@@ -1,3 +1,4 @@
+import { isBrowserOperationToolName } from '@kiki/agent-profiles/toolPolicy';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -320,7 +321,8 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   }
 
   private isDynamicallyLoadable(info: ToolInfo): boolean {
-    return info.source === 'mcp' || info.source === 'plugin';
+    if (info.source === 'mcp' || info.source === 'plugin') return true;
+    return info.source === 'builtin' && info.disclosure === 'deferred' && isBrowserOperationToolName(info.name);
   }
 
   private schemaOf(name: string): Tool | undefined {

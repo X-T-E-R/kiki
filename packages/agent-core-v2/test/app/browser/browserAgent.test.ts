@@ -81,6 +81,32 @@ function publishBrowser(sections: Emitter<ConfigSectionChangedEvent>, config: Br
   sections.fire({ domain: BROWSER_CONFIG_SECTION, source: 'set', value: config, previousValue: {} });
 }
 
+function selectionHarness(tabsFor: () => { tabId: string; targetId: string }[], generationFor: () => number, invoke: (input: BrowserInvocation) => Promise<BrowserInvocationResult>) {
+  const ix = new TestInstantiationService();
+  const browser = sameBrowserControl({ a: { type: 'agent-browser-profile', name: 'A', enabled: true } });
+  const connect = vi.fn(async () => ({ browser: 'a', state: 'ready' as const, executionHost: 'fixture-host', generation: generationFor() }));
+  ix.stub(IBrowserConnectionStore, browser.store);
+  ix.stub(defaults, { ready: Promise.resolve(undefined) });
+  ix.stub(IAgentScopeContext, { agentId: 'main' });
+  ix.stub(ISessionContext, { sessionId: 'session', sessionDir: '/fixture/session' });
+  ix.stub(ISessionWorkspaceContext, { workDir: '/fixture', additionalDirs: [] });
+  ix.stub(IAgentRuntimeService, {});
+  ix.stub(ISessionMediaStore, {});
+  ix.stub(ISessionInteractionService, { hasConsumer: () => false });
+  ix.stub(IFlagService, { enabled: () => true });
+  ix.stub(IConfigService, browser.configService);
+  ix.stub(IAgentToolPolicyService, { isToolActiveForDisclosure: () => true });
+  ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
+  ix.set(IEventBus, new SyncDescriptor(EventBusService));
+  ix.stub(IBrowserControlService, {
+    endTurn: async () => undefined, catalog: async () => [], connect, invoke,
+    status: async () => ({ browser: 'a', state: 'ready' as const, executionHost: 'fixture-host', generation: generationFor() }),
+    tabs: async () => tabsFor(),
+  });
+  ix.set(IAgentBrowserService, new SyncDescriptor(AgentBrowserService));
+  return { ix, service: ix.get(IAgentBrowserService), connect };
+}
+
 class BrowserContributionAssembly extends Service {
   constructor() {
     super();
@@ -157,6 +183,7 @@ describe('native browser agent selection, schema and local file channel', () => 
       profile.enabled = true;
       publishBrowser(browser.sections, browser.config);
       expect(registry.list().map((tool) => tool.name)).toEqual(['browser__agent_browser_fill']);
+      expect(registry.list()[0]).toMatchObject({ source: 'builtin', disclosure: 'deferred' });
       expect(registry.list()[0]?.parameters?.['required']).toEqual(['selector', 'text']);
       await service.tabs({ action: 'select', browser: 'a', target: 'a-target' });
       const fill = registry.resolve('browser__agent_browser_fill')!;
@@ -610,5 +637,61 @@ describe('native browser agent selection, schema and local file channel', () => 
       browser.sections.fire({ domain: 'tools', source: 'set', value: {}, previousValue: {} });
       expect(registry.resolve('browser__ego_run')).toBeInstanceOf(BrowserEgoRunTool);
     } finally { await disposables.dispose(); }
+  });
+
+  it('clears a dead selection after reconnect and does not replace it or replay the close', async () => {
+    let generation = 1;
+    let tabs = [{ tabId: 't1', targetId: 'blank' }, { tabId: 't2', targetId: 'fixture' }, { tabId: 't3', targetId: 'window-tab' }];
+    const calls: string[] = [];
+    const harness = selectionHarness(() => tabs, () => generation, async (input) => {
+      calls.push(input.tool);
+      if (input.tool === 'agent_browser_tab_close') throw new BrowserError('browser.execution_failed', 'The browser command timed out; its outcome is unknown and it was not replayed by Kiki');
+      const tab = input.tool === 'agent_browser_window_new' ? 'window-tab' : 'fixture';
+      return { browser: 'a', executionHost: 'fixture-host', runtimeSession: 'fixture-a', generation, tab,
+        result: { isError: false, content: [], structuredContent: { response: { success: true, data: {} } } } };
+    });
+    try {
+      expect((await harness.service.tabs({ action: 'open', browser: 'a', url: 'http://127.0.0.1/fixture' })).isError).not.toBe(true);
+      expect((await harness.service.tabs({ action: 'window', browser: 'a' })).isError).not.toBe(true);
+      const closed = await harness.service.tabs({ action: 'close', browser: 'a', target: 'window-tab' });
+      expect(closed.isError).toBe(true);
+      expect(String(closed.output)).toContain('not replayed');
+      harness.connect.mockImplementation(async () => {
+        generation = 3;
+        tabs = [{ tabId: 't1', targetId: 'blank' }, { tabId: 't2', targetId: 'fixture' }];
+        return { browser: 'a', state: 'ready' as const, executionHost: 'fixture-host', generation };
+      });
+      const reconnected = JSON.parse(String((await harness.service.connections({ action: 'connect', browser: 'a' })).output)) as { selectedTab?: unknown; selection?: string };
+      expect(reconnected.selectedTab).toBeNull();
+      expect(reconnected.selection).toContain('not replaced');
+      const listed = JSON.parse(String((await harness.service.tabs({ action: 'list', browser: 'a' })).output)) as { selected: unknown; tabs: { targetId: string }[] };
+      expect(listed.tabs.map((tab) => tab.targetId)).toEqual(['blank', 'fixture']);
+      expect(listed.selected).toBeNull();
+      expect(calls).toEqual(['agent_browser_tab_new', 'agent_browser_window_new', 'agent_browser_tab_close']);
+    } finally { await harness.ix.dispose(); }
+  });
+
+  it('keeps a still-listed selection across reconnect without observing or switching tabs', async () => {
+    let generation = 1;
+    const tabs = [{ tabId: 't2', targetId: 'fixture' }, { tabId: 't9', targetId: 'user-tab' }];
+    const calls: string[] = [];
+    const harness = selectionHarness(() => tabs, () => generation, async (input) => {
+      calls.push(input.tool);
+      return { browser: 'a', executionHost: 'fixture-host', runtimeSession: 'fixture-a', generation, tab: 'fixture',
+        result: { isError: false, content: [], structuredContent: { response: { success: true, data: {} } } } };
+    });
+    try {
+      await harness.service.tabs({ action: 'open', browser: 'a', url: 'http://127.0.0.1/fixture' });
+      harness.connect.mockImplementation(async () => {
+        generation = 4;
+        return { browser: 'a', state: 'ready' as const, executionHost: 'fixture-host', generation };
+      });
+      const reconnected = JSON.parse(String((await harness.service.connections({ action: 'connect', browser: 'a' })).output)) as { selectedTab?: { tab?: string; generation?: number; observed?: boolean; frame?: string } };
+      expect(reconnected.selectedTab).toMatchObject({ tab: 'fixture', generation: 4 });
+      expect(reconnected.selectedTab?.observed).toBeUndefined();
+      expect(reconnected.selectedTab?.frame).toBeUndefined();
+      expect(reconnected.selectedTab?.tab).not.toBe('user-tab');
+      expect(calls).toEqual(['agent_browser_tab_new']);
+    } finally { await harness.ix.dispose(); }
   });
 });

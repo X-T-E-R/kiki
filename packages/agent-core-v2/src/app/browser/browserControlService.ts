@@ -290,6 +290,8 @@ export class BrowserControlService implements IBrowserControlService {
         throw new BrowserError('browser.busy', 'The old daemon has not been confirmed stopped; check or disconnect it before reconnecting');
       }
       if (live.status.state === 'ready') return { ...live.status };
+      const resumed = await this.resumeLiveDaemon(live, signal);
+      if (resumed !== undefined) return resumed;
       const previous = live.status;
       live.status = { ...live.status, state: 'connecting' };
       try {
@@ -864,6 +866,27 @@ export class BrowserControlService implements IBrowserControlService {
     }
     if (info.success === true && info.data?.['active'] === true) return 'alive';
     throw new BrowserError('browser.execution_failed', 'Browser check did not confirm the execution state');
+  }
+
+  private async resumeLiveDaemon(live: LiveBrowser, signal?: AbortSignal): Promise<BrowserStatus | undefined> {
+    if (live.backend === undefined || live.backend.official !== undefined) return undefined;
+    if (live.status.failure?.reason !== 'outcome_unknown') return undefined;
+    if (await this.usesWebbridge(live.connection)) return undefined;
+    try {
+      const info = browserResponse(await this.call(live, 'agent_browser_session_info', {}, signal));
+      if (info.success !== true || info.data?.['active'] !== true) return undefined;
+      await this.readTabs(live, signal);
+    } catch (error) {
+      if (signal?.aborted === true && error === signal.reason) throw error;
+      this.fail(live, error, true);
+      return { ...live.status };
+    }
+    live.target = undefined;
+    live.observation = undefined;
+    live.admitting = true;
+    live.status = { ...live.status, state: 'ready', generation: live.status.generation + 1, currentCall: undefined,
+      checkedAt: new Date().toISOString(), error: undefined, failure: undefined };
+    return { ...live.status };
   }
 
   private async recheckUnconfirmed(live: LiveBrowser, signal?: AbortSignal): Promise<BrowserStatus> {

@@ -57,6 +57,7 @@ export const BrowserTabsInputSchema = z.discriminatedUnion('action', [
 export type BrowserTabsInput = z.infer<typeof BrowserTabsInputSchema>;
 export const BrowserEgoRunInputSchema = z.object({ browser: BrowserIdSchema.optional(), script: z.string().min(1) }).strict();
 export type BrowserEgoRunInput = z.infer<typeof BrowserEgoRunInputSchema>;
+const selectionDropped = 'The previously selected tab is not in the current list. It was not replaced. Select a listed target before the next page action.';
 
 export function egoRunExecution(script: string, runtime: Runtime, execute: (ctx: ExecutableToolContext) => Promise<ExecutableToolResult>): ToolExecution {
   return { display: { kind: 'command', command: script, language: 'bash' }, approvalRule: toolApprovalRule('browser__ego_run', script, runtime), execute };
@@ -252,7 +253,22 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
                 ? 'Load snapshot, click, and fill for the selected tab. Window and non-main frame operations are not available.'
                 : 'Use groups or tools to load only the typed operations needed for this task. Tab/frame lifecycle uses BrowserTabs. Browser installation and cross-session management are not page operations.' });
       }
-      if (input.action === 'connect') return this.json(await this.control.connect(browser, signal, this.requestContext(ctx)));
+      if (input.action === 'connect') {
+        const status = await this.control.connect(browser, signal, this.requestContext(ctx));
+        if (status.state !== 'ready') {
+          this.selections.delete(browser);
+          return this.json({ ...status, selectedTab: null });
+        }
+        let dropped = false;
+        try {
+          const tabs = await this.control.tabs(browser, signal, this.requestContext(ctx));
+          dropped = this.reconcileSelection(browser, status.generation, tabs) === 'dropped';
+        } catch (error) {
+          this.selections.delete(browser);
+          return this.error(error);
+        }
+        return this.json({ ...status, selectedTab: this.selections.get(browser) ?? null, ...(dropped ? { selection: selectionDropped } : {}) });
+      }
       if (input.action === 'disconnect') { const status = await this.control.disconnect(browser, signal); this.selections.delete(browser); return this.json(status); }
       return this.json(await (input.action === 'check' ? this.control.check(browser, signal, this.requestContext(ctx)) : this.control.status(browser)));
     } catch (error) { return this.error(error); }
@@ -267,7 +283,12 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         throw new BrowserError('browser.unsupported', 'The Ego Lite Page API has no window or frame method');
       }
       const requestContext = this.requestContext(ctx);
-      if (input.action === 'list') return this.json({ browser, status: await this.control.status(browser), selected: this.selections.get(browser), tabs: await this.control.tabs(browser, signal, requestContext) });
+      if (input.action === 'list') {
+        const status = await this.control.status(browser);
+        const tabs = await this.control.tabs(browser, signal, requestContext);
+        const dropped = this.reconcileSelection(browser, status.generation, tabs) === 'dropped';
+        return this.json({ browser, status, selected: this.selections.get(browser) ?? null, tabs, ...(dropped ? { selection: selectionDropped } : {}) });
+      }
       const current = this.selections.get(browser);
       const caller = { sessionId: this.session.sessionId, agentId: this.agent.agentId };
       if (input.action === 'select' || input.action === 'close') {
@@ -364,6 +385,17 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
     return browser;
   }
 
+  private reconcileSelection(browser: string, generation: number, tabs: readonly { targetId: string }[]): 'absent' | 'kept' | 'dropped' {
+    const current = this.selections.get(browser);
+    if (current === undefined) return 'absent';
+    if (!tabs.some((tab) => tab.targetId === current.tab)) {
+      this.selections.delete(browser);
+      return 'dropped';
+    }
+    if (current.generation !== generation) this.selections.set(browser, { tab: current.tab, generation, ...(current.owned === true ? { owned: true } : {}) });
+    return 'kept';
+  }
+
   private modelName(name: string): string { return `browser__${name}`; }
 
   private register(tool: MCPToolDefinition): void {
@@ -432,7 +464,7 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
             } catch (error) { return this.error(error); }
           } };
         } catch (error) { return { isError: true, output: error instanceof Error ? error.message : String(error) }; }
-      } }, { source: 'builtin' });
+      } }, { source: 'builtin', disclosure: 'deferred' });
     this.registrations.set(name, this._register(registration));
   }
 
@@ -538,7 +570,7 @@ export const IBrowserConnectionsTool = createDecorator<IBrowserConnectionsTool>(
 export class BrowserConnectionsTool implements IBrowserConnectionsTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'BrowserConnections';
-  readonly description = 'Discover saved browser connections and an installed Ego Lite CLI. Check, select, or connect one explicitly, inspect its real execution state, or disconnect it. A check does not replay a timed-out command or stop the browser. Loading groups/tools exposes the donor\'s typed deep-control operations on demand, without loading the entire catalog. Omitted browser uses only this agent\'s selected connection or the new-session default; never a guessed ready browser.';
+  readonly description = 'Discover saved browser connections and an installed Ego Lite CLI. Check, select, or connect one explicitly, inspect its real execution state, or disconnect it. A check does not replay a timed-out command or stop the browser. Connecting after that check reattaches when the browser is still running: the command is not replayed and a replacement browser is not opened. A selected tab that is no longer listed is cleared and is not replaced by another tab. Loading groups/tools exposes those typed operations for SelectTools, without loading the entire catalog into the top-level tool list. Omitted browser uses only this agent\'s selected connection or the new-session default; never a guessed ready browser.';
   readonly parameters = toInputJsonSchema(BrowserConnectionsInputSchema);
   constructor(@IAgentBrowserService private readonly browser: IAgentBrowserService) {}
   resolveExecution(input: BrowserConnectionsInput): ToolExecution {

@@ -460,6 +460,65 @@ describe('browser connection execution ownership', () => {
     } finally { await f.ix.dispose(); }
   });
 
+  it('reattaches a live daemon after an unconfirmed close without opening, switching, or replaying', async () => {
+    const f = fixture();
+    f.tabs.set('a', [{ tabId: 't1', targetId: 'blank' }, { tabId: 't2', targetId: 'fixture' }, { tabId: 't3', targetId: 'window-tab' }]);
+    try {
+      expect((await f.control.connect('a')).generation).toBe(1);
+      f.handlers.set('a:agent_browser_tab_close', async () => ({ isError: true, content: [{ type: 'text', text: 'timed out' }],
+        structuredContent: { exitCode: null, stderr: 'timed out', response: { success: false, error: 'timed out' } } }));
+      await expect(f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_tab_close', args: { tab: 'window-tab' }, tab: 'window-tab' })).rejects.toThrow(/not replayed/);
+      const checked = await f.control.check('a');
+      expect(checked).toMatchObject({ state: 'idle', generation: 2, failure: { reason: 'outcome_unknown' } });
+      expect(checked.error).toContain('not replayed');
+      const names = () => f.calls.map((call) => call.name);
+      const before = names();
+      const ready = await f.control.connect('a');
+      expect(ready).toMatchObject({ state: 'ready', generation: 3, failure: undefined, error: undefined });
+      expect(names().slice(before.length)).toEqual(['agent_browser_session_info', 'agent_browser_tab_list']);
+      expect(f.calls.filter((call) => call.name === 'agent_browser_open')).toHaveLength(1);
+      expect(f.calls.filter((call) => call.name === 'agent_browser_tab_close')).toHaveLength(1);
+      expect(f.calls.some((call) => call.name === 'agent_browser_snapshot')).toBe(false);
+      expect(names().filter((name) => name === 'agent_browser_tab_switch')).toEqual(before.filter((name) => name === 'agent_browser_tab_switch'));
+      expect(f.tabs.get('a')?.map((tab) => tab.targetId)).toEqual(['blank', 'fixture', 'window-tab']);
+    } finally { await f.ix.dispose(); }
+  });
+
+  it('opens a replacement only after the unconfirmed daemon is gone, still without replaying the command', async () => {
+    const f = fixture();
+    try {
+      await f.control.connect('a');
+      f.handlers.set('a:agent_browser_tab_close', async () => ({ isError: true, content: [],
+        structuredContent: { exitCode: null, stderr: 'timed out', response: { success: false, error: 'timed out' } } }));
+      await expect(f.control.invoke({ browser: 'a', caller, tool: 'agent_browser_tab_close', args: { tab: 'a-tab' }, tab: 'a-tab' })).rejects.toThrow(/not replayed/);
+      await f.control.check('a');
+      f.handlers.set('a:agent_browser_session_info', async () => response({ active: false, pid: null, runtime: null }));
+      expect((await f.control.connect('a')).state).toBe('ready');
+      expect(f.calls.filter((call) => call.name === 'agent_browser_open')).toHaveLength(2);
+      expect(f.calls.filter((call) => call.name === 'agent_browser_tab_close')).toHaveLength(1);
+      expect(f.calls.some((call) => call.name === 'agent_browser_snapshot')).toBe(false);
+    } finally { await f.ix.dispose(); }
+  });
+
+  it('does not pin a live CDP browser again after an unconfirmed command', async () => {
+    const f = fixture();
+    try {
+      await f.control.connect('b');
+      f.handlers.set('b:agent_browser_snapshot', async () => ({ isError: true, content: [],
+        structuredContent: { exitCode: null, stderr: 'timed out', response: { success: false, error: 'timed out' } } }));
+      await expect(f.control.invoke({ browser: 'b', caller, tool: 'agent_browser_snapshot', args: {}, tab: 'b-tab' })).rejects.toThrow(/not replayed/);
+      expect((await f.control.check('b')).failure?.reason).toBe('outcome_unknown');
+      const connects = () => f.calls.filter((call) => call.name === 'agent_browser_connect').length;
+      const snapshots = () => f.calls.filter((call) => call.name === 'agent_browser_snapshot').length;
+      expect(connects()).toBe(1);
+      expect(snapshots()).toBe(1);
+      expect((await f.control.connect('b')).state).toBe('ready');
+      expect(connects()).toBe(1);
+      expect(snapshots()).toBe(1);
+      expect(f.calls.filter((call) => call.name === 'agent_browser_connect').every((call) => call.args['pinTab'] === true)).toBe(true);
+    } finally { await f.ix.dispose(); }
+  });
+
   it('keeps a lost CDP connect response unconfirmed without replaying it', async () => {
     const f = fixture();
     try {

@@ -568,6 +568,13 @@ describe('AgentToolSelectService gate', () => {
 });
 
 describe('AgentToolSelectService S0 baseline (gate closed)', () => {
+  it('keeps a deferred browser operation inline while the selection gate is closed', () => {
+    const h = createHarness();
+    disposables.add(h.registry.register(new EchoTool('browser__agent_browser_snapshot'), { source: 'builtin', disclosure: 'deferred' }));
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).toContain('browser__agent_browser_snapshot');
+    expect(h.sut.isLoadable('browser__agent_browser_snapshot')).toBe(false);
+  });
+
   it('shapeTools returns the identical array when dynamically_loaded_tools is absent', () => {
     const h = createHarness();
     registerBuiltin(h, new EchoTool());
@@ -681,6 +688,46 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(shaped.map((entry) => entry.name)).toEqual(['HistoryRead']);
     expect(shaped[0]?.deferred).toBeUndefined();
     expect(h.sut.isLoadable('HistoryRead')).toBe(false);
+  });
+
+  it('announces a deferred browser operation without putting its schema on tools[]', async () => {
+    const h = createHarness();
+    disposables.add(h.registry.register(new EchoTool('browser__agent_browser_snapshot'), { source: 'builtin', disclosure: 'deferred' }));
+    disposables.add(h.registry.register(new EchoTool('browser__ego_run'), { source: 'builtin', disclosure: 'deferred' }));
+    disposables.add(h.registry.register(new EchoTool('HistoryRead'), { source: 'builtin', disclosure: 'deferred' }));
+    disposables.add(h.registry.register(h.ix.createInstance(SelectToolsTool), { source: 'builtin' }));
+    const resident = () => JSON.stringify(h.sut.shapeTools(h.registry.list()).filter((entry) => entry.deferred !== true));
+    const before = resident();
+    expect(before).not.toContain('browser__agent_browser_snapshot');
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).toEqual(expect.arrayContaining(['HistoryRead', 'browser__ego_run', SELECT_TOOLS_TOOL_NAME]));
+    expect(h.sut.isLoadable('browser__agent_browser_snapshot')).toBe(true);
+    expect(h.sut.isLoadable('browser__ego_run')).toBe(false);
+    expect(h.sut.isLoadable('HistoryRead')).toBe(false);
+
+    const announced = await announce(h);
+    expect(announced).toContain('<tools_added>\nbrowser__agent_browser_snapshot —');
+    expect(announced).not.toContain('browser__ego_run');
+    expect(announced).not.toContain('HistoryRead');
+    expect(h.sut.load(['browser__agent_browser_snapshot', 'browser__ego_run', 'HistoryRead'])).toEqual({
+      toLoad: ['browser__agent_browser_snapshot'], alreadyAvailable: [], unknown: ['browser__ego_run', 'HistoryRead'],
+    });
+    const declared = await declareSchemas(h, 2);
+    expect(declared?.tools?.map((tool) => tool.name)).toEqual(['browser__agent_browser_snapshot']);
+    expect(resident()).toBe(before);
+    expect(h.sut.shapeTools(h.registry.list()).find((entry) => entry.name === 'browser__agent_browser_snapshot')?.deferred).toBe(true);
+  });
+
+  it('does not announce or select a deferred browser operation the policy excludes', async () => {
+    activeToolNames = new Set(['HistoryRead']);
+    const h = createHarness();
+    disposables.add(h.registry.register(new EchoTool('browser__agent_browser_snapshot'), { source: 'builtin', disclosure: 'deferred' }));
+    disposables.add(h.registry.register(new EchoTool('HistoryRead'), { source: 'builtin', disclosure: 'deferred' }));
+    expect(h.sut.isLoadable('browser__agent_browser_snapshot')).toBe(false);
+    expect(h.sut.load(['browser__agent_browser_snapshot'])).toEqual({
+      toLoad: [], alreadyAvailable: [], unknown: ['browser__agent_browser_snapshot'],
+    });
+    expect(await announce(h)).toBeUndefined();
+    expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).toEqual(['HistoryRead']);
   });
 
   it('keeps user tools resident regardless of deferred metadata', () => {
