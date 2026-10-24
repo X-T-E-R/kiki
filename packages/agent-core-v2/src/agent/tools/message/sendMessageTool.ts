@@ -4,6 +4,7 @@ import { z } from 'zod';
 
 import { createDecorator, type LiveRef, type ServicesAccessor, ref } from '#/_base/di/instantiation';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { MESSAGE_DELIVERY_SENT_GUIDANCE } from '#/agent/delivery/deliveryReminder';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IBlobStore } from '#/persistence/interface/blobStore';
@@ -47,7 +48,7 @@ interface AttachmentInput {
 export class SendMessageTool implements ISendMessageTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'SendMessage';
-  readonly description = 'Send a message to the user, a room, or another Bot. Ordinary assistant text is not delivered in message mode. Do not send empty confirmations, and do not repeat a message in ordinary text.';
+  readonly description = 'Send a complete message to the user, a room, or another Bot in message mode. Do not split one message into sentences or repeat it in ordinary text. A final ordinary reply is delivered in full as a fallback; do not resend it. After successful delivery to the user, if the request is complete and no work remains, end the turn without a closing SendMessage or confirmation. Progress messages do not end ongoing work; continue any required tools or pending work.';
   readonly parameters = toInputJsonSchema(SendMessageToolInputSchema);
 
   constructor(
@@ -111,7 +112,12 @@ export class SendMessageTool implements ISendMessageTool {
             sender: identity,
           };
         }
-        return { output: JSON.stringify(toWireReceipt(receipt), null, 2) };
+        return {
+          output: JSON.stringify(toWireReceipt(receipt), null, 2),
+          note: receipt.deliveredTo.includes('user') && (receipt.delivery === undefined || receipt.delivery === 'delivered')
+            ? `<system>${MESSAGE_DELIVERY_SENT_GUIDANCE}</system>`
+            : undefined,
+        };
       },
     };
   }
