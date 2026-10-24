@@ -1,3 +1,4 @@
+import { bridgeReadViewSchema } from '@kiki/protocol';
 import { contentRefSchema } from '@kiki/transcript';
 import { z } from 'zod';
 
@@ -36,6 +37,7 @@ export const readThreadResponseSchema = z.object({
   turns: z.array(threadTurnSchema),
   next_cursor: z.string().optional(),
   incomplete: z.literal('history_preparing').optional(),
+  view: bridgeReadViewSchema.optional(),
 });
 export type ReadThreadResponse = z.infer<typeof readThreadResponseSchema>;
 

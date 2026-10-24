@@ -177,6 +177,7 @@ export function registerThreadsRoutes(
               turns: result.turns.map(toTurnWire),
               next_cursor: result.nextCursor,
               incomplete: result.incomplete,
+              view: result.view,
             },
             req.id,
           ),

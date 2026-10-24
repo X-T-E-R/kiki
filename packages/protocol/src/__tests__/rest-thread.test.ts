@@ -33,7 +33,9 @@ describe('peer-thread REST schemas', () => {
 
   it('preserves long-turn content references in the REST response', () => {
     const contentRef = { source: { kind: 'turn', id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text', offset: 0, total: 5000 };
-    const page = { thread: ref, turns: [{ turn_id: 7, ended_at: 2, reason: 'completed', origin: 'user', input: 'preview', output: 'preview', content_refs: [contentRef] }] };
+    const page = { thread: ref, turns: [{ turn_id: 7, ended_at: 2, reason: 'completed', origin: 'user', input: 'preview', output: 'preview', content_refs: [contentRef] }], view: { segment: {
+      ref: contentRef, value: 'segment', next: { ...contentRef, offset: 7 }, contentRefs: [],
+    } } };
     expect(readThreadResponseSchema.parse(page)).toEqual(page);
   });
 

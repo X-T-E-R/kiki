@@ -285,6 +285,51 @@ describe('peer-thread routes', () => {
     expect(response.send).toHaveBeenCalledWith(expect.objectContaining({ code: publicCode }));
   });
 
+  it('delivers local content segments over authenticated REST until the continuation ends', { timeout: 30_000 }, async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kap-thread-content-http-'));
+    await writeFile(join(home, 'config.toml'), '[thread_communication]\nenabled = true\n', 'utf8');
+    let server: RunningServer | undefined;
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+      const base = `http://127.0.0.1:${server.port}`;
+      const service = server.core.accessor.get(IThreadCommunicationService);
+      const thread = { host_id: service.hostId, workspace_id: 'workspace-b', session_id: 'session-b' };
+      const firstRef = { source: { kind: 'turn' as const, id: '7' }, revision: 'revision', path: ['output'], kind: 'text' as const, offset: 0, total: 11 };
+      const secondRef = { ...firstRef, offset: 5 };
+      const read = vi.spyOn(service, 'readThread').mockImplementation(async (input) => {
+        const ref = input.contentRef ?? firstRef;
+        return { thread: input.thread, turns: [], view: { segment: {
+          ref, value: ref.offset === 0 ? 'first' : 'second', next: ref.offset === 0 ? secondRef : undefined, contentRefs: [],
+        } } };
+      });
+      const post = async (body: unknown) => {
+        const response = await fetch(`${base}/api/threads:read`, {
+          method: 'POST', headers: authHeaders(server!, { 'content-type': 'application/json' }), body: JSON.stringify(body),
+        } as never);
+        return { response, body: await response.json() as { code: number; data: unknown } };
+      };
+      const values: string[] = [];
+      let ref: typeof firstRef | undefined = firstRef;
+      while (ref !== undefined) {
+        const result = await post({ thread, content_ref: ref });
+        expect(result.response.status).toBe(200);
+        expect(result.body.code).toBe(0);
+        const page = publicReadThreadResponseSchema.parse(result.body.data);
+        expect(page.turns).toEqual([]);
+        expect(page.view?.segment?.value).toBe(ref.offset === 0 ? 'first' : 'second');
+        values.push(page.view?.segment?.value as string);
+        ref = page.view?.segment?.next as typeof firstRef | undefined;
+      }
+      expect(values).toEqual(['first', 'second']);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect((await fetch(`${base}/api/threads:read`, { method: 'POST', body: JSON.stringify({ thread, content_ref: firstRef }) } as never)).status).toBe(401);
+      read.mockRestore();
+    } finally {
+      await server?.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('stops the long-poll response when the client disconnects', async () => {
     const service = makeService();
     vi.mocked(service.waitThreads).mockImplementation(() => new Promise(() => undefined));
