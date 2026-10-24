@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { imInstanceViewSchema, imSessionSnapshotSchema } from '../imSession';
+import { imBindingPatchSchema, imBindingSchema, imConfirmRequestSchema, imInstanceViewSchema, imPolicySchema, imSessionSnapshotSchema, imTargetChannelsSchema } from '../imSession';
+import { ErrorCode } from '../error-codes';
 
 const view = {
   id: 'inst',
@@ -39,5 +40,24 @@ describe('IM connection metadata', () => {
     for (const extra of [{ errmsg: 'private' }, { token: 'private' }, { body: 'private' }, { cursor: 'private' }, { code: 'arbitrary' }, { retry_in_ms: -1 }, { failure_count: 1.5 }, { ret: Infinity }]) {
       expect(imInstanceViewSchema.safeParse({ ...view, connection_detail: { ...connection_detail, ...extra } }).success).toBe(false);
     }
+  });
+});
+
+
+describe('thread channel contracts', () => {
+  it('keeps optional Persona and missing legacy session provenance while exposing paused ownership', () => {
+    const binding = { id: 'b1', provider_instance_id: 'account', provider_kind: 'telegram', account_id: 'bot',
+      identity: { chat_id: 'room', sender_id: 'user', topic_id: '41' }, enabled: true, busy: 'queue', reply: 'final', mobile_interactions: true };
+    expect(imBindingSchema.parse({ ...binding, session_id: 'thread', input_enabled: false, output_enabled: true }).persona_id).toBeUndefined();
+    expect(imBindingSchema.parse({ ...binding, persona_id: 'legacy', pending_reanchor: true }).session_id).toBeUndefined();
+    expect(imBindingPatchSchema.parse({ input_enabled: null, output_enabled: false, rebind: true, session_id: 'target' })).toMatchObject({ input_enabled: null, output_enabled: false });
+    expect(imConfirmRequestSchema.parse({ target: { kind: 'session', session_id: 'thread' }, rebind: true, input_enabled: true })).toMatchObject({ rebind: true });
+  });
+
+  it('distinguishes unbound notify candidates from bound outputs without colliding with session creation errors', () => {
+    expect(imPolicySchema.parse({ allowed: true, default_enabled: true, allow_channel_borrowing: true }).allow_channel_borrowing).toBe(true);
+    expect(imTargetChannelsSchema.parse({ internal_enabled: true, channels: [{ id: 'notify:updates', kind: 'notify', enabled: true, bound: false, capabilities: [] }] }).channels[0]?.bound).toBe(false);
+    expect(ErrorCode.IM_IDENTITY_ALREADY_BOUND).toBe(40949);
+    expect(ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT).toBe(40948);
   });
 });

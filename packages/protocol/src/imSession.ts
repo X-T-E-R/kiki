@@ -22,6 +22,7 @@ export function imSessionAdmitted(input: ImSessionAllowance): boolean {
 export const imPolicySchema = z.object({
   allowed: z.boolean(),
   default_enabled: z.boolean(),
+  allow_channel_borrowing: z.boolean().optional(),
 }).strict();
 export type ImPolicy = z.infer<typeof imPolicySchema>;
 
@@ -53,10 +54,13 @@ export const imBindingSchema = z.object({
   provider_kind: imProviderKindSchema,
   account_id: z.string().min(1),
   identity: imIdentitySchema,
-  session_id: z.string().min(1),
+  session_id: z.string().min(1).optional(),
   persona_id: z.string().min(1).optional(),
+  pending_reanchor: z.boolean().optional(),
   enabled: z.boolean(),
   session_enabled: z.boolean().optional(),
+  input_enabled: z.boolean().optional(),
+  output_enabled: z.boolean().optional(),
   busy: z.enum(['queue', 'steer']),
   reply: z.enum(['final', 'edit']),
   mobile_interactions: z.boolean(),
@@ -144,12 +148,18 @@ export const imConfirmRequestSchema = z.object({
   reply: z.enum(['final', 'edit']).optional(),
   mobile_interactions: z.boolean().optional(),
   also_home: z.boolean().optional(),
+  rebind: z.boolean().optional(),
+  input_enabled: z.boolean().optional(),
+  output_enabled: z.boolean().optional(),
 }).strict();
 export type ImConfirmRequest = z.infer<typeof imConfirmRequestSchema>;
 
 export const imBindingPatchSchema = z.object({
   enabled: z.boolean().optional(),
   session_enabled: z.boolean().nullable().optional(),
+  input_enabled: z.boolean().nullable().optional(),
+  output_enabled: z.boolean().nullable().optional(),
+  rebind: z.boolean().optional(),
   busy: z.enum(['queue', 'steer']).optional(),
   reply: z.enum(['final', 'edit']).optional(),
   mobile_interactions: z.boolean().optional(),
@@ -172,7 +182,8 @@ export type ImChannelCapability = z.infer<typeof imChannelCapabilitySchema>;
 /** One delivery channel bound to a conversation; `internal` is the in-app message view. */
 export const imChannelViewSchema = z.object({
   id: z.string().min(1),
-  kind: z.enum(['internal', 'im']),
+  kind: z.enum(['internal', 'im', 'notify']),
+  bound: z.boolean().optional(),
   enabled: z.boolean(),
   capabilities: z.array(imChannelCapabilitySchema),
 }).strict();
@@ -227,7 +238,7 @@ export type ImSetupResult = z.infer<typeof imSetupResultSchema>;
 
 export const imBindingTestResultSchema = z.object({
   binding_id: z.string().min(1),
-  status: z.enum(['delivered', 'failed', 'unknown']),
+  status: z.enum(['delivered', 'partial', 'failed', 'unknown']),
   message_ids: z.array(z.string().min(1)),
   detail: z.string().optional(),
 }).strict();
