@@ -72,7 +72,7 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个�
 - **本地文档提取与 Office 办公**：从 **Official** 插件目录按需安装 `Kiki Extract`（将本地 PDF、Office、HTML 转为可读 Markdown，不改原件）、`Kiki Office Suite`（在本机创建与编辑 Word、Excel、PowerPoint）、`Kiki Work`（本机核对 CSV/TSV 键并比对两张表，不上传数据）与 `Kiki Writing`（专注手稿面板与续写命令）。
 - **专业数据库与外部服务**：安装 `Kimi Datasource`（需 Kimi Code OAuth 登录并消耗套餐额度）即可用自然语言查询股票行情、宏观指标、企业工商、学术文献与中国法律法规；安装 `Kiki Notion` 可检索 Notion 并在指定页面写回简报；`Cloudflare Tunnel` 与 `Kiki Sites` 支持暴露本地服务或部署站点。
 - **多模态媒体生成**：通过 `Kiki Media` 插件与 [媒体来源](/zh/customization/plugins#媒体来源) 配置内置的图像、视频、语音生成服务或接入你自己的本地脚本，按需发起生成。
-- **可查看的网页搜索与抓取通道**：内置 `WebSearch` 与 `FetchURL` 默认无需密钥即可搜网页，也支持代码库与文档等具名通道及多密钥轮换。在**设置 → 能力 → 搜索与抓取**中可直接查看每条搜索通道的凭据来源，以及网址抓取依次经过的提取器与回退顺序。
+- **可查看的网页搜索与抓取通道**：用 `WebSearch` 搜索网页，用 `FetchURL` 读取页面内容；默认通道无需密钥，也可接入代码库与文档等专用通道。在**设置 → 能力 → 搜索与抓取**中可查看凭据来源与多密钥轮换配置，以及网址抓取依次经过的提取器与回退顺序。
 - **Agent Skills 与 MCP 服务器**：用一份 Markdown 编写可自动触发或通过 `/skill:<名字>` 调用的 [Agent Skills](/zh/customization/skills)；或通过 `stdio`、`HTTP`、`SSE` 接入任意 [MCP 服务器](/zh/server/mcp)，让外部工具像内置工具一样接受审批与调用。
 
 ![抓取通道页签：一个网址按顺序经过哪些提取器，以及每一级回退到哪里。](/shots/extend/ce-20261005-extend-fetch-chain.zh.png)
