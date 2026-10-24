@@ -606,6 +606,36 @@ describe('zero-output continuation', () => {
     }
   });
 
+  it('continues an empty thinking container as zero output when the switch is on', async () => {
+    const create = scriptedCreate([emptyThinkContainerStream(), textStream('Visible answer')]);
+    const local = anthropicAgent(create, { initialConfig: { loopControl: { zeroOutputContinuation: true } } });
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 2 } });
+      expect(create).toHaveBeenCalledTimes(2);
+      expect(tailRole(create.mock.calls[1]?.[0])).toBe('user');
+      expect(promptCount(create.mock.calls[1]?.[0], CONTINUE)).toBe(1);
+      expect(thinkingOf(create.mock.calls[1]?.[0])).toEqual([]);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
+  it('does not use thinking-only continuation for an empty thinking container', async () => {
+    const create = scriptedCreate([emptyThinkContainerStream(), textStream('should not run')]);
+    const local = anthropicAgent(create);
+    try {
+      const terminal = await (await prompt(local)).completion;
+      expect(terminal).toMatchObject({ state: 'completed', result: { type: 'completed', steps: 1 } });
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(continued(local)).toBe(false);
+      await local.expectResumeMatches();
+    } finally {
+      await local.dispose();
+    }
+  });
+
   it('does not use the switch for a signature without thinking text', async () => {
     const stream = async function* () {
       yield { type: 'message_start', message: { id: 'signature-only', usage: { input_tokens: 4, output_tokens: 0 } } };
@@ -865,6 +895,16 @@ function gatewayNoUsableAnswerStream(code = 'antigravity_thinking_only'): () => 
     yield { type: 'content_block_stop', index: 0 };
     yield { type: 'message_delta', delta: { stop_reason: null }, usage: { output_tokens: 5 } };
     yield { type: 'error', error: { type: 'api_error', code, message: NO_USABLE_ANSWER } };
+  };
+}
+
+function emptyThinkContainerStream(): () => AsyncGenerator<Record<string, unknown>> {
+  return async function* emptyThinkContainer() {
+    yield { type: 'message_start', message: { id: 'empty-think', usage: { input_tokens: 4, output_tokens: 0 } } };
+    yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+    yield { type: 'content_block_stop', index: 0 };
+    yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 0 } };
+    yield { type: 'message_stop' };
   };
 }
 
