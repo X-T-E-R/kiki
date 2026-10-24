@@ -307,6 +307,9 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
     dock.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/other"]')?.click();
   });
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
+  const workingLine = dock.querySelector('[data-composer-working]');
+  expect(workingLine).not.toBeNull();
+  expect(workingLine?.textContent).toContain('Working');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Stop this turn"]')?.click(); });
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
 });

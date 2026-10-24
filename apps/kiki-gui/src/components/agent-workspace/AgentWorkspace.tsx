@@ -63,6 +63,7 @@ import {
   type ConversationShellSlots,
 } from '../ConversationShell';
 import { Composer } from '../Composer';
+import { useLastResponseAt } from '../composerWorking';
 import type { ContextMeterUsage } from '../ContextMeter';
 import { useContextMeterAutoCompact } from '../useContextMeterAutoCompact';
 import { Icon } from '../icons';
@@ -1326,6 +1327,13 @@ function ChildAgentWorkspace({
     pendingInteraction: 'none',
   };
 
+  const composerWorking = headerBusy && agentState.pendingInteraction === 'none';
+  const lastResponseAt = useLastResponseAt(composerWorking, agentBlocks, agentState.turnStartedAt);
+  const composerWorkingInfo = useMemo(
+    () => (composerWorking ? { lastResponseAt } : undefined),
+    [composerWorking, lastResponseAt],
+  );
+
   const chrome = (
     <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
     <WorkspaceSurface
@@ -1397,6 +1405,7 @@ function ChildAgentWorkspace({
           onActivateSkill={handleActivateSkill}
           onSendNow={handleComposerSendNow}
           busySendsNow
+          working={composerWorkingInfo}
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}
         />
