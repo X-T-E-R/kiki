@@ -39,6 +39,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
+import { parseUsageRangeProjection } from '../src/usage/usageRangeProjection';
 import { UsageRangeFold } from '../src/usage/usageRangeFold';
 import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
 
@@ -335,7 +336,7 @@ async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Re
     if (id === IModelPricingService) return pricing;
     return ix.get(id as typeof IQueryStore);
   } } } as unknown as Scope;
-  return { logs, store, core };
+  return { logs, store, core, storage };
 }
 
 function withRecords(base: Readonly<Record<string, readonly WireRecord[]>>, extra: Readonly<Record<string, readonly WireRecord[]>>): Record<string, readonly WireRecord[]> {
@@ -2239,5 +2240,82 @@ describe('shared agent and history usage projection', () => {
     expect(appended.trend).toEqual(after.trend);
     expect(appended.reliability.usage_coverage).toEqual(after.reliability.usage_coverage);
     expect(get).not.toHaveBeenCalled();
+  });
+
+  it('recovers an old projection without per-agent turns instead of counting a repeated turn again', async () => {
+    const day0 = Date.UTC(2026, 9, 1);
+    const now = day0 + 86_400_000;
+    const main = scope('w', 's');
+    const child = main.replace(/main$/, 'child');
+    const sessions = [summary('s', 'w')];
+    const initial: Record<string, readonly WireRecord[]> = {
+      [main]: [{ ...usageRecord(day0, 1), agentId: 'main' }, { ...usageRecord(day0, 1), agentId: 'main' }],
+      [child]: [{ ...usageRecord(day0, 1), agentId: 'child' }],
+    };
+    const repeat = { ...usageRecord(day0, 1), agentId: 'main' };
+    const input = { range: 'custom', start_at: 0, end_at: now, dimension: 'model' } as const;
+    const reference = await new UsageAggregationService((await openRange(sessions, { ...initial, [main]: [...initial[main]!, repeat] })).core, () => now).query(input);
+    expect(reference.reliability.complete).toBe(true);
+    expect(reference.summary.tokens.output).toBe(4);
+    expect(reference.trend[0]?.turn_count).toBe(2);
+    expect(reference.trend[0]?.drilldown.sessions.find((session) => session.session_id === 's')).toMatchObject({ turn_ids: [1], turn_count: 1, unknown_turn_records: 0 });
+    const saved = await openRange(sessions, initial);
+    expect((await new UsageAggregationService(saved.core, () => now, { usageFactBudget: 1 }).query(input)).reliability.complete).toBe(false);
+    let built = await new UsageAggregationService(saved.core, () => now).query(input);
+    for (let attempt = 0; attempt < 4 && !built.reliability.complete; attempt += 1) built = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(built.reliability.complete).toBe(true);
+    const projectionKey = (await saved.storage.list('cache/usage-aggregation-v1')).find((key) => key.startsWith('range-projection-'));
+    expect(projectionKey).toBeTypeOf('string');
+    const projectionBytes = await saved.storage.read('cache/usage-aggregation-v1', projectionKey!);
+    const oldProjection = JSON.parse(Buffer.from(projectionBytes ?? new Uint8Array()).toString('utf8')) as { version: number; fingerprint: string; agents: { turns: unknown[] }[] };
+    expect(oldProjection.version).toBe(2);
+    oldProjection.version = 1;
+    for (const agent of oldProjection.agents) agent.turns = [];
+    await saved.storage.write('cache/usage-aggregation-v1', projectionKey!, Buffer.from(JSON.stringify(oldProjection)));
+    expect(parseUsageRangeProjection(Buffer.from(JSON.stringify(oldProjection)))).toBeUndefined();
+    const collection = `usage-range-v1:${oldProjection.fingerprint}`;
+    for (const key of await saved.store.listKeys(collection)) {
+      const value = await saved.store.get<{ kind?: string; turnAgents?: boolean; sessions?: { agents?: unknown }[] }>(collection, key);
+      if (value?.kind !== 'bucket') continue;
+      const sessionsWithoutAgents = (value.sessions ?? []).map((session) => {
+        const rest = { ...session };
+        delete rest.agents;
+        return rest;
+      });
+      const bucket = { ...value };
+      delete bucket.turnAgents;
+      await saved.store.put(collection, key, { ...bucket, sessions: sessionsWithoutAgents }, { columns: { view: 2 } });
+    }
+    saved.logs.append(main, 'wire.jsonl', repeat);
+    await saved.logs.flush(main, 'wire.jsonl');
+    const recovered = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(recovered.reliability.complete).toBe(true);
+    expect(recovered.summary).toEqual(reference.summary);
+    expect(recovered.trend).toEqual(reference.trend);
+    expect(recovered.reliability.usage_coverage).toEqual(reference.reliability.usage_coverage);
+    const kept = JSON.parse(Buffer.from(await saved.storage.read('cache/usage-aggregation-v1', projectionKey!) ?? new Uint8Array()).toString('utf8')) as { version?: number; agents?: { turns?: { turnIds?: number[] }[] }[] };
+    if (kept.version === 2) expect(kept.agents?.some((agent) => agent.turns?.some((turn) => turn.turnIds?.includes(1)))).toBe(true);
+    else expect(parseUsageRangeProjection(Buffer.from(JSON.stringify(kept)))).toBeUndefined();
+    saved.logs.append(main, 'wire.jsonl', repeat);
+    await saved.logs.flush(main, 'wire.jsonl');
+    const second = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(second.reliability.complete).toBe(true);
+    expect(second.summary.tokens.output).toBe(5);
+    expect(second.reliability.usage_coverage).toMatchObject({ known_records: 5, missing_records: 0 });
+    expect(second.trend[0]?.turn_count).toBe(2);
+    expect(second.trend[0]?.drilldown.sessions.find((session) => session.session_id === 's')).toMatchObject({ turn_ids: [1], turn_count: 1 });
+    const budgetHome = await openRange(sessions, initial);
+    let budgetBuilt = await new UsageAggregationService(budgetHome.core, () => now).query(input);
+    for (let attempt = 0; attempt < 4 && !budgetBuilt.reliability.complete; attempt += 1) budgetBuilt = await new UsageAggregationService(budgetHome.core, () => now).query(input);
+    const budgetKey = (await budgetHome.storage.list('cache/usage-aggregation-v1')).find((key) => key.startsWith('range-projection-'));
+    const budgetBody = JSON.parse(Buffer.from(await budgetHome.storage.read('cache/usage-aggregation-v1', budgetKey!) ?? new Uint8Array()).toString('utf8')) as { version: number; fingerprint: string; agents: { turns: unknown[] }[] };
+    budgetBody.version = 1;
+    for (const agent of budgetBody.agents) agent.turns = [];
+    await budgetHome.storage.write('cache/usage-aggregation-v1', budgetKey!, Buffer.from(JSON.stringify(budgetBody)));
+    await budgetHome.store.dropCollection(`usage-range-v1:${budgetBody.fingerprint}`);
+    await budgetHome.store.delete('usage-range-routing-v1', budgetBody.fingerprint);
+    const limited = await new UsageAggregationService(budgetHome.core, () => now, { usageFactBudget: 1 }).query(input);
+    expect(limited.reliability.complete).toBe(false);
+    expect(limited.reliability.incomplete_reason).toBe('record_budget');
   });
 });

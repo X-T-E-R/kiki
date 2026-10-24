@@ -29,6 +29,7 @@ export interface FoldBucketView {
     }[];
   }[];
   sessionsTruncated: boolean;
+  turnAgents?: boolean;
 }
 
 interface GroupRow {
@@ -98,7 +99,7 @@ export class UsageRangeFold {
       });
       let bucket = read<BucketRow>(row.bucket);
       if (!changed.has(row.bucket)) {
-        bucket = bucket === undefined ? { kind: 'bucket', key: row.bucketKey, turnCount: 0, sessions: [], sessionsTruncated: false } : structuredClone(bucket);
+        bucket = bucket === undefined ? { kind: 'bucket', key: row.bucketKey, turnCount: 0, sessions: [], sessionsTruncated: false, turnAgents: true } : structuredClone(bucket);
         changed.set(row.bucket, bucket);
       }
       const turnIsNew = row.turn !== undefined && read(row.turn) === undefined;

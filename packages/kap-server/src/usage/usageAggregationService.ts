@@ -29,7 +29,7 @@ import type { UsageSourceChanges } from './usageSourceTracker';
 import { UsageReadAllowance } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import { readUsageWireTail, usageRecoveryPool, type UsageRecoveryPool, type WireLineContinuation } from './usageRecovery';
 import { UsageRangeFold, type FoldBucketView, type FoldedUsageRecord } from './usageRangeFold';
-import { appendProjectionAgent, appendStoredBuckets, bucketsFromAgents, buildRangeProjection, parseUsageRangeProjection, projectionFileName, projectionRows, projectionSessionOf, UsageProjectionFold, type UsageProjectionAgent, type UsageRangeProjection } from './usageRangeProjection';
+import { appendProjectionAgent, appendStoredBuckets, bucketsFromAgents, buildRangeProjection, hasProjectionTurnEvidence, parseUsageRangeProjection, projectionFileName, projectionRows, projectionSessionOf, UsageProjectionFold, type UsageProjectionAgent, type UsageRangeProjection } from './usageRangeProjection';
 
 const SOURCE_RECHECK_MS = 10 * 60_000;
 
@@ -1601,9 +1601,10 @@ export class UsageAggregationService {
       if (this.cache.size !== 0) return undefined;
       const bytes = await this.core.accessor.get(IFileSystemStorageService).read(PERSISTENCE_SCOPE, projectionFileName(fingerprint));
       const parsed = bytes === undefined ? undefined : parseUsageRangeProjection(bytes);
-      if (parsed === undefined || parsed.fingerprint !== fingerprint) return undefined;
+      if (parsed === undefined || parsed.fingerprint !== fingerprint || !hasProjectionTurnEvidence(parsed)) return undefined;
       projection = parsed;
     }
+    if (!hasProjectionTurnEvidence(projection)) return undefined;
     await this.prepareInventory();
     const budget: ScanBudget = { signal, remainingRecords: this.limits.wireRecordBudget, deadlineAt: this.now() + this.limits.deadlineMs, sourcesComplete: true, incompleteReason: null };
     const listed = await this.listSessions(query, budget);
@@ -1675,7 +1676,7 @@ export class UsageAggregationService {
     listed: readonly SessionSummary[],
     signal: AbortSignal,
   ): Promise<UsageRangeProjection | undefined> {
-    if (changes.some((change) => !change.append || change.previous === undefined)) return undefined;
+    if (!hasProjectionTurnEvidence(projection) || changes.some((change) => !change.append || change.previous === undefined)) return undefined;
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const facts = this.core.accessor.get(IUsageFactStore);
     const tails: { scope: string; sessionId: string; records: UsageFact[] }[] = [];
@@ -1826,6 +1827,8 @@ export class UsageAggregationService {
         cursor = page.nextCursor;
       } while (cursor !== undefined);
       const stored = keys.size === 0 ? new Map<string, FoldBucketView>() : await fold.buckets([...keys]);
+      const proved = [...stored.values()].filter((bucket): bucket is FoldBucketView => bucket !== undefined && typeof bucket.key === 'string');
+      if (proved.length !== keys.size || proved.some((bucket) => bucket.turnAgents !== true || bucket.sessions.some((session) => !Array.isArray(session.agents)))) return;
       const rowsByScope = new Map<string, FoldedUsageRecord[]>();
       const agentsBySession = new Map<string, UsageProjectionAgent[]>();
       for (const agent of agents) {
@@ -1845,8 +1848,7 @@ export class UsageAggregationService {
         rowsByScope.set(agent.scope, bucket);
       }
       const turnsByScope = new Map<string, { bucket: string; turnIds: number[]; unknownTurnRecords: number }[]>();
-      for (const value of stored.values()) {
-        if (value === undefined || typeof value.key !== 'string') continue;
+      for (const value of proved) {
         for (const session of value.sessions) {
           for (const entry of session.agents ?? []) {
             const inSession = agentsBySession.get(session.sessionId) ?? [];
@@ -1860,12 +1862,12 @@ export class UsageAggregationService {
         }
       }
       const projection: UsageRangeProjection = {
-        version: 1,
+        version: 2,
         fingerprint,
         folded: true,
         storedBuckets: true,
         sessions: listed.map(projectionSessionOf),
-        buckets: [...stored.values()].flatMap((bucket) => bucket === undefined || typeof bucket.key !== 'string' ? [] : [{
+        buckets: proved.map((bucket) => ({
           key: bucket.key,
           turnCount: bucket.turnCount,
           sessionsTruncated: bucket.sessionsTruncated,
@@ -1875,7 +1877,7 @@ export class UsageAggregationService {
             turnCount: session.turnCount,
             unknownTurnRecords: session.unknownTurnRecords,
           })),
-        }]),
+        })),
         agents: agents.map((agent) => ({ ...agent, rows: rowsByScope.get(agent.scope) ?? [], turns: turnsByScope.get(agent.scope) ?? [] })),
       };
       await this.writeProjection(fingerprint, projection);
