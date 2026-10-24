@@ -3073,6 +3073,68 @@ async function diagnosticFailure(events: readonly unknown[]) {
   throw new Error('expected diagnostic fixture failure');
 }
 
+describe('Responses terminal output contract', () => {
+  it.each(['empty-output', 'empty-content', 'unknown-output'] as const)('keeps %s distinct from lost text even with four output tokens', async mode => {
+    const output: OpenAIResponse['output'] = mode === 'empty-content'
+      ? [{ id: 'msg_empty', type: 'message', role: 'assistant', status: 'completed', content: [] }]
+      : [];
+    const completed = finalizedResponse(output, 'completed');
+    const response = { ...completed, usage: { ...completed.usage, output_tokens: 4, total_tokens: 7 } };
+    const { output: _output, ...withoutOutput } = response;
+    const provider = diagnosticFixtureProvider([{ type: 'response.completed', response: mode === 'unknown-output' ? withoutOutput : response }]);
+    const generateSpy = vi.spyOn(provider, 'generate');
+    const result = await generate(provider, 'synthetic fixture', [], []);
+    expect(generateSpy).toHaveBeenCalledTimes(1);
+    expect(result.message).toEqual({ role: 'assistant', content: [], toolCalls: [] });
+    expect(result.finishReason).toBe('completed');
+    expect(result.rawFinishReason).toBe('completed');
+    expect(result.completionAuthority).toBe(mode === 'unknown-output' ? undefined : 'normal');
+    expect(result.usage).toEqual({ inputOther: 3, output: 4, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalEventCount: 1,
+      terminalTextParts: mode === 'unknown-output' ? null : 0,
+      terminalTextChars: mode === 'unknown-output' ? null : 0,
+      emittedTextChars: 0, emittedToolHeaders: 0,
+    });
+  });
+
+  it('recovers promised text from the completed snapshot when all text deltas are absent', async () => {
+    const output: OpenAIResponse['output'] = [{
+      id: 'msg_snapshot', type: 'message', role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text: 'Snapshot answer', annotations: [], logprobs: [] }],
+    }];
+    const result = await generate(diagnosticFixtureProvider([
+      { type: 'response.completed', response: finalizedResponse(output, 'completed') },
+    ]), 'synthetic fixture', [], []);
+    expect(result.message.content).toEqual([{ type: 'text', text: 'Snapshot answer' }]);
+    expect(result.completionAuthority).toBe('normal');
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalTextParts: 1, terminalTextChars: 'Snapshot answer'.length,
+      textDeltaCount: 0, emittedTextChars: 'Snapshot answer'.length,
+    });
+  });
+
+  it.each(['missing-text', 'empty-response-object', 'missing-terminal'] as const)('rejects %s rather than committing an empty success', async mode => {
+    const events = mode === 'missing-terminal' ? [] : [{
+      type: 'response.completed', response: mode === 'empty-response-object' ? {} : {
+        ...finalizedResponse([], 'completed'),
+        output: [{ id: 'msg_malformed', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text' }] }],
+      },
+    }];
+    const error = await generate(diagnosticFixtureProvider(events), 'synthetic fixture', [], []).catch((error: unknown) => error);
+    const payload = toErrorPayload(error);
+    expect(payload.name).toBe(mode === 'empty-response-object' ? 'APIEmptyResponseError' : 'ChatProviderError');
+    expect(isRetryableGenerateError(error)).toBe(true);
+    expect(readGenerateFailureFacts(error)).toBeUndefined();
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: mode === 'missing-terminal' ? 'eof' : mode === 'missing-text' ? 'local_error' : 'terminal',
+      terminalStatus: mode === 'missing-terminal' ? null : 'completed',
+      terminalTextChars: null, emittedTextChars: 0, emittedToolHeaders: 0,
+      terminalEventCount: mode === 'missing-terminal' ? 0 : 1,
+    });
+  });
+});
+
 describe('Responses safe stream diagnostics', () => {
   it.each(['empty', 'reasoning'] as const)('retains the real %s counts on normal completion', async mode => {
     const output: OpenAIResponse['output'] = mode === 'empty' ? [] : [{ id: 'rs_fixture', type: 'reasoning', summary: [] }];
