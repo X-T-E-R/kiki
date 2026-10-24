@@ -471,13 +471,15 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 
 `kimi-webbridge` 请求体必须给出 `name`，可带 `enabled` 和可选的 `driverPath`，不接受 `endpoint`。它使用服务器本机 `http://127.0.0.1:10086` 的 Kimi HTTP 桥，不启动 CDP 驱动。旧版保存为 CDP、且 id 恰为 `kimi-webbridge` 的条目默认也走这条 HTTP 路由，但不改写保存的类型；见 [`webbridge_preset_route`](../configuration/config-files.md#browser-control)。其他 CDP id 保持原路由。
 
-HTTP 桥的工具目录返回 `contextIsolation: "main-frame-only"`：不支持新建窗口或操作非主 frame。选择标签时使用列表返回的准确 id，并核对实际选中的 id；重复 URL 导致目标不唯一时，会拒绝切换到另一标签。命令已发出、但应答丢失或无法读取时，状态为 `unconfirmed`，`failure.reason` 为 `"outcome_unknown"`，不会重放命令。`:check` 只检查桥的健康状态；返回 `idle` 后，先重新连接、选择标签并观察，再决定下一步动作。明确的否定应答则记为已结束的 `failed` 结果。
+`webbridge-command` 请求体必须给出 `name`，可带 `enabled`（默认 `true`），不接受 `endpoint` 或 `driverPath`。它向固定的本地 `/command` 端点发送扩展命令，不启动 agent-browser。工具目录返回 `contextIsolation: "extension-command-session"`。每个调用方使用独立的命令会话；标签身份为 `wb:<十进制 id>`，不是 DevTools target ID。页面操作、选择与关闭只能作用于该调用方最近一次 navigate 打开的标签。Kiki 不会按 URL 查找另一个标签，同 URL 的两个标签也不会混选。不支持 window 和 frame 方法。断开连接只释放 Kiki 的绑定，不关闭标签；显式的 `agent_browser_end_session` 页面操作会关闭该调用方的命令会话。
+
+既有 `kimi-webbridge` HTTP 桥的工具目录返回 `contextIsolation: "main-frame-only"`：不支持新建窗口或操作非主 frame。选择标签时使用列表返回的准确 id，并核对实际选中的 id；重复 URL 导致目标不唯一时，会拒绝切换到另一标签。命令已发出、但应答丢失或无法读取时，状态为 `unconfirmed`，`failure.reason` 为 `"outcome_unknown"`，不会重放命令。`:check` 只检查桥的健康状态；返回 `idle` 后，先重新连接、选择标签并观察，再决定下一步动作。明确的否定应答则记为已结束的 `failed` 结果。
 
 执行类动作失败即关闭：未开启 `native_browser` 实验开关时，`:connect` 返回信封码 `40001`，`details.code` 为 `"browser.disabled"`、`details.reason` 为 `"feature_disabled"`；连接自身被停用时返回的 `details.reason` 为 `"connection_disabled"`。Klient 对应方法为 `rest.browser.list()`、`upsert(id, input)`、`remove(id)`、`setDefault(browser?)`、`status(id)`、`tabs(id)`、`catalog(id, { includeSchema })`、`check(id)`、`connect(id)` 和 `disconnect(id)`。
 
 ### 浏览器引导预设
 
-预设为 `kimi-webbridge`、`independent-browser`、`codex-browser` 和 `ego-lite`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 将匹配的端点名称列为尚未验证的候选项（`candidates`，最多 20 项），并保存明确选定的管道。桌面应用工具也使用同一名称前缀，因此发现名称不代表扩展连接已验证；仅凭空列表也不能判断扩展未启用。Kiki 不安装外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。`ego-lite` 的 `controlSurface` 为 `"external-app"`，`sourceUrl` 为 `https://lite.ego.app/download?auto=1`。它的状态查询不会启动 `nodejs`。只有检查输出包含 `kiki-ego-ready` 时才是 `ready`。其余原因是 `ego_installed`、`ego_onboarding` 和 `ego_choose_cli`。该预设的 `:prepare` 会被拒绝。`:connect` 执行检查；成功且尚无该 id 时，保存连接 id `ego-lite`，不改允许列表，也不改默认浏览器。
+预设为 `kimi-webbridge`、`independent-browser`、`codex-browser` 和 `ego-lite`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 将匹配的端点名称列为尚未验证的候选项（`candidates`，最多 20 项），并保存明确选定的管道。桌面应用工具也使用同一名称前缀，因此发现名称不代表扩展连接已验证；仅凭空列表也不能判断扩展未启用。Kiki 不安装外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。扩展探测成功后，若 id 空闲，会新建不带 endpoint 的 `webbridge-command` 连接，返回 `connectionId: "webbridge-command"` 及 `connection` 运行状态。若该 id 已被另一类型占用，会返回 `reason: "connection_conflict"`，不替换该条目，也不覆盖既有 `kimi-webbridge` 连接。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。`ego-lite` 的 `controlSurface` 为 `"external-app"`，`sourceUrl` 为 `https://lite.ego.app/download?auto=1`。它的状态查询不会启动 `nodejs`。只有检查输出包含 `kiki-ego-ready` 时才是 `ready`。其余原因是 `ego_installed`、`ego_onboarding` 和 `ego_choose_cli`。该预设的 `:prepare` 会被拒绝。`:connect` 执行检查；成功且尚无该 id 时，保存连接 id `ego-lite`，不改允许列表，也不改默认浏览器。
 
 | 方法与路径 | 说明 |
 | --- | --- |

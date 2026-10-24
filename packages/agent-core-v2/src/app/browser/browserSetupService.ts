@@ -24,7 +24,7 @@ import { IBrowserConnectionStore } from './browserConnectionStore';
 import { BrowserIdSchema } from './browserConfig';
 import { BrowserError } from './errors';
 import { IBrowserSetupService, type BrowserPresetId, type BrowserSetupConnectInput, type BrowserSetupOpenInput, type BrowserSetupUpdateInput, type BrowserSetupShortcutInput, type BrowserSetupStatus, type BrowserSetupStep } from './browserSetup';
-import { readWebbridgeStatus, probeWebbridgeConnection } from './browserWebbridge';
+import { readWebbridgeStatus, probeWebbridgeConnection, WEBBRIDGE_COMMAND_ID } from './browserWebbridge';
 import { CODEX_BRIDGE_ADOPTION, codexBridgePipeName, codexBridgeSelection } from './codexBrowser';
 import { EgoBrowserRuntime } from './ego/runtime';
 import { EGO_LITE_CONNECTION_ID, EGO_LITE_DOWNLOAD_URL, EGO_ONBOARDING_SENTENCE } from './ego/resolveCli';
@@ -162,12 +162,18 @@ export class BrowserSetupService implements IBrowserSetupService {
       if (this.preparing.has(preset)) steps.push({ id: 'plugin', state: 'running', reason: 'preparing_plugin' });
       if (bridge?.versionMismatch === true) steps.push({ id: 'compatibility', state: 'warning', reason: 'version_mismatch' });
       const ready = capability.steps.filter((step) => !step.optional).every((step) => step.state === 'ok') && bridge?.extensionConnected === true;
+      const listed = await this.connections.list();
+      const command = listed.connections.find((item) => item.id === WEBBRIDGE_COMMAND_ID && item.type === 'webbridge-command')
+        ?? listed.connections.find((item) => item.type === 'webbridge-command');
+      const commandStatus = command === undefined ? undefined : await this.control.status(command.id);
+      const toolConnected = commandStatus?.state === 'ready' || commandStatus?.state === 'running';
       return {
         preset, displayName: 'Kimi Browser Extension', controlSurface: 'plugin-skill', pluginId: preset, skill: preset,
         capabilityId: preset, supported: capability.supported, executionHost: hostname(), sourceUrl: KIMI_HELP,
         state: installing ? 'preparing' : error !== undefined ? 'failed' : !capability.supported ? 'unsupported'
-          : ready ? this.checked.has(preset) ? 'connected' : 'ready' : bridge?.running === true ? 'needs_user_action' : 'not_prepared',
-        steps, error, checkedAt: ready ? this.checked.get(preset) : undefined,
+          : ready ? (command === undefined ? this.checked.has(preset) : toolConnected) ? 'connected' : 'ready' : bridge?.running === true ? 'needs_user_action' : 'not_prepared',
+        steps, error, checkedAt: ready ? this.checked.get(preset) ?? commandStatus?.checkedAt : undefined,
+        connectionId: command?.id, connection: commandStatus,
         actions: installing ? [] : [
           { id: 'prepare' },
           ...(ready ? [{ id: 'open' as const }] : []),
@@ -262,12 +268,27 @@ export class BrowserSetupService implements IBrowserSetupService {
       if (ready.state !== 'ready' && ready.state !== 'connected') return ready;
       try {
         await probeWebbridgeConnection();
-        this.checked.set(preset, new Date().toISOString());
       } catch (error) {
         this.checked.delete(preset);
         this.errors.set(preset, error instanceof Error ? error.message : 'WebBridge connection failed');
+        return this.status(preset);
       }
-      return this.status(preset);
+      const listed = await this.connections.list();
+      const occupant = listed.connections.find((item) => item.id === WEBBRIDGE_COMMAND_ID);
+      if (occupant !== undefined && occupant.type !== 'webbridge-command') {
+        return { ...await this.status(preset), state: 'needs_user_action', reason: 'connection_conflict', connectionId: WEBBRIDGE_COMMAND_ID, actions: [{ id: 'choose_connection' }] };
+      }
+      if (occupant === undefined) {
+        await this.control.upsert(WEBBRIDGE_COMMAND_ID, { type: 'webbridge-command', name: input.name ?? 'Kimi browser extension', enabled: true });
+      }
+      const connected = await this.control.connect(WEBBRIDGE_COMMAND_ID);
+      if (connected.state === 'ready') this.checked.set(preset, new Date().toISOString());
+      else {
+        this.checked.delete(preset);
+        this.errors.set(preset, connected.error ?? 'WebBridge connection failed');
+      }
+      return { ...await this.status(preset), connectionId: WEBBRIDGE_COMMAND_ID, connection: connected,
+        state: connected.state === 'ready' ? 'connected' : 'failed', error: connected.error };
     }
     if (preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'Unknown browser setup preset');
     const id = input.connectionId ?? INDEPENDENT_ID;

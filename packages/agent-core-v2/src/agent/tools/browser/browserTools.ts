@@ -231,7 +231,9 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
         return this.json({ browser, backend, namespace: backend, backendToolCount: tools.length,
           nativeTool: backend === 'ego-lite' ? 'browser__ego_run' : undefined,
           executionMode: backend === 'ego-lite' ? 'native-script' : undefined,
-          contextIsolation: backend === 'ego-lite'
+          contextIsolation: conn?.type === 'webbridge-command'
+            ? 'WebBridge command drives the Kimi extension on a fixed local bridge. Each caller has its own command session and the tab that caller\'s last navigate opened. Page actions stay on that tab. Another tab id is not selected by URL. Window and frame tools are not available. agent_browser_cdp_action sends the extension command action and does not attach DevTools.'
+            : backend === 'ego-lite'
             ? 'Ego Lite native control runs through browser__ego_run in this agent session\'s bound task space. The script receives task and shotDir; after BrowserTabs selects a page, it also receives page. Use that tool\'s schema and description for snapshot, interaction, navigation, and screenshot guidance. Window and frame tools are not available.'
             : backend === 'official-cua-repl'
             ? 'Official extension browser/tab ids are preserved. Use codex_browser_js and its runtime documentation; window/frame emulation is unsupported.'
@@ -281,8 +283,8 @@ export class AgentBrowserService extends Disposable implements IAgentBrowserServ
       signal?.throwIfAborted();
       const browser = await this.choose(input.browser, input.action === 'list' ? 'read' : 'operate');
       const connection = await this.store.resolve(browser);
-      if (connection.type === 'ego-lite' && (input.action === 'window' || input.action === 'frame')) {
-        throw new BrowserError('browser.unsupported', 'The Ego Lite Page API has no window or frame method');
+      if ((connection.type === 'ego-lite' || connection.type === 'webbridge-command') && (input.action === 'window' || input.action === 'frame')) {
+        throw new BrowserError('browser.unsupported', connection.type === 'ego-lite' ? 'The Ego Lite Page API has no window or frame method' : 'The WebBridge command connection has no window or frame method');
       }
       const requestContext = this.requestContext(ctx);
       if (input.action === 'list') {

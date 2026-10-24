@@ -51,7 +51,12 @@ function fixture(options: { home?: string; hostProcess?: IHostProcessService; ho
     const url = String(input);
     if (url === 'http://127.0.0.1:10086/status') return new Response(JSON.stringify({ running: daemon, version: 'v2.0.22', extension_connected: extension }));
     if (url === 'http://127.0.0.1:10086/command') {
-      expect(JSON.parse(init!.body as string)).toEqual({ action: 'list_tabs', args: {}, session: 'kiki-browser-setup-check' });
+      const command = JSON.parse(init!.body as string) as { action: string; args: unknown; session: string };
+      expect(command).toEqual({ action: 'list_tabs', args: {}, session: expect.any(String) });
+      if (command.session !== 'kiki-browser-setup-check') {
+        expect(options.realControl).toBe(true);
+        expect(command.session).toMatch(/^kiki-cmd-[0-9a-f]{24}$/);
+      }
       return new Response(JSON.stringify({ ok: extension, data: { success: extension, tabs: [] } }));
     }
     if (url === 'https://x-t-e-r.github.io/kiki-plugins/marketplace.json') return new Response(JSON.stringify({ name: 'fixture', plugins: [{ id: 'kimi-webbridge', source, sha256 }] }));
@@ -184,8 +189,13 @@ it('prepares the official pinned plugin and daemon with consent, then waits for 
   expect(waiting).toMatchObject({ state: 'needs_user_action', controlSurface: 'plugin-skill' });
   expect(waiting.steps.find((step) => step.id === 'extension')?.state).toBe('user_action');
   expect(f.fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/command'))).toHaveLength(0);
+  expect(f.upsert).not.toHaveBeenCalled();
+  expect(f.connect).not.toHaveBeenCalled();
   f.extension();
-  expect(await f.setup.connect('kimi-webbridge', {})).toMatchObject({ state: 'connected', checkedAt: expect.any(String), skill: 'kimi-webbridge' });
+  expect(await f.setup.connect('kimi-webbridge', {})).toMatchObject({ state: 'connected', checkedAt: expect.any(String), skill: 'kimi-webbridge', connectionId: 'webbridge-command' });
+  expect(f.upsert).toHaveBeenCalledWith('webbridge-command', { type: 'webbridge-command', name: 'Kimi browser extension', enabled: true });
+  expect(f.connect).toHaveBeenCalledWith('webbridge-command');
+  expect(f.rows.some((row) => row.id === 'kimi-webbridge')).toBe(false);
 });
 
 it('reuses an installed plugin and does not replace it on preparation', async () => {
@@ -983,6 +993,32 @@ it('keeps a CDP connection on the independent browser source', () => {
   expect(browserSourceOfConnection({ id: 'edge-kimi', type: 'agent-browser-cdp' })).toBe('independent-browser');
   expect(browserSourceOfConnection({ type: 'agent-browser-profile' })).toBe('independent-browser');
   expect(browserSourceOfConnection({ type: 'ego-lite' })).toBe('ego-lite');
+});
+
+it('keeps an occupied command id and existing Kimi connection unchanged', async () => {
+  const f = fixture(); f.existing(); f.extension();
+  f.rows.push({ id: 'webbridge-command', type: 'agent-browser-cdp', name: 'Existing CDP', enabled: true });
+  f.rows.push({ id: 'kimi-webbridge', type: 'kimi-webbridge', name: 'Existing Kimi', enabled: true });
+  expect(await f.setup.connect('kimi-webbridge', {})).toMatchObject({ state: 'needs_user_action', reason: 'connection_conflict', connectionId: 'webbridge-command' });
+  expect(f.upsert).not.toHaveBeenCalled();
+  expect(f.connect).not.toHaveBeenCalled();
+  expect(f.rows.map((row) => row.type)).toEqual(['agent-browser-cdp', 'kimi-webbridge']);
+});
+
+it('connects setup through the real command control and does not keep a disconnected row connected', async () => {
+  const f = fixture({ realControl: true }); f.existing(); f.extension();
+  f.rows.push({ id: 'kimi-webbridge', type: 'kimi-webbridge', name: 'Existing Kimi', enabled: true });
+  expect(await f.setup.connect('kimi-webbridge', {})).toMatchObject({ state: 'connected', connectionId: 'webbridge-command', connection: { state: 'ready' } });
+  expect(f.rows.map((row) => row.type)).toEqual(['kimi-webbridge', 'webbridge-command']);
+  const commands = f.fetchMock.mock.calls.filter(([target]) => String(target).endsWith('/command')).map(([, init]) => {
+    if (typeof init?.body !== 'string') throw new Error('Expected a JSON command body');
+    return JSON.parse(init.body) as { session: string };
+  });
+  expect(commands).toHaveLength(2);
+  expect(commands[0]?.session).toBe('kiki-browser-setup-check');
+  expect(commands[1]?.session).toMatch(/^kiki-cmd-[0-9a-f]{24}$/);
+  await f.control!.disconnect('webbridge-command');
+  expect(await f.setup.status('kimi-webbridge')).toMatchObject({ state: 'ready', connection: { state: 'disconnected' } });
 });
 
 async function readShortcut(host: HostProcessService, shortcutPath: string): Promise<{ target: string; arguments: string }> {

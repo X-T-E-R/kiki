@@ -131,7 +131,7 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
       const tools = await control().catalog(parsed.id);
       const connection = await store().resolve(parsed.id);
       const routeEnabled = (await store().list()).webbridgePresetRoute !== false;
-      const contextIsolation = connection.type === 'codex-extension' ? 'official-extension-tab-ids' : webbridgePresetRouted(connection, routeEnabled) ? 'main-frame-only' : 'opaque-context-through-window';
+      const contextIsolation = connection.type === 'codex-extension' ? 'official-extension-tab-ids' : connection.type === 'webbridge-command' ? 'extension-command-session' : webbridgePresetRouted(connection, routeEnabled) ? 'main-frame-only' : 'opaque-context-through-window';
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), backendToolCount: tools.length,
         contextIsolation, capabilities: tools.map((tool) => ({ name: tool.name, description: tool.description,
           group: browserToolGroup(tool.name), surface: isBrowserOperation(tool.name) ? 'operation' : /^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name) ? 'lifecycle' : 'administrative',

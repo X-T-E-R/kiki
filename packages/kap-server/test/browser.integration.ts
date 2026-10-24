@@ -194,6 +194,27 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const reopened = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
     expect(reopened.connections).toEqual([expect.objectContaining({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge' })]);
   }, 30_000);
+  it('persists command connections and exposes their catalog without opening a bridge or changing existing Kimi rows', async () => {
+    const { browserCatalogResponseSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-command-rest-'));
+    const start = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!,
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await start();
+    expect((await request('PUT', '/browser/connections/legacy', { type: 'kimi-webbridge', name: 'Existing Kimi', enabled: true })).code).toBe(0);
+    expect((await request('PUT', '/browser/connections/webbridge-command', { type: 'webbridge-command', name: 'Command bridge', enabled: true })).code).toBe(0);
+    expect((await request('PUT', '/browser/connections/invalid-command', { type: 'webbridge-command', name: 'Invalid', endpoint: { action: 'set', value: 'http://127.0.0.1:10086/command' } })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const response = await request('GET', '/browser/connections/webbridge-command:catalog?includeSchema=true');
+    expect(response.code).toBe(0);
+    const catalog = browserCatalogResponseSchema.parse(response.data);
+    expect(catalog).toMatchObject({ contextIsolation: 'extension-command-session', backendToolCount: 15, status: { state: 'idle' } });
+    expect(catalog.capabilities.filter((tool) => tool.surface === 'lifecycle').map((tool) => tool.name)).toEqual(['agent_browser_tab_new', 'agent_browser_tab_list', 'agent_browser_tab_switch', 'agent_browser_tab_close']);
+    expect(catalog.capabilities.every((tool) => tool.inputSchema !== undefined)).toBe(true);
+    expect(await request('POST', '/browser/connections/webbridge-command:connect', {})).toMatchObject({ code: ErrorCode.VALIDATION_FAILED, details: { code: 'browser.disabled', reason: 'feature_disabled' } });
+    await server.close();
+    server = await start();
+    const saved = browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections;
+    expect(saved.map((row) => [row.id, row.type, row.status.state])).toEqual([['legacy', 'kimi-webbridge', 'idle'], ['webbridge-command', 'webbridge-command', 'idle']]);
+  }, 30_000);
   it('dispatches open, update, and shortcut setup actions to browser setup service', async () => {
     const { vi } = await import('vitest');
     const { IBrowserSetupService } = await import('@kiki/agent-core-v2');

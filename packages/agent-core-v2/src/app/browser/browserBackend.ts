@@ -62,6 +62,7 @@ export class BrowserBackendFactory implements IBrowserBackendFactory {
   async open(connection: BrowserResolvedConnection): Promise<BrowserBackend> {
     if (connection.type === 'ego-lite') throw new BrowserError('browser.unsupported', 'Ego Lite uses its installed CLI');
     if (connection.type === 'kimi-webbridge') throw new BrowserError('browser.unsupported', 'Kimi WebBridge uses the local HTTP daemon');
+    if (connection.type === 'webbridge-command') throw new BrowserError('browser.unsupported', 'WebBridge command uses the local command bridge');
     const workspace = await this.workspaces.acquire({ root: this.bootstrap.cwd });
     let client: StdioMcpClient | undefined;
     try {

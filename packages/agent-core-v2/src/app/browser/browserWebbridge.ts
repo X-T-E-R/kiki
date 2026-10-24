@@ -1,5 +1,14 @@
+import { createHash } from 'node:crypto';
+
+import type { MCPToolDefinition } from '#/mcpCore/types';
+
+import type { BrowserCaller, BrowserTab } from './browser';
+
 const BASE = 'http://127.0.0.1:10086';
 const PROBE_SESSION = 'kiki-browser-setup-check';
+export const WEBBRIDGE_COMMAND_ORIGIN = BASE;
+export const WEBBRIDGE_COMMAND_ID = 'webbridge-command';
+const COMMAND_MISUSE = 'This CDP address is a WebBridge /command endpoint, not a DevTools endpoint. Add a WebBridge command connection; this CDP row was not changed.';
 
 export interface WebbridgeStatus {
   readonly running: boolean;
@@ -150,4 +159,254 @@ export async function probeWebbridgeConnection(fetchImpl: typeof fetch = fetch):
   if (typeof data !== 'object' || data === null || Array.isArray(data)) throw new Error('WebBridge returned an invalid command response');
   const envelope = data as { ok?: boolean; data?: { success?: boolean; tabs?: unknown }; error?: unknown };
   if (envelope.ok !== true || envelope.data?.success !== true || !Array.isArray(envelope.data.tabs)) throw new Error('WebBridge did not confirm the extension connection; authorize or update the extension, then retry');
+}
+
+export function isCommandEndpointPath(value: string): boolean {
+  try { return new URL(value).pathname.replace(/\/+$/, '') === '/command'; }
+  catch { return false; }
+}
+
+export function cdpPublicError(endpoint: string, withheld: string): string {
+  return isCommandEndpointPath(endpoint) ? COMMAND_MISUSE : withheld;
+}
+
+/** Connection session when `caller` is omitted. A caller gets a distinct session so one agent's navigate cannot move another's current tab. */
+export function webbridgeCommandSession(connectionId: string, caller?: Pick<BrowserCaller, 'sessionId' | 'agentId'>): string {
+  const hash = createHash('sha256');
+  hash.update(connectionId);
+  if (caller !== undefined) {
+    hash.update('\0');
+    hash.update(caller.sessionId);
+    hash.update('\0');
+    hash.update(caller.agentId);
+  }
+  return `kiki-cmd-${hash.digest('hex').slice(0, 24)}`;
+}
+
+export class WebbridgeCommandError extends Error {
+  constructor(readonly kind: 'lost' | 'rejected' | 'unreachable', message: string) {
+    super(message);
+    this.name = 'WebbridgeCommandError';
+  }
+}
+
+async function commandPayload(response: Response): Promise<unknown> {
+  if (response.body === null) throw new WebbridgeCommandError('lost', 'WebBridge returned no command response. It was not sent again.');
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (true) {
+      const chunk = await reader.read();
+      if (chunk.done) break;
+      size += chunk.value.length;
+      if (size > 1024 * 1024) throw new WebbridgeCommandError('lost', 'WebBridge response exceeds the size limit. The command was not sent again.');
+      chunks.push(chunk.value);
+    }
+  } catch (error) {
+    if (error instanceof WebbridgeCommandError) throw error;
+    throw new WebbridgeCommandError('lost', 'The WebBridge command was not confirmed. It was not sent again.');
+  } finally {
+    try { await reader.cancel(); } catch {}
+    reader.releaseLock();
+  }
+  try { return JSON.parse(Buffer.concat(chunks).toString('utf8')); }
+  catch { throw new WebbridgeCommandError('lost', 'WebBridge returned an invalid command response. It was not sent again.'); }
+}
+
+function commandResponseData(value: unknown, httpStatus: number): Record<string, unknown> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new WebbridgeCommandError('lost', 'WebBridge returned an invalid command response. It was not sent again.');
+  }
+  const envelope = value as { ok?: unknown; data?: unknown; error?: unknown };
+  if (envelope.ok === false) {
+    throw new WebbridgeCommandError('rejected', typeof envelope.error === 'string' && envelope.error !== '' ? envelope.error : `WebBridge rejected the command: HTTP ${httpStatus}`);
+  }
+  if (envelope.ok !== true || typeof envelope.data !== 'object' || envelope.data === null || Array.isArray(envelope.data)) {
+    throw new WebbridgeCommandError('lost', 'WebBridge returned an invalid command response. It was not sent again.');
+  }
+  const data = envelope.data as Record<string, unknown>;
+  if (data['success'] === false) {
+    const message = data['error'];
+    throw new WebbridgeCommandError('rejected', typeof message === 'string' && message !== '' ? message : 'WebBridge rejected the command');
+  }
+  return data;
+}
+
+export async function sendWebbridgeCommand(input: {
+  readonly action: string;
+  readonly args: Readonly<Record<string, unknown>>;
+  readonly session: string;
+  readonly fetchImpl?: typeof fetch;
+  readonly signal?: AbortSignal;
+  readonly timeoutMs?: number;
+}): Promise<Record<string, unknown>> {
+  input.signal?.throwIfAborted();
+  const timeout = input.timeoutMs ?? 30_000;
+  const signal = input.signal === undefined ? AbortSignal.timeout(timeout) : AbortSignal.any([input.signal, AbortSignal.timeout(timeout)]);
+  let response: Response;
+  try {
+    response = await (input.fetchImpl ?? fetch)(`${BASE}/command`, {
+      method: 'POST', headers: { 'content-type': 'application/json' }, redirect: 'error', signal,
+      body: JSON.stringify({ action: input.action, args: input.args, session: input.session }),
+    });
+  } catch (error) {
+    if (WEBBRIDGE_UNSENT.has(errorCode(error))) throw new WebbridgeCommandError('unreachable', 'WebBridge command bridge is not reachable');
+    throw new WebbridgeCommandError('lost', 'The WebBridge command was not confirmed. It was not sent again.');
+  }
+  const data = commandResponseData(await commandPayload(response), response.status);
+  if (!response.ok) throw new WebbridgeCommandError('lost', `WebBridge command returned HTTP ${response.status}. It was not sent again.`);
+  return data;
+}
+
+/** Canonical command-tab token. `wb:` keeps the decimal id reversible and distinct from a DevTools target id. */
+export function commandTabTokenFromWire(id: unknown): string {
+  const digits = typeof id === 'number' ? String(id) : id;
+  if (typeof digits !== 'string' || !/^(0|[1-9]\d*)$/.test(digits)) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+  const numeric = Number(digits);
+  if (!Number.isSafeInteger(numeric) || numeric < 0 || String(numeric) !== digits) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+  return `wb:${numeric}`;
+}
+
+export function commandTabIdFromToken(token: string): number | undefined {
+  const digits = /^wb:(0|[1-9]\d*)$/.exec(token)?.[1];
+  if (digits === undefined) return undefined;
+  const id = Number(digits);
+  return Number.isSafeInteger(id) && String(id) === digits ? id : undefined;
+}
+
+const BOUND_TAB_TOOLS = new Set([
+  'agent_browser_snapshot', 'agent_browser_click', 'agent_browser_fill', 'agent_browser_eval',
+  'agent_browser_screenshot', 'agent_browser_upload', 'agent_browser_pdf', 'agent_browser_network', 'agent_browser_cdp_action',
+]);
+
+export function commandUsesBoundTab(tool: string): boolean {
+  return BOUND_TAB_TOOLS.has(tool);
+}
+
+export function commandTabsFromData(data: Record<string, unknown>): BrowserTab[] {
+  const tabs = data['tabs'];
+  if (!Array.isArray(tabs)) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+  const seen = new Set<string>();
+  return tabs.map((tab) => {
+    const id = tab !== null && typeof tab === 'object' ? (tab as { tabId?: unknown }).tabId : undefined;
+    const token = commandTabTokenFromWire(id);
+    if (seen.has(token)) throw new WebbridgeCommandError('rejected', 'WebBridge returned invalid tab identities');
+    seen.add(token);
+    const record = tab as { title?: unknown; url?: unknown; active?: unknown; groupTitle?: unknown };
+    return {
+      tabId: token,
+      targetId: token,
+      title: typeof record.title === 'string' ? record.title : undefined,
+      url: typeof record.url === 'string' ? record.url : undefined,
+      active: typeof record.active === 'boolean' ? record.active : undefined,
+      label: typeof record.groupTitle === 'string' ? record.groupTitle : undefined,
+    };
+  });
+}
+
+export function commandSnapshotData(data: Record<string, unknown>): Record<string, unknown> {
+  const refs: Record<string, true> = {};
+  const visit = (value: unknown): void => {
+    if (typeof value === 'string') {
+      for (const match of value.matchAll(/@e\d+/g)) refs[match[0].slice(1)] = true;
+      return;
+    }
+    if (Array.isArray(value)) { value.forEach(visit); return; }
+    if (value !== null && typeof value === 'object') Object.values(value).forEach(visit);
+  };
+  visit(data['tree']);
+  const existing = data['refs'];
+  if (existing !== null && typeof existing === 'object' && !Array.isArray(existing)) {
+    for (const key of Object.keys(existing)) refs[key.replace(/^@/, '')] = true;
+  }
+  return { ...data, refs };
+}
+
+function definedArgs(entries: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(Object.entries(entries).filter(([, value]) => value !== undefined));
+}
+
+function textArg(args: Readonly<Record<string, unknown>>, key: string): string | undefined {
+  const value = args[key];
+  return typeof value === 'string' && value !== '' ? value : undefined;
+}
+
+export type WebbridgeToolPlan =
+  | { readonly kind: 'command'; readonly action: string; readonly args: Record<string, unknown> }
+  | { readonly kind: 'unsupported' }
+  | { readonly kind: 'invalid'; readonly message: string };
+
+export function webbridgeCommandForTool(tool: string, args: Readonly<Record<string, unknown>>): WebbridgeToolPlan {
+  if (tool === 'agent_browser_window_new' || /^agent_browser_(?:window_|frame_)/.test(tool)) return { kind: 'unsupported' };
+  if (tool === 'agent_browser_tab_list') return { kind: 'command', action: 'list_tabs', args: {} };
+  if (tool === 'agent_browser_tab_new' || tool === 'agent_browser_open') {
+    const url = textArg(args, 'url');
+    if (url === undefined) return { kind: 'invalid', message: 'WebBridge navigate requires a url' };
+    return { kind: 'command', action: 'navigate', args: definedArgs({ url, newTab: tool === 'agent_browser_tab_new', group_title: textArg(args, 'label') }) };
+  }
+  if (tool === 'agent_browser_snapshot') return { kind: 'command', action: 'snapshot', args: {} };
+  if (tool === 'agent_browser_click') {
+    const selector = textArg(args, 'selector');
+    if (selector === undefined) return { kind: 'invalid', message: 'WebBridge click requires a selector' };
+    return { kind: 'command', action: 'click', args: { selector } };
+  }
+  if (tool === 'agent_browser_fill') {
+    const selector = textArg(args, 'selector');
+    const value = typeof args['value'] === 'string' ? args['value'] : args['text'];
+    if (selector === undefined || typeof value !== 'string') return { kind: 'invalid', message: 'WebBridge fill requires a selector and a value' };
+    return { kind: 'command', action: 'fill', args: { selector, value } };
+  }
+  if (tool === 'agent_browser_eval') {
+    const code = textArg(args, 'code') ?? textArg(args, 'script');
+    if (code === undefined) return { kind: 'invalid', message: 'WebBridge evaluate requires code' };
+    return { kind: 'command', action: 'evaluate', args: { code } };
+  }
+  if (tool === 'agent_browser_screenshot') return { kind: 'command', action: 'screenshot', args: definedArgs({ format: textArg(args, 'format'), quality: typeof args['quality'] === 'number' ? args['quality'] : undefined, selector: textArg(args, 'selector'), path: textArg(args, 'path') }) };
+  if (tool === 'agent_browser_upload') {
+    const selector = textArg(args, 'selector');
+    const files = args['files'];
+    if (selector === undefined || !Array.isArray(files) || files.some((file) => typeof file !== 'string')) return { kind: 'invalid', message: 'WebBridge upload requires a selector and file paths' };
+    return { kind: 'command', action: 'upload', args: { selector, files } };
+  }
+  if (tool === 'agent_browser_pdf') return { kind: 'command', action: 'save_as_pdf', args: definedArgs({ paper_format: textArg(args, 'paper_format'), landscape: typeof args['landscape'] === 'boolean' ? args['landscape'] : undefined, scale: typeof args['scale'] === 'number' ? args['scale'] : undefined, print_background: typeof args['print_background'] === 'boolean' ? args['print_background'] : undefined, path: textArg(args, 'path') }) };
+  if (tool === 'agent_browser_network') {
+    const cmd = textArg(args, 'cmd');
+    if (cmd === undefined) return { kind: 'invalid', message: 'WebBridge network requires a cmd' };
+    return { kind: 'command', action: 'network', args: definedArgs({ cmd, filter: textArg(args, 'filter'), requestId: textArg(args, 'requestId') }) };
+  }
+  if (tool === 'agent_browser_cdp_action') {
+    const method = textArg(args, 'method');
+    if (method === undefined) return { kind: 'invalid', message: 'WebBridge cdp requires a method' };
+    const params = args['params'];
+    return { kind: 'command', action: 'cdp', args: definedArgs({ method, params: params !== null && typeof params === 'object' && !Array.isArray(params) ? params : undefined }) };
+  }
+  if (tool === 'agent_browser_end_session') return { kind: 'command', action: 'close_session', args: {} };
+  return { kind: 'unsupported' };
+}
+
+function toolSchema(properties: Record<string, unknown>, required: readonly string[] = []): unknown {
+  return { type: 'object', additionalProperties: false, properties, required: [...required] };
+}
+
+export function webbridgeCommandCatalog(): MCPToolDefinition[] {
+  const url = { type: 'string', minLength: 1 };
+  const selector = { type: 'string', minLength: 1, description: 'An @e ref from the latest snapshot, or a CSS selector.' };
+  return [
+    { name: 'agent_browser_open', description: 'Open a URL in this caller\'s current WebBridge tab. This is the navigate command with newTab false.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
+    { name: 'agent_browser_tab_new', description: 'Open a URL in a new WebBridge tab for this caller. This is the navigate command with newTab true.', inputSchema: toolSchema({ url, label: { type: 'string' } }, ['url']) },
+    { name: 'agent_browser_tab_list', description: 'List tabs for this caller\'s WebBridge command session.', inputSchema: toolSchema({}) },
+    { name: 'agent_browser_tab_switch', description: 'Bind this caller\'s WebBridge command tab: the tab its own last navigate opened. The protocol cannot select a different tab by id. This does not call find_tab or match a URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1, description: 'The command tab id returned when this caller opened that tab. Not a DevTools target id.' } }, ['tab']) },
+    { name: 'agent_browser_tab_close', description: 'Close this caller\'s current WebBridge command tab: the tab its own last navigate opened. A different tab id is not closed, and this does not choose a tab by URL.', inputSchema: toolSchema({ tab: { type: 'string', minLength: 1 } }, ['tab']) },
+    { name: 'agent_browser_snapshot', description: 'Read this caller\'s current WebBridge tab as an accessibility tree. Element refs look like @e1.', inputSchema: toolSchema({}) },
+    { name: 'agent_browser_click', description: 'Click a selector on this caller\'s current WebBridge tab.', inputSchema: toolSchema({ selector }, ['selector']) },
+    { name: 'agent_browser_fill', description: 'Replace the value of an input on this caller\'s current WebBridge tab.', inputSchema: toolSchema({ selector, value: { type: 'string' } }, ['selector', 'value']) },
+    { name: 'agent_browser_eval', description: 'Evaluate JavaScript on this caller\'s current WebBridge tab. The script is sent as the evaluate code.', inputSchema: toolSchema({ script: { type: 'string', minLength: 1 } }, ['script']) },
+    { name: 'agent_browser_screenshot', description: 'Capture this caller\'s current WebBridge tab. The command returns a file path.', inputSchema: toolSchema({ format: { type: 'string', enum: ['png', 'jpeg'] }, quality: { type: 'number' }, selector, path: { type: 'string' } }) },
+    { name: 'agent_browser_network', description: 'Read WebBridge network data for this caller\'s current tab. cmd is start, stop, list, or detail.', inputSchema: toolSchema({ cmd: { type: 'string', enum: ['start', 'stop', 'list', 'detail'] }, filter: { type: 'string' }, requestId: { type: 'string' } }, ['cmd']) },
+    { name: 'agent_browser_upload', description: 'Upload files through a selector on this caller\'s current WebBridge tab.', inputSchema: toolSchema({ selector, files: { type: 'array', items: { type: 'string' } } }, ['selector', 'files']) },
+    { name: 'agent_browser_pdf', description: 'Save this caller\'s current WebBridge page as a PDF.', inputSchema: toolSchema({ paper_format: { type: 'string' }, landscape: { type: 'boolean' }, scale: { type: 'number' }, print_background: { type: 'boolean' }, path: { type: 'string' } }) },
+    { name: 'agent_browser_cdp_action', description: 'Send one chrome.debugger method through the WebBridge command action on this caller\'s current tab. This does not attach a DevTools endpoint.', inputSchema: toolSchema({ method: { type: 'string', minLength: 1 }, params: { type: 'object' } }, ['method']) },
+    { name: 'agent_browser_end_session', description: 'Close the tabs this caller\'s WebBridge command session opened. Another caller\'s session stays open. Use it only when the user asks to close them.', inputSchema: toolSchema({}) },
+  ];
 }

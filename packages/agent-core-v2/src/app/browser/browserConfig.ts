@@ -20,6 +20,7 @@ const egoLite = {
   name: common.name, enabled: common.enabled, type: z.literal('ego-lite'),
   cliPath: absolutePath.optional(), profileId: z.string().trim().min(1).max(256).optional(), serverName: z.string().trim().min(1).max(256).optional(),
 };
+const webbridgeCommand = { name: common.name, enabled: common.enabled, type: z.literal('webbridge-command') };
 export const KIMI_WEBBRIDGE_PRESET_ID = 'kimi-webbridge';
 export const BrowserStoredConnectionSchema = z.discriminatedUnion('type', [
   z.object(official).strict(),
@@ -27,6 +28,7 @@ export const BrowserStoredConnectionSchema = z.discriminatedUnion('type', [
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpointSecret: endpoint }).strict(),
   z.object({ ...common, type: z.literal('kimi-webbridge') }).strict(),
   z.object(egoLite).strict(),
+  z.object(webbridgeCommand).strict(),
 ]);
 export type BrowserStoredConnection = z.infer<typeof BrowserStoredConnectionSchema>;
 export type BrowserResolvedConnection = BrowserStoredConnection & { readonly id: string };
@@ -41,6 +43,7 @@ export const BrowserConnectionInputSchema = z.discriminatedUnion('type', [
   z.object({ ...common, type: z.literal('agent-browser-cdp'), endpoint: BrowserEndpointEditSchema }).strict(),
   z.object({ ...common, type: z.literal('kimi-webbridge') }).strict(),
   z.object(egoLite).strict(),
+  z.object(webbridgeCommand).strict(),
 ]);
 export type BrowserConnectionInput = z.infer<typeof BrowserConnectionInputSchema>;
 
@@ -55,7 +58,7 @@ export function webbridgePresetRouted(connection: { readonly id?: string; readon
 export function browserSourceOfConnection(connection: { readonly type: BrowserStoredConnection['type']; readonly id?: string }): BrowserSourceId {
   if (connection.type === 'ego-lite') return 'ego-lite';
   if (connection.type === 'codex-extension') return 'codex-browser';
-  if (connection.type === 'kimi-webbridge' || connection.id === KIMI_WEBBRIDGE_PRESET_ID) return 'kimi-webbridge';
+  if (connection.type === 'kimi-webbridge' || connection.type === 'webbridge-command' || connection.id === KIMI_WEBBRIDGE_PRESET_ID) return 'kimi-webbridge';
   if (connection.type === 'agent-browser-profile' || connection.type === 'agent-browser-cdp') return 'independent-browser';
   return 'independent-browser';
 }
@@ -121,7 +124,7 @@ export interface BrowserConnectionRecord {
   readonly id: string;
   readonly name: string;
   readonly enabled: boolean;
-  readonly type: 'agent-browser-profile' | 'agent-browser-cdp' | 'kimi-webbridge' | 'codex-extension' | 'ego-lite';
+  readonly type: 'agent-browser-profile' | 'agent-browser-cdp' | 'kimi-webbridge' | 'codex-extension' | 'ego-lite' | 'webbridge-command';
   readonly runtimeRoot?: string;
   readonly browserId?: string;
   readonly driverPath?: string;
