@@ -46,7 +46,7 @@ import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
-import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady } from './imageActions';
+import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
 import { MediaLightbox } from './MediaLightbox';
 import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
 import { MiniContextMenu } from './MiniContextMenu';
@@ -490,13 +490,39 @@ export { PreviewToggleButton } from './PreviewToggleButton';
 import { attachmentName, MediaLoadFailure, useSessionMedia } from './mediaParts';
 import { safeImagePreviewName } from './imagePreviewName';
 
+/**
+ * A media store answers saved tool results under a generic type, and a decoder
+ * that trusts the label refuses them. The bytes are already in hand, so the URL
+ * handed to the viewer is minted with the type they really are — the same bytes,
+ * one correct label.
+ */
+function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | undefined): string | undefined {
+  const [typed, setTyped] = useState<{ readonly url: string }>();
+  useEffect(() => {
+    if (bytes === undefined) return;
+    const mime = resolveImageMime(bytes, declared);
+    if (mime === undefined || mime === declared) return;
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+    setTyped({ url });
+    return () => {
+      URL.revokeObjectURL(url);
+      setTyped((current) => current?.url === url ? undefined : current);
+    };
+  }, [bytes, declared]);
+  return typed?.url;
+}
+
 function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; remote?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
   const connection = useOptionalConnection();
   const client = connection?.client;
   const [retry, setRetry] = useState({ id: image.id, attempt: 0 });
   const canonical = seededSrc === undefined && (image.item.fileId !== undefined || image.item.path !== undefined);
   const load = useSessionMedia(image.item, sessionId, canonical, false, retry.id === image.id ? retry.attempt : 0);
-  const src = seededSrc ?? (canonical ? load.status === 'ready' ? load.url : undefined : image.item.url);
+  const bytes = load.status === 'ready' ? load.bytes : undefined;
+  const mime = bytes === undefined ? image.item.mime : resolveImageMime(bytes, load.status === 'ready' ? load.mime : image.item.mime) ?? image.item.mime;
+  const typedSrc = useTypedImageUrl(bytes, mime);
+  const src = seededSrc ?? typedSrc ?? (canonical ? load.status === 'ready' ? load.url : undefined : image.item.url);
+  const size = load.status === 'ready' ? load.bytes.byteLength : image.item.size;
 
   const onSaveOriginal = useMemo(() => {
     if (client === undefined || (image.item.path === undefined && (sessionId === undefined || image.item.fileId === undefined))) return undefined;
@@ -513,6 +539,7 @@ function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, c
 
   return <MediaLightbox src={src} identity={image.id} name={safeImagePreviewName({ name: image.item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: image.item.path })}
     sourcePath={image.item.path} linkUrl={httpImageLink(image.item.url)} outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })} remote={remote}
+    mime={mime} size={size}
     loading={canonical && load.status === 'loading'} failed={canonical && load.status === 'failed'}
     onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
     onSaveOriginal={onSaveOriginal}

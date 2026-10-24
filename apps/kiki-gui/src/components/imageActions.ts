@@ -1,7 +1,7 @@
 import { useEffect, useRef, useSyncExternalStore } from 'react';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
-import { copyImageToClipboard, copyTextToClipboard, isPngBlob } from '../lib/clipboard';
+import { copyImageToClipboard, copyTextToClipboard, isPngBlob, readBlobBytes } from '../lib/clipboard';
 import type { MiniMenuEntry } from './MiniContextMenu';
 
 const COPY_IMAGE = 'media.copyImage' as I18nKey;
@@ -82,12 +82,62 @@ export function useMediaReady(key: string | undefined, onReady: () => void): voi
   }, [key, generation]);
 }
 
+const IMAGE_MIME = /^image\/[a-z0-9.+-]+$/i;
+
+function matches(head: Uint8Array, offset: number, bytes: readonly number[]): boolean {
+  if (head.length < offset + bytes.length) return false;
+  return bytes.every((byte, index) => head[offset + index] === byte);
+}
+
+const ASCII = (text: string): readonly number[] => Array.from(new TextEncoder().encode(text));
+
+/**
+ * The image type the bytes actually are, from their signature alone. A media
+ * store answers saved tool results as `application/octet-stream`, and a
+ * transcoded preview can arrive under a type the decoder will not open, so the
+ * bytes decide — a declared type is only a hint.
+ */
+export function sniffImageMime(bytes: Uint8Array): string | undefined {
+  const head = bytes.subarray(0, 64);
+  if (matches(head, 0, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'image/png';
+  if (matches(head, 0, [0xff, 0xd8, 0xff])) return 'image/jpeg';
+  if (matches(head, 0, ASCII('GIF87a')) || matches(head, 0, ASCII('GIF89a'))) return 'image/gif';
+  if (matches(head, 0, ASCII('RIFF')) && matches(head, 8, ASCII('WEBP'))) return 'image/webp';
+  if (matches(head, 4, ASCII('ftyp')) && (matches(head, 8, ASCII('avif')) || matches(head, 8, ASCII('avis')))) return 'image/avif';
+  if (matches(head, 0, [0x42, 0x4d])) return 'image/bmp';
+  const text = new TextDecoder().decode(head).trimStart().toLowerCase();
+  if (text.startsWith('<svg') || (text.startsWith('<?xml') && text.includes('<svg'))) return 'image/svg+xml';
+  return undefined;
+}
+
+/** A concrete image type for these bytes, preferring what they are over what they claim. */
+export function resolveImageMime(bytes: Uint8Array, declared?: string): string | undefined {
+  const sniffed = sniffImageMime(bytes);
+  if (sniffed !== undefined) return sniffed;
+  const trimmed = declared?.split(';')[0]?.trim().toLowerCase();
+  if (trimmed === undefined || trimmed === 'image/*' || !IMAGE_MIME.test(trimmed)) return undefined;
+  return trimmed;
+}
+
+/**
+ * The same bytes under the image type they really are. A decoder refuses a blob
+ * typed `application/octet-stream` on some engines, and the clipboard bridge
+ * only takes an image type, so the generic label has to be replaced before
+ * either sees it.
+ */
+export async function typedImageBlob(blob: Blob): Promise<Blob> {
+  const bytes = await readBlobBytes(blob);
+  const mime = resolveImageMime(bytes, blob.type);
+  if (mime === undefined || blob.type === mime) return blob;
+  return new Blob([bytes as BlobPart], { type: mime });
+}
+
 export async function copyImageBitmap(src: string): Promise<void> {
   let blob: Blob;
   try {
     const response = await fetch(src);
     if (!response.ok) throw new Error(`Image could not be read (${response.status})`);
-    blob = await response.blob();
+    blob = await typedImageBlob(await response.blob());
     if (blob.size === 0) throw new Error('Image could not be read');
   } catch (error) {
     if (src.startsWith('blob:') || src.startsWith('data:')) throw error;
@@ -124,13 +174,23 @@ async function rasterPng(src: string, blob?: Blob): Promise<Blob> {
     }
   }
 
-  const isBlobUrl = src.startsWith('blob:') || src.startsWith('data:');
+  // Decode the retyped blob rather than the source URL: the source may be a
+  // `blob:` URL whose generic type the decoder rejects, and the URL may need
+  // authorization a plain <img> cannot send.
+  const decodable = blob !== undefined && typeof URL.createObjectURL === 'function'
+    ? URL.createObjectURL(blob)
+    : src;
+  const isBlobUrl = decodable.startsWith('blob:') || decodable.startsWith('data:');
   const image = new Image();
   if (!isBlobUrl) {
     image.crossOrigin = 'anonymous';
   }
-  image.src = src;
-  await image.decode();
+  image.src = decodable;
+  try {
+    await image.decode();
+  } finally {
+    if (decodable !== src) URL.revokeObjectURL(decodable);
+  }
   const canvas = document.createElement('canvas');
   canvas.width = image.naturalWidth;
   canvas.height = image.naturalHeight;

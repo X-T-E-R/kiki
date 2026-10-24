@@ -5,8 +5,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { I18nKey } from '@kiki/session-core/i18n';
 import { HostProvider, browserHost } from '../host';
 import { I18nProvider } from '../i18n';
-import { MediaLightbox } from './MediaLightbox';
-import { copyImageBitmap, hostActionPath, imageMenuEntries, isRemoteConnection, localImagePath } from './imageActions';
+import { MediaLightbox, mediaSourceLabel } from './MediaLightbox';
+import { copyImageBitmap, hostActionPath, imageMenuEntries, isRemoteConnection, localImagePath, resolveImageMime, sniffImageMime } from './imageActions';
 import type { MiniMenuEntry as MenuEntry } from './MiniContextMenu';
 
 function keys(entries: readonly MenuEntry[]): string[] {
@@ -153,6 +153,86 @@ function bytesOfJpeg(): Uint8Array {
   view.set([0xFF, 0xD8, 0xFF, 0xE0, 0, 16, 0x4A, 0x46]);
   return view;
 }
+
+function bytesOfWebp(): Uint8Array {
+  const buffer = new ArrayBuffer(16);
+  const view = new Uint8Array(buffer);
+  view.set([0x52, 0x49, 0x46, 0x46, 0x24, 0, 0, 0]);
+  view.set([0x57, 0x45, 0x42, 0x50], 8);
+  return view;
+}
+
+describe('image type resolution', () => {
+  it('names the type the bytes are, not the label the store gave them', () => {
+    expect(sniffImageMime(bytesOfPng())).toBe('image/png');
+    expect(sniffImageMime(bytesOfJpeg())).toBe('image/jpeg');
+    expect(sniffImageMime(bytesOfWebp())).toBe('image/webp');
+    expect(sniffImageMime(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"/>'))).toBe('image/svg+xml');
+    expect(sniffImageMime(new TextEncoder().encode('not an image at all'))).toBeUndefined();
+
+    expect(resolveImageMime(bytesOfPng(), 'application/octet-stream')).toBe('image/png');
+    expect(resolveImageMime(bytesOfJpeg(), 'image/png')).toBe('image/jpeg');
+    expect(resolveImageMime(new TextEncoder().encode('plain'), 'image/avif')).toBe('image/avif');
+    expect(resolveImageMime(new TextEncoder().encode('plain'), 'image/*')).toBeUndefined();
+    expect(resolveImageMime(new TextEncoder().encode('plain'), 'text/plain')).toBeUndefined();
+  });
+});
+
+describe('copyImageBitmap through a generic media type', () => {
+  const write = vi.fn();
+  const writeText = vi.fn();
+
+  beforeEach(() => {
+    write.mockReset();
+    writeText.mockReset();
+    write.mockResolvedValue(undefined);
+    vi.stubGlobal('ClipboardItem', class ClipboardItem { constructor(readonly items: Record<string, Blob>) {} });
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { write, writeText } });
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('retypes a stored png the media route labelled application/octet-stream and copies its own bytes', async () => {
+    const bytes = bytesOfPng();
+    const stored = new Blob([bytes as BlobPart], { type: 'application/octet-stream' });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => stored })));
+    const raster = vi.spyOn(HTMLCanvasElement.prototype, 'getContext');
+    await copyImageBitmap('blob:stored');
+    expect(write).toHaveBeenCalledOnce();
+    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    expect(item.items['image/png']?.type).toBe('image/png');
+    expect(item.items['image/png']?.size).toBe(bytes.byteLength);
+    expect(raster).not.toHaveBeenCalled();
+    expect(writeText).not.toHaveBeenCalled();
+  });
+
+  it('still writes a bitmap when the stored bytes only look like an image by signature', async () => {
+    const bytes = bytesOfJpeg();
+    const stored = new Blob([bytes as BlobPart], { type: 'application/octet-stream' });
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, blob: async () => stored })));
+    vi.stubGlobal('Image', class { crossOrigin: string | null = null; src = ''; naturalWidth = 4; naturalHeight = 2; decode() { return Promise.resolve(); } });
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue({ drawImage() {} } as unknown as CanvasRenderingContext2D);
+    const converted = bytesOfPng();
+    HTMLCanvasElement.prototype.toBlob = (callback) => { callback(new Blob([converted as BlobPart], { type: 'image/png' })); };
+    await copyImageBitmap('blob:stored-jpeg');
+    const item = write.mock.calls[0]?.[0]?.[0] as { items: Record<string, Blob> };
+    expect(item.items['image/png']?.type).toBe('image/png');
+    expect(writeText).not.toHaveBeenCalled();
+  });
+});
+
+describe('media source labels', () => {
+  it('strips query credentials from an address and keeps real paths intact', () => {
+    expect(mediaSourceLabel('https://example.test/a/shot.png?token=secret&x=1#frag')).toBe('https://example.test/a/shot.png?…');
+    expect(mediaSourceLabel('https://user:pass@example.test/shot.png')).toBe('https://…@example.test/shot.png');
+    expect(mediaSourceLabel('C:/fixture/image-actions/shot.png')).toBe('C:/fixture/image-actions/shot.png');
+    expect(mediaSourceLabel('kimi-file://browser-1')).toBeUndefined();
+    expect(mediaSourceLabel('   ')).toBeUndefined();
+  });
+});
 
 describe('lightbox image menu', () => {
   let root: Root;

@@ -15,7 +15,7 @@ let container: HTMLDivElement;
 
 function renderLightbox(props: Partial<Parameters<typeof MediaLightbox>[0]> & { src?: string }) {
   act(() => {
-    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} /></I18nProvider>);
+    root.render(<I18nProvider><MediaLightbox src={props.src ?? 'data:image/png;base64,AAAA'} name={props.name} identity={props.identity} loading={props.loading} failed={props.failed} onRetry={props.onRetry} index={props.index} count={props.count} onSelect={props.onSelect} onClose={props.onClose ?? (() => {})} mime={props.mime} size={props.size} sourcePath={props.sourcePath} linkUrl={props.linkUrl} remote={props.remote} /></I18nProvider>);
   });
 }
 
@@ -138,8 +138,7 @@ describe('lightbox viewing', () => {
     }
   });
 
-  it('defaults to fit on open, toggles to actual size and back, and resets to fit on image change or reopen', () => {
-    renderLightbox({ name: 'reset-test-1.png', identity: 'img-1' });
+  it('defaults to fit on open, toggles to actual size and back, and resets to fit on image change or reopen', () => {    renderLightbox({ name: 'reset-test-1.png', identity: 'img-1' });
     const img1 = loadImage(1000, 500);
     const viewport = () => document.querySelector('[data-lightbox-viewport]');
     const zoomButton = () => document.querySelector<HTMLButtonElement>('button[data-autofocus]');
@@ -192,6 +191,100 @@ describe('lightbox viewing', () => {
     const resizedStyleWidth = (document.querySelector('[data-lightbox-viewport] img')?.parentElement as HTMLElement).style.width;
     const expectedResized = 800 * Math.min(1, (500 * 0.92) / 800, (400 * 0.75) / 600);
     expect(resizedStyleWidth).toBe(`${expectedResized}px`);
+  });
+});
+
+describe('lightbox zoom controls and details', () => {
+  const zoomSlider = () => document.querySelector<HTMLInputElement>('[data-lightbox-zoom-slider]')!;
+  const zoomLabel = () => document.querySelector('[data-lightbox-zoom]')?.textContent;
+  const setSlider = (value: number) => {
+    const slider = zoomSlider();
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    act(() => {
+      setter.call(slider, String(value));
+      slider.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+  };
+
+  beforeEach(() => {
+    window.innerWidth = 1024;
+    window.innerHeight = 768;
+  });
+
+  it('steps up to 500% with the buttons and hands the picture back to fit from the chip', () => {
+    renderLightbox({ name: 'long.png' });
+    const picture = loadImage(1940, 5170);
+    const zoomIn = document.querySelector<HTMLButtonElement>('[aria-label="Zoom in"]')!;
+    const zoomOut = document.querySelector<HTMLButtonElement>('[aria-label="Zoom out"]')!;
+    for (let step = 0; step < 12; step += 1) act(() => { zoomIn.click(); });
+    expect(zoomSlider().value).toBe('500');
+    expect(zoomLabel()).toBe('500%');
+    expect(document.querySelector('[data-lightbox-viewport]')?.getAttribute('data-lightbox-viewport')).toBe('custom');
+    expect((picture.parentElement as HTMLElement).style.width).toBe(`${1940 * 5}px`);
+    expect(zoomIn.disabled).toBe(true);
+
+    act(() => { zoomOut.click(); });
+    expect(zoomLabel()).toBe('400%');
+
+    act(() => { document.querySelector<HTMLButtonElement>('button[data-autofocus]')!.click(); });
+    const fitPercent = Math.round(Math.min(1, (1024 * 0.92) / 1940, (768 * 0.75) / 5170) * 100);
+    expect(zoomLabel()).toBe(`${fitPercent}%`);
+    expect(document.querySelector('[data-lightbox-viewport]')?.getAttribute('data-lightbox-viewport')).toBe('fit');
+  });
+
+  it('takes an exact percentage from the slider and keeps fit and 100% one key away', () => {
+    renderLightbox({ name: 'long.png' });
+    const picture = loadImage(1000, 500);
+    setSlider(250);
+    expect(zoomLabel()).toBe('250%');
+    expect((picture.parentElement as HTMLElement).style.width).toBe('2500px');
+
+    act(() => { picture.dispatchEvent(new KeyboardEvent('keydown', { key: '1', bubbles: true })); });
+    expect(zoomLabel()).toBe('100%');
+    expect(document.querySelector('[data-lightbox-viewport]')?.getAttribute('data-lightbox-viewport')).toBe('actual');
+
+    act(() => { picture.dispatchEvent(new KeyboardEvent('keydown', { key: '0', bubbles: true })); });
+    expect(document.querySelector('[data-lightbox-viewport]')?.getAttribute('data-lightbox-viewport')).toBe('fit');
+  });
+
+  it('shows the details it holds and strips credentials from a link', () => {
+    renderLightbox({ name: 'long.png', mime: 'image/png', size: 155769, linkUrl: 'https://example.test/shot.png?token=secret' });
+    loadImage(1940, 5170);
+    expect(document.querySelector('[data-lightbox-info]')).toBeNull();
+    const toggle = document.querySelector<HTMLButtonElement>('[aria-label="Details"]')!;
+    act(() => { toggle.click(); });
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+    const info = document.querySelector('[data-lightbox-info]')!;
+    expect(info.textContent).toContain('1940 × 5170');
+    expect(info.textContent).toContain('image/png');
+    expect(info.textContent).toContain('152 KB');
+    expect(info.querySelector('[data-lightbox-source]')?.textContent).toBe('https://example.test/shot.png?…');
+    expect(info.textContent).not.toContain('secret');
+  });
+
+  it('does not present a remote path as a local one and shows a real local path', () => {
+    renderLightbox({ name: 'shot.png', sourcePath: '/C:/fixture/viewer/shot.png' });
+    loadImage(80, 90);
+    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Details"]')!.click(); });
+    expect(document.querySelector('[data-lightbox-source]')?.textContent).toBe('/C:/fixture/viewer/shot.png');
+
+    renderLightbox({ name: 'shot.png', identity: 'remote', remote: true, sourcePath: '/srv/images/shot.png' });
+    loadImage(80, 90);
+    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Details"]')!.click(); });
+    expect(document.querySelector('[data-lightbox-info]')?.textContent).not.toContain('/srv/images');
+    expect(document.querySelector('[data-lightbox-source]')).toBeNull();
+  });
+
+  it('drops the old measurements when a retry finally loads the image', () => {
+    const onRetry = vi.fn();
+    renderLightbox({ name: 'retry.png', onRetry });
+    loadImage(100, 50);
+    act(() => { document.querySelector('[data-lightbox-viewport] img')!.dispatchEvent(new Event('error')); });
+    expect(document.querySelector('[data-lightbox-failure]')).not.toBeNull();
+    act(() => { document.querySelector<HTMLButtonElement>('[data-lightbox-failure] button')!.click(); });
+    expect(onRetry).toHaveBeenCalledOnce();
+    const reloaded = loadImage(300, 150);
+    expect((reloaded.parentElement as HTMLElement).style.width).toBe(`${Math.min(300, 1024 * 0.92)}px`);
   });
 });
 
