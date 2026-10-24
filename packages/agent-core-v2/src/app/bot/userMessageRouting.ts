@@ -11,14 +11,16 @@ export interface MessageMediaCapability {
 
 export interface MessageChannelBinding {
   readonly id: string;
-  readonly kind: 'internal' | 'im';
+  readonly kind: 'internal' | 'im' | 'notify';
+  readonly bound?: boolean;
   readonly enabled: boolean;
   readonly capabilities: readonly MessageMediaCapability[];
 }
 
 export interface MessageChannelReceipt {
   readonly channelId: string;
-  readonly status: 'delivered' | 'unsupported' | 'failed' | 'unknown';
+  readonly status: 'delivered' | 'partial' | 'unsupported' | 'failed' | 'unknown';
+  readonly borrowed?: boolean;
   readonly messageIds?: readonly string[];
   readonly unsupported?: readonly string[];
   readonly detail?: string;
@@ -29,6 +31,8 @@ export interface UserMessageInput {
   readonly toolCallId: string;
   readonly text: string;
   readonly attachments: readonly MessageAttachmentReceipt[];
+  readonly channel?: string;
+  readonly channels?: readonly string[];
   readonly replyTo?: string;
   readonly sender?: MessageSenderIdentity;
 }
@@ -62,40 +66,107 @@ export function supportsMessageMedia(channel: MessageChannelBinding, media: Mess
     })));
 }
 
-export function validateUserMessageChannels(input: UserMessageInput, channels: readonly MessageChannelBinding[]): void {
-  const enabled = channels.filter((channel) => channel.enabled);
-  if (enabled.length === 0) {
+export interface RouteUserMessageOptions {
+  readonly allowChannelBorrowing?: boolean;
+}
+
+function requestChannelIds(input: UserMessageInput): readonly string[] {
+  const requested = [
+    ...(input.channel === undefined ? [] : [input.channel]),
+    ...(input.channels ?? []),
+  ];
+  return [...new Set(requested)];
+}
+
+function invalidTarget(reason: string, message: string, channelId?: string): never {
+  throw new Error2(ErrorCodes.REQUEST_INVALID, `${reason}: ${message}`, {
+    details: { reason, ...(channelId === undefined ? {} : { channelId }) },
+  });
+}
+
+function selectChannels<T extends MessageChannelBinding>(
+  input: UserMessageInput,
+  channels: readonly T[],
+  options: RouteUserMessageOptions,
+): { readonly channels: readonly T[]; readonly borrowed: ReadonlySet<string> } {
+  const byId = new Map<string, T>();
+  for (const channel of channels) if (!byId.has(channel.id)) byId.set(channel.id, channel);
+  const requested = requestChannelIds(input);
+  if (requested.length === 0) {
+    return {
+      channels: [...byId.values()].filter((channel) => channel.enabled && channel.bound !== false),
+      borrowed: new Set(),
+    };
+  }
+  const selected: T[] = [];
+  const borrowed = new Set<string>();
+  for (const id of requested) {
+    const channel = byId.get(id);
+    if (channel === undefined) invalidTarget('channel_not_found', `Message channel ${id} does not exist.`, id);
+    if (!channel.enabled) invalidTarget('channel_disabled', `Message channel ${id} is disabled.`, id);
+    if (channel.bound === false) {
+      if (options.allowChannelBorrowing !== true) {
+        invalidTarget('channel_borrowing_disabled', `Message channel ${id} is available but not bound to this conversation.`, id);
+      }
+      borrowed.add(id);
+    }
+    selected.push(channel);
+  }
+  return { channels: selected, borrowed };
+}
+
+function validateSelectedMessageChannels(input: UserMessageInput, selected: readonly MessageChannelBinding[]): void {
+  if (selected.length === 0) {
     throw new Error2(ErrorCodes.REQUEST_INVALID, 'no_destination: No message channel is enabled for this conversation.', { details: { reason: 'no_destination' } });
   }
-  const unsupported = input.attachments.filter((attachment) => !enabled.some((channel) => supportsMessageMedia(channel, attachment)));
+  const unsupported = input.attachments.filter((attachment) => !selected.some((channel) => supportsMessageMedia(channel, attachment)));
   if (unsupported.length > 0) {
-    throw new Error2(ErrorCodes.REQUEST_INVALID, `media_unsupported: No enabled channel supports ${unsupported.map((item) => `${item.kind ?? 'file'} (${item.mimeType ?? 'unknown MIME'})`).join(', ')}.`, {
-      details: { reason: 'media_unsupported', channels: enabled.map((channel) => channel.id) },
+    throw new Error2(ErrorCodes.REQUEST_INVALID, `media_unsupported: No selected channel supports ${unsupported.map((item) => `${item.kind ?? 'file'} (${item.mimeType ?? 'unknown MIME'})`).join(', ')}.`, {
+      details: { reason: 'media_unsupported', channels: selected.map((channel) => channel.id) },
     });
   }
 }
 
-export async function routeUserMessage(input: UserMessageInput, channels: readonly UserMessageChannel[]): Promise<SendMessageReceipt> {
-  validateUserMessageChannels(input, channels);
+export function validateUserMessageChannels(
+  input: UserMessageInput,
+  channels: readonly MessageChannelBinding[],
+  options: RouteUserMessageOptions = {},
+): void {
+  const selection = selectChannels(input, channels, options);
+  validateSelectedMessageChannels(input, selection.channels);
+}
+
+export async function routeUserMessage(
+  input: UserMessageInput,
+  channels: readonly UserMessageChannel[],
+  options: RouteUserMessageOptions = {},
+): Promise<SendMessageReceipt> {
+  const selection = selectChannels(input, channels, options);
+  validateSelectedMessageChannels(input, selection.channels);
   const receipts: MessageChannelReceipt[] = [];
-  for (const channel of channels.filter((item) => item.enabled)) {
+  for (const channel of selection.channels) {
     const supported = input.attachments.filter((attachment) => supportsMessageMedia(channel, attachment));
-    const unsupported = input.attachments.filter((attachment) => !supportsMessageMedia(channel, attachment))
-      .map((attachment) => attachment.kind ?? 'file');
+    const unsupported = [...new Set(input.attachments.filter((attachment) => !supportsMessageMedia(channel, attachment))
+      .map((attachment) => attachment.kind ?? 'file'))];
     try {
       const sent = await channel.send({ ...input, attachments: supported }, unsupported);
       const skipped = [...new Set([...unsupported, ...(sent.unsupported ?? [])])];
+      const status = sent.status === 'delivered' && skipped.length > 0
+        ? supported.length > 0 || input.text.length > 0 ? 'partial' : 'unsupported'
+        : sent.status;
       receipts.push({
         ...sent,
         channelId: channel.id,
-        status: sent.status === 'delivered' && skipped.length > 0 && supported.length === 0 ? 'unsupported' : sent.status,
+        status,
+        borrowed: selection.borrowed.has(channel.id) ? true : undefined,
         unsupported: skipped.length > 0 ? skipped : undefined,
       });
     } catch {
-      receipts.push({ channelId: channel.id, status: 'unknown', unsupported: unsupported.length > 0 ? unsupported : undefined, detail: 'Send outcome is unknown; do not resend automatically.' });
+      receipts.push({ channelId: channel.id, status: 'unknown', borrowed: selection.borrowed.has(channel.id) ? true : undefined,
+        unsupported: unsupported.length > 0 ? unsupported : undefined, detail: 'Send outcome is unknown; do not resend automatically.' });
     }
   }
-  const delivered = receipts.some((receipt) => receipt.status === 'delivered');
+  const delivered = receipts.some((receipt) => receipt.status === 'delivered' || receipt.status === 'partial');
   const blocked = receipts.length > 0 && receipts.every((receipt) => receipt.status === 'unsupported' || receipt.status === 'failed');
   return {
     messageId: `send:${input.toolCallId}`,

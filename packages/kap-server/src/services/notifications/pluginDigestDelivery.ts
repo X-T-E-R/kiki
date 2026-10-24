@@ -242,6 +242,11 @@ export class PluginDigestDelivery {
     return routes;
   }
 
+  routeRevision(channelId: string): string | undefined {
+    const runtime = this.deps.runtime();
+    return runtime === undefined || this.deps.stopped() ? undefined : fingerprint(this.deps.settings(), runtime, channelId);
+  }
+
   send(value: unknown, signal: AbortSignal, pluginId: string): Promise<PluginImSendReceipt> {
     const parsed = parsePluginImRequest(value);
     if (!parsed.ok) return Promise.resolve(parsed.receipt);

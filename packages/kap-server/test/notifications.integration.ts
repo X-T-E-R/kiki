@@ -210,6 +210,38 @@ describe('notification coordinator', () => {
     }
   });
 
+  it('exposes global notify channels and uses the direct adapter receipt without enqueueing a notification', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-notifications-message-channels-'));
+    const config = { ready: Promise.resolve(), get: () => ({ ...DEFAULT_NOTIFICATIONS_CONFIG }), replaceSections: async () => {} };
+    const core = { accessor: { get: (key: unknown) => {
+      if (key === IConfigService) return config;
+      if (key === ISessionManager) return { list: () => [] };
+      throw new Error('unexpected_app_service');
+    } } } as unknown as Scope;
+    const service = new NotificationService(core, home, () => false, () => { throw new Error('unexpected_notification_error'); });
+    try {
+      await service.start();
+      await service.upsertInstance('hook', { provider_id: 'http', enabled: true, revision: 'v1', options: { endpoint: 'https://example.test/', format: 'json' } }, {});
+      await service.upsertChannel('out', { provider_instance_id: 'hook', enabled: true, revision: 'v1', target: {}, directions: ['send'], scenes: { work_complete: true, question_pending: true } });
+      await service.upsertChannel('out2', { provider_instance_id: 'hook', enabled: true, revision: 'v1', target: {}, directions: ['send'], scenes: { work_complete: true, question_pending: true } });
+      const channels = service.messageChannels('session-message');
+      expect(channels).toHaveLength(2);
+      expect(channels[0]).toMatchObject({ id: 'notify:out', kind: 'notify', bound: false, enabled: true, capabilities: [] });
+      const input = { sessionId: 'session-message', toolCallId: 'message-1', text: 'Hello', attachments: [] };
+      const first = await channels[0]!.send(input, []);
+      const second = await channels[0]!.send(input, []);
+      const otherTarget = await channels[1]!.send(input, []);
+      expect(first).toEqual({ status: 'delivered' });
+      expect(second).toEqual({ status: 'delivered' });
+      expect(otherTarget).toEqual({ status: 'delivered' });
+      expect(service.listDeliveries()).toEqual([]);
+      await service.updateSettings({ ...service.getSettings().global, enabled: false });
+      expect(service.messageChannels('session-message')[0]).toMatchObject({ enabled: false });
+    } finally {
+      await service.close();
+    }
+  });
+
   it('sends one long-work completion, cancels answered questions and waits for background work', async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-notifications-core-'));
     vi.useFakeTimers();

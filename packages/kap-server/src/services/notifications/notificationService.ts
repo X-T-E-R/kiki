@@ -4,7 +4,8 @@ import {
   ConfigTarget, IConfigService, ISessionManager, ISessionActivityView,
   ISessionInteractionService, IAgentLifecycleService, IAgentPromptService,
   IInstantiationService, IAgentTaskService, IAgentLoopService, IAgentActivityView, IEventBus, IAgentExecutionService, IAgentGoalService,
-  type Scope, type ISessionScopeHandle, type IAgentScopeHandle,
+  type Scope, type ISessionScopeHandle, type IAgentScopeHandle, type UserMessageChannel, type UserMessageInput,
+  type PluginImCapabilities, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest,
 } from '@kiki/agent-core-v2';
 import {
   DEFAULT_NOTIFICATIONS_CONFIG, NOTIFICATIONS_SECTION, NotificationsConfigSchema,
@@ -15,7 +16,6 @@ import {
   Runtime, PROVIDERS, validateConfig, telegramProvider, wecomWebhookProvider, wecomHttps, createSafeHttpTransport,
   webhookProvider, type Config, type CredentialScope, type DeliveryView,
 } from '@nb-im/core';
-import type { PluginImCapabilities, PluginImRoute, PluginImSendReceipt, PluginImSendRequest } from '@kiki/agent-core-v2';
 import { ensurePluginDigestReceipts, PluginDigestDelivery } from './pluginDigestDelivery';
 
 type Settings = NotificationsConfig;
@@ -362,6 +362,35 @@ export class NotificationService {
   }
   pluginImSend(request: PluginImSendRequest, signal: AbortSignal, pluginId: string): Promise<PluginImSendReceipt> {
     return this.trackDigest(this.digests.send(request, signal, pluginId));
+  }
+
+  messageChannels(sessionId: string): readonly UserMessageChannel[] {
+    const runtime = this.state?.runtime;
+    return Object.entries(this.settings.channels).toSorted(([left], [right]) => left.localeCompare(right)).flatMap(([channelId, raw]) => {
+      const channel = raw as NotificationChannel;
+      const instance = this.settings.provider_instances[channel.provider_instance_id] as NotificationInstance | undefined;
+      const providerId = instance?.provider_id;
+      const provider = providerId === undefined ? undefined : PROVIDERS[providerId as keyof typeof PROVIDERS];
+      const available = this.settings.global.enabled && channel.enabled && instance?.enabled === true &&
+        provider?.can_send === true && providerId !== undefined && providerId !== 'script' && providerId !== 'windows_toast' &&
+        runtime !== undefined && runtime.providers.has(providerId);
+      const send = async (input: UserMessageInput, skipped: readonly string[]) => {
+        if (skipped.length > 0 && input.text.length === 0) return { status: 'unsupported' as const, unsupported: skipped };
+        if (input.text.length === 0) return { status: 'unsupported' as const, unsupported: ['text'] };
+        const routeRevision = this.digests.routeRevision(channelId);
+        if (routeRevision === undefined) return { status: 'failed' as const, detail: 'notification_channel_unavailable' };
+        const rawKey = `message:${channelId}:${input.toolCallId}`;
+        const key = /^[A-Za-z0-9_.:-]{1,200}$/u.test(rawKey) ? rawKey : `message:${createHash('sha256').update(rawKey).digest('hex')}`;
+        const accountRef = /^[A-Za-z0-9_.:-]{1,120}$/u.test(sessionId) ? sessionId : createHash('sha256').update(sessionId).digest('hex');
+        const receipt = await this.trackDigest(this.digests.send({
+          channelId, routeRevision, accountRef, idempotencyKey: key, text: input.text,
+        }, new AbortController().signal, 'send-message'));
+        if (receipt.status === 'accepted') return { status: 'delivered' as const };
+        if (receipt.status === 'unknown') return { status: 'unknown' as const, detail: receipt.diagnosticCode ?? 'notification_send_unknown' };
+        return { status: 'failed' as const, detail: receipt.diagnosticCode ?? 'notification_send_failed' };
+      };
+      return [{ id: `notify:${channelId}`, kind: 'notify', bound: false, enabled: available, capabilities: [], send }];
+    });
   }
 
   sendTest(channelId: string): DeliveryView {

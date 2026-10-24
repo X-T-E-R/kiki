@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { ErrorCodes } from '#/errors';
 import {
   internalMessageChannel,
   routeUserMessage,
@@ -51,7 +52,7 @@ describe('user message routing', () => {
     expect(sent[0]!.skipped).toEqual(['video']);
     expect(receipt.channels).toEqual([
       expect.objectContaining({ channelId: 'im:yes', status: 'delivered' }),
-      expect.objectContaining({ channelId: 'im:no', status: 'delivered', unsupported: ['video'] }),
+      expect.objectContaining({ channelId: 'im:no', status: 'partial', unsupported: ['video'] }),
     ]);
     expect(receipt.deliveredTo).toEqual(['user']);
   });
@@ -62,7 +63,7 @@ describe('user message routing', () => {
     const receipt = await routeUserMessage(input([image]), [supporting, limited]);
     expect(receipt.channels).toEqual([
       expect.objectContaining({ channelId: 'im:yes', status: 'delivered' }),
-      expect.objectContaining({ channelId: 'im:no', status: 'unsupported', unsupported: ['image'] }),
+      expect.objectContaining({ channelId: 'im:no', status: 'partial', unsupported: ['image'] }),
     ]);
   });
 
@@ -100,5 +101,41 @@ describe('user message routing', () => {
     const receipt = await routeUserMessage(input(), [disabled, internalMessageChannel()]);
     expect(disabled.send).not.toHaveBeenCalled();
     expect(receipt.channels).toEqual([expect.objectContaining({ channelId: 'internal' })]);
+  });
+
+  it('defaults to enabled bound channels and excludes available unbound channels', async () => {
+    const bound = channel('im:bound', true, []);
+    const available = { ...channel('notify:available', true, []), bound: false };
+    const receipt = await routeUserMessage(input(), [bound, available]);
+    expect(bound.send).toHaveBeenCalledOnce();
+    expect(available.send).not.toHaveBeenCalled();
+    expect(receipt.channels?.map((item) => item.channelId)).toEqual(['im:bound']);
+  });
+
+  it('deduplicates explicit targets and rejects missing or disabled targets with a reason', async () => {
+    const target = channel('im:target', true, []);
+    const receipt = await routeUserMessage({ ...input(), channel: 'im:target', channels: ['im:target'] }, [target]);
+    expect(target.send).toHaveBeenCalledOnce();
+    expect(receipt.channels).toHaveLength(1);
+    await expect(routeUserMessage({ ...input(), channel: 'im:missing' }, [target])).rejects.toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID, details: { reason: 'channel_not_found', channelId: 'im:missing' },
+    });
+    await expect(routeUserMessage({ ...input(), channels: ['im:target', 'im:missing'] }, [target])).rejects.toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID, details: { reason: 'channel_not_found', channelId: 'im:missing' },
+    });
+    const disabled = channel('im:disabled', false, []);
+    await expect(routeUserMessage({ ...input(), channel: 'im:disabled' }, [disabled])).rejects.toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID, details: { reason: 'channel_disabled', channelId: 'im:disabled' },
+    });
+  });
+
+  it('requires the borrowing policy for an explicit unbound target and marks a borrowed send', async () => {
+    const available = { ...channel('notify:available', true, []), bound: false };
+    await expect(routeUserMessage({ ...input(), channel: available.id }, [available])).rejects.toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID, details: { reason: 'channel_borrowing_disabled', channelId: available.id },
+    });
+    const receipt = await routeUserMessage({ ...input(), channels: [available.id, available.id] }, [available], { allowChannelBorrowing: true });
+    expect(receipt.channels).toEqual([expect.objectContaining({ channelId: available.id, borrowed: true })]);
+    expect(available.send).toHaveBeenCalledOnce();
   });
 });
