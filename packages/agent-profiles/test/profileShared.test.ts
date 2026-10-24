@@ -490,6 +490,19 @@ describe('renderSystemPromptResult', () => {
     expect(collaboration).toContain('the child does not automatically share your memory');
     expect(collaboration).toContain('changes only what its evidence supports');
     expect(collaboration).toContain('Do not poll to keep the turn open');
+    for (const rule of [
+      'Let one active owner carry the outcome',
+      'do not split one coupled behavior into file-by-file handoffs',
+      'name one producer and the consumers',
+      'inspect the actual artifact, relevant diff, or rendering',
+      'Record acceptance after the result is actually incorporated into its target',
+      'do not duplicate work already present there',
+      'Return a coherent repair list to the same owner',
+      'do not forward raw receipts, partial progress',
+      'do not wake it only to confirm receipt or say thanks',
+      'not restricted by an arbitrary message quota or a fixed reporting template',
+      'being a subagent does not itself make a role a leaf or grant it permission to delegate',
+    ]) expect(collaboration).toContain(rule);
 
     const overridden = renderSystemPromptResult('', {
       promptFields: { 'system.delegation_brief_hygiene': '# Delegation Brief Hygiene\n\nCUSTOM COLLABORATION' },

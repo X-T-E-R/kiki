@@ -23,7 +23,7 @@ export const SubagentToolInputSchema = z.preprocess(
     return normalized;
   },
   z.object({
-    prompt: z.string().describe('Full task prompt for the subagent'),
+    prompt: z.string().describe('Self-contained assignment with the outcome, usable inputs, authority and write boundary, dependencies, and observable finish; the child owns local choices and affected checks. On resume, give the new input for that same assignment.'),
     description: z.string().describe('Short task description (3-5 words) for UI display'),
     workDir: z.string().trim().min(1).optional().describe('Admitted absolute working directory for this child. Omit to inherit the parent workspace directory. New-agent only; resume preserves its original roots.'),
     additionalDirs: z.array(z.string().trim().min(1)).optional().describe('Admitted additional workspace directories for this child. Omit to inherit the parent workspace directories. New-agent only; resume preserves its original roots.'),

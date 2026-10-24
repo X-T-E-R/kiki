@@ -8,6 +8,10 @@ Prompt field overrides replace named pieces of the built-in prompt — system se
 
 Useful built-in field ids include `system.language`, `system.reply_style`, `system.coding`, `system.shared`, `tool.web-search.description`, `tool.web-search.guidance`, `delegation.sub.notice` and `delegation.independent.notice`. System fields replace sections of the built-in prompt, except `system.shared`, which is the one shared outer addition and is appended once when non-empty. A tool `description` replaces its static description; a tool `guidance` is appended under the existing `User-configured guidance:` label.
 
+Kiki's built-in collaboration guidance works without a Recipe. It asks agents to give one owner a complete outcome, inspect and incorporate returned work before accepting it, and send the inputs a recipient still needs for its next action. It does not impose a message quota on user-requested discussion. Customize this guidance through `system.delegation_brief_hygiene`, `delegation.sub.notice`, or the `description` and `guidance` fields for `tool.agent-run`, `tool.agent-send` and `tool.thread-send`.
+
+These defaults keep existing profile and Recipe overrides, delegation-notice off choices, and role and tool limits intact. A custom replacement profile still controls its own body. External executors receive the text through their selected profile or configured `executor_prompt` composition; [direct external execution](./agents-and-subagents.md#direct-external-execution) without those additions stays bare.
+
 ## Where overrides live
 
 Every override surface uses the same format — optional `files` (strict TOML files relative to the Kiki home) and inline `fields`:

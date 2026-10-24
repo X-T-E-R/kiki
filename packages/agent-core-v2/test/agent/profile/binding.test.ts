@@ -929,6 +929,25 @@ describe('AgentProfileService.bind', () => {
     expect(restored.data().executorId).not.toBe('native');
   });
 
+  it.each([undefined, 'CUSTOM HARNESS BODY'])('composes the no-Recipe default profile for an external executor while honoring body override %j', async (body) => {
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: {
+      executor_prompt: { include: [], body },
+    } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: DEFAULT_AGENT_PROFILE_NAME } });
+    expect(service.data().executorId).toBe('grok-acp');
+    expect(service.getCognitionSnapshot()?.recipe).toBeUndefined();
+    expect(service.data().executorPrompt?.include).toEqual([]);
+    if (body === undefined) {
+      expect(service.getSystemPrompt()).toContain('Let one active owner carry the outcome');
+      expect(service.getSystemPrompt()).toContain('Record acceptance after the result is actually incorporated into its target');
+      expect(service.getSystemPrompt()).toContain('do not forward raw receipts, partial progress');
+    } else expect(service.getSystemPrompt()).toBe(body);
+    expect(service.getSystemPrompt()).not.toContain('You are a subagent working for the parent agent');
+  });
+
   it.each([undefined, []] as const)('inherits omitted executor prompt fields and preserves explicit empty include %j from a profile', async (include) => {
     const external = normalizeAgentProfile({ name: 'optional-custom', executor: 'grok-acp', systemPrompt: () => 'PROFILE_BODY',
       executorPrompt: executorPromptSchema.parse({ delivery: 'preamble', include }) });
