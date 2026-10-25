@@ -54,6 +54,50 @@ afterEach(async () => {
 });
 
 describe('plugin IM digest bridge', () => {
+  it('retracts only owned adapter connections on hot changes and enforces declared plugin dependencies', async () => {
+    const plugins = host.app.accessor.get(IPluginService);
+    const hosts = host.app.accessor.get(IPluginHostService);
+    await hosts.ready;
+    const registrations = new Map<string, import('#/app/plugin/imAdapter').PluginImAdapterRegistration>();
+    const connections = new Map<string, import('#/app/plugin/imAdapter').PluginImConnection>();
+    await hosts.attachImAdapters({
+      replace: async (items) => { registrations.clear(); for (const item of items) registrations.set(item.pluginId, item); },
+      withdraw: async (ids) => { for (const id of [...registrations.keys()]) if (ids === undefined || ids.includes(id)) { await connections.get(id)?.stop(); connections.delete(id); registrations.delete(id); } },
+    });
+    const create = async (id: string, dependencies?: Record<string, string>) => {
+      const source = join(root, id);
+      await mkdir(source);
+      const definition = { schemaVersion: 1, id: 'account', label: 'Fixture', inbound: true, outbound: true, listenerRealm: 'fixture', maxInboundBytes: 1024, mediaCapabilities: [] };
+      const tool = { schemaVersion: 1, name: 'state', description: 'State', accesses: [{ kind: 'all' }], disclosure: 'deferred' };
+      await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({ name: id, version: '1.0.0', 'x-kiki': { engines: { kiki: '^0.4.0' }, entry: './entry.mjs', tools: [tool], imAdapters: [definition], dependencies } }));
+      await writeFile(join(source, 'entry.mjs'), `export function register(api) { api.registerTool(${JSON.stringify(tool)}, async () => ({ output: 'ok' })); api.registerImAdapter(${JSON.stringify(definition)}, { start: async () => ({ accountId: 'fixture-account' }), stop: async () => {}, sendText: async () => ({ status: 'delivered' }) }); }`);
+      const plan = await plugins.previewPlugin({ source });
+      expect(plan.contributions).toContain('im-adapter:account');
+      await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+    };
+    await create('fixture-independent');
+    await create('fixture-dependent', { 'fixture-provider': '^1.0.0' });
+    expect(registrations.has('fixture-dependent')).toBe(false);
+    await expect(hosts.execute('fixture-dependent', 'state', {}, new AbortController().signal)).rejects.toThrow('requires enabled plugin fixture-provider');
+    await create('fixture-provider');
+    expect(registrations.has('fixture-dependent')).toBe(true);
+    await create('fixture-version-mismatch', { 'fixture-provider': '^2.0.0' });
+    expect(registrations.has('fixture-version-mismatch')).toBe(false);
+    await expect(hosts.execute('fixture-version-mismatch', 'state', {}, new AbortController().signal)).rejects.toThrow('requires fixture-provider ^2.0.0; installed version is 1.0.0');
+    for (const id of ['fixture-independent', 'fixture-dependent']) connections.set(id, await registrations.get(id)!.connect(async () => undefined));
+    await plugins.setPluginEnabled({ id: 'fixture-provider', enabled: false });
+    expect(registrations.has('fixture-dependent')).toBe(false);
+    expect(hosts.running('fixture-dependent')).toBe(false);
+    expect(hosts.running('fixture-independent')).toBe(true);
+    expect((await hosts.execute('fixture-independent', 'state', {}, new AbortController().signal)).output).toBe('ok');
+    await plugins.setPluginEnabled({ id: 'fixture-provider', enabled: true });
+    expect(registrations.has('fixture-dependent')).toBe(true);
+    const connection = await registrations.get('fixture-dependent')!.connect(async () => undefined);
+    connections.set('fixture-dependent', connection);
+    await plugins.removePlugin({ id: 'fixture-dependent' });
+    expect(registrations.has('fixture-dependent')).toBe(false);
+    expect(hosts.running('fixture-independent')).toBe(true);
+  });
   it('reports the bridge as unsupported until attached, then strips secrets from the live route and receipt', async () => {
     const source = join(root, 'source');
     await mkdir(source);

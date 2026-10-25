@@ -3,7 +3,8 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
 import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
@@ -37,6 +38,7 @@ interface Call {
   readonly reject: (reason: Error) => void;
   readonly onProgress?: (update: ToolUpdate) => void;
   readonly media?: PluginMediaApi;
+  readonly messages?: PluginMessagesApi;
   readonly output?: PluginToolOutput;
   readonly connection?: () => Promise<unknown>;
 }
@@ -47,6 +49,8 @@ export class PluginHost {
   private readonly registered = new Set<string>();
   private readonly registeredSources = new Set<string>();
   private readonly registeredProviders = new Set<string>();
+  private readonly registeredImAdapters = new Set<string>();
+  private readonly imListeners = new Map<string, (event: PluginImEvent) => Promise<void>>();
   private nextId = 0;
   private ready?: Promise<void>;
   private exited: Promise<void> = Promise.resolve();
@@ -63,7 +67,37 @@ export class PluginHost {
     private readonly providers: readonly MediaProviderDefinition[] = [],
     private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void; readonly im?: () => PluginImBridge | undefined },
     private readonly kikiHome?: string,
+    private readonly imAdapters: readonly PluginImAdapterDefinition[] = [],
   ) {}
+
+  async connectImAdapter(adapterId: string, settings: Record<string, unknown>, instanceId: string, listener: (event: PluginImEvent) => Promise<void>, offset?: number): Promise<PluginImConnection> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    await this.start();
+    if (!this.registeredImAdapters.has(adapterId) || this.imListeners.has(adapterId)) throw new Error('IM adapter unavailable or already connected');
+    this.imListeners.set(adapterId, listener);
+    try {
+      const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'start', settings, instanceId, offset }) as { accountId?: unknown; listenerAccountId?: unknown; targets?: unknown };
+      if (typeof result?.accountId !== 'string' || result.accountId.length === 0) throw new Error('IM adapter returned no account identity');
+      if (result.listenerAccountId !== undefined && (typeof result.listenerAccountId !== 'string' || result.listenerAccountId.length === 0 || result.listenerAccountId.length > 1024)) throw new Error('IM adapter returned an invalid listener account identity');
+      const targets = result.targets === undefined ? undefined : pluginImIdentitySchema.array().max(1000).parse(result.targets);
+      return { accountId: result.accountId, listenerAccountId: result.listenerAccountId, targets,
+        request: async (action, input) => {
+          if (this.stopped || !this.imListeners.has(adapterId)) throw new Error('IM adapter was withdrawn');
+          const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action, input });
+          return action === 'answerCallback' ? undefined : pluginImDeliverySchema.parse(result);
+        },
+        stop: async () => {
+          this.imListeners.delete(adapterId);
+          if (this.child !== undefined) await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'stop' });
+          this.scheduleIdle();
+        },
+      };
+    } catch (error) {
+      this.imListeners.delete(adapterId);
+      if (this.child !== undefined) await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'stop' }).catch(() => undefined);
+      throw error;
+    }
+  }
 
   async activate(settings: Record<string, unknown>, userHome: string, dataDir: string): Promise<void> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
@@ -143,7 +177,7 @@ export class PluginHost {
 
   get running(): boolean { return this.child !== undefined; }
 
-  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
+  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly messages?: PluginMessagesApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
     signal.throwIfAborted();
     await this.start();
@@ -174,6 +208,7 @@ export class PluginHost {
         reject: (error) => { void cleanup().then(() => { reject(error); }); },
         onProgress,
         media: scope.media,
+        messages: scope.messages,
         output,
       });
       this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn, workspaceId: scope.workspaceId, kikiHome: this.kikiHome } });
@@ -288,8 +323,23 @@ export class PluginHost {
             const expected = this.providers.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredProviders.has(definition.id)) throw new Error('Plugin media provider definition mismatch');
             this.registeredProviders.add(definition.id);
+          } else if (message.method === 'register-im-adapter') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = pluginImAdapterDefinitionSchema.parse(message.params?.definition);
+            const expected = this.imAdapters.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredImAdapters.has(definition.id)) throw new Error('Plugin IM adapter definition mismatch');
+            this.registeredImAdapters.add(definition.id);
+          } else if (message.method === 'im-adapter-event') {
+            const { adapterId, callId, event } = message.params ?? {};
+            void Promise.resolve().then(async () => {
+              const definition = this.imAdapters.find((item) => item.id === adapterId);
+              const listener = this.imListeners.get(adapterId);
+              if (this.stopped || definition === undefined || listener === undefined) throw new Error('IM adapter is not receiving');
+              await listener(parsePluginImEvent(event, definition));
+            }).then(() => this.send({ method: 'im-adapter-event-result', params: { callId, result: true } }),
+              () => this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM event was not admitted' } }));
           } else if (message.method === 'ready') {
-            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length) throw new Error('Plugin registered incomplete contributions');
+            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
             resolve();
             this.scheduleIdle();
@@ -330,6 +380,10 @@ export class PluginHost {
               if (action === 'connection') {
                 if (call === undefined) throw new Error('Provider connection request is no longer active');
                 return call.connection?.();
+              }
+              if (action === 'message-send') {
+                if (call?.messages === undefined) throw new Error('Message delivery is unavailable outside an admitted session tool call');
+                return call.messages.send(input);
               }
               if (bridge === undefined) throw new Error('Media bridge is unavailable outside an admitted session tool call');
               if (action === 'generate') return bridge.generate(input);
@@ -403,7 +457,7 @@ export class PluginHost {
   }
 
   private scheduleIdle(): void {
-    if (this.pending.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
+    if (this.pending.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
     clearTimeout(this.idle);
     this.idle = setTimeout(() => this.terminate(new Error(`Plugin ${this.id} idle`)), IDLE_MS);
     this.idle.unref();
@@ -420,6 +474,8 @@ export class PluginHost {
     this.registered.clear();
     this.registeredSources.clear();
     this.registeredProviders.clear();
+    this.registeredImAdapters.clear();
+    this.imListeners.clear();
     for (const call of this.pending.values()) call.reject(reason);
     this.pending.clear();
     if (child !== undefined && !child.killed) child.kill();

@@ -1,6 +1,8 @@
 import { z } from 'zod';
 
-export const imProviderKindSchema = z.enum(['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix']);
+export const builtinImProviderKindSchema = z.enum(['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix']);
+export const pluginImProviderKindSchema = z.string().regex(/^plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}$/).transform((value) => value as `plugin:${string}/${string}`);
+export const imProviderKindSchema = z.union([builtinImProviderKindSchema, pluginImProviderKindSchema]);
 export type ImProviderKind = z.infer<typeof imProviderKindSchema>;
 
 /**
@@ -37,6 +39,19 @@ export const imIdentitySchema = z.object({
 }).strict();
 export type ImIdentity = z.infer<typeof imIdentitySchema>;
 
+export const imMessageMetadataSchema = z.object({
+  provider_kind: imProviderKindSchema,
+  provider_instance_id: z.string().min(1),
+  account_id: z.string().min(1),
+  identity: imIdentitySchema,
+  source_message_id: z.string().min(1).optional(),
+  mentioned: z.boolean().optional(),
+  mention_ids: z.array(z.string().min(1)).optional(),
+  reply_to_message_id: z.string().min(1).optional(),
+}).strict();
+export type ImMessageMetadata = z.infer<typeof imMessageMetadataSchema>;
+export const imBindingScopeSchema = z.enum(['sender', 'topic', 'chat']);
+
 export const imDiscoverySchema = z.object({
   id: z.string().min(1),
   provider_instance_id: z.string().min(1),
@@ -57,6 +72,7 @@ export const imBindingSchema = z.object({
   session_id: z.string().min(1).optional(),
   persona_id: z.string().min(1).optional(),
   pending_reanchor: z.boolean().optional(),
+  binding_scope: imBindingScopeSchema.optional(),
   enabled: z.boolean(),
   session_enabled: z.boolean().optional(),
   input_enabled: z.boolean().optional(),
@@ -82,9 +98,11 @@ export const imInstanceViewSchema = z.object({
   provider_kind: imProviderKindSchema,
   label: z.string().optional(),
   listening: z.boolean(),
+  inbound: z.boolean().optional(),
+  outbound: z.boolean().optional(),
   configured: z.boolean(),
   account_id: z.string().optional(),
-  conflict: z.literal('webhook').optional(),
+  conflict: z.enum(['webhook', 'account_in_use']).optional(),
   adapter: z.enum(['missing', 'running', 'shared', 'stopped']),
   connection: z.enum(['starting', 'reconnecting', 'auth_expired', 'stopped']).optional(),
   connection_detail: imConnectionDetailSchema.optional(),
@@ -148,6 +166,7 @@ export const imConfirmRequestSchema = z.object({
   reply: z.enum(['final', 'edit']).optional(),
   mobile_interactions: z.boolean().optional(),
   also_home: z.boolean().optional(),
+  binding_scope: imBindingScopeSchema.optional(),
   rebind: z.boolean().optional(),
   input_enabled: z.boolean().optional(),
   output_enabled: z.boolean().optional(),

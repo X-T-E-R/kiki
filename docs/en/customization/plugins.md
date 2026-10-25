@@ -445,6 +445,36 @@ Supported fields:
 
 Unsupported runtime fields such as `tools`, `apps`, `inject`, and `configFile` appear as diagnostics and are ignored.
 
+### Chat channels and message delivery
+
+Plugins can connect a platform account to Kiki's existing session bindings and send messages from an admitted tool call. Declare executable contributions in `x-kiki`, then register the same definitions from `entry.mjs`. The SDK contracts are exported from `@kiki/plugin-sdk/im` and `@kiki/plugin-sdk/messages`.
+
+A plugin that uses another installed plugin declares its required version range, for example `"dependencies": { "kiki-media": "^1.0.0" }` inside `x-kiki`. Kiki checks that each dependency is installed, enabled and version-compatible before activation or execution. Install or enable a missing dependency yourself; Kiki does not do so automatically. Plugins without `dependencies` keep their existing behavior.
+
+For chat connections, declare `x-kiki.imAdapters` and call `api.registerImAdapter(definition, adapter)`. Each definition represents one configured account and has `schemaVersion: 1`, a local `id`, `label`, independent `inbound` and `outbound` booleans, `maxInboundBytes`, and a `mediaCapabilities` array. Kiki assigns `plugin:<pluginId>/<adapterId>` as the provider and instance ID. Inbound definitions also require `listenerRealm`, the real protocol or message-source namespace. Use `qq-onebot` with the actual QQ self ID as `start()`'s `listenerAccountId`; QQ official API connections use `qq-official` with the app ID. `accountId` remains the plugin's stable binding identity and may keep an existing prefix. When `listenerAccountId` is omitted, Kiki uses `accountId` for listener ownership. An already-running listener retains a source/account claim; a conflicting new listener stops and reports `account_in_use`. Output-only connections do not claim inbound ownership.
+
+`start({ signal, settings, instanceId, offset, emit })` returns `{ accountId, listenerAccountId?, targets? }`. Emit only after startup completes. Output-only adapters can return `targets` for the user to confirm without fabricating an inbound event. Disabling, reloading or removing the plugin closes its own connections and keeps the user's listening preference and bindings for later re-enabling. The user confirms each destination; group bindings default to the original sender and can explicitly use `binding_scope: "topic"` or `"chat"`. A shared group session preserves each message's real sender, and does not let another member answer the original sender's pending approval or question.
+
+Keep `eventId` for event deduplication and send the platform's real message ID separately as `sourceMessageId`. Inbound `mentioned`, `mentionIds` and `replyToMessageId` reach the session's message metadata. Outbound text carries `replyToMessageId` for a quote, `messageId` for an edit, and `mentionIds` for platform mentions. Declare `supportsReply`, `supportsEdit` and `supportsMentions` only when implemented; unsupported requests return a channel receipt instead of silently dropping those fields. Platform passive-reply tokens stay inside the adapter.
+
+Inside a plugin tool, `context.messages.send()` follows the same main-agent, capability, tool-deny and approval checks as `SendMessage`, then uses the thread's enabled bound outputs. For example:
+
+```js
+const receipt = await context.messages.send({
+  request_id: "report-1",
+  messages: [
+    { text: "First message\nwith a line break" },
+    { text: "Second message", attachments: [{ file_id: artifact.file_id, kind: "voice" }] }
+  ]
+});
+```
+
+Pass a completed `context.media.generate()` artifact's `file_id` to send generated output already stored in this session. A tool declaring `mediaInputs: true` must keep the admitted request in `args.request`. Ordinary attachment `path` inputs still require a workspace, additional-directory or Bot-directory path; generated files elsewhere in the home directory do not become generally readable.
+
+Use either single-message `text`/`attachments`/`reply_to`/`mention_ids` or an explicit `messages` array, never both. A newline stays inside one message. Outer `to`, `channel` and `channels` select destinations for every item. Batch results contain ordered `messages` receipts with stable `index`, `message_id`, channel outcomes and attachment references; cancellation stops unlaunched items. An explicit `request_id` is scoped to the plugin, session and agent across tool calls and restarts: the same payload reuses its receipt, and changed content conflicts. An interrupted admitted request remains unknown and is not sent again; use a new ID only after checking its delivery. Without an ID, deduplication is local to that tool call's send sequence.
+
+`minSendIntervalMs` sets the Host's per-target sending interval. Adapters may report `{ status: "failed", errorKind: "rate_limited", retryAfterMs }` only when the platform explicitly rejected the send without accepting it. Kiki retries that result at most twice; delivered results with no message IDs, partial deliveries and unknown outcomes are not retried. Built-in channels also use the Host's target pacing; a platform rate limit without an exact retry delay remains a failed receipt.
+
 ### Native tool results
 
 Native tools declared under `x-kiki.tools` can return text and PNG, JPEG or WebP images as base64 data URLs. Large results are saved automatically as session attachments: text keeps a preview with the complete original's path and `kimi-file://` reference, and images remain available through the session attachment reference. Ask the agent to use `Read` to page through the original text or `ReadMediaFile` to inspect the original image. Plugin authors can keep the usual return format; they do not need to split the result themselves.

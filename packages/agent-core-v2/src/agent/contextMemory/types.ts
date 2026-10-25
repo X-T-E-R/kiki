@@ -11,6 +11,7 @@ export interface UserPromptOrigin {
   readonly kind: 'user';
   readonly skillActivations?: readonly BundledSkillActivation[];
   readonly originalInput?: readonly ContentPart[];
+  readonly im?: import('@kiki/protocol').ImMessageMetadata;
 }
 
 export const USER_PROMPT_ORIGIN: UserPromptOrigin = { kind: 'user' };

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { personaGreeting, projectMessageView, projectSendMessage } from './messageView';
+import { personaGreeting, projectMessageView, projectSendMessage, projectSendMessages } from './messageView';
 import type { AssistantBlock, Block, ToolBlock, UserBlock } from './transcript';
 
 function tool(overrides: Partial<ToolBlock> = {}): ToolBlock {
@@ -16,6 +16,27 @@ function reply(id: string, text: string, turnId: string, overrides: Partial<Assi
 }
 
 describe('SendMessage projection', () => {
+  it('projects explicit batches as independent bubbles with immutable media and per-item outcomes', () => {
+    const original = tool({ args: { messages: [{ text: 'one\ntwo' }, { text: 'media' }, { text: 'uncertain' }, { text: 'not sent' }] }, output: { messages: [
+      { index: 0, message_id: 'send:call:item:0', delivered_to: ['user'], channels: [{ channel_id: 'internal', status: 'delivered' }] },
+      { index: 1, message_id: 'send:call:item:1', delivered_to: ['user'], channels: [{ channel_id: 'internal', status: 'delivered' }, { channel_id: 'im:b1', status: 'partial' }], attachments: [{ blob_id: 'voice-1', path: '/media/voice.ogg', kind: 'voice', mime_type: 'audio/ogg' }] },
+      { index: 2, message_id: 'send:call:item:2', delivered_to: [], delivery: 'pending', channels: [{ channel_id: 'im:b1', status: 'unknown' }] },
+      { index: 3, message_id: 'send:call:item:3', delivered_to: [], delivery: 'not_sent', detail: 'Stopped before sending' },
+    ] } });
+    const messages = projectSendMessages(original);
+    expect(messages.map((item) => [item.id, item.messageId, item.status, item.text])).toEqual([
+      ['tool-call:message:0', 'send:call:item:0', 'sent', 'one\ntwo'],
+      ['tool-call:message:1', 'send:call:item:1', 'sent', 'media'],
+      ['tool-call:message:2', 'send:call:item:2', 'pending', 'uncertain'],
+      ['tool-call:message:3', 'send:call:item:3', 'failed', ''],
+    ]);
+    expect(messages[1]!.attachments[0]).toMatchObject({ blobId: 'voice-1', kind: 'voice' });
+    expect(messages[1]!.channels?.[1]?.status).toBe('partial');
+    expect(messages[3]!.failureDetail).toBe('Stopped before sending');
+    expect(messages.every((item) => item.sourceTool === original)).toBe(true);
+    expect(projectMessageView([original]).map((item) => item.id)).toEqual(messages.map((item) => item.id));
+    expect(projectSendMessage(original)).toEqual(messages[0]);
+  });
   it('retains the call identity through streaming, success, and reconnect replay', () => {
     const pending = projectSendMessage(tool({ status: 'running', output: undefined, args: undefined,
       argsText: '{"text":"Hel' }))!;

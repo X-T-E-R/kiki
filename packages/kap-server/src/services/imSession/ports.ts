@@ -87,7 +87,7 @@ export interface ImSessionPorts {
     ensureHome(personaId: string): Promise<{ homeSessionId?: string }>;
     setHome?(personaId: string, sessionId: string): Promise<void>;
     activity(sessionId: string): Promise<{ busy: boolean; pending: 'none' | 'approval' | 'question'; queueLength: number; activePromptId?: string; activeTurnId?: number }>;
-    submit(input: { sessionId: string; promptId: string; content: readonly MessageContent[]; delivery: 'queue' | 'steer' }): Promise<ImSubmitResult>;
+    submit(input: { sessionId: string; promptId: string; content: readonly MessageContent[]; delivery: 'queue' | 'steer'; im?: import('@kiki/protocol').ImMessageMetadata }): Promise<ImSubmitResult>;
     steer(sessionId: string, promptId: string): Promise<'steered' | 'queued'>;
     abort(sessionId: string, promptId?: string, turnId?: number): Promise<boolean>;
     saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio' | 'video'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]>;

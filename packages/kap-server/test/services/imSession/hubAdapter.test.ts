@@ -5,6 +5,7 @@ import { SESSION_CAPABILITIES, createWechatSessionAdapter, type SessionAdapter, 
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { checkRealtimeSessionAccount, fileCursorStore, HubSessionAdapter, sessionSpec } from '../../../src/services/imSession/hubAdapter';
+import { oneBotIdentityTransport, type OneBotIdentityLink } from '../../../src/services/imSession/oneBotIdentity';
 
 function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound[] } {
   const adapter = {
@@ -26,6 +27,42 @@ function session(): SessionAdapter & { sink?: SessionSink; sent: SessionOutbound
 }
 
 describe('hub session adapter', () => {
+  it('learns the real OneBot listener account through the existing authenticated transport without rewriting binding identity', async () => {
+    const frames: ((frame: unknown) => void)[] = [];
+    let sent: unknown;
+    const link: OneBotIdentityLink = { role: 'universal', send: (frame) => { sent = frame; }, onFrame: (callback) => { frames.push(callback); }, onClose() {}, close() {} };
+    const source = oneBotIdentityTransport({ connect: async () => link, listen: async () => ({ port: 1 }) });
+    const controller = new AbortController();
+    await source.transport.connect({ url: 'ws://127.0.0.1:1', headers: {}, signal: controller.signal });
+    expect(sent).toMatchObject({ action: 'get_login_info' });
+    const echo = (sent as { echo: string }).echo;
+    for (const callback of frames) callback({ echo, status: 'ok', retcode: 0, data: { user_id: 42 } });
+    await source.ready;
+    const raw = { ...session(), platform: 'qq_onebot_v11', account: { platform: 'qq_onebot_v11', account_id: '127.0.0.1:1' } } as SessionAdapter;
+    const hub = new HubSessionAdapter(raw, undefined, source);
+    expect(await hub.start(async () => undefined)).toEqual({ accountId: '127.0.0.1:1' });
+    expect(hub.listenerRealm).toBe('qq-onebot');
+    expect(hub.listenerAccountId).toBe('42');
+    controller.abort();
+  });
+
+  it('uses only an authorized reverse OneBot self header and cancels an unidentified listener', async () => {
+    let authorize!: (headers: Record<string, string | undefined>, url: string) => boolean;
+    const source = oneBotIdentityTransport({ connect: async () => { throw new Error('unused'); }, listen: async (input) => { authorize = input.authorize; return { port: 1 }; } });
+    const controller = new AbortController();
+    await source.transport.listen({ host: '127.0.0.1', port: 1, signal: controller.signal, authorize: (headers) => headers['authorization'] === 'Bearer fixture', accept() {} });
+    expect(authorize({ 'x-self-id': '99' }, '/event')).toBe(false);
+    expect(source.accountId).toBeUndefined();
+    expect(authorize({ 'x-self-id': '42', 'authorization': 'Bearer fixture' }, '/event')).toBe(true);
+    await source.ready;
+    expect(source.accountId).toBe('42');
+    controller.abort();
+    const cancelled = oneBotIdentityTransport({ connect: async () => { throw new Error('unused'); }, listen: async () => ({ port: 1 }) });
+    const stopped = new AbortController();
+    await cancelled.transport.listen({ host: '127.0.0.1', port: 1, signal: stopped.signal, authorize: () => false, accept() {} });
+    stopped.abort();
+    await expect(cancelled.ready).rejects.toThrow();
+  });
   it('keeps reply context on the send target and out of the admitted event', async () => {
     const raw = session();
     const hub = new HubSessionAdapter(raw);

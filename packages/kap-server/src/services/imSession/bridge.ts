@@ -1,7 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
+import { setTimeout as delay } from 'node:timers/promises';
 
-import { imSessionAdmitted, type ImBinding, type ImBindingTestResult, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
+import { imSessionAdmitted, imProviderKindSchema, type ImBinding, type ImBindingTestResult, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
 import {
   internalMessageChannel,
   routeUserMessage,
@@ -31,6 +32,7 @@ interface BindingRecord {
   inputEnabled?: boolean;
   outputEnabled?: boolean;
   pendingReanchor?: boolean;
+  bindingScope?: 'sender' | 'topic' | 'chat';
   busy: 'queue' | 'steer';
   reply: 'final' | 'edit';
   mobileInteractions: boolean;
@@ -54,7 +56,7 @@ interface InstanceMeta {
   listening: boolean;
   virtual: boolean;
   accountId?: string;
-  conflict?: 'webhook';
+  conflict?: 'webhook' | 'account_in_use';
   busy?: 'queue' | 'steer';
   reply?: 'final' | 'edit';
   persona?: string;
@@ -152,6 +154,7 @@ interface Poller {
   tokenHash: string;
   ownerId: string;
   instances: Set<string>;
+  listenerKey?: string;
   adapter: ImSessionAdapter;
 }
 
@@ -205,8 +208,18 @@ const COPY = {
 } as const;
 
 function kindOf(providerId: string): ImProviderKind | undefined {
-  if (providerId === 'telegram' || providerId === 'feishu_app' || providerId === 'onebot_v11' || providerId === 'wechat_bridge' || providerId === 'discord' || providerId === 'slack' || providerId === 'matrix') return providerId;
-  return undefined;
+  const result = imProviderKindSchema.safeParse(providerId);
+  return result.success ? result.data : undefined;
+}
+
+function matchesBinding(binding: BindingRecord, identity: ImInboundIdentity): boolean {
+  if (binding.bindingScope === undefined || binding.bindingScope === 'sender') return sameIdentity(binding.identity, identity);
+  if (binding.identity.chatKind !== 'group' || identity.chatKind !== 'group' || binding.identity.chatId !== identity.chatId) return false;
+  return binding.bindingScope === 'chat' || binding.identity.topicId === identity.topicId;
+}
+
+function overlapsBinding(left: BindingRecord, right: BindingRecord): boolean {
+  return matchesBinding(left, right.identity) || matchesBinding(right, left.identity);
 }
 
 function sameIdentity(left: ImInboundIdentity, right: ImInboundIdentity): boolean {
@@ -229,7 +242,7 @@ export class ImSessionBridge {
   private readonly locale: () => 'en' | 'zh';
   private readonly editIntervalMs: number;
   private readonly now: () => number;
-  private readonly wait: (ms: number) => Promise<void>;
+  private readonly wait: (ms: number, signal?: AbortSignal) => Promise<void>;
   private state: Stored = emptyState();
   private readonly pollers = new Map<string, Poller>();
   private readonly pending = new Map<string, { poller: Poller; originId: string }>();
@@ -248,7 +261,7 @@ export class ImSessionBridge {
     this.locale = typeof locale === 'function' ? locale : () => locale ?? 'en';
     this.editIntervalMs = options.editIntervalMs ?? 2_000;
     this.now = options.now ?? (() => Date.now());
-    this.wait = options.wait ?? ((ms) => new Promise((resolve) => { setTimeout(resolve, ms); }));
+    this.wait = options.wait ?? ((ms, signal) => delay(ms, undefined, { signal }));
     this.wechatLogin = options.wechatLogin;
     this.ready = this.restore();
   }
@@ -395,7 +408,50 @@ export class ImSessionBridge {
     } catch { return []; }
   }
 
+  private readonly sends = new WeakMap<ImSessionAdapter, { controller: AbortController; targets: Map<string, { tail: Promise<unknown>; at?: number }> }>();
+
+  private pacedSend<T>(adapter: ImSessionAdapter, identity: ImInboundIdentity, work: (signal: AbortSignal) => Promise<T>, signal?: AbortSignal): Promise<T> {
+    let owned = this.sends.get(adapter);
+    if (owned === undefined) {
+      owned = { controller: new AbortController(), targets: new Map() };
+      this.sends.set(adapter, owned);
+    }
+    const combined = signal === undefined ? owned.controller.signal : AbortSignal.any([signal, owned.controller.signal]);
+    const key = JSON.stringify([identity.chatId, identity.topicId]);
+    let target = owned.targets.get(key);
+    if (target === undefined) {
+      target = { tail: Promise.resolve() };
+      owned.targets.set(key, target);
+    }
+    const current = target;
+    const interval = this.factories.find((factory) => factory.providerKind === adapter.providerKind)?.minSendIntervalMs ?? 0;
+    const run = current.tail.catch(() => undefined).then(async () => {
+      combined.throwIfAborted();
+      const remaining = current.at === undefined ? 0 : Math.max(0, current.at + interval - this.now());
+      if (remaining > 0) {
+        await new Promise<void>((resolve, reject) => {
+          const aborted = () => reject(combined.reason);
+          combined.addEventListener('abort', aborted, { once: true });
+          void this.wait(remaining, combined).then(resolve, reject).finally(() => combined.removeEventListener('abort', aborted));
+          if (combined.aborted) aborted();
+        });
+      }
+      combined.throwIfAborted();
+      current.at = this.now();
+      return work(combined);
+    });
+    current.tail = run;
+    return run;
+  }
+
+  private stopAdapter(adapter: ImSessionAdapter): Promise<void> {
+    this.sends.get(adapter)?.controller.abort();
+    return adapter.stop();
+  }
+
   private async sendToIm(binding: BindingRecord, adapter: ImSessionAdapter, input: UserMessageInput, skipped: readonly string[]): Promise<Omit<MessageChannelReceipt, 'channelId'>> {
+    if (input.replyTo !== undefined && adapter.supportsReply !== true) return { status: 'unsupported', unsupported: ['reply'], detail: 'reply_unsupported' };
+    if ((input.mentionIds?.length ?? 0) > 0 && adapter.supportsMentions !== true) return { status: 'unsupported', unsupported: ['mentions'], detail: 'mentions_unsupported' };
     const messageIds: string[] = [];
     const unsupported = [...skipped];
     let delivered = false;
@@ -404,7 +460,7 @@ export class ImSessionBridge {
     const text = [input.text, skipped.length > 0 ? COPY[this.locale()].mediaUnsupported(skipped.join(', ')) : ''].filter((part) => part.length > 0).join('\n\n');
     if (text.length > 0) {
       try {
-        const sent = await adapter.sendTextParts({ identity: binding.identity, parts: adapter.splitText(text), code: 'send_message' });
+        const sent = await this.pacedSend(adapter, binding.identity, (signal) => adapter.sendTextParts({ identity: binding.identity, parts: adapter.splitText(text), code: 'send_message', replyToMessageId: input.replyTo, mentionIds: input.mentionIds, signal }), input.signal);
         delivered = input.text.length > 0;
         messageIds.push(...sent.messageIds.filter((id) => id.length > 0));
       } catch (error) {
@@ -434,7 +490,7 @@ export class ImSessionBridge {
       try {
         const receipt = adapter.sendMedia === undefined
           ? { status: 'unsupported' as const, unsupported: [kind] }
-          : await adapter.sendMedia({ identity: binding.identity, name: attachment.title ?? (basename(attachment.path) || read.name), mediaType: attachment.mimeType ?? read.mediaType ?? 'application/octet-stream', bytes: read.bytes, kind });
+          : await this.pacedSend(adapter, binding.identity, (signal) => adapter.sendMedia!({ identity: binding.identity, name: attachment.title ?? (basename(attachment.path) || read!.name), mediaType: attachment.mimeType ?? read!.mediaType ?? 'application/octet-stream', bytes: read!.bytes, kind, signal }), input.signal);
         if (receipt.messageIds !== undefined) messageIds.push(...receipt.messageIds.filter((id) => id.length > 0));
         delivered ||= receipt.messageIds?.some((id) => id.length > 0) === true;
         if (receipt.status === 'delivered') delivered = true;
@@ -451,7 +507,7 @@ export class ImSessionBridge {
     const newlyUnsupported = [...new Set(unsupported.filter((kind) => !skipped.includes(kind)))];
     if (newlyUnsupported.length > 0) {
       try {
-        const sent = await adapter.sendText({ identity: binding.identity, text: COPY[this.locale()].mediaUnsupported(newlyUnsupported.join(', ')), code: 'media_unsupported' });
+        const sent = await this.pacedSend(adapter, binding.identity, (signal) => adapter.sendText({ identity: binding.identity, text: COPY[this.locale()].mediaUnsupported(newlyUnsupported.join(', ')), code: 'media_unsupported', signal }), input.signal);
         messageIds.push(...(sent.messageIds ?? [sent.messageId]).filter((id) => id.length > 0));
       } catch (error) {
         if (failure !== 'unknown') failure = error instanceof ImSendError ? error.outcome : 'unknown';
@@ -461,6 +517,18 @@ export class ImSessionBridge {
     const status = failure === 'failed' && delivered ? 'partial' : failure ??
       (unsupported.length > 0 ? delivered ? 'partial' : 'unsupported' : 'delivered');
     return { status, messageIds, unsupported: unsupported.length > 0 ? [...new Set(unsupported)] : undefined, detail };
+  }
+
+  async reconcileAdapters(changedKinds: readonly ImProviderKind[]): Promise<void> {
+    await this.ready;
+    const changed = new Set(changedKinds);
+    const ids = [...new Set([...this.pollers.values(), ...[...this.pending.values()].map((attempt) => attempt.poller)].filter((poller) => changed.has(poller.adapter.providerKind)).flatMap((poller) => [...poller.instances]))];
+    for (const poller of this.pollers.values()) if (changed.has(poller.adapter.providerKind)) this.sends.get(poller.adapter)?.controller.abort();
+    const sessions = new Set(this.state.bindings.filter((binding) => ids.includes(binding.providerInstanceId)).map((binding) => binding.sessionId));
+    await Promise.allSettled([...sessions].flatMap((id) => { const queue = this.messageQueues.get(id); return queue === undefined ? [] : [queue]; }));
+    await this.enqueueLifecycle(async () => { for (const id of ids) await this.releaseOne(id); });
+    if (this.state.policy.allowed) { await this.ensureListening(); await this.resumeReplies(); }
+    await this.persist();
   }
 
   async setPolicy(policy: ImPolicy): Promise<ImSessionSnapshot> {
@@ -538,7 +606,13 @@ export class ImSessionBridge {
       if (discovery.providerKind === 'wechat_bridge' && (discovery.identity.chatKind === 'group' || discovery.identity.topicId !== '0')) throw new Error('unsupported_wechat_group');
       const meta = this.requireMeta(discovery.providerInstanceId);
       const resolved = await this.resolveTarget(request.target);
-      const existing = this.state.bindings.find((item) => item.providerInstanceId === discovery.providerInstanceId && item.accountId === discovery.accountId && sameIdentity(item.identity, discovery.identity));
+      const scope = request.binding_scope ?? 'sender';
+      if (scope !== 'sender' && discovery.identity.chatKind !== 'group') throw new Error('group_binding_scope_required');
+      const factory = this.factories.find((item) => item.providerKind === discovery.providerKind);
+      if (factory?.inbound === false && request.input_enabled === true) throw new Error('input_unsupported');
+      if (factory?.outbound === false && request.output_enabled === true) throw new Error('output_unsupported');
+      const candidate = { identity: discovery.identity, bindingScope: scope } as BindingRecord;
+      const existing = this.state.bindings.find((item) => item.providerInstanceId === discovery.providerInstanceId && item.accountId === discovery.accountId && (item.bindingScope ?? 'sender') === scope && matchesBinding(candidate, item.identity));
       if (existing !== undefined && existing.sessionId !== resolved.sessionId && !request.rebind) throw this.identityConflict(existing, resolved.sessionId);
       const binding: BindingRecord = existing === undefined ? {
         id: this.next('b'), providerInstanceId: discovery.providerInstanceId, providerKind: discovery.providerKind,
@@ -549,8 +623,9 @@ export class ImSessionBridge {
         mobileInteractions: request.mobile_interactions ?? existing.mobileInteractions,
       };
       binding.pendingReanchor = false;
-      binding.inputEnabled = request.input_enabled ?? binding.inputEnabled;
-      binding.outputEnabled = request.output_enabled ?? binding.outputEnabled;
+      binding.bindingScope = scope;
+      binding.inputEnabled = factory?.inbound === false ? false : request.input_enabled ?? binding.inputEnabled;
+      binding.outputEnabled = factory?.outbound === false ? false : request.output_enabled ?? binding.outputEnabled;
       this.claimInput(binding, request.rebind === true);
       if (existing === undefined) this.state.bindings.push(binding);
       else {
@@ -593,7 +668,7 @@ export class ImSessionBridge {
 
   private claimInput(candidate: BindingRecord, rebind: boolean): void {
     if (!this.admittedInbound(candidate)) return;
-    const conflicts = this.state.bindings.filter((item) => item.id !== candidate.id && item.providerInstanceId === candidate.providerInstanceId && item.accountId === candidate.accountId && sameIdentity(item.identity, candidate.identity) && this.admittedInbound(item));
+    const conflicts = this.state.bindings.filter((item) => item.id !== candidate.id && item.providerInstanceId === candidate.providerInstanceId && item.accountId === candidate.accountId && overlapsBinding(item, candidate) && this.admittedInbound(item));
     if (!rebind && conflicts.length > 0) throw this.identityConflict(conflicts[0]!, candidate.sessionId);
     for (const binding of conflicts) binding.inputEnabled = false;
   }
@@ -719,15 +794,15 @@ export class ImSessionBridge {
 
   private baseAdmitted(binding: BindingRecord): boolean {
     const accountId = this.state.instances.find((instance) => instance.id === binding.providerInstanceId)?.accountId;
-    return (accountId === undefined || accountId === binding.accountId) && !binding.pendingReanchor && binding.enabled && imSessionAdmitted({ allowed: this.state.policy.allowed, defaultEnabled: this.state.policy.defaultEnabled, sessionEnabled: binding.sessionEnabled });
+    return (!binding.providerKind.startsWith('plugin:') || this.factories.some((factory) => factory.providerKind === binding.providerKind)) && (accountId === undefined || accountId === binding.accountId) && !binding.pendingReanchor && binding.enabled && imSessionAdmitted({ allowed: this.state.policy.allowed, defaultEnabled: this.state.policy.defaultEnabled, sessionEnabled: binding.sessionEnabled });
   }
 
   private admittedInbound(binding: BindingRecord): boolean {
-    return this.baseAdmitted(binding) && binding.inputEnabled !== false;
+    return this.baseAdmitted(binding) && binding.inputEnabled !== false && this.factories.find((factory) => factory.providerKind === binding.providerKind)?.inbound !== false;
   }
 
   private admittedOutbound(binding: BindingRecord): boolean {
-    return this.baseAdmitted(binding) && binding.outputEnabled !== false;
+    return this.baseAdmitted(binding) && binding.outputEnabled !== false && this.factories.find((factory) => factory.providerKind === binding.providerKind)?.outbound !== false;
   }
 
   private async markOrphans(): Promise<void> {
@@ -800,7 +875,9 @@ export class ImSessionBridge {
         id,
         provider_kind: kind,
         ...(meta.label === undefined ? {} : { label: meta.label }),
-        listening: meta.listening,
+        listening: meta.listening && this.factories.find((factory) => factory.providerKind === kind)?.inbound !== false,
+        inbound: this.factories.find((factory) => factory.providerKind === kind)?.inbound,
+        outbound: this.factories.find((factory) => factory.providerKind === kind)?.outbound,
         configured: remote?.configured === true || this.ports.credentials.read(id) !== undefined,
         ...(meta.accountId === undefined ? {} : { account_id: meta.accountId }),
         ...(meta.conflict === undefined ? {} : { conflict: meta.conflict }),
@@ -873,7 +950,7 @@ export class ImSessionBridge {
       this.reanchor(previous);
       for (const [key, value] of this.pollers) if (value === previous) this.pollers.delete(key);
       for (const id of previous.instances) this.failures.set(id, { phase: phase === 'auth_expired' ? 'auth_expired' : 'stopped', detail: previous.adapter.connectionDetail?.() });
-      await previous.adapter.stop();
+      await this.stopAdapter(previous.adapter);
     }
     const queued = this.pending.get(tokenHash);
     if (queued !== undefined) {
@@ -922,6 +999,15 @@ export class ImSessionBridge {
     try {
       started = Promise.resolve(adapter.start(async (event) => {
         if (!this.published(poller)) throw new Error('im_not_ready');
+        if (poller.listenerKey !== undefined && adapter.listenerAccountId !== undefined && poller.listenerKey !== JSON.stringify([adapter.listenerRealm ?? adapter.providerKind, adapter.listenerAccountId])) {
+          void this.enqueueLifecycle(async () => {
+            for (const id of [...poller.instances]) {
+              await this.releaseOne(id);
+              this.failures.set(id, { phase: 'stopped' });
+            }
+          });
+          throw new Error('im_listener_account_changed');
+        }
         await this.ingest(poller.ownerId, event);
       }, { offset: this.state.cursors[poller.ownerId] }));
     } catch {
@@ -971,7 +1057,7 @@ export class ImSessionBridge {
       this.forgetPending(poller);
       for (const id of poller.instances) this.failures.set(id, { phase: 'stopped', detail: poller.adapter.connectionDetail?.() });
       await this.persist();
-      await poller.adapter.stop().catch(() => undefined);
+      await this.stopAdapter(poller.adapter).catch(() => undefined);
       return;
     }
     const current = [...this.pending.values()].find((item) => item.poller === poller);
@@ -984,8 +1070,26 @@ export class ImSessionBridge {
       }
       this.forgetPending(poller);
       await this.persist();
-      await poller.adapter.stop().catch(() => undefined);
+      await this.stopAdapter(poller.adapter).catch(() => undefined);
       return;
+    }
+    if (this.factories.find((factory) => factory.providerKind === poller.adapter.providerKind)?.inbound !== false) {
+      const realm = poller.adapter.listenerRealm ?? poller.adapter.providerKind;
+      const listenerKey = JSON.stringify([realm, poller.adapter.listenerAccountId ?? result.accountId]);
+      const occupied = [...this.pollers.values()].some((other) => other !== poller && other.listenerKey === listenerKey && this.published(other) && !['stopped', 'auth_expired', 'conflict'].includes(this.adapterPhase(other.adapter) ?? 'running'));
+      if (occupied) {
+        this.forgetPending(poller);
+        for (const id of poller.instances) {
+          const meta = this.requireMeta(id);
+          meta.accountId = result.accountId;
+          meta.conflict = 'account_in_use';
+          this.failures.set(id, { phase: 'stopped' });
+        }
+        await this.stopAdapter(poller.adapter).catch(() => undefined);
+        await this.persist();
+        return;
+      }
+      poller.listenerKey = listenerKey;
     }
     const keys = [...this.pending.keys()].filter((key) => this.pending.get(key)?.poller === poller);
     this.forgetPending(poller);
@@ -997,6 +1101,8 @@ export class ImSessionBridge {
       meta.conflict = undefined;
     }
     for (const binding of this.state.bindings) if (binding.providerInstanceId === poller.ownerId && binding.accountId !== result.accountId) binding.enabled = false;
+    const owner = this.requireMeta(poller.ownerId);
+    for (const [index, identity] of (poller.adapter.targets ?? []).entries()) this.noteDiscovery(owner, result.accountId, { eventId: `target:${index}`, identity, kind: 'text', preview: identity.chatTitle ?? identity.chatId });
     await this.persist();
     this.ports.logger.info({ instance_id: current.originId, provider_kind: poller.adapter.providerKind, connection: 'running' }, 'im session connected');
     for (const id of poller.instances) {
@@ -1064,7 +1170,7 @@ export class ImSessionBridge {
       this.reanchor(poller);
       if (poller.instances.size > 0) continue;
       for (const [key, item] of this.pollers) if (item === poller) this.pollers.delete(key);
-      await poller.adapter.stop();
+      await this.stopAdapter(poller.adapter);
     }
   }
 
@@ -1074,7 +1180,7 @@ export class ImSessionBridge {
       this.pending.clear();
       this.pollers.clear();
       this.failures.clear();
-      for (const poller of pollers) await poller.adapter.stop();
+      for (const poller of pollers) await this.stopAdapter(poller.adapter);
     });
   }
 
@@ -1089,6 +1195,7 @@ export class ImSessionBridge {
     const key = `${instanceId}:${event.eventId}`;
     if (this.state.seen.includes(key)) return;
     const meta = this.requireMeta(instanceId);
+    if (this.factories.find((factory) => factory.providerKind === meta.providerKind)?.inbound === false) throw new Error('input_unsupported');
     const accountId = meta.accountId ?? instanceId;
     this.rememberChatKind(instanceId, event);
     try {
@@ -1110,7 +1217,7 @@ export class ImSessionBridge {
       this.noteDiscovery(meta, accountId, event);
       return;
     }
-    const matches = this.state.bindings.filter((item) => item.providerInstanceId === instanceId && item.accountId === accountId && sameIdentity(item.identity, event.identity));
+    const matches = this.state.bindings.filter((item) => item.providerInstanceId === instanceId && item.accountId === accountId && matchesBinding(item, event.identity));
     const binding = matches.find((item) => this.admittedInbound(item)) ?? matches[0];
     const adapter = this.adapterFor(instanceId);
     if (binding !== undefined && !this.admittedInbound(binding)) {
@@ -1124,7 +1231,8 @@ export class ImSessionBridge {
       return;
     }
     const text = event.text?.trim() ?? '';
-    if (event.kind === 'text' && text.startsWith(':')) {
+    const interactionOwner = event.identity.senderId === binding.identity.senderId;
+    if (interactionOwner && event.kind === 'text' && text.startsWith(':')) {
       await this.onCommand(binding, text, adapter);
       return;
     }
@@ -1140,7 +1248,7 @@ export class ImSessionBridge {
       delete this.state.awaiting[senderKey(instanceId, event.identity)];
       return;
     }
-    if (event.kind === 'text' && await this.answerNumbers(binding, text)) return;
+    if (interactionOwner && event.kind === 'text' && await this.answerNumbers(binding, text)) return;
     if (event.tooLarge === true) {
       if (adapter !== undefined) await this.send(adapter, event.identity, this.copy('rejected'), 'rejected');
       return;
@@ -1166,7 +1274,11 @@ export class ImSessionBridge {
     } else if (text !== '') content.push({ type: 'text', text });
     if (content.length === 0) return;
     const promptId = `im:${instanceId}:${event.eventId}`;
-    const submitted = await this.ports.sessions.submit({ sessionId: binding.sessionId, promptId, content, delivery: binding.busy });
+    const submitted = await this.ports.sessions.submit({ sessionId: binding.sessionId, promptId, content, delivery: binding.busy,
+      im: { provider_kind: meta.providerKind, provider_instance_id: instanceId, account_id: accountId,
+        identity: { chat_id: event.identity.chatId, sender_id: event.identity.senderId, topic_id: event.identity.topicId, chat_kind: event.identity.chatKind, chat_title: event.identity.chatTitle, sender_name: event.identity.senderName, topic_title: event.identity.topicTitle },
+        source_message_id: event.sourceMessageId, mentioned: event.mentioned, mention_ids: event.mentionIds === undefined ? undefined : [...event.mentionIds], reply_to_message_id: event.replyToMessageId },
+    });
     if (submitted.duplicate) return;
     if (binding.busy === 'steer') {
       const steered = await this.ports.sessions.steer(binding.sessionId, submitted.promptId);
@@ -1859,6 +1971,7 @@ function toBinding(record: BindingRecord): ImBinding {
     session_id: record.sessionId,
     persona_id: record.personaId,
     pending_reanchor: record.pendingReanchor,
+    binding_scope: record.bindingScope,
     enabled: record.enabled,
     session_enabled: record.sessionEnabled,
     input_enabled: record.inputEnabled,

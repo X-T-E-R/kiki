@@ -249,7 +249,7 @@ export interface MessageChannelDelivery {
    * `unsupported` means this channel took none of the attachments and received
    * only the notice — nothing of the message itself reached it.
    */
-  readonly status: 'delivered' | 'unsupported' | 'failed' | 'unknown';
+  readonly status: 'delivered' | 'partial' | 'unsupported' | 'failed' | 'unknown';
   readonly messageIds?: readonly string[];
   /** Media kinds (`image`, `voice`, …) this channel did not receive. */
   readonly unsupported?: readonly string[];

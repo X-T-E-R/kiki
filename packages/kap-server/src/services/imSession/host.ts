@@ -33,6 +33,8 @@ import type { ImProviderKind, MessageContent } from '@kiki/protocol';
 import { createSafeHttpTransport } from '@nb-im/core';
 
 import { IUserMessageRouter } from '@kiki/agent-core-v2/app/bot/messageRouting';
+import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
+import { PluginImAdapterBridge } from './pluginAdapter';
 import { parseMediaBlobRef } from '@kiki/transcript';
 import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
@@ -61,12 +63,14 @@ export async function createImSessionHost(input: {
   readonly factories?: readonly ImAdapterFactory[];
   readonly wechatFetch?: WechatLoginFetch;
 }): Promise<ImSessionBridge> {
-  const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger);
-  const factories = input.factories ?? loadSessionFactories(input.homeDir);
+  const factories = [...(input.factories ?? loadSessionFactories(input.homeDir))];
+  const plugins = new PluginImAdapterBridge(factories);
+  const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger, plugins);
   const fetchImpl = input.wechatFetch ?? ((url, init) => globalThis.fetch(url, init));
   const wechatLogin = new WechatQrLogin(fetchImpl, () => ports.wechatTokens(), async (credential) => ports.credentials.create!({ providerKind: 'wechat_bridge', credential }));
   const bridge = new ImSessionBridge({ ports, factories, locale: () => readHostLocale(input.homeDir), wechatLogin });
   await bridge.whenReady();
+  await plugins.attach(input.core.accessor.get(IPluginHostService), (kinds) => bridge.reconcileAdapters(kinds));
   const snapshot = await bridge.snapshot();
   await bridge.setPolicy(snapshot.policy);
   input.core.instantiation.provide(IUserMessageRouter, {
@@ -108,6 +112,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     private readonly homeDir: string,
     private readonly notificationService: NotificationService,
     readonly logger: HostLogger,
+    private readonly plugins: PluginImAdapterBridge,
   ) {}
 
   readonly notifications = {
@@ -123,9 +128,11 @@ class NotificationSessionPorts implements ImSessionPorts {
         const slot = instance.options['token_slot'];
         const configured = typeof slot === 'string' && settings.credential_slots[slot]?.configured === true;
         return [{ id, providerId: kind, ...(instance.label === undefined ? {} : { label: instance.label }), configured }];
-      });
+      }).concat(this.plugins.credentials());
     },
     read: (instanceId: string): string | undefined => {
+      const plugin = this.plugins.credential(instanceId);
+      if (plugin !== undefined) return plugin;
       const settings = this.notificationService.getSettings();
       const slot = settings.provider_instances[instanceId]?.options['token_slot'];
       if (typeof slot !== 'string') return undefined;
@@ -138,6 +145,7 @@ class NotificationSessionPorts implements ImSessionPorts {
       await this.notificationService.setCredential(slot, value);
     },
     check: async (instanceId: string): Promise<{ ok: boolean; accountId?: string; conflict?: 'webhook'; detail?: string }> => {
+      if (this.plugins.credential(instanceId) !== undefined) return { ok: true };
       const credential = this.credentials.read(instanceId);
       if (credential === undefined || credential.length === 0) return { ok: false, detail: 'missing' };
       const kind = instanceKind(this.notificationService.getSettings().provider_instances[instanceId]);
@@ -273,7 +281,7 @@ class NotificationSessionPorts implements ImSessionPorts {
     });
   }
 
-  private async submit(input: { sessionId: string; promptId: string; content: readonly MessageContent[]; delivery: 'queue' | 'steer' }): Promise<ImSubmitResult> {
+  private async submit(input: Parameters<ImSessionPorts['sessions']['submit']>[0]): Promise<ImSubmitResult> {
     return this.inSession(input.sessionId, async (session) => {
       const agent = await ensureMainAgent(session);
       const prompt = agent.accessor.get(IAgentPromptService);
@@ -284,7 +292,7 @@ class NotificationSessionPorts implements ImSessionPorts {
       });
       const reservation = reservePrompt(prompt, input.promptId, true);
       try {
-        const handle = await reservation.submit({ role: 'user', content: contentToCoreParts(prepared.content), toolCalls: [], origin: { kind: 'user' } });
+        const handle = await reservation.submit({ role: 'user', content: contentToCoreParts(prepared.content), toolCalls: [], providerMessageId: input.im?.source_message_id, origin: { kind: 'user', im: input.im } });
         void Promise.race([handle.launched, handle.completion]).then(() => prepared.discard(), () => prepared.discard());
         const queue = prompt.list();
         const pending = queue.pending.some((item) => item.id === handle.id);

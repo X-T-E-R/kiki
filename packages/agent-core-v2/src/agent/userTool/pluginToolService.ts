@@ -1,7 +1,23 @@
-import { mediaGenerateInputSchema, mediaRequestSchema, type MediaRequest } from '@kiki/protocol';
+import { createHash } from 'node:crypto';
+
+import {
+  mediaGenerateInputSchema,
+  mediaRequestSchema,
+  pluginMessageBatchReceiptSchema,
+  pluginMessageReceiptSchema,
+  pluginMessageSendInputSchema,
+  type MediaRequest,
+  type PluginMessageBatchItemReceipt,
+  type PluginMessageBatchReceipt,
+  type PluginMessagesApi,
+  type PluginMessageReceipt,
+  type PluginMessageSendInput,
+  type PluginMessageSendReceipt,
+} from '@kiki/protocol';
 import { createDecorator } from '#/_base/di/instantiation';
 import { IAgentPluginMediaService, mediaInputRefs } from '#/agent/pluginMedia/pluginMedia';
 import { dispose, type IDisposable } from '#/_base/di/lifecycle';
+import { isAbortError } from '#/_base/utils/abort';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -14,12 +30,17 @@ import type { PluginTool } from '#/app/plugin/contributions';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentToolExecutorService, type ToolExecutionResult } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { isWithinDirectory, resolveRealPathAccess, resolveRealPathAccessPath, type WorkspaceConfig } from '#/tool/path-access';
 import { literalRulePattern, matchesPathRuleSubject } from '#/tool/rule-match';
-import type { ExecutableTool, ToolAccesses, ToolExecution } from '#/tool/toolContract';
+import type { ToolCall } from '#/kosong/contract/message';
+import type { ExecutableTool, ExecutableToolContext, ToolAccesses, ToolExecution } from '#/tool/toolContract';
+import { Error2, ErrorCodes } from '#/errors';
 
 export interface IAgentPluginToolService {
   readonly _serviceBrand: undefined;
@@ -32,6 +53,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
   private readonly registrations = new Map<string, { readonly disposable: IDisposable; readonly definition: PluginTool; readonly pluginId: string }>();
   private refreshQueue: Promise<void> = Promise.resolve();
   private readonly refreshes = new Set<Promise<void>>();
+  private readonly messageCalls = new Map<string, PluginMessageCall>();
   private revision = 0;
   private closing = false;
 
@@ -46,6 +68,9 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     @IPluginUsageService private readonly usage?: IPluginUsageService,
     @ISessionContext private readonly session?: ISessionContext,
     @ISessionMediaStore private readonly attachmentStore?: ISessionMediaStore,
+    @IAgentScopeContext private readonly agentContext?: IAgentScopeContext,
+    @IAgentToolExecutorService private readonly toolExecutor?: IAgentToolExecutorService,
+    @IAtomicTomlDocumentStore private readonly messageDocuments?: IAtomicTomlDocumentStore,
   ) {
     super();
     this._register(this.plugins.onDidReload((event) => {
@@ -116,6 +141,156 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
       const disposable = this._register(this.registry.register(tool, { source: 'plugin', disclosure: definition.disclosure }));
       this.registrations.set(name, { disposable, definition, pluginId });
     }
+  }
+
+  private messagesApi(pluginId: string, context: ExecutableToolContext): PluginMessagesApi {
+    let sequence = 0;
+    return {
+      send: (raw: PluginMessageSendInput) => {
+        const input = pluginMessageSendInputSchema.parse(raw);
+        const requestKey = input.request_id === undefined ? `generated:${++sequence}` : `explicit:${input.request_id}`;
+        const callScope = input.request_id === undefined ? context.toolCallId : '';
+        const callId = messageCallId(pluginId, this.session?.sessionId ?? 'unknown-session', this.agentContext?.agentId ?? 'unknown-agent', callScope, requestKey);
+        const fingerprint = canonicalJson(input);
+        const previous = this.messageCalls.get(callId);
+        if (previous !== undefined) {
+          if (previous.fingerprint !== fingerprint) return Promise.reject(new Error2(ErrorCodes.REQUEST_INVALID, 'Message request_id was already used with a different payload.'));
+          return previous.promise;
+        }
+        const execute = (progress?: (receipt: PluginMessageBatchReceipt) => Promise<void>) => input.messages === undefined
+          ? this.executePluginMessage(input, callId, context)
+          : this.executePluginMessageBatch(input, pluginId, requestKey, context, callScope, progress);
+        const promise = input.request_id === undefined ? execute() : this.durableMessage(input, callId, fingerprint, pluginId, requestKey, execute);
+        this.messageCalls.set(callId, { fingerprint, promise });
+        return promise;
+      },
+    };
+  }
+
+  private async durableMessage(input: PluginMessageSendInput, callId: string, fingerprint: string, pluginId: string, requestKey: string,
+    execute: (progress?: (receipt: PluginMessageBatchReceipt) => Promise<void>) => Promise<PluginMessageSendReceipt>): Promise<PluginMessageSendReceipt> {
+    if (this.messageDocuments === undefined || this.agentContext === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Durable message receipts are unavailable.');
+    const store = this.messageDocuments;
+    const scope = this.agentContext.scope('plugin-messages');
+    const key = `${callId.slice('plugin-message:'.length)}.json`;
+    const unknown = (id: string): PluginMessageReceipt => ({ message_id: `send:${id}`, delivered_to: [], delivery: 'pending', detail: 'Message request was admitted; its final outcome was not recorded. Do not resend automatically.' });
+    const initial: PluginMessageSendReceipt = input.messages === undefined ? unknown(callId) : { messages: input.messages.map((_, index) => ({ index, ...unknown(messageCallId(pluginId, this.session?.sessionId ?? 'unknown-session', this.agentContext!.agentId, '', `${requestKey}:item:${index}`)) })) };
+    let current = JSON.stringify({ fingerprint, receipt: initial });
+    if (!await store.compareAndSetText(scope, key, undefined, current)) {
+      const text = await store.getText(scope, key);
+      if (text === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Message receipt disappeared; delivery was not retried.');
+      const stored = JSON.parse(text) as { fingerprint: string; receipt: unknown };
+      if (stored.fingerprint !== fingerprint) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Message request_id was already used with a different payload.');
+      return pluginMessageReceiptSchema.or(pluginMessageBatchReceiptSchema).parse(stored.receipt);
+    }
+    const save = async (receipt: PluginMessageSendReceipt) => {
+      const next = JSON.stringify({ fingerprint, receipt });
+      if (!await store.compareAndSetText(scope, key, current, next)) throw new Error2(ErrorCodes.REQUEST_INVALID, 'Message receipt changed concurrently; delivery was not retried.');
+      current = next;
+    };
+    try {
+      const receipt = await execute(async (progress) => {
+        const pending = (initial as PluginMessageBatchReceipt).messages;
+        await save({ messages: [...progress.messages, ...pending.slice(progress.messages.length)] });
+      });
+      await save(receipt);
+      return receipt;
+    } catch (error) {
+      if (input.messages === undefined && error instanceof PluginMessageNotSentError) {
+        const receipt: PluginMessageReceipt = { message_id: `send:${callId}`, delivered_to: [], delivery: 'undeliverable', detail: error.message };
+        await save(receipt);
+        return receipt;
+      }
+      return pluginMessageReceiptSchema.or(pluginMessageBatchReceiptSchema).parse((JSON.parse(current) as { receipt: unknown }).receipt);
+    }
+  }
+
+  private async executePluginMessageBatch(
+    input: PluginMessageSendInput,
+    pluginId: string,
+    requestKey: string,
+    context: ExecutableToolContext,
+    callScope: string,
+    progress?: (receipt: PluginMessageBatchReceipt) => Promise<void>,
+  ): Promise<PluginMessageBatchReceipt> {
+    const messages: PluginMessageBatchItemReceipt[] = [];
+    const batch = input.messages!;
+    for (let index = 0; index < batch.length; index++) {
+      const itemCallId = messageCallId(pluginId, this.session?.sessionId ?? 'unknown-session', this.agentContext?.agentId ?? 'unknown-agent', callScope, `${requestKey}:item:${index}`);
+      if (context.signal.aborted) {
+        for (let cancelled = index; cancelled < batch.length; cancelled++) {
+          const cancelledCallId = cancelled === index ? itemCallId : messageCallId(pluginId, this.session?.sessionId ?? 'unknown-session', this.agentContext?.agentId ?? 'unknown-agent', callScope, `${requestKey}:item:${cancelled}`);
+          messages.push(cancelledMessageReceipt(cancelled, cancelledCallId, 'Message batch cancelled before this item was sent.'));
+        }
+        break;
+      }
+      const item = batch[index]!;
+      const itemInput = {
+        to: input.to,
+        channel: input.channel,
+        channels: input.channels,
+        ...item,
+      };
+      try {
+        const receipt = await this.executePluginMessage(itemInput, itemCallId, context);
+        messages.push({ index, ...receipt });
+      } catch (error) {
+        const cancelled = context.signal.aborted || isAbortError(error);
+        messages.push(error instanceof PluginMessageNotSentError
+          ? failedMessageReceipt(index, itemCallId, errorMessage(error))
+          : { index, message_id: `send:${itemCallId}`, delivered_to: [], delivery: 'pending', detail: `Message outcome is unknown: ${errorMessage(error)}. Do not resend automatically.` });
+        const detail = cancelled ? 'Message batch cancelled before this item was sent.' : 'Message batch stopped after a previous item was not sent.';
+        for (let unsent = index + 1; unsent < batch.length; unsent++) {
+          const unsentCallId = messageCallId(pluginId, this.session?.sessionId ?? 'unknown-session', this.agentContext?.agentId ?? 'unknown-agent', callScope, `${requestKey}:item:${unsent}`);
+          messages.push(cancelled ? cancelledMessageReceipt(unsent, unsentCallId, detail) : failedMessageReceipt(unsent, unsentCallId, detail));
+        }
+        break;
+      }
+      await progress?.({ messages });
+    }
+    return pluginMessageBatchReceiptSchema.parse({ messages });
+  }
+
+  private async executePluginMessage(
+    input: PluginMessageSendInput | { readonly text?: string; readonly attachments?: PluginMessageSendInput['attachments']; readonly reply_to?: string; readonly to?: string; readonly channel?: string; readonly channels?: readonly string[] },
+    toolCallId: string,
+    context: ExecutableToolContext,
+  ): Promise<PluginMessageReceipt> {
+    if (this.toolExecutor === undefined || this.registry.resolve('SendMessage') === undefined) {
+      throw new PluginMessageNotSentError(ErrorCodes.REQUEST_INVALID, 'SendMessage is disabled by the active capability or tool policy.');
+    }
+    const args = { ...input };
+    Reflect.deleteProperty(args, 'request_id');
+    const call: ToolCall = {
+      type: 'function',
+      id: toolCallId,
+      name: 'SendMessage',
+      arguments: JSON.stringify(args),
+    };
+    let result: ToolExecutionResult | undefined;
+    let definitelyNotSent = false;
+    const observation = this.toolExecutor.hooks.onDidExecuteTool.register(`plugin-message-receipt:${toolCallId}`, async (event, next) => {
+      await next();
+      if (event.toolCall.id === toolCallId) definitelyNotSent = ['preflight-rejected', 'resolution-failed', 'vetoed', 'skipped'].includes(event.outcome);
+    });
+    try {
+      for await (const item of this.toolExecutor.execute([call], {
+        signal: context.signal,
+        turnId: context.turnId,
+        step: context.step,
+        trace: context.trace,
+      })) {
+        result = item;
+        break;
+      }
+    } finally { observation.dispose(); }
+    if (result === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'SendMessage did not return a receipt.');
+    if (result.result.isError === true) {
+      const output = typeof result.result.output === 'string' ? result.result.output : 'SendMessage failed.';
+      throw definitelyNotSent ? new PluginMessageNotSentError(ErrorCodes.REQUEST_INVALID, output) : new Error2(ErrorCodes.REQUEST_INVALID, output);
+    }
+    if (typeof result.result.output !== 'string') throw new Error2(ErrorCodes.REQUEST_INVALID, 'SendMessage returned an invalid receipt.');
+    return pluginMessageReceiptSchema.parse(JSON.parse(result.result.output));
   }
 
   private async resolveExecution(name: string, pluginId: string, definition: PluginTool, args: unknown): Promise<ToolExecution> {
@@ -201,14 +376,16 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
             }
           }
           if (admittedRequest !== undefined) resolvedArgs['request'] = admittedRequest;
-          return await this.hosts.execute(pluginId, definition.name, resolvedArgs, context.signal, context.onUpdate, {
+          const scope = {
             workspaceRoot: view.workDir,
             approvedPaths,
             imageIn: this.profile.getModelCapabilities().image_in,
             workspaceId: this.session?.workspaceId,
             media: this.media?.api(context.toolCallId, admittedRequest),
             attachmentStore: this.attachmentStore,
-          }, definition);
+            messages: this.messagesApi(pluginId, context),
+          };
+          return await this.hosts.execute(pluginId, definition.name, resolvedArgs, context.signal, context.onUpdate, scope, definition);
         } finally { current.dispose(); }
       },
     };
@@ -220,8 +397,40 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
     await Promise.allSettled(this.refreshes);
     await dispose([...this.registrations.values()].map((entry) => entry.disposable));
     this.registrations.clear();
+    this.messageCalls.clear();
     await super.dispose();
   }
+}
+
+class PluginMessageNotSentError extends Error2 {}
+
+type PluginMessageCall = {
+  readonly fingerprint: string;
+  readonly promise: Promise<PluginMessageSendReceipt>;
+};
+
+function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'undefined';
+  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`;
+  const object = value as Record<string, unknown>;
+  return `{${Object.keys(object).sort().map((key) => `${JSON.stringify(key)}:${canonicalJson(object[key])}`).join(',')}}`;
+}
+
+function messageCallId(pluginId: string, sessionId: string, agentId: string, toolCallId: string, requestId: string): string {
+  const digest = createHash('sha256').update(canonicalJson([pluginId, sessionId, agentId, toolCallId, requestId])).digest('hex').slice(0, 32);
+  return `plugin-message:${digest}`;
+}
+
+function cancelledMessageReceipt(index: number, messageId: string, detail: string): PluginMessageBatchItemReceipt {
+  return { index, message_id: `send:${messageId}`, delivered_to: [], delivery: 'cancelled', detail };
+}
+
+function failedMessageReceipt(index: number, messageId: string, detail: string): PluginMessageBatchItemReceipt {
+  return { index, message_id: `send:${messageId}`, delivered_to: [], delivery: 'not_sent', detail };
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 registerScopedService(LifecycleScope.Agent, IAgentPluginToolService, AgentPluginToolService, ScopeActivation.OnScopeCreated, 'plugin');

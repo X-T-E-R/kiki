@@ -3,6 +3,7 @@ import type { MessageChannelReceipt, MessageMediaCapability } from '@kiki/agent-
 
 export interface ImOutboundMedia {
   readonly identity: ImInboundIdentity;
+  readonly signal?: AbortSignal;
   readonly name: string;
   readonly mediaType: string;
   readonly bytes: Uint8Array;
@@ -25,7 +26,7 @@ export class ImSendError extends Error {
   readonly acceptedIds: readonly string[];
   readonly failedPart: number | undefined;
 
-  constructor(message: string, acceptedIds: readonly string[] = [], failedPart?: number, readonly outcome: 'failed' | 'unknown' = 'failed') {
+  constructor(message: string, acceptedIds: readonly string[] = [], failedPart?: number, readonly outcome: 'failed' | 'partial' | 'unknown' = 'failed') {
     super(message);
     this.name = 'ImSendError';
     this.acceptedIds = acceptedIds;
@@ -42,6 +43,10 @@ export interface ImInboundMedia {
 export interface ImInboundEvent {
   readonly eventId: string;
   readonly cursor?: number;
+  readonly sourceMessageId?: string;
+  readonly mentioned?: boolean;
+  readonly mentionIds?: readonly string[];
+  readonly replyToMessageId?: string;
   readonly identity: ImInboundIdentity;
   readonly kind: 'text' | 'image' | 'file' | 'audio' | 'video' | 'callback';
   readonly text?: string;
@@ -54,14 +59,18 @@ export interface ImInboundEvent {
 
 export interface ImOutboundText {
   readonly identity: ImInboundIdentity;
+  readonly signal?: AbortSignal;
   readonly text: string;
   readonly code: string;
   readonly messageId?: string;
+  readonly replyToMessageId?: string;
+  readonly mentionIds?: readonly string[];
   readonly buttons?: readonly { readonly id: string; readonly label: string }[];
 }
 
 export interface ImOutboundFile {
   readonly identity: ImInboundIdentity;
+  readonly signal?: AbortSignal;
   readonly name: string;
   readonly mediaType: string;
   readonly bytes: Uint8Array;
@@ -77,6 +86,11 @@ export interface ImSessionAdapter {
   readonly supportsEdit: boolean;
   readonly supportsButtons: boolean;
   readonly supportsFile: boolean;
+  readonly supportsReply?: boolean;
+  readonly supportsMentions?: boolean;
+  readonly listenerRealm?: string;
+  readonly listenerAccountId?: string;
+  readonly targets?: readonly ImInboundIdentity[];
   readonly mediaCapabilities?: readonly MessageMediaCapability[];
   sendMedia?(message: ImOutboundMedia): Promise<ImMediaReceipt>;
   describeConflict(): Promise<'webhook' | 'none'>;
@@ -87,7 +101,7 @@ export interface ImSessionAdapter {
   start(listener: (event: ImInboundEvent) => Promise<void>, options?: { readonly offset?: number }): Promise<{ readonly accountId: string; readonly conflict?: 'webhook'; readonly failed?: 'auth' }>;
   stop(): Promise<void>;
   sendText(message: ImOutboundText): Promise<{ readonly messageId: string; readonly messageIds?: readonly string[] }>;
-  sendTextParts(message: { readonly identity: ImInboundIdentity; readonly parts: readonly string[]; readonly code: string }): Promise<{ readonly messageId: string; readonly messageIds: readonly string[] }>;
+  sendTextParts(message: { readonly identity: ImInboundIdentity; readonly parts: readonly string[]; readonly code: string; readonly signal?: AbortSignal; readonly replyToMessageId?: string; readonly mentionIds?: readonly string[] }): Promise<{ readonly messageId: string; readonly messageIds: readonly string[] }>;
   editText(message: ImOutboundText & { readonly messageId: string }): Promise<{ readonly messageId: string; readonly edited: boolean }>;
   sendFile(message: ImOutboundFile): Promise<{ readonly messageId: string; readonly deliveredAs: 'file' | 'image' | 'voice' }>;
   answerCallback(callbackQueryId: string): Promise<void>;
@@ -95,6 +109,9 @@ export interface ImSessionAdapter {
 
 export interface ImAdapterFactory {
   readonly providerKind: ImProviderKind;
+  readonly inbound?: boolean;
+  readonly outbound?: boolean;
+  readonly minSendIntervalMs?: number;
   mediaCapabilities?(input: { readonly instanceId: string; readonly credential: string }): readonly MessageMediaCapability[];
   create(input: { readonly instanceId: string; readonly credential: string }): ImSessionAdapter;
 }

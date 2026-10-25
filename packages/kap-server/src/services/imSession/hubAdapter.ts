@@ -24,6 +24,7 @@ import {
 import { readPrivateFile, writePrivateFile } from '../auth/privateFiles';
 import { ImSendError, type ImAdapterFactory, type ImInboundEvent, type ImInboundIdentity, type ImMediaReceipt, type ImOutboundFile, type ImOutboundMedia, type ImOutboundText, type ImSessionAdapter } from './adapter';
 import { segmentText } from './segment';
+import { oneBotIdentityTransport } from './oneBotIdentity';
 import { wechatEndpointAllowed } from './wechatLogin';
 
 function ioCode(error: unknown): string | undefined {
@@ -166,10 +167,19 @@ export async function checkRealtimeSessionAccount(kind: 'discord' | 'slack' | 'm
 
 export function hubSessionFactories(hub: SessionHub, homeDir: string): ImAdapterFactory[] {
   const kinds: readonly ImProviderKind[] = ['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix'];
+  const sources = new WeakMap<SessionAdapter, ReturnType<typeof oneBotIdentityTransport>>();
   return kinds.map((providerKind) => ({
     providerKind,
-    mediaCapabilities: (input) => new HubSessionAdapter(hub.acquire(sessionSpec(providerKind, input.instanceId, input.credential))).mediaCapabilities,
-    create: (input) => new HubSessionAdapter(hub.acquire(sessionSpec(providerKind, input.instanceId, input.credential)), homeDir),
+    minSendIntervalMs: providerKind === 'telegram' || providerKind === 'slack' ? 1000 : 250,
+    mediaCapabilities: (input) => providerKind === 'onebot_v11' ? [{ kind: 'image', mimeTypes: ['image/*'] }, { kind: 'voice', mimeTypes: ['audio/*'], rendering: 'native_voice' }] : new HubSessionAdapter(hub.acquire(sessionSpec(providerKind, input.instanceId, input.credential))).mediaCapabilities,
+    create: (input) => {
+      const spec = sessionSpec(providerKind, input.instanceId, input.credential);
+      if (spec.platform !== 'qq_onebot_v11') return new HubSessionAdapter(hub.acquire(spec), homeDir);
+      const identity = oneBotIdentityTransport(spec.transport);
+      const session = hub.acquire({ ...spec, transport: identity.transport });
+      if (!sources.has(session)) sources.set(session, identity);
+      return new HubSessionAdapter(session, homeDir, sources.get(session));
+    },
   }));
 }
 
@@ -179,6 +189,7 @@ export function loadHubFactories(homeDir: string): ImAdapterFactory[] {
 
 export class HubSessionAdapter implements ImSessionAdapter {
   readonly canonicalInstanceId: string;
+  readonly listenerRealm: string;
   readonly providerKind: ImProviderKind;
   readonly textLimit: number | undefined;
   readonly maxInboundBytes: number;
@@ -194,9 +205,10 @@ export class HubSessionAdapter implements ImSessionAdapter {
   private replyError: unknown = undefined;
   private readonly replyReady: Promise<void>;
 
-  constructor(private readonly session: SessionAdapter, private readonly homeDir?: string) {
+  constructor(private readonly session: SessionAdapter, private readonly homeDir?: string, private readonly source?: ReturnType<typeof oneBotIdentityTransport>) {
     this.canonicalInstanceId = session.instance_id;
     this.providerKind = providerKindOf(session.platform);
+    this.listenerRealm = session.platform === 'qq_onebot_v11' ? 'qq-onebot' : session.platform === 'personal_wechat' ? 'wechat' : session.platform === 'feishu_app' ? 'feishu' : session.platform;
     this.textLimit = session.limits.text_characters ?? undefined;
     this.maxInboundBytes = session.platform === 'telegram' ? TELEGRAM_DOWNLOAD_BYTES : session.limits.file_bytes ?? 50 * 1024 * 1024;
     const capability = realtimeCapability(session.platform);
@@ -206,6 +218,10 @@ export class HubSessionAdapter implements ImSessionAdapter {
     this.supportsFile = session.platform !== 'qq_onebot_v11';
     this.mediaCapabilities = hubMediaCapabilities(session, this.supportsFile);
     this.replyReady = homeDir === undefined ? Promise.resolve() : this.readReplies().then(() => undefined, (error: unknown) => { this.replyError = error; });
+  }
+
+  get listenerAccountId(): string | undefined {
+    return this.source?.accountId;
   }
 
   describeConflict(): Promise<'webhook' | 'none'> {
@@ -251,6 +267,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
     const accountId = this.session.account.account_id;
     if (this.session.state === 'conflict') return { accountId, conflict: 'webhook' };
     if (this.session.state === 'auth_expired') return { accountId, failed: 'auth' };
+    if (this.session.state !== 'stopped') await this.source?.ready;
     return { accountId };
   }
 
@@ -354,12 +371,12 @@ export class HubSessionAdapter implements ImSessionAdapter {
     const chatKind = event.identity.chat_kind ?? this.contexts.get(contextKey(identity))?.chat_kind;
     const visible: ImInboundIdentity = chatKind === undefined ? identity : { ...identity, chatKind };
     const payload = event.payload;
-    if (payload.type === 'text') return { eventId: event.event_key, identity: visible, kind: 'text', text: payload.text, preview: payload.text.slice(0, 80) };
-    if (payload.type === 'callback') return { eventId: event.event_key, identity: visible, kind: 'callback', callbackData: payload.data, callbackQueryId: payload.callback_id };
-    if (payload.type === 'media_unavailable') return { eventId: event.event_key, identity: visible, kind: payload.kind === 'voice' ? 'audio' : payload.kind, tooLarge: true, text: '' };
+    if (payload.type === 'text') return { eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind: 'text', text: payload.text, preview: payload.text.slice(0, 80) };
+    if (payload.type === 'callback') return { eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind: 'callback', callbackData: payload.data, callbackQueryId: payload.callback_id };
+    if (payload.type === 'media_unavailable') return { eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind: payload.kind === 'voice' ? 'audio' : payload.kind, tooLarge: true, text: '' };
     const kind = payload.media.kind === 'voice' ? 'audio' as const : payload.media.kind;
     return {
-      eventId: event.event_key, identity: visible, kind, text: payload.caption ?? '', ...(payload.caption === undefined ? {} : { preview: payload.caption.slice(0, 80) }),
+      eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind, text: payload.caption ?? '', ...(payload.caption === undefined ? {} : { preview: payload.caption.slice(0, 80) }),
       media: { name: payload.media.filename, mediaType: payload.media.mime, bytes: payload.media.bytes },
     };
   }

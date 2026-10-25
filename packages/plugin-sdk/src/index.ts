@@ -1,6 +1,10 @@
 import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
 export * from './session-import.js';
 export * from './media.js';
+export * from './im.js';
+export * from './messages.js';
+import type { PluginMessagesApi } from './messages.js';
+import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
 
 export interface SessionSourceContext {
@@ -48,6 +52,7 @@ export interface PluginExecutionContext {
   readonly approvedPaths: readonly string[];
   readonly imageIn: boolean;
   readonly media: PluginMediaApi;
+  readonly messages: PluginMessagesApi;
   progress(update: { kind: 'progress' | 'status' | 'stdout' | 'stderr'; text?: string; percent?: number }): void;
 }
 
@@ -60,6 +65,7 @@ export interface PluginRegistrationApi {
   registerTool(definition: PluginToolDefinition, execute: PluginTool['execute']): void;
   registerSessionSource(definition: SessionSourceDefinition, adapter: SessionSourceAdapter): void;
   registerMediaProvider(definition: MediaProviderDefinition, adapter: MediaProviderAdapter): void;
+  registerImAdapter(definition: PluginImAdapterDefinition, adapter: PluginImAdapter): void;
 }
 
 export function definePlugin(tools: readonly PluginTool[]) {

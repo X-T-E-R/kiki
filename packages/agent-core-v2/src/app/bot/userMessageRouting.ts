@@ -34,7 +34,9 @@ export interface UserMessageInput {
   readonly channel?: string;
   readonly channels?: readonly string[];
   readonly replyTo?: string;
+  readonly mentionIds?: readonly string[];
   readonly sender?: MessageSenderIdentity;
+  readonly signal?: AbortSignal;
 }
 
 export interface UserMessageChannel extends MessageChannelBinding {

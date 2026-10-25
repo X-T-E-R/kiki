@@ -1,6 +1,7 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { Readable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -16,6 +17,7 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IRoomMessageRouter, IUserMessageRouter, type SendMessageReceipt } from '#/app/bot/messageRouting';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import type { ExecutableToolResult } from '#/tool/toolContract';
 
 import { appServices, createTestAgent, type TestAgentContext, type TestAgentServiceOverride } from '../../../harness';
@@ -35,22 +37,20 @@ async function messageAgent(...overrides: TestAgentServiceOverride[]): Promise<T
   return ctx;
 }
 
-async function mediaAgent(files: readonly string[]): Promise<string> {
+async function mediaAgent(files: readonly string[], ...overrides: TestAgentServiceOverride[]): Promise<string> {
   const cwd = await mkdtemp(join(tmpdir(), 'send-message-media-'));
   dirs.push(cwd);
   for (const name of files) await writeFile(join(cwd, name), new Uint8Array([1, 2, 3, 4]));
-  ctx = createTestAgent({ cwd });
+  ctx = createTestAgent({ cwd }, ...overrides);
   const delivery = ctx.get(ISessionDeliveryService);
   await delivery.ready;
   await delivery.set('message');
   return cwd;
 }
 
-async function execute(input: Parameters<ISendMessageTool['resolveExecution']>[0]): Promise<ExecutableToolResult> {
+async function execute(input: Parameters<ISendMessageTool['resolveExecution']>[0], context = { turnId: 0, toolCallId: 'send-1', signal: new AbortController().signal }): Promise<ExecutableToolResult> {
   const execution = await ctx.get(ISendMessageTool).resolveExecution(input);
-  return 'execute' in execution
-    ? execution.execute({ turnId: 0, toolCallId: 'send-1', signal: new AbortController().signal })
-    : execution;
+  return 'execute' in execution ? execution.execute(context) : execution;
 }
 
 function historyText(index: number): string {
@@ -72,6 +72,65 @@ describe('SendMessage completion guidance', () => {
     expect(wire.channels).toEqual([{ channel_id: 'internal', status: 'delivered' }]);
     expect(wire.attachments).toEqual([expect.objectContaining({ kind: 'video', mime_type: 'video/mp4' })]);
     expect(result.note).toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
+  });
+
+  it('sends a generated session media artifact by file_id without widening path roots', async () => {
+    await messageAgent();
+    const data = Buffer.from('generated-media');
+    await ctx.get(ISessionMediaStore).materialize({
+      fileId: 'f_media_fixture',
+      name: 'cover.png',
+      mimeType: 'image/png',
+      size: data.length,
+      stream: () => Readable.from([data]),
+    });
+    const result = await execute({ attachments: [{ file_id: 'f_media_fixture' }] });
+    const wire = JSON.parse(result.output as string);
+    expect(wire.delivered_to).toEqual(['user']);
+    expect(wire.attachments).toEqual([expect.objectContaining({ kind: 'image', mime_type: 'image/png', size: data.length })]);
+  });
+
+  it('sends an ordered batch through one SendMessage execution and preserves media channel facts', async () => {
+    const send = vi.fn(async (input: Parameters<IUserMessageRouter['sendMessage']>[0]): Promise<SendMessageReceipt> => ({
+      messageId: `send:${input.toolCallId}`,
+      deliveredTo: input.toolCallId.endsWith(':item:1') ? ['user'] : [],
+      delivery: input.toolCallId.endsWith(':item:1') ? 'delivered' : 'pending',
+      attachments: input.attachments,
+      channels: [{ channelId: input.channels?.[0] ?? 'internal', status: input.toolCallId.endsWith(':item:1') ? 'partial' : 'unknown' }],
+    }));
+    await mediaAgent(['clip.mp4'], appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+    const result = await execute({
+      to: 'user', channels: ['notify:fixture'],
+      messages: [{ text: 'first', attachments: [{ path: 'clip.mp4', kind: 'audio', mime_type: 'audio/mpeg' }] }, { text: 'second', reply_to: 'message-1' }],
+    });
+    const wire = JSON.parse(result.output as string);
+    expect(wire.messages).toHaveLength(2);
+    expect(wire.messages[0]).toMatchObject({ index: 0, message_id: 'send:send-1:item:0', delivery: 'pending', channels: [{ status: 'unknown' }], attachments: [{ kind: 'audio' }] });
+    expect(wire.messages[1]).toMatchObject({ index: 1, message_id: 'send:send-1:item:1', delivery: 'delivered', channels: [{ status: 'partial' }] });
+    expect(send).toHaveBeenCalledTimes(2);
+    expect(send.mock.calls.map(([input]) => input.toolCallId)).toEqual(['send-1:item:0', 'send-1:item:1']);
+    expect(send.mock.calls[0]?.[0].attachments).toEqual([expect.objectContaining({ kind: 'audio', mimeType: 'audio/mpeg' })]);
+    expect(send.mock.calls[1]?.[0].replyTo).toBe('message-1');
+    expect(result.note).toContain('Do not resend automatically');
+    expect(result.note).toContain(MESSAGE_DELIVERY_SENT_GUIDANCE);
+  });
+
+  it('stops unlaunched batch items on cancellation without resending the delivered first item', async () => {
+    const controller = new AbortController();
+    const send = vi.fn(async (input: Parameters<IUserMessageRouter['sendMessage']>[0]): Promise<SendMessageReceipt> => {
+      controller.abort();
+      return { messageId: `send:${input.toolCallId}`, deliveredTo: ['user'], delivery: 'delivered' };
+    });
+    await messageAgent(appServices((reg) => reg.definePartialInstance(IUserMessageRouter, { sendMessage: send })));
+    const result = await execute({ messages: [{ text: 'first' }, { text: 'second' }, { text: 'third' }] }, { turnId: 0, toolCallId: 'batch-1', signal: controller.signal });
+    const wire = JSON.parse(result.output as string);
+    expect(wire.messages).toHaveLength(3);
+    expect(wire.messages[0]).toMatchObject({ index: 0, message_id: 'send:batch-1:item:0', delivery: 'delivered' });
+    expect(wire.messages.slice(1)).toEqual([
+      expect.objectContaining({ index: 1, message_id: 'send:batch-1:item:1', delivery: 'cancelled' }),
+      expect.objectContaining({ index: 2, message_id: 'send:batch-1:item:2', delivery: 'cancelled' }),
+    ]);
+    expect(send).toHaveBeenCalledOnce();
   });
 
   it('rejects a blank message that carries neither text nor attachments', async () => {

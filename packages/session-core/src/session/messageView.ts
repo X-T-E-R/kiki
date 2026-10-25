@@ -32,7 +32,7 @@ function attachments(value: unknown): MessageAttachment[] {
 }
 
 const CHANNEL_STATUS: Readonly<Record<string, MessageChannelDelivery['status']>> = {
-  delivered: 'delivered', unsupported: 'unsupported', failed: 'failed', unknown: 'unknown',
+  delivered: 'delivered', partial: 'partial', unsupported: 'unsupported', failed: 'failed', unknown: 'unknown',
 };
 
 /**
@@ -66,7 +66,7 @@ function channelDeliveries(value: unknown): MessageChannelDelivery[] {
  */
 function reachOf(channels: readonly MessageChannelDelivery[]): MessageReach | 'nowhere' {
   if (channels.some((channel) => channel.channelId === 'internal' && channel.status === 'delivered')) return 'here';
-  if (channels.some((channel) => channel.status === 'delivered')) return 'elsewhere';
+  if (channels.some((channel) => channel.status === 'delivered' || channel.status === 'partial')) return 'elsewhere';
   if (channels.some((channel) => channel.status === 'unknown')) return 'unconfirmed';
   return 'nowhere';
 }
@@ -77,6 +77,31 @@ function reachOf(channels: readonly MessageChannelDelivery[]): MessageReach | 'n
  * per destination; a receipt that predates them keeps its old reading.
  */
 export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
+  return projectSendMessages(tool)[0];
+}
+
+export function projectSendMessages(tool: ToolBlock): MessageBlock[] {
+  if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return [];
+  const args = record(tool.args) ?? record(tool.argsText);
+  const items = args?.['messages'];
+  if (!Array.isArray(items)) {
+    const message = projectSingleSendMessage(tool);
+    return message === undefined ? [] : [message];
+  }
+  const output = record(tool.output);
+  const receipts = Array.isArray(output?.['messages']) ? output['messages'] : [];
+  return items.flatMap((item, index) => {
+    const content = record(item);
+    if (content === undefined) return [];
+    const matches = receipts.filter((value) => record(value)?.['index'] === index);
+    const receipt = matches.length === 1 ? record(matches[0]) : undefined;
+    const child: ToolBlock = { ...tool, id: `${tool.id}:message:${index}`, args: { to: args?.['to'], channel: args?.['channel'], channels: args?.['channels'], ...content }, argsText: '', output: receipt === undefined ? undefined : JSON.stringify(receipt) };
+    const message = projectSingleSendMessage(child);
+    return message === undefined ? [] : [{ ...message, sourceTool: tool }];
+  });
+}
+
+function projectSingleSendMessage(tool: ToolBlock): MessageBlock | undefined {
   if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return undefined;
   const args = record(tool.args) ?? record(tool.argsText);
   const result = record(tool.output);
@@ -86,8 +111,8 @@ export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
   const reach = channels.length === 0 ? undefined : reachOf(channels);
   const delivery = string(result?.['delivery']);
   const status: MessageBlock['status'] = tool.status === 'running' ? 'sending'
-    : tool.status === 'stopped' ? 'cancelled'
-      : !succeeded || reach === 'nowhere' || delivery === 'undeliverable' ? 'failed'
+    : tool.status === 'stopped' || delivery === 'cancelled' ? 'cancelled'
+      : !succeeded || reach === 'nowhere' || delivery === 'undeliverable' || delivery === 'not_sent' ? 'failed'
         : reach === 'unconfirmed' || delivery === 'pending' ? 'pending'
           : 'sent';
   const spoken = status === 'sent' || status === 'sending' || status === 'pending';
@@ -96,7 +121,7 @@ export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
   // saying "not sent".
   const plainOutput = typeof tool.output === 'string' && record(tool.output) === undefined ? tool.output.trim() : undefined;
   const failureDetail = status === 'failed'
-    ? string(result?.['error']) ?? (plainOutput === undefined || plainOutput === '' ? undefined : plainOutput)
+    ? string(result?.['error']) ?? string(result?.['detail']) ?? (plainOutput === undefined || plainOutput === '' ? undefined : plainOutput)
     : undefined;
   const sender = record(result?.['sender']);
   const handoff = record(result?.['handoff']);
@@ -229,11 +254,11 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       seen.add(turn);
       turns.push(turn);
     }
-    const message = block.kind === 'message' ? block : block.kind === 'tool' ? projectSendMessage(block) : undefined;
+    const messages = block.kind === 'message' ? [block] : block.kind === 'tool' ? projectSendMessages(block) : [];
     // The turn spoke through its own call even when the words did not land
     // here, and even when no channel has confirmed them yet: the promotion
     // below must not speak a second copy as this conversation's reply.
-    if (message !== undefined && message.origin === 'send_message' && message.turnId !== undefined
+    for (const message of messages) if (message.origin === 'send_message' && message.turnId !== undefined
       && (message.status === 'sent' || message.status === 'pending')) {
       sent.add(message.turnId);
     }
@@ -285,8 +310,12 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     pendingTurn = undefined;
   };
   let lastTurn: string | undefined;
-  for (const original of blocks) {
-    const block = original.kind === 'tool' ? projectSendMessage(original) ?? original : original;
+  const projected = blocks.flatMap<Block>((block) => {
+    if (block.kind !== 'tool') return [block];
+    const messages = projectSendMessages(block);
+    return messages.length === 0 ? [block] : messages;
+  });
+  for (const block of projected) {
     const turn = turnId(block);
     if (turn !== undefined && lastTurn !== undefined && turn !== lastTurn) {
       flush();

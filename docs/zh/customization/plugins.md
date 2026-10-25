@@ -446,6 +446,36 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段会显示为 diagnostics 并被忽略。
 
+### 聊天信道与消息发送
+
+插件可以把平台账号接入 Kiki 已有的会话绑定，并在已准入的工具调用中发送消息。在 `x-kiki` 中声明可执行贡献，再由 `entry.mjs` 注册相同定义。SDK 合同从 `@kiki/plugin-sdk/im` 和 `@kiki/plugin-sdk/messages` 导出。
+
+需要其他已安装插件时，在 `x-kiki` 中声明版本范围，例如 `"dependencies": { "kiki-media": "^1.0.0" }`。激活或执行前，Kiki 检查依赖是否已安装、已启用且版本兼容。缺少依赖时，由用户安装或启用；Kiki 不自动执行这些操作。未声明 `dependencies` 的旧插件保持原有行为。
+
+聊天连接在 `x-kiki.imAdapters` 中声明，并通过 `api.registerImAdapter(definition, adapter)` 注册。每项代表一个已配置账号，包含 `schemaVersion: 1`、局部 `id`、`label`、独立的 `inbound` 和 `outbound` 布尔值、`maxInboundBytes` 与 `mediaCapabilities` 数组。Kiki 将 `plugin:<pluginId>/<adapterId>` 用作 provider 和 instance ID。入站定义还必须声明真实协议或消息源的 `listenerRealm`：OneBot 使用 `qq-onebot`，并以真实 QQ self ID 作为 `start()` 返回的 `listenerAccountId`；QQ 官方 API 使用 `qq-official` 和 app ID。`accountId` 仍是插件稳定的绑定身份，可保留已有前缀；省略 `listenerAccountId` 时，Kiki 用 `accountId` 判断监听占用。已运行的监听保留同源账号占用，后来冲突的监听停止并显示 `account_in_use`。仅出站连接不占入站监听。
+
+`start({ signal, settings, instanceId, offset, emit })` 返回 `{ accountId, listenerAccountId?, targets? }`，启动完成后才能调用 `emit`。仅出站 adapter 可以返回 `targets` 供用户确认目标，不需要伪造入站事件。关闭、重载或删除插件只关闭它自己的连接，并保留用户的监听偏好和绑定，供重新启用时恢复。用户逐个确认目标；群绑定默认限于原发送人，也可显式设置 `binding_scope: "topic"` 或 `"chat"`。共享群会话保留每条消息的真实发送人，其他成员不能因此处理原发送人的待审批或待回答交互。
+
+`eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds` 和 `replyToMessageId` 会进入会话消息元数据。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
+
+插件工具中的 `context.messages.send()` 与 `SendMessage` 共用 main agent、能力、工具禁用和审批检查，再通过当前线程已启用的绑定信道发送。例如：
+
+```js
+const receipt = await context.messages.send({
+  request_id: "report-1",
+  messages: [
+    { text: "第一条消息\n内含换行" },
+    { text: "第二条消息", attachments: [{ file_id: artifact.file_id, kind: "voice" }] }
+  ]
+});
+```
+
+发送已保存到本会话的生成结果时，使用已完成的 `context.media.generate()` 产物的 `file_id`。声明 `mediaInputs: true` 的工具必须保留 `args.request` 中已准入的请求。普通附件 `path` 仍须位于工作区、附加目录或 Bot 目录；产物在 home 下其他位置，不代表插件可以任意读取整个 home。
+
+单条入口 `text`/`attachments`/`reply_to`/`mention_ids` 与显式 `messages` 数组互斥。换行仍属于同一条消息。外层 `to`、`channel` 和 `channels` 为所有条目选择目标。批次返回有序 `messages` receipt，每项保留稳定的 `index`、`message_id`、信道结果和附件引用；取消会停止尚未发出的条目。显式 `request_id` 在插件、会话和 Agent 范围内跨工具调用及重启有效：相同内容复用 receipt，改动内容会冲突。已经准入但中断的请求保留未知状态，不重新外发；检查投递结果后再决定是否使用新 ID。未提供 ID 时，去重只针对本次工具调用内的发送序号。
+
+`minSendIntervalMs` 设置 Host 对同一目标的发送间隔。只有平台明确拒绝且未受理发送时，adapter 才能返回 `{ status: "failed", errorKind: "rate_limited", retryAfterMs }`；Kiki 对此最多重试两次。已投递但无消息 ID、部分投递和未知结果均不重试。内置信道同样使用 Host 的目标间隔；平台限流若未提供准确重试时长，则保留失败 receipt。
+
 ### 原生工具结果
 
 在 `x-kiki.tools` 下声明的原生工具可以返回文本和 PNG、JPEG 或 WebP 图像的 base64 data URL。大结果自动保存为会话附件：文本保留预览，并附上完整原件的路径和 `kimi-file://` 引用；图像通过会话附件引用继续显示。让 Agent 用 `Read` 分页读取完整文本，或用 `ReadMediaFile` 检查原图。插件作者仍按通常的格式返回结果，不需要自己拆分。
