@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { pushInputHistory, readInputHistory, resetInputHistoryForTests, type ComposerAttachment } from '@kiki/session-core/composer';
+import { pushInputHistory, readInputHistory, resetInputHistoryForTests, type ComposerAttachment, type ExecutionChoice } from '@kiki/session-core/composer';
 import { translate } from '@kiki/session-core/i18n';
 import { resolveSelectedEffort, writeSettings } from '@kiki/session-core/settings';
 import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '@kiki/transcript';
