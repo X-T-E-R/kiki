@@ -31,8 +31,12 @@ A non-native executor can refresh the host profile, prompt fields, skills, instr
 
 ## Failure
 
-A failed rebuild leaves the previous binding in place and records the error. There is no background retry. A later fresh start, summary, context-replacing model switch, context clear, session recovery, or manual refresh can try again. A committed compaction or model switch stays committed when the rebuild fails.
+There is no background retry, and there is no transaction around the stages. A later fresh start, summary, context-replacing model switch, context clear, session recovery, or manual refresh can try again. A committed compaction or model switch stays committed when the rebuild fails.
 
-If an earlier stage finishes and a later stage throws, the report is partial. Finished sources are what the next request reads. Unfinished sources keep the previous binding. A partial report is not a full success. A difference that cannot be read is left off the report; it is not recorded as every source unchanged. The selected model, effort, and explicit tool denies stay, and a compaction that already committed stays committed.
+If profile preparation throws before the new binding commits, the previous binding stays. The report does not list profile as rebuilt, and the next request still uses that previous binding.
 
-The prompt drawer shows one switch. A running rebuild and a finished rebuild use a short status or a small icon on that row. A failure shows the error on one line, with retry. The source-by-source result, including the boundary that ran and anything not refreshed, stays inside that prompt diagnostic and opens on demand. The full system prompt is not part of the notice.
+If the profile binding commits and a later stage throws, the report is partial. The next request uses the profile that committed. Unfinished sources, including an MCP refresh that failed after that commit, are not listed as rebuilt. That partial result is still usable. It is not a report that the old binding was kept.
+
+A difference that cannot be read is left off the report. The log keeps the original diff error. That absence is not a report that every source is unchanged. The selected model, effort, explicit tool denies, and permission mode stay.
+
+The prompt drawer shows one switch. A running rebuild and a finished rebuild use a short status or a small icon on that row. A failure shows one error line. Retry is on that line, and only for the main agent. A child agent has no manual rebuild action. The source-by-source range stays inside an existing channel of the prompt diagnostic and opens with that channel. It is not a separate panel. The full system prompt is not part of the notice.

@@ -208,6 +208,10 @@ describe('AgentContextRebuildService', () => {
     expect(host.prompt.systemPrompt).toBe('rebuilt');
     expect(host.prompt.modelAlias).toBe('kept-model');
     expect(host.prompt.thinkingLevel).toBe('low');
+    expect(host.logError).toHaveBeenCalledWith('failed to read context rebuild changes', {
+      error: expect.objectContaining({ message: 'skills unreadable' }),
+      committed: true,
+    });
   });
 
   it('records cancellation without applying a rebuild', async () => {
@@ -377,6 +381,7 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
   const injector = vi.fn(async () => undefined);
   const invalidate = vi.fn(() => 0);
   const setModel = vi.fn();
+  const logError = vi.fn();
   const profilesReload = vi.fn(options.profilesReload ?? (async () => undefined));
   const history = [{ role: 'user', text: 'kept' }];
   const prompt = {
@@ -403,7 +408,7 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
       reg.definePartialInstance(IAgentModelSwitchService, {
         hooks: { onDidCommitContextWindow: modelWindow },
       });
-      reg.definePartialInstance(ILogService, { error: () => undefined });
+      reg.definePartialInstance(ILogService, { error: logError });
       reg.definePartialInstance(IAgentScopeContext, { agentId: options.agentId ?? 'main' });
       reg.definePartialInstance(IAgentLoopService, {
         tryAcquireQuiescence: () => options.busy === true ? undefined : toDisposable(() => {}),
@@ -457,6 +462,7 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
     injector,
     invalidate,
     setModel,
+    logError,
     profilesReload,
     history,
     prompt,

@@ -70,11 +70,13 @@ const otherDefinition: NamedAgentProfile = {
 
 let root: Root;
 let container: HTMLDivElement;
+let queryClient: QueryClient;
 
 beforeEach(() => {
   vi.resetAllMocks();
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.readHostFile.mockResolvedValue('---\nname: agent\n---\n\nBound body.');
   container = document.createElement('div');
   document.body.append(container);
@@ -94,7 +96,7 @@ async function settle(): Promise<void> {
 
 async function render(props: ProfileDetailSectionsProps): Promise<void> {
   await act(async () => {
-    root.render(<I18nProvider><ProfileDetailSections {...props} /></I18nProvider>);
+    root.render(<QueryClientProvider client={queryClient}><I18nProvider><ProfileDetailSections {...props} /></I18nProvider></QueryClientProvider>);
   });
   await settle();
 }

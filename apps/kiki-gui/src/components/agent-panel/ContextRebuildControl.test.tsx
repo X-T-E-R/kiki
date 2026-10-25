@@ -5,7 +5,9 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { I18nProvider } from '../../i18n';
+import type { AgentPromptDiagnostics } from '@kiki/protocol';
 import { ContextRebuildControl } from './ContextRebuildControl';
+import { PromptEffectiveDetails } from './PromptEffectiveDetails';
 
 const control = vi.fn();
 const setEnabled = vi.fn();
@@ -56,8 +58,27 @@ async function render(ids: { sessionId?: string; agentId?: string } = {}): Promi
   }
 }
 
-async function openSources(): Promise<void> {
-  const details = container.querySelector<HTMLDetailsElement>('details[data-context-rebuild-sources]');
+const prompt: AgentPromptDiagnostics = {
+  identity: { delegation_position: 'main', profile: 'agent', executor: 'native' },
+  apply_on: 'next-binding-or-context-rebuild',
+  channels: [
+    { id: 'system.shared', channel: 'system', state: 'effective', sources: [] },
+  ],
+};
+
+async function renderDiagnostic(): Promise<void> {
+  await act(async () => {
+    root.render(<QueryClientProvider client={queryClient}><I18nProvider>
+      <PromptEffectiveDetails value={prompt} query={{ session_id: 'session-1', agent_id: 'main' }} defaultOpen />
+    </I18nProvider></QueryClientProvider>);
+  });
+  for (let index = 0; index < 6; index += 1) {
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  }
+}
+
+async function openSystemChannel(): Promise<void> {
+  const details = container.querySelector<HTMLDetailsElement>('details[data-prompt-channel="system.shared"]');
   await act(async () => {
     if (details === null) return;
     details.open = true;
@@ -92,10 +113,11 @@ describe('ContextRebuildControl', () => {
     expect(container.textContent).not.toContain('frozen for the conversation');
     expect(container.textContent).not.toMatch(/\brestart\b/i);
     expect(container.querySelector('[data-context-rebuild-mark="applied"]')?.getAttribute('aria-label')).toBe('After compaction');
-    await openSources();
-    expect(container.querySelector('[data-context-rebuild-surface="profile"]')?.getAttribute('data-context-rebuild-status')).toBe('updated');
-    expect(container.querySelector('[data-context-rebuild-surface="skills"]')?.getAttribute('data-context-rebuild-status')).toBe('unchanged');
-    expect(container.querySelector('[data-context-rebuild-outcome="applied"]')?.textContent).toContain('After compaction');
+    expect(container.querySelector('details[data-context-rebuild-sources]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild-sources]')).toBeNull();
+    expect(container.textContent).not.toContain('Sources');
+    expect(container.textContent).not.toContain('Updated');
+    expect(container.textContent).not.toContain('Unchanged');
   });
 
   it('keeps a main-agent failure to one error line and retries through the same rebuild', async () => {
@@ -229,9 +251,30 @@ describe('ContextRebuildControl', () => {
     expect(container.querySelector('[data-context-rebuild-surface]')).toBeNull();
     expect(container.querySelector('[data-context-rebuild-retry]')).toBeNull();
     expect(container.textContent).not.toContain('codex');
-    await openSources();
+    expect(container.querySelector('ul')).toBeNull();
+  });
+
+  it('shows the source range only after the existing prompt channel is opened', async () => {
+    control.mockResolvedValue({
+      ...applied,
+      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'mcp'],
+      unsupported: [
+        { surface: 'executor_session', reason: 'The running codex session is not restarted.' },
+        { surface: 'plugins', reason: 'Plugin session-start reminders are native context.' },
+      ],
+    });
+    await renderDiagnostic();
+    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+    expect(container.querySelector('[data-context-rebuild-surface]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild-retry]')).toBeNull();
+    expect(container.textContent).not.toContain('codex');
+    expect(container.textContent).not.toContain('Last rebuild');
+    await openSystemChannel();
+    expect(container.querySelector('details[data-context-rebuild-sources]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild-surface="profile"]')?.getAttribute('data-context-rebuild-status')).toBe('updated');
+    expect(container.querySelector('[data-context-rebuild-surface="skills"]')?.getAttribute('data-context-rebuild-status')).toBe('unchanged');
     expect(container.querySelector('[data-context-rebuild-surface="plugins"]')?.getAttribute('data-context-rebuild-status')).toBe('unsupported');
     expect(container.querySelector('[data-context-rebuild-surface="executor_session"]')?.textContent).toContain('codex');
-    expect(container.querySelector('[data-context-rebuild-surface="executor_session"]')?.textContent).not.toContain('Updated');
+    expect(container.querySelector('[data-prompt-channel="system.shared"]')?.textContent).not.toContain('Last rebuild');
   });
 });

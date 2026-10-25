@@ -1,7 +1,8 @@
+import { useState } from 'react';
 import type { AgentCapabilitiesQuery, AgentPromptDiagnostics, RecipeModelBinding } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { FilePathLink } from '../mediaParts';
-import { ContextRebuildControl } from './ContextRebuildControl';
+import { ContextRebuildControl, ContextRebuildSources } from './ContextRebuildControl';
 import { PromptFileCheck } from './PromptFileCheck';
 
 type PromptEffectiveData = AgentPromptDiagnostics;
@@ -22,6 +23,15 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
 }) {
   const { t } = useI18n();
   const request = value?.request;
+  const sessionQuery = query !== undefined && 'session_id' in query ? query : undefined;
+  const systemChannel = value?.channels.find((entry) => (GROUPS[0].channels as readonly string[]).includes(entry.channel));
+  const sourceKey = systemChannel === undefined ? undefined : `${systemChannel.channel}:${systemChannel.id}`;
+  const [seenSource, setSeenSource] = useState(sourceKey);
+  const [sourceOpen, setSourceOpen] = useState(false);
+  if (seenSource !== sourceKey) {
+    setSeenSource(sourceKey);
+    setSourceOpen(false);
+  }
   return <details open={defaultOpen || undefined} data-profile-section="prompt" className="min-w-0 py-1">
     <summary className="cursor-pointer rounded py-1 text-[13px] font-medium text-ink outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
       {t('agentPanel.prompt.title')}
@@ -45,23 +55,28 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
         return <section key={group.id} className="min-w-0 space-y-2" data-prompt-channel-group={group.id}>
           <h4 className="text-[12px] font-medium text-ink">{t(`agentPanel.prompt.channel.${group.id}`)}</h4>
           <div className="space-y-3">
-            {channels.map((entry, index) => <details key={`${entry.channel}:${entry.id}:${index}`} className="min-w-0" data-prompt-channel={entry.id} data-prompt-state={entry.state}>
-              <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-3 gap-y-1 rounded text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
-                <span className="min-w-0 flex-1 break-words font-mono text-[11.5px] text-ink-soft">{entry.id}</span>
-                <span className={entry.state === 'shadowed' || entry.state === 'unsupported' ? 'text-amber-ink' : 'text-ink-faint'}>{t(`agentPanel.prompt.state.${entry.state}`)}</span>
-                {entry.selection !== undefined ? <span className="w-full text-[11.5px] text-ink-faint">{t(`agentPanel.prompt.selection.${entry.selection}`)}</span> : null}
-              </summary>
-              <div className="space-y-2 pt-2 text-[11.5px] leading-5 text-ink-soft">
-                {entry.reason !== undefined ? <p data-prompt-reason>{entry.reason}</p> : null}
-                {entry.anchor_steps !== undefined || entry.anchor_scope !== undefined ? <AnchorWindow steps={entry.anchor_steps} scope={entry.anchor_scope} /> : null}
-                {entry.sources.length > 0 ? <ol className="space-y-2" aria-label={t('agentPanel.prompt.sources')}>
-                  {entry.sources.map((source, sourceIndex) => <li key={`${source.path}:${sourceIndex}`} className="min-w-0" data-prompt-source>
-                    <p className="text-ink-faint">{source.order ?? sourceIndex + 1}. {source.surface} · {source.kind}</p>
-                    {source.path !== undefined ? <p className="break-all font-mono text-[11px]"><FilePathLink path={source.path} />{source.line !== undefined ? `:${source.line}` : ''}</p> : null}
-                  </li>)}
-                </ol> : <p className="text-ink-faint">{t('agentPanel.prompt.noSource')}</p>}
-              </div>
-            </details>)}
+            {channels.map((entry, index) => {
+              const hostsSources = sessionQuery !== undefined && `${entry.channel}:${entry.id}` === sourceKey && index === 0;
+              return <details key={`${entry.channel}:${entry.id}:${index}`} className="min-w-0" data-prompt-channel={entry.id} data-prompt-state={entry.state}
+                onToggle={hostsSources ? (event) => { setSourceOpen(event.currentTarget.open); } : undefined}>
+                <summary className="flex cursor-pointer list-none flex-wrap items-baseline gap-x-3 gap-y-1 rounded text-[12px] outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+                  <span className="min-w-0 flex-1 break-words font-mono text-[11.5px] text-ink-soft">{entry.id}</span>
+                  <span className={entry.state === 'shadowed' || entry.state === 'unsupported' ? 'text-amber-ink' : 'text-ink-faint'}>{t(`agentPanel.prompt.state.${entry.state}`)}</span>
+                  {entry.selection !== undefined ? <span className="w-full text-[11.5px] text-ink-faint">{t(`agentPanel.prompt.selection.${entry.selection}`)}</span> : null}
+                </summary>
+                <div className="space-y-2 pt-2 text-[11.5px] leading-5 text-ink-soft">
+                  {entry.reason !== undefined ? <p data-prompt-reason>{entry.reason}</p> : null}
+                  {entry.anchor_steps !== undefined || entry.anchor_scope !== undefined ? <AnchorWindow steps={entry.anchor_steps} scope={entry.anchor_scope} /> : null}
+                  {entry.sources.length > 0 ? <ol className="space-y-2" aria-label={t('agentPanel.prompt.sources')}>
+                    {entry.sources.map((source, sourceIndex) => <li key={`${source.path}:${sourceIndex}`} className="min-w-0" data-prompt-source>
+                      <p className="text-ink-faint">{source.order ?? sourceIndex + 1}. {source.surface} · {source.kind}</p>
+                      {source.path !== undefined ? <p className="break-all font-mono text-[11px]"><FilePathLink path={source.path} />{source.line !== undefined ? `:${source.line}` : ''}</p> : null}
+                    </li>)}
+                  </ol> : <p className="text-ink-faint">{t('agentPanel.prompt.noSource')}</p>}
+                  {hostsSources && sessionQuery !== undefined ? <ContextRebuildSources sessionId={sessionQuery.session_id} agentId={sessionQuery.agent_id} open={sourceOpen} /> : null}
+                </div>
+              </details>;
+            })}
           </div>
         </section>;
       })}

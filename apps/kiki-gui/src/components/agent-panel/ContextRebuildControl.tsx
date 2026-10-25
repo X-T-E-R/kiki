@@ -27,12 +27,10 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
   const [seen, setSeen] = useState(identity);
   const [actionError, setActionError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
-  const [sourcesOpen, setSourcesOpen] = useState(false);
   if (seen !== identity) {
     setSeen(identity);
     setActionError(undefined);
     setBusy(false);
-    setSourcesOpen(false);
   }
   const query = useQuery({
     queryKey: ['context-rebuild', sessionId, agentId],
@@ -79,22 +77,26 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
         {t(busy ? 'agentPanel.rebuild.retrying' : 'agentPanel.rebuild.retry')}
       </button> : null}
     </div> : null}
-    {control?.outcome !== undefined ? <details className="mt-1 min-w-0" data-context-rebuild-sources onToggle={(event) => { setSourcesOpen(event.currentTarget.open); }}>
-      <summary className="cursor-pointer rounded text-[12px] text-ink-faint outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('agentPanel.rebuild.sources')}</summary>
-      {sourcesOpen ? <SourceReport control={control} /> : null}
-    </details> : null}
   </section>;
+}
+
+export function ContextRebuildSources({ sessionId, agentId, open }: { sessionId: string; agentId: string; open: boolean }) {
+  const klient = useOptionalConnection()?.klient;
+  const readable = klient !== undefined && typeof (klient as { session?: unknown }).session === 'function';
+  const query = useQuery({
+    queryKey: ['context-rebuild', sessionId, agentId],
+    enabled: readable,
+    retry: false,
+    queryFn: () => klient!.session(sessionId).agent(agentId).contextRebuildControl(),
+  });
+  if (!open || !readable || query.data?.outcome === undefined) return null;
+  return <SourceReport control={query.data} />;
 }
 
 function SourceReport({ control }: { control: ContextRebuildSnapshot }) {
   const { t } = useI18n();
   if (control.outcome === undefined) return null;
-  return <div className="space-y-2 pt-2">
-    <p className="text-[12px] text-ink-soft" data-context-rebuild-outcome={control.outcome}>
-      {t(`agentPanel.rebuild.outcome.${control.outcome}`)}
-      {control.trigger !== undefined ? ` · ${t(`agentPanel.rebuild.trigger.${control.trigger}`)}` : ''}
-      {control.at !== undefined ? ` · ${t('agentPanel.rebuild.when', { when: new Date(control.at).toLocaleString() })}` : ''}
-    </p>
+  return <div className="space-y-1 pt-2" data-context-rebuild-sources>
     <ul className="space-y-1">
       {SURFACES.map((surface) => {
         const unsupported = control.unsupported.find((item) => item.surface === surface);
