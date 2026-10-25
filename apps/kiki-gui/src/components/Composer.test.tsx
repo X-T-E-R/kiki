@@ -861,8 +861,23 @@ describe('Composer execution control', () => {
     await click(trigger);
     await settle();
     expect(container.textContent).toContain('Could not load personas');
-    const retryBtn = [...container.querySelectorAll('button')].find((btn) => btn.textContent?.includes('Retry'));
+
+    // Profile and file entry options remain reachable and usable while persona loading fails
+    expect(container.querySelector('[data-execution-bare="native"]')).not.toBeNull();
+    expect(container.querySelector('[data-execution-profile="grok-only"]')).not.toBeNull();
+    expect(container.querySelector('[data-execution-file-open]')).not.toBeNull();
+
+    const retryBtn = [...container.querySelectorAll('button')].find((btn) => btn.textContent?.includes('Retry'))!;
     expect(retryBtn).toBeDefined();
+
+    // Trigger retry, verify persona catalog recovers and error state clears
+    await click(retryBtn);
+    await settle();
+
+    expect(listPersonas).toHaveBeenCalledTimes(2);
+    expect(container.textContent).not.toContain('Could not load personas');
+    expect(container.querySelector('[data-composer-persona-option="nia"]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-persona-option="lin-lan"]')).not.toBeNull();
   });
 
   it('keeps the persona-branch control openable while a turn runs', async () => {
