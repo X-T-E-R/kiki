@@ -80,7 +80,7 @@
 //   prompt.outcome_committed           prompt.identity                                                                                                                                                                      src/agent/prompt/promptReplay.ts
 //   prompt.replaced                    prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   prompt.retry_committed             promptRetryReceipt                                                                                                                                                                   src/agent/prompt/promptOps.ts
-//   prompt.steered                     promptResolution                                                                                                                                                                     src/agent/prompt/promptService.ts
+//   prompt.steered                     prompt.identity, promptResolution                                                                                                                                                    src/agent/prompt/promptService.ts
 //   prompt.timing_changed              prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   runtime.set_binding                runtimeBinding                                                                                                                                                                       src/agent/runtimeBinding/runtimeBindingOps.ts
 //   session.delivery                   (none)                                                                                                                                                                               src/agent/delivery/deliveryReminder.ts
@@ -1186,7 +1186,7 @@ interface PromptRetryCommittedPayload {
 }
 
 /**
- * states: promptResolution
+ * states: prompt.identity, promptResolution
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptSteeredPayload {

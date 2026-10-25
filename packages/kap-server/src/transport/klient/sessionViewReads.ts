@@ -603,8 +603,9 @@ async function readColdTranscriptPage(
   const boundary = () => typeof transcriptService.coldWindowBoundary === 'function' ? transcriptService.coldWindowBoundary(sessionId, input.agentId) : undefined;
   const initialBoundary = await boundary();
   const anchored = input.beforeTurn !== undefined || input.beforeItem !== undefined;
-  let snapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal, false, undefined, anchored);
-  if (snapshot === undefined) return undefined;
+  const initialSnapshot = await transcriptService.readColdPageSnapshot(sessionId, input.agentId, project, input.signal, false, undefined, anchored);
+  if (initialSnapshot === undefined) return undefined;
+  let snapshot: AgentTranscriptSnapshot = initialSnapshot;
   const anchor = requestedAnchor(input);
   query.seekTurn ??= anchor === undefined ? undefined : seekTurnForAnchor(snapshot.items, anchor);
   const locate = (prefixMaterialized = false) => {
