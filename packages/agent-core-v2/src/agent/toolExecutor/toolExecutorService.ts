@@ -17,7 +17,7 @@ import {
   parseToolCallArguments,
 } from '#/tool/tool-args-parse';
 import { PathSecurityError } from '#/tool/path-access';
-import { isAbortError, isUserCancellation } from '#/_base/utils/abort';
+import { abortable, isAbortError, isUserCancellation } from '#/_base/utils/abort';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   ToolAccesses,
@@ -76,8 +76,21 @@ export interface ToolExecutionRunResult {
   readonly outcome: ToolExecutionOutcome;
 }
 
+interface PreparedToolTask {
+  readonly task: ToolExecutionTask;
+  readonly call: PreflightedToolCall;
+  readonly readyAt: number;
+  readonly resolvedAccesses?: ToolAccesses;
+}
+
+type ToolBatchEvent =
+  | { readonly type: 'prepared'; readonly result: IteratorResult<PreparedToolTask> }
+  | { readonly type: 'prepareRejected'; readonly reason: unknown }
+  | { readonly type: 'executed'; readonly settled: SettledTimedToolResult };
+
 interface TimedToolResult {
   readonly index: number;
+  readonly prepared: PreparedToolTask;
   readonly result: ToolResult;
   readonly outcome: ToolExecutionOutcome;
   readonly durationMs: number;
@@ -203,38 +216,19 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         this.log,
       ),
     );
-    const preparedTasks: Array<{
-      task: ToolExecutionTask;
-      call: PreflightedToolCall;
-      readyAt: number;
-      resolvedAccesses?: ToolAccesses;
-      stopBatchAfterThis?: boolean;
-    }> = [];
-
-    let stopBatch = false;
-    for (const call of preflighted) {
-      if (stopBatch) {
-        const skipped = this.prepareSkippedToolCall(call, options);
-        preparedTasks.push({ ...skipped, call, readyAt: Date.now() });
-        continue;
-      }
-
-      const prepared = await this.prepareToolCall(call, calls, options);
-      preparedTasks.push({
-        task: prepared.task,
-        call,
-        readyAt: Date.now(),
-        resolvedAccesses: prepared.resolvedAccesses,
-        stopBatchAfterThis: prepared.stopBatchAfterThis,
-      });
-      if (prepared.stopBatchAfterThis === true) {
-        stopBatch = true;
-      }
-    }
-
-    const timedResults = this.executeBatch(preparedTasks, options.signal)[Symbol.asyncIterator]();
+    const controller = new AbortController();
+    const batchOptions = { ...options, signal: AbortSignal.any([options.signal, controller.signal]) };
+    const tasks = this.prepareToolCalls(preflighted, calls, batchOptions);
+    const timedResults = this.executeBatch(tasks, batchOptions.signal)[Symbol.asyncIterator]();
     let nextTimed: Promise<IteratorResult<TimedToolResult>> | undefined = timedResults.next();
+    let executionFailure: { reason: unknown } | undefined;
     const finalizations = new Set<ToolExecutionResultPromise>();
+    const finalize = (timed: TimedToolResult): void => {
+      finalizations.add(this.finalizeTimedResult(timed.prepared, timed, batchOptions).then(
+        (value): SettledToolExecutionResult => ({ status: 'fulfilled', value }),
+        (error): SettledToolExecutionResult => ({ status: 'rejected', reason: error }),
+      ));
+    };
 
     try {
       while (nextTimed !== undefined || finalizations.size > 0) {
@@ -243,7 +237,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           candidates.push(
             nextTimed.then(
               (result): ToolExecutionStreamEvent => ({ type: 'timed', result }),
-              (reason): ToolExecutionStreamEvent => ({ type: 'timedRejected', reason }),
+              (error): ToolExecutionStreamEvent => ({ type: 'timedRejected', reason: error }),
             ),
           );
         }
@@ -259,7 +253,9 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
 
         const event = await Promise.race(candidates);
         if (event.type === 'timedRejected') {
-          throw event.reason;
+          nextTimed = undefined;
+          executionFailure = event;
+          continue;
         }
         if (event.type === 'timed') {
           if (event.result.done === true) {
@@ -267,15 +263,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
             continue;
           }
 
-          const finalization = this.finalizeTimedResult(
-            preparedTasks[event.result.value.index]!,
-            event.result.value,
-            options,
-          ).then(
-            (value): SettledToolExecutionResult => ({ status: 'fulfilled', value }),
-            (reason): SettledToolExecutionResult => ({ status: 'rejected', reason }),
-          );
-          finalizations.add(finalization);
+          finalize(event.result.value);
           nextTimed = timedResults.next();
           continue;
         }
@@ -284,9 +272,37 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         if (event.settled.status === 'rejected') throw event.settled.reason;
         yield event.settled.value;
       }
+      if (executionFailure !== undefined) throw executionFailure.reason;
     } finally {
-      await timedResults.return?.();
-      await Promise.allSettled(finalizations);
+      controller.abort();
+      try {
+        while (nextTimed !== undefined) {
+          const remaining = await nextTimed;
+          if (remaining.done === true) break;
+          finalize(remaining.value);
+          nextTimed = timedResults.next();
+        }
+      } finally {
+        await timedResults.return?.();
+        await Promise.allSettled(finalizations);
+      }
+    }
+  }
+
+  private async *prepareToolCalls(
+    preflighted: readonly PreflightedToolCall[],
+    calls: readonly ToolCall[],
+    options: ToolExecutorExecuteOptions,
+  ): AsyncIterable<PreparedToolTask> {
+    let stopBatch = false;
+    for (const call of preflighted) {
+      if (stopBatch) {
+        yield { ...this.prepareSkippedToolCall(call, options), call, readyAt: Date.now() };
+        continue;
+      }
+      const prepared = await this.prepareToolCall(call, calls, options);
+      stopBatch = prepared.stopBatchAfterThis === true;
+      yield { ...prepared, call, readyAt: Date.now() };
     }
   }
 
@@ -408,7 +424,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     const resolveStartedAt = Date.now();
     try {
       for (const handler of this.beforeResolveHandlers) {
-        const reason = await handler({
+        const reason = await awaitToolPreparation(() => handler({
           turnId: options.turnId,
           signal: options.signal,
           trace: options.trace,
@@ -416,12 +432,12 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
           toolCalls: allCalls,
           tool: call.tool,
           args: call.args,
-        });
+        }), options.signal);
         if (reason !== undefined) return settleError(call.args, reason, 'preflight-rejected');
       }
-      options.signal.throwIfAborted();
-      execution = await call.tool.resolveExecution(call.args);
+      execution = await awaitToolPreparation(() => call.tool.resolveExecution(call.args), options.signal);
     } catch (error) {
+      if (options.signal.aborted) return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted');
       const output =
         error instanceof PathSecurityError
           ? error.message
@@ -446,43 +462,49 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
       return settleSynthetic(call.args, execution, 'synthetic', displayFields);
     }
 
-    const beforeContext = buildBeforeExecuteContext(call, execution, allCalls, options);
-    const admissionStartedAt = Date.now();
-    const decision = await this.beforeExecuteEmitter.fireBeforeExecute(beforeContext);
-    this.logSlowToolPhase(call, 'admission', admissionStartedAt);
+    try {
+      const beforeContext = buildBeforeExecuteContext(call, execution, allCalls, options);
+      const admissionStartedAt = Date.now();
+      const decision = await awaitToolPreparation(() => this.beforeExecuteEmitter.fireBeforeExecute(beforeContext), options.signal);
+      this.logSlowToolPhase(call, 'admission', admissionStartedAt);
 
-    if (decision?.veto !== undefined) {
-      return settleSynthetic(call.args, decision.veto, 'vetoed', displayFields);
+      if (decision?.veto !== undefined) {
+        return settleSynthetic(call.args, decision.veto, 'vetoed', displayFields);
+      }
+
+      const executionMetadata = decision?.executionMetadata;
+
+      let executionVeto: ExecutableToolResult | undefined;
+      const beforeExecuteStartedAt = Date.now();
+      await awaitToolPreparation(() => this.willExecuteEmitter.fireAsync(
+        {
+          turnId: options.turnId,
+          toolCall: call.toolCall,
+          execution,
+          args: call.args,
+          veto: (result) => { executionVeto ??= result; },
+        },
+        options.signal,
+      ), options.signal);
+      this.logSlowToolPhase(call, 'before_execute', beforeExecuteStartedAt);
+      options.signal.throwIfAborted();
+      if (executionVeto !== undefined) return settleSynthetic(call.args, executionVeto, 'vetoed', displayFields);
+
+      this.dispatchToolCall(call, call.args, options, displayFields);
+
+      return {
+        task: {
+          accesses: execution.accesses ?? ToolAccesses.all(),
+          execute: async (taskSignal) =>
+            this.runSingleExecution(call, execution, executionMetadata, options, taskSignal),
+        },
+        resolvedAccesses: execution.accesses,
+        stopBatchAfterThis: execution.stopBatchAfterThis,
+      };
+    } catch (error) {
+      if (!options.signal.aborted) throw error;
+      return settleError(call.args, abortedToolOutput(call.toolName, options.signal), 'aborted', displayFields);
     }
-
-    const executionMetadata = decision?.executionMetadata;
-
-    let executionVeto: ExecutableToolResult | undefined;
-    const beforeExecuteStartedAt = Date.now();
-    await this.willExecuteEmitter.fireAsync(
-      {
-        turnId: options.turnId,
-        toolCall: call.toolCall,
-        execution,
-        args: call.args,
-        veto: (result) => { executionVeto ??= result; },
-      },
-      options.signal,
-    );
-    this.logSlowToolPhase(call, 'before_execute', beforeExecuteStartedAt);
-    if (executionVeto !== undefined) return settleSynthetic(call.args, executionVeto, 'vetoed', displayFields);
-
-    this.dispatchToolCall(call, call.args, options, displayFields);
-
-    return {
-      task: {
-        accesses: execution.accesses ?? ToolAccesses.all(),
-        execute: async (taskSignal) =>
-          this.runSingleExecution(call, execution, executionMetadata, options, taskSignal),
-      },
-      resolvedAccesses: execution.accesses,
-      stopBatchAfterThis: execution.stopBatchAfterThis,
-    };
   }
 
   private prepareSkippedToolCall(
@@ -497,47 +519,69 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
   }
 
   private async *executeBatch(
-    tasks: readonly { task: ToolExecutionTask; call: PreflightedToolCall; readyAt: number }[],
+    tasks: AsyncIterable<PreparedToolTask>,
     signal: AbortSignal,
   ): AsyncIterable<TimedToolResult> {
     const scheduler = new ToolScheduler<TimedToolResult>();
     const allResults: Array<Promise<TimedToolResult>> = [];
-    const pendingResults = new Map<number, Promise<SettledTimedToolResult>>();
-
-    for (let index = 0; index < tasks.length; index += 1) {
-      const { task, call, readyAt } = tasks[index]!;
-      const pendingResult = scheduler.add({
-        accesses: task.accesses,
-        start: async () => {
-          this.logSlowToolPhase(call, 'schedule', readyAt);
-          const startedAt = Date.now();
-          return {
-            result: task.execute(signal).then(({ result, outcome }) => {
-              this.logSlowToolPhase(call, 'execute', startedAt);
-              return { index, result, outcome, durationMs: Math.max(0, Date.now() - startedAt) };
-            }),
-          };
-        },
-      });
-      allResults.push(pendingResult);
-      pendingResults.set(
-        index,
-        pendingResult.then(
-          (value): SettledTimedToolResult => ({ status: 'fulfilled', value }),
-          (reason): SettledTimedToolResult => ({ status: 'rejected', index, reason }),
-        ),
-      );
-    }
+    const pendingResults = new Map<number, Promise<ToolBatchEvent>>();
+    const preparation = tasks[Symbol.asyncIterator]();
+    const prepareNext = (): Promise<ToolBatchEvent> => preparation.next().then(
+      (result) => ({ type: 'prepared', result }),
+      (error) => ({ type: 'prepareRejected', reason: error }),
+    );
+    let nextPrepared: Promise<ToolBatchEvent> | undefined = prepareNext();
+    let preparationFailure: { reason: unknown } | undefined;
+    let nextIndex = 0;
 
     try {
-      while (pendingResults.size > 0) {
-        const settled = await Promise.race(pendingResults.values());
+      while (nextPrepared !== undefined || pendingResults.size > 0) {
+        const candidates = [...pendingResults.values()];
+        if (nextPrepared !== undefined) candidates.push(nextPrepared);
+        const event = await Promise.race(candidates);
+        if (event.type === 'prepareRejected') {
+          nextPrepared = undefined;
+          preparationFailure = event;
+          continue;
+        }
+        if (event.type === 'prepared') {
+          if (event.result.done === true) {
+            nextPrepared = undefined;
+            continue;
+          }
+          const prepared = event.result.value;
+          const { task, call, readyAt } = prepared;
+          const index = nextIndex++;
+          const pendingResult = scheduler.add({
+            accesses: task.accesses,
+            start: async () => {
+              this.logSlowToolPhase(call, 'schedule', readyAt);
+              const startedAt = Date.now();
+              return {
+                result: task.execute(signal).then(({ result, outcome }) => {
+                  this.logSlowToolPhase(call, 'execute', startedAt);
+                  return { index, prepared, result, outcome, durationMs: Math.max(0, Date.now() - startedAt) };
+                }),
+              };
+            },
+          });
+          allResults.push(pendingResult);
+          pendingResults.set(index, pendingResult.then(
+            (value): ToolBatchEvent => ({ type: 'executed', settled: { status: 'fulfilled', value } }),
+            (error): ToolBatchEvent => ({ type: 'executed', settled: { status: 'rejected', index, reason: error } }),
+          ));
+          nextPrepared = prepareNext();
+          continue;
+        }
+        const { settled } = event;
         const index = settled.status === 'fulfilled' ? settled.value.index : settled.index;
         pendingResults.delete(index);
         if (settled.status === 'rejected') throw settled.reason;
         yield settled.value;
       }
+      if (preparationFailure !== undefined) throw preparationFailure.reason;
     } finally {
+      await preparation.return?.();
       await Promise.allSettled(allResults);
     }
   }
@@ -1007,6 +1051,17 @@ function abortedToolOutput(toolName: string, signal: AbortSignal): string {
     return `The user manually interrupted "${toolName}" (and anything else running at the same time). This was a deliberate user action, not a system error, timeout, or capacity limit. Do not retry automatically or guess at the cause — wait for the user's next instruction.`;
   }
   return `Tool "${toolName}" was aborted`;
+}
+
+async function awaitToolPreparation<Result>(
+  prepare: () => Result | PromiseLike<Result>,
+  signal: AbortSignal,
+): Promise<Result> {
+  signal.throwIfAborted();
+  return abortable(Promise.resolve().then(() => {
+    signal.throwIfAborted();
+    return prepare();
+  }), signal);
 }
 
 async function raceWithAbortGrace<Result>(

@@ -8,6 +8,8 @@ import { createServices } from '#/_base/di/test';
 import { ISshConnectionGateService, SshConnectionGateService, sessionSshHostsKey, sshHostFingerprint } from '#/agent/ssh/sshConnectionGateService';
 import type { BeforeResolveToolContext } from '#/agent/toolExecutor/toolHooks';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentContextInjectorService, type ContextInjectionProvider } from '#/agent/contextInjector/contextInjector';
 import { AgentContextInjectorService } from '#/agent/contextInjector/contextInjectorService';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
@@ -101,6 +103,7 @@ async function fixture(options: {
       reg.definePartialInstance(ISessionIndexMirror, { record: () => {} });
       reg.define(ISessionMetadata, SessionMetadata);
       reg.defineInstance(IAgentToolExecutorService, executor);
+      reg.define(IAgentToolRegistryService, AgentToolRegistryService);
       reg.defineInstance(IAgentRuntimeService, runtime);
       reg.definePartialInstance(IAgentPermissionModeService, { mode: options.mode ?? 'auto' });
       reg.definePartialInstance(IAgentScopeContext, { agentId: options.agentId ?? 'main' });
