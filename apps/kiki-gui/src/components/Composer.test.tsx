@@ -35,6 +35,7 @@ const listSessionSkills = vi.fn();
 const listWorkspaceSkills = vi.fn();
 const listDraftSkills = vi.fn();
 const listNamedAgentProfiles = vi.fn();
+const listPersonas = vi.fn();
 const previewAgentProfileFile = vi.fn();
 const listExecutors = vi.fn();
 const getExecutorModels = vi.fn();
@@ -117,6 +118,7 @@ vi.mock('../state/connection', () => ({
       listWorkspaceSkills,
       listDraftSkills,
       listNamedAgentProfiles,
+      listPersonas,
       previewAgentProfileFile,
       listExecutors,
       getConfig,
@@ -217,6 +219,10 @@ beforeEach(() => {
     ] satisfies NamedAgentProfile[],
   });
   listExecutors.mockReset().mockResolvedValue({ items: EXECUTOR_ITEMS });
+  listPersonas.mockReset().mockResolvedValue([
+    { id: 'lin-lan', name: '林岚', title: '全栈架构师', revision: '1', archived: false },
+    { id: 'nia', name: '妮娅', title: '个人管家', revision: '1', archived: false },
+  ]);
   previewAgentProfileFile.mockReset().mockResolvedValue({ profile: FILE_PROFILE });
   getExecutorModels.mockReset().mockReturnValue(new Promise(() => {}));
   refreshExecutorModels.mockReset();
@@ -782,6 +788,27 @@ describe('Composer execution control', () => {
     expect(clear?.getAttribute('aria-label')).toBe('Remove persona 林岚');
     await click(container.querySelector('#composer-profile-select')!);
     expect(container.querySelector('[data-execution-bare="claude-acp"]')).not.toBeNull();
+  });
+
+  it('allows picking a persona directly from the profile select menu', async () => {
+    const onSelectPersona = vi.fn();
+    const onChangeExecution = vi.fn();
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution,
+      personaPick: { value: undefined, onChange: onSelectPersona },
+    });
+    const trigger = await waitForProfileTrigger(container);
+    await click(trigger);
+    expect(container.querySelector('[data-composer-persona-option="nia"]')).not.toBeNull();
+    const niaOption = container.querySelector<HTMLButtonElement>('[data-composer-persona-option="nia"] button')!;
+    expect(niaOption.textContent).toContain('妮娅');
+    expect(niaOption.textContent).toContain('个人管家');
+    await click(niaOption);
+    expect(onSelectPersona).toHaveBeenCalledWith('nia');
+    expect(onChangeExecution).toHaveBeenCalledWith(expect.objectContaining({ executor: 'native', profile: undefined }));
   });
 
   it('keeps the persona-branch control openable while a turn runs', async () => {

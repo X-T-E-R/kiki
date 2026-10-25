@@ -25,6 +25,8 @@ import {
   usePopover,
 } from '../ComposerControls';
 import { Icon } from '../icons';
+import { PersonaAvatar, personaAvatarOf } from '../persona/PersonaAvatar';
+import { matchesPersona, sortPersonas, usePersonaList } from '../persona/usePersonas';
 import {
   configuredEngineDescriptors,
   engineDisplayOf,
@@ -68,6 +70,7 @@ export interface ProfileSelectProps {
   readonly nativeLabel: string;
   readonly persona?: { readonly id: string; readonly name: string; readonly avatar: ReactNode };
   readonly onClearPersona?: () => void;
+  readonly onSelectPersona?: (personaId: string) => void;
   readonly onCancelPending?: () => void;
   readonly boundExecution?: ExecutionChoice;
 }
@@ -85,6 +88,7 @@ export function ProfileSelect({
   nativeLabel,
   persona,
   onClearPersona,
+  onSelectPersona,
   onCancelPending,
   boundExecution,
 }: ProfileSelectProps) {
@@ -310,6 +314,13 @@ export function ProfileSelect({
   const otherProfiles = useMemo(() => {
     return candidateProfiles.filter((p) => p.main !== true);
   }, [candidateProfiles]);
+
+  const personasQuery = usePersonaList({ enabled: onSelectPersona !== undefined });
+  const allPersonas = useMemo(() => sortPersonas((personasQuery.data ?? []).filter((item) => !item.archived)), [personasQuery.data]);
+  const filteredPersonas = useMemo(() => {
+    if (allPersonas.length === 0) return [];
+    return allPersonas.filter((item) => matchesPersona(item, query));
+  }, [allPersonas, query]);
 
   const filterProfileList = useCallback((list: readonly NamedAgentProfile[]) => {
     const needle = query.trim().toLowerCase();
@@ -838,7 +849,7 @@ export function ProfileSelect({
                     {/* Filtered Other Profiles */}
                     {filteredOtherProfiles.map(renderProfileRow)}
 
-                    {filteredMainProfiles.length === 0 && filteredOtherProfiles.length === 0 && query.trim() !== '' ? (
+                    {filteredMainProfiles.length === 0 && filteredOtherProfiles.length === 0 && (onSelectPersona === undefined || filteredPersonas.length === 0) && query.trim() !== '' ? (
                       <li className="px-3 py-4 text-center text-[12px] text-ink-faint">
                         {t('composer.execution.noMatch', { query: query.trim() })}
                       </li>
@@ -862,6 +873,56 @@ export function ProfileSelect({
                     </li>
                   </ul>
                 </div>
+
+                {/* Group 3: 角色 (Personas) */}
+                {onSelectPersona !== undefined && (filteredPersonas.length > 0 || query.trim() === '') ? (
+                  <div className="border-t border-hairline pt-1">
+                    <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
+                      {locale === 'zh' ? '角色' : 'Personas'}
+                    </div>
+                    <ul className="space-y-0.5">
+                      {filteredPersonas.map((item) => {
+                        const isSelected = persona?.id === item.id;
+                        const subline = [item.title, item.job].filter(Boolean).join(' · ');
+                        return (
+                          <li key={item.id} data-composer-persona-option={item.id}>
+                            <button
+                              type="button"
+                              role="option"
+                              aria-selected={isSelected ? 'true' : 'false'}
+                              data-menu-row
+                              data-persona-id={item.id}
+                              data-option-value={item.id}
+                              onClick={() => {
+                                onSelectPersona(item.id);
+                                close(true);
+                              }}
+                              className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
+                            >
+                              <Check on={isSelected} />
+                              <PersonaAvatar
+                                persona={personaAvatarOf(item)}
+                                size={20}
+                                decorative
+                                className="!rounded-full shrink-0 mt-0.5"
+                              />
+                              <span className="min-w-0 flex-1">
+                                <span className="block min-w-0 truncate font-medium text-ink">
+                                  {item.name}
+                                </span>
+                                {subline ? (
+                                  <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-ink-faint">
+                                    {subline}
+                                  </span>
+                                ) : null}
+                              </span>
+                            </button>
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null}
               </div>
             </>
           )}

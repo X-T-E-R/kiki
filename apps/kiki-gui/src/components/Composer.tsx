@@ -2475,6 +2475,9 @@ export function Composer({
               avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
             }}
             onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
+            onSelectPersona={personaPick === undefined ? undefined : (id) => {
+              personaPick.onChange(id);
+            }}
             onCancelPending={executionPending ? onCancelExecution : pendingRuntimeControls !== undefined ? onCancelRuntimeControls : undefined}
             boundExecution={boundExecution}
           />
