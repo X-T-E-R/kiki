@@ -288,4 +288,21 @@ describe('delivery note contract', () => {
     const calls = record();
     expect(deliveryNotes(message({ channels: channels({ channelId: 'internal', status: 'delivered' }) }), calls.t, 'zh')).toEqual([]);
   });
+
+  it('renders partial delivery status through i18n for internal and external channels', () => {
+    const internalPartial = record();
+    deliveryNotes(message({
+      channels: channels({ channelId: 'internal', status: 'partial' }),
+    }), internalPartial.t, 'zh');
+    expect(internalPartial.calls).toContainEqual(['message.internalPartial', undefined]);
+
+    const externalPartial = record();
+    deliveryNotes(message({
+      channels: channels(
+        { channelId: 'internal', status: 'delivered' },
+        { channelId: 'im:feishu', status: 'partial' },
+      ),
+    }), externalPartial.t, 'zh');
+    expect(externalPartial.calls).toContainEqual(['message.channelPartial', { channel: 'im:feishu' }]);
+  });
 });

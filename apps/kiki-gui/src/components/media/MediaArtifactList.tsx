@@ -29,7 +29,7 @@
  * A file with no measured length shows its size alone rather than a guess.
  */
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import { formatBytes } from '@kiki/session-core/composer/media';
@@ -41,6 +41,8 @@ import { MediaPart } from '../mediaParts';
 import { useMediaPreview } from '../mediaPreviewContext';
 import { QUIET_BUTTON } from '../capabilities/primitives';
 import { MediaKindGlyph } from './MediaKindGlyph';
+import { useSessionMediaPlayback } from '../useSessionMediaPlayback';
+import { isRemoteConnection } from '../imageActions';
 
 /** An SDK artifact as the existing media surface already understands. */
 export function artifactToMediaRef(artifact: MediaArtifact): MediaRef {
@@ -249,50 +251,140 @@ function FileChip({ item }: { readonly item: MediaRef }) {
  */
 function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifact; readonly sessionId?: string }) {
   const { t } = useI18n();
-  const client = useOptionalConnection()?.client;
-  const [armed, setArmed] = useState(false);
-  const [load, setLoad] = useState<{ status: 'idle' | 'loading' | 'ready'; url?: string; failed: boolean }>({ status: 'idle', failed: false });
-  const objectUrl = useRef<string | undefined>(undefined);
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const remoteScope = isRemoteConnection(connection);
+  // Armed state binds to the exact client connection, session, and fileId (not containing attempt so retries preserve arming)
+  const [armedSource, setArmedSource] = useState<{ client: typeof client; sessionId: string | undefined; fileId: string | undefined } | undefined>(undefined);
+  const [attempt, setAttempt] = useState(0);
 
-  useEffect(() => () => {
-    if (objectUrl.current !== undefined) { URL.revokeObjectURL(objectUrl.current); objectUrl.current = undefined; }
-  }, []);
+  const currentSource = useMemo(
+    () => ({ client, sessionId, fileId: artifact.file_id }),
+    [client, sessionId, artifact.file_id],
+  );
 
+  const armed = armedSource !== undefined
+    && armedSource.client === client
+    && armedSource.sessionId === sessionId
+    && armedSource.fileId === artifact.file_id;
+
+  // V3: Bind byteLoad state, decode failure, and objectUrl to the current source identity (client, sessionId, file_id, attempt)
+  const sourceIdentity = useMemo(
+    () => ({ client, sessionId, fileId: artifact.file_id, attempt }),
+    [client, sessionId, artifact.file_id, attempt],
+  );
+
+  const mediaRef = useMemo<MediaRef>(() => ({
+    kind: 'file',
+    fileId: artifact.file_id,
+    mime: artifact.mime?.startsWith('audio/') ? artifact.mime : 'audio/mpeg',
+    name: artifact.name,
+    size: artifact.bytes,
+  }), [artifact.file_id, artifact.mime, artifact.name, artifact.bytes]);
+
+  const playback = useSessionMediaPlayback(
+    mediaRef,
+    sessionId,
+    armed ? client : undefined,
+    remoteScope,
+    attempt,
+  );
+
+  const [decodeFailureState, setDecodeFailureState] = useState<{ source: typeof sourceIdentity; failed: boolean }>({
+    source: sourceIdentity,
+    failed: false,
+  });
+  const decodeFailed = decodeFailureState.source === sourceIdentity && decodeFailureState.failed;
+
+  const [byteState, setByteState] = useState<{
+    source: typeof sourceIdentity;
+    load: { status: 'idle' | 'loading' | 'ready'; url?: string; failed: boolean };
+  }>({
+    source: sourceIdentity,
+    load: { status: 'idle', failed: false },
+  });
+
+  const byteLoad = byteState.source === sourceIdentity ? byteState.load : { status: 'idle', failed: false };
+  const objectUrlRef = useRef<string | undefined>(undefined);
+
+  // Revoke previous object URL on source change or unmount
   useEffect(() => {
-    if (!armed || client === undefined || sessionId === undefined) return;
+    return () => {
+      if (objectUrlRef.current !== undefined) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = undefined;
+      }
+    };
+  }, [sourceIdentity]);
+
+  // V1: Include attempt in fallback effect dependencies, so remote / unsupported route retries refetch bytes
+  useEffect(() => {
+    if (!armed || client === undefined || sessionId === undefined || playback.status !== 'fallback') return;
     const controller = new AbortController();
-    setLoad({ status: 'loading', failed: false });
+    setByteState({ source: sourceIdentity, load: { status: 'loading', failed: false } });
+
     client.readSessionMediaBytes(sessionId, artifact.file_id, { signal: controller.signal, timeoutMs: 0 })
       .then(({ bytes, mime }) => {
         if (controller.signal.aborted) return;
+        if (objectUrlRef.current !== undefined) {
+          URL.revokeObjectURL(objectUrlRef.current);
+        }
         const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: artifact.mime || mime }));
-        objectUrl.current = url;
-        setLoad({ status: 'ready', url, failed: false });
+        objectUrlRef.current = url;
+        setByteState({ source: sourceIdentity, load: { status: 'ready', url, failed: false } });
       }, () => {
-        if (!controller.signal.aborted) setLoad({ status: 'idle', failed: true });
+        if (!controller.signal.aborted) {
+          setByteState({ source: sourceIdentity, load: { status: 'idle', failed: true } });
+        }
       });
-    return () => { controller.abort(); };
-  }, [armed, client, sessionId, artifact.file_id, artifact.mime]);
 
-  if (load.failed) {
+    return () => { controller.abort(); };
+  }, [armed, client, sessionId, artifact.file_id, artifact.mime, playback.status, attempt, sourceIdentity]);
+
+  // V2: audio onError handler when decoding or streaming media URL fails
+  const onAudioError = () => {
+    if (playback.status === 'ready') {
+      playback.fail();
+    } else {
+      setDecodeFailureState({ source: sourceIdentity, failed: true });
+    }
+  };
+
+  const failed = armed && (playback.status === 'failed' || byteLoad.failed || decodeFailed);
+  const loading = armed && (playback.status === 'loading' || byteLoad.status === 'loading');
+  const readyUrl = armed && !decodeFailed
+    ? (playback.status === 'ready' ? playback.url : (playback.status === 'fallback' && byteLoad.status === 'ready' ? byteLoad.url : undefined))
+    : undefined;
+
+  if (failed) {
     return (
       <span className="flex min-w-0 flex-wrap items-center gap-2" data-media-audio={artifact.id} data-media-audio-state="failed">
         <span role="alert" className="text-[11px] text-danger">{t('cap.media.artifact.audioFailed')}</span>
-        <button type="button" onClick={() => { setLoad({ status: 'idle', failed: false }); setArmed(true); }}
-          className={`${QUIET_BUTTON} h-8`} data-media-audio-retry={artifact.id}>
+        <button
+          type="button"
+          onClick={() => {
+            setDecodeFailureState({ source: sourceIdentity, failed: false });
+            setByteState({ source: sourceIdentity, load: { status: 'idle', failed: false } });
+            setAttempt((c) => c + 1);
+            setArmedSource(currentSource);
+          }}
+          className={`${QUIET_BUTTON} h-8`}
+          data-media-audio-retry={artifact.id}
+        >
           {t('common.retry')}
         </button>
       </span>
     );
   }
-  if (load.status === 'ready' && load.url !== undefined) {
+  if (readyUrl !== undefined) {
     return (
       <audio
         controls
         preload="none"
         data-media-audio={artifact.id}
         data-media-audio-state="ready"
-        src={load.url}
+        src={readyUrl}
+        onError={onAudioError}
         className="h-8 max-w-[min(100%,17rem)]"
       >
         {t('cap.media.artifact.audioUnsupported')}
@@ -302,14 +394,14 @@ function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifa
   return (
     <button
       type="button"
-      disabled={load.status === 'loading' || sessionId === undefined}
+      disabled={loading || sessionId === undefined}
       data-media-audio={artifact.id}
-      data-media-audio-state={load.status}
-      onClick={() => { setArmed(true); }}
+      data-media-audio-state={loading ? 'loading' : 'idle'}
+      onClick={() => { setArmedSource(currentSource); }}
       className={`${QUIET_BUTTON} h-8 border border-hairline`}
     >
       <MediaKindGlyph kind="audio" className="h-3.5 w-3.5 text-ink-faint" />
-      {load.status === 'loading' ? t('cap.media.artifact.audioLoading') : t('cap.media.artifact.play')}
+      {loading ? t('cap.media.artifact.audioLoading') : t('cap.media.artifact.play')}
     </button>
   );
 }

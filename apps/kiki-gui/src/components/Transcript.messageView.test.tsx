@@ -449,7 +449,7 @@ describe('message view (Bot mode)', () => {
     const { container } = await render(timeline(blocks, 'message'));
     expect(container.querySelector('[data-source-block-id="u9"]')?.textContent).toBe('ping');
     expect(container.textContent).not.toContain('Message from thread');
-    expect(container.textContent).toContain('来自线程 sess-source');
+    expect(container.textContent).toContain('来自线程 sess-sou');
   });
 
   it('says who is working while the turn runs, without the process spinner', async () => {

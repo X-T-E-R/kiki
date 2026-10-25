@@ -20,7 +20,7 @@ import { toolDisplayName } from '../lib/pluginCatalog';
 import { ContentContinuation, DISPLAY_ROOTS, EDIT_ROOTS, frameContentSource, OUTPUT_ROOTS } from './ContentContinuation';
 import { DiffCard } from './DiffCard';
 import { isMemoryToolName, MemoryToolRow } from './MemoryToolRow';
-import { MediaJobView, readMediaJobFromToolResult } from './media/MediaJobView';
+import { MediaJobView, readMediaJobResult } from './media/MediaJobView';
 import { FilePathLink, MediaPartList } from './mediaParts';
 import { Icon, OutcomeMark, type IconName } from './icons';
 import { ActivityRow, ActivityStats, type ActivityTone } from './timeline/ActivityRow';
@@ -456,13 +456,13 @@ function OutputView({ output, media, agentId, island = false, external = false }
 /** The text/JSON reading of a result, with its media handled above. */
 function outputBody(output: unknown, agentId: string, island: boolean, t: Translate): ReactNode {
   if (output === undefined || output === null) return null;
-  // The media plugin's `generate` result: .
+  // The media plugin's `generate` or `voice` result:
   // A short generation shows its files right here; a long one shows where it
   // got to, with the same honesty rules the management view uses. Drawn
   // before the string branch so a serialized job is never shown as raw JSON.
-  const mediaJob = readMediaJobFromToolResult(output);
-  if (mediaJob !== undefined) {
-    return <MediaJobView job={mediaJob} agentId={agentId} />;
+  const mediaResult = readMediaJobResult(output);
+  if (mediaResult !== undefined) {
+    return <MediaJobView job={mediaResult.job} delivery={mediaResult.delivery} agentId={agentId} />;
   }
   if (typeof output === 'string') return <ReadableToolText text={output} className={wellClass(island)} />;
   if (typeof output === 'object') {

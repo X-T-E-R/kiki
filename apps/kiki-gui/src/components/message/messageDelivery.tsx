@@ -72,10 +72,18 @@ export function deliveryNotes(block: MessageBlock, t: Translate, locale: Locale)
   // A channel that delivered the text can still name media it did not take;
   // `unsupported` alone means it took none of the attachments at all.
   const internalKinds = internal?.unsupported ?? [];
-  if (internalKinds.length > 0 || internal?.status === 'unsupported') {
-    notes.push(internalKinds.length === 0
-      ? { id: 'internal-failed', text: t('message.channelFailed', { channel: channelName('internal', t) }), icon: 'info', action: false }
-      : { id: 'internal-unsupported', text: t('message.internalUnsupported', { kinds: kindList(internalKinds, t, locale) }), icon: 'info', action: false });
+  if (internalKinds.length > 0 || internal?.status === 'unsupported' || internal?.status === 'partial') {
+    const text = internalKinds.length > 0
+      ? t('message.internalUnsupported', { kinds: kindList(internalKinds, t, locale) })
+      : internal?.status === 'partial'
+        ? t('message.internalPartial')
+        : t('message.channelFailed', { channel: channelName('internal', t) });
+    const id = internalKinds.length > 0
+      ? 'internal-unsupported'
+      : internal?.status === 'partial'
+        ? 'internal-partial'
+        : 'internal-failed';
+    notes.push({ id, text, icon: 'info', action: false });
   }
   for (const channel of external) {
     const name = channelName(channel.channelId, t);
@@ -84,11 +92,13 @@ export function deliveryNotes(block: MessageBlock, t: Translate, locale: Locale)
     // is confirmed, so it cannot also claim which attachments it skipped.
     if (channel.status === 'unknown') {
       notes.push({ id: `channel-unknown-${channel.channelId}`, text: t('message.channelUnknown', { channel: name }), icon: 'warning', action: false });
-    } else if (kinds.length > 0) {
-      // `delivered` with a non-empty list is a partial send: the endpoint took
-      // the message and named the media it did not take. `unsupported` with no
-      // list falls through to "not delivered".
-      notes.push({ id: `channel-unsupported-${channel.channelId}`, text: t('message.channelUnsupported', { channel: name, kinds: kindList(kinds, t, locale) }), icon: 'info', action: false });
+    } else if (kinds.length > 0 || channel.status === 'partial') {
+      // `delivered` with a non-empty list or `partial` is a partial send: the endpoint took
+      // the message and named the media it did not take (or reported partial status).
+      const text = kinds.length > 0
+        ? t('message.channelUnsupported', { channel: name, kinds: kindList(kinds, t, locale) })
+        : t('message.channelPartial', { channel: name });
+      notes.push({ id: `channel-unsupported-${channel.channelId}`, text, icon: 'info', action: false });
     } else if (channel.status === 'unsupported' || channel.status === 'failed') {
       notes.push({ id: `channel-failed-${channel.channelId}`, text: t('message.channelFailed', { channel: name }), icon: 'warning', action: false });
     }

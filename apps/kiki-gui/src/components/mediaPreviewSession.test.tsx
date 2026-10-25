@@ -27,11 +27,12 @@ const mocks = vi.hoisted(() => ({
   openMediaPlayback: vi.fn(),
   closeMediaPlayback: vi.fn(),
   remote: false,
+  activeClient: undefined as unknown,
 }));
 
 vi.mock('../state/connection', async (importOriginal) => {
   const original = await importOriginal<typeof import('../state/connection')>();
-  const client = {
+  const defaultClient = {
     readingOptions: () => ({ timeoutMs: 0 }),
     readSessionMediaBytes: mocks.readSessionMediaBytes,
     readHostFileBytes: mocks.readHostFileBytes,
@@ -44,7 +45,10 @@ vi.mock('../state/connection', async (importOriginal) => {
   };
   return {
     ...original,
-    useOptionalConnection: () => ({ client, connectionSource: mocks.remote ? 'remote' : 'local' }),
+    useOptionalConnection: () => ({
+      client: (mocks.activeClient ?? defaultClient) as typeof defaultClient,
+      connectionSource: mocks.remote ? 'remote' : 'local',
+    }),
   };
 });
 
@@ -98,6 +102,7 @@ afterEach(async () => {
   mocks.readHostMediaPreviewBytes.mockReset();
   mocks.downloadSessionMedia.mockReset();
   mocks.downloadHostFile.mockReset();
+  mocks.activeClient = undefined;
   // By default the preview read is the original read: these cases are about
   // the file id, the MIME and the dialog, not about bounding.
   mocks.readSessionMediaPreviewBytes.mockImplementation((...args: unknown[]) => mocks.readSessionMediaBytes(...(args as [string, string])));
@@ -680,5 +685,953 @@ describe('session Range playback', () => {
     expect(mocks.openMediaPlayback).not.toHaveBeenCalled();
     if (item.path !== undefined) expect(mocks.readHostFileBytes).toHaveBeenCalledWith(item.path, expect.anything());
     else expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith('session-a', item.fileId, expect.anything());
+  });
+});
+
+describe('ToolCard real Voice plugin result and canonical audio playback', () => {
+  it('parses real Voice plugin JSON string with separate job and delivery, rendering delivery details', async () => {
+    const rawVoiceOutput = JSON.stringify({
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-123',
+        request_id: 'req-speak-1',
+        state: 'succeeded',
+        phase: 'complete',
+        provider: 'kiki-media/script-voice-proof',
+        model: 'default',
+        artifacts: [{
+          id: 'art-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-audio-voice-1',
+          name: 'speech.mp3',
+          mime: 'audio/mpeg',
+          bytes: 1024,
+        }],
+      },
+      delivery: {
+        delivery: 'delivered',
+        request_id: 'delivery-1',
+        detail: 'Sent successfully to channel',
+        channels: [{
+          channel_id: 'im:qq',
+          status: 'delivered',
+        }],
+      },
+    });
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-voice-1',
+      toolCallId: 'call-voice-1',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{"text":"hello"}',
+      args: { text: 'hello' },
+      status: 'done',
+      output: rawVoiceOutput,
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_voice_test">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    // Expand ToolCard
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    // Verify MediaJobView rendered from JSON string
+    const jobElem = container.querySelector('[data-media-job="voice-job-123"]');
+    expect(jobElem).not.toBeNull();
+    expect(jobElem?.getAttribute('data-media-job-state')).toBe('succeeded');
+
+    // Verify delivery section is rendered separately
+    const deliveryElem = container.querySelector('[data-media-job-delivery]');
+    expect(deliveryElem).not.toBeNull();
+    expect(deliveryElem?.textContent).toContain('Delivery');
+    expect(deliveryElem?.textContent).toContain('Delivered');
+    expect(deliveryElem?.textContent).toContain('Sent successfully to channel');
+    expect(container.querySelector('[data-media-delivery-channel="im:qq"]')).not.toBeNull();
+  });
+
+  it('renders mixed delivered/unsupported and unknown channels accurately without false success', async () => {
+    const rawVoiceOutput = JSON.stringify({
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-mixed',
+        request_id: 'req-speak-2',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-audio-mixed',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-audio-mixed',
+          name: 'mixed.mp3',
+          mime: 'audio/mpeg',
+          bytes: 2048,
+        }],
+      },
+      delivery: {
+        delivery: 'partial',
+        request_id: 'del-mixed-1',
+        channels: [
+          { channel_id: 'internal', status: 'delivered' },
+          { channel_id: 'im:unsupported', status: 'unsupported', unsupported: ['voice'] },
+          { channel_id: 'im:unknown', status: 'unknown' },
+        ],
+      },
+    });
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-voice-mixed',
+      toolCallId: 'call-voice-mixed',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: rawVoiceOutput,
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_voice_test">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const deliveryElem = container.querySelector('[data-media-job-delivery]');
+    expect(deliveryElem).not.toBeNull();
+    expect(deliveryElem?.textContent).toContain('Partially delivered');
+    expect(container.querySelector('[data-media-delivery-channel="im:unsupported"][data-media-delivery-channel-status="unsupported"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-delivery-channel="im:unknown"][data-media-delivery-channel-status="unknown"]')).not.toBeNull();
+  });
+
+  it('plays audio from canonical file_id via openMediaPlayback on user action', async () => {
+    mocks.openMediaPlayback.mockResolvedValue({
+      preview_id: 'grant-voice-play',
+      url: '/media-preview/grant-voice-play',
+      mime: 'audio/mpeg',
+      size: 1234,
+      expires_at: Date.now() + 60_000,
+    });
+
+    const voiceOutput = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-play',
+        request_id: 'req-audio-play',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-play-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-canonical-audio-play',
+          name: 'voice-clip.mp3',
+          mime: 'audio/mpeg',
+          bytes: 1234,
+        }],
+      },
+    };
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-voice-play',
+      toolCallId: 'call-voice-play',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: JSON.stringify(voiceOutput),
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_audio_session_1">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const playBtn = container.querySelector<HTMLButtonElement>('[data-media-audio="art-play-1"]');
+    expect(playBtn).not.toBeNull();
+
+    // Trigger audio playback
+    await act(async () => {
+      playBtn?.click();
+    });
+
+    expect(mocks.openMediaPlayback).toHaveBeenCalledWith(
+      'session_audio_session_1',
+      'file-canonical-audio-play',
+      expect.anything(),
+    );
+
+    // Audio element loaded and mounted via canonical stream URL
+    const audioElement = container.querySelector<HTMLAudioElement>('audio[data-media-audio="art-play-1"]');
+    expect(audioElement).not.toBeNull();
+    expect(audioElement?.src).toBe('http://localhost:8080/media-preview/grant-voice-play');
+  });
+
+  it('falls back to readSessionMediaBytes when playback route is unsupported', async () => {
+    mocks.openMediaPlayback.mockRejectedValue({ code: 404 });
+    mocks.readSessionMediaBytes.mockResolvedValue({
+      bytes: new Uint8Array([1, 2, 3]),
+      mime: 'audio/mpeg',
+    });
+
+    const voiceOutput = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-fb',
+        request_id: 'req-fb',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-fb-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-canonical-audio-fb',
+          name: 'fallback.mp3',
+          mime: 'audio/mpeg',
+          bytes: 456,
+        }],
+      },
+    };
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-voice-fb',
+      toolCallId: 'call-voice-fb',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: JSON.stringify(voiceOutput),
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_fb">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const playBtn = container.querySelector<HTMLButtonElement>('[data-media-audio="art-fb-1"]');
+    await act(async () => {
+      playBtn?.click();
+    });
+
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledWith(
+      'session_fb',
+      'file-canonical-audio-fb',
+      expect.anything(),
+    );
+    const audioElement = container.querySelector<HTMLAudioElement>('audio[data-media-audio="art-fb-1"]');
+    expect(audioElement).not.toBeNull();
+    expect(audioElement?.src).toBe('blob:kiki-session-media');
+  });
+
+  it('safely degrades malformed JSON output to ReadableToolText without crashing', async () => {
+    const malformed = '{ "type": "media_generation", "job": { incomplete: true';
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-malformed',
+      toolCallId: 'call-malformed',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: malformed,
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_test">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    expect(container.querySelector('[data-media-job]')).toBeNull();
+    expect(container.textContent).toContain('{ "type": "media_generation"');
+  });
+
+  it('V1: retries remote/fallback byte load after initial failure on user retry action', async () => {
+    // Force remote connection so it hits fallback byte load
+    mocks.remote = true;
+    let callCount = 0;
+    mocks.readSessionMediaBytes.mockImplementation(async () => {
+      callCount++;
+      if (callCount === 1) {
+        throw new Error('remote network read failed');
+      }
+      return {
+        bytes: new Uint8Array([1, 2, 3]),
+        mime: 'audio/mpeg',
+      };
+    });
+
+    const voiceOutput = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-remote-retry',
+        request_id: 'req-remote-retry',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-remote-retry-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-remote-retry-1',
+          name: 'remote-clip.mp3',
+          mime: 'audio/mpeg',
+          bytes: 1234,
+        }],
+      },
+    };
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-remote-retry',
+      toolCallId: 'call-remote-retry',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: JSON.stringify(voiceOutput),
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_remote_retry">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    // 1st play: armed -> triggers readSessionMediaBytes -> fails
+    const playBtn = container.querySelector<HTMLButtonElement>('[data-media-audio="art-remote-retry-1"]');
+    await act(async () => {
+      playBtn?.click();
+    });
+
+    expect(callCount).toBe(1);
+    const failedNotice = container.querySelector('[data-media-audio-state="failed"]');
+    expect(failedNotice).not.toBeNull();
+    const retryBtn = container.querySelector<HTMLButtonElement>('[data-media-audio-retry="art-remote-retry-1"]');
+    expect(retryBtn).not.toBeNull();
+
+    // 2nd play: retry button clicked -> attempt increments -> readSessionMediaBytes triggers again -> succeeds
+    await act(async () => {
+      retryBtn?.click();
+    });
+
+    expect(callCount).toBe(2);
+    const audioElement = container.querySelector<HTMLAudioElement>('audio[data-media-audio="art-remote-retry-1"]');
+    expect(audioElement).not.toBeNull();
+    expect(audioElement?.src).toBe('blob:kiki-session-media');
+  });
+
+  it('V2: handles audio element decode/stream failure via onError and closes playback lease', async () => {
+    mocks.remote = false;
+    mocks.openMediaPlayback.mockResolvedValue({
+      preview_id: 'grant-decode-fail',
+      url: '/media-preview/grant-decode-fail',
+      mime: 'audio/mpeg',
+      size: 1000,
+      expires_at: Date.now() + 60_000,
+    });
+
+    const voiceOutput = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-decode-fail',
+        request_id: 'req-decode-fail',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-decode-fail-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-decode-fail-1',
+          name: 'decode-fail.mp3',
+          mime: 'audio/mpeg',
+          bytes: 1000,
+        }],
+      },
+    };
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-decode-fail',
+      toolCallId: 'call-decode-fail',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: JSON.stringify(voiceOutput),
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_decode_fail">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    // Play -> loads audio
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-media-audio="art-decode-fail-1"]')?.click();
+    });
+
+    const audioElement = container.querySelector<HTMLAudioElement>('audio[data-media-audio="art-decode-fail-1"]');
+    expect(audioElement).not.toBeNull();
+
+    // Trigger audio decode/stream error
+    await act(async () => {
+      audioElement?.dispatchEvent(new Event('error'));
+    });
+
+    // Should have called closeMediaPlayback to release lease
+    expect(mocks.closeMediaPlayback).toHaveBeenCalledWith('grant-decode-fail', expect.anything());
+
+    // Should switch to failed state with retry
+    const failedNotice = container.querySelector('[data-media-audio-state="failed"]');
+    expect(failedNotice).not.toBeNull();
+    expect(container.querySelector('[data-media-audio-retry="art-decode-fail-1"]')).not.toBeNull();
+  });
+
+  it('V3: revokes old objectUrl and resets byte load state when source session or file changes', async () => {
+    mocks.remote = true;
+    const revokedUrls: string[] = [];
+    if (originalRevokeObjectUrl) {
+      vi.spyOn(URL, 'revokeObjectURL').mockImplementation((url) => {
+        revokedUrls.push(url);
+      });
+    }
+
+    mocks.readSessionMediaBytes.mockResolvedValue({
+      bytes: new Uint8Array([1, 2, 3]),
+      mime: 'audio/mpeg',
+    });
+
+    const voiceOutput1 = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-src-1',
+        request_id: 'req-src-1',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-src-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-src-1',
+          name: 'clip1.mp3',
+          mime: 'audio/mpeg',
+          bytes: 100,
+        }],
+      },
+    };
+
+    const block1: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-src-1',
+      toolCallId: 'call-src-1',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: JSON.stringify(voiceOutput1),
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_1">
+        <ToolCard block={block1} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-media-audio="art-src-1"]')?.click();
+    });
+
+    expect(container.querySelector('audio[data-media-audio="art-src-1"]')).not.toBeNull();
+
+    // Now change session to session_2 with a different block
+    const voiceOutput2 = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-src-2',
+        request_id: 'req-src-2',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-src-2',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-src-2',
+          name: 'clip2.mp3',
+          mime: 'audio/mpeg',
+          bytes: 200,
+        }],
+      },
+    };
+
+    const block2: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-src-2',
+      toolCallId: 'call-src-2',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: JSON.stringify(voiceOutput2),
+    };
+
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_2">
+        <ToolCard block={block2} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    // Old URL should have been revoked
+    expect(revokedUrls).toContain('blob:kiki-session-media');
+    // New item in session_2 should start idle and not carry over session_1 audio
+    const newPlayBtn = container.querySelector<HTMLButtonElement>('[data-media-audio="art-src-2"]');
+    expect(newPlayBtn).not.toBeNull();
+    expect(newPlayBtn?.getAttribute('data-media-audio-state')).toBe('idle');
+  });
+
+  it('V3 residual: same artifact and same session/file but switching client resets armed to idle without new read until clicked', async () => {
+    mocks.remote = true;
+    let readCount = 0;
+    mocks.readSessionMediaBytes.mockImplementation(async () => {
+      readCount++;
+      return {
+        bytes: new Uint8Array([1, 2, 3]),
+        mime: 'audio/mpeg',
+      };
+    });
+
+    const voiceOutput = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-client-switch',
+        request_id: 'req-cs-1',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-client-switch',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-cs-1',
+          name: 'audio.mp3',
+          mime: 'audio/mpeg',
+          bytes: 100,
+        }],
+      },
+    };
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-cs',
+      toolCallId: 'call-cs',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: JSON.stringify(voiceOutput),
+    };
+
+    const clientA = {
+      readingOptions: () => ({ timeoutMs: 0 }),
+      readSessionMediaBytes: mocks.readSessionMediaBytes,
+      readHostFileBytes: mocks.readHostFileBytes,
+      readSessionMediaPreviewBytes: mocks.readSessionMediaPreviewBytes,
+      readHostMediaPreviewBytes: mocks.readHostMediaPreviewBytes,
+      downloadSessionMedia: mocks.downloadSessionMedia,
+      downloadHostFile: mocks.downloadHostFile,
+      baseUrl: 'http://localhost:8080',
+      klient: { rest: { sessions: { openMediaPlayback: mocks.openMediaPlayback, closeMediaPlayback: mocks.closeMediaPlayback } } },
+    };
+
+    mocks.activeClient = clientA;
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_cs">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    // 1. Click play on clientA -> armed on clientA, reads bytes
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[data-media-audio="art-client-switch"]')?.click();
+    });
+
+    expect(readCount).toBe(1);
+    expect(container.querySelector('audio[data-media-audio="art-client-switch"]')).not.toBeNull();
+
+    // 2. Switch connection client to clientB (same session, same file_id, same artifact)
+    const clientB = { ...clientA };
+    mocks.activeClient = clientB;
+
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_cs">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    // 3. Armed status must NOT leak to clientB; audio should reset to idle without triggering another read
+    expect(readCount).toBe(1);
+    const playBtn = container.querySelector<HTMLButtonElement>('[data-media-audio="art-client-switch"]');
+    expect(playBtn).not.toBeNull();
+    expect(playBtn?.getAttribute('data-media-audio-state')).toBe('idle');
+
+    // 4. Click play again on clientB -> now armed on clientB, triggers 2nd read
+    await act(async () => {
+      playBtn?.click();
+    });
+    expect(readCount).toBe(2);
+  });
+
+  it('V4: extracts valid media_generation payload even when preceded by unrelated JSON parts', async () => {
+    const unrelatedJsonPart = {
+      type: 'text',
+      text: JSON.stringify({ event: 'status_update', timestamp: 12345678, status: 'ok' }),
+    };
+
+    const voiceOutput = {
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-parts-multi',
+        request_id: 'req-parts-multi',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-parts-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-parts-1',
+          name: 'multi-part-clip.mp3',
+          mime: 'audio/mpeg',
+          bytes: 333,
+        }],
+      },
+      delivery: {
+        delivery: 'delivered',
+        request_id: 'del-parts-1',
+        message_id: 'msg-parts-1',
+      },
+    };
+
+    const mediaGenerationPart = {
+      type: 'text',
+      text: JSON.stringify(voiceOutput),
+    };
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-parts-multi',
+      toolCallId: 'call-parts-multi',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: [unrelatedJsonPart, mediaGenerationPart],
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_parts">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const jobElem = container.querySelector('[data-media-job="voice-job-parts-multi"]');
+    expect(jobElem).not.toBeNull();
+    expect(container.querySelector('[data-media-audio="art-parts-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-media-job-delivery]')).not.toBeNull();
+  });
+
+  it('V5: renders batch delivery with multiple messages and mixed delivered/failed status accurately', async () => {
+    const rawVoiceBatchOutput = JSON.stringify({
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-batch-multi',
+        request_id: 'req-batch-multi',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-batch-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-batch-1',
+          name: 'batch.mp3',
+          mime: 'audio/mpeg',
+          bytes: 512,
+        }],
+      },
+      delivery: {
+        request_id: 'req-batch-delivery',
+        messages: [
+          {
+            index: 0,
+            message_id: 'msg-batch-0',
+            delivery: 'delivered',
+            channels: [
+              { channel_id: 'im:qq', status: 'delivered' },
+            ],
+          },
+          {
+            index: 1,
+            message_id: 'msg-batch-1',
+            delivery: 'undeliverable',
+            detail: 'Target user blocked the bot or channel unavailable',
+            channels: [
+              { channel_id: 'im:tg', status: 'failed' },
+            ],
+          },
+        ],
+      },
+    });
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-voice-batch-multi',
+      toolCallId: 'call-voice-batch-multi',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: rawVoiceBatchOutput,
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_batch_multi">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const deliveryElem = container.querySelector('[data-media-job-delivery]');
+    expect(deliveryElem).not.toBeNull();
+    expect(deliveryElem?.textContent).toContain('Delivery');
+
+    // Both messages must be rendered individually with their exact receipt status
+    const msg0 = container.querySelector('[data-media-delivery-item="0"]');
+    expect(msg0).not.toBeNull();
+    expect(msg0?.querySelector('[data-media-delivery-item-status="delivered"]')).not.toBeNull();
+    expect(msg0?.textContent).toContain('Delivered');
+    expect(msg0?.querySelector('[data-media-delivery-channel="im:qq"][data-media-delivery-channel-status="delivered"]')).not.toBeNull();
+
+    const msg1 = container.querySelector('[data-media-delivery-item="1"]');
+    expect(msg1).not.toBeNull();
+    expect(msg1?.querySelector('[data-media-delivery-item-status="undeliverable"]')).not.toBeNull();
+    expect(msg1?.textContent).toContain('Undeliverable');
+    expect(msg1?.textContent).toContain('Target user blocked');
+    expect(msg1?.querySelector('[data-media-delivery-channel="im:tg"][data-media-delivery-channel-status="failed"]')).not.toBeNull();
+  });
+
+  it('V5 batch edge case 1: handles batch with delivered item and item with missing delivery (unknown)', async () => {
+    const rawOutput = JSON.stringify({
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-batch-missing-del',
+        request_id: 'req-b-1',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-b-1',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-b-1',
+          name: 'b1.mp3',
+          mime: 'audio/mpeg',
+          bytes: 100,
+        }],
+      },
+      delivery: {
+        messages: [
+          {
+            index: 0,
+            delivery: 'delivered',
+            channels: [{ channel_id: 'im:ch1', status: 'delivered' }],
+          },
+          {
+            index: 1,
+            // delivery field omitted
+            channels: [{ channel_id: 'im:ch2', status: 'unknown' }],
+          },
+        ],
+      },
+    });
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-b-missing',
+      toolCallId: 'call-b-missing',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: rawOutput,
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_b_missing">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const msg0 = container.querySelector('[data-media-delivery-item="0"]');
+    expect(msg0?.querySelector('[data-media-delivery-item-status="delivered"]')).not.toBeNull();
+    expect(msg0?.textContent).toContain('Delivered');
+
+    const msg1 = container.querySelector('[data-media-delivery-item="1"]');
+    expect(msg1?.querySelector('[data-media-delivery-item-status="unknown"]')).not.toBeNull();
+    expect(msg1?.textContent).toContain('Outcome unknown');
+  });
+
+  it('V5 batch edge case 2: handles batch where all messages are pending without guessing false success', async () => {
+    const rawOutput = JSON.stringify({
+      type: 'media_generation',
+      job: {
+        job_id: 'voice-job-batch-pending',
+        request_id: 'req-b-pending',
+        state: 'succeeded',
+        provider: 'kiki-media/tts',
+        artifacts: [{
+          id: 'art-b-p',
+          kind: 'audio',
+          role: 'original',
+          complete: true,
+          file_id: 'file-b-p',
+          name: 'bp.mp3',
+          mime: 'audio/mpeg',
+          bytes: 100,
+        }],
+      },
+      delivery: {
+        messages: [
+          {
+            index: 0,
+            delivery: 'pending',
+            channels: [{ channel_id: 'im:pending1', status: 'pending' }],
+          },
+          {
+            index: 1,
+            delivery: 'pending',
+            channels: [{ channel_id: 'im:pending2', status: 'pending' }],
+          },
+        ],
+      },
+    });
+
+    const block: ToolBlock = {
+      kind: 'tool',
+      id: 'tool-b-pending',
+      toolCallId: 'call-b-pending',
+      name: 'plugin__kiki_voice__speak',
+      argsText: '{}',
+      args: {},
+      status: 'done',
+      output: rawOutput,
+    };
+
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <MediaPreviewProvider sessionId="session_b_pending">
+        <ToolCard block={block} agentId="main" />
+      </MediaPreviewProvider>,
+    );
+
+    await act(async () => {
+      container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+
+    const msg0 = container.querySelector('[data-media-delivery-item="0"]');
+    expect(msg0?.querySelector('[data-media-delivery-item-status="pending"]')).not.toBeNull();
+    expect(msg0?.textContent).toContain('Sending');
+
+    const msg1 = container.querySelector('[data-media-delivery-item="1"]');
+    expect(msg1?.querySelector('[data-media-delivery-item-status="pending"]')).not.toBeNull();
+    expect(msg1?.textContent).toContain('Sending');
   });
 });
