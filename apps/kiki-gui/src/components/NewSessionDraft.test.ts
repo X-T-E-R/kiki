@@ -2,6 +2,7 @@
 
 import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { createMemoryRouter, MemoryRouter, RouterProvider, useLocation, useNavigate } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { sessionCreateSchema, ErrorCode, type SessionCreate } from '@kiki/protocol';
@@ -863,7 +864,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(navigate).toHaveBeenCalledWith('/s/session-created-once', expect.objectContaining({
       state: expect.objectContaining({ initialPrompt: `${text}\nMore context`, initialAttachments: attachments,
         model: 'fixture/manual', thinking: 'high' }),
-    }));
+    }), expect.any(Function));
   });
 
   it('restores explicit model and effort on a bare external draft into both first-send hops', async () => {
@@ -917,7 +918,7 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(readComposerState('session-new').attachments).toEqual([]);
     expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({
       state: expect.objectContaining({ createdSession: { id: 'session-new', scopeId: scope.id }, initialPrompt: 'Start work' }),
-    }));
+    }), expect.any(Function));
   });
 
   it('uses workspace Git metadata and refreshes it with the workspace list', async () => {
@@ -2177,7 +2178,7 @@ describe('new-session SSH creation handoff', () => {
     const carried = navigate.mock.calls[0]![1]!.state as Record<string, unknown>;
     expect(JSON.stringify(carried)).not.toContain('example-host');
     expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining(kind === 'prompt'
-      ? { initialAttachments: [], initialPrompt: 'Inspect' } : { initialSkill: { name: 'inspect', args: '--new\nKeep this line.', attachments: [], userInput: '/inspect --new\nKeep this line.' } }) }));
+      ? { initialAttachments: [], initialPrompt: 'Inspect' } : { initialSkill: { name: 'inspect', args: '--new\nKeep this line.', attachments: [], userInput: '/inspect --new\nKeep this line.' } }) }), expect.any(Function));
   });
   it('keeps file mentions on the first message while the host joins the session', async () => {
     await renderDraft();
@@ -2595,7 +2596,7 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     const sent = client.createSession.mock.calls[0]![0] as SessionCreate;
     expect(sent.creation_id).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     expect(readDraft('session-new')).toBe('Normal creation');
-    expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.anything());
+    expect(navigate).toHaveBeenCalledWith('/s/session-new', expect.anything(), expect.any(Function));
     expect(localStorage.getItem('kiki.draft.new.intent.local')).toBeNull();
   });
 
@@ -2627,7 +2628,7 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
     await act(async () => { await state.send(state.draft, []); });
     expect(client.createSession).toHaveBeenCalledTimes(2);
     expect(client.createSession.mock.calls[1]![0].creation_id).toBe(firstCreationId);
-    expect(navigate).toHaveBeenCalledWith(`/s/session_${firstCreationId}`, expect.anything());
+    expect(navigate).toHaveBeenCalledWith(`/s/session_${firstCreationId}`, expect.anything(), expect.any(Function));
   });
 
   it('survives refresh after timeout or 50006 and provides openCreatedSession without duplicate create', async () => {
@@ -2983,7 +2984,7 @@ describe('new-session creation recovery at the component boundary', () => {
     navigate.mockResolvedValue(undefined);
     await act(async () => { await state.send(state.draft, phase === 'ssh' ? hosts : []); });
     expect(client.createSession).toHaveBeenCalledTimes(1);
-    expect(navigate).toHaveBeenLastCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining({ initialPrompt: 'Keep the accepted session' }) }));
+    expect(navigate).toHaveBeenLastCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining({ initialPrompt: 'Keep the accepted session' }) }), expect.any(Function));
   });
 
   it('keeps persistence explicitly off through a held create and the first-message handoff', async () => {
@@ -3003,5 +3004,78 @@ describe('new-session creation recovery at the component boundary', () => {
     expect(localStorage.getItem('kiki.drafts')).toBeNull();
     expect(localStorage.getItem('kiki.composerStates') ?? '').not.toContain('input.txt');
     expect(storedIntent()).toBeNull();
+  });
+});
+
+describe('new-session real dirty navigation handoff', () => {
+  it.each(['declarative', 'data'] as const)('retains the accepted identity and draft while %s navigation waits, cancels, then confirms a retry', async (mode) => {
+    const { useDirtyGuardState } = await vi.importActual<typeof import('./dirtyGuard')>('./dirtyGuard');
+    let guard!: ReturnType<typeof useDirtyGuardState>;
+    let observedPath = '/new';
+    function GuardedHarness() {
+      const location = useLocation();
+      const rawNavigate = useNavigate();
+      observedPath = location.pathname;
+      guard = useDirtyGuardState(location, (target, options) => typeof target === 'number'
+        ? rawNavigate(target) : rawNavigate(target, options));
+      latestDraftState = useNewSessionDraft();
+      return null;
+    }
+    navigate.mockImplementation((...args: Parameters<typeof guard.navigate>) => guard.navigate(...args));
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] }] });
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClients.push(queryClient);
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const router = mode === 'data' ? createMemoryRouter([
+      { path: '/new', element: createElement(GuardedHarness) },
+      { path: '/s/:id', element: createElement('div', null, 'Created session') },
+    ], { initialEntries: ['/new'] }) : undefined;
+    const content = router === undefined
+      ? createElement(MemoryRouter, { initialEntries: ['/new'] }, createElement(GuardedHarness))
+      : createElement(RouterProvider, { router });
+    try {
+      await act(async () => {
+        root.render(createElement(QueryClientProvider, { client: queryClient }, createElement(I18nProvider, null, content)));
+      });
+      let state = await settleDraft((value) => value.selectionReady && !value.agentProfileCatalogPending);
+      await act(async () => {
+        guard.value.reportDirty('example-editor', true);
+        state.updateDraft('Keep this until navigation is confirmed');
+      });
+      let submission: Promise<void> | undefined;
+      let settled = false;
+      await act(async () => {
+        submission = latestDraftState!.send('Keep this until navigation is confirmed', []);
+        void submission?.then(() => { settled = true; });
+      });
+      await settleDraft(() => guard.pending);
+      expect(settled).toBe(false);
+      expect(readDraft('new')).toBe('Keep this until navigation is confirmed');
+      expect(JSON.parse(localStorage.getItem('kiki.draft.new.intent.local') ?? 'null')).toMatchObject({ status: 'accepted', sessionId: 'session-new' });
+      expect(router?.state.location.pathname ?? observedPath).toBe('/new');
+      await act(async () => { guard.cancel(); await submission; });
+      state = latestDraftState!;
+      expect(state.creationPending).toBe(false);
+      expect(state.busy).toBe(false);
+      expect(state.error).toBeNull();
+      expect(state.creationNotice).toContain('The session was created');
+      expect(readDraft('new')).toBe('Keep this until navigation is confirmed');
+      expect(JSON.parse(localStorage.getItem('kiki.draft.new.intent.local') ?? 'null')).toMatchObject({ status: 'accepted', sessionId: 'session-new' });
+      expect(router?.state.location.pathname ?? observedPath).toBe('/new');
+      await act(async () => { submission = state.send(state.draft, []); });
+      await settleDraft(() => guard.pending);
+      expect(client.createSession).toHaveBeenCalledTimes(1);
+      await act(async () => { await guard.confirm(); await submission; });
+      expect(router?.state.location.pathname ?? observedPath).toBe('/s/session-new');
+      expect(readDraft('new')).toBe('');
+      expect(localStorage.getItem('kiki.draft.new.intent.local')).toBeNull();
+    } finally {
+      await unmountDraft();
+      router?.dispose();
+    }
   });
 });

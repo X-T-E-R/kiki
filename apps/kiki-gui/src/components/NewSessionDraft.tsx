@@ -11,8 +11,9 @@
  * textarea survives the hero → session transition.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { UNSAFE_DataRouterContext } from 'react-router-dom';
 import {
   ErrorCode,
   type AuthSummary,
@@ -158,6 +159,11 @@ export interface PersistedCreationIntent {
   readonly evidence?: string;
   readonly reason?: string;
   readonly error?: string;
+}
+
+interface CreationWait {
+  cancelled: boolean;
+  stopWaiting?: () => void;
 }
 
 function creationIntentStorageKey(scopeKey: string): string {
@@ -440,6 +446,7 @@ export function useNewSessionDraft({
 } = {}) {
   const host = useHost();
   const queryClient = useQueryClient();
+  const router = useContext(UNSAFE_DataRouterContext)?.router;
   const { client, scopeId, spaceKey, connectionId, sshLabel } = useConnection();
   const draftScopeId = scopeId;
   /**
@@ -851,7 +858,7 @@ export function useNewSessionDraft({
     intent?.status === 'accepted' ? t('new.creationAccepted')
       : intent?.status === 'unknown' ? t('new.creationUnknown') : null, [t]);
   const [creationNotice, setCreationNotice] = useState<string | null>(() => noticeForIntent(initialIntent));
-  const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
+  const creationIntent = useRef<CreationWait | undefined>(undefined);
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
@@ -862,7 +869,10 @@ export function useNewSessionDraft({
     setCreationPending(false);
     return () => {
       intentScope.active = false;
-      if (creationIntent.current !== undefined) creationIntent.current.cancelled = true;
+      if (creationIntent.current !== undefined) {
+        creationIntent.current.cancelled = true;
+        creationIntent.current.stopWaiting?.();
+      }
     };
   }, [intentScope]);
   useEffect(() => {
@@ -949,10 +959,9 @@ export function useNewSessionDraft({
       creation_id: creationId,
     };
 
-    const intent = { cancelled: false };
+    const intent: CreationWait = { cancelled: false };
     creationIntent.current = intent;
     const submittedDraft = draftRef.current;
-    let draftCleared = false;
     if (trimmedCwd === '') {
       const explicitId = (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : undefined;
       setWorkspaceId(explicitId ?? context.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID);
@@ -1039,14 +1048,11 @@ export function useNewSessionDraft({
           execution: context.execution,
         });
 
-        if (readDraft(draftKey) === submittedDraft) {
-          writeDraft(draftKey, '');
-          draftCleared = true;
-        }
         // Creation already confirmed this target in this connection scope.
         // Let the route mount immediately while its guard revalidates it.
         queryClient.setQueryData(['space-view-target', scopeId, 'session', session.id], true);
-        const navigateToSession = () => navigate(`/s/${session.id}`, {
+        const targetPath = `/s/${session.id}`;
+        const navigateToSession = (onCancel: () => void) => navigate(targetPath, {
           state: {
             createdSession: { id: session.id, scopeId },
             initialPrompt: handoff.initialPrompt,
@@ -1071,13 +1077,49 @@ export function useNewSessionDraft({
             personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
           },
           replace: false,
+        }, onCancel);
+        const navigated = await new Promise<boolean>((resolve, reject) => {
+          let settled = false;
+          let unsubscribe: (() => void) | undefined;
+          const cleanup = () => { unsubscribe?.(); intent.stopWaiting = undefined; };
+          const finish = (accepted: boolean) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(accepted);
+          };
+          const fail = (cause: unknown) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(cause);
+          };
+          const atTarget = () => router?.state.location.pathname === targetPath && router.state.navigation.state === 'idle';
+          if (router !== undefined) {
+            unsubscribe = router.subscribe(() => { if (atTarget()) finish(true); });
+            intent.stopWaiting = () => { finish(atTarget()); };
+          }
+          try {
+            runNewSessionHandoff({
+              text: handoff.initialPrompt,
+              navigate: () => {
+                if (intent.cancelled) { finish(false); return; }
+                void Promise.resolve().then(() => navigateToSession(() => { finish(false); })).then(() => {
+                  // A blocked data-router navigation can resolve without leaving /new.
+                  if (router === undefined || atTarget()) finish(true);
+                }, fail);
+              },
+            });
+          } catch (cause) { fail(cause); }
         });
-        await new Promise<void>((resolve, reject) => {
-          runNewSessionHandoff({
-            text: handoff.initialPrompt,
-            navigate: () => { void Promise.resolve().then(navigateToSession).then(() => { resolve(); }, reject); },
-          });
-        });
+        if (!navigated) {
+          if (intentScope.active) {
+            setBusy(false);
+            setCreationNotice(noticeForIntent(outcome));
+          }
+          return;
+        }
+        if (readDraft(draftKey) === submittedDraft) writeDraft(draftKey, '');
         clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
         clearScopedNewSessionDraft(draftScopeId, intentScope.storage);
         if (intentScope.active) createdForRetry.current = undefined;
@@ -1102,7 +1144,6 @@ export function useNewSessionDraft({
         }
         saveOutcome();
         if (!intentScope.active) return;
-        if (draftCleared && readDraft(draftKey) === '') writeDraft(draftKey, submittedDraft);
         setBusy(false);
         setError(message);
         setCreatedSessionId(outcome?.status === 'accepted' || outcome?.status === 'unknown' ? outcome.sessionId : undefined);
@@ -1114,7 +1155,7 @@ export function useNewSessionDraft({
         setCreationPending(false);
         if (intent.cancelled) setCreationNotice(noticeForIntent(createdForRetry.current));
       });
-  }, [client, connectionId, draftKey, draftScopeId, intentScope, locale, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
+  }, [client, connectionId, draftKey, draftScopeId, intentScope, locale, router, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
 
   const send = useCallback((
     text: string,
