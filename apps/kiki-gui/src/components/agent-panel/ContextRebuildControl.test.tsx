@@ -45,8 +45,12 @@ async function render(): Promise<void> {
   }
 }
 
+function sources(): HTMLDetailsElement | null {
+  return container.querySelector('details[data-context-rebuild-sources]');
+}
+
 describe('ContextRebuildControl', () => {
-  it('shows the last rebuild, unchanged sources, and that the next request uses it', async () => {
+  it('keeps the default face to the switch and a small finished mark', async () => {
     control.mockResolvedValue({
       enabled: true,
       outcome: 'applied',
@@ -57,15 +61,23 @@ describe('ContextRebuildControl', () => {
       unsupported: [],
     });
     await render();
-    expect(container.querySelector('[data-context-rebuild-outcome="applied"]')?.textContent).toContain('Finished');
-    expect(container.querySelector('[data-context-rebuild-outcome="applied"]')?.textContent).toContain('After compaction');
-    expect(container.querySelector('[data-context-rebuild-surface="profile"]')?.getAttribute('data-context-rebuild-status')).toBe('updated');
-    expect(container.querySelector('[data-context-rebuild-surface="skills"]')?.getAttribute('data-context-rebuild-status')).toBe('unchanged');
-    expect(container.querySelector('[data-context-rebuild-applies]')?.textContent).toContain('next request');
+    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+    expect(container.querySelector('[data-context-rebuild-mark="applied"]')?.getAttribute('aria-label')).toBe('After compaction');
+    expect(container.querySelector('[data-context-rebuild-error]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild-retry]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild-applies]')).toBeNull();
     expect(container.textContent).not.toContain('system prompt');
+    expect(container.textContent).not.toContain('frozen for the conversation');
+    expect(container.textContent).not.toMatch(/\brestart\b/i);
+    const details = sources();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector('summary')?.textContent).toBe('Sources');
+    expect(details?.querySelector('[data-context-rebuild-surface="profile"]')?.getAttribute('data-context-rebuild-status')).toBe('updated');
+    expect(details?.querySelector('[data-context-rebuild-surface="skills"]')?.getAttribute('data-context-rebuild-status')).toBe('unchanged');
+    expect(details?.querySelector('[data-context-rebuild-outcome="applied"]')?.textContent).toContain('After compaction');
   });
 
-  it('keeps the failure visible and retries through the same rebuild', async () => {
+  it('keeps the failure to one error line and retries through the same rebuild', async () => {
     control.mockResolvedValue({
       enabled: true,
       outcome: 'failed',
@@ -78,9 +90,13 @@ describe('ContextRebuildControl', () => {
     rebuild.mockRejectedValue(new Error('still down'));
     await render();
     expect(container.querySelector('[data-context-rebuild-error]')?.textContent).toBe('disk down');
-    expect(container.querySelector('[data-context-rebuild-outcome="failed"]')).not.toBeNull();
-    expect(container.querySelector('[data-context-rebuild-surface="profile"]')?.getAttribute('data-context-rebuild-status')).toBe('unfinished');
-    expect(container.querySelector('[data-context-rebuild-applies]')?.textContent).toContain('previous binding');
+    expect(container.querySelector('[data-context-rebuild-retry]')?.textContent).toBe('Retry');
+    expect(container.querySelector('[data-context-rebuild-mark="applied"]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild-applies]')).toBeNull();
+    const details = sources();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector('[data-context-rebuild-outcome="failed"]')).not.toBeNull();
+    expect(details?.querySelector('[data-context-rebuild-surface="profile"]')?.getAttribute('data-context-rebuild-status')).toBe('unfinished');
     await act(async () => {
       container.querySelector<HTMLButtonElement>('[data-context-rebuild-retry]')?.click();
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -89,7 +105,7 @@ describe('ContextRebuildControl', () => {
     expect(container.querySelector('[data-context-rebuild-error]')?.textContent).toBe('still down');
   });
 
-  it('names each context boundary instead of a generic restart', async () => {
+  it('names each context boundary inside the diagnostic instead of a generic restart', async () => {
     const triggers = [
       ['fresh_start', 'After a fresh start'],
       ['summary', 'After a summary'],
@@ -106,14 +122,17 @@ describe('ContextRebuildControl', () => {
         unsupported: [],
       });
       await render();
-      expect(container.querySelector('[data-context-rebuild-outcome="applied"]')?.textContent).toContain(label);
+      expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+      expect(container.querySelector('[data-context-rebuild-mark="applied"]')?.getAttribute('aria-label')).toBe(label);
+      expect(sources()?.open).toBe(false);
+      expect(sources()?.querySelector('[data-context-rebuild-outcome="applied"]')?.textContent).toContain(label);
       expect(container.textContent).not.toContain(`agentPanel.rebuild.trigger.${trigger}`);
     }
-    expect(container.textContent).toContain('model switch that keeps the current context');
+    expect(container.textContent).not.toContain('model switch that keeps the current context');
     expect(container.textContent).not.toMatch(/\brestart\b/i);
   });
 
-  it('shows an unsupported executor boundary instead of calling it refreshed', async () => {
+  it('keeps an unsupported executor boundary in the diagnostic instead of calling it refreshed', async () => {
     control.mockResolvedValue({
       enabled: false,
       outcome: 'applied',
@@ -128,8 +147,12 @@ describe('ContextRebuildControl', () => {
       ],
     });
     await render();
-    expect(container.querySelector('[data-context-rebuild-surface="plugins"]')?.getAttribute('data-context-rebuild-status')).toBe('unsupported');
-    expect(container.querySelector('[data-context-rebuild-surface="executor_session"]')?.textContent).toContain('codex');
-    expect(container.querySelector('[data-context-rebuild-surface="executor_session"]')?.textContent).not.toContain('Updated');
+    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+    expect(container.querySelector('[data-context-rebuild-retry]')).toBeNull();
+    const details = sources();
+    expect(details?.open).toBe(false);
+    expect(details?.querySelector('[data-context-rebuild-surface="plugins"]')?.getAttribute('data-context-rebuild-status')).toBe('unsupported');
+    expect(details?.querySelector('[data-context-rebuild-surface="executor_session"]')?.textContent).toContain('codex');
+    expect(details?.querySelector('[data-context-rebuild-surface="executor_session"]')?.textContent).not.toContain('Updated');
   });
 });

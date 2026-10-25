@@ -35,4 +35,4 @@ A failed rebuild leaves the previous binding in place and records the error. The
 
 If an earlier stage finishes and a later stage throws, the report is partial. Finished sources are what the next request reads. Unfinished sources keep the previous binding. A partial report is not a full success.
 
-The prompt drawer shows the last time, which sources updated or stayed unchanged, which did not finish, and the unsupported boundaries. The next request uses that report. The full system prompt is not part of the notice.
+The prompt drawer shows one switch. A running rebuild and a finished rebuild use a short status or a small icon on that row. A failure shows the error on one line, with retry. The source-by-source result, including the boundary that ran and anything not refreshed, stays inside that prompt diagnostic and opens on demand. The full system prompt is not part of the notice.
