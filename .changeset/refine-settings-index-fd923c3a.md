@@ -1,5 +1,5 @@
 ---
-@kiki/session-core: patch
+"@kiki/cli": patch
 ---
 
-Refine connection, quota, and notification settings.
+Make settings import and export searchable.
