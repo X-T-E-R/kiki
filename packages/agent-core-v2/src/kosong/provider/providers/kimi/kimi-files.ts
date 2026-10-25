@@ -3,7 +3,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type OpenAI from 'openai';
-import OpenAIClient, { APIError as OpenAIAPIError } from 'openai';
+import OpenAIClient, { APIError as OpenAIAPIError, toFile } from 'openai';
 
 import { ChatProviderError } from '#/kosong/contract/errors';
 import type { ImageURLPart, VideoURLPart } from '#/kosong/contract/message';
@@ -77,7 +77,7 @@ export class KimiFiles {
         }
       }
       options?.signal?.throwIfAborted();
-      const file = new File([new Uint8Array(input.data)], input.filename ?? 'upload.image', { type: input.mimeType });
+      const file = await toFile(input.data, input.filename ?? 'upload.image', { type: input.mimeType });
       const uploaded = await client.files.create({ file, purpose: 'image' as never }, requestOptions);
       if (typeof uploaded.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(uploaded.id)) {
         throw new ChatProviderError('The image upload returned an invalid file reference. Retry with the original image.');

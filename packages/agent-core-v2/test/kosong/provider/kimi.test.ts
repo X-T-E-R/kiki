@@ -329,7 +329,10 @@ describe('Kimi image files', () => {
     expect(requests[0]?.headers.has('x-kiki-internal-suppress-request-identity')).toBe(false);
     const upload = await requests[0]!.formData();
     expect(upload.get('purpose')).toBe('image');
-    expect(new Uint8Array(await (upload.get('file') as File).arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    const uploadedFile = upload.get('file') as File;
+    expect(uploadedFile.name).toBe('original.png');
+    expect(uploadedFile.type).toBe('image/png');
+    expect(new Uint8Array(await uploadedFile.arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
     const body = await requests[1]!.json() as { messages: { content: unknown }[] };
     expect(JSON.stringify(body.messages)).toContain('ms://file-fixture');
   });
