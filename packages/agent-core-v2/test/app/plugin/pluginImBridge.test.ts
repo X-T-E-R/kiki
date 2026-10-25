@@ -54,6 +54,44 @@ afterEach(async () => {
 });
 
 describe('plugin IM digest bridge', () => {
+  it('awaits adapter withdrawal on disposal and shares it with concurrent shutdown', async () => {
+    const hosts = host.app.accessor.get(IPluginHostService) as PluginHostService;
+    await hosts.ready;
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let withdrawals = 0;
+    await hosts.attachImAdapters({
+      replace: async () => undefined,
+      withdraw: async () => { withdrawals++; enter(); await blocked; },
+    });
+    const disposal = hosts.dispose();
+    try {
+      expect(disposal).toBeInstanceOf(Promise);
+      await entered;
+      const shutdown = hosts.stopAll();
+      expect(withdrawals).toBe(1);
+      release();
+      await Promise.all([disposal, shutdown]);
+      await hosts.stopAll();
+      expect(withdrawals).toBe(1);
+    } finally {
+      release();
+      await disposal;
+    }
+  });
+
+  it('does not reconcile adapters again when explicit shutdown is followed by disposal', async () => {
+    const hosts = host.app.accessor.get(IPluginHostService) as PluginHostService;
+    await hosts.ready;
+    let withdrawals = 0;
+    await hosts.attachImAdapters({ replace: async () => undefined, withdraw: async () => { withdrawals++; } });
+    await hosts.stopAll();
+    await hosts.dispose();
+    expect(withdrawals).toBe(1);
+  });
+
   it('retracts only owned adapter connections on hot changes and enforces declared plugin dependencies', async () => {
     const plugins = host.app.accessor.get(IPluginService);
     const hosts = host.app.accessor.get(IPluginHostService);

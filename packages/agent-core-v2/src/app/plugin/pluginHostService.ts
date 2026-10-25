@@ -106,6 +106,7 @@ export class PluginHostService extends Service implements IPluginHostService {
   private globalGate: Promise<void> | undefined;
   readonly ready: Promise<void>;
   private closing = false;
+  private shutdown: Promise<void> | undefined;
   private readonly ownSettingsWrites = new Set<string>();
   private readonly activated = new WeakMap<PluginHost, string>();
   private readonly residentWork = new Set<Promise<void>>();
@@ -230,11 +231,15 @@ export class PluginHostService extends Service implements IPluginHostService {
     }));
     this.ready = Promise.resolve().then(() => this.reconcileResidents());
     void this.ready.catch(() => {});
-    this._register(toDisposable(() => { void this.stopAll(); }));
+    this._register(toDisposable(() => this.stopAll()));
   }
 
-  async stopAll(): Promise<void> {
+  stopAll(): Promise<void> {
     this.closing = true;
+    return this.shutdown ??= this.shutdownHosts();
+  }
+
+  private async shutdownHosts(): Promise<void> {
     await this.imAdaptersSink?.withdraw();
     await Promise.allSettled(this.residentWork);
     await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
