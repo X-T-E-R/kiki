@@ -29,6 +29,12 @@ export const KAP_USAGE_PARSER_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const QUERY_STORE_WORKER_ASSET = Object.freeze({
+  key: 'query-store-worker',
+  relativePath: 'runtime/query-store/query-store-worker.mjs',
+  mode: 0o644,
+});
+
 export const KAP_SQLITE_QUERY_WORKER_ASSET = Object.freeze({
   key: 'kap-sqlite-query-worker',
   relativePath: 'runtime/kap-server/sqlite-query-worker.mjs',

@@ -34,7 +34,7 @@ export interface IQuery<T> {
   orderBy(field: string, dir?: SortDir): IQuery<T>;
   limit(n: number): IQuery<T>;
   cursor(cursor: string | undefined): IQuery<T>;
-  execute(): Promise<Page<T>>;
+  execute(signal?: AbortSignal): Promise<Page<T>>;
 }
 
 export interface ValueIndexDef {
@@ -68,6 +68,27 @@ export type WriteOp =
       readonly columns?: Record<string, number>;
     }
   | { readonly kind: 'delete'; readonly collection: string; readonly key: string };
+
+/** Exact JSON document comparison; undefined requires an absent key. All conditions and writes share one transaction. */
+export interface WriteCondition {
+  readonly collection: string;
+  readonly key: string;
+  readonly value: unknown;
+}
+
+/** Merge staged rows and numeric columns into a target in the conditional commit; replace clears only that target first. */
+export interface StagedWrite {
+  readonly source: string;
+  readonly collection: string;
+  readonly replace?: boolean;
+}
+
+/** Owned temporary collections survive budget pauses; dispose removes both. A backend may reclaim them only after the owner retires or dies. */
+export interface QueryStaging {
+  readonly stage: string;
+  readonly publication: string;
+  dispose(): Promise<void>;
+}
 
 export interface Checkpoint {
   readonly seq: number;
@@ -107,17 +128,19 @@ export interface IQueryStore {
     options?: { columns?: Record<string, number> },
   ): Promise<void>;
   batch(ops: readonly WriteOp[]): Promise<void>;
+  batchIf?(conditions: readonly WriteCondition[], ops: readonly WriteOp[], staged?: StagedWrite): Promise<boolean>;
+  createStaging?(source: string): Promise<QueryStaging>;
   delete(collection: string, key: string): Promise<void>;
-  get<T>(collection: string, key: string): Promise<T | undefined>;
+  get<T>(collection: string, key: string, signal?: AbortSignal): Promise<T | undefined>;
   /** Point reads for several keys; missing keys are absent from the result. */
-  getMany<T>(collection: string, keys: readonly string[]): Promise<Map<string, T>>;
+  getMany<T>(collection: string, keys: readonly string[], signal?: AbortSignal): Promise<Map<string, T>>;
   query<T>(collection: string): IQuery<T>;
   /**
    * Bounded page over an ordered column (see `ColumnPageQuery`). This is the
    * keyset-pagination primitive: it must stay cheap even over large
    * collections (index walk, not a full scan + in-memory sort).
    */
-  pageByColumn<T>(collection: string, query: ColumnPageQuery): Promise<Page<T>>;
+  pageByColumn<T>(collection: string, query: ColumnPageQuery, signal?: AbortSignal): Promise<Page<T>>;
   ensureIndex(collection: string, def: IndexDef): Promise<void>;
   /** Every key currently in the collection (engine key decoding applied). */
   listKeys(collection: string): Promise<readonly string[]>;
@@ -125,7 +148,7 @@ export interface IQueryStore {
   dropCollection(collection: string): Promise<void>;
   getCheckpoint(source: string): Promise<Checkpoint | undefined>;
   setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void>;
-  withExclusive?<T>(operation: () => Promise<T>): Promise<T>;
+  withExclusive?<T>(operation: () => Promise<T>, source?: string): Promise<T>;
   /** Drain and retire cached readers/writers without deleting persisted data; new operations wait for recovery. */
   recover?(): Promise<void>;
   close(): Promise<void>;

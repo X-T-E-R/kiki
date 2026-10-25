@@ -30,7 +30,7 @@ import { IModelPricingService } from '../pricing/modelPricingService';
 import type { UsageSourceChanges } from './usageSourceTracker';
 import { UsageReadAllowance } from '@kiki/agent-core-v2/agent/usage/usageWireFramer';
 import { readUsageWireTail, usageRecoveryPool, type UsageRecoveryPool, type WireLineContinuation } from './usageRecovery';
-import { UsageRangeFold, type FoldBucketView, type FoldedUsageRecord } from './usageRangeFold';
+import { UsageRangeFold, UsageRangeFoldChangedError, type FoldBucketView, type FoldedUsageRecord, type RangeFoldHead, type RangeFoldSession, type RangeFoldSource, type UsageFoldCheckpoint as WireCheckpoint } from './usageRangeFold';
 import { appendProjectionAgent, appendStoredBuckets, bucketsFromAgents, buildRangeProjection, hasProjectionTurnEvidence, parseUsageRangeProjection, projectionFileName, projectionRows, projectionSessionOf, UsageProjectionFold, type UsageProjectionAgent, type UsageRangeProjection } from './usageRangeProjection';
 
 const SOURCE_RECHECK_MS = 10 * 60_000;
@@ -109,15 +109,6 @@ interface PreparedSession {
   readonly persisted: PersistentSessionRecords;
   readonly current: boolean;
   readonly view: boolean;
-}
-
-interface WireCheckpoint {
-  readonly generation?: string;
-  readonly offset: number;
-  readonly size: number;
-  readonly mtimeMs: number;
-  readonly boundaryHash: string;
-  readonly valid: boolean;
 }
 
 interface PersistentSessionRecords {
@@ -199,30 +190,6 @@ interface UsageFoldView {
 interface FoldProjectionData {
   readonly rows: { readonly sessionId: string; readonly record: FoldedUsageRecord }[];
   readonly buckets: Map<string, FoldBucketView>;
-}
-
-interface RangeFoldSource {
-  readonly agentId: string;
-  readonly scope: string;
-  checkpoint: WireCheckpoint;
-  cursor?: string;
-  done: boolean;
-}
-
-interface RangeFoldSession {
-  readonly summary: SessionSummary;
-  sources?: RangeFoldSource[];
-  invalid: boolean;
-  prepared: boolean;
-}
-
-interface RangeFoldHead {
-  readonly version: 1;
-  readonly fingerprint: string;
-  readonly sessions: RangeFoldSession[];
-  complete: boolean;
-  inventoryComplete: boolean;
-  invalidated: boolean;
 }
 
 interface AggregateAccumulator {
@@ -629,7 +596,13 @@ export class UsageAggregationService {
     return waitForSource(next, signal);
   }
 
-  private async queryFoldedSources(raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse> {
+  private queryFoldedSources(raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse> {
+    const store = this.core.accessor.get(IQueryStore);
+    const run = (): Promise<UsageResponse> => { signal.throwIfAborted(); return this.queryFoldedSourcesLocked(raw, query, fingerprint, signal); };
+    return store.batchIf !== undefined && store.withExclusive !== undefined ? store.withExclusive(run, 'usage-range-folds-v1') : run();
+  }
+
+  private async queryFoldedSourcesLocked(raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse> {
     const persistProjection = this.factJournalReplayEnabled() && this.rescan.state !== 'running';
     await waitForSource(this.core.accessor.get(IModelPricingService).ready, signal);
     await waitForSource(this.prepareInventory(), signal);
@@ -663,15 +636,16 @@ export class UsageAggregationService {
       const inventory = new Set(listed.items.map(sessionKey));
       const sameInventory = budget.incompleteReason === null && head !== undefined && (!head.complete || head.sessions.length === listed.items.length) && head.sessions.every((session) => inventory.has(sessionKey(session.summary)));
       const current = head !== undefined && sameInventory ? await waitForSource(this.rangeSourcesCurrent(head, query.range, budget.factSignal), budget.factSignal) : false;
-      const aligned = head !== undefined && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory && current;
+      const replayCompatible = !this.factJournalReplayEnabled() || head?.journalReplayVersion === 2;
+      const aligned = head !== undefined && head.version === 1 && replayCompatible && head.fingerprint === fingerprint && !head.invalidated && sameInventory && current;
       const reuseCompleteHead = aligned && head?.complete === true;
       if (!aligned) {
-        const advanced = head !== undefined && head.complete && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory
+        const advanced = head !== undefined && head.complete && head.version === 1 && replayCompatible && head.fingerprint === fingerprint && !head.invalidated && sameInventory
           ? await this.advanceCompleteFold(head, fold, query, budget)
           : false;
         if (!advanced) {
           await fold.reset();
-          head = { version: 1, fingerprint, sessions: listed.items.map((summary) => ({ summary, invalid: false, prepared: false })), complete: false, inventoryComplete: budget.incompleteReason === null, invalidated: false };
+          head = { version: 1, journalReplayVersion: 2, fingerprint, sessions: listed.items.map((summary) => ({ summary, invalid: false, prepared: false })), complete: false, inventoryComplete: budget.incompleteReason === null, invalidated: false };
           await fold.saveHead(head);
         }
       }
@@ -690,10 +664,12 @@ export class UsageAggregationService {
               if (source.cursor?.startsWith('journal:') === true) {
                 const hold = { cursor: source.cursor };
                 const replayed = await this.replayFactJournal(source.scope, source.cursor, query.range, budget, hold, async (records) => {
+                  const cursor = source.cursor, invalid = session.invalid;
                   source.cursor = hold.cursor;
                   session.invalid ||= records.some((record) => record.invalid);
-                  await fold.addPage(session.summary, records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal);
-                });
+                  try { await fold.addPage(session.summary, records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal, { session, source }); }
+                  catch (error) { source.cursor = cursor; session.invalid = invalid; throw error; }
+                }, source.checkpoint.generation ?? 'legacy');
                 if (replayed === undefined) source.cursor = undefined;
                 else {
                   source.done = replayed.done;
@@ -705,11 +681,13 @@ export class UsageAggregationService {
               const page = await facts.read(source.scope, query.range, budget.factSignal, { budget: budget.factBudget, cursor: source.cursor, pageSize: 256 });
               if (page.readComplete === false && page.nextCursor === undefined) { budget.incompleteReason = 'record_budget'; return; }
               if (page.checkpoint === undefined) { foldHead.invalidated = true; budget.sourcesComplete = false; return; }
+              const checkpoint = source.checkpoint, cursor = source.cursor, done = source.done, invalid = session.invalid;
               source.checkpoint = page.checkpoint;
               source.cursor = page.nextCursor;
               source.done = page.readComplete !== false;
               session.invalid ||= !page.checkpoint.valid || page.records.some((record) => record.invalid);
-              await fold.addPage(session.summary, page.records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal);
+              try { await fold.addPage(session.summary, page.records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal, { session, source }); }
+              catch (error) { source.checkpoint = checkpoint; source.cursor = cursor; source.done = done; session.invalid = invalid; throw error; }
             }
           }
         }
@@ -791,7 +769,7 @@ export class UsageAggregationService {
     } catch (error) {
       if (signal.aborted) { clearTimeout(timer); signal.throwIfAborted(); }
       if (error instanceof UsageFactCursorChangedError) {
-        await fold.reset();
+        if (!(error instanceof UsageRangeFoldChangedError)) await fold.reset();
         head = undefined;
         budget.sourcesComplete = false;
       } else if (deadline.signal.aborted) {
@@ -1462,40 +1440,59 @@ export class UsageAggregationService {
     budget: ScanBudget,
     hold: { cursor: string },
     emit: (records: readonly UsageFact[]) => Promise<void>,
+    generation?: string,
   ): Promise<{ done: boolean; cursor: string } | undefined> {
     const parts = cursor.split(':');
     const startOffset = Number(parts[1]);
     let skip = Number(parts[2]);
-    if (!Number.isSafeInteger(startOffset) || startOffset < 0 || !Number.isSafeInteger(skip) || skip < 0) return undefined;
+    let covered: { generation: string; offset: number; count: number } | undefined;
+    try { if (parts[3] !== undefined) covered = JSON.parse(Buffer.from(parts[3], 'base64url').toString('utf8')); }
+    catch { return undefined; }
+    if (!Number.isSafeInteger(startOffset) || startOffset < 0 || !Number.isSafeInteger(skip) || skip < 0 || (covered !== undefined && (covered === null || typeof covered.generation !== 'string' || !Number.isSafeInteger(covered.offset) || covered.offset < 0 || !Number.isSafeInteger(covered.count) || covered.count < 0))) return undefined;
+    const continuation = (offset: number, index: number): string => `journal:${offset}:${index}${covered === undefined ? '' : `:${Buffer.from(JSON.stringify(covered)).toString('base64url')}`}`;
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const directory = factJournalDirectory(wireScope);
     const size = await storage.size(directory, FACT_JOURNAL_KEY) ?? 0;
     if (size === 0 || startOffset > size) return undefined;
-    hold.cursor = `journal:${startOffset}:${skip}`;
+    hold.cursor = continuation(startOffset, skip);
     if (startOffset === size) return { done: true, cursor: hold.cursor };
     let pending = Buffer.alloc(0);
     let lineStart = startOffset;
     let invalid = false;
-    const mark = (offset: number, index: number): void => { hold.cursor = `journal:${offset}:${index}`; };
+    const publish = async (records: readonly UsageFact[], offset: number, index: number): Promise<void> => {
+      const previous = hold.cursor;
+      hold.cursor = continuation(offset, index);
+      try { if (records.length > 0) await emit(records); }
+      catch (error) { hold.cursor = previous; throw error; }
+    };
     const consume = async (line: Buffer): Promise<boolean> => {
-      let records: UsageFact[];
-      try { records = (JSON.parse(line.toString('utf8')) as { records?: UsageFact[] }).records ?? []; }
+      let batch: { version: number; start: number; checkpoint: WireCheckpoint; records: UsageFact[] };
+      try { batch = JSON.parse(line.toString('utf8')) as typeof batch; }
       catch { invalid = true; return true; }
+      const checkpoint = batch.checkpoint;
+      if (batch.version !== 1 || !Number.isSafeInteger(batch.start) || batch.start < 0 || checkpoint === undefined || typeof checkpoint.generation !== 'string' || !Number.isSafeInteger(checkpoint.offset) || checkpoint.offset < batch.start || !Array.isArray(batch.records)) { invalid = true; return true; }
+      const records = batch.records;
+      const sameGeneration = covered?.generation === checkpoint.generation;
+      const replacement = batch.start === 0;
+      const prefix = replacement && sameGeneration ? covered!.count : 0;
+      const apply = (generation === undefined || checkpoint.generation === generation) &&
+        (replacement ? covered === undefined || (sameGeneration && checkpoint.offset > covered.offset) : covered !== undefined && sameGeneration && batch.start === covered.offset);
       const selected: UsageFact[] = [];
       for (let index = skip; index < records.length; index += 1) {
         if (this.now() >= budget.deadlineAt || (budget.remainingFacts ?? Infinity) <= 0) {
-          mark(lineStart, index);
-          if (selected.length > 0) await emit(selected);
+          await publish(selected, lineStart, index);
           budget.incompleteReason = this.now() >= budget.deadlineAt ? 'deadline' : 'record_budget';
           return true;
         }
         if (budget.remainingFacts !== undefined) budget.remainingFacts -= 1;
         const record = records[index]!;
-        if (record.invalid || inRange(record.time, range)) selected.push(record);
-        if (selected.length === 256) { mark(lineStart, index + 1); await emit(selected); selected.length = 0; }
+        if (apply && index >= prefix && (record.invalid || inRange(record.time, range))) selected.push(record);
+        if (selected.length === 256) { await publish(selected, lineStart, index + 1); selected.length = 0; }
       }
-      mark(lineStart + line.byteLength + 1, 0);
-      if (selected.length > 0) await emit(selected);
+      const previous = covered;
+      if (apply) covered = { generation: checkpoint.generation, offset: checkpoint.offset, count: replacement ? records.length : (covered?.count ?? 0) + records.length };
+      try { await publish(selected, lineStart + line.byteLength + 1, 0); }
+      catch (error) { covered = previous; throw error; }
       skip = 0;
       return false;
     };
@@ -1513,6 +1510,7 @@ export class UsageAggregationService {
       }
     } catch (error) {
       budget.signal?.throwIfAborted();
+      if (error instanceof UsageFactCursorChangedError) throw error;
       if (budget.factSignal?.aborted || this.now() >= budget.deadlineAt) {
         budget.incompleteReason = 'deadline';
         return { done: false, cursor: hold.cursor };
@@ -2047,6 +2045,11 @@ export class UsageAggregationService {
         changed.push({ session, source, size: bytes, mtimeMs: mtime, generation });
       }
     }
+    if (changed.length > 0) {
+      head.complete = false;
+      head.invalidated = true;
+      await fold.saveHead(head);
+    }
     for (const job of changed) {
       const checkpoint = job.source.checkpoint;
       const allowance = new UsageReadAllowance(budget.remainingRecords, budget.remainingFacts ?? Infinity, Infinity);
@@ -2063,6 +2066,7 @@ export class UsageAggregationService {
       if (budget.remainingFacts !== undefined) budget.remainingFacts -= tail.scannedFactCount;
     }
     head.complete = head.sessions.every((session) => session.prepared && session.sources?.every((source) => source.done));
+    head.invalidated = false;
     await fold.saveHead(head);
     return head.complete;
   }

@@ -104,6 +104,12 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 这项保留策略不会删除 `sessions/`、Agent 的 `wire.jsonl` 或媒体原件。游标超出保留窗口的客户端会通过快照/reset 恢复，而不是补播旧事件序列，见 [断线恢复](../server/rest-api.md#断线恢复)。如需手动清理旧日志，先停止所有使用该数据根目录的 Kiki 服务，再仅清理 `server/events/` 并重启。不要在 writer 运行时删除或截断这些日志。
 
+## 会话与用量查询缓存
+
+`cache/query-store-sqlite-v1/index.sqlite` 保存会话列表、用量事实和线程轮次查询使用的 SQLite 缓存。Kiki 会按需从会话元数据、用量事实日志和对话历史重建这些视图。数据库打开时，旁边可能还有 `-wal` 和 `-shm` 文件。
+
+如果缓存损坏，先停止所有使用该数据根目录的 Kiki 进程，备份后仅移除 `cache/query-store-sqlite-v1/`，再重新启动。历史较多时，重建可能需要多次请求；准备完成前，Usage 会显示覆盖不完整。请保留 `cache/usage-facts-v1/`、`sessions/` 和 `store/`，恢复所需的日志与记录存放在这些目录中。旧的 `cache/query-store-v*/` 目录与 SQLite 缓存分开，新后端不会导入它们。
+
 ## 内置工具缓存
 
 `Grep` 工具第一次需要 ripgrep 时，CLI 可自动下载 `rg` 并缓存到 `bin/rg`（Windows 为 `bin/rg.exe`）。终端界面的文件引用补全使用 `fd`；需要时 CLI 会在后台自动下载并缓存到 `bin/fd`（Windows 为 `bin/fd.exe`）。之后的运行会直接复用缓存的二进制。`rg` 优先使用系统 `PATH`，再使用缓存；`fd` 优先检查托管缓存，再回退到系统 `fd` / `fdfind`。删除 `bin/` 目录会在下次需要时触发重新下载。

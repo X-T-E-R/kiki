@@ -1,7 +1,8 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { SessionSummary } from '@kiki/agent-core-v2';
 import type { UsageFact } from '@kiki/agent-core-v2/agent/usage/usageFact';
+import { UsageFactCursorChangedError } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
 import type { IQueryStore, WriteOp } from '@kiki/agent-core-v2/persistence/interface/queryStore';
 
 export interface FoldedUsageRecord extends UsageFact {
@@ -40,8 +41,54 @@ interface GroupRow {
 
 interface BucketRow extends FoldBucketView { readonly kind: 'bucket' }
 
-/** A bounded page folds into unpriced groups and exact disk-backed turn sets. Group changes, dedup markers and the caller's continuation head commit together. */
+export interface UsageFoldCheckpoint {
+  readonly generation?: string;
+  readonly offset: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly boundaryHash: string;
+  readonly valid: boolean;
+}
+
+export interface RangeFoldSource {
+  readonly agentId: string;
+  readonly scope: string;
+  checkpoint: UsageFoldCheckpoint;
+  cursor?: string;
+  done: boolean;
+}
+
+export interface RangeFoldSession {
+  readonly summary: SessionSummary;
+  sources?: RangeFoldSource[];
+  invalid: boolean;
+  prepared: boolean;
+}
+
+export interface RangeFoldHead {
+  readonly version: 1;
+  readonly journalReplayVersion?: 2;
+  readonly fingerprint: string;
+  readonly sessions: RangeFoldSession[];
+  complete: boolean;
+  inventoryComplete: boolean;
+  invalidated: boolean;
+}
+
+interface FoldRevision { readonly epoch: string; readonly revision: number }
+interface StoredHead { readonly layout: 2; readonly value: unknown; readonly sessions?: readonly string[] }
+interface StoredSession { readonly value: Omit<RangeFoldSession, 'sources'>; readonly hasSources: boolean }
+interface FoldProgress { readonly session: RangeFoldSession; readonly source: RangeFoldSource }
+const REVISION = 'head:revision';
+
+export class UsageRangeFoldChangedError extends UsageFactCursorChangedError {}
+
+/** A bounded page folds into unpriced groups and exact disk-backed turn sets. Source continuation, group changes and revision/epoch comparison commit together. */
 export class UsageRangeFold {
+  private initialized = false;
+  private revision?: FoldRevision;
+  private readonly persisted = new Map<string, string>();
+
   constructor(
     private readonly query: IQueryStore,
     private readonly collection: string,
@@ -49,9 +96,98 @@ export class UsageRangeFold {
     private readonly turnLimit: number,
   ) {}
 
-  head<T>(): Promise<T | undefined> { return this.query.get<T>(this.collection, 'head'); }
-  saveHead(head: unknown): Promise<void> { return this.query.put(this.collection, 'head', head); }
-  reset(): Promise<void> { return this.query.dropCollection(this.collection); }
+  async head<T>(): Promise<T | undefined> {
+    if (this.query.batchIf === undefined) return this.query.get<T>(this.collection, 'head');
+    const roots = await this.query.getMany<StoredHead | FoldRevision>(this.collection, ['head', REVISION]);
+    this.revision = roots.get(REVISION) as FoldRevision | undefined;
+    this.initialized = true;
+    this.persisted.clear();
+    const root = roots.get('head') as StoredHead | undefined;
+    if (root?.layout !== 2 || this.revision === undefined) return undefined;
+    this.persisted.set('head', JSON.stringify(root));
+    if (root.sessions === undefined) return root.value as T;
+    const sessionRows = await this.query.getMany<StoredSession | readonly string[]>(this.collection, root.sessions.flatMap((key) => [key, `${key}:sources`]));
+    const sourceKeys = root.sessions.flatMap((key) => sessionRows.get(`${key}:sources`) as readonly string[] ?? []);
+    const sources = await this.query.getMany<RangeFoldSource>(this.collection, sourceKeys);
+    const current = await this.query.get<FoldRevision>(this.collection, REVISION);
+    if (current?.epoch !== this.revision.epoch || current.revision !== this.revision.revision) throw new UsageRangeFoldChangedError();
+    const sessions = root.sessions.map((key) => {
+      const row = sessionRows.get(key) as StoredSession | undefined;
+      if (row === undefined) throw new UsageRangeFoldChangedError();
+      this.persisted.set(key, JSON.stringify(row));
+      const keys = sessionRows.get(`${key}:sources`) as readonly string[] | undefined;
+      if (keys !== undefined) this.persisted.set(`${key}:sources`, JSON.stringify(keys));
+      return { ...row.value, sources: row.hasSources ? (keys ?? []).map((sourceKey) => {
+        const source = sources.get(sourceKey);
+        if (source === undefined) throw new UsageRangeFoldChangedError();
+        this.persisted.set(sourceKey, JSON.stringify(source));
+        return source;
+      }) : undefined };
+    });
+    return { ...(root.value as object), sessions } as T;
+  }
+
+  async saveHead(head: unknown): Promise<void> {
+    if (this.query.batchIf === undefined) return this.query.put(this.collection, 'head', head);
+    await this.initialize();
+    const rows = this.headRows(head);
+    await this.commit([], rows, true, this.revision);
+  }
+
+  async reset(): Promise<void> {
+    if (this.query.batchIf === undefined) return this.query.dropCollection(this.collection);
+    await this.initialize();
+    const revision = { epoch: randomUUID(), revision: 0 };
+    const committed = await this.query.batchIf([{ collection: this.collection, key: REVISION, value: this.revision }], [{ kind: 'put', collection: this.collection, key: REVISION, value: revision }], { source: `${this.collection}:reset:${revision.epoch}`, collection: this.collection, replace: true });
+    if (!committed) this.conflict();
+    this.revision = revision;
+    this.persisted.clear();
+  }
+
+  private async initialize(): Promise<void> {
+    if (this.initialized) return;
+    this.revision = await this.query.get<FoldRevision>(this.collection, REVISION);
+    this.initialized = true;
+  }
+
+  private headRows(head: unknown, progress?: FoldProgress): Map<string, unknown> {
+    const rows = new Map<string, unknown>();
+    if (!isRangeHead(head)) { rows.set('head', { layout: 2, value: head }); return rows; }
+    const { sessions, ...value } = head;
+    if (progress === undefined) rows.set('head', { layout: 2, value, sessions: sessions.map(sessionRowKey) });
+    for (const session of progress === undefined ? sessions : [progress.session]) {
+      const key = sessionRowKey(session);
+      const { sources, ...value } = session;
+      rows.set(key, { value, hasSources: sources !== undefined });
+      if (progress === undefined) {
+        if (sources !== undefined) rows.set(`${key}:sources`, sources.map(sourceRowKey));
+        for (const source of sources ?? []) rows.set(sourceRowKey(source), source);
+      } else rows.set(sourceRowKey(progress.source), progress.source);
+    }
+    return rows;
+  }
+
+  private async commit(ops: WriteOp[], rows: Map<string, unknown>, replace: boolean, expected: FoldRevision | undefined): Promise<void> {
+    const changes = new Map<string, string>();
+    for (const [key, value] of rows) {
+      const json = JSON.stringify(value);
+      if (this.persisted.get(key) !== json) { ops.push({ kind: 'put', collection: this.collection, key, value }); changes.set(key, json); }
+    }
+    if (replace) for (const key of this.persisted.keys()) if (!rows.has(key)) ops.push({ kind: 'delete', collection: this.collection, key });
+    const revision = { epoch: expected?.epoch ?? randomUUID(), revision: (expected?.revision ?? 0) + 1 };
+    ops.push({ kind: 'put', collection: this.collection, key: REVISION, value: revision });
+    if (!await this.query.batchIf!([{ collection: this.collection, key: REVISION, value: expected }], ops)) this.conflict();
+    this.revision = revision;
+    if (replace) this.persisted.clear();
+    for (const [key, value] of changes) this.persisted.set(key, value);
+    if (replace) for (const [key, value] of rows) if (!this.persisted.has(key)) this.persisted.set(key, JSON.stringify(value));
+  }
+
+  private conflict(): never {
+    this.initialized = false;
+    this.persisted.clear();
+    throw new UsageRangeFoldChangedError();
+  }
 
   async addPage(
     summary: SessionSummary,
@@ -60,6 +196,7 @@ export class UsageRangeFold {
     matches: (record: UsageFact) => boolean,
     head: unknown,
     signal?: AbortSignal,
+    progress?: FoldProgress,
   ): Promise<void> {
     signal?.throwIfAborted();
     const selected = records.filter((record) => !record.invalid && matches(record));
@@ -71,7 +208,9 @@ export class UsageRangeFold {
       return { record, bucket: foldKey(`bucket:${bucket}`), bucketKey: bucket, group, turn, drilldown };
     });
     const keys = [...new Set(rows.flatMap((row) => [row.group, row.bucket, row.turn, row.drilldown].filter((key): key is string => key !== undefined)))];
-    const existing = await this.query.getMany<GroupRow | BucketRow | true>(this.collection, keys);
+    if (this.query.batchIf !== undefined) await this.initialize();
+    const revision = this.revision;
+    const existing = await this.query.getMany<GroupRow | BucketRow | true>(this.collection, keys, signal);
     signal?.throwIfAborted();
     const changed = new Map<string, GroupRow | BucketRow | true>();
     const read = <T extends GroupRow | BucketRow | true>(key: string): T | undefined => (changed.get(key) ?? existing.get(key)) as T | undefined;
@@ -132,9 +271,9 @@ export class UsageRangeFold {
       }
     }
     const ops: WriteOp[] = [...changed].map(([key, value]) => ({ kind: 'put', collection: this.collection, key, value, columns: value === true ? undefined : { view: value.kind === 'group' ? 1 : 2 } }));
-    ops.push({ kind: 'put', collection: this.collection, key: 'head', value: head });
     signal?.throwIfAborted();
-    await this.query.batch(ops);
+    if (this.query.batchIf !== undefined) await this.commit(ops, this.headRows(head, progress), false, revision);
+    else { ops.push({ kind: 'put', collection: this.collection, key: 'head', value: head }); await this.query.batch(ops); }
   }
 
   recordPage(cursor?: string) {
@@ -145,10 +284,19 @@ export class UsageRangeFold {
     return this.query.getMany<BucketRow>(this.collection, keys.map((key) => foldKey(`bucket:${key}`)));
   }
 
-  putBucket(bucket: FoldBucketView): Promise<void> {
-    return this.query.put(this.collection, foldKey(`bucket:${bucket.key}`), { kind: 'bucket', ...bucket }, { columns: { view: 2 } });
+  async putBucket(bucket: FoldBucketView): Promise<void> {
+    const op: WriteOp = { kind: 'put', collection: this.collection, key: foldKey(`bucket:${bucket.key}`), value: { kind: 'bucket', ...bucket }, columns: { view: 2 } };
+    if (this.query.batchIf === undefined) return this.query.batch([op]);
+    await this.initialize();
+    await this.commit([op], new Map(), false, this.revision);
   }
 }
+
+function isRangeHead(head: unknown): head is RangeFoldHead {
+  return head !== null && typeof head === 'object' && 'version' in head && head.version === 1 && 'sessions' in head && Array.isArray(head.sessions);
+}
+function sessionRowKey(session: RangeFoldSession): string { return foldKey(`session:${JSON.stringify([session.summary.workspaceId, session.summary.id])}`); }
+function sourceRowKey(source: RangeFoldSource): string { return foldKey(`source:${source.scope}`); }
 
 function foldKey(key: string): string {
   if (key.length <= 90) return key;

@@ -10,6 +10,7 @@ const appRoot = import.meta.dirname;
 
 function workerConfig(name: string, entry: string) {
   return defineConfig({
+    name,
     entry: { [name]: resolve(appRoot, entry) },
     format: ['esm'],
     outDir: 'dist',
@@ -35,4 +36,5 @@ function workerConfig(name: string, entry: string) {
 export default [
   workerConfig('search-worker', '../../packages/kap-server/src/search/worker/entry.ts'),
   workerConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),
+  workerConfig('query-store-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/entry.ts'),
 ];

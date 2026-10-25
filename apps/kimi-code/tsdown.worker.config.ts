@@ -22,6 +22,7 @@ const here = import.meta.dirname;
 
 function workerConfig(name: string, entry: string) {
   return defineConfig({
+    name,
     entry: { [name]: resolve(here, entry) },
     format: ['esm'],
     outDir: resolve(here, 'dist-native/intermediates'),
@@ -49,4 +50,5 @@ export default [
   workerConfig('search-worker', '../../packages/kap-server/src/search/worker/entry.ts'),
   workerConfig('sqlite-query-worker', '../../packages/kap-server/src/search/sqlite/queryEntry.ts'),
   workerConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),
+  workerConfig('query-store-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/entry.ts'),
 ];

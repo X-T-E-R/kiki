@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { setImmediate as yieldToEventLoop } from 'node:timers/promises';
 
 import { createDecorator } from '#/_base/di/instantiation';
@@ -9,7 +9,7 @@ import { ILogService } from '#/_base/log/log';
 import { normalizeUsageFact, summarizeUsageFacts, type UsageFact, type UsageFactTotals } from '#/agent/usage/usageFact';
 import { UsageJsonStream } from '#/agent/usage/usageJson';
 import { IAppendLogStore, type AppendLogCommit } from '#/persistence/interface/appendLogStore';
-import { IQueryStore, type WriteOp } from '#/persistence/interface/queryStore';
+import { IQueryStore, type QueryStaging, type WriteOp } from '#/persistence/interface/queryStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
@@ -72,6 +72,10 @@ interface IndexHead {
 }
 
 interface IndexProgress {
+  stage: string;
+  publication: string;
+  staging?: QueryStaging;
+  replace: boolean;
   size: number;
   offset: number;
   head?: IndexHead;
@@ -203,7 +207,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
             const start = cursor.offset;
             const count = allowance(options.budget, Math.min(PAGE_SIZE, remainingPage, cursor.recordCount - start));
             const keys = Array.from({ length: count }, (_value, index) => `fact:${start + index}`);
-            const rows = await abortable(this.query.getMany<UsageFact & { kind: string; ordinal: number }>(collection, keys), signal);
+            const rows = await abortable(this.query.getMany<UsageFact & { kind: string; ordinal: number }>(collection, keys, signal), signal);
             if (rows.size !== keys.length) throw new Error('Incomplete usage fact index');
             for (const key of keys) { const { kind: _kind, ordinal: _ordinal, ...fact } = rows.get(key)!; records.push(fact); }
             cursor.offset += count;
@@ -217,7 +221,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
             const filter = cursor.phase === 'invalid' ? { kind: 'fact', invalid: true, ordinal: { $lt: cursor.recordCount } } : { kind: 'fact', ordinal: { $lt: cursor.recordCount } };
             let read = this.query.query<UsageFact & { kind: string; ordinal: number }>(collection).where(filter).limit(limit).cursor(cursor.page);
             if (cursor.phase === 'range') read = read.whereColumn('time', { gte: range?.startAt, lt: range?.endAt });
-            const page = await abortable(read.execute(), signal);
+            const page = await abortable(read.execute(signal), signal);
             if (options.budget !== undefined) options.budget.remainingRecords += limit - page.items.length;
             remainingPage -= page.items.length;
             for (const { kind: _kind, ordinal: _ordinal, ...fact } of page.items) {
@@ -262,12 +266,13 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     const size = await abortable(this.storage.size(directory, LOG), signal) ?? 0;
     if (size === 0) return undefined;
     const pending = this.indexing.get(scope);
-    if (pending !== undefined && pending.size <= size) {
+    let head = await this.query.get<IndexHead>(collection, HEAD, signal);
+    if (pending !== undefined && pending.size <= size && JSON.stringify(pending.head) === JSON.stringify(head)) {
       pending.size = size;
       return this.advanceIndex(scope, pending, signal, budget);
     }
     this.indexing.delete(scope);
-    let head = await abortable(this.query.get<IndexHead>(collection, HEAD), signal);
+    if (pending !== undefined) await this.discardProgress(pending);
     if (head !== undefined && (head.version !== 2 || head.ledgerOffset > size || !await this.verifyIndex(collection, head, signal, budget))) {
       await this.query.dropCollection(collection);
       head = undefined;
@@ -281,11 +286,14 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
         await abortable(this.operations.get(this.indexing.keys().next().value!)!.catch(() => undefined), signal);
         continue;
       }
+      const retired = this.indexing.get(idle)!;
       this.indexing.delete(idle);
       this.verified.delete(collectionOf(idle));
-      await this.query.dropCollection(`${collectionOf(idle)}:stage`);
+      await this.discardProgress(retired);
     }
-    const progress: IndexProgress = { size, offset: head?.ledgerOffset ?? 0, head, decoder: new TextDecoder(), queued: [], staged: 0, reset: true, copied: 0 };
+    const staging = await this.query.createStaging?.(collection);
+    const stage = staging?.stage ?? `${collection}:stage:${randomUUID()}`;
+    const progress: IndexProgress = { stage, publication: staging?.publication ?? `${stage}:publish`, staging, replace: false, size, offset: head?.ledgerOffset ?? 0, head, decoder: new TextDecoder(), queued: [], staged: 0, reset: true, copied: 0 };
     this.indexing.set(scope, progress);
     return this.advanceIndex(scope, progress, signal, budget);
   }
@@ -301,7 +309,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
     for (;;) {
       signal?.throwIfAborted();
       const limit = allowance(budget, PAGE_SIZE);
-      const page = await abortable(this.query.query(collection).where({ kind: 'fact' }).limit(limit).cursor(progress.cursor).execute(), signal);
+      const page = await abortable(this.query.query(collection).where({ kind: 'fact' }).limit(limit).cursor(progress.cursor).execute(signal), signal);
       if (budget !== undefined) budget.remainingRecords += limit - page.items.length;
       progress.count += page.items.length;
       progress.cursor = page.nextCursor;
@@ -314,7 +322,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
 
   private async advanceIndex(scope: string, progress: IndexProgress, signal?: AbortSignal, budget?: UsageFactReadBudget): Promise<IndexHead | undefined> {
     const collection = collectionOf(scope);
-    const stage = `${collection}:stage`;
+    const stage = progress.stage;
     const flush = async (): Promise<void> => {
       signal?.throwIfAborted();
       if (progress.reset) { await this.query.dropCollection(stage); progress.reset = false; }
@@ -333,8 +341,9 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
         let checkpoint = progress.head?.checkpoint;
         let recordCount = progress.head?.recordCount ?? 0;
         let totals = progress.head?.totals ?? summarizeUsageFacts([]);
-        if (batch.start === 0 || (checkpoint !== undefined && checkpoint.generation !== batch.checkpoint.generation)) {
-          await this.query.dropCollection(collection);
+        progress.replace = batch.start === 0 || (checkpoint !== undefined && checkpoint.generation !== batch.checkpoint.generation);
+        if (progress.replace) {
+          if (this.query.batchIf === undefined) await this.query.dropCollection(collection);
           checkpoint = undefined;
           recordCount = 0;
           totals = summarizeUsageFacts([]);
@@ -346,10 +355,11 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
           signal?.throwIfAborted();
           const count = allowance(budget, Math.min(PAGE_SIZE, progress.staged - progress.copied));
           const keys = Array.from({ length: count }, (_value, index) => `fact:${progress.copied + index}`);
-          const rows = await abortable(this.query.getMany<UsageFact>(stage, keys), signal);
+          const rows = await abortable(this.query.getMany<UsageFact>(stage, keys, signal), signal);
           if (rows.size !== count) throw new InvalidFactJournal('Incomplete staged usage facts');
           const facts = keys.map((key) => rows.get(key)!);
-          await this.query.batch(facts.map((fact, index) => ({ kind: 'put', collection, key: `fact:${progress.copying!.recordCount + index}`, value: { ...fact, kind: 'fact', ordinal: progress.copying!.recordCount + index }, columns: { time: fact.time } })));
+          const target = this.query.batchIf === undefined ? collection : progress.publication;
+          await this.query.batch(facts.map((fact, index) => ({ kind: 'put', collection: target, key: `fact:${progress.copying!.recordCount + index}`, value: { ...fact, kind: 'fact', ordinal: progress.copying!.recordCount + index }, columns: { time: fact.time } })));
           progress.copying = { ...progress.copying, recordCount: progress.copying.recordCount + count, totals: summarizeUsageFacts(facts, progress.copying.totals) };
           progress.copied += count;
           await yieldToEventLoop(undefined, { signal });
@@ -357,7 +367,14 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
         progress.copying = { ...progress.copying, checkpoint: { ...batch.checkpoint, valid: (progress.copying.checkpoint?.valid ?? true) && batch.checkpoint.valid } };
       }
       signal?.throwIfAborted();
-      await this.query.put(collection, HEAD, progress.copying);
+      if (this.query.batchIf !== undefined) {
+        const committed = await this.query.batchIf([{ collection, key: HEAD, value: progress.head }], [{ kind: 'put', collection, key: HEAD, value: progress.copying }], { source: progress.publication, collection, replace: progress.replace });
+        if (!committed) {
+          this.indexing.delete(scope);
+          await this.discardProgress(progress);
+          throw new UsageFactCursorChangedError();
+        }
+      } else await this.query.put(collection, HEAD, progress.copying);
       progress.head = progress.copying;
       progress.batch = undefined;
       progress.copying = undefined;
@@ -400,6 +417,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       }
       if (progress.parser !== undefined) throw new InvalidFactJournal('Incomplete usage fact batch');
       this.indexing.delete(scope);
+      await this.discardProgress(progress);
       return progress.head;
     } catch (error) {
       signal?.throwIfAborted();
@@ -408,15 +426,20 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       this.verified.delete(collection);
       this.damaged.add(scope);
       await this.query.dropCollection(collection);
-      await this.query.dropCollection(stage);
+      await this.discardProgress(progress);
       this.log.warn('Usage facts require source recovery', error);
       return undefined;
     }
   }
 
+  private async discardProgress(progress: IndexProgress): Promise<void> {
+    if (progress.staging !== undefined) await progress.staging.dispose();
+    else { await this.query.dropCollection(progress.stage); await this.query.dropCollection(progress.publication); }
+  }
+
   private exclusive<T>(scope: string, operation: () => Promise<T>): Promise<T> {
     const prior = this.operations.get(scope) ?? Promise.resolve();
-    const next = prior.catch(() => undefined).then(operation);
+    const next = prior.catch(() => undefined).then(() => this.query.batchIf !== undefined && this.query.withExclusive !== undefined ? this.query.withExclusive(operation, collectionOf(scope)) : operation());
     this.operations.set(scope, next);
     void next.finally(() => { if (this.operations.get(scope) === next) this.operations.delete(scope); }).catch(() => undefined);
     return next;

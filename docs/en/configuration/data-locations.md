@@ -104,6 +104,12 @@ Older journals shrink when the new writer first appends to them. Browsing a cold
 
 This retention does not remove `sessions/`, agent `wire.jsonl` files, or saved media. Clients whose cursor is no longer covered recover through a snapshot/reset rather than replaying the old event sequence; see [Reconnect and recovery](../server/rest-api.md#reconnect-and-recovery). If you need to clear old journals manually, first stop every Kiki server using this data root, then clear only `server/events/` and restart. Never delete or truncate these journals while a writer is running.
 
+## Session and usage query cache
+
+`cache/query-store-sqlite-v1/index.sqlite` holds the SQLite query cache for session lists, usage facts, and thread-turn lookups. Kiki rebuilds these views from session metadata, usage-fact journals, and conversation history when needed. The database may have adjacent `-wal` and `-shm` files while it is open.
+
+If this cache is damaged, stop every Kiki process using the data root, back up and remove only `cache/query-store-sqlite-v1/`, then restart. Rebuilding a large history can take several requests; Usage reports incomplete coverage until preparation finishes. Keep `cache/usage-facts-v1/`, `sessions/`, and `store/`: they contain the journals and records needed for recovery. The older `cache/query-store-v*/` directories are separate from the SQLite cache and are not imported by this backend.
+
 ## Built-in tool cache
 
 The first time the `Grep` tool needs ripgrep, the CLI can automatically download `rg` and cache it at `bin/rg` (`bin/rg.exe` on Windows). File-reference completion in the terminal UI uses `fd`; the CLI downloads and caches it at `bin/fd` (`bin/fd.exe` on Windows) in the background when needed. Subsequent runs reuse the cached binaries. `rg` prefers the system `PATH` before the cache, while `fd` checks the managed cache before falling back to system `fd` / `fdfind`. Deleting the `bin/` directory triggers a fresh download on the next use.

@@ -11,6 +11,7 @@ import {
   getEmbeddedNativeAssetManifest,
   getNativeCacheBase,
   getNativePackageRoot,
+  getQueryStoreWorkerFile,
 } from './native-assets';
 
 const smokePackages = ['@mariozechner/clipboard', '@napi-rs/keyring', '@kiki/pi-tui', 'node-pty'];
@@ -182,6 +183,66 @@ async function smokeSearchWorker(): Promise<void> {
   }
 }
 
+type QueryStoreWorkerResponse = {
+  readonly id: number;
+  readonly result?: unknown;
+  readonly error?: { readonly message: string };
+};
+
+async function queryStoreWorkerRequest(
+  worker: Worker,
+  id: number,
+  operation: unknown,
+): Promise<unknown> {
+  const responsePromise = once(worker, 'message', {
+    signal: AbortSignal.timeout(15_000),
+  }) as Promise<[QueryStoreWorkerResponse]>;
+  worker.postMessage({ id, operation });
+  const [response] = await responsePromise;
+  if (response.error !== undefined) throw new Error(response.error.message);
+  return response.result;
+}
+
+async function smokeQueryStoreWorker(): Promise<void> {
+  const runtime = getQueryStoreWorkerFile();
+  if (runtime === null) throw new Error('query-store worker runtime was not installed');
+  const cacheBase = getNativeCacheBase();
+  mkdirSync(cacheBase, { recursive: true });
+  const dir = mkdtempSync(join(cacheBase, 'sea-query-store-worker-'));
+  const worker = new Worker(runtime, {
+    workerData: { database: join(dir, 'index.sqlite') },
+  });
+  const exited = once(worker, 'exit', {
+    signal: AbortSignal.timeout(15_000),
+  }) as Promise<[number]>;
+  try {
+    await queryStoreWorkerRequest(worker, 1, {
+      type: 'batch',
+      ops: [{
+        kind: 'put',
+        collection: 'smoke',
+        key: 'row-1',
+        value: { value: 'worker' },
+      }],
+    });
+    const result = await queryStoreWorkerRequest(worker, 2, {
+      type: 'get',
+      collection: 'smoke',
+      keys: ['row-1'],
+    });
+    const row = (result as unknown[])[0];
+    if (!Array.isArray(row) || row[0] !== 'row-1' || (row[1] as { value?: unknown }).value !== 'worker') {
+      throw new Error(`query-store worker returned an unexpected row: ${JSON.stringify(result)}`);
+    }
+    await queryStoreWorkerRequest(worker, 3, { type: 'close' });
+    const [exitCode] = await exited;
+    if (exitCode !== 0) throw new Error(`query-store worker exited with code ${exitCode}`);
+  } finally {
+    await worker.terminate().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function smokeAuthNative(): Promise<void> {
   const auth = createRequire(import.meta.url)('@kiki/auth-native') as typeof import('@kiki/auth-native');
   const cacheBase = getNativeCacheBase();
@@ -235,10 +296,11 @@ async function runSmoke(): Promise<void> {
   smokeKeyringNativeLoad();
   await smokeMinidbWorker();
   await smokeSearchWorker();
+  await smokeQueryStoreWorker();
   await smokeNativePty();
   await smokeAuthNative();
   process.stdout.write(
-    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; search worker ready; PTY input/resize/exit/kill passed\n`,
+    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; search worker ready; query-store worker ready; PTY input/resize/exit/kill passed\n`,
   );
 }
 

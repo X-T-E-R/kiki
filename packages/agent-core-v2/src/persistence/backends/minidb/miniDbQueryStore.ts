@@ -4,8 +4,7 @@ import { classifyStorageError, LockError, type QueryOptions } from '@kiki/minidb
 import { ClusterDb, wipeCluster } from '@kiki/minidb/cluster';
 
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
-import { LifecycleScope } from '#/app/scopes';
-import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { trackQueryStoreDisposal } from '#/persistence/queryStoreDisposals';
 import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { acquireFileLock } from '#/persistence/backends/node-fs/fileLock';
@@ -22,6 +21,8 @@ import {
   type SortDir,
   type WriteOp,
 } from '#/persistence/interface/queryStore';
+
+export { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 
 const SEP = String.fromCodePoint(0);
 const CHECKPOINT_COLLECTION = '__checkpoint__';
@@ -51,12 +52,6 @@ function isLockContention(error: unknown): boolean {
   return value?.code === 'ELOCKED' || typeof value?.message === 'string' && value.message.includes('locked');
 }
 
-const pendingDisposals = new Set<Promise<void>>();
-
-export async function drainQueryStoreDisposals(): Promise<void> {
-  await Promise.all(pendingDisposals);
-}
-
 /** Query store over a sharded MiniDb cluster. Writes fan out shard by shard under an exclusive
  *  lock: MiniDb's 250ms default would expire the early shard writers before one fan-out finishes,
  *  forcing every following batch to reopen the shards and replay their growing WALs, so the lock is
@@ -78,9 +73,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
     super();
     this.dir = join(this.bootstrap.cacheDir, MINIDB_QUERY_STORE_SUBDIR);
     this._register(toDisposable(() => {
-      const pending = this.close().catch(() => {});
-      pendingDisposals.add(pending);
-      void pending.finally(() => pendingDisposals.delete(pending));
+      trackQueryStoreDisposal(this.close().catch(() => {}));
     }));
   }
 
@@ -374,11 +367,3 @@ class MiniDbQuery<T> implements IQuery<T> {
     return { items, nextCursor };
   }
 }
-
-registerScopedService(
-  LifecycleScope.App,
-  IQueryStore,
-  MiniDbQueryStore,
-  ScopeActivation.OnScopeCreated,
-  'storage',
-);

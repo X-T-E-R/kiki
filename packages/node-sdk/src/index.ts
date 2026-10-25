@@ -1,4 +1,5 @@
 export { installNbSearchWorkerHost, runNbSearchWorkerCommand, NB_SEARCH_WORKER_COMMAND } from '#/nb-search-worker';
+export { configureQueryStoreWorkerRuntime } from '#/query-store-worker';
 export { KimiHarness } from '#/kimi-harness';
 export type { KimiHarnessExitReceipt, KimiHarnessRuntimeOptions } from '#/kimi-harness';
 export { Session } from '#/session';

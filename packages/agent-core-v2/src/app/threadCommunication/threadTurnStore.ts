@@ -114,12 +114,13 @@ export class ThreadTurnStore implements IThreadTurnStore {
         const size = pinned.size ?? 0;
         const mtime = await this.storage.mtime(scope, AGENT_WIRE_RECORD_KEY);
         const collection = collectionOf(scope);
-        let head = await this.query.get<Head>(collection, 'head');
+        let head = await this.query.get<Head>(collection, 'head', signal);
         if (head !== undefined && (head.version !== 1 || head.generation !== generation || size < head.offset ||
           size === head.size && mtime !== head.mtime || await proof(pinned, head.offset, signal) !== head.boundary)) {
           await this.query.dropCollection(collection);
           head = undefined;
         }
+        const expectedHead = head;
         head ??= { kind: 'head', version: 1, generation, epoch: randomUUID(), offset: 0, covered: 0, size, mtime, boundary: '', nextTurnId: 0, cancelled: [], pending: [] };
         const selected = source ?? { generation, epoch: head.epoch, watermark: size, proof: await proof(pinned, size, signal) };
         await this.validate(scope, pinned, head, selected, signal);
@@ -155,7 +156,10 @@ export class ThreadTurnStore implements IThreadTurnStore {
           next.boundary = await proof(pinned, next.offset, signal);
           await this.validate(scope, pinned, next, selected, signal);
           signal?.throwIfAborted();
-          await this.query.batch([...operations.values(), { kind: 'put', collection, key: 'head', value: next }]);
+          const ops: WriteOp[] = [...operations.values(), { kind: 'put', collection, key: 'head', value: next }];
+          if (this.query.batchIf !== undefined) {
+            if (!await this.query.batchIf([{ collection, key: 'head', value: expectedHead }], ops)) changed();
+          } else await this.query.batch(ops);
           head = next;
           this.log.info('Thread history preparation slice', {
             records_count: records, source_bytes: consumed, source_offset: head.offset,
@@ -168,7 +172,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
         const page = await this.query.pageByColumn<TurnRow>(collection, {
           column: 'turnId', dir: 'desc', bounds: { lt: before },
           filter: { kind: 'turn', terminalEnd: { $lte: selected.watermark } }, limit: limit + 1,
-        });
+        }, signal);
         const rows = page.items.slice(0, limit).toSorted((left, right) => left.turnId - right.turnId);
         const turns: ThreadTurn[] = [];
         for (const row of rows) {
@@ -198,7 +202,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
       const field = ref.path.length === 1 ? ref.path[0] : undefined;
       if (ref.source.kind !== 'turn' || !/^\d+$/.test(ref.source.id) || ref.kind !== 'text' ||
         !['input', 'output'].includes(String(field)) || ref.direction === 'backward') changed();
-      const row = await this.query.get<TurnRow>(collectionOf(scope), `turn:${ref.source.id}`);
+      const row = await this.query.get<TurnRow>(collectionOf(scope), `turn:${ref.source.id}`, signal);
       if (row === undefined || this.revision(scope, row) !== ref.revision ||
         ref.total !== (field === 'input' ? row.inputUnits : row.outputUnits) ||
         !Number.isSafeInteger(ref.offset) || ref.offset < 0 || ref.offset >= ref.total) changed();
@@ -306,7 +310,7 @@ export class ThreadTurnStore implements IThreadTurnStore {
     while (position < total && position - offset < limit) {
       signal?.throwIfAborted();
       const start = Math.floor(position / SEGMENT_UNITS) * SEGMENT_UNITS;
-      const chunk = await this.query.get<TextRow>(collectionOf(scope), `text:${turn.turnId}:${field}:${start}`);
+      const chunk = await this.query.get<TextRow>(collectionOf(scope), `text:${turn.turnId}:${field}:${start}`, signal);
       if (chunk === undefined || typeof chunk.text !== 'string' || chunk.text.length !== Math.min(SEGMENT_UNITS, total - start)) changed();
       const end = Math.min(chunk.text.length, position - start + limit - (position - offset));
       const selected = chunk.text.slice(position - start, end);
@@ -332,7 +336,11 @@ export class ThreadTurnStore implements IThreadTurnStore {
 
   private exclusive<T>(scope: string, signal: AbortSignal | undefined, operation: () => Promise<T>): Promise<T> {
     const previous = this.operations.get(scope) ?? Promise.resolve();
-    const current = previous.catch(() => {}).then(async () => { signal?.throwIfAborted(); return operation(); });
+    const current = previous.catch(() => {}).then(async () => {
+      signal?.throwIfAborted();
+      const run = async (): Promise<T> => { signal?.throwIfAborted(); return operation(); };
+      return this.query.batchIf !== undefined && this.query.withExclusive !== undefined ? this.query.withExclusive(run, collectionOf(scope)) : run();
+    });
     this.operations.set(scope, current);
     void current.finally(() => {
       if (this.operations.get(scope) === current) this.operations.delete(scope);

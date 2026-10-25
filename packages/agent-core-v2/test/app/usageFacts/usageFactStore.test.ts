@@ -15,7 +15,8 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IQueryStore } from '#/persistence/interface/queryStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
-import { MiniDbQueryStore, drainQueryStoreDisposals } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteQueryStore } from '#/persistence/backends/sqlite/sqliteQueryStore';
+import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubLog } from '../../_base/log/stubs';
 
@@ -38,7 +39,7 @@ describe('UsageFactStore', () => {
     ix.stub(IBootstrapService, stubBootstrap(home));
     ix.stub(ILogService, stubLog());
     ix.stub(IFileSystemStorageService, storage);
-    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore));
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
     ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
     facts = ix.get(IUsageFactStore);
@@ -164,9 +165,10 @@ describe('UsageFactStore', () => {
     let cursor: string | undefined;
     const result = [];
     for (let pass = 0; pass < 10; pass++) {
-      const budget = { remainingRecords: 100 };
+      const allowance = pass % 2 === 0 ? 100 : 256;
+      const budget = { remainingRecords: allowance };
       const snapshot = await facts.read(SCOPE, { startAt: 0, endAt: 1000 }, undefined, { budget, cursor });
-      expect(snapshot.records.length).toBeLessThanOrEqual(100);
+      expect(snapshot.records.length).toBeLessThanOrEqual(allowance);
       expect(budget.remainingRecords).toBeGreaterThanOrEqual(0);
       result.push(...snapshot.records);
       cursor = snapshot.nextCursor;
@@ -175,6 +177,7 @@ describe('UsageFactStore', () => {
     }
     expect(cursor).toBeUndefined();
     expect(result).toHaveLength(621);
+    expect(result.filter((row) => !row.invalid).map((row) => row.time).toSorted((a, b) => a - b)).toEqual(Array.from({ length: 620 }, (_, ordinal) => ordinal));
     expect(result.filter((row) => row.usageKnown === false)).toHaveLength(208);
     expect(result.filter((row) => row.invalid)).toHaveLength(1);
   });
@@ -215,6 +218,28 @@ describe('UsageFactStore', () => {
     expect(await query.get(COLLECTION, 'head')).toMatchObject({ version: 2 });
     expect(await storage.read(`cache/usage-facts-v1/${ID}`, 'facts.jsonl')).toEqual(before);
     expect(read.mock.calls.every(([, key]) => key === 'facts.jsonl')).toBe(true);
+  });
+
+  it('keeps the published rows stable through staging pauses and peer publication', async () => {
+    const checkpoint = { generation: 'legacy', offset: 1, size: 1, mtimeMs: 1, boundaryHash: '', valid: true };
+    const initial = normalizeUsageFact(fact(0), 'main')!;
+    await facts.commit(SCOPE, 0, checkpoint, [initial]);
+    const published = await facts.read(SCOPE);
+    const records = Array.from({ length: 620 }, (_, index) => normalizeUsageFact(fact(index + 1), 'main')!);
+    await facts.commit(SCOPE, 1, { ...checkpoint, offset: 621, size: 621 }, records);
+    const partial = await facts.summary(SCOPE, undefined, { budget: { remainingRecords: 800 } });
+    expect(partial.readComplete).toBe(false);
+    const peer = new TestInstantiationService();
+    peer.stub(IBootstrapService, stubBootstrap(home)); peer.stub(ILogService, stubLog()); peer.stub(IFileSystemStorageService, storage);
+    peer.set(IQueryStore, new SyncDescriptor(SqliteQueryStore)); peer.set(IAppendLogStore, new SyncDescriptor(AppendLogStore)); peer.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+    try {
+      const peerQuery = peer.get(IQueryStore);
+      expect(await peerQuery.get(COLLECTION, 'head')).toMatchObject({ recordCount: 1, checkpoint: published.checkpoint });
+      expect((await peerQuery.query(COLLECTION).where({ kind: 'fact' }).execute()).items).toEqual([expect.objectContaining({ ordinal: 0, time: 0 })]);
+      expect((await peer.get(IUsageFactStore).read(SCOPE)).records).toEqual([initial, ...records]);
+      expect((await facts.read(SCOPE)).records).toEqual([initial, ...records]);
+      expect(await query.get(COLLECTION, 'head')).toMatchObject({ recordCount: 621, checkpoint: { offset: 621 } });
+    } finally { await peer.dispose(); await drainQueryStoreDisposals(); }
   });
 
   it('resumes multi-page index construction within fact allowances without publishing its source checkpoint early', async () => {
@@ -261,11 +286,40 @@ describe('UsageFactStore', () => {
       await facts.commit(scope, 0, { generation: 'legacy', offset: 300, size: 300, mtimeMs: 1, boundaryHash: '', valid: true }, records);
       await facts.summary(scope);
     }
+    let entered = 0, release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const get = query.getMany.bind(query);
+    vi.spyOn(query, 'getMany').mockImplementation(async <T>(collection: string, keys: readonly string[], signal?: AbortSignal) => {
+      if (keys[0]?.startsWith('fact:') && ++entered <= 2) { if (entered === 2) release(); await gate; }
+      return get<T>(collection, keys, signal);
+    });
     const budget = { remainingRecords: 350 };
     const snapshots = await Promise.all(scopes.map((scope) => facts.read(scope, undefined, undefined, { budget })));
     expect(snapshots.reduce((total, snapshot) => total + snapshot.records.length, 0)).toBe(350);
     expect(snapshots.every((snapshot) => snapshot.readComplete === false)).toBe(true);
     expect(budget.remainingRecords).toBe(0);
+  });
+
+  it('passes the real read signal through staging, ordinal reads, verification and range queries', async () => {
+    const controller = new AbortController();
+    logs.append(SCOPE, KEY, fact());
+    await logs.flush(SCOPE, KEY);
+    const points = vi.spyOn(query, 'getMany');
+    const executeSignals: Array<AbortSignal | undefined> = [];
+    const select = query.query.bind(query);
+    vi.spyOn(query, 'query').mockImplementation(<T>(collection: string) => {
+      const selection = select<T>(collection);
+      const execute = selection.execute.bind(selection);
+      vi.spyOn(selection, 'execute').mockImplementation((signal) => { executeSignals.push(signal); return execute(signal); });
+      return selection;
+    });
+    expect((await facts.read(SCOPE, undefined, controller.signal)).records).toHaveLength(1);
+    expect(points.mock.calls.length).toBeGreaterThan(2);
+    expect(points.mock.calls.every((args) => args[2] === controller.signal)).toBe(true);
+    (Reflect.get(facts, 'verified') as Set<string>).clear();
+    expect((await facts.read(SCOPE, { startAt: 0, endAt: 2 }, controller.signal)).records).toHaveLength(1);
+    expect(executeSignals.length).toBeGreaterThanOrEqual(3);
+    expect(executeSignals.every((signal) => signal === controller.signal)).toBe(true);
   });
 
   it('cancels a stalled index read promptly and leaves another read usable', async () => {

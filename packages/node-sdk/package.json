@@ -64,7 +64,7 @@
     "provenance": true
   },
   "scripts": {
-    "build": "tsdown && tsdown --config tsdown.native-fs-watch-error-guard.config.ts && pnpm run build:dts",
+    "build": "tsdown && tsdown --config tsdown.query-store-worker.config.ts && tsdown --config tsdown.native-fs-watch-error-guard.config.ts && pnpm run build:dts",
     "build:dts": "node scripts/build-dts.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",

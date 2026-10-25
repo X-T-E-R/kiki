@@ -23,6 +23,7 @@ import {
   KAP_SQLITE_QUERY_WORKER_ASSET,
   KAP_USAGE_PARSER_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
+  QUERY_STORE_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
   WINDOWS_PROCESS_HELPER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION as MANIFEST_VERSION,
@@ -448,6 +449,10 @@ export function getKapSearchWorkerFile(options: NativeAssetOptions = {}): string
 
 export function getKapUsageWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(KAP_USAGE_PARSER_WORKER_ASSET.key, options);
+}
+
+export function getQueryStoreWorkerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(QUERY_STORE_WORKER_ASSET.key, options);
 }
 
 export function getKapSqliteQueryWorkerFile(options: NativeAssetOptions = {}): string | null {

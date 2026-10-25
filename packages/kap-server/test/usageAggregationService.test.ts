@@ -1,10 +1,12 @@
 import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
 import { MiniDbQueryStore, drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteQueryStore } from '@kiki/agent-core-v2/persistence/backends/sqlite/sqliteQueryStore';
 import { InMemoryStorageService } from '@kiki/agent-core-v2/persistence/backends/memory/inMemoryStorageService';
 import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
 import { stubBootstrap } from '../../agent-core-v2/test/app/bootstrap/stubs';
@@ -40,7 +42,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { parseUsageRangeProjection } from '../src/usage/usageRangeProjection';
-import { UsageRangeFold } from '../src/usage/usageRangeFold';
+import { UsageRangeFold, type RangeFoldHead } from '../src/usage/usageRangeFold';
 import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
 
 const queryFixtures: { home: string; ix: TestInstantiationService; store: IQueryStore }[] = [];
@@ -309,14 +311,14 @@ function scope(workspaceId: string, sessionId: string): string {
   return `sessions/${workspaceId}/${sessionId}/agents/main`;
 }
 
-async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Record<string, readonly WireRecord[]>>) {
+async function openRange(sessions: readonly SessionSummary[], wires: Readonly<Record<string, readonly WireRecord[]>>, sqlite = false) {
   const home = mkdtempSync(join(tmpdir(), 'usage-range-buckets-'));
   const ix = new TestInstantiationService();
   const storage = new InMemoryStorageService();
   ix.stub(IBootstrapService, stubBootstrap(home));
   ix.stub(ILogService, stubLog());
   ix.stub(IFileSystemStorageService, storage);
-  ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+  ix.set(IQueryStore, new SyncDescriptor<IQueryStore>(sqlite ? SqliteQueryStore : MiniDbQueryStore));
   ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
   ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
   const store = ix.get(IQueryStore);
@@ -2495,5 +2497,199 @@ describe('shared agent and history usage projection', () => {
     expect(added.reliability.usage_coverage).toMatchObject({ known_records: 5, missing_records: 0 });
     expect(added.trend[0]?.turn_count).toBe(3);
     expect(added.trend[0]?.drilldown.sessions.find((session) => session.session_id === 's')).toMatchObject({ turn_ids: [7, 8, 9], turn_count: 3, unknown_turn_records: 0 });
+  });
+});
+
+
+describe('SQLite UsageRangeFold publication', () => {
+  it('reopens a dead SQLite worker on a real Usage history request without a manual recovery call', async () => {
+    const wireScope = scope('workspace', 'session');
+    const saved = await openRange([summary('session', 'workspace')], { [wireScope]: [usageRecord(1, 1), usageRecord(2, 2)] }, true);
+    await saved.store.get('routing', 'missing');
+    const host = Reflect.get(saved.store, 'worker') as object;
+    const thread = Reflect.get(host, 'worker') as import('node:worker_threads').Worker;
+    await thread.terminate();
+    const recover = vi.spyOn(saved.store, 'recover');
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const response = await service.query({ range: 'custom', start_at: 0, end_at: 1000 });
+    expect(response.reliability.complete).toBe(true);
+    expect(response.reliability.usage_coverage).toMatchObject({ known_records: 2, missing_records: 0 });
+    expect(response.summary.tokens.output).toBe(2);
+    expect(recover).toHaveBeenCalledOnce();
+    expect(Reflect.get(saved.store, 'worker')).not.toBe(host);
+    service.dispose();
+  });
+
+  it('rebuilds an interrupted complete-fold append from its invalidated publication without counting the tail twice', async () => {
+    const wireScope = scope('workspace', 'session'), now = 1000;
+    const saved = await openRange([summary('session', 'workspace')], { [wireScope]: [usageRecord(1, 1), usageRecord(2, 2)] }, true);
+    const input = { range: 'custom', start_at: 0, end_at: now, dimension: 'model' } as const;
+    await new UsageAggregationService(saved.core, () => now, { usageFactBudget: 1 }).query(input);
+    let response = await new UsageAggregationService(saved.core, () => now).query(input);
+    for (let pass = 0; pass < 4 && !response.reliability.complete; pass++) response = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(response.reliability.complete).toBe(true);
+    expect(response.summary.tokens.output).toBe(2);
+    const projectionKey = (await saved.storage.list('cache/usage-aggregation-v1')).find((key) => key.startsWith('range-projection-'))!;
+    const projection = parseUsageRangeProjection((await saved.storage.read('cache/usage-aggregation-v1', projectionKey))!)!;
+    const collection = `usage-range-v1:${projection.fingerprint}`;
+    await saved.storage.delete('cache/usage-aggregation-v1', projectionKey);
+    const fold = new UsageRangeFold(saved.store, collection, 100, 100);
+    const head = (await fold.head<RangeFoldHead>())!;
+    const previous = head.sessions[0]!.sources![0]!.checkpoint;
+    saved.logs.append(wireScope, 'wire.jsonl', usageRecord(3, 3));
+    await saved.logs.flush(wireScope, 'wire.jsonl');
+    const facts = saved.core.accessor.get(IUsageFactStore);
+    const stopped = vi.spyOn(facts, 'commit').mockRejectedValueOnce(new Error('process stopped before source acknowledgement'));
+    const service = new UsageAggregationService(saved.core, () => now);
+    const query = { range: { preset: 'custom', startAt: 0, endAt: now, defaultedToAllHistory: false }, granularity: 'five_hour', dimension: 'model', models: [], providers: [], profiles: [], agentIds: [], workspaceIds: [], includeArchived: true, timezoneOffsetMinutes: 0, pageSize: 25 };
+    const signal = new AbortController().signal;
+    const advanced = await Reflect.apply(Reflect.get(service, 'advanceCompleteFold'), service, [head, fold, query, { signal, factSignal: signal, remainingRecords: 200_000, remainingFacts: 200_000, deadlineAt: now + 10_000, sourcesComplete: true, incompleteReason: null }]);
+    expect(advanced).toBe(false);
+    const interrupted = (await new UsageRangeFold(saved.store, collection, 100, 100).head<RangeFoldHead>())!;
+    expect(interrupted).toMatchObject({ invalidated: true, complete: false });
+    expect(interrupted.sessions[0]!.sources![0]!.checkpoint).toEqual(previous);
+    expect((await fold.recordPage()).items.reduce((sum, row) => sum + row.record.usage.output, 0)).toBe(3);
+    stopped.mockRestore();
+    const recovered = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(recovered.reliability.complete).toBe(true);
+    expect(recovered.summary.tokens.output).toBe(3);
+    expect(recovered.reliability.usage_coverage).toMatchObject({ known_records: 3, missing_records: 0 });
+    expect(recovered.trend[0]?.turn_count).toBe(3);
+    service.dispose();
+  });
+
+  it('replays exact fact-journal ordinals after a rejected page without skipping duplicate, zero or unknown facts', async () => {
+    const wireScope = 'sessions/workspace/session/agents/main';
+    const directory = `cache/usage-facts-v1/${createHash('sha256').update(wireScope).digest('hex')}`;
+    const storage = new InMemoryStorageService();
+    const records = Array.from({ length: 600 }, (_, ordinal) => ({ time: 1, model: 'example', turnId: ordinal, usageKnown: ordinal % 3 === 0 ? false : true, usage: { inputOther: 0, output: ordinal % 3 === 1 ? 0 : 1, inputCacheRead: 0, inputCacheCreation: 0 } }));
+    records[599] = { ...records[598]! };
+    const checkpoint = { generation: 'example', offset: 600, size: 600, mtimeMs: 1, boundaryHash: '', valid: true };
+    const initial = { version: 1, start: 0, checkpoint, records };
+    const tail = { version: 1, start: 600, checkpoint: { ...checkpoint, offset: 601, size: 601 }, records: [records[599]!] };
+    const stale = { version: 1, start: 0, checkpoint: { ...checkpoint, generation: 'previous' }, records: [records[0]!] };
+    const journal = [stale, initial, tail, tail].map((batch) => JSON.stringify(batch) + '\n').join('');
+    const initialOffset = Buffer.byteLength(JSON.stringify(stale) + '\n');
+    await storage.write(directory, 'facts.jsonl', Buffer.from(journal));
+    const service = new UsageAggregationService({ accessor: { get: (id: unknown) => { if (id === IFileSystemStorageService) return storage; throw new Error('Unexpected dependency'); } } } as unknown as Scope, () => 0);
+    const replay = Reflect.get(service, 'replayFactJournal') as (...args: unknown[]) => Promise<{ done: boolean; cursor: string }>;
+    const hold = { cursor: 'journal:0:0' }, accepted: unknown[] = [];
+    const deadline = new AbortController();
+    const budget = { signal: new AbortController().signal, factSignal: deadline.signal, remainingFacts: 200_000, deadlineAt: 10_000, incompleteReason: null };
+    const firstPageDeadline = new AbortController();
+    const uncommitted = await replay.call(service, wireScope, hold.cursor, { startAt: 0, endAt: 10 }, { ...budget, factSignal: firstPageDeadline.signal }, hold, async () => { firstPageDeadline.abort(); throw new Error('first page was not committed'); }, 'example');
+    expect(uncommitted).toEqual({ done: false, cursor: `journal:${initialOffset}:0` });
+    expect(accepted).toEqual([]);
+    let pages = 0;
+    const first = await replay.call(service, wireScope, hold.cursor, { startAt: 0, endAt: 10 }, budget, hold, async (page: unknown[]) => { if (++pages === 2) { deadline.abort(); throw new Error('cancelled before commit'); } accepted.push(...page); }, 'example');
+    expect(first).toEqual({ done: false, cursor: `journal:${initialOffset}:256` });
+    expect(accepted).toHaveLength(256);
+    const next = await replay.call(service, wireScope, first.cursor, { startAt: 0, endAt: 10 }, { ...budget, remainingFacts: 345, factSignal: new AbortController().signal }, hold, async (page: unknown[]) => { accepted.push(...page); }, 'example');
+    expect(next.done).toBe(false);
+    expect(accepted).toEqual([...records, records[599]]);
+    expect(JSON.parse(Buffer.from(next.cursor.split(':')[3]!, 'base64url').toString('utf8'))).toEqual({ generation: 'example', offset: 601, count: 601 });
+    const restarted = new UsageAggregationService({ accessor: { get: (id: unknown) => { if (id === IFileSystemStorageService) return storage; throw new Error('Unexpected dependency'); } } } as unknown as Scope, () => 0);
+    const last = await replay.call(restarted, wireScope, next.cursor, { startAt: 0, endAt: 10 }, { ...budget, factSignal: new AbortController().signal }, hold, async (page: unknown[]) => { accepted.push(...page); }, 'example');
+    expect(last.done).toBe(true);
+    expect(accepted).toEqual([...records, records[599]]);
+    expect(accepted).toHaveLength(601);
+    restarted.dispose();
+    service.dispose();
+  });
+
+  it('rejects interleaved same-fingerprint pages and preserves groups, turns and coverage after reopen', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'usage-fold-sqlite-'));
+    const instances: TestInstantiationService[] = [];
+    const open = (): IQueryStore => {
+      const ix = new TestInstantiationService(); instances.push(ix);
+      ix.stub(IBootstrapService, stubBootstrap(home)); ix.stub(ILogService, stubLog());
+      ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore)); return ix.get(IQueryStore);
+    };
+    try {
+      const stores = [open(), open()];
+      const folds = stores.map((store) => new UsageRangeFold(store, 'same-fingerprint', 100, 100));
+      await folds[0]!.saveHead({ offset: 0, complete: false });
+      let entered = 0;
+      let release!: () => void;
+      const paused = new Promise<void>((resolve) => { release = resolve; });
+      const gates = stores.map((store) => {
+        const original = store.getMany.bind(store);
+        return vi.spyOn(store, 'getMany').mockImplementation(async (collection, keys, signal) => {
+          const rows = await original(collection, keys, signal);
+          if (++entered === 2) release();
+          await paused;
+          return rows;
+        });
+      });
+      const records = [1, 2].map((turnId) => ({ time: 1, model: 'example', agentId: 'main', turnId, usageKnown: true, usage: { inputOther: 0, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } }));
+      const accepted = await Promise.allSettled(folds.map((fold, index) => fold.addPage(summary('session', 'workspace'), [records[index]!], () => 'bucket', () => true, { offset: index + 1, complete: false })));
+      expect(accepted.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      const conflict = accepted.find((result) => result.status === 'rejected');
+      expect(conflict).toMatchObject({ status: 'rejected', reason: { message: 'Usage fact cursor changed' } });
+      for (const gate of gates) gate.mockRestore();
+      const winner = (await folds[0]!.head<{ offset: number }>())!.offset - 1;
+      const loser = 1 - winner;
+      expect((await folds[0]!.recordPage()).items[0]?.record.usage.output).toBe(1);
+      expect((await folds[0]!.buckets(['bucket'])).get('bucket:bucket')?.turnCount).toBe(1);
+      await folds[loser]!.addPage(summary('session', 'workspace'), [records[loser]!], () => 'bucket', () => true, { offset: 3, complete: true });
+      for (const store of stores) await store.close();
+      const reopened = new UsageRangeFold(open(), 'same-fingerprint', 100, 100);
+      expect(await reopened.head()).toEqual({ offset: 3, complete: true });
+      expect((await reopened.recordPage()).items[0]?.record).toMatchObject({ usage: { output: 2 }, folded: { records: 2, known: 2 } });
+      expect((await reopened.buckets(['bucket'])).get('bucket:bucket')).toMatchObject({ turnCount: 2, sessions: [{ turnIds: [1, 2], turnCount: 2 }] });
+      const splitStore = open(), split = new UsageRangeFold(splitStore, 'split-head', 100, 100);
+      const checkpoint = { generation: 'example', offset: 1, size: 1, mtimeMs: 1, boundaryHash: '', valid: true };
+      const session = { summary: summary('session', 'workspace'), invalid: false, prepared: true, sources: Array.from({ length: 1000 }, (_, index) => ({ agentId: `agent-${index}`, scope: `sessions/workspace/session/agents/agent-${index}`, checkpoint, done: false, cursor: 'journal:0:0' })) };
+      const head = { version: 1 as const, fingerprint: 'split-head', sessions: [session], complete: false, inventoryComplete: true, invalidated: false };
+      await splitStore.put('split-head', 'head', head);
+      expect(await split.head()).toBeUndefined();
+      await split.reset();
+      await split.saveHead(head);
+      const revision = await splitStore.get<{ epoch: string; revision: number }>('split-head', 'head:revision');
+      expect(JSON.stringify(head).length).toBeGreaterThan(200_000);
+      const commits = vi.spyOn(splitStore, 'batchIf');
+      session.sources[0]!.cursor = 'journal:0:1';
+      await split.addPage(session.summary, [records[0]!], () => 'bucket', () => true, head, undefined, { session, source: session.sources[0]! });
+      expect(JSON.stringify(commits.mock.calls[0]).length).toBeLessThan(10_000);
+      expect(commits.mock.calls[0]?.[0]).toEqual([{ collection: 'split-head', key: 'head:revision', value: revision }]);
+      expect(await new UsageRangeFold(open(), 'split-head', 100, 100).head()).toEqual(head);
+      commits.mockRestore();
+      let enteredPage!: () => void, releasePage!: () => void;
+      const enteredFlight = new Promise<void>((resolve) => { enteredPage = resolve; });
+      const pausedPage = new Promise<void>((resolve) => { releasePage = resolve; });
+      const getMany = splitStore.getMany.bind(splitStore);
+      const gate = vi.spyOn(splitStore, 'getMany').mockImplementation(async (collection, keys, signal) => { const result = await getMany(collection, keys, signal); enteredPage(); await pausedPage; return result; });
+      const stale = split.addPage(session.summary, [records[1]!], () => 'bucket', () => true, head, undefined, { session, source: session.sources[0]! });
+      const rejected = expect(stale).rejects.toThrow('Usage fact cursor changed');
+      await enteredFlight;
+      const resetStore = open(), reset = new UsageRangeFold(resetStore, 'split-head', 100, 100);
+      await reset.reset();
+      releasePage();
+      await rejected;
+      gate.mockRestore();
+      expect((await resetStore.get<{ epoch: string }>('split-head', 'head:revision'))?.epoch).not.toBe(revision?.epoch);
+      expect(await reset.head()).toBeUndefined();
+      expect((await reset.recordPage()).items).toEqual([]);
+      expect(await resetStore.listKeys('split-head')).toEqual(['head:revision']);
+      const sameStore = open(), same = new UsageRangeFold(sameStore, 'same-instance', 100, 100);
+      let enteredSame!: () => void, releaseSame!: () => void;
+      const sameEntered = new Promise<void>((resolve) => { enteredSame = resolve; });
+      const samePaused = new Promise<void>((resolve) => { releaseSame = resolve; });
+      const sameGetMany = sameStore.getMany.bind(sameStore);
+      const sameGate = vi.spyOn(sameStore, 'getMany').mockImplementation(async (collection, keys, signal) => { const result = await sameGetMany(collection, keys, signal); if (!keys.includes('head:revision')) { enteredSame(); await samePaused; } return result; });
+      const beforeInitialization = same.addPage(summary('session', 'workspace'), [records[0]!], () => 'bucket', () => true, { offset: 1 });
+      const missingExpected = expect(beforeInitialization).rejects.toThrow('Usage fact cursor changed');
+      await sameEntered;
+      await same.reset();
+      releaseSame();
+      await missingExpected;
+      sameGate.mockRestore();
+      expect(await sameStore.listKeys('same-instance')).toEqual(['head:revision']);
+      expect((await same.recordPage()).items).toEqual([]);
+    } finally {
+      for (const ix of instances) await ix.dispose();
+      await drainQueryStoreDisposals();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 });

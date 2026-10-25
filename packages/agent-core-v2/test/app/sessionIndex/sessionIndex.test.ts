@@ -46,6 +46,7 @@ import {
   MINIDB_QUERY_STORE_SUBDIR,
   MiniDbQueryStore,
 } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteQueryStore } from '#/persistence/backends/sqlite/sqliteQueryStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
@@ -915,6 +916,29 @@ describe('FileSessionIndex (read model)', () => {
       return keys;
     }
   }
+
+  it('rebuilds SQLite from metadata with tie order, parent filters, mirror and recovery', async () => {
+    overrideScopedService(LifecycleScope.App, IQueryStore, SqliteQueryStore, ScopeActivation.OnDemand, 'storage');
+    await seedSession('a', { title: 'first', createdAt: 1, updatedAt: 10 });
+    await seedSession('b', { title: 'second', createdAt: 1, updatedAt: 10, custom: { parent_session_id: 'parent', child_session_kind: 'child' } });
+    await seedSession('c', { title: 'third', createdAt: 1, updatedAt: 20, custom: { parent_session_id: 'parent', child_session_kind: 'child' } });
+    await seedSession('archived', { archived: true, createdAt: 1, updatedAt: 30 });
+    const store = build();
+    expect((await store.prepare()).state).toBe('ready');
+    expect(await walkPages(store, { workspaceIds: [workspaceId] }, 1)).toEqual(['c', 'b', 'a']);
+    expect((await store.listRecent({ childOf: 'parent' })).items.map((item) => item.id)).toEqual(['c', 'b']);
+    expect(await store.count({ workspaceIds: [workspaceId] })).toBe(3);
+    expect(await store.count({ workspaceIds: [workspaceId], includeArchived: true })).toBe(4);
+    mirror.record(summary('new', { updatedAt: 40, title: 'pending' }));
+    expect(await store.get('new')).toMatchObject({ title: 'pending' });
+    expect((await store.listRecent({ limit: 1 })).items[0]?.id).toBe('new');
+    await queryStore.recover!();
+    expect((await store.listRecent({ childOf: 'parent' })).items.map((item) => item.id)).toEqual(['c', 'b']);
+    const manifest = await queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+    await queryStore.dropCollection(sessionCollection(manifest!.seq));
+    await store.reprojectNow();
+    expect(await walkPages(store, { workspaceIds: [workspaceId] }, 1)).toEqual(['c', 'b', 'a']);
+  });
 
   it('prepare projects the persisted sessions and publishes a generation', async () => {
     await seedSession('active', { title: 'hello', createdAt: 1, updatedAt: 2 });

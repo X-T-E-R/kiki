@@ -39,6 +39,7 @@ import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
 import { installKapSearchWorker } from './native/search-worker';
 import { installKapUsageWorker } from './native/usage-worker';
+import { installQueryStoreWorker } from './native/query-store-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
 
@@ -134,6 +135,14 @@ function bootstrap(): void {
   startupTrace(usageWorkerInstall.status === 'failed'
     ? `usage-worker:failed code=${usageWorkerInstall.errorCode}`
     : `usage-worker:${usageWorkerInstall.status}`);
+  const queryStoreWorkerInstall = installQueryStoreWorker();
+  startupTrace(
+    queryStoreWorkerInstall.status === 'installed'
+      ? `query-store-worker:installed basename=${queryStoreWorkerInstall.basename} sha256=${queryStoreWorkerInstall.assetSha256}`
+      : queryStoreWorkerInstall.status === 'failed'
+        ? `query-store-worker:failed code=${queryStoreWorkerInstall.errorCode} sha256=${queryStoreWorkerInstall.assetSha256 ?? 'unknown'}`
+        : `query-store-worker:${queryStoreWorkerInstall.status}`,
+  );
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();
     if (queryWorker) process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;

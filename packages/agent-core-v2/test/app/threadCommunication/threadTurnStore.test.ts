@@ -10,10 +10,11 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IThreadTurnStore, ThreadTurnStore, type ThreadTurnPage } from '#/app/threadCommunication/threadTurnStore';
 import { IAppendLogStore, AppendLogCorruptedError } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { IQueryStore } from '#/persistence/interface/queryStore';
+import { IQueryStore, type ColumnPageQuery } from '#/persistence/interface/queryStore';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
-import { MiniDbQueryStore, drainQueryStoreDisposals } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { SqliteQueryStore } from '#/persistence/backends/sqlite/sqliteQueryStore';
+import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import { ErrorCodes } from '#/errors';
 import { stubBootstrap } from '../bootstrap/stubs';
 import { stubLog } from '../../_base/log/stubs';
@@ -38,7 +39,7 @@ describe('ThreadTurnStore', () => {
     ix.stub(ILogService, stubLog());
     ix.stub(IFileSystemStorageService, storage);
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
-    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IQueryStore, new SyncDescriptor(SqliteQueryStore));
     ix.set(IThreadTurnStore, new SyncDescriptor(ThreadTurnStore));
     logs = ix.get(IAppendLogStore);
     query = ix.get(IQueryStore);
@@ -94,6 +95,21 @@ describe('ThreadTurnStore', () => {
     expect(ranges.every((range) => range !== undefined && range.end - range.start < 1024)).toBe(true);
     expect(ranges.some((range) => range?.start === 0)).toBe(false);
     read.mockRestore();
+  });
+
+  it('cancels the actual indexed turn page and leaves a later read usable', async () => {
+    await seed([prompt(), part(0, 'output'), ended(0)]);
+    const first = await ready();
+    const controller = new AbortController();
+    const select = query.pageByColumn.bind(query);
+    const page = vi.spyOn(query, 'pageByColumn').mockImplementationOnce(<T>(collection: string, selection: ColumnPageQuery, signal?: AbortSignal) => {
+      const reading = select<T>(collection, selection, signal);
+      queueMicrotask(() => controller.abort());
+      return reading;
+    });
+    await expect(turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 20, first.source, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(page.mock.calls[0]?.[2]).toBe(controller.signal);
+    expect((await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 20, first.source)).turns).toEqual(first.turns);
   });
 
   it('isolates latest and earlier turn pages across scopes with overlapping turn ids', async () => {
