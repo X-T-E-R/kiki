@@ -1,4 +1,7 @@
 import { randomBytes } from 'node:crypto';
+import { stat } from 'node:fs/promises';
+import { isSea } from 'node:sea';
+import { resolveKikiCliLaunch } from '@kiki/agent-core-v2/os/backends/node-local/kikiCliPath';
 
 import { IHarnessMcpService, type Scope } from '@kiki/agent-core-v2';
 import type { FastifyInstance } from 'fastify';
@@ -6,6 +9,8 @@ import type { FastifyInstance } from 'fastify';
 import type { McpSeat, SeatResolver } from './seatResolver';
 import { createHarnessHooks } from './harnessHooks';
 import { ContextProcedureHost } from '../procedures/contextHost';
+import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
+import { withSessionOperation } from '../lib/sessionOperationLease';
 
 export function registerHarnessMcpBridge(core: Scope, app: FastifyInstance): SeatResolver {
   const seats = new Map<string, McpSeat>();
@@ -14,14 +19,25 @@ export function registerHarnessMcpBridge(core: Scope, app: FastifyInstance): Sea
   const configured = core.accessor.get(IHarnessMcpService).configure(async (request) => {
     const address = app.server.address();
     if (address === null || typeof address === 'string') throw new Error('Harness MCP requires a listening HTTP server');
+    const launch = await resolveKikiCliLaunch({ isSea, execPath: process.execPath, argv: process.argv,
+      isFile: async (path) => { try { return (await stat(path)).isFile(); } catch { return false; } } });
+    const command = launch?.kind === 'executable' ? launch.executable : launch?.kind === 'node' ? launch.nodePath : 'kiki';
+    const prefix = launch?.kind === 'node' ? [launch.entryPath] : [];
+    const harnessAgentInstance = request.nativeTools === true ? await withSessionOperation(core, request.sessionId, async (session) => {
+      const agent = session?.accessor.get(IAgentLifecycleService).get(request.agentId);
+      if (agent === undefined) throw new Error('Harness agent is not available');
+      return agent;
+    }) : undefined;
     const token = randomBytes(32).toString('hex');
     const seat: McpSeat = {
-      seatId: `harness:${request.sessionId}`,
-      principalId: `harness:${request.sessionId}`,
+      seatId: `harness:${request.sessionId}:${request.agentId}`,
+      principalId: `harness:${request.sessionId}:${request.agentId}`,
       sessionId: request.sessionId,
       delegationToken: token,
       workspacePath: request.workspacePath,
       harnessAgentId: request.agentId,
+      nativeTools: request.nativeTools,
+      harnessAgentInstance,
     };
     const hooks = request.hooks ? await createHarnessHooks(request.executorId ?? '') : undefined;
     let cleanup: Promise<void> | undefined;
@@ -42,8 +58,8 @@ export function registerHarnessMcpBridge(core: Scope, app: FastifyInstance): Sea
       } : undefined,
       server: {
         name: 'kiki-harness',
-        command: 'kiki',
-        args: ['mcp', '--workspace', request.workspacePath, '--attached'],
+        command,
+        args: [...prefix, 'mcp', '--workspace', request.workspacePath, '--attached'],
         env: [
           { name: 'KIKI_KAP_ENDPOINT', value: `http://127.0.0.1:${address.port}` },
           { name: 'KIKI_DELEGATION_TOKEN', value: token },

@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
 import { translate } from '@kiki/session-core/i18n';
+import type { PromptItem } from '@kiki/protocol';
 import { buildAnnotationsPrefix, clearStoredDrafts, resetDraftMemoryForTests, resetComposerMemoryForTests } from '@kiki/session-core/composer';
 import {
   createViewState,
@@ -19,6 +20,8 @@ import { I18nProvider } from '../../i18n';
 import { ApiError, ExternalAgentAttachmentUnsupportedError, NativeChildPromptConflictError, NativeChildPromptSendError, type AgentModelSwitchEvent, type QueuedModelSwitch } from '../../lib/client';
 import type { MediaPreviewApi } from '../mediaPreviewContext';
 import { AgentTreeView } from '../AgentTreeView';
+import { relatedAgentNodes } from '../AgentBreadcrumb';
+import { agentContinuationAvailable } from './AgentWorkspace';
 import { AgentWorkspace } from './OwnedAgentWorkspace';
 
 const harness = vi.hoisted(() => ({
@@ -27,6 +30,8 @@ const harness = vi.hoisted(() => ({
   shellEnabled: true,
   scopeId: 'direct:one',
   listModels: vi.fn(),
+  getAgentExecutor: vi.fn(),
+  getExecutorModels: vi.fn(),
   sendAgentMessage: vi.fn(),
   isNativeAgent: vi.fn(),
   stopAgentTask: vi.fn(),
@@ -51,10 +56,8 @@ const harness = vi.hoisted(() => ({
   },
 }));
 
-vi.mock('../../state/connection', () => ({
-  useConnection: () => ({
-    scopeId: harness.scopeId,
-    client: {
+vi.mock('../../state/connection', () => {
+  const client = {
       listModels: harness.listModels,
       getAgentCapabilities: harness.readCapabilities,
       listSessionSkills: harness.listSessionSkills,
@@ -73,8 +76,11 @@ vi.mock('../../state/connection', () => ({
       subscribeAgentModelSwitches: harness.subscribeAgentModelSwitches,
       getConfig: harness.getConfig,
       patchConfig: harness.patchConfig,
-    },
+      klient: { rest: { executors: { getModels: harness.getExecutorModels } } },
+  };
+  const connection = () => ({ scopeId: harness.scopeId, client,
     klient: {
+      session: () => ({ getAgentExecutor: harness.getAgentExecutor }),
       global: {
         agentPanel: {
           read: (query: unknown, options: { signal: AbortSignal }) =>
@@ -82,8 +88,9 @@ vi.mock('../../state/connection', () => ({
         },
       },
     },
-  }),
-}));
+  });
+  return { useConnection: connection, useOptionalConnection: connection };
+});
 
 vi.mock('../ConversationShell', () => ({
   EMPTY_SLOTS: { header: null, dock: null, heroFooter: null, rail: null, footer: null, preview: null },
@@ -102,7 +109,14 @@ vi.mock('../ConversationShell', () => ({
       : null,
 }));
 vi.mock('../ActivityHistory', () => ({ revealSubagentCard: () => true }));
-vi.mock('../AgentBreadcrumb', () => ({ AgentBreadcrumb: () => null, AgentRelations: () => null }));
+vi.mock('../AgentBreadcrumb', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../AgentBreadcrumb')>();
+  return {
+    ...actual,
+    AgentBreadcrumb: () => null,
+    AgentRelations: () => null,
+  };
+});
 vi.mock('../mediaPreview', () => ({
   MediaPreviewProvider: (props: { children?: ReactNode; apiRef?: unknown }) => {
     harness.mediaProviderProps.push(props);
@@ -113,8 +127,9 @@ vi.mock('../PreviewToggleButton', () => ({ PreviewToggleButton: () => <div data-
 vi.mock('../RightRail', () => ({ RightRail: () => null }));
 vi.mock('../../host', () => ({ useHost: () => harness.host }));
 vi.mock('../../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: { preparePrompt: vi.fn() } }));
-vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId }: { state: { blocks: readonly unknown[] }; agentId?: string }) =>
-  <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length} /> }));
+vi.mock('../Transcript', () => ({ Transcript: ({ state, agentId }: { state: { blocks: readonly unknown[]; loadError?: string; transcriptReady?: boolean }; agentId?: string }) =>
+  <div data-timeline-agent={agentId ?? 'main'} data-timeline-blocks={state.blocks.length}
+    data-timeline-error={state.loadError} data-timeline-ready={state.transcriptReady === true ? 'true' : 'false'} /> }));
 vi.mock('./ResyncStatusBanner', () => ({ ResyncStatusBanner: () => null }));
 vi.mock('../../lib/toasts', () => ({ pushToast: harness.pushToast }));
 
@@ -132,6 +147,8 @@ beforeEach(() => {
   localStorage.setItem('kiki.locale', 'en');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   harness.listModels.mockResolvedValue({ items: [] });
+  harness.getAgentExecutor.mockResolvedValue('native');
+  harness.getExecutorModels.mockResolvedValue(externalModelCatalog());
   harness.readCapabilities.mockResolvedValue({
     context: 'live',
     owner: { profile: 'general', agent_id: 'child' },
@@ -183,6 +200,18 @@ async function settle() {
   for (let i = 0; i < 5; i += 1) {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
   }
+}
+
+async function attachmentButton(scope: HTMLElement = dock): Promise<HTMLButtonElement> {
+  if (scope.querySelector('[data-attach-button]') === null) {
+    await act(async () => { scope.querySelector<HTMLButtonElement>('[data-add-menu-trigger]')!.click(); });
+  }
+  return scope.querySelector<HTMLButtonElement>('[data-attach-button]')!;
+}
+
+async function clickAttach(): Promise<void> {
+  const button = await attachmentButton();
+  await act(async () => { button.click(); });
 }
 
 async function typeText(textarea: HTMLTextAreaElement, value: string): Promise<void> {
@@ -278,8 +307,156 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
     dock.querySelector<HTMLButtonElement>('[role="option"][data-option-value="fixture/other"]')?.click();
   });
   expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'fixture/other');
+  const workingLine = dock.querySelector('[data-composer-working]');
+  expect(workingLine).not.toBeNull();
+  expect(workingLine?.textContent).toContain('Working');
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Stop this turn"]')?.click(); });
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
+});
+
+it('tracks child agent working line and last response dynamically', async () => {
+  const now = Date.now();
+  const child1Time = now - 15_000;
+  const child1Iso = new Date(child1Time).toISOString();
+  const forest = {
+    roots: [{ agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false, toolCallCount: 0, childIds: ['child-1', 'child-2'] }],
+    byId: {
+      main: { agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false, toolCallCount: 0, childIds: ['child-1', 'child-2'] },
+      'child-1': { agentId: 'child-1', parentAgentId: 'main', name: 'worker1', label: 'Worker 1', model: 'fixture/kiki-pro', status: 'running', busy: true, toolCallCount: 0, childIds: [] },
+      'child-2': { agentId: 'child-2', parentAgentId: 'main', name: 'worker2', label: 'Worker 2', model: 'fixture/kiki-pro', status: 'running', busy: true, toolCallCount: 0, childIds: [] },
+    },
+  } as AgentForest;
+
+  const agentStates: Record<string, ReturnType<typeof createViewState>> = {
+    'child-1': {
+      ...createViewState('session'),
+      loaded: true,
+      busy: true,
+      turnStartedAt: child1Time - 50_000,
+      blocks: [
+        { id: 'u1', kind: 'user', text: 'start child 1' },
+        { id: 'a1', kind: 'assistant', text: 'working on it', createdAt: child1Iso, streaming: false },
+      ] as never,
+    },
+    'child-2': {
+      ...createViewState('session'),
+      loaded: true,
+      busy: true,
+      turnStartedAt: child1Time - 100_000,
+      blocks: [
+        { id: 'u2', kind: 'user', text: 'start child 2' },
+      ] as never,
+    },
+  };
+
+  const listeners = new Map<string, Set<() => void>>();
+  const notifyAgent = (agentId: string) => {
+    listeners.get(agentId)?.forEach((cb) => cb());
+  };
+
+  const controller = {
+    subscribeAgent: (agentId: string, cb: () => void) => {
+      if (!listeners.has(agentId)) listeners.set(agentId, new Set());
+      listeners.get(agentId)!.add(cb);
+      return () => { listeners.get(agentId)?.delete(cb); };
+    },
+    getAgentState: (agentId: string) => agentStates[agentId] ?? EMPTY_AGENT_STATE,
+    getForest: () => forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
+  } as unknown as SessionController;
+
+  // 1. Cold busy child-1 mounts: seeds lastResponseAt from its own block timestamp
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'child-1' },
+    controller,
+    forest,
+  });
+  await settle();
+
+  const workingLine = dock.querySelector('[data-composer-working]');
+  expect(workingLine).not.toBeNull();
+  expect(workingLine?.getAttribute('data-last-response-at')).toBe(String(child1Time));
+  expect(workingLine?.textContent).toContain('Working · last response 15s ago');
+
+  // 2. Main or other child output does not update child-1 lastResponseAt
+  const dateNowSpy = vi.spyOn(Date, 'now');
+  dateNowSpy.mockReturnValue(now + 30_000);
+  agentStates['child-2'] = {
+    ...agentStates['child-2']!,
+    blocks: [
+      { id: 'u2', kind: 'user', text: 'start child 2' },
+      { id: 'a2', kind: 'assistant', text: 'child 2 speaks', createdAt: new Date(now + 20_000).toISOString(), streaming: false },
+    ] as never,
+  };
+  await act(async () => { notifyAgent('child-2'); });
+  await settle();
+  expect(dock.querySelector('[data-composer-working]')?.getAttribute('data-last-response-at')).toBe(String(child1Time));
+
+  // 3. Child-1 produces new output: signature changes and refreshes lastResponseAt
+  const updatedTime = now + 30_000;
+  agentStates['child-1'] = {
+    ...agentStates['child-1']!,
+    blocks: [
+      { id: 'u1', kind: 'user', text: 'start child 1' },
+      { id: 'a1', kind: 'assistant', text: 'working on it - step 2', createdAt: child1Iso, streaming: true },
+    ] as never,
+  };
+  await act(async () => { notifyAgent('child-1'); });
+  await settle();
+  expect(dock.querySelector('[data-composer-working]')?.getAttribute('data-last-response-at')).toBe(String(updatedTime));
+
+  // 4. Switch to child-3 (no outputs yet): does not inherit child-1 or child-2 timestamp
+  agentStates['child-3'] = {
+    ...createViewState('session'),
+    loaded: true,
+    busy: true,
+    turnStartedAt: now - 100_000,
+    blocks: [
+      { id: 'u3', kind: 'user', text: 'start child 3' },
+    ] as never,
+  };
+  const threeForest = {
+    ...forest,
+    byId: {
+      ...forest.byId,
+      'child-3': { agentId: 'child-3', parentAgentId: 'main', name: 'worker3', label: 'Worker 3', model: 'fixture/kiki-pro', status: 'running', busy: true, toolCallCount: 0, childIds: [] },
+    },
+  } as AgentForest;
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'child-3' },
+    controller,
+    forest: threeForest,
+  });
+  await settle();
+  const child3Working = dock.querySelector('[data-composer-working]');
+  expect(child3Working).not.toBeNull();
+  expect(child3Working?.getAttribute('data-last-response-at')).toBeNull();
+  expect(child3Working?.textContent).toContain('Working');
+  expect(child3Working?.textContent).not.toContain('last response');
+
+  // 5. Idle child (busy=false): working line completely unmounts
+  agentStates['child-3'] = {
+    ...agentStates['child-3']!,
+    busy: false,
+  };
+  const idleForest = {
+    ...threeForest,
+    byId: {
+      ...threeForest.byId,
+      'child-3': { ...threeForest.byId['child-3']!, status: 'completed', busy: false },
+    },
+  } as AgentForest;
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'child-3' },
+    controller,
+    forest: idleForest,
+  });
+  await settle();
+  expect(dock.querySelector('[data-composer-working]')).toBeNull();
+
+  dateNowSpy.mockRestore();
 });
 
 async function sendNowToBusyChild(
@@ -332,7 +509,7 @@ it('recovers a failed child send-now into a newly mounted empty composer, includ
   await settle();
   const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
   await typeText(textarea, 'recover this turn');
-  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await clickAttach();
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
   await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
@@ -386,6 +563,104 @@ it('keeps an external-executor child on its mailbox when sending into a busy tur
   expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'look at the tests too', [
     { type: 'text', text: 'look at the tests too' },
   ], expect.any(String), undefined);
+});
+
+it('explains a queued child Send now with the reason the server reported', async () => {
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'queued', reason: 'steer_rejected' });
+  await sendNowToBusyChild(sendPromptNow);
+  expect(harness.pushToast).toHaveBeenCalledWith({ tone: 'info', text: translate('en', 'sv.steerQueuedRejected') });
+});
+
+it('does not guess delivery for a child Send now whose response was lost', async () => {
+  const sendPromptNow = vi.fn().mockRejectedValue(new SendNowError('unknown', new Error('response lost')));
+  const textarea = await sendNowToBusyChild(sendPromptNow);
+  // The message may already be in the turn: it is neither re-sent nor claimed
+  // as queued, and the composer stays empty for an explicit follow-up.
+  expect(sendPromptNow).toHaveBeenCalledTimes(1);
+  expect(textarea.value).toBe('');
+  expect(harness.pushToast).toHaveBeenCalledWith(expect.objectContaining({
+    tone: 'error',
+    text: translate('en', 'sv.steerUnknown', { detail: 'response lost' }),
+  }));
+  expect(harness.pushToast).not.toHaveBeenCalledWith(expect.objectContaining({ text: translate('en', 'sv.steerQueued') }));
+});
+
+it('consumes the final durable reason after the first acknowledgement, once', async () => {
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'restoring' });
+  const forest = testForest('running', true);
+  const controller = Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow });
+  await renderWorkspace({ controller, forest });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'late receipt');
+  await settle();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
+  expect(sendPromptNow).toHaveBeenCalled();
+  expect(harness.pushToast).not.toHaveBeenCalled();
+
+  const queued: PromptItem = {
+    prompt_id: 'p', user_message_id: 'u', status: 'queued', admission: 'admitted',
+    delivery_state: 'queued', delivery_reason: 'target_changed',
+    content: [{ type: 'text', text: 'late receipt' }], created_at: '2026-10-20T00:00:00.000Z',
+  };
+  await renderWorkspace({
+    controller, forest,
+    sessionState: { ...createViewState('session'), loaded: true, durableIngress: [queued] },
+  });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledWith({ tone: 'info', text: translate('en', 'sv.steerQueuedTargetChanged') });
+
+  // The same final receipt read again is not a second explanation.
+  await renderWorkspace({
+    controller, forest,
+    sessionState: { ...createViewState('session'), loaded: true, durableIngress: [{ ...queued }] },
+  });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledTimes(1);
+
+  // Once the prompt runs, the transcript owns it: no late queued notice.
+  await renderWorkspace({
+    controller, forest,
+    sessionState: {
+      ...createViewState('session'), loaded: true,
+      durableIngress: [{ ...queued, status: 'running', delivery_state: undefined, delivery_reason: undefined }],
+    },
+  });
+  await settle();
+  expect(harness.pushToast).toHaveBeenCalledTimes(1);
+});
+
+it('lets a started child prompt win over a stale queued durable receipt', async () => {
+  const sendPromptNow = vi.fn().mockResolvedValue({ promptId: 'p', outcome: 'restoring' });
+  const forest = testForest('running', true);
+  await renderWorkspace({ controller: Object.assign(controllerStub({ forest, agentStates: {} }), { sendPromptNow }), forest });
+  await settle();
+  const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
+  await typeText(textarea, 'already running');
+  await settle();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')?.click(); });
+  await settle();
+  expect(harness.pushToast).not.toHaveBeenCalled();
+
+  // The transcript already shows the prompt running; the ingress still keeps
+  // its earlier admitted/queued receipt with a reason. Canonical wins.
+  const started = {
+    ...createViewState('session'), loaded: true,
+    blocks: [{ kind: 'user', id: 'row', promptId: 'p', promptStatus: 'running', text: 'already running', createdAt: '2026-10-20T00:00:00.000Z' }],
+  } as ReturnType<typeof createViewState>;
+  const stale: PromptItem = {
+    prompt_id: 'p', user_message_id: 'u', status: 'queued', admission: 'admitted',
+    delivery_state: 'queued', delivery_reason: 'target_changed',
+    content: [{ type: 'text', text: 'already running' }], created_at: '2026-10-20T00:00:00.000Z',
+  };
+  await renderWorkspace({
+    controller: Object.assign(controllerStub({ forest, agentStates: { child: started } }), { sendPromptNow }),
+    forest,
+    sessionState: { ...createViewState('session'), loaded: true, durableIngress: [stale] },
+  });
+  await settle();
+  expect(harness.pushToast).not.toHaveBeenCalled();
 });
 
 /** Minimal durable-mailbox acceptance returned by `client.sendAgentMessage`. */
@@ -520,7 +795,7 @@ it('throws a definitive 40001 child rejection instead of showing an unknown outc
   await settle();
   const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
   await typeText(textarea, 'inspect');
-  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await clickAttach();
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
   await clickComposerSend();
@@ -558,7 +833,7 @@ it('activates a child skill with its target, payload, switch dependency, and sta
   await settle();
   const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
   await typeText(textarea, '/review --fix');
-  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await clickAttach();
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
   await clickComposerSend();
@@ -676,7 +951,7 @@ it('retains attached draft on unknown native outcome and does not disguise an ex
   await settle();
   const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
   await typeText(textarea, 'inspect');
-  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await clickAttach();
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
   await clickComposerSend();
@@ -741,7 +1016,7 @@ it('changes the pending submission key when attachment payload changes', async (
   await settle();
   await sendFromComposer('next step');
   const firstKey = harness.sendAgentMessage.mock.calls[0]?.[4];
-  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.click(); });
+  await clickAttach();
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
   await clickComposerSend();
@@ -799,6 +1074,9 @@ it.each([false, true])('updates a mounted child tree and composer after send and
     getState: () => sessionState,
     getAgentState: () => childState,
     getForest: () => forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
   } as unknown as SessionController;
   function MountedWorkspace() {
     const state = useSyncExternalStore(subscribe, () => sessionState);
@@ -863,7 +1141,7 @@ it.each(['completed', 'cancelled', 'failed'] as const)(
     const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
     expect(textarea.disabled).toBe(false);
     expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(false);
-    expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(false);
+    expect((await attachmentButton()).disabled).toBe(false);
     await typeText(textarea, 'wake up');
     await settle();
     const sendButton = dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]');
@@ -1130,8 +1408,9 @@ it('disables composer, model, and attach when the forest does not know the agent
   const textarea = dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]');
   expect(textarea?.disabled).toBe(true);
   expect(textarea?.placeholder).toBe(translate('en', 'subagent.composerUnavailable'));
-  expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(true);
-  expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(true);
+  expect(dock.querySelector<HTMLButtonElement>('#composer-model-select')).toBeNull();
+  expect(dock.querySelector('[data-composer-engine-model]')).not.toBeNull();
+  expect((await attachmentButton()).disabled).toBe(true);
   expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.disabled).toBe(true);
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(harness.setAgentModel).not.toHaveBeenCalled();
@@ -1149,14 +1428,14 @@ it('drops picker results that resolve after the agent leaves the forest', async 
   harness.host = { kind: 'browser', pickFiles };
   await renderWorkspace({ forest: testForest('running', true) });
   await settle();
-  const attachButton = dock.querySelector<HTMLButtonElement>('[data-attach-button]')!;
+  const attachButton = await attachmentButton();
   expect(attachButton.disabled).toBe(false);
   await act(async () => { attachButton.click(); });
   expect(pickFiles).toHaveBeenCalledTimes(1);
   // The agent drops out of the forest while the picker is still open.
   await renderWorkspace({ forest: forestWithoutChild() });
   await settle();
-  expect(dock.querySelector<HTMLButtonElement>('[data-attach-button]')?.disabled).toBe(true);
+  expect((await attachmentButton()).disabled).toBe(true);
   const file = new File(['x'], 'shot.png', { type: 'image/png' });
   resolvePicker([{ name: 'shot.png', size: 1, type: 'image/png', read: async () => file }]);
   await settle();
@@ -1184,14 +1463,20 @@ it('keeps the preview-tab composer disabled for an agent the forest does not kno
     });
     await settle();
     expect(previewDock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
-    expect(previewDock.querySelector<HTMLButtonElement>('#composer-model-select')?.disabled).toBe(true);
+    expect(previewDock.querySelector<HTMLButtonElement>('#composer-model-select')).toBeNull();
+    expect(previewDock.querySelector('[data-composer-engine-model]')).not.toBeNull();
   } finally {
     previewHeader.remove();
     previewDock.remove();
   }
 });
 
-const EMPTY_AGENT_STATE = createViewState('');
+const EMPTY_AGENT_STATE = {
+  ...createViewState(''),
+  loaded: true,
+  transcriptReady: true,
+  historyCoverageKind: 'full' as const,
+};
 
 it('mounts no annotation tray over the child dock — sent notes fold into the message bubble', async () => {
   const forest = testForest('completed');
@@ -1224,6 +1509,9 @@ function controllerStub(input: {
     subscribeAgent: () => () => {},
     getAgentState: (agentId: string) => input.agentStates[agentId] ?? EMPTY_AGENT_STATE,
     getForest: () => input.forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
   } as unknown as SessionController;
 }
 
@@ -1269,6 +1557,124 @@ function testForest(
   };
   return { roots: [main], byId: { main, child: childNode } };
 }
+
+function externalModelCatalog(executor = 'example-acp', state: 'ready' | 'partial' | 'unknown' = 'ready', unsupported = false) {
+  return {
+    executor_id: executor, source: 'cli_probe', provenance: 'read_only_cli_probe',
+    revision: 'fixture', apply_state: 'ready', observed_at: Date.now(),
+    effective: {
+      models: { state, values: ['gemini-3.8-flash-medium', 'vendor/other'] },
+      thinking_levels: { state: 'ready', values: ['medium', 'high'] },
+      context: { state: 'unknown' },
+      controls: {
+        model_switch: { applicability: unsupported ? 'unsupported' : 'fresh_binding', apply_state: unsupported ? 'unsupported' : 'applied' },
+        thinking_switch: { applicability: 'fresh_binding', apply_state: 'applied' },
+        manual_compact: { applicability: 'unsupported', apply_state: 'unsupported' },
+      },
+    },
+  };
+}
+
+it('replies with a known external binding before the presentation profile arrives after 3 seconds', async () => {
+  let presentationReady = false;
+  harness.readCapabilities.mockImplementation(() => new Promise((resolve) => {
+    setTimeout(() => { presentationReady = true; resolve({ profile: { name: 'general', restrict_models_to_menu: true, model_menu: [] } }); }, 3000);
+  }));
+  harness.sendAgentMessage.mockResolvedValue({});
+  await renderWorkspace({ forest: testForest('running', true, { executorId: 'example-acp', executorProtocol: 'acp-v1', model: 'gemini-3.8-flash-medium' }) });
+  await settle();
+  expect(harness.getAgentExecutor).not.toHaveBeenCalled();
+  expect(harness.getExecutorModels).toHaveBeenCalledWith('example-acp');
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+  await typeText(dock.querySelector('textarea')!, 'continue on the bound executor');
+  const send = dock.querySelector<HTMLButtonElement>('[aria-label="Send into this turn"]')!;
+  expect(send.disabled).toBe(false);
+  await act(async () => { send.click(); });
+  await settle();
+  expect(harness.sendAgentMessage).toHaveBeenCalledWith('session', 'child', 'continue on the bound executor', expect.any(Array), expect.any(String), undefined);
+  expect(presentationReady).toBe(false);
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3000)); });
+  expect(presentationReady).toBe(true);
+  await settle();
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+});
+
+it('lists and switches raw models and efforts from the actual external executor, not native aliases', async () => {
+  harness.listModels.mockResolvedValue({ items: [{ id: 'native/gemini-3.8-flash-medium', remote_id: 'gemini-3.8-flash-medium', provider_id: 'native', display_name: 'Native display' }] });
+  await renderWorkspace({ forest: testForest('running', true, { executorId: 'example-acp', model: 'gemini-3.8-flash-medium', thinkingEffort: 'medium' }) });
+  await settle();
+  const pick = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
+  expect(pick.textContent).toContain('gemini-3.8-flash-medium');
+  expect(pick.textContent).not.toContain('Native display');
+  expect(pick.title).toContain('example-acp');
+  await act(async () => { pick.click(); });
+  expect(Array.from(dock.querySelectorAll('[role="option"]')).map((row) => row.getAttribute('data-option-value'))).toEqual(['gemini-3.8-flash-medium', 'vendor/other']);
+  expect(dock.querySelector('[data-model-configure]')).toBeNull();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-option-value="vendor/other"]')!.click(); });
+  expect(harness.setAgentModel).toHaveBeenCalledWith('session', 'child', 'vendor/other');
+  await act(async () => { pick.click(); });
+  expect(Array.from(dock.querySelectorAll('[data-effort]')).map((row) => row.getAttribute('data-effort'))).toEqual(['medium', 'high']);
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-effort="high"]')!.click(); });
+  expect(harness.setAgentEffort).toHaveBeenCalledWith('session', 'child', 'high');
+});
+
+it.each(['unknown', 'partial', 'failed', 'unsupported'] as const)('keeps %s external catalogs sendable without native replacement choices', async (kind) => {
+  if (kind === 'failed') harness.getExecutorModels.mockRejectedValue(new Error('executor directory unavailable'));
+  else harness.getExecutorModels.mockResolvedValue(externalModelCatalog('example-acp', kind === 'partial' ? 'partial' : kind === 'unknown' ? 'unknown' : 'ready', kind === 'unsupported'));
+  await renderWorkspace({ forest: testForest('completed', false, { executorId: 'example-acp', model: 'vendor/unlisted' }) });
+  await settle();
+  await typeText(dock.querySelector('textarea')!, 'resume');
+  expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(false);
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+  const pick = dock.querySelector<HTMLButtonElement>('#composer-model-select');
+  if (kind === 'partial') {
+    await act(async () => { pick!.click(); });
+    expect(dock.querySelector('[data-option-value="vendor/unlisted"]')).not.toBeNull();
+    expect(dock.querySelector('[data-option-value="fixture/kiki-pro"]')).toBeNull();
+  } else {
+    expect(pick).toBeNull();
+    expect(dock.querySelector('[data-composer-engine-model]')?.textContent).toContain('vendor/unlisted');
+  }
+});
+
+it('blocks a truly invalid native model and effort while external identities remain independent', async () => {
+  await renderWorkspace({ forest: testForest('completed', false, { executorId: 'native', model: 'vendor/missing' }) });
+  await settle();
+  await typeText(dock.querySelector('textarea')!, 'resume');
+  expect(dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')!.disabled).toBe(true);
+  expect(dock.querySelector('[data-selection-diagnostic]')?.textContent).toContain('vendor/missing');
+});
+
+it('waits for the real child binding and offers retry on failure instead of assuming native', async () => {
+  harness.getAgentExecutor.mockRejectedValue(new Error('binding read failed'));
+  await renderWorkspace();
+  await settle();
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(true);
+  expect(dock.querySelector('[data-selection-diagnostic]')).toBeNull();
+  harness.getAgentExecutor.mockResolvedValue('example-acp');
+  await act(async () => { Array.from(dock.querySelectorAll('button')).find((button) => button.textContent === 'Retry')!.click(); });
+  await settle();
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea')!.disabled).toBe(false);
+  expect(harness.getExecutorModels).toHaveBeenCalledWith('example-acp');
+});
+
+it('does not carry an external catalog across executor or connection scope changes', async () => {
+  harness.getExecutorModels.mockImplementation((id: string) => Promise.resolve({ ...externalModelCatalog(id), effective: { ...externalModelCatalog(id).effective, models: { state: 'ready', values: [`${harness.scopeId}/${id}`] } } }));
+  await renderWorkspace({ forest: testForest('completed', false, { executorId: 'example-acp', model: 'raw/current' }) });
+  await settle();
+  await act(async () => { dock.querySelector<HTMLButtonElement>('#composer-model-select')!.click(); });
+  expect(dock.querySelector('[data-option-value="direct:one/example-acp"]')).not.toBeNull();
+  await renderWorkspace({ forest: testForest('completed', false, { executorId: 'other-acp', model: 'raw/other' }) });
+  await settle();
+  expect(dock.querySelector('[data-option-value="direct:one/example-acp"]')).toBeNull();
+  harness.scopeId = 'direct:two';
+  await renderWorkspace({ forest: testForest('completed', false, { executorId: 'other-acp', model: 'raw/other' }) });
+  await settle();
+  const pick = dock.querySelector<HTMLButtonElement>('#composer-model-select')!;
+  if (dock.querySelector('[role="option"]') === null) await act(async () => { pick.click(); });
+  expect(dock.querySelector('[data-option-value="direct:two/other-acp"]')).not.toBeNull();
+  expect(dock.querySelector('[data-option-value="direct:one/other-acp"]')).toBeNull();
+});
 
 function renderWorkspace(overrides: Partial<ComponentProps<typeof AgentWorkspace>> = {}) {
   const previewRef = createRef<MediaPreviewApi>();
@@ -1406,6 +1812,17 @@ it('renders the agent’s own context meter and cumulative totals in the fullscr
     maxContextTokens: 10_000,
     usage: { total: { inputOther: 1_200, output: 340, inputCacheRead: 56, inputCacheCreation: 8 } },
   };
+  // The card's cumulative block reads the canonical per-agent row, not the
+  // snapshot projection: gross input counts the cache buckets separately.
+  harness.readCapabilities.mockResolvedValue({
+    context: 'live', owner: { profile: 'general', agent_id: 'child' }, available: true,
+    profile: { name: 'general' }, targets: [], tools: [], skills: [],
+    metrics: { child: {
+      inputTokens: 1_264, outputTokens: 340, cacheReadTokens: 56, cacheWriteTokens: 8, totalTokens: 1_604,
+      totalCostUsd: null, contextTokens: null, contextLimit: null, compactionCount: null,
+      usageComplete: true, usagePartial: false, costPartial: true,
+    } },
+  });
   await renderWorkspace({
     controller: controllerStub({ forest: testForest(), agentStates: { child: childState } }),
   });
@@ -1496,7 +1913,10 @@ it('renders the agent context meter in the preview-tab dock slots', async () => 
 
 it('hosts main in the shared timeline and chrome without child commands or another preview provider', async () => {
   const sessionState = { ...createViewState('session'), loaded: true };
+  const retainHistoryRead = vi.fn(() => () => {});
+  const controller = Object.assign(controllerStub({ forest: testForest(), agentStates: {} }), { retainHistoryRead });
   await renderWorkspace({
+    controller,
     target: { sessionId: 'session', agentId: 'main' },
     sessionState,
     forest: testForest(),
@@ -1523,6 +1943,8 @@ it('hosts main in the shared timeline and chrome without child commands or anoth
   expect(dock.querySelector('[data-composer-variant="subagent"]')).toBeNull();
   expect(harness.sendAgentMessage).not.toHaveBeenCalled();
   expect(harness.mediaProviderProps).toHaveLength(0);
+  expect(retainHistoryRead).not.toHaveBeenCalled();
+  expect(container.querySelector('[data-temporary-history-limit]')).toBeNull();
 });
 
 
@@ -1636,7 +2058,7 @@ it('keeps child A text and attachments through real A/B/A routes without sending
   </I18nProvider></QueryClientProvider>));
   await settle();
   await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'DRAFT FOR A');
-  await act(async () => { dock.querySelector<HTMLButtonElement>('[data-attach-button]')!.click(); });
+  await clickAttach();
   await settle();
   expect(dock.querySelector('[data-attachment-chips]')).not.toBeNull();
   await act(async () => { container.querySelector<HTMLButtonElement>('[data-child-b]')!.click(); });
@@ -1654,4 +2076,72 @@ it('keeps child A text and attachments through real A/B/A routes without sending
   await clickComposerSend();
   expect(harness.sendAgentMessage.mock.calls[1]?.slice(0, 3)).toEqual(['session', 'child', 'DRAFT FOR A']);
   expect(harness.sendAgentMessage.mock.calls[1]?.[3]).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'image' })]));
+});
+
+it('falls back to main agent as parent when subagent is missing from forest', () => {
+  const forest = forestWithoutChild();
+  const related = relatedAgentNodes(forest, 'missing-child');
+  expect(related.parent?.agentId).toBe('main');
+  expect(related.siblings).toEqual([]);
+  expect(related.children).toEqual([]);
+});
+
+it('retains delta view on mount and releases on unmount for deep-linked child agent', async () => {
+  const retainAgentView = vi.fn();
+  const releaseAgentView = vi.fn();
+  const updateAgentView = vi.fn();
+  const controller = Object.assign(
+    controllerStub({ forest: testForest(), agentStates: {} }),
+    { retainAgentView, releaseAgentView, updateAgentView },
+  );
+  await renderWorkspace({ controller, transcriptVisible: true });
+  expect(retainAgentView).toHaveBeenCalledWith('workspace:session:child', 'child', 'delta');
+
+  await act(async () => { root.unmount(); });
+  expect(releaseAgentView).toHaveBeenCalledWith('workspace:session:child');
+});
+
+it('opens a persisted body when the recent forest omits its agent, but keeps the body as the continuation evidence', async () => {
+  const legacyState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    model: 'legacy/model',
+    historyCoverageKind: 'full' as const,
+    blocks: [{ kind: 'user', id: 'legacy-user', text: 'saved history' }] as never,
+  };
+  const forest = forestWithoutChild();
+  const controller = controllerStub({ forest, agentStates: { child: legacyState } });
+  await renderWorkspace({ controller, forest });
+  await settle();
+
+  expect(container.querySelector('[data-timeline-agent="child"]')?.getAttribute('data-timeline-blocks')).toBe('1');
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(false);
+  expect(agentContinuationAvailable({ controller, node: undefined, subagent: undefined, state: legacyState })).toBe(true);
+});
+
+it('settles a loaded partial empty target as unavailable and never enables continuation', async () => {
+  const main = forestWithoutChild().byId['main']!;
+  const unknown: AgentTreeNode = {
+    agentId: 'child', parentAgentId: 'main', name: 'child', label: 'child', status: 'unknown',
+    busy: false, toolCallCount: 0, childIds: [],
+  };
+  const forest: AgentForest = { roots: [main], byId: { main: { ...main, childIds: ['child'] }, child: unknown } };
+  const unknownState = {
+    ...createViewState('session'),
+    loaded: true,
+    transcriptReady: true,
+    historyCoverageKind: 'unknown' as const,
+  };
+  const controller = controllerStub({ forest, agentStates: { child: unknownState } });
+  await renderWorkspace({ controller, forest });
+  await settle();
+
+  expect(agentContinuationAvailable({ controller, node: unknown, subagent: undefined, state: unknownState })).toBe(false);
+  expect(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')?.disabled).toBe(true);
+  expect(container.querySelector('[data-timeline-error]')?.getAttribute('data-timeline-error')).toContain('Name not registered');
+  expect(harness.getAgentExecutor).not.toHaveBeenCalled();
+  await typeText(dock.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!, 'must not send');
+  await act(async () => { dock.querySelector<HTMLButtonElement>('[aria-label="Send message"]')?.click(); });
+  expect(harness.sendAgentMessage).not.toHaveBeenCalled();
 });

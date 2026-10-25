@@ -6,6 +6,7 @@
  * their payload schemas.
  */
 
+import { settingsTransferContract } from './global/settingsTransfer.js';
 import type { KlientContract } from './types.js';
 import { boardContract } from './board/schemas.js';
 import { agentPanelContract } from './global/agentPanel.js';
@@ -18,6 +19,7 @@ import {
   agentContextMutationContract,
   agentConversationUndoContract,
   agentFullCompactionContract,
+  agentExecutionContract,
   agentGoalContract,
   agentLoopContract,
   agentMcpContract,
@@ -26,6 +28,7 @@ import {
   agentPluginCommandContract,
   agentPluginContract,
   agentProfileContract,
+  agentToolPolicyContract,
   agentPromptContract,
   agentRuntimeBindingContract,
   agentShellCommandContract,
@@ -62,6 +65,7 @@ import { sessionApprovalContract } from './session/approval.js';
 import { sessionInteractionContract } from './session/interaction.js';
 import { agentLifecycleContract, sessionManagerContract } from './session/lifecycle.js';
 import { sessionMetadataContract } from './session/metadata.js';
+import { sessionOptionalCapabilityContract } from './session/optionalCapabilities.js';
 import { sessionQuestionContract } from './session/question.js';
 import { sessionSkillCatalogContract } from './session/skills.js';
 import { sessionTitleContract } from './session/title.js';
@@ -70,6 +74,7 @@ import { sessionCronContract } from './session/cron.js';
 import { sessionInitContract } from './session/init.js';
 import { sessionTodoContract } from './session/todo.js';
 export const globalContract: KlientContract = {
+  settingsTransferService: settingsTransferContract,
   agentGoalService: agentGoalContract,
   agentLifecycleService: agentLifecycleContract,
   sessionCronService: sessionCronContract,
@@ -107,6 +112,7 @@ export const globalContract: KlientContract = {
   sessionManager: sessionManagerContract,
   // session scope
   sessionMetadata: sessionMetadataContract,
+  sessionOptionalCapabilityService: sessionOptionalCapabilityContract,
   agentCollaborationMessagingService: agentCollaborationMessagingContract,
   sessionActivityView: sessionActivityViewContract,
   sessionInteractionService: sessionInteractionContract,
@@ -118,6 +124,7 @@ export const globalContract: KlientContract = {
   agentPromptService: agentPromptContract,
   agentSkillService: agentSkillContract,
   agentLoopService: agentLoopContract,
+  agentExecutionService: agentExecutionContract,
   agentContextInjectorService: agentContextInjectorContract,
   agentContextMemoryService: agentContextMemoryContract,
   agentContextMutationService: agentContextMutationContract,
@@ -132,6 +139,7 @@ export const globalContract: KlientContract = {
   agentActivityView: agentActivityViewContract,
   agentShellCommandService: agentShellCommandContract,
   agentProfileService: agentProfileContract,
+  agentToolPolicyService: agentToolPolicyContract,
   agentUsageService: agentUsageContract,
   agentPlanService: agentPlanContract,
   agentTaskService: agentTaskContract,

@@ -40,6 +40,7 @@ import {
   selectionCarryoverPresentation,
   buildQuotePrefix,
   sourceTextVersion,
+  type ComposerAttachment,
 } from '@kiki/session-core/composer';
 import {
   SessionController,
@@ -51,6 +52,7 @@ import {
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
   type AgentForest,
+  type AgentTreeNode,
   type Block,
   type DisplayNode,
   type SessionViewState,
@@ -77,17 +79,21 @@ import {
   userTurnSnapshot,
 } from '@kiki/session-core/session/__fixtures__/canonicalTranscript';
 import { I18nProvider } from '../i18n';
+import { translate } from '@kiki/session-core/i18n';
 import { ConnectionProvider } from '../state/connection';
 import { writeStoredConfig } from '../state/connectionConfig';
 import { browserHost, HostProvider } from '../host';
 import type { AgentTranscriptResponse, KikiClient } from '../lib/client';
 import { revealSubagentCard } from './ActivityHistory';
 import { locateInTimeline, normalizeTurnId, registerTimelineLocator, resetTimelineLocatorsForTests } from '../lib/timelineLocate';
+import { readTimelineVisitLocator } from '../lib/useTimelineNavigation';
 import { Markdown } from './Markdown';
+import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { resolveSubagentToolCalls } from './subagentToolCalls';
 import { ToolCard, toolIcon, resolvedToolName } from './ToolCard';
 import {
+  filterMediaNotRenderedInText,
   mergeSubagentRows,
   splitPrefixSegments,
   splitStreamingText,
@@ -97,12 +103,28 @@ import {
   TurnTailLine,
   type TranscriptRowActions,
 } from './Transcript';
-import { messageLinkHref } from './RowActions';
+import { messageLinkHref, mergeLoadedAttachments } from './RowActions';
 import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
 
 vi.mock('./markdown/streamdown-plugins', async (importOriginal) => {
   const original = await importOriginal<typeof import('./markdown/streamdown-plugins')>();
   return { ...original, useStreamdownPlugins: () => ({}) };
+});
+
+// The gallery order seam wraps every original block in a context provider and
+// renders no DOM of its own, so its props are what the seam is observed by;
+// the real context still reaches every consumer of the module.
+const galleryOrderProbe = vi.hoisted(() => ({ calls: [] as { agentId: string; order: number; blockId: string }[] }));
+
+vi.mock('./mediaPreviewContext', async (importOriginal) => {
+  const original = await importOriginal<typeof import('./mediaPreviewContext')>();
+  return {
+    ...original,
+    MediaGalleryOrder: ({ agentId, order, blockId, children }: { agentId: string; order: number; blockId: string; children: ReactNode }) => {
+      galleryOrderProbe.calls.push({ agentId, order, blockId });
+      return children;
+    },
+  };
 });
 
 const roots: Root[] = [];
@@ -185,22 +207,36 @@ function makeRoot(): { root: Root; container: HTMLDivElement } {
  */
 let editFixture: import('node:child_process').ChildProcess | undefined;
 let editFixturePort: number;
+let editFixtureStderr = '';
+let editFixtureReady: Promise<void> | undefined;
+function startEditFixture(): Promise<void> {
+  editFixtureReady ??= (async () => {
+    const { spawn } = await import('node:child_process');
+    const { resolve } = await import('node:path');
+    editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: resolve(import.meta.dirname, '../..'), stdio: ['ignore', 'pipe', 'pipe'] });
+    editFixture.stderr!.on('data', (chunk) => {
+      const text = String(chunk);
+      editFixtureStderr += text;
+      process.stderr.write(`[Transcript fixture] ${text}`);
+    });
+    await new Promise<void>((resolve, reject) => {
+      let output = '';
+      editFixture!.stdout!.on('data', (chunk) => {
+        output += String(chunk);
+        const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
+        if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
+      });
+      editFixture!.once('error', reject);
+      editFixture!.once('exit', (code) => {
+        if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}\n${editFixtureStderr}`));
+      });
+    });
+  })();
+  return editFixtureReady;
+}
 async function renderSettled(root: Root, node: ReactNode, connected = false): Promise<void> {
   if (connected) {
-    if (editFixture === undefined) {
-      const { spawn } = await import('node:child_process');
-      editFixture = spawn(process.execPath, ['--input-type=module', '-e', "import { startFixtureServer } from './scripts/fixture-server.mjs'; const server = await startFixtureServer({port: 0, scenario: 'queue'}); console.log('TEST_FIXTURE_PORT:' + server.http.address().port);"], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
-      await new Promise<void>((resolve, reject) => {
-        let output = '';
-        editFixture!.stdout!.on('data', (chunk) => {
-          output += String(chunk);
-          const port = /TEST_FIXTURE_PORT:(\d+)/.exec(output);
-          if (port !== null) { editFixturePort = Number(port[1]); resolve(); }
-        });
-        editFixture!.once('error', reject);
-        editFixture!.once('exit', (code) => { if (editFixturePort === undefined) reject(new Error(`fixture exited: ${code}`)); });
-      });
-    }
+    await startEditFixture();
     writeStoredConfig({ url: `http://127.0.0.1:${editFixturePort}`, token: 'kiki-fixture-token' });
   }
   let ready = false;
@@ -568,6 +604,182 @@ describe('splitPrefixSegments streaming differential', () => {
     expect(text()).toMatch(/\d+s ago/);
     expect(text()).not.toContain('just now');
   });
+
+  const completedTail = (turnId: string) => ({
+    turnId,
+    state: 'completed' as const,
+    endedAt: new Date().toISOString(),
+    durationMs: 4_000,
+    ttftMs: undefined,
+    usage: undefined,
+    tokensPerSecond: undefined,
+  });
+
+  it('names the turn that ended with nothing to read, and the work still running', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <TurnTailLine
+      tail={completedTail('t25')}
+      gap={{ turnId: 't25', work: 'running' }}
+      onRetry={() => { throw new Error('a session with work in flight offers no send-again'); }}
+    />);
+    const tail = probe.container.querySelector<HTMLElement>('[data-turn-tail]');
+    expect(tail?.dataset['turnTailState']).toBe('completed');
+    expect(tail?.querySelector('[data-turn-tail-gap="running"]')?.textContent).toBe(translate('en', 'transcript.noReply'));
+    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent)
+      .toBe(translate('en', 'transcript.noReplyBackground'));
+    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+
+  it('offers send-again for an empty turn only once nothing runs, and never sends on its own', async () => {
+    const probe = makeRoot();
+    const retried = vi.fn();
+    await renderSettled(probe.root, <TurnTailLine
+      tail={completedTail('t25')}
+      gap={{ turnId: 't25', work: 'idle' }}
+      onRetry={retried}
+    />);
+    const tail = probe.container.querySelector('[data-turn-tail]');
+    expect(tail?.querySelector('[data-turn-tail-gap="idle"]')).not.toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent).toBe(translate('en', 'transcript.noReplyIdle'));
+    expect(retried).not.toHaveBeenCalled();
+    const button = tail?.querySelector<HTMLButtonElement>('[data-turn-tail-gap-retry]');
+    expect(button?.textContent).toBe(translate('en', 'transcript.promptOutcome.retry'));
+    await act(async () => { button?.click(); });
+    expect(retried).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims no background fact and offers no send-again for an empty turn it cannot confirm', async () => {
+    const probe = makeRoot();
+    const retried = vi.fn();
+    await renderSettled(probe.root, <TurnTailLine
+      tail={completedTail('t25')}
+      gap={{ turnId: 't25', work: 'unknown' }}
+      onRetry={retried}
+    />);
+    const tail = probe.container.querySelector('[data-turn-tail]');
+    expect(tail?.querySelector('[data-turn-tail-gap="unknown"]')).not.toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-gap-work]')?.textContent).toBe(translate('en', 'transcript.noReplyUnknown'));
+    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    expect(retried).not.toHaveBeenCalled();
+  });
+
+  it('lets a failure and a stop keep their own ending over an empty-turn fact', async () => {
+    const failed = makeRoot();
+    await renderSettled(failed.root, <TurnTailLine
+      tail={{ ...completedTail('t25'), state: 'failed', error: 'provider filtered the response' }}
+      gap={{ turnId: 't25', work: 'running' }}
+      onRetry={() => undefined}
+    />);
+    expect(failed.container.querySelector('[data-turn-tail]')?.querySelector('[data-turn-tail-gap]')).toBeNull();
+    expect(failed.container.querySelector('[data-turn-tail-retry]')).not.toBeNull();
+
+    const stopped = makeRoot();
+    await renderSettled(stopped.root, <TurnTailLine
+      tail={{ ...completedTail('t25'), state: 'cancelled', cancellation: 'user' }}
+      gap={{ turnId: 't25', work: 'idle' }}
+      onResume={() => undefined}
+      onRetry={() => undefined}
+    />);
+    expect(stopped.container.querySelector('[data-turn-tail]')?.querySelector('[data-turn-tail-gap]')).toBeNull();
+    expect(stopped.container.querySelector('[data-turn-tail-resume]')).not.toBeNull();
+  });
+
+  it('leaves a completed turn that left a reply without any empty-turn line', async () => {
+    const probe = makeRoot();
+    await renderSettled(probe.root, <TurnTailLine tail={completedTail('t25')} onRetry={() => undefined} />);
+    const tail = probe.container.querySelector('[data-turn-tail]');
+    expect(tail?.querySelector('[data-turn-tail-gap]')).toBeNull();
+    // Send-again belongs to a failure or an empty turn, never to a turn that
+    // already answered.
+    expect(tail?.querySelector('[data-turn-tail-retry]')).toBeNull();
+    expect(tail?.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+});
+
+describe('completed reply gap integration', () => {
+  function gapState(executing?: boolean): SessionViewState {
+    return transcriptState([userBlock({ id: 'user-gap', text: 'Check the background progress', turnId: 't25' })], {
+      sessionId: 'session_gap_recovery',
+      session: { ...snapshotResponse().session, id: 'session_gap_recovery', busy: true, executing },
+      turnTail: {
+        turnId: 't25', state: 'completed', endedAt: '2026-10-01T09:00:05.000Z',
+        durationMs: 4_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+      },
+    });
+  }
+
+  function surface(state: SessionViewState, connected = true, props: Partial<ComponentProps<typeof Transcript>> = {}) {
+    return <Transcript
+      state={state}
+      connected={connected}
+      onLoadOlder={() => Promise.resolve(false)}
+      onResolveApproval={() => noopActions()}
+      onAnswerQuestion={() => noopActions()}
+      onDismissQuestion={() => noopActions()}
+      {...props}
+    />;
+  }
+
+  it('uses execution rather than busy and restores only a draft when the reader asks', async () => {
+    const { root, container } = makeRoot();
+    const draftBefore = readDraft('session_gap_recovery');
+    await renderSettled(root, surface(gapState(true)));
+    expect(container.querySelector('[data-turn-tail-gap="running"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
+    expect(readDraft('session_gap_recovery')).toBe(draftBefore);
+
+    await renderSettled(root, surface(gapState(false)));
+    expect(container.querySelector('[data-turn-tail-gap="idle"]')).not.toBeNull();
+    const retry = container.querySelector<HTMLButtonElement>('[data-turn-tail-gap-retry]');
+    expect(retry).not.toBeNull();
+    expect(readDraft('session_gap_recovery')).toBe(draftBefore);
+    await act(async () => { retry?.click(); });
+    expect(readDraft('session_gap_recovery')).toContain('Check the background progress');
+
+    await renderSettled(root, surface(gapState()));
+    expect(container.querySelector('[data-turn-tail-gap="unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    await renderSettled(root, surface(gapState(true), false));
+    expect(container.querySelector('[data-turn-tail-gap="unknown"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+
+  it('shows the completed gap even when the turn has no prompt or content blocks', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, surface({ ...gapState(true), blocks: [] }));
+    expect(container.querySelector('[data-turn-tail-gap="running"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+  });
+
+  it('clears the gap when the automatic notification opens the next turn or a reply arrives', async () => {
+    const { root, container } = makeRoot();
+    const previous = gapState(true);
+    await renderSettled(root, surface(previous));
+    expect(container.querySelector('[data-turn-tail-gap]')).not.toBeNull();
+    await renderSettled(root, surface({ ...previous, busy: true, abortableTurnId: 26, turnTail: undefined }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+    expect(container.querySelector('[data-turn-status]')).not.toBeNull();
+    await renderSettled(root, surface({
+      ...gapState(false),
+      blocks: [...previous.blocks, assistantBlock('answer', 'The background result is ready.', { turnId: 't25' })],
+    }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+  });
+
+  it('does not carry a gap through loading or a session switch, or offer recovery in a read-only view', async () => {
+    const { root, container } = makeRoot();
+    const previous = gapState(false);
+    await renderSettled(root, surface(previous, true, { readOnly: true }));
+    expect(container.querySelector('[data-turn-tail-gap="idle"]')).not.toBeNull();
+    expect(container.querySelector('[data-turn-tail-gap-retry]')).toBeNull();
+    await renderSettled(root, surface({ ...previous, transcriptReady: false }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+    await renderSettled(root, surface(createViewState('session_other')));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+    await renderSettled(root, surface(previous, true, { agentId: 'child-agent' }));
+    expect(container.querySelector('[data-turn-tail-gap]')).toBeNull();
+  });
 });
 
 describe('media preview wiring', () => {
@@ -706,10 +918,298 @@ describe('media preview wiring', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Gallery order seam: the image gallery orders by a block's place in the
+// session's own blocks. A block keeps that place whether it stands alone or
+// rides a merged row, so a projection never renumbers an image.
+
+/** blockId → the place the seam handed that block (the last render wins; the
+ * seam runs on every render, so one block reports more than once). */
+function probeOrders(): Record<string, number> {
+  return Object.fromEntries(galleryOrderProbe.calls.map((entry) => [entry.blockId, entry.order]));
+}
+
+function readToolBlock(id: string): Block {
+  return {
+    kind: 'tool',
+    id,
+    toolCallId: id,
+    name: 'Read',
+    argsText: '',
+    args: { file_path: `C:/w/${id}.ts` },
+    display: undefined,
+    description: undefined,
+    status: 'done',
+    output: 'ok',
+    isError: undefined,
+    startedAt: undefined,
+    durationMs: undefined,
+    progressText: undefined,
+  };
+}
+
+describe('gallery order seam', () => {
+  it('hands every block its index in the session blocks, a merged run included', async () => {
+    galleryOrderProbe.calls.length = 0;
+    writeSettings({ foldSteps: true });
+    try {
+      const container = await renderTranscript([
+        userBlock({ id: 'u-gallery', text: 'first' }),
+        // Three pure reads merge into one display row; each member must still
+        // hand over its own index instead of the row's.
+        readToolBlock('tool-gallery-1'),
+        readToolBlock('tool-gallery-2'),
+        readToolBlock('tool-gallery-3'),
+        assistantBlock('a-gallery', 'done'),
+      ]);
+      // Collapsed, the run is one display row: the members have not rendered,
+      // and the two rows around it keep their own places (0 and 4).
+      expect(container.querySelectorAll('[data-tool-id]')).toHaveLength(0);
+      expect(probeOrders()).toEqual({ 'u-gallery': 0, 'a-gallery': 4 });
+      expect(galleryOrderProbe.calls.every((entry) => entry.agentId === 'main')).toBe(true);
+      const run = container.querySelector('[data-read-run]')!;
+      expect(run).not.toBeNull();
+      await act(async () => { click(run.querySelector('button')!); });
+      // Expanded: each member carries its own index in the session's blocks —
+      // 1, 2, 3 — which no display row has (the run itself is display row 1).
+      expect(probeOrders()).toEqual({
+        'u-gallery': 0,
+        'a-gallery': 4,
+        'tool-gallery-1': 1,
+        'tool-gallery-2': 2,
+        'tool-gallery-3': 3,
+      });
+    } finally {
+      writeSettings({ foldSteps: false });
+    }
+  });
+});
+
+function RenderedTargetProbe() {
+  const targets = useRenderedImageTargets();
+  return <div data-rendered-image-targets={JSON.stringify(targets)} />;
+}
+
+/** Targets the production Streamdown image nodes published for this text. */
+async function renderedImageTargets(text: string): Promise<string[]> {
+  const { root, container } = makeRoot();
+  await renderSettled(
+    root,
+    <RenderedImageScope>
+      <Markdown text={text} mode="static" />
+      <RenderedTargetProbe />
+    </RenderedImageScope>,
+  );
+  const raw = container.querySelector('[data-rendered-image-targets]')?.getAttribute('data-rendered-image-targets') ?? '[]';
+  return JSON.parse(raw) as string[];
+}
+
+describe('media part deduplication', () => {
+  it('omits media parts already rendered inline in markdown to avoid duplicate thumbnails', async () => {
+    const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
+      { kind: 'image', url: 'https://example.test/rendered.png' },
+    ];
+    const text = 'Here is the diagram: ![diagram](https://example.test/rendered.png)';
+    const filtered = filterMediaNotRenderedInText(media, await renderedImageTargets(text));
+    expect(filtered).toBeUndefined();
+  });
+
+  it('keeps distinct duplicate parts when only one is referenced in markdown text', async () => {
+    const media: readonly import('@kiki/session-core/composer/media').MediaRef[] = [
+      { kind: 'image', url: 'https://example.test/img.png' },
+      { kind: 'image', url: 'https://example.test/img.png' },
+    ];
+    const text = 'First instance: ![img](https://example.test/img.png)';
+    const filtered = filterMediaNotRenderedInText(media, await renderedImageTargets(text));
+    expect(filtered).toHaveLength(1);
+    expect(filtered?.[0]?.url).toBe('https://example.test/img.png');
+  });
+
+  it('preserves media parts across different messages independently', async () => {
+    const part = { kind: 'image' as const, url: 'https://example.test/shared.png' };
+    const textWithImg = 'Inline: ![pic](https://example.test/shared.png)';
+    const textWithoutImg = 'Just text referring to something else';
+
+    const msg1Filtered = filterMediaNotRenderedInText([part], await renderedImageTargets(textWithImg));
+    const msg2Filtered = filterMediaNotRenderedInText([part], await renderedImageTargets(textWithoutImg));
+
+    expect(msg1Filtered).toBeUndefined();
+    expect(msg2Filtered).toHaveLength(1);
+    expect(msg2Filtered?.[0]?.url).toBe('https://example.test/shared.png');
+  });
+
+  it('preserves non-image media parts even if path/name matches text', async () => {
+    const filePart = { kind: 'file' as const, path: '/workspace/doc.pdf', name: 'doc.pdf' };
+    const text = 'See [document](/workspace/doc.pdf)';
+    const filtered = filterMediaNotRenderedInText([filePart], await renderedImageTargets(text));
+    expect(filtered).toEqual([filePart]);
+  });
+
+  it('renders inline image without duplicate MediaPartList thumbnail in assistant message', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-1', 'Chart: ![chart](https://example.test/chart.png)', {
+        media: [{ kind: 'image', url: 'https://example.test/chart.png' }],
+      }),
+    ]);
+    const markdownImg = container.querySelector('img[src="https://example.test/chart.png"]');
+    expect(markdownImg).not.toBeNull();
+    const thumbContainers = container.querySelectorAll('[data-assistant-prose] > div.flex.flex-wrap');
+    expect(thumbContainers).toHaveLength(0);
+  });
+
+  it('renders remaining thumbnail when assistant message has multiple parts and only one is in markdown', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-2', 'Chart: ![chart](https://example.test/chart.png)', {
+        media: [
+          { kind: 'image', url: 'https://example.test/chart.png' },
+          { kind: 'image', url: 'https://example.test/extra.png' },
+        ],
+      }),
+    ]);
+    expect(container.querySelector('img[src="https://example.test/chart.png"]')).not.toBeNull();
+    expect(container.querySelector('img[src="https://example.test/extra.png"]')).not.toBeNull();
+  });
+
+  it('preserves media parts referenced only within fenced, indented, inline code or escaped syntax', async () => {
+    const partFenced = { kind: 'image' as const, url: 'https://example.test/fenced.png' };
+    const partTilde = { kind: 'image' as const, url: 'https://example.test/tilde.png' };
+    const partInline = { kind: 'image' as const, url: 'https://example.test/inline.png' };
+    const partIndented = { kind: 'image' as const, url: 'https://example.test/indented.png' };
+    const partEscaped = { kind: 'image' as const, url: 'https://example.test/escaped.png' };
+
+    const text = [
+      'Here is fenced code:',
+      '```markdown',
+      '![fenced](https://example.test/fenced.png)',
+      '```',
+      'And tilde fence:',
+      '~~~markdown',
+      '![tilde](https://example.test/tilde.png)',
+      '~~~',
+      'Here is `![inline](https://example.test/inline.png)` in code span.',
+      'And indented code:',
+      '    ![indented](https://example.test/indented.png)',
+      'And escaped: \\![escaped](https://example.test/escaped.png)',
+    ].join('\n');
+
+    const targets = await renderedImageTargets(text);
+    // The production parser renders a four-space indented image as an image.
+    // Fenced, tilde, inline-code and escaped forms stay literal, so those
+    // attachments remain.
+    expect(targets).toEqual(['https://example.test/indented.png']);
+    const filtered = filterMediaNotRenderedInText(
+      [partFenced, partTilde, partInline, partIndented, partEscaped],
+      targets,
+    );
+    expect(filtered?.map((item) => item.url)).toEqual([
+      'https://example.test/fenced.png',
+      'https://example.test/tilde.png',
+      'https://example.test/inline.png',
+      'https://example.test/escaped.png',
+    ]);
+  });
+
+  it('preserves media parts with same basename but different directory path', async () => {
+    const partA = { kind: 'image' as const, path: '/workspace/dirA/img.png', name: 'img.png' };
+    const text = 'Look at: ![diagram](/workspace/dirB/img.png)';
+    const filtered = filterMediaNotRenderedInText([partA], await renderedImageTargets(text));
+    expect(filtered).toEqual([partA]);
+  });
+
+  it('preserves media parts with different query strings', async () => {
+    const partV1 = { kind: 'image' as const, url: 'https://example.test/pic.png?v=1' };
+    const text = 'Look at: ![photo](https://example.test/pic.png?v=2#frame)';
+    const targets = await renderedImageTargets(text);
+    expect(targets).toContain('https://example.test/pic.png?v=2#frame');
+    const filtered = filterMediaNotRenderedInText([partV1], targets);
+    expect(filtered).toEqual([partV1]);
+  });
+
+  it('never removes video parts even when image markdown syntax uses the same url or path', async () => {
+    const videoUrl = { kind: 'video' as const, url: 'https://example.test/clip.mp4' };
+    const videoPath = { kind: 'video' as const, path: '/workspace/clip.mp4' };
+    const text = 'Preview: ![video](https://example.test/clip.mp4) and ![local](/workspace/clip.mp4)';
+    const filtered = filterMediaNotRenderedInText([videoUrl, videoPath], await renderedImageTargets(text));
+    expect(filtered).toEqual([videoUrl, videoPath]);
+  });
+
+  it('renders thumbnail when media syntax is inside a code block in assistant message', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-code', '```markdown\n![fenced](https://example.test/fenced.png)\n```', {
+        media: [{ kind: 'image', url: 'https://example.test/fenced.png' }],
+      }),
+    ]);
+    // The code block should contain the literal text
+    expect(container.textContent).toContain('![fenced](https://example.test/fenced.png)');
+    // And the MediaPartList thumbnail must still be rendered below the prose!
+    const imgInMediaPart = container.querySelector('[data-assistant-prose] img[src="https://example.test/fenced.png"]');
+    expect(imgInMediaPart).not.toBeNull();
+  });
+
+  it('renders thumbnail for video even if markdown references the video url as an image', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-video', 'Preview: ![video](https://example.test/clip.mp4)', {
+        media: [{ kind: 'video', url: 'https://example.test/clip.mp4' }],
+      }),
+    ]);
+    const videoElem = container.querySelector('video');
+    expect(videoElem).not.toBeNull();
+  });
+
+  it('keeps one attachment when a reference-style image remains literal', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-ref', 'See ![board][fig]\n\n[fig]: https://example.test/board.png?v=1#crop', {
+        media: [{ kind: 'image', url: 'https://example.test/board.png?v=1#crop' }],
+      }),
+    ]);
+    const prose = container.querySelector('[data-block-id="asst-ref"] [data-assistant-prose]');
+    expect(prose?.textContent).toContain('![board][fig]');
+    expect(prose?.querySelectorAll('img[src="https://example.test/board.png?v=1#crop"]')).toHaveLength(1);
+  });
+
+  it('omits the attachment when a nested-list image renders, and keeps one inside a nested fence', async () => {
+    const nested = await renderTranscript([
+      assistantBlock('asst-nested', '- notes\n  - ![diagram](https://example.test/nested.png)', {
+        media: [{ kind: 'image', url: 'https://example.test/nested.png' }],
+      }),
+    ]);
+    expect(nested.querySelector('img[src="https://example.test/nested.png"]')).not.toBeNull();
+    expect(nested.querySelector('[data-block-id="asst-nested"] [data-assistant-prose]')?.querySelectorAll(':scope > div.flex.flex-wrap')).toHaveLength(0);
+
+    const fenced = await renderTranscript([
+      assistantBlock('asst-nested-fence', '- notes\n\n  ```markdown\n  ![diagram](https://example.test/nested-fence.png)\n  ```', {
+        media: [{ kind: 'image', url: 'https://example.test/nested-fence.png' }],
+      }),
+    ]);
+    expect(fenced.textContent).toContain('![diagram](https://example.test/nested-fence.png)');
+    expect(fenced.querySelector('[data-block-id="asst-nested-fence"] [data-assistant-prose] img[src="https://example.test/nested-fence.png"]')).not.toBeNull();
+  });
+
+  it('preserves media parts across multiple assistant messages independently in rendered Transcript', async () => {
+    const container = await renderTranscript([
+      assistantBlock('asst-msg1', 'Rendered: ![shared](https://example.test/shared.png)', {
+        media: [{ kind: 'image', url: 'https://example.test/shared.png' }],
+      }),
+      assistantBlock('asst-msg2', 'No image inline here', {
+        media: [{ kind: 'image', url: 'https://example.test/shared.png' }],
+      }),
+    ]);
+    // Msg1 has no separate thumbnail container because it's inline in markdown
+    const msg1Prose = container.querySelector('[data-block-id="asst-msg1"] [data-assistant-prose]');
+    expect(msg1Prose?.querySelectorAll('div.flex.flex-wrap')).toHaveLength(0);
+
+    // Msg2 has the MediaPartList thumbnail rendered because it was not in msg2's text
+    const msg2Prose = container.querySelector('[data-block-id="asst-msg2"] [data-assistant-prose]');
+    const msg2Thumb = msg2Prose?.querySelector('img[src="https://example.test/shared.png"]');
+    expect(msg2Thumb).not.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Message-closure row actions + collapsible user messages. These render the
 // full Transcript; the ResizeObserver stub from beforeAll covers both the
 // virtualizer and the collapse hook's observer path (the hook's synchronous
 // first measure is what the collapse tests drive).
+
 
 function transcriptState(
   blocks: Block[],
@@ -727,6 +1227,7 @@ async function renderTranscript(
   rowActions?: TranscriptRowActions,
   stateOverrides?: Partial<SessionViewState>,
   transcriptProps?: Partial<ComponentProps<typeof Transcript>>,
+  connected = false,
 ): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
   await renderSettled(
@@ -751,8 +1252,12 @@ function userBlock(
   return { kind: 'user', createdAt: '2026-01-01T00:00:00.000Z', ...overrides };
 }
 
-function assistantBlock(id: string, text: string): Extract<Block, { kind: 'assistant' }> {
-  return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01.000Z' };
+function assistantBlock(
+  id: string,
+  text: string,
+  overrides?: Partial<Extract<Block, { kind: 'assistant' }>>,
+): Extract<Block, { kind: 'assistant' }> {
+  return { kind: 'assistant', id, text, streaming: false, createdAt: '2026-01-01T00:00:01.000Z', ...overrides };
 }
 
 /**
@@ -965,9 +1470,9 @@ describe('timeline annotations', () => {
     const editedComment = 'Keep the floor boundary explicit';
     await act(async () => { click(panel.querySelector('[data-annotation-bubble-edit]')!); });
     panel = document.body.querySelector<HTMLElement>('[data-annotation-bubble-panel]')!;
-    const input = panel.querySelector<HTMLInputElement>('[data-annotation-bubble-input]')!;
+    const input = panel.querySelector<HTMLTextAreaElement>('[data-annotation-bubble-input]')!;
     await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input, editedComment);
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(input, editedComment);
       input.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => { click(panel.querySelector('[data-annotation-bubble-save]')!); });
@@ -986,7 +1491,7 @@ describe('timeline annotations', () => {
     resetAnnotationOverridesForTests();
   });
 
-  it('hides a generated source prefix only when its presentation metadata is present', async () => {
+  it('hides a generated source prefix even when presentation metadata is missing, while preserving code literals', async () => {
     const source = { blockId: 'assistant-source-prefix', version: sourceTextVersion('quoted'), start: 0, end: 6, text: 'quoted' };
     const carry = selectionCarryoverPresentation([], 'quoted', source);
     const presented = await renderTranscript([
@@ -998,7 +1503,15 @@ describe('timeline annotations', () => {
       userBlock({ id: 'user-raw-source', text: `${carry.prefix}follow up` }),
     ]);
     expect(presented.querySelector('[data-block-id="user-presented-source"]')?.textContent).not.toContain('kiki-source:');
-    expect(raw.querySelector('[data-block-id="user-raw-source"]')?.textContent).toContain('kiki-source:');
+    expect(raw.querySelector('[data-block-id="user-raw-source"]')?.textContent).not.toContain('kiki-source:');
+    expect(raw.querySelector('[data-block-id="user-raw-source"]')?.textContent).toContain('follow up');
+
+    // Code block literal negative test: keeps literal text unchanged
+    const codeBlockText = 'Here is how anchor is formatted:\n```html\n<!-- kiki-source:{"blockId":"b1"} -->\n```';
+    const codeContainer = await renderTranscript([
+      userBlock({ id: 'user-code-literal', text: codeBlockText }),
+    ]);
+    expect(codeContainer.querySelector('[data-block-id="user-code-literal"]')?.textContent).toContain('<!-- kiki-source:{"blockId":"b1"} -->');
   });
 
   it('renders two multiline annotations without leaking source anchor comments', async () => {
@@ -1045,9 +1558,133 @@ describe('timeline annotations', () => {
     await act(async () => { click(mark); });
     expect(document.body.querySelector<HTMLInputElement>('[data-annotation-panel-input]')?.value).toBe('second occurrence');
   });
+
+  it('renders multiple quote chips in selection order alongside annotation bubbles without anchor leaks', async () => {
+    const s1 = { blockId: 'assistant-multi-quote-1', version: sourceTextVersion('first text'), start: 0, end: 5, text: 'first' };
+    const s2 = { blockId: 'assistant-multi-quote-2', version: sourceTextVersion('second text'), start: 0, end: 6, text: 'second' };
+    const quotes = [
+      { quote: 'first quote block', source: s1 },
+      { quote: 'second quote block', source: s2 },
+    ];
+    const annotations = [
+      { quote: 'annotated passage', comment: 'first note', source: s1 },
+    ];
+    const carry = selectionCarryoverPresentation(annotations, quotes);
+    const container = await renderTranscript([
+      assistantBlock('assistant-multi-quote-1', 'first text'),
+      assistantBlock('assistant-multi-quote-2', 'second text'),
+      userBlock({ id: 'user-multi-quotes', text: `${carry.prefix}combined user query`, presentation: carry.presentation }),
+    ]);
+    const row = container.querySelector('[data-block-id="user-multi-quotes"]')!;
+    const chips = row.querySelectorAll('[data-quote-chip]');
+    expect(chips).toHaveLength(2);
+    expect(chips[0]?.textContent).toContain('first quote block');
+    expect(chips[1]?.textContent).toContain('second quote block');
+    expect(row.querySelectorAll('[data-annotation-bubble="user-multi-quotes"]')).toHaveLength(1);
+    expect(row.textContent).toContain('combined user query');
+    expect(row.textContent).not.toContain('kiki-source:');
+  });
+});
+
+describe('reasoning completion chrome', () => {
+  const reasoningRecords: Parameters<typeof replayAgentWire>[1] = [
+    { type: 'turn.prompt', turnId: 1, promptId: 'example-notification', origin: { kind: 'peer_thread' }, input: [{ type: 'text', text: 'Recorded notification' }], time: 1000 },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 1, uuid: 'example-step-1' }, time: 1100 },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-think-1', part: { type: 'think', think: '', encrypted: 'example-signature' } }, time: 1200 },
+    { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: '1', step: 1, stepUuid: 'example-step-1', uuid: 'example-call', toolCallId: 'example-tool', name: 'ExampleTool', args: {} }, time: 1300 },
+    { type: 'context.append_loop_event', event: { type: 'tool.result', parentUuid: 'example-step-1', toolCallId: 'example-tool', result: { output: 'Recorded tool result' } }, time: 1400 },
+    { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 1, uuid: 'example-step-1', finishReason: 'tool_use', providerFinishReason: 'completed' }, time: 1500 },
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 2, uuid: 'example-step-2' }, time: 1600 },
+    { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 2, stepUuid: 'example-step-2', uuid: 'example-think-2', part: { type: 'think', think: '', encrypted: 'example-signature' } }, time: 1700 },
+  ];
+  const thinkingEnd = { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 2, uuid: 'example-step-2', finishReason: 'end_turn', providerFinishReason: 'completed' }, time: 1800 };
+  const emptyContinuation: Parameters<typeof replayAgentWire>[1] = [
+    thinkingEnd,
+    { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: '1', step: 3, uuid: 'example-step-3' }, time: 1900 },
+    { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 3, uuid: 'example-step-3', finishReason: 'end_turn', providerFinishReason: 'completed', usage: { inputOther: 10, output: 4, inputCacheRead: 0, inputCacheCreation: 0 } }, time: 2000 },
+    { type: 'turn.ended', turnId: 1, reason: 'completed', durationMs: 1000, time: 2001 },
+  ];
+
+  it.each([false, true])('settles a signed reasoning then empty completion without inventing a reply (cold=%s)', async (cold) => {
+    const snapshot = replayAgentWire('main', [...reasoningRecords, ...emptyContinuation], cold);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(false);
+    expect(state.turnTail?.state).toBe('completed');
+    expect(state.blocks.some((block) => block.kind === 'assistant')).toBe(false);
+    expect(state.blocks.filter((block) => block.kind === 'thinking').every((block) => !block.streaming)).toBe(true);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    const fold = container.querySelector('[data-history-fold] button');
+    if (fold !== null) await act(async () => { click(fold); });
+    expect(container.querySelector('.thinking-row')?.textContent).toContain('Thinking');
+    expect(container.querySelector('.thinking-row')?.textContent).not.toContain('Thinking…');
+    expect(container.querySelector('[data-streaming]')).toBeNull();
+    expect(container.querySelector('[data-turn-status]')).toBeNull();
+    // A settled turn reads from its facts alone: end time and duration, no
+    // completion label.
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).toContain('Ran for 1.0s');
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).not.toContain('Turn finished');
+  });
+
+  it('keeps long reasoning live until its actual terminal event', async () => {
+    const snapshot = replayAgentWire('main', reasoningRecords);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(true);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.querySelector('.thinking-row[data-streaming]')?.textContent).toContain('Thinking…');
+    expect(container.querySelector('[data-turn-tail]')).toBeNull();
+    expect(container.textContent).not.toContain('Turn finished');
+  });
+
+  it('keeps tool continuation working instead of treating step completion as turn completion', async () => {
+    const snapshot = replayAgentWire('main', reasoningRecords.slice(0, -1));
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(true);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.querySelector('[data-turn-status]')?.textContent).toContain('Working');
+    expect(container.querySelector('[data-turn-tail]')).toBeNull();
+  });
+
+  it.each(['failed', 'cancelled'] as const)('keeps a %s reasoning turn distinct from successful completion', async (reason) => {
+    const snapshot = replayAgentWire('main', [
+      ...reasoningRecords,
+      { type: 'context.append_loop_event', event: { type: 'step.end', turnId: '1', step: 2, uuid: 'example-step-2', finishReason: reason === 'failed' ? 'error' : 'interrupted' }, time: 1800 },
+      { type: 'turn.ended', turnId: 1, reason, time: 1801 },
+    ], true);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    expect(state.busy).toBe(false);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.querySelector(`[data-turn-tail-state="${reason}"]`)).not.toBeNull();
+    expect(container.querySelector('[data-streaming]')).toBeNull();
+    expect(container.textContent).not.toContain('Turn finished');
+  });
+
+  it('retains normal final text and its actual completion', async () => {
+    const snapshot = replayAgentWire('main', [
+      ...reasoningRecords,
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '1', step: 2, stepUuid: 'example-step-2', uuid: 'example-answer', part: { type: 'text', text: 'Recorded reply' } }, time: 1750 },
+      thinkingEnd,
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 1801 },
+    ], true);
+    const state = projectAgentTranscriptView(createViewState('example-session'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    expect(container.textContent).toContain('Recorded reply');
+    expect(container.querySelector('[data-turn-tail-state="completed"]')?.textContent).not.toContain('Turn finished');
+    expect(container.querySelector('[data-streaming]')).toBeNull();
+  });
+
+  it('does not infer completion from an unknown legacy tail state', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, <TurnTailLine tail={{ turnId: 't1', endedAt: new Date().toISOString(), durationMs: undefined, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined }} />);
+    expect(container.textContent).not.toContain('Turn finished');
+  });
 });
 
 describe('live and event chrome', () => {
+  // Cold start of the queue fixture is several seconds and used to run inside
+  // the first row-actions test. That test's 5s budget then expired while the
+  // shared boot promise was still pending, and the next case inherited it.
+  beforeAll(startEditFixture);
+
   it('shows elapsed time after three seconds and cleans up the timer', async () => {
     vi.useFakeTimers();
     const { root, container } = makeRoot();
@@ -1074,6 +1711,66 @@ describe('live and event chrome', () => {
     const container = await renderTranscript([]);
     expect(container.querySelector('[data-transcript-loading]')).toBeNull();
     expect(container.textContent).toContain('A blank page');
+    expect(container.querySelector('[data-top-edge]')).toBeNull();
+  });
+
+  it('exposes the older-page action when queued prompts leave the timeline empty', async () => {
+    const queued = userBlock({ id: 'queued-only', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([queued], {
+      historyCoverageKind: 'tail', hasMoreHistory: true,
+    }), onLoadOlder));
+    await settleVirtualizer();
+
+    const loadButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Load earlier messages');
+    expect(loadButton).toBeDefined();
+    expect(container.textContent).not.toContain('A blank page');
+    await act(async () => { click(loadButton!); });
+    expect(onLoadOlder).toHaveBeenCalledOnce();
+  });
+
+  it('renders a stable delivered user row after the older page fills the filtered tail', async () => {
+    const queued = userBlock({ id: 'stable-user', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    const initial = transcriptState([queued], { historyCoverageKind: 'tail', hasMoreHistory: true });
+    await renderSettled(root, virtualTranscript(initial, onLoadOlder));
+    await settleVirtualizer();
+    const loadButton = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Load earlier messages');
+    expect(loadButton).toBeDefined();
+    await act(async () => { click(loadButton!); });
+
+    const delivered = { ...queued, text: 'delivered prompt', promptStatus: undefined };
+    await renderSettled(root, virtualTranscript({
+      ...initial,
+      blocks: [delivered],
+      hasMoreHistory: false,
+      fetchedOlder: true,
+      historyCoverageKind: 'full',
+    }, onLoadOlder));
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="stable-user"]')?.textContent).toContain('delivered prompt');
+  });
+
+  it('keeps an older-page failure retryable when queued prompts leave the timeline empty', async () => {
+    const queued = userBlock({ id: 'queued-error', text: 'pending prompt', promptStatus: 'queued' });
+    const onLoadOlder = vi.fn(async () => true);
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState([queued], {
+      historyCoverageKind: 'tail', hasMoreHistory: true, olderError: 'page unavailable',
+    }), onLoadOlder));
+    await settleVirtualizer();
+
+    expect(container.textContent).toContain('Could not load earlier messages');
+    expect(container.textContent).toContain('page unavailable');
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('button')]
+      .find((button) => button.textContent === 'Retry');
+    expect(retry).toBeDefined();
+    await act(async () => { click(retry!); });
+    expect(onLoadOlder).toHaveBeenCalledOnce();
   });
 
   it('does not certify an unverified empty cold read as a blank session', async () => {
@@ -1089,6 +1786,22 @@ describe('live and event chrome', () => {
     const button = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Retry');
     expect(button).toBeDefined();
     await act(async () => { click(button!); });
+    expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it('keeps loaded historical rows visible beside a retryable refresh error', async () => {
+    const retry = vi.fn();
+    const { root, container } = makeRoot();
+    const block = userBlock({ id: 'retained-history', text: 'Saved conversation' });
+    await renderSettled(root, <Transcript
+      state={transcriptState([block], { loadError: 'temporary snapshot read failure' })}
+      onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions}
+      onAnswerQuestion={noopActions} onDismissQuestion={noopActions} onRetryLoad={retry}
+    />);
+    await settleVirtualizer();
+    expect(container.querySelector('[data-block-id="retained-history"]')?.textContent).toContain('Saved conversation');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('temporary snapshot read failure');
+    await act(async () => { click(container.querySelector<HTMLButtonElement>('[role="alert"] button')!); });
     expect(retry).toHaveBeenCalledOnce();
   });
 
@@ -1479,8 +2192,20 @@ describe('live and event chrome', () => {
       'axon/gpt-5.6-luna',
     );
     expect(container.querySelector('[data-agent-message-sender="agent-900"]')?.getAttribute('title')).toBe(
-      'Sender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe',
+      'worker\nSender Agent: agent-900\nProfile: unknown\nModel: axon/gpt-5.6-luna\nTask: probe',
     );
+  });
+
+  it('uses short roster titles without requiring model or profile and keeps same-name sender ids separate', async () => {
+    const open = vi.fn();
+    const blocks = ['agent-source-a', 'agent-source-b'].map((id) => userBlock({ id: `user-${id}`, text: 'Message from agent "wire_slug":\n\nResult', agentMessage: { senderAgentId: id, senderTaskName: 'wire_slug' } }));
+    const container = await renderTranscript(blocks, undefined, { snapshotSubagents: ['agent-source-a', 'agent-source-b'].map((id) => ({ id, agent_id: id, session_id: 'session_test', kind: 'subagent' as const, description: 'Check history anchors', status: 'completed' as const })) }, { onOpenAgent: open });
+    const senders = container.querySelectorAll<HTMLButtonElement>('[data-agent-message-sender]');
+    expect([...senders].map((sender) => sender.textContent)).toEqual(['Check history anchors injected', 'Check history anchors injected']);
+    expect(senders[0]?.title).toContain('Check history anchors');
+    expect(container.querySelector('[data-agent-message-sender-meta]')).toBeNull();
+    await act(async () => { senders[1]!.click(); });
+    expect(open).toHaveBeenCalledWith('agent-source-b');
   });
 
   it('labels a subagent-injected bubble it has no roster row for', async () => {
@@ -1513,8 +2238,160 @@ describe('live and event chrome', () => {
       },
     ]);
     expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe(
-      'From thread sess-source',
+      'From thread sess-sou',
     );
+  });
+
+  it('opens the injected sender from its name, the same entry the subagent rows use', async () => {
+    const opened: string[] = [];
+    const container = await renderTranscript(
+      [
+        {
+          kind: 'user',
+          id: 'user-agent-open-1',
+          text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
+        },
+      ],
+      undefined,
+      undefined,
+      { onOpenAgent: (agentId) => { opened.push(agentId); } },
+    );
+    const sender = container.querySelector<HTMLButtonElement>('button[data-agent-message-sender="agent-244"]');
+    // A native button: Tab reaches it, Enter and Space activate it, and a tap
+    // lands on it. Its label and its real-unknown tooltip are exactly the ones
+    // the line already carried.
+    expect(sender?.type).toBe('button');
+    expect(sender?.textContent).toBe('readme_kiki_worker injected');
+    expect(sender?.getAttribute('title')).toBe(
+      'Sender Agent: agent-244\nProfile: unknown\nModel: unknown\nTask: readme_kiki_worker',
+    );
+    // Hover feedback is the wash and ink lift the timeline's agent rows use.
+    expect(sender?.className).toContain('hover:bg-ink/[0.05]');
+    expect(sender?.className).toContain('hover:text-ink');
+    expect(sender?.className).toContain('focus-visible:outline-2');
+    expect(sender?.className).toContain('cursor-pointer');
+    await act(async () => { click(sender!); });
+    // The sender's real agent id opens the agent; the task name is only a label.
+    expect(opened).toEqual(['agent-244']);
+  });
+
+  it('opens a main-sender label as main, never as the task name it displays', async () => {
+    const opened: string[] = [];
+    const container = await renderTranscript(
+      [
+        {
+          kind: 'user',
+          id: 'user-agent-open-main',
+          text: 'Message from agent "root" (main):\n\ncheck the tests',
+          createdAt: '2026-01-01T00:00:00.000Z',
+          agentMessage: { senderAgentId: 'main', senderTaskName: 'root' },
+        },
+      ],
+      undefined,
+      undefined,
+      { onOpenAgent: (agentId) => { opened.push(agentId); } },
+    );
+    await act(async () => {
+      click(container.querySelector('button[data-agent-message-sender="main"]')!);
+    });
+    // Main stays main: the one open entry routes it to this session's own
+    // timeline, never to a subagent page named after its task.
+    expect(opened).toEqual(['main']);
+  });
+
+  it('keeps the sender name a plain label where no surface can open an agent', async () => {
+    const container = await renderTranscript([
+      {
+        kind: 'user',
+        id: 'user-agent-open-null',
+        text: 'Message from agent "explorer" (agent-901):\n\nping',
+        createdAt: '2026-01-01T00:00:00.000Z',
+        agentMessage: { senderAgentId: 'agent-901', senderTaskName: 'explorer' },
+      },
+    ]);
+    const sender = container.querySelector('[data-agent-message-sender="agent-901"]');
+    expect(sender?.tagName).toBe('SPAN');
+    expect(sender?.textContent).toBe('explorer injected');
+    expect(sender?.getAttribute('title')).toBe(
+      'Sender Agent: agent-901\nProfile: unknown\nModel: unknown\nTask: explorer',
+    );
+    expect(container.querySelector('button[data-agent-message-sender]')).toBeNull();
+  });
+
+  it('never opens an agent from a plain message or a peer thread', async () => {
+    const opened: string[] = [];
+    const container = await renderTranscript(
+      [
+        userBlock({ id: 'user-plain-open', text: 'I wrote this myself', userMessageId: 'm-plain-open' }),
+        userBlock({
+          id: 'user-peer-open',
+          text: 'Message from thread "Design review" (sess-source):\n\nping',
+          userMessageId: 'm-peer-open',
+          peerThread: { sessionId: 'sess-source' },
+        }),
+      ],
+      undefined,
+      undefined,
+      { onOpenAgent: (agentId) => { opened.push(agentId); } },
+    );
+    // An ordinary message has no sender to open; a peer thread is a session,
+    // not an agent of this timeline — neither becomes a control.
+    expect(container.querySelector('button[data-agent-message-sender]')).toBeNull();
+    await act(async () => { click(container.querySelector('[data-source-block-id="user-plain-open"]')!); });
+    await act(async () => { click(container.querySelector('[data-peer-thread="sess-source"]')!); });
+    expect(opened).toEqual([]);
+  });
+
+  it('takes a coarse-pointer tap on the sender name as the open, not as the action-strip summon', async () => {
+    // A coarse pointer has no hover, so taming a tap matters: the row's own
+    // tap handler ignores controls inside it, so tapping the name opens the
+    // sender while the bubble keeps summoning the strip (`hover: none` stub,
+    // restored by hand to keep the file-wide ResizeObserver stand-in).
+    const media = window as unknown as { matchMedia?: unknown };
+    const hadMatchMedia = 'matchMedia' in window;
+    const originalMatchMedia = media.matchMedia;
+    media.matchMedia = (query: string) => ({
+      matches: query === '(hover: none)',
+      media: query,
+      onchange: null,
+      addEventListener: () => undefined,
+      removeEventListener: () => undefined,
+      addListener: () => undefined,
+      removeListener: () => undefined,
+      dispatchEvent: () => false,
+    });
+    try {
+      const opened: string[] = [];
+      const container = await renderTranscript(
+        [
+          {
+            kind: 'user',
+            id: 'user-agent-open-tap',
+            text: 'Message from agent "readme_kiki_worker" (agent-244):\n\nstart the slice',
+            createdAt: '2026-01-01T00:00:00.000Z',
+            userMessageId: 'm-tap-open',
+            agentMessage: { senderAgentId: 'agent-244', senderTaskName: 'readme_kiki_worker' },
+          },
+        ],
+        undefined,
+        undefined,
+        { onOpenAgent: (agentId) => { opened.push(agentId); } },
+      );
+      const row = container.querySelector('[data-block-id="user-agent-open-tap"]')!;
+      await act(async () => {
+        click(row.querySelector('button[data-agent-message-sender="agent-244"]')!);
+      });
+      expect(opened).toEqual(['agent-244']);
+      expect(row.querySelector('[data-actions-open]')).toBeNull();
+      await act(async () => { click(row.querySelector('[data-source-block-id="user-agent-open-tap"]')!); });
+      expect(row.querySelector('[data-actions-open]')).not.toBeNull();
+      expect(opened).toEqual(['agent-244']);
+    } finally {
+      if (hadMatchMedia) media.matchMedia = originalMatchMedia;
+      else delete media.matchMedia;
+    }
   });
 
   it('shows only the body of an agent-injected bubble, with the source stated once in the meta line', async () => {
@@ -1542,7 +2419,8 @@ describe('live and event chrome', () => {
     ]);
     expect(container.querySelector('[data-source-block-id="user-peer-body-1"]')?.textContent).toBe('ping');
     expect(container.textContent).not.toContain('Message from thread');
-    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe('From thread sess-source');
+    expect(container.querySelector('[data-peer-thread="sess-source"]')?.textContent).toBe('From thread sess-sou');
+    expect(container.querySelector('[data-peer-thread="sess-source"]')?.getAttribute('title')).toContain('sess-source');
   });
 
   it('keeps a literal "Message from" the user typed verbatim: the text alone is never source evidence', async () => {
@@ -1770,16 +2648,49 @@ describe('live and event chrome', () => {
     expect(dividers[0]?.textContent).toBe('Model changed from example/old to example/new');
   });
 
-  it('renders twelve consecutive goal updates as one divider with a repeat count', async () => {
-    const snapshot = replayAgentWire('main', Array.from({ length: 12 }, (_, index) => ({
-      type: 'goal.update', tokensUsed: index + 1, time: 1000 + index,
-    })));
-    const state = projectAgentTranscriptView(createViewState('marker-fold'), 'main', snapshot);
+  it('names each real goal change and keeps accounting updates out of the timeline', async () => {
+    const snapshot = replayAgentWire('main', [
+      { type: 'turn.prompt', turnId: 1, promptId: 'p1', time: 1000, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Take the input area down to what is really waiting' }] },
+      { type: 'goal.create', objective: 'Remove the composer noise that never ends', time: 1100 },
+      { type: 'goal.update', tokensUsed: 1, time: 1200 },
+      { type: 'goal.update', tokensUsed: 2, turnsUsed: 1, wallClockMs: 900, time: 1300 },
+      { type: 'goal.update', status: 'paused', reason: 'waiting for the reader', time: 1400 },
+      { type: 'goal.update', tokensUsed: 3, turnsUsed: 2, time: 1500 },
+      { type: 'goal.update', status: 'active', time: 1600 },
+      { type: 'turn.prompt', turnId: 2, promptId: 'p2', time: 1700, origin: { kind: 'user' }, input: [{ type: 'text', text: 'Continue with the transcript labels' }] },
+    ]);
+    const state = projectAgentTranscriptView(createViewState('goal-changes'), 'main', snapshot);
     const container = await renderTranscript([...state.blocks]);
-    const dividers = container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]');
-    expect(dividers).toHaveLength(1);
-    expect(dividers[0]?.textContent).toBe('Goal updated ×12');
-    expect(container.querySelector('[data-block-id]')?.getAttribute('data-block-id')).toBe(state.blocks[0]?.id);
+    const dividers = [...container.querySelectorAll('[data-timeline-divider][data-notice-key="transcript.marker.goal"]')];
+    // Accounting-only updates (tokens, turns, wall clock) are not changes and
+    // never grow a divider; each real change keeps its own kind, so a pause and
+    // the resume that follows it are two facts rather than one folded line.
+    expect(dividers.map((divider) => divider.getAttribute('data-goal-change'))).toEqual(['created', 'paused', 'resumed']);
+    expect(dividers.map((divider) => divider.textContent)).toEqual(['Goal set', 'Goal paused', 'Goal resumed']);
+    // The engine's own reason rides on the hover title, not on a wall of text.
+    expect(dividers[1]?.getAttribute('title')).toContain('waiting for the reader');
+    // The conversation itself still reads around the markers.
+    expect(container.textContent).toContain('Take the input area down to what is really waiting');
+    expect(container.textContent).toContain('Continue with the transcript labels');
+  });
+
+  it('keeps the generic compaction label when the wire carries no strategy', async () => {
+    const snapshot = replayAgentWire('main', [1000, 2000, 3000].map((time, index) => ({
+      type: 'context.apply_compaction', summary: 'summary', time, reasonCodes: [index === 0 ? 'notes_missing' : 'tool_error'],
+    })));
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks]);
+    const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
+    // No strategy on the wire: the label stays the generic compaction line.
+    // "summary generated" is selected only by strategy `summarize`, covered below.
+    expect(toggle.textContent).toBe('Context compacted · 3 successful compactions');
+    expect(toggle.textContent).not.toContain('×');
+    await act(async () => { click(toggle); });
+    const entries = container.querySelectorAll('[data-compaction-history] li');
+    expect(entries).toHaveLength(3);
+    expect(entries[0]?.textContent).toContain('The agent has no working notes');
+    expect(entries[1]?.textContent).toContain('Recent tool failures need to remain in context.');
+    expect(entries[0]?.textContent).not.toBe(entries[1]?.textContent);
   });
 
   it('labels folded compactions as successful commits and expands every time and reason', async () => {
@@ -1815,8 +2726,8 @@ describe('live and event chrome', () => {
     const container = await renderTranscript([...state.blocks]);
     const labels = [...container.querySelectorAll('[data-timeline-divider]')].map(node => node.textContent);
     expect(labels).toEqual([
-      'Fresh-context compaction complete · handoff retained', 'Context compacted · summary generated',
-      'Context compacted', 'Compaction failed · context unchanged',
+      translate('en', 'transcript.marker.compactionFresh'), translate('en', 'transcript.marker.compactionSummarize'),
+      translate('en', 'transcript.marker.compaction'), translate('en', 'transcript.marker.compactionFailed'),
     ]);
   });
 
@@ -1833,7 +2744,7 @@ describe('live and event chrome', () => {
       },
     ]);
     const toggle = container.querySelector<HTMLButtonElement>('[data-notice-reasons-toggle]')!;
-    expect(toggle.textContent).toBe('Fresh start conditions were not met · summarized instead');
+    expect(toggle.textContent).toBe(translate('en', 'transcript.marker.compactionFallback'));
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
     expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
     await act(async () => { click(toggle); });
@@ -1842,19 +2753,30 @@ describe('live and event chrome', () => {
     expect(items[2]).toBe('future_code');
   });
 
-  it('shows an over-limit notes notice without requiring the reasons panel to be opened', async () => {
+  it.each(['transcript.marker.compactionSummarize', 'transcript.marker.compactionFresh'] as const)('keeps %s visible beside an over-limit notes warning without opening details', async (key) => {
     const container = await renderTranscript([{ kind: 'notice', id: 'notes-budget', text: 'compaction', tone: 'neutral',
-      i18n: { key: 'transcript.marker.compactionSummarize' }, reasonCodes: ['notes_directives_budget'], createdAt: '2026-01-01T00:00:00.000Z' }]);
-    expect(container.querySelector('[data-notice-reasons-toggle]')?.textContent).toBe('The summary’s task instructions exceed the notes limit. Existing notes are unchanged; the full text remains in the handoff for review.');
+      i18n: { key }, reasonCodes: ['notes_directives_budget'], createdAt: '2026-01-01T00:00:00.000Z' }]);
+    expect(container.querySelector('[data-notice-reasons-toggle]')?.textContent).toBe(translate('en', key));
+    expect(container.querySelector('[data-compaction-notes-budget]')?.textContent).toBe(translate('en', 'transcript.marker.reason.notes_directives_budget'));
     expect(container.querySelector('[data-notice-reason-list]')).toBeNull();
   });
 
   it('renders a projected image compression caption as a separate folded reminder, not user text', async () => {
     const caption = 'Image compressed to fit model limits: original 4500x2800 -> sent 2000x1244. Fine detail may be lost. The original is at "/example/original.png".';
-    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items: [{
-      kind: 'turn', turnId: 't-image', prompt: `Look at this.\n<system>${caption}</system>`,
-      startedAt: '2026-01-01T00:00:00.000Z', steps: [],
-    }] });
+    const source = { agent_id: 'main', items: [
+      {
+        kind: 'marker', markerId: 'caption', marker: 'message.delivery', at: '2026-01-01T00:00:00.000Z',
+        payload: { messageId: 'caption', text: `<system-reminder>${caption}</system-reminder>`,
+          origin: { kind: 'injection', variant: 'image_compression', ownerPromptId: 'image-message' } },
+      },
+      {
+        kind: 'turn', turnId: 't-image', ordinal: 0, state: 'completed', promptId: 'image-message',
+        origin: { kind: 'user', payload: { userMessageId: 'image-message' } }, prompt: 'Look at this.',
+        startedAt: '2026-01-01T00:00:01.000Z', steps: [],
+      },
+    ] } satisfies Parameters<typeof agentTranscriptToBlocks>[0];
+    const blocks = agentTranscriptToBlocks(source);
+    expect(blocks.map((block) => block.id)).toEqual(['user-image-message', 'reminder-caption-0']);
     const container = await renderTranscript(blocks);
     const bubble = container.querySelector('.steer-bubble');
     expect(bubble?.textContent).toBe('Look at this.');
@@ -1862,9 +2784,11 @@ describe('live and event chrome', () => {
     expect(reminder?.textContent).toContain('System reminder');
     expect(reminder?.textContent).toContain('Image compressed');
     expect(reminder?.closest('.steer-bubble')).toBeNull();
+    expect(bubble!.compareDocumentPosition(reminder!) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
     expect(reminder?.textContent).not.toContain('<system>');
     expect(reminder?.querySelector('[aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
     await act(async () => { click(reminder!.querySelector<HTMLElement>('[aria-expanded]')!); });
+    expect(container.textContent).toContain(caption);
     expect(container.textContent).toContain('/example/original.png');
     expect(bubble?.textContent).toBe('Look at this.');
   });
@@ -2194,9 +3118,8 @@ describe('explicit unknown timing', () => {
     const container = await renderToolCard(toolBlock({ toolCallId: 'external:session:call', name: 'Bash', display: { kind: 'command', command: 'npm test' }, output }));
     await act(async () => { flushSync(() => { click(container.querySelector('button')!); }); });
     expect(container.textContent).toContain('partial stdout');
-    const loadImage = Array.from(container.querySelectorAll('button')).find(button => button.textContent?.includes('Load full file'));
-    expect(loadImage).toBeDefined();
-    await act(async () => { flushSync(() => { click(loadImage!); }); });
+    // External images render as media parts. The retired "Load full file" gate is not part of this card.
+    expect(container.textContent).not.toContain('Load full file');
     expect(container.querySelector('img')?.getAttribute('src')).toBe('data:image/png;base64,iVBORw0KGgo=');
     const preserved = container.querySelector('details');
     expect(preserved?.textContent).toContain('first.ts');
@@ -2344,6 +3267,7 @@ describe('explicit unknown timing', () => {
 });
 
 describe('message row actions', () => {
+  beforeAll(startEditFixture);
   it('shows edit/fork on settled user rows and regenerate/fork on the latest final reply only', async () => {
     const rowActions: TranscriptRowActions = {
       disabled: false,
@@ -2522,6 +3446,9 @@ describe('message row actions', () => {
     const container = await renderTranscript(
       [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
       rowActions,
+      undefined,
+      undefined,
+      true,
     );
     const row = container.querySelector('[data-block-id="user-m1"]')!;
     await act(async () => {
@@ -2531,10 +3458,10 @@ describe('message row actions', () => {
     });
     const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
     expect(textarea?.value).toBe('original text');
-    // The attachment note explains the full-replacement semantics.
-    expect(container.querySelector('[data-edit-editor]')?.textContent).toContain(
-      'Keep or change attachments',
-    );
+    // This message has no attachments. The composer is the attachment surface,
+    // so the editor does not add a second sentence under the prefilled text.
+    expect(container.querySelector('[data-edit-editor]')?.textContent).not.toContain('Keep or change attachments');
+    expect(container.querySelector('[data-edit-editor] [data-composer-card]')).not.toBeNull();
     await act(async () => {
       flushSync(() => {
         const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
@@ -2553,6 +3480,277 @@ describe('message row actions', () => {
     expect(text).toBe('edited text');
     // The editor closed on submit.
     expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('opens the editor with no second card and its cancel beside send, not below', async () => {
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: () => undefined,
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1' })],
+      rowActions,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    const shell = container.querySelector<HTMLElement>('[data-edit-editor]')!;
+    // The composer card is the editor's only surface: no outer border, card
+    // background or padding shell dresses the composer up as a second card…
+    expect(shell.className).not.toContain('border');
+    expect(shell.className).not.toContain('bg-panel');
+    expect(shell.className).not.toContain('p-2');
+    expect(shell.querySelector('[data-composer-card]')).not.toBeNull();
+    // …and nothing is left below it: the edit ends on the round X that stands
+    // in the send button's own row, its words on the tooltip and the
+    // accessible name rather than on a line of their own.
+    expect(shell.children).toHaveLength(1);
+    expect(shell.textContent).not.toContain('Cancel');
+    const cancel = shell.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
+    const send = shell.querySelector<HTMLButtonElement>('[data-edit-submit]')!;
+    expect(cancel.textContent).toBe('');
+    expect(cancel.getAttribute('aria-label')).toBe('Cancel');
+    expect(cancel.getAttribute('title')).toBe('Cancel');
+    expect(cancel.parentElement).toBe(send.parentElement?.parentElement);
+    expect(cancel.compareDocumentPosition(send) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  it('does not block typing or cancel while edit attachments are pending, and gates send until settled', async () => {
+    let resolveAttachments!: (attachments: readonly ComposerAttachment[]) => void;
+    const pendingLoad = new Promise<readonly ComposerAttachment[]>((resolve) => {
+      resolveAttachments = resolve;
+    });
+    const onEditMessage = vi.fn();
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage,
+      loadEditAttachments: vi.fn(() => pendingLoad),
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m1', text: 'original text', userMessageId: 'm1', media: [{ kind: 'image', fileId: 'img-1', name: 'photo.png' }] })],
+      rowActions,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = container.querySelector('[data-block-id="user-m1"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    const textarea = container.querySelector<HTMLTextAreaElement>('[data-edit-editor] textarea');
+    expect(textarea).not.toBeNull();
+    expect(textarea?.disabled).toBe(false);
+
+    // Typing is immediately available while attachments load
+    await act(async () => {
+      flushSync(() => {
+        const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!;
+        setter.call(textarea!, 'typed while loading');
+        textarea!.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+    });
+    expect(textarea?.value).toBe('typed while loading');
+
+    // Cancel is immediately clickable
+    const cancel = container.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
+    expect(cancel).not.toBeNull();
+    expect(cancel.disabled).toBe(false);
+
+    // Send is gated while attachments are still pending
+    const send = container.querySelector<HTMLButtonElement>('[data-edit-submit]')!;
+    expect(send.disabled).toBe(true);
+
+    // Initial retained attachment chip is already visible with original name
+    expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain('photo.png');
+
+    // Attachments resolve with thumbnail preview
+    await act(async () => {
+      resolveAttachments([
+        {
+          kind: 'retained',
+          name: 'photo.png',
+          content: { type: 'image', source: { kind: 'session_media', file_id: 'img-1' } },
+          previewUrl: 'data:image/png;base64,thumb',
+        },
+      ]);
+    });
+
+    // Send button is now enabled
+    expect(send.disabled).toBe(false);
+
+    // Submit carries original identity and new text
+    await act(async () => {
+      flushSync(() => { click(send); });
+    });
+    expect(onEditMessage).toHaveBeenCalledOnce();
+    const [_block, text, attachments] = onEditMessage.mock.calls[0] as [{ text: string }, string, readonly ComposerAttachment[]];
+    expect(text).toBe('typed while loading');
+    expect(attachments).toHaveLength(1);
+    expect(attachments[0]).toMatchObject({
+      kind: 'retained',
+      content: { type: 'image', source: { kind: 'session_media', file_id: 'img-1' } },
+    });
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('preserves initial attachments on load error and allows retry without wiping items', async () => {
+    let rejectAttachments!: (err: Error) => void;
+    let resolveAttachments!: (attachments: readonly ComposerAttachment[]) => void;
+    const signals: AbortSignal[] = [];
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: vi.fn(),
+      loadEditAttachments: vi.fn()
+        .mockImplementationOnce((_block, signal: AbortSignal) => { signals.push(signal); return new Promise((_, reject) => { rejectAttachments = reject; }); })
+        .mockImplementationOnce((_block, signal: AbortSignal) => { signals.push(signal); return new Promise((resolve) => { resolveAttachments = resolve; }); }),
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m2', text: 'error case text', userMessageId: 'm2', media: [{ kind: 'image', fileId: 'img-fail', name: 'failed.png' }] })],
+      rowActions,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = container.querySelector('[data-block-id="user-m2"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    expect(container.querySelector('[data-edit-retry]')).toBeNull();
+
+    // Reject the load
+    await act(async () => {
+      rejectAttachments(new Error('Network error'));
+    });
+
+    // Original attachment chip is still preserved, send is disabled, retry button appears
+    expect(container.querySelector('[data-attachment-chips]')?.textContent).toContain('failed.png');
+    const send = container.querySelector<HTMLButtonElement>('[data-edit-submit]')!;
+    expect(send.disabled).toBe(true);
+    const retry = container.querySelector<HTMLButtonElement>('[data-edit-retry]');
+    expect(retry).not.toBeNull();
+
+    // Click retry
+    await act(async () => {
+      flushSync(() => { click(retry!); });
+    });
+    expect(rowActions.loadEditAttachments).toHaveBeenCalledTimes(2);
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(false);
+
+    // Resolve second attempt
+    await act(async () => {
+      resolveAttachments([
+        {
+          kind: 'retained',
+          name: 'failed.png',
+          content: { type: 'image', source: { kind: 'session_media', file_id: 'img-fail' } },
+          previewUrl: 'data:image/png;base64,recovered',
+        },
+      ]);
+    });
+    expect(container.querySelector('[data-edit-retry]')).toBeNull();
+    expect(send.disabled).toBe(false);
+  });
+
+  it('cancels immediately during load and prevents late arrivals from resurrecting or overwriting edits', async () => {
+    let resolveAttachments!: (attachments: readonly ComposerAttachment[]) => void;
+    const pendingLoad = new Promise<readonly ComposerAttachment[]>((resolve) => {
+      resolveAttachments = resolve;
+    });
+    let loadSignal!: AbortSignal;
+    const rowActions: TranscriptRowActions = {
+      disabled: false,
+      onEditMessage: vi.fn(),
+      loadEditAttachments: vi.fn((_block, signal: AbortSignal) => { loadSignal = signal; return pendingLoad; }),
+      onRegenerate: () => undefined,
+      onFork: () => undefined,
+    };
+    const container = await renderTranscript(
+      [userBlock({ id: 'user-m3', text: 'cancel test', userMessageId: 'm3', media: [{ kind: 'image', fileId: 'img-cancel', name: 'cancel.png' }] })],
+      rowActions,
+      undefined,
+      undefined,
+      true,
+    );
+    const row = container.querySelector('[data-block-id="user-m3"]')!;
+    await act(async () => {
+      flushSync(() => { click(row.querySelector('[data-row-action="edit"]')!); });
+    });
+    expect(container.querySelector('[data-edit-editor]')).not.toBeNull();
+
+    // Click cancel while load is still pending
+    const cancel = container.querySelector<HTMLButtonElement>('[data-edit-cancel]')!;
+    await act(async () => {
+      flushSync(() => { click(cancel); });
+    });
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+    expect(loadSignal.aborted).toBe(true);
+
+    // Late arrival after unmount does not throw or remount editor
+    await act(async () => {
+      resolveAttachments([
+        {
+          kind: 'retained',
+          name: 'cancel.png',
+          content: { type: 'image', source: { kind: 'session_media', file_id: 'img-cancel' } },
+        },
+      ]);
+    });
+    expect(container.querySelector('[data-edit-editor]')).toBeNull();
+  });
+
+  it('merges late-loaded attachments without overwriting new attachments or restoring deleted attachments', () => {
+    const initialImg: ComposerAttachment = {
+      kind: 'retained',
+      name: 'initial.png',
+      content: { type: 'image', name: 'original-name.png', source: { kind: 'session_media', file_id: 'img-1' } },
+    };
+    const loadedImgWithPreview: ComposerAttachment = {
+      ...initialImg,
+      content: { ...initialImg.content, name: 'different-detail-name.png' },
+      previewUrl: 'data:image/png;base64,loadedThumb',
+    };
+    const userAddedFile: ComposerAttachment = {
+      kind: 'file',
+      name: 'notes.txt',
+      path: '/path/to/notes.txt',
+      isDir: false,
+    };
+    const initial = [initialImg];
+
+    // Case 1: User added a new attachment while loading -> both preserved, loaded gets preview
+    const mergedWithNew = mergeLoadedAttachments([initialImg, userAddedFile], [loadedImgWithPreview], initial);
+    expect(mergedWithNew).toEqual([{ ...initialImg, previewUrl: loadedImgWithPreview.previewUrl }, userAddedFile]);
+    expect(mergedWithNew[0]!.kind === 'retained' && mergedWithNew[0]!.content).toBe(initialImg.content);
+
+    // Case 2: User explicitly removed the initial attachment -> not resurrected by late load
+    const mergedAfterRemoval = mergeLoadedAttachments([userAddedFile], [loadedImgWithPreview], initial);
+    expect(mergedAfterRemoval).toEqual([userAddedFile]);
+
+    // Case 3: Initial was empty, user added a file, then loaded arrives -> neither is lost
+    const mergedEmptyInitial = mergeLoadedAttachments([userAddedFile], [loadedImgWithPreview], []);
+    expect(mergedEmptyInitial).toEqual([loadedImgWithPreview, userAddedFile]);
+  });
+
+  it.each(['image', 'retained'] as const)('keeps same-name %s images with identical base64 prefixes distinct during late loading', (kind) => {
+    const prefix = 'A'.repeat(32);
+    const image = (tail: string): ComposerAttachment => kind === 'image'
+      ? { kind: 'image', name: 'same.png', mediaType: 'image/png', data: prefix + tail, size: 30, previewUrl: '' }
+      : { kind: 'retained', name: 'same.png', content: { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: prefix + tail } } };
+    const first = image('AAAA');
+    const second = image('BBBB');
+    const loadedFirst = { ...first, previewUrl: 'first-preview' };
+    const loadedSecond = { ...second, previewUrl: 'second-preview' };
+    const initial = [first, second];
+    expect(mergeLoadedAttachments([first, second], [loadedFirst, loadedSecond], initial)).toEqual([loadedFirst, loadedSecond]);
+    expect(mergeLoadedAttachments([second], [loadedFirst, loadedSecond], initial)).toEqual([loadedSecond]);
   });
 
   it('copies the typed body and preserves selected carry annotations in the edit metadata', async () => {
@@ -2753,6 +3951,9 @@ describe('message row actions', () => {
       const container = await renderTranscript(
         [userBlock({ id: 'user-m1', text: 'question', userMessageId: 'm1' })],
         rowActions,
+        undefined,
+        undefined,
+        true,
       );
       const row = () => container.querySelector('[data-block-id="user-m1"]')!;
       expect(row().querySelector('[data-actions-open]')).toBeNull();
@@ -2877,20 +4078,207 @@ describe('message row actions', () => {
 });
 
 describe('user message body sizing', () => {
-  it('does not render a collapse toggle for short messages', async () => {
-    const container = await renderTranscript([userBlock({ id: 'user-m1', text: 'short' })]);
+  it('does not render a collapse toggle or ellipsis when content fits without overflow or server continuation', async () => {
+    const container = await renderTranscript([userBlock({ id: 'user-m1', text: 'short message' })]);
     expect(container.querySelector('[data-collapsible-toggle]')).toBeNull();
+    expect(container.querySelector('[data-user-ellipsis]')).toBeNull();
+    const content = container.querySelector<HTMLElement>('[data-source-block-id="user-m1"]')!;
+    expect(content.className).not.toContain('max-h-60');
+    expect(content.className).not.toContain('collapsed-content-fade');
   });
 
-  it('keeps a long user body fully expanded without a max-height clamp', async () => {
+  it('clamps an overflowing user message with grey ellipsis and expands on click', async () => {
     const text = 'x'.repeat(600);
     const container = await renderTranscript([userBlock({ id: 'user-m1', text })]);
     const content = container.querySelector<HTMLElement>('[data-source-block-id="user-m1"]')!;
     expect(content.textContent).toBe(text);
+    expect(container.querySelector('[data-user-ellipsis]')).toBeNull();
+
+    Object.defineProperty(content, 'scrollHeight', { value: 600, configurable: true });
+    Object.defineProperty(content, 'clientHeight', { value: 100, configurable: true });
+    await act(async () => {
+      resizeElement(content, 100);
+    });
+
+    expect(content.className).toContain('max-h-60');
+    expect(content.className).toContain('collapsed-content-fade');
+    const ellipsis = container.querySelector<HTMLButtonElement>('[data-user-ellipsis]')!;
+    expect(ellipsis).not.toBeNull();
+    expect(ellipsis.textContent).toBe('……');
+    expect(ellipsis.hasAttribute('data-collapsible-toggle')).toBe(true);
+
+    await act(async () => {
+      ellipsis.click();
+    });
     expect(content.className).not.toContain('max-h-60');
     expect(content.className).not.toContain('collapsed-content-fade');
+
+    const showLess = container.querySelector<HTMLButtonElement>('[data-collapsible-toggle]')!;
+    expect(showLess).not.toBeNull();
+    expect(showLess.textContent).toContain('Show less');
+
+    await act(async () => {
+      showLess.click();
+    });
+    expect(content.className).toContain('max-h-60');
+    expect(content.className).toContain('collapsed-content-fade');
+  });
+
+  it.each(['turn', 'prompt', 'presentation', 'attachments'] as const)('reads a bounded %s message even when its projected body is empty', async (kind) => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { applyContentSegment } = await import('@kiki/transcript');
+    const selected = selectionCarryoverPresentation([{ quote: 'Selected passage.', comment: 'Keep the entire annotation.' }], []);
+    const text = selected.prefix + 'Review the complete message.';
+    const source: import('@kiki/transcript').ContentSource = { kind: kind === 'prompt' ? 'prompt' : 'turn', id: kind === 'prompt' ? 'p-bounded' : 't-bounded' };
+    const ref: import('@kiki/transcript').ContentRef = {
+      source, revision: 'bounded-v1',
+      path: kind === 'prompt' ? ['content'] : kind === 'presentation' ? ['presentation', 'spans'] : kind === 'attachments' ? ['attachmentIds'] : ['prompt'],
+      kind: kind === 'turn' ? 'text' : 'array', offset: 0,
+      total: kind === 'turn' ? text.length : 1,
+    };
+    let entity: import('@kiki/transcript').TranscriptPrompt | import('@kiki/transcript').TranscriptTurn = kind === 'prompt'
+      ? { promptId: 'p-bounded', userMessageId: 'um-bounded', status: 'running' as const, createdAt: '2026-01-01T00:00:00.000Z', content: [], contentRefs: [ref] }
+      : { kind: 'turn' as const, turnId: 't-bounded', ordinal: 1, state: 'completed' as const,
+          origin: { kind: 'user', payload: { promptId: 'p-bounded', userMessageId: 'um-bounded' } },
+          prompt: kind === 'turn' || kind === 'attachments' ? '' : text,
+          presentation: kind === 'presentation' ? { spans: [] } : selected.presentation,
+          attachmentIds: [], steps: [], contentRefs: [ref] };
+    const snapshot = (): AgentTranscriptSnapshot => ({
+      items: 'turnId' in entity ? [entity] : [], prompts: 'promptId' in entity && !('turnId' in entity) ? [entity] : [],
+      tasks: [], attachments: [{ attachmentId: 'att-bounded', source: { kind: 'url', url: 'https://example.test/photo.png' }, name: 'photo.png', mediaType: 'image/png' }],
+      todos: [], interactions: [], meta: {},
+    });
+    const { root, container } = makeRoot();
+    const loadContent = vi.fn(async () => {
+      const value = kind === 'turn' ? text : kind === 'prompt' ? [{ type: 'text', text, presentation: selected.presentation }]
+        : kind === 'presentation' ? selected.presentation.spans : ['att-bounded'];
+      entity = applyContentSegment(entity, { ref, value, contentRefs: [] });
+      await draw();
+      return true;
+    });
+    const draw = () => renderSettled(root,
+      <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={entity.contentRefs} loadContent={loadContent}>
+        <Transcript state={projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot())}
+          onLoadOlder={() => Promise.resolve(false)} onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()} onDismissQuestion={() => noopActions()} />
+      </TranscriptDetailProvider>);
+    await draw();
+    const row = container.querySelector('[data-block-id="user-um-bounded"]');
+    expect(row).not.toBeNull();
+    const more = row!.querySelector<HTMLButtonElement>('[data-content-continuation-action]');
+    expect(more).not.toBeNull();
+    await act(async () => { more!.click(); });
+    expect(loadContent).toHaveBeenCalledOnce();
+    expect(container.querySelectorAll('[data-block-id="user-um-bounded"]')).toHaveLength(1);
+    expect(container.querySelector('[data-content-continuation-action]')).toBeNull();
+    if (kind === 'attachments') {
+      expect(container.querySelector('[data-user-media] img')?.getAttribute('src')).toBe('https://example.test/photo.png');
+    } else {
+      expect(container.querySelector('[data-source-block-id="user-um-bounded"]')?.textContent).toBe('Review the complete message.');
+      const note = container.querySelector<HTMLButtonElement>('[data-annotation-bubble]');
+      expect(note).not.toBeNull();
+      await act(async () => { note!.click(); });
+      expect(document.querySelector('[data-annotation-bubble-comment]')?.textContent).toBe('Keep the entire annotation.');
+    }
+  });
+
+  it('keeps range-backed user text in the canonical range reader rather than an inert ellipsis', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't-range' };
+    const ref: import('@kiki/transcript').ContentRef = { source, path: ['prompt'], revision: 'range-v1', kind: 'text', offset: 6, total: 100_000 };
+    const beginContentRead = vi.fn(() => ({ release() {}, retry() {} }));
+    const controller = { contentRefsFor: () => [ref], isContentRange: () => true, beginContentRead,
+      readContentRange: async () => 'Complete range-backed message.', historyPreviewPending: () => false, retainHistoryPreview: () => () => {} };
+    const { root, container } = makeRoot();
+    await renderSettled(root, <TranscriptDetailProvider controller={controller as unknown as SessionController}
+      load={async () => false} loads={{}} contentRefs={[ref]} sessionId="session_test" agentId="main">
+      <Transcript state={transcriptState([userBlock({ id: 'user-range', text: 'prefix', contentSource: source })])}
+        onLoadOlder={async () => false} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />
+    </TranscriptDetailProvider>);
+    expect(container.querySelector('[data-content-range-text]')).not.toBeNull();
+    expect(container.querySelector('[data-user-ellipsis]')).toBeNull();
     expect(container.querySelector('[data-collapsible-content]')).toBeNull();
-    expect(container.querySelector('[data-collapsible-toggle]')).toBeNull();
+    expect(beginContentRead).toHaveBeenCalledWith('main', source, ['text', 'prompt']);
+  });
+
+  it('renders grey ellipsis for server continuation and loads the next segment on click', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };
+    const ref: import('@kiki/transcript').ContentRef = {
+      source,
+      path: ['prompt'],
+      revision: 't0',
+      kind: 'text',
+      offset: 10,
+      total: 20,
+    };
+    const loadContent = vi.fn(async (_ref: import('@kiki/transcript').ContentRef) => true);
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={[ref]} loadContent={loadContent}>
+        <Transcript
+          state={transcriptState([userBlock({ id: 'user-m1', text: 'prefix text', contentSource: source })])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />
+      </TranscriptDetailProvider>,
+    );
+    const ellipsis = container.querySelector<HTMLButtonElement>('[data-user-ellipsis]')!;
+    expect(ellipsis).not.toBeNull();
+    expect(ellipsis.textContent).toBe('……');
+    expect(ellipsis.hasAttribute('data-content-continuation-action')).toBe(true);
+
+    await act(async () => {
+      ellipsis.click();
+    });
+    expect(loadContent).toHaveBeenCalledWith(ref);
+  });
+
+  it('renders a retryable grey ellipsis for an error detail load and reloads that segment', async () => {
+    const { TranscriptDetailProvider, contentSegmentKey } = await import('./transcriptDetail');
+    const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };
+    const ref: import('@kiki/transcript').ContentRef = {
+      source,
+      path: ['prompt'],
+      revision: 't0',
+      kind: 'text',
+      offset: 10,
+      total: 20,
+    };
+    const loadContent = vi.fn(async (_ref: import('@kiki/transcript').ContentRef) => true);
+    const { root, container } = makeRoot();
+    await renderSettled(
+      root,
+      <TranscriptDetailProvider
+        load={async () => false}
+        loads={{ [contentSegmentKey(ref)]: { status: 'error', message: 'segment read failed' } }}
+        contentRefs={[ref]}
+        loadContent={loadContent}
+      >
+        <Transcript
+          state={transcriptState([userBlock({ id: 'user-m1', text: 'prefix text', contentSource: source })])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+        />
+      </TranscriptDetailProvider>,
+    );
+    const ellipsis = container.querySelector<HTMLButtonElement>('[data-user-ellipsis]')!;
+    expect(ellipsis).not.toBeNull();
+    expect(ellipsis.parentElement?.getAttribute('data-content-continuation')).toBe('error');
+    expect(ellipsis.textContent).toBe('… ↺');
+    expect(ellipsis.getAttribute('aria-label')).toBe('Try again');
+    expect(ellipsis.disabled).toBe(false);
+
+    await act(async () => {
+      ellipsis.click();
+    });
+    expect(loadContent).toHaveBeenCalledOnce();
+    expect(loadContent).toHaveBeenCalledWith(ref);
   });
 });
 
@@ -3498,6 +4886,51 @@ describe('virtualized transcript scrolling', () => {
     expect(after.offset).toBe(before.offset);
   });
 
+  it('keeps the visible block inset when the older-page top edge moves to a prepended row', async () => {
+    let topEdgeInset = 62.59375;
+    let postPrependInset = 0;
+    let lateLayout: ReturnType<typeof setTimeout> | undefined;
+    const original = HTMLElement.prototype.getBoundingClientRect;
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const scroll = this.closest<HTMLElement>('[data-transcript-scroll]');
+      const row = this.closest<HTMLElement>('[data-transcript-virtual-item]');
+      if (scroll === null) return original.call(this);
+      const inset = this.hasAttribute('data-block-id') ? row?.dataset['index'] === '0' ? topEdgeInset : postPrependInset : 0;
+      const top = row === null ? 0 : virtualItemStart(row) - scroll.scrollTop + inset;
+      const height = row === null ? scroll.clientHeight : row.offsetHeight;
+      return { x: 0, y: top, top, bottom: top + height, left: 0, right: 760, width: 760, height, toJSON: () => ({}) };
+    });
+    try {
+      const current = virtualBlocks(100, 'reading');
+      const state = { ...transcriptState(current), hasMoreHistory: true };
+      const pending = pendingVoid();
+      const onLoadOlder = vi.fn(async () => { await pending.promise; return true; });
+      const { root, container } = makeRoot();
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+      await settleVirtualizer();
+      await setTranscriptScroll(scroll, 32);
+      await settleVirtualizer();
+      await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+      await setTranscriptScroll(scroll, 0);
+      topEdgeInset += 25.59375;
+      await settleVirtualizer();
+      const block = container.querySelector<HTMLElement>('[data-block-id="reading-0"]')!;
+      const before = block.getBoundingClientRect().top;
+      await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
+      await act(async () => {
+        pending.resolve();
+        lateLayout = setTimeout(() => { postPrependInset = -28; }, 32);
+      });
+      await settleReadingFrames();
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+      expect(container.querySelector<HTMLElement>('[data-block-id="reading-0"]')!.getBoundingClientRect().top).toBeCloseTo(before, 0);
+    } finally {
+      clearTimeout(lateLayout);
+      rect.mockRestore();
+    }
+  });
+
   it('loads one older page only after an upward browsing gesture at the top edge', async () => {
     const onLoadOlder = vi.fn(async () => true);
     const current = virtualBlocks(100, 'history');
@@ -3516,10 +4949,146 @@ describe('virtualized transcript scrolling', () => {
     await renderSettled(root, virtualTranscript({ ...state, blocks: [...virtualBlocks(20, 'older'), ...current] }, onLoadOlder));
     await settleVirtualizer();
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    // The page's own anchor restore is still converging on the rows it just
+    // prepended. A reader ends it by gesturing again, and a downward one must
+    // load nothing: without it the restore can pull the row back under the
+    // viewport after the next line, and the edge check would be measured
+    // against the restored row instead of the top the reader is looking at.
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
     await setTranscriptScroll(scroll, 0);
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
     await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
     expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries older-page load after initial failure on a new upward gesture and can request subsequent pages', async () => {
+    const onLoadOlder = vi.fn();
+    onLoadOlder.mockImplementationOnce(async () => false);
+    onLoadOlder.mockImplementationOnce(async () => true);
+    onLoadOlder.mockImplementationOnce(async () => true);
+    onLoadOlder.mockImplementationOnce(async () => true);
+    const current = virtualBlocks(100, 'history');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    await renderSettled(root, virtualTranscript({ ...state, olderError: 'Failed to fetch segment' }, onLoadOlder));
+    await settleVirtualizer();
+    expect(container.textContent).toContain('Failed to fetch segment');
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+    const page1 = [...virtualBlocks(20, 'older-page-1'), ...current];
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page1, olderError: undefined }, onLoadOlder));
+    await settleReadingFrames();
+    expect(container.textContent).not.toContain('Failed to fetch segment');
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => { scroll.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(3);
+    const page2 = [...virtualBlocks(20, 'older-page-2'), ...page1];
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page2 }, onLoadOlder));
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(3);
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => {
+      scroll.dispatchEvent(new TouchEvent('touchstart', { touches: [{ clientY: 100 } as Touch], bubbles: true }));
+      scroll.dispatchEvent(new TouchEvent('touchmove', { touches: [{ clientY: 160 } as Touch], bubbles: true }));
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(4);
+    const page3 = [...virtualBlocks(20, 'older-page-3'), ...page2];
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page3 }, onLoadOlder));
+    await settleReadingFrames();
+    expect(onLoadOlder).toHaveBeenCalledTimes(4);
+  });
+
+  it('merges upward gestures during an in-flight request without cancelling anchor restoration or auto-paging', async () => {
+    let resolveFlight!: (loaded: boolean) => void;
+    const onLoadOlder = vi.fn(async () => new Promise<boolean>((resolve) => { resolveFlight = resolve; }));
+    const current = virtualBlocks(100, 'anchor-keep');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 32);
+    await settleVirtualizer();
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true }));
+      scroll.dispatchEvent(new KeyboardEvent('keydown', { key: 'PageUp', bubbles: true }));
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    const page1 = [...virtualBlocks(20, 'prepended'), ...current];
+    const beforeBlock = container.querySelector<HTMLElement>('[data-block-id="anchor-keep-0"]')!;
+    const beforeTop = beforeBlock.getBoundingClientRect().top;
+    await act(async () => {
+      resolveFlight(true);
+    });
+    await renderSettled(root, virtualTranscript({ ...state, blocks: page1 }, onLoadOlder));
+    await settleReadingFrames();
+    const afterBlock = container.querySelector<HTMLElement>('[data-block-id="anchor-keep-0"]')!;
+    expect(afterBlock.getBoundingClientRect().top).toBeCloseTo(beforeTop, 0);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not write back or jump reading anchor when a cancelled older load resolves late', async () => {
+    let resolveLate!: (loaded: boolean) => void;
+    let flightSignal: AbortSignal | undefined;
+    const onLoadOlder = vi.fn((signal?: AbortSignal) => {
+      flightSignal = signal;
+      return new Promise<boolean>((resolve) => { resolveLate = resolve; });
+    });
+    const current = virtualBlocks(100, 'reading-late');
+    const state = { ...transcriptState(current), hasMoreHistory: true };
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await settleVirtualizer();
+    await setTranscriptScroll(scroll, 0);
+    await settleVirtualizer();
+
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: -120, bubbles: true })); });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 200, bubbles: true }));
+    });
+    expect(flightSignal?.aborted).toBe(true);
+    await setTranscriptScroll(scroll, 1000);
+    await settleVirtualizer();
+    const userScrollTop = scroll.scrollTop;
+
+    await act(async () => {
+      resolveLate(true);
+    });
+    await settleReadingFrames();
+    expect(scroll.scrollTop).toBe(userScrollTop);
   });
 
   it('loads an older page from the top button without a wheel gesture', async () => {
@@ -3817,6 +5386,74 @@ describe('virtualized transcript scrolling', () => {
   });
 });
 
+function liveToolRow(id: string, turnId: string): Block {
+  return {
+    kind: 'tool', id: `tool-${id}`, toolCallId: id, name: 'Read', argsText: '', args: { path: 'a.ts' },
+    display: undefined, description: undefined, status: 'done', output: 'ok', isError: undefined,
+    startedAt: undefined, durationMs: undefined, progressText: undefined, turnId,
+  };
+}
+
+function liveThoughtRow(id: string, text: string, turnId: string): Block {
+  return { kind: 'thinking', id, text, streaming: true, turnId, createdAt: undefined };
+}
+
+/**
+ * A live turn's process rows are exactly the rows a reader can expand while the
+ * turn keeps producing content: a long in-progress reasoning line, a tool body,
+ * a continuation block. The reader who clicked one must keep both their place
+ * and the expansion they asked for, however the turn keeps growing underneath.
+ */
+describe('a live process row the reader expanded', () => {
+  function liveTurn(extra: Block[] = []): Block[] {
+    return [
+      ...virtualBlocks(40, 'hist'),
+      userBlock({ id: 'live-user', text: 'go', turnId: 't9' }),
+      liveThoughtRow('thought-a', 'first thought', 't9'),
+      liveToolRow('tool-a', 't9'),
+      liveThoughtRow('thought-b', `${'long in-progress thought\n'.repeat(60)}`, 't9'),
+      ...extra,
+    ];
+  }
+
+  it('keeps the place the reader clicked while the turn keeps growing', async () => {
+    const { root, container } = makeRoot();
+    await renderSettled(root, virtualTranscript(transcriptState(liveTurn())));
+    await settleVirtualizer();
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    const toggle = () => container.querySelector<HTMLElement>('[data-block-id="thought-b"] [data-activity-toggle]');
+    // Following the end, as the live turn leaves it.
+    await setTranscriptScroll(scroll, scroll.scrollHeight - scroll.clientHeight);
+    await settleVirtualizer();
+    const clickedAt = scroll.scrollTop;
+    const item = toggle()!.closest<HTMLElement>('[data-transcript-virtual-item]')!;
+    const start = virtualItemStart(item);
+    await act(async () => { click(toggle()!); });
+    await settleVirtualizer();
+    const opened = toggle()!;
+    expect(opened.getAttribute('aria-expanded')).toBe('true');
+
+    // Opening the row lays its body out: the row grows past the estimate. The
+    // click was a reading gesture, so the row's own header must not be carried
+    // out of view — unlike an append, which keeps the end pinned.
+    await act(async () => { resizeElement(item, 900); await new Promise((resolve) => setTimeout(resolve, 35)); });
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(clickedAt);
+    expect(virtualItemStart(item)).toBe(start);
+    expect(toggle()).toBe(opened);
+    expect(toggle()!.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-block-id="thought-b"]')!.closest('[data-history-fold]')).toBeNull();
+
+    // The turn keeps producing rows after it; none of them may drag the reader.
+    await renderSettled(root, virtualTranscript(transcriptState(liveTurn([liveToolRow('tool-b', 't9')]))));
+    await settleVirtualizer();
+    expect(scroll.scrollTop).toBe(clickedAt);
+    expect(toggle()).toBe(opened);
+    expect(toggle()!.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-block-id="thought-b"]')!.closest('[data-history-fold]')).toBeNull();
+  });
+});
+
 describe('canonical mount and key stability', () => {
   it('keeps the same DOM node across consecutive deltas', async () => {
     const { controller, flush } = await openLiveTranscript();
@@ -4083,10 +5720,8 @@ describe('external executor badge', () => {
     expect(fold).not.toBeNull();
     await act(async () => { click(fold!); });
 
-    const usage = container.querySelector('[data-executor-note="usage"]');
-    // The number is labelled as the engine's, so it is never read as Kiki's
-    // own context meter.
-    expect(usage?.textContent).toContain('Engine context: 61.7k of 200.0k tokens');
+    // The engine's context reading is the ContextMeter, not a second timeline line.
+    expect(container.querySelector('[data-executor-note="usage"]')).toBeNull();
 
     const dropped = container.querySelector('[data-executor-note="session"]');
     expect(dropped?.textContent).toContain('dropped an image you sent: image exceeds the engine limit');
@@ -4142,6 +5777,21 @@ describe('subagent timeline dual form (G-4)', () => {
       status: 'completed',
       at: '2026-01-01T00:00:05.000Z',
     };
+  }
+
+  /**
+   * Stamp birth times onto a built forest the way the engine will once it
+   * records one per agent: an immutable fact on the node itself, which no
+   * later run start can move. Applied after the build because the roster
+   * descriptor does not carry it yet.
+   */
+  function born(forest: AgentForest, births: Readonly<Record<string, string>>): AgentForest {
+    const byId: Record<string, AgentTreeNode> = { ...forest.byId };
+    for (const [agentId, createdAt] of Object.entries(births)) {
+      const node = byId[agentId];
+      if (node !== undefined) byId[agentId] = { ...node, createdAt } as AgentTreeNode;
+    }
+    return { roots: forest.roots.map((root) => byId[root.agentId] ?? root), byId };
   }
 
   async function renderWithAgents(
@@ -4524,16 +6174,25 @@ describe('subagent timeline dual form (G-4)', () => {
   });
 
   describe('nested subagents that finished before the view opened', () => {
-    const tree = (grandStatus: Record<string, 'completed' | 'running' | 'suspended' | 'failed'>) => buildAgentForest(
-      [],
-      [
-        { agentId: 'main', name: 'Main' },
-        { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
-        ...Object.entries(grandStatus).map(([agentId, status]) => ({
-          agentId, parentAgentId: 'lead', name: agentId, status, toolCallCount: 2, summary: `${agentId} result. More detail.`,
-          startedAt: '2026-01-01T00:00:00.000Z', endedAt: status === 'completed' || status === 'failed' ? '2026-01-01T00:02:00.000Z' : undefined,
-        })),
-      ],
+    // Every agent is born just after the one that dispatched it, so all of
+    // them lay out and these cases stay about the settled-vs-live fold rule.
+    const tree = (grandStatus: Record<string, 'completed' | 'running' | 'suspended' | 'failed'>) => born(
+      buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'lead', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
+          ...Object.entries(grandStatus).map(([agentId, status], index) => ({
+            agentId, parentAgentId: 'lead', name: agentId, status, toolCallCount: 2, summary: `${agentId} result. More detail.`,
+            startedAt: '2026-01-01T00:00:00.000Z', endedAt: status === 'completed' || status === 'failed' ? '2026-01-01T00:02:00.000Z' : undefined,
+          })),
+        ],
+      ),
+      {
+        'main': '2026-01-01T00:00:00.000Z',
+        'lead': '2026-01-01T00:00:01.000Z',
+        ...Object.fromEntries(Object.keys(grandStatus).map((agentId, index) => [agentId, `2026-01-01T00:00:0${index + 2}.000Z`])),
+      },
     );
     const leadBlock = lifecycleSubagentBlock('lead', { status: 'running', name: 'Lead' });
     const card = (container: Element, id: string) => container.querySelector(`[data-subagent-id="${id}"]`);
@@ -4578,7 +6237,7 @@ describe('subagent timeline dual form (G-4)', () => {
 
     it('tracks running agents even before their collapsed parent mounts them', async () => {
       const { root, container } = makeRoot();
-      const render = (status: 'running' | 'completed') => renderSettled(root, <Transcript state={transcriptState([lifecycleSubagentBlock('lead', { name: 'Lead' })])} forest={buildAgentForest([], [{ agentId: 'main' }, { agentId: 'lead', parentAgentId: 'main', status: 'completed' }, { agentId: 'worker', parentAgentId: 'lead', status }])} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
+      const render = (status: 'running' | 'completed') => renderSettled(root, <Transcript state={transcriptState([lifecycleSubagentBlock('lead', { name: 'Lead' })])} forest={born(buildAgentForest([], [{ agentId: 'main' }, { agentId: 'lead', parentAgentId: 'main', status: 'completed' }, { agentId: 'worker', parentAgentId: 'lead', status }]), { main: '2026-01-01T00:00:00.000Z', lead: '2026-01-01T00:00:01.000Z', worker: '2026-01-01T00:00:02.000Z' })} onLoadOlder={() => Promise.resolve(false)} onResolveApproval={noopActions} onAnswerQuestion={noopActions} onDismissQuestion={noopActions} />);
       await render('running');
       expect(card(container, 'worker')).toBeNull();
       await render('completed');
@@ -4607,6 +6266,248 @@ describe('subagent timeline dual form (G-4)', () => {
     });
   });
 
+describe('a dispatch card lays out only the descendants it provably created', () => {
+    const card = (container: Element, id: string) => container.querySelector(`[data-subagent-id="${id}"]`);
+    const group = (container: Element) => container.querySelector('[data-other-descendants]');
+    const page_groups = (container: Element): Element[] => [...container.querySelectorAll('[data-other-descendants]')];
+    const groupToggle = (container: Element) => container.querySelector<HTMLButtonElement>('[data-other-descendants] [data-activity-toggle]')!;
+    const BORN = (minute: number) => `2026-01-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+
+    // The counterexample, in the shape the page actually shows. `lead`
+    // (agent-2) was BORN at 00:10 and already owned agent-1, born 00:20; the
+    // dispatch this card represents is a LATER run of lead, from 00:40. Only
+    // agent-3, born 00:50, belongs to that dispatch. Comparing descendants
+    // against lead's own birth would wrongly expand agent-1.
+    const tree = (extra: readonly { agentId: string; parentAgentId: string; status: string }[] = []) => born(
+      buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running', toolCallCount: 1 },
+          { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed', toolCallCount: 2, summary: 'Old result.' },
+          { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running', toolCallCount: 1 },
+          ...extra,
+        ],
+      ),
+      { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50), 'agent-4': BORN(25), 'agent-5': BORN(51) },
+    );
+    const leadBlock = lifecycleSubagentBlock('agent-2', {
+      status: 'running', name: 'Lead', startedAt: BORN(40), endedAt: undefined,
+    });
+
+    it('shows this dispatch’s descendant and folds the rest behind one line', async () => {
+      const container = await renderWithAgents([leadBlock], [], tree());
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(card(container, 'agent-1')).toBeNull();
+      const folded = group(container)!;
+      expect(folded.getAttribute('data-other-descendants')).toBe('1');
+      expect(folded.textContent).toContain('Other subagents');
+      expect(groupToggle(container).getAttribute('aria-expanded')).toBe('false');
+    });
+
+    it('folds an old descendant that is only being resumed, and opens a new birth', async () => {
+      // The contrast that matters: `agent-1` is running again right now, and
+      // that is not why it folds — it was BORN at 00:20, before this dispatch
+      // at 00:40, and a resume never moves a birth. `agent-3` was born at
+      // 00:50, inside the dispatch, and opens even while still queued.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'idle' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)?.textContent).toContain('1 running');
+    });
+
+    it('opens a descendant born this dispatch that has not started running yet', async () => {
+      // A queued birth is still a birth: membership never waits on a run.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'Queued', status: 'idle' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)).toBeNull();
+    });
+
+    it('folds every descendant when the records carry no birth time', async () => {
+      // Nothing is proven, so nothing is expanded — and nothing is lost.
+      const container = await renderWithAgents([leadBlock], [], buildAgentForest(
+        [],
+        [
+          { agentId: 'main', name: 'Main' },
+          { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+          { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'running' },
+          { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+        ],
+      ));
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).toBeNull();
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('2');
+      await act(async () => { groupToggle(container).click(); });
+      expect(card(container, 'agent-1')).not.toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+    });
+
+    it('folds every descendant when the card has no window, even with a later run on the node', async () => {
+      // The live node here reports a run that started at 00:55, well after
+      // any birth in this tree, so borrowing it would let agent-3 through. It
+      // is not a confirmed record of THIS dispatch — it is the agent's newest
+      // run — so the card's missing window stays missing and everything folds.
+      const container = await renderWithAgents(
+        [lifecycleSubagentBlock('agent-2', { status: 'running', name: 'Lead', startedAt: undefined, endedAt: undefined })],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running', startedAt: BORN(55) },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-3')).toBeNull();
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('2');
+    });
+
+    it('keeps two dispatch cards for one agent independent, so opening one group opens only that one', async () => {
+      // One agent, dispatched twice: the OLDER card and the NEWER card each
+      // fold their own descendants. They must not share one open/closed
+      // choice, or opening the older card's group would open the newer one's
+      // as well. The two blocks differ only in the call that dispatched them.
+      const OLD_START = BORN(30);
+      const NEW_START = BORN(45);
+      const cardFor = (id: string, call: string, startedAt: string): Block => {
+        const base = lifecycleSubagentBlock('agent-2', { status: 'running', name: 'Lead', startedAt, endedAt: undefined });
+        if (base.kind !== 'subagent') throw new Error('the fixture block is not a subagent card');
+        return { ...base, id, parentToolCallId: call };
+      };
+      const older = cardFor('subagent-agent-2-old', 'call-lead-older', OLD_START);
+      const newer = cardFor('subagent-agent-2-new', 'call-lead-newer', NEW_START);
+      // A notice between the cards keeps both of them individually in view.
+      const container = await renderWithAgents(
+        [older, { kind: 'notice', id: 'between', text: 'boundary', tone: 'danger' }, newer],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-1', parentAgentId: 'agent-2', name: 'Old', status: 'completed' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-1': BORN(20) },
+        ),
+      );
+      // Both cards fold the same historical descendant, so both groups exist.
+      const groups = page_groups(container);
+      expect(groups.length).toBe(2);
+      expect(groups.every((row) => row.getAttribute('data-other-descendants') === '1')).toBe(true);
+
+      // Opening the first group's group must not open the second's.
+      await act(async () => {
+        const first = groups[0]!.querySelector<HTMLButtonElement>('[data-activity-toggle]')!;
+        first.click();
+      });
+      const after = page_groups(container);
+      expect(after[0]?.hasAttribute('data-other-descendants-open')).toBe(true);
+      expect(after[1]?.hasAttribute('data-other-descendants-open')).toBe(false);
+    });
+
+    it('keeps a grandchild of a folded descendant folded, and lays out this run’s own', async () => {
+      // Membership is per direct child. `agent-1` is the folded one, and its
+      // child `agent-4` is reached only through it, so it is folded too.
+      // `agent-3` is this dispatch's and lays out; its own child `agent-5` is
+      // inside that card and is governed by that card's own children row.
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        tree([
+          { agentId: 'agent-4', parentAgentId: 'agent-1', status: 'completed' },
+          { agentId: 'agent-5', parentAgentId: 'agent-3', status: 'completed' },
+        ]),
+      );
+      expect(group(container)?.getAttribute('data-other-descendants')).toBe('1');
+      expect(card(container, 'agent-1')).toBeNull();
+      expect(card(container, 'agent-4')).toBeNull();
+      expect(card(container, 'agent-3')).not.toBeNull();
+    });
+
+    it('renders no fold group when every descendant belongs to this dispatch', async () => {
+      const container = await renderWithAgents(
+        [leadBlock],
+        [],
+        born(
+          buildAgentForest(
+            [],
+            [
+              { agentId: 'main', name: 'Main' },
+              { agentId: 'agent-2', parentAgentId: 'main', name: 'Lead', status: 'running' },
+              { agentId: 'agent-3', parentAgentId: 'agent-2', name: 'New', status: 'running' },
+            ],
+          ),
+          { 'agent-2': BORN(10), 'agent-3': BORN(50) },
+        ),
+      );
+      expect(card(container, 'agent-3')).not.toBeNull();
+      expect(group(container)).toBeNull();
+    });
+
+    it('opens the folded descendants on click, and keeps the reader’s close', async () => {
+      const { root, container } = makeRoot();
+      const render = () => renderSettled(
+        root,
+        <Transcript
+          state={transcriptState([leadBlock])}
+          onLoadOlder={() => Promise.resolve(false)}
+          onResolveApproval={() => noopActions()}
+          onAnswerQuestion={() => noopActions()}
+          onDismissQuestion={() => noopActions()}
+          forest={tree()}
+          onOpenAgent={() => {}}
+        />,
+      );
+      await render();
+      await act(async () => { groupToggle(container).click(); });
+      expect(group(container)?.getAttribute('data-other-descendants-open')).toBe('true');
+      expect(card(container, 'agent-1')).not.toBeNull();
+
+      // A status update must not reopen what the reader closed.
+      await act(async () => { groupToggle(container).click(); });
+      expect(group(container)?.hasAttribute('data-other-descendants-open')).toBe(false);
+      expect(card(container, 'agent-1')).toBeNull();
+      await render();
+      expect(group(container)?.hasAttribute('data-other-descendants-open')).toBe(false);
+    });
+  });
   it('renders a suspended card compact and a completed parent does not inflate for a running child', async () => {
     const forest = buildAgentForest(
       [],
@@ -5349,6 +7250,28 @@ describe('read-run folding (fold-steps)', () => {
     });
   });
 
+  it('keeps completed memory calls in the old turn while a later read group is working', async () => {
+    await withFold(true, async () => {
+      const old = [
+        stepTool('memory-old', { name: 'MemoryRead', turnId: 't1' }),
+        stepTool('search-old', { name: 'MemorySearch', turnId: '1', args: { query: 'saved notes' } }),
+      ];
+      const current = [stepTool('plan', { turnId: 't2' }), stepTool('notes', { turnId: 't2' }), stepTool('grep', { turnId: 't2', status: 'running' })];
+      const container = await renderTranscript([...old, ...current]);
+      const fold = container.querySelector('[data-history-fold]')!;
+      const run = container.querySelector('[data-read-run]')!;
+      expect(fold).not.toBeNull();
+      expect(run.getAttribute('data-read-run')).toBe('3');
+      expect(run.querySelector('.spinner')).not.toBeNull();
+      expect(fold.querySelector('.spinner')).toBeNull();
+      await act(async () => { click(fold.querySelector('button')!); });
+      expect(fold.querySelector('[data-tool-id="memory-old"]')).not.toBeNull();
+      expect(fold.querySelector('[data-tool-id="search-old"]')).not.toBeNull();
+      expect(fold.querySelector('[data-tool-id="plan"]')).toBeNull();
+      expect(run.querySelector('[data-tool-id="memory-old"]')).toBeNull();
+    });
+  });
+
   it('when on, never folds edits, shells, or runs shorter than three', async () => {
     await withFold(true, async () => {
       const container = await renderTranscript([
@@ -5593,6 +7516,65 @@ describe('settled history folds and the unified locate entry', () => {
     expect(outcome).toEqual({ status: 'not-found' });
   });
 
+  it('locates an older target beyond forty pages with one intent and stops at the target', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    let pages = 0;
+    let state = transcriptState(virtualBlocks(3, 'tail'), { sessionId: 'session_far', hasMoreHistory: true });
+    const onLoadOlder = vi.fn(async () => {
+      pages += 1;
+      state = { ...state, blocks: [assistantBlock(pages === 43 ? 'far-target' : `page-${pages}`, `Older page ${pages}`), ...state.blocks] };
+      await renderSettled(root, virtualTranscript(state, onLoadOlder));
+      return true;
+    });
+    await renderSettled(root, virtualTranscript(state, onLoadOlder));
+    await settleVirtualizer();
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => {
+      void locateInTimeline({ kind: 'block', blockId: 'far-target' }, { sessionId: 'session_far', notify: false }).then((value) => { outcome = value; });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    for (let frame = 0; frame < 450; frame += 1) {
+      if (outcome !== undefined) break;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 16)); });
+    }
+    expect(onLoadOlder).toHaveBeenCalledTimes(43);
+    expect(outcome).toEqual({ status: 'found' });
+    expect(container.querySelector('[data-block-id="far-target"]')).not.toBeNull();
+    await settleVirtualizer();
+    expect(onLoadOlder).toHaveBeenCalledTimes(43);
+  }, 10_000);
+
+  it('cancels an older locate on a user scroll before a late page can move the viewport', async () => {
+    resetTimelineLocatorsForTests();
+    const { root, container } = makeRoot();
+    let resolvePage!: (loaded: boolean) => void;
+    let signal: AbortSignal | undefined;
+    const onLoadOlder = vi.fn((consumerSignal?: AbortSignal) => {
+      signal = consumerSignal;
+      return new Promise<boolean>((resolve) => { resolvePage = resolve; });
+    });
+    await renderSettled(root, virtualTranscript(transcriptState(virtualBlocks(100, 'tail'), {
+      sessionId: 'session_cancel_seek', hasMoreHistory: true,
+    }), onLoadOlder));
+    await settleVirtualizer();
+    let pending!: Promise<Awaited<ReturnType<typeof locateInTimeline>>>;
+    await act(async () => {
+      pending = locateInTimeline({ kind: 'block', blockId: 'old-target' }, { sessionId: 'session_cancel_seek', notify: false });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    const scroll = container.querySelector<HTMLElement>('[data-transcript-scroll]')!;
+    await act(async () => { scroll.dispatchEvent(new WheelEvent('wheel', { deltaY: 120, bubbles: true })); });
+    expect(signal?.aborted).toBe(true);
+    const top = scroll.scrollTop;
+    let outcome: Awaited<ReturnType<typeof locateInTimeline>> | undefined;
+    await act(async () => { resolvePage(true); outcome = await pending; });
+    expect(outcome).toEqual({ status: 'no-timeline' });
+    expect(scroll.scrollTop).toBe(top);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+  });
+
   it('re-lands a shown agent tab on its latest message unless the reader scrolled up', async () => {
     resetTimelineLocatorsForTests();
     const { root, container } = makeRoot();
@@ -5654,7 +7636,7 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     kind: 'tool', id, toolCallId: id, name: 'Bash', argsText: '', args: { command: `echo ${id}` }, display: undefined,
     description: undefined, status: 'done', output: 'ok', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
   });
-  const look = (id: string, turnId = 't1'): Block => ({
+  const look = (id: string, turnId = 't1'): Extract<Block, { kind: 'tool' }> => ({
     kind: 'tool', id, toolCallId: id, name: 'ReadMediaFile', argsText: '', args: { path: `C:/w/${id}.png` }, display: undefined,
     description: undefined, status: 'done', isError: undefined, durationMs: undefined, progressText: undefined, turnId,
     output: [
@@ -5714,6 +7696,28 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(settled?.querySelector('img')?.className).toContain('h-9');
     expect(container.querySelectorAll('[data-history-fold]')).toHaveLength(1);
   });
+
+  it('shows an image the result reports as its own attachment, and only once beside its content part', async () => {
+    const { root, container } = makeRoot();
+    const render = (blocks: Block[]) => renderSettled(root, virtualTranscript(transcriptState(blocks, { busy: true })));
+    // No content parts at all: the image is known only through the result's
+    // own attachment reference — the shape an external harness reports.
+    const attached: Block = {
+      ...look('a1'),
+      output: undefined,
+      media: [{ kind: 'image', url: 'data:image/png;base64,iVBORw0KGgo=', name: 'answer.png', mime: 'image/png' }],
+    };
+    await render([user, step('s1'), attached]);
+    const attachedRun = container.querySelector('[data-media-run]');
+    expect(attachedRun?.getAttribute('data-media-run')).toBe('1');
+    expect(attachedRun?.querySelector('[data-media-thumb]')?.getAttribute('title')).toBe('answer.png');
+    // The same file, now reported twice (content part and reference): one slot.
+    const described: Block = { ...look('a2'), media: [{ kind: 'image', url: 'data:image/png;base64,iVBORw0KGgo=', name: 'a2.png', mime: 'image/png' }] };
+    await render([user, step('s1'), described]);
+    const deduped = container.querySelector('[data-media-run]');
+    expect(deduped?.getAttribute('data-media-run')).toBe('1');
+    expect(deduped?.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
+  });
 });
 
 describe('semantic tool cards', () => {
@@ -5747,12 +7751,14 @@ describe('semantic tool cards', () => {
   async function renderCard(
     block: Extract<Block, { kind: 'tool' }>,
     options: { sessionId?: string; onOpenAgent?: (agentId: string) => void } = {},
-  ): Promise<{ container: HTMLDivElement; path: () => string }> {
+  ): Promise<{ container: HTMLDivElement; path: () => string; navState: () => unknown }> {
     const { root, container } = makeRoot();
     let location = '';
+    let navState: unknown;
     function Probe() {
       const current = useLocation();
       location = `${current.pathname}${current.search}`;
+      navState = current.state;
       return null;
     }
     await act(async () => {
@@ -5769,7 +7775,7 @@ describe('semantic tool cards', () => {
         );
       });
     });
-    return { container, path: () => location };
+    return { container, path: () => location, navState: () => navState };
   }
 
   async function expand(container: HTMLElement): Promise<void> {
@@ -5821,7 +7827,7 @@ describe('semantic tool cards', () => {
   });
 
   it('shows what a thread wait returned, per thread, with the turn to open', async () => {
-    const { container, path } = await renderCard(semanticTool(
+    const { container, path, navState } = await renderCard(semanticTool(
       'ThreadWait',
       { threads: [{ thread: THREAD_REF }], timeout_ms: 30_000 },
       JSON.stringify({
@@ -5839,7 +7845,11 @@ describe('semantic tool cards', () => {
     const item = container.querySelector('[data-tool-semantic-items] [data-tool-semantic-link="session"]')!;
     expect(item.textContent).toContain('turn ended · Completed');
     await act(async () => { click(item); });
-    expect(path()).toBe('/s/session_peer?turn=3');
+    // The session route stays bare. The turn rides the visit locator (`t3`), not `?turn=`.
+    expect(path()).toBe('/s/session_peer');
+    expect(readTimelineVisitLocator(navState())).toMatchObject({
+      sessionId: 'session_peer', agentId: 'main', target: { kind: 'turn', turnId: 't3' },
+    });
   });
 
   it('reads an AgentRun result as the agent, its profile and outcome, with a way to open it', async () => {
@@ -5903,12 +7913,7 @@ describe('semantic tool cards', () => {
 
   it('shows a history search as its query and hit count, and jumps back to a hit turn in this session', async () => {
     resetTimelineLocatorsForTests();
-    const targets: unknown[] = [];
-    const unregister = registerTimelineLocator('session_here', 'main', {
-      isVisible: () => true,
-      locate: (target) => { targets.push(target); return Promise.resolve({ status: 'found' as const }); },
-    });
-    const { container } = await renderCard(semanticTool(
+    const { container, navState } = await renderCard(semanticTool(
       'HistorySearch',
       { query: 'rate limit', scope: 'session' },
       JSON.stringify({
@@ -5933,12 +7938,14 @@ describe('semantic tool cards', () => {
     expect(hits).toHaveLength(2);
     expect(hits[0]!.textContent).toContain('Turn 12');
     await act(async () => { click(hits[0]!); });
-    expect(targets).toEqual([{ kind: 'turn', turnId: 't12' }]);
-    unregister();
+    // Same-session hits push a visit locator. The card does not call the mounted timeline locator itself.
+    expect(readTimelineVisitLocator(navState())).toMatchObject({
+      sessionId: 'session_here', agentId: 'main', target: { kind: 'turn', turnId: 't12' },
+    });
   });
 
-  it('names the board card a write touched and links to the board', async () => {
-    const { container, path } = await renderCard(semanticTool(
+  it('names the board card a write touched without opening a core board route', async () => {
+    const { container } = await renderCard(semanticTool(
       'BoardWrite',
       { action: 'create', requestKey: 'rk-1', title: 'Ship thread cards', priority: 'P1' },
       JSON.stringify({ ok: true, value: {
@@ -5951,8 +7958,7 @@ describe('semantic tool cards', () => {
     expect(container.textContent).toContain('Ship thread cards');
     await expand(container);
     expect(container.querySelector('[data-tool-semantic-fields]')?.textContent).toContain('Workspace');
-    await act(async () => { click(container.querySelector('[data-tool-jump="route"]')!); });
-    expect(path()).toBe('/board');
+    expect(container.querySelector('[data-tool-jump="route"]')).toBeNull();
   });
 
   it('folds SelectTools into one line naming the tools it loaded', async () => {
@@ -6367,22 +8373,42 @@ describe('Kiki hook injections', () => {
   });
 });
 
+describe('injected context reading [m_20261002_4e0a323584]', () => {
+  it('displays injected context directly readable without secondary toggle, and allows manual toggle', async () => {
+    const injectedBlock: Block = {
+      kind: 'system',
+      id: 'sys-inject-1',
+      variant: 'injection',
+      text: 'Injected prompt context text for agent run.',
+      createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    const container = await renderTranscript([injectedBlock]);
+    const row = container.querySelector('[data-system="injection"]')!;
+    expect(row).not.toBeNull();
+    expect(row.textContent).toContain('Injected context');
+    // Directly readable without secondary toggle
+    expect(row.textContent).toContain('Injected prompt context text for agent run.');
 
-it('strips a stored SSH host block from an old message and draws no per-message host row', async () => {
-  const container = await renderTranscript([{ kind: 'user', id: 'ssh-user', createdAt: '2026-01-01T00:00:00.000Z',
-    text: 'Inspect the host\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>',
-  }]);
-  // The hosts live on the session's control in the composer now; the message
-  // reads exactly as it was typed, with no marker and no raw XML.
-  expect(container.querySelector('.bg-bubble-user')?.textContent).toBe('Inspect the host');
-  expect(container.textContent).not.toContain('ssh_host_refs');
-  expect(container.textContent).not.toContain('Example host');
+    // Manual toggle collapses it
+    await act(async () => { click(row.querySelector('button')!); });
+    expect(row.textContent).not.toContain('Injected prompt context text for agent run.');
+  });
+});
+
+
+it('keeps a legacy SSH host block as stored text and draws no per-message host row', async () => {
+  const stored = 'Inspect the host\n\n<ssh_host_refs>\n[{"id":"example-host","name":"Example host"}]\n</ssh_host_refs>';
+  const container = await renderTranscript([{ kind: 'user', id: 'ssh-user', createdAt: '2026-01-01T00:00:00.000Z', text: stored }]);
+  // Host membership is session state. A block already stored in an old message
+  // stays literal text and does not grow a per-message host row.
+  expect(container.querySelector('.bg-bubble-user')?.textContent).toBe(stored);
   expect(container.querySelector('[data-user-ssh-hosts]')).toBeNull();
   expect(container.querySelector('[data-user-ssh-host]')).toBeNull();
 });
 
 
 describe('ordinary bounded message reading', () => {
+  beforeAll(startEditFixture);
   it('continues prompt, assistant and thinking from their exact sources, then restores full copy/edit targets', async () => {
     const { TranscriptDetailProvider } = await import('./transcriptDetail');
     const source: import('@kiki/transcript').ContentSource = { kind: 'turn', id: 't0' };

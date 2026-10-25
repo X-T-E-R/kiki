@@ -14,6 +14,7 @@ import type {
   SessionSummary,
 } from '@kiki/agent-core-v2';
 import { Emitter, Event } from '@kiki/agent-core-v2/_base/event';
+import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { MiniDb } from '@kiki/minidb';
 import { TranscriptStore, type TranscriptOperation } from '@kiki/transcript';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -67,6 +68,7 @@ function makeSessionIndex(
     status: () => status,
     listRecent: list,
     get: async () => undefined,
+    archiveFamily: async () => [],
     count: async () => 0,
     remove: async () => {},
   };
@@ -141,7 +143,7 @@ async function writeTitle(
 ): Promise<void> {
   const dir = join(home, 'sessions', workspaceId, sessionId);
   await mkdir(dir, { recursive: true });
-  await writeFile(join(dir, 'state.json'), JSON.stringify({ title }), 'utf8');
+  await atomicWrite(join(dir, 'state.json'), JSON.stringify({ title }));
 }
 
 const noopLog = {
@@ -1025,6 +1027,69 @@ describe('GlobalSearchService', () => {
       expect((await reader.search({ query: 'original' })).items).toEqual([]);
     },
   );
+
+  it('serves the replacement title when it commits during a read-only catch-up', async () => {
+    const s1 = summary('s1', 'original title', T1);
+    await writeWire(home!, s1.id, 'main', [userLine('replacement message', T2)]);
+    const index = staticIndex([s1]);
+    const writer = track(makeInlineService(home!, index));
+    await writer.reindex();
+    const reader = track(makeInlineService(home!, index));
+    await reader.status();
+    await refreshNow(reader);
+    const untitled = await reader.search({ query: 'replacement', role: 'user' });
+    expect(untitled.items).toHaveLength(1);
+    expect(untitled.items[0]?.sessionTitle).toBe('');
+
+    await writeWire(home!, s1.id, 'main', [userLine('replacement message', T3)]);
+    await settleSync(writer);
+
+    const db = coreOf(reader).db as unknown as {
+      catchUpFromWal(offset: number): Promise<{ offset: number; appliedFrames: number } | null>;
+    };
+    const originalCatchUp = db.catchUpFromWal;
+    const callCatchUp = originalCatchUp.bind(db);
+    let releaseScan!: () => void;
+    let markEntered!: () => void;
+    const scanGate = new Promise<void>((resolve) => {
+      releaseScan = resolve;
+    });
+    const scanEntered = new Promise<void>((resolve) => {
+      markEntered = resolve;
+    });
+    let catchUps = 0;
+    db.catchUpFromWal = async (offset) => {
+      catchUps += 1;
+      if (catchUps === 1) {
+        const caught = await callCatchUp(offset);
+        markEntered();
+        await scanGate;
+        return caught;
+      }
+      return callCatchUp(offset);
+    };
+
+    const refreshing = refreshNow(reader);
+    const sawScan = await Promise.race([
+      scanEntered.then(() => true),
+      refreshing.then(() => false),
+    ]);
+    try {
+      expect(sawScan).toBe(true);
+      await writeTitle(home!, s1.id, 'replacement title');
+      await settleSync(writer);
+    } finally {
+      releaseScan();
+      db.catchUpFromWal = originalCatchUp;
+      await refreshing;
+    }
+
+    const replacement = await reader.search({ query: 'replacement', role: 'user' });
+    expect(replacement.items).toHaveLength(1);
+    expect(replacement.items[0]?.sessionTitle).toBe('replacement title');
+    expect(replacement.items[0]?.snippet).toContain('replacement message');
+    expect((await reader.search({ query: 'original' })).items).toEqual([]);
+  });
 
   it('rescans a wire file that shrank between syncs', async () => {
     const s1 = summary('s1', 'shrink', T1);
@@ -2261,6 +2326,7 @@ describe('GlobalSearchService', () => {
         }),
         listRecent: async () => ({ items: summaries, nextCursor: undefined }),
         get: async (id) => byId.get(id),
+        archiveFamily: async () => [],
         count: async () => summaries.length,
         remove: async () => {},
       };
@@ -2511,6 +2577,41 @@ describe('GlobalSearchService', () => {
         query: 'live-outputneedle', container: { sessionId: 's1' }, role: 'tool', pageSize: 1,
       });
       expect(explicitRole.items[0]?.role).toBe('tool');
+    });
+
+    it('searches real user-origin live steer frames but excludes internal user-role content', async () => {
+      const s1 = summary('s1', 'unrelated title', T1);
+      const store = makeLiveStore('s1');
+      const needle = 'uniquesteerneedle';
+      store.getAgent('main')!.apply([
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'text', frameId: 'real-steer', role: 'user', origin: { kind: 'user' }, text: needle,
+          delivery: { deliveryId: 'steer-delivery', messageId: 'real-steer', origin: 'user' },
+        } },
+        ...['system_trigger', 'task', 'mailbox', 'injection'].map((kind): TranscriptOperation => ({
+          op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+            kind: 'text', frameId: `internal-${kind}`, role: 'user', origin: { kind }, text: needle,
+          },
+        })),
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'text', frameId: 'unknown-provenance', role: 'user', text: needle,
+        } },
+        { op: 'frame.upsert', turnId: 't0', stepId: 't0.1', frame: {
+          kind: 'thinking', frameId: 'private-thought', text: needle,
+        } },
+      ]);
+      const service = track(makeService(home!, gettableIndex([s1])));
+      service.setLiveTranscriptSource(fakeLiveSource(new Map([['s1', store]])));
+      for (const mode of ['terms', 'literal'] as const) {
+        for (const includeToolOutput of [false, true]) {
+          const page = await service.search({ query: needle, mode, includeToolOutput,
+            container: { sessionId: 's1', agentId: 'main' } });
+          expect(page.source).toBe('live');
+          expect(page.items).toHaveLength(1);
+          expect(page.items[0]).toMatchObject({ role: 'user', turn: 0, stepId: 't0.1' });
+          expect(page.items[0]?.snippet).toContain(needle);
+        }
+      }
     });
 
     it('accepts single-character literal queries on the live route', async () => {
@@ -3147,7 +3248,7 @@ describe('search worker host (stage 4)', () => {
     }
   });
 
-  it('backs off for hours after worker memory pressure instead of restarting the rebuild loop', async () => {
+  it('uses a bounded restart backoff after worker memory pressure', async () => {
     const host = new SearchWorkerHost({
       dir: join(home!, 'search-index'),
       log: noopLog,
@@ -3158,10 +3259,44 @@ describe('search worker host (stage 4)', () => {
     worker.emit('error', new Error('Worker terminated due to reaching memory limit: JS heap out of memory'));
     await worker.terminate();
     await expect(host.status()).rejects.toMatchObject({ code: 'backoff' });
+    const lifecycle = host.lifecycleSnapshot();
+    expect(lifecycle.state).toBe('degraded');
+    const waitMs = Number(lifecycle.detail?.match(/restart backing off for (\d+)ms/)?.[1]);
+    expect(waitMs).toBeGreaterThan(0);
+    expect(waitMs).toBeLessThanOrEqual(1_000);
+  });
+
+  it('stops repeated OOM restarts until manual retry and preserves the published index', { timeout: 30_000 }, async () => {
+    const s1 = summary('s1', 'memory recovery', T1);
+    await writeWire(home!, 's1', 'main', [userLine('苹果 retained', T1)]);
+    const service = track(makeService(home!, staticIndex([s1])));
+    await service.reindex();
+    const host = hostOf(service);
+    const state = host as unknown as { worker: Worker | null; nextRetryAfter: number };
+    for (const expectedWait of [1_000, 10_000, 60_000, 0]) {
+      const worker = state.worker!;
+      worker.emit('error', new Error('Worker terminated due to reaching memory limit: JS heap out of memory'));
+      await worker.terminate();
+      await expect(host.status()).rejects.toMatchObject({ code: 'backoff' });
+      if (expectedWait > 0) {
+        const waitMs = Number(host.lifecycleSnapshot().detail?.match(/restart backing off for (\d+)ms/)?.[1]);
+        expect(waitMs).toBeGreaterThan(expectedWait - 1_000);
+        expect(waitMs).toBeLessThanOrEqual(expectedWait);
+        state.nextRetryAfter = 0;
+        await host.ensureOpen();
+      }
+    }
     expect(host.lifecycleSnapshot()).toMatchObject({
-      state: 'degraded',
-      detail: expect.stringMatching(/restart backing off for 2\d{7}ms/),
+      state: 'degraded', detail: expect.stringContaining('retry required'),
     });
+    state.nextRetryAfter = 0;
+    await expect(host.ensureOpen()).rejects.toMatchObject({ code: 'backoff' });
+    expect(state.worker).toBeNull();
+    service.retryIndexer();
+    await settleSync(service);
+    expect((await service.search({ query: '苹果' })).items).toMatchObject([
+      { sessionId: 's1', snippet: expect.stringContaining('苹果 retained') },
+    ]);
   });
 
   it('restarts a killed worker, reaps its lock, and keeps serving', { timeout: 30_000 }, async () => {

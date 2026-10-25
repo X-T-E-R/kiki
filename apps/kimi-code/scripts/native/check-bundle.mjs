@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { builtinModules } from 'node:module';
 import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { nativeIntermediatesDir, nativeJsBundlePath } from './paths.mjs';
 
@@ -22,6 +23,8 @@ const optionalRuntimeRequires = new Set([
   'fast-json-stringify/lib/serializer',
   'fast-json-stringify/lib/validator',
   'utf-8-validate',
+  // Discord's SDK catches a missing zlib-sync and works without stream compression.
+  'zlib-sync',
 ]);
 const optionalRelativeRuntimeRequires = new Set(['./crypto/build/Release/sshcrypto.node']);
 
@@ -36,7 +39,7 @@ function executableLines(text) {
     });
 }
 
-function checkBundle(bundlePath, { worker = false } = {}) {
+export function checkBundle(bundlePath, { worker = false } = {}) {
   if (!existsSync(bundlePath)) return [`bundle does not exist: ${bundlePath}`];
   const text = readFileSync(bundlePath, 'utf-8');
   const errors = [];
@@ -71,18 +74,21 @@ function checkBundle(bundlePath, { worker = false } = {}) {
   return errors;
 }
 
-const bundles = [
-  { path: nativeJsBundlePath(), worker: false },
-  { path: resolve(nativeIntermediatesDir(), 'text-build-worker.mjs'), worker: true },
-  { path: resolve(nativeIntermediatesDir(), 'search-worker.mjs'), worker: true },
-  { path: resolve(nativeIntermediatesDir(), 'sqlite-query-worker.mjs'), worker: true },
-];
-let failed = false;
-for (const bundle of bundles) {
-  const errors = checkBundle(bundle.path, { worker: bundle.worker });
-  if (errors.length === 0) continue;
-  failed = true;
-  console.error(`Native JS bundle check failed for ${bundle.path}:`);
-  for (const error of errors) console.error(`- ${error}`);
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  const bundles = [
+    { path: nativeJsBundlePath(), worker: false },
+    { path: resolve(nativeIntermediatesDir(), 'text-build-worker.mjs'), worker: true },
+    { path: resolve(nativeIntermediatesDir(), 'search-worker.mjs'), worker: true },
+    { path: resolve(nativeIntermediatesDir(), 'sqlite-query-worker.mjs'), worker: true },
+    { path: resolve(nativeIntermediatesDir(), 'usage-parser-worker.mjs'), worker: true },
+  ];
+  let failed = false;
+  for (const bundle of bundles) {
+    const errors = checkBundle(bundle.path, { worker: bundle.worker });
+    if (errors.length === 0) continue;
+    failed = true;
+    console.error(`Native JS bundle check failed for ${bundle.path}:`);
+    for (const error of errors) console.error(`- ${error}`);
+  }
+  if (failed) process.exit(1);
 }
-if (failed) process.exit(1);

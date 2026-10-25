@@ -3,17 +3,23 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
+import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { PluginToolOutput } from './toolOutput';
+import {
+  parsePluginImRequest, pluginImReceipt, sanitizePluginImCapabilities, sanitizePluginImReceipt, sanitizePluginImRoutes,
+  type PluginImBridge,
+} from './pluginImBridge';
 
 export const PLUGIN_RPC_VERSION = 1;
 const IDLE_MS = 90_000;
 const HANDSHAKE_MS = 15_000;
 const MAX_RPC_LINE_CHARS = 16 * 1024 * 1024;
-const MAX_IMAGE_URL_CHARS = 12 * 1024 * 1024;
 
-function validToolResult(result: unknown): result is ExecutableToolResult {
+function validToolResult(result: unknown, references: ReadonlySet<string>): result is ExecutableToolResult {
   if (typeof result !== 'object' || result === null || !('output' in result)) return false;
   const { output, isError } = result as { output: unknown; isError?: unknown };
   if (isError !== undefined && typeof isError !== 'boolean') return false;
@@ -23,8 +29,7 @@ function validToolResult(result: unknown): result is ExecutableToolResult {
     const value = part as { type: unknown; text?: unknown; imageUrl?: { url?: unknown } };
     return (value.type === 'text' && typeof value.text === 'string') ||
       (value.type === 'image_url' && typeof value.imageUrl?.url === 'string' &&
-        value.imageUrl.url.length <= MAX_IMAGE_URL_CHARS &&
-        /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value.imageUrl.url));
+        (references.has(value.imageUrl.url) || /^data:image\/(?:png|jpeg|webp);base64,[A-Za-z0-9+/]+={0,2}$/.test(value.imageUrl.url)));
   });
 }
 
@@ -33,6 +38,8 @@ interface Call {
   readonly reject: (reason: Error) => void;
   readonly onProgress?: (update: ToolUpdate) => void;
   readonly media?: PluginMediaApi;
+  readonly messages?: PluginMessagesApi;
+  readonly output?: PluginToolOutput;
   readonly connection?: () => Promise<unknown>;
 }
 
@@ -42,12 +49,15 @@ export class PluginHost {
   private readonly registered = new Set<string>();
   private readonly registeredSources = new Set<string>();
   private readonly registeredProviders = new Set<string>();
+  private readonly registeredImAdapters = new Set<string>();
+  private readonly imListeners = new Map<string, (event: PluginImEvent) => Promise<void>>();
   private nextId = 0;
   private ready?: Promise<void>;
   private exited: Promise<void> = Promise.resolve();
   private idle?: ReturnType<typeof setTimeout>;
   private stopped = false;
   private activitySubscription?: { dispose(): void };
+  private readonly imCalls = new Map<number, AbortController>();
 
   constructor(
     readonly id: string,
@@ -55,8 +65,39 @@ export class PluginHost {
     private readonly definitions: readonly PluginTool[],
     private readonly sources: readonly SessionSourceDefinition[] = [],
     private readonly providers: readonly MediaProviderDefinition[] = [],
-    private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void },
+    private readonly lifecycle?: { readonly resident: boolean; readonly updateSettings: (values: Record<string, string | number | boolean | null>) => Promise<unknown>; readonly observeActivity?: (listener: (activity: readonly import('./pluginActivity').PluginActivity[]) => void) => { dispose(): void }; readonly focusSession?: (sessionId: string) => void; readonly im?: () => PluginImBridge | undefined },
+    private readonly kikiHome?: string,
+    private readonly imAdapters: readonly PluginImAdapterDefinition[] = [],
   ) {}
+
+  async connectImAdapter(adapterId: string, settings: Record<string, unknown>, instanceId: string, listener: (event: PluginImEvent) => Promise<void>, offset?: number): Promise<PluginImConnection> {
+    if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    await this.start();
+    if (!this.registeredImAdapters.has(adapterId) || this.imListeners.has(adapterId)) throw new Error('IM adapter unavailable or already connected');
+    this.imListeners.set(adapterId, listener);
+    try {
+      const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'start', settings, instanceId, offset }) as { accountId?: unknown; listenerAccountId?: unknown; targets?: unknown };
+      if (typeof result?.accountId !== 'string' || result.accountId.length === 0) throw new Error('IM adapter returned no account identity');
+      if (result.listenerAccountId !== undefined && (typeof result.listenerAccountId !== 'string' || result.listenerAccountId.length === 0 || result.listenerAccountId.length > 1024)) throw new Error('IM adapter returned an invalid listener account identity');
+      const targets = result.targets === undefined ? undefined : pluginImIdentitySchema.array().max(1000).parse(result.targets);
+      return { accountId: result.accountId, listenerAccountId: result.listenerAccountId, targets,
+        request: async (action, input) => {
+          if (this.stopped || !this.imListeners.has(adapterId)) throw new Error('IM adapter was withdrawn');
+          const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action, input });
+          return action === 'answerCallback' ? undefined : pluginImDeliverySchema.parse(result);
+        },
+        stop: async () => {
+          this.imListeners.delete(adapterId);
+          if (this.child !== undefined) await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'stop' });
+          this.scheduleIdle();
+        },
+      };
+    } catch (error) {
+      this.imListeners.delete(adapterId);
+      if (this.child !== undefined) await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'stop' }).catch(() => undefined);
+      throw error;
+    }
+  }
 
   async activate(settings: Record<string, unknown>, userHome: string, dataDir: string): Promise<void> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
@@ -136,29 +177,41 @@ export class PluginHost {
 
   get running(): boolean { return this.child !== undefined; }
 
-  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly media?: PluginMediaApi } = {}): Promise<ExecutableToolResult> {
+  async execute(name: string, args: unknown, signal: AbortSignal, onProgress?: (update: ToolUpdate) => void, settings: Record<string, unknown> = {}, scope: { readonly workspaceRoot?: string; readonly approvedPaths?: readonly string[]; readonly imageIn?: boolean; readonly workspaceId?: string; readonly media?: PluginMediaApi; readonly messages?: PluginMessagesApi; readonly attachmentStore?: ISessionMediaStore } = {}): Promise<ExecutableToolResult> {
     if (this.stopped) throw new Error(`Plugin ${this.id} has been unloaded`);
+    signal.throwIfAborted();
     await this.start();
     if (!this.registered.has(name)) throw new Error(`Plugin ${this.id} did not register ${name}`);
     clearTimeout(this.idle);
     const requestId = ++this.nextId;
     return new Promise<ExecutableToolResult>((resolve, reject) => {
-      if (signal.aborted) { reject(signal.reason); return; }
-      const cancel = () => this.send({ method: 'cancel', params: { id: requestId } });
+      if (signal.aborted) { reject(new Error('Plugin tool cancelled')); return; }
+      const output = new PluginToolOutput(scope.attachmentStore, signal);
+      const cleanup = () => {
+        signal.removeEventListener('abort', cancel);
+        this.pending.delete(requestId);
+        this.scheduleIdle();
+        return output.dispose();
+      };
+      const cancel = () => {
+        this.send({ method: 'cancel', params: { id: requestId } });
+        void cleanup().then(() => { reject(new Error('Plugin tool cancelled')); });
+      };
       signal.addEventListener('abort', cancel, { once: true });
       this.pending.set(requestId, {
         resolve: (result) => {
-          signal.removeEventListener('abort', cancel);
-          if (!validToolResult(result)) {
-            reject(new Error(`Plugin ${this.id} returned an invalid tool result`));
-          } else resolve(result);
-          this.scheduleIdle();
+          void cleanup().then(() => {
+            if (!validToolResult(result, output.references)) reject(new Error(`Plugin ${this.id} returned an invalid tool result`));
+            else resolve(result);
+          });
         },
-        reject: (error) => { signal.removeEventListener('abort', cancel); reject(error); this.scheduleIdle(); },
+        reject: (error) => { void cleanup().then(() => { reject(error); }); },
         onProgress,
         media: scope.media,
+        messages: scope.messages,
+        output,
       });
-      this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn } });
+      this.send({ id: requestId, method: 'execute', params: { name, args, settings, workspaceRoot: scope.workspaceRoot, approvedPaths: scope.approvedPaths, imageIn: scope.imageIn, workspaceId: scope.workspaceId, kikiHome: this.kikiHome } });
     });
   }
 
@@ -194,14 +247,14 @@ export class PluginHost {
         },
         reject: (error) => { this.scheduleIdle(); reject(error); },
       });
-      this.send({ id: requestId, method: 'panel-request', params: { action, args, settings } });
+      this.send({ id: requestId, method: 'panel-request', params: { action, args, settings, kikiHome: this.kikiHome } });
     });
   }
 
   async stopAndWait(): Promise<void> {
     this.stopped = true;
     if (this.child !== undefined && this.lifecycle?.resident) {
-      try { await this.lifecycleRequest('shutdown', {}); } catch {}
+      try { await this.lifecycleRequest('shutdown', {}); await this.exited; } catch {}
     }
     this.stop();
     await this.exited;
@@ -270,8 +323,23 @@ export class PluginHost {
             const expected = this.providers.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredProviders.has(definition.id)) throw new Error('Plugin media provider definition mismatch');
             this.registeredProviders.add(definition.id);
+          } else if (message.method === 'register-im-adapter') {
+            if (!handshake || message.params?.version !== PLUGIN_RPC_VERSION) throw new Error('Plugin registered before handshake');
+            const definition = pluginImAdapterDefinitionSchema.parse(message.params?.definition);
+            const expected = this.imAdapters.find((item) => item.id === definition.id);
+            if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredImAdapters.has(definition.id)) throw new Error('Plugin IM adapter definition mismatch');
+            this.registeredImAdapters.add(definition.id);
+          } else if (message.method === 'im-adapter-event') {
+            const { adapterId, callId, event } = message.params ?? {};
+            void Promise.resolve().then(async () => {
+              const definition = this.imAdapters.find((item) => item.id === adapterId);
+              const listener = this.imListeners.get(adapterId);
+              if (this.stopped || definition === undefined || listener === undefined) throw new Error('IM adapter is not receiving');
+              await listener(parsePluginImEvent(event, definition));
+            }).then(() => this.send({ method: 'im-adapter-event-result', params: { callId, result: true } }),
+              () => this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM event was not admitted' } }));
           } else if (message.method === 'ready') {
-            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length) throw new Error('Plugin registered incomplete contributions');
+            if (!handshake || this.registered.size !== this.definitions.length || this.registeredSources.size !== this.sources.length || this.registeredProviders.size !== this.providers.length || this.registeredImAdapters.size !== this.imAdapters.length) throw new Error('Plugin registered incomplete contributions');
             clearTimeout(startupTimeout);
             resolve();
             this.scheduleIdle();
@@ -286,6 +354,7 @@ export class PluginHost {
               return this.lifecycle.updateSettings(values);
             }).then((result) => this.send({ method: 'settings-result', params: { callId, result } }),
               () => this.send({ method: 'settings-result', params: { callId, error: 'Plugin settings could not be saved' } }));
+          } else if (this.acceptIm(message)) {
           } else if (message.method === 'app-focus-session') {
             const { callId, sessionId } = message.params ?? {};
             void Promise.resolve().then(() => {
@@ -293,6 +362,16 @@ export class PluginHost {
               this.lifecycle.focusSession?.(sessionId);
             }).then(() => this.send({ method: 'app-focus-result', params: { callId, result: true } }),
               () => this.send({ method: 'app-focus-result', params: { callId, error: 'Session is no longer available' } }));
+          } else if (message.method === 'output-request') {
+            const { id, callId, action, input } = message.params ?? {};
+            const call = this.pending.get(id);
+            void Promise.resolve().then(() => {
+              if (call?.output === undefined) throw new Error('Plugin output storage is unavailable');
+              return call.output.request(action, input);
+            }).then(
+              (result) => { if (this.child === child) this.send({ method: 'output-result', params: { callId, result } }); },
+              (error) => { if (this.child === child) this.send({ method: 'output-result', params: { callId, error: String(error) } }); },
+            );
           } else if (message.method === 'media-call') {
             const { id, callId, action, input } = message.params ?? {};
             const call = this.pending.get(id);
@@ -301,6 +380,10 @@ export class PluginHost {
               if (action === 'connection') {
                 if (call === undefined) throw new Error('Provider connection request is no longer active');
                 return call.connection?.();
+              }
+              if (action === 'message-send') {
+                if (call?.messages === undefined) throw new Error('Message delivery is unavailable outside an admitted session tool call');
+                return call.messages.send(input);
               }
               if (bridge === undefined) throw new Error('Media bridge is unavailable outside an admitted session tool call');
               if (action === 'generate') return bridge.generate(input);
@@ -335,12 +418,46 @@ export class PluginHost {
     catch (error) { this.ready = undefined; throw error; }
   }
 
+  private acceptIm(message: { method?: string; params?: { callId?: unknown; request?: unknown } }): boolean {
+    const method = message.method;
+    if (method !== 'im-capabilities' && method !== 'im-list-routes' && method !== 'im-send' && method !== 'im-cancel') return false;
+    const callId = message.params?.callId;
+    if (typeof callId !== 'number' || !Number.isSafeInteger(callId) || callId <= 0) return true;
+    if (method === 'im-cancel') {
+      this.imCalls.get(callId)?.abort();
+      return true;
+    }
+    const controller = new AbortController();
+    this.imCalls.set(callId, controller);
+    void Promise.resolve().then(async () => {
+      const bridge = this.lifecycle?.resident === true && !this.stopped ? this.lifecycle.im?.() : undefined;
+      if (method === 'im-capabilities') return sanitizePluginImCapabilities(bridge === undefined ? undefined : await bridge.capabilities(controller.signal));
+      if (method === 'im-list-routes') return sanitizePluginImRoutes(bridge === undefined ? undefined : await bridge.listRoutes(controller.signal));
+      const parsed = parsePluginImRequest(message.params?.request);
+      if (!parsed.ok) return parsed.receipt;
+      if (controller.signal.aborted) return pluginImReceipt('cancelled', { diagnosticCode: 'cancelled' });
+      if (bridge === undefined) return pluginImReceipt('failed', { diagnosticCode: 'im_unsupported', errorKind: 'dependency_missing', retryable: true });
+      return sanitizePluginImReceipt(await bridge.send(parsed.request, controller.signal, { pluginId: this.id }));
+    }).then(
+      (result) => { this.imCalls.delete(callId); if (!this.stopped) this.send({ method: 'im-result', params: { callId, result } }); },
+      () => {
+        this.imCalls.delete(callId);
+        if (this.stopped) return;
+        const result = method === 'im-send'
+          ? pluginImReceipt('unknown', { diagnosticCode: 'send_outcome_unknown', errorKind: 'unknown' })
+          : method === 'im-list-routes' ? [] : { outbound: false, inbound: false };
+        this.send({ method: 'im-result', params: { callId, result } });
+      },
+    );
+    return true;
+  }
+
   private send(message: Record<string, unknown>): void {
     this.child?.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
   }
 
   private scheduleIdle(): void {
-    if (this.pending.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
+    if (this.pending.size > 0 || this.imListeners.size > 0 || this.stopped || this.lifecycle?.resident === true) return;
     clearTimeout(this.idle);
     this.idle = setTimeout(() => this.terminate(new Error(`Plugin ${this.id} idle`)), IDLE_MS);
     this.idle.unref();
@@ -352,9 +469,13 @@ export class PluginHost {
     this.child = undefined;
     this.activitySubscription?.dispose();
     this.activitySubscription = undefined;
+    for (const controller of this.imCalls.values()) controller.abort();
+    this.imCalls.clear();
     this.registered.clear();
     this.registeredSources.clear();
     this.registeredProviders.clear();
+    this.registeredImAdapters.clear();
+    this.imListeners.clear();
     for (const call of this.pending.values()) call.reject(reason);
     this.pending.clear();
     if (child !== undefined && !child.killed) child.kill();

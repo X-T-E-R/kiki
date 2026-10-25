@@ -1,6 +1,8 @@
 import { type CollectionView } from '#/_base/di/collection';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -10,6 +12,7 @@ import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedA
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import { isToolActive } from '#/agent/toolPolicy/evaluate';
+import { isSendMessageCapabilityAdmitted } from '#/agent/toolPolicy/sendMessageAdmission';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolContribution } from '#/agent/toolRegistry/toolContribution';
@@ -17,6 +20,8 @@ import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionT
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentToolActivationService } from './toolActivation';
 import { toolGroupForName } from '#/agent/toolRegistry/toolGroups';
 
@@ -24,6 +29,7 @@ const SEND_MESSAGE_TOOL_NAME = 'SendMessage';
 
 export class AgentToolActivationService extends Service implements IAgentToolActivationService {
   declare readonly _serviceBrand: undefined;
+  private closing = false;
 
   private readonly registrations = new Map<AgentToolContribution, IDisposable>();
 
@@ -63,11 +69,45 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
         }
       }),
     );
+    const capability = this.optionalCapabilityPolicy();
+    if (capability !== undefined) this._register(capability.onDidChange(() => { this.refreshConditionalRecords(); }));
+    this._register(this.toolPolicyGate.onDidChange(() => { this.refreshConditionalRecords(); }));
+    this._register(this.toolRegistry.registerPreparation(() => this.activate()));
   }
 
   async activate(): Promise<void> {
+    if (this.closing) return;
     await this.shippedProfiles.ready;
-    this.activateRecords(this.contributions.items);
+    if (this.closing) return;
+    await this.awaitCapabilityDocument();
+    if (this.closing) return;
+    this.refreshConditionalRecords();
+  }
+
+  override dispose(): void | Promise<void> {
+    this.closing = true;
+    return super.dispose();
+  }
+
+  private optionalCapabilityPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiationService.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async awaitCapabilityDocument(): Promise<void> {
+    const policy = this.optionalCapabilityPolicy();
+    if (policy === undefined) return;
+    let sessionId: string | undefined;
+    try {
+      sessionId = this.instantiationService.invokeFunction((accessor) => accessor.get(ISessionContext))?.sessionId;
+    } catch {
+      sessionId = undefined;
+    }
+    if (sessionId === undefined) return;
+    await policy.load(sessionId).catch(() => undefined);
   }
 
   capabilities(): ReturnType<IAgentToolActivationService['capabilities']> {
@@ -100,6 +140,7 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
         if (!isToolActive(workspaceVeto, options.name, source)) continue;
         const policyActive = this.policyService.isToolActiveForDisclosure(options.name, source);
         const compatibilityActive = options.name === SEND_MESSAGE_TOOL_NAME &&
+          isSendMessageCapabilityAdmitted(accessor) &&
           this.isLegacyShippedMessageBinding(policy, options.name, source);
         if (!policyActive && !compatibilityActive) continue;
         if (options.when !== undefined && !options.when(accessor)) continue;
@@ -135,20 +176,20 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     const shipped = definitionId.startsWith('shipped://agent-profiles/') ||
       this.shippedProfiles.isCleanActivePath(definitionId);
     if (!shipped) return false;
-    return isToolActive({ ...policy, tools: undefined }, name, source);
+    return this.policyService.isToolActiveForProfile({ ...policy, tools: undefined }, name, source);
   }
 
   private refreshRuntimeRecords(): void {
-    for (const record of this.contributions.items) {
-      if (!this.runtimeAllows(record)) this.deactivateRecord(record);
-    }
-    this.activateRecords(this.contributions.items);
+    this.refreshConditionalRecords();
   }
 
   private refreshConditionalRecords(): void {
+    if (this.closing) return;
     this.instantiationService.invokeFunction((accessor) => {
       for (const record of this.contributions.items) {
-        if (record.options.when?.(accessor) === false || !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
+        if (!this.runtimeAllows(record) || record.options.when?.(accessor) === false ||
+          !isToolActive({ disallowedTools: this.toolPolicyGate.disabledTools }, record.options.name, record.options.source ?? 'builtin') ||
+          !this.policyService.isToolActiveForDisclosure(record.options.name, record.options.source ?? 'builtin')) {
           this.deactivateRecord(record);
         }
       }
@@ -165,7 +206,8 @@ export class AgentToolActivationService extends Service implements IAgentToolAct
     const registration = this.registrations.get(record);
     if (registration === undefined) return;
     this.registrations.delete(record);
-    registration.dispose();
+    const result = registration.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
   }
 }
 

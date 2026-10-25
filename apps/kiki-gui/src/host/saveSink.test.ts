@@ -1,10 +1,22 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { browserSaveSink, bufferedSaveSink } from './saveSink';
+import { browserAnchorSaveSink, browserSaveSink, bufferedSaveSink } from './saveSink';
 
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe('browser original save capability', () => {
+  it('downloads directly via browserAnchorSaveSink anchor click without querying showSaveFilePicker', async () => {
+    let blob: Blob | undefined;
+    URL.createObjectURL = vi.fn((value) => { blob = value as Blob; return 'blob:anchor-export'; });
+    URL.revokeObjectURL = vi.fn();
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
+    const sink = browserAnchorSaveSink('package.json');
+    expect(sink.streaming).toBe(false);
+    await sink.write(new TextEncoder().encode('{"test":true}'));
+    expect(await sink.close()).toBe(true);
+    expect(blob?.size).toBe(13);
+    expect(click).toHaveBeenCalledTimes(1);
+  });
   it('writes with FSA backpressure and aborts the pending writer without committing', async () => {
     const write = vi.fn();
     const close = vi.fn();

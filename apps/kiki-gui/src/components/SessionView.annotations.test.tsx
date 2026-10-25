@@ -1,25 +1,32 @@
 // @vitest-environment jsdom
 
-import { act, isValidElement, type ReactElement, type ReactNode } from 'react';
+import { act, isValidElement, type ComponentProps, type ReactElement, type ReactNode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { MemoryRouter, Route, Routes, useNavigate, useParams } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, parseSelectionCarryovers, type ComposerAttachment, type SelectionAnnotation, type SelectionSourceAnchor } from '@kiki/session-core/composer';
+import { clearComposerState, clearStoredDrafts, readComposerState, resetComposerMemoryForTests, resetDraftMemoryForTests, readDraft, writeDraft, writeComposerState, parseSelectionCarryovers, buildAnnotationBlock, type ComposerAttachment, type SelectionAnnotation, type SelectionSourceAnchor } from '@kiki/session-core/composer';
 import { SendNowError } from '@kiki/session-core/session';
+import type { AgentTranscriptSnapshot } from '@kiki/transcript';
+import type { MessageContent } from '@kiki/protocol';
 import { I18nProvider } from '../i18n';
 import { SessionRouteView } from './SessionView';
 import { clearToasts, getToasts } from '../lib/toasts';
 import type { QueuedModelSwitch } from '../lib/client';
 
 const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
-  fixture: { external: false, records: [] as { sessionId: string; record: unknown }[] },
+  fixture: { external: false, loaded: false, realTimeline: false,
+    publish: undefined as ((snapshot: AgentTranscriptSnapshot) => void) | undefined,
+    initialSnapshot: undefined as AgentTranscriptSnapshot | undefined,
+    mediaOpened: [] as string[],
+    binding: undefined as { model: string; thinking: string } | undefined, records: [] as { sessionId: string; record: unknown }[] },
   seat: { composer: null as unknown },
   submit: {
     // Each send hands the test a deferred result so it can inspect the
     // composer mid-flight, then settle it (accepted / queued / rejected).
-    calls: [] as { text: string; input?: { promptId?: string; content?: unknown; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    calls: [] as { text: string; input?: { promptId?: string; content?: unknown; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done'; onPreservation?: (persisted: boolean) => void; onAcknowledged?: () => void }; now?: true; resolve: (value: unknown) => void; reject: (error: unknown) => void }[],
+    persisted: true,
     steered: [] as string[],
   },
   queueStub: {
@@ -36,6 +43,7 @@ const { seat, submit, queueStub, fixture } = vi.hoisted(() => ({
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../state/connection', () => {
   const client = {
+    klient: { session: () => ({ agent: () => ({ events: { on: () => ({ ready: Promise.resolve(), dispose: () => {} }) } }) }) },
     sessionView: () => ({}),
     getConfig: () => Promise.resolve({ default_model: 'provider/native-model' }),
     listModels: () => Promise.resolve({ items: [] }),
@@ -58,6 +66,7 @@ vi.mock('../state/connection', () => {
   };
   return {
     useConnection: () => ({ client, meta: { capabilities: {} }, socket: null, wsStatus: 'closed' }),
+    useOptionalConnection: () => null,
     useControllerRegistry: () => registry,
   };
 });
@@ -65,16 +74,30 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@kiki/session-core/session')>();
   class StubSessionController {
     readonly sessionId: string;
-    readonly subscribe = () => () => {};
+    private readonly listeners = new Set<() => void>();
+    readonly subscribe = (listener: () => void) => { this.listeners.add(listener); return () => { this.listeners.delete(listener); }; };
     readonly subscribeInterruptedPrompt = () => () => {};
     readonly getState: () => ReturnType<typeof actual.createViewState>;
 
     constructor(_sessions: unknown, _view: unknown, sessionId: string) {
       this.sessionId = sessionId;
       const base = actual.createViewState(sessionId);
-      const state = fixture.external
+      if (fixture.loaded) Object.assign(base, { loaded: true });
+      if (fixture.binding !== undefined) {
+        Object.assign(base, { loaded: true, model: fixture.binding.model, thinkingEffort: fixture.binding.thinking,
+          blocks: [{ kind: 'user', id: 'saved-human', text: 'Saved task.', createdAt: '2026-01-01T00:00:00.000Z', promptStatus: 'completed' }] });
+      }
+      let state = fixture.external
         ? { ...base, session: { id: sessionId, executor_id: 'claude-acp', metadata: {}, agent_config: {} } as NonNullable<typeof base.session> }
         : base;
+      if (fixture.realTimeline) {
+        state = { ...state, loaded: true, transcriptReady: true };
+        if (fixture.initialSnapshot !== undefined) state = actual.projectAgentTranscriptView(state, 'main', fixture.initialSnapshot, { cold: true });
+        fixture.publish = (snapshot) => {
+          state = actual.projectAgentTranscriptView(state, 'main', snapshot);
+          for (const listener of this.listeners) listener();
+        };
+      }
       // The queued view is cached by items identity: useSyncExternalStore
       // re-reads the snapshot every render, so a fresh object per call would
       // re-render forever.
@@ -107,12 +130,14 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
 
     setFocusedAgent() {}
     handleSessionRecord(record: unknown) { fixture.records.push({ sessionId: this.sessionId, record }); }
-    sendPrompt(input: { text: string; model?: string; thinking?: string; permissionMode?: string; appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' }) {
-      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, resolve, reject }); });
+    sendPrompt(input: NonNullable<(typeof submit.calls)[number]['input']> & { text: string }) {
+      input.onPreservation?.(submit.persisted);
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, resolve: (value) => { input.onAcknowledged?.(); resolve(value); }, reject }); });
     }
     // Send now goes through the controller's steer ledger, never a queue-then-steer pair.
-    sendPromptNow(input: { text: string; model?: string; thinking?: string; permissionMode?: string }) {
-      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, now: true, resolve, reject }); });
+    sendPromptNow(input: NonNullable<(typeof submit.calls)[number]['input']> & { text: string }) {
+      input.onPreservation?.(submit.persisted);
+      return new Promise((resolve, reject) => { submit.calls.push({ text: input.text, input, now: true, resolve: (value) => { input.onAcknowledged?.(); resolve(value); }, reject }); });
     }
     steerQueued(promptId: string) { submit.steered.push(promptId); return Promise.resolve(); }
     replaceQueued(promptId: string, text: string) {
@@ -135,6 +160,11 @@ vi.mock('@kiki/session-core/session', async (importOriginal) => {
     refreshSession() { return Promise.resolve(); }
     open() { return Promise.resolve(); }
     close() {}
+    contentRefsFor() { return []; }
+    beginContentRead() { return { release() {}, retry() {} }; }
+    isContentRange() { return false; }
+    historyPreviewPending() { return false; }
+    retainHistoryPreview() { return () => {}; }
     getForest() { return undefined; }
   }
   return { ...actual, SessionController: StubSessionController };
@@ -153,14 +183,42 @@ vi.mock('./ConversationShell', () => {
   };
 });
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
-vi.mock('./mediaPreview', () => ({
-  MediaPreviewProvider: ({ children }: { children: ReactNode }) => children,
-  PreviewToggleButton: () => null,
-  useMediaPreview: () => undefined,
-}));
+vi.mock('./mediaPreview', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./mediaPreview')>();
+  const { MediaPreviewContext } = await import('./mediaPreviewContext');
+  return {
+    ...actual,
+    MediaPreviewProvider: ({ children }: { children: ReactNode }) => fixture.realTimeline
+      ? <MediaPreviewContext.Provider value={{ cwd: 'C:/example', sessionId: 'session-a', openImage: (url) => { fixture.mediaOpened.push(url); },
+          openFile: (path) => { fixture.mediaOpened.push(typeof path === 'string' ? path : path.path); }, openAttachment: (item) => { fixture.mediaOpened.push(item.fileId ?? item.path ?? 'attachment'); },
+          openAgentPanel() {}, openBuiltinSkill() {}, previewTabCount: 0, previewPanelOpen: false, togglePreviewPanel() {}, activeAgentPanelId: undefined }}>
+          {children}
+        </MediaPreviewContext.Provider> : children,
+    PreviewToggleButton: () => null,
+    useMediaPreview: () => undefined,
+  };
+});
+/** The retry affordance the composer row owns once delivery is unconfirmed. */
+function pendingRetry(): HTMLButtonElement | null {
+  return document.querySelector<HTMLButtonElement>('[data-pending-retry]');
+}
+
 vi.mock('./Transcript', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./Transcript')>();
-  return { ...actual, Transcript: () => <div data-transcript /> };
+  return {
+    ...actual,
+    Transcript: (props: ComponentProps<typeof actual.Transcript>) => fixture.realTimeline
+      ? <actual.Transcript {...props} />
+      : <div data-transcript>
+        {(props.state.blocks ?? [])
+          .filter((block) => block.kind === 'user' && block.optimisticRetryable === true && block.promptId !== undefined)
+          .map((block) => (
+            <button key={block.id} type="button" data-pending-retry onClick={() => { if (block.kind === 'user') props.onRetryPending?.(block.promptId!); }}>
+              Retry
+            </button>
+          ))}
+      </div>,
+  };
 });
 vi.mock('./SelectionQuoteButton', () => ({
   SelectionQuoteButton: ({ onAnnotate, onQuote }: { onAnnotate: (quote: string, comment: string, source?: SelectionSourceAnchor) => void; onQuote: (text: string, source?: SelectionSourceAnchor) => void }) => (
@@ -196,18 +254,23 @@ type ComposerProps = {
   attachments: readonly ComposerAttachment[];
   queueEditing: boolean;
   quote: string | null;
-  header?: ReactElement<{ queue: { count: number; panel: ReactElement<{ onEdit: (id: string) => void; onClearAll: () => void }> } }>;
+  /** Every unsent quote chip; the single `quote` prop is the legacy shape. */
+  quotes?: readonly { id: string; quote: string; source?: SelectionSourceAnchor | null }[];
+  header?: ReactElement<{ queue: { count: number; panel: ReactElement<{ children: ReactElement<{ onEdit: (id: string) => void; onClearAll: () => void }> }> } }>;
   annotations: readonly SelectionAnnotation[];
   onSend: (
     text: string,
     attachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string; readonly appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done' },
+    options?: { readonly goalObjective?: string; readonly appendTiming?: 'agent_idle' | 'subagents_done' | 'tasks_done'; readonly presentation?: import('@kiki/transcript').TextPresentation },
   ) => Promise<unknown> | undefined;
-  onSendNow: (text: string, attachments: readonly never[]) => Promise<unknown> | undefined;
+  onSendNow: (text: string, attachments: readonly ComposerAttachment[]) => Promise<unknown> | undefined;
   onChangeModel: (model: string | undefined) => void;
+  onChangeEffort: (thinking: string | undefined) => void;
+  model?: string;
+  effort?: string;
   onChangePermissionMode: (mode: 'manual' | 'auto' | 'yolo') => void;
   serverDefaultModel?: string;
-  onQueueEditConfirm?: (text: string) => Promise<void>;
+  onQueueEditConfirm?: (text: string, attachments: readonly ComposerAttachment[]) => Promise<void>;
   onQueueEditCancel?: () => void;
   onUpdateAnnotation?: (id: string, comment: string) => void;
 };
@@ -232,6 +295,191 @@ afterAll(() => {
 });
 
 describe('session selection annotations', () => {
+  it.each([false, true])('renders the complete message before acknowledgement and after queue, delivery and reopening (selections=%s)', async (selections) => {
+    resetComposerMemoryForTests();
+    clearComposerState('session-a');
+    clearStoredDrafts();
+    Object.assign(fixture, { realTimeline: true, loaded: true, external: false, binding: undefined, initialSnapshot: undefined, mediaOpened: [] });
+    queueStub.items = [];
+    submit.calls.length = 0;
+    const annotations = selections ? [
+      { id: 'note-1', quote: 'First selected passage.', comment: 'First complete annotation.\nKeep the second line.' },
+      { id: 'note-2', quote: 'Second selected passage.', comment: 'Second complete annotation.' },
+      { id: 'note-3', quote: 'Third selected passage.', comment: 'Third complete annotation.' },
+    ] : [];
+    const quotes = selections ? [{ id: 'quote-1', quote: 'A separately selected passage.' }] : [];
+    writeComposerState('session-a', { attachments: [], annotations, quotes, permissionMode: undefined, planMode: undefined,
+      planGate: undefined, goalObjective: undefined, modelOverride: undefined, effortOverride: undefined });
+    const image = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=';
+    const attachments: ComposerAttachment[] = [
+      { kind: 'image', name: 'example.png', mediaType: 'image/png', data: image, size: 68, previewUrl: `data:image/png;base64,${image}` },
+      { kind: 'retained', name: 'example.mp4', content: { type: 'video', name: 'example.mp4', source: { kind: 'url', url: 'https://example.test/example.mp4' } } },
+      { kind: 'retained', name: 'report.txt', content: { type: 'file', file_id: 'file-report', name: 'report.txt', media_type: 'text/plain', size: 4096 } },
+      { kind: 'file', name: 'reference.ts', path: 'C:/example/reference.ts', isDir: false },
+    ];
+    const prose = selections ? 'Keep the approved build targets.' : '> A literal quoted line\n\nCheck this image.';
+    const body = `${prose}\nCompare /s/session_reference with /rooms/example-room and ask @reviewer next.`;
+    const hidden = ['Generated context.', 'Generated compression notice.', 'Generated source envelope.', 'Generated attachment notice.'];
+    let inputText = body;
+    const presentation: import('@kiki/transcript').TextPresentation = { spans: [] };
+    hidden.forEach((text, index) => { const start = inputText.length; inputText += `\n\n${text}`;
+      presentation.spans.push({ start, end: inputText.length, kind: (['context', 'image_compression', 'source', 'attachment'] as const)[index]!,
+        attachment: index === 3 ? { path: 'C:/example/notice.txt', name: 'notice.txt', mime: 'text/plain', size: 12 } : undefined }); });
+    const descriptors = new Map<string, PropertyDescriptor | undefined>();
+    for (const key of ['offsetHeight', 'clientHeight', 'scrollHeight', 'offsetWidth']) {
+      descriptors.set(key, Object.getOwnPropertyDescriptor(HTMLElement.prototype, key));
+      Object.defineProperty(HTMLElement.prototype, key, { configurable: true, get(this: HTMLElement) {
+        return this.hasAttribute('data-transcript-scroll') ? key === 'offsetWidth' ? 760 : 4000 : 40;
+      } });
+    }
+    descriptors.set('scrollTo', Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'scrollTo'));
+    Object.defineProperty(HTMLElement.prototype, 'scrollTo', { configurable: true, value() {} });
+    vi.stubGlobal('ResizeObserver', class { observe() {} unobserve() {} disconnect() {} });
+    const container = document.createElement('div');
+    const queueContainer = document.createElement('div');
+    document.body.append(container, queueContainer);
+    let root = createRoot(container);
+    const queueRoot = createRoot(queueContainer);
+    const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const frame = (children: ReactNode) => <QueryClientProvider client={queries}><I18nProvider><MemoryRouter initialEntries={['/s/session-a']}>{children}</MemoryRouter></I18nProvider></QueryClientProvider>;
+    try {
+      await act(async () => { root.render(frame(<RoutesWithNavigation />)); });
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend(inputText, attachments, { presentation }); });
+      const request = submit.calls.at(-1)!;
+      const content = request.input!.content as MessageContent[];
+      const textParts = content.filter((part) => part.type === 'text');
+      const { contentTextPresentation } = await import('@kiki/transcript');
+      const text = textParts.map((part) => part.text).join('\n');
+      const sentPresentation = contentTextPresentation(content, '\n');
+      const assertContent = async (row: Element, timeline = true) => {
+        expect(row.textContent).toContain(prose);
+        for (const text of hidden) expect(row.textContent).not.toContain(text);
+        expect(row.textContent).not.toContain('Attached file');
+        expect(row.querySelector('[data-thread-ref-chip="session_reference"]')?.getAttribute('href')).toBe('/s/session_reference');
+        expect(row.querySelector('[data-room-ref-chip="example-room"]')?.getAttribute('href')).toBe('/rooms/example-room');
+        expect(row.querySelectorAll('[data-quote-chip]')).toHaveLength(quotes.length);
+        const notes = row.querySelectorAll<HTMLButtonElement>('[data-annotation-bubble]');
+        expect(notes).toHaveLength(annotations.length);
+        if (notes.length > 0) {
+          await act(async () => { notes[0]!.click(); });
+          expect([...document.body.querySelectorAll('[data-annotation-bubble-comment]')].map((node) => node.textContent)).toEqual(annotations.map((note) => note.comment));
+          await act(async () => { document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
+        }
+        if (timeline) {
+          expect(row.querySelector('[data-ref-chip="subagent"]')?.textContent).toBe('@reviewer');
+          const media = row.querySelector('[data-user-media]')!;
+          expect(media.querySelector('img')?.getAttribute('src')).toBe(`data:image/png;base64,${image}`);
+          expect(media.querySelector('video')?.getAttribute('src')).toBe('https://example.test/example.mp4');
+          expect(media.querySelector('video')?.hasAttribute('controls')).toBe(true);
+          expect(media.textContent).toContain('report.txt');
+          expect(media.textContent).toContain('notice.txt');
+          expect(row.textContent).toContain('@C:/example/reference.ts');
+          const opened = fixture.mediaOpened.length;
+          await act(async () => { media.querySelector('img')!.closest('button')!.click(); media.querySelector<HTMLButtonElement>('button[title="report.txt"]')!.click(); });
+          expect(fixture.mediaOpened.slice(opened)).toEqual([`data:image/png;base64,${image}`, 'file-report']);
+        }
+      };
+      const assertMessage = async (optimistic: boolean) => {
+        const rows = container.querySelectorAll('[data-block-id]');
+        expect(rows).toHaveLength(1);
+        expect(rows[0]!.querySelector('[data-optimistic-status]') !== null).toBe(optimistic);
+        await assertContent(rows[0]!);
+      };
+      await assertMessage(true);
+      expect(submit.calls).toHaveLength(1);
+      const originalImage = container.querySelector('[data-user-media] img');
+      const prompt = { promptId: request.input!.promptId!, userMessageId: request.input!.promptId, status: 'queued' as const, content, createdAt: '2026-01-01T00:00:00.000Z' };
+      if (!selections) {
+        await act(async () => { fixture.publish!({ items: [], prompts: [prompt], attachments: [], tasks: [], interactions: [], todos: [], meta: {} }); });
+        expect(container.querySelectorAll('[data-block-id]')).toHaveLength(0);
+        await act(async () => { queueRoot.render(frame(composerProps().header!.props.queue.panel)); });
+        await assertContent(queueContainer.querySelector('[data-queue-item]')!, false);
+        await act(async () => { queueRoot.render(null); });
+      }
+      const snapshot: AgentTranscriptSnapshot = { items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'running',
+        promptId: request.input!.promptId, origin: { kind: 'user', payload: { promptId: request.input!.promptId, userMessageId: request.input!.promptId } },
+        prompt: text, presentation: sentPresentation, attachmentIds: ['att-image', 'att-video', 'att-file'], steps: [],
+      }], prompts: [{ ...prompt, status: 'running', content: [{ ...textParts[0]!, text: text.slice(0, 12) }] }],
+      attachments: [{ attachmentId: 'att-image', mediaType: 'image/png', source: { kind: 'url', url: `data:image/png;base64,${image}` } },
+        { attachmentId: 'att-video', name: 'example.mp4', mediaType: 'video/mp4', source: { kind: 'url', url: 'https://example.test/example.mp4' } },
+        { attachmentId: 'att-file', source: { kind: 'session_media', fileId: 'file-report' }, name: 'report.txt', mediaType: 'text/plain', size: 4096 }], tasks: [], interactions: [], todos: [], meta: {} };
+      await act(async () => { fixture.publish!(snapshot); });
+      await assertMessage(false);
+      if (selections) expect(container.querySelector('[data-user-media] img')).toBe(originalImage);
+      await act(async () => { request.resolve({ prompt_id: prompt.promptId, user_message_id: prompt.userMessageId, status: 'running', created_at: prompt.createdAt, content }); await sent; });
+      await assertMessage(false);
+      const completed: AgentTranscriptSnapshot = { ...snapshot,
+        items: snapshot.items.map((turn) => turn.kind === 'turn' ? { ...turn, state: 'completed' } : turn),
+        prompts: [{ ...prompt, status: 'completed' }],
+      };
+      await act(async () => { fixture.publish!(completed); });
+      await assertMessage(false);
+      expect(container.querySelector('[data-row-action="edit"]')).not.toBeNull();
+      fixture.initialSnapshot = completed;
+      await act(async () => { root.unmount(); });
+      root = createRoot(container);
+      await act(async () => { root.render(frame(<RoutesWithNavigation />)); });
+      await assertMessage(false);
+      expect(container.querySelector('[data-row-action="edit"]')).not.toBeNull();
+      expect(submit.calls).toHaveLength(1);
+    } finally {
+      await act(async () => { root.unmount(); queueRoot.unmount(); });
+      queries.clear();
+      container.remove(); queueContainer.remove();
+      Object.assign(fixture, { realTimeline: false, loaded: false, publish: undefined, initialSnapshot: undefined });
+      clearComposerState('session-a');
+      resetComposerMemoryForTests();
+      for (const [key, descriptor] of descriptors) {
+        if (descriptor === undefined) Reflect.deleteProperty(HTMLElement.prototype, key);
+        else Object.defineProperty(HTMLElement.prototype, key, descriptor);
+      }
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it.each(['legacy', 'explicit'] as const)('reconciles %s model chrome with the restored binding before submitting', async (source) => {
+    resetComposerMemoryForTests();
+    clearComposerState('session-a');
+    fixture.binding = { model: 'example/new-model', thinking: 'max' };
+    fixture.external = false;
+    queueStub.items = [];
+    queueStub.switches = [];
+    submit.calls.length = 0;
+    writeComposerState('session-a', { attachments: [], annotations: [], permissionMode: undefined, planMode: undefined,
+      planGate: undefined, goalObjective: undefined, modelOverride: 'example/old-model', effortOverride: 'high',
+      modelChoice: source === 'explicit' ? fixture.binding : undefined, effortChoice: undefined });
+    resetComposerMemoryForTests();
+    const container = document.createElement('div');
+    document.body.append(container);
+    const root = createRoot(container);
+    const queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={queries}><I18nProvider><MemoryRouter initialEntries={['/s/session-a']}><RoutesWithNavigation /></MemoryRouter></I18nProvider></QueryClientProvider>);
+      });
+      expect(composerProps().model).toBe(source === 'explicit' ? 'example/old-model' : undefined);
+      expect(readComposerState('session-a').effortOverride).toBeUndefined();
+      let sent: Promise<unknown> | undefined;
+      await act(async () => { sent = composerProps().onSend('Continue saved work.', []); });
+      // The restored display value is inherited chrome, not a message override:
+      // an untouched control is never promoted onto the wire, so neither the
+      // retired legacy id nor a re-pinned binding rides along.
+      expect(submit.calls.at(-1)?.input?.model).toBe(source === 'explicit' ? 'example/old-model' : undefined);
+      expect(submit.calls.at(-1)?.input?.thinking).not.toBe('high');
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'restored' }); await sent; });
+      await act(async () => { composerProps().onChangeEffort('high'); });
+      await act(async () => { sent = composerProps().onSend('Use my new effort choice.', []); });
+      expect(submit.calls.at(-1)?.input).toMatchObject({ thinking: 'high' });
+      await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'explicit-effort' }); await sent; });
+    } finally {
+      fixture.binding = undefined;
+      await act(async () => { root.unmount(); });
+      queries.clear();
+      clearComposerState('session-a');
+      container.remove();
+    }
+  });
   it('merges the selected temporary session from later shared pages without another session record', async () => {
     fixture.records.length = 0;
     fixture.external = false;
@@ -259,6 +507,9 @@ describe('session selection annotations', () => {
     resetComposerMemoryForTests();
     clearComposerState('session-a');
     fixture.external = external;
+    // An open conversation has a loaded view; only then is the composer a real
+    // place to pick from rather than a placeholder.
+    fixture.loaded = true;
     submit.calls.length = 0;
     const container = document.createElement('div');
     document.body.append(container);
@@ -274,7 +525,9 @@ describe('session selection annotations', () => {
       expect(composerProps().serverDefaultModel).toBe(external ? undefined : 'provider/native-model');
       let sent: Promise<unknown> | undefined;
       await act(async () => { sent = composerProps().onSend('hello', []); });
-      expect(submit.calls.at(-1)?.input).toMatchObject({ model: external ? undefined : 'provider/native-model' });
+      // Neither engine gets Kiki's default pushed in as a message override; the
+      // default stays a display fallback that only an explicit pick can send.
+      expect(submit.calls.at(-1)?.input?.model).toBeUndefined();
       expect(submit.calls.at(-1)?.input?.permissionMode).toBeUndefined();
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'first' }); await sent; });
       await act(async () => { composerProps().onChangePermissionMode('yolo'); });
@@ -285,6 +538,7 @@ describe('session selection annotations', () => {
       await act(async () => { submit.calls.at(-1)!.resolve({ status: 'running', prompt_id: 'second' }); await sent; });
     } finally {
       fixture.external = false;
+      fixture.loaded = false;
       await act(async () => { root.unmount(); });
       container.remove();
     }
@@ -390,7 +644,7 @@ describe('session selection annotations', () => {
     ['a plain send', 'running', false],
     ['a send that parks in the queue', 'queued', false],
     ['send now (steered into the running turn)', 'queued', true],
-  ] as const)('takes the notes off the composer the moment %s goes out', async (_label, status, now) => {
+  ] as const)('takes the notes off the composer once %s is durably preserved', async (_label, status, now) => {
     await withSession(async () => {
       let sent: Promise<unknown> | undefined;
       await act(async () => {
@@ -410,6 +664,28 @@ describe('session selection annotations', () => {
       // The ledger steers by itself; the view never issues a follow-up steer.
       expect(submit.steered).toEqual([]);
     });
+  });
+
+  it.each([false, true])('retains the composition until ACK when durable preservation fails (sendNow=%s)', async (now) => {
+    submit.persisted = false;
+    try {
+      await withSession(async () => {
+        const savedNotes = currentAnnotations();
+        const attachment: ComposerAttachment = { kind: 'retained', name: 'saved.png', content: { type: 'image', source: { kind: 'base64', media_type: 'image/png', data: 'AAAA' } } };
+        await act(async () => { composerProps().onChange('UNCONFIRMED'); composerProps().onChangeAttachments([attachment]); });
+        let sent: Promise<unknown> | undefined;
+        await act(async () => { sent = now ? composerProps().onSendNow('UNCONFIRMED', [attachment]) : composerProps().onSend('UNCONFIRMED', [attachment]); });
+        expect(composerProps().value).toBe('UNCONFIRMED');
+        expect(composerProps().attachments).toEqual([attachment]);
+        expect(currentAnnotations()).toEqual(savedNotes);
+        await act(async () => { submit.calls[0]!.resolve(now ? { promptId: 'prompt-1', outcome: 'steered' } : accepted('running')); await sent; });
+        expect(composerProps().value).toBe('');
+        expect(composerProps().attachments).toEqual([]);
+        expect(currentAnnotations()).toEqual([]);
+      });
+    } finally {
+      submit.persisted = true;
+    }
   });
 
   it.each([
@@ -456,12 +732,15 @@ describe('session selection annotations', () => {
       expect(carry.body).toBe('follow up');
       await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
       expect(currentAnnotations()[0]?.source).toEqual(source);
-      expect(readComposerState('session-a').quoteSource?.blockId).toBe('actual-quote');
+      expect(readComposerState('session-a').quotes?.map((item) => item.source?.blockId)).toEqual(['actual-quote']);
     });
   });
 
   it('a queue edit restores the parked prompt\u2019s notes as live draft annotations', async () => {
-    queueStub.items = [{ promptId: 'p-queued', text: '> quoted passage\n\nComment: noted\n\nqueued body' }];
+    // Built with the same writer the composer sends through: a note always
+    // carries its source-anchor line, and the inverse parser needs it.
+    const queuedSource: SelectionSourceAnchor = { blockId: 'queued-source', version: 'queue-1', start: 0, end: 13, text: 'quotedpassage' };
+    queueStub.items = [{ promptId: 'p-queued', text: `${buildAnnotationBlock({ quote: 'quoted passage', comment: 'noted', source: queuedSource })}queued body` }];
     queueStub.replaced = [];
     resetComposerMemoryForTests();
     resetDraftMemoryForTests();
@@ -505,9 +784,9 @@ describe('session selection annotations', () => {
       // Editing the note rides the confirm back into the queued text's prefix.
       const noteId = currentAnnotations()[0]!.id;
       await act(async () => { composerProps().onUpdateAnnotation!(noteId, 'noted harder'); });
-      await act(async () => { await composerProps().onQueueEditConfirm!('edited body'); });
+      await act(async () => { await composerProps().onQueueEditConfirm!('edited body', composerProps().attachments); });
       expect(queueStub.replaced).toEqual([
-        { promptId: 'p-queued', text: '> quoted passage\n\nComment: noted harder\n\nedited body' },
+        { promptId: 'p-queued', text: `${buildAnnotationBlock({ quote: 'quoted passage', comment: 'noted harder', source: queuedSource })}edited body` },
       ]);
       // The composer then hands its pre-edit state back: empty here.
       expect(currentAnnotations()).toEqual([]);
@@ -529,14 +808,15 @@ describe('session selection annotations', () => {
     resetDraftMemoryForTests();
     clearStoredDrafts();
     writeDraft('session-a', 'ORIGINAL UNSENT DRAFT');
-    queueStub.items = [{ promptId: 'p-edit', text: '> queue quote\n\nComment: queued note\n\nQUEUED TEXT' }];
+    const queuedSource: SelectionSourceAnchor = { blockId: 'queued-edit-source', version: 'queue-2', start: 0, end: 10, text: 'queuequote' };
+    queueStub.items = [{ promptId: 'p-edit', text: `${buildAnnotationBlock({ quote: 'queue quote', comment: 'queued note', source: queuedSource })}QUEUED TEXT` }];
     queueStub.holds = [];
     try {
       await withSession(async (container) => {
         const originalNotes = currentAnnotations();
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-quote]')!.click(); });
-        expect(composerProps().quote).toBe('personal quote');
-        await act(async () => { composerProps().header!.props.queue.panel.props.onEdit('p-edit'); });
+        expect(composerProps().quotes?.map((item) => item.quote)).toEqual(['personal quote']);
+        await act(async () => { composerProps().header!.props.queue.panel.props.children.props.onEdit('p-edit'); });
         expect(composerProps().value).toBe('QUEUED TEXT');
         expect(composerProps().queueEditing).toBe(true);
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-b]')!.click(); });
@@ -546,7 +826,7 @@ describe('session selection annotations', () => {
         await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-a]')!.click(); });
         expect(composerProps().value).toBe('ORIGINAL UNSENT DRAFT');
         expect(currentAnnotations()).toEqual(originalNotes);
-        expect(composerProps().quote).toBe('personal quote');
+        expect(composerProps().quotes?.map((item) => item.quote)).toEqual(['personal quote']);
         expect(composerProps().queueEditing).toBe(false);
       });
     } finally {
@@ -568,18 +848,28 @@ describe('session selection annotations', () => {
       const yAttachment: ComposerAttachment = { kind: 'retained', name: 'y.txt', content: { type: 'file', file_id: 'y-file', name: 'y.txt', media_type: 'text/plain', size: 2 } };
       await act(async () => { composerProps().onChange('NEW Y'); composerProps().onChangeAttachments([yAttachment]); });
       await act(async () => { submit.calls[0]!.reject(new Error('offline')); await sent; });
-      const retry = getToasts().at(-1)!.retry!;
-      await act(async () => { retry.run(); retry.run(); });
+      // Unknown delivery keeps the captured identity on the pending row: one
+      // retry affordance there, and no duplicate toast action beside it.
+      expect(getToasts()).toEqual([]);
+      const retry = pendingRetry()!;
+      expect(retry).not.toBeNull();
+      await act(async () => { retry.click(); retry.click(); });
       expect(submit.calls).toHaveLength(2);
-      expect(submit.calls[1]!.input).toEqual(captured);
+      const { onPreservation: firstPreservation, onAcknowledged: firstAcknowledged, ...capturedPayload } = captured!;
+      const { onPreservation: retryPreservation, onAcknowledged: retryAcknowledged, ...retriedPayload } = submit.calls[1]!.input!;
+      expect(retriedPayload).toEqual(capturedPayload);
+      expect(firstPreservation).toBeTypeOf('function');
+      expect(firstAcknowledged).toBeTypeOf('function');
+      expect(retryPreservation).toBeTypeOf('function');
+      expect(retryAcknowledged).toBeTypeOf('function');
       expect(composerProps().value).toBe('NEW Y');
       if (retryFails) {
         await act(async () => { submit.calls[1]!.reject(new Error('prompt_id already in use')); });
-        expect(getToasts().at(-1)!.retry).toBeDefined();
+        expect(pendingRetry()).not.toBeNull();
         expect(currentAnnotations()).toHaveLength(1);
       } else {
         await act(async () => { submit.calls[1]!.resolve(accepted('running')); });
-        await act(async () => { retry.run(); });
+        expect(pendingRetry()).toBeNull();
         expect(submit.calls).toHaveLength(2);
       }
       expect(readDraft('session-a')).toBe('NEW Y');
@@ -601,7 +891,7 @@ describe('session selection annotations', () => {
       await act(async () => { submit.calls[0]!.reject(new Error('rejected')); await sent; });
       expect(composerProps().value).toBe('X');
       expect(currentAnnotations()).toHaveLength(1);
-      await act(async () => { getToasts().at(-1)!.retry!.run(); });
+      await act(async () => { pendingRetry()!.click(); });
       expect(composerProps().value).toBe('');
       expect(currentAnnotations()).toEqual([]);
       expect(submit.calls[1]!.input?.promptId).toBe(submit.calls[0]!.input?.promptId);
@@ -616,7 +906,7 @@ describe('session selection annotations', () => {
     queueStub.switches = [{
       input: { operationId: 'queued-switch', model: 'fixture/other', mode: 'direct' },
       receipt: { operationId: 'queued-switch', state: 'pending', fromModel: 'fixture/one', toModel: 'fixture/other', mode: 'direct' },
-      revision: 1, queueIndex: messages,
+      revision: 1, originalBinding: { model: 'fixture/one', thinking: '' }, queueIndex: messages,
     } as QueuedModelSwitch];
     queueStub.cancelledSwitches = [];
     queueStub.clearCalls = 0;
@@ -625,7 +915,7 @@ describe('session selection annotations', () => {
         await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
         const queue = composerProps().header!.props.queue;
         expect(queue.count).toBe(messages + 1);
-        await act(async () => { queue.panel.props.onClearAll(); });
+        await act(async () => { queue.panel.props.children.props.onClearAll(); });
         const dialog = document.querySelector('[role="alertdialog"]') ?? document.querySelector('[role="dialog"]');
         expect(dialog?.textContent).toContain(String(messages + 1));
         const confirm = [...dialog!.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Clear all')!;

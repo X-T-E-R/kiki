@@ -18,16 +18,19 @@ export const RETRY_SECTION = 'retry';
  * One `[[retry.policies]]` entry — a per-error override of the step-retry
  * decision. `match` is a regular expression tested against the failed error's
  * code (`provider.rate_limit`) and its name (`APIProviderRateLimitError`); the
- * first entry that matches decides. `retry = false` suppresses retrying that
- * error even though the built-in classification would retry it. `max_attempts`
- * replaces the section budget for that error, and `backoff` is a fixed delay in
- * milliseconds applied before every retry of that error, replacing the default
- * exponential backoff. An entry whose `match` is not a valid regular expression
- * is reported as a load-time warning and ignored.
+ * first entry whose error pattern and optional exact model/provider selectors
+ * match decides. `retry = false` suppresses retrying that error even though the
+ * built-in classification would retry it. `max_attempts` replaces the section
+ * budget for that error, and `backoff` is a fixed delay in milliseconds applied
+ * before every retry of that error, replacing the default exponential backoff.
+ * An entry whose `match` is not a valid regular expression is reported as a
+ * load-time warning and ignored.
  */
 export const RetryPolicySchema = z
   .object({
     match: z.string().min(1),
+    models: z.array(z.string().min(1)).min(1).optional(),
+    providers: z.array(z.string().min(1)).min(1).optional(),
     maxAttempts: z.number().int().min(1).optional(),
     backoff: z.number().int().min(0).optional(),
     retry: z.boolean().default(true),

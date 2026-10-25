@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { access, mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
+import { access, mkdir, mkdtemp, writeFile, readFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
@@ -40,11 +40,11 @@ describe('Recipe accepted revisions', () => {
   let sources: Map<string, Record<string, string>>;
   let reads: string[];
   const modelWrites = vi.fn();
-  function newStore(flagInputs?: { env?: Record<string, string>; recipes?: boolean }) {
+  function newStore(flagInputs?: { env?: Record<string, string>; recipes?: boolean }, baseDocumentStore?: IAtomicDocumentStore) {
     return createServices(disposables, { additionalServices: (reg) => {
       reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
       reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore); reg.define(IBlobStore, BlobStoreService);
-      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', getEnv: (key) => flagInputs?.env?.[key] });
+      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', baseDocumentStore, getEnv: (key) => flagInputs?.env?.[key] });
       reg.definePartialInstance(IConfigService, {
         ready: new Promise<void>(() => {}),
         get: <T>(domain: string) => (domain === 'experimental' ? (flagInputs?.recipes === undefined ? {} : { recipes: flagInputs.recipes }) : { markets: [] }) as T,
@@ -200,6 +200,65 @@ describe('Recipe accepted revisions', () => {
     expect((await fresh.get(imported.installation_id))?.summary).toMatchObject({ manifest_id: 'portable', version: '1.2.3', description: 'Portable snapshot' });
     expect(await fresh.list()).toHaveLength(1); expect(await service.list()).toEqual(before); expect(modelWrites).not.toHaveBeenCalled();
   });
+  it('disables installation-prefixed model references without copying inherited model settings into home', async () => {
+    const ix = newStore();
+    const config = ix.get(IConfigService);
+    const recipes = ix.get(IRecipeService);
+    const preview = await recipes.preview({ source: { locator: parent } });
+    const installed = await recipes.install({ preview_id: preview.preview_id });
+    const effective = { inherited: { provider: 'example', name: 'base-model', recipe: `installation:${installed.installation_id}` } };
+    const local = { inherited: { parameters: { temperature: 0.4 } } };
+    vi.spyOn(ix.get(IModelService), 'list').mockReturnValue(effective);
+    vi.spyOn(config, 'get').mockReturnValue(effective);
+    Object.assign(config, { inspect: () => ({ userValue: local }) });
+    expect((await recipes.get(installed.installation_id))?.used_by).toEqual(['inherited']);
+    await expect(recipes.remove({ installation_id: installed.installation_id })).rejects.toThrow('Disable affected models');
+    await recipes.remove({ installation_id: installed.installation_id, disable_models: true });
+    expect(modelWrites).toHaveBeenCalledWith({ models: { inherited: { parameters: { temperature: 0.4 }, recipe: 'off' } } }, undefined, { models: local });
+    expect(effective.inherited.recipe).toBe(`installation:${installed.installation_id}`);
+    expect(await recipes.list()).toEqual([]);
+  });
+  it('inherits accepted base installations by default, follows base revisions and keeps all writes local', async () => {
+    const installed = await install(parent);
+    const local = newStore(undefined, documents);
+    const inherited = local.get(IRecipeService);
+    expect(await inherited.list()).toEqual([installed]);
+    expect((await inherited.resolve(installed.installation_id)).branches.main.system).toBe('PARENT FILE');
+    const frozen = await inherited.resolve(installed.installation_id);
+    const exported = await inherited.export(installed.installation_id);
+    expect(exported.files['recipe.toml']).toContain('PARENT FILE');
+    expect(await inherited.checkUpdates()).toEqual([installed]);
+    expect(await local.get(IAtomicDocumentStore).get('store', 'recipes/installations')).toBeUndefined();
+    await expect(newStore().get(IRecipeService).resolve(installed.installation_id)).rejects.toThrow('not found');
+    await expect(inherited.update({ installation_id: installed.installation_id })).rejects.toThrow('inherited');
+    await expect(inherited.remove({ installation_id: installed.installation_id })).rejects.toThrow('inherited');
+    const copy = await inherited.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'local', name: 'Local' });
+    const changed = await inherited.saveLocal({ installation_id: copy.summary.installation_id, expected_revision: copy.summary.revision,
+      files: { 'recipe.toml': manifest('local', { system: { text: 'CHILD LOCAL' } }) } });
+    expect(changed.resolved.branches.main.system).toBe('CHILD LOCAL');
+    const localDocuments = local.get(IAtomicDocumentStore);
+    await localDocuments.update<Record<string, { summary: typeof installed; history: string[]; editable: boolean }>>('store', 'recipes/installations', (records) => {
+      const copied = records![copy.summary.installation_id]!;
+      return { ...records, [installed.installation_id]: { ...copied, summary: { ...copied.summary, installation_id: installed.installation_id } } };
+    });
+    expect((await inherited.resolve(installed.installation_id)).branches.main.system).toBe('CHILD LOCAL');
+    expect((await service.resolve(installed.installation_id)).branches.main.system).toBe('PARENT FILE');
+    await inherited.remove({ installation_id: installed.installation_id });
+    expect((await inherited.resolve(installed.installation_id)).branches.main.system).toBe('PARENT FILE');
+    sources.set(parent, { 'recipe.toml': manifest('parent', { system: { text: 'BASE UPDATED' } }) });
+    const updated = await service.update({ installation_id: installed.installation_id });
+    expect((await inherited.get(installed.installation_id))?.summary.revision).toBe(updated.revision);
+    expect((await inherited.resolve(installed.installation_id)).branches.main.system).toBe('BASE UPDATED');
+    expect(frozen.branches.main.system).toBe('PARENT FILE');
+    await inherited.remove({ installation_id: copy.summary.installation_id });
+    expect(await inherited.list()).toEqual([updated]);
+    const baseLocal = await service.fork({ installation_id: installed.installation_id, mode: 'copy', id: 'editable-base', name: 'Editable base' });
+    expect((await inherited.get(baseLocal.summary.installation_id))?.editable).toBe(false);
+    await expect(inherited.saveLocal({ installation_id: baseLocal.summary.installation_id, expected_revision: baseLocal.summary.revision, files: baseLocal.files })).rejects.toThrow('inherited');
+    const isolated = newStore().get(IRecipeService);
+    expect(await isolated.list()).toEqual([]);
+    expect(await service.list()).toHaveLength(2);
+  });
   it('rejects a corrupt immutable revision rather than binding altered content', async () => {
     const installed = await install();
     const key = `recipes/revisions/${installed.revision.slice(7)}`;
@@ -230,11 +289,11 @@ describe('Recipe script hooks', () => {
     Object.assign(files, options.files);
     sources.set(locator, files);
   }
-  function newStore(ready: Promise<void> = pending) {
+  function newStore(ready: Promise<void> = pending, baseDocumentStore?: IAtomicDocumentStore) {
     return createServices(disposables, { additionalServices: (reg) => {
       reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
       reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore); reg.define(IBlobStore, BlobStoreService);
-      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', getEnv: () => undefined });
+      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', baseDocumentStore, getEnv: () => undefined });
       reg.definePartialInstance(IConfigService, {
         ready,
         get: <T>(domain: string) => (domain === 'experimental' ? {} : { markets: [] }) as T,
@@ -396,6 +455,28 @@ describe('Recipe script hooks', () => {
     expect((await service.get(editable.summary.installation_id))?.summary.revision).toBe(changed.summary.revision);
     expect((await service.get(editable.summary.installation_id))?.resolved.branches.main.system).toBe('CONCURRENT');
   });
+  it('inherits accepted hook fingerprints but rejects changed or untrusted base scripts', async () => {
+    const base = newStore();
+    service = base.get(IRecipeService);
+    putPackage(parent, 'base-hooks', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'BASE SCRIPT' } });
+    const first = await install(parent);
+    const baseDocuments = base.get(IAtomicDocumentStore);
+    const inherited = newStore(pending, baseDocuments).get(IRecipeService);
+    const frozen = await inherited.resolve(first.summary.installation_id);
+    expect(frozen.hooks_fingerprint).toBe(first.summary.hooks_fingerprint);
+    expect(frozen.hooks?.[0]?.source).toBe(parent);
+    expect((await inherited.scriptHooks(frozen))[0]?.cwd).toBeDefined();
+    putPackage(parent, 'base-hooks', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'CHANGED SCRIPT' } });
+    await expect(service.update({ installation_id: first.summary.installation_id })).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    expect((await inherited.resolve(first.summary.installation_id)).revision).toBe(first.summary.revision);
+    const next = await service.preview({ source: { locator: parent }, installation_id: first.summary.installation_id });
+    expect(next.hooks?.consent_required).toBe(true);
+    await service.install({ preview_id: next.preview_id, consent: true });
+    expect((await inherited.resolve(first.summary.installation_id)).hooks?.[0]?.files['hook.js']).toBe('CHANGED SCRIPT');
+    expect(frozen.hooks?.[0]?.files['hook.js']).toBe('BASE SCRIPT');
+    await baseDocuments.update<Record<string, { trustedHooks: string[] }>>('store', 'recipes/installations', (records) => ({ ...records, [first.summary.installation_id]: { ...records![first.summary.installation_id]!, trustedHooks: ['unaccepted-fingerprint'] } }));
+    await expect(inherited.resolve(first.summary.installation_id)).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+  });
   it('exports hook resources and requires first consent when reinstalling the package', async () => {
     putPackage(parent, 'exported-hooks', { hooks: hook(hookCommand), files: { 'resources/hook.js': 'EXPORTED' } });
     const first = await install(parent);
@@ -508,5 +589,65 @@ describe('Recipe package boundaries', () => {
     await expect(packageReader.read('body.md')).rejects.toThrow('text budget');
     fetchMock.mockResolvedValueOnce(new Response('x'.repeat(4 * 1024 * 1024 + 1)));
     await expect(reader.catalog('https://93.184.216.34/catalog.json')).rejects.toThrow('download exceeds budget');
+  });
+});
+
+describe('Recipe file references', () => {
+  let root: string;
+  let disposables: DisposableStore;
+  let service: IRecipeService;
+  beforeEach(async () => {
+    root = await mkdtemp(path.join(tmpdir(), 'recipe-file-ref-'));
+    disposables = new DisposableStore();
+    const ix = createServices(disposables, { additionalServices: (reg) => {
+      reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+      reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
+      reg.define(IBlobStore, BlobStoreService);
+      reg.definePartialInstance(IBootstrapService, { scope: () => 'store', homeDir: root, getEnv: () => undefined });
+      reg.definePartialInstance(IConfigService, {
+        ready: new Promise<void>(() => {}),
+        get: <T>(domain: string) => (domain === 'experimental' ? {} : { markets: [] }) as T,
+        onDidChangeConfiguration: Event.None as IConfigService['onDidChangeConfiguration'],
+        replaceSections: async () => undefined,
+      });
+      reg.definePartialInstance(IFlagService, { enabled: () => true });
+      reg.definePartialInstance(IModelService, { list: () => ({}) });
+      reg.definePartialInstance(IPromptFieldRegistry, { get: () => ({ readonly: false }) as PromptFieldDefinition, validate: () => ({ values: {}, fields: [] }) });
+      reg.define(IRecipeSourceReader, RecipeSourceReader);
+      reg.define(IRecipeService, RecipeService);
+    } });
+    service = ix.get(IRecipeService);
+  });
+  afterEach(async () => { await disposables.dispose(); await rm(root, { recursive: true, force: true }); });
+  it('reads relative and absolute Recipe files without installing them, and still resolves an installation id', async () => {
+    const parentDir = path.join(root, 'parent');
+    const childDir = path.join(root, 'roles', 'child');
+    const absoluteDir = path.join(root, 'absolute');
+    await mkdir(parentDir, { recursive: true });
+    await mkdir(childDir, { recursive: true });
+    await mkdir(absoluteDir, { recursive: true });
+    await writeFile(path.join(parentDir, 'body.md'), 'PARENT FILE');
+    await writeFile(path.join(parentDir, 'recipe.toml'), stringify({ schema_version: 1, id: 'parent', name: 'Parent', version: '1.0.0', model: { parameters: { temperature: 0.2 } }, prompts: { system: { file: 'body.md' } } }));
+    await writeFile(path.join(childDir, 'recipe.toml'), stringify({ schema_version: 1, id: 'child', name: 'Child', version: '1.0.0', extends: { source: '../../parent/recipe.toml' }, prompts: { steering: { text: 'CHILD STEERING' } } }));
+    await writeFile(path.join(absoluteDir, 'body.md'), 'ABSOLUTE FILE');
+    await writeFile(path.join(absoluteDir, 'focus.toml'), stringify({ schema_version: 1, id: 'absolute', name: 'Absolute', version: '1.0.0', hooks: 'off', model: { parameters: { temperature: 0.4 } }, prompts: { system: { file: 'body.md' } } }));
+    await writeFile(path.join(absoluteDir, 'hook.js'), 'console.log("no")');
+    await writeFile(path.join(absoluteDir, 'hooks.toml'), stringify({ schema_version: 1, id: 'hooks', name: 'Hooks', version: '1.0.0', hooks: [{ event: 'Stop', command: 'node hook.js', files: ['hook.js'] }], prompts: {} }));
+    const relative = await service.resolve('./roles/child/recipe.toml', root);
+    expect(relative.branches.main.system).toBe('PARENT FILE');
+    expect(relative.branches.main.steering).toBe('CHILD STEERING');
+    expect(relative.model).toMatchObject({ parameters: { temperature: 0.2 } });
+    expect(await service.list()).toEqual([]);
+    const resolvedAbsolute = await service.resolve(path.join(absoluteDir, 'focus.toml'));
+    expect(resolvedAbsolute.branches.main.system).toBe('ABSOLUTE FILE');
+    expect(resolvedAbsolute.hooks).toBeUndefined();
+    await expect(service.resolve('./missing.toml')).rejects.toThrow('profile directory');
+    await expect(service.resolve(path.join(root, 'missing.toml'))).rejects.toThrow(/ENOENT/);
+    await expect(service.resolve(path.join(absoluteDir, 'hooks.toml'))).rejects.toMatchObject({ details: { code: 'recipe-hook-consent-required' } });
+    expect(await service.list()).toEqual([]);
+    const installed = await service.install({ preview_id: (await service.preview({ source: { locator: parentDir } })).preview_id });
+    expect((await service.resolve(installed.installation_id)).branches.main.system).toBe('PARENT FILE');
+    expect((await service.resolve(`installation:${installed.installation_id}`)).branches.main.system).toBe('PARENT FILE');
+    expect(await service.list()).toHaveLength(1);
   });
 });

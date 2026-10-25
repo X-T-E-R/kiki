@@ -19,9 +19,11 @@ const mcp = vi.hoisted(() => ({
 const revealSecret = vi.hoisted(() => vi.fn());
 const createSession = vi.hoisted(() => vi.fn());
 const listWorkspaces = vi.hoisted(() => vi.fn(async () => ({ items: [{ id: 'wd_mcp_000000000000', name: 'MCP WS', root: '/mcp-ws' }] })));
+// The picker behind the handoff button reads the metadata-only catalog.
+const listWorkspaceCatalog = vi.hoisted(() => vi.fn(async () => ({ items: [{ id: 'wd_mcp_000000000000', name: 'MCP WS', root: '/mcp-ws' }] })));
 const navigate = vi.hoisted(() => vi.fn());
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ klient: { global: { mcp } }, client: { revealSecret, createSession, listWorkspaces }, scopeId: 'fixture-server' }),
+  useConnection: () => ({ klient: { global: { mcp } }, client: { revealSecret, createSession, listWorkspaces, listWorkspaceCatalog }, scopeId: 'fixture-server' }),
 }));
 // No `runAction` here on purpose: this file models a page that is not dirty, so
 // the handoff creates and leaves without a prompt. The cancel-the-leave order is
@@ -84,6 +86,8 @@ beforeEach(() => {
   createSession.mockReset();
   listWorkspaces.mockReset();
   listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_mcp_000000000000', name: 'MCP WS', root: '/mcp-ws' }] });
+  listWorkspaceCatalog.mockReset();
+  listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_mcp_000000000000', name: 'MCP WS', root: '/mcp-ws' }] });
   navigate.mockClear();
   resetDraftMemoryForTests();
 });
@@ -600,6 +604,7 @@ describe('handing MCP configuration to Kiki', () => {
 
   it('refuses to press while the fallback workspace is unknown', async () => {
     listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    listWorkspaceCatalog.mockRejectedValue(new Error('list unavailable'));
     createSession.mockResolvedValue({ id: 'mcp-ask-unknown' });
     const container = await render([remote, readOnly], false, '');
 

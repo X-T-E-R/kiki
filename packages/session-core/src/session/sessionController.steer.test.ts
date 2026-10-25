@@ -13,7 +13,7 @@ import { SendNowError, SessionController } from './sessionController';
 import type { SessionViewState, UserBlock } from './transcript';
 import { withPendingSteers } from './transcript/steer';
 import { createViewState } from './transcript';
-import { opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
+import { emptySnapshot, opsEvent, resetEvent, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
 const CHILD = 'agent-research';
 const STEER_TEXT = 'also check the lockfile';
@@ -91,19 +91,19 @@ function queuedOp(promptId: string): TranscriptOperation {
   };
 }
 
-function steeredOp(promptId: string): TranscriptOperation {
+function steeredOp(promptId: string, text = STEER_TEXT): TranscriptOperation {
   return {
     op: 'prompt.upsert',
     prompt: {
       promptId, status: 'completed', userMessageId: promptId,
-      content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03.000Z',
+      content: [{ type: 'text', text }], createdAt: '2026-01-01T00:00:03.000Z',
       finishedAt: '2026-01-01T00:00:04.000Z', steeredAt: '2026-01-01T00:00:04.000Z',
     },
   };
 }
 
 /** The next step boundary delivers the steer as a turn-owned user frame (same id). */
-function deliveredOps(promptId: string): TranscriptOperation[] {
+function deliveredOps(promptId: string, text = STEER_TEXT): TranscriptOperation[] {
   return [
     {
       op: 'step.upsert', turnId: 't1',
@@ -112,14 +112,292 @@ function deliveredOps(promptId: string): TranscriptOperation[] {
     {
       op: 'frame.upsert', turnId: 't1', stepId: 't1.2',
       frame: {
-        kind: 'text', frameId: promptId, role: 'user', text: STEER_TEXT, origin: { kind: 'user' },
+        kind: 'text', frameId: promptId, role: 'user', text, origin: { kind: 'user' },
         part: { partId: promptId, messageId: promptId, revision: 0, provenance: { source: 'engine' } },
       },
     },
   ];
 }
 
+describe('queued submission receipt ordering', () => {
+  it.each(['running', 'completed', 'aborted', 'failed', 'blocked'] as const)('does not restore a queued strip after canonical %s outruns its receipt', async (status) => {
+    const { controller, client } = await open();
+    try {
+      await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+      const receipt = deferred<ReturnType<typeof queuedReceipt>>();
+      client.submitPrompt.mockReturnValue(receipt.promise);
+      const sent = controller.sendPrompt({ text: STEER_TEXT, promptId: 'queued-original' });
+      await deliver(controller, opsEvent('main', [queuedOp('queued-original')], 2));
+      expect(controller.getState().queuedPromptIds).toEqual(['queued-original']);
+      await deliver(controller, opsEvent('main', [{
+        op: 'prompt.upsert', prompt: {
+          promptId: 'queued-original', userMessageId: 'queued-original', status,
+          content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03.000Z',
+        },
+      }], 3));
+      expect(controller.getState().queuedPromptIds).toEqual([]);
+      receipt.resolve(queuedReceipt('queued-original'));
+      await sent;
+      expect(controller.getState().queuedPromptIds).toEqual([]);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
+  it('keeps older queue items through immediate send, drains once, and reopens without the consumed row', async () => {
+    const { controller, client } = await open();
+    const reopened = await open();
+    try {
+      const original = queuedOp('original');
+      const later = queuedOp('later');
+      await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+      await deliver(controller, opsEvent('main', [original, later], 2));
+      const submit = deferred<ReturnType<typeof queuedReceipt>>();
+      client.submitPrompt.mockReturnValue(submit.promise);
+      const sending = controller.sendPromptNow({ text: 'new immediate input', promptId: 'new-now' });
+      expect(controller.getState().queuedPromptIds).toEqual(['original', 'later']);
+      await deliver(controller, opsEvent('main', [steeredOp('original'), ...deliveredOps('original')], 3));
+      expect(controller.getState().queuedPromptIds).toEqual(['later']);
+      submit.resolve(queuedReceipt('new-now', 'new immediate input'));
+      await sending;
+      expect(client.steerPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'new-now', 'main');
+      await deliver(controller, opsEvent('main', [steeredOp('new-now', 'new immediate input'), ...deliveredOps('new-now', 'new immediate input')], 4));
+      expect(controller.getState().queuedPromptIds).toEqual(['later']);
+      expect(controller.getState().blocks.filter(block => block.kind === 'user' && block.userMessageId === 'original')).toHaveLength(1);
+      expect(controller.getState().blocks.find(block => block.kind === 'user' && block.userMessageId === 'new-now')).toMatchObject({ text: 'new immediate input' });
+      const reload = { ...userTurnSnapshot({ streaming: true }), prompts: [
+        ...(later.op === 'prompt.upsert' ? [later.prompt] : []),
+        ...[steeredOp('original'), steeredOp('new-now', 'new immediate input')].flatMap(op => op.op === 'prompt.upsert' ? [op.prompt] : []),
+      ] };
+      await deliver(reopened.controller, resetEvent('main', reload, 1));
+      expect(reopened.controller.getState().queuedPromptIds).toEqual(['later']);
+      expect(reopened.client.submitPrompt).not.toHaveBeenCalled();
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); reopened.controller.close(); }
+  });
+
+  it('keeps a canonical queued edit, attachment, timing and position when the original receipt arrives late', async () => {
+    const { controller, client } = await open();
+    try {
+      await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+      const receipt = deferred<ReturnType<typeof queuedReceipt>>();
+      client.submitPrompt.mockReturnValue(receipt.promise);
+      const sent = controller.sendPrompt({ text: STEER_TEXT, promptId: 'queued-edited' });
+      const content = [{ type: 'text' as const, text: 'edited while the reply was in flight' },
+        { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/retained.png' } }];
+      await deliver(controller, opsEvent('main', [{
+        op: 'prompt.upsert', prompt: {
+          promptId: 'queued-edited', userMessageId: 'logical-edited', status: 'queued', content,
+          createdAt: '2026-01-01T00:00:03.000Z', appendTiming: 'tasks_done', revision: 2, queuePosition: 3,
+        },
+      }], 2));
+      const before = controller.getState();
+      receipt.resolve(queuedReceipt('queued-edited'));
+      await sent;
+      expect(controller.getState().queuedPromptIds).toEqual(['queued-edited']);
+      expect(controller.getState().queuedPromptMeta).toEqual(before.queuedPromptMeta);
+      expect(controller.getState().blocks).toEqual(before.blocks);
+    } finally { controller.close(); }
+  });
+});
+
+describe('submission preservation degradation', () => {
+  it.each(['QuotaExceededError', 'SecurityError'])('still submits complete media when backup fails with %s and accepts an ack despite failed cleanup', async (name) => {
+    const { controller, client } = await open();
+    const storage = {
+      getItem: vi.fn(() => null),
+      setItem: vi.fn(() => { throw new DOMException('unavailable', name); }),
+      removeItem: vi.fn(() => { throw new DOMException('unavailable', name); }),
+    };
+    vi.stubGlobal('localStorage', storage);
+    try {
+      const content = [{ type: 'text' as const, text: 'keep this image' },
+        { type: 'image' as const, source: { kind: 'base64' as const, media_type: 'image/png', data: 'AAAA' } }];
+      const receipt = deferred<Omit<ReturnType<typeof queuedReceipt>, 'content'> & { content: typeof content }>();
+      client.submitPrompt.mockReturnValue(receipt.promise);
+      const onPreservation = vi.fn();
+      const onAcknowledged = vi.fn();
+      const sent = controller.sendPrompt({ text: 'keep this image', content, promptId: 'media-degraded', onPreservation, onAcknowledged });
+      expect(onPreservation).toHaveBeenCalledWith(false);
+      expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', expect.objectContaining({ content, prompt_id: 'media-degraded' }));
+      expect(onAcknowledged).not.toHaveBeenCalled();
+      receipt.resolve({ ...queuedReceipt('media-degraded'), content });
+      await expect(sent).resolves.toMatchObject({ prompt_id: 'media-degraded', status: 'queued' });
+      expect(onAcknowledged).toHaveBeenCalledTimes(1);
+      expect(controller.getState().blocks.find(block => block.kind === 'user' && block.promptId === 'media-degraded')).toMatchObject({ queuedContent: content, text: 'keep this image', media: [{ kind: 'image', url: 'data:image/png;base64,AAAA', mime: 'image/png' }] });
+    } finally { controller.close(); vi.unstubAllGlobals(); }
+  });
+});
+
 describe('send now (steer) — main agent', () => {
+  it.each(['running', 'completed', 'steered'] as const)('prefers canonical %s over a late durable queued disposition without a second steer', async (status) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    const receipt = deferred<ReturnType<typeof queuedReceipt> & { admission: 'admitted'; delivery_state: 'queued'; delivery_reason: 'target_changed' }>();
+    client.submitPrompt.mockReturnValue(receipt.promise);
+    try {
+      await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+      const sending = controller.sendPromptNow({ promptId: 'late-disposition', text: STEER_TEXT });
+      await deliver(controller, opsEvent('main', [status === 'steered' ? steeredOp('late-disposition') : {
+        op: 'prompt.upsert', prompt: { promptId: 'late-disposition', userMessageId: 'late-disposition', status,
+          content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03.000Z' },
+      }, ...(status === 'steered' ? [] : deliveredOps('late-disposition'))], 2));
+      receipt.resolve({ ...queuedReceipt('late-disposition'), admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' });
+      await expect(sending).resolves.toEqual({ promptId: 'late-disposition', outcome: status === 'steered' ? 'steered' : 'started' });
+      expect(controller.getState().queuedPromptIds).toEqual([]);
+      if (status === 'steered') {
+        expect(steerRows(controller.getState())).toHaveLength(1);
+        expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'late-disposition', phase: 'waiting' })]);
+        await deliver(controller, opsEvent('main', deliveredOps('late-disposition'), 3));
+      }
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(controller.getState().blocks.filter(block => block.kind === 'user' && block.userMessageId === 'late-disposition')).toHaveLength(1);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    } finally { controller.close(); }
+  });
+
+  it('returns the actual legacy executor deferral rather than claiming a steer', async () => {
+    const { controller, client } = await open();
+    client.submitPrompt.mockResolvedValue(queuedReceipt('external-deferred'));
+    client.steerPrompt.mockImplementation(async () => ({ steered: true as const, prompt_ids: ['external-deferred'],
+      delivery_state: 'queued' as const, delivery_reason: 'executor_deferred' as const }));
+    try {
+      await expect(controller.sendPromptNow({ promptId: 'external-deferred', text: STEER_TEXT })).resolves.toEqual({
+        promptId: 'external-deferred', outcome: 'queued', reason: 'executor_deferred',
+      });
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); }
+  });
+
+  it.each(['restoring', 'held', 'admitted'] as const)('persists the steer intent for a saved session and never duplicates server delivery after %s', async (admission) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({
+      ...queuedReceipt(body.prompt_id), admission, delivery_state: admission === 'admitted' ? 'steered' : undefined,
+    }));
+    const sent = await controller.sendPromptNow({ promptId: 'saved-now', text: STEER_TEXT });
+    expect(sent).toEqual({ promptId: 'saved-now', outcome: admission === 'admitted' ? 'steered' : admission });
+    expect(client.submitPrompt).toHaveBeenCalledWith('session_test', expect.objectContaining({ admission: 'durable', delivery_mode: 'steer', prompt_id: 'saved-now' }));
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'saved-now', phase: 'waiting' })]);
+    controller.close();
+  });
+
+  it.each(['queued', 'steered'] as const)('hands a late durable %s receipt to the queue or canonical frame without claiming consumption', async (delivery) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    client.submitPrompt.mockResolvedValue({ ...queuedReceipt('late-now'), admission: 'restoring' });
+    const read = vi.fn(async () => ({ ...queuedReceipt('late-now'), admission: 'admitted', delivery_state: delivery,
+      delivery_reason: delivery === 'queued' ? 'target_changed' : undefined }));
+    Object.assign(client, { getDurableIngress: read });
+    await controller.sendPromptNow({ promptId: 'late-now', text: STEER_TEXT });
+    await deliver(controller, opsEvent('main', [queuedOp('late-now')], 2));
+    expect(controller.getState().queuedPromptIds).not.toContain('late-now');
+    await vi.waitFor(() => { expect(controller.getDurableIngress()[0]?.admission).toBe('admitted'); });
+    expect(controller.getDurableIngress()[0]?.delivery_reason).toBe(delivery === 'queued' ? 'target_changed' : undefined);
+    if (delivery === 'queued') {
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(controller.getState().queuedPromptIds).toContain('late-now');
+      expect(steerRows(controller.getState())).toEqual([]);
+    } else {
+      expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'late-now', phase: 'waiting' })]);
+      expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ promptId: 'late-now', steerStatus: 'waiting' })]);
+      await deliver(controller, opsEvent('main', [steeredOp('late-now'), ...deliveredOps('late-now')], 3));
+      expect(controller.getPendingSteers()).toEqual([]);
+      expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ userMessageId: 'late-now', turnId: 't1' })]);
+    }
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it('pauses receipt observation while suspended, stops at held, and never resumes or cancels the request', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await open();
+    try {
+      controller.setEphemeralHint(false);
+      client.submitPrompt.mockResolvedValue({ ...queuedReceipt('held-now'), admission: 'restoring' });
+      const read = vi.fn(async () => ({ ...queuedReceipt('held-now'), admission: 'held' }));
+      Object.assign(client, { getDurableIngress: read });
+      await controller.sendPromptNow({ promptId: 'held-now', text: STEER_TEXT });
+      controller.suspend();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).not.toHaveBeenCalled();
+      await controller.resume();
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenCalledExactlyOnceWith('session_test', 'held-now', 'main');
+      expect(controller.getDurableIngress()[0]?.admission).toBe('held');
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'held-now' })]);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); vi.useRealTimers(); }
+  });
+
+  it('stops pending receipt reads on close without cancelling server-owned delivery', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await open();
+    try {
+      controller.setEphemeralHint(false);
+      client.submitPrompt.mockResolvedValue({ ...queuedReceipt('closed-now'), admission: 'restoring' });
+      const read = vi.fn();
+      Object.assign(client, { getDurableIngress: read });
+      await controller.sendPromptNow({ promptId: 'closed-now', text: STEER_TEXT });
+      controller.close();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).not.toHaveBeenCalled();
+      expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); vi.useRealTimers(); }
+  });
+
+  it('serializes receipt reads across now IDs and ignores an in-flight result from before suspension', async () => {
+    vi.useFakeTimers();
+    const { controller, client } = await open();
+    try {
+      controller.setEphemeralHint(false);
+      client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({ ...queuedReceipt(body.prompt_id), admission: 'restoring' }));
+      const first = deferred<ReturnType<typeof queuedReceipt> & { admission: string }>();
+      const read = vi.fn().mockImplementationOnce(() => first.promise).mockResolvedValue({ ...queuedReceipt('serial-b'), admission: 'admitted', delivery_state: 'queued' });
+      Object.assign(client, { getDurableIngress: read });
+      await controller.sendPromptNow({ promptId: 'serial-a', text: STEER_TEXT });
+      await controller.sendPromptNow({ promptId: 'serial-b', text: STEER_TEXT });
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(read).toHaveBeenCalledExactlyOnceWith('session_test', 'serial-a', 'main');
+      controller.suspend();
+      await controller.resume();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(read).toHaveBeenCalledTimes(1);
+      first.resolve({ ...queuedReceipt('serial-a'), admission: 'held' });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(controller.getDurableIngress().find(item => item.prompt_id === 'serial-a')?.admission).toBe('restoring');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(read).toHaveBeenNthCalledWith(2, 'session_test', 'serial-b', 'main');
+      expect(controller.getPendingSteers().map(item => item.promptId)).toEqual(['serial-a']);
+      expect(client.submitPrompt).toHaveBeenCalledTimes(2);
+      expect(client.steerPrompt).not.toHaveBeenCalled();
+      expect(client.abortPrompt).not.toHaveBeenCalled();
+    } finally { controller.close(); vi.useRealTimers(); }
+  });
+
+  it('keeps ordinary durable submission free of immediate delivery intent', async () => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    client.submitPrompt.mockResolvedValue({ ...queuedReceipt('ordinary'), admission: 'restoring' });
+    await controller.sendPrompt({ promptId: 'ordinary', text: STEER_TEXT });
+    expect(client.submitPrompt.mock.calls[0]![1].delivery_mode).toBeUndefined();
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
   it('promotes a queued prompt on the same row through sending → waiting → delivery', async () => {
     const { controller, client } = await open();
     const promptId = 'queued-send-now';
@@ -146,6 +424,53 @@ describe('send now (steer) — main agent', () => {
     expect(steerRows(controller.getState())[0]!.steerStatus).toBeUndefined();
     expect(controller.getPendingSteers()).toEqual([]);
     expect(client.submitPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
+  it.each([false, true])('confirms every consecutive send at one response boundary with merged=%s, preserving media and reload order', async (merged) => {
+    const { controller } = await open();
+    const ids = ['send-a', 'send-b', 'send-c'];
+    const image = { type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/photo.png' } };
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    await deliver(controller, opsEvent('main', ids.map((id, index) => {
+      const op = queuedOp(id);
+      return op.op === 'prompt.upsert' ? { ...op, prompt: { ...op.prompt,
+        content: [{ type: 'text', text: `message ${index}` }, ...(index === 1 ? [image] : [])] } } : op;
+    }), 2));
+    await Promise.all(ids.map((id) => controller.steerQueued(id)));
+    expect(controller.getPendingSteers()).toHaveLength(3);
+    const receipts = ids.map((id, index): TranscriptOperation => {
+      const op = steeredOp(id);
+      return op.op === 'prompt.upsert' ? { ...op, prompt: { ...op.prompt,
+        content: [{ type: 'text', text: `message ${index}` }, ...(index === 1 ? [image] : [])] } } : op;
+    });
+    await deliver(controller, opsEvent('main', receipts, 3));
+    const ops: TranscriptOperation[] = [{ ...deliveredOps(ids[0]!)[0]! }, {
+      op: 'attachment.upsert', attachment: { attachmentId: 'image-b', mediaType: 'image/png',
+        source: { kind: 'url', url: 'https://example.test/photo.png' }, owner: { kind: 'frame', turnId: 't1', stepId: 't1.2', frameId: ids[1]! } },
+    }, ...(merged ? ids.slice(0, 1) : ids).map((id, index): TranscriptOperation => ({ op: 'frame.upsert', turnId: 't1', stepId: 't1.2', frame: {
+      kind: 'text', frameId: id, role: 'user', text: merged ? 'message 0message 1message 2' : `message ${index}`, origin: { kind: 'user' },
+      part: { partId: id, messageId: id, revision: 0, provenance: { source: 'engine' } },
+      attachmentIds: index === 1 ? ['image-b'] : undefined,
+    } }))];
+    await deliver(controller, opsEvent('main', ops, 4));
+    const rows = visibleUsers(controller.getState()).filter((row) => ids.includes(row.userMessageId ?? ''));
+    expect(rows.map((row) => [row.userMessageId, row.text, row.steerStatus, row.turnId]))
+      .toEqual(ids.map((id, index) => [id, `message ${index}`, undefined, 't1']));
+    expect(rows[1]?.media).toMatchObject([{ kind: 'image', url: 'https://example.test/photo.png' }]);
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    const snapshot = userTurnSnapshot({ streaming: true });
+    const currentTurn = snapshot.items.find((item) => item.kind === 'turn')!;
+    expect(currentTurn.kind).toBe('turn');
+    if (currentTurn.kind === 'turn') {
+      const reload = { ...snapshot, prompts: receipts.flatMap((op) => op.op === 'prompt.upsert' ? [op.prompt] : []), items: [{ ...currentTurn, steps: [...currentTurn.steps,
+        { kind: 'step' as const, stepId: 't1.2', turnId: 't1', ordinal: 2, state: 'running' as const,
+          frames: ops.flatMap((op) => op.op === 'frame.upsert' ? [op.frame] : []) }] }],
+        attachments: ops.flatMap((op) => op.op === 'attachment.upsert' ? [op.attachment] : []) };
+      await deliver(controller, resetEvent('main', reload, 5));
+      expect(visibleUsers(controller.getState()).filter((row) => ids.includes(row.userMessageId ?? '')).map((row) => row.userMessageId)).toEqual(ids);
+    }
     controller.close();
   });
 
@@ -228,6 +553,26 @@ describe('send now (steer) — main agent', () => {
     controller.close();
   });
 
+  it('captures profile and execution controls with the send-now message identity', async () => {
+    const { controller, client } = await open();
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({
+      ...queuedReceipt(body.prompt_id), status: 'running' as const,
+    }));
+    const execution = { executor: 'external-example', profile: 'selected-runtime' };
+    await expect(controller.sendPromptNow({ text: STEER_TEXT, promptId: 'selected-message',
+      profile: 'selected-profile', execution, model: 'selected-model', thinking: 'high',
+      permissionMode: 'manual', planMode: true, planGate: 'gated' }))
+      .resolves.toEqual({ promptId: 'selected-message', outcome: 'started' });
+    expect(client.submitPrompt).toHaveBeenCalledExactlyOnceWith('session_test', {
+      content: [{ type: 'text', text: STEER_TEXT }], prompt_id: 'selected-message',
+      profile: 'selected-profile', execution, model: 'selected-model', thinking: 'high',
+      permission_mode: 'manual', plan_mode: true, plan_gate: 'gated',
+    });
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
   it('retires the echo as an ordinary send when the agent was already idle', async () => {
     const { controller, client } = await open();
     client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => ({
@@ -236,6 +581,42 @@ describe('send now (steer) — main agent', () => {
     await expect(controller.sendPromptNow({ text: STEER_TEXT })).resolves.toMatchObject({ outcome: 'started' });
     expect(client.steerPrompt).not.toHaveBeenCalled();
     expect(controller.getPendingSteers()).toEqual([]);
+    controller.close();
+  });
+
+  it.each(['abort', 'network', 'timeout', 'invalid_response'])('preserves the same send-now identity after an unconfirmed %s transport failure without replay', async (reason) => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    const failure = new ApiError({ code: -1, msg: 'Result unavailable', data: null, source: 'transport', reason });
+    client.submitPrompt.mockRejectedValue(failure);
+    const onAcknowledged = vi.fn();
+    const error = await controller.sendPromptNow({ promptId: 'uncertain-now', text: STEER_TEXT, onAcknowledged }).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(SendNowError);
+    expect((error as SendNowError).reason).toBe('unknown');
+    expect((error as SendNowError).cause).toBe(failure);
+    expect(controller.getPendingSteers()).toEqual([expect.objectContaining({ promptId: 'uncertain-now', text: STEER_TEXT, phase: 'waiting' })]);
+    expect(onAcknowledged).not.toHaveBeenCalled();
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.steerPrompt).not.toHaveBeenCalled();
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    await deliver(controller, opsEvent('main', [steeredOp('uncertain-now'), ...deliveredOps('uncertain-now')], 2));
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(steerRows(controller.getState())).toEqual([expect.objectContaining({ userMessageId: 'uncertain-now', turnId: 't1' })]);
+    controller.close();
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+  });
+
+  it('removes the echo after a confirmed server rejection without cancelling or resubmitting', async () => {
+    const { controller, client } = await open();
+    controller.setEphemeralHint(false);
+    client.submitPrompt.mockRejectedValue(new ApiError({ code: 40001, msg: 'Invalid request', data: null }));
+    const error = await controller.sendPromptNow({ promptId: 'rejected-now', text: STEER_TEXT }).catch((caught: unknown) => caught);
+    expect((error as SendNowError).reason).toBe('submit');
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    expect(client.abortPrompt).not.toHaveBeenCalled();
     controller.close();
   });
 
@@ -364,5 +745,76 @@ describe('withPendingSteers', () => {
     expect(next.blocks).toHaveLength(1);
     expect(next.blocks[0]).toMatchObject({ id: 'user-p1', steerStatus: 'sending', presentation });
     expect(next.blocks[0]).not.toHaveProperty('promptStatus');
+  });
+});
+
+
+describe('queued submit acknowledgement before transcript recovery', () => {
+  it('retains the queued message for retry when cancelling it fails', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+    client.submitPrompt.mockResolvedValue(queuedReceipt('cancel-retry'));
+    await controller.sendPrompt({ promptId: 'cancel-retry', text: STEER_TEXT });
+    client.abortPrompt.mockRejectedValueOnce(new Error('Cancel request unavailable'));
+    await expect(controller.abortPrompt('cancel-retry')).rejects.toThrow('Cancel request unavailable');
+    expect(controller.getState().queuedPromptIds).toEqual(['cancel-retry']);
+    expect(controller.getState().blocks.find(block => block.kind === 'user')).toMatchObject({ text: STEER_TEXT, promptStatus: 'queued' });
+    expect(controller.getState().blocks.some(block => block.kind === 'notice')).toBe(false);
+    await deliver(controller, resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().queuedPromptIds).toEqual(['cancel-retry']);
+    controller.close();
+  });
+
+  it('does not let an older empty reset erase a queued ack, and canonical abort prevents resurrection', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+    client.submitPrompt.mockResolvedValue({ ...queuedReceipt('new-message'), revision: 0 });
+    await controller.sendPrompt({ promptId: 'new-message', text: STEER_TEXT });
+    expect(controller.getState().queuedPromptIds).toEqual(['new-message']);
+    await deliver(controller, resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().queuedPromptIds).toEqual(['new-message']);
+    expect(controller.getState().queuedPromptMeta['new-message']).toMatchObject({ revision: 0 });
+    expect(controller.getState().blocks.filter(block => block.kind === 'user' && block.promptId === 'new-message')).toHaveLength(1);
+    await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: {
+      promptId: 'new-message', status: 'aborted', userMessageId: 'new-message', abortedBeforeStart: true,
+      content: [{ type: 'text', text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03Z', finishedAt: '2026-01-01T00:00:04Z',
+    } }], 3));
+    await deliver(controller, resetEvent('main', emptySnapshot(), 4));
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'new-message')).toBe(false);
+    expect(controller.getState().blocks.some(block => block.kind === 'notice')).toBe(false);
+    controller.close();
+  });
+  it('removes a held cron occurrence by prompt id and reconciles without removing ordinary drafts', async () => {
+    const { controller, client } = await open();
+    const prompts = ['first-draft', 'cron-fire', 'second-draft'].map((promptId, queuePosition) => ({
+      promptId, userMessageId: promptId, status: 'queued' as const, queuePosition,
+      originKind: promptId === 'cron-fire' ? 'cron_job' as const : undefined,
+      originDeliveryMode: promptId === 'cron-fire' ? 'idle' as const : undefined,
+      content: [{ type: 'text' as const, text: promptId }], createdAt: '2026-01-01T00:00:03.000Z',
+    }));
+    await deliver(controller, resetEvent('main', emptySnapshot({ prompts }), 1));
+    expect(controller.getState().queuedPromptMeta['cron-fire']).toMatchObject({ cronDeliveryMode: 'idle' });
+    await controller.abortPrompt('cron-fire');
+    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'cron-fire');
+    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'cron-fire', 'second-draft']);
+    await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: {
+      ...prompts[1]!, status: 'aborted', abortedBeforeStart: true, queuePosition: undefined, finishedAt: '2026-01-01T00:00:04.000Z',
+    } }], 2));
+    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'second-draft']);
+    expect(controller.getState().queuedPromptMeta['cron-fire']).toBeUndefined();
+    expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'cron-fire')).toBe(false);
+    controller.close();
+  });
+
+  it('explicit removal before its transcript upsert is not replayed by an empty reset', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', emptySnapshot(), 1));
+    client.submitPrompt.mockResolvedValue(queuedReceipt('remove-me'));
+    await controller.sendPrompt({ promptId: 'remove-me', text: STEER_TEXT });
+    await controller.abortPrompt('remove-me');
+    await deliver(controller, resetEvent('main', emptySnapshot(), 2));
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    controller.close();
   });
 });

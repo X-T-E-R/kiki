@@ -2,7 +2,7 @@
 name: explore
 description: Bounded, read-only evidence exploration of code and external sources.
 can_spawn_subagents: false
-whenToUse: 'Use for a scoped reading or retrieval question when source volume, context isolation, or parallel progress justifies the handoff. Return file and line or URL sources, observed facts, supported local mechanism explanations, and gaps. Do not ask this role to rank solutions, make product decisions, perform independent review, or accept work; use general or another installed role for bounded synthesis, execution, or verification.'
+whenToUse: 'Read-only leaf for bounded code or source evidence; returns cited facts, local mechanisms, and gaps, not implementation or an independent review verdict. Use when source volume, context isolation, or parallel progress justifies the handoff. Use general or another installed role for decisions, synthesis, execution, or verification.'
 tools:
   - Bash
   - Read

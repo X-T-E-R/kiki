@@ -1,9 +1,11 @@
 {
   "name": "@kiki/plugin-sdk",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "license": "MIT",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -16,6 +18,14 @@
     "./media": {
       "types": "./dist/media.d.ts",
       "default": "./dist/media.js"
+    },
+    "./im": {
+      "types": "./dist/im.d.ts",
+      "default": "./dist/im.js"
+    },
+    "./messages": {
+      "types": "./dist/messages.d.ts",
+      "default": "./dist/messages.js"
     },
     "./session-import": {
       "types": "./dist/session-import.d.ts",

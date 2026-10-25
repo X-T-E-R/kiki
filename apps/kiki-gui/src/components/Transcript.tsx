@@ -13,6 +13,7 @@
  */
 
 import {
+  Fragment,
   memo,
   useCallback,
   useContext,
@@ -29,7 +30,7 @@ import {
   type UIEvent as ReactUIEvent,
 } from 'react';
 import { parseMarkdownIntoBlocks } from 'streamdown';
-import { shiftTextPresentation, type TextPresentation, type ContentRef } from '@kiki/transcript';
+import { shiftTextPresentation, type TextPresentation, type ContentRef, type GoalMarkerChange, parseDaemonFileRefFileId, parseMediaBlobRef } from '@kiki/transcript';
 import { defaultRangeExtractor, useVirtualizer, type Virtualizer } from '@tanstack/react-virtual';
 
 import type { ApprovalDecision, QuestionAnswer } from '@kiki/protocol';
@@ -48,6 +49,7 @@ import {
   buildQuotePrefix,
   type TimelineAnnotation,
   type ComposerAttachment,
+  retainedAttachmentsFromContent,
   appendToDraft,
   prepareThreadRefContext,
   findThreadRefs,
@@ -71,6 +73,7 @@ import {
   snapshotSubagentAgentId,
   stepObject,
   stabilizeAgentForest,
+  turnReplyGap,
   type AgentForest,
   type AgentTreeNode,
   type AssistantBlock,
@@ -91,12 +94,14 @@ import {
   type ToolBlock,
   type ToolGroup,
   type TurnExecutionInfo,
+  type TurnReplyGap,
   type TurnRetryInfo,
   type TurnTailInfo,
   type UserBlock,
   type ActivitySummary,
   type MessageBlock,
   type MessageViewNode,
+  projectMessageView,
 } from '@kiki/session-core/session';
 import { firstSentence, formatTokensPerSecond, plainInline } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -115,6 +120,7 @@ import { timelineSnapshotKey, type TimelineReadingSnapshot } from '../lib/navVie
 import { restoreTimelineReading, type TimelineReadingAdapter } from '../lib/timelineReading';
 import { useNavSnapshotAdapter } from '../lib/useNavSnapshot';
 import { useTimelineVisitLocator } from '../lib/useTimelineNavigation';
+import { useCollapsibleOverflow } from '../lib/collapsibleOverflow';
 import {
   HistoryLine,
   isAbortedPromptNotice,
@@ -137,11 +143,13 @@ import {
   landAtEnd,
   measureTranscriptRow,
   noteReaderDisclosure,
+  observeRowMutations,
   reconcileMountedRows,
 } from './transcriptVirtualizer';
 import { ApprovalCard, InteractionRecord, QuestionCard, useInteractionPlacement } from './Interactions';
 import { ExecutorNoteRow, TurnExecutionBadge } from './timeline/ExecutorNotes';
 import { ExternalTextRow } from './timeline/ExternalTextRow';
+import { AssistantOutputContent, useOutputLayer } from './output-layer';
 import { MediaRunRow, SubagentEndedRow, SubagentGroupRow } from './timeline/FoldRows';
 import { FindBar } from './timeline/FindBar';
 import { buildFindItems } from './timeline/findItems';
@@ -169,26 +177,30 @@ import {
 } from './timeline/PromptOutcome';
 import { Markdown } from './Markdown';
 import { projectTextWithAnnotationMarks } from './markdown/annotationMarks';
+import { RenderedImageScope, useRenderedImageTargets } from './markdown/renderedImages';
 import { MediaPartList } from './mediaParts';
+import { unwrapFileLinkTarget, type MediaRef } from '@kiki/session-core/composer/media';
+import { MediaGalleryOrder } from './mediaPreviewContext';
 import { RelativeTime } from './RelativeTime';
-import { NestedFoldContext, NestedFoldStore, useNestedFold } from './timeline/nestedFold';
+import { NestedFoldContext, NestedFoldStore, countFoldedDescendants, groupDescendantsByDispatch, useDispatchGroup, useNestedFold } from './timeline/nestedFold';
 import { InvocationContext, useInvocationDetails } from './timeline/SubagentInvocationView';
 import { AgentTurnOutcomeLine } from './timeline/AgentTurnOutcomeLine';
 import { MessageLinkContext, MessageRowActions, messageLinkHref, UserMessageEditor, useMessageLink, useMessageRowTapActions } from './RowActions';
 import { ThreadRefText } from './ThreadRefChip';
+import { PeerThreadSource } from './PeerThreadSource';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { resolveSubagentToolCalls, type SubagentToolCalls } from './subagentToolCalls';
 import { activityOutcomeLabels, DURATION_WORTH_SHOWING_MS, ToolCard } from './ToolCard';
-import { DisclosureChevron, Icon, OutcomeMark } from './icons';
+import { DisclosureChevron, Icon, OutcomeMark, Spinner } from './icons';
 import { Wordmark } from './Wordmark';
-import { useContentContinuation, useTranscriptDetail, useTranscriptController } from './transcriptDetail';
+import { useAutomaticContentRead, useContentContinuation, useTranscriptDetail, useTranscriptController, useTranscriptTarget } from './transcriptDetail';
+import { useSessionRemainderPending } from './SessionRemainder';
 import { ContentContinuation, frameContentSource, MESSAGE_TEXT_ROOTS, OUTPUT_ROOTS, SHELL_COMMAND_ROOTS, TASK_COMMAND_ROOTS, TASK_OUTPUT_ROOTS, TURN_STEP_ROOTS } from './ContentContinuation';
-import { SessionRemainder, useSessionRemainderPending } from './SessionRemainder';
 import { BridgedOriginRow } from './message/BridgedOriginLine';
 import { MessageRow, SpeakerHead, speakerOf } from './message/MessageRow';
 import { ActivitySummaryRow, HandoffRow, isSilentActivity, OutcomeLine, PresenceLine } from './message/MessageTimelineRows';
 import { displayUserMessageText, editableUserMessageText } from './message/messageSource';
-import { buildMessageNodes, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
+import { buildMessageNodes, completedTurnIds, isInboundHandoff, presenceOf, speakerKey } from './message/messageTimeline';
 import { writeTimelineView, type TimelineView } from './message/messageViewMode';
 import { useMessageViewContext } from './message/messageViewContext';
 
@@ -302,7 +314,7 @@ export interface TranscriptRowActions {
   /** Turn running / resyncing: mutating actions render but disable. */
   disabled: boolean;
   onEditMessage: (block: UserBlock, text: string, attachments?: readonly ComposerAttachment[], presentation?: TextPresentation) => void | Promise<void>;
-  loadEditAttachments?: (block: UserBlock) => Promise<readonly ComposerAttachment[]>;
+  loadEditAttachments?: (block: UserBlock, signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onRegenerate: (block: AssistantBlock) => void;
   onFork: (block: UserBlock | AssistantBlock) => void;
   /** False when the session's engine cannot fork (external handshake said no): the fork action leaves the row. */
@@ -319,58 +331,79 @@ export interface TranscriptRowActions {
  * roster has no row for that sender yet.
  */
 export interface SenderIdentity {
+  readonly title?: string;
   readonly profile?: string;
   readonly model?: string;
 }
 
+const USER_MESSAGE_DETAILS_ROOTS: readonly string[] = ['content', 'presentation', 'origin', 'attachmentIds'];
+const USER_MESSAGE_ROOTS: readonly string[] = [...MESSAGE_TEXT_ROOTS, ...USER_MESSAGE_DETAILS_ROOTS];
+
 const UserMessage = memo(function UserMessage({
   block,
   onCancelQueued: _onCancelQueued,
+  onRetryPending,
   rowActions,
   annotations,
   senderIdentities,
+  onOpenAgent,
 }: {
   block: UserBlock;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   rowActions?: TranscriptRowActions;
   /** Timeline annotations anchored to this message's text (identity-stable). */
   annotations?: readonly TimelineAnnotation[];
   /** senderAgentId → role profile / model, for the injected-message label. */
   senderIdentities?: ReadonlyMap<string, SenderIdentity>;
+  /**
+   * Opens an agent's own timeline — the same entry the timeline's subagent
+   * cards use. The injected sender's name calls it with the sender's real
+   * agent id; with no opener (a read-only surface) that name stays a label.
+   */
+  onOpenAgent?: (agentId: string) => void;
 }) {
   const { t, time } = useI18n();
   const outcomeActions = usePromptOutcomeActions();
   const messageLink = useMessageLink();
   const [editing, setEditing] = useState(false);
   const tapActions = useMessageRowTapActions<HTMLDivElement>();
+  const { contentRef, contentId, isOverflowing, expanded, toggle } =
+    useCollapsibleOverflow<HTMLDivElement>(block.text);
+  const clipped = !expanded && isOverflowing;
+  useFindReveal(`clamp:${block.id}`, expanded, useCallback((open: boolean) => { if (open) toggle(); }, [toggle]));
 
   // Edit/fork need the stable wire identity; parked prompts settle through
   // the queue strip instead of a rewrite.
   const settled = block.promptStatus === undefined && block.steerStatus === undefined;
-  const incomplete = useContentContinuation(block.contentSource, MESSAGE_TEXT_ROOTS).pending.length > 0;
+  const continuation = useContentContinuation(block.contentSource, USER_MESSAGE_ROOTS);
+  useAutomaticContentRead(block.contentSource, MESSAGE_TEXT_ROOTS);
+  const reader = useTranscriptController();
+  const target = useTranscriptTarget();
+  const textRange = continuation.pending.some((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])) &&
+    reader !== undefined && target !== undefined && reader.isContentRange(target.agentId, ref));
+  const serverRef = textRange ? undefined : continuation.pending.find((ref) => MESSAGE_TEXT_ROOTS.includes(String(ref.path[0])));
+  const serverRemaining = serverRef !== undefined;
+  const serverStatus = serverRef !== undefined ? continuation.statusOf(serverRef) : undefined;
+  const isServerLoading = serverStatus?.status === 'loading';
+  const isServerFailed = serverStatus?.status === 'error';
+  const incomplete = continuation.pending.length > 0;
   const canMutate = rowActions !== undefined && block.userMessageId !== undefined && settled && !incomplete;
-  const agentMessageLabel =
-    block.agentMessage === undefined
-      ? undefined
-      : block.agentMessage.senderAgentId === 'main'
-        ? t('agentMessage.fromMain')
-        : t('agentMessage.fromAgent', {
-            name:
-              block.agentMessage.senderTaskName ??
-              block.agentMessage.senderAgentId ??
-              t('agentMessage.agent'),
-          });
-  const peerThreadLabel =
-    block.peerThread === undefined
-      ? undefined
-      : t('agentMessage.fromThread', { id: block.peerThread.sessionId ?? '?' });
-  const senderLabel = agentMessageLabel ?? peerThreadLabel;
-  // The sender's role profile and model come from the session roster, keyed by
-  // the sender's agent id: the prompt origin carries no profile/model of its
-  // own. A sender with no roster row keeps the plain "{name} injected" label.
+
+  const handleContinue = useCallback(() => {
+    if (clipped) {
+      toggle();
+      return;
+    }
+    if (serverRemaining && serverRef !== undefined) {
+      continuation.request(serverRef);
+    }
+  }, [clipped, toggle, serverRemaining, serverRef, continuation]);
   const senderAgentId = block.agentMessage?.senderAgentId;
-  const senderIdentity =
-    senderAgentId === undefined ? undefined : senderIdentities?.get(senderAgentId);
+  const senderIdentity = senderAgentId === undefined ? undefined : senderIdentities?.get(senderAgentId);
+  const senderLabel = block.agentMessage === undefined ? undefined
+    : senderAgentId === 'main' ? t('agentMessage.fromMain')
+    : t('agentMessage.fromAgent', { name: senderIdentity?.title ?? block.agentMessage.senderTaskName ?? senderAgentId ?? t('agentMessage.agent') });
   const senderMeta = [
     senderIdentity?.profile === undefined
       ? undefined
@@ -385,21 +418,43 @@ const UserMessage = memo(function UserMessage({
   const senderDetails =
     senderAgentId === undefined
       ? undefined
-      : t('agentMessage.senderDetails', {
+      : [senderIdentity?.title !== block.agentMessage?.senderTaskName ? senderIdentity?.title : undefined,
+        t('agentMessage.senderDetails', {
           agentId: senderAgentId,
           profile: senderIdentity?.profile ?? unknownDetail,
           model: senderIdentity?.model ?? unknownDetail,
           task: block.agentMessage?.senderTaskName ?? unknownDetail,
-        });
+        })].filter((part) => part !== undefined).join('\n');
+  // The sender's name is the line's one control: it opens the sender's own
+  // timeline through the same entry the subagent rows use, so a message
+  // another agent injected leads straight to that agent. It carries the
+  // sender's real agent id — never the task name, which is only a label. A
+  // peer thread is a session rather than an agent of this timeline and a
+  // plain user message has no sender at all, so neither routes through this
+  // door; with no opener the name stays the plain label it always was.
+  const senderOpen = senderAgentId === undefined || onOpenAgent === undefined
+    ? undefined
+    : () => { onOpenAgent(senderAgentId); };
+  // Both forms of the name carry the same hooks, so a reader (or a proof)
+  // finds the line by them whether or not this surface can open the sender.
+  const senderAttrs = {
+    'data-agent-message-sender': block.agentMessage?.senderAgentId,
+    'data-peer-thread': block.peerThread?.sessionId,
+  };
   // The bubble reads the body only: a message from another agent or thread
   // states its source in the meta line above, while the durable text keeps
   // the producer's envelope for the model to read.
   const display = useMemo(() => displayUserMessageText(block), [block]);
   const carry = useMemo(() => parseSelectionCarryovers(display.text, display.presentation), [display.text, display.presentation]);
   const bodyText = carry.body;
+  const quoteItems = carry.quotes.length > 0
+    ? carry.quotes
+    : carry.quote !== null
+      ? [{ quote: carry.quote, source: carry.quoteSource }]
+      : [];
   const typedText = [
     ...carry.annotations.map((annotation) => `${buildQuotePrefix(annotation.quote)}${annotation.comment}\n\n`),
-    carry.quote === null ? '' : buildQuotePrefix(carry.quote),
+    ...quoteItems.map((item) => buildQuotePrefix(item.quote)),
     bodyText,
   ].join('');
   // Editing rewrites the durable message, so it opens the text the message
@@ -410,15 +465,60 @@ const UserMessage = memo(function UserMessage({
     if (display.text === block.text) return bodyText;
     return editableUserMessageText(block);
   }, [editing, display.text, block, bodyText]);
+  const initialEditAttachments = useMemo<readonly ComposerAttachment[]>(() => {
+    if (!editing) return [];
+    if (block.queuedContent !== undefined) {
+      return retainedAttachmentsFromContent(block.queuedContent);
+    }
+    if (block.media !== undefined && block.media.length > 0) {
+      return block.media.flatMap((mediaItem): ComposerAttachment[] => {
+        const url = mediaItem.blobHash === undefined ? mediaItem.url : `blobref:${mediaItem.mime};${mediaItem.blobHash}`;
+        if (mediaItem.kind === 'file') {
+          const fileId = mediaItem.fileId;
+          if (fileId === undefined) return [];
+          return [{ kind: 'retained', name: mediaItem.name ?? fileId, content: { type: 'file', file_id: fileId, name: mediaItem.name ?? fileId, media_type: mediaItem.mime ?? 'application/octet-stream', size: mediaItem.size ?? 0 } }];
+        }
+        if (url === undefined && mediaItem.fileId === undefined) return [];
+        return [{
+          kind: 'retained',
+          name: mediaItem.name ?? mediaItem.kind,
+          content: {
+            type: mediaItem.kind,
+            name: mediaItem.name,
+            source: url !== undefined ? { kind: 'url', url } : { kind: 'session_media', file_id: mediaItem.fileId! },
+          },
+          previewUrl: url !== undefined && /^(?:data:|blob:|https?:)/.test(url) ? url : undefined,
+        }];
+      });
+    }
+    return [];
+  }, [editing, block.queuedContent, block.media]);
   const threadRefDirectory = useThreadRefDirectory(
     useMemo(() => findThreadRefs(bodyText).map((ref) => ref.sessionId), [bodyText]),
   );
-  const carried = carry.annotations.length > 0 || carry.quote !== null;
+  const carried = carry.annotations.length > 0 || quoteItems.length > 0;
   const media = block.media ?? [];
   const projectBody = useCallback(
     (segment: string) => <ThreadRefText text={segment} projectSegment={projectUserText} />,
     [],
   );
+  const optimisticStatusLabel = block.optimisticStatus === 'offline'
+    ? t('transcript.sendUnconfirmed')
+    : block.optimisticStatus === 'server'
+      ? block.optimisticRetryable ? t('transcript.serverHeld') : t('transcript.serverSyncing')
+      : t('transcript.sending');
+  const optimisticStatusTitle = block.optimisticStatus === 'sending'
+    ? block.optimisticSlow
+      ? t(block.optimisticPreserved ? 'transcript.sendingSlowTitle' : 'transcript.sendingSlowNoBackupTitle')
+      : undefined
+    : block.optimisticStatus === 'offline'
+      ? t(block.optimisticPreserved ? 'transcript.sendUnconfirmedTitle' : 'transcript.sendUnconfirmedNoBackupTitle')
+      : block.optimisticRetryable ? t('transcript.serverHeldTitle') : t('transcript.serverSyncingTitle');
+  const optimisticStatusIcon = block.optimisticStatus === 'offline'
+    ? <Icon name="warning" size={12} />
+    : block.optimisticStatus === 'server' && block.optimisticRetryable
+      ? <Icon name="hold" size={12} />
+      : <Spinner label={optimisticStatusLabel} size={12} />;
   return (
     <div
       ref={tapActions.rowRef}
@@ -430,17 +530,32 @@ const UserMessage = memo(function UserMessage({
       {/* Meta line: the sender shows only when it is not the user (agent or
           peer-thread messages); the time stays quiet until hover/focus so the
           bubble reads as the user's own voice. */}
-      <span className="mb-1 flex min-h-[18px] items-baseline gap-1.5 pr-1">
-        {senderLabel !== undefined ? (
+      <span className="mb-1 flex min-h-[18px] max-w-full items-baseline gap-1.5 pr-1">
+        {block.agentMessage === undefined && block.peerThread !== undefined ? <PeerThreadSource source={block.peerThread} /> : null}
+        {senderLabel === undefined ? null : senderOpen === undefined ? (
           <span
-            data-agent-message-sender={block.agentMessage?.senderAgentId}
-            data-peer-thread={block.peerThread?.sessionId}
+            {...senderAttrs}
             className="text-[12px] font-medium text-ink-soft"
             title={senderDetails}
           >
             {senderLabel}
           </span>
-        ) : null}
+        ) : (
+          // The wash and the focus ring are the ones the timeline's agent rows
+          // already use for their click, so hovering this name reads as the
+          // same offer: the sink stays inside the meta line (the -mx-1/p-1
+          // pair cancels out), the ink lifts from soft to full, and Enter,
+          // Space or a tap all land on the one open entry above.
+          <button
+            type="button"
+            {...senderAttrs}
+            onClick={senderOpen}
+            title={senderDetails}
+            className="-mx-1 cursor-pointer rounded-md px-1 text-[12px] font-medium text-ink-soft transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+          >
+            {senderLabel}
+          </button>
+        )}
         {senderMeta === '' ? null : (
           <span
             data-agent-message-sender-meta={block.agentMessage?.senderAgentId}
@@ -453,7 +568,7 @@ const UserMessage = memo(function UserMessage({
         <span
           data-user-time
           className={`text-[12px] text-ink-faint transition-opacity duration-[var(--kiki-motion-quick)] ${
-            senderLabel !== undefined
+            senderLabel !== undefined || block.peerThread !== undefined
               ? ''
               : 'opacity-0 group-hover/msg:opacity-100 group-focus-within/msg:opacity-100 [@media(hover:none)]:opacity-100'
           }`}
@@ -463,7 +578,9 @@ const UserMessage = memo(function UserMessage({
       </span>
       {carried && !editing ? (
         <div data-user-context className="mb-1.5 flex max-w-[80%] flex-wrap items-center justify-end gap-1.5">
-          {carry.quote !== null ? <QuoteChip quote={carry.quote} /> : null}
+          {quoteItems.map((item, index) => (
+            <QuoteChip key={index} quote={item.quote} />
+          ))}
           {/* Sent notes fold into one bubble beside the message; the timeline
               itself only marks notes still riding the composer's draft. */}
           {carry.annotations.length > 0 ? (
@@ -480,19 +597,23 @@ const UserMessage = memo(function UserMessage({
       {editing && rowActions !== undefined ? (
         <UserMessageEditor
           initialText={editInitialText}
-          loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : () => rowActions.loadEditAttachments!(block)}
+          initialAttachments={initialEditAttachments}
+          loadAttachments={rowActions.loadEditAttachments === undefined ? undefined : (signal) => rowActions.loadEditAttachments!(block, signal)}
           onSubmit={async (text, attachments, editedPresentation) => {
             const prepared = editedPresentation === undefined
               ? prepareThreadRefContext(text, threadRefDirectory.info)
               : { text, presentation: editedPresentation };
-            const selections = selectionCarryoverPresentation(carry.annotations.map((annotation, index) => ({ ...annotation, id: String(index) })), carry.quote, carry.quoteSource);
+            const selections = selectionCarryoverPresentation(
+              carry.annotations.map((annotation, index) => ({ ...annotation, id: String(index) })),
+              quoteItems,
+            );
             const presentation = { spans: [...selections.presentation.spans, ...(shiftTextPresentation(prepared.presentation, selections.prefix.length)?.spans ?? [])] };
             await rowActions.onEditMessage(block, selections.prefix + prepared.text, attachments, presentation);
             setEditing(false);
           }}
           onCancel={() => { setEditing(false); }}
         />
-      ) : bodyText.trim() === '' ? null : (
+      ) : textRange || (bodyText.trim() === '' && !serverRemaining) ? null : (
         <div
           data-steer-status={block.steerStatus}
           className={`max-w-[80%] rounded-[14px] rounded-br-[6px] px-4 py-2 text-[14px] leading-[1.6] whitespace-pre-wrap text-ink steer-bubble ${
@@ -500,16 +621,105 @@ const UserMessage = memo(function UserMessage({
           }`}
         >
           <div
+            ref={contentRef}
+            id={contentId}
             data-source-block-id={block.id}
             data-source-version={sourceTextVersion(block.text)}
+            data-collapsible-content
+            className={
+              clipped
+                ? 'max-h-60 overflow-hidden relative collapsed-content-fade'
+                : undefined
+            }
           >
             {annotations === undefined || annotations.length === 0
               ? projectBody(bodyText)
               : projectTextWithAnnotationMarks(bodyText, annotations, projectBody)}
+            {!clipped && serverRemaining ? (
+              <span
+                data-content-continuation={serverStatus?.status ?? 'idle'}
+                className="inline-block ml-1 select-none"
+              >
+                <button
+                  type="button"
+                  data-user-ellipsis
+                  data-content-continuation-action
+                  onClick={handleContinue}
+                  disabled={isServerLoading}
+                  aria-busy={isServerLoading}
+                  aria-label={t(
+                    isServerFailed
+                      ? 'transcript.detail.retry'
+                      : isServerLoading
+                        ? 'transcript.content.loading'
+                        : 'transcript.loadMoreSegment',
+                  )}
+                  title={t(
+                    isServerFailed
+                      ? 'transcript.detail.retry'
+                      : isServerLoading
+                        ? 'transcript.content.loading'
+                        : 'transcript.loadMoreSegment',
+                  )}
+                  className="cursor-pointer font-mono tracking-widest text-[13px] leading-none text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+                >
+                  {isServerLoading ? '…' : isServerFailed ? '… ↺' : '……'}
+                </button>
+              </span>
+            ) : null}
           </div>
+          {clipped ? (
+            <div
+              data-content-continuation={serverRemaining ? (serverStatus?.status ?? 'idle') : undefined}
+              className="mt-1 flex justify-end select-none"
+            >
+              <button
+                type="button"
+                data-user-ellipsis
+                data-collapsible-toggle
+                data-content-continuation-action={serverRemaining ? '' : undefined}
+                onClick={handleContinue}
+                disabled={isServerLoading}
+                aria-busy={isServerLoading}
+                aria-label={t(
+                  isServerFailed
+                    ? 'transcript.detail.retry'
+                    : isServerLoading
+                      ? 'transcript.content.loading'
+                      : 'transcript.expandContent',
+                )}
+                title={t(
+                  isServerFailed
+                    ? 'transcript.detail.retry'
+                    : isServerLoading
+                      ? 'transcript.content.loading'
+                      : 'transcript.expandContent',
+                )}
+                className="cursor-pointer font-mono tracking-widest text-[13px] leading-none text-ink-faint transition-colors hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
+              >
+                {isServerLoading ? '…' : isServerFailed ? '… ↺' : '……'}
+              </button>
+            </div>
+          ) : null}
         </div>
       )}
-      <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation} renderText={projectBody} label={t('subagent.message')} className="mt-1 justify-end" />
+      {!editing && isOverflowing && expanded ? (
+        <button
+          type="button"
+          data-collapsible-toggle
+          onClick={toggle}
+          aria-expanded={expanded}
+          aria-controls={contentId}
+          className="mt-1 mr-1 inline-flex items-center gap-1 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink cursor-pointer"
+        >
+          {t('transcript.showLess')}
+          <Icon name="chevron" size={12} className="-rotate-90" />
+        </button>
+      ) : null}
+      {textRange ? <ContentContinuation source={block.contentSource} roots={MESSAGE_TEXT_ROOTS} presentation={block.presentation}
+        renderText={(text) => projectBody(displayUserMessageText({ ...block, text, presentation: undefined }).text)}
+        label={t('subagent.message')} className="mt-1 max-w-[80%]" /> : null}
+      <ContentContinuation source={block.contentSource} roots={USER_MESSAGE_DETAILS_ROOTS} label={t('subagent.message')} className="mt-1 justify-end" />
       {/* Row actions hang under the bubble they belong to, flush right: an
           overlay off the row's bottom edge that reserves no height and never
           sits over the bubble's own inline links. */}
@@ -527,8 +737,26 @@ const UserMessage = memo(function UserMessage({
       ) : null}
 
       {block.optimisticStatus !== undefined ? (
-        <span role="status" data-optimistic-status={block.optimisticStatus} className="mt-1 mr-1 text-[11px] text-ink-faint">
-          {t(block.optimisticStatus === 'slow' ? 'transcript.stillSending' : 'transcript.sending')}
+        <span
+          role="status"
+          data-optimistic-status={block.optimisticStatus}
+          data-optimistic-slow={block.optimisticSlow === true ? '' : undefined}
+          title={optimisticStatusTitle}
+          className={`mt-1 mr-1 flex items-center gap-1.5 text-[11px] ${block.optimisticStatus === 'offline' || block.optimisticRetryable ? 'text-amber-ink' : 'text-ink-faint'}`}
+        >
+          {optimisticStatusIcon}
+          <span>{optimisticStatusLabel}</span>
+          {block.optimisticRetryable && block.promptId !== undefined && onRetryPending !== undefined ? (
+            <button
+              type="button"
+              data-pending-retry
+              aria-label={t('transcript.retryEarlier')}
+              onClick={(event) => { event.stopPropagation(); onRetryPending(block.promptId!); }}
+              className="font-medium text-selected-ink underline decoration-dotted hover:decoration-solid focus-visible:outline-2 focus-visible:outline-selected-ink"
+            >
+              {t('transcript.retryEarlier')}
+            </button>
+          ) : null}
         </span>
       ) : null}
       {block.steerStatus !== undefined ? (
@@ -567,12 +795,103 @@ const UserMessage = memo(function UserMessage({
   );
 });
 
+function parseFileUriPath(target: string): string | undefined {
+  if (!/^file:\/\//i.test(target)) return undefined;
+  try {
+    const url = new URL(target);
+    let path = decodeURIComponent(url.pathname);
+    if (/^\/[A-Za-z]:\//.test(path)) path = path.slice(1);
+    if (url.hostname !== '' && url.hostname !== 'localhost') path = `//${url.hostname}${path}`;
+    return path === '' ? undefined : path;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizePath(p: string): string {
+  return p.replaceAll('\\', '/');
+}
+
+export function matchesMediaRef(item: MediaRef, rawTarget: string): boolean {
+  if (item.kind !== 'image') return false;
+
+  const unwrapped = unwrapFileLinkTarget(rawTarget) ?? rawTarget;
+  const target = unwrapped.trim();
+  if (target === '') return false;
+
+  // Canonical fileId match (exact equality, not suffix/substring)
+  if (item.fileId !== undefined) {
+    const daemonFileId = parseDaemonFileRefFileId(target);
+    if (daemonFileId !== undefined && daemonFileId === item.fileId) return true;
+    if (target === item.fileId || target === `kimi-file://${item.fileId}`) return true;
+  }
+
+  // Canonical blobHash match (exact equality, not substring)
+  if (item.blobHash !== undefined) {
+    const blobref = parseMediaBlobRef(target);
+    if (blobref !== undefined && blobref.hash === item.blobHash) return true;
+    if (target === item.blobHash) return true;
+  }
+
+  // Canonical detail.attachmentId match (exact equality, not substring)
+  if (item.detail?.attachmentId !== undefined) {
+    if (target === item.detail.attachmentId || target === `attachment://${item.detail.attachmentId}`) {
+      return true;
+    }
+  }
+
+  // Canonical URL match (exact string equality, preserving query and hash)
+  if (item.url !== undefined) {
+    if (target === item.url) return true;
+  }
+
+  // Canonical file path match (exact normalized path equality, not suffix or filename-only match)
+  if (item.path !== undefined) {
+    const normItemPath = normalizePath(item.path);
+    const fileUriPath = parseFileUriPath(target);
+    const candidatePath = fileUriPath !== undefined ? normalizePath(fileUriPath) : normalizePath(target);
+    if (candidatePath === normItemPath) return true;
+  }
+
+  return false;
+}
+
+export function filterMediaNotRenderedInText(
+  media: readonly MediaRef[] | undefined,
+  targets: readonly string[],
+): readonly MediaRef[] | undefined {
+  if (media === undefined || media.length === 0 || targets.length === 0) return media;
+  const remainingTargets = [...targets];
+  const filtered: MediaRef[] = [];
+  for (const item of media) {
+    if (item.kind !== 'image') {
+      filtered.push(item);
+      continue;
+    }
+    const matchIndex = remainingTargets.findIndex((target) => matchesMediaRef(item, target));
+    if (matchIndex >= 0) {
+      remainingTargets.splice(matchIndex, 1);
+    } else {
+      filtered.push(item);
+    }
+  }
+  return filtered.length > 0 ? filtered : undefined;
+}
+
+function DedupedAssistantMedia({ media }: { readonly media: readonly MediaRef[] | undefined }) {
+  const targets = useRenderedImageTargets();
+  const visible = filterMediaNotRenderedInText(media, targets);
+  if (visible === undefined) return null;
+  return <MediaPartList media={visible} />;
+}
+
 const AssistantMessage = memo(function AssistantMessage({
   block,
   rowActions,
   isLatestFinal = false,
   annotations,
   stopShownByTail = false,
+  deliveredReply = false,
 }: {
   block: AssistantBlock;
   rowActions?: TranscriptRowActions;
@@ -580,6 +899,8 @@ const AssistantMessage = memo(function AssistantMessage({
   isLatestFinal?: boolean;
   /** The visible turn tail already carries this turn's stop. */
   stopShownByTail?: boolean;
+  /** This assistant text is the reply the message view speaks. */
+  deliveredReply?: boolean;
   /** Timeline annotations anchored to this message's text (identity-stable). */
   annotations?: readonly TimelineAnnotation[];
 }) {
@@ -588,7 +909,15 @@ const AssistantMessage = memo(function AssistantMessage({
   const tapActions = useMessageRowTapActions<HTMLDivElement>();
   const source = frameContentSource(block);
   const incomplete = useContentContinuation(source, MESSAGE_TEXT_ROOTS).pending.length > 0;
-  const internalProse = useMessageViewContext().internalProse && block.text !== '';
+  const { sessionId } = useMessageViewContext();
+  const { isOutputLayerActive } = useOutputLayer(sessionId);
+  const [readingText, setReadingText] = useState(block.text);
+  useEffect(() => {
+    if (!isOutputLayerActive) {
+      setReadingText(block.text);
+    }
+  }, [isOutputLayerActive, block.text]);
+  const internalProse = useMessageViewContext().internalProse && block.text !== '' && !deliveredReply;
   const streaming = block.streaming && block.text !== '';
   const { prefix, tail } = useMemo(
     () => (streaming ? splitStreamingText(block.text) : { prefix: '', tail: '' }),
@@ -619,7 +948,17 @@ const AssistantMessage = memo(function AssistantMessage({
       {/* No leading marker: the right-aligned user bubble already carries
           the turn boundary, so the answer sits on the page as prose. */}
       <div data-assistant-prose className="kiki-prose min-w-0">
-        {streaming ? (
+        <RenderedImageScope>
+        {isOutputLayerActive && block.text !== '' ? (
+          <AssistantOutputContent
+            messageId={block.id}
+            sessionId={sessionId}
+            sourceText={block.text}
+            isStreamingSource={streaming}
+            annotations={annotations}
+            onReadingTextChange={setReadingText}
+          />
+        ) : streaming ? (
           <>
             {segments.length > 0 ? (
               <div className="kiki-md-segments">
@@ -634,15 +973,16 @@ const AssistantMessage = memo(function AssistantMessage({
             </div>
           </>
         ) : (
-          <>
-            {/* Marks ride the settled render only: a streaming block's text
-                still moves under the quote, and a quote split across the
-                memoized prefix chunks would silently lose its mark anyway. */}
-            {block.text !== '' ? <Markdown text={block.text} sourceBlockId={block.id} annotationTargets={annotations} /> : null}
-            {block.streaming ? <span className="stream-caret font-mono">▍</span> : null}
-          </>
+          block.text !== '' ? (
+            <Markdown
+              text={block.text}
+              sourceBlockId={block.id}
+              annotationTargets={annotations}
+            />
+          ) : null
         )}
-        {block.media !== undefined ? <MediaPartList media={block.media} /> : null}
+        <DedupedAssistantMedia media={block.media} />
+        </RenderedImageScope>
         {/* The turn tail's "Stopped by you" divider already states the stop
             of the latest turn; the inline mark stays for older stopped turns. */}
         {block.stopped === true && !stopShownByTail ? (
@@ -656,7 +996,7 @@ const AssistantMessage = memo(function AssistantMessage({
       {showActions ? (
         <MessageRowActions
           align="left"
-          copyText={incomplete ? undefined : block.text}
+          copyText={incomplete ? undefined : (isOutputLayerActive ? readingText : block.text)}
           linkHref={messageLink?.(block.id)}
           canRegenerate={rowActions !== undefined && isLatestFinal}
           canFork={rowActions !== undefined && rowActions.canFork !== false && isLatestFinal}
@@ -826,7 +1166,7 @@ const SystemMessage = memo(function SystemMessage({ block }: { block: SystemBloc
 
 function PlainSystemMessage({ block }: { block: SystemBlock }) {
   const { t, time } = useI18n();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(block.variant === 'injection');
   useFindReveal(block.id, open, setOpen);
   const failed = block.variant === 'task' && isFailedTaskNotificationText(block.text);
   return (
@@ -1298,6 +1638,60 @@ function SubagentCompactCard({
   );
 }
 
+/**
+ * The descendants this dispatch did not create: one quiet line carrying how
+ * many they are and whether any still run or failed, opened by the reader. It
+ * says nothing about their age and removes nothing — it exists only so a
+ * whole subtree does not fill the timeline before it is asked for. It sits
+ * inside the card that owns them rather than beside it, because it groups that
+ * card's own children — the same hairline spine the history fold and the
+ * subagent group use — rather than introducing a new event. Its open state is
+ * the reader's for the rest of the view: a descendant that starts running
+ * later does not unfold a group they closed.
+ */
+function OtherDescendantGroup({
+  groupKey,
+  members,
+  renderMember,
+}: {
+  groupKey: string;
+  members: readonly AgentTreeNode[];
+  renderMember: (member: AgentTreeNode) => ReactNode;
+}) {
+  const { t, tp } = useI18n();
+  const { open, toggle } = useDispatchGroup(groupKey);
+  const counts = countFoldedDescendants(members);
+  const summary = [
+    tp('subagent.otherGroupCount', counts.total),
+    counts.running > 0 ? t('subagent.otherGroupRunning', { count: counts.running }) : null,
+    counts.failed > 0 ? t('subagent.otherGroupFailed', { count: counts.failed }) : null,
+  ].filter((part): part is string => part !== null).join(' · ');
+  return (
+    <ActivityRow
+      className="ml-4"
+      attrs={{ 'data-other-descendants': counts.total, 'data-other-descendants-open': open || undefined }}
+      glyph={<DisclosureChevron open={open} className="text-ink-faint" />}
+      chevronInGlyph
+      label={t('subagent.otherGroup')}
+      detail={<span className="text-ink-faint">{summary}</span>}
+      status={counts.failed > 0
+        ? <OutcomeMark state="failed" labels={activityOutcomeLabels(t)} />
+        : counts.running > 0
+          ? <OutcomeMark state="running" labels={activityOutcomeLabels(t)} />
+          : undefined}
+      expanded={open}
+      onToggle={toggle}
+      ariaLabel={t('subagent.otherGroupAria', { summary })}
+    >
+      {open ? (
+        <div className="space-y-1">
+          {members.map((member) => renderMember(member))}
+        </div>
+      ) : undefined}
+    </ActivityRow>
+  );
+}
+
 const SubagentCard = memo(function SubagentCard({
   block,
   forest,
@@ -1350,6 +1744,35 @@ const SubagentCard = memo(function SubagentCard({
   }, [active]);
   const childCount = node?.childIds.length ?? children.length;
   const toolCalls = resolveSubagentToolCalls(block, node);
+    // Membership is a DESCENDANT's immutable birth against THIS CARD's own run
+  // window, and the card supplies both ends of that window. The live node is
+  // deliberately NOT consulted: it tracks the agent's newest run, so filling a
+  // missing window from it would slide this card's boundary onto a later
+  // resume and reopen exactly the descendants it must fold. Nothing here is a
+  // confirmed same-dispatch record, so it is not a substitute. A card with no
+  // window of its own therefore folds every descendant.
+  const descendantGroups = groupDescendantsByDispatch(
+    { startedAt: block.startedAt, endedAt: block.endedAt, status: block.status },
+    children,
+  );
+  // This card is one AgentRun call, so the call that dispatched it identifies
+  // the fold group's open/closed state. Keying on the agent would make two
+  // cards for one resumed agent share a single choice, and opening the older
+  // card's group would open the newer one's too. The block id is derived from
+  // the agent and cannot separate them, so the dispatch call is used, with the
+  // block id as the fallback for a card that never recorded one.
+  const dispatchGroupKey = `${block.parentToolCallId ?? block.id}`;
+  const renderChildCard = (child: AgentTreeNode): ReactNode => (
+    <SubagentCard
+      key={child.agentId}
+      block={childBlocks?.get(child.agentId) ?? syntheticChildBlock(child)}
+      forest={forest}
+      depth={depth + 1}
+      childBlocks={childBlocks}
+      onOpenAgent={onOpenAgent}
+      displayStatus={child.status}
+    />
+  );
   if (!full) {
     return (
       <SubagentCompactCard
@@ -1455,20 +1878,18 @@ const SubagentCard = memo(function SubagentCard({
           ) : null}
           {expanded && children.length > 0 ? (
             <div className="mt-1 space-y-1">
-              {children.map((child) => {
-                const nested = childBlocks?.get(child.agentId) ?? syntheticChildBlock(child);
-                return (
-                  <SubagentCard
-                    key={child.agentId}
-                    block={nested}
-                    forest={forest}
-                    depth={depth + 1}
-                    childBlocks={childBlocks}
-                    onOpenAgent={onOpenAgent}
-                    displayStatus={child.status}
-                  />
-                );
-              })}
+              {/* The descendants this dispatch provably created lay out; every
+                  other one folds into one line, including any this view cannot
+                  place. Folding is a default, not a deletion and not a claim
+                  about age — the reader opens it and finds the same subtree. */}
+              {descendantGroups.current.map((child) => renderChildCard(child))}
+              {descendantGroups.other.length > 0 ? (
+                <OtherDescendantGroup
+                  groupKey={dispatchGroupKey}
+                  members={descendantGroups.other}
+                  renderMember={renderChildCard}
+                />
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -1576,6 +1997,20 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
   };
 }
 
+// A goal notice names the actual change (set, paused, resumed, blocked,
+// completed, cleared) instead of flattening every lifecycle event into
+// "goal updated". The engine's reason, when present, rides on the hover
+// title only, so the timeline line itself never grows a wall.
+const GOAL_CHANGE_I18N_KEY: Record<GoalMarkerChange['kind'], I18nKey> = {
+  created: 'transcript.marker.goal.created',
+  updated: 'transcript.marker.goal.updated',
+  paused: 'transcript.marker.goal.paused',
+  resumed: 'transcript.marker.goal.resumed',
+  blocked: 'transcript.marker.goal.blocked',
+  completed: 'transcript.marker.goal.completed',
+  cleared: 'transcript.marker.goal.cleared',
+};
+
 /**
  * A notice is a boundary, not an event: compaction, a marker, the start of a
  * plan. It gets the divider rule so the log reads as regions. A danger notice
@@ -1586,8 +2021,11 @@ function syntheticChildBlock(node: AgentTreeNode): SubagentBlock {
 const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const { t, time } = useI18n();
   const [open, setOpen] = useState(false);
-  const baseText = block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
-  const text = block.reasonCodes?.includes('notes_directives_budget') ? t('transcript.marker.reason.notes_directives_budget') : baseText;
+  const baseText = block.goalChange !== undefined
+    ? t(GOAL_CHANGE_I18N_KEY[block.goalChange.kind])
+    : block.i18n !== undefined ? t(block.i18n.key, block.i18n.params) : block.text;
+  const text = baseText;
+  const notesBudgetExceeded = block.reasonCodes?.includes('notes_directives_budget') === true;
   // Why a compaction took the path it did (e.g. summary instead of a fresh
   // window): one sentence per engine reason code; an unknown code reads as-is.
   const reasonText = (code: string) => {
@@ -1598,7 +2036,11 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
   const reasons = [...(block.reasonCodes ?? []).map(reasonText), ...(block.compactionFailure === undefined ? [] : [block.compactionFailure])];
   const history = block.compactionHistory ?? [];
   const expandable = reasons.length > 0 || history.length > 0;
-  const title = [time.absoluteTime(block.createdAt), ...reasons].filter(Boolean).join('\n');
+  // `goalChange.reason` is the engine string for this notice. Compaction
+  // reason codes stay in `reasons` and can also open under the line.
+  const title = [time.absoluteTime(block.createdAt), block.goalChange?.reason, ...reasons]
+    .filter((part) => part !== undefined && part !== '')
+    .join('\n');
   const count = block.markerRepeatCount ?? 1;
   const repeatedText = count > 1 ? history.length > 0
     ? t('transcript.marker.compactionRepeated', { label: text, count }) : `${text} ×${count}` : text;
@@ -1608,7 +2050,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
       <TimelineDivider
         tone={block.tone === 'danger' ? 'warn' : 'plain'}
         title={title}
-        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key }}
+        attrs={{ 'data-notice-tone': block.tone, 'data-notice-key': block.i18n?.key, 'data-goal-change': block.goalChange?.kind }}
       >
         {expandable ? (
           <button
@@ -1623,6 +2065,7 @@ const Notice = memo(function Notice({ block }: { block: NoticeBlock }) {
           </button>
         ) : label}
       </TimelineDivider>
+      {notesBudgetExceeded ? <p data-compaction-notes-budget className="mt-1 text-[12px] leading-snug text-ink-soft">{t('transcript.marker.reason.notes_directives_budget')}</p> : null}
       {/* The reasons are body text under the rule, not a centred aside: the
           list starts on the column's left edge with the same hanging indent
           as a list in an answer (.kiki-md ul), faint bullets like there too. */}
@@ -1671,17 +2114,51 @@ function ReadRunSummary({ group }: { group: ToolGroup }) {
   );
 }
 
+/**
+ * Every original block hands the image gallery its own place in the session's
+ * blocks: `order` is that block's index in `state.blocks`, never the position
+ * of the row a projection put it in, so an image keeps its true sequence
+ * whether its block stands alone, sits inside a fold, or rides a merged run.
+ * The agent is the timeline's own — the scope the gallery filters by. A block
+ * with no original index (a card synthesized from the forest) keeps the
+ * enclosing block's order instead of inventing one.
+ */
+function withGalleryOrder(
+  blockId: string | undefined,
+  agentId: string,
+  blockOrder: ReadonlyMap<string, number>,
+  content: ReactNode,
+): ReactNode {
+  if (blockId === undefined) return content;
+  const order = blockOrder.get(blockId);
+  if (order === undefined) return content;
+  return <MediaGalleryOrder agentId={agentId} order={order} blockId={blockId}>{content}</MediaGalleryOrder>;
+}
+
+/**
+ * The block whose place in the gallery a row's content takes. A delivered
+ * message is projected from its SendMessage call, and the call is the block
+ * that actually lives in the session's blocks — so the call owns the place,
+ * not the row id the projection minted for it.
+ */
+function galleryBlockId(block: Block): string {
+  return block.kind === 'message' ? block.sourceTool?.id ?? block.id : block.id;
+}
+
 const ToolGroupRow = memo(
   function ToolGroupRow({
     group,
     agentId,
     agentNames,
     onOpenAgent,
+    blockOrder,
   }: {
     group: ToolGroup;
     agentId: string;
     agentNames?: ReadonlyMap<string, string>;
     onOpenAgent?: (agentId: string) => void;
+    /** blockId → index in `state.blocks`: a member's real place in the gallery. */
+    blockOrder: ReadonlyMap<string, number>;
   }) {
   const { t, time } = useI18n();
   const running = groupHasRunning(group);
@@ -1723,7 +2200,11 @@ const ToolGroupRow = memo(
         // their hover wash stops at the spine (`nested`).
         <div className="-ml-[9px] border-l border-hairline pl-[17px]">
           {group.tools.map((member) => (
-            <ToolCard key={member.id} nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+            <Fragment key={member.id}>
+              {withGalleryOrder(member.id, agentId, blockOrder, (
+                <ToolCard nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+              ))}
+            </Fragment>
           ))}
         </div>
       ) : undefined}
@@ -1742,6 +2223,7 @@ const ToolGroupRow = memo(
     prev.group.startedAt === next.group.startedAt &&
     prev.agentNames === next.agentNames &&
     prev.onOpenAgent === next.onOpenAgent &&
+    prev.blockOrder === next.blockOrder &&
     prev.group.tools.every((tool, index) => tool === next.group.tools[index]),
 );
 
@@ -1853,6 +2335,7 @@ const BlockView = memo(function BlockView({
   onAnswerQuestion,
   onDismissQuestion,
   onCancelQueued,
+  onRetryPending,
   agentNames,
   senderIdentities,
   approvalShortcutHints,
@@ -1866,10 +2349,13 @@ const BlockView = memo(function BlockView({
   latestFinalAssistantId,
   annotations,
   stoppedTailTurnId,
+  deliveredReply = false,
 }: {
   block: Exclude<Block, ToolBlock>;
   /** Turn whose stop the visible tail divider already states. */
   stoppedTailTurnId?: string;
+  /** This assistant text is the reply the message view speaks. */
+  deliveredReply?: boolean;
   readOnly: boolean;
   onResolveApproval: (
     approvalId: string,
@@ -1880,6 +2366,7 @@ const BlockView = memo(function BlockView({
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   /** subagentId → display name, for tagging child-origin interaction cards. */
   agentNames?: ReadonlyMap<string, string>;
   /** senderAgentId → role profile / model, for the injected-message label. */
@@ -1920,9 +2407,11 @@ const BlockView = memo(function BlockView({
         <UserMessage
           block={block}
           onCancelQueued={readOnly ? undefined : onCancelQueued}
+          onRetryPending={readOnly ? undefined : onRetryPending}
           rowActions={liveRowActions}
           annotations={annotations}
           senderIdentities={senderIdentities}
+          onOpenAgent={onOpenAgent}
         />
       );
     case 'system-reminder':
@@ -1939,6 +2428,7 @@ const BlockView = memo(function BlockView({
           isLatestFinal={block.id === latestFinalAssistantId}
           annotations={annotations}
           stopShownByTail={stoppedTailTurnId !== undefined && sameTurn(block.turnId, stoppedTailTurnId)}
+          deliveredReply={deliveredReply}
         />
       );
     case 'thinking':
@@ -2082,6 +2572,7 @@ const MessageViewRow = memo(function MessageViewRow({
   agentNames,
   onOpenAgent,
   onOpenProcess,
+  blockOrder,
 }: {
   node: MessageBlock | ActivitySummary | NoticeBlock | UserBlock;
   previous: MessageViewNode | undefined;
@@ -2090,6 +2581,8 @@ const MessageViewRow = memo(function MessageViewRow({
   agentNames: ReadonlyMap<string, string>;
   onOpenAgent?: (agentId: string) => void;
   onOpenProcess: (turnId: string | undefined, blockId?: string) => void;
+  /** blockId → index in `state.blocks`: a row's real place in the gallery. */
+  blockOrder: ReadonlyMap<string, number>;
 }) {
   const { t } = useI18n();
   const context = useMessageViewContext();
@@ -2154,7 +2647,7 @@ const MessageViewRow = memo(function MessageViewRow({
         summary={node}
         onOpenProcess={() => { onOpenProcess(turnId, node.members[0]?.id); }}
         renderMember={(member) =>
-          member.kind === 'tool' ? (
+          withGalleryOrder(member.id, agentId, blockOrder, member.kind === 'tool' ? (
             <ToolCard nested block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
           ) : member.kind === 'shell' ? (
             <ShellMessage block={member} />
@@ -2167,14 +2660,21 @@ const MessageViewRow = memo(function MessageViewRow({
             </p>
           ) : member.kind === 'subagent' ? (
             <SubagentEventLine name={member.name} status={member.status} onOpen={onOpenAgent === undefined ? undefined : () => { onOpenAgent(member.subagentId); }} />
-          ) : null
+          ) : null)
         }
       />
     );
   }
+  // A delivered message, a handoff it received and a stored record are each
+  // exactly one original block, so the row body wears that block's place in
+  // the gallery — a delivered message wears its source call's, a promoted
+  // reply its assistant block's, the block that really lives in `state.blocks`;
+  // an activity summary is a projection of many, so its members carry their own
+  // above and the summary itself has no index to hand over.
+  const galleryId = node.kind === 'message' ? node.sourceTool?.id ?? node.sourceBlock?.id ?? node.id : node.id;
   return (
     <div data-block-id={node.id} data-turn-id={turnId} data-message-view-row={node.kind}>
-      {body}
+      {withGalleryOrder(galleryId, agentId, blockOrder, body)}
     </div>
   );
 });
@@ -2457,6 +2957,9 @@ const AGENT_LANE = 'w-full max-w-[var(--kiki-agent-column,640px)]';
 
 const TRANSCRIPT_OVERSCAN = 6;
 const EMPTY_HELD: ReadonlySet<string> = new Set();
+/** No turn reply is delivered speech: the default when the process view has nothing to excuse. */
+const EMPTY_PROMOTED: ReadonlySet<string> = new Set();
+const EMPTY_TURN_IDS: readonly string[] = [];
 const TRANSCRIPT_OLDER_INTENT_MS = 1000;
 const EMPTY_TRANSCRIPT_ITEM_KEY = 'transcript-live-status';
 /** Row-offset tolerance for "the reader is still at that locate target". */
@@ -2475,11 +2978,6 @@ type PendingResetRestore = {
   frame: number | null;
 };
 
-/** A superseded request must stop before it pages history nobody is waiting for. */
-function signalAborted(signal: AbortSignal | undefined): boolean {
-  return signal?.aborted === true;
-}
-
 /**
  * Converge on the reader's row after an offset restore. A freshly mounted
  * timeline resolves the row's start from estimates until the rows are
@@ -2488,16 +2986,19 @@ function signalAborted(signal: AbortSignal | undefined): boolean {
  */
 async function settleRestoredAnchor(
   scroll: HTMLDivElement | null,
-  index: number,
+  resolveAnchor: () => { index: number; blockId?: string } | undefined,
   offset: number,
-  blockId: string | undefined,
-  signal: AbortSignal,
-  requireBlock: boolean,
+  cancelled: () => boolean,
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  settledFrames = 1,
 ): Promise<void> {
-  for (let frame = 0; frame < 12; frame += 1) {
+  let requestedIndex: number | undefined;
+  let stableFrames = 0;
+  for (let frame = 0; frame < 120; frame += 1) {
     await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
-    if (signal.aborted || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
+    if (cancelled() || scroll === null || !scroll.isConnected) throw new Error('Reading restore cancelled');
+    const hit = resolveAnchor();
+    if (hit === undefined) continue;
     const needsMeasurement = [...virtualizer.elementsCache].some(([key, element]) => {
       const rowIndex = virtualizer.indexFromElement(element);
       return element.isConnected && rowIndex >= 0 && rowIndex < virtualizer.options.count
@@ -2508,16 +3009,27 @@ async function settleRestoredAnchor(
     // measurement still compensates scroll and positions on the following
     // frame; drain that existing measurement path before accepting geometry.
     reconcileMountedRows(virtualizer);
-    if (needsMeasurement) continue;
-    const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${index}"]`);
-    if (row === null) continue;
+    if (needsMeasurement) { stableFrames = 0; continue; }
+    const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
+    if (row === null) {
+      if (hit.index !== requestedIndex) {
+        requestedIndex = hit.index;
+        virtualizer.scrollToIndex(requestedIndex, { align: 'start' });
+      }
+      continue;
+    }
     const block = [...row.querySelectorAll<HTMLElement>('[data-block-id]')]
-      .find((candidate) => candidate.dataset['blockId'] === blockId);
-    if (block === undefined && requireBlock) continue;
+      .find((candidate) => candidate.dataset['blockId'] === hit.blockId);
+    if (block === undefined && hit.blockId !== undefined) continue;
     const element = block ?? row;
     // offset = scrollTop - blockStart, so the block belongs at -offset.
     const delta = element.getBoundingClientRect().top - scroll.getBoundingClientRect().top + offset;
-    if (Math.abs(delta) < 2) return;
+    if (Math.abs(delta) < 2) {
+      stableFrames += 1;
+      if (stableFrames >= settledFrames) return;
+      continue;
+    }
+    stableFrames = 0;
     // Replace the estimate-based command as well as the DOM position, so its
     // pending reconcile cannot later undo an exact fold-member correction.
     virtualizer.scrollToOffset(scroll.scrollTop + delta, { align: 'start' });
@@ -2589,9 +3101,18 @@ type TranscriptRowProps = {
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   onOpenAgent?: (agentId: string) => void;
   /** Scroll back to a subagent's dispatch card (the end row's "Dispatch ↑"). */
   onLocateDispatch?: (agentId: string) => void;
+  /** blockId → index in `state.blocks`, the gallery's one ordering source. */
+  blockOrder: ReadonlyMap<string, number>;
+  /**
+   * Assistant blocks whose text the message view already speaks. The process
+   * view keeps its "internal" label for ordinary prose but not for what the
+   * reader was told.
+   */
+  promotedReplyIds?: ReadonlySet<string>;
 };
 
 function nodeUsesAgentNames(node: DisplayNode): boolean {
@@ -2619,6 +3140,24 @@ function subagentBranchEqual(
   }
   if (node.kind !== 'subagent') return true;
   return previousForest?.byId[node.subagentId] === nextForest?.byId[node.subagentId];
+}
+
+/** Assistant block ids a row draws, including the ones inside its folds. */
+function assistantIdsOf(node: DisplayNode): string[] {
+  if (node.kind === 'assistant') return [node.id];
+  if (node.kind !== 'history-fold') return [];
+  return node.members.flatMap((member) => assistantIdsOf(member));
+}
+
+/**
+ * Whether the delivered-reply set changed for anything this row draws. The set
+ * is rebuilt whenever the blocks change, but a row only cares about its own
+ * assistant blocks, so a token elsewhere never repaints it.
+ */
+function promotionEqual(previous: TranscriptRowProps, next: TranscriptRowProps): boolean {
+  if (previous.promotedReplyIds === next.promotedReplyIds) return true;
+  const ids = [...assistantIdsOf(previous.node), ...assistantIdsOf(next.node)];
+  return ids.every((id) => previous.promotedReplyIds?.has(id) === next.promotedReplyIds?.has(id));
 }
 
 /**
@@ -2650,8 +3189,11 @@ const TranscriptRow = memo(
     onAnswerQuestion,
     onDismissQuestion,
     onCancelQueued,
+    onRetryPending,
     onOpenAgent,
     onLocateDispatch,
+    blockOrder,
+    promotedReplyIds,
   }: TranscriptRowProps) {
     // data-turn-id makes a turn addressable from outside the transcript (the
     // /usage drilldown's ?turn= locator scrolls to it); absent on turn-less
@@ -2668,40 +3210,48 @@ const TranscriptRow = memo(
           renderMember={renderNode}
         />
       ) : member.kind === 'subagent-ended' ? (
-        <EndedRow ending={member} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} onLocateDispatch={onLocateDispatch} />
+        withGalleryOrder(member.note.id, agentId, blockOrder, (
+          <EndedRow ending={member} forest={forest} childBlocks={childBlocks} onOpenAgent={onOpenAgent} onLocateDispatch={onLocateDispatch} />
+        ))
       ) : member.kind === 'media-run' ? (
-        <MediaRunRow run={member} agentId={agentId} />
+        <MediaRunRow run={member} agentId={agentId} blockOrder={blockOrder} />
       ) : member.kind === 'subagent-group' ? (
         <SubagentGroupRow group={member} forest={forest} renderMember={(agent) => renderNode(agent, 'compact')} />
       ) : member.kind === 'tool-group' ? (
-        <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        <ToolGroupRow group={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} blockOrder={blockOrder} />
       ) : member.kind === 'tool' ? (
-        <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        withGalleryOrder(member.id, agentId, blockOrder, (
+          <ToolCard block={member} agentId={agentId} agentNames={agentNames} onOpenAgent={onOpenAgent} />
+        ))
       ) : member.kind === 'shell' ? (
-        <ShellMessage block={member} />
+        withGalleryOrder(member.id, agentId, blockOrder, <ShellMessage block={member} />)
       ) : (
-        <BlockView
-          block={member}
-          onResolveApproval={onResolveApproval}
-          onAnswerQuestion={onAnswerQuestion}
-          onDismissQuestion={onDismissQuestion}
-          onCancelQueued={onCancelQueued}
-          agentNames={agentNames}
-          senderIdentities={senderIdentities}
-          approvalShortcutHints={approvalShortcutHints}
-          readOnly={readOnly}
-          forest={forest}
-          childBlocks={childBlocks}
-          subagentFormOverride={
-            member.kind === 'subagent' ? subagentFormOverrides.get(member.subagentId) ?? cardForm : undefined
-          }
-          onToggleSubagentForm={onToggleSubagentForm}
-          onOpenAgent={onOpenAgent}
-          rowActions={rowActions}
-          latestFinalAssistantId={latestFinalAssistantId}
-          annotations={member.id === node.id ? annotations : undefined}
-          stoppedTailTurnId={stoppedTailTurnId}
-        />
+        withGalleryOrder(galleryBlockId(member), agentId, blockOrder, (
+          <BlockView
+            block={member}
+            onResolveApproval={onResolveApproval}
+            onAnswerQuestion={onAnswerQuestion}
+            onDismissQuestion={onDismissQuestion}
+            onCancelQueued={onCancelQueued}
+            onRetryPending={onRetryPending}
+            agentNames={agentNames}
+            senderIdentities={senderIdentities}
+            approvalShortcutHints={approvalShortcutHints}
+            readOnly={readOnly}
+            forest={forest}
+            childBlocks={childBlocks}
+            subagentFormOverride={
+              member.kind === 'subagent' ? subagentFormOverrides.get(member.subagentId) ?? cardForm : undefined
+            }
+            onToggleSubagentForm={onToggleSubagentForm}
+            onOpenAgent={onOpenAgent}
+            rowActions={rowActions}
+            latestFinalAssistantId={latestFinalAssistantId}
+            annotations={member.id === node.id ? annotations : undefined}
+            stoppedTailTurnId={stoppedTailTurnId}
+            deliveredReply={promotedReplyIds?.has(member.id) === true}
+          />
+        ))
       );
     // Conversation keeps the full content column; everything the agent DID is
     // inset into the shared activity lane, so a scan follows one glyph axis.
@@ -2723,6 +3273,7 @@ const TranscriptRow = memo(
     prev.agentId === next.agentId &&
     prev.readOnly === next.readOnly &&
     prev.approvalShortcutHints === next.approvalShortcutHints &&
+    prev.onRetryPending === next.onRetryPending &&
     (!nodeUsesAgentNames(prev.node) || prev.agentNames === next.agentNames) &&
     (prev.node.kind !== 'user' || prev.senderIdentities === next.senderIdentities) &&
     subagentBranchEqual(prev.node, prev.forest, next.forest) &&
@@ -2732,6 +3283,7 @@ const TranscriptRow = memo(
     prev.executionBadge === next.executionBadge &&
     prev.stoppedTailTurnId === next.stoppedTailTurnId &&
     prev.subagentFormOverrides === next.subagentFormOverrides &&
+    prev.blockOrder === next.blockOrder &&
     prev.onToggleSubagentForm === next.onToggleSubagentForm &&
     (prev.node.kind !== 'history-fold' || prev.openFolds.has(prev.node.id) === next.openFolds.has(next.node.id)) &&
     prev.onToggleFold === next.onToggleFold &&
@@ -2740,14 +3292,16 @@ const TranscriptRow = memo(
     prev.onDismissQuestion === next.onDismissQuestion &&
     prev.onCancelQueued === next.onCancelQueued &&
     prev.onOpenAgent === next.onOpenAgent &&
-    prev.onLocateDispatch === next.onLocateDispatch,
+    prev.onLocateDispatch === next.onLocateDispatch &&
+    promotionEqual(prev, next),
 );
 
 /** Jump-to-bottom pill driven by the virtualizer's end state. */
 function JumpToBottom({
-  virtualizer,
+  virtualizer, onJump,
 }: {
   virtualizer: Virtualizer<HTMLDivElement, HTMLDivElement>;
+  onJump: () => void;
 }) {
   const { t } = useI18n();
   if (virtualizer.isAtEnd(TRANSCRIPT_END_THRESHOLD)) return null;
@@ -2755,7 +3309,7 @@ function JumpToBottom({
     <button
       type="button"
       data-jump-to-latest
-      onClick={() => { virtualizer.scrollToEnd(); }}
+      onClick={onJump}
       className="anim-enter absolute bottom-4 left-1/2 z-10 flex min-h-8 -translate-x-1/2 items-center gap-1.5 rounded-full bg-panel px-3 text-[12px] font-medium text-ink-soft shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/.18)] transition-colors duration-[var(--kiki-motion-quick)] hover:text-ink"
     >
       <Icon name="arrowDown" size={12} /> {t('transcript.jumpToLatest')}
@@ -2777,7 +3331,7 @@ function HistoryPreviewReader({ agentId, turnId, state }: { agentId: string; tur
 
 function TopEdge({ state, onLoadOlder }: {
   state: SessionViewState;
-  onLoadOlder: () => Promise<boolean>;
+  onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
 }) {
   const { t } = useI18n();
   // Unverified coverage says one thing: the top of what loaded cannot be
@@ -2924,16 +3478,22 @@ const TAIL_ACTION = 'min-h-6 rounded-md px-1.5 text-[12px] font-medium text-ink-
 
 export const TurnTailLine = memo(function TurnTailLine({
   tail,
+  gap: replyGap,
   onResume,
   resumeDisabled = false,
   onRetry,
   retryDisabled = false,
 }: {
   tail: TurnTailInfo;
+  /**
+   * The turn completed without leaving anything to read. The line says so
+   * instead of letting the page end in silence.
+   */
+  gap?: TurnReplyGap;
   /** Present when the stopped turn can be re-run (cancelled tails only). */
   onResume?: () => void;
   resumeDisabled?: boolean;
-  /** Present when the failed turn's message can be sent again (failed tails only). */
+  /** Present when this turn's message can be sent again. */
   onRetry?: () => void;
   retryDisabled?: boolean;
 }) {
@@ -2941,6 +3501,9 @@ export const TurnTailLine = memo(function TurnTailLine({
   const [copied, setCopied] = useState(false);
   const isFailed = tail.state === 'failed';
   const isCancelled = tail.state === 'cancelled';
+  // Failure and a stop each own their line; an empty completion only exists
+  // where the turn actually completed.
+  const gap = isFailed || isCancelled ? undefined : replyGap;
   // Only an explicit stop request reads as "Stopped by you"; engine aborts,
   // restarts and records without provenance say "Interrupted".
   const cancellation = tail.cancellation ?? 'unknown';
@@ -2972,11 +3535,13 @@ export const TurnTailLine = memo(function TurnTailLine({
     <div
       data-turn-tail
       data-turn-tail-state={tail.state}
+      role={gap === undefined ? undefined : 'status'}
+      aria-live={gap === undefined ? undefined : 'polite'}
       className={`anim-enter py-1 ${isCancelled ? 'text-amber-ink' : ''}`}
     >
       <div className="flex items-center gap-3">
         <span className={`h-px flex-1 ${isCancelled ? 'bg-amber-rule/30' : 'bg-hairline'}`} />
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-center gap-x-2 gap-y-1">
           {isFailed ? (
             <span className="inline-flex items-center gap-1.5 text-[12px] font-medium text-ink-soft">
               <span aria-hidden data-turn-tail-dot className="h-1.5 w-1.5 rounded-full bg-danger" />
@@ -2986,6 +3551,19 @@ export const TurnTailLine = memo(function TurnTailLine({
             <span data-turn-tail-cancellation={cancellation} className="text-[12px] font-semibold text-amber-ink">
               {t(CANCELLATION_LABEL_KEY[cancellation])}
             </span>
+          ) : gap !== undefined ? (
+            <span data-turn-tail-gap={gap.work} className="text-[12px] font-medium text-ink-soft">
+              {t('transcript.noReply')}
+            </span>
+          ) : null}
+          {gap !== undefined ? (
+            <>
+              <span aria-hidden className="text-[12px] text-ink-faint">·</span>
+              <span data-turn-tail-gap-work className="text-[12px] text-ink-faint">
+                {t(gap.work === 'running' ? 'transcript.noReplyBackground'
+                  : gap.work === 'idle' ? 'transcript.noReplyIdle' : 'transcript.noReplyUnknown')}
+              </span>
+            </>
           ) : null}
           {isCancelled && onResume !== undefined ? (
             <>
@@ -3002,6 +3580,7 @@ export const TurnTailLine = memo(function TurnTailLine({
               </button>
             </>
           ) : null}
+          {gap !== undefined ? <span aria-hidden className="text-[12px] text-ink-faint">·</span> : null}
           <span className={`text-[12px] tabular-nums ${isCancelled ? 'text-amber-ink' : 'text-ink-faint'}`}>
             <RelativeTime at={tail.endedAt} />{facts.length > 0 ? ` · ${facts.join(' · ')}` : ''}
           </span>
@@ -3015,10 +3594,11 @@ export const TurnTailLine = memo(function TurnTailLine({
               {copied ? t('cb.copied') : t('cb.copy')}
             </button>
           ) : null}
-          {isFailed && onRetry !== undefined ? (
+          {(isFailed || (gap !== undefined && gap.work === 'idle')) && onRetry !== undefined ? (
             <button
               type="button"
-              data-turn-tail-retry
+              data-turn-tail-retry={isFailed ? '' : undefined}
+              data-turn-tail-gap-retry={isFailed ? undefined : ''}
               onClick={onRetry}
               disabled={retryDisabled}
               title={t('transcript.promptOutcome.retryTitle')}
@@ -3071,12 +3651,14 @@ export function Transcript({
   onAnswerQuestion,
   onDismissQuestion,
   onCancelQueued,
+  onRetryPending,
   onRetryLoad,
   readOnly = false,
   forest,
   onOpenAgent,
   rowActions,
   visible = true,
+  connected,
   view = 'process',
   draftAnnotations,
   onSaveDraftAnnotation,
@@ -3092,7 +3674,12 @@ export function Transcript({
    * place (or the latest message) instead of whatever the hidden box kept.
    */
   visible?: boolean;
-  onLoadOlder: () => Promise<boolean>;
+  /**
+   * Whether this window can still vouch for the session's live work facts.
+   * Undefined (or true) trusts them; false keeps unknown facts unknown.
+   */
+  connected?: boolean;
+  onLoadOlder: (signal?: AbortSignal) => Promise<boolean>;
   onResolveApproval: (
     approvalId: string,
     decision: ApprovalDecision,
@@ -3102,6 +3689,7 @@ export function Transcript({
   onAnswerQuestion: (questionId: string, answers: Record<string, QuestionAnswer>) => Promise<void>;
   onDismissQuestion: (questionId: string) => Promise<void>;
   onCancelQueued?: (promptId: string) => void;
+  onRetryPending?: (promptId: string) => void;
   onRetryLoad?: () => void;
   readOnly?: boolean;
   forest?: AgentForest;
@@ -3118,6 +3706,23 @@ export function Transcript({
 }) {
   const { t } = useI18n();
   const { blocks } = state;
+  const controller = useTranscriptController();
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const readSeekStructure = useCallback(async (signal: AbortSignal): Promise<boolean | undefined> => {
+    const ref = stateRef.current.contentRefs?.findLast((candidate) => candidate.source.kind === 'turn' &&
+      candidate.path[0] === 'steps' && (candidate.path.length === 1 || candidate.path.length === 3 && candidate.path[2] === 'frames'));
+    if (ref === undefined || controller === undefined) return undefined;
+    const key = JSON.stringify(ref);
+    const lease = controller.beginContentRead(agentId, ref.source, ['steps']);
+    try {
+      while (stateRef.current.contentRefs?.some((candidate) => JSON.stringify(candidate) === key)) {
+        if (signal.aborted || stateRef.current.detailLoads[`content:${key}`]?.status === 'error') return false;
+        await new Promise<void>((resolve) => { requestAnimationFrame(() => { resolve(); }); });
+      }
+      return !signal.aborted;
+    } finally { lease.release(); }
+  }, [controller, agentId]);
   const loaded = state.loaded && state.transcriptReady;
   const loadError = state.loadError ?? (!loaded && state.resyncFailed ? state.resyncError?.message : undefined);
   const sessionIdForLocate = state.sessionId === '' ? undefined : state.sessionId;
@@ -3305,6 +3910,23 @@ export function Transcript({
     );
     return user === undefined || user.text.trim() === '' ? undefined : user.text;
   }, [blocks, failedTailTurnId]);
+  // A turn that ended with nothing to read: main only, because this page owns
+  // the session's own last turn. The facts come from the published state, so
+  // switching sessions never shows another session's ending.
+  const replyGap = useMemo(
+    () => (agentId === MAIN_AGENT_ID ? turnReplyGap(state, { connected }) : undefined),
+    [agentId, state, connected],
+  );
+  // Send-again for that turn puts its message back in the composer; it never
+  // dispatches. Only an idle session offers it — unknown background work is
+  // not proof that sending again is safe.
+  const gapTailText = useMemo(() => {
+    if (replyGap === undefined) return undefined;
+    const user = blocks.findLast(
+      (block): block is UserBlock => block.kind === 'user' && sameTurn(block.turnId, replyGap.turnId),
+    );
+    return user === undefined || user.text.trim() === '' ? undefined : user.text;
+  }, [blocks, replyGap]);
   // Settled entries are NOT folded behind a counter: they stay in place at
   // their own timestamp, one quiet activity line each. One subagent is ONE
   // line, though: when its card is on the page, the card absorbs the
@@ -3337,18 +3959,36 @@ export function Transcript({
   );
   // Message view: the same blocks through the delivery projection — speech,
   // your cards, one activity line per stretch, outcomes. Nothing is dropped:
-  // every block stays inside a summary's members.
+  // every block stays inside a summary's members, except the turn's own reply
+  // which becomes speech itself.
   const messageContext = useMessageViewContext();
+  // The session names its running turn; a turn whose text already settled is
+  // still running until that turn ends.
+  const runningTurnId = state.abortableTurnId === undefined ? undefined : `t${state.abortableTurnId}`;
+  // Every loaded turn the transcript reports as failed: its partial text is not
+  // a reply the reader received, and it says on its own bubble why it stopped.
+  const failedTurnIds = state.failedTurnIds ?? EMPTY_TURN_IDS;
   const messageNodes = useMemo<readonly MessageViewNode[]>(
     () => (view === 'message'
       // A silent stretch draws nothing; as a virtual row it would still
       // take a gap, so it is not a row at all.
-      ? buildMessageNodes(timelineBlocks, { busy: state.busy, personaName: messageContext.persona?.name })
+      ? buildMessageNodes(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId, failedTurnIds, personaName: messageContext.persona?.name })
         .filter((node) => node.kind !== 'activity-summary' || !isSilentActivity(node))
       : []),
-    [view, timelineBlocks, state.busy, messageContext.persona?.name],
+    [view, timelineBlocks, state.busy, runningTurnId, failedTurnIds, messageContext.persona?.name],
   );
   const groupedNodes: readonly TimelineNode[] = view === 'message' ? messageNodes : processNodes;
+  // The reply the message view promotes is what the reader was told, so the
+  // process view must not label that same block "internal prose". Only a
+  // message-delivering session's process view asks, and only completed turns
+  // qualify — a running turn's text is not speech yet.
+  const promotedReplyIds = useMemo<ReadonlySet<string>>(() => {
+    if (view !== 'process' || !messageContext.internalProse) return EMPTY_PROMOTED;
+    return new Set(projectMessageView(timelineBlocks, {
+      completedTurnIds: completedTurnIds(timelineBlocks, { busy: state.busy, liveTurnId: runningTurnId }),
+      failedTurnIds,
+    }).flatMap((node) => (node.kind === 'message' && node.sourceBlock !== undefined ? [node.sourceBlock.id] : [])));
+  }, [view, messageContext.internalProse, timelineBlocks, state.busy, runningTurnId, failedTurnIds]);
   const blockById = useMemo(() => new Map(timelineBlocks.map((block) => [block.id, block] as const)), [timelineBlocks]);
   // "查看过程" / "在过程中查看": flip this session to the process view, then
   // let the process timeline (same locator key) scroll to the turn.
@@ -3384,14 +4024,27 @@ export function Transcript({
   // referentially stable props across ordinary deltas.
   const senderIdentities = useMemo(() => {
     const map = new Map<string, SenderIdentity>();
+    for (const [agentId, name] of agentNames) {
+      if (name !== agentId) map.set(agentId, { title: name });
+    }
     for (const row of state.snapshotSubagents) {
-      const profile = row.profile === undefined || row.profile === '' ? undefined : row.profile;
-      const model = row.model === undefined || row.model === '' ? undefined : row.model;
-      if (profile === undefined && model === undefined) continue;
-      map.set(snapshotSubagentAgentId(row), { profile, model });
+      const agentId = snapshotSubagentAgentId(row);
+      const profile = row.profile?.trim() || undefined;
+      const model = row.model?.trim() || undefined;
+      const title = row.label?.trim() || row.description?.trim() || map.get(agentId)?.title;
+      map.set(agentId, { title, profile, model });
     }
     return map;
-  }, [state.snapshotSubagents]);
+  }, [state.snapshotSubagents, agentNames]);
+  // The gallery's one ordering source: a block's place in the session's own
+  // blocks. Built here (not from the display nodes) so a block keeps that
+  // place inside a fold or a merged run, and stable across deltas that do not
+  // change the block list, which the rows' memo boundaries rely on.
+  const blockOrder = useMemo(() => {
+    const map = new Map<string, number>();
+    state.blocks.forEach((block, index) => { if (!map.has(block.id)) map.set(block.id, index); });
+    return map;
+  }, [state.blocks]);
   // y/n acts on the focused card, else the topmost visible pending card
   // (SessionView's resolver); every pending card advertises that shortcut.
   const hasUnresolvedApproval = useMemo(
@@ -3434,6 +4087,16 @@ export function Transcript({
         : () => { onRetryPrompt(failedTailText); },
     [failedTailText, onRetryPrompt],
   );
+  const retryGap = useMemo(
+    () =>
+      gapTailText === undefined || onRetryPrompt === undefined
+        ? undefined
+        : () => { onRetryPrompt(gapTailText); },
+    [gapTailText, onRetryPrompt],
+  );
+  // One send-again control per tail: the failure's own line first, then an
+  // empty turn that has nothing left running.
+  const tailRetry = state.turnTail?.state === 'failed' ? retryFailed : retryGap;
   // External-executor badges: first display node of each turn that carries
   // `execution` provenance. Entry identity is stabilized upstream (the
   // projection reuses unchanged TurnExecutionInfo objects), so the map — and
@@ -3524,27 +4187,89 @@ export function Transcript({
   const olderIntentRef = useRef(false);
   const olderIntentAtRef = useRef(0);
   const olderInflightRef = useRef(false);
+  const readingIntentRef = useRef(0);
+  const seekRequestRef = useRef<AbortController | null>(null);
+  const olderRequestRef = useRef<AbortController | null>(null);
   const loadOlderRef = useRef(onLoadOlder);
+  const loadOlderAtReadingAnchor = useCallback(async (signal: AbortSignal) => {
+    const instance = virtualizerRef.current;
+    const intent = readingIntentRef.current;
+    const firstKey = instance?.options.getItemKey(0);
+    let anchor = instance === null ? undefined : captureTranscriptAnchor(instance, true);
+    const scroll = scrollRef.current;
+    const capture = () => {
+      if (instance !== null && readingIntentRef.current === intent && instance.options.getItemKey(0) === firstKey) anchor = captureTranscriptAnchor(instance, true);
+    };
+    scroll?.addEventListener('scroll', capture, { passive: true });
+    let frame: number;
+    const captureFrame = () => {
+      capture();
+      frame = requestAnimationFrame(captureFrame);
+    };
+    frame = requestAnimationFrame(captureFrame);
+    let loaded = false;
+    try {
+      loaded = await loadOlderRef.current(signal);
+    } catch {
+      loaded = false;
+    } finally {
+      scroll?.removeEventListener('scroll', capture);
+      cancelAnimationFrame(frame);
+    }
+    if (olderRequestRef.current?.signal === signal) olderInflightRef.current = false;
+    if (!signal.aborted && (olderRequestRef.current === null || olderRequestRef.current.signal === signal) &&
+        readingIntentRef.current === intent && loaded && instance !== null && anchor?.key !== undefined && !anchor.atEnd) {
+      const key = anchor.key;
+      try {
+        await settleRestoredAnchor(scrollRef.current, () => {
+          const index = nodeIndexesRef.current.get(key);
+          return index === undefined ? undefined : { index, blockId: key };
+        }, anchor.offset, () => signal.aborted || (olderRequestRef.current !== null && olderRequestRef.current.signal !== signal) || readingIntentRef.current !== intent || !visibleRef.current, instance, 4);
+      } catch {
+        return loaded;
+      }
+    }
+    return loaded;
+  }, []);
   useEffect(() => {
     const element = scrollRef.current;
     if (element === null) return;
     let touchY: number | undefined;
     let pointerY: number | undefined;
     const recordIntent = (upward: boolean) => {
-      olderIntentRef.current = upward;
-      if (upward) olderIntentAtRef.current = Date.now();
+      seekRequestRef.current?.abort();
+      if (!upward) {
+        readingIntentRef.current += 1;
+        olderRequestRef.current?.abort();
+        olderIntentRef.current = false;
+        return;
+      }
+      if (olderInflightRef.current || state.loadingOlder) {
+        olderIntentRef.current = false;
+        return;
+      }
+      readingIntentRef.current += 1;
+      olderIntentRef.current = true;
+      olderIntentAtRef.current = Date.now();
     };
     const loadAtTop = () => {
-      if (!olderIntentRef.current) return;
+      if (!visible || element.clientHeight === 0 || !olderIntentRef.current) return;
       if (Date.now() - olderIntentAtRef.current > TRANSCRIPT_OLDER_INTENT_MS) {
         olderIntentRef.current = false;
         return;
       }
-      if (olderInflightRef.current || state.loadingOlder || state.olderError !== undefined ||
-          !state.hasMoreHistory || element.scrollTop > 48) return;
+      if (olderInflightRef.current || state.loadingOlder ||
+          (!state.hasMoreHistory && state.olderError === undefined) ||
+          element.scrollTop > Math.min(192, element.clientHeight / 3)) return;
       olderIntentRef.current = false;
       olderInflightRef.current = true;
-      void loadOlderRef.current().finally(() => { olderInflightRef.current = false; });
+      const request = new AbortController();
+      olderRequestRef.current = request;
+      void loadOlderAtReadingAnchor(request.signal).finally(() => {
+        if (olderRequestRef.current !== request) return;
+        olderRequestRef.current = null;
+        olderInflightRef.current = false;
+      });
     };
     const onWheel = (event: WheelEvent) => {
       recordIntent(event.deltaY < 0);
@@ -3581,7 +4306,9 @@ export function Transcript({
     element.addEventListener('pointermove', onPointerMove);
     element.addEventListener('pointerup', onPointerUp);
     element.addEventListener('scroll', loadAtTop, { passive: true });
+    const frame = requestAnimationFrame(loadAtTop);
     return () => {
+      cancelAnimationFrame(frame);
       element.removeEventListener('wheel', onWheel);
       element.removeEventListener('keydown', onKeyDown);
       element.removeEventListener('touchstart', onTouchStart);
@@ -3591,7 +4318,7 @@ export function Transcript({
       element.removeEventListener('pointerup', onPointerUp);
       element.removeEventListener('scroll', loadAtTop);
     };
-  }, [state.loadingOlder, state.hasMoreHistory, state.olderError]);
+  }, [state.loadingOlder, state.hasMoreHistory, state.olderError, loaded, loadError, visible, loadOlderAtReadingAnchor]);
   const viewportAnchorRef = useRef<TranscriptViewportAnchor>({
     atEnd: true,
     key: undefined,
@@ -3680,6 +4407,14 @@ export function Transcript({
       if (timer !== null) clearTimeout(timer);
     };
   }, [loaded, loadError, virtualizer]);
+  // Content that grows a mounted row after it painted (a tool card's output,
+  // a code block finishing highlighting, a nested disclosure) is re-measured
+  // in the same frame as the mutation, so the rows below it never paint inside
+  // it while the size observer catches up a frame later.
+  useLayoutEffect(() => {
+    if (!loaded || loadError !== undefined) return;
+    return observeRowMutations(scrollRef.current, virtualizer);
+  }, [loadError, loaded, virtualizer]);
 
   useLayoutEffect(() => {
     if (!loaded || loadError !== undefined) return;
@@ -3819,18 +4554,25 @@ export function Transcript({
     target: TimelineTarget,
     options?: { quiet?: boolean; signal?: AbortSignal },
   ): Promise<LocateOutcome> => {
+    const intent = ++readingIntentRef.current;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    seekRequestRef.current = request;
+    const signal = options?.signal === undefined ? request.signal : AbortSignal.any([request.signal, options.signal]);
+    const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current;
     for (let wait = 0; !liveRef.current.loaded || !initialScrollDoneRef.current; wait += 1) {
-      if (wait > 120) return { status: 'no-timeline' };
+      if (cancelled() || wait > 120) return { status: 'no-timeline' };
       await nextFrame();
     }
-    // A superseded request (the reader already moved to another visit) stops
-    // here, before it pages history for a position nobody is waiting on.
-    if (signalAborted(options?.signal)) return { status: 'no-timeline' };
+    if (cancelled()) return { status: 'no-timeline' };
     if (target.kind === 'latest') {
       if (target.respectReader === true && !viewportAnchorRef.current.atEnd) return { status: 'kept' };
       landAtEnd(virtualizer);
       viewportAnchorRef.current = { atEnd: true, key: undefined, offset: 0 };
       await nextFrame();
+      if (cancelled()) return { status: 'no-timeline' };
       landAtEnd(virtualizer);
       locateTargetRef.current = { key: timelineTargetKey(target), anchor: { ...viewportAnchorRef.current } };
       return { status: 'found' };
@@ -3860,23 +4602,22 @@ export function Transcript({
       }
     };
     let hit = resolve();
-    // Not on the page: page older history in until it shows up or the
-    // beginning is reached. Each page re-renders before the next lookup.
-    for (let page = 0; hit === undefined && page < 40; page += 1) {
-      if (!liveRef.current.hasMore) break;
-      const loadedMore = await loadOlderRef.current();
-      for (let frame = 0; frame < 4; frame += 1) await nextFrame();
+    while (hit === undefined) {
+      if (cancelled()) return { status: 'no-timeline' };
+      const structure = await readSeekStructure(signal);
+      if (cancelled()) return { status: 'no-timeline' };
+      if (structure === undefined && !liveRef.current.hasMore) {
+        return { status: liveRef.current.coverage === 'unknown' ? 'load-failed' : 'not-found' };
+      }
+      const loadedMore = structure ?? await loadOlderRef.current(signal);
+      for (let frame = 0; frame < 4; frame += 1) {
+        await nextFrame();
+        if (cancelled()) return { status: 'no-timeline' };
+      }
       if (liveRef.current.olderError !== undefined) return { status: 'load-failed' };
       hit = resolve();
-      if (!loadedMore && hit === undefined && liveRef.current.hasMore) {
-        for (let frame = 0; frame < 20 && hit === undefined; frame += 1) {
-          await nextFrame();
-          hit = resolve();
-        }
-        if (hit === undefined) return { status: 'load-failed' };
-      }
+      if (!loadedMore && hit === undefined) return { status: 'load-failed' };
     }
-    if (hit === undefined) return { status: 'not-found' };
     if (hit.foldId !== undefined) {
       const foldId = hit.foldId;
       setOpenFolds((previous) => (previous.has(foldId) ? previous : new Set(previous).add(foldId)));
@@ -3884,28 +4625,41 @@ export function Transcript({
     }
     // Row first (virtualized: it may not be mounted), then the exact element
     // (a fold member or an annotation mark inside a tall row).
-    virtualizer.scrollToIndex(hit.index, { align: 'center' });
+    if (cancelled()) return { status: 'no-timeline' };
+    hit = resolve();
+    if (hit === undefined) return { status: 'load-failed' };
+    let requestedIndex = hit.index;
+    virtualizer.scrollToIndex(requestedIndex, { align: 'center' });
     let element: HTMLElement | null = null;
-    for (let frame = 0; frame < 12 && element === null; frame += 1) {
+    for (let frame = 0; frame < 120 && element === null; frame += 1) {
       await nextFrame();
+      if (cancelled()) return { status: 'no-timeline' };
+      hit = resolve();
       const scroll = scrollRef.current;
-      if (scroll === null) break;
+      if (scroll === null || hit === undefined) return { status: 'load-failed' };
+      // Let the virtualizer settle its existing scroll; only a changed row
+      // index needs a new request, not a reset of its reconciliation each frame.
+      if (hit.index !== requestedIndex) {
+        requestedIndex = hit.index;
+        virtualizer.scrollToIndex(requestedIndex, { align: 'center' });
+      }
       const row = scroll.querySelector<HTMLElement>(`[data-transcript-virtual-item][data-index="${hit.index}"]`);
       if (row === null) continue;
+      const blockId = hit.blockId;
       element =
         target.kind === 'annotation'
           ? ([...row.querySelectorAll<HTMLElement>('[data-annotation-ref]')].find(
             (mark) => mark.dataset['annotationRef'] === target.annotationId && mark.tagName === 'MARK',
           ) ?? null)
-          : hit.blockId === undefined
+          : blockId === undefined
             ? row
             : ([...row.querySelectorAll<HTMLElement>('[data-block-id]')].find(
-              (candidate) => candidate.dataset['blockId'] === hit.blockId,
+              (candidate) => candidate.dataset['blockId'] === blockId,
             ) ?? row);
     }
-    if (element === null) return { status: 'not-found' };
+    if (element === null) return { status: 'load-failed' };
+    if (cancelled()) return { status: 'no-timeline' };
     if (options?.quiet === true) return { status: 'found' };
-    if (options?.signal !== undefined && signalAborted(options.signal)) return { status: 'no-timeline' };
     element.scrollIntoView?.({ block: 'center' });
     viewportAnchorRef.current = captureTranscriptAnchor(virtualizer);
     if (target.kind === 'annotation') element.focus({ preventScroll: true });
@@ -3914,7 +4668,7 @@ export function Transcript({
     flashed.classList.add('settings-card-flash');
     window.setTimeout(() => { flashed.classList.remove('settings-card-flash'); }, 1800);
     return { status: 'found' };
-  }, [virtualizer]);
+  }, [virtualizer, readSeekStructure]);
   useEffect(() => {
     if (sessionIdForLocate === undefined) return undefined;
     return registerTimelineLocator(sessionIdForLocate, agentId, {
@@ -3954,8 +4708,17 @@ export function Transcript({
     const hit = locateIndexRef.current.blocks.get(key);
     return hit === undefined ? undefined : { ...hit, blockId: key };
   }, []);
-  const restoreReading = useCallback(async (snapshot: TimelineReadingSnapshot, signal: AbortSignal): Promise<void> => {
+  const restoreReading = useCallback(async (snapshot: TimelineReadingSnapshot, restoreSignal: AbortSignal): Promise<void> => {
     setReadingRestoreFailed(null);
+    const intent = ++readingIntentRef.current;
+    olderIntentRef.current = false;
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+    const request = new AbortController();
+    seekRequestRef.current = request;
+    const signal = AbortSignal.any([request.signal, restoreSignal]);
+    const cancelled = () => signal.aborted || intent !== readingIntentRef.current || !visibleRef.current ||
+      (scrollRef.current !== null && !scrollRef.current.isConnected);
     const adapter: TimelineReadingAdapter = {
       applyFolds: async (value) => {
         setOpenFolds(new Set(value.openFolds));
@@ -3966,8 +4729,13 @@ export function Transcript({
         await nextFrame();
       },
       hasAnchor: (key) => resolveAnchorRow(key) !== undefined,
-      hasMore: () => liveRef.current.hasMore || liveRef.current.coverage === 'unknown' || liveRef.current.olderError !== undefined,
-      loadOlder: () => loadOlderRef.current(),
+      hasMore: () => liveRef.current.hasMore || liveRef.current.coverage === 'unknown' || liveRef.current.olderError !== undefined ||
+        stateRef.current.contentRefs?.some((ref) => ref.source.kind === 'turn' && ref.path[0] === 'steps') === true,
+      loadOlder: async () => {
+        const structure = await readSeekStructure(signal);
+        if (cancelled()) return false;
+        return structure ?? loadOlderRef.current(signal);
+      },
       hasLoadError: () => liveRef.current.olderError !== undefined,
       nextFrame,
       restoreAnchor: async (anchor) => {
@@ -3988,22 +4756,25 @@ export function Transcript({
           setOpenFolds((previous) => (previous.has(foldId) ? previous : new Set(previous).add(foldId)));
           await nextFrame();
         }
-        const offset = virtualizer.getOffsetForIndex(hit.index, 'start')?.[0];
+        if (cancelled()) return;
+        const resolve = () => anchor.key === undefined ? undefined : resolveAnchorRow(anchor.key);
+        const current = resolve();
+        const offset = current === undefined ? undefined : virtualizer.getOffsetForIndex(current.index, 'start')?.[0];
         if (offset !== undefined) virtualizer.scrollToOffset(offset + anchor.offset, { align: 'start' });
-        await settleRestoredAnchor(scrollRef.current, hit.index, anchor.offset, anchor.key, signal, hit.blockId !== undefined, virtualizer);
+        await settleRestoredAnchor(scrollRef.current, resolve, anchor.offset, cancelled, virtualizer);
       },
       beginRestore: () => { navRestorePendingRef.current = true; },
       endRestore: (outcome) => {
-        if (signal.aborted || outcome.status !== 'found') return;
+        if (restoreSignal.aborted || (outcome.status !== 'found' && intent === readingIntentRef.current)) return;
         navRestorePendingRef.current = false;
         navRestoredVisitRef.current = navVisitRef.current;
         initialScrollDoneRef.current = true;
         measuredResetRef.current = state.transcriptResetVersion;
       },
-      isCancelled: () => signal.aborted || (scrollRef.current !== null && !scrollRef.current.isConnected),
+      isCancelled: cancelled,
     };
     const outcome = await restoreTimelineReading(snapshot, adapter);
-    if (signal.aborted) return;
+    if (cancelled()) return;
     if (outcome.status === 'found') {
       // Focus returns to the reading surface when the control that started the
       // jump is gone (a removed trigger leaves focus on <body>).
@@ -4020,7 +4791,7 @@ export function Transcript({
       setReadingRestoreFailed(failure ?? t('locate.failedLoad'));
       throw new Error(failure ?? 'Reading restore is not ready');
     }
-  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer]);
+  }, [nextFrame, resolveAnchorRow, state.transcriptResetVersion, t, virtualizer, readSeekStructure]);
   const reading = useNavSnapshotAdapter<TimelineReadingSnapshot>(readingKey, {
     // Reading a place back only makes sense once this transcript has rows: a
     // not-yet-loaded timeline would page history for an anchor it cannot see.
@@ -4039,11 +4810,17 @@ export function Transcript({
   // Freeze source geometry before the virtualizer's layout cleanup detaches
   // its scroll element and publishes a temporary end anchor.
   useInsertionEffect(() => () => {
+    readingIntentRef.current += 1;
+    olderIntentRef.current = false;
     departingReadingAnchorRef.current = visibleRef.current && scrollRef.current?.isConnected === true && virtualizer.scrollElement === scrollRef.current
       ? captureTranscriptAnchor(virtualizer, true) : navViewportAnchorRef.current;
   }, [reading.visitId, virtualizer]);
   useLayoutEffect(() => { departingReadingAnchorRef.current = null; }, [reading.visitId]);
   useEffect(() => { setReadingRestoreFailed(null); }, [reading.visitId]);
+  useEffect(() => () => {
+    seekRequestRef.current?.abort();
+    olderRequestRef.current?.abort();
+  }, [reading.visitId, visible]);
   useTimelineVisitLocator(sessionIdForLocate, agentId);
 
   // ---- find in this conversation (Ctrl/⌘+F; lib/timelineFind.ts) ----
@@ -4054,11 +4831,13 @@ export function Transcript({
   const [findReveal] = useState(createFindRevealStore);
   const [findOwner] = useState(() => Symbol('transcript-find'));
   const findOpen = findRequest !== null;
-  // Find reads what the rows show; a message-view activity summary is one
-  // collapsed line whose members stay in the process view.
+  // Find reads what the rows show. A message-view activity summary is one
+  // collapsed line, but the tool output inside it is loaded and the tool
+  // checkbox selects it: it is searched here too, and the items carry the
+  // "process view only" mark that routes their landing below.
   const findItems = useMemo(
     () => (findOpen
-      ? buildFindItems(groupedNodes.filter((node): node is DisplayNode => node.kind !== 'activity-summary'), true)
+      ? buildFindItems(groupedNodes, true)
       : []),
     [findOpen, groupedNodes],
   );
@@ -4286,9 +5065,9 @@ export function Transcript({
     if (resetFrame !== null && resetFrame !== undefined) cancelAnimationFrame(resetFrame);
   }, []);
 
-  if (loadError !== undefined) {
+  if (loadError !== undefined && (!loaded || timelineBlocks.length === 0)) {
     return (
-      <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
+      <div role="alert" className="flex flex-1 flex-col items-center justify-center gap-4 px-6">
         <div className="max-w-[360px] rounded-xl border border-danger/30 bg-danger/5 p-4 text-center">
           <p className="text-[13px] font-medium text-danger">{t('transcript.couldNotOpen')}</p>
           <p className="mt-1 font-mono text-[11px] text-danger/80">{loadError}</p>
@@ -4308,7 +5087,14 @@ export function Transcript({
 
   if (!loaded) return <TranscriptLoading />;
 
-  if (timelineBlocks.length === 0 && !state.busy) {
+  // An unknown cold read and a failed anchor restore keep their existing
+  // Retry action in the blank shell. Known tail coverage, an in-flight older
+  // read, and an older-page failure otherwise let TopEdge own the state.
+  const showTopEdgeForEmptyHistory =
+    readingRestoreFailed === null &&
+    (state.hasMoreHistory || state.loadingOlder || state.olderError !== undefined) &&
+    (state.historyCoverageKind !== 'unknown' || state.loadingOlder || state.olderError !== undefined);
+  if (timelineBlocks.length === 0 && !state.busy && replyGap === undefined && !showTopEdgeForEmptyHistory) {
     return (
       <div className="flex flex-1 flex-col items-center justify-center gap-3 opacity-70">
         <Wordmark size="lg" />
@@ -4317,7 +5103,11 @@ export function Transcript({
             {t(state.historyCoverageKind === 'unknown' ? 'transcript.historyPartial' : 'transcript.blank')}
           </p>
         )}
-        <SessionRemainder />
+        {/* The session's own remainder is offered from the composer's footer
+            now, so the reader sees what is missing from where they are typing
+            rather than having to scroll back through a transcript that is not
+            there. The blank-state sentence above still yields to it, so an
+            unread session is never announced as an empty one. */}
         {state.historyCoverageKind === 'unknown' || readingRestoreFailed !== null ? (
           <button type="button" data-reading-restore-retry={readingRestoreFailed !== null || undefined}
             onClick={() => { if (readingRestoreFailed !== null) reading.retryRestore(); else if (onRetryLoad !== undefined) onRetryLoad(); else void onLoadOlder(); }}
@@ -4335,7 +5125,12 @@ export function Transcript({
     <PromptOutcomeActionsContext.Provider value={promptOutcomeActions}>
     <MessageLinkContext.Provider value={messageLink}>
     <FindRevealContext.Provider value={findReveal}>
-    <div className="relative min-h-0 flex-1" onKeyDown={handleFindKeyDown}>
+    <div className="flex min-h-0 flex-1 flex-col" onKeyDown={handleFindKeyDown}>
+      {loadError !== undefined ? <div role="alert" className="mx-4 mt-2 flex shrink-0 items-center gap-3 rounded-lg border border-danger/30 bg-paper p-3 text-[12px] text-danger shadow-sm">
+        <div className="min-w-0 flex-1"><p className="font-medium">{t('transcript.couldNotOpen')}</p><p className="break-words font-mono text-[11px]">{loadError}</p></div>
+        {onRetryLoad !== undefined ? <button type="button" className="shrink-0 rounded-lg border border-danger/30 px-3 py-1.5 font-semibold" onClick={onRetryLoad}>{t('common.retry')}</button> : null}
+      </div> : null}
+      <div className="relative min-h-0 flex-1">
       {readingRestoreFailed ? (
         <button type="button" data-reading-restore-retry onClick={reading.retryRestore}
           className="absolute left-1/2 top-2 z-10 -translate-x-1/2 rounded-full border border-hairline bg-paper px-3 py-1 text-[12px] text-ink-soft">
@@ -4395,6 +5190,7 @@ export function Transcript({
                         agentNames={agentNames}
                         onOpenAgent={onOpenAgent}
                         onOpenProcess={openProcessAt}
+                        blockOrder={blockOrder}
                       />
                     </div>
                   ) : (
@@ -4427,8 +5223,11 @@ export function Transcript({
                         onAnswerQuestion={onAnswerQuestion}
                         onDismissQuestion={onDismissQuestion}
                         onCancelQueued={onCancelQueued}
+                        onRetryPending={onRetryPending}
                         onOpenAgent={onOpenAgent}
                         onLocateDispatch={handleLocateDispatch}
+                        blockOrder={blockOrder}
+                        promotedReplyIds={promotedReplyIds}
                       />
                     </div>
                   )}
@@ -4461,17 +5260,19 @@ export function Transcript({
                     <div className={AGENT_LANE}>
                       <TurnTailLine
                         tail={state.turnTail}
+                        gap={replyGap}
                         onResume={resumeStopped}
                         resumeDisabled={rowActions?.disabled === true}
-                        onRetry={retryFailed}
+                        onRetry={tailRetry}
                         retryDisabled={promptOutcomeActions.disabled === true}
                       />
                     </div>
                   ) : null}
-                  {/* The session's own remainder belongs after the last row the
-                      reader has: it is not a virtual row of its own, so the
-                      existing measurement of this cell carries it. */}
-                  {last ? <SessionRemainder /> : null}
+                  {/* The session's own remainder moved to the composer's footer,
+                      which is where a reader looking at the input sees it and
+                      where it does not perturb this cell's measurement: it used
+                      to be rendered here, after the last row, and that is no
+                      longer part of what this cell measures. */}
                 </div>
               </div>
             );
@@ -4500,13 +5301,17 @@ export function Transcript({
         scrollRef={scrollRef}
         virtualizer={virtualizer}
       />
-      <JumpToBottom virtualizer={virtualizer} />
+      <JumpToBottom virtualizer={virtualizer} onJump={() => { void locate({ kind: 'latest' }); }} />
       {findRequest !== null ? (
         <FindBar
           items={findItems}
           onIncludeToolOutputChange={setFindIncludeToolOutput}
           sessionId={sessionIdForLocate}
           agentId={agentId}
+          surface={view}
+          onOpenProcessView={view === 'message' && sessionIdForLocate !== undefined
+            ? (match) => { openProcessAt(match.item.turnId, match.item.blockId); }
+            : undefined}
           hasMoreHistory={state.hasMoreHistory}
           loadedTurns={loadedTurns}
           request={findRequest}
@@ -4519,6 +5324,7 @@ export function Transcript({
           stepRef={findStepRef}
         />
       ) : null}
+      </div>
     </div>
     </FindRevealContext.Provider>
     </MessageLinkContext.Provider>

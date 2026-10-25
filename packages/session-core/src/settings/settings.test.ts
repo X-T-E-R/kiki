@@ -1,9 +1,14 @@
+import { globSync, readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computerControlPreference, computerControlPreferencePatch } from './computerControl';
+import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
+import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
+  DEFAULT_MODEL_CAPABILITIES,
   EXPERIMENTAL_FLAG_HOMES,
   EXPERIMENTAL_FALLBACK_SECTION,
   experimentalFlagHome,
@@ -18,6 +23,7 @@ import {
   clearRestartRequirement,
   configureSpacePortableSettings,
   refreshSpacePortableSettings,
+  threadAllowPatch,
   threadCommunicationPatch,
   tokenCountingPatch,
   agentNotifyParentPatch,
@@ -38,6 +44,7 @@ import {
   hooksConfigPatch,
   parseRemoteModels,
   providerDraftFromCatalog,
+  providerModelDraftFromCatalog,
   providerDefaultRow,
   providerCreateBody,
   providerPatchBody,
@@ -55,6 +62,7 @@ import {
   requestIdentityPolicyFromDraft,
   resourceLimitPatch,
   sessionTitleModelPatch,
+  sessionTitlePromptPatch,
   sessionTitleSettingsPatch,
   remoteModelsHeaders,
   remoteModelsUrl,
@@ -62,6 +70,9 @@ import {
   resolveModelSource,
   resolveSessionModelOverride,
   resolveSettingsRoute,
+  installedPluginsPath,
+  pluginSettingsIdFromQuery,
+  pluginSettingsPath,
   restartRequirementSnapshot,
   runtimeConfigDraftFromConfig,
   searchSettings,
@@ -74,6 +85,7 @@ import {
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
   settingsSectionIsDeviceOnly,
+  settingsSectionSupportsSpace,
   settingsGroupForSection,
   settingsSectionForCard,
   settingsServerSnapshot,
@@ -94,6 +106,8 @@ import {
 } from './settings';
 import { clearStoredDrafts, flushDrafts, readDraft, resetDraftMemoryForTests, writeDraft } from '../composer/drafts';
 import { translate, type I18nKey } from '../i18n/locale';
+import { en } from '../i18n/en';
+import { zh } from '../i18n/zh';
 import { parseNamedAgentTools } from './agentSettings';
 import { mcpConfigFromDraft } from './mcp';
 
@@ -455,6 +469,8 @@ describe('settings persistence and validation', () => {
       thread_communication: { enabled: true },
       replace_domains: ['thread_communication'],
     });
+    expect(threadAllowPatch(null)).toEqual({ thread_communication: { enabled: null } });
+    expect(threadAllowPatch(false)).toEqual({ thread_communication: { enabled: false } });
     expect(tokenCountingPatch('estimated')).toEqual({
       token_counting: { strategy: 'estimated' },
       replace_domains: ['token_counting'],
@@ -1020,6 +1036,48 @@ describe('provider templates, chips, and dirty tracking', () => {
   });
 });
 
+describe('model capability defaults', () => {
+  /**
+   * The default exists for a model nothing has been decided about. It is not a
+   * correction: a model whose capabilities were explicitly configured to
+   * something narrower keeps exactly that, including an empty list, which is a
+   * decision and must survive a round trip rather than being re-defaulted.
+   */
+  const catalogModel = (capabilities: string[] | undefined) => ({
+    id: 'kimi-code/kimi-k2',
+    provider_id: 'kimi-code',
+    remote_id: 'kimi-k2',
+    max_context_size: 200_000,
+    support_efforts: [],
+    capabilities,
+  }) as unknown as Parameters<typeof providerModelDraftFromCatalog>[0];
+
+  it('defaults a model that carries no capabilities at all', () => {
+    expect(providerModelDraftFromCatalog(catalogModel(undefined)).capabilities)
+      .toEqual([...DEFAULT_MODEL_CAPABILITIES]);
+    expect(DEFAULT_MODEL_CAPABILITIES).toContain('thinking');
+    expect(DEFAULT_MODEL_CAPABILITIES).toContain('tool_use');
+  });
+
+  it('keeps an explicitly empty capability list, which is a decision', () => {
+    expect(providerModelDraftFromCatalog(catalogModel([])).capabilities).toEqual([]);
+  });
+
+  it('keeps a narrower explicit list without adding to it', () => {
+    expect(providerModelDraftFromCatalog(catalogModel(['image_in'])).capabilities)
+      .toEqual(['image_in']);
+  });
+
+  it('lets a saved empty list round-trip instead of being re-defaulted', () => {
+    const draft = providerModelDraftFromCatalog(catalogModel([]));
+    // Reading the model back gives an empty list, not the default; and an
+    // unchanged draft produces no patch at all, so nothing re-adds the default
+    // on save. Clearing a non-empty stored list is still an explicit `[]`.
+    const emptied = providerModelDraftFromCatalog(catalogModel(['thinking', 'tool_use']));
+    expect(modelPatchBody(draft, emptied)).toEqual({ capabilities: [] });
+  });
+});
+
 describe('remote /models probe', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -1098,7 +1156,83 @@ describe('remote /models probe', () => {
   });
 });
 
+function registeredBuiltinFlags(): { id: string; defaultEnabled: boolean; owner: string }[] {
+  const root = new URL('../../../../', import.meta.url);
+  const flags: { id: string; defaultEnabled: boolean; owner: string }[] = [];
+  for (const owner of globSync('packages/{agent-core-v2,kap-server}/src/**/*.ts', { cwd: fileURLToPath(root) })) {
+    const source = readFileSync(new URL(owner.replaceAll('\\', '/'), root), 'utf8');
+    if (!source.includes('registerFlagDefinition')) continue;
+    const file = ts.createSourceFile(owner, source, ts.ScriptTarget.Latest, true);
+    const variables = new Map<string, ts.Expression>();
+    const registrations = new Set<string>(['registerFlagDefinition']);
+    const calls: ts.CallExpression[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer !== undefined) {
+        variables.set(node.name.text, node.initializer);
+      }
+      if (ts.isImportSpecifier(node) && node.propertyName?.text === 'registerFlagDefinition') registrations.add(node.name.text);
+      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) calls.push(node);
+      ts.forEachChild(node, visit);
+    };
+    visit(file);
+    const resolve = (expression: ts.Expression | undefined): ts.Expression | undefined => {
+      if (expression === undefined) return undefined;
+      if (ts.isIdentifier(expression)) {
+        const value = variables.get(expression.text);
+        return value === expression ? undefined : resolve(value);
+      }
+      if (ts.isAsExpression(expression) || ts.isSatisfiesExpression(expression) || ts.isParenthesizedExpression(expression)) return resolve(expression.expression);
+      return expression;
+    };
+    for (const call of calls.filter((node) => registrations.has((node.expression as ts.Identifier).text))) {
+      const definition = resolve(call.arguments[0]);
+      if (definition === undefined || !ts.isObjectLiteralExpression(definition)) throw new Error(`Cannot inspect flag registration in ${owner}`);
+      const property = (name: string) => resolve(definition.properties.find((node): node is ts.PropertyAssignment =>
+        ts.isPropertyAssignment(node) && (ts.isIdentifier(node.name) || ts.isStringLiteral(node.name)) && node.name.text === name)?.initializer);
+      const id = property('id');
+      const defaultEnabled = property('default');
+      if (id === undefined || !ts.isStringLiteral(id) || defaultEnabled === undefined ||
+        (defaultEnabled.kind !== ts.SyntaxKind.TrueKeyword && defaultEnabled.kind !== ts.SyntaxKind.FalseKeyword)) throw new Error(`Cannot inspect flag id/default in ${owner}`);
+      flags.push({ id: id.text, defaultEnabled: defaultEnabled.kind === ts.SyntaxKind.TrueKeyword, owner });
+    }
+  }
+  return flags;
+}
+
 describe('experimental flag homes', () => {
+  it('covers every distributed builtin registration with bilingual copy and a default-on capability', () => {
+    const flags = registeredBuiltinFlags();
+    expect(flags.length).toBeGreaterThan(0);
+    expect(new Set(flags.map((flag) => flag.id)).size).toBe(flags.length);
+    expect(EXPERIMENTAL_FLAG_HOMES.map((home) => home.id).toSorted()).toEqual(flags.map((flag) => flag.id).toSorted());
+    for (const flag of flags) {
+      const home = experimentalFlagHome(flag.id)!;
+      expect(flag.defaultEnabled, `${flag.id} in ${flag.owner}: default off needs an explicit human requirement`).toBe(true);
+      for (const locale of ['en', 'zh'] as const) {
+        for (const key of [home.labelKey, home.descriptionKey]) {
+          expect(Object.hasOwn(locale === 'en' ? en : zh, key), `${locale}: ${flag.id} ${key}`).toBe(true);
+          const text = translate(locale, key);
+          expect(text, `${locale}: ${flag.id}`).not.toBe(key);
+          expect(text.trim(), `${locale}: ${flag.id}`).not.toBe('');
+          expect(text).not.toBe(translate(locale, 'st.exp.unknown.name'));
+          expect(text).not.toBe(translate(locale, 'st.exp.unknown.desc'));
+        }
+      }
+    }
+  });
+
+  it('describes indexing and Recipes without promising replay, role permissions or a fixed build time', () => {
+    for (const locale of ['en', 'zh'] as const) {
+      const search = translate(locale, 'st.exp.desktopSearch.desc');
+      expect(search).toContain('2 GiB');
+      expect(search).not.toMatch(/20[–-]30/);
+      expect(translate(locale, 'st.exp.readModel.name')).toBe(locale === 'en' ? 'Session list index' : '会话列表索引');
+      expect(translate(locale, 'st.exp.readModel.desc')).not.toMatch(/replay|回放/);
+      expect(translate(locale, 'st.exp.recipes.desc')).toContain(locale === 'en' ? 'model prompts and parameters' : '模型提示与参数');
+      expect(translate(locale, 'st.exp.recipes.desc')).toContain(locale === 'en' ? 'confirmation once during installation' : '安装时确认一次');
+    }
+  });
+
   it('homes each flag on a real settings page, with the owners the IA asked for', () => {
     const sections = new Set(SETTINGS_SECTIONS.map((section) => section.id));
     for (const home of EXPERIMENTAL_FLAG_HOMES) {
@@ -1107,31 +1241,22 @@ describe('experimental flag homes', () => {
     }
     expect(new Set(EXPERIMENTAL_FLAG_HOMES.map((home) => home.id)).size).toBe(EXPERIMENTAL_FLAG_HOMES.length);
     expect(experimentalSectionForFlag('agent-profile-routes')).toBe('agents');
-    expect(experimentalSectionForFlag('external_delegation_mcp')).toBe('mcp');
-    expect(experimentalSectionForFlag('subagent_release_idle')).toBe('subagents');
+    expect(experimentalSectionForFlag('external_delegation_mcp')).toBe('extensions');
+    expect(experimentalSectionForFlag('subagent_release_idle')).toBe('agents');
     expect(experimentalSectionForFlag('some_vendor_flag')).toBe('developer');
   });
 
-  it('names the one feature flag the app still ships and keeps the unknown fallback for the rest', () => {
-    // History import is a shipped capability, not an experiment: it has no
-    // switch to draw, so it must not appear in the flag list at all. A server
-    // that still reports the old id is treated as an unknown flag.
+  it('localizes local session continuation in Sessions while keeping the unknown fallback', () => {
+    expect(experimentalFlagHome('usage_export')).toBeUndefined();
     expect(experimentalFlagHome('plugin_import')).toBeUndefined();
     expect(experimentalSectionForFlag('plugin_import')).toBe(EXPERIMENTAL_FALLBACK_SECTION);
-
-    const home = experimentalFlagHome('usage_export');
-    expect(home).toBeDefined();
-    // The switch rides the existing Developer rows; it does not invent a page.
-    expect(home?.section).toBe('developer');
-    expect(home?.cardId).toBeUndefined();
-    expect(home?.labelKey).not.toBe('st.exp.unknown.name');
-    expect(home?.descriptionKey).not.toBe('st.exp.unknown.desc');
-    // Both strings must be real copy in both languages, not the fallback.
-    expect(translate('en', home!.labelKey)).not.toBe(home!.labelKey);
-    expect(translate('zh', home!.labelKey)).not.toBe(home!.labelKey);
-    // kap-server reads usage_export while booting, so the routes only exist
-    // after a restart.
-    expect(home?.effect).toBe('restart');
+    const home = experimentalFlagHome('local_session_resume')!;
+    expect(home.section).toBe('sessions');
+    expect(home.effect).toBe('now');
+    expect(translate('en', home.labelKey)).toBe('Continue local external sessions');
+    expect(translate('en', home.descriptionKey)).toBe('Continue existing Claude Code and Codex sessions on this machine.');
+    expect(translate('zh', home.labelKey)).toBe('接续本机外部会话');
+    expect(translate('zh', home.descriptionKey)).toBe('接续本机已有的 Claude Code 和 Codex 会话。');
     expect(experimentalFlagHome('some_vendor_flag')).toBeUndefined();
   });
 });
@@ -1146,20 +1271,25 @@ describe('settings search index', () => {
     expect(searchSettings(index, 'language')[0]?.cardId).toBe('st-card-language');
     expect(searchSettings(index, 'Models').some((hit) => hit.section === 'ai')).toBe(true);
     expect(searchSettings(index, 'experimental feature').some((hit) => hit.cardId === 'st-card-labs')).toBe(true);
-    expect(searchSettings(index, 'Task board').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-agent-board')).toBe(true);
+    expect(searchSettings(index, 'Task board').some((hit) => hit.cardId === 'st-card-agent-board')).toBe(false);
     expect(searchSettings(index, 'plan mode').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-defaults')).toBe(true);
     expect(searchSettings(index, 'session titles').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-session-title')).toBe(true);
     expect(searchSettings(index, 'permission mode').some((hit) => hit.section === 'permissions' && hit.cardId === 'st-card-permission-defaults')).toBe(true);
     // A flag is found on its feature page's Experimental rows, not only in Labs.
-    expect(searchSettings(index, 'task_wait').some((hit) => hit.section === 'tasks' && hit.cardId === 'st-card-exp-tasks')).toBe(true);
-    expect(searchSettings(index, 'release idle subagents').some((hit) => hit.section === 'subagents' && hit.cardId === 'st-card-exp-subagents')).toBe(true);
+    expect(searchSettings(index, 'task_wait').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    expect(searchSettings(index, 'local_session_resume').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    expect(searchSettings(index, 'Continue local external sessions').some((hit) => hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    const chinese = buildSettingsSearchIndex({}, (key) => translate('zh', key));
+    expect(searchSettings(chinese, '接续本机外部会话').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
+    expect(searchSettings(index, 'usage_export')).toEqual([]);
+    expect(searchSettings(index, 'release idle subagents').some((hit) => hit.section === 'agents' && hit.cardId === 'st-card-exp-agents')).toBe(true);
     expect(searchSettings(index, 'search_worker').find((hit) => hit.cardId === 'st-card-exp-search')?.tab).toBe('advanced');
     expect(searchSettings(index, 'AgentNotify')[0]?.cardId).toBe('st-card-agent-messaging');
     expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, 'Agents').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);
     expect(searchSettings(index, t('st.spaces.ownChoices')).some((hit) => hit.cardId === 'st-card-space-overrides')).toBe(true);
-    expect(searchSettings(index, 'subagent')[0]?.section).toBe('subagents');
+    expect(searchSettings(index, 'subagent')[0]?.section).toBe('agents');
     expect(searchSettings(index, '  ')).toEqual([]);
     expect(searchSettings(index, 'zzzz-no-such-setting')).toEqual([]);
   });
@@ -1214,7 +1344,10 @@ describe('settings search index', () => {
     for (const tab of CONNECTION_SETTINGS_TABS) {
       expect(connectionEntries.some((entry) => entry.tab === tab), tab).toBe(true);
     }
-    expect(connectionTabForCard('st-card-conn-external')).toBe('external');
+    // The Cloudflare card moved to connection-services; the leaf has one
+    // sub-page again, and a bare `?tab=external` bookmark follows the card
+    // (the GUI redirects it to the card's new home).
+    expect(connectionTabForCard('st-card-conn-external')).toBeUndefined();
     expect(connectionTabForCard('st-card-conn-unknown')).toBeUndefined();
   });
 
@@ -1231,38 +1364,52 @@ describe('settings search index', () => {
   });
 });
 
-describe('settings nav groups (IA v2)', () => {
-  it('lists six intent groups in one tree and knows which pages stay on this device', () => {
+describe('settings nav groups (IA purpose)', () => {
+  it('lists seven purpose groups with dedicated pages and knows which pages stay on this device', () => {
     const groups = SETTINGS_NAV_TREE.filter((node) => node.kind === 'group');
     expect(groups.map((group) => group.id))
-      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'advanced']);
+      .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.every((group) => group.sections.length > 0)).toBe(true);
     expect(SETTINGS_NAV_TREE.every((node) => node.kind === 'group')).toBe(true);
     expect(settingsSectionIsDeviceOnly('appearance')).toBe(true);
+    expect(settingsSectionSupportsSpace('appearance')).toBe(true);
+    expect(settingsSectionSupportsSpace('general')).toBe(true);
     expect(settingsSectionIsDeviceOnly('permissions')).toBe(false);
     expect(settingsSectionIsDeviceOnly('nope')).toBe(false);
   });
 
-  it('places every section exactly once under the group a person would look in', () => {
+  it('places each of the 20 dedicated leaves once across the seven groups', () => {
     const placed = SETTINGS_NAV_TREE.flatMap((node) => node.kind === 'group' ? node.sections : [node.section]);
-    expect([...placed].toSorted()).toEqual(SETTINGS_SECTIONS.map((section) => section.id).toSorted());
-    expect(new Set(placed).size).toBe(placed.length);
+    expect(placed).toHaveLength(20);
+    expect(new Set(placed).size).toBe(20);
+    expect(new Set(placed)).toEqual(new Set(SETTINGS_SECTIONS.map((section) => section.id)));
     const sectionsOf = (id: string) => (SETTINGS_NAV_TREE.find((node) => node.kind === 'group' && node.id === id) as { sections: readonly string[] }).sections;
-    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts']);
-    // Spaces sit with the ways of reaching a server: where Kiki runs.
-    expect(sectionsOf('connection')).toEqual(['connection', 'ssh', 'spaces']);
-    expect(sectionsOf('models-agents')).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
-    // Workspaces sit with the sessions that run in them: where work happens.
-    expect(sectionsOf('work')).toEqual(['sessions', 'workspaces', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(sectionsOf('capabilities')).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
-    // The group that only held workspaces and spaces no longer exists: each
-    // page joined the group that answers its own question.
-    expect(settingsGroupForSection('workspaces')?.id).toBe('work');
+    expect(sectionsOf('device')).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
+    expect(sectionsOf('models-agents')).toEqual(['ai', 'agents']);
+    expect(sectionsOf('sessions-work')).toEqual(['sessions', 'workspaces', 'memory']);
+    expect(sectionsOf('capabilities')).toEqual(['extensions', 'search', 'browser-control']);
+    expect(sectionsOf('rules')).toEqual(['permissions', 'hooks']);
+    expect(sectionsOf('connection')).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
+    expect(sectionsOf('advanced')).toEqual(['developer', 'about']);
+    expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services' });
+    // Legacy routes resolve to their canonical merged leaf instead of landing on "unknown setting".
+    expect(resolveSettingsRoute('extensions', '')).toMatchObject({ section: 'extensions' });
+    expect(resolveSettingsRoute('skills', '')).toMatchObject({ section: 'extensions', tab: 'skills' });
+    expect(resolveSettingsRoute('mcp', '')).toMatchObject({ section: 'extensions', tab: 'mcp' });
+    expect(resolveSettingsRoute('plugins', '')).toMatchObject({ section: 'extensions', tab: 'plugins' });
+    expect(resolveSettingsRoute('identity', '')).toMatchObject({ section: 'ai', tab: 'identity' });
+    expect(resolveSettingsRoute('subagents', '')).toMatchObject({ section: 'agents', tab: 'dispatch' });
+    expect(resolveSettingsRoute('tasks', '')).toMatchObject({ section: 'sessions' });
+    expect(resolveSettingsRoute('computer-control', '')).toMatchObject({ section: 'browser-control', tab: 'computer' });
+    expect(resolveSettingsRoute('labs', '')).toMatchObject({ section: 'developer', cardId: 'st-card-labs' });
+    expect(resolveSettingsRoute('environment-tools', '')).toMatchObject({ section: 'search' });
+    expect(resolveSettingsRoute('remote', '')).toMatchObject({ section: 'connection' });
+    expect(resolveSettingsRoute('system', '')).toMatchObject({ section: 'developer' });
+    expect(settingsGroupForSection('external-clients')).toBeUndefined();
+    expect(settingsGroupForSection('workspaces')?.id).toBe('sessions-work');
     expect(settingsGroupForSection('spaces')?.id).toBe('connection');
-    // About closes the list.
-    expect(sectionsOf('advanced')).toEqual(['developer', 'labs', 'about']);
     expect(placed.at(-1)).toBe('about');
-    for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication']) {
+    for (const retired of ['runtime', 'experimental', 'capabilities', 'advanced', 'automation', 'communication', 'identity', 'subagents', 'tasks', 'skills', 'mcp', 'plugins', 'computer-control', 'labs']) {
       expect(settingsGroupForSection(retired), retired).toBeUndefined();
     }
   });
@@ -1290,11 +1437,9 @@ describe('settings nav groups (IA v2)', () => {
       const meta = SETTINGS_SECTION_META[section.id];
       expect(meta, section.id).toBeDefined();
       expect(meta!.scopes.length).toBeGreaterThan(0);
-      // Only the App group's pages and this app's own connection are device-only.
-      expect(settingsSectionIsDeviceOnly(section.id), section.id)
-        .toBe(settingsGroupForSection(section.id)?.id === 'device' || section.id === 'connection');
     }
-    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app']);
+    expect(SETTINGS_SECTION_META['general']?.scopes).toEqual(['app', 'space', 'server']);
+    expect(SETTINGS_SECTION_META['appearance']?.scopes).toEqual(['app', 'space']);
     expect(SETTINGS_SECTION_META['skills']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['mcp']?.scopes).toEqual(['server', 'workspace']);
     expect(SETTINGS_SECTION_META['agents']?.scopes).toEqual(['server', 'workspace']);
@@ -1302,6 +1447,33 @@ describe('settings nav groups (IA v2)', () => {
     expect(SETTINGS_SECTION_META['labs']?.scopes).toEqual(['server']);
     expect(SETTINGS_SECTION_META['runtime']).toBeUndefined();
     expect(SETTINGS_SECTION_META['advanced']).toBeUndefined();
+  });
+});
+
+describe('installed-plugin settings pages', () => {
+  it('addresses one plugin\'s own page inside the plugins section', () => {
+    // A copy of this link, a refresh, and the browser's back button all have to
+    // land on the same plugin, so the id travels in the query of one section.
+    expect(pluginSettingsPath('kiki-writing'))
+      .toBe('/settings/plugins?plugin=kiki-writing');
+    expect(resolveSettingsRoute('plugins', '')).toMatchObject({ status: 'ok', section: 'extensions', tab: 'plugins' });
+    expect(pluginSettingsIdFromQuery('?plugin=kiki-writing')).toBe('kiki-writing');
+    expect(installedPluginsPath()).toBe('/settings/plugins');
+  });
+
+  it('round-trips an id that needs escaping and treats an empty one as the list', () => {
+    const odd = 'vendor/plugin one';
+    expect(pluginSettingsIdFromQuery(pluginSettingsPath(odd))).toBe(odd);
+    // A link built from an unset id resolves to the list, not to a dead page.
+    expect(pluginSettingsIdFromQuery('?plugin=')).toBeNull();
+    expect(pluginSettingsIdFromQuery('')).toBeNull();
+    expect(pluginSettingsIdFromQuery('?server=https%3A%2F%2Fexample.test')).toBeNull();
+  });
+
+  it('follows the WebBridge readiness card to the browser page it moved to', () => {
+    expect(resolveSettingsRoute('plugins', '#st-card-webbridge'))
+      .toMatchObject({ status: 'ok', section: 'browser-control', cardId: 'st-card-webbridge' });
+    expect(settingsSectionForCard('st-card-webbridge')).toBe('browser-control');
   });
 });
 
@@ -1423,16 +1595,12 @@ describe('settings route resolver', () => {
   });
 
   it('redirects the legacy models/providers sections to the merged ai entry with their tab', () => {
-    // Redesign §10.3: /settings/models → /settings/ai?tab=models,
-    // /settings/providers → /settings/ai?tab=providers; the thinking card lands
-    // on the defaults tab regardless of the legacy page, and the request
-    // identity card follows its own Request identity section.
     expect(resolveSettingsRoute('models', ''))
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'models' });
     expect(resolveSettingsRoute('providers', ''))
       .toEqual({ status: 'ok', section: 'ai', cardId: undefined, tab: 'providers' });
     expect(resolveSettingsRoute('models', '#st-card-request-identity'))
-      .toEqual({ status: 'ok', section: 'identity', cardId: 'st-card-request-identity', tab: undefined });
+      .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-request-identity', tab: 'identity' });
     expect(resolveSettingsRoute('models', '#st-card-thinking'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-thinking', tab: 'defaults' });
     expect(resolveSettingsRoute('providers', '#st-card-auth'))
@@ -1441,17 +1609,17 @@ describe('settings route resolver', () => {
 
   it('redirects the retired experimental page and keeps feature card owners precise', () => {
     expect(resolveSettingsRoute('experimental', ''))
-      .toEqual({ status: 'ok', section: 'labs', cardId: undefined, tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: undefined });
     expect(resolveSettingsRoute('experimental', '#st-card-experimental'))
-      .toEqual({ status: 'ok', section: 'labs', cardId: 'st-card-labs', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: undefined });
     // A retired multi-flag card lands on the Labs index; a single-flag card on its row's page.
     expect(resolveSettingsRoute('agents', '#st-card-tool-experiments'))
-      .toEqual({ status: 'ok', section: 'labs', cardId: 'st-card-labs', tab: undefined });
+      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-labs', tab: undefined });
     for (const [card, section] of [
       ['st-card-agent-profile-routes', 'agents'],
-      ['st-card-mcp-delegation', 'mcp'],
-      ['st-card-subagent-release-idle', 'subagents'],
-      ['st-card-task-board', 'tasks'],
+      ['st-card-mcp-delegation', 'extensions'],
+      ['st-card-subagent-release-idle', 'agents'],
+      ['st-card-task-board', 'sessions'],
       ['st-card-performance-storage', 'developer'],
     ] as const) {
       expect(resolveSettingsRoute('labs', `#${card}`), card)
@@ -1491,9 +1659,9 @@ describe('settings route resolver', () => {
 
   it('follows a card hash whose content moved to another section', () => {
     // A bookmark written before a content move: section says general, card
-    // says the card now lives under mcp — the precise half wins.
+    // says the card now lives under extensions (mcp tab) — the precise half wins.
     expect(resolveSettingsRoute('general', '#st-card-mcp'))
-      .toEqual({ status: 'ok', section: 'mcp', cardId: 'st-card-mcp', tab: undefined });
+      .toEqual({ status: 'ok', section: 'extensions', cardId: 'st-card-mcp', tab: 'mcp' });
     expect(resolveSettingsRoute('retired-section', '#st-card-workspaces'))
       .toEqual({ status: 'ok', section: 'workspaces', cardId: 'st-card-workspaces', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-models'))
@@ -1505,45 +1673,40 @@ describe('settings route resolver', () => {
   });
 
   it('redirects the retired capabilities section and its card deep links (redesign §10.3)', () => {
-    // Bare /settings/capabilities lands on skills, the split's primary leaf.
+    // Bare /settings/capabilities lands on extensions?tab=skills.
     expect(resolveSettingsRoute('capabilities', ''))
-      .toEqual({ status: 'ok', section: 'skills', cardId: undefined, tab: undefined });
+      .toEqual({ status: 'ok', section: 'extensions', cardId: undefined, tab: 'skills' });
     // A precise card hash still follows the card across the split.
     expect(resolveSettingsRoute('capabilities', '#st-card-mcp'))
-      .toEqual({ status: 'ok', section: 'mcp', cardId: 'st-card-mcp', tab: undefined });
+      .toEqual({ status: 'ok', section: 'extensions', cardId: 'st-card-mcp', tab: 'mcp' });
     expect(resolveSettingsRoute('capabilities', '#st-card-tools'))
       .toEqual({ status: 'ok', section: 'permissions', cardId: 'st-card-tools', tab: undefined });
     expect(resolveSettingsRoute('capabilities', '#st-card-caps'))
-      .toEqual({ status: 'ok', section: 'skills', cardId: 'st-card-caps', tab: undefined });
+      .toEqual({ status: 'ok', section: 'extensions', cardId: 'st-card-caps', tab: 'skills' });
     // The duplicate timeout card was removed; legacy links land on its editor.
     expect(resolveSettingsRoute('agents', '#st-card-sidecar'))
-      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-limits', tab: undefined });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
     expect(resolveSettingsRoute('retired-section', '#st-card-sidecar'))
-      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-limits', tab: undefined });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
     expect(resolveSettingsRoute('subagents', '#st-card-subagent-timeout'))
-      .toEqual({ status: 'ok', section: 'subagents', cardId: 'st-card-subagent-limits', tab: undefined });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-subagent-limits', tab: 'dispatch' });
   });
 
-  it('redirects the retired runtime page to tasks and keeps dissolved card links precise', () => {
-    // Bare /settings/runtime lands on task policy; precise cron links follow
-    // the read-only diagnostics under System & data.
+  it('redirects the retired runtime page to sessions and keeps dissolved card links precise', () => {
     expect(resolveSettingsRoute('runtime', ''))
-      .toEqual({ status: 'ok', section: 'tasks', cardId: undefined, tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-runtime'))
-      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-policy', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: undefined });
     expect(resolveSettingsRoute('retired-section', '#st-card-runtime'))
-      .toEqual({ status: 'ok', section: 'tasks', cardId: 'st-card-task-policy', tab: undefined });
-    // Cards that moved out of the runtime page resolve to their new owners;
-    // the dissolved st-card-communication hash follows its hand-written alias
-    // to the communication leaf's thread card.
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
-      .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-cron', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-cron', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
       .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
       .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))
-      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-runtime', tab: undefined });
+      .toEqual({ status: 'ok', section: 'agents', cardId: 'st-card-agent-runtime', tab: 'profiles' });
   });
 
   it('flags genuinely unknown sections instead of silently falling back to general', () => {
@@ -1553,9 +1716,9 @@ describe('settings route resolver', () => {
   });
 
   it('knows the canonical owner of every indexed card', () => {
-    expect(settingsSectionForCard('st-card-mcp')).toBe('mcp');
+    expect(settingsSectionForCard('st-card-mcp')).toBe('extensions');
     expect(settingsSectionForCard('st-card-language')).toBe('general');
-    expect(settingsSectionForCard('st-card-task-policy')).toBe('tasks');
+    expect(settingsSectionForCard('st-card-task-policy')).toBe('sessions');
     // Dissolved cards leave the spec to their LEGACY_CARD_ALIASES entry.
     expect(settingsSectionForCard('st-card-sidecar')).toBeUndefined();
     expect(settingsSectionForCard('st-card-runtime')).toBeUndefined();
@@ -1625,22 +1788,23 @@ describe('hooks and MCP timeout patches (batch 3 split)', () => {
     });
   });
 
-  it('scopes the session-title model patch to the session_title replace-domain', () => {
-    expect(sessionTitleModelPatch(' kimi-for-coding ')).toEqual({
-      session_title: { model: 'kimi-for-coding' },
-      replace_domains: ['session_title'],
-    });
-    expect(sessionTitleModelPatch('   ')).toEqual({
-      session_title: { model: undefined },
-      replace_domains: ['session_title'],
-    });
+  it('merges only the title model and explicitly clears an empty model', () => {
+    expect(sessionTitleModelPatch(' kimi-for-coding ')).toEqual({ session_title: { model: 'kimi-for-coding' } });
+    expect(sessionTitleModelPatch('   ')).toEqual({ session_title: { model: null } });
+  });
+
+  it('preserves the complete title prompt and deletes the override for default or blank', () => {
+    const prompt = '  标题要求\n保留 {content} 和 ${name}\n  ';
+    expect(sessionTitlePromptPatch(prompt)).toEqual({ session_title: { prompt } });
+    expect(sessionTitlePromptPatch(null)).toEqual({ session_title: { prompt: null } });
+    expect(sessionTitlePromptPatch(' \n\t ')).toEqual({ session_title: { prompt: null } });
   });
 
   it('persists the selected title moments, including the manual-only empty set', () => {
     expect(sessionTitleSettingsPatch(' model ', ['first_user_message', 'context_compacted'])).toEqual({
-      session_title: { model: 'model', triggers: ['first_user_message', 'context_compacted'] }, replace_domains: ['session_title'],
+      session_title: { model: 'model', triggers: ['first_user_message', 'context_compacted'] },
     });
-    expect(sessionTitleSettingsPatch(' ', [])).toEqual({ session_title: { model: undefined, triggers: [] }, replace_domains: ['session_title'] });
+    expect(sessionTitleSettingsPatch(' ', [])).toEqual({ session_title: { model: null, triggers: [] } });
     expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model' } }).sessionTitleTriggers).toEqual(['first_turn_completed']);
     expect(runtimeConfigDraftFromConfig({ session_title: { model: 'model', triggers: [] } }).sessionTitleTriggers).toEqual([]);
   });
@@ -2048,5 +2212,127 @@ describe('computer-use preference settings', () => {
       const patch = computerControlPreferencePatch(preference);
       expect(patchConfigRequestSchema.parse(patch)).toEqual({ computer_control: { usage_preference: preference } });
     }
+  });
+
+  it('determines computer control enabled and tool policy denial correctly', () => {
+    expect(isComputerControlEnabled({})).toBe(true);
+    expect(isComputerControlEnabled({ computer_control: { enabled: true } })).toBe(true);
+    expect(isComputerControlEnabled({ computer_control: { enabled: false } })).toBe(false);
+    expect(computerControlEnabledPatch(true)).toEqual({ computer_control: { enabled: true } });
+    expect(computerControlEnabledPatch(null)).toEqual({ computer_control: { enabled: null } });
+    expect(isComputerToolPolicyDenied({})).toBe(false);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-computer__*'] } })).toBe(true);
+    expect(isComputerToolPolicyDenied({ tools: { disallowed_tools: ['kiki-computer'] } })).toBe(true);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['Bash'] } })).toBe(false);
+    expect(isComputerToolPolicyPartiallyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } })).toBe(true);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } })).toBe(false);
+    expect(computerControlConnection({})).toBeUndefined();
+    expect(computerControlConnectionPatch('kiki-windows-mcp')).toEqual({ computer_control: { connection: 'kiki-windows-mcp' } });
+    expect(computerControlConnectionPatch(null)).toEqual({ computer_control: { connection: null } });
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-windows-mcp__*'] } })).toBe(false);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-windows-mcp__*'] } }, 'kiki-windows-mcp')).toBe(true);
+    expect(isComputerToolPolicyPartiallyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } }, 'kiki-windows-mcp')).toBe(false);
+    expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-windows-mcp__Click'] } }, 'kiki-windows-mcp')).toBe(false);
+  });
+});
+
+describe('browser-control settings helpers', () => {
+  it('reads browser control enabled state from config or experimental flag and creates patch', () => {
+    expect(isBrowserControlEnabled({})).toBe(true);
+    expect(isBrowserControlEnabled({ browser_control: { enabled: true } })).toBe(true);
+    expect(isBrowserControlEnabled({ browser_control: { enabled: false } })).toBe(false);
+    expect(isBrowserControlEnabled({ experimental: { native_browser: true } })).toBe(true);
+    expect(isBrowserControlEnabled({ experimental: { native_browser: false } })).toBe(false);
+    expect(browserControlEnabledPatch(true)).toEqual({
+      browser_control: { enabled: true },
+    });
+    expect(browserControlEnabledPatch(null)).toEqual({
+      browser_control: { enabled: null },
+    });
+  });
+
+  it('detects when browser tools are explicitly denied and distinguishes partial denials', () => {
+    expect(isBrowserToolPolicyDenied({})).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({})).toBe(false);
+
+    // Partial deny: only BrowserConnections disabled
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['BrowserConnections'] } })).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: ['BrowserConnections'] } })).toBe(true);
+
+    // Partial deny: only BrowserTabs disabled in disallowed_tools (second list merged)
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: [], disallowed_tools: ['BrowserTabs'] } })).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: [], disallowed_tools: ['BrowserTabs'] } })).toBe(true);
+
+    // Full group deny: both BrowserConnections and BrowserTabs disabled
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['BrowserConnections', 'BrowserTabs'] } })).toBe(true);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: ['BrowserConnections', 'BrowserTabs'] } })).toBe(false);
+
+    // Full group deny: browser wildcard or group
+    expect(isBrowserToolPolicyDenied({ tools: { disallowed_tools: ['browser'] } })).toBe(true);
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['browser__*'] } })).toBe(true);
+
+    expect(isBrowserToolPolicyDenied({ tools: { disabled: ['Bash'] } })).toBe(false);
+    expect(isBrowserToolPolicyPartiallyDenied({ tools: { disabled: ['Bash'] } })).toBe(false);
+  });
+
+  it('calculates effective allowed browser count considering allowlist and enabled flag', () => {
+    const connections = [
+      { id: 'b1', enabled: true },
+      { id: 'b2', enabled: true },
+      { id: 'b3', enabled: false },
+    ];
+
+    // Unconfigured: follows enabled !== false
+    expect(effectiveAllowedBrowserCount(connections, false, undefined)).toBe(2);
+
+    // Configured empty set: 0 allowed
+    expect(effectiveAllowedBrowserCount(connections, true, [])).toBe(0);
+
+    // Configured with allowed list: intersection with enabled
+    expect(effectiveAllowedBrowserCount(connections, true, ['b1', 'b3'])).toBe(1);
+    expect(isBrowserConnectionEffectiveAllowed(connections[0]!, true, ['b1'])).toBe(true);
+    expect(isBrowserConnectionEffectiveAllowed(connections[1]!, true, ['b1'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(connections[2]!, true, ['b3'])).toBe(false);
+
+    const cdp = { id: 'cdp', enabled: true, type: 'agent-browser-cdp' };
+    expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['independent-browser'])).toBe(0);
+    expect(effectiveAllowedBrowserCount([cdp], true, ['cdp'], ['kimi-webbridge'])).toBe(1);
+    expect(isBrowserConnectionEffectiveAllowed({ id: 'kimi-webbridge', enabled: true }, true, ['kimi-webbridge'], ['kimi-webbridge'])).toBe(false);
+  });
+
+  it('attributes the bridge source the way the server does, and keeps the other switches apart', () => {
+    // The public type belongs to the bridge whatever its id is.
+    expect(browserSourceOfConnectionType('kimi-webbridge', 'daily-edge')).toBe('kimi-webbridge');
+    expect(browserSourceOfConnectionType('webbridge-command', 'daily-edge')).toBe('kimi-webbridge');
+    // A record still stored as CDP under the preset id runs over the bridge, so
+    // classifying it by type first would report it allowed while the server refuses it.
+    expect(browserSourceOfConnectionType('agent-browser-cdp', 'kimi-webbridge')).toBe('kimi-webbridge');
+    expect(browserSourceOfConnectionType('agent-browser-cdp', 'edge-kimi')).toBe('independent-browser');
+    expect(browserSourceOfConnectionType('agent-browser-profile', 'research')).toBe('independent-browser');
+    expect(browserSourceOfConnectionType('codex-extension', 'codex-browser')).toBe('codex-browser');
+    expect(browserSourceOfConnectionType('ego-lite', 'ego-lite')).toBe('ego-lite');
+    expect(browserSourceOfConnectionType(undefined, 'unsaved')).toBeUndefined();
+
+    const bridge = { id: 'daily-edge', enabled: true, type: 'kimi-webbridge' };
+    const legacyBridge = { id: 'kimi-webbridge', enabled: true, type: 'agent-browser-cdp' };
+    const cdp = { id: 'preview', enabled: true, type: 'agent-browser-cdp' };
+    const profile = { id: 'research', enabled: true, type: 'agent-browser-profile' };
+    // Switching the bridge source off reaches both stored forms and nothing else.
+    expect(isBrowserConnectionEffectiveAllowed(bridge, false, undefined, ['kimi-webbridge'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(legacyBridge, false, undefined, ['kimi-webbridge'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(cdp, false, undefined, ['kimi-webbridge'])).toBe(true);
+    expect(isBrowserConnectionEffectiveAllowed(profile, false, undefined, ['kimi-webbridge'])).toBe(true);
+    // The independent switch is the one that covers those two, and only them.
+    expect(isBrowserConnectionEffectiveAllowed(cdp, false, undefined, ['independent-browser'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(profile, false, undefined, ['independent-browser'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(bridge, false, undefined, ['independent-browser'])).toBe(true);
+    // An explicit off switch wins over an allowlist that still names the connection.
+    expect(isBrowserConnectionEffectiveAllowed(bridge, true, ['daily-edge'], ['kimi-webbridge'])).toBe(false);
+    expect(isBrowserConnectionEffectiveAllowed(bridge, true, ['daily-edge'])).toBe(true);
+    expect(isBrowserConnectionEffectiveAllowed(bridge, true, ['other'])).toBe(false);
+    // Explicitly disabled stays disabled with no source switch and no saved set.
+    expect(isBrowserConnectionEffectiveAllowed({ ...bridge, enabled: false }, false, undefined)).toBe(false);
+    // An allowlist that names only the legacy row still reaches it through the bridge source.
+    expect(effectiveAllowedBrowserCount([legacyBridge, cdp], true, ['kimi-webbridge'], undefined)).toBe(1);
   });
 });

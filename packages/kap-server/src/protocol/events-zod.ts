@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { assistantStreamPartSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
@@ -192,6 +193,7 @@ export const backgroundTaskOriginSchema = z.object({
 
 export const cronJobOriginSchema = z.object({
   kind: z.literal('cron_job'),
+  deliveryMode: z.enum(['queue', 'steer', 'idle']).optional(),
   jobId: z.string(),
   cron: z.string(),
   recurring: z.boolean(),
@@ -632,6 +634,7 @@ export const workspaceDeletedEventSchema = z.object({
 export const sessionWorkChangedEventSchema = z.object({
   type: z.literal('event.session.work_changed'),
   busy: z.boolean(),
+  executing: z.boolean().optional(),
   main_turn_active: z.boolean().optional(),
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
@@ -848,6 +851,7 @@ export const assistantDeltaEventSchema = z.object({
   stepId: z.string().optional(),
   partId: z.string().optional(),
   delta: z.string(),
+  part: assistantStreamPartSchema.optional(),
 }) satisfies z.ZodType<AssistantDeltaPayload>;
 
 export const hookResultEventSchema = z.object({
@@ -975,6 +979,7 @@ export const compactionStartedEventSchema = z.object({
   type: z.literal('compaction.started'),
   trigger: z.enum(['manual', 'auto']),
   instruction: z.string().optional(),
+  phase: z.enum(['queued', 'running']).optional(),
 }) satisfies z.ZodType<CompactionStartedPayload>;
 
 export const compactionBlockedEventSchema = z.object({
@@ -984,10 +989,13 @@ export const compactionBlockedEventSchema = z.object({
 
 export const compactionCancelledEventSchema = z.object({
   type: z.literal('compaction.cancelled'),
+  trigger: z.enum(['manual', 'auto']).optional(),
+  reason: z.string().optional(),
 });
 
 export const compactionCompletedEventSchema = z.object({
   type: z.literal('compaction.completed'),
+  trigger: z.enum(['manual', 'auto']).optional(),
   result: compactionResultSchema,
 }) satisfies z.ZodType<CompactionCompletedPayload>;
 

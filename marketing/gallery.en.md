@@ -44,7 +44,7 @@ Scheduled tasks send prompts into sessions on a cron schedule while a Kiki proce
 
 ![The scheduled-tasks panel with recurring, one-shot, and paused entries.](shots/d05-cron-panel.en.light.png)
 
-Each workspace has a requirement board that outlasts any one session, and each card links to the sessions working on it.
+With the optional `kiki-task-board` plugin, each workspace gets a requirement board that outlasts any one session, and each card links to the sessions working on it.
 
 ![The workspace task board.](shots/r04-task-board.en.light.png)
 
@@ -59,6 +59,14 @@ Tool steps fold away, and completion notices stay on the timeline where you can 
 The usage page breaks a date range into tokens and cost, with separate indicators for whether each figure is complete.
 
 ![The usage page on its History tab.](shots/daily-usage.en.light.png)
+
+Its Live tab shows what is running and what is waiting, and names the concurrency rule holding each waiting request — the same rule, editable, right below.
+
+![The Live tab, with a waiting request and the concurrency rules that gate it.](shots/ux-usage-live.en.light.png)
+
+External sync sends the content-free numbers to a webhook, a VibeCafe account, or a script you approve, and shows each destination's own state — including a refused credential that kept its queue.
+
+![The External sync tab, with a webhook, a VibeCafe destination, and a script in three different states.](shots/ux-usage-export.en.light.png)
 
 ## Roles you can talk to
 

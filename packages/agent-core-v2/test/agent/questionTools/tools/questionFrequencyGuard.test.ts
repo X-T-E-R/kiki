@@ -28,7 +28,7 @@ import { executeTool } from '../../../tools/fixtures/execute-tool';
 
 const input: AskUserQuestionInput = { questions: [{ question: 'Choose the release target', header: 'Release', options: [{ label: 'Staging', description: 'Test rollout' }, { label: 'Production', description: 'Public rollout' }], multi_select: false }] };
 const hosts: TestInstantiationService[] = [];
-afterEach(() => { for (const host of hosts.splice(0)) host.dispose(); vi.useRealTimers(); });
+afterEach(async () => { for (const host of hosts.splice(0)) await host.dispose(); vi.useRealTimers(); });
 
 function fixture(config: InteractionConfig = { askUserQuestion: 'background', askUserQuestionGuard: { enabled: true } }) {
   const ix = new TestInstantiationService();
@@ -42,7 +42,7 @@ function fixture(config: InteractionConfig = { askUserQuestion: 'background', as
   ix.set(ISessionQuestionService, new SyncDescriptor(SessionQuestionService));
   ix.stub(IConfigService, { get: <T>() => currentConfig as T });
   ix.stub(IModelService, { get: (id) => models[id], resolveId: (id) => id === 'alias-b' ? 'b' : id });
-  ix.stub(IAgentProfileService, { getModel: () => modelId });
+  ix.stub(IAgentProfileService, { getModel: () => modelId, getRecipeModelSettings: () => undefined });
   ix.set(IQuestionFrequencyGuard, new SyncDescriptor(QuestionFrequencyGuard));
   const guard = ix.get(IQuestionFrequencyGuard);
   const events = ix.get(IEventBus);

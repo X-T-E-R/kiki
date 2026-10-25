@@ -5,6 +5,8 @@ export interface SkippedAgentFile {
   readonly path: string;
   readonly reason: string;
   readonly code?: string;
+  readonly profileName?: string;
+  readonly executor?: string;
 }
 
 export interface AgentProfileContribution {

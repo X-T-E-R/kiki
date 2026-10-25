@@ -48,8 +48,6 @@ import { SpaceRowMenu, type SpaceMenuItem } from './spaces/SpaceRowMenu';
 import { SpaceCredentialsCard } from './spaces/SubspaceCards';
 import { SpaceSettingsDetail } from './spaces/SpaceSettingsDetail';
 import { RemoteConnectionsSection } from './RemoteConnectionsSection';
-import { InboundConnectionsSection } from './InboundConnectionsSection';
-import { WebAccessSection } from './WebAccessSection';
 
 /**
  * Settings → Spaces (§9.1). The main space manages the list; a space sees the
@@ -71,8 +69,6 @@ export function SpacesSection() {
       {controlClient === null ? <Hint>{t('st.spaces.loading')}</Hint> : <>
         <SpaceListCard sub={sub} client={controlClient} target={controlTarget} openLocalSpace={openLocalSpace} />
         <RemoteConnectionsSection />
-        <InboundConnectionsSection />
-        <WebAccessSection />
         {sub ? <SpaceCredentialsCard client={controlClient} onEnterMain={() => openLocalSpace(MAIN_SPACE_ID, mode)} /> : null}
         {sub ? <CurrentSpaceSettings target={controlTarget} /> : null}
       </>}
@@ -130,7 +126,7 @@ function useGuardedSpaceOpen(client: KikiClient | null) {
       } catch (error) { await prepared?.dispose(); throw error; }
     };
     return guard?.runAction !== undefined ? guard.runAction(open, localView)
-      : open().then(() => { if (localView !== undefined) navigate(localView); });
+      : open().then(() => { if (localView !== undefined) void navigate(localView); });
   };
 }
 
@@ -212,7 +208,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
     | { kind: 'remove'; space: SpaceListItem } | { kind: 'delete'; space: SpaceListItem }
     | { kind: 'credentials'; space: SpaceListItem } | { kind: 'settings'; space: SpaceListItem } | null
   >(null);
-  const [menu, setMenu] = useState<{ space: SpaceListItem; anchor: DOMRect } | null>(null);
+  const [menu, setMenu] = useState<{ space: SpaceListItem; anchor: DOMRect; anchorElement: HTMLElement } | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [restartNote, setRestartNote] = useState<{ id: string; text: string } | null>(null);
   const [entering, setEntering] = useState<string | null>(null);
@@ -413,7 +409,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
             <button type="button" data-space-menu={space.id} aria-haspopup="menu" aria-label={t('st.spaces.menuAria', { name: space.name })}
               className="flex h-8 w-8 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
               onClick={(event) => {
-                setMenu({ space, anchor: event.currentTarget.getBoundingClientRect() });
+                setMenu({ space, anchor: event.currentTarget.getBoundingClientRect(), anchorElement: event.currentTarget });
               }}>
               <Icon name="more" size={14} />
             </button>
@@ -464,7 +460,7 @@ function SpaceListCard({ sub, client, target, openLocalSpace }: {
       </div>
 
       {menu !== null ? (
-        <SpaceRowMenu anchor={menu.anchor} items={menuItems(menu.space)} onClose={() => { setMenu(null); }}
+        <SpaceRowMenu anchor={menu.anchor} anchorElement={menu.anchorElement} items={menuItems(menu.space)} onClose={() => { setMenu(null); }}
           ariaLabel={t('st.spaces.menuAria', { name: menu.space.name })} />
       ) : null}
 

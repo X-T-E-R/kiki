@@ -298,6 +298,40 @@ export const zh = {
   'cron.toast.deleted': '已删除定时任务',
   'cron.error.notFound': '该任务已不存在，列表已刷新。',
   'cron.error.ambiguous': '该任务 ID 在多个会话中存在，请刷新后重试。',
+  // Schedule phrasing. `{days}` and `{times}` are joined with
+  // `cron.schedule.times`, so each locale picks its own separator.
+  'cron.schedule.times': '、',
+  'cron.schedule.everyMinute': '每分钟',
+  'cron.schedule.everyNMinutes': '每 {n} 分钟',
+  'cron.schedule.hourlyOnTheHour': '每小时整点',
+  'cron.schedule.hourly': '每小时第 {m} 分钟',
+  'cron.schedule.everyNHours': '每 {n} 小时的第 {m} 分钟',
+  'cron.schedule.everyNHoursOnTheHour': '每 {n} 小时整点',
+  'cron.schedule.daily': '每天 {times}',
+  'cron.schedule.weekdays': '工作日 {times}',
+  'cron.schedule.weekends': '周末 {times}',
+  'cron.schedule.weekly': '每周{days} {times}',
+  'cron.schedule.monthly': '每月 {day} 日 {times}',
+  'cron.schedule.yearly': '每年 {month} 月 {day} 日 {times}',
+  'cron.schedule.day.sunday': '日',
+  'cron.schedule.day.monday': '一',
+  'cron.schedule.day.tuesday': '二',
+  'cron.schedule.day.wednesday': '三',
+  'cron.schedule.day.thursday': '四',
+  'cron.schedule.day.friday': '五',
+  'cron.schedule.day.saturday': '六',
+  'cron.schedule.month.january': '一月',
+  'cron.schedule.month.february': '二月',
+  'cron.schedule.month.march': '三月',
+  'cron.schedule.month.april': '四月',
+  'cron.schedule.month.may': '五月',
+  'cron.schedule.month.june': '六月',
+  'cron.schedule.month.july': '七月',
+  'cron.schedule.month.august': '八月',
+  'cron.schedule.month.september': '九月',
+  'cron.schedule.month.october': '十月',
+  'cron.schedule.month.november': '十一月',
+  'cron.schedule.month.december': '十二月',
   'st.prompt.title': '提示词字段',
   'st.prompt.expand': '编辑提示词字段',
   'st.prompt.hint': '覆写已注册的提示词字段、添加可复用变量，或加载外部提示词配置文件。',
@@ -457,6 +491,10 @@ export const zh = {
   'capabilityReason.research_readonly_dispatch_forbidden': '仅研究 Agent 不能分派子 Agent。',
   'capabilityReason.plan_resume_forbidden': '计划模式下 AgentRun 不能恢复已有子 Agent；请先退出计划模式。',
   'capabilityReason.native_executor_required': '仅研究分派必须使用原生执行器。',
+  'capabilityReason.tool_not_registered': '该工具尚未注册。',
+  'capabilityReason.plugin_catalog_failed': '插件工具目录加载失败。',
+  'capabilityReason.plugin_usage_disabled': '当前作用域已停用此插件。',
+  'capabilityReason.plugin_usage_unavailable': '暂未能确认此范围的插件使用状态。',
   'agentProfileDiagnostic.agent_profile_source.invalid_path': '来源路径无效。',
   'agentProfileDiagnostic.agent_profile_source.path_escape': '来源路径超出贡献根目录。',
   'agentProfileDiagnostic.agent_profile_source.symlink_escape': '来源路径经符号链接解析后超出贡献根目录。',
@@ -479,6 +517,18 @@ export const zh = {
   'agentPanel.viewSkillMd': '查看 SKILL.md',
   'agentPanel.hideSkillMd': '收起 SKILL.md',
   'agentPanel.loadingSkillMd': '正在读取 SKILL.md…',
+  'agentPanel.skillMdSource': 'SKILL.md',
+  'agentPanel.skillMdReadFailed': '无法读取这份 SKILL.md，可打开原文件确认它是否还在。',
+  'agentPanel.skillMdMissing': '这份 SKILL.md 已经不在原位置了，打开原文件可以找到它现在的位置。',
+  'agentPanel.skillMdForbidden': '这里读不到这份 SKILL.md，打开原文件用别的方式读。',
+  'agentPanel.skillMdTruncated': '正在读取剩余部分，这里先显示文件的开头。',
+  'agentPanel.skillMdLoadingRest': '正在读取文件的剩余部分…',
+  'agentPanel.skillMdIncomplete': '文件的剩余部分没能读到，这里显示的是开头一段。',
+  'agentPanel.skillMdOpenFile': '打开原文件',
+  'agentPanel.skillMdCopy': '复制 SKILL.md',
+  'agentPanel.skillMdCopyShown': '复制显示的内容',
+  'agentPanel.skillMdCopied': '已复制 SKILL.md',
+  'agentPanel.skillMdCopiedShown': '已复制显示的内容',
   'agentPanel.skillType': '类型: {type}',
   'agentPanel.skillTypeLabel': '类型',
   'agentPanel.disableModelInvocationBadge': '仅手动执行',
@@ -646,6 +696,7 @@ export const zh = {
   'app.closeSidebar': '关闭侧栏',
   'app.unexpectedError': 'Kiki 遇到了意外错误。',
   'app.reload': '重新加载',
+  'app.trayLocaleSaveFailed': '托盘菜单仍是上一种语言。重新切换一次即可重试。',
 
   // ---- sidebar ----
   'sidebar.newSession': '新会话',
@@ -664,6 +715,9 @@ export const zh = {
   'sidebar.noSessions': '还没有会话 — 在上方新建一个吧。',
   'sidebar.untitled': '未命名会话',
   'sidebar.archived': '已归档',
+  'sidebar.archiving': '归档中…',
+  'sidebar.archivingAria': '正在归档 {title}',
+  'sidebar.archiveFailedAria': '归档 {title} 失败',
   'sidebar.showArchived': '显示已归档',
   'sidebar.loadMore': '加载更多会话',
   'sidebar.loadingMore': '正在加载…',
@@ -677,6 +731,7 @@ export const zh = {
   'sidebar.pinWorkspace': '置顶该工作区',
   'sidebar.unpinWorkspace': '取消置顶该工作区',
   'sidebar.pinWorkspaceFor': '置顶工作区「{name}」',
+  'sidebar.newSessionInWorkspace': '在「{name}」中新建会话',
   'sidebar.unpinWorkspaceFor': '取消置顶工作区「{name}」',
   'sidebar.workspaceAll': '全部工作区',
   'sidebar.collapseSidebar': '折叠侧栏',
@@ -732,6 +787,9 @@ export const zh = {
   'menu.showNested': '恢复嵌套显示',
   'menu.archive': '归档',
   'menu.copyLink': '复制链接',
+  'menu.copyThreadLink': '复制线程链接',
+  'menu.copyWorkingDirectory': '复制工作目录',
+  'menu.openWorkingDirectory': '打开工作目录',
   'menu.copyPath': '复制路径',
   'menu.openFolder': '打开所在文件夹',
   'menu.openDefaultApp': '以默认程序打开',
@@ -752,6 +810,48 @@ export const zh = {
   'file.openDefaultApp': '以默认程序打开',
   'file.open': '打开',
 
+  // ---- 输出层预设对话框 ----
+  'outputPreset.addAria': '添加输出层预设',
+  'outputPreset.editAria': '编辑输出层预设',
+  'outputPreset.addTitle': '新增预设',
+  'outputPreset.editTitle': '编辑预设',
+  'outputPreset.defaultLabel': '新预设',
+  'outputPreset.templateLabel': '内置模板',
+  'outputPreset.nameLabel': '预设名称',
+  'outputPreset.namePlaceholder': '例如：流式翻译',
+  'outputPreset.modelLabel': '处理模型',
+  'outputPreset.modeCatalog': '从模型目录选择',
+  'outputPreset.modeCustom': '已有连接自定义模型 ID',
+  'outputPreset.selectModelAria': '选择模型',
+  'outputPreset.connectionLabel': '已有连接',
+  'outputPreset.connectionPlaceholder': '选择连接 / 提供商...',
+  'outputPreset.customModelLabel': '自定义模型 ID',
+  'outputPreset.customModelPlaceholder': '输入自定义模型 ID (如 gemini-2.0-flash)',
+  'outputPreset.instructionLabel': '提示词指令',
+  'outputPreset.instructionPlaceholder': '提示词指令...',
+  'outputPreset.advancedToggle': '高级参数 (分组大小、预加载与 Token 预算)',
+  'outputPreset.groupCharsLabel': '单组字符数 (Unicode)',
+  'outputPreset.groupCharsHint': '默认 600',
+  'outputPreset.preloadBeforeLabel': '向前预加载组数',
+  'outputPreset.preloadAfterLabel': '向后预加载组数',
+  'outputPreset.preloadHint': '默认 1',
+  'outputPreset.maxOutputLabel': '单次输出预算 (Tokens)',
+  'outputPreset.maxOutputPlaceholder': '不限制',
+  'outputPreset.maxOutputHint': '单组最大输出 tokens（默认不限制）',
+  'outputPreset.historyLabel': '历史预算 (Tokens)',
+  'outputPreset.historyHint': '历史上下文上限，0 为关闭（默认 16,384）',
+  'outputPreset.errorCustomPair': '自定义模型需要同时选择已有连接并填写模型 ID。',
+  'outputPreset.errorMaxTokens': '输出上限必须是正整数；留空则不额外限制。',
+  'outputPreset.errorRequired': '请填写预设名称和提示词。',
+  'outputPreset.errorSave': '保存失败，请重试',
+  'outputPreset.errorDelete': '删除失败，请重试',
+  'outputPreset.delete': '删除预设',
+  'outputPreset.save': '保存预设',
+  'outputPreset.saving': '保存中...',
+  'outputPreset.noModelLabel': '未选择模型 (保持原文，不触发处理)',
+  'outputPreset.noModelGroup': '未设置',
+  'outputPreset.noModelKeywords': 'none empty 未选择 留空',
+
   // ---- composer right-click menu ----
   'composer.contextMenuAria': '输入操作',
   'contextMenu.cut': '剪切',
@@ -768,7 +868,8 @@ export const zh = {
   'execution.switchFreshContextPlain': '新引擎会从全新上下文开始。Kiki 不会把旧对话交接给它，也不会续用旧引擎的会话。',
   'execution.switchHistoryKept': '本会话的记录保留在这里，仍可完整查看。',
   'execution.switchBareEffects': '不会注入 Kiki 配置档提示词、工具或上下文，模型、思考强度和审批模式都由该引擎自己决定。',
-  'execution.switchProfileEffects': '{profile} 配置档会提供 Kiki 的提示词、工具与上下文，并使用它自己固定的模型和思考强度。',
+  'execution.switchProfileEffects': '{profile} 配置档会提供 Kiki 的提示词、工具与上下文。',
+  'execution.switchNativeContext': 'Kiki 会继续使用本会话的上下文。',
   'execution.switchRunningTurn': '正在运行的这一轮会用当前引擎正常跑完。',
   'execution.switchConfirm': '切换引擎',
   'composer.execution.aria': '执行方式 — {engine}，{profile}',
@@ -801,27 +902,47 @@ export const zh = {
   'composer.execution.fact.hooks': '钩子',
   'profile.switchTitle': '切换到 {profile}？',
   'profile.switchBody': '新的 agent 配置档将从你在本会话发送的下一条消息起生效。',
-  'profile.switchModelReset': '本页的模型与思考强度会切到新配置档的默认值，发送前仍可再改。',
+  'profile.switchModelReset': '配置档已设置的模型与思考强度会生效；未设置模型时保留当前模型。发送前仍可再改。',
   'profile.switchSubagents': '子智能体派发策略将随新配置档一并切换。',
   'profile.switchRunningTurn': '正在运行的这一轮会用当前配置档正常跑完。',
   'profile.switchConfirm': '切换配置档',
+  // 会话中切换执行引擎：新引擎从自己的上下文开始，本会话已有记录留在原处。
+
+
+
+
+
+
+
+
+
   'profile.actionsGroup': '配置档操作',
   'profile.rebuildMenu': '重建上下文',
-  'profile.rebuildMenuDescription': '重新加载当前配置档、提示字段、skills、指令和 plugin 注入。',
-  'profile.rebuildBusy': '请等待当前轮次结束后再重建上下文。',
+  'profile.rebuildMenuDescription': '重新加载当前配置档、提示字段、skills、指令、plugin 内容，以及当前对话的 MCP 服务器。',
+  'profile.rebuildBusy': '重建需要一个轮次边界：当前对话正在运行或还有排队工作时不可用。',
   'profile.rebuildTitle': '重建此会话的上下文？',
-  'profile.rebuildBody': 'Kiki 将从磁盘最新状态重新加载当前 Agent 的系统提示词与注入上下文。',
-  'profile.rebuildKeepsHistory': '对话消息与历史记录会保留。',
-  'profile.rebuildLatestSources': '将重建配置档、提示字段、skills、AGENTS.md 指令、plugin 注入及其他运行时注入。',
+  'profile.rebuildBody': 'Kiki 会从各自当前的来源重新读取当前 Agent 的系统提示词与注入上下文——配置档、提示字段、skills、AGENTS.md 指令、plugin 内容和 MCP 服务器。',
+  'profile.rebuildKeepsHistory': '这是同一个对话：它的消息与历史记录会保留。',
+  'profile.rebuildLatestSources': '将重建配置档、提示字段、skills、AGENTS.md 指令、plugin 注入及其他运行时注入，并重新读取当前对话的 MCP 服务器：会话启动后由配置启用的会加入列表，已关闭的不会被自动打开。',
   'profile.rebuildConfirm': '重建上下文',
-  'profile.rebuildDoneChanged': '已根据最新来源重建上下文。',
-  'profile.rebuildDoneUnchanged': '上下文已重建；各来源原本已是最新状态。',
+  'profile.rebuildDoneChanged': '已根据当前来源重建上下文。',
+  'profile.rebuildDoneUnchanged': '上下文已重新读取；内容没有变化。',
   'profile.rebuildFailed': '上下文重建失败：{detail}',
   'rename.title': '重命名会话',
   'action.exportDone': '“{title}”的归档已下载。',
   'action.exportDoneSession': '会话归档已下载。',
   'action.compactRequested': '已请求压缩“{title}”的上下文。',
-  'action.compactRequestedSession': '已请求压缩上下文 — 更早的内容将被摘要。',
+  'action.compactRequestedSession': '已请求手动压缩。',
+  'context.compaction.manual.queued': '手动压缩已排队 · 等本次请求及工具结束',
+  'context.compaction.manual.running': '手动压缩中',
+  'context.compaction.manual.completed': '手动压缩已完成',
+  'context.compaction.manual.cancelled': '手动压缩已取消',
+  'context.compaction.manual.failed': '手动压缩失败',
+  'context.compaction.auto.queued': '自动压缩已排队',
+  'context.compaction.auto.running': '自动压缩中',
+  'context.compaction.auto.completed': '自动压缩已完成',
+  'context.compaction.auto.cancelled': '自动压缩已取消',
+  'context.compaction.auto.failed': '自动压缩失败',
   'action.undoDone': '已移除“{title}”的最后一轮。',
   'action.undoDoneSession': '已移除最后一轮。',
   'action.forkDoneSession': '已分叉 — 正在打开副本。',
@@ -834,7 +955,7 @@ export const zh = {
   'action.editFailed': '编辑失败：{detail}',
   'action.regenerateFailed': '重新执行失败：{detail}',
   'error.nothingToUndo': '没有可撤销的内容 — 没有更早的轮次可以回退。',
-  'error.nothingToCompact': '暂无可压缩的内容 — 历史记录太短。',
+  'error.nothingToCompact': '暂无可安全压缩的较早上下文。',
   'error.sessionBusy': '会话正忙 — 请等当前轮次结束后再试。',
   'error.messageActionUnavailable': '这条消息已不可编辑或重跑。',
   'error.sessionCursorMismatch': '会话已在别处更新 — 请查看最新状态后重试。',
@@ -866,7 +987,9 @@ export const zh = {
   'shortcuts.group.terminal': '终端',
   'shortcuts.newSession': '新建会话',
   'shortcuts.switcher': '快速切换',
-  'shortcuts.nextSession': '跳到另一个最近会话',
+  'shortcuts.nextSession': '下一个正在运行的线程',
+  'shortcuts.previousSession': '上一个正在运行的线程',
+  'shortcuts.runningThreadsNote': '按创建时间从新到旧循环切换已加载的运行线程。浏览器占用 Ctrl+Tab / Ctrl+Shift+Tab；网页版请为这两个动作重绑定快捷键。',
   'shortcuts.settings': '打开设置',
   'shortcuts.thisPanel': '本快捷键面板',
   'shortcuts.showHide': '显示或隐藏 Kiki 窗口',
@@ -893,10 +1016,10 @@ export const zh = {
   'context.detailsHint': '详情',
   'context.detailsTitle': '上下文详情',
   'context.sessionUsage': '本会话累计',
-  'context.agentUsage': '子智能体累计',
+  'context.agentUsage': '本智能体累计',
   'context.sessionUsageHint': '累计',
   'context.usageReadFailed': '累计用量读取失败，因此不显示数字。',
-  'context.agentUsageIncomplete': '部分子智能体的用量读取失败，以下合计不完整。',
+  'context.agentUsageIncomplete': '部分用量或价格未知，以下合计不完整。',
   'context.windowTitle': '上下文窗口',
   'context.windowHint': '当前',
   'context.breakdownTitle': '分段明细',
@@ -908,6 +1031,9 @@ export const zh = {
   'context.available': '可用',
   'context.limit': '上限',
   'context.compactAction': '压缩较早上下文',
+  'context.compactUnavailable': '此引擎不提供手动压缩。',
+  'context.compactUnknown': '此引擎尚未说明是否支持手动压缩。',
+  'context.compactUnread': '此引擎尚未上报能力信息，因此这里不提供手动压缩。',
   'context.meterCompactTitle': '上下文 {used} / {limit}，到 {point} 时自动压缩。点击查看详情',
   'context.meterCompactDueTitle': '上下文 {used} 已超过压缩点 {point}，下一步开始前会压缩',
   'context.compact.layer.session': '本会话',
@@ -955,9 +1081,9 @@ export const zh = {
   'context.strategy.option.summarize': '摘要',
   'context.strategy.option.fresh': '重新开始',
   'context.strategy.option.auto': '自动',
-  'context.strategy.hint.summarize': '默认。更早的消息会替换为摘要。',
+  'context.strategy.hint.summarize': '更早的消息会替换为摘要。',
   'context.strategy.hint.fresh': '清空上下文，从智能体的工作笔记接着做。',
-  'context.strategy.hint.auto': '工作笔记足以覆盖当前工作时重新开始，否则生成摘要。',
+  'context.strategy.hint.auto': '主智能体内置默认。工作笔记足以覆盖当前工作时重新开始，否则生成摘要。',
   'context.strategy.source.session': '本会话',
   'context.strategy.source.profile': '来自 profile「{profile}」',
   'context.strategy.source.profileUnnamed': '来自 profile',
@@ -1068,6 +1194,48 @@ export const zh = {
   'composer.addMenu.sessionGroup': '会话',
   'composer.addMenu.attachHint': '或拖放、粘贴',
   'composer.addMenu.skills': '技能',
+  'composer.addMenu.plugins': '插件',
+  'composer.addMenu.searchPlugins': '搜索已安装的插件',
+  'composer.addMenu.pluginsLoading': '正在读取当前对话可用的插件…',
+  'composer.addMenu.pluginsFailed': '暂时读不到插件使用情况。',
+  'composer.addMenu.pluginsEmpty': '还没有安装插件，可以到插件页里找。',
+  'composer.addMenu.pluginsHint': '开关只作用于当前对话。',
+  'composer.addMenu.pluginToggle': '{name}（当前对话）',
+  'composer.addMenu.pluginOnSession': '当前对话已开启',
+  'composer.addMenu.pluginOffSession': '当前对话已关闭',
+  'composer.addMenu.pluginOnWorkspace': '本工作区已开启',
+  'composer.addMenu.pluginOffWorkspace': '本工作区已关闭',
+  'composer.addMenu.pluginFromGlobal': '全局默认开启',
+  'composer.addMenu.pluginOffGlobal': '全局默认已关闭',
+  'composer.addMenu.pluginBlocked': '主开关已关闭',
+  'composer.addMenu.mcp': 'MCP 服务器',
+  'composer.addMenu.searchMcp': '搜索 MCP 服务器',
+  'composer.addMenu.mcpLoading': '正在读取当前对话的 MCP 服务器…',
+  'composer.addMenu.mcpFailed': '暂时读不到 MCP 服务器。',
+  'composer.addMenu.mcpCatalogFailed': 'MCP 配置读取失败，因此当前对话没有的服务器不会出现在这里。',
+  'composer.addMenu.mcpEmpty': '还没有配置 MCP 服务器。在设置里添加后，它会出现在这里。',
+  'composer.addMenu.mcpHint': '加入只作用于当前对话。',
+  'composer.addMenu.mcpPluginHint': '来自插件的服务器随该插件的开关一起变化。',
+  'composer.addMenu.mcpExternalHint': '当前对话运行在 {engine} 上。Kiki 只转发该引擎接受的 MCP 服务器。',
+  'composer.addMenu.mcpNeedsAuth': '需要登录',
+  'composer.addMenu.mcpConfigOff': '在 MCP 配置中已关闭',
+  'composer.addMenu.mcpSourceOn': '在 MCP 配置中已开启',
+  'composer.addMenu.mcpOffSession': '当前对话已关闭',
+  'composer.addMenu.mcpOnSession': '当前对话已开启',
+  'composer.addMenu.mcpRemoved': '已从当前对话移出',
+  'composer.addMenu.mcpPluginMuted': '插件 {name} 内已关闭',
+  'composer.addMenu.mcpPluginBlocked': '插件 {name} 被主开关关闭',
+  'composer.addMenu.mcpFromPlugin': '来自插件 {name}',
+  'composer.addMenu.mcpFromConfig': '来自你的 MCP 配置',
+  'composer.addMenu.mcpFromConversation': '由打开此对话的客户端添加',
+  'composer.addMenu.mcpToggle': '{name}（当前对话）',
+  'composer.addMenu.mcpReconnect': '重新连接',
+  'composer.addMenu.mcpRetrying': '正在重新连接…',
+  'composer.addMenu.mcpUseConfig': '用配置',
+  'composer.addMenu.mcpStateUnknown': '状态未报告',
+  'composer.addMenu.mcpNoWrite': '当前 Kiki 版本无法为对话加入或移出 MCP 服务器；这里显示的是它已有的。',
+  'composer.addMenu.mcpWriteFailed': '无法修改 {name}：{detail}',
+  'composer.addMenu.mcpDismiss': '关闭',
   'composer.addMenu.mention': '引用文件',
   'composer.addMenu.mentionHint': '会随消息以 @路径 发送。',
   'composer.addMenu.files': '文件',
@@ -1084,6 +1252,41 @@ export const zh = {
   'composer.agentDefaultName': 'Kiki',
   'composer.agentDefaultOption': 'Kiki（默认）',
   'composer.agentPendingSuffix': '{name} · 下一条消息起',
+  // 执行方式：跑哪个引擎，以及用它的哪个配置档。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'composer.execution.needsSetup': '{engine} 尚不可用。会话仍使用这个引擎，请在设置中完成配置或检查连接。',
+  'composer.execution.configure': '配置或检查引擎',
+
+
+  'composer.execution.filePathAria': '配置档文件路径',
+  'composer.execution.filePathPlaceholder': '/path/to/profile.md',
+  'composer.execution.fileCheck': '检查文件',
+
+  'composer.execution.fileBack': '返回引擎列表',
+  'composer.execution.fileGroupAria': '配置档文件',
+  'composer.execution.fileNote': '任何合法的配置档 Markdown 文件都可以，包括不是 main 配置档的文件。文件在会话运行的位置读取，不会被注册或导入。',
+  'composer.execution.fileUnread': '无法在会话运行的位置读取此文件。',
+
+
+
+
+
+
+
   'composer.modelProvenance.override': '本条消息指定',
   'composer.modelProvenance.session': '来自本会话',
   'composer.modelProvenance.server-default': '服务器默认',
@@ -1111,7 +1314,7 @@ export const zh = {
   'goal.edit': '编辑',
   'goal.editTitle': '编辑目标、完成条件或追加时机',
   'goal.pause': '暂停',
-  'goal.pauseTitle': '暂停目标——恢复前不再发起后续轮次',
+  'goal.pauseTitle': '暂停目标——停止当前目标轮次和自动续轮',
   'goal.resume': '继续',
   'goal.resumeTitle': '恢复目标并继续执行',
   'goal.resumeBlockedTitle': '恢复受阻目标并发起新的后续轮次',
@@ -1128,6 +1331,8 @@ export const zh = {
   'goal.budget.turns': '目标轮次',
   'goal.budget.tokens': '输出 token',
   'goal.budget.seconds': '活跃时间（秒）',
+  'goal.budget.increase': '增加{unit}',
+  'goal.budget.decrease': '减少{unit}',
   'goal.noLimit': '无上限',
   'goal.limitReached': '已达上限',
   'goal.clearBudgets': '清除上限',
@@ -1142,12 +1347,15 @@ export const zh = {
   'composer.agentProfileAria': 'Agent 配置档',
   'composer.agentProfileTitle': 'Agent 配置档 — 本会话以哪套人格与工具集运行',
   'composer.agentProfilePendingTitle': '配置档切换待生效 — 将从你的下一条消息起生效',
+  'composer.agentProfileBusyTitle': 'Agent 配置档 — 在此选择的切换将从你的下一条消息起生效',
   'composer.noAgentProfiles': '（无可用 agent 配置档）',
   'composer.profileGroupMain': '主配置档',
   'composer.profileGroupOther': '更多配置档',
   'composer.profileSearchPlaceholder': '搜索配置档…',
   'composer.profileEffortBadge': '思考强度 · {effort}',
   'composer.modelSearchPlaceholder': '搜索模型…',
+  'composer.chooseModel': '选择模型',
+  'composer.configureModels': '连接提供方或添加模型',
   'composer.modelCompactAt': '{tokens} 自动压缩',
   'composer.modelNoVision': '不支持视觉',
   'composer.placeholder': '让 Kiki 做点什么…',
@@ -1176,14 +1384,30 @@ export const zh = {
   'composer.pasteDraftChanged': '读取剪贴板时草稿已改变，请在当前光标处重新粘贴。',
   'composer.engineModelTitle': '{model} — 由智能体档案设置，{engine} 提供',
   'composer.engineModelDefault': '引擎默认',
+  'composer.engineModelFollow': '跟随引擎配置',
+  'composer.engineModelId': '引擎模型 ID',
+  'composer.engineModelLoading': '正在读取此引擎的模型…',
+  'composer.engineModelPartial': '已读到 {count} 个模型，引擎仍在报告。',
+  'composer.engineModelUnavailable': '此引擎没有报告模型列表。',
+  'composer.engineModelUnknown': '此引擎的模型尚未知。',
+  'composer.engineModelNotInList': '不在此引擎的列表中',
+  'composer.engineModelSwitchUnavailable': '此引擎不接受在此更改模型。',
+  'composer.engineCapabilityStale': '上次读取在一分钟前。',
+  'composer.engineCapabilityRefresh': '刷新',
+  'composer.engineCapabilityRefreshing': '正在刷新…',
+  'composer.engineCapabilityRefreshFailed': '刷新失败；保留最近已知值。',
+  'composer.engineCapabilityRefreshAria': '刷新引擎能力',
   'composer.abortTitle': '停止此轮',
   'composer.sendTitle': '发送（Enter）',
   'composer.sendTitleCmdEnter': '发送（⌘/Ctrl+Enter）',
   'composer.queueTitle': '加入队列（Enter）',
   'composer.queueTitleCmdEnter': '加入队列（⌘/Ctrl+Enter）',
+  'composer.queueTitlePendingSwitch': '加入队列（Enter）— 切换随这条消息生效',
+  'composer.queueTitlePendingSwitchCmdEnter': '加入队列（⌘/Ctrl+Enter）— 切换随这条消息生效',
   'composer.sendAria': '发送消息',
   'composer.queueAria': '加入队列',
   'composer.sendNowAria': '送入当前轮次',
+  'composer.inputAria': '消息输入',
   'composer.sendNowTitle': '送入正在进行的轮次 — 下一步开始时读入本轮（Enter）',
   'composer.sendNowTitleCmdEnter': '送入正在进行的轮次 — 下一步开始时读入本轮（⌘/Ctrl+Enter）',
   'composer.sendTimingAria': '发送时机',
@@ -1254,7 +1478,7 @@ export const zh = {
   'transcript.editTitle': '编辑此消息并重新发送',
   'transcript.editSubmit': '重发',
   'transcript.editSubmitTitle': '替换原消息并从此处重新运行',
-  'transcript.editAttachmentsNote': '完整替换语义 — 附件不会继承。',
+  'transcript.editAttachmentsLoadFailed': '原消息的附件没能载入。',
   'transcript.regenerate': '重新执行这一轮',
   'transcript.regenerateTitle': '重新执行这一轮：从此处撤回上下文并重新运行。已发生的文件和外部操作不会撤回。',
   'transcript.fork': '分叉',
@@ -1262,6 +1486,8 @@ export const zh = {
   'transcript.actionsBusyTitle': '当前轮次结束后可用',
   'transcript.showMore': '展开全部',
   'transcript.showLess': '收起',
+  'transcript.loadMoreSegment': '点击继续加载一段',
+  'transcript.expandContent': '展开完整内容',
   'transcript.detail.showAll': '显示完整输出',
   'transcript.detail.tailOnly': '仅显示最后几行。',
   'transcript.detail.loading': '正在加载完整输出…',
@@ -1339,6 +1565,9 @@ export const zh = {
   'find.readContent': '读取命中正文',
   'find.readFailed': '未能读取命中正文。可重试，或打开消息查看原文。',
   'find.lookBack': '继续往前找',
+
+
+
   'find.stop': '停止',
   'find.compacted': '另有 {count} 处在已压缩历史中',
   'find.openGlobal': '在全局搜索中查看',
@@ -1398,9 +1627,19 @@ export const zh = {
   'transcript.marker.compactionSource.auto': '自动压缩',
   'transcript.marker.compactionSource.manual': '手动压缩',
   'transcript.marker.compactionStartedAt': '开始于 {time}',
-  'transcript.marker.compactionFresh': '清空式压缩完成 · 已保留接力上下文',
-  'transcript.marker.compactionFallback': '未满足换窗条件，已改为摘要',
-  'transcript.marker.compactionRescue': '上下文已压缩 · 摘要失败，已重新开始',
+  'transcript.marker.compactionFresh': '上下文已压缩 · 已重新开始',
+
+
+
+
+
+
+
+
+
+
+  'transcript.marker.compactionFallback': '上下文已压缩 · 已生成摘要（重新开始条件未满足）',
+  'transcript.marker.compactionRescue': '上下文已压缩 · 已重新开始（摘要失败）',
   'transcript.marker.reason.history_unavailable': '换窗时无法读取会话历史。',
   'transcript.marker.reason.notes_missing': '智能体没有可用于接力的工作笔记。',
   'transcript.marker.reason.notes_previous_window': '工作笔记只覆盖了上一个上下文窗口。',
@@ -1421,6 +1660,13 @@ export const zh = {
   'transcript.marker.notice': '提示',
   'transcript.marker.cron': '定时任务',
   'transcript.marker.goal': '目标已更新',
+  'transcript.marker.goal.created': '目标已设定',
+  'transcript.marker.goal.updated': '目标已更新',
+  'transcript.marker.goal.paused': '目标已暂停',
+  'transcript.marker.goal.resumed': '目标已继续',
+  'transcript.marker.goal.blocked': '目标已受阻',
+  'transcript.marker.goal.completed': '目标已完成',
+  'transcript.marker.goal.cleared': '目标已移除',
   'transcript.marker.plan': '计划已更新',
   'transcript.marker.interruption': '你已停止本轮',
   'transcript.marker.modelSwitch': '模型从 {from} 换成 {to}',
@@ -1450,7 +1696,15 @@ export const zh = {
   'transcript.blank': '白纸一张。告诉 Kiki 要做什么。',
   'transcript.blocked': '已阻塞',
   'transcript.sending': '正在发送…',
-  'transcript.stillSending': '仍在发送…请勿重复发送此消息。',
+  'transcript.sendingSlowTitle': '仍在发送。等待 10 秒后，这条消息还没有出现在时间线或队列中。内容已本地保存。',
+  'transcript.sendingSlowNoBackupTitle': '仍在发送。等待 10 秒后，这条消息还没有出现在时间线或队列中。',
+  'transcript.sendUnconfirmed': '未确认送达',
+  'transcript.sendUnconfirmedTitle': '连接中断，无法确认是否送达。内容已本地保存；可使用相同消息身份重试。',
+  'transcript.sendUnconfirmedNoBackupTitle': '连接中断，无法确认是否送达。可使用相同消息身份重试。',
+  'transcript.serverSyncing': '同步中',
+  'transcript.serverSyncingTitle': '服务器已接收这条消息，会话正在同步。',
+  'transcript.serverHeld': '待恢复',
+  'transcript.serverHeldTitle': '服务器已保留这条消息等待恢复。请确认队列恢复，或用相同消息身份重试。',
   'transcript.steerSending': '正在送入当前轮次…',
   'transcript.steerWaiting': '等待插入',
   'transcript.steerWaitingHint': '下一步开始时读入本轮',
@@ -1495,6 +1749,7 @@ export const zh = {
 
   // ---- media + file preview ----
   'media.attachment': '附件',
+  'media.image': '图片',
   'media.viewImage': '查看图片',
   'media.download': '下载',
   'media.zoomFit': '适应屏幕',
@@ -1502,6 +1757,8 @@ export const zh = {
   'preview.openFile': '预览 {name}',
   'preview.loading': '加载中…',
   'preview.failed': '无法读取该文件',
+  'preview.referenceMissing': '文件已打开，但未找到引用的位置。',
+  'preview.referenceClamped': '引用位置超出文件范围，已定位到最近的有效位置。',
   'preview.truncated': '文件较大，仅显示前面一部分。',
   'preview.loadFullFile': '加载完整文件',
   'preview.unsupported': '该文件类型暂不支持预览。',
@@ -1517,6 +1774,7 @@ export const zh = {
   'preview.zoomActual': '100%',
   'preview.empty': '点击会话中的文件路径即可在此预览。',
   'preview.closeTab': '关闭标签',
+  'preview.tabMenuAria': '标签操作',
   'preview.closeOthers': '关闭其他标签',
   'preview.closeAll': '关闭全部标签',
   'preview.openAgentFullscreen': '打开 {name}',
@@ -1546,8 +1804,107 @@ export const zh = {
   'preview.discardBodyMany': '{count} 个文件有未保存的修改。',
   'preview.discard': '放弃修改',
 
+  // ---- document preview (PDF / Office / CSV) ----
+  'preview.rendering': '正在渲染这一页…',
+  'preview.tryAgain': '重试',
+  'preview.pageOf': '第 {page} / {count} 页',
+  'preview.previousPage': '上一页',
+  'preview.nextPage': '下一页',
+  'preview.sheet': '工作表',
+  'preview.fidelitySource': '文件文本',
+  'preview.pageAlt': '{name} 第 {page} 页',
+  'preview.sourceTextNotice': '{name} 以文件自身文本显示，不是排版后的页面。',
+  'preview.loadMore': '显示更多',
+  'preview.rendererShared': '装一次 {name}，这一类文件之后都能在这里预览。',
+  'preview.installRenderer': '安装 {name}',
+  'preview.installing': '正在安装 {name}…',
+  'preview.installFailed': '{name} 安装失败。',
+  'preview.installTimedOut': '安装未在时间内完成，请重试。',
+  'preview.installOfficePlugin': '安装 Office 预览',
+  'preview.installOfficePluginConsent': '这个文件由 {name} 插件渲染，而该插件尚未安装。安装它会一并安装 {program}——真正绘制页面的程序。',
+  'preview.planningInstall': '正在查看安装 {name} 会带来什么…',
+  'preview.installOfficePluginPlan': '安装 {name} 以及它需要的 {program}。下面列出的就是将被安装的内容，与展示的一致。',
+  'preview.installOfficePluginPlanNoConsent': '安装 {name} 以及它需要的 {program}。该插件不申请任何权限。',
+  'preview.installOfficePluginPermissions': '它将能够访问：{permissions}。',
+  'preview.installOfficePluginAdds': '它会为 Kiki 增加 {count} 项工具、面板或命令。',
+  'preview.installOfficePluginConfirm': '安装 {name}',
+  'preview.enableOfficePlugin': '启用 Office 预览',
+  'preview.enableOfficePluginConsent': '{name} 插件已安装但被停用，所以这个文件打不开。重新启用会在缺失时一并安装 {program}，其它一切都不变。',
+  'preview.pluginUnavailable': '当前 home 没有提供 {name}，因此无法在此安装。',
+  'preview.pluginSettings': '打开 Office 插件设置',
+  'preview.assetFailed': '这一页无法读取。',
+  'preview.pdfFailed': '这一页无法绘制。',
+  'preview.legacyFormats': 'Kiki 可预览 .docx、.xlsx、.pptx、.pdf 和 .csv。更早的 .doc、.xls、.ppt 请用其本机应用打开。',
+
+  // ---- work mode: the window's working surface ----
+  'workMode.aria': '窗口模式',
+  'workMode.menu': '切换窗口模式',
+  'workMode.appliesToWindow': '只作用于当前窗口。此空间的其他窗口保持各自模式。',
+  'workMode.sameSpaceSecondWindow': '切换不会动任何会话、记忆和后台任务。要同时用两种模式，开第二个窗口即可。',
+  'workMode.enabled': '已就绪',
+  'workMode.needsSetup': '此空间尚未配置',
+  'workMode.open': '在新窗口中打开',
+  'workMode.loadFailed': '无法读取此空间的模式。',
+  'workMode.retry': '重试',
+  'workMode.switchKeptSessions': '会话保留创建时的工具。当前窗口只改变接下来的建议。',
+
+  // ---- work setup: one flow for a new user and an existing one ----
+  'workSetup.title': '在此空间使用 Work',
+  'workSetup.eyebrow': '配置 {name}',
+  'workSetup.body': '{description} 只补齐缺少的部分，已有的内容保持原样。已配置的模型连接和现有文件直接复用。',
+  'workSetup.haveHeading': '此空间已具备',
+  'workSetup.addHeading': '本次补充',
+  'workSetup.itemReady': '已就绪',
+  'workSetup.itemInstalledOn': '已安装并启用',
+  'workSetup.itemMissing': '尚未安装',
+  'workSetup.itemOptional': '可选',
+  'workSetup.prereqTitle': '{name} · {size}',
+  'workSetup.prereqBody': '{body}',
+  'workSetup.prereqConsent': '现在一并安装',
+  'workSetup.prereqSkipNote': '没有它也能使用 {name}。这些格式的预览要等装好之后才有。',
+  'workSetup.confirm': '配置 {name}',
+  'workSetup.decline': '暂不',
+  'workSetup.working': '正在配置…',
+  'workSetup.doneTitle': '{name} 已就绪',
+  'workSetup.doneBody': '可以从下面的任务开始。',
+  'workSetup.doneAction': '开始工作',
+  'workSetup.partialTitle': '{name} 尚未启用',
+  'workSetup.partialBody': '{total} 项中已有 {done} 项就绪，已完成的部分保持不变。',
+  'workSetup.partialAction': '重试剩余项',
+  'workSetup.close': '关闭',
+  'workSetup.failedItem': '{name} 安装失败。{reason}',
+  'workSetup.reuseNote': '已有会话保留创建时的工具。',
+
+  // ---- work home: the surface itself ----
+  'workHome.eyebrow': 'Work 模式',
+  'workHome.headline': '办公材料进去，核对过的结果出来。',
+  'workHome.subhead': '从你已有的文件开始。下面每个任务都在当前窗口新建会话，并带上 Work 的工具。',
+  'workHome.startHeading': '开始一个任务',
+  'workHome.task.review': '审阅文档',
+  'workHome.task.reviewBody': '读 .docx、.pdf 或 .pptx，给出书面解读。',
+  'workHome.task.draft': '据素材起草',
+  'workHome.task.draftBody': '把笔记和摘录变成可编辑的草稿。',
+  'workHome.task.extract': '从文件中提取文本',
+  'workHome.task.extractBody': '提取可读内容，存成可检索的笔记。',
+  'workHome.task.tables': '比对两张表',
+  'workHome.task.tablesBody': '按主键匹配 CSV 或 .xlsx，报告差异。',
+
   // ---- subagent cards ----
   'subagent.status.unknown': '状态未知',
+  'subagent.status.idle': '空闲',
+  'subagent.status.lost': '已失联',
+  'subagent.name.loading': '名称尚未读取 · {id}',
+  'subagent.name.unreported': '未登记名称 · {id}',
+  'subagent.source.name.user_label': '名称：用户指定',
+  'subagent.source.name.collaboration_task': '名称：登记任务',
+  'subagent.source.name.profile': '名称：绑定配置',
+  'subagent.source.name.task': '名称：派发任务',
+  'subagent.source.name.unreported': '名称：未登记',
+  'subagent.source.status.metadata': '状态：会话登记记录',
+  'subagent.source.status.runtime': '状态：当前运行实例',
+  'transcript.content.remainder.readingAgents': '正在自动读取智能体列表…',
+  'inspector.filter.idle': '{count} 空闲',
+  'inspector.filter.unknown': '{count} 状态未知',
   'subagent.status.refreshing': '刷新中…',
   'subagent.status.running': '运行中',
   'subagent.status.suspended': '已挂起',
@@ -1693,6 +2050,16 @@ export const zh = {
   'tc.noInput': '（无输入）',
   'tc.truncated': '…（已截断）',
   'tc.exit': '退出码 {code}',
+  'tc.ext.read': 'Read',
+  'tc.ext.write': 'Write',
+  'tc.ext.edit': 'Edit',
+  'tc.ext.search': 'Search',
+  'tc.ext.fetch': 'Fetch',
+  'tc.ext.run': 'Run',
+  'tc.ext.agent': 'Agent',
+  'tc.ext.task': 'Task',
+  'tc.ext.plan': 'Plan',
+  'tc.ext.permission': 'Allow',
   'tc.plan': '计划',
   'tc.planPath': '计划 — {path}',
   'tc.planEnter': '进入计划模式',
@@ -1709,6 +2076,8 @@ export const zh = {
   'cb.preparing': '正在准备复制…',
   'cb.copyBody': '复制{field}',
   'subagent.call.copyFailed': '未能复制完整内容，请重试。',
+
+
   'cb.copied': '已复制',
   'cb.showLess': '收起',
   'cb.viewMore': '展开更多（{count} 行）',
@@ -1768,6 +2137,8 @@ export const zh = {
   'tc.sem.web.fetchFailed': '失败',
   'tc.sem.untitled': '未命名',
   'tc.sem.noText': '（无文本）',
+  'tc.sem.prompt': 'Prompt',
+  'tc.sem.message': '消息',
   'tc.sem.notFound': '未找到',
   'tc.sem.timedOut': '已超时',
   'tc.sem.interrupted': '已打断',
@@ -1782,8 +2153,14 @@ export const zh = {
   'tc.sem.thread.list': '列出线程',
   'tc.sem.thread.read': '读取线程',
   'tc.sem.thread.send': '发给',
+  'tc.sem.thread.sendRoom': '发到房间',
+  'tc.sem.thread.roomSending': '发送中…',
+  'tc.sem.thread.roomLoggedSilent': '已记录，未唤醒任何人',
+  'tc.sem.thread.roomLoggedAsked.other': '已记录，已通知 {count} 位',
+  'tc.sem.thread.roomNoMention': '未通知任何人',
   'tc.sem.thread.wait': '等待',
   'tc.sem.thread.undeliverable': '未送达',
+  'tc.sem.openRoom': '打开房间',
   'tc.sem.thread.activity.terminal': '一轮已结束',
   'tc.sem.thread.activity.attention': '需要处理',
   'tc.sem.thread.activity.lifecycle': '线程状态变化',
@@ -1843,6 +2220,9 @@ export const zh = {
   'tc.sem.plan.approved': '已批准',
   'tc.sem.skill': '使用技能',
   'tc.sem.field.thread': '线程',
+  'tc.sem.field.room': '房间',
+  'tc.sem.field.mentions': '通知',
+  'tc.sem.field.messageId': '消息 id',
   'tc.sem.field.profile': '配置',
   'tc.sem.field.cwd': '目录',
   'tc.sem.field.delivery': '投递',
@@ -1898,7 +2278,6 @@ export const zh = {
   'sv.spawnInstructionFrom': '来自 {agent} 的指令',
   'sv.openParent': '打开父智能体',
   'sv.subagentNote': '子智能体会话记录 — 交互卡片在整个会话范围内生效',
-  'sv.agentReadOnly': '此智能体页只读；发送、排队和技能操作仍在会话页。',
   'sv.agentContext': '上下文 {tokens}',
   'sv.agentTokens': '累计 {tokens} tokens',
   'sv.historyUnavailable': '无历史记录',
@@ -1908,6 +2287,14 @@ export const zh = {
     '服务器记录不可用。当前显示本客户端捕获的事件，更早或断连期间的活动可能缺失。',
   'sv.agentHistoryLoading': '正在加载服务器记录，期间先显示本客户端捕获的实时事件。',
   'sv.submissionRecovery.degraded': '本地备份不可用，消息仍会提交。送达确认前内容保留在输入框；此时刷新或关闭可能丢失未确认内容。',
+  'sv.submissionRecovery.title': '有消息尚未收到发送确认',
+  'sv.submissionRecovery.body': '内容已保留，不会自动重发。先核对时间线和队列；如果消息已经送达，请忽略此备份。恢复到输入框后仍需手动发送。',
+  'sv.submissionRecovery.restore': '恢复到输入框',
+  'sv.submissionRecovery.dismiss': '忽略此备份',
+  'sv.submissionRecovery.server': '服务器已保留这条消息等待恢复，尚未开始执行。',
+  'sv.submissionRecovery.failed': '服务器未能接收这条消息，请检查后再重试。',
+  'sv.submissionRecovery.cancelled': '已取消，内容已放回输入框，可修改后重新发送。',
+
   'sv.resyncFailed': '会话恢复失败 — 请手动重试',
   'sv.resyncing': '正在重新同步…',
   'sv.sendPaused': '会话同步完成前暂停发送。',
@@ -1931,30 +2318,40 @@ export const zh = {
   'sv.queueBar.one': '{count} 条排队',
   'sv.queueBar.other': '{count} 条排队',
   'sv.queueAria': '排队消息',
-  'sv.queueSendNow': '送入当前轮次',
+  'sv.queueSendNow': '立即发送',
   'sv.queueSendNowTitle': '把这条消息插入进行中的轮次 — 下一步开始时读入本轮',
+
+
   'sv.queueRemove': '移除',
   'sv.queueRemoveTitle': '把这条消息移出队列',
   'sv.queueClearAll': '全部清除',
   'sv.queueClearAllTitle': '移除所有排队项（消息与模型切换）',
   'sv.queueClearTitle': '清除 {count} 条排队项？',
-  'sv.queueClearBody': '每条排队消息和模型切换都会被移除。失败的项会留在队列中，方便重试。',
+  'sv.queueClearBody': '每条排队消息、定时任务提示和模型切换都会被移除（定时任务本身不会被删除）。失败的项会留在队列中，方便重试。',
   'sv.queueClearFailed': '{total} 条中有 {failed} 条未能清除 — 它们仍留在队列中。',
   'sv.queueNoText': '（仅附件）',
   'sv.queueEdit': '编辑',
   'sv.queueEditAria': '编辑排队的消息',
   'sv.queueExpandAria': '展开或收起排队消息',
   'sv.queueRecovered.title': '队列已恢复',
-  'sv.queueRecovered.body.one': '{count} 条排队消息已随会话恢复，确认后继续发送。',
-  'sv.queueRecovered.body.other': '{count} 条排队消息已随会话恢复，确认后继续发送。',
-  'sv.queueRecovered.confirm': '继续发送',
+  'sv.queueRecovered.body.one': '{count} 项队列内容（消息或模型切换）已随会话恢复，确认后继续执行。',
+  'sv.queueRecovered.body.other': '{count} 项队列内容（消息或模型切换）已随会话恢复，确认后继续执行。',
+  'sv.queueRecovered.confirm': '继续队列',
   'sv.queueRecovered.dismiss': '稍后',
   'sv.queueRecovered.failed': '无法继续队列：{detail}',
   'sv.steerQueuedFailed': '无法把排队消息送入当前轮次：{detail}',
   'sv.steerFailed': '没能立即发送：{detail}。消息已放回输入框。',
   'sv.steerRefused': '这条消息会切换模式，需要单独一轮。已放回输入框，再次发送即可排队。',
   'sv.steerUnknown': '无法确认消息是否已送达：{detail}。请先查看时间线，再决定是否重发。',
-  'sv.steerTurnEnded': '当前轮次已先结束，这条消息会作为下一轮发送。',
+  'sv.steerQueued': '消息仍在队列中：没有进入当前轮次，将作为独立一轮发送。',
+  'sv.steerQueuedNoActiveTurn': '当前没有进行中的轮次，这条消息会单独开始。',
+  'sv.steerQueuedTargetChanged': '当前轮次在消息到达前已发生变化。消息仍在队列中，将作为独立一轮发送。',
+  'sv.steerQueuedNotPending': '这条消息已不在队列中 — 请到时间线确认它落在了哪里。',
+  'sv.steerQueuedRejected': '当前轮次没有接收这条消息。它仍在队列中，将作为独立一轮发送。',
+  'sv.steerQueuedExternal': '这条消息没有进入当前轮次，已在执行引擎侧排队。',
+  'sv.steerQueuedModelBoundary': '模型切换在轮次边界生效，消息已排队，届时接入。',
+  'sv.sendNowOwnTurnBinding': '切换 Profile 或执行引擎需要单独一轮。消息已排队，将作为独立一轮发送。',
+  'sv.sendNowOwnTurnModel': '切换模型需要单独一轮。消息已排队，将作为独立一轮发送。',
   'sv.sessionGone': '会话已不存在 — 正在返回新会话页。',
   'sv.approveAll': '全部批准',
   'sv.approveAllTitle': '批准 {count} 项待批准请求？',
@@ -2017,6 +2414,8 @@ export const zh = {
   'new.noTargetHint': '请选择其他工作区、自动创建工作区，或填写项目的绝对路径。',
   'new.browse': '浏览文件夹…',
   'new.firstRunHint': '可以选择项目文件夹，也可以直接发送，让 Kiki 在 Kiki 主目录中自动创建工作区。',
+
+  'new.workspacesFailed': '无法获取工作区列表。',
   'new.setupTitle': '先连接一个模型',
   'new.setupBody': '还没有配置任何 provider，kiki 没有可用来回答的模型。可以通过 OAuth 登录，也可以填自己的 API key。',
   'new.setupSignIn': 'OAuth 登录',
@@ -2088,8 +2487,69 @@ export const zh = {
   'rail.feed.compacted': '上下文已压缩',
   'rail.feed.earlier': '更早的 {count} 条',
   'rail.capabilities.title': '能力',
-  'rail.capabilities.summary': '工具 {tools} · 技能 {skills} · 子智能体 {subagents} · 扩展 {extensions}',
+  'rail.capabilities.observeTitle': '能力清单',
+  'rail.capabilities.controlTitle': '能力控制',
+  'rail.capabilities.systemTitle': '系统能力',
   'rail.capabilities.unavailable': '暂时读不到能力信息。',
+  'cap.browser': '浏览器',
+  'cap.computer': '电脑',
+  'cap.memory': '记忆',
+  'cap.thread': '线程通信',
+  'cap.web': '网页',
+  'cap.defaultOn': '默认开启',
+  'cap.choice.inherit': '默认',
+  'cap.choice.on': '开启',
+  'cap.choice.off': '关闭',
+  'cap.fact.hardOff': '完全关闭',
+  'cap.fact.workspaceOff': '当前工作区关闭',
+  'cap.fact.unbound': '默认',
+  'cap.fact.sessionOff': '本会话关闭',
+  'cap.fact.sessionOn': '本会话开启',
+  'cap.fact.named': '当前主代理已点名',
+  'cap.fact.inheritOn': '默认',
+  'cap.fact.defaultOff': '默认',
+  'cap.sentence.hardOff': '完全关闭',
+  'cap.sentence.sessionOff': '本会话关闭',
+  'cap.sentence.sessionOn': '本会话开启',
+  'cap.sentence.inheritOn': '跟随默认，当前开启',
+  'cap.source.session': '本会话',
+  'cap.source.default': '默认',
+  'cap.source.off': '完全关闭',
+  'cap.applies.nextModel': '下次模型请求',
+  'cap.applies.nextStep': '下一步',
+  'cap.unavailable': '暂时读不到这些开关。',
+  'composer.addMenu.optional': '能力',
+  'composer.addMenu.optionalHint': '本会话的浏览器、电脑、记忆、线程通信和网页。',
+  'rail.mcp.title': 'MCP 服务器',
+  'rail.mcp.hint': '按服务器选择，只作用于本会话。',
+  'rail.plugins.scope': '本工作区 · {name}',
+  'rail.plugins.hint': '这些开关只作用于当前对话。',
+  'rail.plugins.browse': '目录',
+  'rail.plugins.addSource': '从来源添加',
+  'rail.plugins.browseTitle': '把插件加入当前对话',
+  'rail.plugins.browseBody': '选中后会先展示它带来什么，确认后才安装。',
+  'rail.plugins.addHere': '加入',
+  'rail.plugins.toggle': '{name}（当前对话）',
+  'rail.plugins.restore': '恢复默认',
+  'rail.plugins.reason.homeOff': '已完全关闭',
+  'rail.plugins.reason.invalid': '加载异常',
+  'rail.plugins.reason.workspaceOff': '本工作区已关闭',
+  'rail.plugins.reason.sessionOff': '当前对话已关闭',
+  'rail.plugins.reason.globalOff': '默认关闭',
+  'rail.plugins.source.session': '本会话',
+  'rail.plugins.source.workspace': '本工作区',
+  'rail.plugins.source.global': '默认',
+  'rail.plugins.source.home': '全局开启',
+  'rail.plugins.appService': '共享 home 后台',
+  'rail.plugins.appServiceHint': '一个 home 级后台服务，由当前空间下的工作区共享，不是每个工作区各起一个进程。',
+  'rail.plugins.counts.skill': '{count} 个技能',
+  'rail.plugins.counts.mcp': '{count} 个 MCP',
+  'rail.plugins.loading': '正在读取插件使用情况…',
+  'rail.plugins.applying': '正在应用，你的选择已经保存。',
+  'rail.plugins.saving': '保存中…',
+  'rail.plugins.unavailable': '暂时读不到当前对话的插件使用情况。',
+  'rail.plugins.empty': '还没有安装插件，可以从目录或来源加入。',
+  'rail.plugins.manageHome': '插件设置',
   'rail.cron.title': '本对话定时任务',
   'rail.cron.empty': '暂无定时任务',
   'rail.cron.more': '还有 {count} 项',
@@ -2108,11 +2568,35 @@ export const zh = {
   'rail.cockpit.state.done': '已完成',
   'rail.cockpit.state.failed': '失败',
   'rail.cockpit.state.stopped': '已停止',
+  'rail.cockpit.state.unknown': '未报告',
   'rail.cockpit.summary.suspended': '{count} 挂起',
   'rail.cockpit.duration.underMinute': '<1 分',
   'rail.cockpit.lanes.aria': '智能体时间泳道',
   'rail.cockpit.lane.untimed': '未记录开始时间',
   'rail.cockpit.close': '退出驾驶舱',
+  'rail.cockpit.title': '本会话',
+  'rail.cockpit.graph.aria': '会话执行图',
+  'rail.cockpit.graph.title': '会话执行',
+  'rail.cockpit.graph.range': '图中 {count} 个分支',
+  'rail.cockpit.graph.folded': '上方折叠的分支里还有 {count} 个智能体，展开即可看到。',
+  'rail.cockpit.expandBranch': '展开 {label}，{count} 个智能体',
+  'rail.cockpit.openBranch': '打开 {label}',
+  'rail.cockpit.collapseAll': '全部折叠',
+  'rail.cockpit.taskCoverage': '后台任务读到 {total} 个智能体中的 {covered} 个。',
+  'rail.cockpit.taskWindowed': '部分智能体的任务列表没有读全，所以这份列表并不完整。',
+  'rail.cockpit.taskReading': '正在读取整个会话的后台任务…',
+  'rail.cockpit.taskReadFailed': '本会话的后台任务没有读到，下面显示的是已知部分。',
+  'rail.cockpit.taskReadPartial': '后台任务只读到一部分，下面显示的是已知部分。',
+  'rail.cockpit.taskInventoryIncomplete': '服务端没能列出全部智能体，下面的计数只覆盖它已找到的部分。',
+  'rail.cockpit.taskOwnersUnknown': '服务端没有列出本会话的任何智能体，因此其后台任务情况未知。',
+  'rail.cockpit.taskRetry': '重新读取',
+  'rail.cockpit.taskOwnersFailed': '有 {count} 个智能体的后台任务没有读到。',
+  'rail.cockpit.taskColdOwner': '记录在案，未在运行',
+  'rail.cockpit.taskLiveOwner': '运行中',
+  'rail.cockpit.scope.agent': '所选智能体',
+  'rail.cockpit.scope.tree': '整会话',
+  'rail.cockpit.scope.treePartial': '整会话，部分已报告',
+  'rail.cockpit.treePartial': '这些数字只覆盖已报告的智能体，不是会话里的全部。',
 
   // ---- tasks page (/s/:id/tasks) ----
   'tasks.title': '后台任务',
@@ -2186,6 +2670,8 @@ export const zh = {
   'usage.dimension.agent': '智能体',
   'usage.dimension.project': '工作区',
   'usage.dimension.session': '会话',
+  'usage.dimension.provider': '提供商',
+  'usage.dimension.profile': '配置档',
   'usage.allHistoryChip': '全部历史 · 未套用时间过滤',
   'usage.customRange.start': '开始日期',
   'usage.customRange.end': '结束日期',
@@ -2194,6 +2680,8 @@ export const zh = {
   'usage.workspace.all': '全部工作区',
   'usage.includeArchived': '包含已归档',
   'usage.loading': '正在加载用量…',
+  'usage.scanIncomplete': '统计尚未完成，当前仅显示已读取的部分。',
+  'usage.continueScan': '继续统计',
   'usage.loadFailed': '用量加载失败',
   'usage.card.cost': '总成本',
   'usage.card.tokens': '总 tokens',
@@ -2249,7 +2737,7 @@ export const zh = {
   'usage.trend.title': '趋势',
   'usage.trend.metric.cost': '成本',
   'usage.trend.metric.tokens': 'Tokens',
-  'usage.trend.clickHint': '点击时间桶查看会话下钻',
+  'usage.trend.clickHint': '点一根柱子，查看这段时间的消费来源',
   'usage.drilldown.title': '该时间桶内的会话',
   'usage.drilldown.turns': '{count} 轮',
   'usage.drilldown.unknownTurns': '{count} 条记录无 turn 归因',
@@ -2324,6 +2812,77 @@ export const zh = {
   'usage.col.share': '占比',
   'usage.reliability.complete': '完整',
   'usage.reliability.partial': '不完整',
+
+  // ---- 用量：消费来源、前期比较、条件筛选 ----
+  'common.reload': '重新加载',
+  'usage.loadFailedKeep': '用量未能加载。保留了当前时间和筛选条件，重新加载即可继续。',
+  'usage.timezoneNote': '本地时间，{offset}',
+  'usage.kpi.recordedCost': '已记录估算费用',
+  'usage.kpi.costPartiallyUnknown': '部分记录缺价，这里显示的是已计价的部分。',
+  'usage.sources.title': '消费来源',
+  'usage.sources.wholeRange': '整个时段',
+  'usage.sources.selectedPeriod': '所选时段',
+  'usage.sources.subtotal': '时段小计',
+  'usage.sources.viewWholeRange': '查看整个时段',
+  'usage.sources.grouping': '按什么分组',
+  'usage.sources.grouping.model': '模型',
+  'usage.sources.grouping.provider': '提供商',
+  'usage.sources.grouping.profile': '配置档',
+  'usage.sources.grouping.workspace': '工作区',
+  'usage.sources.search': '查找来源',
+  'usage.sources.searchPlaceholder': '查找来源',
+  'usage.sources.noMatch': '没有匹配的来源，换个名称试试。',
+  'usage.sources.sortHint': '按费用从高到低排列',
+  'usage.sources.expand': '查看 {name} 的 Token 构成',
+  'usage.sources.tokenComposition': 'Token 构成',
+  'usage.sources.modelCount': '{count} 个模型',
+  'usage.sources.mobileDetail': '占比 {share} · {tokens} Token',
+  'usage.sources.onlyThis.model': '只看此模型',
+  'usage.sources.onlyThis.provider': '只看此提供商',
+  'usage.sources.onlyThis.profile': '只看此配置档',
+  'usage.sources.onlyThis.workspace': '只看此工作区',
+  'usage.sources.noExactFilter': '这一行没有可精确表达的条件：来源缺失或混合，因此不把它变成查询。',
+  'usage.sources.openSessions': '查看这段时间的会话',
+  'usage.sources.unknownProviderProfile': '未知提供商 / 配置档',
+  'usage.sources.unknownRowHint': '旧记录没有记录来源。它的费用被保留，而不是被丢掉。',
+  'usage.sources.unknownNote': '没有记录来源的记录，费用单独成行保留。',
+  'usage.sources.windowTotal': '时段小计',
+  'usage.tab.sources': '消费来源',
+  'usage.compare.enable': '对比前一时段',
+  'usage.compare.unavailable': '比较需要一个有界的时段',
+  'usage.compare.prior': '前期',
+  'usage.compare.change': '变化',
+  'usage.compare.priorZero': '前期 0',
+  'usage.compare.points': '个百分点',
+  'usage.compare.rowUnavailable': '不可比较',
+  'usage.compare.loadFailed': '前期用量未能加载。',
+  'usage.compare.retry': '重试比较',
+  'usage.compare.priorCacheHint': '前期的缓存命中率在来源表里。',
+  'usage.filter.open': '筛选',
+  'usage.filter.any': '全部',
+  'usage.filter.model': '模型',
+  'usage.filter.provider': '提供商',
+  'usage.filter.profile': '配置档',
+  'usage.filter.profilePlaceholder': '配置档名称',
+  'usage.filter.field.model': '模型',
+  'usage.filter.field.provider': '提供商',
+  'usage.filter.field.profile': '配置档',
+  'usage.filter.field.workspace': '工作区',
+  'usage.filter.modelChip': '模型：{value}',
+  'usage.filter.providerChip': '提供商：{value}',
+  'usage.filter.profileChip': '配置档：{value}',
+  'usage.live.reference': '当前运行参考',
+  'usage.live.show': '展开当前运行参考',
+  'usage.live.hide': '收起当前运行参考',
+  'usage.sessions.panelTitle': '这段时间的会话',
+  'usage.sessions.filtered': '已限定为 {field} {value}。',
+  'usage.sessions.noExactFilter': '这一行没有可精确表达的筛选条件，因此列出该时段的全部会话。',
+  'usage.sessions.loadFailed': '这些会话未能加载。',
+  'usage.sessions.loadMoreFailed': '继续读取会话',
+  'usage.sessions.locateRaw': '定位原始记录',
+  'usage.sessions.hideRaw': '收起原始记录',
+  'usage.sessions.moreTurns': '还有 {count} 轮',
+  'usage.sessions.noTurnAttribution': '这个时段没有轮次归因。打开会话即可读到原始记录。',
   'context.viewInUsage': '在用量页查看本会话',
 
   // ---- quick switcher page actions ----
@@ -2351,20 +2910,20 @@ export const zh = {
   'st.group.modelsAgents': '模型与智能体',
   'st.group.capabilities': '能力',
   'st.group.connection': '连接与远程',
-  'st.group.workspace': '工作区与空间',
   'st.group.advanced': '高级',
   'st.scope.label': '作用域',
   'st.scope.app': '应用',
   'st.scope.server': '服务器',
   'st.scope.workspace': '工作区',
+  'st.scope.space': '此空间',
   'st.scope.appliesTo': '适用于：',
   'st.scope.device': '本设备',
   'st.scope.connectedServer': '已连接的服务器',
   'st.scope.diagnostic': '诊断信息',
-  'st.purpose.general': '本设备的语言、输入框与桌面行为。所有改动立即生效。',
-  'st.purpose.ai': '管理模型、提供商和登录，以及新会话默认设置。',
+  'st.purpose.general': '本设备的语言、输入框与桌面行为。',
+  'st.purpose.ai': '管理模型、提供商、登录、新会话默认设置与请求身份。',
   'st.purpose.connectionServices': '管理这台机器上的外部连接、监听服务与外部客户端接入。',
-  'st.purpose.agents': '在一个列表中创建和编辑主智能体与子智能体；工作区智能体仅作用于对应工作区。',
+  'st.purpose.agents': '管理主智能体与子智能体定义，以及子智能体派发、模型规则、工具与运行限制。',
   'st.purpose.subagents': '设置子智能体默认值、模型规则、工具与运行限制；智能体定义在「智能体」中编辑。',
   'st.purpose.search': '选择搜索来源和网页抓取方式，管理凭证与超时。',
   'st.purpose.connection': '本应用连接哪个服务器、请求等多久。整套远端环境在「工作区」页的「连接远端 Kiki」里设置。',
@@ -2386,7 +2945,6 @@ export const zh = {
   'st.appearance.theme.light': '亮色',
   'st.appearance.theme.dark': '暗色',
   'st.appearance.theme.system': '跟随系统',
-  'st.appearance.themeHint': '仅作用于此设备，立即生效。选择跟随系统时会随操作系统的设置切换。',
   'st.skin.title': '皮肤',
   'st.skin.hint': '选择界面配色。亮色与暗色仍由上面单独选择。',
   'st.skin.builtin': '内置',
@@ -2427,7 +2985,6 @@ export const zh = {
   'st.font.placeholderMono': '例如 Fira Code、更纱黑体 Mono SC',
   'st.font.present': '已安装 {name}，正在使用。',
   'st.font.missing': '未检测到 {name}，当前使用后备字体。',
-  'st.font.typeHint': '输入字体名称，输入即生效。',
   'st.font.sample.sans': '设置、会话与按钮 · Settings and sessions 0123',
   'st.font.sample.mono': 'const answer = items.filter((x) => x !== null); // 注释',
   'st.font.sample.prose': '长回答读起来像一页印刷品。A long answer reads like a printed page.',
@@ -2464,11 +3021,11 @@ export const zh = {
   'st.appearance.restored': '外观已恢复默认。',
   'st.appearance.undo': '撤销',
   'st.appearance.previewAria': '当前外观的预览',
-  'st.appearance.preview.session': '0.31 发布说明',
+  'st.appearance.preview.session': '发布说明',
   'st.appearance.preview.waiting': '等你处理',
   'st.appearance.preview.otherSession': '迁移探查',
   'st.appearance.preview.time': '6 分钟前',
-  'st.appearance.preview.user': '总结一下 0.30 以来的改动。',
+  'st.appearance.preview.user': '总结最近的改动。',
   'st.appearance.preview.reply': '改动集中在三处：设置、皮肤和动效。打标签前先跑一下下面的检查。',
   'st.appearance.preview.composer': '回复 Kiki…',
   'st.skin.accentHint': '替换皮肤的强调色，用于状态点、焦点环和主按钮。',
@@ -2490,7 +3047,8 @@ export const zh = {
   'st.bg.rejectSize': '文件太大。图片最大 {image}，视频最大 {video}。',
   'st.bg.urlFailed': '无法获取该链接：{reason}',
   'st.bg.urlUnsupported': '当前连接的服务器无法获取链接。请先下载文件，再选择它。',
-  'st.bg.missing': '这台设备上找不到背景文件。请重新选择。',
+  'st.bg.loadFailed': '无法加载这个文件，当前背景未改变。请选择支持的图片或可播放的 MP4/WebM 后重试。',
+  'st.bg.missing': '无法加载所选背景，已保留你的选择。请重新选择该文件以恢复显示。',
   'st.bg.notPersistent': '这个浏览器不保存文件，背景图刷新后就会消失。',
   'st.bg.heavyVideo':
     '这个视频超过 1440p，会占用大量显存。作为窗口背景，1080p 版本看起来没有区别。',
@@ -2527,9 +3085,9 @@ export const zh = {
   'st.bg.scrimHint': '在图片上叠加窗口颜色，让背景退后。',
   'st.bg.surface': '面板不透明度',
   'st.bg.surfaceHint': '只影响背景透出的区域。',
-  'st.bg.surfaceRaised': '只影响背景透出的区域。文字区域会自动叠加更深的层。',
+  'st.bg.surfaceRaised': '面板不透明度保持你设定的值。可读性来自文字对比的提升，而不是把面板加厚。',
   'st.bg.assist': '可读性辅助',
-  'st.bg.assistHint': '在文字下方添加柔和的底色，让文字在任何图片上都清晰易读。',
+  'st.bg.assistHint': '柔化背景图片的纹理，提升文字对比。',
   'st.bg.assistOff': '在这张图片上，文字可能不易阅读。',
   'st.bg.surfaceBlur': '面板模糊',
   'st.bg.more': '更多调整',
@@ -2627,12 +3185,11 @@ export const zh = {
   'st.defaults.planGateTimeoutInvalid': '超时时间最短为 5 秒。',
   'st.defaults.planModeHint': '新会话默认进入计划模式：模型先给出计划再动手。是否等你确认取决于权限模式。',
   'st.defaults.planGateTimeoutHint': '仅在开启审批时生效；超过该时长未答复的进入请求会被自动拒绝。',
-  'st.defaults.hint': '对更改之后创建的会话生效。',
   'st.defaults.globalTitle': '默认模型',
   'st.defaults.globalModelLabel': '默认模型',
   'st.defaults.pickModel': '浏览可用模型',
   'st.defaults.tabHint': '这里是新会话的出厂默认值；进行中的会话不受影响。',
-  'st.defaults.globalHint': '每项工作使用哪个模型。选中即生效；已在运行的会话保留自己的模型。',
+  'st.defaults.globalHint': '已在运行的会话保留自己的模型。',
   'st.composer.title': '输入与会话',
   'st.composer.questions': '智能体提问',
   'st.composer.questionsDontBlock': '不阻塞',
@@ -2884,6 +3441,7 @@ export const zh = {
   'st.source.homeDirHint': '留空则按 {app} 的默认位置查找。注意这是 Kiki 服务端所在的机器，不一定是你正在看的这台。',
   'st.source.foundAccount': '本机找到了 {account} 的登录。',
   'st.source.foundAccountUnknown': '本机找到了登录凭据，但它没有说明属于哪个账号。',
+  'st.source.foundSignIn': '本机找到了 {app} 已有的登录。',
   'st.source.connect': '使用这个登录',
   'st.source.connecting': '接入中…',
   'st.source.connected': '这个连接现在使用本机已有的登录。',
@@ -2917,6 +3475,7 @@ export const zh = {
   'st.models.vision': '视觉',
   'st.ai.tab.models': '模型',
   'st.ai.tab.defaults': '默认值',
+  'st.ai.tab.identity': '身份',
   'st.modelMigration.title': '旧版模型参数迁移',
   'st.modelMigration.hint': '预览可安全迁移的模型参数。确认后才会生效。',
   'st.modelMigration.preview': '预览迁移',
@@ -3006,6 +3565,10 @@ export const zh = {
   'st.models.starAria': '将 {model} 设为默认模型',
   'st.models.starredTitle': '默认模型',
   'st.models.unstarredTitle': '设为默认模型',
+  'st.models.setDefaultAction': '设为全局默认模型',
+  'st.models.currentDefault': '当前新会话全局默认',
+  'st.models.defaultScopeHint': '作为新会话全局默认模型；不影响已锁定的智能体或当前活跃会话。',
+  'st.models.setDefaultSuccess': '已设为全局默认模型。',
   'st.models.editAria': '编辑 {model} 的参数',
   'st.models.editTitle': '编辑参数',
   'st.models.remoteIdAria': '{model} 的远程 ID',
@@ -3020,6 +3583,7 @@ export const zh = {
   'st.models.issue.contextMissing': '使用此模型前请设置最大上下文长度。',
   'st.models.issue.protocolUnresolved': '无法从此模型或其提供商解析协议。',
   'st.models.issue.requestIdentityInvalid': '模型请求身份策略无效。',
+  'st.models.issue.overrideRouting': '这些 overrides 字段已被忽略且未生效：{fields}。请改写在模型自身上。',
   'st.thinking.title': '默认思考',
   'st.thinking.enable': '默认启用思考',
   'st.thinking.placeholder': '例如：high',
@@ -3043,15 +3607,21 @@ export const zh = {
   'st.conn.version': '版本',
   'st.conn.backend': '后端',
   'st.conn.reconnect': '立即重连',
+  'st.conn.noToken': '未设置令牌',
+  'st.conn.dropsSinceStart': '本次启动断开 {closes} 次',
+  'st.conn.busySessions': '{count} 个会话正在运行',
   'st.conn.tokenHint':
     '令牌只保存在这台设备上，每次请求都会带上它，向服务器证明你的身份。',
   'st.conn.statusTitle': '连接状态',
   'st.conn.timeoutTitle': 'HTTP 请求',
   'st.conn.timeoutLabel': '请求超时（秒）',
-  'st.conn.timeoutHint': '对后续发出的请求生效。请输入 {minimum}–{maximum} 的整数；打开大容量会话时可继续等待，不受此上限限制。',
+  'st.conn.timeoutHint': '对后续普通请求生效。请输入 {minimum}–{maximum} 的整数。',
+  'st.conn.readingTimeoutLabel': '阅读超时（秒）',
+  'st.conn.readingTimeoutHint': '0 表示不限时，对后续历史与内容读取生效。',
+  'val.readingTimeoutSeconds': '请输入 0–2147483 秒的整数。',
   'st.conn.timeoutSaved': '请求超时已保存，新请求将使用更新后的上限。',
   'st.conn.logTitle': '连接日志',
-  'st.conn.logBody': '记录实时连接断开的原因（最新在后）：关闭码、心跳间隔，以及当时窗口是否在后台。仅保存在本机，应用重启后清空。',
+  'st.conn.logBody': '实时连接的断开记录，只存本机，可复制用于反馈。',
   'st.conn.logSummary': '断开 {closes} 次 · 计时器暂停 {gaps} 次 · 共 {total} 条',
   'st.conn.logEmpty': '应用启动以来没有记录到断开。',
   'st.conn.logCopy': '复制连接日志',
@@ -3059,14 +3629,14 @@ export const zh = {
   'st.conn.logCopyFailed': '无法复制日志：{reason}',
   'st.conn.ownedTitle': '本机桌面服务器',
   'st.conn.ownedBody':
-    'Kiki 桌面版管理 sidecar 的生命周期。重启会等待其关闭、启动新的 sidecar，并在返回前验证其需认证的端点。',
+    '重启本机 Kiki 服务，完成后自动重连。',
   'st.conn.restart': '重启服务器',
   'st.conn.restarting': '正在重启服务器…',
   'st.conn.restarted': '桌面服务器已重启，并通过认证健康检查。',
   'st.conn.browserHint': '此操作仅在桌面端可用。',
   'st.conn.disconnectTitle': '断开连接',
   'st.conn.disconnectBody':
-    '忘记这台服务器并回到连接页。会话仍保留在服务器上，只清除本地保存的地址与令牌。',
+    '清除本地保存的地址与令牌，回到连接页；会话仍留在服务器上。',
   'st.conn.disconnectConfirmTitle': '断开与这台服务器的连接？',
   'st.conn.disconnectConfirmBody':
     'Kiki 会清除保存的地址与令牌并回到连接页。服务器上正在进行的轮次不会中断。',
@@ -3083,6 +3653,7 @@ export const zh = {
   'st.conn.ext.retry': '重试',
   'st.conn.ext.installing': '正在安装…',
   'st.conn.ext.installPlugin': '安装 Cloudflare 插件',
+  'st.conn.ext.catalogMissing': '插件市场没有列出 Cloudflare，这里无法安装。请打开插件页，从市场安装 Cloudflare。',
   'st.conn.ext.disabled': 'Cloudflare 插件当前已禁用。',
   'st.conn.ext.enablePlugin': '启用插件',
   'st.conn.ext.installConfirmTitle': '安装 Cloudflare 隧道插件？',
@@ -3432,6 +4003,21 @@ export const zh = {
   'st.hostSkill.previewAgain': '重新检查',
   'st.hostSkill.stale': '检查之后文件有变化。请重新检查，再确认新的目标。',
   'st.plugins.title': '插件',
+  'st.plugins.installedTitle': '已安装的插件',
+  'st.plugins.globalDefaultOn': '默认开启',
+  'st.plugins.globalDefaultOff': '默认关闭',
+  'st.plugins.globalDefaultHint': '全局默认决定新工作区的起始状态；名称旁的开关是主开关，任何工作区都无法越过它。',
+  'st.plugins.masterOn': '主开关开启',
+  'st.plugins.masterOff': '主开关关闭',
+  'st.plugins.enableEverywhere': '全局启用',
+  'st.plugins.enableEverywhereHint': '让这个插件在所有工作区默认开启，主开关保持不变。',
+  'st.plugins.browseMarket': '去市场里找插件',
+  'st.plugins.noneInstalledBody': '本 Server 上还没有安装任何插件。',
+  'st.plugins.openSettings': '打开 {name} 的设置',
+  'st.plugins.backToInstalled': '已安装的插件',
+  'st.plugins.brokenState': '这个插件报告了错误，修好之前它的设置可能不会生效。',
+  'st.plugins.notInstalledTitle': '插件未安装',
+  'st.plugins.notInstalledBody': '本 Server 上没有 id 为 {id} 的插件。它可能在这个链接生成之后被卸载了。',
   'st.plugins.hint': '在已连接的 Server 上启用、停用或卸载插件。展开一项可查看清单、MCP 服务器与诊断。',
   'st.plugins.loading': '正在加载插件…',
   'st.plugins.empty': '尚未安装任何插件。',
@@ -3476,9 +4062,9 @@ export const zh = {
   'st.plugins.install': '安装',
   'st.plugins.installing': '正在安装…',
   'st.plugins.installOk': '已安装 {name}。',
-  'st.plugins.sourceLabel': '市场目录 URL',
+  'st.plugins.sourceLabel': '插件目录 URL',
   'st.plugins.sourcePlaceholder': 'https://example.test/marketplace.json',
-  'st.plugins.sourceHint': '一份可安装插件的 JSON 列表。留空则只看已添加的插件。',
+  'st.plugins.sourceHint': '可选。填入一个已发布的目录，以替代 Kiki 自带的官方插件。',
   'st.plugins.sourceSave': '保存目录 URL',
   'st.plugins.sourceSaved': '目录已保存。',
   'st.plugins.sourceCatalogHint': '保存 URL 后目录将在此出现。',
@@ -3570,7 +4156,7 @@ export const zh = {
   'st.cron.pollPlaceholder': '留空或 null',
   'st.communication.title': '通信与 token 计数',
   'st.communication.hint': '线程之间的通信方式，以及对外报告的 token 统计口径。',
-  'st.communication.threadCommunication': '线程之间传话',
+  'st.communication.threadCommunication': '允许使用线程',
   'st.communication.tokenCounting': '对外报告的 token 计数策略',
   'st.communication.saved': '服务器已保存并回显通信设置。',
   'st.resourceLimits.title': '工作区与图片限制',
@@ -3672,6 +4258,26 @@ export const zh = {
     '由该模型写标题，每个勾选的时机各发一次请求。自动生成的标题不会覆盖你手写的标题。',
   'st.sessionTitleModel.saved': '标题模型已保存。',
   'st.sessionTitleModel.unconfigured': '没有选模型，Kiki 不发写标题的请求。',
+  // 提示是给模型看的指令正文，不是设置值：它按散文被读、被写，关键在于读者
+  // 能看到引擎真正收到的那句话。
+  'st.sessionTitlePrompt.source': '提示正文',
+  'st.sessionTitlePrompt.sourceDefault': '内置默认',
+  'st.sessionTitlePrompt.sourceCustom': '自定义',
+  'st.sessionTitlePrompt.defaultTitle': '内置默认稿',
+  'st.sessionTitlePrompt.expand': '展开',
+  'st.sessionTitlePrompt.collapse': '收起',
+  'st.sessionTitlePrompt.defaultUnavailable':
+    '服务器未返回内置默认提示。你仍可编辑自定义提示。',
+  'st.sessionTitlePrompt.customLabel': '自定义提示',
+  'st.sessionTitlePrompt.customPlaceholder': '告诉模型该怎么给一段对话起名。',
+  'st.sessionTitlePrompt.customHelp':
+    '只影响下一次 Kiki 写标题时用的提示；已经写出的标题保持不变。',
+  'st.sessionTitlePrompt.save': '保存提示',
+  'st.sessionTitlePrompt.restore': '恢复默认',
+  'st.sessionTitlePrompt.restoreConfirm': '恢复内置默认稿？你的自定义版本会被删除。',
+  'st.sessionTitlePrompt.restored': '已恢复内置默认稿。',
+  'st.sessionTitlePrompt.saved': '提示已保存。',
+  'st.sessionTitlePrompt.blank': '留空即回默认稿，保存即可切回。',
   'st.advanced.title': '原始引擎配置',
   'st.advanced.hint': '权限、循环控制与后台任务的高级配置。保存时会自动校验格式。',
   'st.advanced.performanceTitle': '性能、存储与扩展设置',
@@ -4444,6 +5050,7 @@ export const zh = {
   'selection.modelMenuError': '未能读取 profile 的有效可用集，请重试。',
   'st.profiles.addModel': '添加模型',
   'st.profiles.tools': '工具',
+  'st.profiles.inspectToolPermissions': '在工具权限视图中查看',
   'st.profiles.advanced': '高级',
   'st.profiles.advancedSummary': '强度限制、禁用模型、预算与少用字段',
   'st.profiles.allowedEfforts': '允许的思考强度（硬限制）',
@@ -4553,6 +5160,7 @@ export const zh = {
   'st.namedAgents.workspaces': '个工作区',
   'st.namedAgents.availableSubagents': '可用子智能体',
   'st.namedAgents.workspaceHint': '智能体按此工作区解析；工作区级文件只对它生效。',
+  'st.namedAgents.workspaceMissing': '它不在当前服务器的工作区列表里；下面的 profile 仍按它读取，不会换成别的工作区。',
   'st.namedAgents.modelPin': '固定模型别名',
   'st.namedAgents.whenToUse': '适用场景',
   'st.namedAgents.defaultModelThinkingEffort': '默认模型的思考强度',
@@ -5108,24 +5716,19 @@ export const zh = {
   'st.about.stable': '稳定版',
   'st.about.beta': '测试版',
   'st.about.betaHint': 'Beta 更新更频繁，稳定性可能低于 Stable。',
-  'st.about.autoUpdate': '自动更新',
-  'st.about.autoUpdateOff': '关闭',
   'st.about.autoUpdateNotify': '仅提醒',
   'st.about.autoUpdateInstall': '下载并安装',
   'st.about.updatesUnavailable': '当前版本未配置自动更新通道。',
   'st.about.checkUpdate': '检查更新',
   'st.about.checking': '正在检查…',
   'st.about.upToDate': 'Kiki 已是最新版本。',
+  'st.about.checkFailed': 'Kiki 无法检查更新。检查网络后重试。',
+  'st.about.prefsSaveFailed': 'Kiki 没有保存这个选择，已恢复原设置。请检查 Kiki 的设置目录是否可写，再试一次。',
+  'st.about.installFailed': '更新未完成，请重试。',
   'st.about.install': '安装 {version}',
   'st.about.installing': '正在安装…',
   'st.about.installConfirm': '安装 Kiki {version}？Kiki 和正在运行的任务将退出。',
-  'st.about.updateAvailable': 'Kiki {version} 可用，请前往“设置 → 关于”安装。',
   'st.about.installedRestart': '更新已安装。请重启 Kiki 以完成更新。',
-
-  // ---- connection provider ----
-  'st.about.checkFailed': 'Kiki 无法检查更新。检查网络后重试。',
-  'st.about.installFailed': '更新未完成，请重试。',
-  'st.about.prefsSaveFailed': 'Kiki 没有保存这个选择，已恢复原设置。请检查 Kiki 的设置目录是否可写，再试一次。',
   'st.about.autoCheck': '自动检查更新',
   'st.about.autoCheckHint': 'Kiki 每天检查一次新版本。',
   'st.about.autoCheckOffHint': '只有你点击“检查更新”时才会检查。',
@@ -5144,6 +5747,29 @@ export const zh = {
   'st.about.updateDialog.skip': '跳过此版本',
   'st.about.updateDialog.skipDone': 'Kiki 不会再提醒 {version}，更新的版本仍会提示。',
   'st.about.updateDialog.fromTo': 'Kiki {from} 升级到 {to}',
+
+  // ---- connection provider ----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   'conn.desktopNoServer': 'Kiki 桌面后端未注册本地服务器。',
   'conn.desktopStartFailed': 'Kiki 桌面后端启动失败：{detail}',
 
@@ -5329,6 +5955,10 @@ export const zh = {
   'roomRef.open': '打开房间 {title}',
   'roomRef.remove': '移除指向房间 {title} 的链接',
   'roomRef.members.other': '{count} 位成员',
+
+
+
+  'roomRef.unknown': '房间 {id}',
   'new.cwdInvalid': '请输入工作目录的绝对路径（例如 C:/work/project 或 /home/you/project）。',
 
   // ---- 技能目录与 MCP 状态（设置 技能/MCP 页）----
@@ -5442,8 +6072,8 @@ export const zh = {
   'onboarding.back': '上一步',
   'onboarding.next': '下一步',
   'onboarding.saveNext': '保存并继续',
-  'onboarding.finish': '开始',
   'onboarding.close': '关闭引导',
+  'onboarding.closeRun': '关闭引导',
   'onboarding.welcome.body': '选好语言和外观，后面的窗口会随你的选择实时变化。',
   'onboarding.model.body':
     'Kiki 可以使用不同厂商的模型。API 密钥适用范围最广，也可用受支持的账号登录；稍后还可在设置中补全。',
@@ -5454,10 +6084,26 @@ export const zh = {
   'onboarding.model.changeTemplate': '重新选择协议或服务',
   'onboarding.model.model': '模型',
   'onboarding.model.modelHint': '点“测试连接”后可从供应商的模型列表中挑选，也可以直接输入模型 id。',
+  'onboarding.model.modelHintFetched': '供应商没有列出这个模型时，直接输入模型 id 即可。',
   'onboarding.model.test': '测试连接',
   'onboarding.model.testHint': '测试只验证当前表单里填写的内容——点击“保存并继续”才会写入。',
   'onboarding.model.testedOk': '连接成功，发现 {count} 个模型，点选即可填入。',
-  'onboarding.model.advancedHint': '上下文大小、能力等均已使用默认值，之后可在“设置”中调整。',
+  'onboarding.model.advanced': '高级',
+  'onboarding.model.identity': '请求身份',
+  'onboarding.model.identityHint': '该提供商的请求按哪种客户端形态发出。',
+  'onboarding.model.identityAria': '该提供商的请求身份',
+  'onboarding.model.contextSize': '上下文长度',
+  'onboarding.model.autoCompact': '自动压缩长度',
+  'onboarding.model.inheritAutoCompact': '沿用默认',
+  'onboarding.model.autoCompactInvalid': '请输入 1 以上的整数 token 数。',
+  'onboarding.model.tokenUnit': 'tok',
+  'onboarding.model.efforts': '支持的思考等级',
+  'onboarding.model.capabilities': '模型固有能力',
+  'onboarding.model.advancedBody': '可选。这里的每一项都有可用的默认值。',
+  'onboarding.model.useCustomId': '使用「{id}」',
+  'onboarding.model.searchModels': '搜索该提供商的模型',
+  'onboarding.model.noModelsYet': '还没有模型列表',
+  'onboarding.model.noModelsFetched': '该供应商没有返回模型列表。也可以直接输入模型 id。',
   'onboarding.permissions.body': '这是新会话的默认设置。你可以在输入框里按会话调整，也可以随时在设置中修改。',
   'onboarding.permissions.recommended': '推荐',
   'onboarding.permissions.auto.line': '在工作区内自主工作；敏感或外部操作前先问你。',
@@ -5466,37 +6112,37 @@ export const zh = {
   'onboarding.permissions.yolo.line': '全部自动批准，包括敏感文件。仅在安全的环境中使用。',
   'onboarding.reenter': '重新进入引导',
   'onboarding.reenterHint': '重新走一遍首次启动引导：外观、默认设置和导览。',
-  'onboarding.step.capabilities': 'Kiki 还能做什么',
-  'onboarding.caps.body': '这些都不是开始使用的前提。想要的现在就配置，其余随时回来再说。',
-  'onboarding.caps.group.find': '查找与记忆',
-  'onboarding.caps.group.reach': '连接更多',
-  'onboarding.caps.group.run': '让工作持续',
-  'onboarding.caps.search.name': '联网搜索与历史检索',
-  'onboarding.caps.search.line': '搜索网页、读取页面，并通过全文索引检索过去的会话。通用网页搜索需要搜索提供商的密钥。',
-  'onboarding.caps.search.prompt': '/kiki-ops 帮我配置联网搜索：先检查现在的配置，再一步步带我添加搜索提供商和它的密钥。',
-  'onboarding.caps.memory.name': '记忆',
-  'onboarding.caps.memory.line': '跨会话记住你的偏好和项目事实，只保存在这台机器上。',
-  'onboarding.caps.ssh.name': 'SSH 远程主机',
-  'onboarding.caps.ssh.line': '在 SSH 配置里的机器上运行命令和会话。',
-  'onboarding.caps.ssh.prompt': '/kiki-ops 帮我配置 SSH 远程主机：先检查我的 SSH 配置和 Kiki 需要什么，再一步步添加主机。',
-  'onboarding.caps.engines.name': '外部引擎',
-  'onboarding.caps.engines.line': '让 Kiki 驱动其他编码智能体，复用它们在本机已有的登录。',
-  'onboarding.caps.extensions.name': '插件、技能与 MCP',
-  'onboarding.caps.extensions.line': '从插件、技能目录和 MCP 服务器添加工具与专门知识。',
-  'onboarding.caps.extensions.prompt': '/kiki-ops 帮我添加一个 MCP 服务器或插件：先问我要哪一个，再完成配置并确认它的工具已加载。',
-  'onboarding.caps.hostSkill.name': '在其他智能体中使用 Kiki',
-  'onboarding.caps.hostSkill.line': '安装 kiki-as-subagent 技能，让其他智能体把长任务交给 Kiki。写入前会先显示文件位置。',
-  'onboarding.caps.hostSkill.installed': '已为 {hosts} 安装。',
-  'onboarding.caps.cron.name': '定时任务',
-  'onboarding.caps.cron.line': '按计划运行提示词，比如每日总结或每周检查。',
-  'onboarding.caps.cron.prompt': '/kiki-ops 帮我设置一个定时任务：先问我要运行什么、什么时候运行，再创建它并告诉我在哪里查看。',
-  'onboarding.caps.board.name': '任务看板',
-  'onboarding.caps.board.line': '每个工作区一个看板，跟踪需求和背后的智能体工作。',
-  'onboarding.caps.bots.name': 'Bot 与房间',
-  'onboarding.caps.bots.line': '让角色拥有常驻会话，或把几个角色放进一个房间讨论同一主题。',
-  'onboarding.caps.ask': '让 Kiki 帮你配置',
-  'onboarding.caps.asking': '正在打开…',
-  'onboarding.caps.askFailed': '没能打开会话：{detail}',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   'onboarding.skill.kikiAsSubagent.name': '在那个 agent 里使用 Kiki',
   'onboarding.skill.kikiAsSubagent.purpose': '让那个 agent 把任务交给 Kiki 做。',
   'onboarding.skill.kikiOps.name': '让那个 agent 帮你配置 Kiki',
@@ -5539,11 +6185,16 @@ export const zh = {
   'onboarding.depart.agent.copy': '要粘贴的那行',
   'onboarding.depart.browse.title': '③ 先逛逛',
   'askKiki.failed': '没能打开会话：{detail}。再点一次重试。',
-  'onboarding.caps.openSettings': '设置',
-  'onboarding.caps.openBoard': '打开看板',
-  'onboarding.caps.openCron': '查看定时任务',
-  'onboarding.caps.openPersonas': '角色',
-  'onboarding.caps.bots.prompt': '/kiki-ops 帮我设置一个 Bot：先说明开启 Bot 模式会做什么，再帮我挑选或新建一个角色，并把它设为 Bot。',
+
+
+
+
+
+
+  'onboarding.step.discover': '先逛逛 Kiki',
+  'onboarding.discover.body': '从一个你感兴趣的地方开始。',
+  'onboarding.discover.overviewLine': '工作台、会话、记忆、能力和定时，各停一站。',
+
   // 排队条与输入框的排队消息编辑往返（拖拽调序、二次确认移除）。
   'queue.editTitle': '放回输入框编辑 — 确认后回到原排队位置',
   'queue.editingBadge': '正在输入框中编辑',
@@ -5553,10 +6204,21 @@ export const zh = {
   'queue.sortMode': '排序',
   'queue.sortDone': '完成',
   'queue.sortHint': '拖动手柄调整顺序',
+  'queue.moreRecords': '还有消息记录',
+  'queue.records': '消息记录',
+  'queue.recordsLoaded': '已加载 {shown} / {total} 条消息记录',
+  'queue.recordsFailed': '未能加载更多消息记录。',
   'queue.waitsForEdit': '等你编辑完',
   'queue.holdNotice': '编辑期间暂停派发，编辑完后按顺序继续。',
   'queue.holdNoticeAhead': '编辑期间暂停派发：前面 {count} 条照常发送，其余等你编辑完再按顺序继续。',
+  // 队列里的定时提示词：`queue` 时机与你提交的消息同序排队；另两种由
+  // 引擎另行持有，每行标出自己的时机，抬头只说明有定时提示词在等。
+  'queue.scheduledBadge': '定时任务',
+  'queue.scheduledMode': '{mode}',
+  'queue.heldSummary': '· 另有 {count} 条定时提示待投递',
+  'queue.heldOnlySummary': '{count} 条定时提示待投递',
   'goal.doneWhen': '完成条件 · {criterion}',
+  'goal.criterionLabel': '完成条件',
   'queue.removeConfirm': '确认移除？',
   'queue.removeConfirmTitle': '再次点击以移除这条排队消息',
   'queue.dragHandleAria': '调整这条排队消息的顺序',
@@ -5620,6 +6282,90 @@ export const zh = {
   'cron.summary.active.other': '{count} 个启用',
   'cron.summary.paused.one': '{count} 个暂停',
   'cron.summary.paused.other': '{count} 个暂停',
+  'cron.panel.create': '新建定时任务',
+  'cron.action.edit': '编辑',
+  'cron.action.expand': '展开详情',
+  'cron.action.collapse': '收起详情',
+  'cron.action.runAria': '立即触发「{schedule}」',
+  'cron.action.editAria': '编辑「{schedule}」',
+  'cron.action.expandAria': '展开「{schedule}」的详情',
+  'cron.action.collapseAria': '收起「{schedule}」的详情',
+  'cron.detail.heading': '任务详情',
+  'cron.detail.prompt': '完整提示词',
+  'cron.detail.schedule': '运行时间',
+  'cron.detail.expression': 'Cron 表达式',
+  'cron.detail.expressionHint': '供工具或其他客户端使用，界面按上面的日程显示。',
+  // 投递时机：标签是列表行上展示的短名，帮助文字说明三种时机真正的差别。
+  'cron.delivery.queue': '排队',
+  'cron.delivery.steer': '立即插入',
+  'cron.delivery.idle': '空闲时插入',
+  'cron.delivery.hint.queue': '和你提交的排队消息一起等待，按你发送的先后顺序发送。',
+  'cron.delivery.hint.steer': '对话在下一个安全步骤读到它，不会打断正在进行的那次请求。',
+  'cron.delivery.hint.idle': '等当前这轮工作做完再开始，排在队列里等待的消息之前。',
+  'cron.form.delivery': '投递时机',
+  'cron.form.delivery.queue': '排队',
+  'cron.form.delivery.steer': '立即插入',
+  'cron.form.delivery.idle': '空闲时插入',
+  'cron.form.delivery.hint.queue': '和你提交的排队消息一起等待，按你发送的先后顺序发送。',
+  'cron.form.delivery.hint.steer': '对话在下一个安全步骤读到它，不会打断正在进行的那次请求。',
+  'cron.form.delivery.hint.idle': '等当前这轮工作做完再开始，排在队列里等待的消息之前。',
+  'cron.form.delivery.unsupported': '当前服务端不会回报已有任务的投递时机。保持原有设置不变；没有设置的任务从下一次触发起按「空闲时插入」执行。',
+  'cron.detail.delivery': '投递时机',
+  'cron.detail.owner': '所属对话',
+  'cron.detail.workspace': '所属工作区',
+  'cron.detail.created': '创建于',
+  'cron.detail.age': '已存在 {days} 天',
+  'cron.detail.bindingSame': '改绑只能选同一工作区内的对话。',
+  'cron.detail.bindingMove': '改绑到其他工作区的对话不会被保存。',
+  'cron.detail.unbound': '未绑定对话',
+  'cron.detail.unboundHint': '该任务属于工作区，不会进入任何对话。',
+  'cron.detail.nextFireHint': '下次触发时间由服务端计算，此处只显示它算出的结果。',
+  'cron.form.createTitle': '新建定时任务',
+  'cron.form.editTitle': '编辑定时任务',
+  'cron.form.kind': '触发方式',
+  'cron.form.kind.once': '仅一次',
+  'cron.form.kind.recurring': '重复',
+  'cron.form.repeat': '重复方式',
+  'cron.form.cadence.hourly': '按小时',
+  'cron.form.cadence.daily': '按天',
+  'cron.form.cadence.weekly': '按星期',
+  'cron.form.cadence.monthly': '按月',
+  'cron.form.everyNHours': '每 {n} 小时',
+  'cron.form.everyHour': '每小时',
+  'cron.form.at': '在',
+  'cron.form.minute': '第 {m} 分钟',
+  'cron.form.minuteOf': '第 {m} 分钟',
+  'cron.form.minuteOnTheHour': '整点',
+  'cron.form.hour': '点',
+  'cron.form.onDays': '在这些天',
+  'cron.form.dayOfMonth': '第 {day} 日',
+  'cron.form.prompt': '提示词',
+  'cron.form.promptPlaceholder': '例如：检查昨夜日志，把新增的设计与验证要求汇总给我。',
+  'cron.form.promptLoading': '正在读完整提示词…',
+  'cron.form.bind': '绑定对话',
+  'cron.form.bindHint': '选一个对话，到点时在该对话里运行。',
+  'cron.form.bindSearch': '搜索对话标题',
+  'cron.form.bindEmpty': '没有可选择的对话。',
+  'cron.form.bindSearchEmpty': '没有匹配「{query}」的对话。',
+  'cron.form.bindCurrent': '当前对话',
+  'cron.form.bindUnbound': '不绑定对话',
+  'cron.form.advanced': '高级 Cron 表达式',
+  'cron.form.advancedHint': '这条日程用下面的表达式表示，保存时按原样保留。',
+  'cron.form.advancedSwitch': '改用高级表达式',
+  'cron.form.advancedBack': '用重复方式设置',
+  'cron.form.advancedLabel': 'Cron 表达式',
+  'cron.form.advancedPlaceholder': '分 时 日 月 星期',
+  'cron.form.advancedInvalid': '这不是有效的 Cron 表达式，请检查分、时、日、月、星期五段。',
+  'cron.form.error.promptRequired': '写一句要运行的内容。',
+  'cron.form.detailUnavailable': '读不到完整提示词。可以重试，或直接写出这条任务要跑的提示词。',
+  'cron.form.promptStillLoading': '完整提示词还在读取，等它读完后才能保存。',
+  'cron.form.discardBody': '这个表单里有还没保存的改动，关闭后会丢失。',
+  'cron.form.discardConfirm': '放弃改动',
+  'cron.form.error.weekdaysRequired': '至少选一个星期。',
+  'cron.form.error.saveFailed': '未能保存修改，草稿还在，请重试。',
+  'cron.form.error.createFailed': '未能创建，草稿还在，请重试。',
+  'cron.toast.created': '已创建定时任务',
+  'cron.toast.updated': '已保存定时任务',
   'sidebar.statusRunning': '运行中',
   'sidebar.statusNeedsMe': '等我处理',
   'sidebar.statusIdle': '空闲',
@@ -5800,11 +6546,10 @@ export const zh = {
   'inspector.cap.tools': '工具',
   'inspector.cap.skills': '技能',
   'inspector.cap.subagents': '子智能体',
-  'inspector.cap.extensions': '扩展',
+  'inspector.cap.plugins': '插件',
   'inspector.cap.noTools': '这个智能体没有开启工具。',
   'inspector.cap.noSkills': '这个智能体没有可用的技能。',
   'inspector.cap.noSubagents': '这个智能体不能派发子智能体。',
-  'inspector.cap.noExtensions': '没有连接 MCP 服务器或插件。',
   'inspector.cap.unavailable': '不可用',
   'inspector.cap.asks': '需审批',
   'inspector.cap.off.one': '{count} 个未开启',
@@ -5815,6 +6560,7 @@ export const zh = {
   'inspector.cap.plugin': '插件',
   'inspector.cap.loadFailed': '读取这个智能体的工具失败。',
   'inspector.cap.loading': '正在读取工具…',
+  'inspector.cap.reading': '正在读取能力…',
   'inspector.cap.more': '还有 {count} 项',
   'inspector.cap.less': '收起',
   'inspector.cap.filter': '筛选{tab}',
@@ -5845,10 +6591,10 @@ export const zh = {
   'inspector.cap.userTools': '自定义工具',
   'inspector.cap.ownerUnreported': '提供方未报告',
   'inspector.cap.noToolsReported': '当前智能体未报告可列出的工具。',
-  'inspector.cap.noOwnTools': '这里没有内置或自定义工具。',
   'inspector.cap.moreGroups.one': '还有 {count} 组',
   'inspector.cap.moreGroups.other': '还有 {count} 组',
   'inspector.cap.fewerGroups': '收起分组',
+  'inspector.cap.previewHint': '点击这组可查看全部工具',
   'inspector.failedNoDetail': '出错后停止，打开智能体查看详情。',
   'rail.source.builtin': '内置',
   'rail.source.workspace': '工作区',
@@ -5862,7 +6608,7 @@ export const zh = {
   'memory.off.title': '记忆未开启',
   'memory.off.body': '开启后，Kiki 会跨会话记住你的偏好和项目事实；每次写入都会在对话里留下一行记录。',
   'memory.off.storage': '只保存在运行 Kiki 的这台机器上，位于 {path}。',
-  'memory.toggle': '使用记忆',
+  'memory.toggle': '允许使用记忆',
   'memory.toggleFailed': '无法切换记忆开关：{detail}',
   'memory.scope.aria': '记忆作用域',
   'memory.scope.global': '全局',
@@ -5902,7 +6648,10 @@ export const zh = {
   'memory.empty.body': '在对话里告诉 Kiki「记住……」，或在这里新建一条。',
   'memory.empty.filtered': '没有符合筛选条件的记忆。',
   'memory.empty.clear': '清除筛选',
+  'memory.detailNone': '选择左侧一条记忆查看详情与历史。',
   'memory.loading': '正在加载记忆…',
+  'memory.readingMore': '正在续读剩余记忆，已显示的条目可以使用。',
+  'memory.readIncomplete': '部分记忆无法读取，下方保留可读条目。',
   'memory.loadFailed': '无法加载记忆。',
   'memory.field.title': '标题',
   'memory.field.type': '类型',
@@ -5994,10 +6743,37 @@ export const zh = {
   'memory.tool.undoConflict': '之后已被修改，请到记忆页查看',
   'memory.tool.undoFailed': '撤销失败：{detail}',
   'memory.tool.reason': '原因',
+  'memory.tool.query': '搜索',
+
+
+
+
+
+
   'memory.scopeTag.global': '全局',
   'memory.scopeTag.workspace': '工作区',
   'memory.scopeTag.persona': '角色',
   'memory.scopeTag.personaWorkspace': '角色 · 工作区',
+
+
+  'memory.basis.label': '内容依据',
+  'memory.basis.human': '你明确要求或认可的',
+  'memory.basis.observed': '可核对的材料或观察',
+  'memory.basis.derived': 'Kiki 的推断或转述',
+  'memory.basis.unknown': '依据未记录',
+  'memory.basis.unrecorded': '未记录',
+  'memory.basis.refs': '· {count} 处来源',
+  'memory.validity.label': '使用前需要',
+  'memory.validity.recheck': '重新核对',
+  'memory.validity.expired': '已过期',
+  'memory.validity.unrecorded': '没有记录复核条件',
+  'memory.validity.recheckShort': '需复核',
+  'memory.validity.expiredShort': '已过期',
+  'memory.coveredBy.label': '已并入',
+  'memory.coveredBy.short': '已并入其他条目',
+  'memory.coveredBy.changed': '承接条目在归并后已改变，请读它的当前版本。',
+  'memory.coveredBy.unavailable': '暂时无法读取承接条目。',
+  'memory.savedUnchanged': '内容没有变化，未产生新版本。',
   'st.memory.title': '记忆',
   'st.memory.hint': '跨会话保存偏好和项目事实，只存在本机。默认开启。',
   'st.memory.open': '打开记忆页',
@@ -6062,10 +6838,26 @@ export const zh = {
   'st.purpose.memory': '设置跨会话和工作区的记忆保存方式。',
   'st.section.permissions': '权限',
   'st.section.hooks': '钩子',
-  'st.section.developer': '开发者',
+  'st.section.developer': '开发与实验',
   'st.section.labs': '实验功能',
   'st.group.device': '应用',
   'st.group.work': '工作方式',
+  'st.group.modelsAccounts': '模型与账号',
+  'st.group.agents': '智能体',
+  'st.group.sessionsWork': '会话与工作',
+  'st.group.rulesAlerts': '规则与通知',
+  'st.group.connectionSpaces': '连接与空间',
+  'st.group.system': '系统',
+  'st.ia.prototype': '设置导航（实验）',
+  'st.ia.current': '当前',
+  'st.ia.taskflow': '任务分组',
+  'st.ia.objects': '对象页',
+  'st.ia.purpose': '目的分组',
+  'st.group.permissionsRules': '权限与规则',
+  'st.section.serverConnection': '服务器连接',
+  'st.section.externalAccess': '外部接入',
+  'st.section.tasksBackground': '任务与后台',
+  'st.ai.tab.providersAccounts': '服务与账号',
   'st.storage.workspace': '工作区：{name}',
   'st.storage.unsaved': '有未保存的更改',
   'st.storage.pageServerRemote': '已保存到你连接的远端服务器。',
@@ -6108,35 +6900,50 @@ export const zh = {
   'st.exp.searchWorker.name': '在工作线程中运行搜索索引',
   'st.exp.searchWorker.desc': '在独立工作线程中运行全局搜索索引，避免大型搜索拖慢服务器。',
   'st.exp.desktopSearch.name': '桌面会话全文搜索',
-  'st.exp.desktopSearch.desc': '在后台建立 SQLite 索引，并从桌面搜索历史会话。重启后生效；首次建库约需 20–30 分钟，磁盘至少剩余 2 GB。',
+  'st.exp.desktopSearch.desc': '从桌面搜索历史会话。首次索引在后台建立；索引所在磁盘可用空间低于 2 GiB 时暂停索引。',
   'st.exp.imageConversion.name': '转换不支持的图片',
   'st.exp.imageConversion.desc': '发送前，把模型无法读取的图片转换成它接受的格式。',
   'st.exp.nativeSsh.name': 'SSH 主机',
   'st.exp.nativeSsh.desc': '使用 SSH 配置中的机器作为会话运行位置。',
   'st.exp.nativeBrowser.name': '原生浏览器控制',
   'st.exp.nativeBrowser.desc': '经由随 Kiki 提供的 agent-browser 受管后端运行已保存的浏览器连接。',
-  'st.exp.readModel.name': '会话读模型',
-  'st.exp.readModel.desc': '使用派生索引提供会话列表和回放，而不是读取原始历史记录。',
-  'st.exp.usageExport.name': '把用量发送到其他工具',
-  'st.exp.usageExport.desc': '让这台服务器把模型、token、质量与价格桶发送到你选择的目的端。对话内容、标题与路径不会发送。',
-  'st.exp.pluginImport.name': '从其他工具导入历史',
-  'st.exp.pluginImport.desc': '从已安装的来源读取对话并保存为只读归档。归档是历史，不是可以继续的会话。',
+  'st.exp.readModel.name': '会话列表索引',
+  'st.exp.readModel.desc': '使用索引列出会话，并在重新打开时查询会话的基本信息。',
+
+
+
+
   'st.exp.pluginAppLifecycle.name': '应用级插件服务',
   'st.exp.pluginAppLifecycle.desc': '随 Kiki 启动已安装且已启用的应用级插件，退出时停止它们的服务。',
+
+
+  'st.exp.localSessionResume.name': '接续本机外部会话',
+  'st.exp.localSessionResume.desc': '接续本机已有的 Claude Code 和 Codex 会话。',
+  'st.exp.recipes.name': '模型 Recipe',
+  'st.exp.recipes.desc': '安装可复用的模型提示与参数。含脚本钩子的 Recipe 仍须在安装时确认一次。',
+  'st.exp.pluginWorkspaceUsage.name': '工作区插件选择',
+  'st.exp.pluginWorkspaceUsage.desc': '选择每个工作区使用哪些已安装插件，不必卸载插件。',
+
+
+  'st.exp.workPresets.name': '空间工作模式',
+  'st.exp.workPresets.desc': '在每个空间使用工作模式。安装所需插件包时仍须确认。',
+  'st.exp.externalClients.name': '外部 MCP 客户端',
+  'st.exp.externalClients.desc': '让客户端通过你明确授权的连接使用 Kiki 会话和工具。',
   'st.exp.unknown.name': '此服务器特有的功能',
   'st.exp.unknown.desc': '此服务器报告了一个本应用没有说明的功能。',
   'st.labs.openIn': '在「{page}」中打开',
   'st.labs.empty': '这个服务器未报告实验功能。',
   'st.labs.indexTitle': '实验功能入口',
   'st.effect.newSessions': '对新会话生效',
-  'st.purpose.sessions': '新会话如何开始、智能体何时可以打断你，以及智能体之间如何传话。',
+  'st.purpose.sessions': '新会话如何开始、智能体何时可以打断你、智能体通信，以及后台与定时任务。',
   'st.purpose.skills': '服务器查找技能的位置。',
-  'st.purpose.plugins': '从哪里找插件，以及浏览器控制是否已设置。',
+
   'st.purpose.hooks': '事件发生时会运行的规则。',
+
   'st.purpose.workspaces': '服务器已知的文件夹。移除后不会删除其中的文件和会话。',
   'st.purpose.about': '版本、构建、Server 标识与更新。',
   'st.purpose.permissions': '默认模式、持久工具规则、危险 Bash 检查、审查者及可用工具。',
-  'st.purpose.developer': '引擎参数、底层配置与系统诊断。',
+  'st.purpose.developer': '引擎参数、底层配置、系统诊断与实验性功能索引。',
   'st.purpose.labs': '实验性功能体验与开关设置。',
   'st.perm.defaultTitle': '默认权限模式',
   'st.perm.dangerousBash': '危险 Bash 命令',
@@ -6168,6 +6975,50 @@ export const zh = {
   'st.perm.delete': '删除',
   'st.perm.moveUp': '上移',
   'st.perm.moveDown': '下移',
+  'st.sessions.archivedTitle': '归档对话',
+  'st.sessions.archivedHint': '归档后的对话仍可在侧栏之外查看。删除后无法从这个 Kiki 恢复。',
+  'st.sessions.archivedOpen': '管理归档对话',
+  'archive.title': '归档对话',
+  'archive.backSettings': '会话设置',
+  'archive.lede': '当前连接上的全部归档对话。可以打开查看，也可以在它们碍事时全部删除。',
+  'archive.searchPlaceholder': '搜索归档对话',
+  'archive.searchAria': '搜索归档对话',
+  'archive.listAria': '归档对话',
+  'archive.loading': '正在读取归档',
+  'archive.loadFailed': '无法读取归档',
+  'archive.empty': '没有归档对话',
+  'archive.emptyHint': '你归档的对话会留在这里，随时可以再打开。',
+  'archive.emptySearch': '没有匹配「{query}」的归档对话',
+  'archive.emptySearchHint': '搜索匹配当前连接上的标题和工作区。清空搜索即可回到完整归档。',
+  'archive.untitled': '未命名对话',
+  'archive.workspaceUnknown': '未知工作区',
+  'archive.openHint': '打开对话历史',
+  'archive.loadOlder': '加载更早的',
+  'archive.allLoaded': '归档已全部加载',
+  'archive.delete': '删除',
+  'archive.deleteOneTitle': '删除这个归档对话？',
+  'archive.deleteOneBody': '会把「{title}」及其全部内容从这个 Kiki 删除，无法撤销。',
+  'archive.deleteOneFamily': '随它归档的关联对话会一起删除。',
+  'archive.deleteOneTopLevel': '你手动提升到顶层的对话不会跟着删除。',
+  'archive.deleteOneConfirm': '删除对话',
+  'archive.deleteOneDone': '已删除「{title}」',
+  'archive.deleteAll': '删除全部归档对话',
+  'archive.deleteAllTitle': '删除全部归档对话？',
+  'archive.deleteAllBody': '会永久删除当前连接上的全部归档对话，无法撤销；范围不受当前搜索或已加载页面限制。',
+  'archive.deleteAllScope': '未归档对话不受影响。房间里的归档对话会删除，房间本身保留。',
+  'archive.deleteAllConfirm': '删除全部归档对话',
+  'archive.deleteAllDone': '已删除 {count} 个归档对话',
+  'archive.deleteNoneDone': '没有可删除的归档对话',
+  'archive.deleteFailed': '没有任何对话被删除',
+  'archive.keptTitle': '未删除的对话',
+  'archive.dismiss': '知道了',
+  'archive.deletePartial': '已删除 {deleted} / {total}，其余 {failed} 个删除失败，仍在列表中。',
+  'archive.pending': '删除中',
+  'archive.refreshList': '刷新列表',
+  'archive.scopeNote': '仅当前连接',
+  'archive.scopeNoteHint': '切换连接会同时改变这份列表和删除操作的范围。',
+  'st.sessions.importPageNote': '导入历史随 Kiki 一起提供，这里不需要安装插件。',
+  'st.sessions.importBrowsePlugins': '浏览插件',
   'st.sessions.questionsTitle': '智能体提问',
   'st.sessions.questionsLabel': '问题等待时',
   'st.sessions.questionsHint': '不阻塞：智能体继续工作，问题留在会话里，直到你回答。阻塞：智能体等你回答，此前不做别的事。',
@@ -6245,6 +7096,10 @@ export const zh = {
   'cap.action.updateNamed': '更新 {name}',
   'cap.action.remove': '移除插件',
   'cap.action.rollback': '回退到 {version}',
+  'cap.shelf.recommended': '当前工作区适用',
+  'cap.shelf.official': '官方插件',
+  'cap.shelf.community': '社区插件',
+  'cap.shelf.media': '媒体提供方',
   'cap.shelf.featured': '精选',
   'cap.shelf.productivity': '效率',
   'cap.shelf.coding': '编程',
@@ -6302,6 +7157,7 @@ export const zh = {
   'cap.plugins.addFromSource': '从来源添加',
   'cap.plugins.updates': '更新',
   'cap.detail.back': '插件',
+  'cap.detail.openSettings': '插件设置',
   'cap.detail.updateAvailable': '有可用更新',
   'cap.detail.broken': '此插件无法加载。诊断信息在「高级」下。',
   'cap.detail.adds': '提供的功能',
@@ -6313,6 +7169,8 @@ export const zh = {
   'cap.settings.secretReplace': '输入新值以替换',
   'cap.settings.secretRemove': '删除',
   'cap.settings.secretRemovePending': '保存后删除',
+  'cap.settings.none': '此插件无需额外设置。',
+  'cap.settings.panelOff': '开启插件后可打开其设置面板。',
   'cap.detail.addsAfterInstall':
     '安装后会在这里显示工具、面板、命令和皮肤的完整列表。安装页会在安装前显示这些内容。',
   'cap.detail.needs': '所需条件',
@@ -6346,13 +7204,16 @@ export const zh = {
   'cap.panel.open': '打开面板',
   'cap.panel.loading': '正在加载面板…',
   'cap.panel.session': '作用于你最近的会话',
+  'cap.panel.settings': '设置面板',
   'cap.panel.noSession': '打开会话后才能使用此面板',
   'cap.import.entry': '导入历史',
   'cap.import.title': '导入历史',
   'cap.import.intro': '把别的工具里的一段对话带进这个 Kiki，变成可以继续聊下去的会话。导入本身不需要模型，发下一条消息才需要。',
   'cap.import.loading': '正在确认这台服务器能导入什么…',
-  'cap.import.unavailableTitle': '这台服务器没有开启导入历史。',
-  'cap.import.unavailableBody': '用 {flag} 启动这个 Kiki 即可开启。',
+  'cap.import.unavailableTitle': '这台服务器无法导入历史。',
+  'cap.import.unavailableBody': '导入历史是 Kiki 自带的能力，无需开启任何开关。这台服务器没有提供可导入的来源，通常说明它还是较早的版本。',
+  'cap.import.settingsHint': '把另一个工具里的对话导入这个 Kiki，作为可以继续工作的会话。导入不需要模型，也不会安装任何东西；发送下一条消息才需要。',
+  'cap.import.open': '导入历史',
   'cap.import.unwiredBody': '这台服务器还没有注册导入路由。更新 Kiki 后才能导入历史。',
   'cap.import.destinationTitle': '导入为',
   'cap.import.destinationAria': '导入成什么',
@@ -6502,6 +7363,18 @@ export const zh = {
   'cap.install.installing': '安装中…',
   'cap.install.done': '{name} 已安装并开启。',
   'cap.install.finish': '完成',
+  'cap.install.scope.title': '这个插件要在哪里可用？',
+  'cap.install.scope.global': '全局可用',
+  'cap.install.scope.globalHint': '所有工作区和对话默认开启，之后仍可按工作区单独关闭。',
+  'cap.install.scope.later': '先安装，之后再决定',
+  'cap.install.scope.laterHint': '现在就安装，但全局默认关闭；需要时再在具体位置开启。',
+  'cap.install.scope.workspace': '仅当前工作区',
+  'cap.install.scope.workspaceHint': '安装时全局默认保持关闭，并为{workspace}开启；其它工作区不受影响。',
+  'cap.install.appServiceHint': '该插件使用各工作区共享的 home 后台服务；选择“先安装，之后再决定”不会启动它。',
+  'cap.install.done.later': '{plugin} 已安装，全局默认关闭。',
+  'cap.install.done.workspace': '{plugin} 已安装，并在{workspace}中开启。',
+  'cap.install.usageFailed': '{plugin} 已安装，但在这里开启失败。重试不会重新安装。',
+  'cap.install.retryUsage': '再试一次开启',
   'cap.prereq.title': '安装 {id}？',
   'cap.prereq.body': '这会下载固定的 {id} {version} 版本，核对校验和后保存到插件的数据文件夹。',
   'cap.prereq.action': '安装 {id}',
@@ -6613,7 +7486,7 @@ export const zh = {
   'st.ssh.hostKeys.refresh': '重新读取',
   'st.ssh.hostKeys.localNote': '以下是在这台电脑的 known_hosts 文件中找到的记录；不会连接该主机。',
   'st.ssh.hostKeys.unrecorded': '这台电脑的 known_hosts 文件中没有该主机的记录。',
-  'st.ssh.hostKeys.ambiguous': '无法根据该主机的配置确定它使用哪个 known_hosts 文件，因此没有读取记录。下面是它解析出的路径。',
+  'st.ssh.hostKeys.ambiguous': '无法唯一确定 known_hosts 文件的路径边界，因此没有读取记录。请检查该主机的 SSH 配置。',
   'st.ssh.hostKeys.unavailable': '无法读取该主机的记录。',
   'st.ssh.hostKeys.noFingerprint': '指纹不可用',
   'st.ssh.hostKeys.copy': '复制 {algorithm} 指纹',
@@ -6693,6 +7566,11 @@ export const zh = {
   'st.ssh.form.saveOverride': '保存为 Kiki 主机',
   'composer.addMenu.ssh': '会话可用的 SSH 主机',
   'composer.ssh.heading': '此会话中的 SSH 主机',
+  'composer.ssh.enabled': '已启用',
+  'composer.ssh.disabled': '未启用',
+  'composer.ssh.expand': '展开全部 ({count})',
+  'composer.ssh.collapse': '收起',
+  'composer.ssh.switchLabel': '{name}：{status}',
   'composer.ssh.loading': '正在加载主机…',
   'composer.ssh.empty': '还没有配置主机。',
   'composer.ssh.fromConfig': '来自 ~/.ssh/config',
@@ -6702,6 +7580,7 @@ export const zh = {
   'composer.ssh.removeChip': '从此会话移除“{name}”',
   'composer.ssh.addFailed': '无法添加 {name}：{detail}',
   'composer.ssh.removeFailed': '无法移除 {name}：{detail}',
+  'composer.execution.keptEngine': '{engine} 的现有绑定已保留。可在设置中管理新的引擎选择。',
   'ia.ssh.title': '连接到主机',
   'ia.ssh.promptsTitle': '登录步骤',
   'ia.ssh.hostKeyTitle': '新主机密钥',
@@ -6815,7 +7694,7 @@ export const zh = {
   'st.xc.listenerOffBody': '本机客户端仍可使用。远程客户端无法连接。',
   'st.xc.listenerOn': '已开启',
   'st.xc.listenerOnBody': '正在 {origin} 提供 MCP 服务。',
-  'st.xc.listenerDiscoveryHint': '客户端访问此地址获取可用能力和登录指引。',
+  'st.xc.listenerDiscoveryHint': '“可达”表示客户端可以在这个地址上完成握手。隧道显示就绪只代表它连上了 Cloudflare，不代表这个地址能用。',
   'st.xc.publicUrl': '公网地址',
   'st.xc.publicUrlHint': '远程客户端访问使用的 https 地址。留空则仅服务本机客户端。',
   'st.xc.publicUrlInvalid': '公网地址必须以 https:// 开头。',
@@ -6916,6 +7795,229 @@ export const zh = {
   'ia.ssh.method.agent': 'SSH 配置',
   'ia.ssh.method.agentHint':
     '使用 ssh-agent 和 ~/.ssh/config 中指定的密钥。不会从这里发送任何内容。',
+
+  // ---- 外部客户端（设置 › 外部客户端、由外部驱动的会话）----
+  // 与外部引擎方向相反：那些是 Kiki 驱动的智能体，这些是驱动 Kiki 的客户端。
+  // 文案不把客户端叫成引擎，也不暗示 Kiki 看到了它自己的那段对话。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // 本机路径：让用户复制到自己的 MCP 客户端里的原生配置。
+
+
+
+
+
+
+
+
+  // 远程路径：地址、OAuth，以及客户端实际能做到什么。
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // 监听器，四种状态要分开。
+
+
+
+
+
+
+  'st.xc.listenerStart': '启动监听器',
+  'st.xc.listenerStop': '停止监听器',
+  'st.xc.listenerStarting': '正在启动',
+  'st.xc.listenerState.stopped': '已停止',
+  'st.xc.listenerState.listening': '正在监听',
+  'st.xc.listenerState.error': '未提供',
+  'st.xc.listenerOrigin': '本机地址',
+  'st.xc.listenerPublic': '公网地址',
+  'st.xc.listenerPublicNone': '未设置',
+  'st.xc.listenerDiscovery.unchecked': '未检查',
+  'st.xc.listenerDiscovery.reachable': '可达',
+  'st.xc.listenerDiscovery.failed': '不可达',
+
+  'st.xc.listenerCheck': '检查这个地址',
+  'st.xc.listenerChecking': '正在检查',
+
+
+
+
+
+  // 等待用户确认的授权请求。
+
+
+
+
+
+
+
+
+  // 失败要说明什么没成功，以及接下来怎么办。
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // 监听器的五种状态。“正在监听”不等于“可达”：还没有任何证据表明客户端能连上。
+
+
+
+
+
+
+  // ---- 由外部驱动的会话 ----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   'ia.ssh.method.password': '密码',
   'ia.ssh.method.keyFile': '密钥文件',
   'ia.ssh.method.keyText': '粘贴密钥',
@@ -6939,7 +8041,7 @@ export const zh = {
   'ia.ssh.cancelSignIn': '取消登录',
   'ia.ssh.keyFirstSeen': '{algorithm} 密钥指纹',
   'ia.ssh.keyCheckHint':
-    '信任前，先与服务器管理员提供的指纹核对。信任后会写入 ~/.ssh/known_hosts。',
+    '信任前，先与服务器管理员提供的指纹核对。信任后会写入配置中的第一个 known_hosts 文件。若设为 UserKnownHostsFile none，则不保存，每次连接都会再次询问。',
   'ia.ssh.trustKey': '信任此主机密钥',
   'ia.ssh.dontTrust': '不连接',
   'ia.ssh.sent': '已发送',
@@ -6977,6 +8079,12 @@ export const zh = {
   'st.engines.versionUnknown': '未报告',
   'st.engines.login': '登录',
   'st.engines.loginStale': '运行检查即可读取登录状态。',
+  'st.engines.showInList': '在新的 Profile 和执行选择中提供 {engine}',
+  'st.engines.showInListHint': '打开后，这个引擎才会成为新选择。关掉后不再作为新选择；已经绑定它的 profile 和会话保持原来的引擎。刷新、重新检查和再次导入都不会重新打开。',
+  'st.engines.showAllInList': '允许选择已开启的外部引擎',
+  'st.engines.showAllInListHint': '关闭后，新的选择里不会出现外部引擎。已经绑定的 profile 和会话保持原来的引擎。',
+  'st.engines.showAllInListOffHint': '当前不在选择列表中提供任何外部引擎。它们仍然保留在机器上，已在使用的会话也照常运行。',
+  'st.engines.hiddenByGlobal': '总开关已关闭。重新打开后，仅之前明确开启的引擎回到新选择；明确关闭的保持关闭。',
   'st.engines.loginCommand': '登录命令',
   'st.engines.apiKeyCommand': 'API key',
   'st.engines.loginOrKey': 'Kiki 会复用这台电脑上已有的凭据，下面两条路线选一条即可。',
@@ -7055,6 +8163,14 @@ export const zh = {
   'st.engines.notFoundBody': '这台电脑上找不到 {program}。安装后再检查一次。',
   'st.engines.integrations': 'Kiki 为此引擎提供的工具',
   'st.engines.integrationsBody': '此引擎上的主智能体可以派发 Kiki 子智能体：在它的智能体档案里打开「允许派发 Kiki 子智能体」。共享记忆和技能目前还不可用。',
+  'st.engines.mcpInject.title': '默认注入 Kiki MCP',
+  'st.engines.mcpInject.hint': '为此引擎启动的新绑定默认注入 Kiki MCP 桥接。明确的智能体或会话设置优先。',
+  'st.engines.mcpInject.unsupported': '不支持 MCP 桥接',
+  'st.engines.mcpInject.unsupportedHint': '此引擎未声明或不支持 stdio MCP 桥接。',
+  'st.engines.mcpInject.on': '开启',
+  'st.engines.mcpInject.off': '关闭',
+  'st.engines.mcpInject.inherit': '默认 (继承)',
+  'st.engines.mcpInject.saved': 'MCP 注入默认设置已保存。',
   'st.engines.configHint': '引擎在 config.toml 的 [agent_executors.<id>] 下配置。',
   'st.engines.empty': '此服务器尚未配置外部引擎。',
   'st.engines.loading': '正在加载引擎…',
@@ -7069,6 +8185,18 @@ export const zh = {
   'st.engines.loginUnknownBody': 'Kiki 读取不到凭据。用下面的命令登录，或者设置这个引擎读取的 API key。',
   'st.engines.defaultProfile':
     '这个引擎还没有现成的智能体。可以在「智能体」中把它设为某个智能体的引擎。',
+  // 按引擎设置的默认值：裸运行时 Kiki 会补充什么。
+  'st.engines.defaults.title': '此引擎运行时 Kiki 补充的内容',
+  'st.engines.defaults.hint': '默认情况下 {engine} 使用自己的配置运行，不套用 Kiki 配置档。在这里设置的内容会作用于所有未自行覆盖的 {engine} 会话。',
+  'st.engines.defaults.modelAlias': '模型',
+  'st.engines.defaults.modelAliasHint': '填这个引擎自己的模型 id，而不是 Kiki 的模型别名。留空则由引擎自行决定。',
+  'st.engines.defaults.modelAliasPlaceholder': '引擎默认',
+  'st.engines.defaults.thinkingEffort': '思考强度',
+  'st.engines.defaults.permissionMode': '审批模式',
+  'st.engines.defaults.inheritPlaceholder': '引擎默认',
+  'st.engines.defaults.save': '保存引擎默认值',
+  'st.engines.defaults.saved': '引擎默认值已保存。已在运行的会话保持它启动时的取值。',
+  'st.engines.defaults.applyNote': '从下一个会话起生效；运行中的会话保持当前取值。',
   'st.executorPrompt.title': '执行器提示词',
   'st.executorPrompt.nativeNote': '仅在此智能体运行于外部引擎时使用。',
   'st.executorPrompt.scope': '适用于',
@@ -7159,12 +8287,18 @@ export const zh = {
   'transcript.exec.compacted': '引擎已压缩上下文',
   'transcript.exec.turnDiff': '本轮改动',
   'transcript.exec.turnDiffFiles': '{count} 个文件',
-  'transcript.exec.unknownUpdate': '引擎发送了 Kiki 无法显示的更新',
+  'transcript.exec.unknownUpdate': '未识别的引擎更新',
   'transcript.exec.engineContextUsed': '引擎上下文：{used} tokens',
   'transcript.exec.engineContextOf': '引擎上下文：{used} / {size} tokens',
   'transcript.exec.imageDropped': '引擎丢弃了你发送的一张图片',
   'transcript.exec.imageDroppedReason': '引擎丢弃了你发送的一张图片：{reason}',
   'transcript.exec.engineModel': '引擎正在运行 {model}',
+
+
+
+
+
+
   'st.executorPrompt.overrideNote': '覆盖设置有自己的区块列表；对所有引擎的更改不会影响它。',
   'st.profiles.fieldsAfterSave': '保存后查看 {engine} 使用的设置。',
   'st.profiles.fieldValueSet': '已在此文件中设置',
@@ -7176,14 +8310,245 @@ export const zh = {
   'transcript.loss.additional_directories_dropped': '额外的工作区文件夹未传给引擎',
   'transcript.loss.thought_level_unconfigured': '引擎没有思考强度设置，因此使用了默认值',
   'st.section.notifications': '通知与消息',
-  'st.purpose.notifications': '工作完成或有问题等待回答时，推送到手机或团队群。',
+  'st.purpose.notifications': '在手机、团队群或这台电脑上收到 Kiki 的消息，也能直接回复。',
   'st.notify.rulesTitle': '通知规则',
+  'st.im.title': 'IM 账号与渠道',
+  'st.im.hint': '连接账号后，在下方添加聊天、联系人、群组或话题。',
+  'st.im.loading': '正在加载 IM 账号…',
+  'st.im.loadError': '无法加载 IM 账号，请重试。',
+  'st.im.catalogError': '无法加载角色与线程，请重试。',
+  'st.im.searchError': '无法搜索线程，修改搜索内容后重试。',
+  'st.im.newAccount': '新账号',
+  'st.im.chatId': '聊天',
+  'st.im.senderId': '发信人',
+  'st.im.topicId': '话题',
+  'st.im.removeConfirm': '移除{name}？此渠道的消息将不再进入 Kiki。',
+  'st.im.stateAuthExpired': '授权已过期',
+  'st.im.stateListenerStopped': '连接已停止',
+  'st.im.authExpiredHint': '重新授权此账号以恢复监听。',
+  'st.im.reauthorize': '重新授权',
+  'st.im.retryConnection': '重试连接',
+  'st.im.failure.transport_error': '网络请求失败。',
+  'st.im.failure.http_error': '平台返回 HTTP 错误。',
+  'st.im.failure.api_error': '平台报告 API 错误。',
+  'st.im.failure.invalid_response': '无法读取平台响应。',
+  'st.im.failure.auth_expired': '重新授权此账号以恢复监听。',
+  'st.im.failure.loop_failed': '连接意外停止，请重试连接。',
+  'st.im.failureCount': '失败次数：{count}',
+  'st.im.retryDelay': '重试间隔：{seconds} 秒',
+  'st.im.wechatDirectOnly': '此微信连接只支持私聊，群聊暂不支持。',
+  'st.im.wechatDiscover': '从要添加的联系人发送私聊消息，再为每位联系人单独选择角色或线程。',
+  'st.im.wechatAwaitingListen': '开启监听后，从要添加的联系人发送一条私聊消息。',
+  'st.im.paste': '配置',
+  'st.im.pastePlaceholder': '机器人令牌，或一行一个字段',
+  'st.im.instance': '已有连接',
+  'st.im.check': '检查',
+  'st.im.listen': '开启监听',
+  'st.im.stop': '停止',
+  'st.im.webhook': '这个机器人已经设置了 webhook。请在平台上移除后再检查。这里不会删除它。',
+  'st.im.discovery': '收到一条消息',
+  'st.im.confirm': '绑定',
+  'st.im.dismiss': '忽略',
+  'st.im.target': '绑定到',
+  'st.im.persona': '角色日常会话',
+  'st.im.session': '已有会话',
+  'st.im.busy': '忙碌时',
+  'st.im.queue': '排队',
+  'st.im.steer': '插入',
+  'st.im.text': '消息正文',
+  'st.im.final': '完整正文',
+  'st.im.edit': '实时正文',
+  'st.im.actions': '审批与提问',
+  'st.im.qqText': 'QQ 会发送完整正文，也不能修改已发出的消息。',
+  'st.im.wechatText': '微信会发送完整正文，也不能修改已发出的消息。',
+  'st.im.fileNote': 'QQ 不能接收文件。',
+  'st.im.railOffAllowed': '双向消息已关闭。',
+  'st.im.railOffBinding': '这条 IM 绑定已停用。',
+  'st.im.railBusy': '正在更新',
+  'st.im.on': '开',
+  'st.im.off': '关',
+  'st.im.allowed': '双向消息',
+  'st.im.default': '绑定默认开启',
+  'st.im.sessionSwitch': 'IM 对话',
+  'st.im.disable': '停用',
+  'st.im.enable': '启用',
+  'st.im.remove': '移除',
+  'st.im.strangers': '未确认的发信人',
+  'st.im.ignored': '已忽略的字段',
+  'st.im.chatHint': '已忽略粘贴的聊天编号。请从要添加的渠道发送一条消息。',
+  'st.im.empty': '连接 IM 账号后即可添加渠道。',
+  'st.im.missing': '这个平台在当前版本里还没有实时连接。',
+  'st.im.voice': '语音已按文件发送',
+  'st.im.alsoHome': '同时设为日常会话',
+  'st.im.error': '没能更新 IM 对话。',
+  'st.im.retry': '再试一次',
+  'st.im.followDefault': '跟随默认',
+  'st.im.wechatScan': '微信扫码',
+  'st.im.wechatWaiting': '等待扫码。',
+  'st.im.wechatScanned': '已扫码。',
+  'st.im.wechatExpired': '这个码过期了。',
+  'st.im.wechatVerify': '输入手机上显示的验证码。',
+  'st.im.wechatBlocked': '尝试次数过多，请重新开始。',
+  'st.im.wechatBound': '这个账号已经绑定。',
+  'st.im.wechatCancel': '取消',
+  'st.notify.tab.im': '双向对话',
+  'st.notify.tab.channels': '通知推送',
+  'st.notify.tab.away': '本机提醒',
+  'st.im.provider.wechat_bridge': '微信',
+  'st.im.provider.telegram': 'Telegram',
+  'st.im.provider.feishu_app': '飞书',
+  'st.im.provider.onebot_v11': 'QQ (OneBot)',
+  'st.im.provider.discord': 'Discord',
+  'st.im.provider.slack': 'Slack',
+  'st.im.provider.matrix': 'Matrix',
+  'st.im.accountsTitle': '已连接账号',
+  'st.im.stateListening': '监听中',
+  'st.im.stateStarting': '正在连接',
+  'st.im.stateReconnecting': '重新连接中',
+  'st.im.stateStopped': '未开启监听',
+  'st.im.connectNew': '添加或更新账号',
+  'st.im.connectHide': '收起配置',
+  'st.im.bindAction': '新增渠道',
+  'st.im.bindTitle': '发现新渠道',
+  'st.im.bindStepTarget': '绑定目标',
+  'st.im.bindStepIdentity': '渠道',
+  'st.im.kindPersona': '角色',
+  'st.im.kindSession': '线程',
+  'st.im.searchTarget': '搜索线程…',
+  'st.im.noTargetMatch': '无匹配项。',
+  'st.im.noTargetsYet': '暂无角色或线程。',
+  'st.im.awaitingListenBody': '开启监听后，从要添加的联系人、群组或话题发送一条消息。',
+  'st.im.startListenNow': '开启监听',
+  'st.im.waitingTitle': '等待渠道消息…',
+  'st.im.waitingBody': '从要添加的联系人、群组或话题发送消息，再在下方为它单独选择角色或线程。',
+  'st.im.refreshDiscovery': '刷新',
+  'st.im.advancedOptions': '高级选项',
+  'st.im.bindingsTitle': '已绑定聊天',
+  'st.im.changeTarget': '绑定目标',
+  'st.im.bindingOptions': '选项',
+  'st.im.closeBindFlow': '收起',
+  'st.im.routeExisting': '切换至此目标',
+  'st.im.railBind': '绑定到此会话',
+  'st.im.railRoute': '切到此会话',
+  'st.im.setup.platform': '平台配置方式',
+  'st.im.setup.catalogError': '无法加载 Discord、Slack 与 Matrix 配置项，请重试。',
+  'st.im.setup.pasteMode': '粘贴 / 其它',
+  'st.im.setup.portalLink': '开发者控制台',
+  'st.im.setup.saveSlot': '保存凭据',
+  'st.im.setup.savedNotice': '已保存 {id} 的凭据。确认无误后可在下方检查并开启监听。',
+  'st.im.setup.generatedLink': '授权链接',
+  'st.im.setup.openLink': '打开链接',
+  'st.im.setup.field.bot_token': 'Bot 令牌 (bot_token)',
+  'st.im.setup.field.app_token': '应用级令牌 (xapp)',
+  'st.im.setup.field.homeserver': 'Homeserver 地址',
+  'st.im.setup.field.access_token': '访问令牌 (access_token)',
+  'st.im.setup.discord.appId': 'Application ID',
+  'st.im.setup.discord.guildId': '服务器 Guild ID（可选）',
+  'st.im.setup.discord.installLink': '生成机器人邀请链接',
+  'st.im.setup.slack.appName': '应用名称（可选）',
+  'st.im.setup.slack.manifestLink': '通过 Manifest 创建应用',
+  'st.im.setup.slack.oauthToggle': '通过 OAuth 换取 Bot 令牌',
+  'st.im.setup.slack.clientId': 'Client ID',
+  'st.im.setup.slack.clientSecret': 'Client Secret',
+  'st.im.setup.slack.redirectUri': '回调地址 (Redirect URI)',
+  'st.im.setup.slack.oauthBegin': '生成 OAuth 链接',
+  'st.im.setup.slack.code': '回调 code',
+  'st.im.setup.slack.state': '回调 state',
+  'st.im.setup.slack.oauthComplete': '换取令牌并保存',
+  'st.im.setup.matrix.server': 'Matrix 域名或用户 ID',
+  'st.im.setup.matrix.discover': '发现 Homeserver',
+  'st.im.setup.matrix.discovered': 'Homeserver：{homeserver} · 登录方式：{flows}',
+  'st.im.setup.matrix.authMethod': '认证方式',
+  'st.im.setup.matrix.methodToken': '访问令牌',
+  'st.im.setup.matrix.methodPassword': '密码登录',
+  'st.im.setup.matrix.methodSso': 'SSO 登录',
+  'st.im.setup.matrix.user': 'Matrix 用户名',
+  'st.im.setup.matrix.password': '密码',
+  'st.im.setup.matrix.passwordSubmit': '登录并保存令牌',
+  'st.im.setup.matrix.redirectUri': '回调地址 (Redirect URI)',
+  'st.im.setup.matrix.idpId': '身份提供商 ID（可选）',
+  'st.im.setup.matrix.ssoBegin': '发起 SSO 登录',
+  'st.im.setup.matrix.callbackUri': '回跳完整 URL',
+  'st.im.setup.matrix.loginToken': '登录令牌 (loginToken)',
+  'st.im.setup.matrix.ssoComplete': '换取令牌并保存',
+  'st.im.cap.matrixUnencrypted': '仅支持未加密房间（暂不支持 E2EE；向加密房间发送明文会被拒绝）。',
+  'st.im.cap.voiceUnsupported': '此平台不支持发送语音气泡；普通音频将作为 {rendering} 发送。',
+  'st.im.cap.outboundMedia': '可发送媒体：{kinds}',
+  'st.im.internalChannel': '本对话接收消息',
+  'st.im.internalChannelHint': '回复始终保留在当前 Kiki 会话里。',
+  'st.im.bindSteps': '1. 给机器人发一条消息 · 2. 发现渠道身份 · 3. 选择会话或角色 · 4. 确认绑定',
+  'st.im.preselectTarget': '预选绑定目标（收到消息后可直接确认）',
+  'st.im.pendingStepHint': '等待收到渠道消息以识别对方身份；识别前尚未完成绑定。',
+  'st.im.testBinding': '测试此绑定',
+  'st.im.testingBinding': '测试中…',
+  'st.im.testBinding.delivered': '测试消息已送达。',
+  'st.im.testBinding.failed.binding_disabled': '此绑定已停用，请先启用后再发送测试。',
+  'st.im.testBinding.failed.channel_not_connected': '账号当前未开启监听，请先开启监听后再发送测试。',
+  'st.im.testBinding.failed': '测试消息发送失败：{detail}',
+  'st.im.testBinding.unknown': '送达结果未知，请先在聊天端确认是否收到，切勿自动重发。',
+  'st.im.channels': '通信信道',
+  'st.im.addBinding': '+ 绑定',
+  'st.im.sendMessageTitle': '主动消息工具 (SendMessage)',
+  'st.im.toolBadge': '工具',
+  'st.im.personaDefault': '角色',
+  'st.im.sm.personaActive': '角色消息模式已开启 · {count} 个输出',
+  'st.im.sm.personaOff': '本会话已关闭主动发送',
+  'st.im.sm.sessionActive': '本会话已开启 · {count} 个输出',
+  'st.im.sm.defaultOff': '主动发送已关闭，可为本会话开启。',
+  'st.im.sm.globalActive': '全局默认已开启 · {count} 个输出',
+  'st.im.sm.hostLocked': '宿主策略已禁用此工具',
+  'st.im.sm.hardOff': '当前策略不允许使用此工具',
+  'st.im.sm.loading': '正在获取工具状态…',
+  'st.im.sm.unresolved': '工具状态暂不可用',
+  'st.im.group.im': '消息信道',
+  'st.im.group.notify': '单向推送',
+  'st.im.dir.in': '入',
+  'st.im.dir.out': '出',
+  'st.im.dir.inOut': '入 · 出',
+  'st.im.tag.bi': '双向',
+  'st.im.tag.in': '仅入',
+  'st.im.tag.out': '仅出',
+  'st.im.tag.off': '已停',
+  'st.im.pill.in': '入',
+  'st.im.pill.out': '出',
+  'st.im.noBindings': '本会话尚未绑定消息信道。',
+  'st.im.noNotify': '本会话尚未绑定推送信道。',
+  'st.im.unbind': '解绑',
+  'st.im.internalAlwaysOn': '回复始终保留在本会话',
+  'st.im.borrowing': '未绑定信道访问',
+  'st.im.settingsLink': '设置 ↗',
+  'st.im.picker.title': '为本会话绑定信道',
+  'st.im.picker.close': '收起',
+  'st.im.picker.empty': '没有可绑定的候选信道。',
+  'st.im.rebindButton': '转绑到本会话…',
+  'st.im.pendingReanchor': '待确认归属',
+  'st.im.occupiedBy': '已归属于',
+  'st.im.unknownSession': '未知会话',
+  'st.im.rebind.title': '转移信道归属？',
+  'st.im.rebind.confirm': '确认转移',
+  'st.im.rebind.cancel': '取消',
+  'st.im.rebind.description': '后续新消息与回复将使用当前会话，原会话的历史记录保留不变。',
+  'st.im.rebind.variant': '信道变体',
+  'st.im.rebind.identity': '身份标识',
+  'st.im.rebind.currentOwner': '当前归属',
+  'st.im.rebind.targetOwner': '转入目标',
+  'st.im.allowBorrowing': '允许发送到未绑定信道',
+  'st.im.allowBorrowingHint': '允许 SendMessage 显式选择未绑定到本会话的可用信道。',
+  'st.im.defaultSendMessage': '普通会话默认启用主动消息工具',
+  'st.im.channelDisabledHint': '此信道已被策略或设置禁用',
+  'st.im.notifyBound': '已绑定到本会话',
+  'st.im.notifyCandidate': '可绑定到本会话',
+  'st.im.bindNotify': '绑定到本会话',
+  'st.im.removeNotify': '解绑',
+  'st.im.testBinding.partial': '测试消息已部分投递，仍有内容未完成。',
+  'st.notify.paused': '通知已暂停，通道不会发送。',
+  'st.notify.pausedShort': '已暂停',
   'st.notify.enabled': '发送通知',
   'st.notify.enabledHint': '下方所有通道的总开关，默认开启。',
   'st.notify.viewing': '正在查看的会话不提醒',
   'st.notify.viewingHint': '会话正在你面前打开时，不发送通知。',
   'st.notify.minWork': '跳过短任务',
-  'st.notify.minWorkHint': '短于该时长的一轮工作不发送完成通知，默认 60 秒。',
+  'st.notify.minWorkHint': '短于该时长的交办工作不发送完成通知。默认 0 秒，短答也会通知。',
   'st.notify.seconds': '秒',
   'st.notify.minWorkInvalid': '请输入 0 到 86400 之间的整数秒。',
   'st.notify.quiet': '免打扰时段',
@@ -7193,7 +8558,7 @@ export const zh = {
   'st.notify.quietZone': '时区',
   'st.notify.timeInvalid': '请使用 24 小时制，例如 22:00。',
   'st.notify.privacyLabel': '发送内容',
-  'st.notify.privacy': '只说明发生了什么，例如“一轮工作已完成”。会话标题、问题内容和文件路径不会离开这台电脑。',
+  'st.notify.privacy': '只说明发生了什么，例如“交办工作已完成”。会话标题、问题内容和文件路径不会离开这台电脑。',
   'st.notify.runtimeLabel': '何时送达',
   'st.notify.runtime.tray': '关闭窗口后 Kiki 留在托盘，通知照常发送；退出 Kiki 后停止发送。',
   'st.notify.runtime.quit': '关闭窗口即退出 Kiki，重新打开前不会发送通知。',
@@ -7222,7 +8587,7 @@ export const zh = {
   'st.notify.connectionShared.other': '与另外 {n} 个通道共用，这里的修改对它们都生效。',
   'st.notify.target': '目标',
   'st.notify.scenes': '何时提醒',
-  'st.notify.scene.work_complete': '一轮工作完成',
+  'st.notify.scene.work_complete': '对话结束后通知',
   'st.notify.scene.question_pending': '有问题等待回答',
   'st.notify.check': '检查凭据',
   'st.notify.checking': '正在检查…',
@@ -7663,6 +9028,7 @@ export const zh = {
   'st.web.revokeAllDone': '已注销所有浏览器。Web 访问仍然开着。',
   'st.web.revoked': '已注销{name}。',
   'st.web.insecureLive': '这条连接没有加密，同一网络里的其他人可能读到传输的内容。',
+  'st.web.openFailed': '没有打开浏览器。可以手动打开这个地址：',
   'st.web.addressPending': '开启之后这里会显示地址。',
   'st.web.linkExpires': '这个链接还可以使用 {duration}。',
   'st.web.hostField': '监听地址',
@@ -7703,19 +9069,21 @@ export const zh = {
   'st.web.failed': '操作没有成功。{reason}',
   // ---- away notifications, activity inbox ----
   'st.away.title': '系统通知',
-  'st.away.hint': 'Kiki 在后台或隐藏时弹出。点通知会打开对应会话。',
-  'st.away.enabled': 'Kiki 在后台时通知我',
-  'st.away.completed': '一轮完成',
+  'st.away.hint': '控制本设备的会话通知和跨空间待处理提醒。点通知可返回查看。',
+  'st.away.enabled': '允许系统通知',
+  'st.away.completed': '对话结束后通知',
+  'st.away.completedHint': '默认开启。本次交办工作、有限后台任务和结果处理全部收尾后通知；常驻服务和未来定时任务不影响。',
   'st.away.failed': '一轮失败',
   'st.away.question': '有问题等你回答',
   'st.away.approval': '有请求等你批准',
   'st.away.kindsLabel': '通知这些事',
-  'st.away.browserHint': '浏览器标签页无法弹出系统通知，桌面版和 VS Code 扩展可以。',
+  'st.away.browserHint': '当前浏览器不支持系统通知。可使用桌面版或 VS Code 扩展。',
+  'st.away.permissionDenied': '浏览器已阻止通知。请在地址栏的网站权限中允许通知，再回到此页。',
   'away.completed.title': '已完成 · {title}',
   'away.failed.title': '已失败 · {title}',
   'away.question.title': '待回答 · {title}',
   'away.approval.title': '待批准 · {title}',
-  'away.completed.body': '这一轮已跑完，打开会话查看结果。',
+  'away.completed.body': '本次交办的工作已收尾，打开对话查看结果。',
   'away.failed.body': '这一轮没有跑完，打开会话查看原因。',
   'away.question.body': 'Kiki 在等你回答。',
   'away.approval.body': '有一项操作等你批准。',
@@ -7837,16 +9205,18 @@ export const zh = {
   'agentPanel.notes.loadFailed': '工作笔记读取失败',
   'agentPanel.notes.notRead': '工作笔记尚未读取',
   'agentPanel.notes.partial': '显示已读取的版本，最新笔记尚未确认。',
+
+
   'agentPanel.notes.unavailable': '工作笔记暂无法读取。',
   'agentPanel.notes.stale': '最新笔记未能读取，暂显示上次可读的版本。',
   'agentPanel.notes.unknown': '新版笔记字段：{field}',
   'agentPanel.notes.cleared': '工作笔记为空 · 第 {rev} 版',
-  'agentPanel.hooks': '带入规则',
+  'agentPanel.hooks': '自动规则',
   'agentPanel.hooks.summary': '{count} 条生效',
-  'agentPanel.hooks.empty': '本轮没有生效的带入规则。',
-  'agentPanel.hooks.loading': '正在读取带入规则…',
-  'agentPanel.hooks.unavailable': '这台服务端还不支持查看带入规则。',
-  'agentPanel.hooks.loadFailed': '带入规则读取失败',
+  'agentPanel.hooks.summaryFaulty': '查看来源',
+  'agentPanel.hooks.loading': '正在读取自动规则…',
+  'agentPanel.hooks.unavailable': '这台服务端还不支持查看自动规则。',
+  'agentPanel.hooks.loadFailed': '自动规则读取失败',
   'agentPanel.hooks.inactive': '未生效',
   'agentPanel.hooks.steps': '已计 {count} 步',
   'agentPanel.hooks.nextDue': '下次第 {step} 步触发',
@@ -7866,6 +9236,12 @@ export const zh = {
   'transcript.agents.progress': '{done}/{total} 完成',
   'transcript.agents.open': '打开',
   'transcript.agents.openAria': '打开 {name}',
+  'subagent.otherGroup': '其他子智能体',
+  'subagent.otherGroupCount.one': '{count} 个子智能体',
+  'subagent.otherGroupCount.other': '{count} 个子智能体',
+  'subagent.otherGroupRunning': '{count} 个运行中',
+  'subagent.otherGroupFailed': '{count} 个失败',
+  'subagent.otherGroupAria': '{summary}，展开或收起',
   'transcript.agentEnd.completed': '完成',
   'transcript.agentEnd.failed': '失败',
   'transcript.agentEnd.cancelled': '被停止',
@@ -7941,7 +9317,7 @@ export const zh = {
   'persona.switch': '换角色',
   'persona.avatarHint': 'PNG、JPG 或 WebP，最大 20 MB，上传前可裁剪',
   'persona.nav': '角色',
-  'persona.lede': '角色决定「谁」来和你说话：名字、样子、性格和长期规则。干活的方式仍由 profile 决定。',
+  'persona.lede': '角色决定「谁」来和你说话：名字、样子、性格和长期规则。干活的方式仍由配置档决定。',
   'persona.loading': '正在读取角色…',
   'persona.loadFailed': '角色列表读取失败',
   'persona.searchPlaceholder': '搜索名字、头衔或职责',
@@ -8020,6 +9396,8 @@ export const zh = {
   'persona.importIdLabel': '导入为 ID',
   'persona.importedToast': '已导入「{name}」',
   'persona.importMemoryPending': '已导入「{name}」，记忆还在写入',
+  'persona.importMemoryFailed': '已导入「{name}」，但记忆未能写入',
+  'persona.importMemoryView': '查看记忆',
   'persona.importChooseOther': '换一张',
   'persona.chipAria': '选择智能体或角色',
   'persona.pickerManage': '管理角色',
@@ -8040,9 +9418,10 @@ export const zh = {
   'bot.hiddenNotice': '隐藏不会暂停定时任务。',
   'message.view': '消息',
   'message.process': '过程',
+  'message.body': '消息正文',
   'message.internal': '内部',
   'message.replyDelivery': '直接回复',
-  'message.messageDelivery': '仅发送的消息',
+  'message.messageDelivery': '按消息送达',
   'message.noReply': '{name} 没有回复 · 查看过程',
   'message.failed': '消息未发出 · 查看过程',
   'message.cancelled': '消息已取消 · 查看过程',
@@ -8091,10 +9470,21 @@ export const zh = {
   'message.ranSoFar': '跑了 {count} 条命令',
   'message.viewSwitchAria': '时间线视图',
   'message.deliveryLabel': '投递方式',
-  'message.deliveryMessageHint': '只有它用 SendMessage 发出的内容会送达你。',
+  'message.deliveryMessageHint': '它每轮最后的回复会作为消息送到你这里。',
   'message.deliveryReplyHint': '它的普通回复直接显示给你。',
   'message.deliveryNextTurn': '下一轮生效',
   'message.deliverySwitchFailed': '投递方式没有切换：{detail}',
+  'message.deliveryElsewhere': '已发送至 {channels} · 本对话未接收',
+  'message.deliveryUnconfirmed': '送达未确认 · 查看过程',
+  'message.internalUnsupported': '本对话未收到：{kinds}',
+  'message.channelUnsupported': '{channel} 未收到 {kinds}',
+  'message.channelFailed': '{channel}：未送达',
+  'message.channelUnknown': '{channel}：送达未知',
+  'message.media.image': '图片',
+  'message.media.file': '文件',
+  'message.media.audio': '音频',
+  'message.media.voice': '语音',
+  'message.media.video': '视频',
   'bot.group': 'Bot',
   'bot.open': '打开 {name}',
   'bot.enabledToast': '{name} 已设为 Bot',
@@ -8142,7 +9532,7 @@ export const zh = {
   'room.system.wakeConnectionFailed': '没能唤醒 {name}：无法连接 {provider}。请检查网络和模型服务，恢复后再发一条房间消息。',
   'room.system.wakeSessionUnavailable': '没能唤醒 {name}：成员会话不可用或已归档。请打开成员会话检查，或将成员移出后重新加入。',
   'room.system.wakeWorkspaceUnavailable': '没能唤醒 {name}：工作区不可用。请检查房间工作区路径和访问权限，再发一条房间消息。',
-  'room.namePlaceholder': '例如：0.31 发布',
+  'room.namePlaceholder': '例如：产品讨论',
   'room.membersHint': '选 2–6 个角色，主持人默认是第一个。',
   'room.noPersonas': '还没有角色。先在角色页新建几个。',
   'room.allPersonasIn': '角色都已在房间里。',
@@ -8195,6 +9585,9 @@ export const zh = {
   'room.fromThreadsCount': '把 {count} 个线程拉进新房间',
   'room.joinRoom': '加入房间…',
   'room.joinRoomTitle': '把「{name}」加入房间',
+  'room.joinRoomCountTitle': '把 {count} 个线程加入房间',
+  'room.chooseNewRoom': '新建房间…',
+  'room.joinRoomLoadFailed': '无法读取房间。请重试，或新建房间。',
   'room.joinRoomNone': '还没有房间。先把几个线程拉进新房间。',
   'room.joinRoomFull': '已满',
   'room.joinRoomMember': '已在房间',
@@ -8316,11 +9709,40 @@ export const zh = {
   'st.workspaces.noMatchTitle': '没有匹配的工作区',
   'st.workspaces.searchPlaceholder': '按名称或路径搜索…',
   'st.workspaces.more': '{name} 的更多操作',
-  'st.models.filter.inUse': '在用',
+  'st.workspaces.detail.back': '全部工作区',
+  'st.workspaces.detail.open': '打开{name}的设置',
+  'st.workspaces.detail.renamed': '已重命名为{name}。',
+  'st.workspaces.detail.pinHelp': '置顶后，工作区会留在列表顶部和空间切换器里。',
+  'st.workspaces.detail.plugins': '插件',
+  'st.workspaces.detail.pluginsScope': '本工作区可用的插件 · {name}',
+  'st.workspaces.detail.pluginsScopePending': '本工作区可用的插件',
+  'st.workspaces.detail.pluginsEmpty': '还没有安装插件，可以从目录或来源加入。',
+  'st.workspaces.detail.browseTitle': '把插件加入本工作区',
+  'st.workspaces.detail.browseBody': '选中后会先展示它带来什么，确认后才安装；装到哪一层由你在下一步自己选。',
+  'st.workspaces.detail.pluginsUnsupported': '当前服务器不提供按工作区的插件使用情况。',
+  'st.workspaces.detail.pluginToggle': '{name}（本工作区）',
+  'st.workspaces.detail.trust': '工作区信任',
+  'st.workspaces.detail.trustGrant': '信任{name}',
+  'st.workspaces.detail.trustRevoke': '不再信任{name}',
+  'st.workspaces.detail.trustOn': '本工作区会话会加载它自己的配置文件、MCP 服务器与钩子，它的 profile 也可以指定外部执行器。',
+  'st.workspaces.detail.trustOff': '会跳过本工作区自己的配置文件、MCP 服务器与钩子，指定外部执行器的 profile 一律拒绝。',
+  'st.workspaces.detail.trustUnsupported': '当前服务器不提供工作区信任信息。',
+  'st.workspaces.detail.trustGranted': '已信任本工作区。',
+  'st.workspaces.detail.trustRemoved': '已取消对本工作区的信任。',
+  'st.workspaces.detail.inherit': '与全局默认一致',
+  'st.workspaces.detail.memoryFor': '对{name}中的会话生效。',
+  'st.workspaces.detail.resources': '同样按本工作区划分',
+  'st.workspaces.detail.profiles': '智能体配置',
+  'st.workspaces.detail.mcp': 'MCP 服务器',
+  'st.workspaces.detail.skills': '技能',
+  'st.workspaces.detail.count': '此处 {count} 个',
+  'st.workspaces.detail.openResource': '打开{name}',
+  'st.workspaces.detail.unreadable': '暂时读不到',
+  'st.workspaces.detail.missingTitle': '该工作区已不存在',
+  'st.workspaces.detail.missingBody': '它已不在当前服务器上注册，没有可配置的内容；列表里是仍然存在的工作区。',
   'st.models.filter.attention': '有问题',
   'st.models.filter.reasoning': '推理',
   'st.models.filter.vision': '视觉',
-  'st.models.group.inUse': '在用',
   'st.models.inUseAs': '用于{roles}',
   'st.models.providerAttention': '连接不可用',
   'st.models.providerUnconfigured': '未设置密钥',
@@ -8379,8 +9801,11 @@ export const zh = {
   'subagent.call.details': '调用详情',
   'subagent.call.noOutputYet': '任务执行中，尚未产生输出。',
   'subagent.call.noOutput': '没有录得调用输出。',
-  'subagent.call.loading': '正在加载较早的调用记录…',
-  'subagent.call.unavailable': '此会话中未找到原始调用记录。',
+  'subagent.call.loading': '正在读取调用记录…',
+  'subagent.call.preparing': '正在定位已保存的调用记录…',
+  'subagent.call.failed': '调用记录读取失败，请重试。',
+
+  'subagent.call.unavailable': '已核对保存的记录，未找到这次原始调用。',
   'subagent.call.taskId': '任务 ID',
   'subagent.call.actualProfile': '实际 Profile',
   'subagent.call.advisories': '绑定建议 (Advisories)',
@@ -8391,10 +9816,6 @@ export const zh = {
   'subagent.call.targetAgent': '目标智能体',
   'subagent.call.expandDetails': '展开调用详情',
   'subagent.call.collapseDetails': '收起调用详情',
-  'subagent.call.expandPrompt': '展开 Prompt（共 {count} 字）',
-  'subagent.call.collapsePrompt': '收起 Prompt',
-  'subagent.call.expandMessage': '展开消息（共 {count} 字）',
-  'subagent.call.collapseMessage': '收起消息',
   'usage.governance.realtime': '实时',
   'usage.governance.history': '历史',
   'usage.governance.stale': '数据可能已过期 · 最后更新 {time}',
@@ -8420,7 +9841,7 @@ export const zh = {
   'usage.governance.unavailable': '实时请求状态不可用',
   'usage.governance.running': '进行中',
   'usage.governance.queued': '排队中',
-  'usage.governance.details': '请求详情',
+  'usage.governance.details': '详情',
   'usage.governance.limitsTitle': '并发限制',
   'usage.governance.byDimension': '按维度',
   'usage.governance.idleNow': '此刻没有进行中或排队的模型请求。',
@@ -8453,12 +9874,12 @@ export const zh = {
   'usage.governance.disabled': '已停用',
   'usage.governance.toggleRule': '启用或停用「{name}」',
   'usage.governance.viewRequests': '模型请求',
-  'usage.governance.viewAgents': '在飞智能体',
+  'usage.governance.viewAgents': '运行中的智能体',
   'usage.governance.mainAgents': '主智能体',
   'usage.governance.subagents': '子智能体',
   'usage.governance.independentAgents': '独立智能体',
   'usage.governance.totalAgents': '智能体合计',
-  'usage.governance.activeAgents': '在飞智能体',
+  'usage.governance.activeAgents': '运行中的智能体',
   'usage.governance.queuedAgents': '排队智能体',
   'usage.governance.idleAgents': '此刻没有运行中的智能体。',
   'usage.governance.executor': '执行器',
@@ -8466,8 +9887,8 @@ export const zh = {
   'usage.governance.executorKiki': 'Kiki (内置)',
   'usage.governance.resource': '限制对象',
   'usage.governance.resourceModelRequest': '限制模型请求',
-  'usage.governance.resourceLiveAgent': '在飞 Agent',
-  'usage.governance.resourceAgentExecution': '在飞 Agent 执行',
+  'usage.governance.resourceLiveAgent': '运行中的 Agent',
+  'usage.governance.resourceAgentExecution': '运行中的 Agent 执行',
   'usage.governance.executors': '执行器',
   'usage.governance.profiles': '配置预设',
   'usage.governance.roles': '角色',
@@ -8476,8 +9897,8 @@ export const zh = {
   'usage.governance.roleScopeMain': '仅主智能体',
   'usage.governance.roleScopeSub': '仅子智能体',
   'usage.governance.roleScopeIndependent': '仅独立智能体',
-  'usage.governance.tagLiveAgent': '[在飞智能体]',
-  'usage.governance.tagAgentExecution': '[在飞智能体]',
+  'usage.governance.tagLiveAgent': '[运行中的智能体]',
+  'usage.governance.tagAgentExecution': '[运行中的智能体]',
   'usage.governance.tagModelRequest': '[模型请求]',
   'usage.governance.ancestorLimitTitle': '父 Agent 正占用运行名额',
   'usage.governance.ancestorLimitMessage': '父 Agent 正占用此规则的运行名额。选择仅限制子 Agent、将 main/subagent 分开配置，或提高此规则上限。',
@@ -8485,7 +9906,19 @@ export const zh = {
   'usage.quota.title': '服务与提供商剩余额度',
   'usage.quota.subtitle': 'OAuth 账号、API 密钥与外部服务的实时余量及重置时间。',
   'usage.quota.refresh': '刷新额度',
+  'usage.quota.refreshAll': '刷新全部',
   'usage.quota.refreshing': '正在刷新…',
+  'usage.quota.notQueried': '尚未查询',
+  'usage.quota.queryNow': '查询',
+  'usage.quota.attentionTitle': '需要处理',
+  'usage.quota.ledgerTitle': '可查询额度',
+  'usage.quota.value.remaining': '剩余 {value}',
+  'usage.quota.value.balance': '余额 {value}',
+  'usage.quota.value.used': '已用 {value}',
+  'usage.quota.action.localUsage': '查看本地用量',
+  'usage.quota.action.disable': '关闭额度检查',
+  'usage.quota.action.manageConnections': '管理连接',
+  'usage.quota.off.summary': '{n} 个连接已关闭额度检查',
   'usage.quota.source': '来源：{source}',
   'usage.quota.balance': '余额',
   'usage.quota.credits': '积分',
@@ -8516,6 +9949,16 @@ export const zh = {
   'usage.quota.kind.provider': '模型提供商',
   'usage.quota.kind.external_service': '外部服务',
   'usage.quota.kind.executor': '执行器',
+  'usage.quota.engines.title': '外部引擎',
+  'usage.quota.engines.manage': '管理引擎',
+  'usage.quota.engines.note': '这里显示连接状态；剩余额度请在对应引擎中查看。',
+  'usage.quota.engines.hidden': '已隐藏 {n} 个未启用的引擎。',
+  'usage.quota.engines.configError': '引擎偏好加载失败，暂时显示已注册引擎，可重试加载。',
+  'usage.quota.unsupported.summary': '{n} 个连接未提供额度查询',
+  'usage.quota.unsupported.note': '这些连接暂无可用的额度查询接口，剩余额度未知。',
+  'usage.quota.off.title': '已关闭额度检查',
+  'usage.quota.off.blocked': '额度检查仍未开启，请前往设置检查此连接。',
+  'usage.quota.signedOut': '此账号已退出登录，请先登录再刷新额度。',
   'usage.export.nav': '外部同步',
   'usage.export.sourceLabel': '上报来源',
   'usage.export.sourceValue': '{server} · home {home}',
@@ -8523,11 +9966,9 @@ export const zh = {
   'usage.export.add': '添加目的端',
   'usage.export.loading': '正在加载外部同步…',
   'usage.export.loadFailed': '外部同步没有加载成功',
-  'usage.export.unavailable.title': '这台服务器没有开启外部同步',
-  'usage.export.unavailable.body': '服务器不上报任何目的端，也不发送任何数据。请在服务器上打开 {flag} 实验开关后重新加载。',
   'usage.export.noTransport': '当前连接无法管理外部同步。请通过 HTTP 或 IPC 连接到 Kiki 服务器。',
   'usage.export.readonly.title': '这里由另一个实例负责',
-  'usage.export.readonly.body': '这个 home 的外发写者是另一个 Kiki 实例，所以这里是只读的。请到数据所在的实例上管理。',
+  'usage.export.readonly.body': '这个数据目录的外部同步由另一个 Kiki 实例管理。这里是只读的，请到那个实例管理目的端。',
   'usage.export.empty.title': '还没有目的端',
   'usage.export.empty.body': 'Kiki 可以只把模型、token、质量与价格桶发送到 vibecafe.ai、Kiki 用量 Webhook，或你自己写的脚本；对话内容、标题与路径不会发送。',
   'usage.export.empty.add': '添加目的端',
@@ -8721,6 +10162,7 @@ export const zh = {
   'usage.export.form.privateHint': '只批准这组主机名、地址、端口与协议，不是整个私网。回环、链路本地与云元数据地址仍然会被拒绝。',
   'usage.export.form.schedule': '发送周期',
   'usage.export.form.historyFrom': '历史起点',
+  'usage.export.form.historyBounded': '到某个时间为止',
   'usage.export.form.historyHint': '任何时刻都会向下对齐到包含它的 UTC 半小时边界。之后记录的桶会随产生逐步加入。',
   'usage.export.form.historyInvalid': '请输入日期和时间。',
   'usage.export.form.excluded': '排除的工作区',
@@ -8828,8 +10270,7 @@ export const zh = {
   'usage.export.handoff.sameAccount': '交接会把目的端与 collector 自己记录下来的配置做比对。两者不一致时，Kiki 会请你核对设置，而不是声称是同一个账号。',
   'usage.export.handoff.mismatch': 'collector 记录的目标与这个目的端不一致。请核对 collector 的配置；Kiki 不会把同一个账号当作已被证明。',
   'usage.export.handoff.technicalShow': 'collector 与 Kiki 如何对上是同一个目标',
-  'composer.ssh.sessionHosts': '本会话 SSH',
-  'composer.ssh.draftHosts': '待加入 SSH',
+  'composer.ssh.hosts': 'SSH',
   'composer.ssh.draftHint': '创建会话后，所选主机会先加入，再随会话保留到移除为止。加入不等于连接。',
   'composer.ssh.sessionHint': '这些主机属于本会话，会一直保留到移除。加入不等于连接。',
   'st.promptIdentity.common': '共用内容',
@@ -8932,6 +10373,10 @@ export const zh = {
   'agentPanel.prompt.diskChanged': '已保存的配置与当前绑定不同，将在下次绑定或上下文重建时采用。',
   'agentPanel.prompt.lease.preserve': '调用方保留角色的模型专用提示，再应用自己的声明。',
   'agentPanel.prompt.lease.replace': '调用方替换了角色的模型专用提示。',
+  'agentPanel.prompt.recipeSources': '本次绑定使用的配方',
+  'agentPanel.prompt.recipeSurface.model': '模型',
+  'agentPanel.prompt.recipeSurface.profile': 'Profile',
+  'agentPanel.prompt.recipeCompositeRevision': '合成 revision {revision} 覆盖上面全部来源，不属于其中任何一个包。',
   'agentPanel.prompt.anchorUnknown': '此请求未记录锚点是否生效。',
   'agentPanel.prompt.anchorSteps': '前 {count} 个请求步骤',
   'agentPanel.prompt.files.title': '提示文件',
@@ -8985,9 +10430,9 @@ export const zh = {
   'persona.tabSettings': '角色设置',
   'persona.workspaceAuto': '自动 · {name} 的工作区',
   'persona.homeWorkspaceHint': '新对话默认在此工作区开展。未指定时自动使用专用目录。',
-  'persona.deliveryHint': '普通回复直接在对话中作答；消息模式仅通过 SendMessage 工具发送。',
-  'persona.deliveryReply': '普通回复（默认）',
-  'persona.deliveryMessage': '消息模式',
+  'persona.deliveryHint': '普通回复直接在对话里作答；消息模式把每轮最后的回复作为消息送来。',
+  'persona.deliveryReply': '普通回复',
+  'persona.deliveryMessage': '消息模式（默认）',
   'persona.noCronTasks': '尚未配置归属该角色的定时任务',
   'persona.menu.conversations': '全部对话',
   'persona.menu.settings': '角色设置',
@@ -9044,6 +10489,14 @@ export const zh = {
   'transcript.modelSwitch.preparing.fresh': '正在准备新上下文…',
   'transcript.modelSwitch.preparing.direct': '正在切换到 {to}…',
   'transcript.modelSwitch.done': '已切换到 {to}',
+  'transcript.modelSwitch.pending.binding': '空闲时应用模型设置 · {to}',
+  'transcript.modelSwitch.preparing.binding': '正在应用模型设置 · {to}…',
+  'transcript.modelSwitch.done.resume': '已恢复 · 继续使用 {to}',
+  'transcript.modelSwitch.done.effort': '已更新思考强度 · {to}',
+  'transcript.modelSwitch.done.binding': '已应用模型设置 · {to}',
+  'transcript.modelSwitch.done.sameModelCompact': '已重建上下文 · 继续使用 {to}',
+  'transcript.modelSwitch.failed.binding': '未能应用模型设置 · {to}',
+  'transcript.modelSwitch.cancelled.binding': '已取消模型设置更新 · {to}',
   'transcript.modelSwitch.done.direct': '沿用当前上下文',
   'transcript.modelSwitch.done.compact': '已由 {from} 整理对话摘要',
   'transcript.modelSwitch.done.compactNone': '对话为空，直接移交',
@@ -9118,8 +10571,17 @@ export const zh = {
   'modelSwitch.recoverFailed': '恢复失败：{detail}',
   'modelSwitch.prefsSaveFailed': '已切换，但偏好尚未保存：{detail}',
   'modelSwitch.pendingChipPrefix': '待切换 → ',
-  'modelSwitch.pendingChipTitle': '切换已排队，空闲时执行',
-  'modelSwitch.pendingLine': '空闲后切换到 {model} · {mode}',
+  'modelSwitch.pendingChipPrefix.effort': '待调整思考强度 → ',
+  'modelSwitch.pendingChipPrefix.fresh': '待更新上下文 · ',
+  'modelSwitch.pendingChipPrefix.compact': '待压缩上下文 · ',
+  'modelSwitch.pendingChipPrefix.binding': '待应用模型设置 · ',
+  'modelSwitch.pendingChipTitle': '已排队；立即发送会在安全步骤边界应用',
+  'modelSwitch.pendingLine': '待切换到 {model} · {mode}',
+  'modelSwitch.pendingLine.effort': '待调整思考强度 → {effort} · {mode}',
+  'modelSwitch.pendingLine.fresh': '待更新上下文 · 继续使用 {model}',
+  'modelSwitch.pendingLine.compact': '待压缩上下文 · 继续使用 {model}',
+  'modelSwitch.pendingLine.binding': '待应用模型设置 · {model}',
+  'modelSwitch.preparingEffort': '正在调整思考强度 → {effort}',
   'modelSwitch.listFailed': '排队的模型切换暂时读不到',
   'modelSwitch.menuFreshContext': '使用新上下文继续…',
 
@@ -9127,7 +10589,12 @@ export const zh = {
   'st.section.computerControl': '电脑控制',
   'st.purpose.computerControl': '通过开源执行器在此服务机执行桌面观察与输入。',
   'st.computer.title': '电脑控制',
+  'st.computer.enabledLabel': '允许使用电脑控制',
+  'st.computer.enabledHint': '允许主 Agent 使用桌面观察与输入工具组（如屏幕捕获、鼠标与键盘控制）。',
+  'st.computer.toolPolicyDenied': '受工具策略限制，电脑控制工具已被全局禁用。',
+  'st.computer.toolPolicyPartial': '受工具策略限制，部分电脑控制工具已被禁用。',
   'st.computer.machineLabel': 'Kiki 服务机',
+  'st.computer.machineTitle': '这台服务机',
   'st.computer.machineUnknown': '服务机未报告平台信息',
   'st.computer.machineHint': '以上信息来自已连接的 Kiki 服务机本身；检查状态会重新读取执行器与连接状态。',
   'st.computer.machineHintSsh': '当前连接的主机是「{label}」，桌面观察与输入发生在该主机自己的图形会话上。',
@@ -9205,48 +10672,187 @@ export const zh = {
   'st.computer.stop.disables': '这是一条可编辑的全局连接，停止时会同时停用该配置。',
   'st.computer.stop.readOnly': '只读来源的配置不会被改写，停止只作用于本服务进程。',
   'st.computer.stop.confirmTitle': '停止「{name}」的控制？',
-  'st.computer.stop.confirmBody': '正在运行的 cua 实例会被结束。这里的停止只覆盖本服务进程启动的实例，不代表这台电脑的桌面无人控制。',
+  'st.computer.stop.confirmBody': '正在运行的电脑控制实例会被结束。这里的停止只覆盖本服务进程启动的实例，不代表这台电脑的桌面无人控制。',
   'st.computer.create': '创建连接',
+  'st.computer.activeConnectionLabel': '当前执行连接',
+  'st.computer.activeConnectionDefault': 'CUA 默认路径（未指定）',
+  'st.computer.activeConnectionDefaultHint': '放行已配置的 CUA 连接（如 kiki-computer），不启动 Windows-MCP。',
+  'st.computer.activeConnectionHint': '未指定时默认使用 CUA 路径；显式选择某条连接后仅放行该连接，切换不会自动安装或迁移。',
+  'st.computer.kind.cua': 'CUA',
+  'st.computer.kind.windowsMcp': 'Windows-MCP 0.8.8',
+  'st.computer.windowsMcp.foregroundHint': '运行在前台交互桌面，调用（含截图与显示器读取）会占用真实鼠标键盘并短暂锁定输入，不等同于 CUA 后台无焦点模式。',
+  'st.computer.windowsMcp.notServeReady': '启动参数或环境未满足受管 stdio 合同，准入已暂缓。',
+  'st.computer.windowsMcp.registerSummary': '登记已安装的 Windows-MCP 0.8.8 独立环境',
+  'st.computer.windowsMcp.registerHint': '仅向当前服务机登记已存在的 Python 3.14 虚拟环境与配置文件，不下载安装、不启动进程，也不会自动切换当前连接。',
+  'st.computer.windowsMcp.pythonLabel': 'Python 解释器路径',
+  'st.computer.windowsMcp.pythonPlaceholder': '例如 C:\\...\\venv\\Scripts\\python.exe',
+  'st.computer.windowsMcp.configLabel': '配置文件路径',
+  'st.computer.windowsMcp.configPlaceholder': '例如 C:\\...\\windows-mcp\\config.toml',
+  'st.computer.windowsMcp.registerButton': '登记环境',
+  'st.computer.windowsMcp.registering': '正在登记…',
+  'st.computer.windowsMcp.registered': '已登记为 {name}。可在上方「当前执行连接」中显式选用。',
+  'st.computer.windowsMcp.reused': '已复用现有 {name} 配置。',
 
   // ---- 浏览器控制设置 ----
-  'st.section.browserControl': '浏览器控制',
-  'st.purpose.browserControl': '在此服务机上管理浏览器连接：Kiki 启动的独立 profile，或已有/远端浏览器。',
-  'st.browser.setup.title': '准备浏览器组件',
-  'st.browser.setup.flagOff': '此服务尚未开启原生浏览器执行，连接前请先开启。',
-  'st.browser.setup.host': '组件运行在当前连接的 Kiki 服务机上，不一定是这个窗口所在的电脑。',
-  'st.browser.setup.hostSsh': '组件运行在 {label} 的 Kiki 服务机上。',
-  'st.browser.setup.detecting': '正在检测浏览器组件…',
-  'st.browser.setup.driver': '受管驱动',
-  'st.browser.setup.chrome': '独立 Chrome',
-  'st.browser.setup.ready': '已就绪',
-  'st.browser.setup.missing': '未准备',
-  'st.browser.setup.check': '重新检测',
-  'st.browser.setup.install': '安装组件',
-  'st.browser.setup.retry': '重试安装',
-  'st.browser.setup.installing': '正在安装…',
-  'st.browser.setup.driverDownload': '正在下载已校验驱动',
-  'st.browser.setup.chromeMetadata': '正在查询 Chrome for Testing',
-  'st.browser.setup.chromeDownload': '正在下载 Chrome',
-  'st.browser.setup.extract': '正在解压 Chrome',
-  'st.browser.setup.verify': '正在校验组件',
-  'st.browser.setup.cancelled': '已取消安装。已完成的组件会保留，重试可继续安装剩余组件。',
-  'st.browser.setup.next': '在下方添加连接，保存后检测、连接。',
-  'st.browser.setup.scope': '只将所选组件安装到 Kiki home。独立浏览器使用自己的登录状态；CDP 借用已有浏览器。',
-  'st.browser.setup.unsupported': '自动安装目前支持 Windows x64。其他宿主可使用兼容的固定驱动和已有浏览器；不会安装系统软件包。',
-  'st.browser.setup.details': '安装详情',
-  'st.browser.setup.integrity': '固定 Kiki 驱动经过 SHA-256 校验。Chrome 通过 HTTPS 从 Google 的 Chrome for Testing Stable 元数据下载，此来源未提供 SHA-256；本地哈希用于检测后续文件变化。',
-  'st.browser.setup.mode': '准备方式',
-  'st.browser.setup.modeProfile': '独立 profile',
-  'st.browser.setup.modeCdp': 'CDP / 已有 Chrome',
-  'st.browser.setup.modeCdpHint': '只需驱动。CDP 需要已运行且开放 CDP 地址的浏览器；自定义浏览器路径在「高级」中设置。',
+  'st.section.browserControl': '浏览器与电脑',
+  'st.purpose.browserControl': '设置并管理 Kiki 为 Agent 任务驱动的浏览器与桌面环境。',
+  'st.browser.title': '浏览器控制',
+  'st.browser.enabledLabel': '允许使用浏览器',
+  'st.browser.enabledHint': '允许主 Agent 使用浏览器操作工具组（如页面导航、点击、表单输入与截图）。',
+  'st.browser.toolPolicyDenied': '受工具策略限制，浏览器控制工具已被禁用。',
+  'st.browser.toolPolicyPartial': '受工具策略限制，部分浏览器控制工具已被禁用。',
+  'st.browser.sessionPolicyPending': '本会话仍保留旧工具选择。应用当前 profile 的工具设置后，才能使用新增工具。',
+  'st.browser.sessionPolicyRestricted': '本会话的工具设置限制了浏览器控制，启用浏览器控制不会覆盖这些限制。',
+  'st.browser.sessionPolicyUnavailable': '暂时无法核对本会话的有效工具设置。请返回已打开的会话后重试。',
+  'st.browser.refreshToolPolicy': '应用当前工具设置',
+  'st.browser.refreshToolPolicyBody': '仅将当前 profile 的工具设置应用到下方会话，不改变提示词、模型或历史；已禁止的工具仍保持禁止。',
+  'st.browser.allowedCount': '已允许 {count} 个',
+  'st.browser.source.allowedOf': '已允许 {allowed}/{total}',
+  'st.browser.found.title': '在这里发现、还没保存。勾选即保存并允许 Agent 使用。',
+  'st.browser.found.allow': '保存并允许 {name}',
+  'st.browser.found.notSaved': '未保存',
+  'st.browser.row.allow': '允许 Agent 使用 {name}',
+  'st.browser.row.makeDefault': '把 {name} 设为默认',
+  'st.browser.row.sourceOff': '{source}（来源已停用）',
+  'st.browser.defaultNotAllowed': '默认连接「{name}」没有被允许，Agent 现在用不了它。',
+  'st.browser.sourceName.kimi-webbridge': 'Kimi 浏览器扩展',
+  'st.browser.sourceName.independent-browser': '独立浏览器',
+  'st.browser.sourceName.codex-browser': 'Codex 浏览器扩展',
+  'st.browser.sourceName.ego-lite': 'Ego Lite',
+  'st.browser.allowedTotal': '当前已允许 {count} 个浏览器',
+  'st.browser.allowCheckbox': '允许 Agent 调度',
+  'st.browser.source.enable': '启用 {name}',
+  'st.browser.source.disabled': '已停用',
+  'st.browser.source.disabledHint': '已停用此来源，勾选记录已保留。',
+  'st.browser.status.available': '可用',
+  'st.browser.status.allowed': '已允许',
+  'st.browser.status.ready': '已就绪',
+  'st.browser.status.authUnknown': '授权待确认',
+  'st.browser.status.denied': '策略禁用',
+  'st.browser.status.partial': '部分受限',
+  'st.browser.status.disconnected': '未连接',
+  'st.browser.setup.title': '浏览器来源',
+  'st.browser.setup.host': 'Kiki 安装的组件运行在当前连接的 Kiki 服务机上，不一定是这个窗口所在的电脑。',
+  'st.browser.setup.hostSsh': 'Kiki 安装的组件运行在 {label} 的 Kiki 服务机上。',
+  'st.browser.setup.detecting': '正在检测哪些浏览器已就绪…',
+  'st.browser.route.none': '此服务没有报告任何浏览器接入方式。',
+  'st.browser.route.blurb.kimi-webbridge': '驱动你自己在用的浏览器，带着你自己的登录状态。Kiki 安装插件和本地桥接；扩展只需在浏览器里加一次。',
+  'st.browser.route.blurb.independent-browser': '由 Kiki 启动并维护自己的浏览器，登录状态独立，不碰你日常用的浏览器。',
+  'st.browser.route.blurb.codex-browser': '配合 Codex / ChatGPT 桌面端与浏览器扩展协议使用。准备组件后选择对应连接并保存。',
+  'st.browser.route.blurb.ego-lite': '请自行下载 Ego Lite，完成它自己的设置窗口，再在这里检查。Kiki 不会安装它，也不会导入 Chrome 的数据。',
+  'st.browser.route.preparing': '正在准备…',
+  'st.browser.route.turnOn': '开启浏览器控制',
+  'st.browser.route.needsAction': '需要配置',
+  'st.browser.route.ready': '可以连接',
+  'st.browser.route.connected': '已连接',
+  'st.browser.route.unsupported': '不支持',
+  'st.browser.route.failed': '配置失败',
+  'st.browser.route.forcedOff': '已被强制禁用',
+  'st.browser.route.blocked': '已受阻',
+  'st.browser.route.external': '在另一个应用里配置',
+  'st.browser.route.prepare': '一键配置',
+  'st.browser.route.connect': '连接',
+  'st.browser.route.saveConnection': '保存连接',
+  'st.browser.route.cancelSelection': '还原选择',
+  'st.browser.route.connecting': '正在连接…',
+  'st.browser.route.open': '打开浏览器',
+  'st.browser.route.opening': '正在打开…',
+  'st.browser.route.advanced': '高级选项',
+  'st.browser.route.update': '检测与更新',
+  'st.browser.route.updating': '正在更新…',
+  'st.browser.route.shortcut': '创建桌面快捷方式',
+  'st.browser.route.creatingShortcut': '正在创建快捷方式…',
+  'st.browser.route.shortcutHostLocal': '将在本机桌面上创建快捷方式。',
+  'st.browser.route.shortcutHostRemote': '将在远端服务所在机器（{host}）的桌面上创建快捷方式。',
+  'st.browser.route.cancel': '取消配置',
+  'st.browser.route.addExtension': '把扩展加到 {store}',
+  'st.browser.route.instructions': '官方说明',
+  'st.browser.route.downloadEgo': '下载 Ego Lite',
+  'st.browser.route.checkEgo': '检查 Ego Lite',
+  'st.browser.route.otherApps': '由另一个应用驱动',
+  'st.browser.route.hostLine': '以上都在下面这台机器上运行：',
+  'st.browser.route.diagnostics': '此服务检测了什么',
+
+
+  'st.browser.stepState.ready': '已就绪',
+  'st.browser.stepState.missing': '未安装',
+  'st.browser.stepState.running': '进行中',
+  'st.browser.stepState.user_action': '需要你操作',
+  'st.browser.stepState.failed': '失败',
+  'st.browser.stepState.warning': '注意',
+  'st.browser.route.installing': '正在配置：{step}',
+  'st.browser.route.blocking': '还差一步：{step}。',
+  'st.browser.route.warning': '使用前值得先看一眼：{step}。',
+  'st.browser.route.alreadyInstalled': 'Kiki 能装的都已经装好了。',
+  'st.browser.route.connectedAt': '已连接，{at} 验证通过',
+  'st.browser.route.connectedNow': '刚刚',
+  'st.browser.route.checkedAt': '上次检测 {at}',
+  'st.browser.route.done.prepare': '配置完成。确认它报告的状态后即可连接。',
+  'st.browser.route.done.connect': '已连接。',
+  'st.browser.route.done.savedApprovalUnproven': '连接已保存。扩展协议将在调用时进行必要授权。',
+  'st.browser.route.done.open': '浏览器已打开。',
+  'st.browser.route.done.update': '更新完成。',
+  'st.browser.route.done.updateDisk': '磁盘已更新。',
+  'st.browser.route.done.updateRunningUnchanged': '文件已更新，正在运行的浏览器或服务保持原样继续运行。',
+  'st.browser.route.done.shortcut': '桌面快捷方式已创建。',
+  'st.browser.route.done.cancel': '已取消配置。已经装好的部分会保留。',
+  'st.browser.route.openFailed': '打开浏览器失败。',
+  'st.browser.route.confirmTitle': '配置{name}？',
+  'st.browser.route.confirmBody': 'Kiki 会安装并校验这一项所需的组件，启用它的插件，并为这台服务开启浏览器控制。',
+  'st.browser.route.consequenceHost': '安装在 {host}',
+  'st.browser.route.consequencePlugin': '会启用插件 {name}',
+  'st.browser.route.consequenceFeature': '会为这台服务开启浏览器控制',
+  'st.browser.route.consequenceConnection': '会创建或复用连接 {name}',
+  'st.browser.store.chrome': 'Chrome',
+  'st.browser.store.edge': 'Edge',
+  'st.browser.store.docs': '官方文档',
+  'st.browser.step.daemonBinary': '本地桥接程序',
+  'st.browser.step.daemon': '本地桥接运行',
+  'st.browser.step.skill': 'Kimi 浏览器插件启用',
+  'st.browser.step.plugin': 'Kimi 浏览器插件启用',
+  'st.browser.step.extension': '浏览器扩展连接',
+  'st.browser.step.detect': '检测完成',
+  'st.browser.step.compatibility': '桥接程序和插件报的版本一致',
+  'st.browser.step.feature': '浏览器控制',
+  'st.browser.step.desktopApp': 'Codex / ChatGPT 桌面端',
+  'st.browser.step.driver': '浏览器驱动',
+  'st.browser.step.chrome': '独立浏览器',
+  'st.browser.step.install': '所需组件',
+  'st.browser.reason.featureDisabled': '这台服务尚未开启浏览器控制，下面的按钮会一并开启。',
+  'st.browser.reason.forcedOff': '本页之外有东西让{step}保持关闭，这里改不动。',
+  'st.browser.reason.forcedOffCause': '看是什么把它关着',
+  'st.browser.reason.versionMismatch': '已安装的桥接版本与插件要求的版本不一致。',
+  'st.browser.reason.preparingPlugin': '正在启用插件。',
+  'st.browser.reason.externalApp': '在桌面端或浏览器扩展中完成首次授权批准。',
+  'st.browser.reason.connectionConflict': '同名连接已存在且指向别处。可在「高级」里换一个连接。',
+  'st.browser.reason.connectionDisabled': '此浏览器连接已被禁用。',
+  'st.browser.reason.extensionNotConnected': '在浏览器中添加并启用扩展后即可连接。',
+  'st.browser.reason.artifactMissing': '未安装桥接组件。确认后将自动下载安装。',
+  'st.browser.reason.artifactMismatch': '已安装的桥接组件版本不匹配。点击「准备」重新下载更新。',
+  'st.browser.reason.chooseConnection': '请选择一个已发现的扩展连接。',
+  'st.browser.reason.approvalUnproven': '已保存连接。首次使用请在桌面端或扩展中完成批准。',
+  'st.browser.reason.pipeDiscoveryFailed': '扩展管道发现失败。未打开任何管道。',
+  'st.browser.reason.egoInstalled': '已安装 Ego Lite。请先完成它自己的设置窗口，再在这里检查。',
+  'st.browser.reason.egoOnboarding': '请先完成 Ego Lite 自己的设置窗口，然后再检查。',
+  'st.browser.reason.egoChooseCli': '找到了多个 Ego Lite 程序。请在这里选一个，再检查。',
+  'st.browser.reason.egoMissing': '请自行下载 Ego Lite，完成它自己的设置窗口，再在这里检查。Kiki 不会安装它，也不会导入 Chrome 的数据。',
+  'st.browser.reason.egoReady': 'Ego Lite 已经就绪。勾选允许这条连接，再为 Agent 选中它。',
+  'st.browser.reason.egoAdmitted': '这条 Ego Lite 连接已经打开。为 Agent 选中它即可操作页面。',
+  'st.browser.reason.egoFailed': 'Ego Lite 没有就绪。',
+  'st.browser.route.egoCliPlaceholder': '选择已安装的 Ego Lite 程序',
+  'st.browser.candidates.label': '可用扩展连接',
+  'st.browser.candidates.placeholder': '选择一个连接...',
+  'st.browser.candidates.empty': '未发现正在运行的扩展连接。请先启动桌面端并启用扩展。',
   'st.browser.defaultTitle': '新会话默认浏览器',
   'st.browser.defaultLabel': '默认连接',
+  'st.browser.defaultActive': '默认',
+  'st.browser.setDefaultAction': '设为默认',
   'st.browser.defaultHint': '只影响之后创建的会话。停用某个连接不会自动改用另一个。',
   'st.browser.defaultEmpty': '还没有浏览器连接，先添加一个再选默认。',
   'st.browser.defaultNone': '每次指定',
   'st.browser.defaultNoneHint': '不预设默认，模型调用时要显式给出连接标识。',
   'st.browser.connectionsTitle': '浏览器连接',
-  'st.browser.intro': '每条连接是一个可控制的浏览器位置。驱动程序运行在这台 Kiki 服务机上；CDP 连接指向地址所在的那台机器。创建、检查与连接都不会复制你日常浏览器的登录状态。',
+  'st.browser.intro': '驱动程序运行在 Kiki 服务机上；CDP 连接指向地址所在的那台机器。不会复制你日常浏览器的登录状态。',
   'st.browser.add': '添加浏览器',
   'st.browser.loading': '正在读取连接…',
   'st.browser.emptyTitle': '还没有浏览器连接',
@@ -9266,6 +10872,11 @@ export const zh = {
   'st.browser.type.cdpLong': '已有或远端浏览器（CDP 地址）',
   'st.browser.type.cdpHint': '连接一个已经开着 CDP 的浏览器，不启动新的。',
   'st.browser.type.codex-extension': 'Codex 扩展',
+  'st.browser.type.ego-lite': 'Ego Lite',
+  'st.browser.type.kimi-webbridge': 'Kimi WebBridge',
+  'st.browser.type.webbridgeHint': '经本机 HTTP 桥接驱动你已安装的浏览器扩展。',
+  'st.browser.type.egoLiteLong': 'Ego Lite',
+  'st.browser.type.egoLiteHint': '使用你自行安装的 Ego Lite。Kiki 不会导入 Chrome 的数据。',
   'st.browser.type.codexExtensionLong': '官方浏览器扩展 (Codex)',
   'st.browser.type.codexExtensionHint': '通过官方浏览器扩展连接，支持会话级操作审批。',
   'st.browser.runtimeRoot': '运行根路径',
@@ -9293,8 +10904,19 @@ export const zh = {
   'st.browser.fieldDriverPathHint': '受管的 agent-browser 原生可执行文件，服务机上的绝对路径。Kiki 要求带 {markers} 标记的 {version} 构建：它避免响应丢失后的自动重放，也避免 Windows 上 MCP 输出不收尾；其它构建会被拒绝。',
   'st.browser.advanced': '高级参数',
   'st.browser.fieldEndpoint': 'CDP 地址',
+  'st.browser.fieldCliPath': 'CLI 路径',
+  'st.browser.fieldCliPathHint': 'ego-browser.exe 的绝对路径。留空则使用 Kiki 找到的已安装副本。',
+  'st.browser.fieldProfileId': 'Profile id',
+  'st.browser.fieldProfileIdHint': '可选的 Ego Lite profile id。',
+  'st.browser.fieldServerName': '服务名称',
+  'st.browser.fieldServerNameHint': '可选的 Ego Lite 服务名称。',
+  'st.browser.checkEgo': '检查 Ego Lite',
+  'st.browser.checkHintEgo': '运行 Ego Lite 自己的检查，不会打开网站。',
+  'st.browser.connectEgo': '连接 Ego Lite',
+  'st.browser.deleteConsequenceEgo': '从 Kiki 移除这条连接。Ego Lite 仍保留在本机。',
   'st.browser.endpointSource': '保存在服务机的浏览器控制配置里',
   'st.browser.fieldEndpointHint': 'http、https、ws 或 wss 地址，指向实际提供 CDP 的那个浏览器；不是服务商的 REST API 地址。',
+  'st.browser.bridgeHint': '这些调用经 Kimi 的本地 HTTP 桥接交给已安装的浏览器扩展——这里没有 CDP 或 DevTools 地址可填。',
   'st.browser.endpointHostLine': '目标主机 {host}',
   'st.browser.driverLine': '驱动 {version}',
   'st.browser.checkedAt': '检查于 {at}',
@@ -9303,9 +10925,12 @@ export const zh = {
   'st.browser.checkCdp': '检查连接',
   'st.browser.checkHintProfile': '检查会启动受管驱动并读取它的会话与标签状态，不打开浏览器页面。',
   'st.browser.checkHintCdp': '检测受管驱动。已经连接时还会读取目标；单独检查不会连接 CDP 地址。',
+  'st.browser.checkWebbridge': '检查桥接',
+  'st.browser.checkHintWebbridge': '查询本地桥接是否在运行、扩展是否已连上。不会启动任何东西，也不会打开页面。',
   'st.browser.connecting': '正在连接…',
   'st.browser.connectProfile': '启动浏览器',
   'st.browser.connectCdp': '附着浏览器',
+  'st.browser.connectWebbridge': '连接桥接',
   'st.browser.disconnecting': '正在断开…',
   'st.browser.disconnect': '断开控制',
   'st.browser.callerLine': '{session} 的 {agent} 正在执行 {tool}。',
@@ -9334,10 +10959,15 @@ export const zh = {
   'st.browser.catalog.title': '工具目录',
   'st.browser.catalog.readHint': '从这条连接的受管后端读取工具列表。不会打开浏览器或页面。',
   'st.browser.catalog.readHintIdle': '当前没有连接，因此这一步会启动受管后端，但不会连上它，也不会打开浏览器或页面。',
+  'st.browser.catalog.readHintWebbridge': '列出桥接向会话提供的工具。不会启动任何东西，也不会打开页面。',
   'st.browser.catalog.read': '读取工具目录',
   'st.browser.catalog.loading': '正在向后端询问工具列表…',
   'st.browser.catalog.backendCount': '个工具（后端报告）',
   'st.browser.catalog.isolation': '上下文隔离',
+  'st.browser.catalog.isolation.window': '不透明窗口上下文',
+  'st.browser.catalog.isolation.officialTabs': '扩展标签 ID',
+  'st.browser.catalog.isolation.mainFrame': '仅主帧',
+  'st.browser.catalog.isolation.commandSession': '扩展命令会话',
   'st.browser.catalog.empty': '这个后端没有报告可读取的工具。',
   'st.browser.catalog.searchLabel': '筛选工具目录',
   'st.browser.catalog.searchPlaceholder': '按名称、说明或分组筛选',
@@ -9358,11 +10988,13 @@ export const zh = {
   'st.browser.detail.ownership': '所有权',
   'st.browser.ownership.managedProfile': 'Kiki 启动并管理（独立 profile）',
   'st.browser.ownership.externalBrowser': '借用已有浏览器（CDP）',
+  'st.browser.ownership.webbridge': '你自己的浏览器，经本地桥接驱动',
   'st.browser.ownership.unknown': '服务端未报告',
   'st.browser.detail.runtimeSession': '运行会话',
   'st.browser.detail.resolvedProfile': '实际 profile 路径',
   'st.browser.detail.generation': '代次',
   'st.browser.detail.driverVersion': '驱动版本',
+  'st.browser.detail.bridgeVersion': '桥接版本',
   'st.browser.detail.driverRequirement': '受管要求 {version} {markers}',
   'st.browser.detail.driverUnknown': '未知',
   'st.browser.detail.checkedAt': '最近检查',
@@ -9370,8 +11002,10 @@ export const zh = {
   'st.browser.detail.currentCall': '当前调用',
   'st.browser.disconnectMeaningExternal': '断开只结束 Kiki 的控制会话，借用的浏览器保留；下次连接会重新核对页面。',
   'st.browser.disconnectMeaningManaged': '断开控制会结束 Kiki 启动的这个浏览器实例。',
+  'st.browser.disconnectMeaningWebbridge': '断开只结束 Kiki 的控制会话；你的浏览器、标签页和桥接都保留。',
   'st.browser.disconnectMeaningUnknown': '断开结束 Kiki 的控制会话；Kiki 启动的实例会被关闭，借用的浏览器保留。',
   'st.browser.outcome.checkOk': '检查通过 · 驱动 {version}',
+  'st.browser.outcome.checkOkWebbridge': '检查通过 · 桥接 {version}',
   'st.browser.outcome.connected': '已连接，状态已重新读取。',
   'st.browser.outcome.connectIncomplete': '连接没有到达可用状态，下面是服务端返回的状态。',
   'st.browser.outcome.disconnected': '已断开控制。',
@@ -9383,25 +11017,17 @@ export const zh = {
   'st.browser.deleteBody': '只移除这条连接和 Kiki 自己的控制会话。',
   'st.browser.deleteConsequenceProfile': 'profile 目录里的登录数据不会被删除。',
   'st.browser.deleteConsequenceCdp': '不会关闭你借用的浏览器，也不会删除它的页面。',
+  'st.browser.deleteConsequenceWebbridge': '浏览器扩展和本地桥接仍保留在本机。',
   'st.browser.deleteEndsSession': '这条连接当前有运行会话，删除会先结束它。',
   'st.browser.deleteDefault': '它当前是新会话默认浏览器，删除后默认回到「每次指定」。',
   'st.browser.deleted': '已删除连接「{name}」。',
   'st.browser.save': '保存更改',
   'st.browser.create': '创建连接',
-  'st.browser.otherTitle': '其他浏览器生态的接入条件',
-  'st.browser.otherHint': 'WebBridge 使用独立的插件与扩展设置。提供 CDP 的云浏览器可在上方建立 CDP 连接，创建会话与计费仍由服务商管理。',
-  'st.browser.other.webbridge.action': '设置 WebBridge',
-  'st.browser.other.state': '未接通',
-  'st.browser.other.webbridge.name': '浏览器扩展',
-  'st.browser.other.webbridge': '使用扩展所连接的那个用户浏览器。组件安装与来源仍由插件页管理；只有一个扩展实例时，不能当多份 profile 用。',
-  'st.browser.other.cloud.name': '云端托管',
-  'st.browser.other.cloud': '需要服务账号与 API 密钥，创建会话可能计费；会话与文件通过服务商接口收取。',
-  'st.browser.other.codex.name': 'Codex 官方浏览器',
-  'st.browser.other.codex': '需要该安装的浏览器桥接在所选执行方式中可用；只有可执行文件不算浏览器可用。',
-  'st.browser.other.executors.name': '其他执行器',
-  'st.browser.other.executors': '保留公共 CDP 与低层库的接法（Browser Use、Browse 等），发行物尚未固定。',
+  'st.browser.otherHint': 'Kimi 浏览器插件和它的扩展也可以在插件页管理。',
+  'st.browser.other.webbridge.action': '打开插件',
   'st.browser.modelNotice': '页面上读到的内容与截图会交给当前会话使用的模型。',
   'st.browser.location.server': '服务机',
+  'st.browser.location.webbridge': '本地桥接',
   'st.browser.location.unknown': '未指定地址',
   'st.browser.idRequired': '请填写连接标识。',
   'st.browser.idInvalid': '标识只能包含字母、数字、点、连字符和下划线，并以字母或数字开头。',
@@ -9430,6 +11056,8 @@ export const zh = {
   // Media sources (D12): one provider object — what it is, whether it works,
   // which modalities it is the default for, and the jobs it produced.
   'cap.media.title': '媒体来源',
+  'cap.media.open': '打开媒体来源',
+  'cap.media.manageHint': '各提供方、它们的凭据，以及每种媒体的默认提供方。',
   'cap.media.back': '返回插件',
   'cap.media.loading': '正在读取媒体来源…',
   'cap.media.saving': '正在保存…',
@@ -9464,10 +11092,6 @@ export const zh = {
   'cap.media.status.needs-config': '待配置',
   'cap.media.status.blocked': '被占用',
   'cap.media.status.broken': '不可用',
-  'cap.media.status.unchecked': '未检查',
-  'cap.media.flagOff': '这台服务器没有启用媒体生成。已配置的来源、设置和历史结果都保持原样；在实验设置里开启之前，无法发起新的生成。',
-  'cap.media.filter.unchecked': '未检查',
-  'cap.media.row.unchecked': '来自 {plugin}。打开它可以查看设置。',
   'cap.media.row.missing': '还需要填写 {keys}',
   'cap.media.row.needsKey': '还没有填写必填项。',
   'cap.media.row.blocked': '有未完成的生成在等这个来源恢复。',
@@ -9496,7 +11120,6 @@ export const zh = {
   'cap.media.detail.unavailable': '此服务器尚未提供媒体来源。',
   'cap.media.default.on': '默认',
   'cap.media.default.off': '设为默认',
-  'cap.media.setting.saved': '已保存。',
   'cap.media.setting.choice': '请从列出的选项中选择。',
   'cap.media.setting.notSet': '（未设置）',
   'cap.media.artifact.preview': '预览',
@@ -9546,6 +11169,84 @@ export const zh = {
   'cap.media.subscriptions.added': '已添加“{id}”。',
   'cap.media.subscriptions.removed': '已移除“{id}”。已安装的 provider 和密钥不变。',
   'cap.media.detail.noModelsYet': '这个 provider 还没有报告模型。它仍然可以被设为某个模态的默认。',
+  'cap.media.addScript': '添加脚本',
+  'cap.media.status.off': '已停用',
+  'cap.media.status.removed': '已移除',
+  'cap.media.filter.off': '已停用',
+  'cap.media.filter.removed': '已移除',
+  'cap.media.row.script': '脚本',
+  'cap.media.row.scriptRuns': '运行 {command}',
+  'cap.media.row.selfManaged': '自带运行环境与命令。',
+  'cap.media.row.off': '已停用。设置与过往结果都保留。',
+  'cap.media.row.removed': '已停用。设置、任务与已保存的结果都保留。',
+  'cap.media.row.packageFailed': '{plugin} 插件没有加载。',
+  'cap.media.detail.inUse': '使用这个来源',
+  'cap.media.detail.inUseHint': '停用一个来源不会影响这个插件里的其他来源。它的设置与过往结果都会保留。',
+  'cap.media.detail.remove': '移除这个来源',
+  'cap.media.detail.removeHint': '工具将不再提供它。它的设置、已完成的文件和任务都会保留，可以在这里撤销。',
+  'cap.media.detail.restore': '恢复这个来源',
+  'cap.media.detail.restoreHint': '它会带着原有的设置重新投入使用。',
+  'cap.media.detail.removed': '已移除。设置与已完成的文件都保留。',
+  'cap.media.detail.restored': '已重新使用。',
+  'cap.media.detail.sourceId': '来源 id',
+  'cap.media.detail.adapters': '适配器',
+  'cap.media.detail.secrets': '已存密钥',
+  'cap.media.detail.noSecrets': '未存储',
+  'cap.media.detail.secretCount.one': '已存 {count} 个（不会显示具体值）',
+  'cap.media.detail.secretCount.other': '已存 {count} 个（不会显示具体值）',
+  'cap.media.script.title': '添加脚本来源',
+  'cap.media.script.body': '在生成需要这个来源时，运行一条你已有的命令。命令输出文件路径或 JSON，Kiki 会保存它生成的文件。',
+  'cap.media.script.trust': '这条命令以你的身份运行，拥有你本人的文件与网络访问权限——与你安装的插件获得的是同一种信任。请只添加你自己会运行的命令。',
+  'cap.media.script.id': 'Id',
+  'cap.media.script.label': '名称',
+  'cap.media.script.labelPlaceholder': '我的本地渲染器',
+  'cap.media.script.kinds': '生成的媒体类型',
+  'cap.media.script.command': '命令',
+  'cap.media.script.args': '参数',
+  'cap.media.script.argsHint': '每行一个。它们会原样传给命令，不经过 shell，所以带空格的值仍是一个参数。',
+  'cap.media.script.cwd': '工作目录',
+  'cap.media.script.cwdPlaceholder': '留空则使用当前目录',
+  'cap.media.script.protocol': '输出',
+  'cap.media.script.protocolFile': '标准输出为文件路径',
+  'cap.media.script.protocolJson': '标准输出为 JSON',
+  'cap.media.script.format': '文件格式',
+  'cap.media.script.mime': '媒体类型',
+  'cap.media.script.environment': '环境变量',
+  'cap.media.script.environmentHint': '一个「名称: 值」的 JSON 对象，按密钥存储且不再显示。如果命令自己读取环境变量，留空即可。',
+  'cap.media.script.add': '添加来源',
+  'cap.media.script.added': '已添加“{label}”，设置已打开。',
+  'cap.media.script.needId': '请为这个来源填写 id：小写字母、数字和连字符。',
+  'cap.media.script.badId': 'id 最多 48 个小写字母、数字或连字符，且不能以连字符开头。',
+  'cap.media.script.needLabel': '请为这个来源填写名称。',
+  'cap.media.script.longLabel': '名称最多 200 个字符。',
+  'cap.media.script.needKind': '请至少选择一种这条命令生成的媒体类型。',
+  'cap.media.script.needCommand': '请填写要运行的命令。',
+  'cap.media.script.badFormat': '文件格式只写小写字母和数字，不带点——写“png”，不要写“.png”。',
+  'cap.media.script.badEnvironment': '环境变量是「名称: 文本值」的 JSON 对象，例如 {"NAME": "value"}。',
+  'cap.media.script.noArgs': '无',
+  'cap.media.script.untitled': '未填写',
+  'media.previousImage': '上一张图片',
+  'media.nextImage': '下一张图片',
+  'media.copyImage': '复制图片',
+  'media.imagePosition': '{current} / {total}',
+  'media.annotate': '标注',
+  'media.startAnnotation': '标注图片',
+  'media.annotationMode': '标注模式',
+  'media.annotationDone': '完成',
+  'media.annotationSelect': '选择 / 移动',
+  'media.annotationArrow': '箭头',
+  'media.annotationRectangle': '矩形',
+  'media.annotationPen': '画笔',
+  'media.annotationUndo': '撤销',
+  'media.annotationClear': '清除标注',
+  'media.annotationDelete': '删除所选标注',
+  'media.downloadAnnotated': '保存标注图片',
+  'media.annotationSaveFailed': '保存标注图片失败，标注已保留。',
+  'media.zoomIn': '放大',
+  'media.zoomOut': '缩小',
+  'media.details': '图片详情',
+  'media.copyFailed': '复制图片失败，请尝试下载。',
+  'agentPanel.metrics.settleFailed': '用量统计没有完成',
   'nav.scope.failed.target-missing.body': '你刚才所在的会话或页面已经不在了。',
   // ---- model editor and Recipe surfaces (ported with the model-panel slice) ----
   'st.modelEditor.navAria': '模型设置分区',
@@ -9561,9 +11262,19 @@ export const zh = {
   'st.modelProtocol.label': '请求格式',
   'st.modelProtocol.aria': '{model} 的请求格式',
   'st.modelProtocol.hint':
-    '只改这个模型的请求格式；提供商、密钥、默认模型和请求身份都不变。显示出的格式不代表连接已通。',
+    '只改这个模型的请求格式；提供商、密钥、默认模型和请求身份都不变。与提供商不同的格式是合法的网关选择，不是错误。显示出的格式不代表连接已通。',
   'st.modelProtocol.inherit': '沿用提供商',
   'st.modelProtocol.inheritResolved': '沿用提供商 · {format}',
+  'st.modelProtocol.effective': '有效格式：{format} · {source}',
+  'st.modelProtocol.bindingOrigins': '端点 {endpoint} · 凭据 {credential}',
+  'st.modelProtocol.source.model': '此模型',
+  'st.modelProtocol.source.provider': '供应商类型',
+  'st.modelProtocol.source.vendor': '厂商默认',
+  'st.modelProtocol.origin.model': '模型',
+  'st.modelProtocol.origin.provider': '提供商',
+  'st.modelProtocol.origin.env': '环境变量',
+  'st.modelProtocol.origin.vendor': '厂商',
+  'st.modelProtocol.origin.none': '无',
   'st.modelProtocol.openai': 'Chat Completions',
   'st.modelProtocol.openai_responses': 'Responses',
   'st.modelProtocol.anthropic': 'Messages',
@@ -9796,7 +11507,7 @@ export const zh = {
   'discovery.route.understand.title': '看懂与指挥工作',
   'discovery.route.understand.summary': '看进度、看分工，需要时补充方向。',
   'discovery.route.sustain.title': '让工作持续',
-  'discovery.route.sustain.summary': '留住经验，跟踪任务，安排下一次。',
+  'discovery.route.sustain.summary': '留住经验，安排下一次。',
   'discovery.route.extend.title': '按需扩展 Kiki',
   'discovery.route.extend.summary': '角色、技能与插件，还有其他工作环境。',
   'discovery.station.workspace.title': '把事情交代清楚',
@@ -9859,9 +11570,9 @@ export const zh = {
   'onboarding.intro.appearance': '外观',
   'onboarding.intro.appearanceHint': '主题、配色和可选的背景图，改动立即生效。',
   'onboarding.notNow': '先不看',
-  'onboarding.step.discover': '先逛逛 Kiki',
-  'onboarding.discover.body': '从一个你感兴趣的地方开始。',
-  'onboarding.discover.overviewLine': '工作台、会话、记忆、能力和定时，各停一站。',
+
+
+
   'onboarding.discover.unavailable': '这条路线暂时打不开，可以换一条，或稍后从侧栏「发现 Kiki」再来。',
   'new.connect.quiet': '还没有连接模型，准备发送时再连接即可。',
   'new.connect.title': '连接模型后再发送',
@@ -9890,21 +11601,404 @@ export const zh = {
   'transcript.lossSpoken.permission_mode_unverified': '引擎没有确认当前的权限模式。',
   'transcript.lossSpoken.additional_directories_dropped': '额外的工作区文件夹没有交给引擎。',
   'transcript.lossSpoken.thought_level_unconfigured': '这个引擎没有思考强度设置，因此用了它自己的默认。',
-  'context.compaction.manual.queued': '手动压缩已排队 · 等本次请求及工具结束',
-  'context.compaction.manual.running': '手动压缩中',
-  'context.compaction.manual.completed': '手动压缩已完成',
-  'context.compaction.manual.cancelled': '手动压缩已取消',
-  'context.compaction.manual.failed': '手动压缩失败',
-  'context.compaction.auto.queued': '自动压缩已排队',
-  'context.compaction.auto.running': '自动压缩中',
-  'context.compaction.auto.completed': '自动压缩已完成',
-  'context.compaction.auto.cancelled': '自动压缩已取消',
-  'context.compaction.auto.failed': '自动压缩失败',
-  'subagent.status.idle': '空闲',
-  'subagent.status.lost': '已失联',
-  'sv.submissionRecovery.title': '有消息尚未收到发送确认',
-  'sv.submissionRecovery.body': '内容已保留，不会自动重发。先核对时间线和队列；如果消息已经送达，请忽略此备份。恢复到输入框后仍需手动发送。',
-  'sv.submissionRecovery.restore': '恢复到输入框',
-  'sv.submissionRecovery.dismiss': '忽略此备份',
-  'val.readingTimeoutSeconds': '请输入 0–2147483 秒的整数。',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.recipe.none': '不使用 Recipe',
+  'st.recipe.noneHelp': '这个模型使用它自己保存的提示设置。',
+
+
+
+
+
+  'st.recipe.view': '查看 Recipe',
+  'st.recipe.install': '安装',
+  'st.recipe.installed': '已安装 {name}。',
+
+
+  'st.recipe.fromUrl': '从链接添加',
+
+  'st.recipe.fromUrlHelp': 'HTTPS 上的 recipe.toml，或本地文件与目录。',
+  'st.recipe.market': 'Recipe 市场',
+
+
+
+
+
+
+  'st.recipe.loadFailed': '这个 Recipe 读取失败。{detail}',
+  'st.recipe.selectAria': '{model} 使用的 Recipe',
+
+
+
+
+
+
+
+
+  'st.recipe.updateKeptOld': '更新没有通过校验，仍在使用 {version}。{reason}',
+  'st.recipe.checkNow': '立即检查更新',
+  'st.recipe.updated': 'Recipe 已更新。',
+  'st.recipe.updateFailed': 'Recipe 更新失败。{detail}',
+  'st.recipe.pin': '固定当前版本',
+  'st.recipe.follow': '跟随更新',
+  'st.recipe.tabRead': '阅读',
+  'st.recipe.tabEdit': '定制',
+  'st.recipe.position.main': '主智能体',
+  'st.recipe.position.sub': '子智能体',
+  'st.recipe.position.independent': '被委派的智能体',
+
+
+
+
+  'st.recipe.branchOff': '这个 Recipe 不向该身份发送任何内容。',
+
+
+
+  'st.recipe.readOnlySource': '这个包跟随它的来源。要改动请先复制，或基于它继承。',
+
+  'st.recipe.editHint': '修改 Recipe 不会改动它的来源。可以复制一份，或新建一个继承自它的子包。',
+  'st.recipe.forkId': '新 ID',
+
+
+  'st.recipe.forked': '已创建 {name}。',
+
+  'st.recipe.saved': 'Recipe 已保存。',
+
+  'st.recipe.ignoredNotice': '此模型对配方声明的项使用 Recipe。',
+  'st.recipe.ignoredKept': 'Agent 的职责、人格与工作区指令不变。',
+  'st.recipe.ignoredCount': '{count} 项已保存的模型提示仍然保留；这份配方只贡献它声明的内容。',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.modelPrompt.modeInherit': '继承共享',
+  'st.modelPrompt.modeCustom': '此身份自定义',
+  'st.modelPrompt.groupOff': '此身份关闭',
+  'st.modelPrompt.groupOffHint': '此身份不使用这组模型提示。',
+  'st.modelPrompt.inheritedReadonly': '只读：这是该身份实际会收到的内容。',
+  'st.modelPrompt.inheritedEmpty': '共享内容为空。',
+  'st.modelPrompt.explicitSame': '来源明确写了“same”，不动就会保持这一状态。',
+  'st.modelPrompt.fieldsTitle': '提示字段覆盖',
+  'st.modelPrompt.fieldFiles': '来源文件',
+  'st.modelPrompt.removeField': '删除',
+
+
+
+
+  'st.modelPrompt.cadenceIntervalHelp': '个本智能体模型步。填 0 表示不按步重复。',
+  'st.modelPrompt.cadenceDefaultNote': '这里没有设置，因此使用引擎默认值：开、开、0。',
+  'st.modelPrompt.cadenceTiming': '新输入与提醒会进入下一次安全的模型请求；正在输出的请求不变。',
+  'st.modelPrompt.cadenceNoContent': '尚无追加提醒内容，触发设置暂不产生提醒。',
+  'st.modelPrompt.fromRecipe': '来自 Recipe {name}',
+  'st.steerSource.disclosure': '按消息来源',
+
+  'st.steerSource.aria': '按消息来源',
+  'st.steerSource.hint': '以上设置管的是你发出的消息。下面九行管的是自己就能发起一轮的其他消息。',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.recipe.slotProse': '正文',
+
+  'st.recipe.slotUseFile': '改用文件',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.recipe.proseFirstHint': '这些就是模型会收到的正文。两处始终展开，即使为空。',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.modelPrompt.keepAsModelBody': '把这段正文留在模型上',
+  'st.modelPrompt.promptWords': '提示正文',
+  'composer.profileGroupPassthrough': '内置直通（默认）',
+  'composer.profileGroupCustom': '自定义 Profile',
+  'composer.profilePassthroughBadge': '直通',
+  'composer.execution.effortHeading': '思考强度',
+  'composer.execution.defaultModelOption': '默认模型',
+  'onboarding.step.appearance': '外观与主题',
+  'onboarding.depart.model.readyBadge': '模型服务已就绪',
+  'onboarding.depart.model.notReadyBadge': '尚未连接模型服务',
+  'onboarding.depart.model.configureCta': '前往设置配置模型服务 →',
+  'onboarding.depart.model.startChatCta': '开始第一次对话',
+  'onboarding.depart.tour.title': '1 分钟实景交互导览',
+  'onboarding.depart.tour.subtitle': '在真实界面中跟随聚光灯走一遍核心工作流，无需先配好模型。',
+  'onboarding.depart.tour.startBtn': '立即开始导览 →',
+  'onboarding.returnBanner.text': '配好模型服务后，即可返回开始对话',
+  'onboarding.returnBanner.action': '返回开始第一次对话 →',
+  'discovery.tour.stepBadge': '{current} / {total}',
+  'discovery.tour.nextShort': '下一站 →',
+  'discovery.tour.exitEsc': '退出 Esc',
+  'st.group.preferences': '偏好与外观',
+  'st.group.workspacesMemory': '工作区与记忆',
+  'st.group.capabilitiesSafety': '能力与安全边界',
+  'st.group.systemConnection': '系统与连接',
+  'st.section.generalMerged': '通用与外观',
+  'st.section.providers': '模型服务商',
+  'st.purpose.providers': '通过 API、订阅账号或本机 HTTP 与 CLI 服务接入模型。',
+  'st.section.models': '模型目录与默认项',
+  'st.purpose.models': '配置新会话默认模型与思考强度，管理可用模型目录。',
+  'st.section.agentsMerged': 'Profile 与子智能体',
+  'st.section.workspacesMerged': '工作区与会话',
+  'st.section.memoryMerged': '记忆与知识',
+  'st.section.permissionsMerged': '权限、任务与钩子',
+  'st.section.extensions': '扩展与工具',
+  'st.purpose.extensions': '管理技能目录、MCP 工具服务器与已安装的插件扩展。',
+  'st.section.environmentTools': '联网、浏览器与桌面控制',
+  'st.purpose.environmentTools': '配置联网搜索与抓取、浏览器驱动和本机桌面控制。',
+  'st.section.remote': '远程守护进程与 SSH',
+  'st.purpose.remote': '管理当前服务端连接、SSH 远程主机与外部客户端接入。',
+  'st.section.system': '开发者、实验特性与关于',
+  'st.purpose.system': '底层引擎诊断、实验特性索引、日志级别与版本更新。',
+  'st.providers.zone1.title': '② 账号登录（订阅直连）',
+  'st.providers.zone1.hint': '使用已有的 Codex、Grok、Claude 或 Kimi 账号直接授权登录，无需手动管理密钥。',
+  'st.providers.zone2.title': '③ 本机 CLI 宿主',
+  'st.providers.localConnectionsTitle': '本机 HTTP 与 CLI',
+  'st.providers.zone2.hint': '自动探测本机 AGY CLI、Codex、Claude Code 等宿主状态；启用后可在对话的运行方式中选择。',
+  'st.providers.zone3.title': '① API Key 服务商',
+  'st.providers.zone3.hint': '使用常用厂商快捷模板或自定义兼容端点接入 API Key，支持一键测试连接并拉取模型。',
+  'st.providers.advancedProtocol': '高级协议设置（协议类型覆写、请求身份与图片策略）',
+  'st.modelEditor.tab.basics': '基础配置',
+  'st.modelEditor.tab.advanced': '高级协议与能力',
+  'composer.profile.retained': '只读保留身份',
+  'composer.profile.searchPlaceholder': '搜索 Profile',
+  'composer.model.searchPlaceholder': '搜索模型',
+  'composer.execution.defaultEffort': '默认',
+  'composer.model.useCustomId': '使用模型 ID "{id}"',
+  'st.agents.tab.profiles': '智能体配置',
+  'st.agents.tab.dispatch': '子智能体与派发',
+  'st.extensions.tab.plugins': '插件',
+  'st.extensions.tab.skills': '技能',
+  'st.extensions.tab.mcp': 'MCP',
+  'st.browserControl.tab.browser': '浏览器控制',
+  'st.browserControl.tab.computer': '电脑控制',
+  'st.settingsTransfer.title': '设置迁移',
+  'st.settingsTransfer.description': '迁移选定设置，可选择是否包含凭证。',
+  'st.settingsTransfer.open': '导入或导出',
+  'st.settingsTransfer.export': '导出',
+  'st.settingsTransfer.import': '导入',
+  'st.settingsTransfer.exportTitle': '导出设置',
+  'st.settingsTransfer.importTitle': '导入设置',
+  'st.settingsTransfer.exportHint': '选择要包含的设置。凭证默认不包含，除非你主动选择。',
+  'st.settingsTransfer.importHint': '先选择并预览变更，确认后才会写入目标 Home。',
+  'st.settingsTransfer.categories': '设置类别',
+  'st.settingsTransfer.selectAll': '全选',
+  'st.settingsTransfer.clearAll': '清空',
+  'st.settingsTransfer.category.models': '模型与提供商',
+  'st.settingsTransfer.category.agents': '智能体与提示词',
+  'st.settingsTransfer.category.permissions': '权限与会话',
+  'st.settingsTransfer.category.tools': '工具、MCP 与插件',
+  'st.settingsTransfer.category.browser': '浏览器与电脑',
+  'st.settingsTransfer.category.notifications': '通知与 IM',
+  'st.settingsTransfer.category.appearance': '外观与设备',
+  'st.settingsTransfer.categoryCount': '{count} 项',
+  'st.settingsTransfer.credentials': '包含凭证',
+  'st.settingsTransfer.credentialsHint': '凭证默认不导出。只有在文件会保持私密时才选择此项。',
+  'st.settingsTransfer.file': '设置包',
+  'st.settingsTransfer.chooseFile': '选择 JSON 文件',
+  'st.settingsTransfer.fileHint': '选择不超过 8 MiB 的 kiki.settings JSON 包。',
+  'st.settingsTransfer.fileSelected': '已选择文件：{name}',
+  'st.settingsTransfer.fileTooLarge': '文件超过 8 MiB。',
+  'st.settingsTransfer.fileReadFailed': '无法读取文件。请重新选择设置 JSON 包。',
+  'st.settingsTransfer.fileInvalid': '这个文件不是有效的 Kiki 设置包。',
+  'st.settingsTransfer.mode': '冲突处理',
+  'st.settingsTransfer.modeAppend': '保留现有值',
+  'st.settingsTransfer.modeOverwrite': '替换选定值',
+  'st.settingsTransfer.appendHint': '已有值保持不变，只添加新值。',
+  'st.settingsTransfer.overwriteHint': '仅替换此设置包中选定的键，其他目标值保持不变。',
+  'st.settingsTransfer.preview': '预览变更',
+  'st.settingsTransfer.previewing': '正在准备预览',
+  'st.settingsTransfer.previewFailed': '无法准备预览。请检查设置包后重试。',
+  'st.settingsTransfer.previewRequired': '至少选择一项设置后才能预览。',
+  'st.settingsTransfer.applyNeedsPreview': '请先预览选定变更，再执行应用。',
+  'st.settingsTransfer.target': '目标',
+  'st.settingsTransfer.targetHome': 'Home：{home}',
+  'st.settingsTransfer.targetSpace': '空间：{space}',
+  'st.settingsTransfer.summaryHeading': '本次预览的变更',
+  'st.settingsTransfer.summaryItems': '设置包 {count} 项',
+  'st.settingsTransfer.summaryAdded': '新增 {count}',
+  'st.settingsTransfer.summaryConflicts': '冲突 {count}',
+  'st.settingsTransfer.summaryUnchanged': '未变化 {count}',
+  'st.settingsTransfer.summarySkipped': '跳过 {count}',
+  'st.settingsTransfer.noticeHeading': '迁移范围',
+  'st.settingsTransfer.notice.localScope': '只迁移当前 Home 的显式设置，不包含继承值、环境变量、聊天记录或缓存。',
+  'st.settingsTransfer.notice.externalLogins': '不包含外部登录。',
+  'st.settingsTransfer.notice.localPaths': '本机路径和命令可能需要在目标设备重新配置。',
+  'st.settingsTransfer.notice.omittedCredentials': '凭证未包含。',
+  'st.settingsTransfer.notice.omittedBrowserConnections': '无法安全迁移的浏览器连接未包含。',
+  'st.settingsTransfer.notice.pluginCode': '不包含插件代码或已安装组件。',
+  'st.settingsTransfer.notice.profileScope': '仅包含当前 Home 中格式有效的用户 Profile、SYSTEM.md 和引用的提示文件，不含内置、项目或系统通用目录。',
+  'st.settingsTransfer.localPreferences': '已保存的设备偏好',
+  'st.settingsTransfer.localPreferencesHint': '已保存的设备偏好包括交互、通知、外观、布局等，不包含皮肤资源。',
+  'st.settingsTransfer.localApplied': '设备偏好已更新。',
+  'st.settingsTransfer.localNothing': '这个设置包没有已保存的设备偏好。',
+  'st.settingsTransfer.localReadbackFailed': '部分设备偏好无法验证，导入结果为部分完成。',
+  'st.settingsTransfer.apply': '应用',
+  'st.settingsTransfer.applying': '正在应用',
+  'st.settingsTransfer.cancel': '取消',
+  'st.settingsTransfer.close': '关闭',
+  'st.settingsTransfer.exporting': '正在准备导出',
+  'st.settingsTransfer.exported': '设置包已保存。',
+  'st.settingsTransfer.exportFailed': '无法保存设置包，请重试。',
+  'st.settingsTransfer.imported': '设置已重载，Profile 与标记为仅新会话生效的设置将在新会话中生效。',
+  'st.settingsTransfer.importPartial': '设置导入部分完成，请查看下方项目状态。',
+  'st.settingsTransfer.importFailed': '设置未能全部导入，请查看下方项目状态。',
+  'st.settingsTransfer.failure.changed': '预览后目标已变化，请重新预览再应用。',
+  'st.settingsTransfer.failure.expired': '预览已过期，请重新预览再应用。',
+  'st.settingsTransfer.failure.writeFailed': '部分设置无法写入，请查看项目状态后重试。',
+  'st.settingsTransfer.failure.readbackFailed': '部分设置写入后无法验证，请查看项目状态。',
+  'st.settingsTransfer.itemStatusHeading': '项目状态',
+  'st.settingsTransfer.itemStatus.applied': '已应用',
+  'st.settingsTransfer.itemStatus.unchanged': '未变化',
+  'st.settingsTransfer.itemStatus.failed': '失败',
+  'st.settingsTransfer.itemStatus.unverified': '未验证',
+  'st.settingsTransfer.noCategories': '至少选择一项设置。',
+  'st.settingsTransfer.catalogLoading': '正在加载设置目录',
+  'st.settingsTransfer.catalogFailed': '无法加载设置目录，请重试。',
+  'st.settingsTransfer.retry': '重试',
+  'transcript.noReply': '本轮未产生回复',
+  'transcript.noReplyBackground': '后台工作仍在执行',
+  'transcript.noReplyIdle': '当前没有执行中的工作',
+  'transcript.noReplyUnknown': '后台执行状态未知',
 };

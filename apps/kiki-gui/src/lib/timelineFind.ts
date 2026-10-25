@@ -64,6 +64,11 @@ export interface FindItem {
   /** Tool leaves have no `data-block-id` of their own; they scope by call id. */
   readonly toolCallId?: string;
   readonly toolOutput?: boolean;
+  /**
+   * The message view holds this leaf inside a collapsed activity summary, so
+   * its own rows cannot paint it: only the process view can open and show it.
+   */
+  readonly processViewOnly?: boolean;
   readonly textSelector?: string;
   /** `t12` style turn of the leaf, when it has one. */
   readonly turnId?: string;

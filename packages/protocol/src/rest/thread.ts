@@ -3,8 +3,10 @@
  * session identity; waits are bounded to eight threads and sixty seconds.
  */
 
+import { contentRefSchema } from '@kiki/transcript';
 import { z } from 'zod';
 
+import { bridgeReadViewSchema } from './thread-bridge';
 import {
   threadActivitySchema,
   threadRefSchema,
@@ -27,6 +29,7 @@ export type ListThreadsResponse = z.infer<typeof listThreadsResponseSchema>;
 
 export const readThreadRequestSchema = z.object({
   thread: threadRefSchema,
+  content_ref: contentRefSchema.optional(),
   cursor: z.string().min(1).optional(),
   limit: z.number().int().min(1).max(100).optional(),
 });
@@ -36,6 +39,8 @@ export const readThreadResponseSchema = z.object({
   thread: threadRefSchema,
   turns: z.array(threadTurnSchema),
   next_cursor: z.string().optional(),
+  incomplete: z.literal('history_preparing').optional(),
+  view: bridgeReadViewSchema.optional(),
 });
 export type ReadThreadResponse = z.infer<typeof readThreadResponseSchema>;
 

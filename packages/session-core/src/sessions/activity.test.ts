@@ -125,8 +125,18 @@ describe('buildActivityModel', () => {
     expect(model.runningTaskTotal).toBe(1);
   });
 
+  it('does not classify busy-only delivery work as currently running when executing is explicit false', () => {
+    const model = buildActivityModel({
+      sessions: [session('settled', { busy: true, executing: false })],
+      prompts: {},
+      tasks: {},
+      untitled: 'Untitled',
+    });
+    expect(model.running).toEqual([]);
+  });
+
   it('lets live queuedPromptIds win over a stale REST prompt list', () => {
-    const busy = session('busy', { busy: true });
+    const busy = session('busy', { busy: true, executing: true });
     const model = buildActivityModel({
       sessions: [busy],
       prompts: {
@@ -145,7 +155,7 @@ describe('buildActivityModel', () => {
 
   it('falls back to the record last_prompt and zero counts without fetched data', () => {
     const model = buildActivityModel({
-      sessions: [session('busy', { busy: true, last_prompt: 'ship it' })],
+      sessions: [session('busy', { busy: true, executing: true, last_prompt: 'ship it' })],
       prompts: {},
       tasks: {},
       untitled: 'Untitled',
@@ -162,7 +172,7 @@ describe('buildActivityModel', () => {
 
   it('labels a busy untitled session from its title fallback chain', () => {
     const model = buildActivityModel({
-      sessions: [session('x', { busy: true, title: '' })],
+      sessions: [session('x', { busy: true, executing: true, title: '' })],
       prompts: {},
       tasks: {},
       untitled: 'Untitled session',
@@ -175,6 +185,7 @@ describe('buildActivityModel', () => {
       sessions: [
         session('busy-pending', {
           busy: true,
+          executing: true,
           pending_interaction: 'approval',
           updated_at: '2026-08-10T02:00:00.000Z',
         }),
@@ -195,8 +206,8 @@ describe('buildActivityModel', () => {
   it('sorts both lists most-recently-updated first', () => {
     const model = buildActivityModel({
       sessions: [
-        session('old-busy', { busy: true, updated_at: '2026-08-09T00:00:00.000Z' }),
-        session('new-busy', { busy: true, updated_at: '2026-08-10T00:00:00.000Z' }),
+        session('old-busy', { busy: true, executing: true, updated_at: '2026-08-09T00:00:00.000Z' }),
+        session('new-busy', { busy: true, executing: true, updated_at: '2026-08-10T00:00:00.000Z' }),
         session('old-wait', { pending_interaction: 'approval', updated_at: '2026-08-08T00:00:00.000Z' }),
         session('new-wait', { pending_interaction: 'question', updated_at: '2026-08-09T12:00:00.000Z' }),
       ],

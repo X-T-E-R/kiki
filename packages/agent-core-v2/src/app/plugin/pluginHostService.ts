@@ -1,6 +1,9 @@
 import path from 'node:path';
 import { createHash } from 'node:crypto';
-import type { MediaProviderDefinition, PluginMediaApi, MediaConnection } from '@kiki/protocol';
+import type { MediaProviderDefinition, PluginMediaApi, PluginMessagesApi, MediaConnection } from '@kiki/protocol';
+import { satisfies, valid } from 'semver';
+import type { PluginImAdapterRegistration, PluginImAdapterSink } from './imAdapter';
+export type { PluginImAdapterRegistration, PluginImAdapterSink, PluginImConnection } from './imAdapter';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IOAuthService } from '#/app/auth/auth';
 import { oauthRequestAuth } from '#/kosong/model/modelOAuth';
@@ -25,15 +28,24 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { Error2, PluginErrors } from '#/errors';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
+import type { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 
 import { PluginHost } from './host';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { observePluginActivity } from './pluginActivity';
 import { builtinHistory, builtinHistoryEntry } from '#/app/pluginImport/builtinHistory';
 import { IPluginService } from './plugin';
 import { IPluginSettingsService } from './pluginSettingsService';
 import type { PluginTool } from './contributions';
 import type { PluginInfo } from './types';
+import { sourceSchema, sourceValues, sourceActive, sourceDefaults, scriptSources, scriptDefinition, scriptEnvironmentKey, type MediaSettingValues } from './mediaSourceSettings';
+import type { PluginImBridge } from './pluginImBridge';
+export {
+  parsePluginImRequest, pluginImCaller, pluginImReceipt, sanitizePluginImCapabilities, sanitizePluginImReceipt, sanitizePluginImRoutes,
+  PLUGIN_IM_DIGEST_MAX_UTF8_BYTES,
+  type PluginImBridge, type PluginImCaller, type PluginImCapabilities, type PluginImErrorKind, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest, type PluginImSendStatus,
+} from './pluginImBridge';
 
 export interface PluginToolRegistration {
   readonly pluginId: string;
@@ -46,6 +58,7 @@ export interface PluginMediaProviderRegistration {
   readonly source: string;
   readonly version?: string;
   readonly configuration: string;
+  readonly aliases?: readonly string[];
 }
 
 export interface PluginMediaCallContext {
@@ -60,7 +73,10 @@ export interface PluginExecutionScope {
   readonly workspaceRoot?: string;
   readonly approvedPaths?: readonly string[];
   readonly imageIn?: boolean;
+  readonly workspaceId?: string;
   readonly media?: PluginMediaApi;
+  readonly messages?: PluginMessagesApi;
+  readonly attachmentStore?: ISessionMediaStore;
 }
 
 export interface IPluginHostService {
@@ -76,6 +92,8 @@ export interface IPluginHostService {
   requestSource(pluginId: string, sourceId: string, action: 'discover' | 'probe' | 'parse', args: unknown, signal: AbortSignal): Promise<unknown>;
   running(pluginId: string): boolean;
   navigation(): { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number } | undefined;
+  attachOutboundIm(bridge: PluginImBridge | undefined): void;
+  attachImAdapters(sink: PluginImAdapterSink): Promise<void>;
 }
 
 export const IPluginHostService = createDecorator<IPluginHostService>('pluginHostService');
@@ -95,6 +113,64 @@ export class PluginHostService extends Service implements IPluginHostService {
   private readonly residentChains = new Map<string, Promise<void>>();
   private navigationRequest?: { readonly id: number; readonly pluginId: string; readonly sessionId: string; readonly at: number };
   private nextNavigationId = 0;
+  private outboundIm: PluginImBridge | undefined;
+  private imAdaptersSink?: PluginImAdapterSink;
+  private readonly knownDependencies = new Map<string, readonly string[]>();
+
+  attachOutboundIm(bridge: PluginImBridge | undefined): void {
+    this.outboundIm = bridge;
+  }
+
+  async attachImAdapters(sink: PluginImAdapterSink): Promise<void> {
+    this.imAdaptersSink = sink;
+    await this.reconcileImAdapters();
+  }
+
+  private async checkDependencies(info: PluginInfo, visiting = new Set<string>()): Promise<void> {
+    this.knownDependencies.set(info.id, Object.keys(info.manifest?.kiki?.dependencies ?? {}));
+    if (visiting.has(info.id)) throw new Error(`Plugin dependency cycle: ${info.id}`);
+    visiting.add(info.id);
+    for (const [id, range] of Object.entries(info.manifest?.kiki?.dependencies ?? {})) {
+      const dependency = await this.plugins.getPluginInfo({ id }).catch(() => undefined);
+      if (dependency === undefined || !dependency.enabled || dependency.state !== 'ok') throw new Error(`Plugin ${info.id} requires enabled plugin ${id} ${range}`);
+      if (dependency.version === undefined || valid(dependency.version) === null || !satisfies(dependency.version, range)) throw new Error(`Plugin ${info.id} requires ${id} ${range}; installed version is ${dependency.version ?? 'unknown'}`);
+      await this.checkDependencies(dependency, visiting);
+    }
+    visiting.delete(info.id);
+  }
+
+  private async reconcileImAdapters(): Promise<void> {
+    const sink = this.imAdaptersSink;
+    if (sink === undefined || this.closing) return;
+    const installed = await this.plugins.listPlugins();
+    const registrations: PluginImAdapterRegistration[] = [];
+    for (const summary of installed.filter((item) => item.enabled && item.state === 'ok')) {
+      const info = await this.plugins.getPluginInfo({ id: summary.id });
+      try { await this.checkDependencies(info); } catch { continue; }
+      const settings = await this.settings.forExecution(info.id);
+      for (const definition of info.manifest?.kiki?.imAdapters ?? []) {
+        const providerKind = `plugin:${info.id}/${definition.id}` as const;
+        registrations.push({ pluginId: info.id, definition, providerKind, instanceId: providerKind,
+          revision: JSON.stringify([info.version, info.root, definition, settings]),
+          connect: (listener, offset) => {
+            if (this.closing) return Promise.reject(new Error('Plugin Host is shutting down'));
+            return this.getHost(info).connectImAdapter(definition.id, settings, providerKind, listener, offset);
+          },
+        });
+      }
+    }
+    await sink.replace(registrations);
+  }
+
+  private affectedPlugins(ids?: readonly string[]): readonly string[] | undefined {
+    if (ids === undefined) return undefined;
+    const affected = new Set(ids);
+    for (let changed = true; changed;) {
+      changed = false;
+      for (const [id, dependencies] of this.knownDependencies) if (!affected.has(id) && dependencies.some((dependency) => affected.has(dependency))) { affected.add(id); changed = true; }
+    }
+    return [...affected];
+  }
 
   constructor(
     @IPluginService private readonly plugins: IPluginService,
@@ -106,8 +182,17 @@ export class PluginHostService extends Service implements IPluginHostService {
     @IConfigService private readonly configService?: IConfigService,
     @IFlagService private readonly flags?: IFlagService,
     @ISessionManager private readonly sessions?: ISessionManager,
+    @IPluginUsageService usage?: IPluginUsageService,
   ) {
     super();
+    if (usage !== undefined) this._register(usage.onDidChange((event) => {
+      event.waitUntil((async () => {
+        if (!await usage.allows(event.workspaceId, event.pluginId, event.sessionId)) return;
+        const info = await this.plugins.getPluginInfo({ id: event.pluginId });
+        if (info.manifest?.kiki?.activation !== 'app') return;
+        await this.runRequest(event.pluginId, async () => undefined);
+      })());
+    }));
     this._register(this.plugins.onWillChange((event) => {
       if (event.affected === undefined) this.globalGate = event.finished;
       else for (const id of event.affected) this.gates.set(id, event.finished);
@@ -119,8 +204,11 @@ export class PluginHostService extends Service implements IPluginHostService {
         void this.reconcileResidents(event.affected).catch(() => {});
       });
       event.waitUntil((async () => {
-        await Promise.allSettled([...this.residentLifecycle]);
-        const ids = event.affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
+        await Promise.allSettled(this.residentLifecycle);
+        const affected = this.affectedPlugins(event.affected);
+        if (affected !== undefined) for (const id of affected) this.gates.set(id, event.finished);
+        await this.imAdaptersSink?.withdraw(affected);
+        const ids = affected ?? [...new Set([...this.hosts.keys(), ...this.active.keys()])];
         await Promise.all(ids.map(async (id) => {
           await Promise.allSettled(this.active.get(id) ?? new Set<Promise<unknown>>());
           const host = this.hosts.get(id);
@@ -129,14 +217,16 @@ export class PluginHostService extends Service implements IPluginHostService {
         }));
       })());
     }));
-    this._register(this.plugins.onDidReload((event) => { event.waitUntil(this.reconcileResidents(event.affected)); }));
+    this._register(this.plugins.onDidReload((event) => {
+      event.waitUntil((async () => { await this.reconcileResidents(); await this.reconcileImAdapters(); })());
+    }));
     if (this.configService !== undefined) this._register(this.configService.onDidSectionChange((event) => {
       if (event.domain !== 'pluginSettings' || this.closing) return;
       const current = event.value as Record<string, unknown> | undefined;
       const previous = event.previousValue as Record<string, unknown> | undefined;
       const ids = [...new Set([...Object.keys(current ?? {}), ...Object.keys(previous ?? {})])]
         .filter((id) => !this.ownSettingsWrites.has(id) && JSON.stringify(current?.[id]) !== JSON.stringify(previous?.[id]));
-      void this.reconcileResidents(ids, true).catch(() => {});
+      void this.reconcileResidents(ids, true).then(() => this.reconcileImAdapters()).catch(() => {});
     }));
     this.ready = Promise.resolve().then(() => this.reconcileResidents());
     void this.ready.catch(() => {});
@@ -145,7 +235,8 @@ export class PluginHostService extends Service implements IPluginHostService {
 
   async stopAll(): Promise<void> {
     this.closing = true;
-    await Promise.allSettled([...this.residentWork]);
+    await this.imAdaptersSink?.withdraw();
+    await Promise.allSettled(this.residentWork);
     await Promise.allSettled([...this.active.values()].flatMap((requests) => [...requests]));
     const hosts = [...this.hosts.values()];
     this.hosts.clear();
@@ -170,6 +261,7 @@ export class PluginHostService extends Service implements IPluginHostService {
       if (this.closing) return undefined;
       const info = await this.plugins.getPluginInfo({ id: plugin.id });
       if (info.manifest?.kiki?.activation !== 'app' || this.closing) return undefined;
+      try { await this.checkDependencies(info); } catch { return undefined; }
       const settings = await this.settings.forExecution(info.id);
       return { info, settings };
     }))).filter((item): item is { info: PluginInfo; settings: Record<string, string | number | boolean> } => item !== undefined);
@@ -210,12 +302,54 @@ export class PluginHostService extends Service implements IPluginHostService {
   async listMediaProviders(): Promise<readonly PluginMediaProviderRegistration[]> {
     await this.connections?.ready;
     const installed = await this.plugins.listPlugins();
-    const items = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map(async (plugin) => {
-      const info = await this.plugins.getPluginInfo({ id: plugin.id });
-      const settings = await this.settings.forExecution(plugin.id);
-      return (info.manifest?.kiki?.mediaProviders ?? []).map((definition) => this.mediaRegistration(info, settings, definition));
+    const infos = await Promise.all(installed.filter((plugin) => plugin.enabled && plugin.state === 'ok').map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
+    const replaced = new Set(infos.flatMap((info) => (info.manifest?.kiki?.mediaSources ?? []).flatMap((group) => group.legacyPluginId === undefined ? [] : [group.legacyPluginId])));
+    const items = await Promise.all(infos.filter((info) => !replaced.has(info.id)).map(async (info) => {
+      const settings = await this.settings.forExecution(info.id);
+      const definitions = info.manifest?.kiki?.mediaProviders ?? [];
+      const scriptId = info.manifest?.kiki?.mediaScriptProvider;
+      const expanded = definitions.filter((definition) => definition.id !== scriptId);
+      if (scriptId !== undefined) {
+        const script = definitions.find((definition) => definition.id === scriptId)!;
+        expanded.push(...scriptSources(settings).filter((source) => source.enabled && !source.removed).map((source) => scriptDefinition(source, script.resumeVersion)));
+      }
+      const entries = await Promise.all(expanded.map((definition) => this.mediaEntry(info, settings, definition.id)));
+      return entries.filter((entry) => entry !== undefined).map((entry) => entry.registration);
     }));
     return items.flat();
+  }
+
+  private async mediaEntry(info: PluginInfo, settings: MediaSettingValues, id: string) {
+    const extension = info.manifest?.kiki;
+    let definition = extension?.mediaProviders?.find((item) => item.id === id);
+    let execution: Record<string, unknown> = settings;
+    let configuration: Record<string, unknown> = settings;
+    let connectionDefinition = definition;
+    let aliases: string[] = [];
+    const group = extension?.mediaSources?.find((item) => item.providerIds.includes(id));
+    if (group !== undefined) {
+      const legacySummary = (await this.plugins.listPlugins()).find((plugin) => plugin.id === group.legacyPluginId);
+      const legacyInfo = legacySummary === undefined ? undefined : await this.plugins.getPluginInfo({ id: legacySummary.id });
+      const legacyInstalled = legacyInfo?.manifest !== undefined;
+      if (!sourceActive(settings, group) || (settings[group.settingsPrefix + 'enabled'] === undefined && legacyInstalled && !legacyInfo.enabled)) return undefined;
+      const legacy = legacyInstalled ? await this.settings.forExecution(group.legacyPluginId!) : {};
+      configuration = sourceValues(settings, group, legacy);
+      const schema = sourceSchema(extension!, group);
+      execution = sourceDefaults(schema, configuration as MediaSettingValues);
+      connectionDefinition = definition === undefined ? undefined : { ...definition, connectionSetting: 'connectionId' };
+      aliases = group.legacyPluginId === undefined ? [] : [`${group.legacyPluginId}/${id.slice(group.id.length + 1)}`];
+    } else if (extension?.mediaScriptProvider !== undefined && id.startsWith('script-')) {
+      const source = scriptSources(settings).find((item) => `script-${item.id}` === id);
+      const runtime = extension.mediaProviders?.find((item) => item.id === extension.mediaScriptProvider);
+      if (source === undefined || !source.enabled || source.removed || runtime === undefined) return undefined;
+      definition = scriptDefinition(source, runtime.resumeVersion);
+      execution = { scriptSource: source, environment: settings[scriptEnvironmentKey(source.id)] };
+      configuration = { scriptSource: { ...source, enabled: undefined, removed: undefined }, environment: execution['environment'] };
+      connectionDefinition = undefined;
+    }
+    if (definition === undefined) return undefined;
+    const registration = { ...this.mediaRegistration(info, configuration, connectionDefinition ?? definition), provider: `${info.id}/${definition.id}`, definition, aliases };
+    return { registration, execution, runtimeId: group !== undefined ? definition.id : id.startsWith('script-') && extension?.mediaScriptProvider !== undefined ? extension.mediaScriptProvider : definition.id, connectionDefinition };
   }
 
   requestMediaProvider(provider: string, action: 'describe' | 'submit' | 'poll' | 'cancel' | 'voices', input: unknown, signal: AbortSignal, context: PluginMediaCallContext, expected?: PluginMediaProviderRegistration): Promise<unknown> {
@@ -224,12 +358,12 @@ export class PluginHostService extends Service implements IPluginHostService {
     return this.runRequest(pluginId, async (info, settings) => {
       await this.connections?.ready;
       signal.throwIfAborted();
-      const definition = info.manifest?.kiki?.mediaProviders?.find((item) => item.id === providerId);
-      if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.entry === undefined || definition === undefined) throw new Error('Media provider is not enabled');
-      const current = this.mediaRegistration(info, settings, definition);
-      if (expected !== undefined && (expected.source !== current.source || expected.configuration !== current.configuration || expected.definition.resumeVersion !== definition.resumeVersion)) throw new Error('Media provider source, endpoint, credential or resume version changed; restore the original provider configuration');
-      return this.getHost(info).requestMediaProvider(providerId, action, input, signal, settings, {
-        ...context, connection: () => this.resolveMediaConnection(info, settings, definition, context),
+      const entry = await this.mediaEntry(info, settings, providerId);
+      if (!info.enabled || info.state !== 'ok' || info.manifest?.kiki?.entry === undefined || entry === undefined) throw new Error('Media provider is not enabled');
+      const current = entry.registration;
+      if (expected !== undefined && (expected.source !== current.source || expected.configuration !== current.configuration || expected.definition.resumeVersion !== current.definition.resumeVersion)) throw new Error('Media provider source, endpoint, credential or resume version changed; restore the original provider configuration');
+      return this.getHost(info).requestMediaProvider(entry.runtimeId, action, input, signal, entry.execution, {
+        ...context, connection: () => entry.connectionDefinition === undefined ? Promise.resolve(undefined) : this.resolveMediaConnection(info, entry.execution, entry.connectionDefinition, context),
       }, context.onProgress);
     });
   }
@@ -244,7 +378,8 @@ export class PluginHostService extends Service implements IPluginHostService {
   private async resolveMediaConnection(info: PluginInfo, settings: Record<string, unknown>, definition: MediaProviderDefinition, context: PluginMediaCallContext): Promise<MediaConnection | undefined> {
     const setting = definition.connectionSetting;
     if (setting === undefined) return undefined;
-    if (info.manifest?.kiki?.settings?.schema.properties[setting]?.type !== 'string') throw new Error('Media connectionSetting must name a declared string setting');
+    const group = info.manifest?.kiki?.mediaSources?.find((source) => source.providerIds.includes(definition.id));
+    if (info.manifest?.kiki?.settings?.schema.properties[(group?.settingsPrefix ?? '') + setting]?.type !== 'string') throw new Error('Media connectionSetting must name a declared string setting');
     const id = settings[setting];
     if (id === undefined || id === '') return undefined;
     if (typeof id !== 'string' || this.connections === undefined) throw new Error('Configured Kiki connection is unavailable');
@@ -360,7 +495,7 @@ export class PluginHostService extends Service implements IPluginHostService {
         focusSession: (sessionId) => {
           if (this.sessions?.get(sessionId) === undefined) throw new Error('Session is not live');
           this.navigationRequest = { id: ++this.nextNavigationId, pluginId: info.id, sessionId, at: Date.now() };
-        } });
+        }, im: () => this.outboundIm }, this.bootstrap.homeDir, info.manifest?.kiki?.imAdapters);
       this.hosts.set(info.id, host);
     }
     return host;
@@ -369,6 +504,7 @@ export class PluginHostService extends Service implements IPluginHostService {
   private runRequest<T>(pluginId: string, action: (info: PluginInfo, settings: Record<string, string | number | boolean>) => Promise<T>): Promise<T> {
     return this.runTracked(pluginId, async () => {
       const info = await this.plugins.getPluginInfo({ id: pluginId.toLowerCase() });
+      await this.checkDependencies(info);
       const settings = await this.settings.forExecution(info.id);
       return async () => {
         if (this.closing) throw new Error('Plugin Host is shutting down');

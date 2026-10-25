@@ -169,10 +169,10 @@ export class AppLogService extends BoundLogger implements ILogService {
     this.sink.flushSync();
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.sink.flushSync();
     trackLogClose(this.sink.close());
-    super.dispose();
+    return super.dispose();
   }
 }
 

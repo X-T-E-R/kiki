@@ -8,7 +8,7 @@ export const agentProfileRoutesFlag: FlagDefinitionInput = {
   title: 'Agent profile routes',
   description: 'Load and dispatch named specializations of existing agent profiles.',
   env: 'KIKI_EXPERIMENTAL_AGENT_PROFILE_ROUTES',
-  default: false,
+  default: true,
   surface: 'core',
 };
 

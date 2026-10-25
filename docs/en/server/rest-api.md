@@ -146,9 +146,13 @@ The response uses schema version `1` with independent sources and meters. Each m
 | `GET /api/config` | Read the global config (secret fields redacted) |
 | `POST /api/config` | Merge-patch the config; broadcasts `event.config.changed` |
 
+`request_compression` and `responses_web_socket` are system sections on both calls. Omit a section to leave it unchanged. JSON `null` removes it. A compression object needs `encoding` and `targets`, with optional `min_bytes` and `dictionary`, or `encoding` set to `"off"` and no other fields. `dictionary` applies only to `zstd`. A WebSocket object needs `targets`, or `off: true` and no targets. An incomplete object is rejected and the saved file stays unchanged.
+
+Session-title prompt reads, read-only defaults and field-level save/delete patches are documented under [`session_title`](../configuration/config-files.md#session-title).
+
 The `hooks` value accepts a legacy command-rule array or a declarative object with `schemaVersion: 2`. Both reads and saves retain the complete value, including `rules`, `legacy`, `enabled`, `disabled`, and `files`. Nested JSON keys use camelCase (`textFile`, `agentRoles`, `everyCompletedSteps`, `counterScope`, `partitionBy`); TOML uses snake_case. Send the complete hooks array or object when editing it; omit `hooks` to leave it unchanged, or send `[]` to clear it. `null` and unsupported rule shapes return validation code `40001` without changing the saved file. Reading or saving configuration does not execute hook commands. See [Hooks](../customization/hooks.md) for supported events and actions.
 
-`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is the separate read-only inspection view for an active agent. Its rules, source statuses, diagnostics, and cadence counts describe effective runtime state; it is not a configuration-save endpoint.
+`GET /api/sessions/{session_id}/agents/{agent_id}/hooks` is a separate read-only inspection view. Active agents return their effective rules, source statuses, diagnostics, and cadence counts. Closed sessions use the saved agent binding and cadence records with the current rule sources, without resuming the agent or executing hooks. Invalid workspace sources remain visible in diagnostics while valid global rules are retained. This endpoint does not save configuration.
 
 ### Models and providers
 
@@ -163,6 +167,8 @@ The `hooks` value accepts a legacy command-rule array or a declarative object wi
 | `POST /api/providers` | Create a provider (201) |
 | `GET /api/providers/{provider_id}` | Read a provider (reveals the stored key) |
 | `PATCH /api/providers/{provider_id}` | Change only the supplied provider fields |
+
+`GET /api/providers` and `GET /api/providers/{provider_id}` include `request_compression` and `responses_web_socket` when that provider saved them. A partial compression object, `encoding: "off"`, `off: true`, and the saved `targets` order come back as stored. The read does not fill those fields from the system section. `POST /api/providers` and `PATCH /api/providers/{provider_id}` accept the same objects. JSON `null` on PATCH clears that provider field. Omitted fields stay unchanged.
 | `DELETE /api/providers/{provider_id}` | Delete a provider (204) |
 | `POST /api/providers/{provider_id}:refresh` | Refresh one provider's model metadata |
 | `POST /api/providers:{action}` | Collection actions: `refresh` / `refresh_oauth` / `import_catalog` / `import_registry` |
@@ -179,13 +185,28 @@ The executor catalog lists registered engines without waiting for executable dis
 
 | Method and path | Description |
 | --- | --- |
-| `GET /api/executors` | Registered engines with their latest valid check results |
-| `GET /api/executors/{id}` | One engine's capabilities, connection settings and latest check result |
-| `POST /api/executors/{id}/check` | Discover executable sources and check the declared authentication hints for this engine |
+| `GET /api/executors` | Registered engines and the latest check for each. This request does not probe. A result older than 60 seconds has `check_stale: true` |
+| `GET /api/executors/{id}` | One engine's capabilities, connection settings, and latest check. This request does not probe |
+| `POST /api/executors/{id}/check` | Check only that engine's executable sources and its declared authentication hints |
+| `GET /api/executors/installations` | Pinned adapter releases and any selected source-owned adapter. This request does not install. An item with no installation omits `active` |
+| `POST /api/executors/{id}/install` | Explicitly update one selected adapter. The request has no body fields |
+| `POST /api/executors/{id}/rollback` | Restore that adapter's previous installation. The request has no body fields |
 
-Catalog `status` is `ready`, `unavailable` or `unknown`. Native is always `ready`; an external engine without a valid check is `unknown`, not missing. Checks remain valid for 60 seconds while the engine's launch configuration is unchanged. A successful explicit check updates only that engine; unrelated entries do not wait for it. The check response also includes diagnostics, requirements and `selected_source`, preserving any configured source pin.
+Catalog `status` is `ready`, `unavailable`, or `unknown`. Native is always `ready`. An external engine with no check yet is `unknown`. `check_status` keeps the latest explicit check as `ready`, `warning`, or `unavailable`, and `checked_at` is that time. While the launch configuration is unchanged, `check_stale` is false for 60 seconds and true after that. The list still returns the previous `check_status` instead of falling back to `unknown`. After the engine revision changes, both fields disappear and that engine is unchecked again. `POST` updates only the named engine. The others keep the results they already have. One engine timing out or failing does not mark the rest ready. `GET` does not start a probe.
 
-Binary readiness and authentication are separate facts. `connection.login_status: "unknown"` does not mean `logged_out`, and `status: "ready"` does not prove a login. Pickers retain unchecked engines while honoring explicit hide/off choices and known unavailable states; a checked logged-out engine remains hidden unless its declared API-key environment is configured. To inspect an engine, call its check endpoint explicitly; sending a prompt still uses the real executable, source and authentication checks rather than trusting the display catalog.
+Binary readiness and authentication are stored separately. `connection.login_status: "unknown"` means the login state has not been read. Catalog `status: "ready"` means the program requirement passed. When preflight is `warning` and the program requirement passed, catalog `status` is `ready` and `check_status` stays `warning`. New profile choices and bare execution entries include an external engine only when `show_in_profile_list` is `true`. A missing field leaves it on the settings page. `false` stays off after refresh, another check, and another import. `externals_visible = false` blocks every external engine from new choices. A bare execution entry also needs a ready program and either a confirmed login or the engine's declared API-key environment. A profile or session already bound to a hidden or unavailable engine keeps that identity. Settings still lists every engine. Sending a prompt still runs the real program, source, and authentication checks. The previous check in the display catalog does not replace the launch check.
+
+`POST /api/executors/{id}/install` and `POST /api/executors/{id}/rollback` use the executor id you select. That id is not a fixed value. An id that is not an installable adapter, including a path lookup, returns not found and does not change files.
+
+A source-owned update runs only when that executor's selected source is one `node-script` whose file name is `agy-cli-acp.mjs`, and the path is absolute after `~` and `${KIKI_HOME}` expand. More than one selected script is not this update.
+
+Install replaces three files beside that script: `agy-cli-acp.mjs`, `agy-hook-registration.mjs`, and `agy-permission-hook.mjs`. Other files there stay, including custom scripts and `audit/` records. The call does not rewrite the executor's env, model, permissions, or `supports_mcp`. `supports_mcp` keeps its existing value. The status JSON has `id`, `release`, `active`, `previous`, and `phase`. It does not include `supports_mcp`. For this bundle, `release.source` is `bundled:external-harness`, `release.entry` is `agy-cli-acp.mjs`, and `active.version` is `0.4.1`.
+
+The replaced files are read the next time that executor process starts. This request does not restart a process that is already running.
+
+Rollback restores the previous copy of those three files when one was saved, and leaves custom files in place. A second rollback swaps those two copies again. Install saves a snapshot of the current three files before it replaces them. A failed write puts the original bytes back, deletes a file that was not there before, and the call fails. If the installation record cannot be saved, install restores that earlier copy and the call fails. If the rollback record cannot be saved, rollback restores the active copy and the call fails. When that restore fails too, the response is validation code `40001` with the restore diagnosis, the stored installation record is left as it was, and the call does not report success.
+
+`GET /api/executors/installations` can also list pinned releases such as `claude-acp` and `codex-acp` with `phase: idle` and no `active` field. Listing them does not install them.
 
 ### Local executor sessions
 
@@ -208,11 +229,13 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | Method and path | Description |
 | --- | --- |
 | `POST /api/sessions` | Create a session; omit both `workspace_id` and `metadata.cwd` to allocate a new workspace |
-| `GET /api/sessions` | List sessions; cursor pagination with filters such as `busy` and `archived_only` |
+| `GET /api/sessions` | List sessions; cursor pagination with `busy`, `archived_only` and title/workspace search `q` |
 | `GET /api/sessions/{session_id}` | Read one session |
 | `GET /api/sessions/{session_id}/profile` | Read the session profile |
 | `POST /api/sessions/{session_id}/profile` | Update title, metadata, agent config |
 | `POST /api/sessions/{session_id}:{action}` | Session actions: `fork` / `compact` / `undo` / `abort` / `btw` / `archive` / `restore` |
+| `POST /api/sessions/{session_id}:delete-archived` | Permanently delete an archived conversation and its attached archived family |
+| `POST /api/sessions:delete-archived` | Permanently delete all archived conversations in the connected home |
 | `GET /api/sessions/{session_id}/children` | List child sessions |
 | `POST /api/sessions/{session_id}/children` | Create a child session (fork with a tag) |
 | `GET /api/sessions/{session_id}/status` | Realtime status rollup |
@@ -221,7 +244,54 @@ Attachment does not copy the vendor transcript or send a prompt. The first promp
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream, not enveloped) |
 | `GET /api/sessions/{session_id}/snapshot` | Full snapshot for client rebuilds (with `as_of_seq` and `epoch`) |
 
+When the session is not live in this process, the snapshot is read from the saved main-agent wire and session metadata. The request does not resume the session or its workspace. `messages` is the newest 100 entries of the current logical context after compaction, undo, and edit, oldest first. `has_more` is true when older logical entries exist, and `message_count` is that logical length. `as_of_seq` and `epoch` are the session journal watermark. Permission mode and plan mode come from the saved runtime records; model and effort come from the saved agent binding. Context-token totals and breakdowns are omitted when this process has not measured them. `in_flight_turn`, `pending_approvals`, and `pending_questions` describe only activity in this process, so a session that is active in another process is not reported as active here.
+
+Session reads and `event.session.work_changed` expose `executing` separately from `busy`. `busy` includes unfinished work, queued prompts and terminal task results awaiting delivery. `executing` reports current local execution or finite process/media work; it excludes those queues, undelivered terminal results, resident services and agent task rows without an active executor. A cold session reports `executing: false` for this process. Older servers omit the field; omission means unknown. A historical subagent row with `status: "running"` is not current execution evidence.
+
+Snapshot `subagents` roster rows carry an optional `created_at` UTC ISO timestamp for the agent's immutable creation time. A newly created agent has it before its first run starts, including while queued; resuming the same agent, restoring its scope, restarting the server, or switching its model does not change it. A fork that creates a new agent records a new creation time. The separate optional `started_at` identifies the run described by the row and may change on a later run.
+
+Model, effort and executor fields prefer the current committed agent metadata over its spawn snapshot, with spawn values used only when current values are unavailable. Effort provenance and executor protocol stay with their selected source; a current binding alone does not prove which model served a request.
+
+An agent whose saved metadata has no creation time omits `created_at`; treat it as unknown, not as the session creation time, run start, attachment time, or a value inferred from its ID. Creation timestamps use the host's wall clock, not a dispatch or turn identity: equal timestamps, clock changes, or missing comparison boundaries do not establish which dispatch created an agent.
+
 For automatic allocation, send `{}` to `POST /api/sessions`. The server creates a distinct directory under `$KIKI_HOME/workspaces/`, registers it, and returns its `workspace_id` and `metadata.cwd` in the session response. Supplying an existing `workspace_id` or `metadata.cwd` keeps the existing targeting behavior; an unknown `workspace_id` is still rejected.
+
+For retry-safe creation, generate a UUID once and send it as the optional top-level `creation_id`. Keep that ID and the same request body when retrying after a timeout or disconnect. Concurrent matching requests share the creation; completed requests replay the saved result, including after a server restart. Saved failures are also replayed without repeating creation side effects. The resulting session ID is `session_<creation_id>`, with the UUID normalized to lowercase.
+
+Creation identities belong to the connected home: clients must keep separate pending requests for each home and connection. Omitting `creation_id` retains ordinary creation without retry deduplication. Cancelling a client wait does not delete a session the server has created.
+
+| Creation error code | Recovery |
+| --- | --- |
+| `40948` | The creation identity conflicts. `details.reason` is `body_mismatch` when the same `creation_id` carries a different body, or `session_id_exists` when its mapped session ID is already occupied outside this creation. Keep the pending identity and draft. A collision is not a successful replay; use a new ID only for a deliberately separate creation. |
+| `50006` | The creation outcome is unconfirmed. `details` contains `{ creation_id, session_id, evidence }`. Diagnostic values include `session_present_without_completion`, `session_absent`, `completion_receipt_write_failed`, `session_read_error`, and `receipt_read_error`; clients must also preserve unknown diagnostic values. Keep the draft and creation identity, and inspect the exact session ID. This code never confirms that starting a replacement is safe; the server does not rerun creation or its hooks. |
+
+Set `agent_config.execution` at creation to select a harness independently of a profile:
+
+```json
+{ "agent_config": { "execution": { "executor": "claude-acp" } } }
+```
+
+The selection is `{ executor, profile?, profile_file?, overrides? }`. Choose either a registered `profile` name or a `profile_file` Markdown path; they are mutually exclusive, and the selected profile must use the same executor. Explicit files do not require `main: true` and are not registered or copied into a profile directory. Omit both fields for direct external execution. `overrides` accepts `model`, `thinking`, `permission_mode`, `kiki_context`, `allow_kiki_subagents`, `native_agent` and `inject_kiki_mcp`. With the same executor and profile name or file path, omitted overrides keep the session's saved overrides; `null` removes an override and restores the [lower-priority defaults](../configuration/config-files.md#external-harness-defaults), while `[]` and `false` explicitly disable their respective capabilities. For `native_agent`, `engine-default` keeps the vendor's default agent and does not send a custom selection. A newly chosen value must already be advertised. Missing discovery keeps an existing choice when the executor, that agent, and the descriptor revision still match; a discovery list that omits the value is rejected and the current binding stays. `inject_kiki_mcp: true` opens the bridge without granting tools the binding already denies; `false` closes it. Legacy top-level model/profile/thinking requests remain supported.
+
+Before choosing a file, `POST /api/agent-profiles/file-preview` accepts `{ path, cwd?, workspace_id? }` and returns `{ profile }` with the usual named-profile metadata, including its canonical `source_file` and executor. Supply at most one of `cwd` and `workspace_id`; a relative path requires one, while an absolute or `~/` path can be previewed without either. Paths are read on the connected server, not the client machine. Missing or invalid files return `40001` with path diagnostics, without changing a binding. The typed HTTP client exposes this as `klient.rest.agents.previewFile(body, options?)`. Use the returned `source_file` as `execution.profile_file` at session creation or with the next prompt.
+
+Session reads return the committed `agent_config.execution` binding as `{ version: 1, selection, effective, sources, generation }`. Sources are `session`, `profile`, `harness-settings` or `harness-default`; an absent effective model or effort means Kiki has not selected one, not that the harness has none. A reported vendor model is an observation, not a new override. Idle updates can also use `POST /api/sessions/{session_id}/profile` with `agent_config.execution`; while running, submit the selection with the next prompt instead.
+
+On an idle agent, `thinking: null` in `agent_config` clears only the session thinking override, so the lower-priority effort applies again: the profile, then the harness setting, then the engine default when Kiki has not pinned an effort. Leaving `model` out keeps the saved model. An empty thinking string is rejected; omitting `thinking` keeps the current effort. While the agent is running, that profile update is refused. A prompt can carry the same `thinking: null`; Kiki applies it when that prompt launches, and an omitted model stays in place.
+
+#### `POST /api/sessions/{session_id}:archive`
+
+An empty body keeps the single-session behavior. Send `{ "include_attached": true, "exclude_session_ids": ["independent-thread-id"] }` to archive the attached family. The server reads persisted metadata across all workspaces, not the client's loaded page. `created_by_session_id` records a created thread; `parent_session_id` counts only with `child_session_kind: "child"`, so ordinary forks are not included. Each excluded thread cuts its whole subtree; excluding the requested root does not exclude that root.
+
+Family requests return `data: { archived, outcomes }`. `archived: true` confirms all target sessions; each outcome is `{ id, ok: true }` or `{ id, ok: false, reason, message }`. Partial failure returns `archived: false` even when the envelope code is `0`; keep the successful items and retry the unfinished ones. Discovery failure returns an error before any archive mutation. Refresh the list after either result. Older servers without `outcomes` cannot confirm a family archive. Archive does not delete history or worktrees; `:restore` restores only the requested session. The existing batch archive endpoint still acts only on its supplied IDs.
+
+#### Archived conversation management
+
+Use `GET /api/sessions?archived_only=true` with the existing `page_size` and `before_id` cursor parameters to read archives. `q` accepts up to 500 characters and matches a case-insensitive substring of the title, workspace path or workspace ID, across pages; it does not search message contents. Reading an archived conversation's messages does not restore it.
+
+`POST /api/sessions/{session_id}:delete-archived` accepts `{}` or `{ "exclude_session_ids": ["independent-thread-id"] }`. It discovers the same attached family as [session archive](#sessions), excludes whole specified subtrees, and deletes only archived members. The requested root must still be archived; restoring a target before its deletion keeps it. `POST /api/sessions:delete-archived` accepts `{}` and discovers all archived conversations in the connected home before deleting; search, workspace filters and the loaded page do not narrow its scope. Independently displayed archived threads are included in this all-archives operation.
+
+Both calls permanently remove saved conversation data and return `data: { deleted_ids, failed }`. Each failed item has `{ id, title?, message }`; an envelope code of `0` is not complete success when `failed` is nonempty. Refresh the archive list after success, partial failure or a request error, and use the fresh state before retrying. Discovery failure occurs before deletion. Clients must obtain confirmation before sending either request; cancelling that confirmation must not send a delete request.
 
 #### `POST /api/sessions/{session_id}:compact`
 
@@ -241,6 +311,8 @@ Accepting the request does not promise the compression succeeds. A run that reac
 | --- | --- |
 | `GET /api/sessions/{session_id}/messages` | Page messages (`before_id` / `after_id` / `role`) |
 | `GET /api/sessions/{session_id}/messages/{message_id}` | Read one message |
+| `POST /api/sessions/{session_id}/messages/{message_id}:edit` | Replace a user message and rerun from it |
+| `POST /api/sessions/{session_id}/messages/{message_id}:regenerate` | Rerun the user turn behind the latest final assistant message |
 | `GET /api/sessions/{session_id}/transcript` | Turn-paged transcript (requires `agent_id` and `transcript_coverage_version=2`); global state rides along unpaginated |
 | `GET /api/sessions/{session_id}/transcript/ops` | Op-batch catch-up (requires `agent_id`, `since_seq`, and `transcript_coverage_version=2`); `complete: false` means a full refresh is needed |
 | `GET /api/sessions/{session_id}/transcript/user-messages` | Turn-opening user inputs, unpaginated |
@@ -248,7 +320,13 @@ Accepting the request does not promise the compression succeeds. A run that reac
 | `GET /api/sessions/{session_id}/transcript/detail` | One canonical entity (`agent_id`, `kind`, `id`) |
 | `POST /api/klient/session-view/{session_id}/transcript/content` | Continue one bounded field from a `contentRefs` entry |
 
+Editing and regenerating require an idle session and `expected_cursor: { seq, epoch }` from the current session view. An edit replaces the complete `content` array, including attachments; regeneration reuses the original user input behind the selected final assistant response. Preflight rejection leaves conversation history unchanged. An accepted rewrite retains `user_message_id` and receives a new `prompt_id`.
+
+For response-loss recovery, send an optional `operation_id` and keep that ID and the entire request body unchanged when retrying the same action. A matching accepted retry returns the original receipt without another run, even after an uploaded source file has expired. Use a new ID for a different body or a new action. Reusing an ID with different input returns `40938`; a stale cursor returns `40937`, so refresh the session view before starting a new action. If the response is uncertain, retry manually rather than automatically submitting another action.
+
 Both transcript-page and catch-up requests must send `transcript_coverage_version=2`. Successful responses echo `data.transcript_coverage_version` as the number `2`; a missing or unsupported request version returns envelope code `40001` with an upgrade message, without returning a transcript. When a newer client reads a server that does not confirm coverage, it treats the history as unverified rather than complete.
+
+When an older-page request is still locating its anchor in saved history, it can return empty `items`, `has_more: true`, and `read.readiness: "preparing"`, with `read.source` set to `cold` or `derived`. Continue with the returned `next_cursor` as `before_item`, even when the cursor is unchanged. Neither an empty page nor a repeated cursor means the beginning has been reached. Once a page returns content, continue from its new cursor; that content alone does not establish full coverage, so retain the response's `coverage` and `read` status.
 
 `GET /api/sessions/{session_id}/transcript/detail` reads one entity. Query `agent_id` is a plain agent id, `kind` is `task`, `attachment`, `prompt`, or `tool`, and `id` is that entity's id. For `kind=tool`, `lookup.status` is `found`, `preparing`, or `not_found`. `found` includes `turnId`, `stepId`, and `frame`. That `frame`, and a returned task, attachment, or prompt body, can carry `contentRefs`; continue those with the POST below. `preparing` means the call is not yet located in the session's source history: retry the same request. `read.source` is then `derived` and `read.readiness` is `preparing`. `not_found` means the located history has no such call.
 
@@ -257,6 +335,8 @@ A session already covered in memory returns the live tool call directly, with `r
 A transcript page keeps large fields as `contentRefs`. Each reference carries `source`, `revision`, `path`, `kind` (`text`, `array`, or `object`), `offset`, and `total`. Continue it with `POST /api/klient/session-view/{session_id}/transcript/content` and JSON `{ "agentId", "ref" }`. Send the reference unchanged. The HTTP status stays 200 and the envelope carries the result. `code: 0` returns `value` and, when more of the field remains, `next`. Submit that `next` unchanged as the next `ref`, until `next` is absent. The same `ref` again returns the same part; `"range": true` does not advance `offset`. On a text ref it only limits the slice that already starts at `offset` (about 4096 characters, inside the field budget), and a snapshot ref ignores `range`. A page is budgeted at 64 KiB, and each field slice aims at half of that, 32 KiB.
 
 While the source history is still being located, the same call returns `code: 40923` and `msg: "history_canonical_preparing"`; retry that body. When the field no longer matches the reference, it returns `code: 40922` and `msg: "Content changed; reload its preview before continuing."` Reload the transcript preview and continue from the new reference. An unknown reference returns `code: 40401` and `msg: "content unavailable"`. Other routes also use `40922` and `40923`; match this `msg`, not the number alone. An invalid body returns `code: 40001` and `msg: "invalid content reference"`.
+
+The transcript response's `agents` descriptors use camelCase: `{ agentId, type?, parentAgentId?, delegator?, label?, createdAt?, disposedAt? }`. Their optional `createdAt` carries the same immutable UTC ISO creation time and [unknown-time rules](#sessions) as snapshot `subagents[].created_at`, for both live and closed sessions. It is not the transcript turn's `startedAt` or the snapshot run's `started_at`.
 
 ### Prompts
 
@@ -267,10 +347,44 @@ While the source history is still being located, the same call returns `code: 40
 | `POST /api/sessions/{session_id}/prompts:steer` | Send selected queued prompts now |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | Abort one queued, launching, running, or steered prompt |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | Send one queued prompt now |
+| `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | Read a saved request, including its complete content, without restoring the agent |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | Retry a held or failed saved request |
+
+A saved session opts in with `admission: "durable"` and a stable `prompt_id` of 1–256 characters. Saving while that session is still restoring is one use; the gate is the saved session, not an in-progress restore. Any other `admission` value is rejected before a body is stored. A session that does not exist, and a temporary session that is live but not yet saved, are rejected before storage and do not produce an acceptance receipt.
+
+The server then saves the complete request and uploaded attachments and returns `status: "queued", admission: "restoring"`. That pair means the message is persisted and waiting for recovery, not that the agent has accepted it. A successful HTTP envelope confirms only the save.
+
+Invalid request shapes, empty messages, missing targets and unavailable uploads fail before that receipt. Model, profile and execution checks run during recovery. Omitting `admission` keeps the synchronous launch or block response and does not write this durable copy. `?receipt=true` returns a compact receipt without echoing the full content.
+
+Read `GET /api/sessions/{session_id}/prompts?admission=durable` to receive `ingress` items. Follow `ingress_next_cursor` as `cursor` until absent, even if a page has no items for the selected agent. Pages scan at most 64 saved requests and return a text preview of at most 1024 characters with `admission_content_truncated: true`. A saved request with no text previews as `[Attachment]`. Use the point-read route for the original. Both reads leave cold agents unloaded. For a child agent, include the same `agent_id` in the submission body and every query or action.
+
+`admission: "admitted"` means the agent accepted the request; `status` reports its saved receipt state, not its current queue position or model consumption. For immediate delivery, optional `delivery_state: "steered"` means the core assigned the message to the target turn; `"queued"` means it was awaiting delivery when that receipt was recorded, including a pending model-switch boundary. Neither assignment nor admission confirms insertion into a model request; use the delivered transcript frame and subsequent request for that. A newer canonical started, steered or terminal prompt takes precedence over an older queued receipt.
+
+Optional `delivery_reason` explains the immediate-delivery decision on submit receipts and durable reads. A single-ID `:steer` response also carries `delivery_state` and `delivery_reason`; its existing `steered: true` acknowledges the command, not model consumption. Multi-ID steer acknowledgements omit these single-prompt fields.
+
+| `delivery_reason` | Meaning |
+| --- | --- |
+| `target_changed` | The active turn or prompt changed before delivery; the message was left queued. |
+| `steer_rejected` | The core refused insertion into the active turn, such as for incompatible execution controls. |
+| `executor_deferred` | The external executor did not deliver this message into its active run; it remains queued for a later turn. This does not distinguish an unsupported operation from a declined one. |
+| `model_switch_boundary` | Delivery is waiting for the selected model-switch boundary. |
+| `no_active_turn` | No active turn was available; the selected message follows the new-turn path. |
+| `external_retry` | A known external submission was replayed without repeating its immediate-delivery action. |
+| `prompt_no_longer_pending` | The prompt was no longer selectable in the pending queue. This alone proves neither delivery nor that it is still queued; read its canonical state. |
+
+`failed` includes `admission_error` and keeps the original content and attachments. Restarted or uncertain submissions become `held` until an explicit `:resume`; the server checks the original receipt before retrying, and a failed receipt lookup does not authorize another launch. Use `:abort` to cancel. `aborted: false` with admission `held` means cancellation still needs reconciliation; `cancelled` confirms it. To edit a saved request, cancel it and submit a new ID.
+
+If an external executor's immediate-delivery result is unknown, its pending queue stays under recovery hold even after the active turn ends. `:resume` keeps the request `held` with an explanatory error instead of repeating that external action. Check the executor's result before explicitly sending or cancelling the retained prompt.
+
+To retry a submission whose response was lost, keep its optional `prompt_id` and complete request body unchanged. Matching retries return the original accepted receipt without resubmitting the prompt, including main-agent, attachment, and bundled-skill submissions. Changed input needs a new `prompt_id`; reusing an accepted ID for different input returns `40938`. If an older accepted request has no replayable receipt, inspect its queue or history rather than automatically sending it again.
+
+A prompt can carry the same [execution selection](#sessions) in its top-level `execution` field. It is captured with that prompt and applied when the prompt launches, not when it enters the queue. The current turn keeps its committed binding. A changed execution generation starts a fresh remote session without resuming or forking the old one or sending a handoff of the old Kiki conversation; visible Kiki history is retained. Cold recovery reuses the committed generation and its own saved remote reference.
 
 The top-level `profile`, `model` and `thinking` selections are also captured with the prompt. Add `model_switch_mode: "direct" | "compact" | "fresh"` with `model` to carry a confirmed context choice on that same message: keep the current context, summarize it, or rebuild a fresh context window. This choice cannot also change `profile` or `execution`. Prompt list items expose saved settings in optional `runtime_controls`, including camelCase `modelSwitchMode`. They survive queue recovery and do not create a separate control-only queue item. A saved selection or accepted receipt is not proof of an actual request on the selected model.
 
-Sending now adds ordinary selected prompts to the active turn, or starts them as new turns in queue order when no turn is active. A native prompt carrying a model, effort or context choice applies it at the first safe step boundary, after the current model response and tool results have landed, then consumes the same message once. Cancellation or summary failure before commit leaves the binding and context unchanged and does not send the message on the old model. Unsupported external context rebuilds fail instead of silently becoming direct switches. A main agent's foreground child wait can move into the background; the child is not cancelled.
+To send a new message now, include `delivery_mode: "steer"` in the submission; omit it for ordinary sending. With durable admission, the server saves this intent and continues delivery after the `restoring` response, even if the client disconnects. It targets the turn active when the request arrived. If that turn ends and another turn starts before admission, the message stays queued for its own turn rather than joining the replacement. If no turn is active, it follows the existing new-turn path. Profile, execution or runtime-control changes that require a separate turn remain queued.
+
+Sending now adds ordinary selected prompts to the active turn at a safe step boundary. A native prompt carrying a model, effort or context choice applies it after the current model response and tool results have landed, then consumes the same message once. Cancellation or summary failure before commit leaves the binding and context unchanged and does not send the message on the old model. Unsupported external context rebuilds fail instead of silently becoming direct switches. A main agent's foreground child wait can move into the background; the child is not cancelled.
 
 Use `after_model_switch` only for a message intentionally dependent on an existing explicit switch operation. Do not combine it with a new model, effort, profile, execution or context choice: the server rejects mixed selections instead of silently replacing them with the old dependency's binding. Standalone manual compaction reports its own `compaction.started`, `compaction.completed` or `compaction.cancelled` progress; it neither accepts nor executes a pending message's model choice.
 
@@ -294,8 +408,15 @@ For an explicit switch operation, an accepted send is not a completed switch. If
 | `GET /api/sessions/{session_id}/tasks/{task_id}` | Read a task (optional output preview) |
 | `POST /api/sessions/{session_id}/tasks/{task_id}:cancel` | Cancel a task |
 | `GET /api/cron` | List scheduled tasks across workspaces |
+| `POST /api/cron` | Create a scheduled prompt for `session_id` |
+| `GET /api/cron/{task_id}` | Read the complete scheduled prompt |
+| `PATCH /api/cron/{task_id}` | Edit a schedule or rebind within its workspace |
+| `POST /api/cron/{task_id}:pause` / `:resume` / `:run` | Pause, resume, or trigger a schedule |
+| `DELETE /api/cron/{task_id}` | Delete a schedule |
 
 Task and cron lists accept `page_size` (1–100, default 100) and `offset` (default 0). Responses include `items`, `has_more`, and `next_offset` when more results remain. The task list also accepts `status`; the cron list accepts `session_id`. Offset pages may shift if tasks change between requests.
+
+Cron create accepts `session_id`, `cron`, `prompt`, and optional `recurring`, `paused`, and `delivery_mode`. Update accepts any nonempty subset except `paused`; use the pause/resume action for that field. `delivery_mode` is `idle` (default, wait for current work then run ahead of ordinary messages), `queue` (normal message order), or `steer` (next safe step without cancelling the current request). Repeated idle fires of one waiting job merge with a total trigger count. Task responses include the effective `delivery_mode`; omitted modes on older tasks default to idle on their next fire, without changing already queued deliveries. See [Scheduled tasks](../reference/tools.md#scheduled-tasks) for timing and recovery semantics.
 
 ### Skills, tools, and MCP
 
@@ -337,7 +458,7 @@ Sync reads and saves return `{ enabled, source }`: `home` is this Kiki home's sa
 
 `rest.ssh.hostKeys(id, workspaceId?)` returns the resolved `hostname`, `port`, and matching `label`, plus `state`, `records`, and source `files`. `recorded` means a local identity record exists; it does not mean the remote key has just been verified. `unrecorded` means no matching record was found in readable or missing files. `unavailable` means the read is incomplete or a matching record cannot be interpreted. Records include the SHA256 `fingerprint` when readable, `algorithm`, file and line, host pattern, and status (`recorded`, `revoked`, `unsupported`, or `invalid`). Unsupported markers such as `@cert-authority`, invalid public keys, and file errors carry a `reason`.
 
-OpenSSH's `ssh -G` output loses path quoting. A multi-file `UserKnownHostsFile` value or a path containing whitespace therefore returns `unavailable` with `ambiguous-known-hosts-paths`, including the usual two-file OpenSSH default. The reader does not guess path boundaries. This API neither connects to the host nor changes trust records, and cannot report a remote key as unchanged or changed. First-key approval and changed-key rejection still occur through the existing connection flow.
+Kiki resolves `UserKnownHostsFile` boundaries from OpenSSH's configuration and path expansion, including multiple files and quoted paths containing spaces. If the boundaries cannot be resolved unambiguously, the request fails rather than guessing. `UserKnownHostsFile none` returns an empty `files` list and does not write a default file; unknown keys still require approval on each connection. This API neither connects to the host nor changes trust records, and cannot report a remote key as unchanged or changed. First-key approval and changed-key rejection still occur through the existing connection flow.
 
 ### Browser connections
 
@@ -355,9 +476,36 @@ These endpoints manage saved browser connections, not the sessions that use them
 | `POST /api/browser/connections/{id}:check` | Run the check that fits the connection style |
 | `POST /api/browser/connections/{id}:connect` \| `:disconnect` | Start or attach the connection, or release it |
 
-`PUT` takes the same discriminated body as the GUI. A body whose `type` is `agent-browser-profile` needs `name` and accepts `profilePath`, `executablePath`, `headed` and `driverPath`; one whose `type` is `agent-browser-cdp` needs `name` and `endpoint` — either `{ "action": "set", "value": "<CDP http/ws URL>" }` or `{ "action": "keep" }` to leave the stored address unchanged. Both accept `enabled`, which defaults to `true`. A new CDP connection without `set` is rejected. A stored CDP address reads back masked; revealing it is an explicit `POST /api/secrets:reveal` whose `ref` has `kind: "browser_endpoint"`.
+`PUT` takes the same discriminated body as the GUI. A body whose `type` is `agent-browser-profile` needs `name` and accepts `profilePath`, `executablePath`, `headed` and `driverPath`; one whose `type` is `agent-browser-cdp` needs `name` and `endpoint` — either `{ "action": "set", "value": "<CDP http/ws URL>" }` or `{ "action": "keep" }` to leave the stored address unchanged. Both accept `enabled`, which defaults to `true`. A new CDP connection without `set` is rejected. A stored CDP address reads back masked; revealing it is an explicit `POST /api/secrets:reveal` whose `ref` has `kind: "browser_endpoint"`. A body whose `type` is `ego-lite` needs `name` and accepts optional `cliPath`, `profileId`, and `serverName`. It has no endpoint.
+
+A `kimi-webbridge` body needs `name`, accepts `enabled` and optional `driverPath`, and rejects `endpoint`. It uses the Kimi HTTP daemon at `http://127.0.0.1:10086` on the server; it does not start the CDP driver. Legacy saved CDP entries whose id is exactly `kimi-webbridge` use this HTTP route by default without rewriting the saved type; see [`webbridge_preset_route`](../configuration/config-files.md#browser-control). Other CDP ids keep their CDP route.
+
+A `webbridge-command` body needs `name`, accepts `enabled` (default `true`), and rejects both `endpoint` and `driverPath`. It sends extension commands to the fixed local `/command` endpoint without starting agent-browser. Its catalog reports `contextIsolation: "extension-command-session"`. Each caller has a separate command session; tab identities are `wb:<decimal id>`, not DevTools target IDs. Page actions, tab selection and close apply only to the tab that caller's last navigate opened. Kiki does not find a different tab by URL, including when two tabs share a URL. Window and frame methods are unavailable. Disconnect releases Kiki's binding without closing tabs; the explicit `agent_browser_end_session` page operation closes that caller's command session.
+
+The existing `kimi-webbridge` HTTP bridge's catalog reports `contextIsolation: "main-frame-only"`: window creation and non-main frames are unsupported. Tab selection uses the exact id returned by the tab list and verifies the selected id; switching to another tab is rejected when duplicate URLs prevent an unambiguous selection. When a command was sent but its response is lost or unreadable, status is `unconfirmed` with `failure.reason: "outcome_unknown"`. The command is not replayed. `:check` only checks bridge health; if it returns `idle`, reconnect, select the tab, and observe it before deciding the next action. An explicit negative acknowledgement is a finished `failed` result instead.
 
 Execution actions fail closed: without the `native_browser` experimental flag `:connect` returns envelope code `40001` with `details.code: "browser.disabled"` and `details.reason: "feature_disabled"`, while a switched-off connection returns `details.reason: "connection_disabled"`. Klient exposes the same surface as `rest.browser.list()`, `upsert(id, input)`, `remove(id)`, `setDefault(browser?)`, `status(id)`, `tabs(id)`, `catalog(id, { includeSchema })`, `check(id)`, `connect(id)`, and `disconnect(id)`.
+
+### Browser setup presets
+
+Presets are `kimi-webbridge`, `independent-browser`, `codex-browser`, and `ego-lite`. `kimi-webbridge` and `independent-browser` manage local components, while `codex-browser` lists matching endpoint names as unverified candidates (`candidates`, up to 20 entries) and saves an explicitly selected pipe. The name prefix is shared with desktop app tools, so discovery does not verify an extension connection. An empty list alone does not establish that the extension is disabled. Kiki does not install the external app. `kimi-webbridge` connects and opens one fixed local bridge and does not take a candidate list. After the extension probe succeeds, it creates an endpoint-free `webbridge-command` connection if that id is free and returns `connectionId: "webbridge-command"` plus `connection` runtime state. If another type already occupies the id, it returns `reason: "connection_conflict"` without replacing that row or any existing `kimi-webbridge` connection. Codex pipes and independent-browser profiles are separate connection styles; they do not create extra Kimi WebBridge instances. `ego-lite` uses `controlSurface: "external-app"` and `sourceUrl` `https://lite.ego.app/download?auto=1`. Its status does not launch `nodejs`. `ready` is reported only after a check prints `kiki-ego-ready`. Other reasons are `ego_installed`, `ego_onboarding`, and `ego_choose_cli`. `:prepare` rejects this preset. `:connect` runs the check and, when it succeeds and the id is absent, saves connection id `ego-lite` without changing the allowed set or the default browser.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/browser/setup` | List presets with their step states and available actions |
+| `GET /api/browser/setup/{preset}` | Read a preset's status |
+| `POST /api/browser/setup/{preset}:prepare` | Install components with `{ "consent": true }` |
+| `POST /api/browser/setup/{preset}:connect` | Connect a prepared preset or save a selected candidate pipe |
+| `POST /api/browser/setup/{preset}:open` | Open or activate the independent browser; for WebBridge, connect the bridge |
+| `POST /api/browser/setup/{preset}:update` | Update components from verified downloads; retain the previous installation on failure |
+| `POST /api/browser/setup/{preset}:shortcut` | Create an independent-browser shortcut on the Windows server's desktop |
+| `POST /api/browser/setup/{preset}:cancel` | Cancel preparation |
+
+`:connect` accepts optional `connectionId` (stable connection ID), `browserId` (the selected pipe identifier, e.g. `codex-browser-use-...`), `name`, and `setDefault`; `:open` accepts optional `connectionId`; `:shortcut` accepts optional `connectionId` and shortcut `name`. `:update` takes an empty object. All actions return a setup status: inspect `state`, `reason`, `error`, `steps`, `actions`, `candidates`, and saved `browserId`, not just HTTP success. Saving a candidate returns `state: "needs_user_action"` with `reason: "approval_unproven"`: the target is configured, but its browser handshake has not been verified. Saving does not open the pipe or consume a permission request. The preset becomes `connected` only after the browser control service confirms the handshake; connection failures retain their error. Real permission requests still go to the current permission consumer. A disabled connection returns `connection_disabled` without opening another profile. A failed window activation returns `state: "failed"`.
+
+Updates replace files on disk without switching an already-running browser or daemon. `reason: "disk_updated"` reports the disk change; `"disk_updated_running_unchanged"` also identifies an unchanged running WebBridge daemon. Neither means that a running process has upgraded.
+
+Klient exposes these operations as `rest.browser.setupPresets()`, `setupStatus(preset)`, `prepare(preset, { consent })`, `connectPreset(preset, input?)`, `openPreset(preset, input?)`, `updatePreset(preset, input?)`, `createShortcut(preset, input?)`, and `cancelSetup(preset)`.
 
 ### Terminals
 
@@ -372,15 +520,24 @@ PTY terminal endpoints; mounted only on loopback binds.
 
 ### Workspaces
 
+Use the catalog view for workspace selection and metadata changes; request one workspace's details when you need its session count or Git state.
+
 | Method and path | Description |
 | --- | --- |
-| `GET /api/workspaces` | List registered workspaces |
-| `POST /api/workspaces` | Register a workspace (idempotent on the root path) |
-| `PATCH /api/workspaces/{workspace_id}` | Rename |
+| `GET /api/workspaces?view=catalog` | List persisted registration metadata without session counting, Git checks or legacy discovery |
+| `GET /api/workspaces` | List full workspace records, waiting for discovery and every workspace's session count and Git check |
+| `GET /api/workspaces/{workspace_id}` | Read one registered workspace with its session count and Git state, without global discovery |
+| `POST /api/workspaces` | Register a workspace (idempotent on the root path); return the full record |
+| `PATCH /api/workspaces/{workspace_id}?view=catalog` | Rename and/or pin; return only the saved metadata |
+| `PATCH /api/workspaces/{workspace_id}` | Rename and/or pin; return the full record, including session count and Git state |
 | `DELETE /api/workspaces/{workspace_id}` | Unregister (keeps on-disk content) |
-| `GET /api/workspaces/{workspace_id}/trust` | Read the trust state |
+| `GET /api/workspaces/{workspace_id}/trust` | Read the trust state without starting a workspace runtime |
 | `POST /api/workspaces/{workspace_id}/trust` | Grant trust |
 | `POST /api/workspaces/{workspace_id}/untrust` | Revoke trust |
+
+Both list variants return `{ items }`. Catalog entries contain only `id`, `root`, `name`, `created_at`, `last_opened_at` and `pinned`; absent `session_count` and `isGit` mean unmeasured, not zero and false. The catalog reads already persisted registrations; use the default full list when you explicitly need legacy workspace discovery. Keep these response shapes in separate client caches.
+
+Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field required. The catalog variant does not wait for discovery, counts or Git before returning the saved entry. Single-workspace details count sessions, including archived sessions, under that root's registered IDs and legacy directory aliases, and check Git only for that root. These measured details can still take time or fail; load them independently of workspace selection and metadata editing. Unknown registered IDs on the detail or catalog `PATCH` routes return envelope code `40410`.
 
 ### Memory
 
@@ -400,9 +557,11 @@ PTY terminal endpoints; mounted only on loopback binds.
 | `GET /api/memory/{scope}/journal` | Change history, optionally narrowed to one `id` |
 | `POST /api/memory/{scope}/undo` | Undo one operation by `operation_id` |
 
-`GET /api/memory/{scope}` without pagination returns the whole namespace as `{ items, coverage }` and keeps working for existing clients. Its default statuses differ by shape: with no `query` it returns `active` and `pending`, with a `query` it searches `active` only, and `include_inactive=true` widens either to all four. `coverage` reports the statuses that were actually inspected.
+`GET /api/memory/{scope}` returns bounded pages as `{ items, mode, next_cursor, coverage }`, including when no pagination parameters are supplied. `mode` defaults to `list` with no `query` and to `search` with one; `page_size` is 1–20. Without explicit `statuses`, list reads `active` and `pending`, search reads `active`, and `include_inactive=true` widens either to all four. `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived`. Existing clients must consume `next_cursor` rather than treating the first page as the whole namespace.
 
-Passing `mode`, `page_size`, `statuses` or `cursor` switches to paged results and adds `next_cursor`. Here `mode` defaults to `list` with no `query` and to `search` with one, `page_size` is 1–20, and `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived` defaulting to `active`. Keep the same `{scope}` path and the same `workspace_id` / `persona_id` that identify the namespace, and send `cursor` without `mode`, `query`, `type`, `page_size`, `statuses` or `include_inactive` — the cursor already carries the scopes, filters and page size it was issued for, and adding any of them back returns the `40944` code. A cursor also stops working when the underlying entries or the namespace change; start the query over and reconcile by id rather than assuming the second run covers what the first did.
+Continue until `next_cursor` is null and `coverage.exhausted` is true. An empty preparation page with a cursor is not an empty namespace. `coverage.complete` and `warnings` report unreadable, invalid or oversized records; those records do not hide the other readable entries. Scan budgets are per call, not a permanent inventory limit; search ranking and list title ordering apply within each bounded source chunk.
+
+Keep the same `{scope}` path and owning `workspace_id` / `persona_id`, and send `cursor` alone, without the original filters or page size. Mixing them returns `40944`. A cursor is invalidated by source changes or a store restart; restart and reconcile by scope plus ID. `GET /api/memory/{scope}/inbox` returns the same page shape for `pending` only and accepts `page_size` or a pending-list `cursor`; cursors for other statuses or search mode are rejected.
 
 `PUT /api/memory/{scope}/{id}` takes the same action vocabulary as [`MemoryWrite`](../reference/tools.md#writing-an-entry): `action` (`create`, `update`, `supersede`, `archive`), `type`, `title`, `body`, `reason`, `expected_revision` and `pinned`. Writes through REST are recorded as coming from you, whatever `source` the agent would have used. The response is `{ entry, operationId, outcome, warnings? }`, where `outcome` is `applied`, `pending` or `unchanged`; `operationId` is `null` for `unchanged` and for a proposal identical to one already waiting, and those two cases have nothing to undo. For `update`, `supersede` and `archive`, `expected_revision` is required — a `PUT` built on a stale revision is refused instead of overwriting a newer one.
 
@@ -423,17 +582,25 @@ A session lease is a periodically renewed "online token" a client holds: `POST /
 | --- | --- |
 | `POST /api/leases` | Create or renew a lease (body carries an optional `lease_id`); returns `lease_id` and `expires_at` |
 
-The peer-thread endpoints support cross-session collaboration: a thread is addressed by the `{ host_id, workspace_id, session_id }` triple for another session on the same local host, whose completed turns you can read and to which you can deliver messages. The tool-side counterparts are `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`; for the concepts, see [Agents and Sub-Agents](../customization/agents.md#peer-thread-communication).
+The peer-thread endpoints support cross-session collaboration: a thread is addressed by the `{ host_id, workspace_id, session_id }` triple for another session on the same local host, whose completed turns you can read and to which you can deliver messages. The tool-side counterparts are `ThreadList` / `ThreadRead` / `ThreadSend` / `ThreadWait`; for the concepts, see [Agents and Sub-Agents](../customization/agents-and-subagents.md#peer-thread-communication).
 
 | Method and path | Description |
 | --- | --- |
 | `GET /api/threads` | List addressable threads, filterable by `workspace_id`; cursor pagination |
-| `POST /api/threads:read` | Read a thread's completed user and peer turns, optionally continuing from a `cursor` |
+| `POST /api/threads:read` | Read a thread's completed turns with their recorded origin, optionally continuing from a `cursor`; preparation can return an incomplete page with an opaque continuation |
 | `POST /api/threads:send` | Durably accept a message for another thread (requires a non-empty `idempotency_key`; a key maps to a single message) |
 | `POST /api/threads:wait` | Long-poll for activity on up to 8 threads, `timeout_ms` capped at 60 seconds |
 | `GET /api/workspaces/{workspace_id}/thread-communication` | Read the persisted override and effective thread-communication state for the workspace |
 | `PUT /api/workspaces/{workspace_id}/thread-communication` | Persist the workspace's enable/disable override |
 | `DELETE /api/workspaces/{workspace_id}/thread-communication` | Clear the override |
+
+#### ThreadRead continuation
+
+A `POST /api/threads:read` response can contain `turns: []`, `incomplete: "history_preparing"`, and an opaque `next_cursor` while the local history projection is preparing. This is an incomplete preparation page, not proof that the thread has no conversation. Repeat the request with `next_cursor`, keeping the same thread and bridge scope. The preparation cursor binds its projection generation and fixed source watermark while retaining the original older-turn boundary; once preparation completes, ended-turn pages keep the existing default `limit` of 20, 1–100 range, and chronological order.
+
+Local turn `input` and `output` fields of at most 4,096 UTF-16 units remain inline. Longer fields return a preview and a field-specific entry in `content_refs`. Send that entry as `content_ref` with the same thread to receive `view.segment`; keep the preview and append each segment's `value`, following `next` until it is absent. Each segment contains at most 16,384 UTF-16 units, and its reference starts after the text already returned. Reading segments does not resume the thread.
+
+Existing read cursors remain accepted for compatibility. A history rewrite explicitly invalidates affected cursors, as does a generation change; when the server reports an invalid cursor, restart from the first page rather than treating the thread as empty.
 
 #### Communication history
 
@@ -498,8 +665,19 @@ In-session file operations go through `POST /api/sessions/{session_id}/fs:{actio
 | `GET /api/fs:home` | The user's home directory and recent workspaces |
 | `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) |
 | `POST /api/fs:mkdir` | Create a directory by absolute path |
+| `POST /api/fs:media-preview` | Create a temporary host audio/video playback URL (authenticated loopback connection) |
+| `DELETE /api/fs:media-preview/{preview_id}` | Revoke a host-media playback URL (bearer token required) |
+| `POST /api/sessions/{session_id}/media-playback` | Create a temporary playback URL for a canonical session audio or video file (authenticated loopback connection) |
+| `DELETE /api/sessions/media-playback/{preview_id}` | Revoke a session playback URL (bearer token required) |
+| `GET /media-preview/{preview_id}` | Stream the granted host file or canonical session file without a bearer header; supports Range |
+
+For host audio/video, send `{ "path": "<absolute file path>" }` to `POST /api/fs:media-preview`. The response envelope contains `preview_id`, `url`, `mime`, `size`, and `expires_at` (Unix milliseconds). Pass `url` directly to the media element; possession of this URL permits reading that file until it expires after 30 minutes, is revoked, or the server stops. Close the preview with `DELETE /api/fs:media-preview/{preview_id}`. These routes are registered only when server authentication is enabled; creation requires a loopback client and host name, and at most 64 grants may be open at once. Host creation takes an absolute path, not a session media ID. For a historical attachment, send `{ "file_id": "<canonical file id>" }` to `POST /api/sessions/{session_id}/media-playback`. The response uses the same fields, and `GET /media-preview/{preview_id}` streams that canonical file. A host path on that request is rejected, and a missing canonical file is not read from the host filesystem. Revoke it with `DELETE /api/sessions/media-playback/{preview_id}`. An unsatisfiable Range receives 416. The same loopback, 30-minute, and 64-grant limits apply to host and session grants together. These media-preview routes own that shared table: a grant expires after 30 minutes, DELETE removes it, and server stop drops it. A persisted tool result stored as `tool-result.bin` and `application/octet-stream` is playable only when the first 512 bytes identify audio or video; the stored bytes and the authenticated download's generic binary type stay unchanged. A live session lease is released once when playback finishes, the client disconnects, or the stream fails, and a failed release is reported rather than discarded. Supported codecs still depend on the browser or WebView. The authenticated `GET /api/sessions/{session_id}/media/{file_id}` download remains for other reads.
 
 The session `fs:{action}` workspace API accepts workspace-relative paths only and rejects absolute paths and symlink escapes. This GUI boundary does not restrict the separate agent `Read` tool's explicit absolute paths. `/api/fs:content` is for an authenticated user's preview, not an agent file tool: do not expose the bearer token or disable authentication on an untrusted network.
+
+Both session and workspace `fs:search` return one bounded page. Send `query`, `limit`, and optional `include_globs`, `exclude_globs`, and `follow_gitignore`; to continue, repeat the same conditions with the returned `next_cursor` as `cursor`. Each response contains `items`, `sort_scope: "page"`, and `truncated`, which is true exactly when `next_cursor` is present. An empty page with a cursor still has work remaining. Fetch another page only when more results are requested; an absent cursor means the search is exhausted.
+
+Pages are sorted by score descending, then path; an empty query lists the root directory with directories first, then path. Page order is not a global best-match ranking. Cancel the request when its query changes or its picker closes; cancellation stops subsequent traversal after any in-flight file-system call finishes. A single wide directory still requires a full directory read and sort. If a continuation returns `40001` because its conditions or traversed directories changed, retain the displayed candidates and restart without a cursor.
 
 ### File uploads
 
@@ -509,15 +687,52 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `GET /api/files/{file_id}` | Download (binary; errors use real HTTP statuses) |
 | `DELETE /api/files/{file_id}` | Delete |
 
+### IM account and channel bindings
+
+[Two-way messaging](../features/phone.md) binds each input or output channel to a session. A Persona is optional; changing or clearing it does not move the session's bindings.
+
+| Method and path | Description |
+| --- | --- |
+| `GET /api/im/sessions` | Snapshot of policy, instances, discoveries, bindings, strangers and voice fallbacks |
+| `GET /api/im/sessions/catalog` | Personas and sessions available as binding targets |
+| `PUT /api/im/sessions/policy` | Set `allowed`, `default_enabled`, and optional `allow_channel_borrowing` (default `false`) |
+| `POST /api/im/sessions/instances/{id}/listen` | Set `{ listening: true \| false }`; retry a stopped listener with `true` |
+| `POST /api/im/sessions/discoveries/{id}/confirm` | Bind to `target`; optional `rebind`, `input_enabled`, `output_enabled`, `busy`, `reply`, `mobile_interactions`, `also_home` |
+| `PATCH /api/im/sessions/bindings/{id}` | Update this binding's target, direction switches or options |
+| `DELETE /api/im/sessions/bindings/{id}` | Remove this IM binding |
+| `GET /api/im/sessions/targets/{session_id}/channels` | Read output channels and candidates with their actual media capabilities |
+| `PUT /api/im/sessions/targets/{session_id}/notify/{channel_id}` | Bind a notification output or change its session switch with `{ enabled: boolean }` |
+| `DELETE /api/im/sessions/targets/{session_id}/notify/{channel_id}` | Remove only this session's notification binding |
+| `GET /api/sessions/{session_id}/optional-capabilities` | Read authoritative capability rows, including `send_message` |
+| `POST /api/sessions/{session_id}/optional-capabilities` | Set `{ id: "send_message", choice: "on" \| "off" \| "inherit" }`; applies at the next step without restarting |
+
+A `target` is `{ kind: "session", session_id }`, or the compatible `{ kind: "persona", persona_id }` shortcut to that Persona's home session. PATCH also accepts legacy `session_id`, but not together with `target`; `also_home` belongs only to confirmation. Reconfirming preserves existing `enabled`, `session_enabled`, `input_enabled` and `output_enabled` unless explicitly changed. `session_enabled: null` follows `policy.default_enabled`; a direction set to `null` removes that direction override. Both directions still require the binding and session allowance to be enabled.
+
+An input identity belongs to one session at a time. Moving a binding to another session without `rebind: true` returns business code `40949`, `msg: "im_identity_already_bound"`, and `details` containing `existing_binding_id`, `previous_session_id`, `target_session_id` and `variant_key`. Show these identities for confirmation, then repeat the request with `rebind: true`; cancelling sends no mutation. Old interaction tickets cannot act on the new session, and old reply watchers expire on transfer. The mobile `:target` command lists targets but requires confirmation in Kiki to transfer them. A legacy binding with a missing session stays visible as `pending_reanchor: true`, retaining its old identity and Persona provenance without routing until explicitly reanchored.
+
+The output response contains `internal_enabled: true` and `channels`. Each channel has `id`, `kind` (`internal`, `im`, `notify`), `enabled`, `capabilities`, and optional `bound`; `bound: false` is a candidate, not a session binding. `internal` stays enabled; the legacy internal-switch endpoint rejects `{ enabled: false }`. Klient exposes `rest.imSessions.channelViews`, `setNotificationChannel` and `removeNotificationChannel`.
+
+Binding channels does not grant `SendMessage`. Ordinary reply threads default to off; `[optionalCapabilities.defaults] send_message = true` changes the global default, while a session choice of `on` works even when the default is off. Persona message mode retains its implicit-on behavior; explicit session `off` and hard tool-policy denies take precedence. Turning the tool off neither unbinds channels nor hides ordinary final replies.
+
+With the tool admitted, omit `channel`/`channels` to send only to enabled bound outputs, including `internal`; explicit IDs select one or more outputs. Borrowing an unbound channel requires `allow_channel_borrowing: true` and an enabled, authorized target. `to: "user"`, `to: "@Bot"` and Room routing retain their recipient meaning; channel IDs cannot be combined with Room or `@Bot` routing. Per-channel receipts distinguish `delivered`, `partial`, `unsupported`, `failed` and `unknown`, and mark borrowed targets. Notification outputs currently carry text only. Inspect partial or unknown receipts instead of resending automatically; an accepted provider response does not prove a person received the message.
+
+An instance's `listening` records the requested state. Its `adapter` is `missing`, `running`, `shared` or `stopped`; optional `connection` is `starting`, `reconnecting`, `auth_expired` or `stopped`. Normal running omits `connection`. For `auth_expired`, renew authorization through setup; for a stopped connection, retry listening explicitly. Optional `connection_detail` contains a finite `code` (`transport_error`, `http_error`, `api_error`, `invalid_response`, `auth_expired`, `loop_failed`) and optional numeric `http_status`, `ret`, `errcode`, `failure_count`, `retry_in_ms`. A successful reconnect clears that detail; an absent detail does not identify a failure cause.
+
+Channel identity uses `chat_id`, `sender_id`, and `topic_id` (`"0"` for no topic). Optional `chat_kind` is `private` or `group`; do not infer it from a title when absent. The current WeChat connection supports private contacts only. Confirming a group returns business `code: 40001`, `msg: "unsupported_wechat_group"`, preserving the discovery without creating a persona home or changing a binding.
+
+If an older Feishu thread binding has no reply context, send a new message from the same sender in that thread to restore delivery of still-pending approvals and questions. Unsupported WeChat group bindings remain unsent; disable or remove them rather than retrying them as private chats. A blocked binding does not prevent delivery to other channels.
+
 ### Global search and misc
 
 | Method and path | Description |
 | --- | --- |
 | `POST /api/search` | Cross-session full-text search; `mode` is `terms` (default) or `literal` (exact substring); `page_token` pagination |
+| `POST /api/search/retry` | Restart a search indexer that stopped after memory pressure; keeps the published index |
 | `GET /api/connections` | List live WebSocket connections |
 | `GET /api/usage` | Aggregate usage across sessions with bounded filters and pagination |
 | `GET /api/usage/pricing` / `PUT /api/usage/pricing` | Inspect model price sources or patch user price overrides, see below |
 | `POST /api/external-delegation/seats` / `GET /api/external-delegation/seats` | Create or list external-delegation seats |
+| `POST /api/external-delegation/seats:resolve` | Resolve an existing seat by `{ workspace, principal }`; returns the seat with its delegation token, or `null`, without creating a seat, session, or workspace |
 | `DELETE /api/external-delegation/seats/{seat_id}` | Revoke an external-delegation seat |
 | `POST /api/sessions/{session_id}/external-delegation/{procedure}` | Call an admitted external-delegation procedure |
 | `GET /api/sessions/query` | Next-generation session list, see below |
@@ -525,11 +740,27 @@ The session `fs:{action}` workspace API accepts workspace-relative paths only an
 | `POST /api/sessions:restore` | Batch-restore archived sessions, see below |
 | `/api/debug/*` | Reflection debug RPC; mounted only with `--debug-endpoints` on loopback, not a stable protocol |
 
+`POST /api/search` accepts `query` and defaults to user/assistant text plus session titles. Set `include_tool_output: true` to include tool results and Shell output; thinking, tool names and tool inputs remain excluded. `role` can select `user`, `assistant`, `tool` or `title`, with `role: "tool"` explicitly selecting tool results. The same content scope applies to live sessions and existing indexes. Changing it invalidates the old `page_token`; start again without a token.
+
+`POST /api/search/retry` takes no body. When the indexer has stopped after repeated memory pressure, call it to clear the backoff and restart the stopped writer. This applies to the default SQLite backend and to MiniDB. Documents already in the published index stay searchable; the call does not delete or rebuild that index. Success uses the normal envelope with `data.retried` set to `true`. Klient exposes `rest.search.retry()`.
+
+### Usage source grouping
+
+`GET /api/usage` supports `dimension=agent|model|project|session|provider|profile`. The native `provider` and `profile` dimensions group each record by its recorded source, including profile changes within one agent and provider changes behind one model alias. Profile means the execution profile, not a persona or a main/subagent role.
+
+Repeat `model`, `provider`, `profile`, `agent.id`, or `workspace.id` to select multiple values: `?dimension=profile&profile=explore&profile=general`. Values within a filter are ORed; different filters are ANDed. Profile matching is exact and case-sensitive against the record's `profileName`, not the agent's current profile. The response echoes normalized values in `query.profiles`; older servers may omit this additive field.
+
+Source groups use opaque keys such as `provider:"example-provider"` or `profile:"explore"`; missing sources have distinct `provider:null` or `profile:null` keys and a `null` attribution field. They retain their recorded usage and are never inferred from a model or agent ID. Use `group.provider` or `group.profile_name`, not the group key, as a filter value. There is no filter sentinel for missing sources; the literal value `unknown` selects only records that actually carry that name.
+
+For a selected period or comparison, send `range=custom&start_at=A&end_at=B` with epoch-millisecond bounds `[A,B)`. Summary, trend groups, and each session's `usage` apply the same record filters and exact window; session totals do not include unrelated profiles or the rest of a time bucket. Cost and token unknown flags remain separate from their recorded numeric subtotals. Keep the existing archive, timezone, and pagination parameters; discard `page_token` when changing filters or the window.
+
 ### Full usage rescan
 
 On the usage page's History tab, **Rescan all usage** scans every indexed session, including archived sessions. It runs only when requested and can take a while. `POST /api/usage/rescan` starts the task without a body; another POST while it is running returns the same task's current progress. Poll `GET /api/usage/rescan` about once per second. Both use the normal success envelope with `data` containing `state` (`idle`, `running`, `completed`, or `failed`), `scanned_sessions`, `total_sessions`, `scanned_records`, `started_at`, `finished_at`, and `error`. Times are epoch milliseconds or `null`; `error` is `null` unless the task failed. `scanned_records` counts newly read wire records, including non-usage records; unchanged checkpoints need no wire reads.
 
-The rescan bypasses session, record, and time scan budgets and saves incremental checkpoints; regular queries keep serving committed checkpoints while it runs. A regular query has a 10-second deadline, a 500-session cold-scan limit, and a 200,000-record budget. Sessions it rescans successfully stop consuming the cold-session limit: their keys are saved in `cache/usage-aggregation-v1/full-scan.json` and their usage stays in the existing per-session checkpoints. A completed rescan does not supply missing provider usage or model prices. Task progress is process-local and resets to `idle` on restart, while checkpoints and the completed inventory survive; cancellation is not supported.
+The rescan bypasses session, record, and time scan budgets and saves incremental checkpoints; regular queries keep serving committed checkpoints while it runs. A regular query has a 10-second deadline, a 500-session cold-scan limit, and a budget of 200,000 newly scanned usage facts, including unknown and invalid facts. Non-usage wire records no longer consume that cumulative record budget. Sessions it rescans successfully stop consuming the cold-session limit: their keys are saved in `cache/usage-aggregation-v1/full-scan.json`. Deleted-session and ephemeral ledgers remain subject to regular query budgets. A completed rescan does not supply missing provider usage or model prices. Task progress is process-local and resets to `idle` on restart, while checkpoints and the completed inventory survive; cancellation of the rescan is not supported.
+
+History and agent totals share lightweight usage facts saved as conversation records are committed. Valid existing usage checkpoints migrate automatically. Without a usable checkpoint, the first query recovers only the uncovered source prefix; `reliability.complete=false` means the displayed subtotal is not yet complete. A later query continues from committed progress, and cancelling a history request stops recovery when no other caller still needs it. Restarting with valid facts or rebuilding their query index does not require reading conversation bodies again.
 
 ### Usage pricing
 
@@ -663,10 +894,11 @@ The following endpoints stream binary bodies instead of a JSON payload. Their HT
 | `GET /api/sessions/{session_id}/media/{file_id}` | Read session media, including saved tool-result blobs | Yes | Yes |
 | `GET /api/fs:content` | User-directed host-file preview by absolute path, including sensitive files (bearer token required; not an agent tool permission endpoint) | Yes | Yes |
 | `POST /api/sessions/{session_id}/export` | Export the session with diagnostics (zip stream) | No | No |
+| `GET /media-preview/{preview_id}` | Stream a temporary host or session playback grant | Yes; unsatisfiable Range is 416 | No (`private, no-store`) |
 
 Indexed sessions serve canonical media and staged uploads without restoring the session. Canonical bytes and filenames take precedence over a staged-upload copy. Admitted browser origins can read `ETag`, `Content-Disposition`, and `Content-Range` for revalidation, filenames, and range receipts; this does not change origin admission or authentication.
 
-Error semantics differ as well: `GET /api/files/{file_id}` and session media downloads answer lookup and storage failures with real 404 / 500 statuses (file parameter validation still uses the HTTP 200 envelope), while the other three report failures through the standard [response envelope](#response-envelope) — clients must keep checking the envelope `code` on those endpoints.
+Error semantics differ as well: `GET /api/files/{file_id}` and session media downloads answer lookup and storage failures with real 404 / 500 statuses (file parameter validation still uses the HTTP 200 envelope). A missing, revoked, or expired `/media-preview/{preview_id}` grant returns HTTP 404 with a JSON error envelope. Workspace downloads, raw host-file previews, and exports use the standard [response envelope](#response-envelope) for failures — clients must keep checking its `code`.
 
 ## Next steps
 

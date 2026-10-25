@@ -18,6 +18,11 @@ export interface WireRecordSpan {
   readonly ordinal: number;
 }
 
+export interface WireByteSource {
+  readonly size: number;
+  readAt(position: number, length: number): Promise<Uint8Array>;
+}
+
 export interface WireRecordsStreamOptions {
   readonly chunkBytes?: number;
   readonly maxBytes?: number;
@@ -29,6 +34,7 @@ export interface WireRecordsStreamOptions {
   readonly signal?: AbortSignal;
   readonly onRecord: (record: ContextRecord, span: WireRecordSpan, raw?: Uint8Array) => unknown;
   readonly includeRawRecord?: boolean;
+  readonly byteSource?: WireByteSource;
 }
 
 export interface WireRecordsStreamResult {
@@ -37,6 +43,40 @@ export interface WireRecordsStreamResult {
   readonly nextByteOffset: number;
   readonly complete: boolean;
   readonly incompleteReason?: WireRecordsIncompleteReason;
+}
+
+function compactionHeadlineRecord(line: Buffer): ContextRecord | undefined {
+  try {
+    const text = line.subarray(Math.max(0, line.length - 4096)).toString('utf8');
+    const end = /,"time":(\d+)}[ \t\r]*$/.exec(text);
+    if (end?.index === undefined || end[1] === undefined) return undefined;
+    const fields: Record<string, unknown> = { time: Number(end[1]) };
+    let slice = text.slice(0, end.index);
+    for (let guard = 0; guard < 16; guard += 1) {
+      const match = /,"([^"]+)":(\[[^\]]*\]|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|null)$/.exec(slice);
+      if (match?.index === undefined || match[1] === undefined || match[2] === undefined) break;
+      const key = match[1];
+      const raw = match[2];
+      if (key === 'strategy' || key === 'fallbackFrom') {
+        const value = raw === '"summarize"' || raw === '"relay"' ? raw.slice(1, -1) : undefined;
+        if (value !== undefined) fields[key] = value;
+      } else if (key === 'source' && (raw === '"auto"' || raw === '"manual"')) {
+        fields[key] = raw.slice(1, -1);
+      } else if (key === 'phase' && /^"(?:queued|running|started|blocked|completed|failed|cancelled|interrupted)"$/.test(raw)) {
+        fields[key] = raw.slice(1, -1);
+      } else if (key === 'summary' || key === 'contextSummary') {
+        break;
+      }
+      slice = slice.slice(0, match.index);
+    }
+    if (fields['strategy'] === undefined && fields['fallbackFrom'] === undefined && fields['source'] === undefined && fields['phase'] === undefined) return undefined;
+    const head = line.subarray(0, Math.min(line.length, 180)).toString('utf8');
+    const typed = /"type":"(context\.apply_compaction|full_compaction\.(?:begin|cancel|complete))"/.exec(head);
+    const type = typed?.[1] ?? (fields['strategy'] !== undefined || fields['fallbackFrom'] !== undefined ? 'context.apply_compaction' : 'full_compaction.begin');
+    return { type, ...fields };
+  } catch {
+    return undefined;
+  }
 }
 
 export const WIRE_READ_CHUNK_BYTES = 1 << 20;
@@ -56,9 +96,9 @@ export const WIRE_COLD_READ_MAX_LINE_BYTES = 64 << 20;
  * `byte_budget`, `record_budget` and `line_budget` mean the file continues
  * beyond what was returned; `partial_tail` means the file itself ends in an
  * unterminated, unparseable record (the historical cold-read tail). The
- * `WIRE_COLD_READ_MAX_*` fences belong to the cold transcript reader: healthy
- * wires stay far below them, and that reader treats a tripped fence as a
- * failed read instead of serving a shorter history.
+ * The cold transcript reader uses `WIRE_COLD_READ_MAX_*` as scheduling slices
+ * and resumes at complete record boundaries. Explicitly bounded readers return
+ * the slice receipt so their callers can continue or report incomplete coverage.
  */
 export async function streamWireRecords(
   wirePath: string,
@@ -107,14 +147,17 @@ export async function streamWireRecords(
     try {
       record = JSON.parse(normalized.toString('utf8'));
     } catch (parseError) {
-      if (terminated) {
+      if (!terminated) {
+        stop('partial_tail');
+        return;
+      }
+      record = compactionHeadlineRecord(normalized);
+      if (record === undefined) {
         throw new Error(
           `wire.jsonl: corrupted line ${lineNumber} in ${wirePath}: ${String(parseError)}`,
           { cause: parseError },
         );
       }
-      stop('partial_tail');
-      return;
     }
     const endByteOffset = nextByteOffset + line.length + (terminated ? 1 : 0);
     const keepReading = options.onRecord(record as ContextRecord, {
@@ -162,13 +205,14 @@ export async function streamWireRecords(
   };
 
   signal?.throwIfAborted();
-  const handle = await open(wirePath, 'r');
+  const source = options.byteSource;
+  const handle = source === undefined ? await open(wirePath, 'r') : undefined;
   try {
-    const info = await handle.stat();
-    if (!Number.isSafeInteger(info.size) || info.size < 0) {
+    const infoSize = source !== undefined ? source.size : (await handle!.stat()).size;
+    if (!Number.isSafeInteger(infoSize) || infoSize < 0) {
       throw new Error(`wire.jsonl: invalid size for ${wirePath}`);
     }
-    const fileSize = Math.min(info.size, endByteOffset ?? info.size);
+    const fileSize = Math.min(infoSize, endByteOffset ?? infoSize);
     if (startByteOffset > fileSize) {
       throw new Error(`wire.jsonl: start offset exceeds file size for ${wirePath}`);
     }
@@ -181,15 +225,24 @@ export async function streamWireRecords(
         break;
       }
       const length = Math.min(chunkBytes, fileSize - position, remainingBytes);
-      const chunk = Buffer.allocUnsafe(length);
-      const { bytesRead: read } = await handle.read(chunk, 0, length, position);
+      let read: number;
+      let chunk: Buffer;
+      if (source !== undefined) {
+        const bytes = await source.readAt(position, length);
+        read = Math.min(bytes.byteLength, length);
+        chunk = Buffer.from(bytes.subarray(0, read));
+      } else {
+        const allocated = Buffer.allocUnsafe(length);
+        read = (await handle!.read(allocated, 0, length, position)).bytesRead;
+        chunk = allocated.subarray(0, read);
+      }
       if (read === 0) {
         throw new Error(`wire.jsonl: file changed during streaming read for ${wirePath}`);
       }
       position += read;
       bytesRead += read;
       remainingBytes -= read;
-      absorb(chunk.subarray(0, read));
+      absorb(chunk);
     }
     if (!stopped && lineBytes > 0) {
       if (endByteOffset !== undefined) stop('partial_tail');
@@ -199,7 +252,7 @@ export async function streamWireRecords(
       }
     }
   } finally {
-    await handle.close().catch(() => undefined);
+    await handle?.close().catch(() => undefined);
   }
   return {
     recordCount,
@@ -249,6 +302,7 @@ export async function streamWireRecordsAwaited(
       startRecordOrdinal: (optionalLimit(options.startRecordOrdinal) ?? 0) + recordCount,
       signal: options.signal,
       includeRawRecord: options.includeRawRecord,
+      byteSource: options.byteSource,
       onRecord: (record, span, raw) => {
         pending.push({ record, span, raw });
         batchBytes += span.endByteOffset - span.startByteOffset;

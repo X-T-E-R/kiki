@@ -4,12 +4,10 @@ Kiki uses environment variables to control a small number of runtime behaviors �
 
 Kiki-owned runtime controls use the `KIKI_*` prefix. Provider credential key names such as `KIMI_API_KEY` and `KIMI_BASE_URL` remain upstream-facing and are documented separately. Treat the exact names listed on this page as authoritative.
 
-::: warning Important: API keys are not configured here
-Credential variables such as `KIMI_API_KEY`, `ANTHROPIC_API_KEY`, and `OPENAI_API_KEY` are **not** read automatically from shell environment variables. Running `export KIMI_API_KEY=xxx` in the terminal does not give any provider its key — they must be written in the config files under `[providers.<name>]` or its `[providers.<name>.env]` sub-table. API keys live in the companion `credentials.toml`; `config.toml` never carries a plaintext credential.
+::: warning
+Provider API key variables are **not** read automatically. To use one, set `api_key_env = "YOUR_PROVIDER_KEY"` in the provider's `config.toml` table and supply that variable to the Kiki process. See [credential priority and example](./overrides.md#provider-credentials). Stored key values remain in `credentials.toml`; the environment reference stores only the variable name.
 
-The only exception is the `KIKI_MODEL_*` family, which is an explicit channel that *does* read credentials from the shell — see [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
-
-For background, see [Config overrides: provider credentials](./overrides.md#provider-credentials).
+The separate `KIKI_MODEL_*` family can supply a temporary model and key — see [Define a model from environment variables](#define-a-model-from-environment-variables-kiki-model).
 :::
 
 ## Core paths
@@ -36,7 +34,7 @@ Switch models temporarily without modifying `config.toml` — when `KIKI_MODEL_N
 
 ## Provider credential key names
 
-The key names below are not read from the shell. They are keys written inside the `[providers.<name>.env]` sub-table, used as fallback values for `api_key` / `base_url`. Secret keys go in the companion `credentials.toml`; the non-secret `*_BASE_URL` keys stay in `config.toml`.
+The names below are the conventional keys for the `[providers.<name>.env]` sub-table, used as fallback values for `api_key` / `base_url`. Secret keys go in the companion `credentials.toml`; the non-secret `*_BASE_URL` keys stay in `config.toml`. To read an API key from the process instead, explicitly reference its variable name with [`api_key_env`](./overrides.md#provider-credentials).
 
 ```toml
 # ~/.kiki/credentials/credentials.toml
@@ -60,15 +58,15 @@ Key names per provider:
 | `ANTHROPIC_BASE_URL` | Anthropic | Follows Anthropic SDK default |
 | `OPENAI_API_KEY` | OpenAI (`openai` and `openai_responses`) | None |
 | `OPENAI_BASE_URL` | OpenAI (`openai` and `openai_responses`) | `https://api.openai.com/v1` |
-| `GOOGLE_API_KEY` | Google GenAI, Vertex AI | None |
+| `GOOGLE_API_KEY` | Google GenAI (`google-genai`) | None |
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI (`google-genai`) | `https://generativelanguage.googleapis.com` |
-| `GOOGLE_VERTEX_BASE_URL` | Vertex AI (`vertexai`) | SDK regional default `*-aiplatform.googleapis.com` host |
-| `VERTEXAI_API_KEY` | Vertex AI | None |
-| `GOOGLE_CLOUD_PROJECT` | Vertex AI | None |
-| `GOOGLE_CLOUD_LOCATION` | Vertex AI | None |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI (`vertexai`) | `https://aiplatform.googleapis.com` when no location is set or the location is `global`. `https://aiplatform.us.rep.googleapis.com` for `us` and `https://aiplatform.eu.rep.googleapis.com` for `eu`. `https://<location>-aiplatform.googleapis.com` for another location. An API key and project ADC use the same host. |
+| `VERTEXAI_API_KEY` | Vertex AI (`vertexai`) | None |
+| `GOOGLE_CLOUD_PROJECT` | Vertex AI, together with `GOOGLE_CLOUD_LOCATION` | None |
+| `GOOGLE_CLOUD_LOCATION` | Vertex AI, together with `GOOGLE_CLOUD_PROJECT` | None |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is the only exception that goes through the system environment variable mechanism — it is read by the Google SDK directly via the standard ADC flow, and the CLI does not participate. All other key names must be placed in the `[providers.<name>.env]` sub-table to take effect — the secret ones in `credentials.toml`, the `*_BASE_URL` ones in `config.toml`.
+`GOOGLE_APPLICATION_CREDENTIALS` (path to a service account JSON file) is read directly by the Google SDK through the standard ADC flow. Project, location, and base URL values still come from the provider's config sub-table; `api_key_env` opts in only the named API key, not other shell variables.
 :::
 
 For the full provider type and field reference, see [Providers and models](./providers.md).
@@ -138,7 +136,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_BUILTIN_PRODUCT_SKILLS` | Whether the built-in skills documenting Kiki itself are offered to the model; takes higher priority than `builtin_product_skills` in `config.toml` (default enabled) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_TUI_FULL_SCREEN` | Enable the experimental fullscreen alternate-screen UI: scrollable transcript viewport, mouse text selection, clickable links, and Ctrl-Shift-F transcript search | `1` enables it; anything else keeps the regular inline UI |
 | `KIKI_EXPERIMENTAL_TASK_WAIT` | Whether the model is given the `TaskWait` tool, which waits for background tasks inside the current turn instead of ending it (enabled by default) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
-| `KIKI_EXPERIMENTAL_PLUGIN_IMPORT` | Enable history import into continuable Kiki sessions or read-only archives, with built-in formats and optional third-party sources; on by default, without startup scanning or automatic import, and also settable as `plugin_import` under [`[experimental]`](./config-files.md#experimental) — see [Session history import](../customization/plugins.md#session-history-import) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_EXPERIMENTAL_WORK_PRESETS` | Control space-local Work modes and their explicit package setup (default on); takes precedence over `[experimental] work_presets` — see [Spaces and work modes](../features/spaces.md#spaces-the-kikis-you-open) | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_MCP_CONFIG_PATH` | MCP config file injected by an external orchestrator and loaded read-only by the server started via `kiki web`. Must be set together with `KIKI_MCP_AGENT_PROFILE_HOME` and `KIKI_MCP_CONFIG_READ_ONLY`; an incomplete set fails startup | Absolute path |
 | `KIKI_MCP_AGENT_PROFILE_HOME` | Agent-profile root directory injected by an external orchestrator, used together with `KIKI_MCP_CONFIG_PATH`; the three `KIKI_MCP_*` catalog variables must always be set as a set | Absolute path |
 | `KIKI_MCP_CONFIG_READ_ONLY` | Read-only marker for the injected catalog; must be `1` — the server never writes back to the injected config or profiles | `1` |
@@ -146,7 +144,7 @@ Switches that control the behavior of subsystems such as background tasks, the b
 | `KIKI_MCP_TOOL_TIMEOUT_MS` | Global default single tool-call timeout (ms) for all MCP servers; takes higher priority than `[mcp] tool_timeout_ms` in `config.toml`, but a per-server `toolTimeoutMs` in `mcp.json` still wins (default `60000`) | Integer from `1` to `2147483647`; invalid values are ignored |
 | `KIKI_LOOP_MAX_STEPS_PER_TURN` | Maximum Agent steps per turn; takes higher priority than `[loop_control] max_steps_per_turn` in `config.toml` (unset or `0` means unlimited) | Non-negative integer; invalid values are ignored |
 | `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` | Maximum total attempts for a failing step (including the initial attempt); takes higher priority than `[loop_control] max_attempts_per_step` in `config.toml` (default `5`) | Non-negative integer; invalid values are ignored |
-| `KIKI_INFINITE_RETRY` | Retry every failed LLM request indefinitely — turn steps and background operations such as compaction alike — instead of failing the task; waits use exponential backoff (capped at 32 s) and honor the server's `Retry-After` header, and aborting still cancels immediately. Intended for long-running unattended evaluations against endpoints that may fail temporarily | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
+| `KIKI_INFINITE_RETRY` | Retry failed LLM requests indefinitely, including turn steps, compaction, HTTP 400/404, and quota errors. Waits use exponential backoff (capped at 32 s) and honor `Retry-After`. Does not override cancellation, local admission denials, observed output or tool execution, `retry = false`, or per-request `retry: 'never'`; the one-use [`Continue.` request](./config-files.md#loop-control) is never retried. Context overflow still uses context recovery. Intended for unattended evaluations against temporarily failing endpoints | Truthy: `1`/`true`/`yes`/`on`; falsy: `0`/`false`/`no`/`off` |
 | `KIKI_TOKEN_COUNTING_STRATEGY` | Which context token count is reported externally (the context-size display); takes higher priority than `[token_counting] strategy` in `config.toml` (default `measured+estimated`) | `measured+estimated`, `measured`, `estimated` (case-insensitive); invalid values are ignored |
 | `NB_SEARCH_CONFIG` | Path to a canonical JSON configuration for the built-in search and retrieval module, loaded before Kiki's `[nb_search]` patch | File path |
 | `NB_SEARCH_HOME` | Data directory for the built-in search and retrieval module | Directory path |

@@ -179,6 +179,7 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly permissionMode?: AgentPermissionMode;
   readonly main?: boolean;
   readonly tools?: readonly string[];
+  readonly toolsSource?: 'declared' | 'inherited-default' | 'builtin-default';
   readonly toolAllowPolicies?: readonly (readonly string[])[];
   readonly disallowedTools?: readonly string[];
   readonly disabledToolGroups?: readonly ToolGroupId[];
@@ -196,6 +197,8 @@ export interface AgentProfile extends AgentModelParameters, AgentModelConstraint
   readonly executorPrompt?: ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
   readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+  /** Explicit profile choice for the Kiki MCP lease. Absent inherits the executor default. */
+  readonly injectKikiMcp?: boolean;
   readonly modelAlias?: string;
   readonly thinkingEffort?: string;
   readonly allowedModels?: readonly string[];

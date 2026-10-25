@@ -1,19 +1,27 @@
 import { z } from 'zod';
-import { generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire } from '@kiki/protocol';
+import { bindingOriginSchema, generationParametersSchema, modelBehaviorWireSchema, modelBehaviorToWire, modelProtocolSourceSchema } from '@kiki/protocol';
 
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ProviderRequestAuth, ServiceTier } from '#/kosong/contract/provider';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
 import { ProtocolSchema, type Protocol, type ProtocolProviderOptions } from '#/kosong/protocol/protocol';
 
 import { ENV_MODEL_PROVIDER_KEY, type ProviderConfig } from '../provider/provider';
-import { explainProviderEndpoint } from '../provider/providerDefinition';
+import { resolveProviderApiKey } from '../provider/providerDefinition';
 import {
   IMAGE_MIME_TYPES,
   type ImagePolicyConfig,
   type ResolvedImagePolicy,
 } from '../provider/providerImagePolicy';
+import {
+  requestCompressionToWire,
+  responsesWebSocketToWire,
+  RequestCompressionWireSchema,
+  ResponsesWebSocketWireSchema,
+} from '../provider/requestCompression';
 import {
   RequestIdentityPolicyWireSchema,
   requestIdentityToWire,
@@ -21,7 +29,8 @@ import {
 
 import type { ModelInspection } from './inspection';
 import type { ModelRecord, ModelUsagePosition } from './model';
-import { effectiveModelConfig } from './modelAuth';
+import { effectiveModelConfig, explainModelAuthOrigin, explainModelEndpointOrigin } from './modelAuth';
+import { explainModelProtocol } from './modelProtocol';
 import { parametersToWire, type GenerationParameters, type ResolvedModelUsage } from './parameters';
 import type { ModelRequester } from './modelRequester';
 
@@ -46,7 +55,10 @@ export interface Model {
   readonly name: string;
   readonly aliases: readonly string[];
   readonly protocol: Protocol;
+  readonly protocolSource?: 'model' | 'provider' | 'vendor';
   readonly baseUrl?: string;
+  readonly requestCompression?: RequestCompression;
+  readonly responsesWebSocket?: ResponsesWebSocketConfig;
   readonly headers: Readonly<Record<string, string>>;
 
   readonly capabilities: ModelCapability;
@@ -103,6 +115,11 @@ export const modelCatalogItemSchema = z.object({
   effective_capabilities: z.array(z.string()).optional(),
   protocol: ProtocolSchema.optional(),
   effective_protocol: ProtocolSchema.optional(),
+  protocol_source: modelProtocolSourceSchema.optional(),
+  endpoint_source: bindingOriginSchema.optional(),
+  endpoint_env: z.string().min(1).optional(),
+  auth_source: bindingOriginSchema.optional(),
+  auth_env: z.string().min(1).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: z.enum(['auto', 'default', 'flex', 'priority']).optional(),
@@ -127,6 +144,8 @@ export const providerCatalogItemSchema = z.object({
   default_model: z.string().min(1).optional(),
   defaults: generationParametersSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
+  request_compression: RequestCompressionWireSchema.optional(),
+  responses_web_socket: ResponsesWebSocketWireSchema.optional(),
   images: imagePolicyWireSchema.optional(),
   api_key: z.string().min(1).optional(),
   api_key_env: z.string().min(1).optional(),
@@ -153,29 +172,31 @@ export interface ProviderCredentialState {
 
 export function providerCredentialFields(
   providerId: string,
-  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'env'>,
+  provider: Pick<ProviderConfig, 'type' | 'apiKey' | 'apiKeyEnv' | 'env'>,
 ): { api_key?: string; api_key_env?: string } {
   if (providerId === ENV_MODEL_PROVIDER_KEY) {
     return { api_key_env: provider.apiKey?.trim() ? 'KIKI_MODEL_API_KEY' : undefined };
   }
   if (provider.apiKey?.trim()) return { api_key: provider.apiKey };
-  if (provider.type === undefined) return {};
-  const bag = explainProviderEndpoint(provider.type, provider.env ?? {});
-  return { api_key_env: bag.apiKeyEnvName ?? explainProviderEndpoint(provider.type).apiKeyEnvName };
+  return { api_key_env: resolveProviderApiKey(provider).envName };
 }
 
 export function toProtocolModel(
   model: Model,
   record: ModelRecord,
   providerType?: string,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'apiKeyEnv' | 'oauth'>,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType ?? model.providerType);
+  const explained = explainModelProtocol(record, providerOf(providerType ?? model.providerType));
   const effectiveCapabilities = modelCapabilityNames(model.capabilities);
   if (model.alwaysThinking) effectiveCapabilities.push('always_thinking');
   return {
     id: model.id,
     protocol: record.protocol,
     effective_protocol: model.protocol,
+    protocol_source: explained?.source,
+    ...modelBindingOriginFields(record, provider ?? providerOf(providerType ?? model.providerType)),
     provider_id: model.providerName,
     remote_id: model.name ?? model.id,
     display_name: model.displayName ?? model.name ?? model.id,
@@ -201,13 +222,17 @@ export function toProtocolModelFallback(
   modelId: string,
   record: ModelRecord,
   providerType?: string,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'apiKeyEnv' | 'oauth'>,
 ): ModelCatalogItem {
   const effective = effectiveModelConfig(record, providerType);
+  const explained = explainModelProtocol(record, providerOf(providerType));
   const remoteId = effective.name ?? effective.model ?? modelId;
   return {
     id: modelId,
     protocol: record.protocol,
-    effective_protocol: undefined,
+    effective_protocol: explained?.protocol,
+    protocol_source: explained?.source,
+    ...modelBindingOriginFields(record, provider ?? providerOf(providerType)),
     provider_id: effective.provider ?? effective.providerId ?? '',
     remote_id: remoteId,
     display_name: effective.displayName ?? remoteId,
@@ -223,6 +248,24 @@ export function toProtocolModelFallback(
     behavior: modelBehaviorToWire(record.behavior),
     request_identity: requestIdentityToWire(record.requestIdentity),
     images: imagePolicyToWire(record.images),
+  };
+}
+
+function providerOf(providerType: string | undefined): { readonly type: string } | undefined {
+  return providerType === undefined ? undefined : { type: providerType };
+}
+
+export function modelBindingOriginFields(
+  record: ModelRecord,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env' | 'apiKey' | 'apiKeyEnv' | 'oauth'>,
+): Pick<ModelCatalogItem, 'endpoint_source' | 'endpoint_env' | 'auth_source' | 'auth_env'> {
+  const endpoint = explainModelEndpointOrigin(record, provider);
+  const auth = explainModelAuthOrigin(record, provider);
+  return {
+    endpoint_source: endpoint.source,
+    ...(endpoint.source === 'env' && endpoint.envName !== undefined ? { endpoint_env: endpoint.envName } : {}),
+    auth_source: auth.source,
+    ...(auth.source === 'env' && auth.envName !== undefined ? { auth_env: auth.envName } : {}),
   };
 }
 
@@ -255,6 +298,8 @@ export function toProtocolProvider(
     default_model: defaultModel,
     defaults: parametersToWire(provider.defaults),
     request_identity: requestIdentityToWire(provider.requestIdentity),
+    request_compression: requestCompressionToWire(provider.requestCompression),
+    responses_web_socket: responsesWebSocketToWire(provider.responsesWebSocket),
     images: imagePolicyToWire(provider.images),
     api_key_env: key.api_key_env,
     has_api_key: credential.hasApiKey,
@@ -299,6 +344,7 @@ export interface IModelCatalog {
 
   get(id: string, recipeSettings?: Record<string, unknown>): Model;
   getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester;
+  getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester;
   inspect(id: string): ModelInspection;
   ping(id: string): Promise<ModelPingResult>;
   findByName(name: string): readonly string[];

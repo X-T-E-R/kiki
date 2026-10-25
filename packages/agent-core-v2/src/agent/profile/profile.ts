@@ -54,6 +54,7 @@ export type AgentConfigUpdateData = Partial<{
 }>;
 
 export interface SystemPromptContext extends AgentProfileContext {
+  readonly pluginBlocks?: Readonly<Record<string, string>>;
   readonly agentsMdWarning?: string;
   readonly agentsMdPaths?: readonly string[];
   readonly agentsMdFiles?: readonly import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[];
@@ -67,6 +68,16 @@ export type ProfileBindingSource = 'registered' | 'profile-file';
 export interface ToolBindingOverride {
   readonly tools?: readonly string[];
   readonly disallowedTools?: readonly string[];
+}
+
+export interface ProfileToolPolicyStatus {
+  readonly definitionId?: string;
+  readonly source?: AgentProfile['toolsSource'];
+  readonly activeTools?: readonly string[];
+  readonly currentTools?: readonly string[];
+  readonly revision?: string;
+  readonly canRefresh: boolean;
+  readonly reason?: 'main_only' | 'binding_restricted' | 'source_changed' | 'source_unavailable';
 }
 
 export interface ProfileToolPolicyBase {
@@ -99,6 +110,7 @@ export interface ProfileData extends AgentConfigData {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly injectKikiMcp?: boolean;
   readonly kikiContext?: AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
   readonly agentsMdPaths?: readonly string[];
@@ -169,6 +181,7 @@ export interface ProfileBindingSnapshot {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly injectKikiMcp?: boolean;
   readonly kikiContext?: AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
@@ -272,10 +285,11 @@ export interface BindAgentInput {
   readonly resolvedProfile?: AgentProfile;
   readonly resolvedRoute?: ResolvedAgentProfileRoute;
   readonly model?: string;
-  readonly thinking?: string;
+  readonly thinking?: string | null;
   readonly bindingSelection?: BindingSelectionInput;
   readonly strictThinking?: boolean;
   readonly inheritedUserToolNames?: readonly string[];
+  readonly unavailableTools?: 'restore';
   readonly delegationPosition?: 'main' | 'sub' | 'independent';
   readonly lease?: SubagentLease;
   readonly spawnPolicy?: SpawnConstraints;
@@ -290,6 +304,7 @@ export interface IAgentProfileService {
   applyBindingSnapshot(snapshot: ProfileBindingSnapshot): void;
   /** Runs the optional guard synchronously before committing a prepared binding; throwing prevents the commit. */
   bind(input: BindAgentInput, assertCurrent?: () => void): Promise<void>;
+  warnRestoredUnavailableTools(): Promise<void>;
   resolveFile(path: string): Promise<ResolvedAgentProfile>;
   applyPersonaSettings(restoreDefaults?: boolean): Promise<void>;
   /** Runs the optional guard synchronously before committing a prepared model; throwing prevents the commit. */
@@ -297,6 +312,8 @@ export interface IAgentProfileService {
   prepareModelSwitchBinding(model: string, thinking?: string): Promise<PreparedModelSwitchBinding>;
   setEffort(level: string): ProfileSetEffortResult;
   setThinking(level: string): void;
+  /** Drops a user effort pin and stores the profile or model default. An execution binding clears through that binding instead. */
+  restoreDefaultThinking(): void;
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult;
   prepareResumeBinding(input: {
     readonly toolOverride?: ToolBindingOverride;
@@ -310,12 +327,15 @@ export interface IAgentProfileService {
   syncBindingMetadata(): Promise<void>;
   publishBindingAdvisories(): void;
   republishStatus(): void;
+  inspectToolPolicy(): Promise<ProfileToolPolicyStatus>;
+  refreshToolPolicy(revision: string): Promise<ProfileToolPolicyStatus>;
   getModel(): string;
   useProfile(profile: ResolvedAgentProfile, context: SystemPromptContext): void;
   applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void>;
   refreshSystemPrompt(): Promise<void>;
   refreshMemorySnapshot(): Promise<void>;
   reconcileMemorySnapshot(): Promise<void>;
+  reconcilePluginUsage?(): Promise<void>;
   rebuildPromptContext(): Promise<void>;
   preparePromptConfiguration(): Promise<boolean>;
   getCognitionBinding(): Promise<import('#/agent/cognition/cognitionConfig').CognitionBinding>;

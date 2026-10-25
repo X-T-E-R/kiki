@@ -201,10 +201,12 @@ describe('PluginManager consumption plane', () => {
     expect(manager.pluginAgentRoots()).toContainEqual({
       path: path.join(managedA, 'agents'),
       source: 'plugin',
+      pluginId: 'a',
     });
     expect(manager.pluginAgentRoots()).not.toContainEqual({
       path: path.join(managedB, 'agents'),
       source: 'plugin',
+      pluginId: 'b',
     });
   });
 
@@ -736,6 +738,7 @@ describe('PluginManager consumption plane', () => {
         event: 'PreToolUse',
         command: './hooks/guard.sh',
         timeout: 10,
+        pluginId: 'demo',
         cwd: installedRoot,
         env: { KIKI_HOME: home, KIKI_PLUGIN_ROOT: installedRoot },
       },

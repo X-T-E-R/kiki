@@ -6,7 +6,9 @@ import {
   HistorySearchTool,
   IHistoryArchive,
   IHistorySearchTool,
+  IHistoryReadTool,
 } from '../../../src/agent/tools/history/historyTools';
+import { HistoryListTool } from '../../../src/agent/tools/history/historyListTool';
 import { SyncDescriptor } from '../../../src/_base/di/descriptors';
 import { TestInstantiationService } from '../../../src/_base/di/test';
 import { ISessionContext as SessionContextToken } from '../../../src/session/sessionContext/sessionContext';
@@ -47,6 +49,7 @@ interface HistoryToolData {
   readonly has_more?: boolean;
   readonly next_cursor?: string;
   readonly warning?: string;
+  readonly error?: { readonly code?: string; readonly next_call?: { readonly arguments: Record<string, unknown> } };
   readonly expand_hint?: { readonly next_call: { readonly arguments: Record<string, unknown> } };
   readonly fallback?: {
     readonly maxBytes: number;
@@ -55,9 +58,9 @@ interface HistoryToolData {
   };
 }
 
-async function run(tool: HistorySearchTool | HistoryReadTool, input: Record<string, unknown>) {
+async function run(tool: { resolveExecution(input: never): import('../../../src/tool/toolContract').ToolExecution | Promise<import('../../../src/tool/toolContract').ToolExecution> }, input: Record<string, unknown>) {
   const execution = await tool.resolveExecution(input as never);
-  if (!('execute' in execution)) throw new Error('Expected executable tool');
+  if (!('execute' in execution)) return { execution, result: execution, data: JSON.parse(execution.output as string) as HistoryToolData };
   const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'c' });
   return { execution, result, data: result.isError ? {} as HistoryToolData : JSON.parse(result.output as string) as HistoryToolData };
 }
@@ -97,7 +100,7 @@ describe('history tools', () => {
       expect(conflicting.result.isError).toBe(true);
       await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', include_subagents: true })).rejects.toThrow('peer searches');
       await expect(tool.resolveExecution({ query: 'handoff', scope: 'peer', sort: 'oldest' })).rejects.toThrow('peer searches');
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('uses the existing profile tool-group gate', () => {
     expect(toolGroupForName('HistorySearch')).toBe('history');
@@ -160,6 +163,33 @@ describe('history tools', () => {
     const wrongScope = await run(tool, { cursor: first.data.next_cursor, include_tool_output: false });
     expect(wrongScope.result.isError).toBe(true);
     expect(JSON.parse(wrong.result.output as string)).toMatchObject({ error: { code: 'cursor_mismatch' } });
+  });
+
+  it('returns a cursor-free recovery call after a captured source range changes', async () => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    const search = vi.fn(source.search);
+    source.search = search;
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistorySearchTool, new SyncDescriptor(HistorySearchTool));
+    try {
+      const tool = ix.get(IHistorySearchTool);
+      const input = { query: 'needle', source: 'transcript', session_id: 'older' };
+      search.mockRejectedValueOnce(new Error('history_source_changed'));
+      const failed = await run(tool, input);
+      expect(failed.result.isError).toBe(true);
+      const data = JSON.parse(failed.result.output as string);
+      expect(data).toMatchObject({ target: { session_id: 'older', agent_id: 'main' }, error: {
+        code: 'source_changed', message: 'The transcript was replaced or its captured range changed; restart the query without cursor.',
+        retryable: true, next_call: { tool: 'HistorySearch', arguments: input },
+      } });
+      expect(data.error.next_call.arguments).not.toHaveProperty('cursor');
+      expect((await run(tool, data.error.next_call.arguments)).result.isError).not.toBe(true);
+    } finally { await ix.dispose(); }
   });
 
   it('surfaces an unavailable index alongside bounded fallback metadata', async () => {
@@ -231,19 +261,181 @@ describe('history tools', () => {
     expect(wrong.result.isError).toBe(true);
   });
 
-  it('rejects another workspace by default and subjects an explicit request to external access policy', async () => {
+  it('approves a known foreign session without workspace_id and does not read before that approval', async () => {
     const source = archive();
     const reader = new HistoryReadTool(source, session, workspaces, sessions, caller);
-    await expect(reader.resolveExecution({ session_id: 'foreign', turn: 0 })).rejects.toThrow('requested workspace');
+    const external = await reader.resolveExecution({ session_id: 'foreign', turn: 0 });
     expect(source.readTurn).not.toHaveBeenCalled();
-    const external = await reader.resolveExecution({ session_id: 'foreign', workspace_id: 'ws-b', turn: 0 });
     expect('accesses' in external && external.accesses).toEqual([{
       kind: 'file', operation: 'read', path: '/external/project', implicitExternal: true,
     }]);
-    const search = await new HistorySearchTool(source, session, workspaces, caller, sessions)
-      .resolveExecution({ query: 'needle', workspace_id: 'ws-b', scope: 'workspace' });
-    expect('accesses' in search && search.accesses).toEqual([{
+    if (!('execute' in external)) throw new Error('expected execution');
+    await external.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'foreign-read' });
+    expect(source.readTurn).toHaveBeenCalledWith('foreign', 'main', 0, undefined);
+    const mismatched = await reader.resolveExecution({ session_id: 'foreign', workspace_id: 'ws-a', turn: 4 });
+    expect('execute' in mismatched).toBe(false);
+    expect(source.readTurn).toHaveBeenCalledTimes(1);
+    const mismatch = JSON.parse((mismatched as { output: string }).output);
+    expect(mismatch.error.next_call).toEqual({ tool: 'HistoryRead', arguments: {
+      session_id: 'foreign', workspace_id: 'ws-b', turn: 4,
+    } });
+    const followed = await reader.resolveExecution(mismatch.error.next_call.arguments);
+    expect(source.readTurn).toHaveBeenCalledTimes(1);
+    expect('accesses' in followed && followed.accesses).toEqual([{
+      kind: 'file', operation: 'read', path: '/external/project', implicitExternal: true,
+    }]);
+    if (!('execute' in followed)) throw new Error('expected execution');
+    await followed.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'foreign-follow' });
+    expect(source.readTurn).toHaveBeenLastCalledWith('foreign', 'main', 4, undefined);
+    const searchSource = archive();
+    const search = new HistorySearchTool(searchSource, session, workspaces, caller, sessions);
+    const known = await search.resolveExecution({ query: 'needle', session_id: 'foreign' });
+    expect(searchSource.search).not.toHaveBeenCalled();
+    expect('accesses' in known && known.accesses).toEqual([{
       kind: 'file', operation: 'search', path: '/external/project', recursive: true, implicitExternal: true,
     }]);
+    if (!('execute' in known)) throw new Error('expected execution');
+    await known.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'foreign-search' });
+    expect(searchSource.search).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-b', sessionId: 'foreign' }));
+    const widened = await search.resolveExecution({ query: 'needle', workspace_id: 'ws-b', scope: 'workspace' });
+    expect('accesses' in widened && widened.accesses).toEqual([{
+      kind: 'file', operation: 'search', path: '/external/project', recursive: true, implicitExternal: true,
+    }]);
+  });
+
+  it('follows unknown and stale recovery to a real target without another session or a loop', async () => {
+    const source = archive();
+    const known: Record<string, string> = { current: 'ws-a', older: 'ws-a', foreign: 'ws-b' };
+    const get = vi.fn(async (id: string) => known[id] === undefined ? undefined : { id, workspaceId: known[id] });
+    const index = { get } as unknown as ISessionIndex;
+    const list = vi.fn(async (request: { workspaceId: string; sessionId: string }) => ({
+      status: 'ok' as const, target: { workspaceId: request.workspaceId, sessionId: request.sessionId },
+      source: 'transcript' as const, coverage: { complete: true, domain: 'directory' as const }, turns: [],
+    }));
+    const search = new HistorySearchTool(source, session, workspaces, caller, index);
+    const listed = new HistoryListTool({ _serviceBrand: undefined, list }, session, workspaces, index, caller);
+    const reader = new HistoryReadTool(source, session, workspaces, index, caller);
+    const signal = { signal: new AbortController().signal, turnId: 1, toolCallId: 'recover' };
+    const searchFailure = await run(search, { query: 'needle', session_id: 'missing' });
+    const workspaceFailure = await run(search, { query: 'needle', scope: 'workspace', workspace_id: 'ws-missing' });
+    const listFailure = await run(listed, { session_id: 'missing' });
+    const ref = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'missing', agent: 'main', kind: 'turn' })).toString('base64url')}`;
+    const refFailure = await run(reader, { ref });
+    expect(searchFailure.data.error?.next_call).toEqual({ tool: 'HistorySearch', arguments: { query: 'needle', scope: 'workspace' } });
+    expect(workspaceFailure.data.error?.next_call).toEqual({ tool: 'HistorySearch', arguments: { query: 'needle', scope: 'workspace' } });
+    expect(listFailure.data.error?.next_call).toEqual({ tool: 'HistoryList', arguments: { kind: 'turns' } });
+    expect(refFailure.data.error?.next_call).toEqual({ tool: 'HistoryList', arguments: { kind: 'turns' } });
+    expect(JSON.stringify(refFailure.data.error?.next_call)).not.toContain('missing');
+    expect(source.search).not.toHaveBeenCalled();
+    expect(source.readTurn).not.toHaveBeenCalled();
+    expect(list).not.toHaveBeenCalled();
+    const moved = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'foreign', agent: 'main', kind: 'turn' })).toString('base64url')}`;
+    const movedFailure = await run(reader, { ref: moved });
+    expect(movedFailure.data.error?.next_call).toEqual({ tool: 'HistoryList', arguments: {
+      kind: 'turns', session_id: 'foreign', workspace_id: 'ws-b', agent_id: 'main',
+    } });
+    const movedList = await listed.resolveExecution(movedFailure.data.error?.next_call?.arguments ?? {});
+    expect(list).not.toHaveBeenCalled();
+    expect(source.readTurn).not.toHaveBeenCalled();
+    expect('accesses' in movedList && movedList.accesses).toEqual([{
+      kind: 'file', operation: 'read', path: '/external/project', implicitExternal: true,
+    }]);
+    const widened = await search.resolveExecution(searchFailure.data.error?.next_call?.arguments ?? {});
+    expect(source.search).not.toHaveBeenCalled();
+    if (!('execute' in widened)) throw new Error('expected search execution');
+    const widenedResult = await widened.execute(signal);
+    expect(widenedResult.isError).not.toBe(true);
+    expect(source.search).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-a', sessionId: undefined }));
+    const browsed = await listed.resolveExecution(listFailure.data.error?.next_call?.arguments ?? {});
+    if (!('execute' in browsed)) throw new Error('expected list execution');
+    const browsedResult = await browsed.execute(signal);
+    expect(browsedResult.isError).not.toBe(true);
+    expect(list).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-a', sessionId: 'current' }));
+    expect(source.readTurn).not.toHaveBeenCalled();
+    const staleCursor = Buffer.from(JSON.stringify({ v: 1, session: 'older', agent: 'main', turn: 7, offset: 0, hash: 'stale' })).toString('base64url');
+    get.mockResolvedValueOnce(undefined);
+    const stale = await run(reader, { cursor: staleCursor });
+    expect(stale.data.error?.next_call).toEqual({ tool: 'HistoryRead', arguments: { session_id: 'older', turn: 7, agent_id: 'main' } });
+    expect(stale.data.error?.next_call?.arguments).not.toHaveProperty('cursor');
+    expect(source.readTurn).not.toHaveBeenCalled();
+    const restored = await reader.resolveExecution(stale.data.error?.next_call?.arguments ?? {});
+    if (!('execute' in restored)) throw new Error('expected restored read');
+    await restored.execute(signal);
+    expect(source.readTurn).toHaveBeenCalledWith('older', 'main', 7, undefined);
+    const ghostCursor = Buffer.from(JSON.stringify({ v: 1, session: 'ghost', agent: 'main', turn: 7, offset: 0, hash: 'gone' })).toString('base64url');
+    vi.mocked(source.readTurn).mockClear();
+    const ghost = await run(reader, { cursor: ghostCursor });
+    const ghostRetry = await run(reader, ghost.data.error?.next_call?.arguments ?? {});
+    expect(ghostRetry.data.error?.next_call).toEqual({ tool: 'HistoryList', arguments: { kind: 'turns' } });
+    expect(JSON.stringify(ghostRetry.data.error?.next_call)).not.toContain('ghost');
+    expect(source.readTurn).not.toHaveBeenCalled();
+    const ghostList = await listed.resolveExecution(ghostRetry.data.error?.next_call?.arguments ?? {});
+    if (!('execute' in ghostList)) throw new Error('expected discovery list');
+    const ghostPage = await ghostList.execute(signal);
+    expect(ghostPage.isError).not.toBe(true);
+    expect(list).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'current', workspaceId: 'ws-a' }));
+    const unindexed = archive();
+    const empty = { get: vi.fn(async () => undefined) } as unknown as ISessionIndex;
+    const currentSearch = await new HistorySearchTool(unindexed, session, workspaces, caller, empty)
+      .resolveExecution({ query: 'needle' });
+    if (!('execute' in currentSearch)) throw new Error('current session must stay readable');
+    await currentSearch.execute(signal);
+    expect(unindexed.search).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-a', sessionId: 'current' }));
+  });
+
+  it('drops a stale read cursor and restores its original session', async () => {
+    const source = archive('text'.repeat(4_000));
+    const get = vi.fn(async (id: string): Promise<{ id: string; workspaceId: string } | undefined> => ({ id, workspaceId: 'ws-a' }));
+    const index = { get } as unknown as ISessionIndex;
+    const reader = new HistoryReadTool(source, session, workspaces, index, caller);
+    const first = await run(reader, { session_id: 'older', turn: 7 });
+    vi.mocked(source.readTurn).mockClear();
+    get.mockResolvedValueOnce(undefined);
+    const failed = await run(reader, { cursor: first.data.next_cursor });
+    expect(failed.data).toMatchObject({ error: { code: 'history_target_unavailable', scope: 'selector', target_kind: 'cursor',
+      next_call: { tool: 'HistoryRead', arguments: { session_id: 'older', turn: 7, agent_id: 'main' } } } });
+    expect(failed.data.error?.next_call?.arguments).not.toHaveProperty('cursor');
+    expect(source.readTurn).not.toHaveBeenCalled();
+    const restored = await run(reader, failed.data.error?.next_call?.arguments ?? {});
+    expect(restored.result.isError).not.toBe(true);
+    expect(source.readTurn).toHaveBeenCalledWith('older', 'main', 7, undefined);
+  });
+
+  it('binds preparation cursors to their target and never advises replaying a stale directory ref', async () => {
+    const ix = new TestInstantiationService();
+    const source = archive();
+    source.lookupDirectory = vi.fn(async () => ({ status: 'navigation_building' as const,
+      next: { offset: 8000, incarnation: 'incarnation' }, scanned: { bytes: 8000, records: 2 } }));
+    source.readDirectory = vi.fn(async () => ({ status: 'stale_ref' as const }));
+    ix.set(IHistoryArchive, source);
+    ix.set(SessionContextToken, session);
+    ix.set(AgentScopeContextToken, caller);
+    ix.set(SessionIndexToken, sessions);
+    ix.set(WorkspaceToken, workspaces);
+    ix.set(IHistoryReadTool, new SyncDescriptor(HistoryReadTool));
+    const tool = ix.get(IHistoryReadTool);
+    const execute = async (input: Record<string, unknown>) => {
+      const execution = await tool.resolveExecution(input as never);
+      if (!('execute' in execution)) throw new Error('Expected execute');
+      const result = await execution.execute({ signal: new AbortController().signal, turnId: 1, toolCallId: 'read' });
+      return { result, data: JSON.parse(result.output as string) };
+    };
+    try {
+      const first = await execute({ step_id: 't782.14', max_chars: 10_000 });
+      expect(first.data).toMatchObject({ status: 'partial', has_more: true, continuation: 'scan' });
+      await execute({ cursor: first.data.next_cursor });
+      expect(source.lookupDirectory).toHaveBeenLastCalledWith('ws-a', 'current', 'main', 782, 't782.14',
+        { offset: 8000, incarnation: 'incarnation' }, expect.any(AbortSignal));
+      const wrong = await execute({ cursor: first.data.next_cursor, turn: 1 });
+      expect(wrong.data.error.code).toBe('cursor_mismatch');
+      const foreign = await execute({ cursor: first.data.next_cursor, max_chars: 1000 });
+      expect(foreign.data.error.code).toBe('cursor_mismatch');
+      const ref = `h1_${Buffer.from(JSON.stringify({ workspace: 'ws-a', session: 'current', agent: 'main', kind: 'turn' })).toString('base64url')}`;
+      const stale = await execute({ ref });
+      expect(stale.data).toMatchObject({ error: { code: 'stale_ref', retryable: false,
+        next_call: { tool: 'HistoryList', arguments: { session_id: 'current', agent_id: 'main' } } } });
+      expect(stale.data.error.next_call.arguments).not.toHaveProperty('ref');
+      expect(source.readTurn).not.toHaveBeenCalled();
+    } finally { await ix.dispose(); }
   });
 });

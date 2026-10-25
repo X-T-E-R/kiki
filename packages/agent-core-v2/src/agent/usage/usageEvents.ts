@@ -2,6 +2,7 @@
 import { Event2 } from '#/app/event/event2';
 
 import type { UsageStatus } from './usage';
+import type { PermissionMode } from '#/agent/permissionPolicy/types';
 
 export interface AgentStatusUpdatedPayload {
   usage?: UsageStatus;
@@ -16,6 +17,7 @@ export interface AgentStatusUpdatedPayload {
   effectiveMaxContextTokens?: number;
   reservedContextTokens?: number;
   contextTokens?: number;
+  permission?: PermissionMode;
 }
 
 export class AgentStatusUpdated extends Event2<AgentStatusUpdatedPayload> {
@@ -23,3 +25,13 @@ export class AgentStatusUpdated extends Event2<AgentStatusUpdatedPayload> {
   static override readonly observable = true;
 }
 export interface AgentStatusUpdated extends AgentStatusUpdatedPayload {}
+
+export interface UsageSettledPayload {
+  readonly payload: { readonly sessionId?: string; readonly agentId?: string };
+}
+
+export class UsageSettled extends Event2<UsageSettledPayload> {
+  static override readonly type = 'event.usage.settled';
+  static override readonly observable = true;
+}
+export interface UsageSettled extends UsageSettledPayload {}

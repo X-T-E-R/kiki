@@ -49,11 +49,11 @@ describe('session activity recency', () => {
     ix.stub(IBootstrapService, stubBootstrap());
     ix.stub(ILogService, stubLog());
     ix.stub(IEventService, { publish });
-    ix.stub(ISessionManager, { get: () => undefined, withLifecycleSerialization: async (_id, work) => work({ archive: async () => {}, restore: async () => undefined }) });
+    ix.stub(ISessionManager, { get: () => undefined, withLifecycleSerialization: async (_id, work) => work({ archive: async () => {}, restore: async () => undefined, delete: async () => {} }) });
     ix.stub(ISessionIndex, { get: (id) => readSessionSummary(docs, 'sessions', 'ws', id) });
     ix.set(ISessionRecencyStore, new SyncDescriptor(SessionRecencyStore));
   });
-  afterEach(async () => { await drainSessionMetadataWrites(); ix.dispose(); vi.restoreAllMocks(); });
+  afterEach(async () => { await drainSessionMetadataWrites(); await ix.dispose(); vi.restoreAllMocks(); });
   async function seed(id: string, custom = {}, activityUpdatedAt?: number) {
     await docs.set(`sessions/ws/${id}`, 'state.json', { id, version: 2, createdAt: 1, updatedAt: 10, activityUpdatedAt, archived: false, title: 'Explicit title', titleKind: 'custom', lastPrompt: 'Main prompt', agents: {}, custom } satisfies SessionMeta);
   }
@@ -85,7 +85,7 @@ describe('session activity recency', () => {
     ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
     const metadata = ix.get(ISessionMetadata);
     ix.stub(ISessionManager, { get: () => ({ accessor: { get: () => metadata } }) as never, isEphemeral: () => false,
-      withLifecycleSerialization: async (_id, work) => work({ archive: async () => {}, restore: async () => undefined }) });
+      withLifecycleSerialization: async (_id, work) => work({ archive: async () => {}, restore: async () => undefined, delete: async () => {} }) });
     await ix.get(ISessionRecencyStore).propagate('parent', 300, new Set(['child']));
     expect(await metadata.read()).toMatchObject({ updatedAt: 10, activityUpdatedAt: 300 });
     expect(mirror.recorded.at(-1)?.updatedAt).toBe(300);
@@ -123,7 +123,7 @@ describe('session activity recency', () => {
     const lock = new Promise<void>((resolve) => { release = resolve; });
     ix.stub(ISessionManager, { get: () => undefined, withLifecycleSerialization: async (_id, work) => {
       await lock;
-      return work({ archive: async () => {}, restore: async () => undefined });
+      return work({ archive: async () => {}, restore: async () => undefined, delete: async () => {} });
     } });
     const handlers = new Map<string, (event: unknown) => void>();
     const bus = { subscribe: (type: { type: string }, handler: (event: unknown) => void) => {

@@ -1,4 +1,5 @@
 export * from './agentSettings';
+export * from './browserControl';
 export * from './computerControl';
 export * from './layoutPrefs';
 export * from './mcp';
@@ -13,3 +14,4 @@ export * from './questionGuardSettings';
 export * from './subagentToolSettings';
 export * from './terminalPrefs';
 export * from './externalConnections';
+export * from './settingsTransfer';

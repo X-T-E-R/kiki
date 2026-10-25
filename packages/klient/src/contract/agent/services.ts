@@ -11,6 +11,11 @@ import { goalBudgetPatchSchema } from '@kiki/protocol';
 
 import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
+import {
+  mcpServerAuthStateSchema,
+  mcpServerConfigDataSchema,
+  mcpServerLocatorSchema,
+} from '../global/mcpManagement.js';
 import type { ServiceContract } from '../types.js';
 import { goalSnapshotSchema } from './events.js';
 import { modelSwitchInputSchema, modelSwitchModeSchema, modelSwitchReceiptSchema, queuedModelSwitchSchema } from './modelSwitch.js';
@@ -140,6 +145,10 @@ export const agentPluginContract = {
   refreshSessionStart: { input: z.tuple([]), output: noResult },
 } satisfies ServiceContract;
 
+export const agentExecutionContract = {
+  shutdown: { input: z.tuple([z.string().optional()]), output: noResult },
+} satisfies ServiceContract;
+
 export const agentLoopContract = {
   cancelFromUser: { input: z.tuple([z.number().optional()]), output: noResult },
   status: { input: z.tuple([]), output: agentLoopStatusSchema },
@@ -185,7 +194,23 @@ export const agentShellCommandContract = {
   cancel: { input: z.tuple([z.string()]), output: noResult },
 } satisfies ServiceContract;
 
+export const profileToolPolicyStatusSchema = z.object({
+  definitionId: z.string().optional(),
+  source: z.enum(['declared', 'inherited-default', 'builtin-default']).optional(),
+  activeTools: z.array(z.string()).readonly().optional(),
+  currentTools: z.array(z.string()).readonly().optional(),
+  revision: z.string().optional(),
+  canRefresh: z.boolean(),
+  reason: z.enum(['main_only', 'binding_restricted', 'source_changed', 'source_unavailable']).optional(),
+});
+
+export const agentToolPolicyContract = {
+  isToolActive: { input: z.tuple([z.string(), z.enum(['builtin', 'user', 'mcp', 'plugin']).optional()]), output: z.boolean() },
+} satisfies ServiceContract;
+
 export const agentProfileContract = {
+  inspectToolPolicy: { input: z.tuple([]), output: profileToolPolicyStatusSchema },
+  refreshToolPolicy: { input: z.tuple([z.string().min(1)]), output: profileToolPolicyStatusSchema },
   getModel: { input: z.tuple([]), output: z.string() },
   setModel: { input: z.tuple([z.string()]), output: setModelResultSchema },
   setEffort: { input: z.tuple([z.string()]), output: setEffortResultSchema },
@@ -215,6 +240,27 @@ export const mcpServerEntrySchema = z.object({
   error: z.string().optional(),
 });
 
+export const mcpSessionOverrideSchema = z.object({
+  locator: mcpServerLocatorSchema,
+  override: z.enum(['on', 'off', 'inherit']),
+});
+
+export const mcpSessionCapabilitySchema = z.object({
+  locator: mcpServerLocatorSchema,
+  runtimeName: z.string(),
+  origin: z.enum(['global', 'plugin', 'caller']),
+  config: z.discriminatedUnion('transport', [
+    mcpServerConfigDataSchema.options[0].omit({ env: true }),
+    mcpServerConfigDataSchema.options[1].omit({ headers: true }),
+    mcpServerConfigDataSchema.options[2].omit({ headers: true }),
+  ]),
+  authStatus: mcpServerAuthStateSchema,
+  connection: z.enum(['enabled', 'disabled', 'connecting', 'connected', 'failed', 'unavailable']),
+  override: z.enum(['on', 'off', 'inherit']),
+  error: z.string().optional(),
+  errorCode: z.literal('tool_catalog_refresh_failed').optional(),
+});
+
 export const agentMcpContract = {
   list: { input: z.tuple([]), output: z.array(mcpServerEntrySchema) },
   waitForInitialLoad: { input: z.tuple([]), output: noResult },
@@ -223,6 +269,11 @@ export const agentMcpContract = {
   connect: {
     input: z.tuple([z.string(), mcpServerConfigSchema]),
     output: noResult,
+  },
+  listMcpSessionCapabilities: { input: z.tuple([]), output: z.array(mcpSessionCapabilitySchema) },
+  setMcpSessionOverride: {
+    input: z.tuple([mcpSessionOverrideSchema]),
+    output: mcpSessionCapabilitySchema,
   },
 } satisfies ServiceContract;
 

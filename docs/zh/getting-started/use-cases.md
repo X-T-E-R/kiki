@@ -24,7 +24,7 @@ src/runtime 下的 event loop 是怎么工作的？事件从哪里产生、又�
 这个项目里「权限审批」是怎么实现的？涉及哪些文件，关键类型是什么？
 ```
 
-调研规模较大时，可以让 main agent（直接与你对话的那个）把任务拆给多个 subagent 并行处理。写法见 [Agent 与 subagent](../customization/agents.md)。
+调研规模较大时，可以让 main agent（直接与你对话的那个）把任务拆给多个 subagent 并行处理。写法见 [Agent 与 subagent](../customization/agents-and-subagents.md)。
 
 ## 实现新功能
 
@@ -101,6 +101,30 @@ src/parser/markdown.ts 目前几乎没有测试。请补一组单元测试，覆
 
 确认安全的批量任务可以不再逐条审批：启动 CLI 时加 `--yolo`，或在会话中输入 `/yolo`，两者都会把会话切到 YOLO 模式，工具调用（包括读取敏感文件）不再询问，除非被权限规则显式拒绝；退出 Plan 模式时仍会审核。想收窄范围，就在[配置文件](../configuration/config-files.md#permission)的 `[permission]` 段为特定工具预置允许规则。
 
+## 文档拆读、表格核对与调研写作
+
+文件夹里装的不一定是代码。本地文档要先按格式装目录里的对应插件：[Kiki Extract](../customization/plugins.md#本地文档提取) 把 PDF、Office、HTML 或文本转成智能体能读能搜的 Markdown；处理 PDF 或 Office 需要先在本机备好 Python 与 MarkItDown，并在插件设置里指向那个解释器。把核对和要求出处写进同一条消息：
+
+```text
+把 ./sources 里的 PDF 全部读一遍，拿里面的数字和 budget.xlsx 对照，把每一处不一致列出来，再把结果和每个数字来自哪个文件第几页写进 summary.md。不要改 budget.xlsx。
+```
+
+CSV、TSV 的键值核对交给 [Kiki Work](../customization/plugins.md#官方插件)：它在本机核对键并把两张表对上，不改原文件也不上传。Word、Excel、PowerPoint 文件的创建和编辑用 [Kiki Office Suite](../customization/plugins.md#官方插件)。
+
+长稿先让主智能体盘点素材，再动笔，提纲才带着证据，而不是事后补编：
+
+```text
+把 ./research 里的笔记读一遍，先给我一份提纲，每一节都写明它依据哪几篇笔记。提纲确认后按节起草 report.md，每个论断都对应到具体笔记；笔记没覆盖的地方单独标出来。
+```
+
+盘点这一步可以派一个只读子智能体去做，主智能体同时搭结构——写法见 [Agent 与 subagent](../customization/agents-and-subagents.md)。想要一个专门的写作界面，可以装 [Kiki Writing](../customization/plugins.md#官方插件) 插件，它提供手稿面板和续写草稿命令。
+
+要登录才能看的页面，或者本来得靠手工抄的数字，属于浏览器和数据源这两类活。浏览器控制有几条来源：用 [Kimi Browser Extension](../customization/plugins.md#kimi-browser-extension) 驱动你已经在用的浏览器，这还要去扩展商店装好配套扩展并在那里批准；让 Kiki 自己跑一个浏览器；用 CDP 接一个已经在跑的浏览器；或者选你自己装好的 Ego Lite。每条路由见[浏览器控制](../guides/settings.md#浏览器控制)。行情、宏观、企业工商、文献和中文法律法规的查询来自 [Kimi Datasource](../customization/plugins.md#kimi-datasource) 插件，需要 Kimi Code OAuth 登录，查询消耗套餐额度。
+
+```text
+这几个产品页已经在我的浏览器里开着了。帮我做一张对照表，每个产品写价格、套餐和主要限制，每读一个页面截一张图。
+```
+
 ## 定时任务与提醒
 
 在交互式会话里，直接让 Agent 设一次性提醒或周期任务。它会按你的本地时区生成 cron 表达式（描述「什么时间运行」的标准写法），到点把 prompt 重新发进同一个会话：
@@ -141,6 +165,6 @@ src/api 下所有公开函数里，凡是没有 docstring 的都补上文档注�
 
 ## 下一步
 
-- [Agent 与 subagent](../customization/agents.md) — 如何让 Agent 派发子任务并行处理
+- [Agent 与 subagent](../customization/agents-and-subagents.md) — 如何让 Agent 派发子任务并行处理
 - [Hooks](../customization/hooks.md) — 在任务完成等节点触发本地脚本
 - [内置工具](../reference/tools.md) — Agent 可调用的全部工具参考

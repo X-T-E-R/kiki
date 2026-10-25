@@ -74,3 +74,9 @@
 - 三份 wire 折叠口径（transcript wireAdapter / transcript-live liveAdapter / kap-server wireExtract）需要后续收敛到 transcript 读模型——观察项，未评估工作量。
 - #3694 与 #3531 的验收跨切片（session index 与搜索索引同源 minidb wipe；CLI print 生命周期），单独做一半会造成两套不一致的"不可恢复"判定。
 - merge-log 落点按仓规创建本文件（此前 EasyAgent 工作区的同名文件是战役合并日志，非本表）。
+
+## 2026-10-25 provider 凭证来源接续
+
+| 日期 | 上游提交 | 判定 | 本地 HEAD（接续基线） | 备注 |
+| --- | --- | --- | --- | --- |
+| 2026-10-25 | [c5ad17f06aa12702d2b30dff63acba9ed08f688d](https://github.com/MoonshotAI/kimi-code/commit/c5ad17f06aa12702d2b30dff63acba9ed08f688d) `api_key_env` | adapt | `070832863` | 显式变量名接入 config/schema、SDK、模型鉴权、readiness、模型发现与 provider create/patch/clear。保留模型凭证、provider inline 优先级及未声明时原 env bag 合同；同名 bag 空值不回落，不隐式读取 vendor shell key，不复制运行时值进凭证存储。共享 resolver、fake-env 请求/冷读/失败脱敏回归及双语配置参考随实现交付；无 GUI、默认模型选择或协议路由变更。 |

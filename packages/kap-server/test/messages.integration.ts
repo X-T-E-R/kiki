@@ -5,21 +5,32 @@ import { join } from 'node:path';
 import {
   AGENT_WIRE_RECORD_KEY,
   IAgentContextMemoryService,
+  IAgentExecutionService,
   IAgentLifecycleService,
+  IAgentProfileService,
+  IAgentScopeContext,
+  IAgentPromptService,
   IAppendLogStore,
   IAuthSummaryService,
   IFileSystemStorageService,
   IWireService,
+  ensureMainAgent,
   getLiveSessionById,
   IModelCatalog,
   ISessionInteractionService,
+  ISessionManager,
+  IWorkspaceInstanceManager,
+  closeSessionById,
   resumeSessionById,
   type ContextMessage,
   type ScopeSeed,
+  type WireRecord,
 } from '@kiki/agent-core-v2';
+import type { Model } from '@kiki/agent-core-v2/kosong/model/catalog';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { type RunningServer, startServer } from '../src/start';
+import { TranscriptService } from '../src/services/transcript/transcriptService';
 import { MESSAGE_HISTORY_CACHE_MAX_ENTRY_BYTES } from '../src/services/messages/messageHistory';
 import { PROMPT_BODY_LIMIT_BYTES } from '../src/routes/prompts';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -47,6 +58,14 @@ interface PageWire {
   has_more: boolean;
 }
 
+interface PromptWire {
+  prompt_id: string;
+  user_message_id: string;
+  status: string;
+  content: unknown;
+  created_at: string;
+}
+
 const MSG_ID = /^msg_.+/;
 
 describe('server-v2 /api/sessions/{sid}/messages', () => {
@@ -54,17 +73,61 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
   let home: string | undefined;
   let base: string;
   let seeds: ScopeSeed | undefined;
+  let modelRequestCount = 0;
+  let modelRequestMode: 'complete' | 'pending' = 'complete';
+  let modelRequestStarted: (() => void) | undefined;
 
   beforeEach(async () => {
+    modelRequestCount = 0;
+    modelRequestMode = 'complete';
+    modelRequestStarted = undefined;
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-messages-'));
+    const fixtureModel = {
+      id: 'stub',
+      name: 'stub',
+      aliases: [],
+      protocol: 'openai',
+      headers: {},
+      capabilities: {
+        image_in: false,
+        video_in: false,
+        audio_in: false,
+        thinking: true,
+        tool_use: false,
+        max_context_tokens: 100000,
+      },
+      maxContextSize: 100000,
+      supportEfforts: ['low', 'high'],
+      defaultEffort: 'high',
+      alwaysThinking: false,
+      providerName: 'stub',
+      imagePolicy: { acceptedTypes: new Set(['image/png']), convertUnsupported: 'off' },
+      authProvider: { getAuth: async () => ({ apiKey: 'fixture' }) },
+    } as Model;
     const modelCatalog: IModelCatalog = {
       _serviceBrand: undefined,
-      get: () => {
-        throw new Error('modelCatalog.get not exercised in this test');
-      },
-      getRequester: () => {
-        throw new Error('modelCatalog.getRequester not exercised in this test');
-      },
+      get: () => fixtureModel,
+      getRequester: () => ({
+        model: fixtureModel,
+        request: async function* (_input, signal) {
+          modelRequestCount += 1;
+          if (modelRequestMode === 'pending') {
+            modelRequestStarted?.();
+            yield { type: 'part' as const, part: { type: 'text' as const, text: 'partial answer' } };
+            await new Promise<void>((resolve) => {
+              if (signal?.aborted === true) resolve();
+              else signal?.addEventListener('abort', () => resolve(), { once: true });
+            });
+            signal?.throwIfAborted();
+          }
+          yield {
+            type: 'finish' as const,
+            message: { role: 'assistant' as const, content: [{ type: 'text' as const, text: 'fixture answer' }], toolCalls: [] },
+            providerFinishReason: 'completed' as const,
+          };
+        },
+      }),
+      getConnectionRequester: () => { throw new Error('not exercised'); },
       inspect: () => {
         throw new Error('modelCatalog.inspect not exercised in this test');
       },
@@ -131,12 +194,45 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     return (await res.json()) as Envelope<T>;
   }
 
+  async function uploadFixtureFile(bytes: Uint8Array, name: string, mediaType: string): Promise<{ id: string; size: number }> {
+    const form = new FormData();
+    form.set('file', new Blob([Uint8Array.from(bytes).buffer], { type: mediaType }), name);
+    const response = await fetch(`${base}/api/files`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer),
+      body: form,
+    } as never);
+    const body = (await response.json()) as Envelope<{ id: string; size: number }>;
+    expect(body.code, JSON.stringify(body)).toBe(0);
+    return body.data;
+  }
+
+  async function deleteFixtureFile(fileId: string): Promise<void> {
+    const response = await fetch(`${base}/api/files/${fileId}`, {
+      method: 'DELETE',
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    const body = (await response.json()) as Envelope<{ deleted: boolean }>;
+    expect(body.code, JSON.stringify(body)).toBe(0);
+    expect(body.data).toEqual({ deleted: true });
+  }
+
   async function cursor(sessionId: string): Promise<{ seq: number; epoch: string }> {
     const snapshot = await getJson<{ as_of_seq: number; epoch: string }>(
       `/api/sessions/${sessionId}/snapshot`,
     );
     expect(snapshot.body.code).toBe(0);
     return { seq: snapshot.body.data.as_of_seq, epoch: snapshot.body.data.epoch };
+  }
+
+  async function stableCursor(sessionId: string): Promise<{ seq: number; epoch: string }> {
+    return vi.waitFor(async () => {
+      const first = await cursor(sessionId);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const second = await cursor(sessionId);
+      expect(second).toEqual(first);
+      return second;
+    }, { timeout: 2_000, interval: 25 });
   }
 
   async function createSession(): Promise<string> {
@@ -148,6 +244,42 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     const body = (await res.json()) as Envelope<{ id: string }>;
     expect(body.code).toBe(0);
     return body.data.id;
+  }
+
+  async function waitForTerminal(main: Awaited<ReturnType<typeof ensureMainAgent>>): Promise<void> {
+    await main.accessor.get(IAgentExecutionService).settled();
+    await vi.waitFor(() => {
+      const prompts = main.accessor.get(IAgentPromptService).list();
+      expect(prompts.active).toBeUndefined();
+      expect(prompts.pending).toHaveLength(0);
+    });
+  }
+
+  async function createTerminalPrompt(text: string) {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const main = await ensureMainAgent(session);
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const submitted = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text }],
+    });
+    expect(submitted.code, JSON.stringify(submitted)).toBe(0);
+    expect(submitted.data).toMatchObject({ status: 'running' });
+    await vi.waitFor(() => expect(modelRequestCount).toBeGreaterThan(0), { timeout: 5_000 });
+    await waitForTerminal(main);
+    return { id, main, submitted, requestCount: () => modelRequestCount };
+  }
+
+  async function readMainWireRecords(
+    main: Awaited<ReturnType<typeof ensureMainAgent>>,
+  ): Promise<WireRecord[]> {
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const scope = main.accessor.get(IAgentScopeContext).scope();
+    await appendLog.flush(scope, AGENT_WIRE_RECORD_KEY);
+    const records: WireRecord[] = [];
+    for await (const record of appendLog.read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY)) records.push(record);
+    return records;
   }
 
   async function seedMainAgentMessages(
@@ -165,6 +297,113 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       await agent.accessor.get(IWireService).flush();
     }
   }
+
+  it('reads cold message pages and media without restoring a session or workspace', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'saved-user', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'saved' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'reply' }], toolCalls: [] },
+      { id: 'saved-image', role: 'user', origin: { kind: 'user' }, content: [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${Buffer.alloc(5000, 1).toString('base64')}` } }], toolCalls: [] },
+    ]);
+    const warm = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    await closeSessionById(server!.core.accessor, id);
+    await server!.close();
+    await boot();
+    const manager = server!.core.accessor.get(ISessionManager);
+    const acquire = vi.spyOn(manager, 'acquire');
+    const resume = vi.spyOn(manager, 'resume');
+    const workspaceAcquire = vi.spyOn(server!.core.accessor.get(IWorkspaceInstanceManager), 'acquire');
+    const read = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read');
+    try {
+      const cold = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=2`);
+      expect(cold.body.code, JSON.stringify(cold.body)).toBe(0);
+      expect(cold.body.data).toEqual({ items: warm.body.data.items.slice(0, 2), has_more: true });
+      const older = await getJson<PageWire>(`/api/sessions/${id}/messages?before_id=${cold.body.data.items.at(-1)!.id}`);
+      expect(older.body.data.items).toEqual(warm.body.data.items.slice(2));
+      const single = await getJson<MessageWire>(`/api/sessions/${id}/messages/saved-image`);
+      expect(single.body.data).toEqual(warm.body.data.items[0]);
+      expect((await getJson<null>(`/api/sessions/${id}/messages/missing`)).body.code).toBe(40403);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(resume).not.toHaveBeenCalled();
+      expect(workspaceAcquire).not.toHaveBeenCalled();
+      expect(manager.residencyReport?.()).toMatchObject({ liveSessions: 0, pinnedSessions: 0, pendingRestores: 0 });
+      expect(read.mock.calls.filter(([scope, key]) => scope.endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY)).toHaveLength(1);
+      await manager.resume(id);
+      const resumed = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+      expect(resumed.body.data).toEqual(warm.body.data);
+    } finally {
+      acquire.mockRestore();
+      resume.mockRestore();
+      workspaceAcquire.mockRestore();
+      read.mockRestore();
+    }
+  });
+
+  it('pins live message reads without invoking the restoring acquire path', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [{ role: 'user', content: [{ type: 'text', text: 'live' }], toolCalls: [] }]);
+    const manager = server!.core.accessor.get(ISessionManager);
+    const acquire = vi.spyOn(manager, 'acquire');
+    try {
+      const page = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+      expect(page.body.code).toBe(0);
+      expect(page.body.data.items[0]?.content).toEqual([{ type: 'text', text: 'live' }]);
+      expect(acquire).not.toHaveBeenCalled();
+      expect(manager.residencyReport?.().pinnedSessions).toBe(0);
+    } finally {
+      acquire.mockRestore();
+    }
+  });
+
+  it('cancels an in-flight cold message wire read without caching a partial transcript', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'saved-user', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'saved' }], toolCalls: [] },
+    ]);
+    await closeSessionById(server!.core.accessor, id);
+    await server!.close();
+    await boot();
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const original = appendLog.read.bind(appendLog);
+    let releaseRead = (): void => {};
+    let observed: AbortSignal | undefined;
+    const read = vi.spyOn(appendLog, 'read').mockImplementation((scope, key, options) => {
+      if (scope.endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY) {
+        if (options?.signal === undefined) throw new Error('cold wire read has no cancellation signal');
+        observed = options.signal;
+        const signal = options.signal;
+        const held = new Promise<void>((resolve) => {
+          releaseRead = resolve;
+          if (signal.aborted) resolve();
+          else signal.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return (async function* () {
+          await held;
+          if (signal.aborted) throw new DOMException('The operation was aborted', 'AbortError');
+          yield* original(scope, key, options);
+        })();
+      }
+      return original(scope, key, options);
+    });
+    const controller = new AbortController();
+    const pending = fetch(`${base}/api/sessions/${id}/messages`, {
+      headers: authHeaders(server as RunningServer),
+      signal: controller.signal,
+    });
+    void pending.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(observed).toBeDefined());
+      controller.abort();
+      await vi.waitFor(() => expect(observed?.aborted).toBe(true));
+      await expect(pending).rejects.toThrow();
+    } finally {
+      releaseRead();
+      read.mockRestore();
+    }
+    const cold = await getJson<PageWire>(`/api/sessions/${id}/messages`);
+    expect(cold.body.code).toBe(0);
+    expect(cold.body.data.items[0]?.content).toEqual([{ type: 'text', text: 'saved' }]);
+  });
 
   it('returns an empty page when the session has no main agent', async () => {
     const id = await createSession();
@@ -267,6 +506,8 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       `/api/sessions/${id}/messages/user_1:edit`,
       {
         content: [{ type: 'text', text: 'first edited' }],
+        model: 'stub',
+        thinking: 'high',
         expected_cursor: await cursor(id),
       },
     );
@@ -274,8 +515,10 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(result.data.user_message_id).toBe('user_1');
 
     const listed = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
-    const userMessages = listed.body.data.items.filter((message) => message.role === 'user');
-    expect(userMessages).toHaveLength(1);
+    const userMessages = listed.body.data.items.filter((message) =>
+      message.role === 'user' && (message.metadata?.['origin'] as { kind?: string } | undefined)?.kind === 'user',
+    );
+    expect(userMessages, JSON.stringify(listed.body.data.items)).toHaveLength(1);
     expect(userMessages[0]).toMatchObject({
       id: 'user_1',
       content: [{ type: 'text', text: 'first edited' }],
@@ -291,9 +534,38 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       .filter((line) => line.kind === 'event')
       .map((line) => line.envelope?.type);
     expect(eventTypes.indexOf('event.session.history_rewritten')).toBeGreaterThanOrEqual(0);
-    expect(eventTypes.indexOf('turn.started')).toBeGreaterThan(
+    expect(eventTypes.indexOf('turn.started'), journal).toBeGreaterThan(
       eventTypes.indexOf('event.session.history_rewritten'),
     );
+  });
+
+  it('reports an edit-resend launch failure without emitting turn.started when no model is configured', async () => {
+    const id = await createSession();
+    await seedMainAgentMessages(id, [
+      { id: 'unbound_user', role: 'user', content: [{ type: 'text', text: 'before' }], toolCalls: [], origin: { kind: 'user' } },
+    ]);
+    const result = await postJson<PromptWire>(`/api/sessions/${id}/messages/unbound_user:edit`, {
+      operation_id: 'unbound-edit',
+      content: [{ type: 'text', text: 'after' }],
+      expected_cursor: await cursor(id),
+    });
+    expect(result.code, JSON.stringify(result)).toBe(0);
+    const main = await ensureMainAgent(getLiveSessionById(server!.core.accessor, id)!);
+    await waitForTerminal(main);
+    expect(main.accessor.get(IAgentPromptService).lookup(result.data.prompt_id)).toMatchObject({
+      phase: 'terminal', terminal: { state: 'failed', result: { type: 'failed', error: { code: 'model.not_configured' } } },
+    });
+    await cursor(id);
+    const journal = await readFile(join(home as string, 'server', 'events', `${id}.jsonl`), 'utf8');
+    const events = journal.trim().split('\n')
+      .map((line) => JSON.parse(line) as { kind: string; envelope?: { type: string; payload?: unknown } })
+      .filter((line) => line.kind === 'event')
+      .map((line) => line.envelope!);
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'prompt.completed', payload: expect.objectContaining({ reason: 'failed', error: expect.objectContaining({ code: 'model.not_configured' }) }),
+    }));
+    expect(events.some((event) => event.type === 'turn.started')).toBe(false);
+    expect(modelRequestCount).toBe(0);
   });
 
   it('applies the prompt-sized body budget to edit-resend media payloads', async () => {
@@ -814,6 +1086,278 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
     expect(second.body.data.items).toHaveLength(1);
     expect(second.body.data.items[0]?.content[0]?.['text']).toBe(bigText);
     expect(reads).toBe(1);
+  });
+
+  it('keeps message edit preflight failures from changing a real prompt history', async () => {
+    const { id, submitted } = await createTerminalPrompt('original prompt');
+    const before = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+    const result = await postJson(`/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`, {
+      operation_id: 'message-edit-preflight',
+      content: [{
+        type: 'file',
+        file_id: 'missing-after-real-prompt',
+        name: 'missing.txt',
+        media_type: 'text/plain',
+        size: 1,
+      }],
+      expected_cursor: await stableCursor(id),
+    });
+    expect(result.code).toBe(40407);
+    const after = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+    expect(after.body.data.items).toEqual(before.body.data.items);
+  });
+
+  it('edits a real prompt with a new run id and replays the same operation receipt', async () => {
+    const { id, main, submitted, requestCount } = await createTerminalPrompt('original prompt');
+    const expected_cursor = await stableCursor(id);
+    const body = {
+      operation_id: 'message-edit-replay',
+      content: [{ type: 'text', text: 'edited prompt' }],
+      expected_cursor,
+    };
+    const edited = await postJson<PromptWire>(
+      `/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`,
+      body,
+    );
+    expect(edited.code, JSON.stringify(edited)).toBe(0);
+    expect(edited.data.prompt_id).not.toBe(submitted.data.prompt_id);
+    expect(edited.data.user_message_id).toBe(submitted.data.user_message_id);
+    await waitForTerminal(main);
+    expect(requestCount()).toBe(2);
+
+    const replay = await postJson<PromptWire>(
+      `/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`,
+      body,
+    );
+    expect(replay.code, JSON.stringify(replay)).toBe(0);
+    expect(replay.data).toEqual(edited.data);
+    expect(requestCount()).toBe(2);
+
+    const mismatch = await postJson(
+      `/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`,
+      { ...body, content: [{ type: 'text', text: 'different payload' }] },
+    );
+    expect(mismatch.code).toBe(40938);
+    const listed = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+    expect(listed.body.data.items.find((message) => message.id === submitted.data.user_message_id)).toMatchObject({
+      role: 'user',
+      content: [{ type: 'text', text: 'edited prompt' }],
+    });
+  });
+
+  it('replays an after-commit edit failure without duplicating the rewrite', async () => {
+    const { id, main, submitted, requestCount } = await createTerminalPrompt('original prompt');
+    const reconcile = vi.spyOn(TranscriptService.prototype, 'reconcileAfterRewrite').mockImplementationOnce(async () => {
+      throw new Error('fixture transcript reconcile failed after history commit');
+    });
+    try {
+      const body = {
+        operation_id: 'message-edit-after-commit-replay',
+        content: [{ type: 'text', text: 'edited after commit failure' }],
+        expected_cursor: await stableCursor(id),
+      };
+      const edited = await postJson<PromptWire>(
+        `/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`,
+        body,
+      );
+      expect(edited.code, JSON.stringify(edited)).toBe(0);
+      expect(['running', 'queued', 'blocked']).toContain(edited.data.status);
+      expect(edited.data.user_message_id).toBe(submitted.data.user_message_id);
+      await waitForTerminal(main);
+      expect(requestCount()).toBe(2);
+
+      const listed = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+      expect(listed.body.data.items.find((message) => message.id === submitted.data.user_message_id)).toMatchObject({
+        role: 'user',
+        content: [{ type: 'text', text: 'edited after commit failure' }],
+      });
+      const wire = await readMainWireRecords(main);
+      expect(wire).toContainEqual(expect.objectContaining({
+        type: 'context.append_message',
+        message: expect.objectContaining({
+          id: submitted.data.user_message_id,
+          content: [{ type: 'text', text: 'original prompt' }],
+        }),
+      }));
+      const undo = wire.find((record) => record.type === 'context.undo');
+      expect(undo).toMatchObject({
+        count: expect.any(Number),
+        replacementPrompt: {
+          schemaVersion: 1,
+          promptId: edited.data.prompt_id,
+          userMessageId: submitted.data.user_message_id,
+          createdAt: expect.any(String),
+          retryFingerprint: expect.any(String),
+          message: {
+            id: submitted.data.user_message_id,
+            role: 'user',
+            content: [{ type: 'text', text: 'edited after commit failure' }],
+            toolCalls: [],
+          },
+          alreadyMaterialized: true,
+          appendTiming: 'agent_idle',
+          revision: 0,
+          queueIndex: expect.any(Number),
+        },
+      });
+
+      const replay = await postJson<PromptWire>(
+        `/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`,
+        body,
+      );
+      expect(replay.code, JSON.stringify(replay)).toBe(0);
+      expect(replay.data).toEqual(edited.data);
+      expect(requestCount()).toBe(2);
+      expect(reconcile).toHaveBeenCalledTimes(1);
+    } finally {
+      reconcile.mockRestore();
+    }
+  });
+
+  it('regenerates after aborting a real pending assistant turn', async () => {
+    modelRequestMode = 'pending';
+    let requestStarted!: () => void;
+    const requestReady = new Promise<void>((resolve) => { requestStarted = resolve; });
+    modelRequestStarted = requestStarted;
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const main = await ensureMainAgent(session);
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const submitted = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, {
+      content: [{ type: 'text', text: 'interrupt me' }],
+    });
+    expect(submitted.code, JSON.stringify(submitted)).toBe(0);
+    await requestReady;
+    const aborted = await postJson<{ aborted: boolean }>(
+      `/api/sessions/${id}/prompts/${submitted.data.prompt_id}:abort`,
+      {},
+    );
+    expect(aborted.code, JSON.stringify(aborted)).toBe(0);
+    expect(aborted.data).toEqual({ aborted: true });
+    await waitForTerminal(main);
+
+    const interrupted = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+    const assistant = interrupted.body.data.items.find((message) => message.role === 'assistant');
+    expect(assistant).toMatchObject({ content: [{ type: 'text', text: 'partial answer' }] });
+    modelRequestMode = 'complete';
+    const regenerated = await postJson<PromptWire>(
+      `/api/sessions/${id}/messages/${assistant!.id}:regenerate`,
+      { operation_id: 'message-regenerate-after-abort', expected_cursor: await stableCursor(id) },
+    );
+    expect(regenerated.code, JSON.stringify(regenerated)).toBe(0);
+    expect(regenerated.data.prompt_id).not.toBe(submitted.data.prompt_id);
+    expect(regenerated.data.user_message_id).toBe(submitted.data.user_message_id);
+    await waitForTerminal(main);
+    expect(modelRequestCount).toBe(2);
+    expect(main.accessor.get(IAgentPromptService).list()).toMatchObject({ active: undefined, pending: [] });
+    const final = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+    expect(final.body.data.items.find((message) => message.id === submitted.data.user_message_id)).toMatchObject({
+      content: [{ type: 'text', text: 'interrupt me' }],
+    });
+    expect(final.body.data.items.some((message) => message.content.some((part) => part['text'] === 'fixture answer'))).toBe(true);
+  });
+
+  it('regenerates a real terminal prompt as a new run and replays without executing again', async () => {
+    const { id, main, submitted, requestCount } = await createTerminalPrompt('original prompt');
+    const initial = await getJson<PageWire>(`/api/sessions/${id}/messages?page_size=100`);
+    const assistant = initial.body.data.items.find((message) => message.role === 'assistant');
+    expect(assistant).toBeDefined();
+    const body = {
+      operation_id: 'message-regenerate-replay',
+      expected_cursor: await stableCursor(id),
+    };
+    const regenerated = await postJson<PromptWire>(
+      `/api/sessions/${id}/messages/${assistant!.id}:regenerate`,
+      body,
+    );
+    expect(regenerated.code, JSON.stringify(regenerated)).toBe(0);
+    expect(regenerated.data.prompt_id).not.toBe(submitted.data.prompt_id);
+    expect(regenerated.data.user_message_id).toBe(submitted.data.user_message_id);
+    await waitForTerminal(main);
+    expect(requestCount()).toBe(2);
+
+    const replay = await postJson<PromptWire>(
+      `/api/sessions/${id}/messages/${assistant!.id}:regenerate`,
+      body,
+    );
+    expect(replay.code, JSON.stringify(replay)).toBe(0);
+    expect(replay.data).toEqual(regenerated.data);
+    expect(requestCount()).toBe(2);
+  });
+
+  it('replays a main attachment and text presentation after the source file is deleted', async () => {
+    const id = await createSession();
+    const session = getLiveSessionById(server!.core.accessor, id);
+    if (session === undefined) throw new Error(`session ${id} not found`);
+    const main = await ensureMainAgent(session);
+    await main.accessor.get(IAgentProfileService).bind({ profile: 'agent', model: 'stub', thinking: 'high' });
+    const bytes = new TextEncoder().encode('attachment fixture');
+    const uploaded = await uploadFixtureFile(bytes, 'fixture.txt', 'text/plain');
+    const text = 'inspect attachment';
+    const presentation = {
+      spans: [{ start: 0, end: text.length, kind: 'attachment' as const, quote: text }],
+    };
+    const body = {
+      prompt_id: 'main-attachment-retry',
+      content: [
+        { type: 'text' as const, text, presentation },
+        { type: 'file' as const, file_id: uploaded.id, name: 'fixture.txt', media_type: 'text/plain', size: bytes.byteLength },
+      ],
+    };
+
+    const [first, concurrent] = await Promise.all([
+      postJson<PromptWire>(`/api/sessions/${id}/prompts`, body),
+      postJson<PromptWire>(`/api/sessions/${id}/prompts`, body),
+    ]);
+    expect(first.code, JSON.stringify(first)).toBe(0);
+    expect(['running', 'queued']).toContain(first.data.status);
+    expect(first.data.user_message_id).toBe(first.data.prompt_id);
+    expect(first.data).toMatchObject({ origin: { kind: 'user' } });
+    expect(first.data.content).toEqual([
+      { type: 'text', text, presentation },
+      expect.objectContaining({
+        type: 'text', text: expect.stringContaining('Attached file "fixture.txt"'),
+        presentation: { spans: [expect.objectContaining({
+          start: 0, kind: 'attachment', attachment: expect.objectContaining({
+            name: 'fixture.txt', mime: 'text/plain', size: bytes.byteLength, path: expect.any(String),
+          }),
+        })] },
+      }),
+    ]);
+    expect(concurrent.code, JSON.stringify(concurrent)).toBe(0);
+    expect(concurrent.data).toEqual(first.data);
+    await vi.waitFor(() => expect(modelRequestCount).toBeGreaterThan(0), { timeout: 5_000 });
+    await waitForTerminal(main);
+    expect(modelRequestCount).toBe(1);
+
+    await deleteFixtureFile(uploaded.id);
+    const replay = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, body);
+    expect(replay.code, JSON.stringify(replay)).toBe(0);
+    expect(replay.data).toEqual(first.data);
+    expect(replay.data.user_message_id).toBe(first.data.user_message_id);
+    expect(modelRequestCount).toBe(1);
+
+    const mismatch = await postJson(
+      `/api/sessions/${id}/prompts`,
+      { ...body, content: [{ type: 'text', text: 'different', presentation }, body.content[1] ] },
+    );
+    expect(mismatch.code).toBe(40938);
+    const changedPresentation = await postJson(`/api/sessions/${id}/prompts`, {
+      ...body, content: [{ type: 'text', text, presentation: { spans: [{ ...presentation.spans[0], quote: 'changed' }] } }, body.content[1]],
+    });
+    expect(changedPresentation.code).toBe(40938);
+    const fresh = await postJson(`/api/sessions/${id}/prompts`, { ...body, prompt_id: 'fresh-attachment' });
+    expect(fresh.code).toBe(40407);
+    expect(modelRequestCount).toBe(1);
+
+    await server!.close();
+    server = undefined;
+    await boot();
+    const restoredReplay = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, body);
+    expect(restoredReplay.code, JSON.stringify(restoredReplay)).toBe(0);
+    expect(restoredReplay.data).toEqual(first.data);
+    expect(modelRequestCount).toBe(1);
   });
 
   it('does not cache a history refresh whose admission crosses any session archive (global generation guard)', async () => {

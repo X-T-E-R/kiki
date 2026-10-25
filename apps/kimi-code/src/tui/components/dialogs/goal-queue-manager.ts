@@ -261,7 +261,7 @@ export class GoalQueueEditDialogComponent extends Container implements Focusable
     );
     const inputLines = this.input.render(innerWidth);
     const footer = truncateToWidth(
-      currentTheme.fg('textDim', 'Enter submit · Shift-Enter/Ctrl-J newline · Esc cancel'),
+      currentTheme.fg('textDim', 'Enter submit · Shift+Enter/Ctrl+J newline · Esc cancel'),
       innerWidth,
       ELLIPSIS,
     );

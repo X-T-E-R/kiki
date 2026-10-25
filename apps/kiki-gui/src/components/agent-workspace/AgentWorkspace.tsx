@@ -18,8 +18,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 import { createPortal } from 'react-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
-import type { PermissionMode } from '@kiki/protocol';
-import { buildPromptContent, buildSkillActivation, flushDrafts, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment } from '@kiki/session-core/composer';
+import type { PermissionMode, PromptDeliveryReason, PromptItem } from '@kiki/protocol';
+import { buildPromptContent, buildSkillActivation, flushDrafts, isNativeExecutor, readComposerState, readDraft, recoverSubmittedDraft, subscribeDraftAppends, writeComposerState, writeDraft, type ComposerAttachment, type ExecutionChoice } from '@kiki/session-core/composer';
 import {
   agentPath,
   createViewState,
@@ -43,6 +43,7 @@ import {
 } from '@kiki/session-core/settings';
 
 import { useI18n } from '../../i18n';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import type { ContentRef } from '@kiki/transcript';
 import { ExternalAgentAttachmentUnsupportedError, NativeChildPromptSendError, isDefinitivePromptRejection, type ModelSwitchMode } from '../../lib/client';
 import { ModelSwitchDialog } from '../model-switch/ModelSwitchDialog';
@@ -62,6 +63,7 @@ import {
   type ConversationShellSlots,
 } from '../ConversationShell';
 import { Composer } from '../Composer';
+import { useLastResponseAt } from '../composerWorking';
 import type { ContextMeterUsage } from '../ContextMeter';
 import { useContextMeterAutoCompact } from '../useContextMeterAutoCompact';
 import { Icon } from '../icons';
@@ -103,6 +105,82 @@ export interface AgentWorkspaceNavigation {
     readonly toggle: () => void;
     readonly available?: boolean;
   };
+}
+
+/**
+ * "Send now" delivery feedback, shared by the session composer and this
+ * workspace's child composer: the receipt names why a message did not join
+ * the running turn, and a late durable read can still supply the reason when
+ * the first acknowledgement has none. The copy follows that reason — it is
+ * never inferred from a streaming or tool phase, which do not reject a steer.
+ */
+type SendNowOutcome = Awaited<ReturnType<SessionController['sendPromptNow']>>['outcome'];
+
+const SEND_NOW_QUEUED_KEYS: Readonly<Record<PromptDeliveryReason, I18nKey>> = {
+  no_active_turn: 'sv.steerQueuedNoActiveTurn',
+  target_changed: 'sv.steerQueuedTargetChanged',
+  prompt_no_longer_pending: 'sv.steerQueuedNotPending',
+  steer_rejected: 'sv.steerQueuedRejected',
+  external_retry: 'sv.steerQueuedExternal',
+  executor_deferred: 'sv.steerQueuedExternal',
+  model_switch_boundary: 'sv.steerQueuedModelBoundary',
+};
+
+export function sendNowQueuedNotice(reason: PromptDeliveryReason | undefined): I18nKey {
+  return reason === undefined ? 'sv.steerQueued' : SEND_NOW_QUEUED_KEYS[reason];
+}
+
+export function sendNowNotice(
+  outcome: SendNowOutcome,
+  reason: PromptDeliveryReason | undefined,
+): { readonly tone: 'info'; readonly key: I18nKey } | undefined {
+  if (outcome === 'held') return { tone: 'info', key: 'sv.submissionRecovery.server' };
+  if (outcome === 'queued') return { tone: 'info', key: sendNowQueuedNotice(reason) };
+  return undefined;
+}
+
+/** Receipts a late durable read can still explain; bounded per mounted view. */
+const MAX_OPEN_NOW_RECEIPTS = 20;
+
+/** What a still-open "Send now" receipt should do on this snapshot. */
+type NowReceiptDecision =
+  | { readonly kind: 'drop' }
+  | { readonly kind: 'wait' }
+  | { readonly kind: 'report'; readonly reason: PromptDeliveryReason };
+
+/**
+ * One rule for both composers: a canonical row owns the message first, then
+ * the durable record decides while the prompt is still queued. Only an
+ * admitted, queued record with a reason is final — a restoring/held record
+ * that still carries an older delivery field is not. A missing record is not
+ * proof of delivery either: the durable read may still be in flight.
+ */
+export function nowReceiptDecision(input: {
+  readonly promptId: string;
+  readonly reported: string | null;
+  readonly ingress: readonly PromptItem[];
+  readonly settled: boolean;
+}): NowReceiptDecision {
+  if (input.settled) return { kind: 'drop' };
+  const record = input.ingress.find((item) => item.prompt_id === input.promptId);
+  if (record === undefined) return { kind: 'wait' };
+  if (record.admission === 'failed' || record.admission === 'cancelled'
+    || record.status === 'running' || record.delivery_state === 'steered') return { kind: 'drop' };
+  if (record.admission !== 'admitted' || record.delivery_state !== 'queued' || record.delivery_reason === undefined) {
+    return { kind: 'wait' };
+  }
+  if (input.reported !== null) return { kind: 'drop' };
+  return { kind: 'report', reason: record.delivery_reason };
+}
+
+/** A queued Send now that still carries an open receipt for a later reason. */
+export function trackOpenNowReceipt(receipts: Map<string, string | null>, promptId: string, reason: string | null): void {
+  receipts.set(promptId, reason);
+  while (receipts.size > MAX_OPEN_NOW_RECEIPTS) {
+    const oldest = receipts.keys().next().value;
+    if (oldest === undefined) break;
+    receipts.delete(oldest);
+  }
 }
 
 export interface AgentWorkspaceProps {
@@ -276,6 +354,30 @@ export function resolveRunningSubagentTask(input: {
 }
 
 const emptyAgentView = createViewState('');
+
+/**
+ * A routed agent may be absent from the session's recent roster while its
+ * persisted transcript is still readable. Continuation needs stronger
+ * evidence than the route itself: an opened body, an effective identity, a
+ * terminal status, or an authoritative full read. A partial empty read is
+ * kept read-only and settles as an unavailable target instead of becoming a
+ * send gate by accident.
+ */
+export function agentContinuationAvailable(input: {
+  readonly controller: SessionController | null;
+  readonly node: AgentTreeNode | undefined;
+  readonly subagent: SubagentBlock | undefined;
+  readonly state: Pick<SessionViewState, 'blocks' | 'model' | 'historyCoverageKind' | 'transcriptReady'>;
+}): boolean {
+  if (input.controller === null) return input.node !== undefined || input.subagent !== undefined;
+  // Test/legacy embeddings may not expose view retention and already provide
+  // an authoritative forest; the real SessionController always has it.
+  if (typeof input.controller.retainAgentView === 'function' && !input.state.transcriptReady) return false;
+  if (input.state.blocks.length > 0 || input.state.model !== undefined) return true;
+  const status = input.node?.status ?? input.subagent?.status;
+  if (status !== undefined && status !== 'unknown') return true;
+  return input.state.historyCoverageKind === 'full';
+}
 
 export function WorkspaceHeader({ children, main = false }: { children: ReactNode; main?: boolean }) {
   // A quiet bar on the sheet's own ground: no rule under it — the sheet edge
@@ -518,7 +620,7 @@ function ChildAgentWorkspace({
   mediaPreviewProvider: MediaPreviewProvider,
 }: WorkspaceCompositionProps) {
   const { t } = useI18n();
-  const { client, scopeId } = useConnection();
+  const { client, klient, scopeId } = useConnection();
   const queryClient = useQueryClient();
   // 派发处 is an explicit visit, not a plain scroll: the arrow returns to what
   // the reader was looking at before the jump.
@@ -559,6 +661,12 @@ function ChildAgentWorkspace({
   const pendingSendRef = useRef<{
     scope: string; payload: string; key: string; afterModelSwitch: string | undefined;
   } | null>(null);
+  // "Send now" receipts still open to a late durable read: prompt id → the
+  // reason already reported (null = only the generic queued notice went out).
+  const nowReceiptsRef = useRef(new Map<string, string | null>());
+  // Re-read the ingress snapshot after a receipt registers, even when the
+  // controller had already published it before this promise settled.
+  const [nowReceiptTick, setNowReceiptTick] = useState(0);
   const composerOwnerActive = useRef(true);
   useEffect(() => {
     composerOwnerActive.current = true;
@@ -628,10 +736,21 @@ function ChildAgentWorkspace({
       : emptyAgentView,
   );
 
+  const workspaceViewId = useMemo(() => `workspace:${sessionId}:${agentId}`, [sessionId, agentId]);
+  useEffect(() => {
+    if (controller === null || typeof controller.retainAgentView !== 'function') return;
+    controller.retainAgentView(workspaceViewId, agentId, transcriptVisible ? 'delta' : 'off');
+    return () => { controller.releaseAgentView?.(workspaceViewId); };
+  }, [controller, workspaceViewId, agentId, transcriptVisible]);
+  useEffect(() => {
+    if (controller === null || typeof controller.updateAgentView !== 'function') return;
+    controller.updateAgentView(workspaceViewId, transcriptVisible ? 'delta' : 'off');
+  }, [controller, workspaceViewId, transcriptVisible]);
+
   // Same query key as the session view: one catalog fetch, shared cache.
-  const handleLoadOlder = useCallback(async (): Promise<boolean> => {
+  const handleLoadOlder = useCallback(async (signal?: AbortSignal): Promise<boolean> => {
     if (controller === null) return false;
-    return controller.loadOlderMessages(agentId);
+    return controller.loadOlderMessages(agentId, signal);
   }, [controller, agentId]);
   const handleResolveApproval = useCallback(
     (
@@ -670,6 +789,34 @@ function ChildAgentWorkspace({
       block.kind === 'subagent' && block.subagentId === agentId,
   );
   const crumbs = useMemo(() => agentPath(forest, agentId), [forest, agentId]);
+  const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
+  const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
+  const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
+  const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
+  const resolvedCrumbs = useMemo(() => {
+    if (crumbs.length > 0) return crumbs;
+    const sessionLabel = sessionState.session?.title || t('sv.sessionCrumb');
+    const mainNode: AgentTreeNode = {
+      agentId: MAIN_AGENT_ID,
+      name: 'main',
+      label: sessionLabel,
+      status: 'completed',
+      busy: false,
+      toolCallCount: 0,
+      childIds: [agentId],
+    };
+    const childNode: AgentTreeNode = {
+      agentId,
+      parentAgentId: MAIN_AGENT_ID,
+      name: displayName,
+      label: displayName,
+      status: selectedStatus ?? 'completed',
+      busy: headerBusy,
+      toolCallCount: 0,
+      childIds: [],
+    };
+    return [mainNode, childNode];
+  }, [crumbs, agentId, sessionState.session?.title, t, displayName, selectedStatus, headerBusy]);
 
   // Parent jump-back: navigate to the spawning agent's timeline, then locate
   // this agent's card there (the locate entry waits for the target view to
@@ -681,9 +828,6 @@ function ChildAgentWorkspace({
     const spawn = locateSpawnTarget(sessionId, agentId, spawnParentId);
     navigateTimeline(spawn.target, { ...spawn.options, route: spawn.route });
   };
-  const headerBusy = selectedNode?.busy === true || agentLiveState.busy;
-  const displayName = selectedNode?.label ?? selectedSubagent?.name ?? agentId;
-  const displayModel = agentLiveState.model ?? selectedNode?.model ?? selectedSubagent?.model;
   // The child run is a task on the PARENT agent's task service; nested agents
   // therefore need the parent's per-agent snapshot rather than the main one.
   const { ownerAgentId, task: runningAgentTask } = resolveRunningSubagentTask({
@@ -692,12 +836,30 @@ function ChildAgentWorkspace({
     mainTasks: sessionState.tasks,
     parentTasks: parentAgentState.tasks,
   });
-  // Sendable whenever the forest can still resolve this agent: a closed child
-  // (completed / cancelled / failed) is a wakeable target the engine resumes on
-  // a new prompt, so terminal status is not an input gate. Only a node the
-  // forest does not know at all is genuinely unreachable.
-  const agentKnown = selectedNode !== undefined;
-  const composerDisabled = !agentKnown;
+  // A terminal child remains wakeable, but a route alone is not permission to
+  // continue it. Old persisted bodies can establish identity after the recent
+  // roster has already dropped the row; a partial empty read cannot.
+  const agentKnown = agentContinuationAvailable({
+    controller,
+    node: selectedNode,
+    subagent: selectedSubagent,
+    state: agentLiveState,
+  });
+  const reportedExecutorId = selectedNode?.executorId ?? selectedSubagent?.executorId;
+  const executorBindingQuery = useQuery({
+    queryKey: ['agentExecutor', scopeId, sessionId, agentId],
+    queryFn: () => klient.session(sessionId).getAgentExecutor(agentId),
+    enabled: agentKnown && reportedExecutorId === undefined,
+    staleTime: 30_000,
+    retry: false,
+  });
+  const executorId = reportedExecutorId ?? (executorBindingQuery.isSuccess ? executorBindingQuery.data ?? 'native' : undefined);
+  const externalExecutor = executorId !== undefined && !isNativeExecutor(executorId);
+  const childExecution: ExecutionChoice | undefined = executorId === undefined ? undefined : {
+    executor: executorId, profile: undefined, overrides: displayModel === undefined ? undefined : { model: displayModel },
+  };
+  const agentReadUnavailable = controller !== null && agentLiveState.transcriptReady && !agentKnown;
+  const composerDisabled = !agentKnown || executorId === undefined;
   const handleComposerSend = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
@@ -822,7 +984,15 @@ function ChildAgentWorkspace({
     setAttachments([]);
     try {
       const result = await controller.sendPromptNow({ agentId, text, content });
-      if (result.outcome === 'queued') pushToast({ tone: 'info', text: t('sv.steerTurnEnded') });
+      const notice = sendNowNotice(result.outcome, result.reason);
+      if (notice !== undefined) pushToast({ tone: notice.tone, text: t(notice.key) });
+      // A queued acknowledgement already carries its final reason; only
+      // restoring/held receipts are open to a later durable read.
+      if (result.outcome === 'restoring' || result.outcome === 'held') {
+        // Neither carries a reason yet: leave the receipt open for the final one.
+        trackOpenNowReceipt(nowReceiptsRef.current, result.promptId, null);
+        setNowReceiptTick((tick) => tick + 1);
+      }
     } catch (error) {
       const reason = error instanceof SendNowError ? error.reason : 'submit';
       if (reason !== 'unknown') recoverSubmittedDraft(draftKey, text, composerAttachments);
@@ -835,6 +1005,28 @@ function ChildAgentWorkspace({
       });
     }
   };
+  // The first acknowledgement of a durable steer is not the last word: keep
+  // reading the receipt and explain the final reason when it lands. A prompt
+  // that started, steered or reached this agent's transcript is owned by it,
+  // so the pending explanation goes away instead of re-attaching.
+  useEffect(() => {
+    const tracked = nowReceiptsRef.current;
+    if (tracked.size === 0) return;
+    const ingress = sessionState.durableIngress ?? [];
+    for (const [promptId, reported] of tracked) {
+      const decision = nowReceiptDecision({
+        promptId, reported, ingress,
+        settled: agentLiveState.blocks.some((block) => block.kind === 'user' && block.promptId === promptId && block.promptStatus !== 'queued'),
+      });
+      if (decision.kind === 'wait') continue;
+      if (decision.kind === 'drop') {
+        tracked.delete(promptId);
+        continue;
+      }
+      tracked.set(promptId, decision.reason);
+      pushToast({ tone: 'info', text: t(sendNowQueuedNotice(decision.reason)) });
+    }
+  }, [agentLiveState.blocks, sessionState.durableIngress, nowReceiptTick, t]);
   const handleComposerSendBusy = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
@@ -1001,10 +1193,10 @@ function ChildAgentWorkspace({
   }), [agentId, client, modelSwitchActionPending, modelSwitches.switches, modelsQuery.data, runModelSwitchAction, sessionId]);
   const handleChangeAgentModel = async (model: string | undefined) => {
     if (!agentKnown || model === undefined) return;
-    const target = resolveCatalogModel(modelsQuery.data?.items ?? [], model)?.id ?? model;
+    const target = externalExecutor ? model : resolveCatalogModel(modelsQuery.data?.items ?? [], model)?.id ?? model;
     const current = displayModel === undefined
       ? undefined
-      : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
+      : externalExecutor ? displayModel : resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)?.id ?? displayModel;
     if (current !== undefined && target === current) return;
     // A child with no conversation yet has nothing to hand over: the pick is a
     // plain rebind, exactly the pre-switch behaviour.
@@ -1054,7 +1246,6 @@ function ChildAgentWorkspace({
     displayModel !== undefined
       ? resolveCatalogModel(modelsQuery.data?.items ?? [], displayModel)
       : undefined;
-  const selectedStatus = selectedNode?.status ?? selectedSubagent?.status;
   const agentTerminal =
     selectedStatus === 'completed' || selectedStatus === 'cancelled' || selectedStatus === 'failed';
   const supportedEfforts =
@@ -1124,7 +1315,8 @@ function ChildAgentWorkspace({
     // would spend the one-time initial scroll on an empty list.
     loaded: agentLiveState.loaded,
     loadError: agentLiveState.loadError ?? sessionState.loadError ??
-      (!agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined),
+      (agentReadUnavailable ? t('subagent.name.unreported', { id: agentId }) :
+        !agentLiveState.transcriptReady && sessionState.resyncFailed ? sessionState.resyncError?.message : undefined),
     busy: headerBusy,
     model: displayModel,
     thinkingEffort: displayEffort,
@@ -1135,6 +1327,13 @@ function ChildAgentWorkspace({
     pendingInteraction: 'none',
   };
 
+  const composerWorking = headerBusy && agentState.pendingInteraction === 'none';
+  const lastResponseAt = useLastResponseAt(composerWorking, agentBlocks, agentState.turnStartedAt);
+  const composerWorkingInfo = useMemo(
+    () => (composerWorking ? { lastResponseAt } : undefined),
+    [composerWorking, lastResponseAt],
+  );
+
   const chrome = (
     <ModelSwitchActionsContext.Provider value={modelSwitchActions}>
     <WorkspaceSurface
@@ -1143,7 +1342,7 @@ function ChildAgentWorkspace({
       slots={slots}
       header={<AgentWorkspaceHeader
         target={target} name={displayName} model={displayModel} effort={displayEffort}
-        crumbs={crumbs} forest={forest} railOpen={railOpen} onToggleRail={onToggleRail}
+        crumbs={resolvedCrumbs} forest={forest} railOpen={railOpen} onToggleRail={onToggleRail}
         navigation={navigation} showPreviewToggle={showPreviewToggle}
         showRailToggle={showRailToggle} railAvailable={railAvailable}
         showBreadcrumb={showBreadcrumb}
@@ -1170,15 +1369,24 @@ function ChildAgentWorkspace({
             {sendNotice.text}
           </p>
         ) : null}
+        {executorBindingQuery.isError && reportedExecutorId === undefined ? <p role="status" className="text-[12px] text-ink-faint">
+          {t('diagnostics.error')} · {executorBindingQuery.error.message}
+          <button type="button" className="ml-2 underline" onClick={() => { void executorBindingQuery.refetch(); }}>{t('common.retry')}</button>
+        </p> : null}
         <Composer
           variant="subagent" replyingTo={displayName} busy={headerBusy} disabled={composerDisabled}
+          boundExecution={childExecution}
+          engine={executorId === undefined ? { label: t('composer.unknown'), fork: false, images: false } : undefined}
           disabledPlaceholder={t('subagent.composerUnavailable')}
           value={draft} onChange={handleDraftChange}
           model={displayModel} defaultModel={displayModel} serverDefaultModel={displayModel}
           modelSource="session" permissionMode={agentLiveState.permissionMode ?? ('manual' as PermissionMode)}
           pendingModelSwitch={modelSwitches.active === undefined ? undefined : {
+            from: modelSwitches.active.receipt.fromModel,
             to: modelSwitches.active.receipt.toModel,
             mode: modelSwitches.active.input.mode,
+            originalThinking: modelSwitches.active.originalBinding.thinking,
+            targetThinking: modelSwitches.active.input.thinking,
           }}
           modelSwitchError={modelSwitches.error === undefined ? undefined : {
             detail: modelSwitches.error.message,
@@ -1197,6 +1405,7 @@ function ChildAgentWorkspace({
           onActivateSkill={handleActivateSkill}
           onSendNow={handleComposerSendNow}
           busySendsNow
+          working={composerWorkingInfo}
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}
         />

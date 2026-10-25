@@ -1,0 +1,127 @@
+diff --git a/src/client.rs b/src/client.rs
+index fd3b3c8..6401196 100644
+--- a/src/client.rs
++++ b/src/client.rs
+@@ -265,10 +265,11 @@ impl Client {
+             .await
+         {
+             Ok(raw) => Ok(raw),
+-            Err(err) if Self::is_connection_error(&err) => {
+-                // The pipe broke mid-request (or just after ensure_alive). Force a
+-                // reconnect and retry exactly once on the fresh connection.
+-                tracing::debug!(method, error = %err, "request failed, reconnecting + retrying once");
++            Err(err) if Self::request_was_not_written(&err) => {
++                // The writer was already gone, so this attempt did not encode a frame.
++                // Reconnect and send once. A frame that was written, including a
++                // response-channel close or a pipe error after encode_frame, is not sent again.
++                tracing::debug!(method, error = %err, "request was not written, reconnecting + retrying once");
+                 self.force_reconnect().await?;
+                 self.send_request_once(method, params, request_timeout)
+                     .await
+@@ -310,8 +311,8 @@ impl Client {
+             Ok(Ok(resp)) => resp,
+             Ok(Err(_)) => {
+                 self.inner.pending.lock().await.remove(&id);
+-                // Channel closed = the read loop died (connection down). Surface as a
+-                // Connection error so the caller's retry path can trigger a reconnect.
++                // The frame was already encoded. The read loop died before a response,
++                // so the write outcome is unknown. This is not a retryable unwritten failure.
+                 return Err(BridgeError::Connection(format!(
+                     "response channel closed for {method}"
+                 )));
+@@ -329,10 +330,10 @@ impl Client {
+         self.inner.alive.load(Ordering::Acquire)
+     }
+ 
+-    /// Errors that mean the connection is broken and a reconnect may help.
+-    /// Protocol/Rpc/Cdp errors are server-side problems — reconnecting won't fix them.
+-    fn is_connection_error(err: &BridgeError) -> bool {
+-        matches!(err, BridgeError::Connection(_) | BridgeError::PipeIo(_))
++    /// True only when `send_request_once` returned before `encode_frame`.
++    /// `PipeIo` can be a partial write. `response channel closed` is after a write.
++    fn request_was_not_written(err: &BridgeError) -> bool {
++        matches!(err, BridgeError::Connection(message) if message.starts_with("writer is none"))
+     }
+ 
+     /// Reconnect if the connection is dead. Double-checked locking: the second
+@@ -1394,6 +1395,38 @@ mod reconnect_tests {
+         assert!(result.is_ok(), "got: {:?}", result.err());
+     }
+ 
++    #[tokio::test]
++    async fn response_channel_close_after_write_is_not_resent() {
++        let (client_end, mut server) = duplex(4096);
++        let call_count = Arc::new(AtomicUsize::new(0));
++        let factory: ConnectionFactory = {
++            let call_count = Arc::clone(&call_count);
++            Arc::new(move || {
++                let call_count = Arc::clone(&call_count);
++                Box::pin(async move {
++                    call_count.fetch_add(1, Ordering::SeqCst);
++                    let (client, _server) = duplex(4096);
++                    Ok(client)
++                })
++            })
++        };
++        let client = Client::from_stream_with_factory(client_end, factory).unwrap();
++        let task = tokio::spawn({
++            let client = client.clone();
++            async move { client.send_request("click", None).await }
++        });
++        let req = next_request(&mut server).await;
++        assert_eq!(req["method"], "click");
++        server.shutdown().await.ok();
++        drop(server);
++        let err = task.await.unwrap().unwrap_err();
++        assert!(
++            matches!(err, BridgeError::Connection(message) if message.starts_with("response channel closed")),
++            "got: {err}"
++        );
++        assert_eq!(call_count.load(Ordering::SeqCst), 0);
++    }
++
+     #[tokio::test]
+     async fn lazy_client_connects_on_first_request() {
+         let new_server = Arc::new(Mutex::new(None::<DuplexStream>));
+@@ -1691,3 +1724,25 @@ mod cdp_error_tests {
+         assert!(msg.contains("\\n"));
+     }
+ }
++
++#[cfg(test)]
++mod unwritten_retry {
++    use super::Client;
++    use crate::error::BridgeError;
++
++    #[test]
++    fn retries_only_when_the_request_was_not_written() {
++        assert!(Client::request_was_not_written(&BridgeError::Connection(
++            "writer is none (connection dropped)".into(),
++        )));
++        assert!(!Client::request_was_not_written(&BridgeError::Connection(
++            "response channel closed for click".into(),
++        )));
++        assert!(!Client::request_was_not_written(&BridgeError::PipeIo(
++            std::io::Error::new(std::io::ErrorKind::BrokenPipe, "partial write"),
++        )));
++        assert!(!Client::request_was_not_written(&BridgeError::Timeout(
++            "click".into(),
++        )));
++    }
++}
+diff --git a/src/error.rs b/src/error.rs
+index 604dd82..8ce1baa 100644
+--- a/src/error.rs
++++ b/src/error.rs
+@@ -9,8 +9,9 @@ pub enum BridgeError {
+     PipeIo(#[from] std::io::Error),
+ 
+     /// The bridge connection is down (read loop exited / writer reclaimed /
+-    /// reconnect failed). The caller may safely retry — a retry can trigger
+-    /// an automatic reconnect.
++    /// reconnect failed). Retry only a failure that proves the request was not
++    /// written (`writer is none`). A response-channel close or pipe I/O error
++    /// can follow `encode_frame` and must not be sent again.
+     #[error("bridge connection is down: {0}")]
+     Connection(String),
+ 

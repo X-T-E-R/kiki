@@ -8,6 +8,7 @@ export const pluginPreviewRequestSchema = z.object({
 export const pluginInstallRequestSchema = pluginPreviewRequestSchema.extend({
   fingerprint: z.string().regex(/^[0-9a-f]{64}$/),
   consent: z.boolean(),
+  defaultEnabled: z.boolean().optional(),
 });
 
 export const pluginInstallPlanSchema = z.object({
@@ -24,6 +25,7 @@ export const pluginInstallPlanSchema = z.object({
     uiPanel: z.boolean().optional(),
   }).optional(),
   contributions: z.array(z.string()),
+  appService: z.boolean().optional(),
   contextTokens: z.number(),
   unsupported: z.array(z.string()),
 });
@@ -43,13 +45,16 @@ export const pluginPrerequisiteInstallSchema = z.object({
 });
 
 export const pluginPanelSummarySchema = z.object({
-  pluginId: z.string(), id: z.string(), label: z.string(), slot: z.enum(['sidebar', 'workspace']),
+  pluginId: z.string(), id: z.string(), label: z.string(), slot: z.enum(['sidebar', 'workspace', 'settings']),
 });
 export const pluginPanelDocumentSchema = z.object({ html: z.string(), sandbox: z.literal('allow-scripts') });
 export const pluginPanelBridgeRequestSchema = z.discriminatedUnion('method', [
   z.object({ method: z.literal('session.summary'), session_id: z.string().min(1) }),
   z.object({ method: z.literal('session.sendMessage'), session_id: z.string().min(1), text: z.string().min(1).max(16_384) }),
   z.object({ method: z.literal('plugin.call'), session_id: z.string().min(1).optional(), action: z.string().regex(/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/), args: z.unknown() }),
+  z.object({ method: z.literal('plugin.settings.get') }),
+  z.object({ method: z.literal('plugin.settings.patch'), values: pluginSettingsPatchSchema.shape.values }),
+  z.object({ method: z.literal('plugin.models.list') }),
 ]);
 export const pluginPanelBridgeResponseSchema = z.object({ result: z.unknown() });
 
@@ -68,3 +73,27 @@ export const pluginNavigationSchema = z.object({
   request: z.object({ id: z.number().int(), pluginId: z.string(), sessionId: z.string(), at: z.number() }).optional(),
 });
 export type PluginNavigation = z.infer<typeof pluginNavigationSchema>;
+
+export const pluginUsageTargetSchema = z.union([
+  z.object({ workspace_id: z.string().min(1) }).strict(),
+  z.object({ session_id: z.string().min(1) }).strict(),
+]);
+export const pluginUsageOverrideSchema = z.enum(['inherit', 'on', 'off']);
+export const pluginUsageRequestSchema = z.object({ target: pluginUsageTargetSchema, plugin_id: z.string().min(1), override: pluginUsageOverrideSchema }).strict();
+export const pluginUsageItemSchema = z.object({
+  id: z.string(), displayName: z.string(), version: z.string().optional(), icon: z.string().optional(),
+  home_enabled: z.boolean(), global_enabled: z.boolean(), state: z.enum(['ok', 'error']), override: pluginUsageOverrideSchema,
+  session_override: pluginUsageOverrideSchema.optional(),
+  effective: z.boolean(), reason: z.enum(['home_disabled', 'workspace_disabled', 'session_disabled', 'global_disabled', 'invalid_plugin']).optional(),
+  app_service: z.boolean(), skillCount: z.number(), mcpServerCount: z.number(),
+});
+export const pluginUsageResponseSchema = z.object({
+  home_id: z.string(), target: z.object({ workspace_id: z.string(), name: z.string(), root: z.string(), session_id: z.string().optional() }),
+  revision: z.number().int().nonnegative(), apply_state: z.enum(['applied', 'pending', 'failed']),
+  errors: z.array(z.string()), plugins: z.array(pluginUsageItemSchema),
+});
+export type PluginUsageTarget = z.infer<typeof pluginUsageTargetSchema>;
+export type PluginUsageOverride = z.infer<typeof pluginUsageOverrideSchema>;
+export type PluginUsageRequest = z.infer<typeof pluginUsageRequestSchema>;
+export type PluginUsageResponse = z.infer<typeof pluginUsageResponseSchema>;
+export type PluginUsageItem = z.infer<typeof pluginUsageItemSchema>;

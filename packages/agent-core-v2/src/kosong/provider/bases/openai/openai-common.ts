@@ -8,11 +8,15 @@ import {
 import { BugIndicatingError } from '#/_base/errors/errors';
 import {
   APIConnectionError,
+  ambiguousRequestDelivery,
+  isAmbiguousRequestDelivery,
   APIProviderQuotaExhaustedError,
   APITimeoutError,
   ChatProviderError,
   classifyBaseApiError,
   normalizeAPIStatusError,
+  markProviderEventError,
+  markProviderHttpError,
   parseRetryAfterMs,
   parseTraceId,
   providerStreamErrorDetails,
@@ -119,6 +123,7 @@ export function convertOpenAIError(
   convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
 ): ChatProviderError {
   throwIfAbortError(error);
+  if (isAmbiguousRequestDelivery(error)) return ambiguousRequestDelivery(error);
   if (error instanceof ChatProviderError) {
     return error;
   }
@@ -139,14 +144,14 @@ export function convertOpenAIError(
     if (isOpenAIInsufficientQuotaError(error)) {
       return new APIProviderQuotaExhaustedError(error.message, reqId, retryAfterMs, traceId);
     }
-    return normalizeAPIStatusError(
+    return markProviderHttpError(normalizeAPIStatusError(
       error.status,
       error.message,
       reqId,
       retryAfterMs,
       traceId,
       error.error,
-    );
+    ), error.code);
   }
   if (
     error instanceof OpenAIAPIError &&
@@ -156,9 +161,9 @@ export function convertOpenAIError(
     return classifyBaseApiError(error.message);
   }
   if (error instanceof OpenAIAPIError && error.error !== undefined) {
-    return new ChatProviderError(`Error: ${error.message}`, undefined, {
+    return markProviderEventError(new ChatProviderError(`Error: ${error.message}`, undefined, {
       details: providerStreamErrorDetails(error.error, error.requestID, parseTraceId(error.headers)),
-    });
+    }), error.code);
   }
   if (error instanceof OpenAIError) {
     return new ChatProviderError(`Error: ${error.message}`);

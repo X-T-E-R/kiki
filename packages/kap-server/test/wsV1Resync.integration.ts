@@ -78,6 +78,12 @@ interface TranscriptResponse {
   items: Array<{ kind: string; turnId?: string; state?: string }>;
 }
 
+function closeOwned(conn: Conn | undefined): Promise<void> {
+  if (conn === undefined) return Promise.resolve();
+  if (conn.ws.readyState === WebSocket.CONNECTING || conn.ws.readyState === WebSocket.OPEN) conn.ws.close();
+  return conn.closed;
+}
+
 function openConn(url: string, token: string): Promise<Conn> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(url, [`kimi-code.bearer.${token}`]);
@@ -195,6 +201,19 @@ function responseTurnOutcomes(response: TranscriptResponse): Array<{ turnId: str
 
 function integerRange(from: number, through: number): number[] {
   return Array.from({ length: Math.max(through - from + 1, 0) }, (_, index) => from + index);
+}
+
+function isSessionGlobalFanout(type: string): boolean {
+  return (
+    type === 'session.meta.updated' ||
+    type === 'session.worktree.changed' ||
+    type.startsWith('event.session.') ||
+    type.startsWith('event.workspace.') ||
+    type.startsWith('event.config.') ||
+    type.startsWith('event.plugin.') ||
+    type.startsWith('event.capability.') ||
+    type.startsWith('event.model_catalog.')
+  );
 }
 
 describe('server-v2 /api/ws resync', () => {
@@ -504,6 +523,10 @@ describe('server-v2 /api/ws resync', () => {
     'replays disconnected cursors and restores terminal transcript after an epoch change',
     { timeout: 20_000 },
     async () => {
+    let c1: Conn | undefined;
+    let c2: Conn | undefined;
+    let c3: Conn | undefined;
+    try {
     const sid = await createSession();
     await ensureMainAgent(sid);
     await seedMainAgentMessages(sid, [
@@ -512,7 +535,7 @@ describe('server-v2 /api/ws resync', () => {
     ]);
 
     const liveTranscript = new AgentTranscript('main');
-    const c1 = await openConn(wsUrl, server!.localOwnerToken);
+    c1 = await openConn(wsUrl, server!.localOwnerToken);
     await c1.next((f) => f.type === 'server_hello');
     c1.send({
       type: 'client_hello',
@@ -574,7 +597,7 @@ describe('server-v2 /api/ws resync', () => {
       { role: 'assistant', content: [{ type: 'text', text: 'second answer' }], toolCalls: [] },
     ]);
 
-    const c2 = await openConn(wsUrl, server!.localOwnerToken);
+    c2 = await openConn(wsUrl, server!.localOwnerToken);
     await c2.next((f) => f.type === 'server_hello');
     c2.send({
       type: 'client_hello',
@@ -585,22 +608,48 @@ describe('server-v2 /api/ws resync', () => {
         cursors: { [sid]: durableCursor },
       }),
     });
-    const replayAck = await c2.next((f) => f.type === 'ack' && f.id === 'h-replay');
+    const replayConnection = c2;
+    let replayBatch: Frame[] = [];
+    const replayAck = await c2.next((frame) => {
+      if (frame.type !== 'ack' || frame.id !== 'h-replay') return false;
+      replayBatch = [...replayConnection.frames];
+      return true;
+    });
     const replayAckPayload = ackPayload(replayAck);
     expect(replayAckPayload).toMatchObject({
       accepted_subscriptions: [sid],
       resync_required: [],
     });
     const replayWatermark = replayAckPayload.cursors![sid]!;
-    const replayedDurable = c2.frames.filter(
+    const liveAfterAck = await new Promise<Frame>((resolve) => {
+      const observe = (data: unknown): void => {
+        const frame = JSON.parse(String(data)) as Frame;
+        if (frame.type !== 'fixture.after_replay_ack') return;
+        replayConnection.ws.off('message', observe);
+        resolve(frame);
+      };
+      replayConnection.ws.on('message', observe);
+      emitAgentEvent(sid, { type: 'fixture.after_replay_ack' } as unknown as Event2<any>);
+    });
+    expect(liveAfterAck.seq).toBeGreaterThan(replayWatermark.seq);
+    expect(replayConnection.frames).toContainEqual(liveAfterAck);
+    const replayedDurable = replayBatch.filter(
       (frame) =>
         frame.session_id === sid &&
         frame.volatile !== true &&
         typeof frame.seq === 'number' &&
         frame.seq > durableCursor.seq,
     );
-    const durableSeqs = replayedDurable.map((frame) => frame.seq!);
-    expect(durableSeqs).toEqual(integerRange(durableCursor.seq + 1, replayWatermark.seq));
+    const expectedReplay = integerRange(durableCursor.seq + 1, replayWatermark.seq);
+    const replayStart = replayedDurable.length - expectedReplay.length;
+    const globalPrefix = replayStart > 0 ? replayedDurable.slice(0, replayStart) : [];
+    const replayFrames = replayStart >= 0 ? replayedDurable.slice(replayStart) : replayedDurable;
+    expect(globalPrefix.map((frame) => `${frame.type}#${frame.seq}`)).toEqual(
+      globalPrefix.map((frame) =>
+        isSessionGlobalFanout(frame.type) ? `${frame.type}#${frame.seq}` : `non-global#${frame.seq}`,
+      ),
+    );
+    expect(replayFrames.map((frame) => frame.seq!)).toEqual(expectedReplay);
     expect(
       replayedDurable.filter(
         (frame) => frame.type === 'turn.ended' && frame.payload?.['turnId'] === 1,
@@ -645,7 +694,7 @@ describe('server-v2 /api/ws resync', () => {
     await boot();
     expect(await resumeSessionById(server!.core.accessor, sid)).toBeDefined();
 
-    const c3 = await openConn(wsUrl, server!.localOwnerToken);
+    c3 = await openConn(wsUrl, server!.localOwnerToken);
     await c3.next((f) => f.type === 'server_hello');
     c3.send({
       type: 'client_hello',
@@ -698,6 +747,11 @@ describe('server-v2 /api/ws resync', () => {
 
     c3.ws.close();
     await c3.closed;
+    } finally {
+      await closeOwned(c1);
+      await closeOwned(c2);
+      await closeOwned(c3);
+    }
   });
 
   it('delivers only the allowlisted agent events via agent_filter', async () => {

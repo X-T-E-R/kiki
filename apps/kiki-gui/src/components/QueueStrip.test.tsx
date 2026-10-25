@@ -5,7 +5,21 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
-import { QueueHeaderSummary, QueueStrip } from './QueueStrip';
+import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
+import { QueueHeaderSummary, QueueStrip, type QueueRuntimeControls } from './QueueStrip';
+
+const readSessionMediaPreviewBytes = vi.hoisted(() => vi.fn(async () => ({
+  bytes: new Uint8Array([137, 80, 78, 71]),
+  mime: 'image/png',
+  name: 'shot.png',
+})));
+const queuedMediaClient = vi.hoisted(() => ({
+  readingOptions: () => ({}),
+  readSessionMediaPreviewBytes,
+}));
+vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => ({ client: queuedMediaClient, scopeId: 'local' }),
+}));
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -34,21 +48,48 @@ const ITEMS = [
 
 async function renderStrip(
   props: Partial<Parameters<typeof QueueStrip>[0]> = {},
+  preview?: Partial<MediaPreviewApi>,
 ): Promise<{ container: HTMLDivElement; root: Root }> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  const api: MediaPreviewApi | undefined = preview === undefined ? undefined : {
+    cwd: 'C:/work',
+    sessionId: 'session-1',
+    openImage: vi.fn(),
+    openFile: vi.fn(),
+    openAttachment: vi.fn(),
+    openAgentPanel: vi.fn(),
+    openBuiltinSkill: vi.fn(),
+    previewTabCount: 0,
+    previewPanelOpen: false,
+    togglePreviewPanel: vi.fn(),
+    activeAgentPanelId: undefined,
+    ...preview,
+  };
   await act(async () => {
     root.render(
       <I18nProvider>
-        <QueueStrip
-          items={ITEMS}
-          onSendNow={() => {}}
-          onRemove={() => {}}
-          onClearAll={() => {}}
-          {...props}
-        />
+        {api === undefined ? (
+          <QueueStrip
+            items={ITEMS}
+            onSendNow={() => {}}
+            onRemove={() => {}}
+            onClearAll={() => {}}
+            {...props}
+          />
+        ) : (
+          <MediaPreviewContext.Provider value={api}>
+            <QueueStrip
+              items={ITEMS}
+              onSendNow={() => {}}
+              onRemove={() => {}}
+              onClearAll={() => {}}
+              {...props}
+            />
+          </MediaPreviewContext.Provider>
+        )}
       </I18nProvider>,
     );
   });
@@ -109,8 +150,9 @@ async function pointer(target: Element, type: string, clientY: number, clientX =
 
 function queueGeometry(container: HTMLDivElement): void {
   const box = (top: number, height: number) => ({ top, bottom: top + height, height, left: 0, right: 300, width: 300, x: 0, y: top, toJSON: () => ({}) }) as DOMRect;
-  vi.spyOn(container.querySelector('ol')!, 'getBoundingClientRect').mockReturnValue(box(100, rows(container).length * 40));
-  rows(container).forEach((row, index) => {
+  const sendRows = rows(container).filter(row => row.closest('[data-queue-idle-region]') === null);
+  vi.spyOn(container.querySelector('[data-queue-strip] > ol')!, 'getBoundingClientRect').mockReturnValue(box(100, sendRows.length * 40));
+  sendRows.forEach((row, index) => {
     vi.spyOn(row, 'getBoundingClientRect').mockReturnValue(box(100 + index * 40, 40));
     const handle = row.querySelector<HTMLButtonElement>('button[aria-label="Reorder this queued prompt"]');
     if (handle !== null) {
@@ -176,6 +218,30 @@ describe('QueueStrip edit round-trip', () => {
 
     await click(container.querySelector('button[aria-label="Edit queued prompt"]')!);
     expect(onEdit).toHaveBeenCalledExactlyOnceWith('p1');
+  });
+
+  it('shows and opens a persisted queued image that has only a file id', async () => {
+    readSessionMediaPreviewBytes.mockClear();
+    const openImage = vi.fn();
+    const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:queued-file');
+    const revokeObjectURL = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => {});
+    try {
+      const { container } = await renderStrip({
+        items: [{
+          promptId: 'p-file',
+          text: 'parked',
+          media: [{ kind: 'image', fileId: 'file-queued', name: 'shot.png' }],
+        }],
+      }, { sessionId: 'session-1', openImage });
+      expect(readSessionMediaPreviewBytes).toHaveBeenCalledWith('session-1', 'file-queued', expect.anything());
+      const image = container.querySelector('img');
+      expect(image?.getAttribute('src')).toBe('blob:queued-file');
+      await click(image!.closest('button')!);
+      expect(openImage).toHaveBeenCalledWith('blob:queued-file', 'shot.png');
+    } finally {
+      createObjectURL.mockRestore();
+      revokeObjectURL.mockRestore();
+    }
   });
 
   it('shows queued images, permits editing attachment-only prompts and removes visible attachments', async () => {
@@ -259,7 +325,249 @@ describe('QueueStrip edit round-trip', () => {
   });
 });
 
+describe('QueueStrip scheduled delivery modes', () => {
+  const cron = (promptId: string, cronDeliveryMode: 'queue' | 'steer' | 'idle' | undefined, text = 'Controller self-check.') => ({
+    promptId,
+    text,
+    originKind: 'cron_job' as const,
+    cronDeliveryMode,
+    content: [{ type: 'text' as const, text }],
+    media: [],
+  });
+
+  it('keeps a queue-mode job an ordinary queued message, controls and all', async () => {
+    const onEdit = vi.fn();
+    const onSendNow = vi.fn();
+    const onMove = vi.fn();
+    const onChangeTiming = vi.fn();
+    const { container } = await renderStrip({
+      items: [cron('q1', 'queue'), { promptId: 'user-1', text: 'my own message' }],
+      onEdit, onSendNow, onMove, onChangeTiming,
+    });
+    const row = rows(container)[0]!;
+    // In the user's send order, so nothing is withheld: the row is not marked
+    // held and it carries the same controls as the message beside it.
+    expect(row.getAttribute('data-queue-held')).toBeNull();
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).not.toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).not.toBeNull();
+    const sendNow = row.querySelector<HTMLButtonElement>('button[aria-label="Send now"]')!;
+    expect(sendNow.disabled).toBe(false);
+    await click(sendNow);
+    expect(onSendNow).toHaveBeenCalledWith('q1');
+  });
+
+  it('treats a legacy scheduled record with no mode as the FIFO it still is', async () => {
+    const { container } = await renderStrip({
+      items: [cron('legacy', undefined), { promptId: 'user-1', text: 'my own message' }],
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+    });
+    const row = rows(container)[0]!;
+    expect(row.getAttribute('data-queue-held')).toBeNull();
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).not.toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).not.toBeNull();
+  });
+
+  it.each(['idle', 'steer'] as const)('keeps a %s job readable and removable but out of the send order', async (mode) => {
+    const onSendNow = vi.fn();
+    const onEdit = vi.fn();
+    const onRemove = vi.fn();
+    const { container } = await renderStrip({
+      items: [cron('held-1', mode, 'Read the runbook before the next release.'), { promptId: 'user-1', text: 'my own message' }],
+      onSendNow, onEdit, onRemove, onMove: vi.fn(), onChangeTiming: vi.fn(),
+    });
+    const row = rows(container)[0]!;
+    expect(row.getAttribute('data-queue-held')).toBe(mode);
+    const modeLabel = mode === 'idle' ? container.querySelector('[data-queue-idle-region]') : row.querySelector('[data-queue-held-mode]');
+    expect(modeLabel?.textContent).toContain(mode === 'idle' ? 'Insert when idle' : 'Insert immediately');
+    expect(row.textContent).toContain('Read the runbook before the next release.');
+    // The controls that would re-order or rush it are absent, not greyed out:
+    // a dead Send now beside a live one reads as a broken row, and a note
+    // saying the row is read-only costs the preview the width it needs.
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).toBeNull();
+    expect(row.querySelector('button[aria-label="Send now"]')).toBeNull();
+    expect(row.querySelector('[data-queue-read-only]')).toBeNull();
+    // Remove stays: the record is real work, and withdrawing it is a real
+    // action. Two-step like any other row: arm, then remove.
+    const disclosure = row.querySelector('details')!;
+    expect(disclosure.querySelector('p')?.textContent).toBe('Read the runbook before the next release.');
+    await click(rows(container)[0]!.querySelector<HTMLButtonElement>('button[aria-label="Remove"]')!);
+    await click(rows(container)[0]!.querySelector<HTMLButtonElement>('button[aria-label="Remove?"]')!);
+    expect(onRemove).toHaveBeenCalledWith('held-1');
+    expect(onSendNow).not.toHaveBeenCalled();
+  });
+
+  it('gives a held job the same shape whether or not user messages are queued', async () => {
+    // Held alone, the row must not acquire controls just because there is
+    // nothing beside it to compare against.
+    const { container } = await renderStrip({
+      items: [cron('held-1', 'idle')],
+      onEdit: vi.fn(),
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+    });
+    const row = rows(container)[0]!;
+    expect(row.getAttribute('data-queue-held')).toBe('idle');
+    expect(row.querySelector('button[aria-label="Send now"]')).toBeNull();
+    expect(row.querySelector('button[aria-label="Reorder this queued prompt"]')).toBeNull();
+    expect(row.querySelector('select[data-timing-picker]')).toBeNull();
+    expect(row.querySelector('button[aria-label="Remove"]')).not.toBeNull();
+  });
+
+  it('groups idle occurrences in one leading region without changing ordinary move slots', async () => {
+    const onMove = vi.fn();
+    const onRemove = vi.fn();
+    const onRequest = vi.fn();
+    const { container } = await renderStrip({
+      items: [
+        { promptId: 'user-1', text: 'first ordinary draft', queuePosition: 0,
+          runtimeControls: { profile: 'reviewer', model: 'example/captured', thinking: 'max' } },
+        { ...cron('idle-1', 'idle', 'first real job'), queuePosition: 1 },
+        { promptId: 'user-2', text: 'second ordinary draft', queuePosition: 2 },
+        { ...cron('idle-2', 'idle', 'different real job'), queuePosition: 3 },
+      ],
+      onMove, onRemove,
+      promptContinuation: { coverage: { returned: 8, total: 12, hasMore: true }, onRequest },
+    });
+    const region = container.querySelector('[data-queue-idle-region]');
+    expect(region).not.toBeNull();
+    expect(container.querySelectorAll('[data-queue-idle-region]')).toHaveLength(1);
+    expect(rows(container).map(row => row.dataset['queueItem'])).toEqual(['idle-1', 'idle-2', 'user-1', 'user-2']);
+    expect(region!.textContent).toContain('first real job');
+    expect(region!.textContent).toContain('different real job');
+    expect(region!.querySelectorAll('[data-queue-held-mode]')).toHaveLength(0);
+    expect(container.querySelector('[data-queue-item="user-1"] [data-queue-runtime-controls]')?.textContent)
+      .toBe('reviewer · example/captured · max');
+    expect(container.querySelector('[data-queue-model-switch]')).toBeNull();
+    expect(container.textContent).toContain('8 / 12 message records loaded');
+    await click(container.querySelector('[data-content-continuation-action]')!);
+    expect(onRequest).toHaveBeenCalledOnce();
+    const secondUser = container.querySelector('[data-queue-item="user-2"]')!;
+    await keydown(secondUser.querySelector('button[aria-label="Reorder this queued prompt"]')!, 'ArrowUp');
+    expect(onMove).toHaveBeenCalledExactlyOnceWith('user-2', 0);
+    queueGeometry(container);
+    const firstHandle = handleOf(container, 2);
+    await pointer(firstHandle, 'pointerdown', 110);
+    await pointer(firstHandle, 'pointermove', 170);
+    await pointer(firstHandle, 'pointerup', 170);
+    expect(onMove).toHaveBeenLastCalledWith('user-1', 3);
+    const firstIdle = container.querySelector('[data-queue-item="idle-1"]')!;
+    await click(firstIdle.querySelector('button[aria-label="Remove"]')!);
+    await click(firstIdle.querySelector('button[aria-label="Remove?"]')!);
+    expect(onRemove).toHaveBeenCalledExactlyOnceWith('idle-1');
+  });
+
+  it('keeps user messages and attachment-only rows out of the mode rule entirely', async () => {
+    const { container } = await renderStrip({
+      items: [
+        { promptId: 'user-1', text: 'my own message' },
+        { promptId: 'user-2', text: '', media: [{ kind: 'image', url: 'https://example.test/a.png' }] as never },
+        cron('held-1', 'idle'),
+      ],
+      onMove: vi.fn(),
+      onChangeTiming: vi.fn(),
+    });
+    const [held, first, second] = rows(container);
+    expect(first!.getAttribute('data-queue-held')).toBeNull();
+    expect(second!.getAttribute('data-queue-held')).toBeNull();
+    expect(first!.querySelector('select[data-timing-picker]')).not.toBeNull();
+    expect(second!.querySelector('select[data-timing-picker]')).not.toBeNull();
+    expect(held!.getAttribute('data-queue-held')).toBe('idle');
+  });
+
+  async function renderSummary(count: number, heldCount: number): Promise<HTMLDivElement> {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <QueueHeaderSummary count={count} heldCount={heldCount} />
+        </I18nProvider>,
+      );
+    });
+    return container;
+  }
+
+  it('names held scheduled jobs beside the ordinary count instead of counting them as queued', async () => {
+    const container = await renderSummary(2, 1);
+    expect(container.querySelector('[data-queue-count]')?.textContent).toBe('2 queued');
+    // Neutral about when they go: the count says they are waiting, and each
+    // row says its own timing. "Earlier" would claim an order the modes do
+    // not share.
+    expect(container.querySelector('[data-queue-held-count]')?.textContent).toContain('1 scheduled waiting');
+  });
+
+  it('shows only the scheduled jobs when nothing of your own is queued', async () => {
+    const container = await renderSummary(0, 2);
+    // "0 queued" beside real work reads as nothing to send.
+    expect(container.querySelector('[data-queue-count]')).toBeNull();
+    expect(container.querySelector('[data-queue-held-count]')?.textContent).toBe('2 scheduled waiting');
+  });
+
+  it('shows the ordinary count alone when nothing scheduled is held', async () => {
+    const container = await renderSummary(3, 0);
+    expect(container.querySelector('[data-queue-count]')?.textContent).toBe('3 queued');
+    expect(container.querySelector('[data-queue-held-count]')).toBeNull();
+  });
+});
+
 describe('QueueStrip drawer body', () => {
+  it('hydrates canonical queued content into its body, selection controls, links and media without duplicating the row', async () => {
+    const { MemoryRouter } = await import('react-router-dom');
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const { selectionCarryoverPresentation } = await import('@kiki/session-core/composer');
+    const { createViewState, projectAgentTranscriptView, queuedPromptPreviews } = await import('@kiki/session-core/session');
+    const { applyContentSegment } = await import('@kiki/transcript');
+    const selection = selectionCarryoverPresentation([{ quote: 'Selected requirement.', comment: 'Preserve this entire comment.' }], [{ quote: 'Quoted source.' }]);
+    const text = selection.prefix + '> Keep this literal quote\n\nReview /s/session_reference.';
+    const ref: import('@kiki/transcript').ContentRef = { source: { kind: 'prompt', id: 'p-content' }, path: ['content'], kind: 'array', offset: 0, total: 2, revision: 'content-v1' };
+    let prompt: import('@kiki/transcript').TranscriptPrompt = { promptId: 'p-content', userMessageId: 'um-content', status: 'queued', createdAt: '2026-01-01T00:00:00.000Z', content: [], contentRefs: [ref] };
+    const container = document.createElement('div'); document.body.append(container); containers.push(container);
+    const root = createRoot(container);
+    const loadContent = vi.fn(async () => {
+      prompt = applyContentSegment(prompt, { ref, value: [{ type: 'text', text, presentation: selection.presentation }, { type: 'file', file_id: 'file-report', name: 'report.txt', media_type: 'text/plain', size: 12 }], contentRefs: [] });
+      await draw(); return true;
+    });
+    const draw = () => act(async () => {
+      const view = projectAgentTranscriptView(createViewState('session_example'), 'main', { items: [], prompts: [prompt], attachments: [], tasks: [], todos: [], interactions: [], meta: {} });
+      root.render(<MemoryRouter><I18nProvider><TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={prompt.contentRefs} loadContent={loadContent}>
+        <QueueStrip items={queuedPromptPreviews(view)} onSendNow={() => {}} onRemove={() => {}} onClearAll={() => {}} />
+      </TranscriptDetailProvider></I18nProvider></MemoryRouter>);
+    });
+    try {
+      await draw();
+      await click(container.querySelector('[data-content-continuation-action]')!);
+      expect(loadContent).toHaveBeenCalledWith(ref);
+      expect(rows(container)).toHaveLength(1);
+      expect(container.querySelector('[data-content-continuation-action]')).toBeNull();
+      const row = rows(container)[0]!;
+      expect(row.textContent).toContain('> Keep this literal quote');
+      expect(row.textContent).toContain('report.txt');
+      expect(row.textContent).not.toContain('Comment:');
+      expect(row.querySelector('[data-thread-ref-chip]')?.getAttribute('href')).toBe('/s/session_reference');
+      expect(row.querySelectorAll('[data-quote-chip]')).toHaveLength(1);
+      await click(row.querySelector('[data-annotation-bubble]')!);
+      expect(document.querySelector('[data-annotation-bubble-comment]')?.textContent).toBe('Preserve this entire comment.');
+    } finally { await act(async () => { root.unmount(); }); }
+  });
+
+  it('identifies scheduled text and discloses its body without making it an editable attachment row', async () => {
+    const text = 'Controller self-check: keep existing work running.';
+    const { container } = await renderStrip({ items: [{ promptId: 'scheduled-1', originKind: 'cron_job', text, content: [{ type: 'text', text }], media: [] }], onEdit: vi.fn() });
+    const row = rows(container)[0]!;
+    expect(row.textContent).toContain('Scheduled job');
+    expect(row.textContent).not.toContain('(attachment only)');
+    const disclosure = row.querySelector('details')!;
+    expect(disclosure.querySelector('p')?.textContent).toBe(text);
+    await click(disclosure.querySelector('summary')!);
+    expect(disclosure.open).toBe(true);
+    expect(row.querySelector('button[aria-label="Edit queued prompt"]')).toBeNull();
+    expect(row.querySelector('img')).toBeNull();
+  });
+
   it('lists every row with Clear all in the header (the tab carries the count)', async () => {
     const onClearAll = vi.fn();
     const { container } = await renderStrip({ onClearAll });
@@ -393,7 +701,7 @@ describe('QueueStrip reorder', () => {
     queueGeometry(container);
     container.classList.add('composer-header-scroll');
     const rect = container.querySelector('ol')!.getBoundingClientRect();
-    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({ ...rect, bottom: 180, height: 80 });
+    vi.spyOn(container, 'getBoundingClientRect').mockReturnValue({ top: rect.top, bottom: 180, height: 80, left: rect.left, right: rect.right, width: rect.width, x: rect.x, y: rect.y, toJSON: () => ({}) } as DOMRect);
     const handle = handleOf(container, 0);
     await pointer(handle, 'pointerdown', 110);
     await pointer(handle, 'pointermove', 210);
@@ -512,6 +820,18 @@ describe('QueueStrip timing picker', () => {
   });
 });
 
+describe('QueueStrip runtime controls attached to messages', () => {
+  it('shows frozen controls on the real queued message without creating a switch row', async () => {
+    const item = {
+      ...ITEMS[0],
+      runtimeControls: { profile: 'reviewer', model: 'example/new', thinking: 'max' },
+    } as Parameters<typeof QueueStrip>[0]['items'][number] & { readonly runtimeControls: QueueRuntimeControls };
+    const { container } = await renderStrip({ items: [item] });
+    expect(container.querySelector('[data-queue-runtime-controls]')?.textContent).toBe('reviewer · example/new · max');
+    expect(container.querySelector('[data-queue-model-switch]')).toBeNull();
+  });
+});
+
 describe('QueueStrip model-switch control rows', () => {
   const switchEntry = (overrides: {
     operationId?: string;
@@ -549,7 +869,7 @@ describe('QueueStrip model-switch control rows', () => {
       onEditModelSwitch: () => {},
     });
     const rowTexts = rows(container).map((row) => row.textContent ?? '');
-    expect(rowTexts[0]).toContain('Will switch to example/new when idle');
+    expect(rowTexts[0]).toContain('Switching to example/new');
     expect(rowTexts[0]).toContain('Fresh context');
     expect(rowTexts[1]).toContain('first parked prompt');
     const cancel = container.querySelector<HTMLButtonElement>('[data-queue-model-switch-actions] button:last-child')!;

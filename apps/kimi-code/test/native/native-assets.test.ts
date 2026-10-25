@@ -26,11 +26,14 @@ import {
   getNativeCacheBase,
   getNativePackageRoot,
   getPluginHostRunnerFile,
+  getWindowsProcessHelperFile,
   NATIVE_ASSET_MANIFEST_VERSION,
   type NativeAssetManifest,
   type NativeAssetSource,
 } from '#/native/native-assets';
 import { installMinidbTextBuildWorker } from '#/native/minidb-worker';
+import { installKapUsageWorker } from '#/native/usage-worker';
+import { resetUsageWorkerRuntime, usageWorkerEntry } from '@kiki/kap-server/usage-worker-runtime';
 import { loadNativePackage } from '#/native/native-require';
 import { installKikiDocs, resolveKikiDocsSourceDir } from '#/native/product-docs';
 import { Marked } from '@kiki/pi-tui';
@@ -159,6 +162,7 @@ function writeDocsTree(root: string, english: string, chinese: string): void {
 
 afterEach(() => {
   resetTextBuildWorkerRuntime();
+  resetUsageWorkerRuntime();
 });
 
 describe('native assets', () => {
@@ -290,6 +294,19 @@ describe('native assets', () => {
     } finally {
       rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+
+  it('installs the usage parser asset without starting a worker or changing other worker entries', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-usage-worker-'));
+    try {
+      const content = Buffer.from('export const worker = true;\n');
+      const key = 'native/test-target/runtime/kap-usage-parser-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'kap-usage-parser-worker', assetKey: key, relativePath: 'runtime/kap-server/usage-parser-worker.mjs', sha256: sha256(content), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: (asset) => { if (asset !== key) throw new Error('Unexpected asset'); return content; } };
+      expect(installKapUsageWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'installed', basename: 'usage-parser-worker.mjs' });
+      expect(readFileSync(usageWorkerEntry()!, 'utf8')).toBe(content.toString());
+      expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 
   it('extracts the plugin host runner from the checked native asset manifest', () => {
@@ -692,6 +709,43 @@ describe('text-only bundled documentation', () => {
     );
   });
 
+  it('ships renamed product references and removes reserved filenames on a docs upgrade', async () => {
+    const repository = resolve(import.meta.dirname, '../../../..');
+    const scratch = join(repository, '.tmp');
+    mkdirSync(scratch, { recursive: true });
+    const root = mkdtempSync(join(scratch, 'renamed-docs-'));
+    const packageRoot = join(root, 'package');
+    const home = join(root, 'home');
+    const previous: Record<string, string> = {};
+    for (const locale of ['en', 'zh']) {
+      for (const section of ['customization', 'features']) {
+        previous[`${locale}/${section}/agents.md`] = '# Previous product reference\n';
+      }
+    }
+    try {
+      const copied = await copyKikiDocs({ sourceDir: join(repository, 'docs'), targetDir: join(packageRoot, 'dist', 'docs') });
+      expect(copied.some(({ relativePath }) => /(?:^|\/)agents\.md$/i.test(relativePath))).toBe(false);
+      const old = fakeDocsSource(previous);
+      expect(installKikiDocs({ ...old, kikiHome: home })).toMatchObject({ status: 'installed', fileCount: 4 });
+      const edited = join(home, 'docs', 'en', 'customization', 'agents.md');
+      writeFileSync(edited, '# User notes\n');
+      expect(installKikiDocs({ source: null, packageRoot, runtimeDir: join(packageRoot, 'dist'), kikiHome: home }))
+        .toMatchObject({ status: 'installed', source: 'package', removedFiles: 4, backedUpFiles: 1 });
+      expect(readFileSync(`${edited}.bak`, 'utf8')).toBe('# User notes\n');
+      for (const locale of ['en', 'zh']) {
+        for (const [section, name] of [['customization', 'agents-and-subagents'], ['features', 'agent-workflows']]) {
+          const relativePath = `${locale}/${section}/${name}.md`;
+          const file = copied.find((entry) => entry.relativePath === relativePath);
+          expect(file).toBeDefined();
+          expect(readFileSync(join(home, 'docs', relativePath))).toEqual(file?.bytes);
+          expect(existsSync(join(home, 'docs', locale, section!, 'agents.md'))).toBe(false);
+        }
+      }
+    } finally {
+      rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+
   it('prepares matching SEA/npm/workspace text and hashes without modifying sources, and preserves edits on upgrade', async () => {
     const scratch = resolve(import.meta.dirname, '../../../../.tmp');
     mkdirSync(scratch, { recursive: true });
@@ -766,5 +820,34 @@ describe('text-only bundled documentation', () => {
     } finally {
       rmSync(root, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
     }
+  });
+});
+
+
+describe('Windows process helper native assets', () => {
+  it('extracts and repairs the checked helper asset without requiring a runtime compiler', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-process-asset-'));
+    try {
+      const bytes = Buffer.from([77, 90, 0, 255]);
+      const base = fakeManifest({});
+      const assetKey = 'native/test-target/runtime/windows-process-helper';
+      const manifest: NativeAssetManifest = {
+        ...base.manifest,
+        runtimeFiles: [{ key: 'windows-process-helper', assetKey,
+          relativePath: 'runtime/process/windows-process-helper.exe', sha256: sha256(bytes), mode: 0o755 }],
+      };
+      const source: NativeAssetSource = {
+        getAssetKeys: () => [...base.source.getAssetKeys(), assetKey],
+        getRawAsset: (key) => key === assetKey ? bytes : base.source.getRawAsset(key),
+      };
+      const options = { cacheBase: dir, manifest, source, version: 'test' };
+      const file = getWindowsProcessHelperFile(options);
+      expect(file).toBe(join(dir, 'native', 'test', 'test-target', sha256(JSON.stringify(manifest)), 'runtime', 'process', 'windows-process-helper.exe'));
+      expect(readFileSync(file!)).toEqual(bytes);
+      writeFileSync(file!, 'corrupt');
+      expect(getWindowsProcessHelperFile(options)).toBe(file);
+      expect(readFileSync(file!)).toEqual(bytes);
+      expect(getWindowsProcessHelperFile({ ...options, manifest: base.manifest })).toBeNull();
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 });

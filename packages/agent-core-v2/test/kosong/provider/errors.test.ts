@@ -280,6 +280,23 @@ describe('non-abort classification still works', () => {
     expect(result.message).not.toContain(' — ');
   });
 
+  it('keeps a status-less Messages api_error retryable and a status-less invalid_request permanent', () => {
+    const retryable = convertAnthropicError(new AnthropicAPIError(undefined, {
+      type: 'error',
+      error: { type: 'api_error', message: 'upstream reset' },
+    }, undefined, new Headers(), 'api_error'));
+    expect(retryable).toMatchObject({ name: 'ChatProviderError', code: 'provider.api_error' });
+    expect(isRetryableGenerateError(retryable)).toBe(true);
+
+    const permanent = convertAnthropicError(new AnthropicAPIError(undefined, {
+      type: 'error',
+      error: { type: 'invalid_request_error', message: 'Invalid signature in thinking block' },
+    }, undefined, new Headers(), 'invalid_request_error'));
+    expect(permanent).toBeInstanceOf(APIStatusError);
+    expect(permanent).toMatchObject({ statusCode: 400 });
+    expect(isRetryableGenerateError(permanent)).toBe(false);
+  });
+
   it('redacts labeled plaintext secrets inlined in the Anthropic SDK message', () => {
     const labeled = 'api_key=AIza-PLAINSECRET123 token: plainsecret123 Authorization: Basic plainsecret123';
     const err = AnthropicAPIError.generate(

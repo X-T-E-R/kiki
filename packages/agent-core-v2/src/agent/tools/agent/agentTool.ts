@@ -1,4 +1,5 @@
-import type { Runtime } from '#/runtime/runtime';
+import { ref, type LiveRef } from '#/_base/di/instantiation';
+import type { Runtime, RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { resolvePathAccessPath } from '#/tool/path-access';
 import { loadDispatchProfileFile, inheritProfileFileSources } from '#/session/dispatch/profileFile';
@@ -44,7 +45,11 @@ import {
   subagentParentAgentId,
   subagentProfileName,
 } from '#/session/agentLifecycle/subagentMetadata';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import {
+  IAgentRuntimeService,
+  IAgentWorkspaceRootsSeed,
+  inspectAgentWorkspaceRoots,
+} from '#/agent/runtimeBinding/agentRuntime';
 import {
   AGENTS_SECTION,
   isParentNotifyEnabled,
@@ -128,6 +133,7 @@ export class SubagentTool implements ISubagentTool {
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @ISessionWorkspaceContext private readonly workspace: ISessionWorkspaceContext,
     @IAgentRuntimeService private readonly runtime: IAgentRuntimeService,
+    @ref(IAgentWorkspaceRootsSeed) private readonly workspaceRootsSeed: LiveRef<IAgentWorkspaceRootsSeed>,
     @ILogService private readonly log: ILogService,
     @IConfigService private readonly config: IConfigService,
     @IModelService private readonly models: IModelService,
@@ -243,6 +249,36 @@ export class SubagentTool implements ISubagentTool {
     return inheritProfileFileSources(this.profile.data(), this.catalog, snapshot) ?? snapshot;
   }
 
+  private workspaceRoots(runtime: Runtime, args: SubagentToolInput): RuntimeWorkspaceRoots | undefined {
+    if (args.workDir === undefined && args.additionalDirs === undefined && this.workspaceRootsSeed.current === undefined) {
+      return undefined;
+    }
+    const inherited = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
+    const view = new RuntimeWorkspaceView(runtime, inherited);
+    return {
+      workDir: args.workDir === undefined
+        ? view.workDir
+        : view.resolve(args.workDir, view.workDir, true),
+      additionalDirs: (args.additionalDirs ?? view.additionalDirs).map((dir) =>
+        view.resolve(dir, view.workDir, true)),
+    };
+  }
+
+  private workspaceRootAccesses(
+    runtime: Runtime,
+    inherited: RuntimeWorkspaceRoots,
+    roots: RuntimeWorkspaceRoots,
+  ): ToolAccesses {
+    const inheritedView = new RuntimeWorkspaceView(runtime, inherited);
+    const candidates = [roots.workDir, ...(roots.additionalDirs ?? [])];
+    const external = [...new Set(candidates.filter((candidate) =>
+      !inheritedView.roots.some((root) => containsRuntimePath(runtime, root, candidate))))];
+    return external.flatMap((path) => ToolAccesses.file('readwrite', path, {
+      recursive: true,
+      implicitExternal: true,
+    }));
+  }
+
   async resolveExecution(args: SubagentToolInput): Promise<ToolExecution> {
     if (args.model_alias?.trim() === 'inherit') {
       return { output: INHERIT_MODEL_ALIAS_UNAVAILABLE, isError: true };
@@ -277,10 +313,18 @@ export class SubagentTool implements ISubagentTool {
     const prefix = runInBackground ? 'Launching background' : 'Launching';
     if (resumeAgentId === undefined || resumeAgentId.length === 0) await this.catalog.ready;
     const snapshot = this.catalog.snapshot?.();
+    const runtime = this.runtime.inspect();
+    const workspaceRoots = this.workspaceRoots(runtime, args);
+    const inheritedRoots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
+    const rootsForResolution = workspaceRoots ?? inheritedRoots;
+    const rootAccesses = this.workspaceRootAccesses(
+      runtime,
+      inheritedRoots,
+      rootsForResolution,
+    );
     let filePath: string | undefined;
     if (args.profile_file !== undefined) {
-      const runtime = this.runtime.inspect();
-      const view = new RuntimeWorkspaceView(runtime, this.workspace);
+      const view = new RuntimeWorkspaceView(runtime, rootsForResolution);
       filePath = resolvePathAccessPath(args.profile_file, {
         env: runtime.environment,
         workspace: { workspaceDir: view.workDir, additionalDirs: view.additionalDirs },
@@ -290,7 +334,10 @@ export class SubagentTool implements ISubagentTool {
     }
     return {
       description: `${prefix} ${profileNameForDisplay} agent: ${args.description}`,
-      accesses: filePath === undefined ? ToolAccesses.none() : ToolAccesses.readFile(filePath),
+      accesses: [
+        ...(filePath === undefined ? [] : ToolAccesses.readFile(filePath)),
+        ...rootAccesses,
+      ],
       display: {
         kind: 'agent_call',
         agent_name: profileNameForDisplay,
@@ -299,7 +346,7 @@ export class SubagentTool implements ISubagentTool {
       },
       approvalRule: this.name,
       matchesRule: (ruleArgs) => matchesStringRuleSubject(ruleArgs, profileNameForDisplay),
-      execute: (ctx) => this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy, runInBackground),
+      execute: (ctx) => this.execution(filePath === undefined ? args : { ...args, profile_file: filePath }, ctx, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots),
     };
   }
 
@@ -363,6 +410,7 @@ export class SubagentTool implements ISubagentTool {
     snapshot: AgentProfileCatalogSnapshot | undefined,
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runTask: Promise<string | undefined>,
+    workspaceRoots: RuntimeWorkspaceRoots | undefined,
   ): Promise<SubagentHandle> {
     const policy = tightenDispatchLaunchPolicy(this.dispatch.readLaunchPolicy(this.callerAgentId), capturedLaunchPolicy);
     const admission = evaluateDispatchAdmission(policy, args.resume?.trim() ? 'resume' : 'spawn');
@@ -377,8 +425,12 @@ export class SubagentTool implements ISubagentTool {
     }
     const resumeRef = args.resume?.trim();
     const caller = this.profile.data();
+    const effectiveRoots = workspaceRoots ?? new RuntimeWorkspaceView(
+      runtime,
+      inspectAgentWorkspaceRoots(this.runtime, this.workspace),
+    );
     const fileTarget = args.profile_file === undefined ? undefined
-      : await loadDispatchProfileFile(args.profile_file, runtime, this.workspace, this.catalog,
+      : await loadDispatchProfileFile(args.profile_file, runtime, effectiveRoots, this.catalog,
           caller, snapshot);
     const fileProfile = fileTarget === undefined
       ? undefined
@@ -426,7 +478,8 @@ export class SubagentTool implements ISubagentTool {
             allowParentNotify: args.allow_parent_notify,
             toolOverride: { tools: args.tools, disallowedTools: args.disallowed_tools },
             runtime,
-            workDir: this.workspace.workDir,
+            workDir: effectiveRoots.workDir,
+            workspaceRoots,
             signal: controller.signal,
             userLabel: args.description,
             parentTurnId,
@@ -481,8 +534,9 @@ export class SubagentTool implements ISubagentTool {
     snapshot: AgentProfileCatalogSnapshot | undefined,
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
+    workspaceRoots: RuntimeWorkspaceRoots | undefined,
   ): Promise<ExecutableToolResult> {
-    if (!args.resume?.trim()) return this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground);
+    if (!args.resume?.trim()) return this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
     const key = `${context.turnId}:${context.toolCallId}`;
     const fingerprint = JSON.stringify(args);
     const previous = this.resumeExecutions.get(key);
@@ -490,7 +544,7 @@ export class SubagentTool implements ISubagentTool {
       if (previous.fingerprint !== fingerprint) return { isError: true, output: 'This resume tool call already belongs to a different request. Retry its original arguments.' };
       return previous.promise;
     }
-    const promise = this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground);
+    const promise = this.executeOnce(args, context, snapshot, capturedLaunchPolicy, runInBackground, workspaceRoots);
     this.resumeExecutions.set(key, { fingerprint, promise });
     void promise.then((result) => { if (result.isError) this.resumeExecutions.delete(key); }, () => { this.resumeExecutions.delete(key); });
     return promise;
@@ -502,6 +556,7 @@ export class SubagentTool implements ISubagentTool {
     snapshot: AgentProfileCatalogSnapshot | undefined,
     capturedLaunchPolicy: DispatchLaunchPolicy,
     runInBackground: boolean,
+    workspaceRoots: RuntimeWorkspaceRoots | undefined,
   ): Promise<ExecutableToolResult> {
     try {
       signal.throwIfAborted();
@@ -555,7 +610,7 @@ export class SubagentTool implements ISubagentTool {
       let resolveRunTask!: (taskId: string | undefined) => void;
       const runTask = new Promise<string | undefined>((resolve) => { resolveRunTask = resolve; });
       try {
-        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy, runTask);
+        handle = await this.launch(args, toolCallId, turnId, controller, runtimeLease.runtime, snapshot, capturedLaunchPolicy, runTask, workspaceRoots);
       } catch (error) {
         resolveRunTask(undefined);
         signal.removeEventListener('abort', abortBeforeRegister);
@@ -823,4 +878,13 @@ function errorMessage(error: unknown): string | undefined {
   if (typeof error === 'string') return error;
   if (error instanceof Error) return error.message;
   return undefined;
+}
+
+function containsRuntimePath(runtime: Runtime, root: string, candidate: string): boolean {
+  const relative = runtime.path.relative(root, candidate);
+  return relative === '' || (
+    relative !== '..' &&
+    !relative.startsWith(`..${runtime.path.separator}`) &&
+    !runtime.path.isAbsolute(relative)
+  );
 }

@@ -78,6 +78,24 @@ A malformed update is a protocol error and closes the connection. An
 unrecognized discriminator is rewritten to `unknown` before it reaches the
 SDK's closed-union parser, so ACP schema types never reach downstream recorders.
 
+Grok's `_x.ai/session_notification` and `_x.ai/session/update` extensions are
+decoded only for six supported update types: tool-input fragments, pending and
+resolved interactions, session summaries, response-completion metadata, and
+turn-completion metadata. Tool input is emitted as a complete snapshot for the
+canonical tool frame; completion metadata never creates a second turn terminal
+state. Unknown updates retain their method and bounded source payload when
+available so downstream diagnostics can show what arrived without treating it
+as assistant text.
+
+## Permission requests
+
+The permission handler receives the original request input and options. If an
+agent sends a partial tool call in `session/request_permission`, the client fills
+missing `kind` and `locations` from that tool's preceding updates in the same
+active turn and remote session. Request-supplied fields take precedence. Facts
+are discarded at turn completion and never reused across sessions or turns.
+The handler still owns the decision; enrichment does not grant permission.
+
 ## Durable session refs
 
 `parseExecutorSessionRefEnvelope`, `serializeExecutorSessionRefEnvelope`, and

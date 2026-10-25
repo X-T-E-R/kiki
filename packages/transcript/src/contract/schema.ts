@@ -140,7 +140,7 @@ export const textFrameSchema = z.object({
   role: z.enum(['assistant', 'user']),
   text: z.string(),
   presentation: textPresentationSchema.optional(),
-  attachmentIds: z.array(z.string()).optional(),
+  attachmentIds: z.array(z.string()).readonly().optional(),
   resourceLink: z.object({
     uri: z.string(), name: z.string().optional(), mimeType: z.string().optional(), size: z.number().optional(),
     title: z.string().optional(), description: z.string().optional(),
@@ -194,7 +194,7 @@ export const toolCallFrameSchema = z.object({
   taskId: taskIdSchema.optional(),
   approvalId: z.string().optional(),
   todoId: z.string().optional(),
-  agentRefs: z.array(agentRefSchema).optional(),
+  agentRefs: z.array(agentRefSchema).readonly().optional(),
 });
 
 export const interactionSchema = z.object({
@@ -262,7 +262,7 @@ export const transcriptTurnSchema = z.object({
   delivery: messageDeliverySchema.optional(),
   prompt: z.string().optional(),
   presentation: textPresentationSchema.optional(),
-  attachmentIds: z.array(z.string()).optional(),
+  attachmentIds: z.array(z.string()).readonly().optional(),
   steps: z.array(transcriptStepSchema),
   startedAt: z.string().optional(),
   endedAt: z.string().optional(),
@@ -336,6 +336,12 @@ export const transcriptTaskSchema = z.object({
 });
 
 export const goalMetaSchema = z.object({
+  goalId: z.string().optional(),
+  turnsUsed: z.number().optional(),
+  wallClockMs: z.number().optional(),
+  turnBudget: z.number().optional(),
+  wallClockBudgetMs: z.number().optional(),
+  terminalReason: z.string().optional(),
   objective: z.string(),
   status: z.enum(['active', 'paused', 'blocked', 'complete']),
   completionCriterion: z.string().optional(),
@@ -343,23 +349,6 @@ export const goalMetaSchema = z.object({
   controlRevision: z.number().int().nonnegative().optional(),
   budgetUsed: z.number().optional(),
   budgetLimit: z.number().optional(),
-  goalId: z.string().optional(),
-  turnsUsed: z.number().optional(),
-  tokensUsed: z.number().optional(),
-  wallClockMs: z.number().optional(),
-  terminalReason: z.string().optional(),
-  budget: z.object({
-    tokenBudget: z.number().nullable(),
-    turnBudget: z.number().nullable(),
-    wallClockBudgetMs: z.number().nullable(),
-    remainingTokens: z.number().nullable(),
-    remainingTurns: z.number().nullable(),
-    remainingWallClockMs: z.number().nullable(),
-    tokenBudgetReached: z.boolean(),
-    turnBudgetReached: z.boolean(),
-    wallClockBudgetReached: z.boolean(),
-    overBudget: z.boolean(),
-  }).optional(),
 });
 
 export const modesMetaSchema = z.object({
@@ -584,6 +573,7 @@ export const transcriptPromptRuntimeControlsSchema = z.object({
   execution: z.object({
     executor: z.string().min(1),
     profile: z.string().min(1).optional(),
+    profile_file: z.string().min(1).optional(),
     overrides: z.object({
       model: z.string().min(1).nullable().optional(),
       thinking: z.string().min(1).nullable().optional(),
@@ -595,7 +585,7 @@ export const transcriptPromptRuntimeControlsSchema = z.object({
   profile: z.string().min(1).optional(),
   model: z.string().min(1).optional(),
   modelSwitchMode: z.enum(['direct', 'compact', 'fresh']).optional(),
-  thinking: z.string().min(1).optional(),
+  thinking: z.string().min(1).nullable().optional(),
   permissionMode: z.enum(['manual', 'auto', 'review', 'yolo']).optional(),
   planGate: z.enum(['free', 'gated']).optional(),
   planMode: z.boolean().optional(),
@@ -608,6 +598,8 @@ export const transcriptPromptSchema = z.object({
   status: z.enum(['running', 'queued', 'blocked', 'completed', 'failed', 'aborted']),
   userMessageId: z.string().optional(),
   content: z.unknown().optional(),
+  originKind: z.literal('cron_job').optional(),
+  originDeliveryMode: z.enum(['queue', 'steer', 'idle']).optional(),
   createdAt: z.string(),
   finishedAt: z.string().optional(),
   queuePosition: z.number().int().nonnegative().optional(),
@@ -682,6 +674,9 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
     op: z.literal('frame.upsert'),
     turnId: turnIdSchema,
     stepId: stepIdSchema,
+    stepIndex: z.number().int().nonnegative().optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
+    place: z.enum(['safety_boundary']).optional(),
     frame: transcriptFrameSchema,
   }),
   z.object({
@@ -697,6 +692,8 @@ export const transcriptOperationSchema = z.discriminatedUnion('op', [
   z.object({
     op: z.literal('append'),
     target: appendTargetSchema,
+    stepIndex: z.number().int().nonnegative().optional(),
+    frameIndex: z.number().int().nonnegative().optional(),
     offset: z.number().int().nonnegative(),
     text: z.string(),
   }),

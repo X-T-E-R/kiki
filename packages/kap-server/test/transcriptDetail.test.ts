@@ -48,12 +48,14 @@ describe('session transcript detail reads', () => {
     })).resolves.toEqual({
       session_id: 's1', agent_id: 'main', kind: 'task',
       task: expect.objectContaining({ taskId: 'task-1', outputTail: 'complete task output' }),
+      read: { source: 'live', readiness: 'ready' },
     });
     await expect(readSessionViewTranscriptDetail(service, 's1', {
       agentId: 'main', kind: 'attachment', id: 'attachment-1',
     })).resolves.toEqual({
       session_id: 's1', agent_id: 'main', kind: 'attachment',
       attachment: expect.objectContaining({ attachmentId: 'attachment-1', source: { kind: 'session_media', fileId: expect.stringMatching(/^inline:main:/) } }),
+      read: { source: 'live', readiness: 'ready' },
     });
     expect(transcript.getAttachment('attachment-1')?.source).toEqual({ kind: 'url', url: `data:image/png;base64,${'A'.repeat(8_192)}` });
     await expect(readSessionViewTranscriptDetail(service, 's1', {
@@ -61,6 +63,7 @@ describe('session transcript detail reads', () => {
     })).resolves.toEqual({
       session_id: 's1', agent_id: 'main', kind: 'prompt',
       prompt: expect.objectContaining({ promptId: 'prompt-1', content: { text: 'complete prompt content' } }),
+      read: { source: 'live', readiness: 'ready' },
     });
     await expect(readSessionViewTranscriptDetail(service, 's1', {
       agentId: 'main', kind: 'task', id: 'missing',

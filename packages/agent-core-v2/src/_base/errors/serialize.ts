@@ -1,6 +1,6 @@
 import { CoreErrors, errorInfo, isErrorCode } from './codes';
 import type { ErrorCode } from '#/errors';
-import { Error2 } from './errors';
+import { Error2, readAttachedErrorDetails } from './errors';
 
 export interface ErrorPayload {
   readonly code: ErrorCode;
@@ -65,16 +65,17 @@ function toErrorPayloadAtDepth(error: unknown, depth: number): ErrorPayload {
 
 function toShallowErrorPayload(error: unknown): ErrorPayload {
   if (isCodedError(error)) {
+    const attached = readAttachedErrorDetails(error);
     return {
       code: error.code,
       message: error.message,
       name: error.name,
-      details: error.details,
+      details: attached === undefined ? error.details : { ...error.details, ...attached },
       retryable: errorInfo(error.code).retryable,
     };
   }
   if (error instanceof Error) {
-    return makeErrorPayload(CoreErrors.codes.INTERNAL, error.message, { name: error.name });
+    return makeErrorPayload(CoreErrors.codes.INTERNAL, error.message, { name: error.name, details: readAttachedErrorDetails(error) });
   }
   return makeErrorPayload(CoreErrors.codes.INTERNAL, String(error));
 }

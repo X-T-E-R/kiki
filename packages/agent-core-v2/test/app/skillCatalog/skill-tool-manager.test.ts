@@ -321,6 +321,7 @@ describe('ToolManager SkillTool restore behavior', () => {
     };
 
     await ctx.restore([
+      ...(await ctx.persistedWireRecords()),
       { type: 'skill.activate', origin },
       { type: 'context.append_message', message },
     ]);

@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
   refreshProviderModels,
+  resolveConfiguredProviderApiKey,
   type ManagedKimiConfigShape,
   type RefreshProviderHost,
 } from '../src/index';
@@ -68,7 +69,60 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 
+describe('configured provider API key resolution', () => {
+  it('reads only the explicit variable and never consults runtime env for inline or legacy sources', () => {
+    const reads: string[] = [];
+    const runtimeEnv = new Proxy<Record<string, string | undefined>>({ EXAMPLE_PROVIDER_KEY: 'runtime-fixture' }, {
+      get(target, key: string) { reads.push(key); return target[key]; },
+      ownKeys() { throw new Error('runtime environment enumeration is forbidden'); },
+    });
+    expect(resolveConfiguredProviderApiKey({ apiKey: 'inline-fixture', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, {}, runtimeEnv)).toEqual({ apiKey: 'inline-fixture' });
+    expect(resolveConfiguredProviderApiKey({}, { apiKey: 'legacy-fixture', envName: 'LEGACY_KEY' }, runtimeEnv)).toEqual({ apiKey: 'legacy-fixture', envName: 'LEGACY_KEY' });
+    expect(reads).toEqual([]);
+    expect(resolveConfiguredProviderApiKey({ apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, {}, runtimeEnv)).toEqual({ apiKey: 'runtime-fixture', envName: 'EXAMPLE_PROVIDER_KEY' });
+    expect(reads).toEqual(['EXAMPLE_PROVIDER_KEY']);
+    expect(resolveConfiguredProviderApiKey({ apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { EXAMPLE_PROVIDER_KEY: '' } }, { apiKey: 'legacy-fixture' }, runtimeEnv)).toEqual({ apiKey: undefined, envName: 'EXAMPLE_PROVIDER_KEY' });
+    expect(reads).toEqual(['EXAMPLE_PROVIDER_KEY']);
+  });
+});
+
 describe('refreshProviderModels suggestions', () => {
+  it.each(['openai', 'platform'] as const)('uses an explicit runtime variable for %s discovery without storing its value', async (kind) => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    const fetchMock = vi.fn(async () => jsonResponse({ data: [{ id: 'kimi-k2', context_length: 262144 }] }));
+    vi.stubGlobal('fetch', fetchMock);
+    const providerId = kind === 'platform' ? 'moonshot-cn' : 'gateway';
+    const fixture = createHost({ providers: { [providerId]: { type: kind === 'platform' ? 'kimi' : 'openai', baseUrl: 'https://gateway.example.test/v1', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' } }, models: {} });
+    const before = fixture.config();
+    const result = await refreshProviderModels(fixture.host, { providerId });
+    expect(result.failed).toEqual([]);
+    expect(fetchMock).toHaveBeenCalledOnce();
+    expect(fetchMock.mock.calls[0]).toEqual([expect.anything(), expect.objectContaining({ headers: expect.objectContaining({ Authorization: 'Bearer runtime-fixture' }) })]);
+    expect(fixture.config()).toEqual(before);
+    expect(fixture.setConfig).not.toHaveBeenCalled();
+    expect(JSON.stringify(result)).not.toContain('runtime-fixture');
+  });
+
+  it.each([undefined, ''] as const)('does not discover with missing or empty explicit credentials (%s)', async (value) => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', value);
+    vi.stubEnv('OPENAI_API_KEY', 'implicit-fixture');
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const fixture = createHost({ providers: { gateway: { type: 'openai', baseUrl: 'https://gateway.example.test/v1', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { OPENAI_API_KEY: 'legacy-fixture' } } }, models: {} });
+    const result = await refreshProviderModels(fixture.host, { providerId: 'gateway' });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.failed).toHaveLength(1);
+  });
+
+  it('redacts explicitly resolved runtime credentials from discovery failures', async () => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('request failed with runtime-fixture'); }));
+    const fixture = createHost({ providers: { gateway: { type: 'openai', baseUrl: 'https://gateway.example.test/v1', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' } }, models: {} });
+    const result = await refreshProviderModels(fixture.host, { providerId: 'gateway' });
+    expect(result.failed).toHaveLength(1);
+    expect(JSON.stringify(result)).not.toContain('runtime-fixture');
+  });
+
   it('reports a scoped generic provider catalog as a suggestion and never writes config', async () => {
     const fetchMock = vi.fn(async () =>
       jsonResponse({ data: [{ id: 'gpt-new' }, { id: 'gpt-new' }] }),

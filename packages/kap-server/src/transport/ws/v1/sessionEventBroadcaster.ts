@@ -64,7 +64,6 @@ import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
 import { recordSessionViewTiming } from '../../klient/sessionViewTiming';
 import { boundedTranscriptOps, boundedTranscriptSnapshot, TRANSCRIPT_WINDOW_BYTES } from '../../klient/boundedTranscript';
-
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
 import { TurnUsageTracker } from './turnUsageTracker';
@@ -189,10 +188,10 @@ async function disposeSessionState(state: SessionState): Promise<void> {
     state.interactionService?.releaseConsumer(id);
   }
   state.interactionConsumers.clear();
-  for (const subscription of state.targets.values()) subscription.residencyLease?.dispose();
+  for (const subscription of state.targets.values()) await subscription.residencyLease?.dispose();
   state.targets.clear();
-  for (const d of state.lifecycleDisposables) d.dispose();
-  for (const d of state.agentDisposables.values()) d.dispose();
+  for (const d of state.lifecycleDisposables) await d.dispose();
+  for (const d of state.agentDisposables.values()) await d.dispose();
   state.roster.clear(state.sessionId);
   await state.journal.close();
 }
@@ -219,7 +218,7 @@ export class SessionEventBroadcaster {
    * per-chunk `AABBCC` stream while every seq and offset still looks valid.
    */
   private readonly pendingStates = new Map<string, Promise<SessionState | undefined>>();
-  private readonly pendingSubscriptions = new Map<string, Map<BroadcastTarget, symbol>>();
+  private readonly pendingSubscriptions = new Map<string, Map<BroadcastTarget, AbortController>>();
   /** Session ids whose closing state is being drained and disposed. */
   private readonly evictions = new Map<string, Promise<void>>();
   private readonly maxBufferSize: number;
@@ -322,9 +321,10 @@ export class SessionEventBroadcaster {
     opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince },
   ): Promise<boolean> {
     if (this.closed) return false;
-    const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, symbol>();
+    const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, AbortController>();
     this.pendingSubscriptions.set(sessionId, pending);
-    const token = Symbol();
+    pending.get(target)?.abort();
+    const token = new AbortController();
     pending.set(target, token);
     let acquiredLease: SessionLease | undefined;
     let attached: { state: SessionState; generation: number } | undefined;
@@ -333,7 +333,7 @@ export class SessionEventBroadcaster {
       const existingLease = pinnedState?.targets.get(target)?.residencyLease;
       const manager = this.opts.core.accessor.get(ISessionManager);
       if (existingLease === undefined) {
-        acquiredLease = await manager.acquire?.(sessionId, 'ws-subscription');
+        acquiredLease = await manager.acquire?.(sessionId, 'ws-subscription', undefined, token.signal);
         if (manager.acquire !== undefined && acquiredLease === undefined) return false;
       }
       if (this.closed || pending.get(target) !== token) return false;
@@ -352,7 +352,7 @@ export class SessionEventBroadcaster {
         state.interactionConsumers.set(target, consumerId);
       }
       const generation = this.nextTranscriptGeneration(state, target);
-      if (prev?.residencyLease !== undefined) acquiredLease?.dispose();
+      if (prev?.residencyLease !== undefined) await acquiredLease?.dispose();
       acquiredLease = undefined;
       state.targets.set(target, {
         agentFilter: filter,
@@ -391,6 +391,7 @@ export class SessionEventBroadcaster {
       if (!deferred) await this.runTranscriptSeed(state, target, seed);
       return true;
     } catch (error) {
+      if (token.signal.aborted && (this.closed || pending.get(target) !== token)) return false;
       if (attached !== undefined && pending.get(target) === token &&
           this.sessions.get(sessionId) === attached.state &&
           attached.state.targets.get(target)?.transcriptGeneration === attached.generation) {
@@ -398,7 +399,7 @@ export class SessionEventBroadcaster {
       }
       throw error;
     } finally {
-      acquiredLease?.dispose();
+      await acquiredLease?.dispose();
       if (pending.get(target) === token) pending.delete(target);
       if (pending.size === 0 && this.pendingSubscriptions.get(sessionId) === pending) {
         this.pendingSubscriptions.delete(sessionId);
@@ -472,12 +473,16 @@ export class SessionEventBroadcaster {
 
   unsubscribe(sessionId: string, target: BroadcastTarget): void {
     const pending = this.pendingSubscriptions.get(sessionId);
+    pending?.get(target)?.abort();
     pending?.delete(target);
     if (pending?.size === 0) this.pendingSubscriptions.delete(sessionId);
     const state = this.sessions.get(sessionId);
     if (state === undefined) return;
     this.nextTranscriptGeneration(state, target);
-    state.targets.get(target)?.residencyLease?.dispose();
+    const residencyLease = state.targets.get(target)?.residencyLease;
+    if (residencyLease !== undefined) {
+      state.queue = state.queue.then(() => residencyLease.dispose()).then(() => undefined);
+    }
     state.targets.delete(target);
     const consumerId = state.interactionConsumers.get(target);
     if (consumerId !== undefined) {
@@ -1086,6 +1091,7 @@ export class SessionEventBroadcaster {
     const journal = await SessionEventJournal.open(
       sessionJournalPath(this.opts.eventsDir, sessionId),
       this.opts.logger,
+      this.maxBufferSize,
     );
     const watermark = { seq: journal.seq, epoch: journal.epoch };
     await journal.close();
@@ -1095,9 +1101,10 @@ export class SessionEventBroadcaster {
   async close(): Promise<void> {
     if (this.closed) return;
     this.closed = true;
+    for (const pending of this.pendingSubscriptions.values()) for (const controller of pending.values()) controller.abort();
     this.pendingSubscriptions.clear();
-    this.coreEventSubscription.dispose();
-    this.sessionLifecycleSubscription.dispose();
+    await this.coreEventSubscription.dispose();
+    await this.sessionLifecycleSubscription.dispose();
     await Promise.allSettled([...this.evictions.values(), ...this.pendingStates.values()]);
     for (const [sessionId, state] of this.sessions) {
       await state.queue;
@@ -1161,6 +1168,7 @@ export class SessionEventBroadcaster {
     const journal = await SessionEventJournal.open(
       sessionJournalPath(this.opts.eventsDir, sessionId),
       this.opts.logger,
+      this.maxBufferSize,
     );
     if (this.closed) {
       await journal.close();
@@ -1218,6 +1226,7 @@ export class SessionEventBroadcaster {
     const journal = await SessionEventJournal.open(
       sessionJournalPath(this.opts.eventsDir, GLOBAL_SESSION_ID),
       this.opts.logger,
+      this.maxBufferSize,
     );
     const state: SessionState = {
       sessionId: GLOBAL_SESSION_ID,
@@ -1431,7 +1440,7 @@ export class SessionEventBroadcaster {
       agents.onDidDispose((agentId) => {
         const d = state.agentDisposables.get(agentId);
         if (d !== undefined) {
-          d.dispose();
+          state.queue = state.queue.then(() => d.dispose()).then(() => undefined);
           state.agentDisposables.delete(agentId);
           this.enqueueDurable(state, {
             type: 'agent.disposed',
@@ -1480,7 +1489,7 @@ export class SessionEventBroadcaster {
       }),
     ];
 
-    return { dispose: () => disposables.forEach((disposable) => disposable.dispose()) };
+    return { dispose: async () => { for (const disposable of disposables) await disposable.dispose(); } };
   }
 
   private onAgentEvent(sessionId: string, agentId: string, event: Event2<any>): void {
@@ -1624,6 +1633,7 @@ export class SessionEventBroadcaster {
           {
             type: 'event.session.work_changed',
             busy: work.busy,
+            executing: work.executing,
             main_turn_active: work.mainTurnActive,
             pending_interaction: work.pendingInteraction,
             last_turn_reason: work.lastTurnReason,
@@ -1803,6 +1813,7 @@ const TRANSCRIPT_ONLY_STATE_EVENT_TYPES: ReadonlySet<string> = new Set([
   'context.clear',
   'context.apply_compaction',
   'context.undo',
+  'tools.update_store',
 ]);
 
 function isVolatileSignal(type: string): boolean {
@@ -1837,6 +1848,7 @@ function matchesAgentFilter(envelope: EventEnvelope, filter: AgentFilter): boole
   if (filter === undefined) return true;
   if (isGlobalEvent(envelope.type)) return true;
   if (isAgentLifecycleEvent(envelope.type)) return true;
+  if (envelope.type.startsWith('event.approval.') || envelope.type.startsWith('event.question.')) return true;
   const payload = envelope.payload;
   const agentId =
     typeof payload === 'object' && payload !== null

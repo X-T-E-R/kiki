@@ -1,14 +1,19 @@
 import {
+  IAtomicDocumentStore,
   IHostFileSystem,
+  ISessionIndex,
   IWorkspaceInstanceManager,
+  IWorkspacePersistence,
   IWorkspaceService,
   IWorkspaceSessions,
   IWorkspaceTrust,
   type Scope,
   type Workspace,
 } from '@kiki/agent-core-v2';
-import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { workspaceRootKey, workDirKeyAliases } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { IGitService } from '@kiki/agent-core-v2/app/git/git';
+import { dedupeByRoot } from '@kiki/agent-core-v2/app/workspace/workspaceAlias';
+import { readWorkspaceTrust } from '@kiki/agent-core-v2/workspace/workspaceTrust/trustRecord';
 import { isAbsolute } from 'node:path';
 
 import { z } from 'zod';
@@ -24,12 +29,14 @@ import {
   inspectWorkspaceRequestSchema,
   inspectWorkspaceResponseSchema,
   listWorkspacesResponseSchema,
+  workspaceViewQuerySchema,
+  listWorkspaceCatalogResponseSchema,
   updateWorkspaceRequestSchema,
   updateWorkspaceResponseSchema,
   workspaceIdParamSchema,
   workspaceTrustResponseSchema,
 } from '../protocol/rest-workspace';
-import type { Workspace as WorkspaceWire } from '../protocol/workspace';
+import { workspaceCatalogEntrySchema, type Workspace as WorkspaceWire } from '../protocol/workspace';
 
 interface WorkspaceRouteHost {
   get(
@@ -74,7 +81,8 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
     {
       method: 'GET',
       path: '/workspaces',
-      success: { data: listWorkspacesResponseSchema },
+      querystring: workspaceViewQuerySchema,
+      success: { data: z.union([listWorkspacesResponseSchema, listWorkspaceCatalogResponseSchema]) },
       errors: {
         [ErrorCode.SESSION_INDEX_BUILDING]: {},
       },
@@ -82,12 +90,47 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
       tags: ['workspaces'],
     },
     async (req, reply) => {
+      if (req.query.view === 'catalog') {
+        const catalog = await core.accessor.get(IWorkspacePersistence).load();
+        const items = dedupeByRoot(new Map((catalog?.workspaces ?? []).map(ws => [ws.id, ws])));
+        reply.send(okEnvelope({ items: items.map(toWireCatalogEntry) }, req.id));
+        return;
+      }
       const items = await core.accessor.get(IWorkspaceService).list();
       const projected = await Promise.all(items.map((ws) => toWireWorkspace(core, ws)));
       reply.send(okEnvelope({ items: projected }, req.id));
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<WorkspaceRouteHost['get']>[2]);
+
+  const detailRoute = defineRoute(
+    {
+      method: 'GET',
+      path: '/workspaces/{workspace_id}',
+      params: workspaceIdParamSchema,
+      success: { data: createWorkspaceResponseSchema },
+      errors: { [ErrorCode.WORKSPACE_NOT_FOUND]: {}, [ErrorCode.SESSION_INDEX_BUILDING]: {} },
+      description: 'Read one registered workspace without legacy discovery',
+      tags: ['workspaces'],
+    },
+    async (req, reply) => {
+      const items = (await core.accessor.get(IWorkspacePersistence).load())?.workspaces ?? [];
+      const ws = items.find(item => item.id === req.params.workspace_id);
+      if (ws === undefined) {
+        reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `workspace ${req.params.workspace_id} does not exist`, req.id));
+        return;
+      }
+      const rootKey = workspaceRootKey(ws.root);
+      const ids = new Set(items.filter(item => workspaceRootKey(item.root) === rootKey)
+        .flatMap(item => [item.id, ...workDirKeyAliases(item.root)]));
+      const [session_count, isGit] = await Promise.all([
+        core.accessor.get(ISessionIndex).count({ workspaceIds: [...ids], includeArchived: true }),
+        isGitRoot(core, ws.root),
+      ]);
+      reply.send(okEnvelope({ ...toWireCatalogEntry(ws), session_count, isGit }, req.id));
+    },
+  );
+  app.get(detailRoute.path, detailRoute.options, detailRoute.handler as Parameters<WorkspaceRouteHost['get']>[2]);
 
   const inspectRoute = defineRoute(
     {
@@ -162,7 +205,8 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
       path: '/workspaces/{workspace_id}',
       params: workspaceIdParamSchema,
       body: updateWorkspaceRequestSchema,
-      success: { data: updateWorkspaceResponseSchema },
+      querystring: workspaceViewQuerySchema,
+      success: { data: z.union([updateWorkspaceResponseSchema, workspaceCatalogEntrySchema]) },
       errors: {
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
@@ -172,6 +216,13 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
     },
     async (req, reply) => {
       const { workspace_id } = req.params;
+      if (req.query.view === 'catalog') {
+        const catalog = await core.accessor.get(IWorkspacePersistence).load();
+        if (!catalog?.workspaces.some((workspace) => workspace.id === workspace_id)) {
+          reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `workspace ${workspace_id} does not exist`, req.id));
+          return;
+        }
+      }
       const ws = await core.accessor
         .get(IWorkspaceService)
         .update(workspace_id, { name: req.body.name, pinned: req.body.pinned });
@@ -181,7 +232,7 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
         );
         return;
       }
-      reply.send(okEnvelope(await toWireWorkspace(core, ws), req.id));
+      reply.send(okEnvelope(req.query.view === 'catalog' ? toWireCatalogEntry(ws) : await toWireWorkspace(core, ws), req.id));
     },
   );
   app.patch(
@@ -239,9 +290,13 @@ export function registerWorkspacesRoutes(app: WorkspaceRouteHost, core: Scope,
       tags: ['workspaces'],
     },
     async (req, reply) => {
-      const trust = await resolveTrust(core, req.params.workspace_id, req.id, reply);
-      if (trust === undefined) return;
-      reply.send(okEnvelope({ trusted: await trust.get() }, req.id));
+      const ws = await core.accessor.get(IWorkspaceService).get(req.params.workspace_id);
+      if (ws === undefined) {
+        reply.send(errEnvelope(ErrorCode.WORKSPACE_NOT_FOUND, `workspace ${req.params.workspace_id} does not exist`, req.id));
+        return;
+      }
+      const trusted = await readWorkspaceTrust(core.accessor.get(IAtomicDocumentStore), ws.root);
+      reply.send(okEnvelope({ trusted }, req.id));
     },
   );
   app.get(
@@ -322,18 +377,20 @@ async function resolveTrust(
   return workspace.program.trust;
 }
 
-async function toWireWorkspace(core: Scope, ws: Workspace): Promise<WorkspaceWire> {
-  const sessionCount = await core.accessor.get(IWorkspaceSessions).count(ws.id);
+function toWireCatalogEntry(ws: Workspace) {
   return {
     id: ws.id,
     root: ws.root,
     name: ws.name,
     created_at: new Date(ws.createdAt).toISOString(),
     last_opened_at: new Date(ws.lastOpenedAt).toISOString(),
-    session_count: sessionCount,
     pinned: ws.pinned,
-    isGit: await isGitRoot(core, ws.root),
   };
+}
+
+async function toWireWorkspace(core: Scope, ws: Workspace): Promise<WorkspaceWire> {
+  const session_count = await core.accessor.get(IWorkspaceSessions).count(ws.id);
+  return { ...toWireCatalogEntry(ws), session_count, isGit: await isGitRoot(core, ws.root) };
 }
 
 async function isGitRoot(core: Scope, root: string): Promise<boolean> {

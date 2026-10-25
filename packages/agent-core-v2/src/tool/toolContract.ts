@@ -117,6 +117,12 @@ export interface RunnableToolExecution {
   readonly description?: string;
   readonly stopBatchAfterThis?: boolean | undefined;
   readonly approvalRule: string;
+  readonly sessionApprovalRule?: string;
+  readonly shellContext?: {
+    readonly runtimeId: string;
+    readonly cwd: string;
+    readonly pathClass: 'posix' | 'win32';
+  };
   readonly matchesRule?: ((ruleArgs: string, mode?: 'all' | 'any') => boolean) | undefined;
   readonly execute: (ctx: ExecutableToolContext) => Promise<ExecutableToolResult>;
 }

@@ -157,22 +157,40 @@ describe('GoalInjection content', () => {
     expect(text.match(/<\/untrusted_completion_criterion>/g)).toHaveLength(1);
   });
 
-  it('includes budget lines', async () => {
+  it('omits cumulative usage and budget judgments without an explicit budget', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
-      await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 100, turnBudget: 5 } }, 'user');
+      await goals.incrementTurn();
     }))!;
-    expect(text).toContain('Budgets:');
-    expect(text).toContain('tokens 0/100');
-    expect(text).toContain('turns 0/5');
+    expect(text).not.toContain('Progress:');
+    expect(text).not.toContain('Budgets as of');
+    expect(text).not.toContain('within budget');
+    expect(text).not.toContain('elapsed');
   });
 
-  it('uses the within-budget band below 75 percent', async () => {
+  it.each([
+    [{ turnBudget: 5 }, ['turns 0/5'], ['goal output tokens 0/', 'time 0s/']],
+    [{ tokenBudget: 100 }, ['goal output tokens 0/100', "this agent's goal-driven output only"], ['turns 0/', 'time 0s/']],
+    [{ wallClockBudgetMs: 60000 }, ['time 0s/1m00s'], ['turns 0/', 'goal output tokens 0/']],
+    [{ tokenBudget: 100, turnBudget: 5 }, ['goal output tokens 0/100', 'turns 0/5'], ['time 0s/']],
+  ] as const)('discloses only configured budget dimensions (%j) and their sampling freshness', async (budgetLimits, present, absent) => {
+    const text = (await readGoalReminder(async (goals) => {
+      await goals.createGoal({ objective: 'work' });
+      await goals.setBudgetLimits({ budgetLimits }, 'user');
+    }))!;
+    expect(text).toContain('Budgets as of this reminder:');
+    expect(text).toContain('Goal({action:"get"})');
+    for (const value of present) expect(text).toContain(value);
+    for (const value of absent) expect(text).not.toContain(value);
+  });
+
+  it('does not claim a live within-budget band below 75 percent', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'work' });
       await goals.setBudgetLimits({ budgetLimits: { turnBudget: 10 } }, 'user');
     }))!;
-    expect(text).toContain('within budget');
+    expect(text).not.toContain('within budget');
+    expect(text).not.toContain('nearing its limit');
   });
 
   it('uses the convergence band at or above 75 percent', async () => {
@@ -183,8 +201,9 @@ describe('GoalInjection content', () => {
       await goals.incrementTurn();
       await goals.incrementTurn();
     }))!;
-    expect(text).toContain('nearing a budget');
-    expect(text).toContain('avoid starting new discretionary work');
+    expect(text).toContain('nearing its limit');
+    expect(text).toContain('essential verification');
+    expect(text).toContain('Report partial work honestly');
   });
 
   it('shows a blocked note once a budget is reached', async () => {
@@ -199,11 +218,16 @@ describe('GoalInjection content', () => {
     expect(text).not.toContain('Budget guidance');
   });
 
-  it('references the UpdateGoal tool', async () => {
+  it('uses canonical actions and outcome-based completion or blocking', async () => {
     const text = (await readGoalReminder(async (goals) => {
-      await goals.createGoal({ objective: 'work' });
+      await goals.createGoal({ objective: 'Repair the parser and verify all accepted inputs' });
     }))!;
-    expect(text).toContain('UpdateGoal');
+    expect(text).toContain('Goal({action:"update",status:"complete"})');
+    expect(text).toContain('Goal({action:"update",status:"blocked"}) now');
+    expect(text).toContain('every explicit requirement');
+    expect(text).toContain('For a recoverable failure, inspect the cause');
+    expect(text).toContain('Do not spend extra turns repeating an unchanged blocker');
+    expect(text).not.toMatch(/UpdateGoal|SetGoalBudget|3 consecutive|broad goal in one turn/);
   });
 
   it('keeps natural-language limits from becoming model-controlled budgets', async () => {
@@ -213,9 +237,10 @@ describe('GoalInjection content', () => {
     }))!;
     expect(text).toContain('controlled only by the user in the GUI goal editor');
     expect(text).not.toContain('SetGoalBudget');
+    expect(text).not.toContain('set_budget');
   });
 
-  it('renders compact reminder text without template-tag blank lines', async () => {
+  it('renders the budget block adjacent to status without template-tag blank lines', async () => {
     const text = (await readGoalReminder(async (goals) => {
       await goals.createGoal({ objective: 'Ship feature X', completionCriterion: 'tests pass' });
       await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 100, turnBudget: 5 } }, 'user');
@@ -223,8 +248,8 @@ describe('GoalInjection content', () => {
     expect(text).not.toContain('\n\n\n');
     expect(text).toContain('</untrusted_objective>\n<untrusted_completion_criterion>');
     expect(text).toContain('</untrusted_completion_criterion>\n\nStatus: active');
-    expect(text).toMatch(/Progress: [^\n]*\.\nBudgets: /);
-    expect(text).toMatch(/Budgets: [^\n]*\.\nBudget guidance: /);
+    expect(text).toMatch(/Status: active\nBudgets as of this reminder: /);
+    expect(text).not.toContain('Progress:');
   });
 });
 

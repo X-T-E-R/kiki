@@ -1,3 +1,4 @@
+import { isBrowserOperationToolName } from '@kiki/agent-profiles/toolPolicy';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -151,7 +152,7 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   private isHistoricallyDisabled(name: string): boolean {
     const info = this.toolRegistry.list().find((entry) => entry.name === name);
     if (info !== undefined) return !this.toolPolicy.isToolActive(name, info.source);
-    return isMcpToolName(name) && !this.toolPolicy.isToolActive(name, 'mcp');
+    return name.startsWith('plugin__') || name.startsWith('browser__') || isMcpToolName(name);
   }
 
   load(names: readonly string[]): LoadToolsResult {
@@ -315,17 +316,18 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
         this.toolPolicy.isToolActive(name, info.source)
       );
     }
-    if (isMcpToolName(name)) return this.toolPolicy.isToolActive(name, 'mcp');
     return false;
   }
 
   private isDynamicallyLoadable(info: ToolInfo): boolean {
-    return info.source === 'mcp' || info.source === 'plugin';
+    if (info.source === 'mcp' || info.source === 'plugin') return true;
+    return info.source === 'builtin' && info.disclosure === 'deferred' && isBrowserOperationToolName(info.name);
   }
 
   private schemaOf(name: string): Tool | undefined {
+    const info = this.toolRegistry.list().find((entry) => entry.name === name);
     const tool = this.toolRegistry.resolve(name);
-    if (tool === undefined) return undefined;
+    if (tool === undefined || info === undefined || !this.toolPolicy.isToolActive(name, info.source)) return undefined;
     return {
       name: tool.name,
       description: tool.description,

@@ -129,7 +129,7 @@ describe('Model assembly (pure data)', () => {
     const { host, catalog, models, providers } = createHost({ providers: { edge: provider }, models: records, defaultModel: 'chat', defaultProvider: 'edge' });
     const captured: Array<{ url: string; body: Record<string, unknown> }> = [];
     let fail = false;
-    const sse = (events: Array<Record<string, unknown>>) => new Response(events.map((event) => `event: ${event['type']}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
+    const sse = (events: Array<Record<string, unknown>>) => new Response(events.map((event) => `event: ${event['type'] as string}\ndata: ${JSON.stringify(event)}\n\n`).join(''), { headers: { 'Content-Type': 'text/event-stream' } });
     const sink = vi.fn(async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
       const request = new Request(input, init);
       const body = await request.json() as Record<string, unknown>;
@@ -214,7 +214,7 @@ describe('Model assembly (pure data)', () => {
       expect(generate).toHaveBeenCalledOnce();
       expect(JSON.stringify(factory.mock.calls)).not.toMatch(/ask.?user.?question|behavior|maxPerWindow|window_ms/i);
       expect(JSON.stringify(generate.mock.calls)).not.toMatch(/ask.?user.?question|behavior|maxPerWindow|window_ms/i);
-    } finally { factory.mockRestore(); host.dispose(); }
+    } finally { factory.mockRestore(); await host.dispose(); }
   });
   it('uses an inline configured static key through the normal model request sink', async () => {
     const sections = {
@@ -233,7 +233,33 @@ describe('Model assembly (pure data)', () => {
       }).rejects.toThrow('fake network sink');
       expect(generate).toHaveBeenCalledOnce();
       expect(generate.mock.calls[0]?.[3]).toMatchObject({ auth: { apiKey: 'sk-stored' } });
-    } finally { factory.mockRestore(); host.dispose(); }
+    } finally { factory.mockRestore(); await host.dispose(); }
+  });
+
+  it.each([
+    { label: 'explicit runtime variable', provider: { apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, model: {}, expected: 'runtime-fixture' },
+    { label: 'provider env bag', provider: { apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { EXAMPLE_PROVIDER_KEY: 'bag-fixture' } }, model: {}, expected: 'bag-fixture' },
+    { label: 'inline provider precedence', provider: { apiKey: 'inline-fixture', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, model: {}, expected: 'inline-fixture' },
+    { label: 'model precedence', provider: { apiKey: 'inline-fixture', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' }, model: { apiKey: 'model-fixture' }, expected: 'model-fixture' },
+  ])('resolves $label through the normal model request sink', async ({ provider, model, expected }) => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    const { host, catalog } = createHost({
+      providers: { gateway: { type: 'openai', baseUrl: 'https://gateway.example.test/v1', ...provider } },
+      models: { m1: { provider: 'gateway', model: 'remote', maxContextSize: 4096, ...model } },
+    });
+    const generate = vi.fn(async (..._args: unknown[]) => { throw new Error('fake network sink'); });
+    const factory = vi.spyOn(host.app.accessor.get(IProtocolAdapterRegistry), 'createChatProvider').mockReturnValue({
+      name: 'fake', modelName: 'remote', thinkingEffort: null, generate,
+    } as unknown as ChatProvider);
+    try {
+      await expect(async () => {
+        for await (const event of catalog.getRequester('m1').request({ systemPrompt: '', tools: [], messages: [] }, undefined, { attribution: { logicalRequestId: 'fixture', purpose: 'connectivity_probe', waitBudget: { waitedMs: 0 } } })) void event;
+      }).rejects.toThrow('fake network sink');
+      expect(generate.mock.calls[0]?.[3]).toMatchObject({ auth: { apiKey: expected } });
+      const wire = (await catalog.listModels())[0];
+      expect(wire).toMatchObject({ auth_source: model.apiKey === undefined ? provider.apiKey === undefined ? 'env' : 'provider' : 'model' });
+      expect(JSON.stringify(wire)).not.toContain(expected);
+    } finally { factory.mockRestore(); await host.dispose(); vi.unstubAllEnvs(); }
   });
 
   it('suppresses process environment API keys when composing a model without configured auth', async () => {
@@ -252,7 +278,7 @@ describe('Model assembly (pure data)', () => {
       }).rejects.toThrow(/apiKey is required/);
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
-      host.dispose();
+      await host.dispose();
       vi.unstubAllGlobals();
       if (previous === undefined) delete process.env['OPENAI_API_KEY'];
       else process.env['OPENAI_API_KEY'] = previous;
@@ -269,7 +295,7 @@ describe('Model assembly (pure data)', () => {
       expect(toProtocolModelFallback('tiered', record).service_tier).toBe('priority');
       expect(await catalog.listModels()).toContainEqual(expect.objectContaining({ id: 'tiered', service_tier: 'priority' }));
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -296,10 +322,10 @@ describe('Model assembly (pure data)', () => {
       expect(inspection.sources['resolved.generationParameters.temperature']?.detail).toBe('[providers.*.defaults]');
       expect(inspection.sources['resolved.generationParameters.maxCompletionTokens']?.detail).toBe('[models.*.parameters]');
       expect((await catalog.listProviders())[0]?.defaults?.temperature).toBe(0);
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
-  it('keeps explicit legacy model preferences above new provider defaults until migrated', () => {
+  it('keeps explicit legacy model preferences above new provider defaults until migrated', async () => {
     const { host, catalog } = createHost({
       providers: { gateway: { type: 'openai', baseUrl: 'https://example.test/v1', defaults: {
         temperature: 0.9, topP: 0.8, maxCompletionTokens: 8192,
@@ -317,10 +343,10 @@ describe('Model assembly (pure data)', () => {
       expect(model.generationParameters?.topP).toEqual({ kind: 'api_default' });
       expect(catalog.inspect('legacy').sources['resolved.generationParameters.temperature']?.detail)
         .toBe('[models.*.overrides] legacy generation fields');
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
-  it('drops an old effort invalidated by override support without forgiving a new explicit invalid effort', () => {
+  it('drops an old effort invalidated by override support without forgiving a new explicit invalid effort', async () => {
     const { host, catalog } = createHost({
       providers: { gateway: { type: 'openai', baseUrl: 'https://example.test/v1' } },
       models: {
@@ -336,10 +362,10 @@ describe('Model assembly (pure data)', () => {
       expect(catalog.get('legacy').generationParameters?.thinkingEffort).toBeUndefined();
       expect(catalog.get('legacy').preferredThinkingEffort).toBeUndefined();
       expect(() => catalog.get('explicit')).toThrow('does not support thinking effort');
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
-  it('rejects known unsupported or forced-off thinking preferences but leaves unknown effort claims unverified', () => {
+  it('rejects known unsupported or forced-off thinking preferences but leaves unknown effort claims unverified', async () => {
     const { host, catalog } = createHost({
       providers: { gateway: { type: 'openai', baseUrl: 'https://example.test/v1' } },
       models: {
@@ -355,10 +381,10 @@ describe('Model assembly (pure data)', () => {
       expect(() => catalog.get('forced')).toThrow('requires thinking');
       expect(() => catalog.get('known')).toThrow('does not support thinking effort');
       expect(catalog.get('unknown').preferredThinkingEffort).toBe('custom');
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
-  it('resolves provider image defaults with field-level model overrides', () => {
+  it('resolves provider image defaults with field-level model overrides', async () => {
     const { host, catalog } = createHost({
       providers: {
         gateway: {
@@ -390,11 +416,11 @@ describe('Model assembly (pure data)', () => {
         convertUnsupported: 'auto',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('rejects a fixed conversion target outside the effective accepted set', () => {
+  it('rejects a fixed conversion target outside the effective accepted set', async () => {
     const { host, catalog } = createHost({
       providers: {
         gateway: { type: 'openai', apiKey: 'sk-test', baseUrl: 'https://example.test/v1' },
@@ -411,11 +437,11 @@ describe('Model assembly (pure data)', () => {
     try {
       expect(() => catalog.get('vision')).toThrow(/requires image\/png/);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('assembles a kimi model: protocol resolves to the vendor base, never a vendor', () => {
+  it('assembles a kimi model: protocol resolves to the vendor base, never a vendor', async () => {
     const { host, catalog } = createHost(kimiSections);
     try {
       const model = catalog.get('k1');
@@ -432,11 +458,11 @@ describe('Model assembly (pure data)', () => {
         'X-Msh-Device-Id': 'device-1',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('the Model carries no morphs and no request driver — pure data only', () => {
+  it('the Model carries no morphs and no request driver — pure data only', async () => {
     const { host, catalog } = createHost(kimiSections);
     try {
       const model: Record<string, unknown> = { ...catalog.get('k1') };
@@ -447,11 +473,11 @@ describe('Model assembly (pure data)', () => {
       expect(model['request']).toBeUndefined();
       expect(model['thinkingEffort']).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('forwards only the User-Agent to vendors without a full hostHeaders declaration', () => {
+  it('forwards only the User-Agent to vendors without a full hostHeaders declaration', async () => {
     const { host, catalog } = createHost({
       providers: {
         openai: { type: 'openai', apiKey: 'sk-o', baseUrl: 'https://api.openai.com/v1' },
@@ -464,7 +490,7 @@ describe('Model assembly (pure data)', () => {
       expect(model.providerType).toBe('openai');
       expect(model.headers).toEqual({ 'User-Agent': 'kimi-test/1.0' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -480,7 +506,7 @@ describe('Model assembly (pure data)', () => {
       models: { k2: { provider: 'kimi', model: 'kimi-k2', maxContextSize: 200000 } },
     };
 
-    it('rewrites the User-Agent product token for third-party vendors', () => {
+    it('rewrites the User-Agent product token for third-party vendors', async () => {
       const { host, catalog } = createHost(THIRD_PARTY, stubModelOAuthTokens(), {
         headers: HOST_HEADERS,
         identitySlug: 'acme-dev',
@@ -488,11 +514,11 @@ describe('Model assembly (pure data)', () => {
       try {
         expect(catalog.get('gpt').headers).toEqual({ 'User-Agent': 'acme-dev/1.0' });
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
 
-    it('preserves a parenthesized User-Agent suffix while rewriting', () => {
+    it('preserves a parenthesized User-Agent suffix while rewriting', async () => {
       const { host, catalog } = createHost(THIRD_PARTY, stubModelOAuthTokens(), {
         headers: { 'User-Agent': 'kimi-test/1.0 (web)' },
         identitySlug: 'acme-dev',
@@ -500,11 +526,11 @@ describe('Model assembly (pure data)', () => {
       try {
         expect(catalog.get('gpt').headers).toEqual({ 'User-Agent': 'acme-dev/1.0 (web)' });
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
 
-    it('leaves full-header vendor requests byte-for-byte unchanged', () => {
+    it('leaves full-header vendor requests byte-for-byte unchanged', async () => {
       const { host, catalog } = createHost(OFFICIAL, stubModelOAuthTokens(), {
         headers: HOST_HEADERS,
         identitySlug: 'acme-dev',
@@ -512,20 +538,20 @@ describe('Model assembly (pure data)', () => {
       try {
         expect(catalog.get('k2').headers).toEqual(HOST_HEADERS);
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
 
-    it('changes nothing when no identity is configured', () => {
+    it('changes nothing when no identity is configured', async () => {
       const { host, catalog } = createHost(THIRD_PARTY);
       try {
         expect(catalog.get('gpt').headers).toEqual({ 'User-Agent': 'kimi-test/1.0' });
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
 
-    it('never synthesizes a User-Agent the host did not provide', () => {
+    it('never synthesizes a User-Agent the host did not provide', async () => {
       const { host, catalog } = createHost(THIRD_PARTY, stubModelOAuthTokens(), {
         headers: {},
         identitySlug: 'acme-dev',
@@ -533,11 +559,11 @@ describe('Model assembly (pure data)', () => {
       try {
         expect(catalog.get('gpt').headers).toEqual({});
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
 
-    it('attributes the User-Agent provenance for a lowercase host spelling', () => {
+    it('attributes the User-Agent provenance for a lowercase host spelling', async () => {
       const { host, catalog } = createHost(THIRD_PARTY, stubModelOAuthTokens(), {
         headers: { 'user-agent': 'kimi-test/1.0' },
         identitySlug: 'acme-dev',
@@ -550,12 +576,12 @@ describe('Model assembly (pure data)', () => {
           detail: 'host User-Agent, product token from [identity] (acme-dev)',
         });
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     });
   });
 
-  it('keeps an explicit foreign protocol for a kimi model (the dialect path)', () => {
+  it('keeps an explicit foreign protocol for a kimi model (the dialect path)', async () => {
     const { host, catalog } = createHost({
       providers: { kimi: { type: 'kimi', apiKey: 'sk', baseUrl: 'https://api.example.test/v1' } },
       models: {
@@ -569,11 +595,11 @@ describe('Model assembly (pure data)', () => {
       expect(model.baseUrl).toBe('https://api.example.test');
       expect(model.supportEfforts).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('infers the Anthropic effort profile for non-trait-driven anthropic vendors', () => {
+  it('infers the Anthropic effort profile for non-trait-driven anthropic vendors', async () => {
     const { host, catalog } = createHost({
       providers: { claude: { type: 'anthropic', apiKey: 'sk-a' } },
       models: {
@@ -587,11 +613,11 @@ describe('Model assembly (pure data)', () => {
       expect(model.defaultEffort).toBe('high');
       expect(model.capabilities.thinking).toBe(true);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('resolves provider env-bag credentials and endpoints through the registry', () => {
+  it('resolves provider env-bag credentials and endpoints through the registry', async () => {
     const { host, catalog } = createHost({
       providers: {
         kimi: { type: 'kimi', env: { KIMI_API_KEY: 'env-token', KIMI_BASE_URL: 'https://kimi-env.example.test/v1' } },
@@ -605,13 +631,13 @@ describe('Model assembly (pure data)', () => {
     try {
       const kimi = catalog.get('k1');
       expect(kimi.baseUrl).toBe('https://kimi-env.example.test/v1');
-      return expect(kimi.authProvider.getAuth()).resolves.toEqual({ apiKey: 'env-token' });
+      await expect(kimi.authProvider.getAuth()).resolves.toEqual({ apiKey: 'env-token' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('passes a declared offEffort through providerOptions for the OpenAI wires', () => {
+  it('passes a declared offEffort through providerOptions for the OpenAI wires', async () => {
     const { host, catalog } = createHost({
       providers: {
         gateway: { type: 'openai', apiKey: 'sk-gw', baseUrl: 'https://gateway.example.test/v1' },
@@ -639,11 +665,11 @@ describe('Model assembly (pure data)', () => {
       expect(catalog.get('grokResponses').providerOptions).toEqual({ offEffort: 'none' });
       expect(catalog.get('plain').providerOptions).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('enables google-genai vertex mode through providerOptions when project and location resolve', () => {
+  it('enables google-genai vertex mode through providerOptions when project and location resolve', async () => {
     const { host, catalog } = createHost({
       providers: {
         vertex: {
@@ -678,11 +704,69 @@ describe('Model assembly (pure data)', () => {
       });
       expect(catalog.get('g').providerOptions).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('supports flat models with an inline baseUrl (provider synthesized from the origin)', () => {
+  it('resolves a vertexai provider onto Vertex options without moving a plain Gemini key', async () => {
+    const { host, catalog } = createHost({
+      providers: {
+        keyed: { type: 'vertexai', apiKey: 'vk-local-fixture' },
+        project: {
+          type: 'vertexai',
+          env: { GOOGLE_CLOUD_PROJECT: 'my-project', GOOGLE_CLOUD_LOCATION: 'us-central1' },
+        },
+        both: {
+          type: 'vertexai',
+          apiKey: 'vk-local-fixture',
+          env: { GOOGLE_CLOUD_PROJECT: 'my-project', GOOGLE_CLOUD_LOCATION: 'us-central1' },
+        },
+        projectOnly: { type: 'vertexai', env: { GOOGLE_CLOUD_PROJECT: 'example-project' } },
+        locationOnly: { type: 'vertexai', env: { GOOGLE_CLOUD_LOCATION: 'global' } },
+        gemini: { type: 'google-genai', apiKey: 'gk-local-fixture' },
+        geminiProjectOnly: { type: 'google-genai', env: { GOOGLE_CLOUD_PROJECT: 'example-project' } },
+      },
+      models: {
+        keyed: { provider: 'keyed', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        project: { provider: 'project', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        both: { provider: 'both', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        projectOnly: { provider: 'projectOnly', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        locationOnly: { provider: 'locationOnly', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        gemini: { provider: 'gemini', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+        geminiProjectOnly: { provider: 'geminiProjectOnly', model: 'gemini-2.5-flash', maxContextSize: 1000 },
+      },
+    });
+    try {
+      expect(catalog.get('keyed').protocol).toBe('google-genai');
+      expect(catalog.get('keyed').providerType).toBe('vertexai');
+      expect(catalog.get('keyed').providerOptions).toEqual({ vertexai: true });
+      expect(catalog.get('project').providerOptions).toEqual({
+        vertexai: true,
+        project: 'my-project',
+        location: 'us-central1',
+      });
+      expect(catalog.get('both').providerOptions).toEqual({
+        vertexai: true,
+        project: 'my-project',
+        location: 'us-central1',
+      });
+      expect(catalog.get('projectOnly').providerOptions).toEqual({
+        vertexai: true,
+        project: 'example-project',
+      });
+      expect(catalog.get('locationOnly').providerOptions).toEqual({
+        vertexai: true,
+        location: 'global',
+      });
+      expect(catalog.get('gemini').protocol).toBe('google-genai');
+      expect(catalog.get('gemini').providerOptions).toBeUndefined();
+      expect(catalog.get('geminiProjectOnly').providerOptions).toBeUndefined();
+    } finally {
+      await host.dispose();
+    }
+  });
+
+  it('supports flat models with an inline baseUrl (provider synthesized from the origin)', async () => {
     const { host, catalog } = createHost({
       models: {
         flat: {
@@ -700,11 +784,11 @@ describe('Model assembly (pure data)', () => {
       expect(model.providerType).toBe('openai');
       expect(model.baseUrl).toBe('https://flat.example.test/v1');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('falls back to defaultProvider when a model names no provider', () => {
+  it('falls back to defaultProvider when a model names no provider', async () => {
     const { host, catalog } = createHost({
       ...kimiSections,
       defaultProvider: 'kimi',
@@ -713,11 +797,11 @@ describe('Model assembly (pure data)', () => {
     try {
       expect(catalog.get('inherited').providerName).toBe('kimi');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('supports unregistered vendors when the model declares the protocol explicitly', () => {
+  it('supports unregistered vendors when the model declares the protocol explicitly', async () => {
     const { host, catalog } = createHost({
       providers: {
         mine: { type: 'my-vendor', apiKey: 'sk-m', baseUrl: 'https://vendor.example.test/v1' },
@@ -732,7 +816,7 @@ describe('Model assembly (pure data)', () => {
       expect(model.protocol).toBe('openai');
       expect(model.headers).toEqual({ 'User-Agent': 'kimi-test/1.0' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -761,11 +845,11 @@ describe('Model assembly (pure data)', () => {
       });
       expect(models.getDefaultModel()).toBe(canonicalId);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('resolves ambiguous bare ids to the first candidate and preserves not-configured errors otherwise', () => {
+  it('resolves ambiguous bare ids to the first candidate and preserves not-configured errors otherwise', async () => {
     const { host, catalog } = createHost({
       ...kimiSections,
       models: {
@@ -785,34 +869,34 @@ describe('Model assembly (pure data)', () => {
       );
     } finally {
       warn.mockRestore();
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('throws config.invalid for unknown models, missing providers, and incomplete records', () => {
-    const expectInvalid = (sections: Record<string, unknown>, id: string): void => {
+  it('throws config.invalid for unknown models, missing providers, and incomplete records', async () => {
+    const expectInvalid = async (sections: Record<string, unknown>, id: string): Promise<void> => {
       const { host, catalog } = createHost(sections);
       try {
         expect(() => catalog.get(id)).toThrowError(
           expect.objectContaining({ code: ConfigErrors.codes.CONFIG_INVALID }),
         );
       } finally {
-        host.dispose();
+        await host.dispose();
       }
     };
-    expectInvalid(kimiSections, 'nope');
-    expectInvalid({ models: { ghost: { provider: 'missing', model: 'm', maxContextSize: 1 } } }, 'ghost');
-    expectInvalid(
+    await expectInvalid(kimiSections, 'nope');
+    await expectInvalid({ models: { ghost: { provider: 'missing', model: 'm', maxContextSize: 1 } } }, 'ghost');
+    await expectInvalid(
       { models: { noname: { protocol: 'openai', baseUrl: 'https://x.test', maxContextSize: 1 } } },
       'noname',
     );
-    expectInvalid(
+    await expectInvalid(
       { ...kimiSections, models: { noctx: { provider: 'kimi', model: 'm' } } },
       'noctx',
     );
   });
 
-  it('findByName matches name, model, and aliases', () => {
+  it('findByName matches name, model, and aliases', async () => {
     const { host, catalog } = createHost({
       ...kimiSections,
       models: {
@@ -827,7 +911,7 @@ describe('Model assembly (pure data)', () => {
       expect(catalog.findByName('shared-name')).toEqual(['k2', 'k3']);
       expect(catalog.findByName('unknown')).toEqual([]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -847,7 +931,7 @@ describe('Model assembly (pure data)', () => {
       expect(model.authProvider.canRefresh).toBe(true);
       await expect(model.authProvider.getAuth()).resolves.toEqual({ apiKey: 'tok-1' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -875,13 +959,13 @@ describe('Model assembly (pure data)', () => {
       });
       expect(tokens.calls).toEqual([{}, { force: true }]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 });
 
 describe('ModelCatalog caching and config-event invalidation', () => {
-  it('caches per id; getRequester returns the cached pair', () => {
+  it('caches per id; getRequester returns the cached pair', async () => {
     const { host, catalog } = createHost(kimiSections);
     try {
       const model = catalog.get('k1');
@@ -890,7 +974,7 @@ describe('ModelCatalog caching and config-event invalidation', () => {
       expect(catalog.getRequester('k1')).toBe(requester);
       expect(requester.model).toBe(model);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -906,7 +990,7 @@ describe('ModelCatalog caching and config-event invalidation', () => {
       await providers.set('kimi', { type: 'kimi', apiKey: 'sk-2', baseUrl: 'https://other.example.test/v1' });
       expect(catalog.get('k1').baseUrl).toBe('https://other.example.test/v1');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -932,7 +1016,7 @@ describe('ModelCatalog caching and config-event invalidation', () => {
       expect(await after.model.authProvider.getAuth()).toMatchObject({ apiKey: 'next-key' });
       expect(catalog.get('explicit')).toMatchObject({ providerName: 'old', baseUrl: 'https://old.example.test/v1' });
       expect(await catalog.get('explicit').authProvider.getAuth()).toMatchObject({ apiKey: 'old-key' });
-    } finally { host.dispose(); }
+    } finally { await host.dispose(); }
   });
 
   it('keeps serving the stale Model on a silent registry write until notifyConfigChanged()', async () => {
@@ -950,13 +1034,76 @@ describe('ModelCatalog caching and config-event invalidation', () => {
       expect(after).not.toBe(before);
       expect(after.displayName).toBe('silent');
     } finally {
-      host.dispose();
+      await host.dispose();
+    }
+  });
+
+  it('applies system transport defaults until a provider overrides them and drops the cache on change', async () => {
+    const gateway = { type: 'openai', apiKey: 'sk-gateway', baseUrl: 'https://gateway.example.test/v1' };
+    const { host, catalog, providers } = createHost({
+      providers: { gateway, plain: { type: 'openai', apiKey: 'sk-plain', baseUrl: 'https://plain.example.test/v1' } },
+      models: {
+        chat: { provider: 'gateway', model: 'remote-chat', maxContextSize: 8192, protocol: 'openai' },
+        messages: { provider: 'gateway', model: 'remote-messages', maxContextSize: 8192, protocol: 'anthropic' },
+        responses: { provider: 'gateway', model: 'remote-responses', maxContextSize: 8192, protocol: 'openai_responses' },
+        plain: { provider: 'plain', model: 'remote-plain', maxContextSize: 8192, protocol: 'openai' },
+      },
+    });
+    const systemCompression = {
+      encoding: 'zstd' as const,
+      targets: ['https://gateway.example.test/v1'],
+      minBytes: 2048,
+      dictionary: true,
+    };
+    const systemSocket = { targets: ['https://gateway.example.test/v1'] };
+    try {
+      expect(catalog.get('chat').requestCompression).toBeUndefined();
+      expect(catalog.get('responses').responsesWebSocket).toBeUndefined();
+      const before = catalog.get('chat');
+      providers.setTransportDefaults({ requestCompression: systemCompression, responsesWebSocket: systemSocket });
+      const inherited = catalog.get('chat');
+      expect(inherited).not.toBe(before);
+      expect(inherited.requestCompression).toEqual(systemCompression);
+      expect(catalog.get('messages').requestCompression).toEqual(systemCompression);
+      expect(catalog.get('responses')).toMatchObject({
+        requestCompression: systemCompression,
+        responsesWebSocket: systemSocket,
+      });
+      expect(catalog.get('plain').requestCompression).toEqual(systemCompression);
+
+      await providers.set('gateway', { ...gateway, requestCompression: { minBytes: 0 }, responsesWebSocket: { off: true } });
+      expect(catalog.get('chat').requestCompression).toEqual({ ...systemCompression, minBytes: 0 });
+      expect(catalog.get('responses').responsesWebSocket).toBeUndefined();
+      expect(catalog.get('plain').responsesWebSocket).toEqual(systemSocket);
+
+      await providers.set('gateway', { ...gateway, requestCompression: { encoding: 'off' } });
+      expect(catalog.get('chat').requestCompression).toEqual({ encoding: 'off' });
+      expect(catalog.get('plain').requestCompression).toEqual(systemCompression);
+
+      await providers.set('gateway', gateway);
+      expect(catalog.get('chat').requestCompression).toEqual(systemCompression);
+      expect(catalog.get('responses').responsesWebSocket).toEqual(systemSocket);
+
+      const stable = catalog.get('chat');
+      providers.setTransportDefaults({
+        requestCompression: structuredClone(systemCompression),
+        responsesWebSocket: structuredClone(systemSocket),
+      });
+      expect(catalog.get('chat')).toBe(stable);
+
+      providers.setTransportDefaults({});
+      expect(catalog.get('chat').requestCompression).toBeUndefined();
+      expect(catalog.get('responses').responsesWebSocket).toBeUndefined();
+      providers.setTransportDefaults({ requestCompression: { minBytes: 0 } });
+      expect(() => catalog.get('chat')).toThrowError(expect.objectContaining({ code: 'config.invalid' }));
+    } finally {
+      await host.dispose();
     }
   });
 });
 
 describe('headers merge order', () => {
-  it('lets provider customHeaders win over the host layer', () => {
+  it('lets provider customHeaders win over the host layer', async () => {
     const { host, catalog } = createHost({
       providers: {
         kimi: {
@@ -976,13 +1123,13 @@ describe('headers merge order', () => {
         'X-Custom': 'c',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 });
 
 describe('ModelCatalog inspect', () => {
-  it('builds the god object with per-field provenance (kimi structured model)', () => {
+  it('builds the god object with per-field provenance (kimi structured model)', async () => {
     const { host, catalog } = createHost(kimiSections);
     try {
       const view = catalog.inspect('k1');
@@ -1007,11 +1154,11 @@ describe('ModelCatalog inspect', () => {
       expect(view.sources['resolved']).toMatchObject({ kind: 'synthesized' });
       expect(view.sources['resolved.capabilities.tool_use']).toMatchObject({ kind: 'none' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('serves the same resolution as get (chain consistency, same cache generation)', () => {
+  it('serves the same resolution as get (chain consistency, same cache generation)', async () => {
     const { host, catalog, models } = createHost(kimiSections);
     try {
       const model = catalog.get('k1');
@@ -1025,10 +1172,14 @@ describe('ModelCatalog inspect', () => {
         maxCompletionTokens: _maxCompletionTokens,
         requestParams: _requestParams,
         usageParameters: _usageParameters,
+        requestCompression: _requestCompression,
+        responsesWebSocket: _responsesWebSocket,
         ...rest
       } = model;
       expect(model.usageParameters).toHaveProperty('main.values');
       expect(view.resolved).not.toHaveProperty('usageParameters');
+      expect(view.resolved).not.toHaveProperty('requestCompression');
+      expect(view.resolved).not.toHaveProperty('responsesWebSocket');
       expect(view.resolved).toMatchObject({ ...rest, wireName: name });
       expect(view.sources['resolved.maxContextSize']).toEqual(view.sources['model.effective.maxContextSize']);
       expect(view.sources['resolved.maxContextSize']).toMatchObject({ kind: 'config' });
@@ -1047,11 +1198,11 @@ describe('ModelCatalog inspect', () => {
       expect(refreshed.sources['resolved.displayName']).toEqual(refreshed.sources['model.effective.displayName']);
       expect(refreshed.sources['resolved.displayName']).toMatchObject({ kind: 'config' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('attributes profile-filled efforts and capabilities to builtin', () => {
+  it('attributes profile-filled efforts and capabilities to builtin', async () => {
     const { host, catalog } = createHost({
       providers: { claude: { type: 'anthropic', apiKey: 'sk-a' } },
       models: {
@@ -1072,11 +1223,11 @@ describe('ModelCatalog inspect', () => {
         kind: 'builtin',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('attributes override fields to the overrides block', () => {
+  it('attributes override fields to the overrides block', async () => {
     const { host, catalog } = createHost({
       providers: {
         kimi: { type: 'kimi', apiKey: 'sk', baseUrl: 'https://api.example.test/v1' },
@@ -1097,11 +1248,11 @@ describe('ModelCatalog inspect', () => {
       expect(view.sources['resolved.maxContextSize']).toMatchObject({ kind: 'override' });
       expect(view.sources['model.effective.model']).toMatchObject({ kind: 'config' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('attributes the input cap to config, its clamp, and its absence', () => {
+  it('attributes the input cap to config, its clamp, and its absence', async () => {
     const { host, catalog } = createHost({
       providers: {
         kimi: { type: 'kimi', apiKey: 'sk', baseUrl: 'https://api.example.test/v1' },
@@ -1165,11 +1316,11 @@ describe('ModelCatalog inspect', () => {
         kind: 'none',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('attributes env-bag credentials and endpoints by env-var name', () => {
+  it('attributes env-bag credentials and endpoints by env-var name', async () => {
     const { host, catalog } = createHost({
       providers: {
         kimi: {
@@ -1193,11 +1344,11 @@ describe('ModelCatalog inspect', () => {
       });
       expect(JSON.stringify(view)).not.toContain('env-token');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('attributes the definition defaultBaseUrl to builtin and reports missing credentials', () => {
+  it('attributes the definition defaultBaseUrl to builtin and reports missing credentials', async () => {
     const { host, catalog } = createHost({
       providers: { kimi: { type: 'kimi' } },
       models: { k1: { provider: 'kimi', model: 'kimi-k2', maxContextSize: 1 } },
@@ -1212,11 +1363,11 @@ describe('ModelCatalog inspect', () => {
       expect(view.resolved.auth).toEqual({ kind: 'none' });
       expect(view.sources['resolved.auth']).toMatchObject({ kind: 'none' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('marks flat-model providers as synthesized', () => {
+  it('marks flat-model providers as synthesized', async () => {
     const { host, catalog } = createHost({
       models: {
         flat: {
@@ -1237,18 +1388,18 @@ describe('ModelCatalog inspect', () => {
       expect(view.resolved.auth).toEqual({ kind: 'apiKey', apiKey: '••••flat' });
       expect(JSON.stringify(view)).not.toContain('sk-flat');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('throws config.invalid for unknown models, same as get', () => {
+  it('throws config.invalid for unknown models, same as get', async () => {
     const { host, catalog } = createHost(kimiSections);
     try {
       expect(() => catalog.inspect('nope')).toThrowError(
         expect.objectContaining({ code: ConfigErrors.codes.CONFIG_INVALID }),
       );
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 });
@@ -1303,7 +1454,7 @@ describe('ModelCatalog ping', () => {
       expect(result.usage).toEqual(emptyUsage());
       expect(result.durationMs).toBeGreaterThanOrEqual(0);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1324,7 +1475,7 @@ describe('ModelCatalog ping', () => {
       expect(result.ok).toBe(false);
       expect(result.error).toBeTruthy();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1358,7 +1509,7 @@ describe('ModelCatalog ping', () => {
       else expect(result.error).toContain('[redacted]');
     } finally {
       factory.mockRestore();
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1369,7 +1520,7 @@ describe('ModelCatalog ping', () => {
         expect.objectContaining({ code: ConfigErrors.codes.CONFIG_INVALID }),
       );
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 });
@@ -1394,11 +1545,15 @@ const catalogSections: Record<string, unknown> = {
 };
 
 describe('wire projection (pure)', () => {
-  it('toProtocolModel projects the materialized Model into the snake_case wire shape', () => {
+  it('toProtocolModel projects the materialized Model into the snake_case wire shape', async () => {
     const { host, catalog } = createHost(catalogSections);
     try {
       const record = (catalogSections['models'] as Record<string, ModelRecord>)['k2']!;
       expect(toProtocolModel(catalog.get('k2'), record, 'kimi')).toEqual({
+        effective_protocol: 'openai',
+        protocol_source: 'vendor',
+        endpoint_source: 'vendor',
+        auth_source: 'none',
         id: 'k2',
         provider_id: 'kimi',
         remote_id: 'kimi-k2',
@@ -1411,7 +1566,7 @@ describe('wire projection (pure)', () => {
         request_identity: undefined,
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1430,6 +1585,10 @@ describe('wire projection (pure)', () => {
       display_name: 'Kimi K2',
       max_context_size: 131072,
       capabilities: ['thinking'],
+      effective_protocol: 'openai',
+      protocol_source: 'vendor',
+      endpoint_source: 'vendor',
+      auth_source: 'none',
       support_efforts: undefined,
       default_effort: undefined,
       request_identity: undefined,
@@ -1496,6 +1655,10 @@ describe('ModelCatalog enumeration', () => {
       await expect(catalog.listModels()).resolves.toEqual([
         {
           id: 'k2',
+          effective_protocol: 'openai',
+          protocol_source: 'vendor',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
           provider_id: 'kimi',
           remote_id: 'kimi-k2',
           display_name: 'Kimi K2',
@@ -1505,6 +1668,10 @@ describe('ModelCatalog enumeration', () => {
         },
         {
           id: 'turbo',
+          effective_protocol: 'openai',
+          protocol_source: 'vendor',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
           provider_id: 'kimi',
           remote_id: 'kimi-turbo',
           display_name: 'Kimi Turbo',
@@ -1512,6 +1679,10 @@ describe('ModelCatalog enumeration', () => {
         },
         {
           id: 'gpt4o',
+          effective_protocol: 'openai',
+          protocol_source: 'provider',
+          endpoint_source: 'none',
+          auth_source: 'none',
           provider_id: 'openai',
           remote_id: 'gpt-4o',
           display_name: 'gpt-4o',
@@ -1520,7 +1691,7 @@ describe('ModelCatalog enumeration', () => {
         },
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1586,7 +1757,7 @@ describe('ModelCatalog enumeration', () => {
         }),
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1619,7 +1790,7 @@ describe('ModelCatalog enumeration', () => {
         expect.objectContaining({ id: 'managed:kimi-code/kimi-k2' }),
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1639,7 +1810,7 @@ describe('ModelCatalog enumeration', () => {
         default_effort: 'max',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1660,7 +1831,7 @@ describe('ModelCatalog enumeration', () => {
         default_effort: 'high',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1681,7 +1852,7 @@ describe('ModelCatalog enumeration', () => {
         default_effort: 'high',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1700,7 +1871,7 @@ describe('ModelCatalog enumeration', () => {
       expect(compatible?.support_efforts).toBeUndefined();
       expect(compatible?.default_effort).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1724,7 +1895,7 @@ describe('ModelCatalog enumeration', () => {
         default_effort: 'high',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1746,7 +1917,7 @@ describe('ModelCatalog enumeration', () => {
       expect(compatible?.support_efforts).toBeUndefined();
       expect(compatible?.default_effort).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1766,7 +1937,7 @@ describe('ModelCatalog enumeration', () => {
       expect(compatible?.support_efforts).toBeUndefined();
       expect(compatible?.default_effort).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1786,7 +1957,7 @@ describe('ModelCatalog enumeration', () => {
         default_effort: 'max',
       });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1806,10 +1977,10 @@ describe('ModelCatalog enumeration', () => {
     });
     try {
       await expect(catalog.listModels()).resolves.toEqual([
-        { id: 'bad', provider_id: '', remote_id: 'bad-model', display_name: 'Bad', max_context_size: 1000 },
+        { id: 'bad', provider_id: '', remote_id: 'bad-model', display_name: 'Bad', max_context_size: 1000, endpoint_source: 'model', auth_source: 'model' },
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1835,7 +2006,7 @@ describe('ModelCatalog enumeration', () => {
         },
       ]);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1862,22 +2033,32 @@ describe('ModelCatalog enumeration', () => {
       for (const id of ['kimi', 'claude', '__kimi_env__']) expect(byId[id]?.api_key).toBeUndefined();
       expect(byId['inline']?.api_key_env).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
-  it('reports an actual declared process environment key by name, never by value', async () => {
-    vi.stubEnv('KIMI_API_KEY', 'sk-shell-only');
-    const { host, catalog } = createHost({ providers: { kimi: { type: 'kimi' } }, models: {} });
+  it('reports only resolved explicit runtime keys as configured and never exposes their values', async () => {
+    vi.stubEnv('KIMI_API_KEY', 'undeclared-fixture');
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    vi.stubEnv('EXAMPLE_MISSING_KEY', undefined);
+    const { host, catalog } = createHost({
+      providers: {
+        declared: { type: 'kimi', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' },
+        missing: { type: 'kimi', apiKeyEnv: 'EXAMPLE_MISSING_KEY', env: { KIMI_API_KEY: 'legacy-fixture' } },
+        empty: { type: 'kimi', apiKeyEnv: 'EXAMPLE_PROVIDER_KEY', env: { EXAMPLE_PROVIDER_KEY: '' } },
+        undeclared: { type: 'kimi' },
+      },
+      models: {},
+    });
     try {
-      expect(await catalog.listProviders()).toEqual([expect.objectContaining({
-        id: 'kimi', api_key_env: 'KIMI_API_KEY', has_api_key: true, status: 'connected',
-      })]);
-      expect((await catalog.getProvider('kimi')).api_key).toBeUndefined();
-    } finally {
-      host.dispose();
-      vi.unstubAllEnvs();
-    }
+      const byId = Object.fromEntries((await catalog.listProviders()).map((provider) => [provider.id, provider]));
+      expect(byId['declared']).toMatchObject({ api_key_env: 'EXAMPLE_PROVIDER_KEY', has_api_key: true, status: 'connected' });
+      expect(byId['missing']).toMatchObject({ api_key_env: 'EXAMPLE_MISSING_KEY', has_api_key: false, status: 'unconfigured' });
+      expect(byId['empty']).toMatchObject({ api_key_env: 'EXAMPLE_PROVIDER_KEY', has_api_key: false, status: 'unconfigured' });
+      expect(byId['undeclared']).toMatchObject({ has_api_key: false, status: 'unconfigured' });
+      expect(byId['undeclared']?.api_key_env).toBeUndefined();
+      expect(JSON.stringify(byId)).not.toMatch(/runtime-fixture|undeclared-fixture|legacy-fixture/);
+    } finally { await host.dispose(); vi.unstubAllEnvs(); }
   });
 
   it('marks an OAuth provider connected when a cached token exists', async () => {
@@ -1892,7 +2073,7 @@ describe('ModelCatalog enumeration', () => {
       const [provider] = await catalog.listProviders();
       expect(provider).toMatchObject({ id: 'acme', has_api_key: false, status: 'connected' });
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1910,7 +2091,7 @@ describe('ModelCatalog enumeration', () => {
       expect(isErrorCode('provider.not_found')).toBe(true);
       expect(isErrorCode('model.not_found')).toBe(true);
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 });
@@ -1923,6 +2104,10 @@ describe('ModelCatalog setDefaultModel', () => {
         default_model: 'turbo',
         model: {
           id: 'turbo',
+          effective_protocol: 'openai',
+          protocol_source: 'vendor',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
           provider_id: 'kimi',
           remote_id: 'kimi-turbo',
           display_name: 'Kimi Turbo',
@@ -1931,7 +2116,7 @@ describe('ModelCatalog setDefaultModel', () => {
       });
       expect(models.getDefaultModel()).toBe('turbo');
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1942,7 +2127,7 @@ describe('ModelCatalog setDefaultModel', () => {
         (error) => isError2(error) && error.code === 'model.not_found',
       );
     } finally {
-      host.dispose();
+      await host.dispose();
     }
   });
 
@@ -1962,7 +2147,24 @@ describe('ModelCatalog setDefaultModel', () => {
       await expect(catalog.setDefaultModel('bad')).rejects.toThrow();
       expect(models.getDefaultModel()).toBeUndefined();
     } finally {
-      host.dispose();
+      await host.dispose();
     }
+  });
+});
+
+
+describe('transient models on configured connections', () => {
+  it('uses a connection with no catalog models and preserves its credentials and model registry', async () => {
+    const { host, catalog, models } = createHost({ providers: {
+      edge: { type: 'openai', apiKey: 'fixture-secret', baseUrl: 'https://example.test/v1' },
+    }, models: {} });
+    try {
+      const requester = catalog.getConnectionRequester('edge', 'remote/custom-model', 65536);
+      expect(requester.model).toMatchObject({ name: 'remote/custom-model', providerName: 'edge', protocol: 'openai', maxContextSize: 65536, baseUrl: 'https://example.test/v1' });
+      expect(await requester.model.authProvider.getAuth()).toMatchObject({ apiKey: 'fixture-secret' });
+      expect(models.list()).toEqual({});
+      expect(models.getDefaultModel()).toBeUndefined();
+      expect(() => catalog.getConnectionRequester('missing', 'remote/custom-model', 65536)).toThrow('does not exist');
+    } finally { await host.dispose(); }
   });
 });

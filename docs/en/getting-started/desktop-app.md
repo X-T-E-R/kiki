@@ -78,7 +78,17 @@ When SmartScreen appears, check the URL and the hash before you go any further: 
 
 ## Windows, tray, and opening files
 
-On Windows and macOS, closing the window hides it to the tray — **Quit** in the tray menu is what actually exits. On Linux with a tray available, the same close minimizes the window so your window manager can bring it back. Where no tray is available, closing the window asks you to confirm the exit instead.
+On Windows and macOS, closing the window hides it to the tray. On Linux with a tray available, the same close minimizes the window so your window manager can bring it back. **Quit** in the tray menu is how you leave the app. Closing the window asks the same question when no tray is available, or when **Settings → General → Desktop behaviour** is set to **Quit Kiki** instead of **Hide to tray**.
+
+**Quit** offers three buttons:
+
+- **Stop services and quit** — exit, and stop the desktop-managed local shared services for the spaces this window is connected to.
+- **Close desktop only** — exit this desktop and leave a service that is already running. Background work, other windows, the CLI, and external clients stay connected to it. A service that has not finished starting can still be stopped by the exit; wait until it is ready if you need it to stay.
+- **Cancel** — stay in the app.
+
+**Stop services and quit** stops only desktop-managed services from the same build as this app, including a shared service started by another Kiki window. Stopping it disconnects every other window, CLI, and external client using that space, cancels unfinished work, and waits for that service to close its MCP servers and finish `Bash` cleanup. [Shell](../reference/tools.md#shell) describes which Windows `Bash` processes keep running after a command exits. A service you started yourself keeps running, and so does any space this window is not connected to. Processes that belong to another Kiki service stay with that service, and programs you did not start through Kiki stay as they are.
+
+If the connected service belongs to another build, its identity changed after you confirmed, a connection is still starting, or the service is still draining after about 90 seconds, Kiki keeps this window open under **Kiki · Service shutdown not confirmed** and shows the reason. On Windows, a backend that exits with a nonzero code is reported the same way. Nothing is force-stopped. Let the work settle, then choose **Quit** again.
 
 Opening a file from the file menu hands it to the app your system associates with that file type. The menu does not launch these types, because starting them would run code outside the app: `.app` and `.command` on macOS, `.desktop` on Linux, and executables and scripts on Windows. A shortcut pointing at one of those is refused too. Other files, including ordinary text files, open normally, and **Reveal in file manager** is unaffected.
 

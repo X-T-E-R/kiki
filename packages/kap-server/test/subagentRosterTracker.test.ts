@@ -24,6 +24,17 @@ function spawn(subagentId: string, extra: Record<string, unknown> = {}): Event {
 }
 
 describe('SubagentRosterTracker', () => {
+  it('does not synthesize birth from spawn or task starts across generations', () => {
+    const tracker = new SubagentRosterTracker();
+    tracker.apply(SID, spawn('child', { time: 100 }));
+    expect(tracker.get(SID)[0]?.created_at).toBeUndefined();
+    tracker.apply(SID, ev({ type: 'subagent.completed', subagentId: 'child', time: 200, resultSummary: 'done' }));
+    tracker.apply(SID, spawn('child', { time: 300 }));
+    expect(tracker.get(SID)[0]).toMatchObject({ created_at: undefined, started_at: new Date(300).toISOString() });
+    tracker.seedTask(SID, 'main', { kind: 'agent', taskId: 'next', agentId: 'child', description: 'next',
+      status: 'running', startedAt: 400, endedAt: null });
+    expect(tracker.get(SID)[0]?.created_at).toBeUndefined();
+  });
   it('ignores late lifecycle events belonging to an older registered task', () => {
     const tracker = new SubagentRosterTracker();
     for (const [taskId, startedAt] of [['task-a', 100], ['task-b', 200]] as const) {
@@ -623,7 +634,7 @@ describe('SubagentRosterTracker', () => {
         status: 'running',
         subagent_phase: phase,
         tool_call_count: 0,
-        created_at: new Date(300).toISOString(),
+        created_at: undefined,
         started_at: new Date(300).toISOString(),
       });
       expect(entry?.run_in_background).toBeUndefined();

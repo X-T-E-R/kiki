@@ -51,7 +51,7 @@ export function useTimelineNavigation(): (target: TimelineTarget, options: Locat
     const visit = getCurrentVisit();
     if (visit !== null) captureVisitSnapshots(visit.visitId);
     // Do not spread one-shot handoffs (initialPrompt/create/approval) into a new visit.
-    navigate(route, { preventScrollReset: true, state: { kikiNav: {
+    void navigate(route, { preventScrollReset: true, state: { kikiNav: {
       visitId: createVisitId(), intent: 'timeline-locate',
       locator: { target, sessionId: options.sessionId, agentId: options.agentId ?? 'main', notify: options.notify, waitMs: options.waitMs },
     } } });

@@ -273,7 +273,7 @@ export class BotService extends Disposable implements IBotService {
     if (definition.homeWorkspace === undefined) await this.fs.mkdir(workDir, { recursive: true });
     const handle = await this.sessions.create({
       workDir,
-      delivery: definition.delivery ?? 'reply',
+      delivery: definition.delivery,
       mainAgentBinding: { persona: personaId },
     });
     try {

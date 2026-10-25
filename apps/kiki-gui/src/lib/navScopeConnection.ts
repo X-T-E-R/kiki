@@ -2,7 +2,7 @@ import { CONNECTION_PROTOCOL, type MetaResponse } from '@kiki/protocol';
 import { RPCError } from '@kiki/klient';
 import type { HostAdapter } from '../host';
 import type { ConnectionSelection } from '../state/connectionConfig';
-import { API_CODES, ApiError, createRemoteSpaceClient, KikiClient } from './client';
+import { API_CODES, ApiError, createRemoteSpaceClient, isSessionNotFoundMessage, KikiClient } from './client';
 import { ScopeRestoreError, type ScopeConnectionAdapter } from './navScope';
 import type { NavScopeIdentity } from './navHistory';
 import { parseActiveSpacePayload } from './spaceStorage';
@@ -52,7 +52,7 @@ export async function validateScopeRoute(client: KikiClient, route: string, sign
       if ((await rest.rooms.get(decodeURIComponent(roomId))) === undefined) throw new ScopeRestoreError('target-missing');
     }
   } catch (error) {
-    if (sessionId !== undefined && error instanceof ApiError && error.code === API_CODES.SESSION_NOT_FOUND) throw new ScopeRestoreError('target-missing');
+    if (sessionId !== undefined && error instanceof ApiError && isSessionNotFoundMessage(error.message)) throw new ScopeRestoreError('target-missing');
     // REST rooms.get uses this precise REQUEST_INVALID envelope for absence;
     // an arbitrary 400/404, missing prompt/block, or malformed response is not deletion.
     if (roomId !== undefined && error instanceof RPCError && error.code === API_CODES.REQUEST_INVALID &&

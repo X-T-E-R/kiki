@@ -143,7 +143,8 @@ describe('messageContentSchema variants', () => {
   });
 
   it('rejects unknown content type', () => {
-    expect(messageContentSchema.safeParse({ type: 'audio', text: '' }).success).toBe(false);
+    expect(messageContentSchema.safeParse({ type: 'widget', text: '' }).success).toBe(false);
+    expect(messageContentSchema.safeParse({ type: 'audio', source: { kind: 'url', url: 'https://example.com/a.mp3' } }).success).toBe(true);
   });
 });
 

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
+import { ErrorCodes } from '#/errors';
 
 import { stubSkill } from '../../app/skillCatalog/stubs';
 import { createTestAgent, skillServices, type TestAgentContext } from '../../harness';
@@ -209,6 +210,7 @@ describe('promptWithSkills', () => {
         input: [{ type: 'text', text: 'again' }],
         promptId: launched.prompt_id,
       }),
-    ).rejects.toThrow(/already in use/i);
+    ).rejects.toMatchObject({ code: ErrorCodes.PROMPT_ID_CONFLICT });
+    expect(ctx.llmCalls).toHaveLength(1);
   });
 });

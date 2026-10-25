@@ -22,16 +22,24 @@ function turnOf(block: Block): string | undefined {
 }
 
 /**
- * Every turn on the page is complete except the one still running. The live
- * turn is the last turn id seen while the session is busy.
+ * Every turn on the page is complete except the one still running. The running
+ * turn is the session's own running turn when it says which one that is; a
+ * turn is never ended merely because its last text arrived, and a finished
+ * turn is never held open because another one started.
  */
-export function completedTurnIds(blocks: readonly Block[], busy: boolean): string[] {
+export function completedTurnIds(
+  blocks: readonly Block[],
+  options: { readonly busy: boolean; readonly liveTurnId?: string },
+): string[] {
   const turns: string[] = [];
   for (const block of blocks) {
     const turn = turnOf(block);
     if (turn !== undefined && !turns.includes(turn)) turns.push(turn);
   }
-  return busy ? turns.slice(0, -1) : turns;
+  if (!options.busy) return turns;
+  return options.liveTurnId === undefined
+    ? turns.slice(0, -1)
+    : turns.filter((turn) => turn !== options.liveTurnId);
 }
 
 /** A Bot message addressed to another Bot reads as a handoff line, not as speech to the user. */
@@ -46,10 +54,16 @@ export function isInboundHandoff(block: UserBlock): boolean {
 
 export function buildMessageNodes(
   blocks: readonly Block[],
-  options: { readonly busy: boolean; readonly personaName?: string },
+  options: {
+    readonly busy: boolean;
+    readonly liveTurnId?: string;
+    readonly failedTurnIds?: readonly string[];
+    readonly personaName?: string;
+  },
 ): MessageViewNode[] {
   return projectMessageView(blocks, {
-    completedTurnIds: completedTurnIds(blocks, options.busy),
+    completedTurnIds: completedTurnIds(blocks, { busy: options.busy, liveTurnId: options.liveTurnId }),
+    failedTurnIds: options.failedTurnIds,
     personaName: options.personaName,
   });
 }
@@ -58,7 +72,9 @@ export function buildMessageNodes(
 export function speakerKey(node: MessageViewNode | undefined): string | undefined {
   if (node === undefined) return undefined;
   if (node.kind === 'message') {
-    if (node.status === 'failed' || node.status === 'cancelled' || isHandoffMessage(node)) return undefined;
+    // A failure, a cancellation and an unconfirmed delivery are delivery lines
+    // rather than a run of speech, so whatever follows starts on its own face.
+    if (node.status === 'failed' || node.status === 'cancelled' || node.status === 'pending' || isHandoffMessage(node)) return undefined;
     return `bot:${node.personaId ?? 'self'}`;
   }
   if (node.kind === 'question') return 'bot:self';

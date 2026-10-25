@@ -24,12 +24,12 @@ export const WORKING_TIPS: readonly ToolbarTip[] = [
 
 export const ALL_TIPS: readonly ToolbarTip[] = [
   ...WORKING_TIPS,
-  { text: 'shift+enter: newline' },
-  { text: 'ctrl+c: cancel' },
+  { text: 'Shift+Enter: newline' },
+  { text: 'Ctrl+C: cancel' },
   { text: '/auto when you want Kiki to handle approvals and keep going unattended' },
   { text: '/yolo to skip most approvals for trusted batch work, only use it in repos you trust' },
   { text: '/help: show commands' },
-  { text: 'ctrl-o to hide or reveal tool output switching between a clean chat view and full execution details', priority: 2 },
-  { text: 'shift-tab to Plan mode to review the approach before Kiki edits files.', priority: 2 },
+  { text: 'Ctrl+O to hide or reveal tool output switching between a clean chat view and full execution details', priority: 2 },
+  { text: 'Shift+Tab to Plan mode to review the approach before Kiki edits files.', priority: 2 },
   { text: '/model: switch model', priority: 2 },
 ];

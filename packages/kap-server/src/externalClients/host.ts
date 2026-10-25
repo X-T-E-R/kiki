@@ -136,7 +136,7 @@ export class ExternalClientHost {
     }
     return {connection:next};
   }
-  stdio(id:string){return {command:'kiki',args:['mcp','--client',id,'--tools']};}
+  stdio(id:string){return {command:'kiki',args:['mcp','--client',id,'--tools','--home',this.core.accessor.get(IBootstrapService).homeDir]};}
   async resolveGrant(id:string):Promise<ExternalClientGrant|null>{
     const connection=await this.store.active(id).catch(()=>undefined);
     return connection===undefined?null:{id:connection.id,resource:'kiki',audience:'kiki',scopes:['tools'],metadata:{name:connection.name}};
@@ -209,7 +209,7 @@ export class ExternalClientHost {
     if(workspace===undefined) throw new ExternalClientError('session_required','Create a session in Kiki with this connection and a workspace, or select its session_ref from kiki_session list.');
     const now=Date.now();const sessionId=`session_${randomUUID().replaceAll('-','')}`;
     let record:ExternalClientSession={sessionId,sessionRef:`ext_${randomUUID().replaceAll('-','')}`,connectionId:connection.id,
-      clientName:connection.name,workspace,permissionMode:selected?.permissionMode??connection.mode,
+      clientName:connection.name,workspace,permissionMode:selected?.permissionMode,
       profile:selected?.profile,profileFile:selected?.profileFile,
       conversationKey,status:'open',createdAt:now,updatedAt:now};
     this.sessionBindings.set(sessionId,record);
@@ -286,7 +286,7 @@ export class ExternalClientHost {
         const main=await ensureMainAgent(session);
         const mode=main.accessor.get(IAgentPermissionModeService);const grant=await this.store.active(record.connectionId);
         mode.setModeCeiling(grant.mode);
-        if(record.permissionMode===undefined) mode.setMode(grant.mode);
+        mode.setMode(record.permissionMode??grant.mode);
         recorder=new ExternalClientRecorder(main,{driver:'external',connectionId:record.connectionId,clientName:record.clientName,sessionRef:record.sessionRef,operationId:operation.id,toolCallId:operation.id});
         await recorder.begin(operation.name,operation.name==='kiki_save_text'?{kind:operation.arguments['kind'],title:operation.arguments['title']}:operation.arguments);
         let result:unknown;
@@ -303,7 +303,7 @@ export class ExternalClientHost {
               {signal,turnId:recorder.turnId,onToolCall:payload=>{recorder!.toolCall(payload);}})){
               await recorder.toolResult(executed);result=executed.result;break;
             }
-          }finally{await changed.dispose();await approvalWrite;}
+          }finally{changed.dispose();await approvalWrite;}
         }
         if(result===undefined) throw new ExternalClientError('missing_result','Native tool returned no result.');
         const failed=typeof result==='object'&&result!==null&&'isError' in result&&result.isError===true;

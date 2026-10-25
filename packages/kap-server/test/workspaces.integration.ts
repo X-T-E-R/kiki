@@ -2,13 +2,20 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  IAtomicDocumentStore,
   ISessionManager,
+  ISessionIndex,
+  IWorkspacePersistence,
+  IWorkspaceService,
+  IWorkspaceSessions,
   IWorkspaceInstanceManager,
 } from '@kiki/agent-core-v2';
-import { encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { encodeLegacyWorkDirKey, encodeWorkDirKey, workDirKeyAliases } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
+import { IGitService } from '@kiki/agent-core-v2/app/git/git';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -55,6 +62,7 @@ describe('server-v2 /api/workspaces', () => {
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     if (server !== undefined) {
       await server.close();
       server = undefined;
@@ -200,6 +208,102 @@ describe('server-v2 /api/workspaces', () => {
     expect(body.data.items.some((w) => w.id === created.body.data.id)).toBe(true);
   });
 
+  it('serves catalog and metadata updates while full discovery, count and Git never answer', async () => {
+    const core = (server as RunningServer).core;
+    const registry = core.accessor.get(IWorkspaceService);
+    const workspace = await registry.createOrTouch(home as string, 'Catalog');
+    const persistence = core.accessor.get(IWorkspacePersistence);
+    const before = await persistence.load();
+    const storage = core.accessor.get(IFileSystemStorageService);
+    const read = storage.read.bind(storage);
+    const discoveryReads: string[] = [];
+    vi.spyOn(storage, 'read').mockImplementation((scope, key) => {
+      if (scope === '' && key === 'session_index.jsonl') {
+        discoveryReads.push(key);
+        return new Promise(() => {});
+      }
+      return read(scope, key);
+    });
+    const list = vi.spyOn(registry, 'list').mockImplementation(() => new Promise(() => {}));
+    const count = vi.spyOn(core.accessor.get(IWorkspaceSessions), 'count').mockImplementation(() => new Promise(() => {}));
+    const git = vi.spyOn(core.accessor.get(IGitService), 'findWorkTree').mockImplementation(() => new Promise(() => {}));
+    const index = vi.spyOn(core.accessor.get(ISessionIndex), 'count');
+    const started = performance.now();
+    const catalog = await getJson<{ items: Omit<WorkspaceWire, 'session_count' | 'isGit'>[] }>('/api/workspaces?view=catalog');
+    expect(performance.now() - started).toBeLessThan(2_000);
+    expect(catalog.body.code).toBe(0);
+    expect(catalog.body.data.items).toHaveLength(1);
+    expect(Object.keys(catalog.body.data.items[0]!).sort()).toEqual(['created_at', 'id', 'last_opened_at', 'name', 'pinned', 'root']);
+    expect(await persistence.load()).toEqual(before);
+    const updated = await patchJson<Omit<WorkspaceWire, 'session_count' | 'isGit'>>(`/api/workspaces/${workspace.id}?view=catalog`, { name: 'Renamed', pinned: true });
+    expect(updated.body.code).toBe(0);
+    expect(updated.body.data).toMatchObject({ id: workspace.id, name: 'Renamed', pinned: true });
+    expect(updated.body.data).not.toHaveProperty('session_count');
+    expect(updated.body.data).not.toHaveProperty('isGit');
+    expect((await persistence.load())?.workspaces[0]).toMatchObject({ name: 'Renamed', pinned: true });
+    expect(list).not.toHaveBeenCalled();
+    expect(count).not.toHaveBeenCalled();
+    expect(git).not.toHaveBeenCalled();
+    expect(index).not.toHaveBeenCalled();
+    expect(core.accessor.get(IWorkspaceInstanceManager).list()).toHaveLength(0);
+    expect((await getJson('/api/workspaces?view=unsupported')).body.code).toBe(40001);
+    expect((await patchJson(`/api/workspaces/${workspace.id}?view=unsupported`, { name: 'Wrong' })).body.code).toBe(40001);
+    expect((await patchJson('/api/workspaces/wd_missing_000000000000?view=catalog', { pinned: true })).body.code).toBe(40410);
+    expect(discoveryReads).toEqual([]);
+  });
+
+  it('reads only the requested workspace details without legacy discovery', async () => {
+    const core = (server as RunningServer).core;
+    const registry = core.accessor.get(IWorkspaceService);
+    const target = await registry.createOrTouch(home as string, 'Target');
+    const otherRoot = join(home as string, 'other');
+    await mkdir(otherRoot);
+    await registry.createOrTouch(otherRoot, 'Other');
+    const list = vi.spyOn(registry, 'list').mockRejectedValue(new Error('global discovery unavailable'));
+    const fullCount = vi.spyOn(core.accessor.get(IWorkspaceSessions), 'count').mockRejectedValue(new Error('global count unavailable'));
+    const count = vi.spyOn(core.accessor.get(ISessionIndex), 'count').mockResolvedValue(7);
+    const git = vi.spyOn(core.accessor.get(IGitService), 'findWorkTree').mockResolvedValue(null);
+    const details = await getJson<WorkspaceWire>(`/api/workspaces/${target.id}`);
+    expect(details.body.code).toBe(0);
+    expect(details.body.data).toMatchObject({ id: target.id, session_count: 7, isGit: false });
+    expect(count).toHaveBeenCalledExactlyOnceWith({ workspaceIds: [...new Set([target.id, ...workDirKeyAliases(target.root)])], includeArchived: true });
+    expect(git).toHaveBeenCalledExactlyOnceWith(target.root);
+    expect(list).not.toHaveBeenCalled();
+    expect(fullCount).not.toHaveBeenCalled();
+    expect(core.accessor.get(IWorkspaceInstanceManager).list()).toHaveLength(0);
+    expect((await getJson('/api/workspaces/wd_missing_000000000000')).body.code).toBe(40410);
+    count.mockRejectedValueOnce(new Error('target count unavailable'));
+    const failed = await getJson<WorkspaceWire>(`/api/workspaces/${target.id}`);
+    expect(failed.body.code).toBe(50001);
+    expect(failed.body.data).toBeNull();
+  });
+
+  it('reads cold workspace trust without creating a runtime or migrating records', async () => {
+    const root = home as string;
+    const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
+    const id = created.body.data.id;
+    const core = (server as RunningServer).core;
+    const instances = core.accessor.get(IWorkspaceInstanceManager);
+    const docs = core.accessor.get(IAtomicDocumentStore);
+    expect(instances.list()).toHaveLength(0);
+
+    const untrusted = await getJson<{ trusted: boolean }>(`/api/workspaces/${id}/trust`);
+    expect(untrusted.body.code).toBe(0);
+    expect(untrusted.body.data.trusted).toBe(false);
+    expect(instances.list()).toHaveLength(0);
+
+    await docs.set('workspace-trust', id, { root, trustedAt: 1 });
+    const trusted = await getJson<{ trusted: boolean }>(`/api/workspaces/${id}/trust`);
+    expect(trusted.body.data.trusted).toBe(true);
+    expect(instances.list()).toHaveLength(0);
+    expect(await docs.get('workspace-trust', id)).toEqual({ root, trustedAt: 1 });
+
+    await docs.delete('workspace-trust', id);
+    expect((await getJson<{ trusted: boolean }>(`/api/workspaces/${id}/trust`)).body.data.trusted).toBe(false);
+    expect((await getJson('/api/workspaces/wd_missing_000000000000/trust')).body.code).toBe(40410);
+    expect(instances.list()).toHaveLength(0);
+  });
+
   it('renames a workspace via PATCH', async () => {
     const root = home as string;
     const created = await postJson<WorkspaceWire>('/api/workspaces', { root });
@@ -338,8 +442,9 @@ describe('server-v2 /api/workspaces', () => {
     server = undefined;
     const typedRoot = 'C:\\Users\\Foo\\Proj';
     const lowerRoot = 'c:\\users\\foo\\proj';
-    const typedId = encodeWorkDirKey(typedRoot);
+    const typedId = encodeLegacyWorkDirKey(typedRoot);
     const lowerId = encodeWorkDirKey(lowerRoot);
+    expect(typedId).not.toBe(lowerId);
     await writeFile(
       join(home as string, 'workspaces.json'),
       JSON.stringify({
@@ -390,5 +495,13 @@ describe('server-v2 /api/workspaces', () => {
     expect(body.data.items).toHaveLength(1);
     expect([typedId, lowerId]).toContain(body.data.items[0]?.id);
     expect(body.data.items[0]?.session_count).toBe(2);
+    const core = (server as RunningServer).core;
+    const list = vi.spyOn(core.accessor.get(IWorkspaceService), 'list').mockRejectedValue(new Error('discovery must not run'));
+    for (const id of [typedId, lowerId]) {
+      const detail = await getJson<WorkspaceWire>(`/api/workspaces/${id}`);
+      expect(detail.body.code).toBe(0);
+      expect(detail.body.data.session_count).toBe(2);
+    }
+    expect(list).not.toHaveBeenCalled();
   });
 });

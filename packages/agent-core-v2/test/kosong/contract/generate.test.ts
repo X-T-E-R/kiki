@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { APIEmptyResponseError, isRetryableGenerateError } from '#/kosong/contract/errors';
-import { generate, type GenerateResult } from '#/kosong/contract/generate';
+import { APIEmptyResponseError, ChatProviderError, isRetryableGenerateError, markProviderEventError } from '#/kosong/contract/errors';
+import { generate, readGenerateFailureFacts, readGenerateFailureUsage, type GenerateResult } from '#/kosong/contract/generate';
 import type { Message, StreamedMessagePart, ToolCall } from '#/kosong/contract/message';
 import type {
   ChatProvider,
@@ -13,6 +13,13 @@ import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 const USAGE: TokenUsage = { inputOther: 10, output: 5, inputCacheRead: 2, inputCacheCreation: 1 };
+
+function promiseGate<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
 
 class FakeStreamedMessage implements StreamedMessage {
   readonly id: string | null = 'gen-1';
@@ -243,22 +250,50 @@ describe('generate() stream normalization', () => {
     expect(sentTools.map((tool) => tool.name)).toEqual(['visible']);
   });
 
-  it('rejects an empty response with APIEmptyResponseError', async () => {
-    const stream = new FakeStreamedMessage([]);
-    const { provider } = createFakeProvider(stream);
+  it.each([{ parts: [] }, { parts: [{ type: 'think' as const, think: 'only thinking' }] }])(
+    'accepts explicitly completed output without text or tool calls: $parts',
+    async ({ parts }) => {
+      const stream = new FakeStreamedMessage(parts);
+      const { provider, generateSpy } = createFakeProvider(stream);
+      const onStreamEnd = vi.fn();
+      const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY, undefined, { onStreamEnd });
 
-    await expect(generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY)).rejects.toBeInstanceOf(
-      APIEmptyResponseError,
-    );
-  });
+      expect(result.message).toEqual({ role: 'assistant', content: parts, toolCalls: [] });
+      expect(result.finishReason).toBe('completed');
+      expect(result.rawFinishReason).toBe('stop');
+      expect(result.usage).toBe(USAGE);
+      expect(generateSpy).toHaveBeenCalledTimes(1);
+      expect(onStreamEnd).toHaveBeenCalledTimes(1);
+    },
+  );
 
-  it('rejects a thinking-only response with APIEmptyResponseError', async () => {
-    const stream = new FakeStreamedMessage([{ type: 'think', think: 'only thinking' }]);
-    const { provider } = createFakeProvider(stream);
+  it.each([null, 'truncated', 'filtered', 'paused', 'other', 'tool_calls'] as const)(
+    'still rejects output without text or tools when completion is %s',
+    async (finishReason) => {
+      class UncompletedStream extends FakeStreamedMessage {
+        override readonly finishReason: FinishReason | null = finishReason;
+        override readonly rawFinishReason: string | null = 'completed';
+      }
+      for (const parts of [[], [{ type: 'think' as const, think: 'only thinking' }]]) {
+        const { provider } = createFakeProvider(new UncompletedStream(parts));
+        const error = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY).catch((error: unknown) => error);
+        expect(error).toBeInstanceOf(APIEmptyResponseError);
+        expect(isRetryableGenerateError(error)).toBe(parts.length === 0 && finishReason !== 'filtered');
+      }
+    },
+  );
 
-    await expect(generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY)).rejects.toBeInstanceOf(
-      APIEmptyResponseError,
-    );
+  it('returns a CONTINUATION thinking partial instead of treating it as an empty response', async () => {
+    class ContinuationStream extends FakeStreamedMessage {
+      override readonly finishReason: FinishReason | null = 'other';
+      override readonly rawFinishReason: string | null = 'CONTINUATION';
+    }
+    const parts = [{ type: 'think' as const, think: 'partial thought', encrypted: 'sig-fixture' }];
+    const { provider } = createFakeProvider(new ContinuationStream(parts));
+    const result = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY);
+    expect(result.finishReason).toBe('other');
+    expect(result.rawFinishReason).toBe('CONTINUATION');
+    expect(result.message.content).toEqual(parts);
   });
 
   it('marks a provider-filtered thinking-only response as non-retryable', async () => {
@@ -318,6 +353,60 @@ describe('generate() stream normalization', () => {
 });
 
 describe('generate() abort contract', () => {
+  it.each(['waiting-for-chunk', 'slow-consumer'] as const)('actively cancels a silent provider while %s', async (phase) => {
+    const controller = new AbortController();
+    const waiting = promiseGate<void>();
+    const closed = promiseGate<void>();
+    const consuming = promiseGate<void>();
+    const consumerDone = promiseGate<void>();
+    const cancel = vi.fn(() => closed.resolve());
+    const stream: StreamedMessage & { cancel(): void } = {
+      id: null, usage: null, finishReason: null, rawFinishReason: null,
+      cancel,
+      async *[Symbol.asyncIterator]() {
+        if (phase === 'slow-consumer') yield { type: 'text', text: 'partial' };
+        waiting.resolve();
+        await closed.promise;
+      },
+    };
+    const { provider } = createFakeProvider(stream);
+    const result = generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY, {
+      onMessagePart: async () => { consuming.resolve(); await consumerDone.promise; },
+    }, { signal: controller.signal });
+    const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    await (phase === 'slow-consumer' ? consuming.promise : waiting.promise);
+    const startedAt = performance.now();
+    controller.abort();
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(performance.now() - startedAt).toBeLessThanOrEqual(200);
+    consumerDone.resolve();
+    await rejected;
+    expect(performance.now() - startedAt).toBeLessThanOrEqual(1000);
+  });
+
+  it('does not report cancellation complete for a provider that ignores both signal and cancel', async () => {
+    const waiting = promiseGate<void>();
+    const release = promiseGate<void>();
+    const controller = new AbortController();
+    let settled = false;
+    const stream: StreamedMessage = {
+      id: null, usage: null, finishReason: null, rawFinishReason: null,
+      [Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
+        return { next: async () => { waiting.resolve(); await release.promise; return { done: true, value: undefined }; } };
+      },
+    };
+    const { provider } = createFakeProvider(stream);
+    const result = generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY, undefined, { signal: controller.signal });
+    void result.then(() => { settled = true; }, () => { settled = true; });
+    const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    await waiting.promise;
+    controller.abort();
+    await new Promise(resolve => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    release.resolve();
+    await rejected;
+  });
+
   it('throws the standard abort DOMException when the signal is already aborted', async () => {
     const stream = new FakeStreamedMessage([{ type: 'text', text: 'ok' }]);
     const { provider, generateSpy } = createFakeProvider(stream);
@@ -385,5 +474,41 @@ describe('generate() per-turn intent passthrough', () => {
 
     expect(generateSpy).toHaveBeenCalledTimes(1);
     expect(generateSpy.mock.calls[0]?.[3]).toBe(options);
+  });
+});
+
+
+describe('locally observed thinking-only failure facts', () => {
+  it.each(['text', 'tool', 'refusal', 'grounding', 'partial', 'empty', 'wrong-code'] as const)('rejects recovery facts for %s', async mode => {
+    const error = markProviderEventError(new ChatProviderError('fixture failure'), mode === 'wrong-code' ? 'antigravity_missing_terminal' : 'antigravity_thinking_only');
+    const stream: StreamedMessage = {
+      id: null, usage: USAGE, finishReason: mode === 'partial' ? 'truncated' : null, rawFinishReason: null,
+      thinkingOnlyRecoveryBlocked: mode === 'refusal' || mode === 'grounding',
+      async *[Symbol.asyncIterator]() {
+        if (mode !== 'empty') yield { type: 'think', think: 'private thought', encrypted: 'signature-fixture' };
+        if (mode === 'text') yield { type: 'text', text: 'body' };
+        if (mode === 'tool') yield { type: 'function', id: 'call_fixture', name: 'Lookup', arguments: '{}' };
+        throw error;
+      },
+    };
+    const { provider } = createFakeProvider(stream);
+    await expect(generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY)).rejects.toBe(error);
+    expect(readGenerateFailureFacts(error)).toBeUndefined();
+    expect(readGenerateFailureUsage(error)).toBe(USAGE);
+  });
+
+  it.each([USAGE, null])('retains known failure usage without granting a blocked thinking-only completion recovery facts', async usage => {
+    const stream: StreamedMessage = {
+      id: null, usage, finishReason: 'completed', rawFinishReason: 'STOP',
+      thinkingOnlyRecoveryBlocked: true,
+      async *[Symbol.asyncIterator]() { yield { type: 'think', think: 'private thought', encrypted: 'signature-fixture' }; },
+    };
+    const { provider } = createFakeProvider(stream);
+    const error = await generate(provider, SYSTEM_PROMPT, NO_TOOLS, HISTORY).catch((error: unknown) => error);
+    expect(error).toBeInstanceOf(APIEmptyResponseError);
+    expect(isRetryableGenerateError(error)).toBe(false);
+    expect(readGenerateFailureFacts(error)).toBeUndefined();
+    expect(readGenerateFailureUsage(error)).toBe(usage ?? undefined);
+    expect(JSON.stringify(error)).not.toMatch(/private thought|signature-fixture/);
   });
 });

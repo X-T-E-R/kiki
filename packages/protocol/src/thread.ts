@@ -1,3 +1,4 @@
+import { contentRefSchema } from '@kiki/transcript';
 import { z } from 'zod';
 
 export const threadRefSchema = z.object({
@@ -30,6 +31,7 @@ export const threadTurnSchema = z.object({
     .optional(),
   input: z.string(),
   output: z.string(),
+  content_refs: z.array(contentRefSchema).optional(),
 });
 export type ThreadTurn = z.infer<typeof threadTurnSchema>;
 

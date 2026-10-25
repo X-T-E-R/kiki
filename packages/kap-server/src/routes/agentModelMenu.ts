@@ -1,4 +1,4 @@
-import { IConfigService, IModelService, type AgentProfile, type Scope } from '@kiki/agent-core-v2';
+import { IAgentExecutorPreflightService, IAgentExecutorRegistry, IConfigService, IModelService, type AgentProfile, type Scope } from '@kiki/agent-core-v2';
 import { projectProfileModelMenu, type ProfileModelMenuInput } from '@kiki/agent-core-v2/session/subagent/modelCatalogProjection';
 import type { AgentModelMenuDraft, AgentModelMenuProjection } from '@kiki/protocol';
 
@@ -8,7 +8,18 @@ export function projectAgentModelMenu(
   position: 'main' | 'sub',
   frozen = false,
 ): AgentModelMenuProjection {
-  const projected = projectProfileModelMenu(profile, scope.accessor.get(IModelService), scope.accessor.get(IConfigService), position, { frozen });
+  const capabilityCatalog = profile.executor === undefined || profile.executor === 'native'
+    ? undefined
+    : (() => {
+      const registry = scope.accessor.get(IAgentExecutorRegistry);
+      const descriptor = registry.get(profile.executor);
+      const checkedVersion = scope.accessor.get(IAgentExecutorPreflightService).lastCheck(profile.executor)?.version ?? descriptor?.version;
+      return registry.getExecutorCapabilityCatalog?.(profile.executor, checkedVersion === undefined ? undefined : { version: checkedVersion });
+    })();
+  const projected = projectProfileModelMenu(profile, scope.accessor.get(IModelService), scope.accessor.get(IConfigService), position, {
+    frozen,
+    executorCapabilityCatalog: capabilityCatalog,
+  });
   return {
     restrict_models_to_menu: projected.restrictModelsToMenu,
     declared_model_menu: {
@@ -18,6 +29,21 @@ export function projectAgentModelMenu(
     },
     effective_model_aliases: projected.effectiveModelAliases,
     model_constraints_active: projected.modelConstraintsActive,
+    executor_capabilities: capabilityCatalog === undefined ? undefined : {
+      source: capabilityCatalog.source,
+      version: capabilityCatalog.version,
+      observed_at: capabilityCatalog.observedAt,
+      models: {
+        state: capabilityCatalog.models.state,
+        values: capabilityCatalog.models.values === undefined ? undefined : [...capabilityCatalog.models.values],
+        diagnostic: capabilityCatalog.models.diagnostic,
+      },
+      thinking_levels: {
+        state: capabilityCatalog.thinkingLevels.state,
+        values: capabilityCatalog.thinkingLevels.values === undefined ? undefined : [...capabilityCatalog.thinkingLevels.values],
+        diagnostic: capabilityCatalog.thinkingLevels.diagnostic,
+      },
+    },
   };
 }
 

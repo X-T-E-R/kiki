@@ -1,8 +1,9 @@
-import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, open, readdir, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, open, readdir, readFile, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { resolveKikiHome } from '@kiki/agent-core-v2';
+import { atomicWrite } from '@kiki/agent-core-v2/_base/utils/fs';
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { ulid } from 'ulid';
 
@@ -139,26 +140,8 @@ async function readInstanceFile(filePath: string): Promise<ServerInstanceInfo | 
   }
 }
 
-async function writeFileAtomic(filePath: string, content: string): Promise<void> {
-  const tmpPath = `${filePath}.tmp.${process.pid}.${randomBytes(4).toString('hex')}`;
-  let renamed = false;
-  try {
-    const fh = await open(tmpPath, 'w');
-    try {
-      await fh.writeFile(content);
-    } finally {
-      await fh.close();
-    }
-    await rename(tmpPath, filePath);
-    renamed = true;
-  } finally {
-    if (!renamed) {
-      try {
-        await unlink(tmpPath);
-      } catch {
-      }
-    }
-  }
+function writeFileAtomic(filePath: string, content: string): Promise<void> {
+  return atomicWrite(filePath, content);
 }
 
 async function sweepStale(instancesDir: string): Promise<void> {

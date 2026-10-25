@@ -9,6 +9,8 @@ import {
 import type { IDisposable } from '#/_base/di/lifecycle';
 import type {
   ExecutorBinding,
+  ExecutorControlApplicability,
+  ExecutorCapabilityCatalog,
   ExecutorValidationResult,
 } from '@kiki/agent-profiles/ports';
 
@@ -46,6 +48,22 @@ export type AgentExecutorBinarySource =
 
 export interface AgentExecutorVersionProbe {
   readonly args: readonly string[];
+}
+
+export interface AgentExecutorModelProbe {
+  readonly command?: string;
+  readonly args: readonly string[];
+  readonly format: 'lines' | 'tab' | 'columns' | 'json';
+  readonly jsonPath?: readonly string[];
+  readonly versionProbe?: AgentExecutorVersionProbe;
+  readonly timeoutMs?: number;
+  readonly maxOutputBytes?: number;
+}
+
+export interface AgentExecutorControlCapabilities {
+  readonly modelSwitch?: ExecutorControlApplicability;
+  readonly thinkingSwitch?: ExecutorControlApplicability;
+  readonly manualCompact?: ExecutorControlApplicability;
 }
 
 export interface AgentExecutorSourceProbe {
@@ -136,6 +154,7 @@ export interface AgentExecutorDescriptor {
   readonly programLabel?: string;
   readonly version?: string;
   readonly versionProbe?: AgentExecutorVersionProbe;
+  readonly modelProbe?: AgentExecutorModelProbe;
   readonly diagnostics?: readonly AgentExecutorDiagnosticRule[];
   readonly auth?: { readonly kind: 'command-json'; readonly command: string;
     readonly args: readonly string[]; readonly loggedInKey: string }
@@ -161,6 +180,7 @@ export interface AgentExecutorDescriptor {
   readonly modelArgs?: readonly string[];
   readonly modelConfigCategory?: string;
   readonly modelConfigId?: string;
+  readonly controlCapabilities?: AgentExecutorControlCapabilities;
   readonly thoughtConfigCategory?: string;
   readonly thoughtConfigId?: string;
   readonly permissionModeMapping?: AgentExecutorPermissionModeMapping;
@@ -192,7 +212,8 @@ export interface AgentExecutionStatus {
     | 'starting'
     | 'running'
     | 'cancelling'
-    | 'broken';
+    | 'broken'
+    | 'closed';
   readonly turnId?: number;
 }
 
@@ -203,7 +224,7 @@ export interface AgentExecutorSession {
   ): Promise<AgentRunHandle>;
   status(): AgentExecutionStatus;
   canResumeBrokenOriginal?(): boolean;
-  steer?(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean>;
+  steer?(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean | 'unknown'>;
   updateBinding?(binding: ProfileBindingSnapshot): void;
   cancel(reason?: unknown): boolean;
   settled(): Promise<void>;
@@ -253,6 +274,7 @@ export function agentExecutorBindingFingerprint(binding: ProfileBindingSnapshot,
       systemPrompt: binding.systemPrompt,
       executorPrompt: binding.executorPrompt,
       allowKikiSubagents: binding.allowKikiSubagents === true ? true : undefined,
+      injectKikiMcp: binding.injectKikiMcp,
       kikiContext: binding.kikiContext?.length ? [...new Set(binding.kikiContext)].sort() : undefined,
       renderGeneration: binding.renderGeneration,
     }))
@@ -287,6 +309,12 @@ export interface IAgentExecutorRegistry {
   resolveExecutable(id?: string, options?: unknown): Promise<ResolvedAgentExecutor>;
   /** Defaults to full diagnostics; false resolves only the admitted source needed for catalog availability. */
   discover(id: string, exhaustive?: boolean): Promise<readonly AgentExecutorSourceProbe[]>;
+  refreshExecutorCapabilityCatalog?(id: string): Promise<ExecutorCapabilityCatalog>;
+  recordExecutorCapabilityCatalog?(catalog: ExecutorCapabilityCatalog): void;
+  getExecutorCapabilityCatalog?(
+    id: string,
+    expected?: { readonly descriptorRevision?: string; readonly version?: string; readonly programVersion?: string },
+  ): ExecutorCapabilityCatalog | undefined;
   recordNegotiated?(id: string, version: string | undefined, capabilities: NegotiatedExecutorCapabilities): void;
   negotiated?(id: string, version: string | undefined): NegotiatedExecutorCapabilities | undefined;
   /** Last observation for the current descriptor, without launching the executor or verifying its installed version. */

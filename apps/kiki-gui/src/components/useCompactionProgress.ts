@@ -25,14 +25,27 @@ export function useCompactionProgress(client: KikiClient, sessionId: string | un
     setProgress(undefined);
     if (sessionId === undefined) return;
     const events = client.klient.session(sessionId).agent('main').events;
-    const update = (event: CompactionProgressEvent) => { setProgress((current) => applyCompactionProgress(current, event)); };
+    let active = true;
+    const update = (event: CompactionProgressEvent) => {
+      if (active) setProgress((current) => applyCompactionProgress(current, event));
+    };
     const subscriptions = [
       events.on('compaction.started', update),
       events.on('compaction.completed', update),
       events.on('compaction.cancelled', update),
     ];
     for (const subscription of subscriptions) void subscription.ready.catch(() => undefined);
-    return () => { for (const subscription of subscriptions) subscription.dispose(); };
+    return () => {
+      active = false;
+      for (const subscription of subscriptions) subscription.dispose();
+    };
   }, [client, sessionId]);
+  useEffect(() => {
+    if (progress?.phase !== 'completed') return;
+    const timer = setTimeout(() => {
+      setProgress((current) => current === progress ? undefined : current);
+    }, 3_000);
+    return () => { clearTimeout(timer); };
+  }, [progress, client, sessionId]);
   return progress;
 }

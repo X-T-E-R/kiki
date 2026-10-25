@@ -55,27 +55,61 @@ max_handoffs_per_hour = 30
 room_budget = 12
 ```
 
-A session's `delivery` is either `reply` or `message`. In message mode only successful `SendMessage` calls become delivered messages, and ordinary model text stays in the process view; if a user-triggered turn ends with text and no send, Kiki asks the model to reconsider **once**, which can cost one extra request. The shipped `agent` profile exposes `SendMessage` in message mode and omits it in reply mode, and a custom profile with an explicit `tools` allowlist must list it — delivery mode does not bypass profile permissions. The tool table is frozen for a turn, so a delivery change applies to the next one.
+A session's `delivery` is either `reply` or `message`. New persona sessions use message mode when the persona omits `delivery`; an explicit session choice takes priority, and an existing session keeps its saved choice. Sessions without a persona, and personas with explicit `reply`, answer directly. The persona editor saves the delivery mode it shows, including an explicit `reply`.
 
-`SendMessage` addresses the user or another persona with `to: "@Name"`; use the persona ID when names collide. A handoff can wake a closed conversation and counts toward the hourly limit, though retrying the same delivery key does not consume another slot. Attachments are immutable copies from the session workspace, its additional directories or the persona's own area, not arbitrary filesystem paths.
+In the message view, a completed turn's last complete ordinary reply also appears when that turn has no successful `SendMessage`. Long replies and sent messages load the rest of their text automatically. Failed turns keep a failure indicator; switch to the process view to read any unfinished prose. This display fallback does not send to a room, another persona, or an IM channel; those destinations still need an actual delivery.
+
+When `SendMessage` confirms delivery to the user, its result tells the model to end the turn without another closing message if the request is complete and no work remains. Progress updates still allow required tools and pending work to continue. A native-executor turn that ends in ordinary text instead receives guidance in the next model request when the tool is available; it does not add a request to the completed turn or resend its answer.
+
+The shipped `agent` profile exposes `SendMessage` in message mode and omits it in reply mode. A custom profile with an explicit `tools` allowlist must include it; delivery mode does not bypass profile permissions. The tool table is frozen for a turn, so a delivery change applies to the next one.
+
+`SendMessage` addresses the user or another persona with `to: "@Name"`; use the persona ID when names collide. A handoff can wake a closed conversation and counts toward the hourly limit, though retrying the same delivery key does not consume another slot. Attachments are immutable copies from the session workspace, its additional directories or the persona's own area, not arbitrary filesystem paths. Set an attachment's `kind` to request `image`, `audio`, `voice`, or `video` delivery; omitting it preserves ordinary `file` delivery. A message can contain attachments without text:
+
+```json
+{
+  "attachments": [
+    { "path": "output/voice.ogg", "kind": "voice", "mime_type": "audio/ogg" }
+  ]
+}
+```
+
+## Connect conversation channels
+
+A user-directed `SendMessage` uses the conversation's enabled channels: the Kiki in-app channel, named `internal`, and its confirmed IM bindings. The in-app channel is enabled by default; adding an IM binding does not turn it off. HTTP clients can inspect `rest.imSessions.channelViews(sessionId)` and explicitly change it with `setInternalChannel(sessionId, false)`, independently of reply/message mode. Turning it off does not erase historical messages or delivery diagnostics.
+
+Each attachment must be supported by at least one enabled channel. Otherwise the send fails with `media_unsupported`; with no enabled destination, it fails with `no_destination`. If only some channels support an attachment, Kiki sends it to those channels and tells the others which media were skipped. The receipt's `channels` list identifies each destination as `delivered`, `unsupported`, `failed`, or `unknown`; a delivered channel can also list skipped types in `unsupported`. Do not automatically resend an `unknown` outcome: the platform may already have accepted it.
+
+Voice is an explicit intent, not permission to fall back to a file. The in-app channel plays audio and voice in its audio player. Discord, Slack, and Matrix accept ordinary `audio` but do not support outgoing native `voice`; Discord and Slack upload audio as attachments, while Matrix uses `m.audio`. Matrix connections support only unencrypted rooms and refuse plaintext sends into encrypted rooms.
+
+HTTP clients configure these connections through `rest.imSessions.setupCatalog()` and `setup(...)`. The catalog supplies each platform's required fields and actual capabilities:
+
+| Platform | Required fields | Setup route |
+| --- | --- | --- |
+| Discord | `bot_token` | `discord_install` builds a bot invitation from `application_id`; enable Message Content Intent in the developer portal. |
+| Slack | `bot_token`, `app_token` | `slack_manifest` creates a Socket Mode app; OAuth can supply the bot token, but an app-level `xapp` token is still required. |
+| Matrix | `homeserver`, `access_token` | `matrix_discover` reads login methods; `matrix_sso_begin` / `matrix_sso_complete` or `matrix_password` can obtain and save a token. |
+
+Call `setup({ action: "save", provider_kind, fields })` to save credentials without starting a listener. Then use the returned `provider_instance_id` with `check` and `listen(id, true)`, send the bot a platform message, and confirm the resulting discovery against the intended session or persona. Existing Telegram, Feishu, OneBot, and WeChat connections keep their configuration and binding flow. The [REST API guide](../server/rest-api.md) covers connection authentication; the HTTP endpoints for these operations are `GET` / `POST /api/im/sessions/setup`, `GET /api/im/sessions/targets/{sessionId}/channels`, and `PUT /api/im/sessions/targets/{sessionId}/internal`.
+
+After confirming a binding, call `rest.imSessions.testBinding(bindingId)` to send a fixed, clearly marked test message to that binding's chat without starting a model reply. It uses the existing connection and requires the binding to be enabled and connected. The HTTP equivalent is `POST /api/im/sessions/bindings/{bindingId}/test` with `{}`; custom text and targets are rejected. The result contains `binding_id`, `status`, `message_ids`, and an optional `detail`. A `delivered` result confirms platform acceptance, not that someone read the message; for `failed`, fix the reported cause before trying again. If the status is `unknown`, check the chat before manually retrying.
 
 ## Discuss in a room
 
-Create a room with two to six members, a classification workspace and a host. Persona members get their own message-mode sessions. The API also accepts existing threads (`kind: "thread"`), which reuse their own sessions, workspaces and permissions, need `[thread_communication] enabled = true`, and cannot be subagents. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add them from the **Threads** tab under **Add member**, or pick **Open a room with these threads** on a thread link. Three rules decide who wakes:
+Create a room with two to six members, a classification workspace and a host. Persona members get their own message-mode sessions. The API also accepts existing threads (`kind: "thread"`), which reuse their own sessions, workspaces and permissions, need thread communication admitted for that thread, and cannot be subagents. Factory settings allow thread communication and leave it off. Turn that thread's session on, or turn the default on, before it can join. A user `[thread_communication] enabled = false` turns it off completely, and the thread's profile does not override a session that is off. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add them from the **Threads** tab under **Add member**, or pick **Open a room with these threads** on a thread link. Three rules decide who wakes:
 
 1. A user mention wakes the named members; `@everyone` selects all members.
 2. A user message without mentions goes to the host, whether the host is a persona or a thread.
-3. A persona message wakes only the members it mentions. A message with no mentions does not continue the discussion.
+3. A persona or thread room message wakes only the members it mentions. A message with no mentions is logged but wakes no one.
 
-Members run one after another, so a later speaker sees earlier speakers' results. A muted member is skipped by persona mentions and host fallback, but an explicit user mention still wakes it. Each member sees the messages since its last wake, minus its own already-recorded output.
+Persona turns run one after another; existing threads each have their own queue. A muted member is skipped by agent mentions and host fallback, but an explicit user mention still wakes it. Each member sees messages since its last successfully completed catch-up, minus its own already-recorded output. Notifications already covered by that successful batch do not start separate turns; a failed or cancelled turn does not confirm the batch.
 
 The budget limits member messages after each user message (12 by default). When it runs out the discussion pauses; **Continue** resets the budget and resumes the retained work. **Pause** cancels queued wakes but lets the active turn finish, and **Stop all** also interrupts an active persona turn — never an original thread task — without undoing completed actions. Persona-only rooms keep user interruption steering, mixed rooms keep queued work. One room question is shown at a time; later ones queue.
 
-Thread members default to `queueWhenBusy: true`, so room input waits for their current turn instead of steering it, and cold threads resume in their own workspaces. Every member other than the host gets unmentioned messages in its next catch-up without a separate model call. To speak, a thread must use `ThreadSend({room, content, mentions?})`; its ordinary assistant text never enters the room.
+Thread members default to `queueWhenBusy: true`, so room input waits for their current turn instead of steering it, and cold threads resume in their own workspaces. Messages that do not select a member are included in that member's next catch-up without a separate model call. To speak, a thread must use `ThreadSend({room, content, mentions?})`; its ordinary assistant text never enters the room. Use exact member IDs (`sessionId` for a thread, `personaId` for a persona) in `mentions`, not display names. A send without mentions does not wake the host; that fallback applies only to user messages.
 
 Renaming, changing the host, muting and workspace classification never rewrite a member's system prompt or permissions. Removing a thread leaves a system record in its session and preserves the room log without archiving the original thread. Creating a room needs two to six members, though members can leave and take it below two.
 
-If a member cannot wake, the room shows the failure and what to do about it. For a model login failure, sign in under **Settings → Models & providers → Connections**, or open that member's conversation and pick an available model — existing member sessions keep their bound model, and editing the persona card does not change it. Then send another room message mentioning the failed member if it is not the host. **Continue** resumes a paused room; it does not retry a failed wake on an unpaused one.
+If a member cannot wake, the room shows the failure and what to do about it. For a model login failure, sign in under **Settings → Models & providers → Providers & accounts**, or open that member's conversation and pick an available model — existing member sessions keep their bound model, and editing the persona card does not change it. Then send another room message mentioning the failed member if it is not the host. **Continue** resumes a paused room; it does not retry a failed wake on an unpaused one.
 
 ## API entry points
 

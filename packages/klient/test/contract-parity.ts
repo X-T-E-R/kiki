@@ -27,8 +27,8 @@ import type {
 import type { AgentContextData } from '@kiki/agent-core-v2/agent/contextMemory/types';
 import type { IAgentCommandService } from '@kiki/agent-core-v2/agent/command/agentCommand';
 import type { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
-import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
 import type { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
+import type { IAgentRuntimeBindingService } from '@kiki/agent-core-v2/agent/runtimeBinding/runtimeBinding';
 import type { TurnEndReason } from '@kiki/agent-core-v2/agent/loop/turnEvents';
 import type { PermissionMode } from '@kiki/agent-core-v2/agent/permissionPolicy/types';
 import type { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
@@ -40,6 +40,7 @@ import type { PlanData } from '@kiki/agent-core-v2/features/plan/plan';
 import type { UsageStatus } from '@kiki/agent-core-v2/agent/usage/usage';
 import type { SkillSummary } from '@kiki/agent-core-v2/app/skillCatalog/types';
 import type { McpServerEntry } from '@kiki/agent-core-v2/mcpCore/connection-manager';
+import type { McpSessionCapability, McpSessionOverride } from '@kiki/agent-core-v2/agent/mcp/mcp';
 import type {
   GlobalMcpServerConfig,
   McpAuthStatusQuery,
@@ -94,6 +95,7 @@ import type {
   SessionMetaPatch,
 } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/sessionTitle';
+import type { ISessionOptionalCapabilityService } from '@kiki/agent-core-v2/session/optionalCapability/sessionOptionalCapabilityService';
 import type { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
 import type { SessionActivityState } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import { sessionActivityStateSchema } from '../src/contract/session/activity.js';
@@ -269,6 +271,8 @@ import {
   agentGoalContract,
   fullCompactionInputSchema,
   mcpServerEntrySchema,
+  mcpSessionCapabilitySchema,
+  mcpSessionOverrideSchema,
 } from '../src/contract/agent/services.js';
 import {
   createChildSessionOptionsSchema,
@@ -297,6 +301,7 @@ import {
 } from '../src/contract/session/question.js';
 import { skillSummarySchema } from '../src/contract/session/skills.js';
 import { sessionTitleContract } from '../src/contract/session/title.js';
+import { optionalCapabilitySessionViewSchema } from '../src/contract/session/optionalCapabilities.js';
 import { agentCollaborationMessagingContract } from '../src/contract/session/agentMessage.js';
 
 import {
@@ -407,8 +412,19 @@ import {
 import type { AssertWire, MutableDeep } from './helpers/typeAssert.js';
 import type { AgentFacade } from '../src/core/facade/agent.js';
 import type { ManagedUsageResult as EngineManagedUsageResult } from '@kiki/agent-core-v2/app/auth/oauthProtocol';
+import type { ISettingsTransferService } from '@kiki/agent-core-v2/app/settingsTransfer/settingsTransfer';
+import { settingsTransferContract } from '../src/contract/global/settingsTransfer.js';
+type SettingsTransferOutput<Method extends keyof typeof settingsTransferContract> = Awaited<ReturnType<ISettingsTransferService[Method]>> extends void ? undefined : Awaited<ReturnType<ISettingsTransferService[Method]>>;
+const _settingsTransferOutputs: { [Method in keyof typeof settingsTransferContract]: AssertWire<(typeof settingsTransferContract)[Method]['output'], SettingsTransferOutput<Method>> } = {
+  catalog: true, export: true, preview: true, apply: true, cancel: true,
+};
 import type { IPluginImportService } from '@kiki/agent-core-v2/app/pluginImport/pluginImport';
 import { importsContract } from '../src/contract/global/imports.js';
+import type { IPluginMediaService } from '@kiki/agent-core-v2/app/pluginMedia/pluginMedia';
+import { mediaContract } from '../src/contract/global/media.js';
+const _mediaOutputs: { [Method in keyof typeof mediaContract]: AssertWire<(typeof mediaContract)[Method]['output'], Awaited<ReturnType<IPluginMediaService[Method]>>> } = {
+  managedSources: true, sourceSettings: true, updateSource: true, addScriptSource: true, sources: true, setSources: true, catalog: true, providers: true, capabilities: true, voices: true, jobs: true, job: true,
+};
 const _importOutputs: { [Method in keyof typeof importsContract]: AssertWire<(typeof importsContract)[Method]['output'], Awaited<ReturnType<IPluginImportService[Method]>>> } = {
   sources: true, discover: true, preview: true, start: true, jobs: true, job: true,
   cancel: true, resume: true, archives: true, read: true,
@@ -715,6 +731,12 @@ const _questionResult: AssertWire<typeof questionResultSchema, QuestionResult> =
 // session/skills.ts
 const _skillSummary: AssertWire<typeof skillSummarySchema, SkillSummary> = true;
 
+// session/optionalCapabilities.ts
+const _optionalCapabilitySessionView: AssertWire<
+  typeof optionalCapabilitySessionViewSchema,
+  Awaited<ReturnType<ISessionOptionalCapabilityService['read']>>
+> = true;
+
 // session/title.ts
 const _generateTitleOutput: AssertWire<
   (typeof sessionTitleContract)['generateTitle']['output'],
@@ -861,6 +883,8 @@ const _getTaskOutputPayload: AssertWire<typeof getTaskOutputPayloadSchema, GetTa
 
 // agent/services.ts (mcp / fullCompaction)
 const _mcpServerEntry: AssertWire<typeof mcpServerEntrySchema, McpServerEntry> = true;
+const _mcpSessionCapability: AssertWire<typeof mcpSessionCapabilitySchema, McpSessionCapability> = true;
+const _mcpSessionOverride: AssertWire<typeof mcpSessionOverrideSchema, McpSessionOverride> = true;
 const _fullCompactionInput: AssertWire<typeof fullCompactionInputSchema, FullCompactionInput> =
   true;
 const _contextStrategyStatus: AssertWire<

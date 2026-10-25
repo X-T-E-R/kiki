@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter, type Event } from '#/_base/event';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { LifecycleScope } from '#/app/scopes';
@@ -14,9 +15,11 @@ import {
   RUNTIME_PROTOCOL_VERSION,
   callTimeoutMs,
   type RuntimeCallOptions,
+  type RuntimeCallerOutcome,
   type RuntimeHostStatus,
   type RuntimeLimits,
   type RuntimeMethodContext,
+  type RuntimeReceipt,
   type RuntimeRole,
 } from './messages';
 import {
@@ -44,8 +47,13 @@ const REELECT_DELAY_MS = 50;
 const DEFAULT_LIMITS: RuntimeLimits = Object.freeze({});
 
 interface DirectInvocation {
+  readonly operationId: string;
+  readonly requestId: string;
+  readonly epoch: number;
   readonly fenceToken: FenceToken;
   readonly controller: AbortController;
+  callerOutcome: RuntimeCallerOutcome;
+  callerError?: Error;
 }
 
 export class HomeRuntimeHostService implements IHomeRuntimeService {
@@ -59,6 +67,8 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
   private readonly directInvocations = new Set<DirectInvocation>();
   private readonly roleStatusEmitter = new Emitter<RuntimeRoleStatus>('runtimeRoleStatus');
   readonly onDidChangeRoleStatus: Event<RuntimeRoleStatus> = this.roleStatusEmitter.event;
+  private readonly receiptEmitter = new Emitter<RuntimeReceipt>('runtimeReceipt');
+  readonly onDidReceipt: Event<RuntimeReceipt> = this.receiptEmitter.event;
   private role: RuntimeRole = 'idle';
   private readyState = false;
   private epoch = 0;
@@ -164,11 +174,14 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
     this.publishRoleStatus();
     this.signalRoleLost();
     this.abortDirectCalls(new HomeRuntimeError('runtime.detached', 'runtime service closed'));
+    const resourcesBefore = this.directInvocations.size + Number(this.server !== undefined) + Number(this.client !== undefined);
     await this.teardown();
     this.fence.reset();
     await this.loopPromise?.catch(() => {});
     await this.teardown();
+    this.emitExitReceipt('normal', resourcesBefore);
     this.roleStatusEmitter.dispose();
+    this.receiptEmitter.dispose();
   }
 
   private async teardown(): Promise<void> {
@@ -300,26 +313,31 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
         this.publishRoleStatus();
       },
       onOwnerLost: (error) => {
-        void this.onServerLost(error);
+        void this.onServerLost(error).catch(onUnexpectedError);
       },
     };
   }
 
   private async onServerLost(error: Error): Promise<void> {
     if (this.role !== 'owner') return;
+    const resourcesBefore = this.directInvocations.size + Number(this.server !== undefined);
     this.role = 'idle';
     this.readyState = false;
     this.publishRoleStatus();
     this.abortDirectCalls(new HomeRuntimeError('runtime.owner_gone', 'runtime owner role was lost', { cause: error }));
-    if (this.server !== undefined) {
-      const server = this.server;
-      this.server = undefined;
-      await server.detach();
-      await removeOwnedEndpoint(this.platform, this.canonicalHomeDir, this.endpointPath).catch(() => undefined);
+    try {
+      if (this.server !== undefined) {
+        const server = this.server;
+        this.server = undefined;
+        await server.detach();
+        await removeOwnedEndpoint(this.platform, this.canonicalHomeDir, this.endpointPath).catch(() => undefined);
+      }
+    } finally {
+      this.fence.reset();
+      if (isFatalRuntimeError(error)) this.bootstrapError = error;
+      this.signalRoleLost();
+      this.emitExitReceipt('owner_lost', resourcesBefore);
     }
-    this.fence.reset();
-    if (isFatalRuntimeError(error)) this.bootstrapError = error;
-    this.signalRoleLost();
   }
 
   private clientCallbacks(): ClientCallbacks {
@@ -335,12 +353,34 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
       },
       onDisconnected: () => {
         const wasClient = this.role === 'client';
+        const resourcesBefore = this.directInvocations.size + Number(wasClient);
         this.role = 'idle';
         this.readyState = false;
         this.publishRoleStatus();
-        if (wasClient) this.signalRoleLost();
+        if (wasClient) {
+          this.signalRoleLost();
+          this.emitExitReceipt('connection_lost', resourcesBefore);
+        }
       },
     };
+  }
+
+  private emitExitReceipt(
+    exitReason: 'normal' | 'owner_lost' | 'connection_lost',
+    resourcesBefore: number,
+  ): void {
+    const resourcesAfter = this.directInvocations.size + Number(this.server !== undefined) + Number(this.client !== undefined);
+    this.receiptEmitter.fire({
+      kind: 'exit',
+      operationId: randomUUID(),
+      owner: 'runtime',
+      epoch: this.epoch,
+      exitReason,
+      cleanupOutcome: resourcesAfter === 0 ? 'closed' : 'cleanup_failed',
+      resourcesBefore,
+      resourcesAfter,
+      settledAt: Date.now(),
+    });
   }
 
   private publishRoleStatus(): void {
@@ -384,7 +424,10 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
       return Promise.reject(new HomeRuntimeError('runtime.outstanding_overflow', 'runtime in-flight limit reached'));
     }
     const controller = new AbortController();
-    const invocation = { fenceToken: claim.token, controller };
+    const invocation: DirectInvocation = {
+      operationId: randomUUID(), requestId, epoch: this.epoch, fenceToken: claim.token, controller,
+      callerOutcome: 'unknown',
+    };
     this.directInvocations.add(invocation);
     const timeoutMs = callTimeoutMs(options.timeoutMs, this.limits.callTimeoutMs);
     return new Promise<unknown>((resolve, reject) => {
@@ -400,42 +443,64 @@ export class HomeRuntimeHostService implements IHomeRuntimeService {
         if (callerSettled) return;
         callerSettled = true;
         cleanupCaller();
-        if (error === undefined) resolve(value);
-        else reject(ensureError(error));
+        if (error === undefined) {
+          invocation.callerOutcome = 'resolved';
+          resolve(value);
+        } else {
+          const normalized = ensureError(error);
+          invocation.callerOutcome = isCallerCancellation(normalized) ? 'cancelled' : 'rejected';
+          invocation.callerError = normalized;
+          reject(normalized);
+        }
       };
       const settleHandler = (): void => {
+        const resourcesBefore = this.directInvocations.size;
         this.fence.release(invocation.fenceToken);
         this.directInvocations.delete(invocation);
+        this.receiptEmitter.fire({
+          kind: 'call', operationId: invocation.operationId, requestId: invocation.requestId,
+          owner: 'runtime', epoch: invocation.epoch, callerOutcome: invocation.callerOutcome,
+          cleanupOutcome: 'closed', resourcesBefore, resourcesAfter: this.directInvocations.size,
+          errorCode: invocation.callerError === undefined ? undefined : runtimeErrorCode(invocation.callerError),
+          errorName: invocation.callerError?.name,
+          settledAt: Date.now(),
+        });
       };
       const onAbort = (): void => settleCaller(abortReason(controller.signal));
       options.signal?.addEventListener('abort', abortFromCaller, { once: true });
       controller.signal.addEventListener('abort', onAbort, { once: true });
-      timer = setTimeout(() => {
-        controller.abort(new HomeRuntimeError('runtime.timeout', `runtime call timed out after ${timeoutMs}ms`));
-      }, timeoutMs);
+      let readDiagnostic: (() => string) | undefined;
+      const deadlineAt = Date.now() + timeoutMs;
+      const expire = (): void => {
+        controller.abort(new HomeRuntimeError('runtime.timeout',
+          `runtime call timed out after ${timeoutMs}ms (method=${name}, epoch=${invocation.epoch}, timerLagMs=${Math.max(0, Date.now() - deadlineAt)}${readDiagnostic === undefined ? '' : `, ${readDiagnostic()}`})`));
+      };
+      timer = setTimeout(expire, timeoutMs);
       timer.unref?.();
       const ctx: RuntimeMethodContext = {
         requestId,
         epoch: this.epoch,
         callerHostId: this.hostId,
         signal: controller.signal,
+        setTimeoutDiagnostic: (read) => { readDiagnostic = read; },
       };
       let result: unknown;
       try {
         result = handler(payload, ctx);
       } catch (error) {
-        settleHandler();
         settleCaller(error);
+        settleHandler();
         return;
       }
       void Promise.resolve(result).then(
         (value) => {
-          settleHandler();
+          if (!controller.signal.aborted && Date.now() >= deadlineAt) expire();
           if (!controller.signal.aborted) settleCaller(undefined, value);
+          settleHandler();
         },
         (error: unknown) => {
-          settleHandler();
           if (!controller.signal.aborted) settleCaller(error);
+          settleHandler();
         },
       );
     });
@@ -473,6 +538,16 @@ function abortReason(signal: AbortSignal): Error {
 
 function ensureError(error: unknown): Error {
   return error instanceof Error ? error : new Error(String(error));
+}
+
+function runtimeErrorCode(error: Error): string | undefined {
+  const code = (error as { readonly code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function isCallerCancellation(error: Error): boolean {
+  const code = runtimeErrorCode(error);
+  return code === 'runtime.aborted' || code === 'runtime.detached';
 }
 
 function isRetryableConnectError(error: unknown): boolean {

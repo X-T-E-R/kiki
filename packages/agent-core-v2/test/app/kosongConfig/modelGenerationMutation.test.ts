@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -19,6 +19,47 @@ import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 
 import { StubConfigService, stubModelOAuthTokens } from '../../kosong/stubs';
 
+describe('provider environment credential mutations', () => {
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('creates, cold-reads, changes and clears the variable name without persisting its runtime value', async () => {
+    vi.stubEnv('EXAMPLE_MISSING_PROVIDER_KEY', undefined);
+    vi.stubEnv('EXAMPLE_NEXT_PROVIDER_KEY', 'runtime-fixture');
+    const storage = new InMemoryStorageService(); const store = new TomlAtomicDocumentStore(storage);
+    await store.setText('', 'config.toml', '[providers.sibling]\ntype="openai"\nbase_url="https://sibling.example.test/v1"\n[providers.managed]\ntype="openai"\n[providers.managed.oauth]\nstorage="file"\nkey="oauth/example"\n');
+    const host = () => {
+      const ix = new TestInstantiationService();
+      ix.stub(ILogService, stubLog()); ix.stub(IBootstrapService, stubBootstrap('/scratch/home'));
+      ix.stub(IFileSystemStorageService, storage); ix.stub(IAtomicTomlDocumentStore, store); ix.stub(IModelOAuthTokens, stubModelOAuthTokens());
+      ix.set(IConfigRegistry, new SyncDescriptor(ConfigRegistry)); ix.set(IConfigService, new SyncDescriptor(ConfigService)); ix.set(IModelCatalogMutationService, new SyncDescriptor(ModelCatalogMutationService));
+      return ix;
+    };
+    const first = host();
+    try {
+      const catalog = first.get(IModelCatalogMutationService);
+      const created = await catalog.createProvider({ id: 'edge', type: 'openai', api_key_env: 'EXAMPLE_MISSING_PROVIDER_KEY', base_url: 'https://edge.example.test/v1' });
+      expect(created).toMatchObject({ api_key_env: 'EXAMPLE_MISSING_PROVIDER_KEY', has_api_key: false, status: 'unconfigured' });
+      expect(await store.getText('', 'config.toml')).toContain('api_key_env = "EXAMPLE_MISSING_PROVIDER_KEY"');
+      const edited = await catalog.updateProvider('edge', { base_revision: created.revision, api_key_env: 'EXAMPLE_NEXT_PROVIDER_KEY' });
+      await expect(catalog.updateProvider('edge', { base_revision: created.revision, api_key_env: null })).rejects.toMatchObject({ code: 'model_catalog.revision_conflict' });
+      expect(edited).toMatchObject({ api_key_env: 'EXAMPLE_NEXT_PROVIDER_KEY', has_api_key: true, status: 'connected' });
+      expect(await store.getText('', 'config.toml')).not.toContain('runtime-fixture');
+      await expect(catalog.updateProvider('edge', { api_key_env: '' })).rejects.toMatchObject({ code: 'config.invalid' });
+      await expect(catalog.updateProvider('managed', { api_key_env: 'EXAMPLE_NEXT_PROVIDER_KEY' })).rejects.toMatchObject({ code: 'provider.oauth_managed' });
+      await expect(catalog.updateProvider('managed', { api_key_env: null })).rejects.toMatchObject({ code: 'provider.oauth_managed' });
+    } finally { await first.dispose(); }
+    const cold = host();
+    try {
+      const catalog = cold.get(IModelCatalogMutationService);
+      const saved = await catalog.readProvider('edge');
+      expect(saved.api_key_env).toBe('EXAMPLE_NEXT_PROVIDER_KEY');
+      expect((await catalog.updateProvider('edge', { base_revision: saved.revision, api_key_env: null })).api_key_env).toBeUndefined();
+      expect(await store.getText('', 'config.toml')).not.toContain('api_key_env');
+      expect((await catalog.readProvider('sibling')).base_url).toBe('https://sibling.example.test/v1');
+    } finally { await cold.dispose(); }
+  });
+});
+
 describe('generation parameter entity mutations', () => {
   it('CAS-merges source modes and saved custom leaves without erasing user bodies or model/profile fields', async () => {
     const storage = new InMemoryStorageService(); const store = new TomlAtomicDocumentStore(storage);
@@ -37,8 +78,8 @@ describe('generation parameter entity mutations', () => {
       await expect(catalog.updateModel('fast', { steering_sources_patch: { common: { thread: { mode: 'inherit' } } } })).rejects.toMatchObject({ code: 'config.invalid' });
       const custom = await catalog.updateModel('fast', { base_revision: initial.revision, steering_sources_patch: { common: { thread: { mode: 'custom', custom: { steering: { text: 'THREAD BODY' }, steering_interval_steps: 3 } } } } });
       const off = await catalog.updateModel('fast', { base_revision: custom.revision, steering_sources_patch: { common: { thread: { mode: 'off' } } } });
-      expect(off.cognition?.steering_sources?.thread).toEqual({ mode: 'off', custom: { steering: { text: 'THREAD BODY' }, steering_interval_steps: 3 } });
-      expect(off.cognition_bodies?.branches.common.steering_sources?.thread?.text).toBe('THREAD BODY');
+      expect(off.cognition?.steering_sources?.['thread']).toEqual({ mode: 'off', custom: { steering: { text: 'THREAD BODY' }, steering_interval_steps: 3 } });
+      expect(off.cognition_bodies?.branches.common.steering_sources?.['thread']?.text).toBe('THREAD BODY');
       const inherited = await catalog.updateModel('fast', { base_revision: off.revision, steering_sources_patch: { main: { agent: { mode: 'inherit' } } } });
       expect(inherited.cognition?.main).toMatchObject({ steering: { text: 'USER BODY' }, steering_sources: { thread: { mode: 'off' }, agent: { mode: 'inherit' } } });
       expect(inherited.cognition?.steering).toEqual({ text: 'USER BODY' });
@@ -49,8 +90,8 @@ describe('generation parameter entity mutations', () => {
     const cold = host();
     try {
       const saved = await cold.get(IModelCatalogMutationService).readModel('fast');
-      expect(saved.cognition?.steering_sources?.thread?.custom?.steering_interval_steps).toBe(3);
-      expect(saved.cognition_bodies?.branches.main.steering_sources?.thread?.text).toBe('THREAD BODY');
+      expect(saved.cognition?.steering_sources?.['thread']?.custom?.steering_interval_steps).toBe(3);
+      expect(saved.cognition_bodies?.branches.main.steering_sources?.['thread']?.text).toBe('THREAD BODY');
       const cleared = await cold.get(IModelCatalogMutationService).updateModel('fast', { base_revision: saved.revision, steering_sources_patch: { common: null } });
       expect(cleared.cognition?.steering_sources).toBeUndefined(); expect(cleared.cognition?.steering).toEqual({ text: 'USER BODY' });
       expect(typeof cleared.cognition?.main).toBe('object');
@@ -210,7 +251,7 @@ max_context_size=8192
       expect(edited.behavior).toEqual({ ask_user_question_guard: { enabled: false, max_per_window: 5 } });
       expect(edited.parameters).toEqual({ thinking_effort: 'medium' }); expect(edited.usage_effective?.main.thinking_effort).toBe('high');
       const text = await store.getText('', 'config.toml'); expect(text).toContain('[models.fast.behavior.ask_user_question_guard]'); expect(text).toContain('enabled = false');
-    } finally { first.dispose(); }
+    } finally { await first.dispose(); }
     const cold = host();
     try {
       const catalog = cold.get(IModelCatalogMutationService);
@@ -223,7 +264,7 @@ max_context_size=8192
       expect(created.behavior?.ask_user_question_guard?.enabled).toBe(true);
       await catalog.createProvider({ id: 'new-edge', type: 'openai', models: [{ remote_id: 'nested', behavior: { ask_user_question_guard: { enabled: false } } }] });
       expect((await catalog.readModel('new-edge/nested')).behavior?.ask_user_question_guard?.enabled).toBe(false);
-    } finally { cold.dispose(); }
+    } finally { await cold.dispose(); }
   });
   it('persists identity parameter differences sparsely and previews the same inherited defaults', async () => {
     const ix = new TestInstantiationService();
@@ -279,7 +320,7 @@ max_context_size=8192
       await config.reload();
       expect(config.inspect<Record<string, Record<string, unknown>>>('models').userValue?.['fast']?.['usage']).toBeUndefined();
       expect(await baseStore.getText('', 'config.toml')).toBe(baseText);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('reads inherited models and edits sparse home overrides without copying the base', async () => {
     const ix = new TestInstantiationService();
@@ -319,7 +360,7 @@ max_context_size=8192
       await config.reload();
       expect((await catalog.readModel('second')).remote_id).toBe('remote-second');
       expect(config.inspect<Record<string, Record<string, unknown>>>('models').userValue?.['fast']).toEqual({});
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('patches only the selected provider/model fields and rejects stale revisions', async () => {
     const config = new StubConfigService({
@@ -349,6 +390,6 @@ max_context_size=8192
       expect(updated.defaults).toMatchObject({ temperature: 0.3, max_completion_tokens: 16384 });
       expect((await catalog.readModel('fast')).effective_parameters?.max_completion_tokens).toBe(16384);
       expect((await catalog.readModel('sibling')).effective_parameters?.max_completion_tokens).toBe(16384);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 });

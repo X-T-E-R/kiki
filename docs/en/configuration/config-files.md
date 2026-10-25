@@ -109,6 +109,57 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## External harness defaults
+
+An external harness (the program running the agent) can use its own configuration without a Kiki profile. For the main-agent `execution` selection, set reusable Kiki overrides under `[agent_executor_overrides.<id>.defaults]`; a session override wins over an explicitly declared profile value, which wins over these settings. Anything left unset stays with the harness's own default. Native execution keeps Kiki's existing model and profile defaults.
+
+```toml
+[agent_executor_overrides."claude-acp".defaults]
+# Optional: use the harness's model ID, not a native Kiki model alias.
+model_alias = "YOUR_HARNESS_MODEL"
+thinking_effort = "high"
+permission_mode = "auto"
+kiki_context = []
+allow_kiki_subagents = false
+```
+
+Omit model, effort and permission fields to let the harness choose them. `kiki_context` accepts `memory`, `board`, `cron`, `threads`, `history` and `hooks`; `[]` explicitly disables all groups, and `allow_kiki_subagents = false` explicitly disables delegation. An omitted profile field inherits the harness settings in this execution path. Changing settings does not rewrite an existing binding: select the execution again or explicitly rebuild its context to adopt them.
+
+`native_agent` selects the vendor's own agent. It is a session override or a value in these defaults, not a profile field. JSON `null` on the session override clears that choice and inherits the defaults value. Omit it, or set `engine-default`, to keep the vendor's default agent; Kiki then does not send a custom agent selection. A newly chosen value must be one the executor has already advertised. Missing discovery keeps an existing choice when the executor, that agent, and the descriptor revision still match; a discovery list that omits the value is rejected and the current binding stays.
+
+Kiki's own executor accepts only omission or `engine-default`. AGY CLI's menu currently offers only `engine-default`, so its default main agent stays AGY's own and is not passed as a custom `--agent`.
+
+`inject_kiki_mcp` opens or closes the Kiki tool bridge. `true` opens the bridge and does not grant a tool the binding already denies. `false` closes the bridge, including credentials already issued. JSON `null` on the session override inherits the profile value or these defaults. The bridge rules are in [Kiki tools in an external harness](../server/acp.md#kiki-tools-in-an-external-harness).
+
+`defaults.executor_prompt` accepts `delivery` (`append`, `replace` or `preamble`), `body`, `append`, `include`, and `per_engine.<id>` overrides. These fields merge individually with the selected profile, so setting only `delivery` does not erase the default body. Omitted `include` inherits; `include = []` turns off the additional sections. A profile body is used when no effective `executor_prompt.body` is set. External execution does not automatically add Kiki cognition or shared prompt fields; request the desired fields explicitly in `include`.
+
+Through [the REST API](../server/rest-api.md#sessions), update these settings with `POST /api/config` and an `agent_executor_overrides` object. A defaults field set to JSON `null` removes that saved setting; `defaults: null` removes the whole defaults block. TOML has no `null`, so remove the corresponding key when editing the file. Launch settings such as `bin_path`, `home_dir`, `env` and `args` remain separate from defaults.
+
+Display preferences are separate from execution settings. An external engine becomes a new profile or execution choice only when `[agent_executor_overrides.<id>]` sets `show_in_profile_list = true`. A missing field leaves that engine on the settings page and out of new choices. `show_in_profile_list = false` stays off: refresh, a new check, and another import all keep that off. `externals_visible = false` under `[agent_executor_display]` blocks every external engine from new choices. Omitting it, or setting `true`, only opens that gate; engines already set to `false` stay off. Reopening the gate brings back only the engines that are still `true`. `discovery_initialized = true` records that Settings has already run the one-time import check. It does not enable an engine. Native stays in the choices. A profile or session already bound to a hidden or unavailable engine keeps that identity as its current value. Those engines stay available there and do not return to the list of new choices. Hiding a choice does not uninstall an engine, rewrite an existing execution binding, or cancel a task.
+
+```toml
+[agent_executor_overrides."claude-acp"]
+show_in_profile_list = true
+
+[agent_executor_display]
+externals_visible = true
+discovery_initialized = true
+```
+
+Send the same snake_case fields in `POST /api/config`. JSON `null` removes only that display preference; launch settings and defaults stay. `GET /api/config` and the write response expose these fields in `raw.agent_executor_overrides` and `raw.agent_executor_display`. `raw.agent_executors` contains configured descriptors, not the shipped engine catalog. `GET /api/executors` reads the latest check and does not probe the program or the login. Check one engine with `POST /api/executors/{id}/check`. Catalog `status: "unknown"` means that engine has no check yet. After 60 seconds the response still carries the previous `check_status` and `checked_at`, with `check_stale: true`. A timeout or failure is recorded on that engine alone. Settings lists every engine for configuration and Check. The first time Settings opens while `discovery_initialized` is not `true`, each external engine is checked once. A `ready` or `warning` result turns on an engine that has no explicit on or off yet, by writing `show_in_profile_list = true`. A failure, a timeout, and an engine already set to `false` stay as they are. Once that import records `discovery_initialized = true`, opening Settings again does not repeat it. A bare execution entry needs all three: a ready program, a confirmed login or the engine's declared API-key environment, and `show_in_profile_list = true`. A saved profile, launch preference, or native Kiki model on its own does not add the engine to new choices.
+
+Custom executor descriptors can read model IDs from a metadata-only command under `[agent_executors.<id>.model_probe]`. For a command whose JSON response contains `command.data.models`, configure:
+
+```toml
+[agent_executors.example.model_probe]
+command = "vendor.exe"
+args = ["--output-format", "json", "models"]
+format = "json"
+json_path = ["command", "data", "models"]
+```
+
+Use the vendor's actual metadata subcommand and flag order; a print, prompt or slash-command invocation is not a guarantee that no model request will run. Arguments are passed directly as an array, not through a shell. `format` accepts `lines` (the default), `tab`, or `json`; `json_path` selects the JSON array of strings or objects with an `id`. IDs stay unchanged. Invalid JSON or a missing array leaves the catalog partial rather than proving that saved model IDs are invalid.
+
 ## Continuity reminder cues
 
 Kiki can remind the agent to record standing instructions, find earlier decisions, update unfinished todos, and preserve working notes before or after context compaction. Reminders are appended to conversation history; they do not automatically save memories or change the system prompt. Progress reminders require `TodoList`; instruction and history reminders can also operate with approved memory access when `TodoList` is unavailable.
@@ -164,10 +215,11 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `retry` | `table` | — | Error-specific step retry policies → [`retry`](#retry) |
 | `request_governance` | `table` | No rules | Model-request and agent-execution concurrency and waiting budgets → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | Which context token count is reported externally → [`token_counting`](#token-counting) |
+| `transcript_memory` | `table` | — | Server-side transcript history memory budgets → [`transcript_memory`](#transcript-memory) |
 | `background` | `table` | — | Background task runtime parameters → [`background`](#background) |
 | `subagent` | `table` | — | Subagent run defaults and limits → [`subagent`](#subagent) |
 | `agents` | `table` | — | Delegation-notice defaults → [`agents`](#agents) |
-| `thread_communication` | `table` | `{ enabled = false }` | Local peer-thread communication → [`thread_communication`](#thread-communication) |
+| `thread_communication` | `table` | unset | Allow peer-thread tools; default stays off → [`thread_communication`](#thread-communication) |
 | `mcp` | `table` | — | Global MCP server timeout defaults → [`mcp`](#mcp) |
 | `tools` | `table` | — | Global tool switch → [`tools`](#tools) |
 | `image` | `table` | — | Image compression parameters → [`image`](#image) |
@@ -181,22 +233,23 @@ Fields in the config file fall into two categories: **top-level scalars** that d
 | `identity` | `table` | — | Custom agent identity → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | Prompt field overrides and custom variables → [`prompt`](#prompt) |
 
-The following sections cover each of the nested tables in turn: `providers`, `models`, `model_switch`, `thinking`, `loop_control`, `retry`, `token_counting`, `background`, `subagent`, `agents`, `thread_communication`, `mcp`, `tools`, `image`, `session_title`, `experimental`, `nb_search`, `permission`, `interaction`, and `prompt`.
+The following sections detail the nested tables listed above.
 
 ## `providers`
 
-Each entry in the `providers` table defines an API provider, keyed by a unique name. The provider's `api_key` lives in [`credentials.toml`](#provider-credentials), and the CLI does **not** fall back to shell environment variables automatically. Running `export KIMI_API_KEY` in the terminal does not give any provider its key — write it in `credentials.toml` instead.
+Each entry in the `providers` table defines an API provider, keyed by a unique name. Store an API key in [`credentials.toml`](#provider-credentials), or set `api_key_env` in `config.toml` to read a named environment variable from the Kiki process. Without that explicit reference, exporting a provider key in the shell has no effect.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `type` | `string` | Yes | Provider type: `kimi`, `anthropic`, `openai`, `openai_responses`, `google-genai`, `vertexai` |
 | `api_key` | `string` | No | API key. Stored in `credentials.toml`; a value in `config.toml` is used only when `credentials.toml` has none for that provider |
+| `api_key_env` | `string` | No | Non-empty environment variable name, not a key value. Stored in `config.toml`; consulted only when `api_key` is empty. See [credential priority and example](./overrides.md#provider-credentials) |
 | `base_url` | `string` | No | API base URL |
 | `oauth` | `table` | No | OAuth credential reference (`storage` and `key` fields); injected automatically by the login flow — normally no need to write this by hand |
-| `env` | `table<string, string>` | No | Fallback source for provider credentials; see below |
+| `env` | `table<string, string>` | No | Provider environment values; see below |
 | `custom_headers` | `table<string, string>` | No | Custom HTTP headers attached to each request |
 
-**`env` sub-table**: You can write provider-conventional key names (such as `KIMI_API_KEY`) inside `[providers.<name>.env]` as a fallback source for `api_key` / `base_url`. This sub-table is **read only from the config file** and does not modify the shell environment:
+**`env` sub-table**: You can write provider-conventional key names (such as `KIMI_API_KEY`) inside `[providers.<name>.env]` as a fallback source for `api_key` / `base_url`. It also takes priority over the process environment for the variable named by `api_key_env`, including an explicitly empty value. This sub-table is **read only from the config file** and does not modify the shell environment:
 
 ```toml
 [providers.kimi.env]
@@ -204,7 +257,7 @@ KIMI_API_KEY = "sk-xxx"
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-Priority: `api_key` field > `env` sub-table key > if both are absent, startup fails with an error.
+If the variable named by `api_key_env` is missing or empty, Kiki does not fall back to another credential variable. See [Config overrides](./overrides.md#provider-credentials) for the full resolution order. `type = "vertexai"` can omit `api_key` when the env sub-table sets both `GOOGLE_CLOUD_PROJECT` and `GOOGLE_CLOUD_LOCATION`. An API key set alongside those coordinates is still sent. See [Vertex AI](./providers.md#vertexai).
 
 ## `models`
 
@@ -227,9 +280,9 @@ Each entry in the `models` table defines a model alias (the name used in `defaul
 | `auto_compact` | `integer` | No | Automatic compaction point in absolute tokens for this model. A closer profile or session value takes precedence; this does not change the model's context limit. Also accepted under this model's `overrides` table |
 | `max_completion_tokens` | `integer` | No | Upper bound on per-request completion tokens. Layered values take the smallest, within the model's output cap |
 | `off_effort` | `string` | No | Effort value sent on the wire to disable thinking (e.g. `none` for xai grok). Only meaningful for models that declare such an encoding (catalog imports set it): turning thinking Off then sends this value instead of omitting the effort field — the only way to actually stop reasoning on models that reason by default |
-| `protocol` | `string` | No | Transport override; currently only `anthropic`, which routes this model's requests through the Anthropic Messages transport. Not accepted in `overrides` |
+| `protocol` | `string` | No | Request format for this model: `anthropic`, `openai`, `openai_responses`, or `google-genai`. Resolution uses this field, then the provider type when that type is one of these four, then the vendor base format. A value that differs from the provider type is a valid gateway choice. Not accepted in `overrides`; writing it there raises a warning and is not applied |
 | `beta_api` | `boolean` | No | `anthropic` transport only: route requests through the beta Messages API endpoint instead of the standard one. Not accepted in `overrides` |
-| `base_url` | `string` | No | Per-model endpoint override (written by catalog imports for gateway models served away from the provider default). Resolution prefers it over the provider's `base_url`; only takes effect together with `protocol` |
+| `base_url` | `string` | No | Per-model endpoint. Resolution prefers it over the provider's `base_url` even when `protocol` is omitted, and it does not by itself change the request format. Not accepted in `overrides`; writing it there raises a warning and is not applied |
 | `display_name` | `string` | No | Name shown in the UI; falls back to `model` when unset |
 | `aliases` | `array<string>` | No | Extra routing keys for this model. An exact match on any entry resolves to this table key, including names that contain `/`. This is the supported way to keep old names working after you rename a key. The same alias string on two models is an error |
 | `reasoning_key` | `string` | No | `openai` provider only. Override the field name used for reasoning content when the gateway returns it under a non-standard name; by default `reasoning_content`, `reasoning_details`, and `reasoning` are auto-detected |
@@ -302,7 +355,9 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, `off_effort`, `service_tier`, `request_params`, `context_budget`, `auto_compact`, and `max_completion_tokens`. It does not accept identity or routing fields: `provider`, `model`, `protocol`, `beta_api` and `base_url`.
+`[models."<alias>".overrides]` accepts ordinary model fields such as `max_context_size`, `max_input_size`, `max_output_size`, `capabilities`, `display_name`, `reasoning_key`, `adaptive_thinking`, `support_efforts`, `default_effort`, `off_effort`, `service_tier`, `request_params`, `context_budget`, `auto_compact`, and `max_completion_tokens`. It does not accept identity or routing fields: `provider`, `model`, `protocol`, `beta_api` and `base_url`. Writing one of those fields there raises a warning when the config loads and does not change the model; set it on the model itself. The model settings page names that warning and shows whether the effective format, endpoint, and credential come from the model, the provider, or an environment variable. It does not show the key or the endpoint address.
+
+Recipes can change supported model prompts and generation parameters, but not the model's provider, request format, endpoint, or credentials. A routing field in a Recipe is rejected; set it on the model itself instead. This also applies to programmatic model-settings overlays, including nested routing fields in `overrides`.
 
 Layering works in this order: resolve the alias configuration including its `overrides`, then apply model alias → top-level profile → matching `model_profiles` entry. `request_params` merge by key and the last explicit `service_tier` wins. `context_budget` and `max_completion_tokens` are limits, so the smallest value across layers applies, within the model's capacity and output cap; omitting one adds no restriction.
 
@@ -320,7 +375,7 @@ You can also switch models temporarily without touching the config file — by s
 | `steering_on_turn` | `boolean` | `true` | Inject on a new user-source turn and after compaction re-arms its context |
 | `steering_on_input` | `boolean` | `true` | Inject after newly accepted human input, including in-turn Send now corrections |
 | `steering_interval_steps` | `integer` | `0` | Repeat every N model steps driven by user input; nonnegative, with `0` disabling periodic steering |
-| `steering_sources` | `table` | other sources off | Per-source `mode`: `off`, `inherit` (use user settings), or `custom` (separate body and cadence) |
+| `steering_sources` | `table` | verified child completions inherit; other sources off | Per-source `mode`: `off`, `inherit` (use user settings), or `custom` (separate body and cadence) |
 | `anchor` | `{text: string}`, `string` or `array<string>` | — | Body used as the complete system prompt for the opening steps of a turn, replacing the profile prompt and any `overlay` |
 | `anchor_steps` | `integer` | `1` | How many model requests at the start of an anchored turn use the `anchor` text; must be at least 1 |
 | `anchor_scope` | `string` | `session` | `session` anchors only the session's first turn; `turn` anchors the opening steps of every turn |
@@ -350,7 +405,7 @@ Usage differences on `main` and `independent` are not that copy. `thinking_effor
 
 Paths are relative to the [data root directory](./data-locations.md#data-root-directory) (`~/.kiki` by default). Absolute paths, paths that resolve outside the data root (including through a symlink), and missing files are rejected when the profile binds, with an error naming the field and the path. A declared file that exists but is empty is skipped; when every file declared for one field is empty, that field behaves as unset. Reading the model does not alter these files. Explicitly saving an edited file-backed slot as `{text}` stores a body in the model instead, leaving the original files unchanged; restore their original path references to use them again. Existing sessions keep their frozen text until an explicit context rebuild or model change.
 
-The three text slots differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your input as an ordinary user message — not a `<system-reminder>`. Its body and cadence apply to direct user messages, including queued input, **Send now**, user-slash skills and plugin commands. Other sources are off unless enabled in `steering_sources`; a retry keeps the original input's source.
+The three text slots differ in how far they sit from the model's next token. `overlay` and `anchor` rewrite the system prompt, which the model reads before your request. `steering` follows your input as an ordinary user message — not a `<system-reminder>`. Its body and cadence apply to direct user messages, including queued input, **Send now**, user-slash skills and plugin commands. Verified completed subagent-task receipts inherit that steering by default; an explicit `steering_sources.task.mode = "off"` still wins. Ordinary process results, failed child tasks and other non-user sources remain off unless enabled in `steering_sources`. A retry keeps the original input's source.
 
 Choose `mode = "inherit"` to use the steering body and timing already in effect for user messages on the selected identity, or `mode = "custom"` to use `custom.steering`, `custom.steering_on_turn`, `custom.steering_on_input` and `custom.steering_interval_steps`. Custom bodies accept the same inline, path and path-array forms; a missing custom body does not inherit user text. `off` and `inherit` retain a saved custom draft. Source keys are `thread` (peer messages and model-created threads), `room`, `agent` (child messages and parent notifications), `task`, `cron`, `hook`, `automation` (automatic goal continuation), `skill` (model-tool activation) and `external` (external-client thread input). Unknown sources remain off; delivery through Send now does not turn another source into user input.
 
@@ -482,6 +537,8 @@ A partial update changes only the fields you send. `POST /api/config` with `{ "m
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | Maximum steps per turn; unset or `0` means unlimited |
 | `max_attempts_per_step` | `integer` | `5` | Maximum total attempts for a failing step, including the initial attempt |
+| `thinking_only_continuation` | `boolean` | `true` | Send one explicit `Continue.` user message when a model ends normally with only non-empty thinking |
+| `zero_output_continuation` | `boolean` | `false` | Send one explicit `Continue.` user message when a normal completion has no thinking text, visible text, or tool call |
 | `reserved_context_size` | `integer` | `50000` | Tokens reserved above the automatic compaction point for model output |
 | `auto_compact` | `string` | — | Global default compaction point as a percentage of the model's usable context (e.g. `"85%"`). This layer does not accept token counts; model, profile, and session settings use positive integer tokens |
 | `compaction_trigger_ratio` | `number` | `0.85` | Legacy trigger ratio, used only when no `auto_compact` is set at any layer |
@@ -492,7 +549,13 @@ The compaction point resolves in this order: the session's per-model token overr
 
 `max_steps_per_turn` can be overridden by the `KIKI_LOOP_MAX_STEPS_PER_TURN` environment variable, and `max_attempts_per_step` by `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP`; both take higher priority than the config file.
 
-Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and all HTTP 500–599 server errors. A 429 caused by an exhausted quota or insufficient account balance is not retried and fails immediately, since it cannot succeed until the account is recharged.
+Retries only apply to transient failures — connection errors, timeouts, HTTP 429 rate limits, and eligible HTTP 500–599 server errors. Partial output, safety refusals, and exhausted quota stop rather than replaying the request.
+
+When a provider confirms a normal end with non-empty thinking but no answer, tool call, or refusal, Kiki keeps the thinking and its signature and sends a `Continue.` user message at most once per turn. A gateway's exact `antigravity_thinking_only` event can also qualify, but only when Kiki retained the actual thinking and confirmed that no other output, grounding, or refusal occurred. Cancellation, missing terminal events, interrupted streams, and token-limit stops do not qualify. The follow-up counts as a real model request with its own usage. A second empty response or failure stops the turn—even HTTP 429 or a temporary server error is not retried for this follow-up.
+
+Set `[loop_control] thinking_only_continuation = false` to disable this automatic message. Changes apply at the next step boundary. Google models that reject a trailing model turn keep their existing original-snapshot retry; it shares the same one-recovery-per-turn budget and is not disabled by this setting. Google `CONTINUATION` stops still require a continuation token that this SDK cannot send.
+
+`zero_output_continuation` stays off when omitted or set to `false`. Set `[loop_control] zero_output_continuation = true` to send one `Continue.` user message after a provider confirms a normal completion whose thinking text, visible answer, and tool calls are all empty. A signature attached to empty thinking is not thinking content and stays in the conversation. Non-empty redacted thinking data is output. Non-empty thinking text still uses `thinking_only_continuation`. A child agent uses the same rule; while the switch is off, a child completion with no content still fails, and a second empty completion stops the turn. Token counts do not decide this. The choice applies at the next step boundary. That follow-up is one model request in the same turn and is not retried as a connection or rate-limit error. Cancellation, provider errors, and a stream that ends without a normal stop stay on their existing paths.
 
 ### Continuity reminder settings
 
@@ -536,7 +599,7 @@ New sessions keep changing date, directory listings, workspace instructions and 
 
 ## `retry`
 
-`retry` customizes the total attempt budget and fixed backoff for selected step errors. By default, a retryable step gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
+`retry` customizes the total attempt budget and fixed backoff for selected step errors. By default, a retryable step gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. Policies can also target exact model and provider configuration keys, so one provider's temporary failures do not change retry behavior elsewhere. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -547,26 +610,39 @@ Each `[[retry.policies]]` entry has these fields:
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
-| `match` | `string` | Yes | Regular expression matched against the error code and error name |
+| `match` | `string` | Yes | JavaScript regular expression matched against the error code and error name; inline modifiers such as `(?i)` are invalid and cause the policy to be ignored with a configuration warning |
+| `models` | `array<string>` | No | Exact canonical `[models]` keys; the policy applies only when the bound model is listed |
+| `providers` | `array<string>` | No | Exact `[providers]` keys; the policy applies only when the bound provider is listed |
 | `max_attempts` | `integer` | No | Total attempts for matching errors, including the initial attempt; overrides the section-level budget |
 | `backoff` | `integer` | No | Fixed delay in milliseconds before each retry; a provider retry-after hint still takes precedence |
 | `retry` | `boolean` | No | Defaults to `true`. `false` can suppress an error that Kiki normally considers retryable; `true` cannot force retries for an error classified as non-retryable |
 
-Policies are checked from top to bottom, so put specific regular expressions before broader ones:
+Policies are checked from top to bottom. A policy whose `models` or `providers` selector does not contain the current binding is skipped; the first remaining policy whose `match` expression matches the error applies. If both selectors are present, both must match. Omitting both selectors preserves the earlier global per-error behavior.
+
+This example keeps the ordinary five-attempt default for every other model and provider, but gives one native Google GenAI Argon binding up to 20 total attempts for HTTP 429 rate limits:
 
 ```toml
-[retry]
-max_attempts = 4
-
 [[retry.policies]]
 match = '^provider\.rate_limit$'
-max_attempts = 6
-backoff = 1000
-
-[[retry.policies]]
-match = '^provider\.'
-retry = false
+models = ['gemini-4-argon']
+providers = ['google-native']
+max_attempts = 20
+backoff = 15000
 ```
+
+Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. The policy does not make HTTP 400, exhausted quota, partial output, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
+
+## `transcript_memory`
+
+`transcript_memory` controls how much transcript history the server keeps in memory. All three fields are optional: an omitted field uses its default.
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `tail_turns` | positive integer | `20` | How many finished turns stay resident per agent |
+| `max_agent_bytes` | positive integer | `16777216` (16 MiB) | Per-agent resident byte budget — what stays in memory. Older turns are read from disk on demand |
+| `max_detail_cache_bytes` | non-negative safe integer | `268435456` (256 MiB) | Largest single full-detail read cached at once. `0` turns that extra slot off, leaving the content to be read without being held in that cache. A changed value takes effect at the next cache admission or eviction; lowering it evicts what no longer fits, and does not cancel a read already in progress |
+
+These are server-side memory budgets, not read limits. Lowering them reduces memory use and may mean reading the same content from disk again.
 
 ## `token_counting`
 
@@ -600,23 +676,23 @@ In print mode (`kiki -p "<prompt>"`), Kiki stays alive after the main agent's tu
 
 ## `subagent`
 
-`subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents.md#agent-file-format); the former host dispatch-policy settings are removed.
+`subagent` controls how spawned subagents (`AgentRun`) run. Role selection uses the profile's [`can_spawn_subagents`, `allowed_subagents`, `preferred_subagents`, and `deny_subagents`](../customization/agents-and-subagents.md#agent-file-format); the former host dispatch-policy settings are removed.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | built-in general-purpose prompt | Explicit profile override when `AgentRun` omits `profile`, `route`, and `profile_file`. If the key is absent, including from a partial `[subagent]` table, `AgentRun` uses the built-in general-purpose subagent prompt without loading a catalog profile. Set `""` to require an explicit target (strict mode) |
 | `default_model` | `string` | — | Explicit fallback only when neither a dispatch parameter nor an effective profile, route, or caller-lease pin selects a model; never inherits the caller |
 | `deny_models` | `string[]` | — | Hard denylist for every subagent binding after alias resolution; pins, manual changes, resume, and advisory dispatch cannot bypass it. Profile/lease/tree/model-profile hard rules remain additional boundaries |
-| `allowed_tools` | `string[]` | `[]` | Exact tool names to allow past the native subagent default restriction. It covers every tool a subagent does not get by default (`BoardRead`, `BoardWrite`, `AskUserQuestion`, `Cron`, `EnterPlanMode` / `ExitPlanMode`, `ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`); it does not override profile allowlists, denylists, or other policy limits |
+| `allowed_tools` | `string[]` | `[]` | Exact tool names to allow past the native subagent default restriction. It covers every built-in tool a subagent does not get by default (`AskUserQuestion`, `Cron`, `EnterPlanMode` / `ExitPlanMode`, `ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`); it does not override profile allowlists, denylists, or other policy limits |
 | `max_direct_children` | `integer` | `16` | Maximum simultaneous dispatched child runs per caller, including startup and cancellation; `0` disables this limit |
 | `max_total_subagents` | `integer` | `0` | Maximum simultaneous dispatched subagent runs throughout one session tree, including grandchildren and deeper descendants but not main; `0` disables this limit |
 | `timeout_ms` | `integer` | `7200000` (2 hours) | Maximum wall-clock time (milliseconds) a single subagent (`AgentRun`) is allowed to run before it is settled as `timed_out`. `0` means no timeout — the subagent runs until it finishes or the model stops it. This is the background-task manager's per-task timeout for each subagent task, so it applies to both foreground and background subagents. In print mode (`kiki -p`) the default is `0` unless explicitly set. Note: any value above `2147483647` (about 24.8 days) is clamped to roughly 24.8 days by the runtime |
 
-Native subagents get the ordinary tools, including read-only `MemorySearch` and `MemoryRead`. A few tools are off until something opts in: `BoardRead`, `BoardWrite`, `AskUserQuestion`, `Cron`, `EnterPlanMode` and `ExitPlanMode`, and `ThreadCreate`, `ThreadList`, `ThreadRead`, and `ThreadWait`. Opt in per profile by naming the tool in the subagent profile's [`tools`](../customization/agents.md#agent-file-format) list, or set a server-wide default in `config.toml`:
+Native subagents get the ordinary tools, including read-only `MemorySearch` and `MemoryRead`. A few built-in tools are off until something opts in: `AskUserQuestion`, `Cron`, `EnterPlanMode` and `ExitPlanMode`, and `ThreadCreate`, `ThreadList`, `ThreadRead`, and `ThreadWait`. Opt in per profile by naming the tool in the subagent profile's [`tools`](../customization/agents-and-subagents.md#agent-file-format) list, or set a server-wide default in `config.toml`:
 
 ```toml
 [subagent]
-allowed_tools = ["BoardRead", "ThreadRead"]
+allowed_tools = ["AskUserQuestion", "ThreadRead"]
 ```
 
 Omitting `tools` or using `*` does not opt in: only a concrete name does, and the wildcard never opens an opt-in on its own. The two opt-ins are alternatives to each other, but a profile's own list still filters the result: a subagent may use one of these tools when this server-wide list names it **or** when the subagent profile's `tools` list names it, and that profile must also select the tool. A profile writing a finite `tools` list therefore blocks any tool it leaves out, even one this list opens, while a profile that writes no list (or writes `*`) is open to everything either entry allows. `allowed_tools = []` removes server opt-ins without removing explicit profile entries. Profile allowlists, `disallowedTools`, disabled tool groups, caller restrictions, global and session policy, feature flags, Plan mode, and invocation approval still apply, and a profile's own `disallowedTools` denies an opt-in that either entry granted. `MemoryWrite`, `ThreadSend`, `SendMessage`, and the goal tools stay main-only and cannot be opened this way. `Cron` schedules the current session and wakes the main agent, so it is not a private timer for the child. MCP tools, inherited user tools, and other extensions keep their existing defaults. External executors control their own tools.
@@ -631,7 +707,7 @@ The limits are global configuration defaults, but counts are isolated to each se
 
 ## `agents`
 
-This strict section controls the boolean gates for [delegation notices](../customization/agents.md). Unknown keys are configuration errors.
+This strict section controls the boolean gates for [delegation notices](../customization/agents-and-subagents.md). Unknown keys are configuration errors.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -649,13 +725,28 @@ To replace notice text, override `delegation.sub.notice` or `delegation.independ
 
 ## `thread_communication`
 
-This strict section controls [local peer-thread communication](../customization/agents.md#peer-thread-communication). It is disabled by default and has no environment-variable override.
+This strict section is the allow switch for [local peer-thread communication](../customization/agents-and-subagents.md#peer-thread-communication). Leaving `enabled` unset allows the tools and keeps them off until a conversation turns them on, or a declared profile or this task names them. `enabled = false` that you write turns them completely off. A conversation cannot turn that back on. `enabled = true` that you already saved keeps the previous default-on until `[optional_capabilities.defaults] thread` says otherwise.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `false` | Permits the four main-Agent peer-thread tools and local REST and Klient thread operations. Set to `true` to enable those operations globally |
+| `enabled` | `boolean` | unset | Allow the four main-agent peer-thread tools and local REST and Klient thread operations. A value you set to `false` is a hard off |
 
-Per-workspace overrides are persisted separately and managed through the local REST API or Klient. An override can disable one workspace while the global switch remains on, but cannot enable communication while this global switch is off.
+Per-workspace overrides are persisted separately and managed through the local REST API or Klient. An override can disable one workspace while the tools stay allowed, but cannot enable communication after a hard off.
+
+## `optional_capabilities`
+
+This section separates “allowed” from “on by default” for browser, computer, memory, threads, and web (`WebSearch` and `FetchURL`).
+
+| Field | Type | Default | Description |
+| --- | --- | --- | --- |
+| `defaults.browser` | `boolean` | `true` | Whether a conversation starts with browser tools |
+| `defaults.computer` | `boolean` | `true` | Whether a conversation starts with computer tools |
+| `defaults.memory` | `boolean` | `true` | Whether a conversation starts with memory tools |
+| `defaults.thread` | `boolean` | `false` | Whether a conversation starts with peer-thread tools |
+| `defaults.web` | `boolean` | `true` | Whether a conversation starts with web tools |
+| `web.allowed` | `boolean` | `true` | `false` turns web tools completely off |
+
+Browser, computer, memory, and thread allow bits stay on their existing keys (`native_browser`, `computer_control.enabled`, `memory.enabled`, `thread_communication.enabled`). A conversation can turn an allowed capability on or off. It cannot cross a hard off. Memory approval, budget, browser connections, and the computer usage preference are separate settings.
 
 ## `mcp`
 
@@ -729,8 +820,13 @@ Which image formats reach the model depends on the provider the request resolves
 | --- | --- | --- | --- |
 | `model` | `string` | unset | Model alias used to write session titles. While it is unset (or empty) Kiki sends no title request at all: it does not fall back to `fast_model`, and it does not use a managed `chat_title` tool, so no title generation is billed to a subscription |
 | `triggers` | `array<string>` | `["first_turn_completed"]` | The moments that write a title on their own. Any of `first_user_message`, `first_turn_completed`, `context_compacted`. An empty array turns automatic titling off; asking for a title on demand still works, and it still needs a `model` |
+| `prompt` | `string` | built-in prompt | Optional system prompt for the title model. Multiline text is sent in full, without template expansion. Remove this field or leave it blank to use the built-in prompt; the default text is not saved as an override |
 
-A model you picked is used as-is, under the same title-prompt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+The built-in prompt asks for a recognizable title based on the current purpose and concrete subject, keeping useful names and identifiers without claiming unproven success. Changing `prompt` takes effect on the next title request, including in an open session, without restarting. Saving or removing the override does not rename existing sessions or send a title request.
+
+A model you picked is used as-is, under the same excerpt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+
+`GET /api/config` and successful `POST /api/config` responses include `session_title.default_prompt` and `prompt_source` (`default` or `custom`). These are read-only fields; `prompt` is returned only for a nonblank override. Save with `{ "session_title": { "prompt": "Your title instructions" } }`, or remove the override with `{ "session_title": { "prompt": null } }`. Omitted fields stay unchanged, so these patches preserve `model` and `triggers`. Use `model: null` to remove the model without erasing the prompt or selected moments; do not use `replace_domains` for a single-field edit.
 
 On-demand generation is `POST /api/sessions/{session_id}/title/generate`, which the SDK exposes. It needs a `model`, because without one there is nothing to ask. Its `force` option is what replaces a hand-written title; leave it unset to keep that title.
 
@@ -738,26 +834,31 @@ Automatic title generation is on by default. Turn it off in the GUI, with `auto_
 
 ## `experimental`
 
-`experimental` stores persistent overrides for experimental-feature flags, keyed by flag id. Each flag's precedence, highest first: its `KIKI_EXPERIMENTAL_<NAME>` environment variable, this section, the `KIKI_EXPERIMENTAL_FLAG` master switch, then the flag's built-in default.
+`experimental` stores persistent overrides for built-in rollout and rollback flags, keyed by flag id. Built-in features are available by default; an explicit `false` remains off. Each flag's precedence, highest first: its `KIKI_EXPERIMENTAL_<NAME>` environment variable, this section, a truthy `KIKI_EXPERIMENTAL_FLAG` master switch, then the flag's built-in default. A falsy master switch is treated as unset, not as a global off command.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | Whether an AI session title is generated automatically; see [`session_title`](#session-title) |
-| `native_browser` | `boolean` | `false` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
-| `usage_export` | `boolean` | `false` | Send content-free usage buckets to destinations configured under Usage → External sync; while it is off those routes are not mounted at all |
+| `native_browser` | `boolean` | `true` | Run saved browser connections through the managed browser backend; without it a connection cannot connect and agents get no [browser tools](../reference/tools.md#browser-tools) |
+| `local_session_resume` | `boolean` | `true` | Continue existing local Claude Code and Codex sessions; managed under Settings → Sessions and checked on each new attachment |
 
-Any registered flag can be overridden here by id, with a boolean value. A flag that has its own control on a feature page is switched there; a flag that does not appears under **Settings → Developer → Experimental**, which lists server-reported flags by id.
+Any registered flag can be overridden here by id, with a boolean value. Every built-in switch is named and explained on its related Settings page; **Settings → Advanced → Developer & labs** ends with **Where experimental features live**, which links to those homes and shows when a change applies. Unknown extension flags appear on that page by id. Availability does not install a plugin, authorize a script or connect an unconfigured external destination.
 
 ## `browser_control`
 
-`browser_control` holds the browser connections managed by [Browser control](../guides/settings.md#browser-control) and the default used for new sessions. The settings page is the supported editor: it saves one entry per connection, reads it back before showing the result, and saving never starts a browser.
+`browser_control` holds the browser connections managed by [Browser control](../guides/settings.md#browser-control) and the default used for new sessions. The settings page is the supported editor: it saves one entry per connection, reads it back before showing the result, and saving never starts a browser. To add an HTTP bridge connection, choose **Add browser** and set **Connection style** to **Kimi WebBridge**.
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `default_browser` | `string` | Connection id used for sessions created afterwards; unset means a call has to name a connection |
+| `allowed_browsers` | `string[]` | Connection ids an agent may use. Omit it to keep the previous default. An empty list still allows listing and discovery |
+| `disabled_sources` | `string[]` | Sources that are off: `kimi-webbridge`, `independent-browser`, `codex-browser`, `ego-lite`. Turning a source off does not clear `allowed_browsers` |
+| `webbridge_preset_route` | `boolean` | Defaults to `true`: route the legacy `kimi-webbridge` id stored as `agent-browser-cdp` through the Kimi HTTP bridge. Set `false` to keep that entry on the CDP driver |
 | `connections` | `table` | One entry per connection, keyed by the connection's fixed id |
 
-Each entry describes one connection through its `type` (`agent-browser-profile` or `agent-browser-cdp`), `name`, `enabled`, and the fields that style needs; the settings page shows the fields for each style. An entry whose fields do not match its style is rejected and the saved file is left unchanged. A stored CDP address counts as a credential: the page masks it and reveals it only when asked.
+Each entry has `name`, `enabled`, and a `type`: `agent-browser-profile`, `agent-browser-cdp`, `codex-extension`, `ego-lite`, `kimi-webbridge`, or `webbridge-command`. The [browser connection API](../server/rest-api.md#browser-connections) describes each type's fields. Fields that do not match the type are rejected without changing the saved file. A stored CDP address counts as a credential: the page masks it and reveals it only when asked. `webbridge-command` takes only `name` and `enabled`, uses the fixed local command bridge, and belongs to the `kimi-webbridge` source switch. It has no endpoint or driver path; a CDP row is not converted into this type.
+
+The `kimi-webbridge` type uses the server's local HTTP daemon at `http://127.0.0.1:10086` and takes no endpoint. This is not a CDP address. The legacy-id routing above does not rewrite the saved entry and does not affect other CDP ids; an explicit `kimi-webbridge` type always uses HTTP, even when `webbridge_preset_route` is `false`.
 
 ## `computer_control`
 
@@ -768,7 +869,9 @@ Each entry describes one connection through its `type` (`agent-browser-profile` 
 usage_preference = "avoid"
 ```
 
-`usage_preference` accepts `"avoid"` (default) or `"prefer"`. `"avoid"` tells models generally not to use computer control unless the user or the user's rules explicitly request it, preferring existing CLI, API, MCP, short-script, and browser-specific capabilities. `"prefer"` favors computer control for suitable interactive tasks. Current explicit user instructions, correctness, availability, and permission rules take priority in both modes. Changes apply on the next model request without reconnecting or installing anything; removing the field restores inheritance.
+`enabled = false` turns computer tools completely off. Leaving it unset allows them. Whether a conversation starts with them is `[optional_capabilities.defaults] computer`, which is on unless you turn that default off.
+
+`usage_preference` accepts `"avoid"` (default) or `"prefer"`. `"avoid"` tells models generally not to use computer control unless the user or the user's rules explicitly request it, preferring existing CLI, API, MCP, short-script, and browser-specific capabilities. `"prefer"` favors computer control for suitable interactive tasks. Current explicit user instructions, correctness, availability, and permission rules take priority in both modes. The preference does not grant or remove the tools. Changes apply on the next model request without reconnecting or installing anything; removing the field restores inheritance.
 
 Computer tools from the recognized cua-driver MCP default to the main agent of each session, including an independent session. Children require explicit MCP tool patterns in their profile, route, or dispatch tool selection, `[subagent].allowed_tools`, or `[tools].enabled`. For the installed connection, `mcp__kiki-computer__*` opts in; a blanket `tools: ["*"]` does not. All existing allow ceilings, deny rules, and disabled connections still apply. A call with an unknown input outcome is not replayed: reconnect and observe before another action.
 
@@ -776,18 +879,18 @@ Computer tools from the recognized cua-driver MCP default to the main agent of e
 
 `nb_search` configures Kiki's built-in search and retrieval module — the capability behind the `WebSearch` and `FetchURL` tools. The module is part of the product: it ships with Kiki and needs no separate installation, and its provider instances, credential slots, lanes, and default fetch chain are built in.
 
-No credentials or configuration are required for the default `WebSearch` lane, `github.repositories`, but it searches GitHub repositories only. For library documentation, choose `context7.docs` explicitly; it returns typed context and cannot be combined with result lanes. `duckduckgo.search` is an optional keyless general-web lane, but its public HTML endpoint may return a CAPTCHA; for reliable broader coverage, configure a provider credential and override `defaults.search_lane`. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
+The default `WebSearch` lane is `duckduckgo.search`, which searches the general web without registration, credentials or configuration. Its public HTML endpoint may issue a challenge or rate limit; wait before retrying, or explicitly choose another configured source. These failures are errors, not empty results, and never trigger a silent switch to a paid provider. Configured defaults and explicit lane selections take precedence. For repository search or library documentation, choose `github.repositories` or `context7.docs` explicitly; the latter returns typed context and cannot be combined with result lanes. Field names and merge behavior follow the module's canonical configuration contract, shared with the standalone nb-search CLI, so an existing nb-search configuration file applies without translation.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `provider_instances` | `table` | No | Named provider instances with `provider_id`, `enabled`, optional `credential_slot_id` / `base_url`, `key_strategy` (`round-robin` or `priority`), `balance_ttl_ms` (60,000–86,400,000), and provider-specific `options` |
 | `credential_slots` | `table` | No | Named credential slots containing only `provider_id` and the environment-variable name in `env` |
 | `lanes` | `table` | No | Named operation lanes with `provider_instance_id`, `operation_id`, `latency`, `cost`, and optional `evidence_groups` |
-| `defaults.search_lane` | `string` | No | Built-in default is `github.repositories` (repositories only); override for general-web search. Explicitly removing the default without selecting a lane makes `WebSearch` fail closed |
+| `defaults.search_lane` | `string` | No | Built-in default is keyless `duckduckgo.search` (general web); configured defaults take precedence. Explicitly removing the default without selecting a lane makes `WebSearch` fail closed |
 | `defaults.fetch_chain` | `array<table>` | No | URL default tries `direct.fetch` first and keyless `jina.reader` on failure; a successful but unusable direct response needs explicit `execution.fetch.quality` rules to trigger fallback |
 | `execution` | `table` | No | Provider-call, concurrency, retry, timeout, inline-output, response-size, redirect, content-size, and quality budgets |
 
-Credential values are never stored in `config.toml`; each canonical credential slot still contains only `provider_id` and the environment-variable name `env`. The server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki fills missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It imports matching slots only, validates imported bindings, and rejects redirects. If neither source supplies a value, an optional **Kiki-managed** value for that slot is used. Save, explicitly reveal, edit, overwrite, or clear it in **Settings → Search & retrieval → Providers**. This value is stored in this server's protected `secrets/nb-search/gui-credentials.json` under the Kiki home, not in `config.toml`, the nb-search CLI file, or browser storage. Changing a slot's provider, variable name, consumer, or endpoint invalidates the stored binding rather than silently rebinding it; overwrite explicitly after checking the new binding or clear the obsolete value. Only Kiki-managed values can be revealed; server environment and CLI `secrets.json` values show their source only and are never sent to the GUI. Referenced slots must use distinct environment-variable names to prevent a managed value from crossing provider boundaries. If another editor changes a slot's variable, provider, consumers, or endpoint while the credential editor is open, saving the older draft returns a conflict: reload, check the destination, then save again. The read/write REST endpoints use the existing Kiki bearer token; anyone holding it can reveal Kiki-managed values. On a remote connection the credential file is on that server, and switching connections does not transfer the editor's value. The module does not read another terminal's variables or automatically load `.env` files.
+Credential values are never stored in `config.toml`; each canonical credential slot still contains only `provider_id` and the environment-variable name `env`. The server process environment takes precedence, including an explicitly empty value. When local reuse is enabled, Kiki fills missing variables from the local nb-search `secrets.json` under the server's `NB_SEARCH_HOME` (default: `~/.nb-search`). It imports matching slots only, validates imported bindings, and rejects redirects. If neither source supplies a value, an optional **Kiki-managed** value for that slot is used. Save, explicitly reveal, edit, overwrite, or clear it in **Settings → Search & retrieval → Services & credentials**. This value is stored in this server's protected `secrets/nb-search/gui-credentials.json` under the Kiki home, not in `config.toml`, the nb-search CLI file, or browser storage. Changing a slot's provider, variable name, consumer, or endpoint invalidates the stored binding rather than silently rebinding it; overwrite explicitly after checking the new binding or clear the obsolete value. Only Kiki-managed values can be revealed; server environment and CLI `secrets.json` values show their source only and are never sent to the GUI. Referenced slots must use distinct environment-variable names to prevent a managed value from crossing provider boundaries. If another editor changes a slot's variable, provider, consumers, or endpoint while the credential editor is open, saving the older draft returns a conflict: reload, check the destination, then save again. The read/write REST endpoints use the existing Kiki bearer token; anyone holding it can reveal Kiki-managed values. On a remote connection the credential file is on that server, and switching connections does not transfer the editor's value. The module does not read another terminal's variables or automatically load `.env` files.
 
 An existing single Tavily key in `~/.nb-search/secrets.json` under `values.NB_SEARCH_TAVILY_API_KEY` keeps working without migration when local reuse is enabled. For multiple keys, set that same value or the Kiki server's `NB_SEARCH_TAVILY_API_KEY` environment variable to an ordered, comma-separated list of 1–32 distinct nonempty keys, such as `YOUR_FIRST_API_KEY,YOUR_SECOND_API_KEY`. Do not put the keys in `config.toml`; the server environment takes precedence over the local file. The same format works for other configured credential slots.
 
@@ -1036,7 +1139,7 @@ A whole-body `SYSTEM.md` or agent replacement, or a model cognition `replace`, s
 The old `[prompt] shared` and `[prompt.tools]` keys have been removed and now fail strict configuration parsing. Move `shared` to the `"system.shared"` key under `[prompt.overrides.fields]`; move each tool entry to `tool.<kebab-case-name>.guidance` (for example, `WebSearch` becomes `tool.web-search.guidance`).
 :::
 
-In the desktop GUI, open **Settings → Agents → Prompt** to edit this section. The card is collapsed by default — expand it before editing.
+In the desktop GUI, open **Settings → Agents → Prompt fields** to edit this section. The card is collapsed by default — expand it before editing.
 
 ## `[request_governance]`
 

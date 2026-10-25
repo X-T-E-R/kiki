@@ -1,12 +1,26 @@
-import { open } from 'node:fs/promises';
+import { open, stat, type FileHandle } from 'node:fs/promises';
+
+import { openLogicalWire, readLogicalInto, type LogicalWire } from './logicalWireRead';
 
 import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter,
-  type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
+  type AgentTranscriptSnapshot, type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
 import type { HistoryNavManifest, HistoryNavigationDb, LazyHistoryNavigationDb } from './historyNavigationDb';
-import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
+import { historyNavigationProof, matchesNavigationProof, type HistoryNavigationProof } from './historyNavigationProof';
 import { hashHistoryRecord } from './historySource';
 import type { HistoryNavScan } from './historyLocatorStore';
 import type { TranscriptService } from '../transcript/transcriptService';
+
+async function readAddressedBytes(
+  logical: LogicalWire | undefined,
+  handle: FileHandle | undefined,
+  buffer: Buffer,
+  offset: number,
+  length: number,
+  position: number,
+): Promise<number> {
+  if (logical !== undefined) return readLogicalInto(logical, buffer, offset, length, position);
+  return (await handle!.read(buffer, offset, length, position)).bytesRead;
+}
 
 const CACHE_BYTES = 4 << 20;
 const CACHE_ENTRIES = 32;
@@ -31,11 +45,28 @@ interface Prepared {
   readonly wirePath: string;
   readonly manifest: HistoryNavManifest;
 }
+interface SourceContext {
+  readonly scope: string;
+  readonly wirePath: string;
+}
 interface CacheEntry { readonly fingerprint: string; readonly entity: TranscriptTurn | TranscriptFrame; readonly bytes: number }
+interface PreparationFlight {
+  readonly controller: AbortController;
+  readonly promise: Promise<void>;
+}
 
 function sourceFingerprint(manifest: HistoryNavManifest): string {
   return JSON.stringify([manifest.generation, manifest.incarnation, manifest.offset, manifest.source]);
 }
+
+function directSourceFingerprint(proof: HistoryNavigationProof): string {
+  return JSON.stringify(['wire', proof.identity, proof.size, proof.mtimeNs, proof.ctimeNs, proof.head, proof.tail]);
+}
+
+function directCacheKey(scope: string, turnId: string): string {
+  return `${scope}\0direct\0${turnId}`;
+}
+
 interface Flight {
   readonly controller: AbortController;
   readonly promise: Promise<TranscriptTurn | undefined>;
@@ -47,6 +78,7 @@ interface Flight {
 export class HistoryCanonicalReader {
   private readonly cache = new Map<string, CacheEntry>();
   private readonly flights = new Map<string, Flight>();
+  private readonly preparationFlights = new Map<string, PreparationFlight>();
   private cacheBytes = 0;
   private oversizedCacheKey?: string;
   private oversizedExpiresAt = 0;
@@ -57,6 +89,9 @@ export class HistoryCanonicalReader {
   private cacheHits = 0;
   private projectionBytes = 0;
   private projectionRecords = 0;
+  private preparationsCompleted = 0;
+  private preparationsFailed = 0;
+  private preparationsCancelled = 0;
   private readonly projectedScans = new WeakSet<HistoryNavScan>();
 
   constructor(private readonly database: LazyHistoryNavigationDb, private readonly transcript: TranscriptService,
@@ -68,6 +103,8 @@ export class HistoryCanonicalReader {
     this.generation += 1;
     for (const flight of this.flights.values()) flight.controller.abort();
     this.flights.clear();
+    for (const flight of this.preparationFlights.values()) flight.controller.abort();
+    this.preparationFlights.clear();
     if (this.oversizedCacheKey !== undefined) this.deleteCached(this.oversizedCacheKey);
     this.cache.clear();
     this.cacheBytes = 0;
@@ -80,7 +117,9 @@ export class HistoryCanonicalReader {
       oversizedCacheEntries: oversizedCacheBytes === 0 ? 0 : 1,
       cacheBudgetBytes: CACHE_BYTES + this.transcript.detailCacheBudgetBytes(), replayBytes: this.replayBytes,
       replayRecords: this.replayRecords, replays: this.replays, cacheHits: this.cacheHits,
-      projectionBytes: this.projectionBytes, projectionRecords: this.projectionRecords };
+      projectionBytes: this.projectionBytes, projectionRecords: this.projectionRecords,
+      preparationsActive: this.preparationFlights.size, preparationsCompleted: this.preparationsCompleted,
+      preparationsFailed: this.preparationsFailed, preparationsCancelled: this.preparationsCancelled };
   }
 
   async lookupToolCall(session: string, agent: string, callId: string, signal?: AbortSignal): Promise<CanonicalToolLookup> {
@@ -96,15 +135,103 @@ export class HistoryCanonicalReader {
     return { status: 'found', turnId: tool.turnId, stepId: tool.stepId, frame };
   }
 
+  async readTurnHeader(session: string, agent: string, turnId: string, signal?: AbortSignal): Promise<
+    { status: 'found'; turn: TranscriptTurn; attachments: ReturnType<AgentTranscriptDraft['snapshot']>['attachments'] } |
+    { status: 'preparing' | 'not_found' }> {
+    const generation = this.generation;
+    const context = await this.sourceContext(session, agent, signal);
+    const db = await this.database.ready();
+    const manifest = db.readManifest(context.scope);
+    if (manifest === undefined || !db.hasCanonicalSources(context.scope)) return { status: 'preparing' };
+    const seed = db.canonicalSeed(context.scope, turnId);
+    if (seed === undefined) return { status: manifest.complete ? 'not_found' : 'preparing' };
+    const spans = db.canonicalSources(context.scope, turnId, -1, 32);
+    const draft = new AgentTranscriptDraft(agent);
+    const reducer = new TranscriptFactReducer(draft);
+    const adapter = new TranscriptWireAdapter(agent);
+    adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
+    let logical: LogicalWire | undefined;
+    let handle: FileHandle | undefined;
+    const releaseRead = async (): Promise<void> => {
+      const currentLogical = logical;
+      const currentHandle = handle;
+      logical = undefined;
+      handle = undefined;
+      currentLogical?.close();
+      if (currentHandle !== undefined) await currentHandle.close();
+    };
+    let bytesRead = 0;
+    try {
+      logical = await openLogicalWire(context.wirePath);
+      handle = logical === undefined ? await open(context.wirePath, 'r') : undefined;
+      for (const span of spans) {
+        signal?.throwIfAborted();
+        const size = span.end - span.start;
+        if (!Number.isSafeInteger(size) || size <= 0) throw new Error('history_canonical_invalid_span');
+        if (bytesRead + size > (1 << 20)) return { status: 'preparing' };
+        const bytes = Buffer.allocUnsafe(size);
+        let offset = 0;
+        while (offset < size) {
+          signal?.throwIfAborted();
+          const readCount = await readAddressedBytes(logical, handle, bytes, offset, size - offset, span.start + offset);
+          if (readCount === 0) throw new Error('history_source_changed');
+          offset += readCount;
+          bytesRead += readCount;
+          this.replayBytes += readCount;
+        }
+        if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
+        adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
+        reducer.apply(adapter.add(JSON.parse(bytes.toString('utf8'))));
+        this.replayRecords += 1;
+        const turn = draft.getTurn(turnId);
+        if (turn !== undefined && (turn.prompt !== undefined || (turn.attachmentIds?.length ?? 0) > 0)) {
+          await releaseRead();
+          signal?.throwIfAborted();
+          const proof = await historyNavigationProof(context.wirePath, manifest.offset);
+          signal?.throwIfAborted();
+          if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
+            db.readManifest(context.scope)?.generation !== manifest.generation || db.readManifest(context.scope)?.offset !== manifest.offset) throw new Error('history_source_changed');
+          return { status: 'found', turn: { ...turn, steps: [] }, attachments: draft.snapshot().attachments };
+        }
+      }
+      return { status: manifest.complete && spans.length < 32 ? 'not_found' : 'preparing' };
+    } finally {
+      await releaseRead();
+    }
+  }
+
   async readEntity(session: string, agent: string, source: ContentSource, signal?: AbortSignal): Promise<CanonicalEntityLookup> {
     if (source.kind !== 'turn' && source.kind !== 'frame') throw new Error('history_canonical_unsupported_source');
     const turnId = source.kind === 'turn' ? source.id : source.turnId;
     if (turnId === undefined) throw new Error('history_canonical_turn_required');
+    if (signal !== undefined) {
+      const cached = await this.readDirectCached(session, agent, source, signal);
+      if (cached !== undefined) return { status: 'found', entity: cached };
+    }
+    const retained = await this.transcript.readRetainedColdTurn(session, agent, turnId, signal);
+    if (retained !== undefined) {
+      const entity = source.kind === 'turn' ? retained : retained.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) return { status: 'found', entity };
+    }
     const prepared = await this.prepare(session, agent, signal);
-    if (prepared === undefined) return { status: 'preparing' };
+    if (prepared === undefined) {
+      if (signal === undefined) return { status: 'preparing' };
+      const entity = await this.readColdEntity(session, agent, source, signal);
+      return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
+    }
     const entity = source.kind === 'turn' ? await this.readTurn(prepared, agent, turnId, signal, true) :
       await this.readFrame(prepared, agent, turnId, source.stepId, source.id, signal);
     return entity === undefined ? { status: 'not_found' } : { status: 'found', entity };
+  }
+
+  async readDurableTurn(session: string, agent: string, turnId: string, signal: AbortSignal): Promise<
+    { status: 'found'; snapshot: AgentTranscriptSnapshot } | { status: 'preparing' | 'not_found' | 'over_budget' }> {
+    const input = await this.transcript.scheduleHistoryRead(signal, owned => this.prepare(session, agent, owned));
+    if (input === undefined) return { status: 'preparing' };
+    if (input.db.canonicalSeed(input.scope, turnId) === undefined) return { status: 'not_found' };
+    const snapshot = await this.transcript.scheduleHistoryRead(signal, owned => this.replaySnapshot(input, agent, turnId, owned, 8 << 20));
+    return snapshot === undefined ? { status: 'over_budget' } : { status: 'found', snapshot };
   }
 
   private async prepare(session: string, agent: string, signal?: AbortSignal): Promise<Prepared | undefined> {
@@ -134,11 +261,7 @@ export class HistoryCanonicalReader {
     signal?.throwIfAborted();
     if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
     if (scan === undefined) throw new Error('history_canonical_source_missing');
-    if (!this.projectedScans.has(scan)) {
-      this.projectedScans.add(scan);
-      this.projectionBytes += scan.bytesRead;
-      this.projectionRecords += scan.recordsRead;
-    }
+    this.recordProjection(scan);
     if (!scan.complete) {
       if (scan.recordsRead === 0) throw new Error(`history_canonical_source_no_progress:${scan.incompleteReason ?? 'unknown'}`);
       if (scan.incompleteReason !== 'byte_budget' && scan.incompleteReason !== 'record_budget') {
@@ -150,11 +273,94 @@ export class HistoryCanonicalReader {
     if (manifest === undefined || !db.hasCanonicalSources(scope)) throw new Error('history_canonical_locator_incomplete');
     const proof = await historyNavigationProof(location.wirePath, manifest.offset);
     signal?.throwIfAborted();
-    if (!manifest.complete || manifest.offset !== proof.size || !matchesNavigationProof(manifest.source, proof)) {
+    if (!manifest.complete || !matchesNavigationProof(manifest.source, proof)) {
       throw new Error('history_source_changed');
     }
     if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
     return { db, scope, wirePath: location.wirePath, manifest };
+  }
+
+  private recordProjection(scan: HistoryNavScan): void {
+    if (this.projectedScans.has(scan)) return;
+    this.projectedScans.add(scan);
+    this.projectionBytes += scan.bytesRead;
+    this.projectionRecords += scan.recordsRead;
+  }
+
+  private async sourceContext(session: string, agent: string, signal?: AbortSignal): Promise<SourceContext> {
+    signal?.throwIfAborted();
+    const location = await this.transcript.historyWireLocation(session, agent);
+    if (location === undefined) throw new Error('history_canonical_source_missing');
+    return { scope: `${location.workspaceId}\0${session}\0${agent}`, wirePath: location.wirePath };
+  }
+
+  private async fullWireProof(wirePath: string, signal?: AbortSignal): Promise<HistoryNavigationProof> {
+    const info = await stat(wirePath).catch((error: unknown) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new Error('history_canonical_source_missing');
+      throw error;
+    });
+    if (!Number.isSafeInteger(info.size) || info.size < 0) throw new Error('history_source_changed');
+    const proof = await historyNavigationProof(wirePath, info.size);
+    signal?.throwIfAborted();
+    return proof;
+  }
+
+  private async readDirectCached(session: string, agent: string, source: ContentSource,
+    signal: AbortSignal): Promise<TranscriptTurn | TranscriptFrame | undefined> {
+    const turnId = source.kind === 'turn' ? source.id : source.turnId;
+    if (turnId === undefined) return undefined;
+    const context = await this.sourceContext(session, agent, signal);
+    const key = directCacheKey(context.scope, turnId);
+    if (!this.cache.has(key)) return undefined;
+    let proof: HistoryNavigationProof;
+    try { proof = await this.fullWireProof(context.wirePath, signal); }
+    catch (error) {
+      if (error instanceof Error && error.message === 'history_source_changed') {
+        this.deleteCached(key);
+        return undefined;
+      }
+      throw error;
+    }
+    const cached = this.getCached(key, directSourceFingerprint(proof));
+    if (cached?.entity.kind !== 'turn') return undefined;
+    if (source.kind === 'turn') return cached.entity;
+    return cached.entity.steps.find((step) => step.stepId === source.stepId)?.frames.find((frame) => frame.frameId === source.id);
+  }
+
+  private async readColdEntity(session: string, agent: string, source: ContentSource,
+    signal: AbortSignal): Promise<TranscriptTurn | TranscriptFrame | undefined> {
+    const turnId = source.kind === 'turn' ? source.id : source.turnId;
+    if (turnId === undefined) return undefined;
+    const generation = this.generation;
+    const context = await this.sourceContext(session, agent, signal);
+    const before = await this.fullWireProof(context.wirePath, signal);
+    const retained = await this.transcript.readRetainedColdTurn(session, agent, turnId, signal);
+    if (retained !== undefined) {
+      const proof = await historyNavigationProof(context.wirePath, before.size);
+      signal.throwIfAborted();
+      if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
+      if (!matchesNavigationProof(before, proof)) throw new Error('history_source_changed');
+      const entity = source.kind === 'turn' ? retained : retained.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) {
+        this.admit(directCacheKey(context.scope, turnId), directSourceFingerprint(before), retained, true);
+        return entity;
+      }
+    }
+    const snapshotTurn = await this.transcript.readProjectedColdTurn(session, agent, turnId, signal);
+    if (snapshotTurn !== undefined) {
+      const proof = await historyNavigationProof(context.wirePath, before.size);
+      signal.throwIfAborted();
+      if (generation !== this.generation) throw new DOMException('Detail scope changed', 'AbortError');
+      if (!matchesNavigationProof(before, proof)) throw new Error('history_source_changed');
+      const entity = source.kind === 'turn' ? snapshotTurn : snapshotTurn.steps.find((step) => step.stepId === source.stepId)
+        ?.frames.find((frame) => frame.frameId === source.id);
+      if (entity !== undefined) {
+        this.admit(directCacheKey(context.scope, turnId), directSourceFingerprint(before), snapshotTurn, true);
+        return entity;
+      }
+    }
+    return undefined;
   }
 
   private async readFrame(input: Prepared, agent: string, turnId: string, stepId: string | undefined,
@@ -188,7 +394,7 @@ export class HistoryCanonicalReader {
     let flight = this.flights.get(flightKey);
     if (flight === undefined || flight.controller.signal.aborted) {
       const controller = new AbortController();
-      const promise = this.replay(input, agent, turnId, controller.signal).then((turn) => {
+      const promise = this.transcript.scheduleHistoryRead(controller.signal, signal => this.replay(input, agent, turnId, signal)).then((turn) => {
         controller.signal.throwIfAborted();
         if (turn !== undefined && input.db.readManifest(scope)?.generation === manifest.generation &&
             input.db.readManifest(scope)?.offset === manifest.offset) this.admit(key, fingerprint, turn);
@@ -231,6 +437,11 @@ export class HistoryCanonicalReader {
   }
 
   private async replay(input: Prepared, agent: string, turnId: string, signal: AbortSignal): Promise<TranscriptTurn | undefined> {
+    return (await this.replaySnapshot(input, agent, turnId, signal))?.items.find((item): item is TranscriptTurn => item.kind === 'turn' && item.turnId === turnId);
+  }
+
+  private async replaySnapshot(input: Prepared, agent: string, turnId: string, signal: AbortSignal,
+    maxBytes?: number): Promise<AgentTranscriptSnapshot | undefined> {
     const seed = input.db.canonicalSeed(input.scope, turnId);
     if (seed === undefined) return undefined;
     const draft = new AgentTranscriptDraft(agent);
@@ -238,13 +449,26 @@ export class HistoryCanonicalReader {
     const adapter = new TranscriptWireAdapter(agent, { turn: (id) => draft.getTurn(id),
       tool: (id) => draft.getToolCall(id), task: (id) => draft.getTask(id) });
     adapter.restore({ ...adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
-    const handle = await open(input.wirePath, 'r');
+    let logical: LogicalWire | undefined;
+    let handle: FileHandle | undefined;
+    const releaseRead = async (): Promise<void> => {
+      const currentLogical = logical;
+      const currentHandle = handle;
+      logical = undefined;
+      handle = undefined;
+      currentLogical?.close();
+      if (currentHandle !== undefined) await currentHandle.close();
+    };
     let sliceBytes = 0;
     let sliceRecords = 0;
+    let totalBytes = 0;
+    let totalRecords = 0;
     let ordinal = -1;
     let expectedOrdinal = seed.ordinal;
     this.replays += 1;
     try {
+      logical = await openLogicalWire(input.wirePath);
+      handle = logical === undefined ? await open(input.wirePath, 'r') : undefined;
       for (;;) {
         signal.throwIfAborted();
         const page = input.db.canonicalSources(input.scope, turnId, ordinal, 128);
@@ -253,6 +477,7 @@ export class HistoryCanonicalReader {
           signal.throwIfAborted();
           const size = span.end - span.start;
           if (!Number.isSafeInteger(size) || size <= 0) throw new Error('history_canonical_invalid_span');
+          if (maxBytes !== undefined && (totalBytes + size > maxBytes || totalRecords >= 50_000)) return undefined;
           if (sliceBytes >= TARGET_BYTES || sliceRecords >= TARGET_RECORDS) {
             await new Promise<void>((resolve) => { setImmediate(resolve); });
             signal.throwIfAborted();
@@ -263,11 +488,12 @@ export class HistoryCanonicalReader {
           let offset = 0;
           while (offset < size) {
             signal.throwIfAborted();
-            const read = await handle.read(bytes, offset, size - offset, span.start + offset);
-            this.replayBytes += read.bytesRead;
-            sliceBytes += read.bytesRead;
-            if (read.bytesRead === 0) throw new Error('history_source_changed');
-            offset += read.bytesRead;
+            const readCount = await readAddressedBytes(logical, handle, bytes, offset, size - offset, span.start + offset);
+            this.replayBytes += readCount;
+            sliceBytes += readCount;
+            totalBytes += readCount;
+            if (readCount === 0) throw new Error('history_source_changed');
+            offset += readCount;
           }
           if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
           if (span.ordinal !== expectedOrdinal) adapter.restore({ ...adapter.checkpoint(), recordOrdinal: span.ordinal });
@@ -276,19 +502,24 @@ export class HistoryCanonicalReader {
           expectedOrdinal = span.ordinal + 1;
           ordinal = span.ordinal;
           sliceRecords += 1;
+          totalRecords += 1;
           this.replayRecords += 1;
         }
         if (page.length < 128) break;
       }
+      await releaseRead();
+      signal.throwIfAborted();
       const proof = await historyNavigationProof(input.wirePath, input.manifest.offset);
       signal.throwIfAborted();
-      if (!matchesNavigationProof(input.manifest.source, proof) || proof.size !== input.manifest.offset ||
+      if (!matchesNavigationProof(input.manifest.source, proof) ||
           input.db.readManifest(input.scope)?.generation !== input.manifest.generation ||
           input.db.readManifest(input.scope)?.offset !== input.manifest.offset) throw new Error('history_source_changed');
       const turn = draft.getTurn(turnId);
       if (turn === undefined) throw new Error('history_canonical_locator_incomplete');
-      return turn;
-    } finally { await handle.close(); }
+      return { ...draft.snapshot(), items: [turn] };
+    } finally {
+      await releaseRead();
+    }
   }
 
   private getCached(key: string, fingerprint: string): CacheEntry | undefined {

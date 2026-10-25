@@ -52,8 +52,8 @@ import { useCallback, useContext, useEffect, useLayoutEffect, useRef, useState }
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { AuthSummary, PermissionMode } from '@kiki/protocol';
-import { discoveryRoute, type DiscoveryRouteId } from '@kiki/session-core/discovery';
-import { errorText, type I18nKey, type Locale } from '@kiki/session-core/i18n';
+import type { DiscoveryRouteId } from '@kiki/session-core/discovery';
+import { errorText, type Locale } from '@kiki/session-core/i18n';
 import {
   isOnboardingCompleted,
   markOnboardingCompleted,
@@ -67,7 +67,6 @@ import { Icon } from './icons';
 import { useConnection } from '../state/connection';
 import { Dialog } from './Dialog';
 import { useDiscovery } from './discovery';
-import { MODEL_SETTINGS_HREF } from './discovery/ModelConnectionEntry';
 import { OnboardingAgreementStep } from './OnboardingAgreementStep';
 import { OnboardingAppearanceStep } from './OnboardingAppearanceStep';
 import { OnboardingDepartStep } from './OnboardingDepartStep';
@@ -83,33 +82,32 @@ import { Wordmark } from './Wordmark';
 const PRIMARY_BUTTON = `${SHARED_PRIMARY_BUTTON} dark:text-primary-foreground`;
 
 // Named by what each step asks, not by position, so a later `import` step can
-// land after `welcome` without renumbering anything.
-const STEPS = ['welcome', 'agreement', 'depart'] as const;
+// land after `appearance` without renumbering anything.
+const STEPS = ['agreement', 'appearance', 'depart'] as const;
 type OnboardingStep = (typeof STEPS)[number];
 
 const STEP_TITLE_KEYS = {
-  welcome: 'onboarding.intro.title',
   agreement: 'onboarding.step.agreement',
+  appearance: 'onboarding.step.appearance',
   depart: 'onboarding.step.depart',
 } as const;
+
+function readInitialStep(): OnboardingStep {
+  try {
+    const saved = localStorage.getItem('kiki.onboarding.step');
+    if (saved === 'appearance' || saved === 'depart') return saved;
+    if (saved === 'welcome') return 'agreement';
+  } catch {
+    // Storage can be unavailable
+  }
+  return 'agreement';
+}
 
 /** The modes the local settings store accepts; the wire may carry the same four. */
 function isStoredPermissionMode(value: unknown): value is 'manual' | 'auto' | 'review' | 'yolo' {
   return value === 'manual' || value === 'auto' || value === 'review' || value === 'yolo';
 }
 
-/**
- * The first step's four uses. Each one borrows its name from the discovery
- * route that shows it, so the word a person reads here is the word on the
- * closing step, the /discover hub and the README — one narrative, one set of
- * names. Only the one-line description is the welcome's own.
- */
-const INTRO_USES: readonly { readonly routeId: DiscoveryRouteId; readonly lineKey: I18nKey }[] = [
-  { routeId: 'do-first', lineKey: 'onboarding.intro.doFirst' },
-  { routeId: 'understand', lineKey: 'onboarding.intro.understand' },
-  { routeId: 'sustain', lineKey: 'onboarding.intro.sustain' },
-  { routeId: 'extend', lineKey: 'onboarding.intro.extend' },
-];
 
 /**
  * The auto-popup rule: only while the server provably has nothing to answer
@@ -177,10 +175,12 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   const dirtyGuard = useContext(DirtyGuardContext);
   const navigate = useGuardedNavigate();
   const queryClient = useQueryClient();
-  const [step, setStep] = useState<OnboardingStep>('welcome');
-  // Appearance stays complete but folded: the first screen answers "what is
-  // this for", and the look is one row away for whoever wants it now.
-  const [appearanceOpen, setAppearanceOpen] = useState(false);
+  const [step, setStep] = useState<OnboardingStep>(readInitialStep);
+
+  const goToStep = (next: OnboardingStep) => {
+    try { localStorage.setItem('kiki.onboarding.step', next); } catch {}
+    setStep(next);
+  };
 
   // Whether the step still has content below the fold, so the edge can say so.
   const stepScrollRef = useRef<HTMLDivElement>(null);
@@ -201,16 +201,16 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   useLayoutEffect(() => {
     const node = stepScrollRef.current;
     if (node === null) return;
+    // A new step reuses this element. Leaving the previous offset would open
+    // the next step mid-scroll and hide its top.
+    node.scrollTop = 0;
     noteStepScroll();
     if (typeof ResizeObserver === 'undefined') return;
     const observer = new ResizeObserver(() => { noteStepScroll(); });
     observer.observe(node);
     for (const child of Array.from(node.children)) observer.observe(child);
-    // Step content swaps wholesale on most changes, so a child-only observer
-    // would miss a taller body that replaced a short one. Any real change
-    // lands in a re-render of this panel; measure then too.
     return () => { observer.disconnect(); };
-  }, [step, noteStepScroll, locale, appearanceOpen]);
+  }, [step, noteStepScroll, locale]);
 
   // A fresh run (auto-popup, onboarding never completed) defaults the
   // permission choice to auto; a replay from Settings shows the server's
@@ -236,6 +236,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   }, [configQuery.data]);
 
   const close = useCallback(() => {
+    try { localStorage.removeItem('kiki.onboarding.step'); } catch {}
     markOnboardingCompleted();
     onClose();
   }, [onClose]);
@@ -304,31 +305,20 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
   };
 
   const goNext = async () => {
-    if (step === 'welcome') {
-      setStep('agreement');
+    if (step === 'agreement') {
+      if (await savePermissionMode()) {
+        goToStep('appearance');
+      }
       return;
     }
-    // The permission default is saved on leaving its step, so the departure
-    // after it never holds anything unsaved.
-    if (step === 'agreement' && await savePermissionMode()) {
-      setStep('depart');
+    if (step === 'appearance') {
+      goToStep('depart');
+      return;
     }
   };
 
   /**
    * "Set up later" leaves the *step*, not the run.
-   *
-   * The action is about this step's one question, so it answers that question
-   * the way "not now" does everywhere else in Kiki — step past it — and the
-   * walk continues to the finish. Closing the whole wizard here discarded the
-   * steps the user had not reached yet and left them re-running from the top,
-   * which is not what the label promises. On the last step there is no next
-   * step to move to, so it keeps the original meaning and closes.
-   *
-   * The agreement step saves like any other advance: its permission default
-   * is a choice already made, and skipping past it must not silently discard
-   * it. A failed save keeps the step, so the choice is never lost behind the
-   * skip.
    */
   const skipStep = async () => {
     const index = STEPS.indexOf(step);
@@ -337,17 +327,13 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       return;
     }
     if (step === 'agreement' && !await savePermissionMode()) return;
-    setStep(STEPS[index + 1]!);
+    goToStep(STEPS[index + 1]!);
   };
 
   /**
    * A route row starts that route right there: the shared DiscoveryContext
    * owns the state, the guarded navigation and the persistence, so the wizard
-   * only decides what the outcome means for itself. A committed start ends the
-   * run like any other explicit exit. A cancelled one — the dirty-draft prompt
-   * answered with "stay" — is the user choosing to remain here, so it stays
-   * silent; anything else (offline with no local example, a navigation that
-   * failed) gets a recovery line, or the row reads as dead.
+   * only decides what the outcome means for itself.
    */
   const startDiscoveryRoute = async (routeId: DiscoveryRouteId) => {
     setDiscoverBusy(true);
@@ -355,6 +341,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
     try {
       const started = await startRoute(routeId);
       if (started) {
+        try { localStorage.removeItem('kiki.onboarding.step'); } catch {}
         markOnboardingCompleted();
         onClose();
       } else if (dirtyGuard?.dirty !== true) {
@@ -367,14 +354,11 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
 
   /**
    * The hand-off to the Connections card goes through the same guarded
-   * navigation the hub's model row uses. It is not an exit (see the header):
-   * the dialog closes so the card is usable, the run stays unmarked. A
-   * cancelled dirty-draft prompt is the user choosing to stay, so the dialog
-   * stays with them; without a draft to guard the navigation commits at once.
+   * navigation the hub's model row uses.
    */
   const openModelSettings = () => {
     let cancelled = false;
-    const result = navigate(MODEL_SETTINGS_HREF, undefined, () => { cancelled = true; });
+    const result = navigate('/settings/providers?from=onboarding', undefined, () => { cancelled = true; });
     const settle = () => { if (!cancelled) onClose(); };
     if (result instanceof Promise) void result.then(settle, () => {});
     else if (dirtyGuard?.dirty !== true) settle();
@@ -388,31 +372,22 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       onClose={dismiss}
       ariaLabel={t('onboarding.title')}
       overlayId="onboarding-wizard"
-      // This run ends when it closes, and it carries choices the user has made
-      // about their own setup, so it leaves on the header's close button or on
-      // an explicit action inside it — never on a backdrop click or a stray
-      // Escape, which used to end the first run behind the user's back.
+      overlayData={{ 'data-onboarding-dialog': '' }}
       dismissible={false}
-      // Same chrome as DIALOG_PANEL_BASE, minus the padding: the wizard owns
-      // its header/body/footer insets so the scroll region meets the dividers.
-      // A cap, not a fixed height: a short step keeps the panel short instead of
-      // reserving an empty 85vh, and a tall one still scrolls inside the cap.
       panelClassName="anim-enter flex max-h-[85vh] min-h-0 w-full max-w-[680px] flex-col rounded-2xl border border-hairline bg-panel shadow-[0_16px_48px_-16px_rgb(var(--kiki-shadow-ink)/0.35)]"
     >
-      {/* The full masthead greets once, on the first step. After that the
-          header is the wordmark and the step dots only, so a step never opens
-          under two stacked titles. */}
+      {/* Step 1 keeps the full masthead and language selector. Later steps use compact header. */}
       <div
         className={`flex shrink-0 justify-between gap-4 border-b border-hairline px-6 ${
-          step === 'welcome' ? 'items-start pb-4 pt-5' : 'items-center pb-3 pt-3.5'
+          step === 'agreement' ? 'items-start pb-4 pt-5' : 'items-center pb-3 pt-3.5'
         }`}
-        data-onboarding-header={step === 'welcome' ? 'full' : 'compact'}
+        data-onboarding-header={step === 'agreement' ? 'full' : 'compact'}
       >
         <div className="min-w-0">
           <span className="inline-flex" aria-hidden>
             <Wordmark size="md" />
           </span>
-          {step === 'welcome' ? (
+          {step === 'agreement' ? (
             <>
               <h2 className="mt-1.5 font-display text-[18px] font-semibold tracking-tight text-ink">
                 {t('onboarding.title')}
@@ -421,7 +396,7 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
             </>
           ) : null}
         </div>
-        <div className={`flex shrink-0 items-center gap-3 ${step === 'welcome' ? 'pt-1' : ''}`}>
+        <div className={`flex shrink-0 items-center gap-3 ${step === 'agreement' ? 'pt-1' : ''}`}>
           <StepDots step={step} />
           <button
             type="button"
@@ -434,28 +409,25 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
         </div>
       </div>
 
-      {/* The step is taller than the dialog on a short window, so the edge says
-          so while there is more below: a soft fade over the panel ground, the
-          same mask the composer seat uses. No text, and it disappears the
-          moment the end is reached. */}
-      {/* `min-h-0` lets this flex child shrink so the step scrolls inside its
-          own box and the footer below keeps its row, however long the step is.
-          `grow shrink` keeps an automatic basis, so a short step contributes its
-          own height to the panel and the cap only bites when the content is
-          taller than the window. */}
-      <div className="relative min-h-0 shrink grow overflow-hidden">
+      {/*
+        * The body row already has a used height (the panel caps at 85vh and
+        * this row shrinks). A child with height:100% does not resolve against
+        * that used height, so it grew with the step and the row clipped it —
+        * a short window showed the cut-off step and could not scroll. The
+        * scroller has to be the flex child: it keeps the header and footer
+        * where they are, scrolls when the step is taller, and stays content-
+        * sized when the step fits.
+        */}
+      <div className="relative flex min-h-0 shrink grow flex-col overflow-hidden">
         <div
           ref={stepScrollRef}
           data-onboarding-step-scroll
           onScroll={noteStepScroll}
-          className="h-full min-h-0 overflow-y-auto px-6 py-3"
+          className="min-h-0 flex-1 overflow-y-auto overscroll-y-contain px-6 py-3"
         >
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2">
           <h3 className="font-display text-[15px] leading-5 font-semibold text-ink">{t(STEP_TITLE_KEYS[step])}</h3>
-          {/* Language is the one choice that changes how everything below
-              reads, so it stays on the first screen — as one small switch
-              beside the title, not as the first row of a form. */}
-          {step === 'welcome' ? (
+          {step === 'agreement' ? (
             <div className="flex items-center gap-2" data-onboarding-language>
               <span id="onboarding-language-label" className="text-[12px] text-ink-faint">
                 {t('st.language.title')}
@@ -470,64 +442,9 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           ) : null}
         </div>
 
-        {step === 'welcome' ? (
-          <div className="mt-3" data-onboarding-welcome>
-            {/* What it is for, in the four uses the closing step and the hub
-                are organised by. Numbered quietly, not iconified: these are a
-                reading order, not four features competing for a click. */}
-            <ol className="space-y-2.5" data-onboarding-intro>
-              {INTRO_USES.map((use, index) => (
-                <li
-                  key={use.routeId}
-                  data-onboarding-use={use.routeId}
-                  className="grid grid-cols-[20px_minmax(0,1fr)] gap-x-2"
-                >
-                  <span aria-hidden className="font-mono text-[11px] leading-5 tabular-nums text-ink-faint">
-                    {index + 1}
-                  </span>
-                  <span className="min-w-0">
-                    <span className="block text-[13px] leading-5 font-medium text-ink">
-                      {t(discoveryRoute(use.routeId).titleKey)}
-                    </span>
-                    <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-soft">{t(use.lineKey)}</span>
-                  </span>
-                </li>
-              ))}
-            </ol>
-
-            <div className="mt-4 border-t border-hairline pt-1">
-              <button
-                type="button"
-                data-onboarding-appearance-toggle
-                aria-expanded={appearanceOpen}
-                aria-controls="onboarding-appearance-panel"
-                onClick={() => { setAppearanceOpen((open) => !open); }}
-                className="group -mx-2 flex w-[calc(100%+1rem)] items-center gap-3 rounded-md px-2 py-2 text-left transition-colors hover:bg-ink/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40"
-              >
-                <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-medium text-ink">{t('onboarding.intro.appearance')}</span>
-                  <span className="mt-0.5 block text-[12px] leading-relaxed text-ink-soft">
-                    {t('onboarding.intro.appearanceHint')}
-                  </span>
-                </span>
-                <Icon
-                  name="chevron"
-                  size={12}
-                  className={`shrink-0 text-ink-faint transition-transform group-hover:text-ink ${appearanceOpen ? 'rotate-90' : ''}`}
-                />
-              </button>
-              {appearanceOpen ? (
-                <div id="onboarding-appearance-panel" className="pb-1 pt-2">
-                  <OnboardingAppearanceStep />
-                  <p className="mt-1 text-[12px] text-ink-faint">{t('onboarding.appearance.later')}</p>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        ) : null}
-
         {step === 'agreement' ? (
           <OnboardingAgreementStep
+            key={permissionMode}
             permissionMode={permissionMode}
             onPermissionModeChange={(mode) => {
               permissionTouched.current = true;
@@ -538,8 +455,16 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
           />
         ) : null}
 
+        {step === 'appearance' ? (
+          <div className="mt-3 space-y-4" data-onboarding-appearance>
+            <OnboardingAppearanceStep />
+            <p className="mt-1 text-[12px] text-ink-faint">{t('onboarding.appearance.later')}</p>
+          </div>
+        ) : null}
+
         {step === 'depart' ? (
           <OnboardingDepartStep
+            onDismiss={close}
             onOpenModelSettings={openModelSettings}
             onStartRoute={(routeId) => { void startDiscoveryRoute(routeId); }}
             discoverBusy={discoverBusy}
@@ -557,35 +482,24 @@ export function OnboardingWizard({ onClose }: { readonly onClose: () => void }) 
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center justify-between gap-x-3 gap-y-1 border-t border-hairline px-6 py-3">
-        {/* The first step asks nothing, so "later" has nothing to defer and
-            Next is its one action; the slot keeps its place so the footer does
-            not jump between steps. */}
-        {step === 'welcome' ? (
-          <span aria-hidden />
-        ) : (
-          <button
-            type="button"
-            onClick={() => { void skipStep(); }}
-            disabled={permissionBusy}
-            className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
-          >
-            {last ? t('onboarding.close') : t('onboarding.skip')}
-          </button>
-        )}
-        {/* A failed hand-off belongs to the button that made it: the step is
-            unchanged and only the retry is missing. */}
+        <button
+          type="button"
+          onClick={() => { void skipStep(); }}
+          disabled={permissionBusy}
+          className="shrink-0 text-[12px] font-medium text-ink-faint transition-colors hover:text-ink disabled:opacity-50"
+        >
+          {last ? t('onboarding.close') : t('onboarding.skip')}
+        </button>
         <div className="flex shrink-0 items-center gap-2">
           {stepIndex > 0 ? (
             <button
               type="button"
-              onClick={() => { setStep(STEPS[stepIndex - 1]!); }}
+              onClick={() => { goToStep(STEPS[stepIndex - 1]!); }}
               className={SECONDARY_BUTTON}
             >
               {t('onboarding.back')}
             </button>
           ) : null}
-          {/* The last step's actions are its own three paths, so the footer
-              keeps no primary of its own. */}
           {!last ? (
             <button
               type="button"

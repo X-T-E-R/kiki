@@ -154,10 +154,10 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
           const value = response.headers.get(name); if (value !== null) reply.header(name, value);
         }
         reply.code(response.status);
-        if (response.body === null || response.status === 304) { cleanup(); return reply.send(); }
+        if (response.body === null || response.status === 304) { cleanup(); return await reply.send(); }
         const stream = Readable.fromWeb(response.body as Parameters<typeof Readable.fromWeb>[0]);
         stream.once('close', cleanup); lease.signal.addEventListener('abort', () => stream.destroy(), { once: true });
-        return reply.send(stream);
+        return await reply.send(stream);
       } catch (error) { cleanup(); throw error; }
     } catch (error) { return sendError(error, reply); }
   };
@@ -182,7 +182,7 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
     try {
       if (peerAudience(req) !== undefined) throw new AdmissionError(403, 'html_preview_target_owner_grant_required');
       requireLocalClient(req);
-      return reply.send(okEnvelope(await open(req.body), req.id));
+      return await reply.send(okEnvelope(await open(req.body), req.id));
     } catch (error) { return sendError(error, reply); }
   });
   app.delete('/api/fs::html-preview/:previewId', async (req, reply) => {
@@ -204,7 +204,7 @@ export function registerHtmlPreviewRoutes(app: FastifyInstance, core: Scope, man
       const pathname = new URL(result.url, 'http://target.invalid').pathname;
       if (!pathname.startsWith(prefix)) throw new AdmissionError(502, 'invalid_html_preview_resource_url');
       const path = pathname.slice(prefix.length).split('/').map(decodeURIComponent).join('/');
-      return reply.send(okEnvelope({ ...result, preview_id: id, url: await documentUrl(id, path) }, req.id));
+      return await reply.send(okEnvelope({ ...result, preview_id: id, url: await documentUrl(id, path) }, req.id));
     } catch (error) { if (id !== undefined) await close(id); return sendError(error, reply); }
   });
   app.get('/api/html-preview/:previewId/resource', resourceOptions, async (req, reply) => {

@@ -136,12 +136,12 @@ export function FontRoleField({ role, label, help, note, presets, presetValue, c
           >
             {t(SAMPLE_KEY[role])}
           </p>
-          <p aria-live="polite" data-font-presence={presence} className={`text-[12px] leading-4 ${presence === 'missing' ? 'text-amber-ink' : 'text-ink-faint'}`}>
+          <p aria-live="polite" data-font-presence={presence} className={`min-h-4 text-[12px] leading-4 ${presence === 'missing' ? 'text-amber-ink' : 'text-ink-faint'}`}>
             {presence === 'missing'
               ? t('st.font.missing', { name })
               : presence === 'present'
                 ? t('st.font.present', { name })
-                : t('st.font.typeHint')}
+                : null}
           </p>
         </div>
       ) : null}

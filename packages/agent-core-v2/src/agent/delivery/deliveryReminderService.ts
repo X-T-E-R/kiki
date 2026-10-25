@@ -4,25 +4,26 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IEventBus } from '#/app/event/eventBus';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
-import { IAgentLoopService } from '#/agent/loop/loop';
-import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
+import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { TurnEnded } from '#/agent/loop/turnOps';
-import { IAgentDeliveryReminderService, SessionDeliveryChanged } from './deliveryReminder';
+import {
+  IAgentDeliveryReminderService,
+  MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE,
+  MESSAGE_DELIVERY_REMINDER_VARIANT,
+  SessionDeliveryChanged,
+} from './deliveryReminder';
 import { IEventService } from '#/app/event/event';
-
-const REMINDER_TEXT = 'You have not sent a message this turn. Ordinary output is not visible to the user. If a reply is needed, call SendMessage; otherwise finish without sending.';
-const REMINDER_NAME = 'message_delivery';
 
 interface TurnDeliveryState {
   readonly triggered: boolean;
   readonly messageMode: boolean;
   sent: boolean;
-  reminded: boolean;
 }
 
 export class DeliveryReminderService extends Service implements IAgentDeliveryReminderService {
@@ -31,9 +32,10 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
 
   constructor(
     @IEventBus events: IEventBus,
-    @IAgentLoopService loop: IAgentLoopService,
     @IAgentContextMemoryService context: IAgentContextMemoryService,
     @IAgentToolExecutorService tools: IAgentToolExecutorService,
+    @IAgentProfileService profile: IAgentProfileService,
+    @IAgentToolRegistryService registry: IAgentToolRegistryService,
     @ISessionDeliveryService delivery: ISessionDeliveryService,
     @IEventService eventService: IEventService,
     @IAgentScopeContext scope: IAgentScopeContext,
@@ -50,11 +52,22 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
         triggered: shouldRemind(event.origin),
         messageMode: delivery.effectiveMode() === 'message',
         sent: false,
-        reminded: false,
       });
     }));
     this._register(events.subscribe(TurnEnded, (event) => {
+      const state = this.turns.get(event.turnId);
       this.turns.delete(event.turnId);
+      if (
+        state !== undefined && state.messageMode && state.triggered && !state.sent &&
+        event.reason === 'completed' &&
+        hasCompletedTurnAssistantText(context.get(), event.turnId) &&
+        nativeRegisteredSendMessage(profile.data().executorId, registry)
+      ) {
+        reminders.appendSystemReminder(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE, {
+          kind: 'injection',
+          variant: MESSAGE_DELIVERY_REMINDER_VARIANT,
+        });
+      }
       delivery.endTurn();
     }));
     this._register(tools.hooks.onDidExecuteTool.register('message-delivery-reminder', async (event, next) => {
@@ -64,27 +77,31 @@ export class DeliveryReminderService extends Service implements IAgentDeliveryRe
         if (state !== undefined) state.sent = true;
       }
     }));
-    this._register(loop.hooks.onDidFinishStep.register('message-delivery-reminder', async (event, next) => {
-      await next();
-      const state = this.turns.get(event.turnId);
-      if (
-        state === undefined || !state.messageMode || !state.triggered || state.sent || state.reminded ||
-        event.finishReason === 'tool_calls' || loop.hasPendingRequests() || !hasAssistantText(context.get())
-      ) return;
-      state.reminded = true;
-      reminders.appendSystemReminder(REMINDER_TEXT, { kind: 'injection', variant: REMINDER_NAME });
-      loop.enqueue(new ContinuationStepRequest({ kind: REMINDER_NAME, mergeable: true, admission: 'activeOrNextTurn' }));
-    }));
   }
+}
+
+function nativeRegisteredSendMessage(executorId: string | undefined, registry: IAgentToolRegistryService): boolean {
+  return (executorId ?? 'native') === 'native' && registry.resolve('SendMessage') !== undefined;
 }
 
 function shouldRemind(origin: PromptOrigin): boolean {
   return origin.kind === 'user' || origin.kind === 'peer_thread' || origin.kind === 'bridged_peer' || (origin.kind === 'room_message' && origin.targeted);
 }
 
-function hasAssistantText(messages: readonly { readonly role: string; readonly content: readonly { readonly type: string; readonly text?: string }[] }[]): boolean {
+function hasCompletedTurnAssistantText(
+  messages: readonly {
+    readonly role: string;
+    readonly partial?: boolean;
+    readonly source?: { readonly turnId?: number };
+    readonly content: readonly { readonly type: string; readonly text?: string }[];
+  }[],
+  turnId: number,
+): boolean {
   const message = messages.at(-1);
-  return message?.role === 'assistant' && message.content.some((part) => part.type === 'text' && (part.text?.length ?? 0) > 0);
+  return message?.role === 'assistant'
+    && message.partial !== true
+    && message.source?.turnId === turnId
+    && message.content.some((part) => part.type === 'text' && (part.text?.length ?? 0) > 0);
 }
 
 registerScopedService(LifecycleScope.Agent, IAgentDeliveryReminderService, DeliveryReminderService, ScopeActivation.OnScopeCreated, 'deliveryReminder');

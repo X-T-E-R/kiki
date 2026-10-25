@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'vitest';
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
+import { profilesFromDiscovery } from '@kiki/agent-profiles/agentProfileFromFile';
 
 import { Emitter } from '#/_base/event';
 import { createDecorator } from '#/_base/di/instantiation';
@@ -170,10 +172,10 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
 
     expect(catalog.complete).toBe(true);
     expect(catalog.get('user-profile')).toBe(userProfile);
-    registration.dispose();
-    for (const handle of readiness) handle.dispose();
-    catalog.dispose();
-    container.dispose();
+    await registration.dispose();
+    for (const handle of readiness) await handle.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
   it('completes after one loader fails and keeps profiles from the other sources', async () => {
@@ -207,13 +209,13 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     await expect(catalog.ready).resolves.toBeUndefined();
     expect(catalog.complete).toBe(true);
     expect(catalog.get('workspace-profile')).toBe(workspaceProfile);
-    registration.dispose();
-    for (const handle of readiness) handle.dispose();
-    catalog.dispose();
-    container.dispose();
+    await registration.dispose();
+    for (const handle of readiness) await handle.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('projects global entries and own-workspace entries, filtering other workspace keys', () => {
+  it('projects global entries and own-workspace entries, filtering other workspace keys', async () => {
     const { container, catalog, contribute } = makeCatalog();
     const globalProfile = profile('global-p');
     const ownProfile = profile('own-ws-p');
@@ -224,11 +226,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.get('global-p')).toBe(globalProfile);
     expect(catalog.get('own-ws-p')).toBe(ownProfile);
     expect(catalog.get('other-ws-p')).toBeUndefined();
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('excludes same-name profiles of other workspace keys from the merge entirely', () => {
+  it('excludes same-name profiles of other workspace keys from the merge entirely', async () => {
     const { container, catalog, contribute } = makeCatalog();
     const userProfile = profile('shared');
     const ownProfile = profile('shared');
@@ -254,11 +256,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
         { sourceId: 'user', priority: AGENT_PROFILE_SOURCE_PRIORITY.user, reason: 'priority' },
       ],
     });
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('lets the higher-priority source win a name collision and reports the suppressed candidate', () => {
+  it('lets the higher-priority source win a name collision and reports the suppressed candidate', async () => {
     const { container, catalog, contribute } = makeCatalog();
     const lowProfile = profile('x');
     const highProfile = profile('x');
@@ -280,8 +282,8 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
         { sourceId: 'user', priority: AGENT_PROFILE_SOURCE_PRIORITY.user, reason: 'priority' },
       ],
     });
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
   it('logs the same duplicate profile warning once across catalog projections', async () => {
@@ -318,12 +320,12 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     await Promise.all(catalogs.map((catalog) => catalog.reload()));
 
     expect(warnings.filter((message) => message.startsWith('Duplicate agent profile '))).toHaveLength(1);
-    for (const catalog of catalogs) catalog.dispose();
-    registration.dispose();
-    container.dispose();
+    for (const catalog of catalogs) await catalog.dispose();
+    await registration.dispose();
+    await container.dispose();
   });
 
-  it('lets a same-name file profile win the default agent name by source priority', () => {
+  it('lets a same-name file profile win the default agent name by source priority', async () => {
     const { container, catalog, contribute } = makeCatalog();
     const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const fileProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
@@ -349,11 +351,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
         },
       ],
     });
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('keeps the builtin bind candidate when the first projection contains invalid inherit', () => {
+  it('keeps the builtin bind candidate when the first projection contains invalid inherit', async () => {
     const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const inherited = normalizeAgentProfile({
       name: 'writer',
@@ -379,11 +381,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.resolveSelection({ profile: DEFAULT_AGENT_PROFILE_NAME }).profile).toMatchObject(builtinProfile);
     expect(catalog.get('writer')).toBeUndefined();
     expect(warnings).toContainEqual(expect.stringMatching(/writer.*no lower-priority base profile/));
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('reports a matching invalid profile file when selection fails', () => {
+  it('reports a matching invalid profile file when selection fails', async () => {
     const { container, catalog } = makeCatalog(WORKSPACE_KEY, [], [{
       sourceId: 'workspace', priority: AGENT_PROFILE_SOURCE_PRIORITY.workspace,
       workspaceKey: WORKSPACE_KEY,
@@ -399,11 +401,35 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       '/project/agents/contestant_deepseek.md was skipped: Missing required frontmatter field "description"',
     );
     expect(() => catalog.resolveSelection({ profile: 'other' })).not.toThrow(/unrelated\.md/);
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('lets a higher-priority file profile replace a same-name low-priority candidate', () => {
+  it.each(['agent', 'reviewer'])('does not replace an unavailable explicit external %s with a lower-priority native profile', async (name) => {
+    const definition = parseAgentFileText({ path: '/user/agents/runner.md', source: 'user',
+      text: `---\nname: ${name}\ndescription: External runner\nexecutor: missing-acp\nmodel_alias: vendor-model\n---\nExternal body` });
+    const rejected = profilesFromDiscovery({ agents: [definition], routes: [], skipped: [], scannedRoots: [],
+      sourceDefinitions: new Map(), scopedBindings: new Map(), dependencyIndex: new Map(), diagnostics: [] },
+      () => ({ text: '', environment: { cwd: '/work', date: { disclosed: false } } }), undefined,
+      { allowExternal: true, validateExecutor: () => ({ ok: false, diagnostic: 'External executor missing-acp is unavailable' }) });
+    const { container, catalog } = makeCatalog(WORKSPACE_KEY, [], [
+      { sourceId: BUILTIN_AGENT_PROFILE_SOURCE_ID, priority: AGENT_PROFILE_SOURCE_PRIORITY.builtin,
+        contribution: { profiles: [profile(name)] } },
+      { sourceId: 'user', priority: AGENT_PROFILE_SOURCE_PRIORITY.user, contribution: rejected },
+    ]);
+    try {
+      await catalog.ready;
+      expect(catalog.get(name)).toBeUndefined();
+      expect(() => catalog.resolveSelection({ profile: name })).toThrow(/missing-acp.*unavailable/);
+      if (name === DEFAULT_AGENT_PROFILE_NAME) expect(() => catalog.getDefault()).toThrow(/missing-acp.*unavailable/);
+      expect(catalog.snapshot().resolvableProfiles?.has(name)).toBe(false);
+    } finally {
+      await catalog.dispose();
+      await container.dispose();
+    }
+  });
+
+  it('lets a higher-priority file profile replace a same-name low-priority candidate', async () => {
     const { container, catalog, contribute } = makeCatalog();
     const builtinProfile = profile(DEFAULT_AGENT_PROFILE_NAME);
     const overrideProfile = profile(DEFAULT_AGENT_PROFILE_NAME, { override: true });
@@ -427,11 +453,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
         },
       ],
     });
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('filters named profiles, rejects their dispatch selection, and hot-reprojects config changes', () => {
+  it('filters named profiles, rejects their dispatch selection, and hot-reprojects config changes', async () => {
     const { container, catalog, config, contribute } = makeCatalog(
       WORKSPACE_KEY,
       ['reviewer'],
@@ -468,8 +494,8 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     );
     expect(seen).toEqual(['catalog']);
     subscription.dispose();
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
   it('keeps a disabled default profile only on the main-agent binding surface', async () => {
@@ -490,11 +516,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       `Unknown agent profile: "${DEFAULT_AGENT_PROFILE_NAME}". Available agent profiles: coder`,
     );
     expect(warnings).toEqual([]);
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('re-projects and fires the source id on relevant registry changes, ignoring other keys', () => {
+  it('re-projects and fires the source id on relevant registry changes, ignoring other keys', async () => {
     const { container, catalog, contribute } = makeCatalog();
     const seen: string[] = [];
     const subscription = catalog.onDidChange((sourceId) => seen.push(sourceId));
@@ -508,19 +534,19 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(catalog.get('global-p')).toBe(globalProfile);
 
     const otherHandle = contribute('workspace', [profile('other-ws-p')], { workspaceKey: 'wd_b' });
-    otherHandle.dispose();
+    await otherHandle.dispose();
     expect(catalog.get('other-ws-p')).toBeUndefined();
 
-    globalHandle.dispose();
+    await globalHandle.dispose();
     expect(catalog.get('global-p')).toBeUndefined();
 
     expect(seen).toEqual(['workspace', 'user', 'user']);
     subscription.dispose();
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('keeps private profiles resolvable but rejects new dispatch from live and frozen catalogs', () => {
+  it('keeps private profiles resolvable but rejects new dispatch from live and frozen catalogs', async () => {
     const { container, catalog } = makeCatalog();
     const initial = profile('worker');
     catalog.setContribution('hot', { profiles: [profile(DEFAULT_AGENT_PROFILE_NAME), initial] }, 10);
@@ -545,11 +571,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     catalog.setContribution('hot', { profiles: [profile(DEFAULT_AGENT_PROFILE_NAME), latest] }, 10);
     expect(resolveSubagentDispatch(catalog, { profileName: DEFAULT_AGENT_PROFILE_NAME },
       { profileName: 'worker', snapshot: catalog.snapshot() }).selection.profile).toBe(latest);
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('keeps the last good projection when a catalog contribution cannot be projected', () => {
+  it('keeps the last good projection when a catalog contribution cannot be projected', async () => {
     const { container, catalog, warnings, contribute } = makeCatalog();
     const stable = profile('stable');
     contribute('user', [stable]);
@@ -568,8 +594,8 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
     expect(warnings).toContainEqual(
       expect.stringContaining('keeping the last good catalog'),
     );
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
   it("fires 'catalog' on reload", async () => {
@@ -581,8 +607,8 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
 
     expect(seen).toEqual(['catalog']);
     subscription.dispose();
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
   it('resolves ready after the config snapshot is available', async () => {
@@ -590,11 +616,11 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
 
     await expect(catalog.ready).resolves.toBeUndefined();
     await expect(catalog.load()).resolves.toBeUndefined();
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 
-  it('serves the read surface and throws from getDefault without the default profile', () => {
+  it('serves the read surface and throws from getDefault without the default profile', async () => {
     const { container, catalog, contribute } = makeCatalog();
     expect(catalog.get('missing')).toBeUndefined();
     expect(catalog.inspect('missing')).toBeUndefined();
@@ -616,7 +642,7 @@ describe('SessionAgentProfileCatalogService (registry projection)', () => {
       priority: 0,
       suppressed: [],
     });
-    catalog.dispose();
-    container.dispose();
+    await catalog.dispose();
+    await container.dispose();
   });
 });

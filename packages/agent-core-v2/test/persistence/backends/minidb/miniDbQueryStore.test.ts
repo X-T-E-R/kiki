@@ -25,7 +25,7 @@ const SEP = String.fromCodePoint(0);
 
 describe('MiniDbQueryStore', () => {
   let homeDir: string;
-  let disposeHost: (() => void) | undefined;
+  let disposeHost: (() => void | Promise<void>) | undefined;
 
   beforeEach(async () => {
     _clearScopedRegistryForTests();
@@ -40,7 +40,7 @@ describe('MiniDbQueryStore', () => {
   });
 
   afterEach(async () => {
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
     await drainQueryStoreDisposals();
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
@@ -51,7 +51,7 @@ describe('MiniDbQueryStore', () => {
       stubPair(IBootstrapService, stubBootstrap(homeDir)),
       stubPair(ILogService, stubLog()),
     ]);
-    disposeHost = () => { host.dispose(); };
+    disposeHost = async () => { await host.dispose(); };
     return host.app.accessor.get(IQueryStore);
   }
 
@@ -72,6 +72,22 @@ describe('MiniDbQueryStore', () => {
     expect(await store.get(COLLECTION, 'missing')).toBeUndefined();
     await store.delete(COLLECTION, 'a');
     expect(await store.get(COLLECTION, 'a')).toBeUndefined();
+  });
+
+  it('serializes reader recovery with new operations and preserves persisted data', async () => {
+    const store = build();
+    await store.put(COLLECTION, 'saved', { id: 'saved' });
+    const first = store.recover!();
+    expect(store.recover!()).toBe(first);
+    const read = store.get(COLLECTION, 'saved');
+    const write = store.put(COLLECTION, 'new', { id: 'new' });
+    await first;
+    expect(await read).toEqual({ id: 'saved' });
+    await write;
+    expect(await store.get(COLLECTION, 'new')).toEqual({ id: 'new' });
+    await store.withExclusive!(async () => {
+      expect(await store.get(COLLECTION, 'saved')).toEqual({ id: 'saved' });
+    });
   });
 
   it('batch applies put and delete atomically', async () => {
@@ -206,7 +222,7 @@ describe('MiniDbQueryStore', () => {
     await first.put(COLLECTION, 'a', { id: 'a', v: 1 });
     await first.ensureIndex(COLLECTION, { kind: 'value', name: 'byV', field: 'v' });
     await first.close();
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
 
     const registryFile = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR, 'cluster.indexes.json');
@@ -225,7 +241,7 @@ describe('MiniDbQueryStore', () => {
     await first.put(COLLECTION, 'a', { id: 'a', v: 1 });
     await first.ensureIndex(COLLECTION, { kind: 'value', name: 'byV', field: 'v' });
     await first.close();
-    disposeHost?.();
+    await disposeHost?.();
     disposeHost = undefined;
 
     const storeDir = join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR);

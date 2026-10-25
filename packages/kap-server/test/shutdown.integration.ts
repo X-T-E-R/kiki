@@ -125,7 +125,7 @@ describe('POST /api/shutdown', () => {
 
       const firstClose = running.close();
       expect(running.close()).toBe(firstClose);
-      await expect(firstClose).rejects.toBeInstanceOf(AggregateError);
+      await expect(firstClose).rejects.toThrow('simulated thread shutdown failure');
       expect(threadShutdown).toHaveBeenCalledOnce();
       expect(mailboxClose).toHaveBeenCalledOnce();
       expect(runtimeClose).toHaveBeenCalledOnce();

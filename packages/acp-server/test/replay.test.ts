@@ -95,6 +95,22 @@ describe('projectHistoryToSessionUpdates', () => {
     expect(kinds(updates)).toEqual(['agent_thought_chunk']);
   });
 
+  it('omits hidden summaries and opaque reasoning records from replay', () => {
+    const updates = projectHistoryToSessionUpdates(SESSION_ID, [{
+      role: 'assistant',
+      content: [
+        { type: 'think', think: 'Primary thinking' },
+        { type: 'think', think: 'Duplicate summary', hidden: true, reasoningDetails: [{ type: 'reasoning.summary', summary: 'Duplicate summary' }] },
+        { type: 'think', think: '', hidden: true, reasoningDetails: [{ type: 'reasoning.encrypted', data: 'opaque' }] },
+      ],
+      toolCalls: [],
+    }]);
+    expect(kinds(updates)).toEqual(['agent_thought_chunk']);
+    expect(JSON.stringify(updates)).toContain('Primary thinking');
+    expect(JSON.stringify(updates)).not.toContain('Duplicate summary');
+    expect(JSON.stringify(updates)).not.toContain('opaque');
+  });
+
   it('skips a tool message whose call was never issued in this slice', () => {
     const messages: ContextMessage[] = [
       {

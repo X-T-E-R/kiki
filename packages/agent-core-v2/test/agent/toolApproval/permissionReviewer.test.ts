@@ -10,7 +10,7 @@ import type { ISessionWorkspaceContext } from '#/session/workspaceContext/worksp
 const context = {
   toolCall: { id: 'call-1', name: 'Bash' },
   args: { command: 'rm -rf /tmp/example' },
-  execution: { accesses: [] },
+  execution: { accesses: [], shellContext: { runtimeId: 'local', cwd: '/workspace', pathClass: 'posix' } },
   signal: new AbortController().signal,
   turnId: 1,
 } as unknown as ResolvedToolExecutionHookContext;
@@ -38,6 +38,11 @@ function dependencies(reviewer: Record<string, unknown>, options: {
 }
 
 describe('permission reviewer', () => {
+  it('uses resolved shell cwd and host instead of the workspace', () => {
+    const actual = { ...context, execution: { ...context.execution, shellContext: { runtimeId: 'ssh:example', cwd: '/srv/actual', pathClass: 'posix' as const } } };
+    const payload = JSON.parse(buildReviewerInput(memory, workspace, actual, 'dangerous-bash', {})!) as { cwd: string; host: string };
+    expect(payload).toMatchObject({ cwd: '/srv/actual', host: 'ssh:example' });
+  });
   it('sends bounded user-origin text and action, never injection, assistant or tool output', () => {
     const input = buildReviewerInput(memory, workspace, context, 'dangerous-bash', { rule: 'ask' });
     expect(input).toContain('rm -rf /tmp/example');

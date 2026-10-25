@@ -6,8 +6,12 @@ import {
   _clearScopedRegistryForTests,
   registerScopedService,
 } from '#/_base/di/scope';
-import { Emitter } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
+import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import type { SkillCatalog } from '#/app/skillCatalog/types';
 import { ISessionSkillCatalog, type ISkillCatalogSink } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
@@ -59,11 +63,19 @@ describe('SessionSkillCatalogService (seed view)', () => {
     registerScopedService(LifecycleScope.Session, ISessionSkillCatalog, SessionSkillCatalogService);
   });
 
-  function makeSession(data: ISessionSkillCatalogData) {
+  function makeSession(data: ISessionSkillCatalogData, sessionId = 's1', options?: {
+    readonly plugins?: IPluginService;
+    readonly usage?: IPluginUsageService;
+    readonly discovery?: ISkillDiscovery;
+  }) {
     const host = createScopedTestHost([]);
-    const session = host.child(LifecycleScope.Session, 's1', [
+    const session = host.child(LifecycleScope.Session, sessionId, [
       stubPair(ISessionSkillCatalogData, data),
       stubPair(IWorkspaceStateService, new WorkspaceStateService()),
+      stubPair(ISessionContext, makeSessionContext({ sessionId, workspaceId: 'workspace-a', sessionDir: '', cwd: '', sessionScope: `workspace-a/${sessionId}` })),
+      ...(options?.plugins === undefined ? [] : [stubPair(IPluginService, options.plugins)]),
+      ...(options?.usage === undefined ? [] : [stubPair(IPluginUsageService, options.usage)]),
+      ...(options?.discovery === undefined ? [] : [stubPair(ISkillDiscovery, options.discovery)]),
     ]);
     return { host, catalog: session.accessor.get(ISessionSkillCatalog) };
   }
@@ -74,7 +86,7 @@ describe('SessionSkillCatalogService (seed view)', () => {
 
     await catalog.load();
     expect(catalog.catalog.getSkill('from-workspace')).toBeDefined();
-    host.dispose();
+    await host.dispose();
   });
 
   it('re-folds and forwards the source id when the seed fires a change', async () => {
@@ -91,7 +103,7 @@ describe('SessionSkillCatalogService (seed view)', () => {
     expect(catalog.catalog.getSkill('after')).toBeDefined();
     expect(seen).toEqual(['workspace']);
     subscription.dispose();
-    host.dispose();
+    await host.dispose();
   });
 
   it('merges ad-hoc sink contributions over the seed and drops them on remove', async () => {
@@ -111,7 +123,7 @@ describe('SessionSkillCatalogService (seed view)', () => {
     sink.remove('adhoc');
     expect(catalog.catalog.getSkill('shared')?.description).toBe('from workspace');
     expect(catalog.catalog.getSkill('adhoc-only')).toBeUndefined();
-    host.dispose();
+    await host.dispose();
   });
 
   it('reload re-folds the current seed without rescanning and fires catalog', async () => {
@@ -127,7 +139,107 @@ describe('SessionSkillCatalogService (seed view)', () => {
     expect(catalog.catalog.getSkill('two')).toBeDefined();
     expect(seen).toEqual(['catalog']);
     subscription.dispose();
-    host.dispose();
+    await host.dispose();
+  });
+
+  it('keeps session plugin skills isolated within one workspace', async () => {
+    const pluginSkill = stubSkill('demo-skill', {
+      source: 'extra',
+      plugin: { id: 'demo', instructions: 'demo instructions' },
+      sourceRoot: '/plugins/demo/skills',
+    });
+    const seed = dataSeed(catalogOf(pluginSkill));
+    const usage: IPluginUsageService = {
+      _serviceBrand: undefined,
+      enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      allows: async (_workspaceId, _pluginId, sessionId) => sessionId === 's1',
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
+      set: async () => { throw new Error('unused'); },
+      onDidChange: Event.None as IPluginUsageService['onDidChange'],
+      onDidApply: Event.None as IPluginUsageService['onDidApply'],
+    };
+    const rootsBySession: string[] = [];
+    const plugins = {
+      onDidReload: Event.None,
+      pluginSkillRoots: async (_workspaceId: string | undefined, sessionId?: string) => {
+        rootsBySession.push(sessionId ?? 'missing');
+        return sessionId === 's1'
+          ? [{ path: '/plugins/demo/skills', source: 'extra' as const, plugin: { id: 'demo' } }]
+          : [];
+      },
+      hasLoadedSnapshot: () => true,
+    } as unknown as IPluginService;
+    const discovery: ISkillDiscovery = {
+      _serviceBrand: undefined,
+      discover: async (roots) => roots.length === 0
+        ? { skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }
+        : { skills: [pluginSkill], skipped: [], scannedRoots: ['/plugins/demo/skills'], scannedDirectories: [] },
+    };
+    const s1 = makeSession(seed.data, 's1', { plugins, usage, discovery });
+    const s2 = makeSession(seed.data, 's2', { plugins, usage, discovery });
+    await Promise.all([s1.catalog.load(), s2.catalog.load()]);
+
+    expect(rootsBySession.toSorted()).toEqual(['s1', 's2']);
+    expect(s1.catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeDefined();
+    expect(s2.catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeUndefined();
+    expect(s1.catalog.catalog.getSkill('demo-skill')).toBeDefined();
+    expect(s2.catalog.catalog.getSkill('demo-skill')).toBeUndefined();
+    await Promise.all([s1.host.dispose(), s2.host.dispose()]);
+  });
+
+  it('waits for a plugin snapshot that is not loaded yet and does not strip skills when it never arrives', async () => {
+    const pluginSkill = stubSkill('demo-skill', {
+      source: 'extra',
+      plugin: { id: 'demo', instructions: 'demo instructions' },
+      sourceRoot: '/plugins/demo/skills',
+    });
+    const seed = dataSeed(catalogOf(pluginSkill));
+    let loaded = false;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const plugins = {
+      onDidReload: Event.None,
+      pluginSkillRoots: async () => {
+        await gate;
+        return loaded
+          ? [{ path: '/plugins/demo/skills', source: 'extra' as const, plugin: { id: 'demo' } }]
+          : [];
+      },
+      hasLoadedSnapshot: () => loaded,
+    } as unknown as IPluginService;
+    const discovery: ISkillDiscovery = {
+      _serviceBrand: undefined,
+      discover: async (roots) => roots.length === 0
+        ? { skills: [], skipped: [], scannedRoots: [], scannedDirectories: [] }
+        : { skills: [pluginSkill], skipped: [], scannedRoots: ['/plugins/demo/skills'], scannedDirectories: [] },
+    };
+    const missed = makeSession(seed.data, 's1', { plugins, discovery });
+    release();
+    await missed.catalog.load();
+    expect(missed.catalog.catalog.getSkill('demo-skill')).toBeDefined();
+    await missed.host.dispose();
+
+    loaded = false;
+    let open!: () => void;
+    const wait = new Promise<void>((resolve) => { open = resolve; });
+    const late = {
+      onDidReload: Event.None,
+      pluginSkillRoots: async () => {
+        await wait;
+        return [{ path: '/plugins/demo/skills', source: 'extra' as const, plugin: { id: 'demo' } }];
+      },
+      hasLoadedSnapshot: () => loaded,
+    } as unknown as IPluginService;
+    const arrived = makeSession(seed.data, 's1', { plugins: late, discovery });
+    const pending = arrived.catalog.load();
+    loaded = true;
+    open();
+    await pending;
+    expect(arrived.catalog.catalog.getPluginSkill('demo', 'demo-skill')).toBeDefined();
+    await arrived.host.dispose();
   });
 
   it('list returns plain summaries of the merged catalog after ready', async () => {
@@ -151,6 +263,6 @@ describe('SessionSkillCatalogService (seed view)', () => {
     });
     expect(Object.keys(seeded ?? {})).not.toContain('content');
     expect(summaries.some((summary) => summary.name === 'adhoc-only')).toBe(true);
-    host.dispose();
+    await host.dispose();
   });
 });

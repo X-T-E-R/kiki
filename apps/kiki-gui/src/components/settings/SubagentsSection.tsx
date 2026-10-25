@@ -19,13 +19,11 @@ import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus } from '../controls';
 import { SearchableSelect, type SearchableSelectOption } from '../SearchableSelect';
-import { SubagentGovernanceCard } from './AgentsSection';
 import { SettingField } from './fields';
 import { SectionCard } from './SectionCard';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
 import { useInstantSave } from './useInstantSave';
 import { dispatchFieldsOf } from './profileEditor/profileDraft';
-import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
 
 const STRICT_TARGET_VALUE = '__strict__';
 
@@ -196,7 +194,7 @@ export function SubagentDefaultTargetCard() {
   );
 }
 
-function SubagentOpenModeCard() {
+export function SubagentOpenModeCard() {
   const { t } = useI18n();
   const [settings, setSettings] = useState(readSettings);
 
@@ -225,17 +223,5 @@ function SubagentOpenModeCard() {
         <Hint>{t('st.subagentOpenMode.hint')}</Hint>
       </div>
     </SectionCard>
-  );
-}
-
-/** Subagent defaults and governance; agent definitions live in the unified Agents list. */
-export function SubagentsSection() {
-  return (
-    <div className="space-y-4">
-      <SubagentDefaultTargetCard />
-      <SubagentGovernanceCard />
-      <SubagentOpenModeCard />
-      <SubagentToolSettingsCard />
-    </div>
   );
 }

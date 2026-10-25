@@ -155,8 +155,8 @@ function BrowserReturnHarness() {
   const location = useLocation(); const navigate = useGuardedNavigate();
   return <>
     <span data-return-route>{location.pathname}</span>
-    <button data-return-board onClick={() => { navigate('/board'); }} />
-    <button data-return-back onClick={() => { navigate(-1); }} />
+    <button data-return-board onClick={() => { void navigate('/board'); }} />
+    <button data-return-back onClick={() => { void navigate(-1); }} />
   </>;
 }
 
@@ -617,10 +617,13 @@ describe('ConnectionProvider desktop backend recovery', () => {
       dangerous_bypass_auth: false, server_version: '0.1.0', build_id: 'test-build', build_channel: 'stable',
     } : { server_version: '0.1.0', server_id: 'local' }));
     const container = await mountProvider(false, true);
+    expect(container.querySelector('[data-conn-edit]')).not.toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-conn-edit]')!.click(); });
     expect(container.querySelector('#st-conn-token')).not.toBeNull();
     expect(container.querySelector('#st-card-conn-owned')).not.toBeNull();
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-switch-ssh]')!.click(); });
     await flush();
+    expect(container.querySelector('[data-conn-edit]')).toBeNull();
     expect(container.querySelector('#st-conn-token')).toBeNull();
     expect(container.querySelector('#st-card-conn-owned')).toBeNull();
     expect(container.textContent).toContain('Its agent and provider settings live there');
@@ -809,7 +812,10 @@ describe('ConnectionProvider desktop backend recovery', () => {
     });
     await act(async () => newer.resolve(resolved('newer')));
     await flush();
-    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('ssh:host-1');
+    // Scope preparation is serialized: the cancelled attempt must release its
+    // tunnel before the newer attempt can commit, even if its result is ready.
+    expect(connections).toBe(1);
+    expect(container.querySelector('[data-scope-id]')?.textContent).toBe('local');
     await act(async () => old.resolve(resolved('older')));
     await flush();
     expect(mocks.invoke).toHaveBeenCalledWith('disconnect_ssh_profile', { id: 'host-1', tunnelId: 'older' });

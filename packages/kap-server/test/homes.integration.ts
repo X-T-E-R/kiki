@@ -507,12 +507,20 @@ describe('space registration REST', () => {
     expect(JSON.parse(await readFile(join(path, 'mcp.json'), 'utf8')).mcpServers).toEqual({ referenced });
   });
 
-  it('refuses creation over an existing directory', async () => {
+  it('adopts an unregistered existing directory and refuses a second registration', async () => {
     root = await mkdtemp(join(tmpdir(), 'kiki-homes-'));
     const main = await boot(root);
     const path = join(root, 'existing');
     await mkdir(path);
-    expect((await call(main, '/api/homes', 'POST', { name: 'No overwrite', path })).code).not.toBe(0);
-    expect((await call(main, '/api/homes')).data).toMatchObject({ items: [{ id: 'main' }] });
+    const created = await call(main, '/api/homes', 'POST', { name: 'Adopted', path });
+    expect(created.code).toBe(0);
+    const id = (created.data as SpaceRecord).id;
+    expect(id).toMatch(/^h-/);
+    expect((await call(main, '/api/homes')).data).toMatchObject({ items: [{ id: 'main' }, { id, name: 'Adopted' }] });
+    const again = await call(main, '/api/homes', 'POST', { name: 'Adopted', path });
+    expect(again.code).toBe(0);
+    expect((again.data as SpaceRecord).id).toBe(id);
+    expect((await call(main, '/api/homes')).data).toMatchObject({ items: [{ id: 'main' }, { id }] });
+    expect((await call(main, '/api/homes', 'POST', { name: 'Main', path: root })).code).not.toBe(0);
   });
 });

@@ -6,6 +6,7 @@ import { CREDENTIALS_KEY, migrateCredentialsDirectory } from '@kiki/agent-core-v
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { TomlAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/atomicDocumentStore';
 import { cognitionFromToml, cognitionToToml } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { retryFromToml, retryToToml } from '@kiki/agent-core-v2/agent/stepRetry/configSection';
 import { questionSettingsFromToml, interactionConfigToWire, modelBehaviorToWire, type ModelBehaviorConfig } from '@kiki/protocol';
 
 import { ErrorCodes, KimiError } from '../errors';
@@ -409,6 +410,8 @@ export function transformTomlData(data: Record<string, unknown>): Record<string,
       result[targetKey] = cloneRecord(value);
     } else if (targetKey === 'loopControl' && isPlainObject(value)) {
       result[targetKey] = transformLoopControlData(value);
+    } else if (targetKey === 'retry' && isPlainObject(value)) {
+      result[targetKey] = retryFromToml(value);
     } else if (targetKey === 'background' && isPlainObject(value)) {
       result[targetKey] = transformPlainObject(value);
     } else if (targetKey === 'image' && isPlainObject(value)) {
@@ -649,6 +652,7 @@ export function configToTomlData(config: KimiConfig): Record<string, unknown> {
   setSection(out, 'nb_search', config.nbSearch, nbSearchToToml);
   setSection(out, 'nb_search_source', config.nbSearchSource, (source) => ({ ...source }));
   setSection(out, 'loop_control', config.loopControl, loopControlToToml);
+  setSection(out, 'retry', config.retry, (value, raw) => retryToToml(value, raw) as Record<string, unknown>);
   setSection(out, 'background', config.background, backgroundToToml);
   setSection(out, 'subagent', config.subagent, subagentToToml);
   setSection(out, 'agents', config.agents, plainSectionToToml);

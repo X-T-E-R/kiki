@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { bridgeReadSchema } from '@kiki/protocol';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 
-import { createDecorator, type ServicesAccessor } from '#/_base/di/instantiation';
+import { createDecorator, IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import THREAD_SEND_DESCRIPTION_SOURCE from './thread-send.md?raw';
 import type { AgentTool, ToolExecution } from '#/tool/toolContract';
@@ -11,6 +11,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import {
   IThreadCommunicationService,
+  type ThreadCaller,
   type ThreadRef,
 } from '#/app/threadCommunication/threadCommunication';
 import {
@@ -18,7 +19,7 @@ import {
   peerSendCapability,
 } from '#/app/threadCommunication/peerThreadCapability';
 import { Error2, ErrorCodes } from '#/errors';
-import { IRoomService } from '#/app/room/room';
+import { IRoomService, roomMemberId, type RoomDocument } from '#/app/room/room';
 
 const ThreadRefSchema = z
   .object({
@@ -80,6 +81,31 @@ export const WaitThreadsToolInputSchema = z
   })
   .strict();
 
+export const RoomReadToolInputSchema = z.object({
+  room: z.string().min(1).max(128),
+  after_id: z.string().min(1).max(256).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
+}).strict();
+
+export const RoomAddToolInputSchema = z.object({
+  room: z.string().min(1).max(128),
+  session_id: z.string().min(1).max(256).describe('An existing unarchived top-level thread to add. No session or persona is created.'),
+}).strict();
+
+type RoomReadToolInput = z.infer<typeof RoomReadToolInputSchema>;
+type RoomAddToolInput = z.infer<typeof RoomAddToolInputSchema>;
+
+export interface IRoomReadTool extends AgentTool<RoomReadToolInput> {
+  readonly _serviceBrand: undefined;
+}
+
+export interface IRoomAddTool extends AgentTool<RoomAddToolInput> {
+  readonly _serviceBrand: undefined;
+}
+
+export const IRoomReadTool = createDecorator<IRoomReadTool>('roomReadTool');
+export const IRoomAddTool = createDecorator<IRoomAddTool>('roomAddTool');
+
 type ListThreadsToolInput = z.infer<typeof ListThreadsToolInputSchema>;
 type ReadThreadToolInput = z.infer<typeof ReadThreadToolInputSchema>;
 type SendMessageToThreadToolInput = z.infer<typeof SendMessageToThreadToolInputSchema>;
@@ -111,6 +137,8 @@ abstract class ThreadToolBase {
   constructor(
     protected readonly threads: IThreadCommunicationService,
     protected readonly session: ISessionContext,
+    private readonly instantiation?: IInstantiationService,
+    private readonly knownAgentId?: string,
   ) {}
 
   protected callerRef(): ThreadRef {
@@ -121,8 +149,24 @@ abstract class ThreadToolBase {
     };
   }
 
+  protected admissionCaller(): ThreadCaller {
+    return {
+      ...this.callerRef(),
+      agentId: this.knownAgentId ?? this.lookupAgentId(),
+    };
+  }
+
+  private lookupAgentId(): string | undefined {
+    if (this.instantiation === undefined) return undefined;
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IAgentScopeContext))?.agentId;
+    } catch {
+      return undefined;
+    }
+  }
+
   protected async requireCallerEnabled(): Promise<void> {
-    if (await this.threads.isWorkspaceEnabled(this.session.workspaceId, this.callerRef())) return;
+    if (await this.threads.isWorkspaceEnabled(this.session.workspaceId, this.admissionCaller())) return;
     throw new Error2(
       ErrorCodes.THREAD_DISABLED,
       `Thread communication is disabled for workspace "${this.session.workspaceId}".`,
@@ -140,8 +184,9 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
   constructor(
     @IThreadCommunicationService threads: IThreadCommunicationService,
     @ISessionContext session: ISessionContext,
+    @IInstantiationService instantiation: IInstantiationService,
   ) {
-    super(threads, session);
+    super(threads, session, instantiation);
   }
 
   resolveExecution(input: ListThreadsToolInput): ToolExecution {
@@ -154,7 +199,7 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
           signal: ctx.signal,
           bridgeId: input.bridge_id,
           connectionId: input.connection_id,
-          caller: this.callerRef(),
+          caller: this.admissionCaller(),
           workspaceId: input.workspace_id,
           cursor: input.cursor,
           limit: input.limit,
@@ -169,14 +214,15 @@ export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
   declare readonly _serviceBrand: undefined;
   readonly name = 'ThreadRead';
   readonly description =
-    'Read a thread without resuming it. This home returns finished main-agent turns. An approved space returns bounded view.transcript with coverage and stable contentRefs; pass content_ref to retrieve its next segment in view.segment. Reading is a separate bridge permission, never implied by send or GUI access. Each turn has its input, output, and a `reason` of completed, cancelled, failed, or blocked; a turn still running is not included. Returns the newest `limit` turns (1-100, default 20) in chronological order. Pass the returned `cursor` with the same thread to page to older turns; a cursor from another thread is rejected.';
+    'Read a thread without resuming it. This home returns finished main-agent turns. Small local turns keep complete input and output; long values may be returned as previews with stable contentRefs. Pass content_ref to retrieve a bounded view.segment of up to 16,384 UTF-16 units and follow segment.next. An approved space returns bounded view.transcript with coverage and stable contentRefs; pass content_ref to retrieve its next segment in view.segment. Reading is a separate bridge permission, never implied by send or GUI access. Each turn has its input, output, and a `reason` of completed, cancelled, failed, or blocked; a turn still running is not included. Returns the newest `limit` turns (1-100, default 20) in chronological order. While the local history projection is preparing, it may return `turns: []`, `incomplete: "history_preparing"`, and an opaque `nextCursor`; this is not an empty thread. Continue with that `nextCursor` using the same thread and bridge scope; the original older-turn boundary is retained. After preparation completes, normal ended-turn pages use the same limit and order. Existing read cursors remain accepted, but a history rewrite or generation change can invalidate a cursor; restart from the first page when that happens.';
   readonly parameters = toInputJsonSchema(ReadThreadToolInputSchema);
 
   constructor(
     @IThreadCommunicationService threads: IThreadCommunicationService,
     @ISessionContext session: ISessionContext,
+    @IInstantiationService instantiation: IInstantiationService,
   ) {
-    super(threads, session);
+    super(threads, session, instantiation);
   }
 
   resolveExecution(input: ReadThreadToolInput): ToolExecution {
@@ -188,7 +234,7 @@ export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
         const result = await this.threads.readThread({
           signal: ctx.signal,
           contentRef: input.content_ref,
-          caller: this.callerRef(),
+          caller: this.admissionCaller(),
           thread: fromToolRef(input.thread),
           cursor: input.cursor,
           limit: input.limit,
@@ -215,7 +261,7 @@ export class SendMessageToThreadTool
     @IAgentScopeContext private readonly agent: IAgentScopeContext,
     @IAgentContextMemoryService private readonly memory: IAgentContextMemoryService,
   ) {
-    super(threads, session);
+    super(threads, session, undefined, agent.agentId);
   }
 
   resolveExecution(input: SendMessageToThreadToolInput): ToolExecution {
@@ -237,6 +283,7 @@ export class SendMessageToThreadTool
           signal: ctx.signal,
           cause: origin?.kind === 'bridged_peer' ? { causeId: origin.causeId, hop: origin.hop } : undefined,
           source: this.callerRef(),
+          executingAgentId: this.agent.agentId,
           target: fromToolRef(input.thread),
           content: input.content,
           idempotencyKey: input.idempotency_key,
@@ -257,8 +304,9 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
   constructor(
     @IThreadCommunicationService threads: IThreadCommunicationService,
     @ISessionContext session: ISessionContext,
+    @IInstantiationService instantiation: IInstantiationService,
   ) {
-    super(threads, session);
+    super(threads, session, instantiation);
   }
 
   resolveExecution(input: WaitThreadsToolInput): ToolExecution {
@@ -269,7 +317,7 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
         await this.requireCallerEnabled();
         const result = await this.threads.waitThreads({
           signal: ctx.signal,
-          caller: this.callerRef(),
+          caller: this.admissionCaller(),
           threads: input.threads.map((item) => ({
             thread: fromToolRef(item.thread),
             cursor: item.cursor,
@@ -279,6 +327,81 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
         return { output: JSON.stringify(result, null, 2) };
       },
     };
+  }
+}
+
+abstract class RoomToolBase extends ThreadToolBase {
+  constructor(
+    threads: IThreadCommunicationService,
+    session: ISessionContext,
+    protected readonly rooms: IRoomService,
+    private readonly agent: IAgentScopeContext,
+  ) {
+    super(threads, session, undefined, agent.agentId);
+  }
+
+  protected async requireMember(roomId: string): Promise<RoomDocument> {
+    if (this.agent.agentId !== 'main') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Only main agents can read or manage rooms.');
+    await this.requireCallerEnabled();
+    const room = await this.rooms.get(roomId);
+    if (room === undefined || !room.members.some((member) => member.sessionId === this.session.sessionId)) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'This thread is not a member of the room.');
+    }
+    return room;
+  }
+
+  protected roster(room: RoomDocument) {
+    return { roomId: room.id, name: room.name, host: room.host, members: room.members.map((member) => ({ ...member, id: roomMemberId(member) })),
+      paused: room.paused, pauseReason: room.pauseReason, archived: room.archived === true };
+  }
+}
+
+export class RoomReadTool extends RoomToolBase implements IRoomReadTool {
+  declare readonly _serviceBrand: undefined;
+  readonly name = 'RoomRead';
+  readonly description = 'Read the roster, host and saved messages of a room this main thread belongs to, without waking members. Member ids are the exact ids ThreadSend mentions. Returns at most 100 log entries (default 50); pass nextCursor as after_id to read the next page. Empty entries mean no new saved messages, not that members have exited. Does not mark notifications read or change room membership.';
+  readonly parameters = toInputJsonSchema(RoomReadToolInputSchema);
+
+  constructor(
+    @IThreadCommunicationService threads: IThreadCommunicationService,
+    @ISessionContext session: ISessionContext,
+    @IRoomService rooms: IRoomService,
+    @IAgentScopeContext agent: IAgentScopeContext,
+  ) {
+    super(threads, session, rooms, agent);
+  }
+
+  resolveExecution(input: RoomReadToolInput): ToolExecution {
+    return { approvalRule: this.name, description: 'Reading room members and messages', execute: async () => {
+      const room = await this.requireMember(input.room);
+      const log = await this.rooms.log(input.room, { afterId: input.after_id, limit: input.limit ?? 50 });
+      return { output: JSON.stringify({ ...this.roster(room), ...log }, null, 2) };
+    } };
+  }
+}
+
+export class RoomAddTool extends RoomToolBase implements IRoomAddTool {
+  declare readonly _serviceBrand: undefined;
+  readonly name = 'RoomAdd';
+  readonly description = 'Add an existing unarchived top-level thread to a room this main thread already belongs to, only when the user asks. Use ThreadList for the existing session_id. Keeps the host, existing member settings, workspace permissions and the room limit of six members. An already joined thread is returned unchanged. Does not create a room, persona or session, and does not send a message.';
+  readonly parameters = toInputJsonSchema(RoomAddToolInputSchema);
+
+  constructor(
+    @IThreadCommunicationService threads: IThreadCommunicationService,
+    @ISessionContext session: ISessionContext,
+    @IRoomService rooms: IRoomService,
+    @IAgentScopeContext agent: IAgentScopeContext,
+  ) {
+    super(threads, session, rooms, agent);
+  }
+
+  resolveExecution(input: RoomAddToolInput): ToolExecution {
+    return { approvalRule: this.name, description: 'Adding an existing thread to a room', execute: async () => {
+      const room = await this.requireMember(input.room);
+      const duplicate = room.members.some((member) => member.sessionId === input.session_id);
+      const updated = duplicate ? room : await this.rooms.addMember(input.room, { kind: 'thread', sessionId: input.session_id });
+      return { output: JSON.stringify({ ...this.roster(updated), added: !duplicate }, null, 2) };
+    } };
   }
 }
 
@@ -306,4 +429,14 @@ registerAgentToolService(ISendMessageToThreadTool, SendMessageToThreadTool, {
 registerAgentToolService(IWaitThreadsTool, WaitThreadsTool, {
   name: 'ThreadWait',
   domain: 'threadCommunication',
+});
+registerAgentToolService(IRoomReadTool, RoomReadTool, {
+  name: 'RoomRead',
+  domain: 'threadCommunication',
+  when: mainAgentOnly,
+});
+registerAgentToolService(IRoomAddTool, RoomAddTool, {
+  name: 'RoomAdd',
+  domain: 'threadCommunication',
+  when: mainAgentOnly,
 });

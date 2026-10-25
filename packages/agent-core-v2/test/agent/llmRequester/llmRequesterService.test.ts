@@ -1,9 +1,20 @@
 import { createControlledPromise } from '@antfu/utils';
+import { readFileSync } from 'node:fs';
 import { release as osRelease } from 'node:os';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { WebSocket, WebSocketServer } from 'ws';
+import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
+import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
+import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
+import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
+import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
+import type { ConfigChangedEvent } from '#/app/config/config';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -57,8 +68,15 @@ import {
   APIProviderRateLimitError,
   APIRequestTooLargeError,
   APIStatusError,
+  ChatProviderError,
+  ambiguousRequestDelivery,
+  isRetryableGenerateError,
+  markProviderEventError,
+  noteExecutedRequestDelivery,
 } from '#/kosong/contract/errors';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
+import { readGenerateFailureFacts } from '#/kosong/contract/generate';
+import { toErrorPayload } from '#/_base/errors/serialize';
 import {
   isToolCall,
   type Message,
@@ -70,9 +88,10 @@ import type { ToolInfo } from '#/tool/toolContract';
 import { toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { SshHostStore } from '#/app/ssh/sshHosts';
 import type { ModelCapability } from '#/kosong/contract/capability';
+import { ResponsesWebSocketTransport } from '#/kosong/provider/bases/openai/responses-websocket';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { IModelService, type ModelRecord } from '#/kosong/model/model';
-import type { ProvidersSection } from '#/kosong/provider/provider';
+import { IProviderService, type ProvidersSection } from '#/kosong/provider/provider';
 import type { RequestIdentityPolicy } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import {
@@ -83,11 +102,13 @@ import {
 } from '#/kosong/model/modelRequester';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ILogService } from '#/_base/log/log';
-import { Error2, ErrorCodes } from '#/errors';
+import { Error2, ErrorCodes, attachErrorDetails } from '#/errors';
+import type { RetryConfig } from '#/agent/stepRetry/configSection';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { WireRecord } from '#/wire/record';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import {
   IRequestIdentityInstallation,
   IRequestIdentityRegistry,
@@ -215,6 +236,8 @@ function createService(
   options: {
     readonly thinkingLevel?: ThinkingEffort;
     readonly tokenMeasurementTrusted?: boolean;
+    readonly measuredTokens?: number;
+    readonly reservedContextSize?: number;
     readonly mediaResolver?: Partial<IAgentMediaResolverService>;
     readonly contextMessages?: Message[];
     readonly sessionId?: string;
@@ -231,6 +254,7 @@ function createService(
     readonly identityCatalogDocument?: unknown;
     readonly hostRequestHeaders?: Readonly<Record<string, string>>;
     readonly env?: Record<string, string>;
+    readonly retryConfig?: RetryConfig;
     readonly nativeWebSearch?: boolean;
     readonly nbSearch?: Partial<INbSearchService>;
     readonly promptConfig?: { value: PromptConfig };
@@ -238,6 +262,8 @@ function createService(
     readonly systemPrompt?: () => string;
     readonly tools?: readonly ToolInfo[];
     readonly advertisedProfiles?: ReadonlyMap<string, { line: string; signature: string }>;
+    readonly sectionChanges?: Emitter<ConfigChangedEvent>;
+    readonly catalogReads?: { value: number };
   } = {},
 ) {
   const ix = disposables.add(new TestInstantiationService());
@@ -252,13 +278,14 @@ function createService(
     fields: [],
   });
   const profile: Partial<IAgentProfileService> = {
+    getRecipeModelSettings: () => undefined,
     resolveModelContext: () => ({
       modelAlias: selectedModelAlias(),
-      modelCapabilities: capabilities,
-      maxOutputSize: undefined,
+      modelCapabilities: requester.model.capabilities,
+      maxOutputSize: requester.model.maxOutputSize,
       alwaysThinking: undefined,
       thinkingLevel,
-      reservedContextSize: undefined,
+      reservedContextSize: options.reservedContextSize,
       compactionTriggerRatio: undefined,
       compactionMaxAttempts: undefined,
       compactionSoftContextSize: undefined,
@@ -293,7 +320,7 @@ function createService(
   };
   const measuredCalls: { readonly messages: number; readonly usage: TokenUsage }[] = [];
   const tokenCounting = {
-    get: () => ({ size: 0, measured: 0, estimated: 0 }),
+    get: () => ({ size: 0, measured: options.measuredTokens ?? 0, estimated: 0 }),
     isCurrentContextMeasured: () => options.tokenMeasurementTrusted ?? false,
     measured: (input: readonly Message[], _output: readonly Message[], usage: TokenUsage) => {
       measuredCalls.push({ messages: input.length, usage });
@@ -341,8 +368,10 @@ function createService(
       if (section === 'prompt') return options.promptConfig?.value;
       if (section === 'providers') return options.providers;
       if (section === 'requestIdentity') return options.globalRequestIdentity?.value;
+      if (section === 'retry') return options.retryConfig;
       return undefined;
     }) as IConfigService['get'],
+    onDidSectionChange: options.sectionChanges?.event,
   };
   const log = { info: () => undefined, warn: () => undefined };
   const telemetryRecords: TelemetryRecord[] = [];
@@ -394,6 +423,10 @@ function createService(
   });
   ix.stub(IAgentUsageService, usage);
   ix.stub(IConfigService, config);
+  ix.stub(IProviderService, {
+    onDidChangeProviders: () => toDisposable(() => {}),
+    onDidChangeDefaultProvider: () => toDisposable(() => {}),
+  });
   ix.stub(IAgentIdentity, {
     resolved: async () => identitySnapshot,
     current: () => identitySnapshot,
@@ -448,7 +481,10 @@ function createService(
   ix.stub(IModelCatalog, {
     _serviceBrand: undefined,
     get: () => requester.model,
-    getRequester: () => requester,
+    getRequester: () => {
+      if (options.catalogReads !== undefined) options.catalogReads.value += 1;
+      return requester;
+    },
     findByName: () => [],
   });
   ix.stub(IModelService, {
@@ -464,6 +500,7 @@ function createService(
   registerTestEventDispatcher(ix);
   ix.set(IAgentStateService, new AgentStateService());
   ix.set(IAgentLLMRequesterService, new SyncDescriptor(AgentLLMRequesterService));
+  ix.stub(IAppendLogStore, { append: () => {}, flush: async () => {} });
 
   return {
     identityCatalog: catalog,
@@ -532,7 +569,258 @@ describe('AgentLLMRequesterService prompt snapshot invalidation', () => {
   });
 });
 
+describe('AgentLLMRequesterService Responses WebSocket lifecycle', () => {
+  it('shares only the main turn lineage and disposes the transport on helper/rebase boundaries', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    Object.assign(requester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    const captured = captureRequestParams(requester);
+    const dispose = vi.spyOn(ResponsesWebSocketTransport.prototype, 'dispose');
+    const { service } = createService(requester, undefined);
+    try {
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      const first = captured[0]?.responsesTransport;
+      expect(first).toBeDefined();
+      await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+      await service.request({ source: { type: 'turn', turnId: 2, step: 1 } });
+      expect(captured[1]?.responsesTransport).toBe(first);
+      expect(captured[2]?.responsesTransport).toBe(first);
+
+      await service.request({ source: { type: 'operation', requestKind: 'full_compaction' } });
+      expect(captured[3]?.responsesTransport).toBeUndefined();
+      expect(dispose).toHaveBeenCalledTimes(1);
+
+      await service.request({ source: { type: 'turn', turnId: 3, step: 1 } });
+      expect(captured[4]?.responsesTransport).toBeDefined();
+      expect(captured[4]?.responsesTransport).not.toBe(first);
+      expect(service.invalidatePromptSnapshots()).toBe(1);
+      expect(dispose).toHaveBeenCalledTimes(2);
+    } finally {
+      await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      dispose.mockRestore();
+    }
+  });
+
+  it('creates a distinct transport for each Agent service instance', async () => {
+    const firstRequester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    const secondRequester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    Object.assign(firstRequester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    Object.assign(secondRequester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    const firstCaptured = captureRequestParams(firstRequester);
+    const secondCaptured = captureRequestParams(secondRequester);
+    const first = createService(firstRequester, undefined).service;
+    const second = createService(secondRequester, undefined).service;
+    await first.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    await second.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    expect(firstCaptured[0]?.responsesTransport).toBeDefined();
+    expect(secondCaptured[0]?.responsesTransport).toBeDefined();
+    expect(firstCaptured[0]?.responsesTransport).not.toBe(secondCaptured[0]?.responsesTransport);
+  });
+
+  it('closes the Agent socket when system transport config changes', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai_responses' });
+    Object.assign(requester.model, { responsesWebSocket: { targets: ['https://example.test'] } });
+    const captured = captureRequestParams(requester);
+    const dispose = vi.spyOn(ResponsesWebSocketTransport.prototype, 'dispose');
+    const sectionChanges = new Emitter<ConfigChangedEvent>();
+    const { service } = createService(requester, undefined, { sectionChanges });
+    const changed = { domain: 'prompt', source: 'set' as const, value: undefined, previousValue: undefined };
+    try {
+      await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      const first = captured[0]?.responsesTransport;
+      sectionChanges.fire({ ...changed, domain: 'prompt' });
+      await service.request({ source: { type: 'turn', turnId: 1, step: 2 } });
+      expect(captured[1]?.responsesTransport).toBe(first);
+      sectionChanges.fire({ ...changed, domain: 'requestCompression' });
+      await service.request({ source: { type: 'turn', turnId: 1, step: 3 } });
+      expect(captured[2]?.responsesTransport).toBeDefined();
+      expect(captured[2]?.responsesTransport).not.toBe(first);
+      sectionChanges.fire({ ...changed, domain: 'responsesWebSocket' });
+      expect(dispose).toHaveBeenCalledTimes(2);
+    } finally {
+      sectionChanges.dispose();
+      await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      dispose.mockRestore();
+    }
+  });
+
+  it('lets a real in-flight Responses socket reach terminal before rotating the next request', async () => {
+    const capabilities = readFileSync(
+      new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url),
+      'utf8',
+    ).trim();
+    const server = createServer();
+    const sockets = new Set<WebSocket>();
+    const webSockets = new WebSocketServer({ server });
+    webSockets.on('headers', (headers) => {
+      headers.push(`X-Responses-WebSocket-Capabilities: ${capabilities}`);
+    });
+    let firstSocket: WebSocket | undefined;
+    let resolveFirstFrame: () => void = () => undefined;
+    const firstFrame = new Promise<void>((resolve) => {
+      resolveFirstFrame = resolve;
+    });
+    let connections = 0;
+    const sendCompleted = (socket: WebSocket, id: string, text: string): void => {
+      const output = [{
+        id: `msg_${id}`,
+        role: 'assistant',
+        status: 'completed',
+        type: 'message',
+        content: [{ annotations: [], text, type: 'output_text' }],
+      }];
+      socket.send(JSON.stringify({
+        content_index: 0,
+        delta: text,
+        item_id: `msg_${id}`,
+        output_index: 0,
+        sequence_number: 1,
+        type: 'response.output_text.delta',
+      }));
+      socket.send(JSON.stringify({
+        response: { id, output, status: 'completed', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+        sequence_number: 2,
+        type: 'response.completed',
+      }));
+    };
+    webSockets.on('connection', (socket) => {
+      const connection = connections;
+      connections += 1;
+      sockets.add(socket);
+      socket.on('close', () => sockets.delete(socket));
+      socket.on('message', () => {
+        const id = connection === 0 ? 'resp_old' : 'resp_new';
+        socket.send(JSON.stringify({
+          response: { id, output: [], status: 'in_progress' },
+          sequence_number: 0,
+          type: 'response.created',
+        }));
+        if (connection === 0) {
+          firstSocket = socket;
+          resolveFirstFrame();
+        } else {
+          sendCompleted(socket, id, 'new transport');
+        }
+      });
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model: Model = {
+      ...createRequester({ value: 0 }, null).model,
+      protocol: 'openai_responses',
+      baseUrl,
+      responsesWebSocket: { targets: [baseUrl] },
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) },
+    };
+    const provider = new OpenAIResponsesChatProvider({
+      model: model.name,
+      baseUrl,
+      apiKey: 'YOUR_API_KEY',
+      responsesWebSocket: { targets: [baseUrl] },
+    });
+    const requester = new ModelRequesterImpl(model, {
+      createChatProvider: () => provider,
+    } as unknown as IProtocolAdapterRegistry);
+    const dispose = vi.spyOn(ResponsesWebSocketTransport.prototype, 'dispose');
+    const sectionChanges = new Emitter<ConfigChangedEvent>();
+    const catalogReads = { value: 0 };
+    const { service } = createService(requester, undefined, { sectionChanges, catalogReads });
+    try {
+      const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+      await firstFrame;
+      const readsDuringFlight = catalogReads.value;
+      sectionChanges.fire({
+        domain: 'requestCompression',
+        source: 'set',
+        value: undefined,
+        previousValue: undefined,
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(firstSocket?.readyState).toBe(WebSocket.OPEN);
+      expect(dispose).not.toHaveBeenCalled();
+      sendCompleted(firstSocket!, 'resp_old', 'old transport completed');
+      await expect(pending).resolves.toMatchObject({
+        message: { content: [{ type: 'text', text: 'old transport completed' }] },
+      });
+      await vi.waitFor(() => {
+        expect(dispose).toHaveBeenCalledTimes(1);
+      });
+
+      await expect(service.request({ source: { type: 'turn', turnId: 1, step: 2 } })).resolves.toMatchObject({
+        message: { content: [{ type: 'text', text: 'new transport' }] },
+      });
+      expect(connections).toBe(2);
+      expect(catalogReads.value).toBeGreaterThan(readsDuringFlight);
+    } finally {
+      sectionChanges.dispose();
+      await (service as unknown as { dispose(): void | Promise<void> }).dispose();
+      for (const socket of sockets) socket.terminate();
+      await new Promise<void>((resolve) => {
+        webSockets.close(() => {
+          resolve();
+        });
+      });
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => {
+        server.close(() => {
+          resolve();
+        });
+      });
+      dispose.mockRestore();
+    }
+  });
+});
+
 describe('AgentLLMRequesterService parameter budgets', () => {
+  it.each(['openai', 'openai_responses'] as const)('uses the server output default for %s without a real output limit', async (protocol) => {
+    for (const contextSize of [0, 128000]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, {
+        protocol, capabilities: { ...capabilities, max_context_tokens: contextSize }, maxContextSize: contextSize,
+      });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, { reservedContextSize: 50000 });
+      await service.request({ messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBeUndefined();
+      expect(captured[0]?.maxContextTokens).toBeUndefined();
+    }
+  });
+
+  it('keeps explicit output, real model output and ContextBudget ceilings for OpenAI', async () => {
+    for (const limit of [
+      { model: {}, params: { maxCompletionTokens: 300 }, expected: 300 },
+      { model: { maxOutputSize: 600 }, params: {}, expected: 600 },
+      { model: {}, params: { maxContextTokens: 400 }, expected: 400 },
+    ]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai', ...limit.model });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined, { requestParams: limit.params });
+      await service.request({ maxOutputSize: 900, messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBe(limit.expected);
+    }
+  });
+
+  it('retains measured context independently of an automatic output budget', async () => {
+    const requester = createRequester({ value: 0 }, null, [], undefined, { protocol: 'openai' });
+    const captured = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { tokenMeasurementTrusted: true, measuredTokens: 800 });
+    await service.request({});
+    expect(captured[0]).toMatchObject({ usedContextTokens: 800, usedContextTokensTrusted: true });
+    expect(captured[0]?.maxCompletionTokens).toBeUndefined();
+  });
+
+  it('keeps legacy unknown output fallback for other protocols and Kimi', async () => {
+    for (const model of [
+      { protocol: 'anthropic' as const },
+      { protocol: 'openai' as const, providerType: 'kimi' },
+    ]) {
+      const requester = createRequester({ value: 0 }, null, [], undefined, {
+        ...model, capabilities: { ...capabilities, max_context_tokens: 0 }, maxContextSize: 0,
+      });
+      const captured = captureRequestParams(requester);
+      const { service } = createService(requester, undefined);
+      await service.request({ messages: history });
+      expect(captured[0]?.maxCompletionTokens).toBe(32000);
+    }
+  });
   it('clamps output to the context budget even when operation history has no measured usage', async () => {
     const requester = createRequester({ value: 0 }, null);
     const captured = captureRequestParams(requester);
@@ -583,6 +871,23 @@ describe('AgentLLMRequesterService parameter budgets', () => {
 });
 
 describe('AgentLLMRequesterService native tool and shared prompt preparation', () => {
+  it('records protocol and source from the bound requester model', async () => {
+    const { service, records } = createService(
+      createRequester({ value: 0 }, null, [], undefined, {
+        protocol: 'google-genai',
+        protocolSource: 'provider',
+      }),
+      undefined,
+    );
+    await service.request({ source: { type: 'turn', turnId: 1, step: 1 } });
+    const request = records.find((record) => record.type === 'llm.request');
+    expect(request).toMatchObject({
+      provider: 'google-genai',
+      protocol: 'google-genai',
+      protocol_source: 'provider',
+    });
+  });
+
   it('records only profiles actually advertised by the request schema and none when AgentRun is absent', async () => {
     const line = '- explore: Scoped evidence';
     const advertisedProfiles = new Map([
@@ -1437,6 +1742,50 @@ describe('AgentLLMRequesterService infinite retry', () => {
     vi.useRealTimers();
   });
 
+  it.each(['provider-failed', 'unknown-websocket'] as const)('uses the existing backoff for no-output %s and succeeds on the next attempt', async mode => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const error = mode === 'provider-failed'
+      ? markProviderEventError(new ChatProviderError('service unavailable'), 'provider_infrastructure_unavailable')
+      : ambiguousRequestDelivery(new APIConnectionError('websocket closed before terminal event (code 1012)'));
+    const { service } = createService(createRequester(calls, error), undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const onAttemptRetry = vi.fn();
+    const pending = service.request({ onAttemptRetry });
+    await vi.runAllTimersAsync();
+    expect((await pending).message.content).toEqual([{ type: 'text', text: 'ok' }]);
+    expect(calls.value).toBe(2);
+    expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['output', 'explicit-false', 'policy-false', 'thinking-only'] as const)('does not bypass %s while infinite retry is enabled', async mode => {
+    const calls = { value: 0 };
+    const error = mode === 'thinking-only'
+      ? markProviderEventError(new ChatProviderError('thinking-only stop'), 'antigravity_thinking_only')
+      : new APIStatusError(503, 'service unavailable');
+    if (mode === 'output') noteExecutedRequestDelivery(error);
+    if (mode === 'explicit-false') attachErrorDetails(error, { retry: false });
+    const { service } = createService(createRequester(calls, error), undefined, {
+      env: { [KIKI_INFINITE_RETRY_ENV]: '1' },
+      retryConfig: mode === 'policy-false' ? { policies: [{ match: 'APIStatusError', retry: false }] } : undefined,
+    });
+    await expect(service.request()).rejects.toBe(error);
+    expect(calls.value).toBe(1);
+  });
+
+  it('cancels during the existing backoff after a no-output provider failure', async () => {
+    vi.useFakeTimers();
+    const calls = { value: 0 };
+    const error = markProviderEventError(new ChatProviderError('service unavailable'), 'provider_infrastructure_unavailable');
+    const { service } = createService(createRequester(calls, error), undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const controller = new AbortController();
+    const pending = service.request({}, undefined, controller.signal);
+    const assertion = expect(pending).rejects.toThrow('stop');
+    setTimeout(() => { controller.abort(new Error('stop')); }, 100);
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(calls.value).toBe(1);
+  });
+
   it('retries every request error while KIKI_INFINITE_RETRY is set', async () => {
     vi.useFakeTimers();
     const calls = { value: 0 };
@@ -2145,5 +2494,338 @@ describe('AgentLLMRequesterService governance attribution', () => {
     const { service } = createService(requester, undefined, { env: { KIKI_INFINITE_RETRY: 'true' } });
     await expect(service.request()).rejects.toMatchObject({ code });
     expect(calls.value).toBe(1);
+  });
+});
+
+
+describe('Anthropic raw capture management port', () => {
+  it('defaults off and admits only the addressed identity and exact normal request binding', async () => {
+    const calls = { value: 0 };
+    const requester = createRequester(calls, null);
+    const params = captureRequestParams(requester);
+    const { service } = createService(requester, undefined, { agentId: 'example-child', sessionId: 'example-session', thinkingLevel: 'medium' });
+    expect(await service.anthropicResponseCaptureStatus()).toBeNull();
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+    const input = { sessionId: 'example-session', agentId: 'example-child', providerId: 'p', model: 'wire-model', thinkingEffort: 'medium', expiresAt: Date.now() + 3_600_000, maxResponses: 20 };
+    expect(() => service.armAnthropicResponseCapture({ ...input, sessionId: 'other' })).toThrow('identity must match');
+    expect(() => service.armAnthropicResponseCapture({ ...input, agentId: 'other' })).toThrow('identity must match');
+    expect(() => service.armAnthropicResponseCapture({ ...input, expiresAt: Date.now() - 1 })).toThrow('future expiry');
+    const armed = service.armAnthropicResponseCapture(input);
+    expect(() => service.armAnthropicResponseCapture(input)).toThrow('Stop the existing');
+    await service.request({ source: { type: 'turn', turnId: 7, step: 3 } });
+    expect(params.at(-1)?.rawResponseObserver).toBeDefined();
+    expect(await service.anthropicResponseCaptureStatus()).toMatchObject({ responses: 1, completed: 1, flushed: true });
+    await expect(service.stopAnthropicResponseCapture('other')).rejects.toThrow('id does not match');
+    expect(await service.stopAnthropicResponseCapture(armed.captureId)).toMatchObject({ enabled: false, closedReason: 'operator', flushed: true });
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+    service.armAnthropicResponseCapture({ ...input, providerId: 'other' });
+    await service.request(); expect(params.at(-1)?.rawResponseObserver).toBeUndefined();
+  });
+});
+
+describe('AgentLLMRequesterService production delivery provenance', () => {
+  it.each([
+    { kind: 'unknown connection', status: undefined, message: 'terminated' },
+    { kind: 'provider infrastructure failure', status: undefined, message: 'temporary service failure' },
+    { kind: 'partial rate limit', status: 429, message: 'rate limit after partial output' },
+    { kind: 'partial media rejection', status: 413, message: 'request entity too large' },
+    { kind: 'partial structure rejection', status: 400, message: 'messages: `tool_use` ids must be unique' },
+  ])('classifies $kind by actual output before projection or infinite retry', async ({ kind, status, message }) => {
+    let calls = 0;
+    const server = createServer((request, response) => {
+      calls += 1;
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        if (status === undefined) {
+          if (calls === 1) {
+            if (kind === 'provider infrastructure failure') response.end(`data: ${JSON.stringify({ type: 'response.failed', response: {
+              id: 'resp_failed', status: 'failed', output: [], error: { code: 'provider_infrastructure_unavailable', message },
+            } })}\n\n`);
+            else { response.write(': connected\n\n'); setImmediate(() => response.destroy()); }
+          } else response.end(`data: ${JSON.stringify({ type: 'response.completed', response: {
+            id: 'resp_recovered', status: 'completed', output: [{ type: 'message', id: 'msg_recovered', role: 'assistant',
+              content: [{ type: 'output_text', text: 'recovered', annotations: [] }] }],
+          } })}\n\n`);
+          return;
+        }
+        const events = [
+          { type: 'response.created', response: { id: 'resp_partial', output: [], status: 'in_progress' } },
+          { type: 'response.output_text.delta', item_id: 'msg_partial', output_index: 0, content_index: 0, delta: 'partial' },
+          { type: 'error', code: 'synthetic_rejection', message, status },
+        ];
+        response.end(events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol: 'openai_responses' as const, baseUrl,
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const provider = new OpenAIResponsesChatProvider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY',
+      requestCompression: { encoding: 'gzip', targets: [baseUrl], minBytes: 0 },
+      convertError: (event) => {
+        if (typeof event !== 'object' || event === null) return undefined;
+        const raw = event as Record<string, unknown>;
+        return typeof raw['status'] === 'number' && typeof raw['message'] === 'string'
+          ? new APIStatusError(raw['status'], raw['message']) : undefined;
+      },
+    });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    try {
+      const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 } }, undefined, AbortSignal.timeout(2_000));
+      if (status === undefined) {
+        expect((await result).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+        expect(calls).toBe(2);
+      } else {
+        await expect(result).rejects.toMatchObject({ statusCode: status, message });
+        expect(calls).toBe(1);
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
+  });
+});
+
+it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('recovers WebSocket %s only before output and replaces the failed connection', async mode => {
+  const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
+  const server = createServer();
+  const webSockets = new WebSocketServer({ server });
+  const sockets = new Set<WebSocket>();
+  const closedSockets = new Set<WebSocket>();
+  const requestSockets: WebSocket[] = [];
+  const frames: Record<string, unknown>[] = [];
+  const code = 'websocket_connection_limit_reached';
+  let calls = 0;
+  webSockets.on('headers', headers => { headers.push(`X-Responses-WebSocket-Capabilities: ${handshake}`); });
+  webSockets.on('connection', socket => {
+    sockets.add(socket);
+    socket.on('close', () => { sockets.delete(socket); closedSockets.add(socket); });
+    socket.on('message', bytes => {
+      calls++;
+      requestSockets.push(socket);
+      const frameBytes = Array.isArray(bytes) ? Buffer.concat(bytes) : bytes instanceof ArrayBuffer ? Buffer.from(bytes) : bytes;
+      frames.push(JSON.parse(frameBytes.toString()) as Record<string, unknown>);
+      if (calls === 1) {
+        if (mode.endsWith('1012')) {
+          if (mode !== '1012') {
+            const message = mode === 'empty-message-1012';
+            const item = message
+              ? { type: 'message', id: 'msg_fixture', role: 'assistant', status: 'in_progress', content: [] }
+              : { type: 'reasoning', id: 'rs_fixture', status: 'in_progress', summary: [] };
+            const events = [
+              { type: 'response.created', response: { id: 'resp_metadata', status: 'in_progress', output: [] } },
+              { type: 'response.in_progress', response: { id: 'resp_metadata', status: 'in_progress', output: [] } },
+              { type: 'response.output_item.added', output_index: 0, item },
+              message
+                ? { type: 'response.content_part.added', item_id: item.id, output_index: 0, content_index: 0, part: { type: 'output_text', text: '', annotations: [] } }
+                : mode === 'thinking-1012'
+                  ? { type: 'response.reasoning_summary_text.delta', item_id: item.id, output_index: 0, summary_index: 0, delta: 'fixture thought' }
+                  : { type: 'response.reasoning_summary_part.added', item_id: item.id, output_index: 0, summary_index: 0, part: { type: 'summary_text', text: '' } },
+            ];
+            for (const [sequence_number, event] of events.entries()) socket.send(JSON.stringify({ ...event, sequence_number }));
+          }
+          socket.close(1012, 'fixture service restart');
+        } else {
+          if (mode === 'partial-limit') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
+          if (mode === 'tool-limit') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
+            item: { type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture', name: 'Lookup', arguments: '{}' } }));
+          socket.send(JSON.stringify({ type: 'response.failed', response: { id: 'resp_failed', status: 'failed', output: [], error: {
+            code, message: 'Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.',
+          } } }));
+        }
+        return;
+      }
+      socket.send(JSON.stringify({ type: 'response.completed', sequence_number: 0, response: {
+        id: 'resp_recovered', status: 'completed', output: [{ type: 'message', id: 'msg_recovered', role: 'assistant',
+          status: 'completed', content: [{ type: 'output_text', text: 'recovered', annotations: [] }] }],
+      } }));
+    });
+  });
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+  const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+  const model = { ...createRequester({ value: 0 }, null).model, protocol: 'openai_responses' as const, baseUrl,
+    responsesWebSocket: { targets: [baseUrl] }, authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+  const provider = new OpenAIResponsesChatProvider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY', responsesWebSocket: { targets: [baseUrl] } });
+  const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+  const failures: unknown[] = [];
+  const request = requester.request.bind(requester);
+  requester.request = async function* (input, signal, params) {
+    try { yield* request(input, signal, params); }
+    catch (error) { failures.push(error); throw error; }
+  };
+  const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+  const onAttemptRetry = vi.fn();
+  const parts: StreamedMessagePart[] = [];
+  const hasOutput = mode === 'partial-limit' || mode === 'tool-limit' || mode === 'thinking-1012';
+  try {
+    const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, part => { parts.push(part); }, AbortSignal.timeout(2000));
+    if (hasOutput) {
+      const error = await pending.catch((error: unknown) => error);
+      expect(error).toBe(failures[0]);
+      expect(toErrorPayload(error).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
+      if (mode !== 'thinking-1012') expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code });
+      expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' ? { type: 'text', text: 'partial answer' }
+        : mode === 'thinking-1012' ? { type: 'think', think: 'fixture thought' } : { type: 'function', name: 'Lookup' }));
+      expect(calls).toBe(1);
+      expect(onAttemptRetry).not.toHaveBeenCalled();
+    } else {
+      expect((await pending).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+      expect(calls).toBe(2);
+      expect(requestSockets[1]).not.toBe(requestSockets[0]);
+      expect(frames[1]?.['input']).toEqual(frames[0]?.['input']);
+      expect(frames[1]).not.toHaveProperty('previous_response_id');
+      expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+      expect(toErrorPayload(failures[0]).details).not.toHaveProperty('request_output', 'observed');
+      expect(toErrorPayload(failures[0]).details).not.toHaveProperty('request_delivery', 'executed');
+    }
+    expect(failures).toHaveLength(1);
+    expect(isRetryableGenerateError(failures[0])).toBe(!hasOutput);
+    expect(readGenerateFailureFacts(failures[0])).toBeUndefined();
+    if (mode === 'empty-message-1012' || mode === 'empty-reasoning-1012' || mode === 'thinking-1012') {
+      const payload = toErrorPayload(failures[0]);
+      expect(payload.details?.['streamDiagnostics']).toMatchObject({
+        endSource: 'sdk_error', eventCount: 4, outputItemAddedCount: 1, outputItemDoneCount: 0,
+        terminalEventCount: 0, emittedTextChars: 0, emittedToolHeaders: 0,
+      });
+      expect(JSON.stringify(payload)).not.toContain('fixture thought');
+    }
+    await vi.waitFor(() => { expect(closedSockets.has(requestSockets[0]!)).toBe(true); });
+  } finally {
+    await (service as AgentLLMRequesterService).dispose();
+    for (const socket of sockets) socket.terminate();
+    await new Promise<void>(resolve => { webSockets.close(() => { resolve(); }); });
+    server.closeAllConnections();
+    await new Promise<void>(resolve => { server.close(() => { resolve(); }); });
+  }
+});
+
+describe.each([
+  { protocol: 'anthropic', Provider: AnthropicChatProvider },
+  { protocol: 'openai', Provider: OpenAILegacyChatProvider },
+  { protocol: 'openai_responses', Provider: OpenAIResponsesChatProvider },
+] as const)('Agent requester $protocol SDK timeout', ({ protocol, Provider }) => {
+  it.each(['gzip', 'zstd'] as const)('recovers a no-output %s SDK timeout through the existing infinite retry', async (encoding) => {
+    const sent: Array<string | null> = [];
+    let entered!: () => void;
+    const didSend = new Promise<void>((resolve) => { entered = resolve; });
+    vi.useFakeTimers();
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const request = new Request(input, init);
+      sent.push(request.headers.get('content-encoding'));
+      entered();
+      if (sent.length > 1) {
+        const frames = protocol === 'anthropic' ? [
+          { type: 'message_start', message: { id: 'msg_recovered', usage: { input_tokens: 7, output_tokens: 0 } } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'text', text: 'recovered' } },
+          { type: 'content_block_stop', index: 0 },
+          { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 2 } },
+          { type: 'message_stop' },
+        ] : protocol === 'openai' ? [
+          { id: 'chat_recovered', choices: [{ delta: { content: 'recovered' }, finish_reason: 'stop' }], usage: { prompt_tokens: 7, completion_tokens: 2 } },
+        ] : [{ type: 'response.completed', response: { id: 'resp_recovered', status: 'completed', output: [
+          { type: 'message', id: 'msg_recovered', role: 'assistant', content: [{ type: 'output_text', text: 'recovered', annotations: [] }] },
+        ], usage: { input_tokens: 7, output_tokens: 2 } } }];
+        return new Response(frames.map(frame => `${protocol === 'anthropic' ? `event: ${(frame as { type: string }).type}\n` : ''}data: ${JSON.stringify(frame)}\n\n`).join(''),
+          { headers: { 'content-type': 'text/event-stream' } });
+      }
+      return new Promise<Response>((_resolve, reject) => {
+        const abort = (): void => { reject(new DOMException('The operation was aborted.', 'AbortError')); };
+        if (request.signal.aborted) abort();
+        else request.signal.addEventListener('abort', abort, { once: true });
+      });
+    });
+    const baseUrl = 'https://example.test/v1';
+    const getAuth = vi.fn(async () => ({ apiKey: 'YOUR_API_KEY' }));
+    const model = { ...createRequester({ value: 0 }, null).model, protocol, baseUrl,
+      authProvider: { canRefresh: true, getAuth } };
+    const provider = new Provider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY',
+      requestCompression: { encoding, targets: [baseUrl], minBytes: 0 } });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    try {
+      const onAttemptRetry = vi.fn();
+      const result = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry,
+        messages: [{ role: 'user', content: [{ type: 'text', text: 'synthetic-timeout-history '.repeat(4000) }], toolCalls: [] }] });
+      await didSend;
+      await vi.advanceTimersByTimeAsync(600_001);
+      await vi.waitFor(() => { expect(onAttemptRetry).toHaveBeenCalledTimes(1); });
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((await result).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+      expect(sent).toEqual([encoding, encoding]);
+      expect(onAttemptRetry).toHaveBeenCalledTimes(1);
+      expect(getAuth).toHaveBeenCalledTimes(2);
+    } finally {
+      await (service as AgentLLMRequesterService).dispose();
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+});
+
+
+describe('Agent requester exact thinking-only provider failure', () => {
+  it.each(['anthropic', 'openai', 'openai_responses'] as const)('retains local facts and records %s usage once without a network retry', async protocol => {
+    const code = 'antigravity_thinking_only';
+    const thought = 'locally received private thought';
+    const signature = 'fixture-signature';
+    const frames = protocol === 'anthropic' ? [
+      { type: 'message_start', message: { id: 'msg_fixture', usage: { input_tokens: 7, output_tokens: 2 } } },
+      { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: thought } },
+      { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature } },
+      { type: 'error', error: { type: 'api_error', code, message: 'clean thinking stop' } },
+    ] : protocol === 'openai' ? [
+      { id: 'chat_fixture', choices: [{ delta: { reasoning_content: thought }, finish_reason: null }], usage: { prompt_tokens: 7, completion_tokens: 2 } },
+      { error: { code, message: 'clean thinking stop', type: 'api_error' } },
+    ] : [
+      { type: 'response.reasoning_summary_text.delta', delta: thought },
+      { type: 'response.output_item.done', output_index: 0, item: { type: 'reasoning', id: 'rs_fixture', summary: [], encrypted_content: signature } },
+      { type: 'response.failed', response: { id: 'resp_fixture', status: 'failed', output: [], usage: { input_tokens: 7, output_tokens: 2 }, error: { code, message: 'clean thinking stop' } } },
+    ];
+    let calls = 0;
+    const server = createServer((request, response) => {
+      calls += 1;
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(frames.map(frame => `${protocol === 'anthropic' ? `event: ${(frame as { type: string }).type}\n` : ''}data: ${JSON.stringify(frame)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol, baseUrl,
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const Provider = protocol === 'anthropic' ? AnthropicChatProvider : protocol === 'openai' ? OpenAILegacyChatProvider : OpenAIResponsesChatProvider;
+    const provider = new Provider({ model: model.name, baseUrl, apiKey: 'YOUR_API_KEY' });
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service, usageRecords } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    try {
+      const error = await service.request({ source: { type: 'turn', turnId: 1, step: 1 } }, undefined, AbortSignal.timeout(2_000)).catch((failure: unknown) => failure);
+      expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code });
+      const facts = readGenerateFailureFacts(error);
+      expect(facts?.message.content).toContainEqual(expect.objectContaining({ type: 'think', think: thought }));
+      if (protocol !== 'openai') expect(facts?.message.content[0]).toHaveProperty('encrypted', signature);
+      expect(usageRecords).toHaveLength(1);
+      expect(usageRecords[0]).toMatchObject({ usage: { inputOther: 7, output: 2 }, context: { usageKnown: true } });
+      expect(calls).toBe(1);
+      expect(JSON.stringify(toErrorPayload(error))).not.toContain(thought);
+      expect(JSON.stringify(toErrorPayload(error))).not.toContain(signature);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
+
+
+describe('Agent requester request-scoped retry policy', () => {
+  it.each([new APIStatusError(413, 'request entity too large'), new APIStatusError(503, 'service unavailable')])('preserves the original error without projection or infinite retry when retry is never: $statusCode', async error => {
+    const calls = { value: 0 };
+    const { service } = createService(createRequester(calls, error), undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const onAttemptRetry = vi.fn();
+    await expect(service.request({ retry: 'never', onAttemptRetry })).rejects.toBe(error);
+    expect(calls.value).toBe(1);
+    expect(onAttemptRetry).not.toHaveBeenCalled();
   });
 });

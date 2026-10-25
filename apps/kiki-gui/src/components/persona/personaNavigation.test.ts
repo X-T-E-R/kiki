@@ -17,7 +17,7 @@ const { scope, client, navigate, route, draftPage } = vi.hoisted(() => ({
   draftPage: vi.fn(),
   navigate: vi.fn(),
   client: {
-    listWorkspaces: vi.fn(), getConfig: vi.fn(), listModels: vi.fn(), listNamedAgentProfiles: vi.fn(), getAuth: vi.fn(), getPersona: vi.fn(), createSession: vi.fn(),
+    listWorkspaceCatalog: vi.fn(), getConfig: vi.fn(), listModels: vi.fn(), listNamedAgentProfiles: vi.fn(), getAuth: vi.fn(), getPersona: vi.fn(), createSession: vi.fn(),
     klient: { rest: { workspaces: { inspect: vi.fn() }, ssh: { addSessionHost: vi.fn() } } },
   },
 }));
@@ -34,7 +34,7 @@ afterAll(() => { environment.IS_REACT_ACT_ENVIRONMENT = false; });
 beforeEach(() => {
   scope.id = 'local'; scope.label = null; localStorage.clear(); resetDraftMemoryForTests();
   route.personaId = 'a'; route.data = []; route.isLoading = false; route.isError = false; draftPage.mockReset();
-  client.listWorkspaces.mockReset().mockResolvedValue({ items: [] });
+  client.listWorkspaceCatalog.mockReset().mockResolvedValue({ items: [] });
   client.getConfig.mockReset().mockResolvedValue({}); client.listModels.mockReset().mockResolvedValue({ items: [] });
   client.listNamedAgentProfiles.mockReset().mockResolvedValue({ items: [{ name: 'agent', main: true }] });
   client.getAuth.mockReset().mockResolvedValue({ ready: true });
@@ -156,7 +156,7 @@ describe('daily route rendering boundary', () => {
 describe('daily target/settings isolation', () => {
   const workspaces = ['project-a', 'project-b'].map((id) => ({ id, name: id, root: `/fixture/${id}`, created_at: '2026-10-01T00:00:00Z', last_opened_at: '2026-10-02T00:00:00Z', pinned: false, session_count: 0 }));
   it('does not copy A\'s chosen workspace into B\'s daily draft and restores A\'s explicit target', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: workspaces });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: workspaces });
     const a = await mountDraft('a');
     await act(async () => { a().selectWorkspace('project-a'); }); await unmountDrafts();
     const b = await mountDraft('b');
@@ -166,7 +166,7 @@ describe('daily target/settings isolation', () => {
   });
 
   it('lets the persona default determine a fresh daily target instead of silently sending to the most recent registered project', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: workspaces });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: workspaces });
     const current = await mountDraft('a');
     await act(async () => { await current().send('first message', []); });
     expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ persona: 'a', persona_home: true }));

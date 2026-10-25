@@ -17,6 +17,7 @@ const messageDeliverySchema = z.object({
   step: z.number().int().nonnegative().optional(),
   deliveredAt: z.string().min(1),
   origin: z.enum(['user', 'queue', 'mailbox', 'recovery', 'injection']),
+  placement: z.enum(['safety_boundary']).optional(),
 });
 
 const contextAppendMessageSchema = z.object({
@@ -108,6 +109,7 @@ export class ContextApplyCompaction extends Event2<ContextApplyCompactionPayload
 
 const contextUndoSchema = z.object({
   count: z.number().int().positive().max(Number.MAX_SAFE_INTEGER),
+  replacementPrompt: z.custom<import('#/agent/prompt/promptService').PromptEnqueuedPayload>().optional(),
 });
 
 export class ContextUndo extends Event2<z.infer<typeof contextUndoSchema>> {

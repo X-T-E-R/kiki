@@ -52,6 +52,7 @@ async function openWithScriptedAgent(
     systemPromptOverride?: string;
     sessionMeta?: Record<string, unknown>;
     contextHookHandler?: import('../src/types').AcpContextHookHandler;
+    permissionHandler?: import('../src/types').AcpPermissionHandler;
     requireResume?: boolean;
     onFork?: import('../src/types').AcpOpenSessionOptions['onFork'];
   },
@@ -62,7 +63,7 @@ async function openWithScriptedAgent(
   const client = new AcpProcessClient(
     { spawn: async () => child },
     { id: 'fixture', command: 'fixture', startupTimeoutMs: 5_000 },
-    { platform: 'linux', contextHookHandler: options.contextHookHandler },
+    { platform: 'linux', contextHookHandler: options.contextHookHandler, permissionHandler: options.permissionHandler },
   );
   try {
     const opened = await client.openSession({
@@ -82,6 +83,65 @@ async function openWithScriptedAgent(
 }
 
 describe('AcpProcessClient session capability negotiation', () => {
+  it.each(['new', 'load'] as const)('preserves actual request and response metadata for %s and live reuse', async (mode) => {
+    const sessionMeta = { 'kiki.permission': { requestId: 'this-open', override: { mode: 'yolo', source: 'runtime' }, restriction: undefined } };
+    const wireMeta = JSON.parse(JSON.stringify(sessionMeta));
+    const responseMeta = { 'kiki.permission': { sessionId: 'session-in-process', openMode: mode, applied: wireMeta['kiki.permission'] } };
+    const { client, opened } = await openWithScriptedAgent({ capabilities: { loadSession: true }, sessionResponseMeta: responseMeta }, {
+      sessionMeta, sessionRef: mode === 'load' ? { executorId: 'fixture', version: 1, ref: { sessionId: 'session-in-process' } } : undefined,
+    });
+    try {
+      expect(opened.mode).toBe(mode);
+      expect(opened.sessionRequestMeta).toStrictEqual(wireMeta);
+      expect(opened.sessionResponseMeta).toEqual(responseMeta);
+      const live = await client.openSession({ cwd: 'C:/workspace', sessionMeta: { 'kiki.permission': { requestId: 'not-sent-on-live-open' } } });
+      expect(live.mode).toBe('live');
+      expect(live.sessionRequestMeta).toStrictEqual(wireMeta);
+      expect(live.sessionResponseMeta).toEqual(responseMeta);
+    } finally { await client.shutdown(); }
+  });
+  it.each(['partial', 'explicit', 'explicit-null', 'other-session', 'next-turn'] as const)(
+    'preserves scoped permission tool facts for %s requests', async (scenario) => {
+      const script: InProcessAgentScript = {
+        promptUpdates: [{ sessionUpdate: 'tool_call', toolCallId: 'tool-1', title: 'Edit', kind: 'edit',
+          status: 'pending', locations: [{ path: '/workspace/example.ts' }] }],
+        permissionOptions: [{ optionId: 'allow', name: 'Allow once', kind: 'allow_once' }],
+        permissionToolCall: { toolCallId: 'tool-1', title: 'Edit /workspace/example.ts',
+          rawInput: { file_path: '/workspace/example.ts', old_string: 'before', new_string: 'after' },
+          kind: scenario === 'explicit' ? 'read' : scenario === 'explicit-null' ? null : undefined,
+          locations: scenario === 'explicit' ? [{ path: '/workspace/explicit.ts' }] : scenario === 'explicit-null' ? null : undefined },
+        permissionSessionId: scenario === 'other-session' ? 'different-session' : undefined,
+      };
+      const requests: Parameters<import('../src/types').AcpPermissionHandler>[0][] = [];
+      const { client, history } = await openWithScriptedAgent(script, {
+        permissionHandler: (request) => {
+          requests.push(request);
+          return { outcome: 'selected', optionId: 'allow' };
+        },
+      });
+      try {
+        const run = async () => {
+          const turn = await client.startTurn({ prompt: 'neutral fixture', signal: new AbortController().signal,
+            session: { cwd: '/workspace' } });
+          for await (const _event of turn.events) { }
+          await turn.completion;
+        };
+        await run();
+        if (scenario === 'next-turn') {
+          Object.assign(script, { promptUpdates: [] });
+          await run();
+        }
+        const request = requests.at(-1)!;
+        expect(request.toolCall.rawInput).toEqual(script.permissionToolCall?.rawInput);
+        expect(request.toolCall.title).toBe(script.permissionToolCall?.title);
+        expect(request.toolCall.kind).toBe(scenario === 'partial' ? 'edit'
+          : scenario === 'explicit' ? 'read' : scenario === 'explicit-null' ? null : undefined);
+        expect(request.toolCall.locations).toEqual(scenario === 'partial' ? [{ path: '/workspace/example.ts' }]
+          : scenario === 'explicit' ? [{ path: '/workspace/explicit.ts' }] : scenario === 'explicit-null' ? null : undefined);
+        expect(history.permissionResponses.at(-1)).toEqual({ outcome: { outcome: 'selected', optionId: 'allow' } });
+      } finally { await client.shutdown(); }
+    },
+  );
   it('forwards current permission context on every prompt without reopening the session', async () => {
     const { client, history } = await openWithScriptedAgent({}, {});
     try {
@@ -359,4 +419,75 @@ describe('ACP fork isolation', () => {
     })).rejects.toThrow();
     expect(saved).toEqual([{ executorId: 'fixture', version: 1, ref: { sessionId: 'forked-session' } }]);
   }, 15_000);
+});
+
+async function whenPrompting(methods: readonly string[]): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (!methods.includes('session/prompt')) {
+    if (Date.now() > deadline) throw new Error('scripted prompt did not start');
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+describe('AcpProcessClient steering consumption', () => {
+  const steeringMeta = { steering: { supported: true } };
+
+  async function duringPrompt(outcome: InProcessAgentScript['steeringOutcome']) {
+    const opened = await openWithScriptedAgent({
+      hangPrompt: true,
+      initializeMeta: steeringMeta,
+      steeringOutcome: outcome,
+    }, {});
+    const turn = await opened.client.startTurn({
+      prompt: 'work',
+      signal: new AbortController().signal,
+      session: { cwd: 'C:/workspace' },
+    });
+    void turn.completion.catch(() => undefined);
+    await whenPrompting(opened.history.methods);
+    return { ...opened, turn };
+  }
+
+  it('acks an injected steering prompt', async () => {
+    const { client, history, turn } = await duringPrompt('injected');
+    try {
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(true);
+      expect(history.steeringParams).toEqual([expect.objectContaining({
+        prompt: [{ type: 'text', text: 'later' }],
+        _meta: { steering: { idleBehavior: 'promptRequired' } },
+      })]);
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
+
+  it('acks a started turn once and then stops steering that session', async () => {
+    const { client, history, turn } = await duringPrompt('startedNewTurn');
+    try {
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(true);
+      await expect(client.steer([{ type: 'text', text: 'again' }])).resolves.toBe(false);
+      expect(history.steeringParams).toHaveLength(1);
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
+
+  it('reports a steering request lost when the connection closes as unknown', async () => {
+    const { client } = await duringPrompt('hang');
+    const pending = client.steer([{ type: 'text', text: 'later' }]);
+    await client.shutdown();
+    await expect(pending).resolves.toBe('unknown');
+  });
+
+  it.each(['promptRequired', 'unknown', 'reject', 'abort'] as const)('leaves %s unconsumed', async (outcome) => {
+    const { client, turn } = await duringPrompt(outcome);
+    try {
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(false);
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
 });

@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { normalizeLiteral, tokenize } from '@kiki/minidb';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SqliteSearchIndex } from '../../src/search/sqlite/index';
 import { openSearchDatabase } from '../../src/search/sqlite/schema';
@@ -134,6 +134,47 @@ describe('SQLite derived search index', () => {
     expect(second.rows.map((r) => 'turn' in r.value ? r.value.turn : undefined)).toEqual([1, 1]);
     expect(second.hasMore).toBe(false);
     await expect(index.search(q('梨子'), first.pageToken)).rejects.toMatchObject({ reason: 'invalid_page_token' });
+  });
+
+  it('keeps default conversation score search on bounded ranked candidates', async () => {
+    await wire([
+      ...Array.from({ length: 80 }, () => tool('needle '.repeat(100))),
+      ...Array.from({ length: 70 }, (_, i) => user(`needle ${'padding '.repeat(20)}${i}`)),
+      assistant('needle needle needle'),
+    ]);
+    await index.syncSession(session());
+    const originalPrepare = index.db.prepare.bind(index.db);
+    const limits: number[] = [];
+    const prepare = vi.spyOn(index.db, 'prepare').mockImplementation((sql) => {
+      const statement = originalPrepare(sql);
+      if (sql.includes('ORDER BY rank LIMIT')) {
+        const all = statement.all.bind(statement);
+        vi.spyOn(statement, 'all').mockImplementation((...args) => {
+          limits.push(Number(args.at(-1)));
+          return all(...args);
+        });
+      }
+      return statement;
+    });
+    const query = q('needle', 'terms', 'score', 20);
+    const page = await index.search(query);
+    expect(page.rows).toHaveLength(20);
+    expect(page.rows[0]?.value).toMatchObject({ role: 'assistant', text: 'needle needle needle' });
+    expect(page.rows.every((row) => row.value.role !== 'tool')).toBe(true);
+    expect(page.incomplete).toBe('candidate_cap');
+    expect(page.rows.map((row) => row.score)).toEqual(page.rows.map((row) => row.score).toSorted((a, b) => b - a));
+    const sql = prepare.mock.calls.map(([statement]) => statement);
+    expect(sql.find((statement) => statement.includes('docs_terms MATCH'))).toMatch(/d\.role!='tool'.*ORDER BY rank LIMIT/s);
+    expect(sql.some((statement) => statement.includes('count(*)'))).toBe(false);
+    expect(limits).toEqual([65]);
+    expect(page.pageToken).toBeDefined();
+    prepare.mockRestore();
+    const tools = await index.search({ ...query, includeToolOutput: true });
+    expect(tools.rows[0]?.value.role).toBe('tool');
+    expect(tools.rows).toHaveLength(20);
+    expect(tools.incomplete).toBe('candidate_cap');
+    await expect(index.search({ ...query, includeToolOutput: true }, page.pageToken))
+      .rejects.toMatchObject({ reason: 'invalid_page_token' });
   });
 
   it('applies session, workspace, agent, role and time filters before candidate caps', async () => {

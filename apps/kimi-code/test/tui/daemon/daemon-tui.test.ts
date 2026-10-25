@@ -13,6 +13,7 @@ import {
   MEDIA_STAGING_TTL_SECONDS,
 } from '#/tui/constant/media';
 import type { DaemonFileAttachment } from '#/tui/daemon/attachments';
+import type { ShowStatusOptions } from '#/tui/daemon/activity-status-helper';
 import { buildLoadedTranscriptMarkdown, DaemonTUI } from '#/tui/daemon/daemon-tui';
 import type { ImageAttachmentStore } from '#/tui/utils/image-attachment-store';
 import * as clipboardImage from '#/utils/clipboard/clipboard-image';
@@ -65,6 +66,10 @@ function driver(
     blocks: [] as Array<Record<string, unknown>>,
     activePromptId: undefined as string | undefined,
     queuedPromptIds: [] as string[],
+    turnStartedAt: undefined as number | undefined,
+    tasks: [] as Array<{ kind: string; status: string }>,
+    turnRetry: undefined as { failedAttempt: number; maxAttempts: number; delayMs: number } | undefined,
+    resyncAttempt: 0,
     turnTail: undefined as { turnId: string } | undefined,
     goal: null as null | { status: 'active' | 'paused' | 'blocked' | 'complete' },
   };
@@ -137,13 +142,19 @@ function driver(
     ensureSourceOverlayLease(): Promise<string>;
     initializeSession(): Promise<void>;
     renderSession(view: unknown): void;
+    renderActivityState(view: unknown): void;
+    clearActivityTickTimer(): void;
+    clearStatusNotice(): void;
+    activityTickTimer: ReturnType<typeof setInterval> | undefined;
+    activeStatusNotice: unknown;
+    sourceOverlayErrorActive: boolean;
     settleAttachmentLeases(view: unknown): void;
     refreshAgentCommands(): Promise<void>;
     refreshSkillCommands(sessionId: string): Promise<void>;
     showSessionPicker(scope?: 'cwd' | 'all'): Promise<void>;
     respondApproval(block: unknown, response: unknown): Promise<void>;
     respondQuestion(block: unknown, response: unknown): Promise<void>;
-    showStatus: ReturnType<typeof vi.fn>;
+    showStatus: ReturnType<typeof vi.fn<(message: string, options?: 'normal' | 'error' | ShowStatusOptions) => void>>;
   };
   internal.controller = controller;
   const addImage = internal.imageAttachments.addImage.bind(internal.imageAttachments);
@@ -268,7 +279,10 @@ function driver(
   internal.client.setThinking = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setPlanMode = vi.fn(async () => ({ id: 'session-1' }));
   internal.client.setTitle = vi.fn(async (_sessionId, title) => ({ id: 'session-1', title }));
-  internal.client.updateSessionProfile = vi.fn(async () => ({ id: 'session-1' }));
+  internal.client.updateSessionProfile = vi.fn(async () => ({
+    id: 'session-1',
+    agent_config: { model: 'model-a', profile: undefined },
+  }));
   internal.client.renewServerLease = vi.fn(async () => ({
     lease_id: 'lease-1',
     expires_at: Date.now() + 60_000,
@@ -300,6 +314,9 @@ function driver(
 afterEach(async () => {
   vi.unstubAllEnvs();
   for (const tui of created.splice(0)) {
+    const internal = tui as unknown as { clearActivityTickTimer(): void; clearStatusNotice(): void };
+    internal.clearActivityTickTimer();
+    internal.clearStatusNotice();
     tui.state.footer.dispose();
     await (tui as unknown as { client: { close(): Promise<void> } }).client.close();
   }
@@ -329,9 +346,9 @@ describe('DaemonTUI commands', () => {
     }
     for (const text of [
       '/tasks [stop|output] [task-id]', 'Browse background tasks',
-      '/help (/h, /?)', 'Disabled in daemon TUI:',
+      '/help (/h, /?)', 'Disabled in daemon TUI',
       'Export the session as a ZIP archive; use kiki export', 'Local docs:',
-      'type / in the input box', 'Ctrl--',
+      'type / in the input box', 'Ctrl+-',
       'Prompt steering shortcut is disabled in daemon TUI',
       'Backgrounding the active turn is disabled in daemon TUI',
     ]) expect(frames.some((frame) => frame.includes(text)), text).toBe(true);
@@ -1347,7 +1364,7 @@ describe('DaemonTUI commands', () => {
     expect(tui.state.editor.onToggleTodoExpand?.()).toBe(true);
     expect(internal.showStatus).toHaveBeenCalledWith(
       expect.stringContaining('Retrying attempt'),
-      'normal',
+      { tone: 'normal', source: 'activity' },
     );
     expect(tui.state.footer.render(120).join('\n')).toContain('task');
   });
@@ -1416,7 +1433,7 @@ describe('DaemonTUI commands', () => {
     const help = focus.mock.lastCall?.[0];
     if (help === undefined || help === null) throw new Error('Help was not focused');
     expect(help).not.toBe(tui.state.editor);
-    expect(tui.state.editorContainer.render(80).join('\n')).toContain('Supported:');
+    expect(tui.state.editorContainer.render(80).join('\n')).toContain('Sessions & history');
     help.handleInput?.('\u001B');
     expect(focus.mock.lastCall?.[0]).toBe(tui.state.editor);
     await internal.handleSlash('/config');
@@ -1861,5 +1878,431 @@ describe('DaemonTUI commands', () => {
     expect(internal.showStatus).toHaveBeenCalledWith('offline', 'error');
     expect(internal.showStatus).toHaveBeenCalledWith('resync offline', 'error');
     expect(controller.resync).toHaveBeenCalledTimes(2);
+  });
+
+  describe('TUI activity and status presentation (TUI01/02 & AF1/AF2/AF3/AF4)', () => {
+    it('clears activityContainer when transitioning from busy to idle without leaving a completed tag', () => {
+      const { tui, internal, controllerState } = driver();
+      const prototype = Object.getPrototypeOf(tui) as {
+        showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+      };
+      internal.showStatus.mockImplementation(
+        (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+          prototype.showStatus.call(tui, message, options);
+        },
+      );
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+      // Set busy state
+      controllerState.busy = true;
+      internal.renderActivityState(controllerState);
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+
+      // Transition to idle
+      controllerState.busy = false;
+      internal.renderActivityState(controllerState);
+      expect(tui.state.activityContainer.render(80).join('\n').trim()).toBe('');
+    });
+
+    it('renders pure Working… when turnStartedAt is cold or unknown', () => {
+      const { tui, internal, controllerState } = driver();
+      const prototype = Object.getPrototypeOf(tui) as {
+        showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+      };
+      internal.showStatus.mockImplementation(
+        (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+          prototype.showStatus.call(tui, message, options);
+        },
+      );
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+      controllerState.busy = true;
+      controllerState.turnStartedAt = undefined;
+      internal.renderActivityState(controllerState);
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+      expect(tui.state.activityContainer.render(80).join('\n')).not.toContain('waited');
+    });
+
+    it('renders Window 1 waited suffix driven by real 1s tick timer and hands off to Window 2 on first agent response', async () => {
+      vi.useFakeTimers();
+      try {
+        const { tui, internal, controllerState } = driver();
+        const prototype = Object.getPrototypeOf(tui) as {
+          showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+        };
+        internal.showStatus.mockImplementation(
+          (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+            prototype.showStatus.call(tui, message, options);
+          },
+        );
+        vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+        const now = 1_700_000_000_000;
+        vi.setSystemTime(now);
+
+        controllerState.busy = true;
+        controllerState.turnStartedAt = now;
+        controllerState.blocks = [{ kind: 'user', id: 'u1', text: 'prompt', createdAt: new Date(now).toISOString() }];
+        internal.renderActivityState(controllerState);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+
+        // Advance 2 real seconds via timer tick (still < 3s threshold)
+        vi.advanceTimersByTime(2_000);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+        expect(tui.state.activityContainer.render(80).join('\n')).not.toContain('waited');
+
+        // Advance 1 more second to cross 3s threshold (driven by 1s interval tick!)
+        vi.advanceTimersByTime(1_000);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working · waited 3s');
+
+        // Advance 15 more seconds to reach 18s via real tick
+        vi.advanceTimersByTime(15_000);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working · waited 18s');
+
+        // Verify 24 column wrap retains waited 18s
+        const narrowWaited = tui.state.activityContainer.render(24).join('\n');
+        expect(narrowWaited).toContain('waited 18s');
+
+        // Agent first response arrives at t = 18s
+        const firstResponseTime = now + 18_000;
+        controllerState.blocks = [
+          ...controllerState.blocks,
+          {
+            kind: 'assistant',
+            id: 'a1',
+            text: 'Here is the answer',
+            streaming: false,
+            createdAt: new Date(firstResponseTime).toISOString(),
+          },
+        ];
+
+        // Trigger update with first agent response
+        internal.renderActivityState(controllerState);
+
+        // Advance 5 seconds in Window 2 via real tick
+        vi.advanceTimersByTime(5_000);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working · last response 5s ago');
+
+        // Also verify 24 column wrap retains last response without truncation
+        const narrowWait = tui.state.activityContainer.render(24).join('\n');
+        expect(narrowWait).toContain('response');
+
+        // Switch session resets tracker and clears tick timer
+        await internal.openSession('session-2');
+        expect(internal.activityTickTimer).toBeUndefined();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('renders pure Working… when turnStartedAt is in the future due to clock skew', () => {
+      vi.useFakeTimers();
+      try {
+        const { tui, internal, controllerState } = driver();
+        const prototype = Object.getPrototypeOf(tui) as {
+          showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+        };
+        internal.showStatus.mockImplementation(
+          (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+            prototype.showStatus.call(tui, message, options);
+          },
+        );
+        vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+        const now = 1_700_000_000_000;
+        vi.setSystemTime(now);
+
+        controllerState.busy = true;
+        controllerState.blocks = [
+          { kind: 'user', id: 'old-u', text: 'old', createdAt: new Date(now - 60_000).toISOString() },
+          { kind: 'assistant', id: 'old-a', text: 'old answer', streaming: false, createdAt: new Date(now - 59_000).toISOString() },
+        ];
+        for (const start of [undefined, now + 180_000]) {
+          controllerState.turnStartedAt = start;
+          internal.renderActivityState(controllerState);
+          vi.advanceTimersByTime(60_000);
+          expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+          expect(tui.state.activityContainer.render(80).join('\n')).not.toMatch(/waited|last response/);
+          expect(internal.activityTickTimer).toBeUndefined();
+        }
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('transient notice restores activity after TTL, while non-transient status remains sticky', () => {
+      vi.useFakeTimers();
+      try {
+        const { tui, internal, controllerState } = driver();
+        const prototype = Object.getPrototypeOf(tui) as {
+          showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+        };
+        internal.showStatus.mockImplementation(
+          (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+            prototype.showStatus.call(tui, message, options);
+          },
+        );
+        vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+        controllerState.busy = true;
+        internal.renderActivityState(controllerState);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+
+        // Transient action receipt
+        internal.showStatus('Copied the last assistant message.', { transient: true });
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Copied the last assistant message.');
+
+        // Re-rendering activity does not wipe transient message before TTL
+        internal.renderActivityState(controllerState);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Copied the last assistant message.');
+
+        // After TTL passes, activity is restored
+        vi.advanceTimersByTime(3_000);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+
+        // Non-transient status (e.g. export path or web address)
+        internal.showStatus('C:/export/result.md');
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('C:/export/result.md');
+
+        // Even after time passes, non-transient status stays sticky and is not cleared by TTL
+        vi.advanceTimersByTime(10_000);
+        internal.renderActivityState(controllerState);
+        expect(tui.state.activityContainer.render(80).join('\n')).toContain('C:/export/result.md');
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resyncFailed has highest priority and cannot be overwritten by showStatus until resync succeeds', () => {
+      const { tui, internal, controllerState } = driver();
+      const prototype = Object.getPrototypeOf(tui) as {
+        showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+      };
+      internal.showStatus.mockImplementation(
+        (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+          prototype.showStatus.call(tui, message, options);
+        },
+      );
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+      // Sticky message in place
+      internal.showStatus('C:/export/result.md');
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('C:/export/result.md');
+
+      // resyncFailed activates
+      controllerState.resyncFailed = true;
+      internal.renderActivityState(controllerState);
+      const output = tui.state.activityContainer.render(80).join('\n');
+      expect(output).toContain('Session resync failed. Run /reload to retry.');
+
+      // Also verify 24 column wrap retains /reload
+      const narrow = tui.state.activityContainer.render(24).join('\n');
+      expect(narrow).toContain('/reload');
+
+      // Attempting to show status while resyncFailed is active is blocked
+      internal.showStatus('Another notice while resync failed');
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('Session resync failed. Run /reload to retry.');
+
+      // When resync succeeds, normal activity state is restored
+      controllerState.resyncFailed = false;
+      controllerState.busy = true;
+      internal.renderActivityState(controllerState);
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('Working…');
+    });
+
+    it('clears source overlay error notice upon self-recovery without deleting unrelated notices', async () => {
+      const { tui, internal } = driver();
+      const prototype = Object.getPrototypeOf(tui) as {
+        showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+      };
+      internal.showStatus.mockImplementation(
+        (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+          prototype.showStatus.call(tui, message, options);
+        },
+      );
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+      // 1. Simulate lease heartbeat failure
+      internal.sourceOverlayErrorActive = true;
+      internal.showStatus('Source overlay lease renewal failed: connection reset', {
+        tone: 'error',
+        source: 'source-overlay',
+      });
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('Source overlay lease renewal failed');
+
+      // 2. An unrelated export result replaces the notice
+      internal.showStatus('C:/export/result.md');
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('C:/export/result.md');
+
+      // 3. Now ensureSourceOverlayLease succeeds while unrelated notice is active
+      internal.client.renewServerLease.mockResolvedValueOnce({
+        lease_id: 'lease-recovered',
+        expires_at: Date.now() + 60_000,
+      });
+
+      await internal.ensureSourceOverlayLease();
+      expect(internal.sourceOverlayErrorActive).toBe(false);
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('C:/export/result.md');
+      internal.sourceOverlayErrorActive = true;
+      internal.showStatus('Attachment upload failed', 'error');
+      await internal.ensureSourceOverlayLease();
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('Attachment upload failed');
+
+      // 4. Now if lease renewal fails again and recovers with source-overlay notice intact
+      internal.sourceOverlayErrorActive = true;
+      internal.showStatus('Source overlay lease renewal failed: timeout', {
+        tone: 'error',
+        source: 'source-overlay',
+      });
+      expect(tui.state.activityContainer.render(80).join('\n')).toContain('Source overlay lease renewal failed: timeout');
+
+      internal.client.renewServerLease.mockResolvedValueOnce({
+        lease_id: 'lease-recovered-2',
+        expires_at: Date.now() + 60_000,
+      });
+      await internal.ensureSourceOverlayLease();
+      expect(internal.sourceOverlayErrorActive).toBe(false);
+      expect(tui.state.activityContainer.render(80).join('\n')).not.toContain('Source overlay lease renewal failed');
+    });
+
+    it('clears timer and status notice on openSession and dispose', async () => {
+      const { tui, internal } = driver();
+      const prototype = Object.getPrototypeOf(tui) as {
+        showStatus(message: string, options?: 'normal' | 'error' | ShowStatusOptions): void;
+      };
+      internal.showStatus.mockImplementation(
+        (message: string, options?: 'normal' | 'error' | ShowStatusOptions) => {
+          prototype.showStatus.call(tui, message, options);
+        },
+      );
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+
+      internal.showStatus('Copied the last assistant message.', { transient: true });
+      expect(internal.activeStatusNotice).toBeDefined();
+
+      // Switch session clears notice and timer
+      await internal.openSession('session-new');
+      expect(internal.activeStatusNotice).toBeUndefined();
+
+      // Re-set notice and test dispose
+      internal.showStatus('Copied the last assistant message.', { transient: true });
+      expect(internal.activeStatusNotice).toBeDefined();
+
+      await tui.close();
+      expect(internal.activeStatusNotice).toBeUndefined();
+      expect(internal.activityTickTimer).toBeUndefined();
+    });
+
+    it('projects current-turn history, streaming and queued changes through the production ticker', async () => {
+      vi.useFakeTimers();
+      const { tui, internal, controllerState } = driver();
+      internal.showStatus.mockImplementation(Object.getPrototypeOf(tui).showStatus.bind(tui));
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+      const now = 1_700_000_000_000;
+      vi.setSystemTime(now);
+      const frame = () => tui.state.activityContainer.render(80).join('\n');
+      try {
+        controllerState.busy = true;
+        controllerState.turnStartedAt = now;
+        controllerState.blocks = [
+          { kind: 'user', id: 'old-u', text: 'old', createdAt: new Date(now - 60_000).toISOString() },
+          { kind: 'assistant', id: 'old-a', text: 'old answer', streaming: false, createdAt: new Date(now - 59_000).toISOString() },
+          { kind: 'user', id: 'new-u', text: 'new', createdAt: new Date(now).toISOString() },
+        ];
+        internal.renderActivityState(controllerState);
+        vi.advanceTimersByTime(2_999);
+        expect(frame()).toContain('Working…');
+        vi.advanceTimersByTime(1);
+        expect(frame()).toContain('Working · waited 3s');
+        controllerState.tasks = [{ kind: 'bash', status: 'running' }, { kind: 'subagent', status: 'running' }];
+        vi.advanceTimersByTime(15_000);
+        expect(frame()).toContain('Working · 2 tasks running · waited 18s');
+        const narrow = tui.state.activityContainer.render(24);
+        expect(narrow.every((line) => visibleWidth(line) <= 24)).toBe(true);
+        expect(narrow.join(' ').replaceAll(/\s+/g, ' ')).toContain('running · waited 18s');
+
+        const answer = { kind: 'assistant', id: 'new-a', text: 'Hello', streaming: true, createdAt: new Date(now + 18_000).toISOString() };
+        controllerState.blocks.push(answer);
+        vi.advanceTimersByTime(1_000);
+        expect(frame()).toContain('last response 1s ago');
+        expect(frame()).not.toContain('waited');
+        answer.text = 'Hello world';
+        vi.advanceTimersByTime(1_000);
+        expect(frame()).toContain('last response 0s ago');
+        controllerState.queuedPromptIds = ['queued-p'];
+        controllerState.blocks.push({ kind: 'user', id: 'queued-u', promptId: 'queued-p', text: 'next', createdAt: new Date().toISOString() });
+        vi.advanceTimersByTime(5_000);
+        expect(frame()).toContain('last response 5s ago');
+        controllerState.blocks.push({ kind: 'tool', id: 'tool-1', status: 'running', progressText: '10%', startedAt: Date.now() });
+        vi.advanceTimersByTime(1_000);
+        expect(frame()).toContain('last response 0s ago');
+        controllerState.blocks.at(-1)!['progressText'] = '90%';
+        vi.advanceTimersByTime(1_000);
+        expect(frame()).toContain('last response 0s ago');
+
+        controllerState.busy = false;
+        internal.renderActivityState(controllerState);
+        expect(frame().trim()).toBe('');
+        expect(internal.activityTickTimer).toBeUndefined();
+        controllerState.busy = true;
+        controllerState.turnStartedAt = Date.now();
+        controllerState.blocks = [{ kind: 'user', id: 'untimed-u', text: 'run' }];
+        internal.renderActivityState(controllerState);
+        vi.advanceTimersByTime(3_000);
+        expect(frame()).toContain('waited 3s');
+        controllerState.blocks.push({ kind: 'subagent', id: 'untimed-sa', status: 'running', toolCallCount: 0 });
+        vi.advanceTimersByTime(1_000);
+        expect(frame()).toContain('Working · 2 tasks running');
+        expect(frame()).not.toMatch(/waited|last response/);
+        const closing = tui.close();
+        await vi.advanceTimersByTimeAsync(1_000);
+        await closing;
+        expect(internal.activityTickTimer).toBeUndefined();
+      } finally {
+        internal.clearActivityTickTimer();
+        internal.clearStatusNotice();
+        vi.useRealTimers();
+      }
+    });
+
+    it('keeps notices readable on ticks but yields to new work and recovery, including direct resync failures', () => {
+      vi.useFakeTimers();
+      const { tui, internal, controllerState } = driver();
+      internal.showStatus.mockImplementation(Object.getPrototypeOf(tui).showStatus.bind(tui));
+      vi.spyOn(tui.state.ui, 'requestRender').mockImplementation(() => {});
+      vi.setSystemTime(1_700_000_000_000);
+      const frame = () => tui.state.activityContainer.render(80).join('\n');
+      try {
+        internal.showStatus('https://example.test/result');
+        internal.renderActivityState(controllerState);
+        expect(frame()).toContain('https://example.test/result');
+        controllerState.busy = true;
+        controllerState.turnStartedAt = Date.now();
+        internal.renderActivityState(controllerState);
+        expect(frame()).toContain('Working…');
+        internal.showStatus('Export: C:/export/result.md');
+        vi.advanceTimersByTime(4_000);
+        expect(frame()).toContain('C:/export/result.md');
+        internal.showStatus('Upload failed', 'error');
+        vi.advanceTimersByTime(1_000);
+        expect(frame()).toContain('Upload failed');
+        controllerState.turnRetry = { failedAttempt: 1, maxAttempts: 3, delayMs: 500 };
+        vi.advanceTimersByTime(1_000);
+        expect(frame()).toContain('Retrying attempt 2/3');
+        expect(internal.activityTickTimer).toBeUndefined();
+        controllerState.resyncing = true;
+        internal.renderActivityState(controllerState);
+        expect(frame()).toContain('Resyncing session');
+        controllerState.resyncFailed = true;
+        internal.showStatus('Must not hide /reload');
+        expect(frame()).toContain('Session resync failed. Run /reload to retry.');
+        internal.showStatus('Another error', 'error');
+        expect(frame()).toContain('Session resync failed. Run /reload to retry.');
+      } finally {
+        internal.clearActivityTickTimer();
+        internal.clearStatusNotice();
+        vi.useRealTimers();
+      }
+    });
   });
 });

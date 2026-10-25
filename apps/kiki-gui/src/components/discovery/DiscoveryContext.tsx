@@ -31,6 +31,7 @@ import {
   type DiscoveryActionPort,
   type DiscoveryAnchor,
   type DiscoveryContext as CoreDiscoveryContext,
+  type DiscoveryDestination,
   type DiscoveryEvent,
   type DiscoveryExampleId,
   type DiscoveryNavigationPort,
@@ -38,7 +39,7 @@ import {
   type DiscoveryState,
   type DiscoveryTryAction,
 } from '@kiki/session-core/discovery';
-import { appendToDraft, readDraft, writeDraft } from '@kiki/session-core/composer';
+import { appendToDraft, readDraft } from '@kiki/session-core/composer';
 
 function hasRouterErrors(routerState?: { errors?: Record<string, unknown> | null }): boolean {
   if (!routerState || !routerState.errors) return false;
@@ -53,7 +54,6 @@ export interface DiscoveryDataState {
   readonly memory?: boolean;
   readonly capabilities?: boolean;
   readonly cron?: boolean;
-  readonly board?: boolean;
 }
 
 export const ALL_DISCOVERY_ANCHORS: readonly DiscoveryAnchor[] = [
@@ -64,7 +64,6 @@ export const ALL_DISCOVERY_ANCHORS: readonly DiscoveryAnchor[] = [
   'send-controls',
   'memory-scope',
   'capability-detail',
-  'board-detail',
   'cron-detail',
   'result-detail',
   'usage-filter',
@@ -84,11 +83,22 @@ export function detectActiveAnchors(): readonly DiscoveryAnchor[] {
   return ALL_DISCOVERY_ANCHORS.filter((anchor) => resolveAnchorElement(anchor) !== null);
 }
 
+/**
+ * The usage station's anchor lives on the history panel's filter bar, while a
+ * bare `/usage` visit intentionally opens the realtime governance view — so
+ * navigating to that anchor has to ask for the panel that actually mounts it.
+ */
+export function discoveryDestinationHref(destination: DiscoveryDestination): string {
+  if (destination.anchor === 'usage-filter' && !/[?&]panel=/.test(destination.href)) {
+    return `${destination.href}${destination.href.includes('?') ? '&' : '?'}panel=history`;
+  }
+  return destination.href;
+}
+
 export function detectActiveData(): DiscoveryDataState | undefined {
   if (typeof document === 'undefined') return undefined;
   return {
     cron: document.querySelector('[data-cron-card], [data-cron-item], [data-anchor="cron-detail"]') !== null,
-    board: document.querySelector('[data-board-card], [data-task-card], [data-anchor="board-detail"]') !== null,
     capabilities: document.querySelector('[data-capability-card], [data-anchor="capability-detail"]') !== null,
     memory: document.querySelector('[data-memory-card], [data-memory-entry], [data-anchor="memory-scope"]') !== null,
   };
@@ -232,7 +242,6 @@ export function DiscoveryProvider({
       setProducedData((prev) => {
         if (
           prev?.cron === nextData?.cron &&
-          prev?.board === nextData?.board &&
           prev?.capabilities === nextData?.capabilities &&
           prev?.memory === nextData?.memory
         ) {
@@ -329,7 +338,7 @@ export function DiscoveryProvider({
     navigate: async (destination, signal) => {
       if (signal?.aborted || unmountedRef.current) return 'cancelled';
 
-      const targetHref = destination.href;
+      const targetHref = discoveryDestinationHref(destination);
       const currentLoc = dataRouter ? dataRouter.state.location : location;
       const isAlreadyCommitted = isLocationCommitted(currentLoc, targetHref) &&
         (!dataRouter || (dataRouter.state.navigation.state === 'idle' && !hasRouterErrors(dataRouter.state)));

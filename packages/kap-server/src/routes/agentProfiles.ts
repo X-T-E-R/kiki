@@ -14,11 +14,14 @@ import {
   LOCAL_SESSION_RESUME_FLAG,
   localSessionEngine,
   type LocalSessionSummary,
-  MANAGED_ADAPTER_RELEASES,
   IBootstrapService,
   EXECUTOR_OVERRIDE_SOURCE_ID,
   executorCapabilities,
   expandExecutorText,
+  AGENT_EXECUTORS_SECTION,
+  AGENT_EXECUTOR_OVERRIDES_SECTION,
+  BUILTIN_AGENT_EXECUTORS,
+  kikiMcpDefaultView,
   IConfigService,
   IInstantiationService,
   ISessionAgentProfileCatalog,
@@ -26,10 +29,12 @@ import {
   ISessionManager,
   IWorkspaceInstanceManager,
   IWorkspaceService,
+  executorControlCapabilities,
   isError2,
   type AgentProfile,
   type AgentProfileCatalogSnapshot,
   type AgentExecutorDescriptor,
+  type AgentExecutorOverridesConfig,
   type AgentProfileRegistration,
   type AgentProfileRouteDefinition,
   type DisabledNamedProfilesConfig,
@@ -47,6 +52,9 @@ import {
   listExecutorsResponseSchema,
   executorDetailResponseSchema,
   executorCheckResponseSchema,
+  getExecutorModelsResponseSchema,
+  refreshExecutorModelsResponseSchema,
+  removeExecutorRegistrationResponseSchema,
   executorPromptPreviewRequestSchema,
   executorPromptPreviewResponseSchema,
   localSessionDirectorySchema,
@@ -71,11 +79,13 @@ import { errEnvelope, okEnvelope } from '../envelope';
 import { defineRoute } from '../middleware/defineRoute';
 import { ErrorCode } from '../protocol/error-codes';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
-import { acquireDraftProfileCatalog, acquireDraftProfileListCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
+import { acquireDraftProfileListCatalog, acquireWorkspaceProfileCatalog, agentCapabilities } from './agentProfileCapabilities';
 import { previewExecutorPrompt } from './executorPromptPreview';
 import { applyAgentModelMenuDraft, projectAgentModelMenu } from './agentModelMenu';
 import { resumeLocalSession } from './localSessionResume';
 import { registerAntigravityRoutes } from './antigravity';
+
+type ExecutorCapabilityCatalog = Awaited<ReturnType<NonNullable<IAgentExecutorRegistry['refreshExecutorCapabilityCatalog']>>>;
 
 const unscopedCatalogs = new WeakMap<Scope, ReturnType<typeof createUnscopedAgentProfileCatalog>>();
 
@@ -86,9 +96,9 @@ async function unscopedProfileCatalog(core: Scope) {
     preview = createUnscopedAgentProfileCatalog(instantiation);
     unscopedCatalogs.set(core, preview);
     const owned = preview;
-    instantiation.onWillDispose(() => {
+    instantiation.onWillDispose(async () => {
       unscopedCatalogs.delete(core);
-      owned.dispose();
+      await owned.dispose();
     });
   }
   await preview.catalog.ready;
@@ -198,7 +208,8 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     const registry = core.accessor.get(IAgentExecutorRegistry);
     const preflight = core.accessor.get(IAgentExecutorPreflightService);
     const items = registry.list().map((descriptor) =>
-      projectExecutor(descriptor, registry, preflight.lastCheck(descriptor.id), core.accessor.get(IBootstrapService)));
+      projectExecutor(descriptor, registry, preflight.rememberedCheck(descriptor.id), core.accessor.get(IBootstrapService),
+        savedKikiMcpInjection(config, descriptor.id)));
 
     reply.send(okEnvelope({ items }, req.id));
   });
@@ -212,15 +223,17 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
     description: 'Inspect execution engine capability and connection settings', tags: ['agents'],
   }, async (req, reply) => {
-    await core.accessor.get(IConfigService).ready;
+    const config = core.accessor.get(IConfigService);
+    await config.ready;
     const registry = core.accessor.get(IAgentExecutorRegistry);
     const descriptor = registry.get(req.params.id);
     if (descriptor === undefined) {
       reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Executor not found', req.id));
       return;
     }
-    const check = core.accessor.get(IAgentExecutorPreflightService).lastCheck(descriptor.id);
-    reply.send(okEnvelope(projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService)), req.id));
+    const check = core.accessor.get(IAgentExecutorPreflightService).rememberedCheck(descriptor.id);
+    reply.send(okEnvelope(projectExecutor(descriptor, registry, check, core.accessor.get(IBootstrapService),
+      savedKikiMcpInjection(config, descriptor.id)), req.id));
   });
   app.get(executorDetailRoute.path, executorDetailRoute.options,
     executorDetailRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
@@ -251,6 +264,52 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
   app.post(executorCheckRoute.path, executorCheckRoute.options,
     executorCheckRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
+  const executorModelsRoute = defineRoute({
+    method: 'GET', path: '/executors/{id}/models', params: executorParams,
+    success: { data: getExecutorModelsResponseSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Read the cached external executor model catalog without launching a probe', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get(req.params.id);
+    if (descriptor === undefined || descriptor.protocol === 'native') {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'External executor model catalog is unavailable', req.id));
+      return;
+    }
+    const check = core.accessor.get(IAgentExecutorPreflightService).lastCheck(descriptor.id);
+    const expectedVersion = check?.version ?? descriptor.version;
+    const catalog = registry.getExecutorCapabilityCatalog?.(descriptor.id,
+      expectedVersion === undefined ? undefined : { version: expectedVersion });
+    reply.send(okEnvelope(projectExecutorModelCatalog(catalog ?? unknownExecutorModelCatalog(descriptor)), req.id));
+  });
+  app.get(executorModelsRoute.path, executorModelsRoute.options,
+    executorModelsRoute.handler as Parameters<AgentProfilesRouteHost['get']>[2]);
+
+  const refreshExecutorModelsRoute = defineRoute({
+    method: 'POST', path: '/executors/{id}/models:refresh', params: executorParams,
+    success: { data: refreshExecutorModelsResponseSchema },
+    errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
+    description: 'Explicitly refresh one external executor model catalog through its bounded read-only probe', tags: ['agents'],
+  }, async (req, reply) => {
+    await core.accessor.get(IConfigService).ready;
+    const registry = core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get(req.params.id);
+    if (descriptor === undefined || descriptor.protocol === 'native') {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'External executor model catalog is unavailable', req.id));
+      return;
+    }
+    const catalog = await registry.refreshExecutorCapabilityCatalog?.(descriptor.id);
+    if (catalog === undefined) {
+      reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'External executor model catalog is unsupported', req.id));
+      return;
+    }
+    await core.accessor.get(IAgentExecutorPreflightService).run([descriptor.id]);
+    reply.send(okEnvelope(projectExecutorModelCatalog(catalog), req.id));
+  });
+  app.post(refreshExecutorModelsRoute.path, refreshExecutorModelsRoute.options,
+    refreshExecutorModelsRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
   const installationsRoute = defineRoute({
     method: 'GET', path: '/executors/installations',
     success: { data: z.object({ items: z.array(managedStatusSchema) }) },
@@ -268,11 +327,12 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
     description: 'Install the checksum-pinned adapter under the Kiki home', tags: ['agents'],
   }, async (req, reply) => {
-    if (!Object.hasOwn(MANAGED_ADAPTER_RELEASES, req.params.id)) {
+    const service = core.accessor.get(IManagedAdapterService);
+    if (!await service.installable(req.params.id)) {
       reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Managed adapter not found', req.id));
       return;
     }
-    const status = await core.accessor.get(IManagedAdapterService).install(req.params.id);
+    const status = await service.install(req.params.id);
     reply.send(okEnvelope(projectManagedStatus(status), req.id));
   });
   app.post(installRoute.path, installRoute.options,
@@ -284,15 +344,42 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
     errors: { [ErrorCode.AGENT_PROFILE_NOT_FOUND]: {} },
     description: 'Atomically activate the previous managed adapter version', tags: ['agents'],
   }, async (req, reply) => {
-    if (!Object.hasOwn(MANAGED_ADAPTER_RELEASES, req.params.id)) {
+    const service = core.accessor.get(IManagedAdapterService);
+    if (!await service.installable(req.params.id)) {
       reply.send(errEnvelope(ErrorCode.AGENT_PROFILE_NOT_FOUND, 'Managed adapter not found', req.id));
       return;
     }
-    const status = await core.accessor.get(IManagedAdapterService).rollback(req.params.id);
+    const status = await service.rollback(req.params.id);
     reply.send(okEnvelope(projectManagedStatus(status), req.id));
   });
   app.post(rollbackRoute.path, rollbackRoute.options,
     rollbackRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
+
+  const removeRegistrationRoute = defineRoute({
+    method: 'POST', path: '/executors/{id}/registration:remove', params: executorParams,
+    success: { data: removeExecutorRegistrationResponseSchema },
+    description: 'Drop a user executor registration. Owned adapter files are removed only when no live or recoverable binding remains',
+    tags: ['agents'],
+  }, async (req, reply) => {
+    const config = core.accessor.get(IConfigService);
+    await config.ready;
+    const id = req.params.id;
+    const userValue = config.inspect<Record<string, unknown> | undefined>(AGENT_EXECUTORS_SECTION).userValue;
+    const registrationRemoved = userValue !== undefined && userValue !== null && typeof userValue === 'object'
+      && Object.hasOwn(userValue, id);
+    const descriptor = core.accessor.get(IAgentExecutorRegistry).get(id);
+    await config.removeOverride(AGENT_EXECUTORS_SECTION, [id]);
+    const removal = await core.accessor.get(IManagedAdapterService).removeOwnedResources(id, descriptor);
+    reply.send(okEnvelope({
+      id,
+      registration_removed: registrationRemoved,
+      builtin_retained: Object.hasOwn(BUILTIN_AGENT_EXECUTORS, id),
+      resources: removal.resources,
+      ...(removal.reason === undefined ? {} : { reason: removal.reason }),
+    }, req.id));
+  });
+  app.post(removeRegistrationRoute.path, removeRegistrationRoute.options,
+    removeRegistrationRoute.handler as Parameters<AgentProfilesRouteHost['post']>[2]);
 
   const localSessionsRoute = defineRoute({
     method: 'GET', path: '/executors/{id}/local-sessions', params: executorParams,
@@ -425,7 +512,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
               req.query.expand === true, catalogs, executors);
         reply.send(okEnvelope({ items, complete: catalog.complete }, req.id));
       } finally {
-        workspaceCatalog.dispose();
+        await workspaceCatalog.dispose();
       }
     },
   );
@@ -484,7 +571,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
       }
       reply.send(okEnvelope(await previewExecutorPrompt(core, workspace.instance, profile, executorId), req.id));
     } finally {
-      workspace.dispose();
+      await workspace.dispose();
     }
   });
   app.post(executorPromptPreviewRoute.path, executorPromptPreviewRoute.options,
@@ -531,7 +618,7 @@ export function registerAgentProfilesRoute(app: AgentProfilesRouteHost, core: Sc
         removed_model_identities: [...oldIds].filter((id) => !newIds.has(id)),
       }, req.id));
     } finally {
-      workspace.dispose();
+      await workspace.dispose();
     }
   });
   app.post(modelMenuPreviewRoute.path, modelMenuPreviewRoute.options,
@@ -1205,8 +1292,85 @@ function executorOverrideProjection(descriptor: AgentExecutorDescriptor) {
   };
 }
 
+function unknownExecutorModelCatalog(descriptor: AgentExecutorDescriptor): ExecutorCapabilityCatalog {
+  return {
+    executorId: descriptor.id,
+    descriptorRevision: descriptor.revision,
+    source: descriptor.modelProbe === undefined ? 'negotiated' : 'cli_probe',
+    provenance: descriptor.modelProbe === undefined ? 'acp_negotiation' : 'read_only_cli_probe',
+    observedAt: 0,
+    models: { state: 'unknown', diagnostic: 'No current executor catalog observation is available' },
+    thinkingLevels: { state: 'unknown', diagnostic: 'No current executor catalog observation is available' },
+    context: { state: 'unknown' },
+    controls: executorControlCapabilities(descriptor),
+    catalogCommand: descriptor.modelProbe?.command ?? descriptor.command,
+  };
+}
+
+function projectExecutorModelCatalog(catalog: ExecutorCapabilityCatalog) {
+  return {
+    executor_id: catalog.executorId,
+    source: catalog.source,
+    provenance: catalog.provenance,
+    revision: catalog.descriptorRevision,
+    apply_state: catalogApplyState(catalog),
+    observed_at: catalog.observedAt,
+    executor_version: catalog.version,
+    catalog_program_version: catalog.catalogProgramVersion,
+    catalog_command: catalog.catalogCommand,
+    effective: {
+      models: projectCapabilityDimension(catalog.models),
+      thinking_levels: projectCapabilityDimension(catalog.thinkingLevels),
+      context: {
+        state: catalog.context.state,
+        context_window: catalog.context.contextWindow,
+        max_input_tokens: catalog.context.maxInputTokens,
+        max_output_tokens: catalog.context.maxOutputTokens,
+        compaction_threshold: catalog.context.compactionThreshold,
+        diagnostic: catalog.context.diagnostic,
+      },
+      controls: {
+        model_switch: projectCapabilityControl(catalog.controls.modelSwitch),
+        thinking_switch: projectCapabilityControl(catalog.controls.thinkingSwitch),
+        manual_compact: projectCapabilityControl(catalog.controls.manualCompact),
+      },
+    },
+  };
+}
+
+function projectCapabilityDimension(dimension: ExecutorCapabilityCatalog['models']) {
+  return {
+    state: dimension.state,
+    values: dimension.values === undefined ? undefined : [...dimension.values],
+    diagnostic: dimension.diagnostic,
+  };
+}
+
+function projectCapabilityControl(control: ExecutorCapabilityCatalog['controls']['modelSwitch']) {
+  return {
+    advertised: control.advertised,
+    applicability: control.applicability,
+    apply_state: control.applyState,
+    diagnostic: control.diagnostic,
+  };
+}
+
+function catalogApplyState(catalog: ExecutorCapabilityCatalog) {
+  if (catalog.models.state === 'loading' || catalog.thinkingLevels.state === 'loading') return 'loading' as const;
+  if (catalog.models.state === 'unavailable') return 'unavailable' as const;
+  if (catalog.models.state === 'partial') return 'partial' as const;
+  if (catalog.models.state === 'ready') return 'ready' as const;
+  return 'unknown' as const;
+}
+
+function savedKikiMcpInjection(config: IConfigService, executorId: string): boolean | undefined {
+  return config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executorId]?.defaults?.inject_kiki_mcp;
+}
+
 function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentExecutorRegistry,
-  check: ReturnType<IAgentExecutorPreflightService['lastCheck']>, bootstrap: IBootstrapService) {
+  remembered: ReturnType<IAgentExecutorPreflightService['rememberedCheck']>, bootstrap: IBootstrapService,
+  injectKikiMcp: boolean | undefined) {
+  const check = remembered?.result;
   const selected = check?.sources?.find((probe) => probe.id === check.selectedSource && probe.available);
   const program = check?.requirements.find((requirement) => requirement.role === 'program');
   const status = descriptor.protocol === 'native' ? 'ready' as const
@@ -1232,7 +1396,7 @@ function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentEx
       thinking_binding: capabilities.thinkingBinding,
       negotiated: registry.negotiated?.(descriptor.id, check?.version) === undefined ? undefined : (() => {
         const observed = registry.negotiated!(descriptor.id, check?.version)!;
-        return { models: observed.models, thinking_levels: observed.thinkingLevels,
+        return { models: observed.models, thinking_levels: observed.thinkingLevels, native_agents: observed.nativeAgents,
           auth_methods: observed.authMethods, resume: observed.resume, load: observed.load,
           permission_modes: observed.permissionModes, agent_version: observed.agentVersion,
           image: observed.image, audio: observed.audio, fork: observed.fork,
@@ -1254,6 +1418,10 @@ function projectExecutor(descriptor: AgentExecutorDescriptor, registry: IAgentEx
       default_args: [...descriptor.args],
     },
     default_profile: descriptor.defaultProfile === true,
+    kiki_mcp: kikiMcpDefaultView(injectKikiMcp, descriptor),
+    check_status: check?.status,
+    checked_at: remembered === undefined ? undefined : new Date(remembered.checkedAt).toISOString(),
+    check_stale: remembered === undefined ? undefined : !remembered.fresh,
   };
 }
 

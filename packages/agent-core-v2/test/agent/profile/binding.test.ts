@@ -1,6 +1,8 @@
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, normalize } from 'pathe';
+import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
+import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -33,6 +35,7 @@ import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import type { ToolCall } from '#/kosong/contract/message';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { IModelService } from '#/kosong/model/model';
+import { resolveExecutionBinding, resolveSelectedExecutionBinding } from '#/agent/profile/executionBinding';
 import { IAgentProfileService, type PreparedModelSwitchBinding, type ProfileBindingSnapshot, type ResolvedAgentProfile } from '#/agent/profile/profile';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
@@ -58,6 +61,7 @@ import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolic
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { IWireService } from '#/wire/wire';
 import { IEventBus } from '#/app/event/eventBus';
+import { IAgentLoopService } from '#/agent/loop/loop';
 import { WarningIssued } from '#/agent/profile/profileOps';
 import { AgentStatusUpdated } from '#/agent/usage/usageEvents';
 import type { ExecutableTool, ToolExecution, ToolResult, ToolSource } from '#/tool/toolContract';
@@ -393,6 +397,585 @@ describe('AgentProfileService.bind', () => {
     return { ctx, profile: ctx.get(IAgentProfileService) };
   }
 
+  it.each(['', 'main: false\n'])('binds an explicit profile file without main curation (%s)', async (main) => {
+    const path = join(homeDir, 'selected.md');
+    await writeFile(path, `---\nname: resume-profile\ndescription: Explicit file fixture\n${main}model_alias: ${RESUME_OLD_MODEL}\ntools: [Read]\ndisallowedTools: [Bash]\n---\nEXPLICIT_FILE_BODY\n\${builtin_prompt}\n`);
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    const service = ctx.get(IAgentProfileService);
+    const before = service.data();
+    const preview = await service.resolveFile(path);
+    expect(preview.sourcePath?.toLowerCase()).toBe(path.replaceAll('\\', '/').toLowerCase());
+    expect(service.data()).toEqual(before);
+    await service.bind({ execution: { executor: 'native', profile_file: path } });
+    expect(service.data()).toMatchObject({ profileName: 'resume-profile', modelAlias: RESUME_OLD_MODEL,
+      execution: { selection: { executor: 'native', profile_file: preview.sourcePath } } });
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+    expect(service.data().boundProfile?.fileSources?.root.path).toBe(preview.sourcePath);
+    expect(service.data().disallowedTools).toContain('Bash');
+    await service.rebuildPromptContext();
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+    const frozen = service.data();
+    await writeFile(path, '---\nname: invalid\nexecutor: missing-executor\n---\ninvalid');
+    await expect(service.bind({ execution: { executor: 'native', profile_file: path } })).rejects.toThrow('Unable to load profile file');
+    expect(service.data()).toEqual(frozen);
+    await expect(service.bind({ execution: { executor: 'native', profile_file: join(homeDir, 'missing.md') } })).rejects.toThrow('Unable to load profile file');
+    expect(service.data()).toEqual(frozen);
+    service.applyBindingSnapshot(JSON.parse(JSON.stringify(frozen)) as ProfileBindingSnapshot);
+    await service.preparePromptConfiguration();
+    expect(service.data().systemPrompt).toContain('EXPLICIT_FILE_BODY');
+    expect(service.data().systemPrompt).not.toContain('resume profile');
+  });
+
+  it('inherits a same-name profile for an explicit file and keeps executor policy', async () => {
+    const path = join(homeDir, 'inherit.md');
+    await writeFile(path, '---\nname: resume-profile\ndescription: Inherit fixture\nmain: false\nsystem_prompt_mode: inherit\nprompt_overrides:\n  fields:\n    system.shared: Fixture shared field\nmodel_alias: ' + RESUME_OLD_MODEL + '\n---\n');
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile({ allowedSubagents: ['explore'] }))));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'native', profile_file: path } });
+    expect(service.data().systemPrompt).toContain('resume profile');
+    expect(service.data().boundProfile?.allowedSubagents).toEqual(['explore']);
+    const frozen = service.data();
+    await expect(service.bind({ execution: { executor: 'missing-executor', profile_file: path } })).rejects.toThrow('Unknown agent executor "missing-executor"');
+    expect(service.data()).toEqual(frozen);
+    vi.spyOn(ctx.get(ISessionAgentProfileCatalog), 'getDefault').mockReturnValue(normalizeAgentProfile({ name: 'agent', systemPrompt: () => 'CHANGED_DEFAULT' }));
+    service.applyBindingSnapshot(JSON.parse(JSON.stringify(frozen)) as ProfileBindingSnapshot);
+    await service.preparePromptConfiguration();
+    expect(service.data().systemPrompt).toContain('resume profile');
+    expect(service.data().systemPrompt).not.toContain('CHANGED_DEFAULT');
+  });
+
+  it('binds a direct executor without a synthetic profile and clears inherited profile state', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const build = () => createTestAgent({ persistence, autoConfigure: false }, appService(IAgentExecutorRegistry, externalExecutorRegistry()), hostEnvironmentServices(homeDir, hostPathClass));
+    ctx = build();
+    const service = ctx.get(IAgentProfileService);
+    service.applyBindingSnapshot({ profileName: 'old-profile', modelAlias: 'old-model', thinkingLevel: 'high',
+      systemPrompt: 'OLD_KIKI_SYSTEM', executorId: 'grok-acp', executorProtocol: 'acp-v1',
+      executorDescriptorRevision: 'test-revision', roomPrompt: 'OLD_ROOM', personaId: 'old-persona' });
+    const metadata = ctx.get(ISessionMetadata);
+    await metadata.registerAgent('main', { executor: 'grok-acp', personaId: 'old-persona' });
+    await service.bind({ execution: { executor: 'grok-acp' } });
+    expect((await metadata.read()).agents?.['main']?.personaId).toBeUndefined();
+    expect(service.data()).toMatchObject({ systemPrompt: '', thinkingLevel: 'off', kikiContext: [], allowKikiSubagents: false,
+      execution: { selection: { executor: 'grok-acp' }, effective: { kiki_context: [], allow_kiki_subagents: false } } });
+    expect(service.data().profileName).toBeUndefined();
+    expect(service.data().modelAlias).toBeUndefined();
+    expect(service.data().roomPrompt).toBeUndefined();
+    expect(service.data().personaId).toBeUndefined();
+    expect(service.isRunnable()).toBe(true);
+    const frozen = service.data();
+    await service.preparePromptConfiguration();
+    expect(service.data().execution).toEqual(frozen.execution);
+    service.applyBindingSnapshot(frozen);
+    expect(service.data().execution).toEqual(frozen.execution);
+    await ctx.get(IWireService).flush();
+    const projected = await readPersistedAgentProfileSnapshot({
+      storage: { size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
+      appendLog: { read: async function* () { yield* persistence.records; } } as unknown as IAppendLogStore,
+    }, 'test-workspace', 'test-session', 'main', undefined);
+    expect(projected?.execution).toEqual(frozen.execution);
+    expect(projected?.profileName).toBeUndefined();
+    await ctx.dispose();
+    ctx = build();
+    await ctx.restorePersisted();
+    const restored = ctx.get(IAgentProfileService);
+    expect(restored.data().execution).toEqual(frozen.execution);
+    expect(restored.data().systemPrompt).toBe('');
+    expect(restored.data().modelAlias).toBeUndefined();
+    expect(restored.isRunnable()).toBe(true);
+  });
+
+  it('freezes native agent defaults and advertised selections, preserving a binding on unknown or unsupported discovery', async () => {
+    let discovered: { nativeAgents: readonly string[] } | undefined;
+    const registry = { ...externalExecutorRegistry(), lastNegotiated: () => discovered };
+    const persistence = new InMemoryWireRecordPersistence();
+    const build = () => createTestAgent({ persistence, autoConfigure: false }, appService(IAgentExecutorRegistry, registry), hostEnvironmentServices(homeDir, hostPathClass));
+    ctx = build();
+    const service = ctx.get(IAgentProfileService);
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: { native_agent: 'engine-default' } } }, ConfigTarget.Memory);
+    await service.bind({ execution: { executor: 'grok-acp' } });
+    const initial = service.data();
+    expect(initial.execution?.effective.native_agent).toBe('engine-default');
+    await expect(service.bind({ execution: { executor: 'grok-acp', overrides: { native_agent: 'specialist' } } })).rejects.toThrow('have not been discovered');
+    expect(service.data()).toEqual(initial);
+    discovered = { nativeAgents: [] };
+    await expect(service.bind({ execution: { executor: 'grok-acp', overrides: { native_agent: 'specialist' } } })).rejects.toThrow('does not advertise');
+    expect(service.data()).toEqual(initial);
+    discovered = { nativeAgents: ['engine-default', 'specialist'] };
+    await service.bind({ execution: { executor: 'grok-acp', overrides: { native_agent: 'specialist' } } });
+    const selected = service.data();
+    expect(selected.execution?.effective.native_agent).toBe('specialist');
+    expect(selected.execution!.generation).toBe(initial.execution!.generation + 1);
+    service.applyBindingSnapshot(JSON.parse(JSON.stringify(selected)) as ProfileBindingSnapshot);
+    expect(service.data().execution).toEqual(selected.execution);
+    await ctx.get(IWireService).flush();
+    await ctx.dispose();
+    ctx = build();
+    await ctx.restorePersisted();
+    const restored = ctx.get(IAgentProfileService);
+    expect(restored.data().execution).toEqual(selected.execution);
+    discovered = undefined;
+    await restored.preparePromptConfiguration();
+    expect(restored.data().execution?.effective.native_agent).toBe('specialist');
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: { native_agent: 'engine-default' } } }, ConfigTarget.Memory);
+    await restored.bind({ execution: { executor: 'grok-acp', overrides: { native_agent: null } } });
+    expect(restored.data().execution?.effective.native_agent).toBe('engine-default');
+    expect(restored.data().execution?.selection.overrides?.native_agent).toBeUndefined();
+  });
+
+  it('resolves harness defaults, profile and session overrides without filling omitted vendor controls', async () => {
+    const external = normalizeAgentProfile({ name: 'optional-custom', executor: 'grok-acp', modelAlias: 'profile-model',
+      systemPrompt: () => 'ONLY_PROFILE_BODY', kikiContext: ['history'], allowKikiSubagents: true, canSpawnSubagents: false });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: {
+      model_alias: 'settings-model', thinking_effort: 'low', permission_mode: 'auto', kiki_context: ['memory'], allow_kiki_subagents: true,
+    } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: external.name,
+      overrides: { model: 'session-model', kiki_context: [], allow_kiki_subagents: false } } });
+    expect(service.data().execution).toMatchObject({ effective: { model: 'session-model', thinking: 'low', permission_mode: 'auto',
+      kiki_context: [], allow_kiki_subagents: false }, sources: { model: 'session', thinking: 'harness-settings', kiki_context: 'session' } });
+    expect(service.data().systemPrompt).toBe('ONLY_PROFILE_BODY');
+    await service.bind({ execution: { executor: 'grok-acp', profile: external.name, overrides: { model: null, kiki_context: null, allow_kiki_subagents: null } } });
+    expect(service.data().execution).toMatchObject({ effective: { model: 'profile-model', kiki_context: ['history'], allow_kiki_subagents: true }, sources: { model: 'profile' } });
+    expect(service.data().canSpawnSubagents).toBe(false);
+    await ctx.get(IConfigService).replace('agentExecutorOverrides', { 'grok-acp': { defaults: {
+      kiki_context: [], allow_kiki_subagents: false,
+    } } }, ConfigTarget.Memory);
+    await service.bind({ execution: { executor: 'grok-acp' } });
+    expect(service.data().execution).toMatchObject({ effective: { kiki_context: [], allow_kiki_subagents: false },
+      sources: { thinking: 'harness-default', kiki_context: 'harness-settings', allow_kiki_subagents: 'harness-settings' } });
+    expect(service.data().execution?.effective.thinking).toBeUndefined();
+  });
+
+  it('resolves executor, model, and effort from the selected executor group', () => {
+    const native = normalizeAgentProfile({
+      name: 'role', modelAlias: 'native-pin', thinkingEffort: 'high', executorOptions: { pin: true },
+      kikiContext: ['history'], allowKikiSubagents: true, systemPrompt: () => 'role',
+    });
+    const engineDefault = { model: 'engine-default', thinkingFor: () => 'low' };
+    const same = resolveExecutionBinding({ executor: 'native' }, undefined, native, undefined, engineDefault);
+    expect(same.effective).toMatchObject({ model: 'native-pin', thinking: 'high', kiki_context: ['history'], allow_kiki_subagents: true });
+    expect(same.sources).toMatchObject({ model: 'profile', thinking: 'profile' });
+    const bare = resolveExecutionBinding({ executor: 'grok-acp' }, undefined, native, undefined);
+    expect(bare.effective.model).toBeUndefined();
+    expect(bare.effective.thinking).toBeUndefined();
+    expect(bare.sources).toMatchObject({ model: 'harness-default', thinking: 'harness-default', kiki_context: 'profile' });
+    const filled = resolveExecutionBinding({ executor: 'grok-acp' }, undefined, native, undefined, engineDefault);
+    expect(filled.effective).toMatchObject({ model: 'engine-default', thinking: 'low', kiki_context: ['history'], allow_kiki_subagents: true });
+    expect(filled.sources).toMatchObject({ model: 'harness-default', thinking: 'harness-default' });
+    const explicit = resolveExecutionBinding({ executor: 'grok-acp', overrides: { model: 'raw', thinking: 'max' } }, {
+      model_alias: 'settings-model', thinking_effort: 'low',
+    }, native, undefined, engineDefault);
+    expect(explicit.effective).toMatchObject({ model: 'raw', thinking: 'max' });
+    expect(explicit.sources).toMatchObject({ model: 'session', thinking: 'session' });
+    const cleared = resolveExecutionBinding({ executor: 'grok-acp', overrides: { model: null, thinking: null } }, {
+      model_alias: 'settings-model', thinking_effort: 'low',
+    }, native, explicit);
+    expect(cleared.effective).toMatchObject({ model: 'settings-model', thinking: 'low' });
+    expect(cleared.sources).toMatchObject({ model: 'harness-settings', thinking: 'harness-settings' });
+    const previous = resolveExecutionBinding({ executor: 'native', overrides: { model: 'old-native', thinking: 'high' } }, undefined, undefined, undefined);
+    const switched = resolveExecutionBinding({ executor: 'grok-acp' }, undefined, native, previous);
+    expect(switched.effective.model).toBeUndefined();
+    expect(switched.selection.overrides).toBeUndefined();
+    const open = normalizeAgentProfile({ name: 'open', systemPrompt: () => 'open' });
+    const kept = resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, previous);
+    expect(kept.effective.model).toBe('old-native');
+    expect(kept.sources['model']).toBe('session');
+    expect(kept.selection.overrides).toEqual({ model: 'old-native' });
+    const pinnedProfile = normalizeAgentProfile({ name: 'pinned', modelAlias: 'native-pin', systemPrompt: () => 'pin' });
+    const adopted = resolveExecutionBinding({ executor: 'native', profile: 'pinned' }, undefined, pinnedProfile, kept);
+    expect(adopted.effective.model).toBe('native-pin');
+    expect(adopted.sources['model']).toBe('profile');
+    expect(adopted.selection.overrides?.model).toBeUndefined();
+    const clearedPin = resolveExecutionBinding({ executor: 'native', profile: 'open', overrides: { model: null } }, {
+      model_alias: 'settings-model',
+    }, open, adopted);
+    expect(clearedPin.effective.model).toBe('settings-model');
+    expect(clearedPin.sources['model']).toBe('harness-settings');
+    expect(resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, undefined).effective.model).toBeUndefined();
+    expect(resolveExecutionBinding({ executor: 'native', profile: 'open' }, undefined, open, undefined, undefined, 'live-model').effective)
+      .toMatchObject({ model: 'live-model' });
+    expect(resolveExecutionBinding({ executor: 'grok-acp' }, undefined, open, previous, undefined, 'old-native').effective.model).toBeUndefined();
+    const external = normalizeAgentProfile({
+      name: 'ext', executor: 'grok-acp', modelAlias: 'raw-id', thinkingEffort: 'max', systemPrompt: () => 'x',
+    });
+    expect(resolveExecutionBinding({ executor: 'grok-acp' }, undefined, external, undefined, engineDefault).effective)
+      .toMatchObject({ model: 'raw-id', thinking: 'max' });
+  });
+
+  it('deletes a previous thinking override on null and keeps it when thinking is omitted', () => {
+    const previous = resolveExecutionBinding({ executor: 'grok-acp', overrides: { model: 'raw', thinking: 'max' } }, undefined, undefined, undefined);
+    const cleared = resolveSelectedExecutionBinding({ executor: 'grok-acp' }, { thinking: null }, undefined, undefined, previous);
+    expect(cleared.selection.overrides?.thinking).toBeUndefined();
+    expect(cleared.selection.overrides?.model).toBe('raw');
+    const kept = resolveSelectedExecutionBinding({ executor: 'grok-acp' }, {}, undefined, undefined, previous);
+    expect(kept.selection.overrides).toEqual({ model: 'raw', thinking: 'max' });
+    const replaced = resolveSelectedExecutionBinding({ executor: 'grok-acp' }, { thinking: 'low' }, undefined, undefined, previous);
+    expect(replaced.selection.overrides?.thinking).toBe('low');
+    expect(replaced.effective.thinking).toBe('low');
+  });
+
+  it('keeps the live model when an unpinned profile is selected and still applies a pin or an explicit clear', async () => {
+    const open = normalizeAgentProfile({ name: 'open', systemPrompt: () => 'OPEN' });
+    const other = normalizeAgentProfile({ name: 'other', systemPrompt: () => 'OTHER' });
+    const pinned = normalizeAgentProfile({ name: 'pinned', modelAlias: 'mock-pin', systemPrompt: () => 'PINNED' });
+    const profiles = [open, other, pinned];
+    const catalog: ISessionAgentProfileCatalog = {
+      _serviceBrand: undefined,
+      ready: Promise.resolve(),
+      onDidChange: Event.None as ISessionAgentProfileCatalog['onDidChange'],
+      get: (name) => profiles.find((profile) => profile.name === name),
+      getDefault: () => open,
+      list: () => profiles,
+      listRoutes: () => [],
+      routeDiagnostics: () => [],
+      resolveSelection: ({ profile: name }) => {
+        const profile = profiles.find((candidate) => candidate.name === name);
+        if (profile === undefined) throw new Error(`Unknown agent profile: "${name ?? ''}"`);
+        return { profile, baseProfile: profile };
+      },
+      inspect: () => undefined,
+      load: async () => {},
+      reload: async () => {},
+    };
+    ctx = createTestAgent(
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, catalog),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    await ctx.ready;
+    await ctx.get(IModelService).set('mock-pin', {
+      provider: 'test-provider', model: 'mock-pin', maxContextSize: 1_000_000, defaultEffort: 'off',
+    });
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ profile: 'open', model: MOCK_MODEL });
+    expect(service.data().execution).toBeUndefined();
+    expect(service.getModel()).toBe(MOCK_MODEL);
+
+    await service.bind({ execution: { executor: 'native', profile: 'other' } });
+    expect(service.data()).toMatchObject({
+      profileName: 'other', modelAlias: MOCK_MODEL,
+      execution: {
+        selection: { executor: 'native', profile: 'other', overrides: { model: MOCK_MODEL } },
+        effective: { model: MOCK_MODEL }, sources: { model: 'session' },
+      },
+    });
+
+    await service.bind({ execution: { executor: 'native', profile: 'pinned' } });
+    expect(service.data()).toMatchObject({
+      profileName: 'pinned', modelAlias: 'mock-pin',
+      execution: { selection: { executor: 'native', profile: 'pinned' }, effective: { model: 'mock-pin' }, sources: { model: 'profile' } },
+    });
+    expect(service.data().execution?.selection.overrides?.model).toBeUndefined();
+
+    await service.bind({ execution: { executor: 'native', profile: 'other' } });
+    expect(service.getModel()).toBe('mock-pin');
+    expect(service.data().execution).toMatchObject({
+      selection: { profile: 'other', overrides: { model: 'mock-pin' } },
+      effective: { model: 'mock-pin' }, sources: { model: 'session' },
+    });
+
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { native: { defaults: { model_alias: MOCK_MODEL } } }, ConfigTarget.Memory);
+    await service.bind({ execution: { executor: 'native', profile: 'other', overrides: { model: null } } });
+    expect(service.data()).toMatchObject({
+      profileName: 'other', modelAlias: MOCK_MODEL,
+      execution: { effective: { model: MOCK_MODEL }, sources: { model: 'harness-settings' } },
+    });
+    expect(service.data().execution?.selection.overrides?.model).toBeUndefined();
+
+    await service.bind({ execution: { executor: 'grok-acp', profile: 'other' } });
+    expect(service.data().executorId).toBe('grok-acp');
+    expect(service.data().modelAlias).toBeUndefined();
+    expect(service.data().execution?.effective.model).toBeUndefined();
+    expect(service.data().execution?.selection.overrides).toBeUndefined();
+  });
+
+  it('selects an external executor on a native profile without borrowing its model, effort, or options', async () => {
+    const native = normalizeAgentProfile({
+      name: 'native-role', modelAlias: 'mock-model', thinkingEffort: 'high', executorOptions: { pin: 'native-pin' },
+      serviceTier: 'priority', requestParams: { seed: 7 }, contextBudget: 1000, maxCompletionTokens: 50,
+      kikiContext: ['history'], allowKikiSubagents: true, canSpawnSubagents: false, allowedSubagents: ['explore'],
+      disallowedTools: ['Bash'], tools: ['Read'], systemPrompt: () => 'NATIVE_ROLE_BODY',
+    });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(native)), hostEnvironmentServices(homeDir, hostPathClass));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: native.name, overrides: { model: 'session-raw', thinking: 'max' } } });
+    expect(service.data()).toMatchObject({
+      profileName: 'native-role', executorId: 'grok-acp', executorOptions: {}, modelAlias: 'session-raw', thinkingLevel: 'max',
+      canSpawnSubagents: false, allowedSubagents: ['explore'],
+      execution: {
+        selection: { executor: 'grok-acp', profile: native.name, overrides: { model: 'session-raw', thinking: 'max' } },
+        effective: { model: 'session-raw', thinking: 'max', kiki_context: ['history'], allow_kiki_subagents: true },
+        sources: { model: 'session', thinking: 'session', kiki_context: 'profile', allow_kiki_subagents: 'profile' },
+      },
+    });
+    expect(service.data().systemPrompt).toContain('NATIVE_ROLE_BODY');
+    expect(service.data().disallowedTools).toContain('Bash');
+    expect(service.data().serviceTier).toBeUndefined();
+    expect(service.data().requestParams).toBeUndefined();
+    expect(native.serviceTier).toBe('priority');
+    expect(native.executorOptions).toEqual({ pin: 'native-pin' });
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: {
+      model_alias: 'engine-raw', thinking_effort: 'low',
+    } } }, ConfigTarget.Memory);
+    await service.bind({ execution: { executor: 'grok-acp', profile: native.name, overrides: { model: null, thinking: null } } });
+    expect(service.data().execution).toMatchObject({
+      effective: { model: 'engine-raw', thinking: 'low' },
+      sources: { model: 'harness-settings', thinking: 'harness-settings' },
+    });
+    expect(service.data().modelAlias).toBe('engine-raw');
+    await ctx.get(IConfigService).replace('agentExecutorOverrides', {}, ConfigTarget.Memory);
+    await service.bind({ execution: { executor: 'grok-acp', profile: native.name, overrides: { model: null, thinking: null } } });
+    expect(service.data().execution?.effective.model).toBeUndefined();
+    expect(service.data().execution?.effective.thinking).toBeUndefined();
+    expect(service.data().execution?.sources).toMatchObject({ model: 'harness-default', thinking: 'harness-default' });
+    expect(service.data().modelAlias).toBeUndefined();
+    expect(service.data().executorId).toBe('grok-acp');
+    expect(service.data().executorOptions).toEqual({});
+    expect(service.data().profileName).toBe('native-role');
+    const generation = service.data().execution?.generation ?? 0;
+    await service.rebuildPromptContext();
+    expect(service.data().executorId).toBe('grok-acp');
+    expect(service.data().modelAlias).toBeUndefined();
+    expect(service.data().execution?.selection.executor).toBe('grok-acp');
+    expect(service.data().execution?.generation).toBeGreaterThanOrEqual(generation);
+  });
+
+  it('drops an explicit native effort and returns the model default when no execution is bound', async () => {
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ profile: 'resume-profile', model: RESUME_OLD_MODEL });
+    service.setThinking('low');
+    expect(service.data()).toMatchObject({
+      thinkingLevel: 'low', thinkingEffortExplicit: true, modelAlias: RESUME_OLD_MODEL, profileName: 'resume-profile',
+    });
+    expect(service.data().execution).toBeUndefined();
+    service.restoreDefaultThinking();
+    expect(service.data()).toMatchObject({
+      thinkingLevel: 'high', thinkingEffortExplicit: false, modelAlias: RESUME_OLD_MODEL, profileName: 'resume-profile',
+    });
+    expect(service.data().execution).toBeUndefined();
+  });
+
+  it('clears a native execution thinking override without pinning the resolved default', async () => {
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'native', profile: 'resume-profile', overrides: { thinking: 'low' } } });
+    const before = service.data();
+    expect(before.thinkingLevel).toBe('low');
+    expect(before.thinkingEffortExplicit).toBe(true);
+    expect(before.execution?.selection.overrides?.thinking).toBe('low');
+    await service.bind({ execution: before.execution!.selection, thinking: null });
+    const after = service.data();
+    expect(after.execution?.selection.overrides?.thinking).toBeUndefined();
+    expect(after.thinkingLevel).toBe('high');
+    expect(after.thinkingEffortExplicit).toBe(false);
+    expect(after.modelAlias).toBe(before.modelAlias);
+    expect(after.executorId).toBe('native');
+    expect(after.profileName).toBe('resume-profile');
+  });
+
+  it('clears a native effort pin to the executor default rather than the model default', async () => {
+    ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(resumeProfile())));
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { native: { defaults: { thinking_effort: 'low' } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'native', profile: 'resume-profile', overrides: { thinking: 'high' } } });
+    await service.bind({ execution: service.data().execution!.selection, thinking: null });
+    expect(service.data().execution?.effective.thinking).toBe('low');
+    expect(service.data().execution?.sources['thinking']).toBe('harness-settings');
+    expect(service.data().execution?.selection.overrides?.thinking).toBeUndefined();
+    expect(service.data().thinkingLevel).toBe('low');
+  });
+
+  it('deletes an external thinking override through the current selection and keeps an omitted thinking', async () => {
+    const native = normalizeAgentProfile({ name: 'native-role', systemPrompt: () => 'BODY' });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(native)), hostEnvironmentServices(homeDir, hostPathClass));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', overrides: { model: 'session-raw', thinking: 'max' } } });
+    const bound = service.data();
+    expect(bound.execution?.selection.overrides).toEqual({ model: 'session-raw', thinking: 'max' });
+    await service.bind({ execution: bound.execution!.selection });
+    expect(service.data().execution?.selection.overrides?.thinking).toBe('max');
+    await service.bind({ execution: bound.execution!.selection, thinking: null });
+    const cleared = service.data();
+    expect(cleared.execution?.selection.overrides?.thinking).toBeUndefined();
+    expect(cleared.execution?.selection.overrides?.model).toBe('session-raw');
+    expect(cleared.modelAlias).toBe('session-raw');
+    expect(cleared.executorId).toBe('grok-acp');
+    expect(cleared.profileName).toBe(bound.profileName);
+    expect(cleared.execution?.effective.thinking).not.toBe('max');
+  });
+
+  it('selects the native executor on an external profile from the native engine default', async () => {
+    const external = normalizeAgentProfile({
+      name: 'external-role', executor: 'grok-acp', modelAlias: 'profile-raw', thinkingEffort: 'high',
+      executorOptions: { pin: 'external-pin' }, kikiContext: ['memory'], allowKikiSubagents: false,
+      disallowedTools: ['Write'], allowedSubagents: ['explore'], systemPrompt: () => 'EXTERNAL_ROLE_BODY',
+    });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: external.name, overrides: { model: 'session-raw', thinking: 'max' } } });
+    const externalGeneration = service.data().execution?.generation ?? 0;
+    await service.bind({ execution: { executor: 'native', profile: external.name } });
+    expect(service.data()).toMatchObject({
+      profileName: 'external-role', executorId: 'native', modelAlias: 'mock-model', thinkingLevel: 'off',
+      allowedSubagents: ['explore'],
+      execution: {
+        selection: { executor: 'native', profile: external.name },
+        effective: { model: 'mock-model', thinking: 'off', kiki_context: ['memory'], allow_kiki_subagents: false },
+        sources: { model: 'harness-default', thinking: 'harness-default', kiki_context: 'profile' },
+      },
+    });
+    expect(service.data().executorOptions).toBeUndefined();
+    expect(service.data().systemPrompt).toContain('EXTERNAL_ROLE_BODY');
+    expect(service.data().disallowedTools).toContain('Write');
+    expect(service.data().execution?.generation).toBeGreaterThan(externalGeneration);
+    expect(external.modelAlias).toBe('profile-raw');
+    expect(external.executorOptions).toEqual({ pin: 'external-pin' });
+    await service.bind({ execution: { executor: 'native', profile: external.name, overrides: { model: 'mock-model', thinking: 'off' } } });
+    expect(service.data().execution?.sources).toMatchObject({ model: 'session', thinking: 'session' });
+    await service.bind({ execution: { executor: 'native', profile: external.name, overrides: { model: null, thinking: null } } });
+    expect(service.data()).toMatchObject({
+      executorId: 'native', modelAlias: 'mock-model', thinkingLevel: 'off',
+      execution: { effective: { model: 'mock-model', thinking: 'off' }, sources: { model: 'harness-default', thinking: 'harness-default' } },
+    });
+    expect(service.data().modelAlias).not.toBe('profile-raw');
+    const generation = service.data().execution?.generation ?? 0;
+    await service.rebuildPromptContext();
+    expect(service.data().executorId).toBe('native');
+    expect(service.data().modelAlias).toBe('mock-model');
+    expect(service.data().execution?.selection.executor).toBe('native');
+    expect(service.data().execution?.generation).toBeGreaterThanOrEqual(generation);
+  });
+
+  it('keeps the active binding when an executor selection is rejected', async () => {
+    const native = normalizeAgentProfile({
+      name: 'native-role', modelAlias: 'mock-model', disallowedTools: ['Bash'], systemPrompt: () => 'NATIVE_ROLE_BODY',
+    });
+    const external = normalizeAgentProfile({
+      name: 'external-role', executor: 'grok-acp', modelAlias: 'profile-raw', serviceTier: 'priority', systemPrompt: () => 'EXTERNAL_ROLE_BODY',
+    });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry(DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR, (binding) =>
+      binding.modelAlias === 'rejected-model'
+        ? { ok: false, diagnostic: 'fixture executor rejects rejected-model' }
+        : { ok: true, binding })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(native)), hostEnvironmentServices(homeDir, hostPathClass));
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: native.name, overrides: { model: 'kept-raw' } } });
+    const frozen = service.data();
+    await expect(service.bind({ execution: { executor: 'grok-acp', profile: native.name, overrides: { model: 'rejected-model' } } })).rejects.toThrow('fixture executor rejects rejected-model');
+    expect(service.data()).toEqual(frozen);
+    await expect(service.bind({ execution: { executor: 'missing-executor', profile: native.name } })).rejects.toThrow('Unknown executor missing-executor');
+    expect(service.data()).toEqual(frozen);
+    await expect(service.bind({ execution: { executor: 'grok-acp', profile: native.name }, executionRestriction: 'research-readonly' })).rejects.toThrow('Research-readonly agents require the native executor.');
+    expect(service.data()).toEqual(frozen);
+    await ctx.dispose();
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    const externalService = ctx.get(IAgentProfileService);
+    const before = externalService.data();
+    await expect(externalService.bind({ execution: { executor: 'grok-acp', profile: external.name } })).rejects.toThrow('cannot declare service_tier');
+    expect(externalService.data()).toEqual(before);
+    await expect(externalService.bind({ execution: { executor: 'other-acp', profile: external.name } })).rejects.toThrow('cannot declare service_tier');
+    expect(externalService.data()).toEqual(before);
+  });
+
+  it('restores a cross-executor binding with the selected executor, model, and generation', async () => {
+    const persistence = new InMemoryWireRecordPersistence();
+    const native = normalizeAgentProfile({
+      name: 'native-role', modelAlias: 'mock-model', thinkingEffort: 'high', executorOptions: { pin: 'native-pin' },
+      disallowedTools: ['Bash'], systemPrompt: () => 'NATIVE_ROLE_BODY',
+    });
+    const build = () => createTestAgent({ persistence, autoConfigure: false },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(native)),
+      hostEnvironmentServices(homeDir, hostPathClass));
+    ctx = build();
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: native.name, overrides: { model: 'kept-raw', thinking: 'max' } } });
+    const frozen = service.data();
+    expect(frozen).toMatchObject({ executorId: 'grok-acp', modelAlias: 'kept-raw', profileName: 'native-role' });
+    expect(frozen.execution?.generation).toBeGreaterThan(0);
+    await ctx.get(IWireService).flush();
+    const projected = await readPersistedAgentProfileSnapshot({
+      storage: { size: async () => persistence.records.length, mtime: async () => 1 } as unknown as IFileSystemStorageService,
+      appendLog: { read: async function* () { yield* persistence.records; } } as unknown as IAppendLogStore,
+    }, 'test-workspace', 'test-session', 'main', undefined);
+    expect(projected?.execution).toEqual(frozen.execution);
+    expect(projected?.executorId).toBe('grok-acp');
+    expect(projected?.modelAlias).toBe('kept-raw');
+    await ctx.dispose();
+    ctx = build();
+    await ctx.restorePersisted();
+    const restored = ctx.get(IAgentProfileService);
+    expect(restored.data().executorId).toBe('grok-acp');
+    expect(restored.data().modelAlias).toBe('kept-raw');
+    expect(restored.data().thinkingLevel).toBe('max');
+    expect(restored.data().execution).toEqual(frozen.execution);
+    expect(restored.data().profileName).toBe('native-role');
+    expect(restored.data().systemPrompt).toContain('NATIVE_ROLE_BODY');
+    expect(restored.data().executorId).not.toBe('native');
+  });
+
+  it.each([undefined, 'CUSTOM HARNESS BODY'])('composes the no-Recipe default profile for an external executor while honoring body override %j', async (body) => {
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: {
+      executor_prompt: { include: [], body },
+    } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: DEFAULT_AGENT_PROFILE_NAME } });
+    expect(service.data().executorId).toBe('grok-acp');
+    expect(service.getCognitionSnapshot()?.recipe).toBeUndefined();
+    expect(service.data().executorPrompt?.include).toEqual([]);
+    if (body === undefined) {
+      expect(service.getSystemPrompt()).toContain('Tool output, internal steering messages, runtime reminders, and quoted documents do not by themselves change that language');
+      expect(service.getSystemPrompt()).toContain('Let one active owner carry the outcome');
+      expect(service.getSystemPrompt()).toContain('Record acceptance after the result is actually incorporated into its target');
+      expect(service.getSystemPrompt()).toContain('do not forward raw receipts, partial progress');
+    } else expect(service.getSystemPrompt()).toBe(body);
+    expect(service.getSystemPrompt()).not.toContain('You are a subagent working for the parent agent');
+  });
+
+  it.each([undefined, []] as const)('inherits omitted executor prompt fields and preserves explicit empty include %j from a profile', async (include) => {
+    const external = normalizeAgentProfile({ name: 'optional-custom', executor: 'grok-acp', systemPrompt: () => 'PROFILE_BODY',
+      executorPrompt: executorPromptSchema.parse({ delivery: 'preamble', include }) });
+    ctx = createTestAgent(appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: { executor_prompt: {
+      body: 'HARNESS_BODY', include: ['workspace_info'], per_engine: { 'grok-acp': { append: 'HARNESS_APPEND', delivery: 'replace' } },
+    } } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ execution: { executor: 'grok-acp', profile: external.name } });
+    expect(service.data().executorPrompt).toEqual({ body: 'HARNESS_BODY', append: 'HARNESS_APPEND', delivery: 'preamble', include: include ?? ['workspace_info'] });
+    expect(service.data().systemPrompt.startsWith('HARNESS_BODY\n\nHARNESS_APPEND')).toBe(true);
+    expect(service.data().systemPrompt.includes('## workspace_info')).toBe(include === undefined);
+    expect(service.data().execution?.sources).toMatchObject({ 'executor_prompt.body': 'harness-settings',
+      'executor_prompt.append': 'harness-settings', 'executor_prompt.delivery': 'profile', 'executor_prompt.include': include === undefined ? 'harness-settings' : 'profile' });
+    const before = service.data();
+    await ctx.get(IConfigService).replace('agentExecutorOverrides', { 'grok-acp': { defaults: { executor_prompt: { body: 'UPDATED_BODY' } } } }, ConfigTarget.Memory);
+    await service.preparePromptConfiguration();
+    await service.refreshSystemPrompt();
+    expect(service.data().systemPrompt).toBe(before.systemPrompt);
+    expect(service.data().execution).toEqual(before.execution);
+    await service.rebuildPromptContext();
+    expect(service.data().systemPrompt).toBe('UPDATED_BODY');
+    expect(service.data().execution?.selection).toEqual(before.execution?.selection);
+    expect(service.data().execution?.generation).toBe(before.execution!.generation + 1);
+  });
+
   function buildNativeResumeProfile(profile: AgentProfile): IAgentProfileService {
     ctx = createTestAgent(
       nativeResumeOptions(),
@@ -619,6 +1202,69 @@ describe('AgentProfileService.bind', () => {
     expect(profileRecords).toHaveLength(1);
     expect(JSON.stringify(profileRecords)).not.toContain(secret);
     expect(() => svc.resolveModelContext()).toThrow(/unsupported for external executor/);
+  });
+
+  it.each([
+    { saved: true, selected: undefined, effective: true },
+    { saved: true, selected: false, effective: false },
+    { saved: false, selected: true, effective: true },
+    { saved: undefined, selected: undefined, effective: undefined },
+  ])('freezes legacy external MCP injection $saved/$selected across cold restore', async ({ saved, selected, effective }) => {
+    const external = normalizeAgentProfile({ name: 'bridge-worker', executor: 'grok-acp', modelAlias: 'vendor-model',
+      injectKikiMcp: selected, kikiContext: ['memory'], systemPrompt: () => 'external worker' });
+    const persistence = new InMemoryWireRecordPersistence();
+    const build = () => createTestAgent({ persistence, autoConfigure: false },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)), hostEnvironmentServices(homeDir, hostPathClass));
+    ctx = build();
+    await ctx.get(IConfigService).set('agentExecutorOverrides', { 'grok-acp': { defaults: { inject_kiki_mcp: saved } } }, ConfigTarget.Memory);
+    const service = ctx.get(IAgentProfileService);
+    await service.bind({ profile: external.name, delegationPosition: 'sub' });
+    expect(service.data().injectKikiMcp).toBe(effective);
+    expect(service.data().execution).toBeUndefined();
+    const frozen = service.data();
+    service.applyBindingSnapshot(frozen);
+    expect(service.data().injectKikiMcp).toBe(effective);
+    await ctx.get(IWireService).flush();
+    expect(persistence.records.filter((record) => record.type === 'profile.bind').at(-1)?.['injectKikiMcp']).toBe(effective);
+    await ctx.dispose();
+    ctx = build();
+    await ctx.restorePersisted();
+    expect(ctx.get(IAgentProfileService).data().injectKikiMcp).toBe(effective);
+    expect(ctx.get(IAgentProfileService).data().execution).toBeUndefined();
+  });
+
+  it('keeps absent external effort as vendor default and preserves an explicit off choice', async () => {
+    const seen: ExecutorBinding[] = [];
+    const external = normalizeAgentProfile({
+      name: 'external-vendor-default', executor: 'grok-acp', modelAlias: 'vendor-model',
+      systemPrompt: () => 'external worker',
+    });
+    const persistence = new InMemoryWireRecordPersistence();
+    ctx = createTestAgent(
+      { persistence },
+      appService(IAgentExecutorRegistry, externalExecutorRegistry(DEFAULT_EXTERNAL_EXECUTOR_DESCRIPTOR, (binding) => {
+        seen.push(binding);
+        return { ok: true, binding };
+      })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(external)),
+      hostEnvironmentServices(homeDir, hostPathClass),
+    );
+    const svc = ctx.get(IAgentProfileService);
+    await svc.bind({ profile: external.name, delegationPosition: 'main' });
+    expect(seen.at(-1)?.thinkingEffort).toBeUndefined();
+    expect(svc.data()).toMatchObject({ thinkingLevel: 'off', thinkingEffortExplicit: false });
+    expect(persistence.records.find((record) => record.type === 'profile.bind')).toMatchObject({
+      thinkingEffort: 'off', thinkingEffortExplicit: false,
+    });
+
+    svc.setThinking('off');
+    expect(seen.at(-1)?.thinkingEffort).toBe('off');
+    expect(svc.data().thinkingEffortExplicit).toBe(true);
+
+    await svc.bind({ profile: external.name, delegationPosition: 'main' });
+    expect(seen.at(-1)?.thinkingEffort).toBeUndefined();
+    expect(svc.data().thinkingEffortExplicit).toBe(false);
   });
 
   it.each([
@@ -876,12 +1522,37 @@ describe('AgentProfileService.bind', () => {
     expect(resolve).not.toHaveBeenCalled();
   });
 
+  it('binds an external driver without a local model and exposes image media capability', async () => {
+    const { profile: svc } = buildContext();
+
+    await svc.bind({ driver: 'external' });
+
+    expect(svc.data().driver).toBe('external');
+    expect(svc.data().modelAlias).toBeUndefined();
+    expect(svc.isRunnable()).toBe(false);
+    expect(svc.getModelCapabilities()).toMatchObject({ image_in: true, video_in: false });
+    expect(svc.getActiveToolNames()?.length).toBeGreaterThan(0);
+  });
+
+  it('clears the external driver only when a local model binding is explicit', async () => {
+    const { profile: svc } = buildContext();
+
+    await svc.bind({ driver: 'external' });
+    expect(svc.isRunnable()).toBe(false);
+
+    await svc.bind({ model: MOCK_MODEL });
+
+    expect(svc.data().driver).toBeUndefined();
+    expect(svc.data().modelAlias).toBe(MOCK_MODEL);
+    expect(svc.isRunnable()).toBe(true);
+  });
+
   it('binds a profile + model atomically and becomes runnable', async () => {
     const { profile: svc } = buildContext();
 
     const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     expect(catalog.get(DEFAULT_AGENT_PROFILE_NAME)).toBeDefined();
-    catalog.dispose();
+    await catalog.dispose();
 
     expect(svc.isRunnable()).toBe(false);
 
@@ -923,8 +1594,11 @@ describe('AgentProfileService.bind', () => {
     );
     const svc = ctx.get(IAgentProfileService);
 
+    const metadata = ctx.get(ISessionMetadata);
+    await metadata.registerAgent('main', { type: 'main' });
     await svc.bind({ persona: 'lin-lan' });
 
+    expect((await metadata.read()).agents?.['main']?.personaId).toBe('lin-lan');
     expect(svc.data()).toMatchObject({ profileName: 'persona-profile', modelAlias: MOCK_MODEL, personaId: 'lin-lan', personaRevision: 'r1' });
     expect(svc.getSystemPrompt().startsWith('<persona name="林岚" title="发布协调">')).toBe(true);
     expect(svc.getSystemPrompt()).toContain('你运行在 Kiki 中');
@@ -1027,6 +1701,7 @@ describe('AgentProfileService.bind', () => {
       sessionService(ISessionAgentProfileCatalog, routedCatalog(MOCK_MODEL)),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
+    await ctx.ready;
     const canonicalId = `test-provider/${MOCK_MODEL}`;
     await ctx.get(IModelService).replaceAll({
       [canonicalId]: {
@@ -1086,7 +1761,7 @@ describe('AgentProfileService.bind', () => {
     });
   });
 
-  it('does not admit deleted collaboration tools on any builtin profile', () => {
+  it('does not admit deleted collaboration tools on any builtin profile', async () => {
     const catalog = new BuiltinAgentProfileLoaderService(new ShippedAgentProfileSourceService());
     const collaborationTools = [
       'spawn_agent',
@@ -1103,7 +1778,7 @@ describe('AgentProfileService.bind', () => {
       expect(collaborationTools.filter((name) => isToolActive(profile, name))).toEqual([]);
     }
 
-    catalog.dispose();
+    await catalog.dispose();
   });
 
   it('waits for the identity freeze instead of racing it', async () => {
@@ -1194,6 +1869,7 @@ describe('AgentProfileService.bind', () => {
       hostEnvironmentServices(homeDir, hostPathClass),
       sessionService(ISessionAgentProfileCatalog, routedCatalog()),
     );
+    await ctx.ready;
     await ctx.get(IModelService).set('other-model', {
       provider: 'test-provider',
       model: 'other-model',
@@ -1242,7 +1918,7 @@ describe('AgentProfileService.bind', () => {
     profile.setThinking('high');
     expect(profile.data().thinkingLevel).toBe('high');
     expect(profile.data().lockedThinkingEffort).toBe('off');
-    expect(warnings).toEqual([]);
+    expect(warnings.filter(({ code }) => code !== 'agents-md-oversized')).toEqual([]);
     await expect(profile.bind({ profile: 'reviewer', model: MOCK_MODEL })).rejects.toMatchObject({
       code: 'agent_profile_route.switch_forbidden',
     });
@@ -1578,6 +2254,24 @@ describe('AgentProfileService.bind', () => {
     expect(svc.data()).toEqual(before);
   });
 
+  it.each(['appliedLease', 'spawnPolicy'] as const)('keeps external model identities distinct from native aliases when restoring legacy %s', async (scope) => {
+    const configured = resumeProfile({ executor: 'grok-acp', modelAlias: 'vendor-a', allowedModels: ['vendor-a'] });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass),
+      appService(IAgentExecutorRegistry, externalExecutorRegistry()),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(configured)),
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'child', parentAgentId: 'main', agentScope: 'test/child' })));
+    const nativeResolve = vi.spyOn(ctx.get(IModelService), 'resolveId').mockImplementation((alias) =>
+      alias === 'vendor-a' || alias === 'vendor-b' ? 'native-collision' : undefined);
+    const svc = ctx.get(IAgentProfileService);
+    svc.applyBindingSnapshot({ profileName: configured.name, executorId: 'grok-acp', executorProtocol: 'acp-v1',
+      modelAlias: 'vendor-a', thinkingLevel: 'low', systemPrompt: 'Saved external child prompt',
+      [scope]: { name: configured.name, allowedModels: ['vendor-b'] } });
+    const before = svc.data();
+    await expect(svc.prepareResumeBinding({})).rejects.toMatchObject({ code: ErrorCodes.PROFILE_CONSTRAINT_VIOLATION });
+    expect(nativeResolve).not.toHaveBeenCalledWith('vendor-b');
+    expect(svc.data()).toEqual(before);
+  });
+
   it.each(['lease', 'spawnPolicy'] as const)('does not let explicit pins or preferences widen caller %s hard rules', async (scope) => {
     const configured = resumeProfile();
     ctx = createTestAgent(nativeResumeOptions(), hostEnvironmentServices(homeDir, hostPathClass),
@@ -1629,7 +2323,7 @@ describe('AgentProfileService.bind', () => {
         model: { source: 'dispatch-explicit', requestedValue: RESUME_NEW_MODEL },
       },
     });
-    expect(warnings).toEqual([]);
+    expect(warnings.filter(({ code }) => code !== 'agents-md-oversized')).toEqual([]);
     expect(profile.data().bindingAdvisories).toEqual([
       expect.objectContaining({
         code: 'model_not_preferred',
@@ -1639,8 +2333,9 @@ describe('AgentProfileService.bind', () => {
 
     profile.publishBindingAdvisories();
     profile.publishBindingAdvisories();
-    expect(warnings).toHaveLength(1);
-    expect(warnings[0]).toMatchObject({
+    const advisoryWarnings = warnings.filter(({ code }) => code === 'profile-binding-advisory');
+    expect(advisoryWarnings).toHaveLength(1);
+    expect(advisoryWarnings[0]).toMatchObject({
       code: 'profile-binding-advisory',
       advisory: expect.objectContaining({ code: 'model_not_preferred' }),
     });
@@ -2601,14 +3296,14 @@ describe('AgentProfileService.bind', () => {
 
   it('registers and executes read-only memory in a child main-profile binding with a frozen private view', async () => {
     const childScope = makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' });
-    const search = vi.fn<IMemoryStore['search']>(async () => []);
+    const query = vi.fn<IMemoryStore['query']>(async () => ({ items: [], mode: 'search', next_cursor: null, coverage: { scopes: [], statuses: ['active'], exhausted: true, complete: true, warnings: [] } }));
     const get = vi.fn<IMemoryStore['get']>(async () => undefined);
     const original = resumeProfile({ main: true });
     ctx = createTestAgent(
       { ...nativeResumeOptions(), cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, memory: { enabled: true, approval: 'auto', workspaces: {} } } },
       agentService(IAgentScopeContext, childScope),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
-      appServices((reg) => reg.definePartialInstance(IMemoryStore, { search, get })),
+      appServices((reg) => reg.definePartialInstance(IMemoryStore, { query, get })),
       hostEnvironmentServices(homeDir, hostPathClass),
     );
     const profile = ctx.get(IAgentProfileService);
@@ -2625,10 +3320,48 @@ describe('AgentProfileService.bind', () => {
       { id: 'read', type: 'function', name: 'MemoryRead', arguments: JSON.stringify({ id: 'm_private' }) },
     ], { signal: new AbortController().signal, turnId: 1 })) results.push(result);
     expect(results.map((result) => result.result.isError === true)).toEqual([false, false]);
-    expect(search.mock.calls[0]?.[0]).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
+    expect(query.mock.calls[0]?.[0]).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
     expect(get.mock.calls.map((call) => call[0])).toEqual([{ kind: 'persona', personaId: 'reader-persona' }, { kind: 'persona_workspace', personaId: 'reader-persona', workspaceId: 'test-workspace' }]);
     expect(profile.data().personaId).toBeUndefined();
     expect(await ctx.get(IAgentMemorySnapshot).get()).toBe('');
+  });
+
+  it.each(['profile', 'dispatch'] as const)('makes browser and computer opt-in usable through %s selection and revocable on resume', async (selection) => {
+    const names = ['*', 'BrowserConnections', 'BrowserTabs', 'browser__*', 'mcp__kiki-computer__*'];
+    const original = resumeProfile({
+      tools: selection === 'profile' ? names : ['Read'],
+      toolsSource: selection === 'profile' ? 'declared' : undefined,
+    });
+    ctx = createTestAgent({ ...nativeResumeOptions(), autoConfigure: false, cwd: homeDir },
+      agentService(IAgentScopeContext, makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' })),
+      sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)), hostEnvironmentServices(homeDir, hostPathClass));
+    await ctx.get(ISessionMetadata).registerAgent('agent-tools', { type: 'sub', parentAgentId: 'main' });
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: original.name, delegationPosition: 'sub', toolOverride: selection === 'dispatch' ? { tools: names } : undefined });
+    await ctx.rpc.setPermission({ mode: 'yolo' });
+    await ctx.get(IAgentToolActivationService).activate();
+    const registry = ctx.get(IAgentToolRegistryService);
+    expect(registry.resolve('BrowserConnections')).toBeDefined();
+    expect(registry.resolve('BrowserTabs')).toBeDefined();
+    const browser = new PolicyProbeTool('browser__codex_browser_js', 'builtin');
+    const computer = new PolicyProbeTool('mcp__kiki-computer__click', 'mcp');
+    registry.register(browser, { source: 'builtin' });
+    registry.register(Object.assign(computer, { subagentDefault: 'opt-in' as const }), { source: 'mcp' });
+    await ctx.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 1, step: 1, firstStepOfTurn: true, signal: new AbortController().signal });
+    for (const tool of [browser, computer]) {
+      expect(ctx.get(IAgentToolPolicyService).isToolActive(tool.name, tool.source)).toBe(true);
+      expect((await executeDirectToolCall(ctx, tool.name)).isError).not.toBe(true);
+      expect(tool.calls).toBe(1);
+    }
+    await commitResumeBinding(await profile.prepareResumeBinding({ toolOverride: { tools: [] } }));
+    await ctx.get(IAgentLoopService).hooks.onWillBeginStep.run({ turnId: 2, step: 1, firstStepOfTurn: true, signal: new AbortController().signal });
+    for (const tool of [browser, computer]) {
+      expect(ctx.get(IAgentToolPolicyService).isToolActive(tool.name, tool.source)).toBe(false);
+      const results: ToolExecutionResult[] = [];
+      for await (const result of ctx.get(IAgentToolExecutorService).execute([{ type: 'function', id: `revoked_${tool.name}`, name: tool.name, arguments: '{}' }], { signal: new AbortController().signal, turnId: 2 })) results.push(result);
+      expect(results[0]?.result).toMatchObject({ isError: true, output: `Tool "${tool.name}" is disabled by the active tool policy` });
+      expect(tool.calls).toBe(1);
+    }
   });
 
   it('replaces child tool defaults, commits resume overrides, withdraws stale tools and restores the saved layers', async () => {
@@ -2637,7 +3370,7 @@ describe('AgentProfileService.bind', () => {
     const childScope = makeAgentScopeContext({ agentId: 'agent-tools', parentAgentId: 'main', agentScope: 'agents/agent-tools' });
     const readThread = vi.fn(async () => ({ thread: { hostId: 'local', workspaceId: 'workspace-1', sessionId: 'peer' }, turns: [] }));
     const build = () => createTestAgent(
-      { ...nativeResumeOptions(), persistence, cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, threadCommunication: { enabled: true } } },
+      { ...nativeResumeOptions(), persistence, autoConfigure: false, cwd: homeDir, initialConfig: { ...nativeResumeOptions().initialConfig, threadCommunication: { enabled: true } } },
       agentService(IAgentScopeContext, childScope),
       sessionService(ISessionAgentProfileCatalog, singleProfileCatalog(original)),
       appServices((reg) => reg.definePartialInstance(IThreadCommunicationService, { hostId: 'local', isWorkspaceEnabled: async () => true, readThread })),
@@ -2658,7 +3391,7 @@ describe('AgentProfileService.bind', () => {
     const result: ToolExecutionResult[] = [];
     for await (const value of ctx.get(IAgentToolExecutorService).execute([{ id: 'peer-read', type: 'function', name: 'ThreadRead', arguments: JSON.stringify({ thread: { workspace_id: 'workspace-1', session_id: 'peer' } }) }], { signal: new AbortController().signal, turnId: 1 })) result.push(value);
     expect(result[0]?.result.isError).not.toBe(true);
-    expect(readThread).toHaveBeenCalledWith(expect.objectContaining({ caller: { hostId: 'local', workspaceId: 'test-workspace', sessionId: 'test-session' } }));
+    expect(readThread).toHaveBeenCalledWith(expect.objectContaining({ caller: { hostId: 'local', workspaceId: 'test-workspace', sessionId: 'test-session', agentId: 'agent-tools' } }));
     await commitResumeBinding(await profile.prepareResumeBinding({ toolOverride: { tools: [], disallowedTools: [] } }));
     expect(profile.data().activeToolNames).toEqual([]);
     expect(profile.data().disallowedTools).toEqual(['Write']);
@@ -2773,6 +3506,8 @@ describe('AgentProfileService.bind', () => {
         thinking: 'low',
         delegationPosition: 'sub',
       });
+      const savedPromptBase = initial.data().boundProfile?.promptBase?.text;
+      expect(savedPromptBase).toBeTruthy();
       await ctx.get(IWireService).flush();
       await ctx.dispose();
 
@@ -2787,7 +3522,7 @@ describe('AgentProfileService.bind', () => {
             )
           : missingProfileCatalog();
       ctx = createTestAgent(
-        { ...nativeResumeOptions(), persistence },
+        { ...nativeResumeOptions(), persistence, autoConfigure: false },
         sessionService(ISessionAgentProfileCatalog, liveCatalog),
         hostEnvironmentServices(homeDir, hostPathClass),
       );
@@ -2803,6 +3538,8 @@ describe('AgentProfileService.bind', () => {
       if (catalogState === 'missing') {
         await restored.rebuildPromptContext();
         expect(restored.data().profileName).toBe(original.name);
+        expect(restored.getSystemPrompt()).toContain(savedPromptBase!);
+        expect(restored.getSystemPrompt()).not.toContain('missing profile catalog');
       }
       const apply = await prepareResumeBinding(restored, {
         modelAlias: RESUME_NEW_MODEL,
@@ -3541,6 +4278,43 @@ describe('AgentProfileService tool-pattern warnings', () => {
     await ctx.get(IAgentProfileService).bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
 
     expect(toolPatternWarnings()).toEqual([]);
+  });
+
+  it('restores a profile whose plugin tools are no longer registered and still rejects patterns that can never match', async () => {
+    registerAgentProfile({
+      name: 'restore-plugin-tools',
+      tools: ['Read', 'plugin__alpha_kit__AlphaPing', 'plugin__beta_kit__BetaPing'],
+      systemPrompt: () => 'restore two plugin tools',
+    });
+    registerAgentProfile({
+      name: 'restore-still-strict',
+      tools: ['Bash*'],
+      disallowedTools: ['mcp__github'],
+      systemPrompt: () => 'restore stays strict',
+    });
+    ctx = createTestAgent(hostEnvironmentServices(homeDir, hostPathClass));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({
+      profile: 'restore-plugin-tools',
+      model: MOCK_MODEL,
+      unavailableTools: 'restore',
+    });
+    const restored = (ctx.newEvents() as readonly { event: string; args?: { code?: string; message?: string } }[])
+      .filter((entry) => entry.event === 'warning' && entry.args?.code === 'restore-tool-unavailable')
+      .map((entry) => entry.args?.message ?? '');
+    expect(restored).toEqual([
+      expect.stringMatching(/plugin__alpha_kit__AlphaPing/),
+      expect.stringMatching(/plugin__beta_kit__BetaPing/),
+    ]);
+    expect(profile.data().activeToolNames).toEqual(['Read', 'plugin__alpha_kit__AlphaPing', 'plugin__beta_kit__BetaPing']);
+    await expect(profile.bind({
+      profile: 'restore-still-strict',
+      model: MOCK_MODEL,
+      unavailableTools: 'restore',
+    })).rejects.toThrow(/Bash\*[\s\S]*mcp__github/);
+    await expect(profile.bind({ profile: 'restore-plugin-tools', model: MOCK_MODEL })).rejects.toThrow(
+      /plugin__alpha_kit__AlphaPing[\s\S]*plugin__beta_kit__BetaPing/,
+    );
   });
 
   it('bind also rejects inert profile tool patterns', async () => {

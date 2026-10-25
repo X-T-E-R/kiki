@@ -354,6 +354,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
       'demo',
     );
     await waitForOutput(manager, taskId, 'persisted line');
+    await manager.suppressTerminalNotification(taskId);
     await manager.wait(taskId);
 
     const freshFixture = createTaskService(sessionDir);
@@ -378,6 +379,7 @@ describe('AgentTaskService — readOutput / getOutputSnapshot', () => {
     );
     await waitForOutput(manager, taskId, 'persisted output');
     await manager.wait(taskId);
+    await manager.suppressTerminalNotification(taskId);
 
     const freshFixture = createTaskService(sessionDir);
     const fresh = freshFixture.manager;

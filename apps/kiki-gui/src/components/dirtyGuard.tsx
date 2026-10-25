@@ -30,9 +30,9 @@ export interface DirtyGuardValue {
   readonly reportDirty: (id: string, dirty: boolean) => void;
   readonly navigate: GuardedNavigate;
   /** Guard connection/window changes that can unmount every dirty editor. */
-  readonly runAction?: (action: GuardedAction, target?: To | number) => void | Promise<void>;
+  readonly runAction?: (action: GuardedAction, target?: To | number, onCancel?: () => void) => void | Promise<void>;
   /** Prompt before replacing a draft without changing routes (entity/workspace). */
-  readonly confirmDiscard?: (id: string, action: () => void) => void;
+  readonly confirmDiscard?: (id: string, action: () => void, onCancel?: () => void) => void;
 }
 
 export const DirtyGuardContext = createContext<DirtyGuardValue | null>(null);
@@ -163,12 +163,12 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
       pendingCancelRef.current = onCancel;
       return rawNavigate(target, options);
     }
-    return request(shouldGuardNavigation(currentRoute, target, dirtyIds.length > 0), null, () => { rawNavigate(target, options); }, onCancel);
+    return request(shouldGuardNavigation(currentRoute, target, dirtyIds.length > 0), null, () => { void rawNavigate(target, options); }, onCancel);
   }, [router, cancel, currentRoute, dirtyIds.length, rawNavigate, request]);
-  const confirmDiscard = useCallback((id: string, action: () => void) => {
-    request(dirtyIds.includes(id), id, action);
+  const confirmDiscard = useCallback((id: string, action: () => void, onCancel?: () => void) => {
+    void request(dirtyIds.includes(id), id, action, onCancel);
   }, [dirtyIds, request]);
-  const runAction = useCallback((action: GuardedAction, target?: To | number) => {
+  const runAction = useCallback((action: GuardedAction, target?: To | number, onCancel?: () => void) => {
     return request(dirtyIds.length > 0, null, () => {
       const generation = generationRef.current;
       const controller = new AbortController();
@@ -179,15 +179,16 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
         // Only successful actions may discard before the router transition.
         // Update the ref too: browser delta transitions check it asynchronously.
         if (router) { dirtyIdsRef.current = []; setDirtyIds([]); }
-        rawNavigate(target);
+        return rawNavigate(target);
       };
       try {
         const result = action(controller.signal);
         if (result !== undefined) return result.then(navigateAfterAction).finally(finish);
-        navigateAfterAction();
+        const navResult = navigateAfterAction();
         finish();
+        return navResult;
       } catch (error) { finish(); throw error; }
-    });
+    }, onCancel);
   }, [router, dirtyIds.length, rawNavigate, request]);
   const confirm = useCallback(() => {
     pendingCancelRef.current = undefined;
@@ -203,7 +204,7 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
         if (redirect === undefined) currentBlocker.proceed();
         else {
           currentBlocker.reset();
-          if (redirect.target !== 0) rawNavigate(redirect.target, redirect.options);
+          if (redirect.target !== 0) void rawNavigate(redirect.target, redirect.options);
         }
       };
       if (preparationRef.current?.needsPreparation(currentBlocker.location)) {
@@ -238,7 +239,7 @@ export function useDirtyGuardState(currentRoute: CurrentRoute, rawNavigate: Guar
 export function useGuardedNavigate(): GuardedNavigate {
   const fallback = useNavigate();
   const context = useContext(DirtyGuardContext);
-  return context?.navigate ?? ((target, options) => {
+  return context?.navigate ?? ((target, options, _onCancel) => {
     if (typeof target === 'number') void fallback(target);
     else void fallback(target, options);
   });

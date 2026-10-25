@@ -3,6 +3,8 @@ import type { BindingAdvisory } from '@kiki/agent-profiles/bindingAdvisory';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { isAbortError } from '#/_base/utils/abort';
+import { Error2 } from '#/_base/errors/errors';
+import { TaskErrors } from '#/agent/task/errors';
 import {
   type AgentTask,
   type AgentTaskInfoBase,
@@ -41,6 +43,14 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
+export const EMPTY_AGENT_RECEIPT_REASON =
+  'The agent ended without a final receipt. Inspect preserved work and the original turn, then resume the same agent with a new prompt ID and request a final receipt.';
+
+function requireAgentReceipt(outcome: SubagentCompletion, agentId: string): void {
+  if (outcome.result.trim().length > 0) return;
+  throw new Error2(TaskErrors.codes.TASK_EMPTY_AGENT_RECEIPT, EMPTY_AGENT_RECEIPT_REASON, { details: { agentId } });
+}
+
 export function createSubagentExecutor(
   handle: SubagentHandle,
   abortController: AbortController,
@@ -57,6 +67,7 @@ export function createSubagentExecutor(
 
     try {
       const outcome = await handle.completion;
+      requireAgentReceipt(outcome, handle.agentId);
       output(outcome.result);
       return outcome;
     } catch (error: unknown) {
@@ -114,6 +125,7 @@ export class SubagentTask implements AgentTask {
 
     try {
       const outcome = await this.handle.completion;
+      requireAgentReceipt(outcome, this.agentId);
       if (sink.setFinalOutput !== undefined) sink.setFinalOutput(outcome.result);
       else sink.appendOutput(outcome.result);
       await sink.settle({ status: 'completed' });

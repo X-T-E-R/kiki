@@ -37,6 +37,10 @@ export function spaceSettingsTargetOf(client: KikiClient, meta: { server_id: str
   return { client, identity: { serverId: meta.server_id, homeId } };
 }
 
+export function spaceSettingsTargetIsSpace(target: SpaceSettingsTarget | null): boolean {
+  return target !== null && target.identity.homeId !== MAIN_SPACE_ID;
+}
+
 const clientIds = new WeakMap<KikiClient, number>();
 let nextClientId = 0;
 export function spaceSettingsClientKey(client: KikiClient): number {

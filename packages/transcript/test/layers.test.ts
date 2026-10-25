@@ -621,6 +621,55 @@ describe('TranscriptWireAdapter', () => {
     return transcript;
   };
 
+  it('omits hidden reasoning summaries and opaque detail records from cold frames', () => {
+    const part = (uuid: string, value: Record<string, unknown>): TranscriptWireRecord => ({
+      type: 'context.append_loop_event',
+      event: { type: 'content.part', turnId: 0, stepUuid: 'step-1', uuid, part: value },
+      time: 2_500,
+    });
+    const transcript = replay([
+      ...records.slice(0, 3),
+      part('primary', { type: 'think', think: 'Primary thinking', reasoningKey: 'reasoning_content' }),
+      part('summary', { type: 'think', think: 'Duplicate summary', hidden: true, reasoningDetails: [{ type: 'reasoning.summary', summary: 'Duplicate summary' }] }),
+      part('ciphertext', { type: 'think', think: '', hidden: true, reasoningDetails: [{ type: 'reasoning.encrypted', data: 'opaque' }] }),
+      ...records.slice(3),
+    ]);
+    const thinking = transcript.getItems().flatMap((item) => item.kind === 'turn' ? item.steps.flatMap((step) => step.frames.filter((frame) => frame.kind === 'thinking')) : []);
+    expect(thinking).toHaveLength(1);
+    expect(thinking[0]).toMatchObject({ text: 'Primary thinking' });
+    expect(JSON.stringify(transcript.snapshot())).not.toContain('Duplicate summary');
+    expect(JSON.stringify(transcript.snapshot())).not.toContain('opaque');
+  });
+
+  it('retains recorded display and latest progress without fabricating missing or orphan facts', () => {
+    const event = (value: Record<string, unknown>): TranscriptWireRecord => ({ type: 'context.append_loop_event', event: value });
+    const call = records[3]!;
+    const original = call['event'] as Record<string, unknown>;
+    const enriched = { ...call, event: { ...original, display: { kind: 'diff', path: 'a.ts', before: 'a', after: 'b' } } };
+    const transcript = replay([
+      ...records.slice(0, 3),
+      event({ type: 'tool.progress', toolCallId: 'orphan', update: { kind: 'status', text: 'ignored' } }),
+      enriched,
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'progress', percent: 10 } }),
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'custom', text: 'latest', customKind: 'phase', customData: { phase: 2 } } }),
+      ...records.slice(4),
+      event({ type: 'tool.progress', toolCallId: 'call-1', update: { kind: 'invalid', text: 'ignored' } }),
+    ]);
+    expect(transcript.getToolCall('orphan')).toBeUndefined();
+    expect(transcript.getToolCall('call-1')?.frame).toMatchObject({ state: 'done', output: '/repo',
+      display: { kind: 'diff', path: 'a.ts', before: 'a', after: 'b' },
+      progress: { kind: 'custom', text: 'latest', customKind: 'phase', customData: { phase: 2 } } });
+    const legacy = { ...call, event: { ...original, display: { type: 'diff', before: 'a', after: 'b' } } };
+    expect(replay([...records.slice(0, 3), legacy, ...records.slice(4)]).getToolCall('call-1')?.frame.display)
+      .toEqual({ kind: 'command', command: 'pwd' });
+    const absent = replay(records).getToolCall('call-1')?.frame;
+    expect(absent?.display).toEqual({ kind: 'command', command: 'pwd' });
+    expect(absent?.progress).toBeUndefined();
+    const terminal = replay([...records, event({ type: 'tool.progress', toolCallId: 'call-1',
+      update: { kind: 'status', text: 'late update' } })]).getToolCall('call-1')?.frame;
+    expect(terminal).toMatchObject({ state: 'done', output: '/repo', progress: { kind: 'status', text: 'late update' } });
+  });
+
   it('recovers an edited message appended before its managed resend turn', () => {
     const message = (text: string) => ({
       id: 'message-1', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text }],
@@ -656,6 +705,52 @@ describe('TranscriptWireAdapter', () => {
     expect(cold.getTurn('t1')?.steps.flatMap((step) => step.frames)).toEqual([
       expect.objectContaining({ kind: 'text', role: 'assistant', text: 'edited reply' }),
     ]);
+  });
+
+  it('keeps the logical user message when an atomic edit launches with a new request id', () => {
+    const message = (text: string) => ({ id: 'logical-message', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text }] });
+    const records: TranscriptWireRecord[] = [
+      { type: 'prompt.enqueued', promptId: 'request-original', userMessageId: 'logical-message', message: message('original'), time: 1_000 },
+      { type: 'turn.prompt', turnId: 0, promptId: 'request-original', input: message('original').content, origin: { kind: 'user' }, managed: true, time: 1_100 },
+      { type: 'context.append_message', message: message('original'), delivery: { messageId: 'logical-message', turnId: 0, stepId: 'step-0', origin: 'user' }, time: 1_200 },
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 1_300 },
+      { type: 'context.undo', count: 1, time: 2_000, replacementPrompt: {
+        promptId: 'request-edit', userMessageId: 'logical-message', message: message('edited'), alreadyMaterialized: true,
+      } },
+      { type: 'prompt.launch_committed', promptId: 'request-edit', time: 2_100 },
+      { type: 'turn.prompt', turnId: 1, promptId: 'request-edit', input: message('edited').content, origin: { kind: 'user' }, managed: true, time: 2_200 },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 1, step: 1, uuid: 'step-1' }, time: 2_300 },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: 1, stepUuid: 'step-1', uuid: 'reply', part: { type: 'text', text: 'edited reply' } }, time: 2_400 },
+      { type: 'turn.ended', turnId: 1, reason: 'completed', time: 2_500 },
+    ];
+    const transcript = replay(records);
+    expect(transcript.getTurn('t0')).toBeUndefined();
+    expect(transcript.getTurn('t1')).toMatchObject({ prompt: 'edited', promptId: 'request-edit', message: { messageId: 'logical-message' }, state: 'completed' });
+    expect(transcript.getItems().filter(item => item.kind === 'turn')).toHaveLength(1);
+    expect(transcript.getTurn('t1')?.steps.flatMap(step => step.frames).filter(frame => frame.kind === 'text' && frame.role === 'user')).toEqual([]);
+  });
+
+  it('replays a durable prompt outcome without requiring a legacy completion record', () => {
+    const cold = replay([
+      { type: 'prompt.enqueued', promptId: 'p-outcome', userMessageId: 'm-outcome', message: { id: 'm-outcome', role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'hello' }] }, time: 1_000 },
+      { type: 'prompt.launch_committed', promptId: 'p-outcome', time: 1_100 },
+      { type: 'prompt.outcome_committed', terminal: { promptId: 'p-outcome', turnId: 2, state: 'blocked' }, time: 1_200 },
+    ]);
+    expect(cold.getPrompt('p-outcome')).toMatchObject({ status: 'blocked', finishedAt: new Date(1_200).toISOString(), userMessageId: 'm-outcome' });
+  });
+
+  it('commits an outcome from the canonical prompt instead of its stale wire cache', () => {
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main', { prompt: id => transcript.getPrompt(id) });
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({ type: 'prompt.enqueued', promptId: 'cancel-request', userMessageId: 'original-identity',
+      message: { role: 'user', content: [{ type: 'text', text: 'old body' }] }, time: 1000 }));
+    const canonical = { ...transcript.getPrompt('cancel-request')!, status: 'aborted' as const, abortedBeforeStart: true,
+      userMessageId: 'canonical-identity', revision: 3, runtimeControls: { model: 'example/model', thinking: 'high' as const },
+      content: [{ type: 'text', text: 'edited body', presentation: { spans: [{ start: 0, end: 6, kind: 'selection', quote: 'edited' }] } }] };
+    transcript.apply([{ op: 'prompt.upsert', prompt: canonical }]);
+    reducer.apply(adapter.add({ type: 'prompt.outcome_committed', terminal: { promptId: 'cancel-request', state: 'cancelled' }, time: 2000 }));
+    expect(transcript.getPrompt('cancel-request')).toEqual({ ...canonical, finishedAt: new Date(2000).toISOString(), queuePosition: undefined });
   });
 
   it('carries validated text presentation through queue replacement, delivery, steer, and cold replay', () => {
@@ -887,6 +982,27 @@ describe('TranscriptWireAdapter', () => {
     },
   );
 
+  it('projects Grok tool input snapshots through live and cold facts without reviving terminal tools', () => {
+    const input = (text: string): TranscriptWireRecord => ({ type: 'executor.runtime.update', executorId: 'grok-acp', turnId: 0,
+      kind: 'tool_input', value: { toolCallId: 'call-1', stepId: 'step-1', name: 'Bash', inputText: text } });
+    const progress: TranscriptWireRecord = { type: 'executor.runtime.update', executorId: 'grok-acp', turnId: 0,
+      kind: 'tool_progress', value: { toolCallId: 'call-1', update: { kind: 'status', text: 'Waiting for permission' } } };
+    const all = [records[0]!, records[1]!, input('{"command":'), input('{"command":"pwd"}'), records[3]!, progress,
+      records[4]!, input('late'), records[6]!, records[7]!];
+    const cold = replay(all);
+    const live = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(live);
+    const adapter = new TranscriptWireAdapter('main');
+    for (const record of all) reducer.apply(adapter.add(record));
+    expect(live.snapshot()).toEqual(cold.snapshot());
+    const frame = cold.getTurn('t0')?.steps[0]?.frames[0];
+    expect(frame).toMatchObject({ kind: 'tool', name: 'Bash', state: 'done', input: { command: 'pwd' },
+      inputText: '{"command":"pwd"}', output: '/repo', progress: { text: 'Waiting for permission' } });
+    expect(cold.getItems().filter((item) => item.kind === 'marker')).toEqual([]);
+    const interrupted = replay([records[0]!, records[1]!, input('{"command":')]);
+    expect(interrupted.getTurn('t0')?.steps[0]?.frames[0]).toMatchObject({ inputText: '{"command":', state: 'interrupted' });
+  });
+
   it('projects durable executor delivery, diff, compaction, and unknown markers through recovery', () => {
     const delivery = { type: 'executor.prompt.delivery', executorId: 'codex-app-server', turnId: 0,
       promptId: 'queued', origin: 'user', method: 'native_steer', status: 'delivered' };
@@ -918,8 +1034,12 @@ describe('TranscriptWireAdapter', () => {
     recovered.apply([{ op: 'reset', agentId: 'main', snapshot }]);
     expect(recovered.getItems().filter((item) => item.kind === 'marker')).toMatchObject([
       { marker: 'executor.session', payload: updates[0] },
-      { marker: 'executor.usage', payload: updates[1] },
     ]);
+    expect(recovered.getMeta().agent).toMatchObject({
+      contextTokens: 41_000,
+      maxContextTokens: 200_000,
+      contextUsage: 0.205,
+    });
   });
 
   it('normalizes bundled skill prompts and gives media and markers stable identities', () => {
@@ -934,7 +1054,7 @@ describe('TranscriptWireAdapter', () => {
           { type: 'text', text: '<skill>review</skill>' },
           { type: 'text', text: '<skill>security</skill>' },
           { type: 'text', text: 'inspect this' },
-          { type: 'image_url', imageUrl: { id: 'file-1' } },
+          { type: 'image', source: { kind: 'session_media', file_id: 'file-1' } },
         ],
         origin: {
           kind: 'user',
@@ -987,7 +1107,7 @@ describe('TranscriptWireAdapter', () => {
           role: 'user',
           content: [
             { type: 'text', text: 'third' },
-            { type: 'image_url', imageUrl: { id: 'file-1' } },
+            { type: 'image', source: { kind: 'session_media', file_id: 'file-1' } },
           ],
           origin: { kind: 'user' },
         },
@@ -1011,9 +1131,9 @@ describe('TranscriptWireAdapter', () => {
         promptId: 'prompt-1',
         input: [
           { type: 'text', text: 'look' },
-          { type: 'image_url', imageUrl: { id: 'file-1', name: 'photo.png' } },
-          { type: 'video_url', videoUrl: { id: 'file-2', name: 'clip.mp4' } },
-          { type: 'image_url', imageUrl: { id: 'file-3' } },
+          { type: 'image', name: 'photo.png', source: { kind: 'session_media', file_id: 'file-1' } },
+          { type: 'video', name: 'clip.mp4', source: { kind: 'session_media', file_id: 'file-2' } },
+          { type: 'image', source: { kind: 'session_media', file_id: 'file-3' } },
         ],
         origin: { kind: 'user' },
         time: 1_000,
@@ -1022,9 +1142,21 @@ describe('TranscriptWireAdapter', () => {
     ]);
 
     expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['t0.att1', 't0.att2', 't0.att3']);
-    expect(transcript.getAttachment('t0.att1')?.name).toBe('photo.png');
-    expect(transcript.getAttachment('t0.att2')?.name).toBe('clip.mp4');
+    expect(transcript.getAttachment('t0.att1')).toMatchObject({ name: 'photo.png', source: { kind: 'session_media', fileId: 'file-1' } });
+    expect(transcript.getAttachment('t0.att2')).toMatchObject({ name: 'clip.mp4', source: { kind: 'session_media', fileId: 'file-2' } });
     expect(transcript.getAttachment('t0.att3')?.name).toBeUndefined();
+    expect(transcript.getAttachment('t0.att3')?.source).toEqual({ kind: 'session_media', fileId: 'file-3' });
+  });
+
+  it('leaves an id-only provider image off the session media route', () => {
+    const transcript = replay([{
+      type: 'turn.prompt', turnId: 0, promptId: 'provider-only',
+      input: [{ type: 'text', text: 'look' }, { type: 'image_url', imageUrl: { id: 'provider-only' } }],
+      origin: { kind: 'user' }, time: 1_000,
+    }]);
+    expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['t0.att1']);
+    expect(transcript.getAttachment('t0.att1')).toMatchObject({ attachmentId: 't0.att1', owner: { kind: 'turn', turnId: 't0' } });
+    expect(transcript.getAttachment('t0.att1')?.source).toBeUndefined();
   });
 
   it('derives inline media size while preserving explicit media metadata', () => {
@@ -1153,6 +1285,94 @@ describe('TranscriptWireAdapter', () => {
     });
   });
 
+  it('places an unanchored boundary injection on the step already opened by its user frames', () => {
+    const user = (id: string, text: string, time: number, stepId: string, step: number): TranscriptWireRecord => ({
+      type: 'context.append_message', time,
+      delivery: { deliveryId: `d-${id}`, messageId: id, turnId: 0, stepId, step, origin: 'user', deliveredAt: new Date(time).toISOString() },
+      message: { id, role: 'user', content: [{ type: 'text', text }], origin: { kind: 'user' } },
+    });
+    const injection = (id: string, text: string, variant: string, time: number): TranscriptWireRecord => ({
+      type: 'context.append_message', time,
+      delivery: { deliveryId: `d-${id}`, messageId: id, origin: 'injection', deliveredAt: new Date(time).toISOString() },
+      message: { id, role: 'user', content: [{ type: 'text', text }], origin: { kind: 'injection', variant } },
+    });
+    const loop = (event: Record<string, unknown>, time: number): TranscriptWireRecord => ({
+      type: 'context.append_loop_event', event, time,
+    });
+    const steering = injection('steer-cue', 'CLASSIFY THEN ACT', 'model_steering', 6_200);
+    const records: TranscriptWireRecord[] = [
+      { type: 'turn.prompt', turnId: 0, promptId: 'previous', input: [{ type: 'text', text: 'previous request' }], origin: { kind: 'user' }, time: 1_000 },
+      loop({ type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' }, 2_000),
+      loop({ type: 'content.part', turnId: 0, stepUuid: 'step-1', uuid: 'before', part: { type: 'text', text: 'before' } }, 2_500),
+      injection('mid', '<system-reminder>still running</system-reminder>', 'goal_cancelled', 3_000),
+      loop({ type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-1', toolCallId: 'edit-1', name: 'Edit', args: { file: 'a.ts' } }, 3_200),
+      loop({ type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-2', toolCallId: 'edit-2', name: 'Edit', args: { file: 'b.ts' } }, 3_300),
+      loop({ type: 'tool.call', turnId: 0, stepUuid: 'step-1', uuid: 'edit-3', toolCallId: 'edit-3', name: 'Edit', args: { file: 'c.ts' } }, 3_400),
+      loop({ type: 'step.end', turnId: 0, step: 1, uuid: 'step-1', finishReason: 'tool_calls' }, 4_000),
+      injection('idle', '<system-reminder>between steps</system-reminder>', 'goal_cancelled', 5_000),
+      user('steer-a', 'this request', 6_000, 'step-2', 2),
+      user('steer-b', 'quoted: see the edits', 6_100, 'step-2', 2),
+      steering,
+      loop({ type: 'step.begin', turnId: 0, step: 2, uuid: 'step-2' }, 6_300),
+      loop({ type: 'content.part', turnId: 0, stepUuid: 'step-2', uuid: 'thought', part: { type: 'think', think: 'planning' } }, 6_400),
+    ];
+    const opened = records.slice(0, records.indexOf(steering) + 1);
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main', { turn: (turnId) => transcript.getTurn(turnId) });
+    for (const record of opened) reducer.apply(adapter.add(record));
+    expect(transcript.getTurn('t0')?.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)])).toEqual([
+      ['step-1', ['before', 'mid', 'step-1.edit-1', 'step-1.edit-2', 'step-1.edit-3', 'idle']],
+      ['step-2', ['steer-a', 'steer-b', 'steer-cue']],
+    ]);
+    const resumed = new AgentTranscript('main');
+    resumed.apply([{ op: 'reset', agentId: 'main', snapshot: transcript.snapshot() }]);
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.restore(reducer.checkpoint());
+    const resumedAdapter = new TranscriptWireAdapter('main', { turn: (turnId) => resumed.getTurn(turnId) });
+    resumedAdapter.restore(adapter.checkpoint());
+    for (const record of records.slice(opened.length)) resumedReducer.apply(resumedAdapter.add(record));
+    expect(resumed.getTurn('t0')?.steps.map((step) => [step.stepId, step.frames.map((frame) => frame.frameId)])).toEqual([
+      ['step-1', ['before', 'mid', 'step-1.edit-1', 'step-1.edit-2', 'step-1.edit-3', 'idle']],
+      ['step-2', ['steer-a', 'steer-b', 'steer-cue', 'thought']],
+    ]);
+    expect(resumed.getTurn('t0')?.steps[1]?.frames[2]).toMatchObject({
+      origin: { kind: 'injection', variant: 'model_steering' },
+      delivery: { messageId: 'steer-cue', turnId: 't0', stepId: 'step-2', origin: 'injection' },
+    });
+    const page = paginateTurns(resumed.getItems(), { pageSize: 1 });
+    expect(page.items.map(idLabel)).toEqual(['t0']);
+    const pagedTurn = page.items.find((item) => item.kind === 'turn');
+    expect(pagedTurn?.kind === 'turn' ? pagedTurn.steps[1]?.frames.map((frame) => frame.frameId) : []).toEqual([
+      'steer-a', 'steer-b', 'steer-cue', 'thought',
+    ]);
+
+    const freshUser: TranscriptWireRecord = {
+      type: 'context.append_message', time: 8_200,
+      delivery: { deliveryId: 'd-body', messageId: 'body', turnId: 1, stepId: 'step-3', step: 1, origin: 'user', deliveredAt: new Date(8_200).toISOString() },
+      message: { id: 'body', role: 'user', content: [{ type: 'text', text: 'send now' }], origin: { kind: 'user' } },
+    };
+    const freshSteering = injection('fresh-cue', 'CLASSIFY THEN ACT', 'model_steering', 8_300);
+    const fresh = replay([
+      { type: 'turn.ended', turnId: 0, reason: 'completed', time: 7_000 },
+      { type: 'context.append_message', time: 7_500, message: { id: 'orphan', role: 'user', content: [{ type: 'text', text: '<system-reminder>after the turn</system-reminder>' }], origin: { kind: 'injection', variant: 'goal_cancelled' } } },
+      { type: 'turn.prompt', turnId: 1, promptId: 'header', input: [{ type: 'text', text: 'header' }], origin: { kind: 'user' }, managed: true, time: 8_000 },
+      freshUser,
+      freshSteering,
+      loop({ type: 'step.begin', turnId: 1, step: 1, uuid: 'step-3' }, 8_400),
+      loop({ type: 'content.part', turnId: 1, stepUuid: 'step-3', uuid: 'next-thought', part: { type: 'think', think: 'next' } }, 8_500),
+    ]);
+    expect(fresh.getItems().filter((item) => item.kind === 'marker').map((item) => item.markerId)).toContain('message-delivery:orphan');
+    expect(fresh.getTurn('t1')?.steps.map((step) => step.frames.map((frame) => frame.frameId))).toEqual([
+      ['body', 'fresh-cue', 'next-thought'],
+    ]);
+    const older = paginateTurns(fresh.getItems(), { beforeTurn: 't1', pageSize: 1 });
+    expect(older.items.map(idLabel)).toEqual(['message-delivery:orphan']);
+    const newest = paginateTurns(fresh.getItems(), { pageSize: 1 });
+    expect(newest.items.find((item) => item.kind === 'turn' && item.turnId === 't1')?.kind).toBe('turn');
+    expect(newest.items.filter((item) => item.kind === 'marker').map((item) => item.markerId)).toEqual(['message-delivery:orphan']);
+  });
+
   it('projects canonical delivery once at its accepted step and round trips the delivery contract', () => {
     const delivery = {
       deliveryId: 'delivery-1', messageId: 'mail', turnId: 0, stepId: 'step-2', step: 2,
@@ -1218,7 +1438,7 @@ describe('TranscriptWireAdapter', () => {
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter('main');
     const origin = { kind: 'user', skillActivations: [{ activationId: 'activation-1', skillName: 'review' }] };
-    const input = [{ type: 'text', text: '<skill>review</skill>' }, { type: 'image_url', imageUrl: { id: 'image-1' } }];
+    const input = [{ type: 'text', text: '<skill>review</skill>' }, { type: 'image', source: { kind: 'session_media', file_id: 'image-1' } }];
     reducer.apply(adapter.add({ type: 'turn.prompt', turnId: 0, promptId: 'managed-media', input, origin, managed: true }));
     expect(transcript.getTurn('t0')?.attachmentIds).toBeUndefined();
     expect(transcript.getItems().filter((item) => item.kind === 'marker')).toEqual([]);
@@ -1228,6 +1448,10 @@ describe('TranscriptWireAdapter', () => {
       message: { id: 'managed-media', role: 'user', content: input, origin },
     }));
     expect(transcript.getTurn('t0')?.attachmentIds).toEqual(['managed-media.att1']);
+    expect(transcript.getAttachment('managed-media.att1')).toMatchObject({
+      source: { kind: 'session_media', fileId: 'image-1' },
+      owner: { kind: 'turn', turnId: 't0' },
+    });
     expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
     expect(transcript.getItems().filter((item) => item.kind === 'marker').map((item) => item.markerId)).toEqual(['wire:v2:skill:activation-1']);
   });
@@ -1452,7 +1676,13 @@ describe('TranscriptWireAdapter', () => {
       expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({ marker: 'model.switch', payload: { from: 'old', to: 'new' } }) }),
     ]);
     const canonical = restored.add({ type: 'agent.model_switch', operationId: 'standalone', fromModel: 'new', toModel: 'newer', mode: 'direct', time: 3 });
-    expect(canonical[0]?.operations).toEqual([expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({ markerId: 'model-switch:standalone', payload: expect.objectContaining({ state: 'completed' }) }) })]);
+    expect(canonical[0]?.operations).toEqual([
+      { op: 'meta.merge', meta: { agent: { model: 'newer' } } },
+      expect.objectContaining({ op: 'marker.upsert', item: expect.objectContaining({
+        markerId: 'model-switch:standalone', marker: 'model.switch',
+        payload: expect.objectContaining({ state: 'completed', change: 'model', from: 'new', to: 'newer', mode: 'direct' }),
+      }) }),
+    ]);
   });
 
   it('upserts one compaction through queued, running and committed lifecycle, including checkpoint tails', () => {
@@ -1483,6 +1713,7 @@ describe('TranscriptWireAdapter', () => {
     ]).snapshot());
   });
 
+
   it('keeps queued cancellation separate from an active run, preserves failures on cold replay and never invents a commit', () => {
     const records: TranscriptWireRecord[] = [
       { type: 'full_compaction.begin', source: 'auto', time: 1000 },
@@ -1500,6 +1731,7 @@ describe('TranscriptWireAdapter', () => {
       expect.objectContaining({ payload: expect.objectContaining({ phase: 'completed', summary: 'old successful record' }) }),
     ]);
   });
+
 
   it('retracts discarded streaming frames idempotently in stores and subscriber grades', () => {
     const seed: TranscriptOperation[] = [turnOp(0), { ...stepOp, turnId: 't0', step: { ...stepOp.step, turnId: 't0', stepId: 'step-fixture' } },
@@ -1525,11 +1757,30 @@ describe('TranscriptWireAdapter', () => {
     expect(draft.snapshot()).toEqual(tx.snapshot());
   });
 
+
   it('retains response instance and provider response metadata in canonical schema round trips', () => {
     const frame = transcriptOperationSchema.parse({ op: 'frame.upsert', turnId: 't0', stepId: 'step-fixture', frame: { kind: 'thinking', frameId: 'item-fixture', text: 'fixture summary', responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });
     expect(frame).toMatchObject({ frame: { responseInstanceId: 'attempt-fixture', recordedStepId: 'step-fixture' } });
     const step = transcriptOperationSchema.parse({ op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 'step-fixture', turnId: 't0', ordinal: 1, state: 'completed', providerResponseId: 'response-fixture' } });
     expect(step).toMatchObject({ step: { providerResponseId: 'response-fixture' } });
+  });
+
+
+  it('classifies same-model resume, effort changes, context rebuilds and real model switches without changing the journal', () => {
+    const adapter = new TranscriptWireAdapter('child');
+    adapter.add({ type: 'profile.bind', modelAlias: 'example/model', thinkingEffort: 'high', time: 1 });
+    const restored = new TranscriptWireAdapter('child');
+    restored.restore(JSON.parse(JSON.stringify(adapter.checkpoint())));
+    const change = (operationId: string, thinking: string, mode = 'direct', toModel = 'example/model') => {
+      const facts = restored.add({ type: 'agent.model_switch', operationId, fromModel: 'example/model', toModel, thinking, mode, oldEpoch: 0, newEpoch: mode === 'direct' ? 0 : 1 });
+      return facts[0]?.operations.find((op) => op.op === 'marker.upsert');
+    };
+    expect(change('resume:parent:1', 'high')).toMatchObject({ item: { payload: { change: 'resume', state: 'completed' } } });
+    restored.add({ type: 'prompt.model_switch_queued', entry: { receipt: { operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', mode: 'direct', state: 'pending' } } });
+    expect(change('resume:parent:2', 'low')).toMatchObject({ item: { payload: { change: 'effort' } } });
+    expect(restored.add({ type: 'prompt.model_switch_status', receipt: { operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', mode: 'direct', state: 'completed', binding: { thinking: 'low' } } })[0]?.operations.find((op) => op.op === 'marker.upsert')).toMatchObject({ item: { payload: { change: 'effort', state: 'completed' } } });
+    expect(change('resume:parent:3', 'low', 'fresh')).toMatchObject({ item: { payload: { change: 'context' } } });
+    expect(change('resume:parent:4', 'low', 'direct', 'example/other')).toMatchObject({ item: { payload: { change: 'model' } } });
   });
 
   it('projects notes metadata alongside todos, including notes-only writes and restored checkpoints', () => {
@@ -1583,6 +1834,26 @@ describe('TranscriptWireAdapter', () => {
     const unreadable = replay([{ type: 'tools.update_store', key: 'todo_notes', value: { notes: { future: 42 } } }]);
     expect(unreadable.getTodo('todo')?.notes).toBeUndefined();
     expect(unreadable.getTodo('todo')?.notesStatus?.state).toBe('incompatible');
+  });
+
+  it('restores all goal budget counters and clears limits through full replacement records', () => {
+    const records = [
+      { type: 'goal.create', goalId: 'goal-budget', objective: 'bounded work' },
+      { type: 'goal.update', turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
+        budgetLimits: { turnBudget: 2, tokenBudget: 100, wallClockBudgetMs: 5_000 } },
+    ];
+    const before = replay(records).getMeta().goal;
+    expect(before).toMatchObject({ goalId: 'goal-budget', turnsUsed: 2, budgetUsed: 100, wallClockMs: 5_000,
+      budgetLimit: 100, turnBudget: 2, wallClockBudgetMs: 5_000 });
+    const after = replay([...records, { type: 'goal.update', budgetLimits: { turnBudget: 3 } }]).getMeta().goal;
+    expect(after).toMatchObject({ turnsUsed: 2, budgetUsed: 100, wallClockMs: 5_000, turnBudget: 3 });
+    expect(after?.budgetLimit).toBeUndefined();
+    expect(after?.wallClockBudgetMs).toBeUndefined();
+    const cleared = replay([...records, { type: 'goal.update', budgetLimits: {} }]).getMeta().goal;
+    expect(cleared).toMatchObject({ turnsUsed: 2, budgetUsed: 100, wallClockMs: 5_000 });
+    expect(cleared?.budgetLimit).toBeUndefined();
+    expect(cleared?.turnBudget).toBeUndefined();
+    expect(cleared?.wallClockBudgetMs).toBeUndefined();
   });
 
   it('folds todo, goal, plan, task, and interruption facts through the shared reducer', () => {
@@ -1652,23 +1923,6 @@ describe('TranscriptWireAdapter', () => {
     expect(
       transcript.getItems().filter((item) => item.kind === 'marker').map((item) => item.marker),
     ).toEqual(['goal', 'goal', 'plan.enter', 'plan.revision', 'interruption']);
-  });
-
-  it('restores all goal budget counters and clears limits through full replacement records', () => {
-    const records = [
-      { type: 'goal.create', goalId: 'goal-budget', objective: 'bounded work' },
-      { type: 'goal.update', turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
-        budgetLimits: { turnBudget: 2, tokenBudget: 100, wallClockBudgetMs: 5_000 } },
-    ];
-    const before = replay(records).getMeta().goal;
-    expect(before).toMatchObject({ goalId: 'goal-budget', turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
-      budget: { turnBudgetReached: true, tokenBudgetReached: true, wallClockBudgetReached: true, overBudget: true } });
-    const after = replay([...records, { type: 'goal.update', budgetLimits: { turnBudget: 3 } }]).getMeta().goal;
-    expect(after).toMatchObject({ turnsUsed: 2, tokensUsed: 100, wallClockMs: 5_000,
-      budget: { turnBudget: 3, tokenBudget: null, wallClockBudgetMs: null, remainingTurns: 1, overBudget: false } });
-    expect(after?.budgetLimit).toBeUndefined();
-    expect(replay([...records, { type: 'goal.update', budgetLimits: {} }]).getMeta().goal?.budget)
-      .toMatchObject({ turnBudget: null, tokenBudget: null, wallClockBudgetMs: null, overBudget: false });
   });
 
   it('projects reviewer provenance from an approval resolution', () => {
@@ -2229,7 +2483,7 @@ describe('TranscriptWireAdapter', () => {
         type: 'turn.steer',
         turnId: 0,
         promptId: 'steer-1',
-        input: [{ type: 'image_url', imageUrl: { id: 'file-steer' } }],
+        input: [{ type: 'image', source: { kind: 'session_media', file_id: 'file-steer' } }],
         origin: { kind: 'user' },
         time: 4_000,
       },
@@ -2238,7 +2492,7 @@ describe('TranscriptWireAdapter', () => {
         message: {
           id: 'steer-1',
           role: 'user',
-          content: [{ type: 'image_url', imageUrl: { id: 'file-steer' } }],
+          content: [{ type: 'image', source: { kind: 'session_media', file_id: 'file-steer' } }],
           origin: { kind: 'user' },
         },
         time: 4_100,
@@ -3085,6 +3339,55 @@ describe('TranscriptWireAdapter', () => {
     expect(countResult.changedIds).toEqual(new Set(['toolCallCount']));
   });
 
+  it('retains prompt-bound controls on the same message through queue moves and cold replay', () => {
+    const runtimeControls = { model: 'example/new', thinking: 'max', profile: 'example-profile', execution: { executor: 'native', profile: 'example-profile' }, planMode: false };
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'bound-message', userMessageId: 'bound-message', message: { id: 'bound-message', origin: { kind: 'user' }, content: [{ type: 'text', text: 'continue' }] }, execution: { ...runtimeControls, goalObjective: 'not a public binding field' }, queueIndex: 0, time: 1000 },
+      { type: 'prompt.moved', queuedPromptIds: ['bound-message'], time: 1001 },
+      { type: 'prompt.launch_committed', promptId: 'bound-message', time: 1002 },
+    ]);
+    expect(transcript.getPrompts()).toHaveLength(1);
+    expect(transcript.getPrompt('bound-message')).toMatchObject({ runtimeControls, status: 'running' });
+    expect(transcript.getPrompt('bound-message')?.runtimeControls).not.toHaveProperty('goalObjective');
+    expect(transcript.getItems()).toEqual([]);
+  });
+
+  it('keeps producer profile_file through cold replay and the wire adapter checkpoint', () => {
+    const runtimeControls = {
+      model: 'example/new',
+      execution: { executor: 'claude-acp', profile_file: 'C:/profiles/example.md', overrides: { permission_mode: 'manual' as const } },
+    };
+    const transcript = new AgentTranscript('main');
+    const adapter = new TranscriptWireAdapter('main');
+    new TranscriptFactReducer(transcript).apply(adapter.add({
+      type: 'prompt.enqueued', promptId: 'profile-file', userMessageId: 'profile-file',
+      message: { id: 'profile-file', origin: { kind: 'user' }, content: [{ type: 'text', text: 'continue' }] },
+      execution: { ...runtimeControls, goalObjective: 'not a public binding field' }, queueIndex: 0, time: 1000,
+    }));
+    expect(transcript.getPrompt('profile-file')?.runtimeControls).toEqual(runtimeControls);
+    const checkpoint = JSON.parse(JSON.stringify(adapter.checkpoint()));
+    expect(checkpoint.prompts).toContainEqual(['profile-file', expect.objectContaining({ runtimeControls })]);
+    const restored = new TranscriptWireAdapter('main');
+    restored.restore(checkpoint);
+    expect(restored.checkpoint().prompts).toContainEqual(['profile-file', expect.objectContaining({ runtimeControls })]);
+  });
+
+  it('keeps message-bound controls with separate request identity and presentation across replacement', () => {
+    const runtimeControls = { model: 'example/new', thinking: 'max', execution: { executor: 'native' } };
+    const presentation = { spans: [{ start: 0, end: 8, kind: 'selection' as const, quote: 'continue' }] };
+    const content = [{ type: 'text' as const, text: 'continue', presentation }];
+    const transcript = replay([
+      { type: 'prompt.enqueued', promptId: 'retry-request', userMessageId: 'logical-message', message: { id: 'logical-message', origin: { kind: 'user' }, content }, execution: runtimeControls, queueIndex: 0, revision: 0, time: 1000 },
+      { type: 'prompt.replaced', promptId: 'retry-request', content, revision: 1, time: 1001 },
+      { type: 'prompt.launch_committed', promptId: 'retry-request', userMessageId: 'logical-message', time: 1002 },
+    ]);
+    expect(transcript.getPrompts()).toHaveLength(1);
+    expect(transcript.getPrompt('retry-request')).toMatchObject({
+      userMessageId: 'logical-message', content, runtimeControls, revision: 1, status: 'running',
+    });
+    expect(transcript.getPrompt('logical-message')).toBeUndefined();
+  });
+
   it('recovers the prompt queue content, timing and order from durable wire facts', () => {
     const transcript = replay([
       {
@@ -3240,7 +3543,64 @@ describe('TranscriptWireAdapter', () => {
     expect(resumed.snapshot().prompts).toEqual(full.snapshot().prompts);
   });
 
-  it('hides non-user-origin prompts from replay, tail records and checkpoint restore', () => {
+  it('preserves scheduled queue content and origin across moves and checkpoint restore', () => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({ type: 'prompt.enqueued', promptId: 'scheduled-1', userMessageId: 'scheduled-1', message: { origin: { kind: 'cron_job' }, content }, createdAt: '2026-01-01T00:00:00.000Z', queueIndex: 0 }));
+    reducer.apply(adapter.add({ type: 'prompt.moved', promptId: 'scheduled-1', queuedPromptIds: ['user-1', 'scheduled-1'] }));
+    expect(transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'queued', queuePosition: 1 });
+    const resumedAdapter = new TranscriptWireAdapter('main');
+    resumedAdapter.restore(adapter.checkpoint());
+    const resumed = new AgentTranscriptDraft('main');
+    resumed.seed(transcript.snapshot());
+    const resumedReducer = new TranscriptFactReducer(resumed);
+    resumedReducer.apply(resumedAdapter.add({ type: 'prompt.launch_committed', promptId: 'scheduled-1' }));
+    resumedReducer.apply(resumedAdapter.add({ type: 'prompt.completed', promptId: 'scheduled-1', reason: 'completed' }));
+    expect(resumed.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({ originKind: 'cron_job', content, status: 'completed' });
+  });
+
+  it.each(['queue', 'steer', 'idle'] as const)('carries a %s delivery mode off the enqueue record and keeps it through moves', (deliveryMode) => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    reducer.apply(adapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'scheduled-1',
+      userMessageId: 'scheduled-1',
+      message: { origin: { kind: 'cron_job', deliveryMode }, content },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      queueIndex: 0,
+    }));
+    reducer.apply(adapter.add({ type: 'prompt.moved', promptId: 'scheduled-1', queuedPromptIds: ['user-1', 'scheduled-1'] }));
+    expect(transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-1')).toMatchObject({
+      originKind: 'cron_job',
+      originDeliveryMode: deliveryMode,
+      status: 'queued',
+      queuePosition: 1,
+    });
+  });
+
+  it('leaves a scheduled record with no delivery mode undefined rather than defaulting it', () => {
+    const content = [{ type: 'text', text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+    const adapter = new TranscriptWireAdapter('main');
+    const transcript = new AgentTranscriptDraft('main');
+    new TranscriptFactReducer(transcript).apply(adapter.add({
+      type: 'prompt.enqueued',
+      promptId: 'scheduled-legacy',
+      userMessageId: 'scheduled-legacy',
+      message: { origin: { kind: 'cron_job' }, content },
+      createdAt: '2026-01-01T00:00:00.000Z',
+      queueIndex: 0,
+    }));
+    const prompt = transcript.snapshot().prompts.find((p) => p.promptId === 'scheduled-legacy');
+    expect(prompt?.originKind).toBe('cron_job');
+    expect(prompt?.originDeliveryMode).toBeUndefined();
+  });
+
+  it('hides other non-user-origin prompts from replay, tail records and checkpoint restore', () => {
     const records: TranscriptWireRecord[] = [
       {
         type: 'prompt.enqueued',
@@ -3250,8 +3610,8 @@ describe('TranscriptWireAdapter', () => {
         createdAt: '2026-06-09T00:00:00.000Z',
         message: {
           id: 'mc1',
-          origin: { kind: 'cron_job', jobId: 'j1', cron: '* * * * *', recurring: true, coalescedCount: 0, stale: false },
-          content: [{ type: 'text', text: '<cron-fire jobId="j1"><prompt>nightly</prompt></cron-fire>' }],
+          origin: { kind: 'system_trigger', name: 'internal' },
+          content: [{ type: 'text', text: 'internal prompt' }],
         },
         alreadyMaterialized: false,
         appendTiming: 'agent_idle',
@@ -3406,7 +3766,7 @@ describe('TranscriptWireAdapter', () => {
   it.each([
     { origin: { kind: 'cron_job', jobId: 'j1' }, promptId: 'p-cron' },
     { origin: { kind: 'agent_message', senderAgentId: 'peer' }, promptId: 'p-mailbox' },
-  ])('retains the $origin.kind turn id for abort without revealing a hidden prompt', ({ origin, promptId }) => {
+  ])('retains the $origin.kind turn id for abort without revealing internal turn text', ({ origin, promptId }) => {
     const transcript = new AgentTranscript('main');
     const reducer = new TranscriptFactReducer(transcript);
     const adapter = new TranscriptWireAdapter('main', { turn: (turnId) => transcript.getTurn(turnId) });
@@ -3422,13 +3782,14 @@ describe('TranscriptWireAdapter', () => {
       input: [{ type: 'text', text: 'internal trigger' }], time: 2_000,
     }));
     const running = agentTranscriptSnapshotSchema.parse(transcript.snapshot());
-    expect(running.prompts).toEqual([]);
+    const expectedPrompts = origin.kind === 'cron_job' ? [expect.objectContaining({ promptId, originKind: 'cron_job', content: [{ type: 'text', text: 'internal trigger' }] })] : [];
+    expect(running.prompts).toEqual(expectedPrompts);
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'running', promptId });
     expect(transcript.getTurn('t0')?.prompt).toBeUndefined();
 
     reducer.apply(adapter.add({ type: 'turn.ended', turnId: 0, reason: 'cancelled', time: 3_000 }));
     expect(transcript.getTurn('t0')).toMatchObject({ state: 'cancelled', promptId });
-    expect(transcript.snapshot().prompts).toEqual([]);
+    expect(transcript.snapshot().prompts).toEqual(expectedPrompts);
   });
 });
 
@@ -4211,6 +4572,17 @@ describe('AgentTranscriptDraft differential replay', () => {
 });
 
 describe('wire model binding facts', () => {
+  it('projects a canonical committed binding immediately without reviving a pending selection', () => {
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    reducer.apply(adapter.add({ type: 'profile.bind', modelAlias: 'example/old', thinkingEffort: 'high' }));
+    reducer.apply(adapter.add({ type: 'prompt.model_switch_queued', entry: { receipt: { operationId: 'switch-binding', fromModel: 'example/old', toModel: 'example/new', state: 'pending', mode: 'direct' } } }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/old', thinkingEffort: 'high' });
+    reducer.apply(adapter.add({ type: 'agent.model_switch', operationId: 'switch-binding', fromModel: 'example/old', toModel: 'example/new', thinking: 'max', mode: 'direct' }));
+    expect(transcript.getMeta().agent).toEqual({ model: 'example/new', thinkingEffort: 'max' });
+    expect(transcript.getItems()[0]).toMatchObject({ marker: 'model.switch', payload: { state: 'preparing' } });
+  });
   it('restores model and effort metadata while marking only alias changes and never copying configuration prompts', () => {
     const adapter = new TranscriptWireAdapter('main');
     const transcript = new AgentTranscript('main');
@@ -4297,11 +4669,11 @@ it('preserves subagent task effort and provenance through wire and schema projec
     { type: 'task.terminated', time: 2, info: { kind: 'agent', taskId: 'task', agentId: 'child', status: 'completed', description: 'work', startedAt: 1, endedAt: 2, model: 'vendor-model', thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp', executorProtocol: 'acp-v1' } },
   ];
   for (const record of records) {
-    const ops = adapter.add(record).flatMap((fact) => fact.operations);
-    const task = ops.find((op) => op.op === 'task.upsert');
+    const ops = adapter.add(record).flatMap(fact => fact.operations);
+    const task = ops.find(op => op.op === 'task.upsert');
     expect(task?.op).toBe('task.upsert');
     expect(transcriptOperationSchema.parse(task)).toMatchObject({ task: { thinkingEffort: 'high', thinkingEffortExplicit: true, executorId: 'example-acp' } });
   }
-  const legacy = new TranscriptWireAdapter('main').add({ type: 'subagent.spawned', time: 1, subagentId: 'legacy', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true }).flatMap((fact) => fact.operations).find((op) => op.op === 'task.upsert');
+  const legacy = new TranscriptWireAdapter('main').add({ type: 'subagent.spawned', time: 1, subagentId: 'legacy', subagentName: 'worker', parentToolCallId: 'call', runInBackground: true }).flatMap(fact => fact.operations).find(op => op.op === 'task.upsert');
   expect(legacy?.op === 'task.upsert' ? legacy.task.thinkingEffort : 'missing').toBeUndefined();
 });

@@ -22,6 +22,7 @@ import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tansta
 
 import type { PersonaSummary, Session } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
+import { cronScheduleLabel } from '@kiki/session-core/util';
 
 import { useI18n } from '../../i18n';
 import type { CronTask } from '../../lib/client';
@@ -156,7 +157,7 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
     ? `${pauseResume.variables?.task.id}:${pauseResume.variables?.task.session_id ?? ''}`
     : undefined;
 
-  const openDaily = () => { navigate(`/p/${encodeURIComponent(persona.id)}/daily`); };
+  const openDaily = () => { void navigate(`/p/${encodeURIComponent(persona.id)}/daily`); };
 
   return (
     <div data-persona-tasks className="space-y-8">
@@ -213,7 +214,9 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                      <span className="text-[13px] font-medium text-ink">{task.human_schedule}</span>
+                      <span data-persona-cron-schedule className="text-[13px] font-medium text-ink">
+                        {cronScheduleLabel(locale, task.cron, task.human_schedule, t)}
+                      </span>
                       <span data-cron-status={task.paused ? 'paused' : 'running'} className={`text-[12px] ${task.paused ? 'text-ink-faint' : 'text-ink-soft'}`}>
                         {task.paused ? t('cron.status.paused') : t('cron.status.running')}
                       </span>
@@ -233,7 +236,7 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
                       <button
                         type="button"
                         data-persona-cron-session={session.id}
-                        onClick={() => { navigate(`/s/${encodeURIComponent(session.id)}`); }}
+                        onClick={() => { void navigate(`/s/${encodeURIComponent(session.id)}`); }}
                         className="max-w-64 truncate text-left text-ink-soft underline-offset-2 transition-colors hover:text-ink hover:underline"
                         title={session.title}
                       >
@@ -306,7 +309,7 @@ export function PersonaTasksSection({ persona }: PersonaTasksSectionProps) {
                 <button
                   type="button"
                   data-persona-room-row={room.id}
-                  onClick={() => { navigate(`/rooms/${encodeURIComponent(room.id)}`); }}
+                  onClick={() => { void navigate(`/rooms/${encodeURIComponent(room.id)}`); }}
                   className="row-interactive flex w-full items-baseline gap-2 py-2.5 text-left"
                 >
                   <span aria-hidden className="shrink-0 font-mono text-[12px] text-ink-faint">#</span>

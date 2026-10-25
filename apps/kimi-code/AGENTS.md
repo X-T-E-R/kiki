@@ -8,7 +8,7 @@ This file only contains rules local to `apps/kimi-code`. For cross-repo rules, s
 
 `apps/kimi-code` is the terminal UI / CLI app. The interactive entry chain is:
 
-`src/main.ts` -> `src/cli/commands.ts` -> `src/cli/run-shell.ts` -> daemon attach-or-spawn -> `src/tui/daemon/daemon-tui.ts`. The internal `__search-indexer` command is dispatched by `src/main.ts` before ordinary bootstrap, including in the SEA executable.
+`src/main.ts` -> `src/cli/commands.ts` -> `src/cli/run-shell.ts` -> daemon attach-or-spawn -> `src/tui/daemon/daemon-tui.ts`. The SEA bundle starts at `src/native-entry.ts`, which dynamically loads either the internal `__search-indexer` runtime or `src/main.ts`. Keep application imports behind this dispatch so the indexer can start within its 384 MiB old-space budget; `src/main.ts` also dispatches the command for non-SEA entries.
 
 Main directories:
 
@@ -36,6 +36,7 @@ Main directories:
 - Interactive `kiki` shells always attach to or spawn the shared daemon and run `DaemonTUI`; there is no runtime legacy-TUI fallback.
 - The daemon TUI command registry must identify supported and disabled commands in both autocomplete and `/help`; unknown slash input must not become a prompt unless it matches a discovered Skill or agent profile.
 - Commands without a daemon contract stay explicitly disabled in the registry rather than simulating support client-side.
+- Activity timing is a local projection owned by `daemon/activity-status-helper.ts` and consumed by `DaemonTUI`: use current-turn blocks and queued prompt IDs, never seed a response clock from historical output or an unknown/future start. The coordinator owns ticker/notice cleanup on session switch and close. Status callers declare transient policy and source explicitly; failed resync takes priority, while source-overlay recovery clears only its own notice.
 
 ## Module Responsibilities
 

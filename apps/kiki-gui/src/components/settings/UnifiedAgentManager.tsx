@@ -58,7 +58,7 @@ export function UnifiedAgentManager() {
   const { ask: askKiki, busy: askingKiki } = useAskKiki();
   // Only consulted when this page has no workspace of its own to address.
   const kikiFallbackWorkspace = useAskKikiWorkspace();
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
   const profilesQuery = useQuery({
     queryKey: ['named-agent-profiles', selectedWorkspaceId ?? 'global'],
@@ -195,6 +195,47 @@ export function UnifiedAgentManager() {
   return <SectionCard id="st-card-main-agents" title={t('st.agentManager.title')}>
     <div className="space-y-4">
       <Hint>{t('st.profiles.teamIntro')}</Hint>
+      <div
+        data-agent-passthrough-presets
+        className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-hairline bg-panel/60 px-3 py-2 text-[12px]"
+      >
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="font-medium text-ink-soft">{t('composer.profileGroupPassthrough')}：</span>
+          <span
+            data-passthrough-preset="native"
+            className="inline-flex items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[12px] font-medium text-ink"
+          >
+            <span className="h-1.5 w-1.5 rounded-full bg-success" aria-hidden />
+            Kiki
+            <span className="text-[11px] font-normal text-ink-faint">· {t('composer.profilePassthroughBadge')}</span>
+          </span>
+          {executors.filter((item) => item.id !== 'native').map((item) => {
+            const ready = item.status === 'ready';
+            const needsSetup = item.status === 'unknown';
+            return (
+              <span
+                key={item.id}
+                data-passthrough-preset={item.id}
+                className={`inline-flex items-center gap-1.5 rounded-full border border-hairline bg-paper px-2.5 py-0.5 text-[12px] ${ready ? 'font-medium text-ink' : 'text-ink-soft'}`}
+              >
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${ready ? 'bg-success' : needsSetup ? 'bg-amber-rule' : 'bg-ink-faint/50'}`}
+                  aria-hidden
+                />
+                {engineLabel(item.id, item.label ?? item.id, executors)}
+              </span>
+            );
+          })}
+        </div>
+        <button
+          type="button"
+          data-agent-passthrough-manage
+          onClick={() => { void navigate('/settings/providers#st-card-engines'); }}
+          className="text-[12px] font-medium text-accent-ink hover:underline"
+        >
+          {t('st.providers.zone2.title')} →
+        </button>
+      </div>
       <TeamView rows={rows} models={models} filter={filter} onFilter={setFilter} savingKey={quickSaving}
         toolbar={<>
           <SaveStatus saving={quickSaving !== undefined} saved={quickSaved} />
@@ -313,7 +354,7 @@ export function UnifiedAgentManager() {
           onToggleEnabled={(enabled) => toggleEnabled(editing.profile, enabled)} toggleSaving={toggleSaving || configQuery.isLoading}
           newSessionBlocked={namedAgentNewSessionBlocked(editing.profile, relations.get(editing.profile))
             || (effective !== undefined && !effective.some((winner) => sameProfile(winner, editing.profile)))}
-          onNewSession={() => navigate(namedAgentSessionHref(editing.profile, selectedWorkspaceId))}
+          onNewSession={() => { void navigate(namedAgentSessionHref(editing.profile, selectedWorkspaceId)); }}
           onDuplicate={() => setSheet({ kind: 'new', source: editing.profile.name })} />
           : <Hint>{t('st.agentManager.select')}</Hint>}
     </Dialog> : null}

@@ -8,7 +8,7 @@ import {
   matchUnknownClaudeProfile,
 } from '../provider/bases/anthropic/anthropic-profile';
 import type { ProviderConfig } from '../provider/provider';
-import { explainProviderEndpoint } from '../provider/providerDefinition';
+import { explainProviderEndpoint, resolveProviderApiKey } from '../provider/providerDefinition';
 
 import type { ModelRecord } from './model';
 import type { ResolvedModelAuthMaterial } from './model.types';
@@ -46,12 +46,8 @@ export function resolveModelAuthMaterial(
     };
   }
 
-  const providerAuthType = args.provider?.type ?? args.model.protocol;
-  const providerEndpoint =
-    providerAuthType === undefined
-      ? {}
-      : explainProviderEndpoint(providerAuthType, args.provider?.env ?? {});
-  const providerApiKey = nonEmpty(args.provider?.apiKey) ?? nonEmpty(providerEndpoint.apiKey);
+  const providerKey = resolveProviderApiKey({ ...args.provider, type: args.provider?.type ?? args.model.protocol });
+  const providerApiKey = providerKey.apiKey;
   if (providerApiKey !== undefined && args.provider?.oauth !== undefined) {
     throw authConflictError('Provider', args.providerName);
   }
@@ -62,7 +58,7 @@ export function resolveModelAuthMaterial(
         ? { kind: 'config', detail: `provider '${args.providerName}' apiKey` }
         : {
             kind: 'env',
-            detail: `${providerEndpoint.apiKeyEnvName ?? '?'} (provider '${args.providerName}' env bag)`,
+            detail: `${providerKey.envName ?? '?'} (provider '${args.providerName}' ${args.provider?.apiKeyEnv === undefined ? 'env bag' : 'api_key_env'})`,
           },
     );
     return { apiKey: providerApiKey };
@@ -148,19 +144,51 @@ export function deriveProviderId(baseUrl: string): string {
   }
 }
 
+export type BindingOrigin = 'model' | 'provider' | 'env' | 'vendor' | 'none';
+
+export interface BindingOriginExplanation {
+  readonly source: BindingOrigin;
+  readonly envName?: string;
+  readonly baseUrl?: string;
+}
+
+export function explainModelEndpointOrigin(
+  model: Pick<ModelRecord, 'baseUrl' | 'protocol'>,
+  provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env'>,
+): BindingOriginExplanation {
+  const fromModel = nonEmpty(model.baseUrl);
+  if (fromModel !== undefined) return { source: 'model', baseUrl: fromModel };
+  const fromProvider = nonEmpty(provider?.baseUrl);
+  if (fromProvider !== undefined) return { source: 'provider', baseUrl: fromProvider };
+  const endpointType = provider?.type ?? model.protocol;
+  if (endpointType === undefined) return { source: 'none' };
+  const explained = explainProviderEndpoint(endpointType, provider?.env ?? {});
+  const fromBag = nonEmpty(explained.baseUrl);
+  if (fromBag === undefined) return { source: 'none' };
+  if (explained.baseUrlIsDefault === true) return { source: 'vendor', baseUrl: fromBag };
+  return { source: 'env', baseUrl: fromBag, envName: explained.baseUrlEnvName };
+}
+
+export function explainModelAuthOrigin(
+  model: Pick<ModelRecord, 'apiKey' | 'oauth' | 'protocol'>,
+  provider?: Pick<ProviderConfig, 'apiKey' | 'apiKeyEnv' | 'oauth' | 'type' | 'env'>,
+): BindingOriginExplanation {
+  if (nonEmpty(model.apiKey) !== undefined || model.oauth !== undefined) return { source: 'model' };
+  if (nonEmpty(provider?.apiKey) !== undefined) return { source: 'provider' };
+  const explained = resolveProviderApiKey({ ...provider, type: provider?.type ?? model.protocol });
+  if (explained.apiKey !== undefined) {
+    return { source: 'env', envName: explained.envName };
+  }
+  if (provider?.oauth !== undefined) return { source: 'provider' };
+  return { source: 'none' };
+}
+
 /** Shared endpoint precedence for the requester and the read-only key preview. */
 export function resolveConfiguredModelBaseUrl(
   model: Pick<ModelRecord, 'baseUrl' | 'protocol'>,
   provider?: Pick<ProviderConfig, 'baseUrl' | 'type' | 'env'>,
 ): string | undefined {
-  const fromModel = nonEmpty(model.baseUrl);
-  if (fromModel !== undefined) return fromModel;
-  const fromProvider = nonEmpty(provider?.baseUrl);
-  if (fromProvider !== undefined) return fromProvider;
-  const endpointType = provider?.type ?? model.protocol;
-  return endpointType === undefined
-    ? undefined
-    : nonEmpty(explainProviderEndpoint(endpointType, provider?.env ?? {}).baseUrl);
+  return explainModelEndpointOrigin(model, provider).baseUrl;
 }
 
 export function nonEmpty(value: string | undefined): string | undefined {

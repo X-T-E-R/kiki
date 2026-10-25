@@ -41,7 +41,7 @@ import { ActivityComms } from './comms/ActivityComms';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
 import { LifeMark } from './LifeMark';
-import { PageHeader, useWorkspaceScope } from './PageChrome';
+import { PAGE_WIDTH, PageHeader, useWorkspaceScope } from './PageChrome';
 import { RelativeTime } from './RelativeTime';
 import { ThreadTitle } from './ThreadTitle';
 import { segmentClass, WorkspaceScopeControl } from './WorkspaceScopeControl';
@@ -207,7 +207,7 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
     } else updated.set('view', next);
     setParams(updated, { replace: true });
   };
-  const open = (href: string) => { navigate(href); };
+  const open = (href: string) => { void navigate(href); };
   // Only the finished drain can be cleared: a blocked session stays until it
   // is answered, so "read" would be a lie there.
   const markAllRead = () => {
@@ -216,38 +216,39 @@ export function ActivityPage({ sessions, rooms = [], workspaceOptions, onToggleS
   };
   return (
     <div data-activity-page data-activity-view={view} className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-      <PageHeader title={t('nav.activity')} onToggleSidebar={onToggleSidebar} />
+      <PageHeader title={t('nav.activity')} onToggleSidebar={onToggleSidebar} width="reading" />
       {/* The view switch sits on the header's left edge, the scope (comms
-          only) right after it — the /cron and /board scope-bar rhythm. */}
-      <div className="flex shrink-0 flex-wrap items-center gap-x-4 gap-y-2 px-4 pb-2 lg:px-6">
-        <div role="group" aria-label={t('activity.viewAria')} data-activity-views
-          className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
-          {(['inbox', 'comms'] as const).map((candidate) => (
-            <button
-              key={candidate}
-              type="button"
-              data-activity-view-option={candidate}
-              aria-pressed={view === candidate}
-              onClick={() => { chooseView(candidate); }}
-              className={segmentClass(view === candidate, 'h-7 px-3 text-[13px]')}
-            >
-              {t(candidate === 'inbox' ? 'activity.view.inbox' : 'activity.view.comms')}
-            </button>
-          ))}
+          only) right after it — aligned to the shared reading column. */}
+      <div className="shrink-0 px-4 pb-2 lg:px-6">
+        <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-wrap items-center gap-x-4 gap-y-2`}>
+          <div role="group" aria-label={t('activity.viewAria')} data-activity-views
+            className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+            {(['inbox', 'comms'] as const).map((candidate) => (
+              <button
+                key={candidate}
+                type="button"
+                data-activity-view-option={candidate}
+                aria-pressed={view === candidate}
+                onClick={() => { chooseView(candidate); }}
+                className={segmentClass(view === candidate, 'h-7 px-3 text-[13px]')}
+              >
+                {t(candidate === 'inbox' ? 'activity.view.inbox' : 'activity.view.comms')}
+              </button>
+            ))}
+          </div>
+          {view === 'comms' && workspaceOptions.length > 1 ? (
+            <WorkspaceScopeControl workspaces={workspaceOptions} value={scope} onChange={setScope} dataAttribute="data-activity-scope" />
+          ) : null}
         </div>
-        {view === 'comms' && workspaceOptions.length > 1 ? (
-          <WorkspaceScopeControl workspaces={workspaceOptions} value={scope} onChange={setScope} dataAttribute="data-activity-scope" />
-        ) : null}
       </div>
-      {/* The list starts on the header's own left edge (a reading column, not a
-          centred card) so the page title and the first row share one margin. */}
-      <div data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-1 pb-8 lg:px-3">
+      {/* Centred reading column aligned with the page title. */}
+      <div data-activity-scroll className="min-h-0 flex-1 overflow-y-auto px-4 pb-8 lg:px-6">
         {view === 'comms' ? (
-          <div className="flex w-full max-w-[680px] flex-col gap-3 pt-1">
+          <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-3 pt-1`}>
             <ActivityComms workspaceId={scope} workspaceNames={workspaceNames} onOpen={open} />
           </div>
         ) : (
-        <div className="flex w-full max-w-[680px] flex-col gap-3 pt-1">
+        <div className={`mx-auto flex w-full ${PAGE_WIDTH.reading} flex-col gap-3 pt-1`}>
           <InboxGroup
             hook={{ 'data-activity-group': 'needs-you' }}
             title={t('activity.needsYou')}

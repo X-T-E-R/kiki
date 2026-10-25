@@ -15,10 +15,11 @@
  * that dirty set); closing the last tab is what unmounts the workspace.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from 'react';
 import { browserSaveSink, bufferedSaveSink } from '../host/saveSink';
 import type { HostSaveSink } from '../host/host';
 import { createPortal } from 'react-dom';
+import { CodeEditor } from './CodeEditor';
 
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
@@ -45,7 +46,9 @@ import { useNavSnapshotAdapter, useNavVisitId } from '../lib/useNavSnapshot';
 import { useDirtyReporter } from './dirtyGuard';
 import { Dialog } from './Dialog';
 import { Icon } from './icons';
+import { copyImageBitmap, httpImageLink, imageMenuEntries, isRemoteConnection, mediaOutcomeKey, noteMediaReady, resolveImageMime } from './imageActions';
 import { MediaLightbox } from './MediaLightbox';
+import { blockGalleryImages, canonicalGalleryItem, galleryImageId, orderedGalleryImages, type GalleryImage } from './mediaGallery';
 import { MiniContextMenu } from './MiniContextMenu';
 import { PreviewCloseConfirm, PreviewWorkspace } from './PreviewWorkspace';
 import {
@@ -53,6 +56,8 @@ import {
   useMediaPreview,
   type MediaPreviewApi,
 } from './mediaPreviewContext';
+
+import { useSessionMediaPlayback } from './useSessionMediaPlayback';
 
 export { useMediaPreview } from './mediaPreviewContext';
 
@@ -151,10 +156,40 @@ export function MediaPreviewProvider({
   snapshotAgentId?: string;
   children: ReactNode;
 }) {
-  const clientIdentity = useOptionalConnection()?.client;
+  const connection = useOptionalConnection();
+  const clientIdentity = connection?.client;
+  const remoteScope = isRemoteConnection(connection);
   const [image, setImage] = useState<{ src: string; name?: string; client: unknown; sessionId?: string; agentId: string } | null>(null);
-  const [attachment, setAttachment] = useState<{ item: MediaRef; client: unknown; sessionId?: string; agentId: string } | null>(null);
-  useEffect(() => { setImage(null); setAttachment(null); }, [clientIdentity, sessionId, snapshotAgentId]);
+  const [gallery, setGallery] = useState<{ images: readonly GalleryImage[]; selected: number; client: unknown; sessionId?: string; scopeAgentId: string; seededId?: string; seededSrc?: string } | null>(null);
+  const registeredImages = useRef<{ client: unknown; sessionId?: string; agentId: string; images: Map<string, GalleryImage> }>({ client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() });
+  if (registeredImages.current.client !== clientIdentity || registeredImages.current.sessionId !== sessionId || registeredImages.current.agentId !== snapshotAgentId) {
+    registeredImages.current = { client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() };
+  }
+  const registerGalleryImage = useCallback((entry: GalleryImage) => {
+    registeredImages.current.images.set(entry.id, entry);
+  }, []);
+  const imagesFor = useCallback((item: MediaRef, agentId = snapshotAgentId) => {
+    const id = galleryImageId(item, agentId);
+    if (id === undefined) return [];
+    const source = sessionViewState !== undefined && sessionViewState.sessionId === sessionId
+      ? blockGalleryImages(sessionViewState.blocks, snapshotAgentId)
+      : [];
+    const entries = [...source, ...registeredImages.current.images.values()];
+    if (!entries.some((entry) => entry.id === id)) entries.push({ id, agentId, order: [Number.MAX_SAFE_INTEGER], item: canonicalGalleryItem(item, agentId) });
+    return orderedGalleryImages(entries, agentId);
+  }, [sessionId, snapshotAgentId, sessionViewState]);
+  const openGalleryImage = useCallback((item: MediaRef, agentId = snapshotAgentId, initialSrc?: string) => {
+    const id = galleryImageId(item, agentId);
+    if (id === undefined) return;
+    const images = imagesFor(item, agentId);
+    const selected = images.findIndex((entry) => entry.id === id);
+    if (selected < 0) return;
+    setImage(null);
+    setAttachment(null);
+    setGallery({ images, selected, client: clientIdentity, sessionId, scopeAgentId: snapshotAgentId, seededId: initialSrc === undefined ? undefined : id, seededSrc: initialSrc });
+  }, [clientIdentity, imagesFor, sessionId, snapshotAgentId]);
+  const [attachment, setAttachment] = useState<{ item: MediaRef; client: unknown; sessionId?: string; agentId: string; galleryAgentId: string } | null>(null);
+  useEffect(() => { setImage(null); setGallery(null); setAttachment(null); }, [clientIdentity, sessionId, snapshotAgentId]);
   const previewKey = sessionId === undefined ? 'preview:unsessioned' : previewSnapshotKey(sessionId, snapshotAgentId);
   const visitId = useNavVisitId();
   const initialSnapshot = useMemo(
@@ -187,6 +222,7 @@ export function MediaPreviewProvider({
     ready: sessionId !== undefined,
     capture: () => ({ tabsState, panelOpen, positions }),
     restore: (snapshot) => {
+      setNavigation(undefined);
       setTabsState((current) => {
         const kept = current.tabs.filter((tab) => tab.kind === 'file' && dirtyPaths.has(tab.path) &&
           !snapshot.tabsState.tabs.some((candidate) => previewTabKey(candidate) === previewTabKey(tab)));
@@ -208,11 +244,14 @@ export function MediaPreviewProvider({
   const [navigation, setNavigation] = useState<FileReference | undefined>();
   const openFile = useCallback((input: string | FileReference) => {
     const raw = typeof input === 'string' ? { path: input } : input;
-    const reference = { ...raw, path: normalizeRawPath(raw.path) };
+    const path = normalizeRawPath(raw.path);
+    const identity = (value: string) => /^[A-Za-z]:[\\/]|^\\\\/.test(value) ? value.replaceAll('\\', '/').toLowerCase() : value;
+    const existing = tabsState.tabs.find((tab) => tab.kind === 'file' && identity(tab.path) === identity(path));
+    const reference = { ...raw, path: existing?.kind === 'file' ? existing.path : path };
     setTabsState((state) => openPreviewTab(state, reference.path));
     setNavigation(reference);
     revealPreview();
-  }, [revealPreview]);
+  }, [revealPreview, tabsState.tabs]);
 
   const openAgentPanel = useCallback((agentId: string, title?: string) => {
     setTabsState((state) => openPreviewTab(state, { kind: 'panel', agentId, title }));
@@ -315,9 +354,21 @@ export function MediaPreviewProvider({
     () => ({
       cwd,
       sessionId,
-      openImage: (src, name) => { setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId }); },
+      openImage: (src, name) => { setGallery(null); setImage({ src, name, client: clientIdentity, sessionId, agentId: snapshotAgentId }); },
+      openGalleryImage,
+      registerGalleryImage,
       openFile,
-      openAttachment: (item) => { setAttachment({ item, client: clientIdentity, sessionId, agentId: snapshotAgentId }); },
+      openAttachment: (item, galleryAgentId = snapshotAgentId) => {
+        const isImage = item.kind === 'image' || item.mime?.startsWith('image/') === true;
+        const id = galleryImageId(item, galleryAgentId);
+        if (isImage && id !== undefined) {
+          openGalleryImage(item, galleryAgentId);
+        } else {
+          setImage(null);
+          setGallery(null);
+          setAttachment({ item, client: clientIdentity, sessionId, agentId: snapshotAgentId, galleryAgentId });
+        }
+      },
       openAgentPanel,
       openBuiltinSkill,
       previewTabCount: tabsState.tabs.length,
@@ -326,7 +377,7 @@ export function MediaPreviewProvider({
       togglePreviewPanel: togglePanel,
       activeAgentPanelId,
     }),
-    [cwd, sessionId, clientIdentity, snapshotAgentId, openFile, openAgentPanel, openBuiltinSkill, tabsState.tabs, tabsState.active, panelOpen, cockpit, width, togglePanel, activeAgentPanelId],
+    [cwd, sessionId, clientIdentity, snapshotAgentId, openGalleryImage, registerGalleryImage, openFile, openAgentPanel, openBuiltinSkill, tabsState.tabs, tabsState.active, panelOpen, cockpit, width, togglePanel, activeAgentPanelId],
   );
 
   useEffect(() => {
@@ -356,7 +407,7 @@ export function MediaPreviewProvider({
       workspaceNavigation={workspaceNavigation}
       onCancelTask={onCancelTask}
       onStopAgentTask={onStopAgentTask}
-      onActivate={(key) => { setTabsState((state) => ({ ...state, active: key })); }}
+      onActivate={(key) => { setNavigation(undefined); setTabsState((state) => ({ ...state, active: key })); }}
       onClose={(key) => { requestClose({ kind: 'tab', key }); }}
       onCloseOthers={(key) => { requestClose({ kind: 'others', key }); }}
       onCloseAll={() => { requestClose({ kind: 'all' }); }}
@@ -378,6 +429,11 @@ export function MediaPreviewProvider({
     />
   ) : null;
 
+  const attachmentGallery = attachment !== null && attachment.item.kind === 'image'
+    ? imagesFor(attachment.item, attachment.galleryAgentId)
+    : [];
+  const attachmentImageIndex = attachment === null ? 0 : attachmentGallery.findIndex((entry) => entry.id === galleryImageId(attachment.item, attachment.galleryAgentId));
+
   return (
     <MediaPreviewContext.Provider value={api}>
       {children}
@@ -395,13 +451,31 @@ export function MediaPreviewProvider({
         <AttachmentPreviewDialog
           item={attachment.item}
           sessionId={attachment.sessionId}
+          galleryAgentId={attachment.galleryAgentId}
+          imageIndex={attachmentImageIndex}
+          imageCount={attachmentGallery.length}
+          onSelectImage={(selected) => {
+            setAttachment((current) => {
+              if (current === null) return null;
+              const next = imagesFor(current.item, current.galleryAgentId)[selected];
+              return next === undefined ? current : { ...current, item: next.item };
+            });
+          }}
           onClose={() => { setAttachment(null); }}
         />
+      ) : null}
+      {gallery !== null && gallery.client === clientIdentity && gallery.sessionId === sessionId && gallery.scopeAgentId === snapshotAgentId && gallery.images[gallery.selected] !== undefined ? (
+        <GalleryLightbox image={gallery.images[gallery.selected]!} sessionId={sessionId} remote={remoteScope} seededSrc={gallery.seededId === gallery.images[gallery.selected]!.id ? gallery.seededSrc : undefined} index={gallery.selected} count={gallery.images.length}
+          onSelect={(selected) => { setGallery((current) => current === null ? null : { ...current, selected }); }}
+          onClose={() => { setGallery(null); }} />
       ) : null}
       {image !== null && image.client === clientIdentity && image.sessionId === sessionId && image.agentId === snapshotAgentId ? (
         <MediaLightbox
           src={image.src}
           name={image.name}
+          linkUrl={httpImageLink(image.src)}
+          outcomeKey={mediaOutcomeKey({ url: image.src })}
+          remote={remoteScope}
           onClose={() => { setImage(null); }}
         />
       ) : null}
@@ -413,7 +487,64 @@ export { PreviewToggleButton } from './PreviewToggleButton';
 
 // ---------------------------------------------------------------------------
 
-import { attachmentName, useSessionMedia } from './mediaParts';
+import { attachmentName, MediaLoadFailure, useSessionMedia } from './mediaParts';
+import { safeImagePreviewName } from './imagePreviewName';
+
+/**
+ * A media store answers saved tool results under a generic type, and a decoder
+ * that trusts the label refuses them. The bytes are already in hand, so the URL
+ * handed to the viewer is minted with the type they really are — the same bytes,
+ * one correct label.
+ */
+function useTypedImageUrl(bytes: Uint8Array | undefined, declared: string | undefined): string | undefined {
+  const [typed, setTyped] = useState<{ readonly url: string }>();
+  useEffect(() => {
+    if (bytes === undefined) return;
+    const mime = resolveImageMime(bytes, declared);
+    if (mime === undefined || mime === declared) return;
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+    setTyped({ url });
+    return () => {
+      URL.revokeObjectURL(url);
+      setTyped((current) => current?.url === url ? undefined : current);
+    };
+  }, [bytes, declared]);
+  return typed?.url;
+}
+
+function GalleryLightbox({ image, sessionId, remote = false, seededSrc, index, count, onSelect, onClose }: { image: GalleryImage; sessionId?: string; remote?: boolean; seededSrc?: string; index: number; count: number; onSelect: (index: number) => void; onClose: () => void }) {
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const [retry, setRetry] = useState({ id: image.id, attempt: 0 });
+  const canonical = seededSrc === undefined && (image.item.fileId !== undefined || image.item.path !== undefined);
+  const load = useSessionMedia(image.item, sessionId, canonical, false, retry.id === image.id ? retry.attempt : 0);
+  const bytes = load.status === 'ready' ? load.bytes : undefined;
+  const mime = bytes === undefined ? image.item.mime : resolveImageMime(bytes, load.status === 'ready' ? load.mime : image.item.mime) ?? image.item.mime;
+  const typedSrc = useTypedImageUrl(bytes, mime);
+  const src = seededSrc ?? typedSrc ?? (canonical ? load.status === 'ready' ? load.url : undefined : image.item.url);
+  const size = load.status === 'ready' ? load.bytes.byteLength : image.item.size;
+
+  const onSaveOriginal = useMemo(() => {
+    if (client === undefined || (image.item.path === undefined && (sessionId === undefined || image.item.fileId === undefined))) return undefined;
+    return async (sink: HostSaveSink, signal: AbortSignal, onProgress: (bytes: number, total?: number) => void) => {
+      const consume: import('@kiki/klient').HttpRestMediaSink = async (chunk, progress) => {
+        await sink.write(chunk);
+        onProgress(progress.bytes, progress.totalBytes);
+      };
+      const options = { ...client.readingOptions(), signal };
+      if (image.item.path !== undefined) await client.downloadHostFile(image.item.path, consume, options);
+      else await client.downloadSessionMedia(sessionId!, image.item.fileId!, consume, options);
+    };
+  }, [client, sessionId, image.item.path, image.item.fileId]);
+
+  return <MediaLightbox src={src} identity={image.id} name={safeImagePreviewName({ name: image.item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: image.item.path })}
+    sourcePath={image.item.path} linkUrl={httpImageLink(image.item.url)} outcomeKey={mediaOutcomeKey({ ...image.item, sessionId })} remote={remote}
+    mime={mime} size={size}
+    loading={canonical && load.status === 'loading'} failed={canonical && load.status === 'failed'}
+    onRetry={() => { setRetry((current) => ({ id: image.id, attempt: current.id === image.id ? current.attempt + 1 : 1 })); }}
+    onSaveOriginal={onSaveOriginal}
+    index={index} count={count} onSelect={onSelect} onClose={onClose} />;
+}
 
 function isTextPreview(mime: string, name: string): boolean {
   if (mime.startsWith('text/')) return true;
@@ -424,23 +555,39 @@ function isTextPreview(mime: string, name: string): boolean {
 function AttachmentPreviewDialog({
   item,
   sessionId,
+  galleryAgentId,
+  imageIndex = 0,
+  imageCount = 1,
+  onSelectImage,
   onClose,
 }: {
   item: MediaRef;
   sessionId: string | undefined;
+  galleryAgentId?: string;
+  imageIndex?: number;
+  imageCount?: number;
+  onSelectImage?: (index: number) => void;
   onClose: () => void;
 }) {
   const { t } = useI18n();
   const host = useHost();
-  const client = useOptionalConnection()?.client;
-  const [original, setOriginal] = useState(false);
-  const [textLimit, setTextLimit] = useState(1024 * 1024);
+  const preview = useMediaPreview();
+  const connection = useOptionalConnection();
+  const client = connection?.client;
+  const remoteScope = isRemoteConnection(connection);
   const [transfer, setTransfer] = useState<{ status: 'idle' | 'downloading' | 'saving' | 'saved' | 'failed'; bytes?: number; total?: number; message?: string }>({ status: 'idle' });
   const downloadController = useRef<AbortController | null>(null);
-  const load = useSessionMedia(item, sessionId, true, !original);
-  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined);
+  const [attempt, setAttempt] = useState(0);
+  const [failedUrl, setFailedUrl] = useState<string>();
+  const viewable = item.kind !== 'file' || /^(?:image|video|audio)\//.test(item.mime ?? '') || item.mime === 'application/pdf' || /\.pdf$/i.test(item.name ?? '') || isTextPreview(item.mime ?? '', item.name ?? '');
+  const playback = useSessionMediaPlayback(item, sessionId, client, remoteScope, attempt);
+  const load = useSessionMedia(item, sessionId, viewable && playback.status === 'fallback', false, attempt);
+  const name = attachmentName(item, load.status === 'ready' ? load.name : undefined, item.kind === 'image' ? t('media.image') : t('media.attachment'));
+  const downloadName = safeImagePreviewName({ name: item.name, metadataName: load.status === 'ready' ? load.name : undefined, path: item.path });
   const title = t('preview.openFile', { name });
+  const imageActionLabel = t('media.viewImage');
   const imageSurface = item.kind === 'image' || item.mime?.startsWith('image/') === true;
+  const previewSurface = useRef<HTMLDivElement>(null);
   const [imageMenu, setImageMenu] = useState<{ x: number; y: number } | null>(null);
   useEffect(() => {
     if (imageMenu !== null) document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [role="menuitem"]')?.focus();
@@ -463,7 +610,7 @@ function AttachmentPreviewDialog({
         await target.write(chunk);
         if (!controller.signal.aborted) setTransfer({ status: 'downloading', bytes: progress.bytes, total: progress.totalBytes });
       };
-      const options = { signal: controller.signal, timeoutMs: 0 };
+      const options = { ...client.readingOptions(), signal: controller.signal };
       if (item.path !== undefined) await client.downloadHostFile(item.path, consume, options);
       else await client.downloadSessionMedia(sessionId!, item.fileId!, consume, options);
       controller.signal.throwIfAborted();
@@ -479,29 +626,44 @@ function AttachmentPreviewDialog({
   };
   let body: ReactNode;
 
-  if (load.status === 'loading') {
+  if (!viewable) {
+    body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.unsupported')}</div>;
+  } else if (playback.status === 'ready') {
+    body = playback.mime.startsWith('video/')
+      ? <video src={playback.url} controls onError={playback.fail} className="max-h-[72vh] max-w-full" />
+      : <audio src={playback.url} controls onError={playback.fail} className="w-full" />;
+  } else if (playback.status === 'failed') {
+    body = <MediaLoadFailure name={name} decode={false} onRetry={() => { setAttempt((value) => value + 1); }} />;
+  } else if (load.status === 'loading') {
     body = <div className="flex min-h-48 items-center justify-center text-sm text-ink-faint">{t('preview.loading')}</div>;
-  } else if (load.status === 'failed') {
-    body = <div className="flex min-h-48 items-center justify-center text-sm text-danger">{t('preview.failed')}</div>;
+  } else if (load.status === 'failed' || failedUrl === load.url) {
+    body = <MediaLoadFailure name={name} decode={load.status === 'ready'} onRetry={() => { setFailedUrl(undefined); setAttempt((value) => value + 1); }} />;
   } else if (load.mime.startsWith('image/')) {
-    body = <img src={load.url} alt={name} className="max-h-[72vh] max-w-full object-contain" />;
+    body = (
+      <button
+        type="button"
+        title={imageActionLabel}
+        aria-label={imageActionLabel}
+        onClick={() => {
+          if (preview?.openGalleryImage !== undefined) preview.openGalleryImage(item, galleryAgentId, load.url);
+          else preview?.openImage(load.url, downloadName);
+        }}
+        className="block w-full max-w-full overflow-hidden rounded-lg transition-opacity hover:opacity-90 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink"
+      >
+        <img src={load.url} alt={name} decoding="async" onLoad={() => { noteMediaReady(mediaOutcomeKey({ ...item, sessionId })); }} onError={() => { setFailedUrl(load.url); }} className="mx-auto block h-auto w-full max-w-full" />
+      </button>
+    );
   } else if (load.mime.startsWith('video/')) {
-    body = <video src={load.url} controls className="max-h-[72vh] max-w-full" />;
+    body = <video src={load.url} controls onError={() => { setFailedUrl(load.url); }} className="max-h-[72vh] max-w-full" />;
   } else if (load.mime.startsWith('audio/')) {
     body = <audio src={load.url} controls className="w-full" />;
   } else if (load.mime === 'application/pdf' || name.toLowerCase().endsWith('.pdf')) {
     body = <iframe src={load.url} title={name} className="h-[72vh] w-full rounded-lg border border-hairline bg-white" />;
   } else if (isTextPreview(load.mime, name)) {
-    const shown = load.bytes.subarray(0, textLimit);
-    const text = new TextDecoder().decode(shown, { stream: shown.byteLength < load.bytes.byteLength });
-    body = (
-      <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3">
-        <pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre>
-        {load.bytes.byteLength > shown.byteLength ? (
-          <button type="button" onClick={() => { setTextLimit((value) => value + 1024 * 1024); }} className="mt-3 text-[11px] text-accent">{t('transcript.showMore')}</button>
-        ) : null}
-      </div>
-    );
+    const text = new TextDecoder().decode(load.bytes);
+    body = load.bytes.byteLength > 1024 * 1024
+      ? <div className="h-[72vh] min-h-0 w-full overflow-hidden rounded-lg border border-hairline bg-paper"><CodeEditor key={`${name}:${attempt}`} path={name} value={text} generation={attempt} readOnly onChange={() => {}} ariaLabel={title} /></div>
+      : <div className="min-h-0 flex-1 overflow-auto rounded-lg border border-hairline bg-paper p-3"><pre className="font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-ink">{text}</pre></div>;
   } else {
     body = (
       <div className="flex min-h-48 flex-col items-center justify-center gap-3 text-sm text-ink-faint">
@@ -510,6 +672,18 @@ function AttachmentPreviewDialog({
       </div>
     );
   }
+
+  const onGalleryKey = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (imageMenu !== null || event.altKey || event.ctrlKey || event.metaKey || (event.target instanceof Element && event.target.closest('input, textarea, select, [contenteditable="true"]') !== null)) return;
+    if (event.key === 'ArrowLeft' && imageIndex > 0) { event.preventDefault(); onSelectImage?.(imageIndex - 1); }
+    else if (event.key === 'ArrowRight' && imageIndex < imageCount - 1) { event.preventDefault(); onSelectImage?.(imageIndex + 1); }
+    else if (imageSurface && (event.key === 'PageUp' || event.key === 'PageDown' || event.key === 'ArrowUp' || event.key === 'ArrowDown')) {
+      event.preventDefault();
+      const scroller = previewSurface.current;
+      if (scroller !== null) scroller.scrollTop += (event.key === 'PageUp' || event.key === 'ArrowUp' ? -1 : 1) * (event.key.startsWith('Page') ? scroller.clientHeight * 0.85 : 60);
+    }
+  };
+  const navButton = 'rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft hover:border-accent hover:text-ink disabled:opacity-40';
 
   return (
     <Dialog
@@ -521,6 +695,7 @@ function AttachmentPreviewDialog({
         ? 'anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden outline-none'
         : 'anim-enter flex max-h-[92vh] w-full max-w-[min(94vw,1100px)] flex-col overflow-hidden rounded-2xl border border-hairline bg-panel p-4 shadow-[0_20px_60px_-20px_rgb(var(--kiki-shadow-ink)/0.45)]'}
     >
+      <div className="flex min-h-0 flex-1 flex-col" onKeyDown={onGalleryKey}>
       <header
         className={imageSurface
           ? 'mb-3 flex shrink-0 items-center gap-3 rounded-xl border border-hairline bg-panel/90 px-3.5 py-2 shadow-sm backdrop-blur-md'
@@ -532,11 +707,11 @@ function AttachmentPreviewDialog({
             <p className="truncate font-mono text-[11px] text-ink-faint">{load.mime} · {formatBytes(load.bytes.byteLength)}</p>
           ) : null}
         </div>
-        {!original ? (
-          <button type="button" onClick={() => { setOriginal(true); }} className="rounded-lg border border-hairline px-3 py-1 text-[11px] text-ink-soft hover:border-accent hover:text-ink">
-            {t('preview.loadFullFile')}
-          </button>
-        ) : null}
+        {imageSurface && imageCount > 1 ? <>
+          <button type="button" disabled={imageIndex <= 0} aria-label={t('media.previousImage')} onClick={() => { onSelectImage?.(imageIndex - 1); }} className={navButton}>‹</button>
+          <span aria-live="polite" className="font-mono text-[11px] text-ink-faint">{t('media.imagePosition', { current: imageIndex + 1, total: imageCount })}</span>
+          <button type="button" disabled={imageIndex >= imageCount - 1} aria-label={t('media.nextImage')} onClick={() => { onSelectImage?.(imageIndex + 1); }} className={navButton}>›</button>
+        </> : null}
         {!imageSurface ? <button
           type="button"
           disabled={transfer.status === 'downloading' || transfer.status === 'saving'}
@@ -564,7 +739,7 @@ function AttachmentPreviewDialog({
           </> : transfer.status === 'saving' ? t('preview.saving') : transfer.status === 'saved' ? t('preview.saved') : <span className="text-danger">{transfer.message}</span>}
         </div>
       ) : null}
-      <div data-attachment-preview className="flex min-h-0 flex-1 items-center justify-center overflow-auto"
+      <div ref={previewSurface} data-attachment-preview className={`flex min-h-0 flex-1 overflow-auto ${imageSurface ? 'items-start justify-center' : 'items-center justify-center'}`}
         tabIndex={imageSurface ? 0 : undefined}
         onContextMenu={(event) => {
           if (!imageSurface || transfer.status === 'downloading' || transfer.status === 'saving') return;
@@ -582,7 +757,21 @@ function AttachmentPreviewDialog({
       >
         {body}
       </div>
-      {imageMenu === null ? null : <MiniContextMenu x={imageMenu.x} y={imageMenu.y} entries={[{ key: 'save-image', label: t('media.download'), run: download }]} onClose={() => { setImageMenu(null); }} ariaLabel={title} overlayId="attachment-image-menu" dataAttribute="data-attachment-image-menu" modalOwnerId="session-attachment-preview" />}
+      </div>
+      {imageMenu === null ? null : <MiniContextMenu x={imageMenu.x} y={imageMenu.y} entries={imageMenuEntries({
+        t,
+        src: load.status === 'ready' && load.mime.startsWith('image/') && failedUrl !== load.url ? load.url : undefined,
+        path: item.path,
+        link: httpImageLink(item.url),
+        remote: remoteScope,
+        revealPath: host.revealPath,
+        openPath: host.openPath,
+        canCopyImage: load.status === 'ready' && load.mime.startsWith('image/') && failedUrl !== load.url,
+        canSave: true,
+        annotated: false,
+        onCopyImage: async () => { if (load.status === 'ready') await copyImageBitmap(load.url); },
+        onSave: download,
+      })} onClose={() => { setImageMenu(null); }} ariaLabel={title} overlayId="attachment-image-menu" dataAttribute="data-attachment-image-menu" modalOwnerId="session-attachment-preview" />}
     </Dialog>
   );
 }

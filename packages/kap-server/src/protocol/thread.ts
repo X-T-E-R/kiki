@@ -1,3 +1,4 @@
+import { contentRefSchema } from '@kiki/transcript';
 import { z } from 'zod';
 
 export const threadRefSchema = z.object({
@@ -21,7 +22,7 @@ export const threadTurnSchema = z.object({
   started_at: z.number().int().nonnegative().optional(),
   ended_at: z.number().int().nonnegative(),
   reason: z.enum(['completed', 'cancelled', 'failed', 'blocked']),
-  origin: z.enum(['user', 'peer']),
+  origin: z.enum(['user', 'peer', 'bridged_peer', 'external', 'mixed', 'unknown', 'thread_created']),
   peer: z
     .object({
       source: threadRefSchema,
@@ -30,6 +31,7 @@ export const threadTurnSchema = z.object({
     .optional(),
   input: z.string(),
   output: z.string(),
+  content_refs: z.array(contentRefSchema).optional(),
 });
 export type ThreadTurn = z.infer<typeof threadTurnSchema>;
 

@@ -8,15 +8,85 @@ import {
   API_CODES,
   ApiError,
   isSessionIndexBuildingError,
+  isUnconfirmedTransportError,
   isSessionNotFoundMessage,
   KikiClient,
   MEMORY_REVISION_CONFLICT,
   NativeChildPromptConflictError,
   type AgentTranscriptResponse,
 } from './client';
-import { isMemoryToolName, parseMemoryWriteResult } from '../components/MemoryToolRow';
+import {
+  isMemoryToolName,
+  parseMemoryReadResult,
+  parseMemorySearchSummary,
+  parseMemoryWriteResult,
+} from '../components/MemoryToolRow';
+import { memoryApplicability } from '../components/memory/memoryReceipt';
 import { refreshSessionAttention } from '../state/connection';
 import { saveOnboardingReplyParagraph } from './onboardingReplyStyle';
+
+/** JSON body a stubbed transport was handed; these tests always post serialized strings. */
+function sentJson(init: RequestInit | undefined): unknown {
+  return typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
+}
+
+/** Request URL a stubbed fetch was called with, whether it was given text, a URL, or a Request. */
+function requestUrl(input: RequestInfo | URL): URL {
+  if (typeof input === 'string') return new URL(input);
+  return input instanceof URL ? new URL(input.href) : new URL(input.url);
+}
+
+describe('KikiClient workspace catalog', () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it('uses the light directory endpoint and keeps detail reads explicitly addressed', async () => {
+    const catalog = { items: [{ id: 'workspace-a', name: 'Example', root: '/example', created_at: '2026-01-01', last_opened_at: '2026-01-01' }] };
+    const detail = { ...catalog.items[0], session_count: 4, isGit: true };
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      return Response.json({ code: 0, msg: 'success', data: url.pathname.endsWith('/workspace-a') ? detail : catalog });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.listWorkspaceCatalog()).resolves.toEqual(catalog);
+      await expect(client.getWorkspaceDetails('workspace-a')).resolves.toEqual(detail);
+      expect(calls).toEqual(['/api/workspaces?view=catalog', '/api/workspaces/workspace-a']);
+    } finally { await client.klient.close(); }
+  });
+
+  it('forwards metadata-only rename and pin to the catalog view while the full PATCH stays available', async () => {
+    const entry = {
+      id: 'wd_example_0123456789ab',
+      root: 'C:/example/project',
+      name: 'Renamed',
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_opened_at: '2026-01-01T00:00:00.000Z',
+      pinned: true,
+    };
+    const full = { ...entry, session_count: 7, isGit: true };
+    const calls: { method: string; path: string; search: string; body: unknown }[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ method: init?.method ?? 'GET', path: url.pathname, search: url.search, body: sentJson(init) });
+      return Response.json({ code: 0, msg: 'success', data: url.searchParams.get('view') === 'catalog' ? entry : full });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.renameWorkspaceCatalog(entry.id, 'Renamed')).resolves.toEqual(entry);
+      await expect(client.setWorkspacePinnedCatalog(entry.id, true)).resolves.toEqual(entry);
+      await expect(client.renameWorkspace(entry.id, 'Renamed')).resolves.toEqual(full);
+      await expect(client.setWorkspacePinned(entry.id, false)).resolves.toEqual(full);
+      expect(calls).toEqual([
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '?view=catalog', body: { name: 'Renamed' } },
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '?view=catalog', body: { pinned: true } },
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '', body: { name: 'Renamed' } },
+        { method: 'PATCH', path: `/api/workspaces/${entry.id}`, search: '', body: { pinned: false } },
+      ]);
+    } finally { await client.klient.close(); }
+  });
+});
 
 describe('KikiClient onboarding prompt preservation', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -55,11 +125,122 @@ function resumeResponse(url: string | URL, init?: RequestInit): Response | undef
   return Response.json({ code: 0, msg: 'success', data: { id: 's1', kind: 'session' } });
 }
 
+describe('KikiClient reading deadline options', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('defaults to unlimited reading without browser storage', async () => {
+    vi.stubGlobal('localStorage', undefined);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try { expect(client.readingOptions()).toEqual({ timeoutMs: 0 }); }
+    finally { await client.klient.close(); }
+  });
+  it('reads changed browser deadlines on the existing client', async () => {
+    let stored = '{}';
+    vi.stubGlobal('localStorage', { getItem: () => stored });
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      expect(client.readingOptions()).toEqual({ timeoutMs: 0 });
+      stored = JSON.stringify({ readingTimeoutSeconds: 3600 });
+      expect(client.readingOptions()).toEqual({ timeoutMs: 3600000 });
+      stored = JSON.stringify({ readingTimeoutSeconds: 0 });
+      expect(client.readingOptions()).toEqual({ timeoutMs: 0 });
+    } finally { await client.klient.close(); }
+  });
+  it('does not abort a document preview when the reading deadline is unlimited', async () => {
+    vi.stubGlobal('localStorage', { getItem: () => JSON.stringify({ readingTimeoutSeconds: 0 }) });
+    const body = {
+      kind: 'missing_dependency',
+      dependency: 'officecli',
+      source: { kind: 'workspace', name: 'deck.pptx', media_type: 'application/vnd.openxmlformats-officedocument.presentationml.presentation', size: 4 },
+      message: 'The kiki-office plugin is not installed.',
+      recovery: { kind: 'install-prerequisite', plugin_id: 'kiki-office', prerequisite_id: 'officecli', consent_required: true, plugin_state: 'not-installed' },
+      read_only: true,
+    };
+    const fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      await new Promise((resolve) => { setTimeout(resolve, 40); });
+      expect(init?.signal?.aborted).not.toBe(true);
+      return Response.json({ code: 0, msg: 'OK', data: body });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    const controller = new AbortController();
+    try {
+      await expect(client.documentPreview('session', { source: { kind: 'workspace', path: '/work/deck.pptx' } }, controller.signal)).resolves.toMatchObject({ kind: 'missing_dependency' });
+      expect(String(fetch.mock.calls[0]?.[0])).toContain('/api/sessions/session/document-preview');
+      expect(controller.signal.aborted).toBe(false);
+    } finally { await client.klient.close(); }
+  });
+});
+
+describe('KikiClient skill and text preview reading options', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('samples the live reading setting and forwards cancellation without changing existing read arguments', async () => {
+    let stored = '{}';
+    vi.stubGlobal('localStorage', { getItem: () => stored });
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    const rest = client.klient.rest;
+    if (rest === undefined) throw new Error('HTTP client must expose its REST facade');
+    const builtin = vi.spyOn(rest.skills, 'readBuiltinContent').mockResolvedValue({ name: 'example', content: '# skill' });
+    const preview = vi.spyOn(rest.filesystem, 'previewHostFile').mockResolvedValue({ text: 'preview', truncated: true });
+    const original = vi.spyOn(rest.filesystem, 'readHostFile').mockResolvedValue('complete');
+    const controller = new AbortController();
+    try {
+      await expect(client.readBuiltinSkill('example')).resolves.toBe('# skill');
+      expect(builtin).toHaveBeenLastCalledWith('example', { timeoutMs: 0 });
+      await client.previewHostFile('/example');
+      expect(preview).toHaveBeenLastCalledWith('/example', 512001, { timeoutMs: 0 });
+      stored = JSON.stringify({ readingTimeoutSeconds: 2 });
+      await client.readBuiltinSkill('example', { signal: controller.signal });
+      expect(builtin).toHaveBeenLastCalledWith('example', { timeoutMs: 2000, signal: controller.signal });
+      await client.previewHostFile('/example', 8, { signal: controller.signal });
+      expect(preview).toHaveBeenLastCalledWith('/example', 8, { timeoutMs: 2000, signal: controller.signal });
+      await client.readHostFile('/example', { signal: controller.signal, timeoutMs: 0 });
+      expect(original).toHaveBeenLastCalledWith('/example', { timeoutMs: 0, signal: controller.signal });
+    } finally { await client.klient.close(); }
+  });
+});
+
+describe('KikiClient attached archive adapter', () => {
+  afterEach(() => vi.unstubAllGlobals());
+  it('sends family scope and explicit exclusions without resuming a cold session', async () => {
+    const result = { archived: true, outcomes: [{ id: 's1', ok: true }] };
+    const fetch = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(String(url)).toBe('http://example.test/api/sessions/s1:archive');
+      expect(JSON.parse(init!.body as string)).toEqual({ include_attached: true, exclude_session_ids: ['promoted'] });
+      return Response.json({ code: 0, msg: 'success', data: result });
+    });
+    vi.stubGlobal('fetch', fetch);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.archiveSession('s1', { exclude_session_ids: ['promoted'] })).resolves.toEqual(result);
+      expect(fetch).toHaveBeenCalledOnce();
+    } finally { await client.klient.close(); }
+  });
+  it('rejects partial failure with the unfinished id and succeeds on retry', async () => {
+    let calls = 0;
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 0, msg: 'success', data: ++calls === 1
+      ? { archived: false, outcomes: [{ id: 's1', ok: true }, { id: 'child', ok: false, reason: 'error', message: 'write failed' }] }
+      : { archived: true, outcomes: [{ id: 's1', ok: true }, { id: 'child', ok: true }] } })));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.archiveSession('s1')).rejects.toThrow('child: write failed');
+      await expect(client.archiveSession('s1')).resolves.toMatchObject({ archived: true });
+    } finally { await client.klient.close(); }
+  });
+  it('does not silently confirm a family on an old server but permits explicit single archive', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 0, msg: 'success', data: { archived: true } })));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(client.archiveSession('s1')).rejects.toThrow('cannot confirm');
+      await expect(client.archiveSession('s1', { include_attached: false })).resolves.toEqual({ archived: true });
+    } finally { await client.klient.close(); }
+  });
+});
+
 describe('KikiClient cold-session actions', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
+  const promptResult = { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hello' }], created_at: '2026-01-01T00:00:00.000Z' };
+  const submitHello = (client: KikiClient) => client.submitPrompt('s1', { content: [{ type: 'text', text: 'hello' }] });
   const actions = [
-    { path: '/prompts', invoke: (client: KikiClient) => client.submitPrompt('s1', { content: [{ type: 'text', text: 'hello' }] }),
-      result: { prompt_id: 'p1', user_message_id: 'p1', status: 'queued', content: [{ type: 'text', text: 'hello' }], created_at: '2026-01-01T00:00:00.000Z' } },
     { path: '/approvals/a1', invoke: (client: KikiClient) => client.resolveApproval('s1', 'a1', { decision: 'approved' }),
       result: { resolved: true, resolved_at: '2026-01-01T00:00:00.000Z' } },
     { path: '/prompts/p1:steer', invoke: (client: KikiClient) => client.steerPrompt('s1', 'p1'),
@@ -88,6 +269,30 @@ describe('KikiClient cold-session actions', () => {
     const client = new KikiClient({ baseUrl: 'http://example.test' });
     try {
       await expect(invoke(client)).rejects.toMatchObject({ code: 40901 });
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await client.klient.close(); }
+  });
+  // Prompt submission is the durable enqueue boundary: it must not wait for
+  // the view/history resume gate, so the POST goes out on its own.
+  it('enqueues a prompt without resuming the view first', async () => {
+    const calls: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      calls.push(new URL(url).pathname);
+      expect(init?.method).toBe('POST');
+      return Response.json({ code: 0, msg: 'success', data: promptResult });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(submitHello(client)).resolves.toEqual(promptResult);
+      expect(calls).toEqual(['/api/sessions/s1/prompts']);
+    } finally { await client.klient.close(); }
+  });
+  it('surfaces a refused prompt without a resume attempt of its own', async () => {
+    const fetchMock = vi.fn(async () => Response.json({ code: 40901, msg: 'session locked', data: null }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://example.test' });
+    try {
+      await expect(submitHello(client)).rejects.toMatchObject({ code: 40901 });
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally { await client.klient.close(); }
   });
@@ -186,8 +391,22 @@ describe('isSessionNotFoundMessage', () => {
     expect(isSessionNotFoundMessage(error.message)).toBe(true);
   });
 
-  it('matches on the numeric code even when the msg text differs', () => {
-    expect(isSessionNotFoundMessage('Could not load session (code 40401)')).toBe(true);
+  it('matches the metadata wording for a session that does not exist', () => {
+    expect(isSessionNotFoundMessage('session sess-1 does not exist (code 40401)')).toBe(true);
+    expect(isSessionNotFoundMessage('temporary session sess-1 does not exist (code 40401)')).toBe(true);
+    expect(isSessionNotFoundMessage('Session not found')).toBe(true);
+  });
+
+  it('keeps a legal session when 40401 is an internal resource miss', () => {
+    expect(isSessionNotFoundMessage('Could not load session (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('session not found: sess-1 (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('session sess-1 not found (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('session not found while reading history (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('transcript page failed: session not found (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('content unavailable (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('session sess-1 has no recoverable cwd (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('Agent "main" does not exist (code 40401)')).toBe(false);
+    expect(isSessionNotFoundMessage('agent main not found in session sess-1 (code 40401)')).toBe(false);
   });
 
   it('rejects other load failures', () => {
@@ -372,8 +591,6 @@ describe('KikiClient.sendAgentMessage', () => {
     const urls: string[] = [];
     vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
       urls.push(String(url));
-      const resumed = resumeResponse(url, init);
-      if (resumed !== undefined) return resumed;
       if (String(url).endsWith('/api/klient/call')) return Response.json({
         code: 0, msg: 'success', data: 'native',
       });
@@ -387,9 +604,11 @@ describe('KikiClient.sendAgentMessage', () => {
     }));
     const receipt = await new KikiClient({ baseUrl: 'http://127.0.0.1:8080' })
       .sendAgentMessage('s1', 'child', 'look', content, 'native-submission');
-    // Attachments retain the ordinary prompt route and have no replay guarantee.
+    // Attachments retain the ordinary prompt route and have no replay
+    // guarantee; the prompt POST is the durable boundary and takes no view
+    // resume with it.
     expect(receipt).toBeNull();
-    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts?receipt=true']);
+    expect(urls).toEqual(['http://127.0.0.1:8080/api/klient/call', 'http://127.0.0.1:8080/api/sessions/s1/prompts?receipt=true']);
   });
 
   it('sends one native child text key to the prompt route and treats replay as a prompt, not a mailbox delivery', async () => {
@@ -519,6 +738,49 @@ describe('KikiClient transport error mapping', () => {
     // failure; it has to survive the RPCError -> ApiError hop.
     expect((failure as ApiError).details).toEqual(details);
     expect((failure as ApiError).requestId).toBe('req-server-50001');
+    expect((failure as ApiError).source).toBe('server');
+    expect(isUnconfirmedTransportError(failure)).toBe(false);
+  });
+
+  it('preserves a rejected HTTP fetch as an unconfirmed transport source through KikiClient.run', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const failure = await client.meta().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({ code: -1, source: 'transport', reason: 'transport.network' });
+      expect(isUnconfirmedTransportError(failure)).toBe(true);
+    } finally {
+      await client.klient.close();
+    }
+  });
+
+  it('preserves a rejected HTTP fetch through the session prompt adapter', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch'); }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const failure = await client.sessions.submitPrompt('s1', {
+        content: [{ type: 'text', text: 'transport probe' }],
+      }).catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({ code: -1, source: 'transport', reason: 'transport.network' });
+      expect(isUnconfirmedTransportError(failure)).toBe(true);
+    } finally {
+      await client.klient.close();
+    }
+  });
+
+  it('does not classify a server negative code as an unconfirmed transport error', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: -1, msg: 'server.rejected', data: null })));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080' });
+    try {
+      const failure = await client.meta().catch((error: unknown) => error);
+      expect(failure).toBeInstanceOf(ApiError);
+      expect(failure).toMatchObject({ code: -1, source: 'server' });
+      expect(isUnconfirmedTransportError(failure)).toBe(false);
+    } finally {
+      await client.klient.close();
+    }
   });
 
   it('maps an actual transport deadline to the GUI timeout code and text', async () => {
@@ -536,7 +798,34 @@ describe('KikiClient transport error mapping', () => {
 
     expect(failure).toBeInstanceOf(ApiError);
     expect((failure as ApiError).code).toBe(API_CODES.TIMEOUT);
+    expect((failure as ApiError).source).toBe('transport');
+    expect((failure as ApiError).reason).toBe('transport.timeout');
     expect((failure as ApiError).message).toContain('Request timed out after 5ms');
+    const requestId = new Headers(fetchMock.mock.calls[0]?.[1]?.headers).get('x-request-id');
+    expect(requestId).toMatch(/^[0-7][0-9A-HJKMNP-TV-Z]{25}$/);
+    expect((failure as ApiError).requestId).toBe(requestId);
+    expect((failure as ApiError).details).toEqual({ method: 'GET', path: '/api/meta', phase: 'headers', timeoutMs: 5, elapsedMs: expect.any(Number), request_id: requestId });
+  });
+
+  it('keeps authoritative response identity and body phase in GUI deadline diagnostics', async () => {
+    vi.useFakeTimers();
+    const responseId = '01ARZ3NDEKTSV4RRFFQ69G5FAV';
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener('abort', () => controller.error(new DOMException('aborted', 'AbortError')), { once: true });
+        },
+      });
+      return new Response(body, { headers: { 'content-type': 'application/json', 'x-request-id': responseId } });
+    }));
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', timeoutMs: 5 });
+    const pending = client.meta().catch((error: unknown) => error);
+    await vi.advanceTimersByTimeAsync(5);
+    const failure = await pending as ApiError;
+    expect(failure).toBeInstanceOf(ApiError);
+    expect(failure.code).toBe(API_CODES.TIMEOUT);
+    expect(failure.requestId).toBe(responseId);
+    expect(failure.details).toEqual({ method: 'GET', path: '/api/meta', phase: 'body', timeoutMs: 5, elapsedMs: expect.any(Number), request_id: responseId });
   });
 
   it('keeps the initial session snapshot loading beyond the generic request deadline', async () => {
@@ -925,6 +1214,40 @@ describe('KikiClient.readHostFileBytes', () => {
 });
 
 describe('KikiClient.readSessionMediaBytes', () => {
+  it('shares a source preview request and cancels only the departing reader', async () => {
+    let complete!: (response: Response) => void;
+    let sharedSignal: AbortSignal | null | undefined;
+    const fetchMock = vi.fn(async (_url: unknown, init?: RequestInit) => {
+      sharedSignal = init?.signal;
+      return new Promise<Response>((resolve) => { complete = resolve; });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'fixture-token' });
+    const first = new AbortController();
+    const second = new AbortController();
+    try {
+      const leaving = client.readSessionMediaPreviewBytes('s1', 'image', { signal: first.signal });
+      const staying = client.readSessionMediaPreviewBytes('s1', 'image', { signal: second.signal });
+      const rejected = expect(leaving).rejects.toThrow();
+      first.abort();
+      await rejected;
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(sharedSignal?.aborted).toBe(false);
+      complete(new Response(new Uint8Array([1, 2]), { headers: { 'content-type': 'image/png', etag: 'fixture-v2' } }));
+      expect((await staying).bytes).toEqual(new Uint8Array([1, 2]));
+    } finally { await client.klient.close(); vi.unstubAllGlobals(); }
+  });
+
+  it('does not retain failed shared preview requests and permits retry', async () => {
+    const fetchMock = vi.fn().mockRejectedValueOnce(new Error('temporary transport failure')).mockResolvedValueOnce(new Response(new Uint8Array([1]), { headers: { 'content-type': 'image/png' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const client = new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'fixture-token' });
+    try {
+      await expect(client.readSessionMediaPreviewBytes('s1', 'image')).rejects.toThrow('temporary transport failure');
+      expect((await client.readSessionMediaPreviewBytes('s1', 'image')).bytes.byteLength).toBe(1);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    } finally { await client.klient.close(); vi.unstubAllGlobals(); }
+  });
   it('revalidates a bounded image thumbnail without downloading the original', async () => {
     const thumbnail = new Uint8Array(64 * 1024);
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
@@ -1637,6 +1960,27 @@ describe('KikiClient transcript protocol', () => {
 describe('memory client surface', () => {
   afterEach(() => { vi.unstubAllGlobals(); });
 
+  it('carries page coverage and scope while continuing with only cursor, and forwards cancellation', async () => {
+    const seen: URL[] = [];
+    const controller = new AbortController();
+    const page = { items: [], next_cursor: 'opaque-example', coverage: { scopes: [{ kind: 'persona_workspace', workspaceId: 'wd_a_0123456789ab', personaId: 'example-role' }], statuses: ['pending'], complete: false, exhausted: false, warnings: ['1 invalid memory record'] } };
+    vi.stubGlobal('fetch', vi.fn(async (url: string | URL, init?: RequestInit) => {
+      seen.push(new URL(String(url)));
+      expect(init?.signal?.aborted).toBe(controller.signal.aborted);
+      return new Response(JSON.stringify({ code: 0, msg: 'success', data: page }));
+    }));
+    const api = new KikiClient({ baseUrl: 'http://example.test' });
+    const target = { scope: 'persona_workspace' as const, workspaceId: 'wd_a_0123456789ab', personaId: 'example-role' };
+    expect(await api.listMemory(target, { mode: 'list', statuses: ['pending'], page_size: 2 }, controller.signal)).toEqual(page);
+    expect(seen[0]!.searchParams.get('statuses')).toBe('pending');
+    await api.listMemory(target, { cursor: 'opaque-example' }, controller.signal);
+    expect([...seen[1]!.searchParams.keys()].sort()).toEqual(['cursor', 'persona_id', 'workspace_id']);
+    expect(await api.memoryInbox(target, { cursor: 'opaque-example' }, controller.signal)).toEqual(page);
+    expect([...seen[2]!.searchParams.keys()].sort()).toEqual(['cursor', 'persona_id', 'workspace_id']);
+    controller.abort();
+    await api.memoryInbox(target, {}, controller.signal);
+  });
+
   const client = () => new KikiClient({ baseUrl: 'http://127.0.0.1:8080', token: 'token' });
   const envelope = (data: unknown, code = 0, msg = 'success') =>
     new Response(JSON.stringify({ code, msg, data, request_id: 'req_1' }), {
@@ -1698,6 +2042,36 @@ describe('memory client surface', () => {
     expect(result.operation_id).toBe('op_1');
   });
 
+  it('preserves metadata omission versus explicit validity null and reads an unchanged null operation', async () => {
+    const sent: Record<string, unknown>[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      sent.push(JSON.parse(init?.body as string));
+      return envelope({ entry: { id: 'm_1' }, outcome: 'unchanged', operationId: null });
+    }));
+    const fields = { action: 'update' as const, type: 'project' as const, title: 'Rule', body: 'Keep the current condition.', reason: 'Reviewed.', expected_revision: 'r1' };
+    const result = await client().putMemory({ scope: 'global' }, 'm_1', fields);
+    expect(sent[0]).not.toHaveProperty('basis');
+    expect(sent[0]).not.toHaveProperty('validity');
+    expect(result).toMatchObject({ outcome: 'unchanged', operationId: null });
+    const basis = { kind: 'human' as const, note: 'An explicit current requirement.' };
+    await client().putMemory({ scope: 'global' }, 'm_1', { ...fields, basis, validity: null });
+    expect(sent[1]).toMatchObject({ basis, validity: null });
+    expect(sent[1]?.['basis']).not.toBeNull();
+  });
+
+  it('sends covered-by expected_revision on archive and keeps the stored revision response', async () => {
+    let sent: Record<string, unknown> | undefined;
+    const covered = { id: 'm_kept', expected_revision: 'kept-r1' };
+    vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
+      sent = JSON.parse(init?.body as string);
+      return envelope({ entry: { id: 'm_retired', covered_by: { id: covered.id, revision: covered.expected_revision } }, outcome: 'applied', operationId: 'op_archive' });
+    }));
+    const result = await client().putMemory({ scope: 'global' }, 'm_retired', { action: 'archive', type: 'project', title: 'Old rule', body: 'Stored rule.', reason: 'Covered by the retained rule.', expected_revision: 'r1', covered_by: covered });
+    expect(sent?.['covered_by']).toEqual(covered);
+    expect(sent?.['covered_by']).not.toHaveProperty('revision');
+    expect(result.entry.covered_by).toEqual({ id: 'm_kept', revision: 'kept-r1' });
+  });
+
   it('rejects a non-envelope response instead of returning undefined data', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response('<html>nope</html>', { status: 502 })));
     await expect(client().getMemorySettings()).rejects.toMatchObject({ code: API_CODES.INVALID_RESPONSE });
@@ -1718,9 +2092,12 @@ describe('memory timeline rows', () => {
       id: 'm_1', title: 'Use pnpm', scope: 'workspace', status: 'active',
       revision: 'rev_1', operation_id: 'op_1',
     });
-    expect(parseMemoryWriteResult(output)).toEqual({
+    // A pre-`outcome` receipt still reads as `applied`: the payload it carries
+    // is the whole truth about what happened.
+    expect(parseMemoryWriteResult(output)).toMatchObject({
       id: 'm_1', title: 'Use pnpm', scope: 'workspace', status: 'active',
-      revision: 'rev_1', operation_id: 'op_1',
+      revision: 'rev_1', operation_id: 'op_1', outcome: 'applied',
+      target: { scope: 'workspace', id: 'm_1', expected_revision: 'rev_1' },
     });
     // A running call, a plain string, and a foreign shape all yield undefined.
     expect(parseMemoryWriteResult(undefined)).toBeUndefined();
@@ -1731,7 +2108,67 @@ describe('memory timeline rows', () => {
 
   it('defaults the optional result fields so a partial payload still renders', () => {
     const parsed = parseMemoryWriteResult(JSON.stringify({ id: 'm_2', title: 'T', scope: 'global' }));
-    expect(parsed).toMatchObject({ status: 'active', revision: '', operation_id: '' });
+    expect(parsed).toMatchObject({ status: 'active', revision: '', operation_id: null, outcome: 'applied' });
+  });
+
+  it('gives a receipt its real owning scope, so a persona entry is not read as the session workspace', () => {
+    const parsed = parseMemoryWriteResult(JSON.stringify({
+      id: 'm_3', title: 'Publish confirmation', scope: 'persona_workspace',
+      owner_scope: { kind: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' },
+      target: { scope: 'persona_workspace', id: 'm_3', expected_revision: 'rev_3' },
+      status: 'active', revision: 'rev_3', operation_id: 'op_3', outcome: 'applied',
+    }));
+    expect(parsed?.owner_scope).toEqual({ scope: 'persona_workspace', workspaceId: 'wd_home', personaId: 'lin-lan' });
+  });
+
+  it('reads a no-op write as unchanged and withholds the operation it never created', () => {
+    const parsed = parseMemoryWriteResult(JSON.stringify({
+      id: 'm_4', title: 'Already said', scope: 'global', status: 'active',
+      revision: 'rev_4', operation_id: null, outcome: 'unchanged',
+    }));
+    // There is nothing to replay, so Undo must not be offered.
+    expect(parsed?.outcome).toBe('unchanged');
+    expect(parsed?.operation_id).toBeNull();
+  });
+
+  it('reads both search shapes, and a short page as a partial one rather than an absence', () => {
+    expect(parseMemorySearchSummary(JSON.stringify([{ id: 'm_1' }, { id: 'm_2' }])))
+      .toEqual({ count: 2, hasMore: false, partial: false, warnings: [] });
+    expect(parseMemorySearchSummary(JSON.stringify({
+      items: [{ id: 'm_1' }],
+      mode: 'list',
+      next_cursor: 'next-page',
+      coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: false, complete: true, warnings: [] },
+    }))).toMatchObject({ count: 1, hasMore: true, partial: false });
+    expect(parseMemorySearchSummary(JSON.stringify({
+      items: [{ id: 'm_1' }],
+      coverage: { scopes: [{ kind: 'global' }], statuses: ['active'], exhausted: true, complete: false, warnings: ['1 unreadable'] },
+    }))).toMatchObject({ count: 1, partial: true });
+  });
+
+  it('reads a read result as full entries with their own scope, target and applicability', () => {
+    const read = parseMemoryReadResult(JSON.stringify([{
+      id: 'm_5', type: 'project', title: 'GPU schedule', body: 'Check the schedule first.',
+      status: 'active', revision: 'rev_5', complete: true,
+      scope: { kind: 'persona', personaId: 'lin-lan' },
+      target: { scope: 'persona', id: 'm_5', expected_revision: 'rev_5' },
+      applicability: 'expired',
+      validity: { check: 'check the schedule', until: '2026-01-01T00:00:00Z' },
+    }]));
+    expect(read?.complete).toBe(true);
+    expect(read?.items[0]?.applicability).toBe('expired');
+    expect(read?.items[0]?.owner_scope).toEqual({ scope: 'persona', workspaceId: undefined, personaId: 'lin-lan' });
+    // An entry with no validity reads as unrecorded, which is not permanence.
+    expect(memoryApplicability(undefined)).toBe('unrecorded');
+    expect(memoryApplicability({ check: 'c' })).toBe('recheck');
+  });
+
+  it('reports an id the read could not resolve instead of dropping it', () => {
+    const read = parseMemoryReadResult(JSON.stringify([
+      { id: 'm_6', missing: true, reason: 'not_found', recovery: 'Locate it in a visible scope.' },
+    ]));
+    expect(read?.items).toEqual([]);
+    expect(read?.missing).toEqual([{ id: 'm_6', reason: 'not_found' }]);
   });
 });
 
@@ -1748,7 +2185,7 @@ describe('typed quota consumer', () => {
     const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
       expect(new URL(url).pathname).toBe(`/api/usage/provider-quotas${suffix}`);
       expect(init?.method ?? 'GET').toBe(method);
-      expect(init?.body === undefined ? undefined : JSON.parse(String(init.body))).toEqual(body);
+      expect(sentJson(init)).toEqual(body);
       return Response.json({ code: 0, msg: 'success', data: snapshot });
     });
     vi.stubGlobal('fetch', fetchMock);
@@ -1759,8 +2196,13 @@ describe('typed quota consumer', () => {
   it.each(actions)('rejects a failed $method $suffix rather than reporting cached success', async ({ invoke }) => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 40001, msg: 'Quota unavailable', data: null })));
     const client = new KikiClient({ baseUrl: 'http://example.test' });
-    try { await expect(invoke(client)).rejects.toMatchObject({ message: 'Quota unavailable' }); }
-    finally { await client.klient.close(); }
+    try {
+      const failure = await invoke(client).catch((error: unknown) => error);
+      // ApiError keeps the code in its own field and the server text in the
+      // message, so the failure is attributable and never a cached success.
+      expect(failure).toMatchObject({ name: 'ApiError', code: 40001 });
+      expect((failure as Error).message).toContain('Quota unavailable');
+    } finally { await client.klient.close(); }
   });
   it('rejects an obsolete fixture shape instead of inventing source data', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => Response.json({ code: 0, msg: 'success', data: { items: [], fetchedAt: '2026-10-10T12:00:00Z' } })));
@@ -1775,9 +2217,9 @@ describe('KikiClient profile file preview', () => {
     const body = { path: 'profiles/example.md', cwd: '/workspace/example' };
     const result = { profile: { name: 'example', description: 'Example profile', source: 'file', main: false, disabled: false, routes: [] } };
     const fetchMock: typeof fetch = async (input, init) => {
-      expect(new URL(String(input)).pathname).toBe('/api/agent-profiles/file-preview');
+      expect(requestUrl(input).pathname).toBe('/api/agent-profiles/file-preview');
       expect(init?.method).toBe('POST');
-      expect(JSON.parse(String(init?.body))).toEqual(body);
+      expect(sentJson(init)).toEqual(body);
       return Response.json({ code: 0, msg: 'success', data: result });
     };
     const client = new KikiClient({ baseUrl: 'http://example.test', transport: { fetch: fetchMock, eventsUrl: 'ws://example.test/api/ws' } });

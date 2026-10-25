@@ -5,12 +5,11 @@
  * The composer itself is NOT rendered here — this route publishes it into the
  * conversation shell's seat (same DOM node that docks at the bottom once the
  * first send lands on /s/:id). What this file owns is the chrome above the
- * card (wordmark + claim, then the target row: workspace, whose popover also
- * folds the dispatch diagnostic, and the per-draft switches) and the starters
- * hanging under it, portaled into the shell's
- * hero-footer slot. Recent sessions and the agent roster live elsewhere (the
- * sidebar, the composer's agent chip), so the page carries only what starts
- * this conversation.
+ * card (wordmark + claim, then the target row: the workspace chip and the
+ * per-draft switches) and the starters hanging under it, portaled into the
+ * shell's hero-footer slot. Recent sessions and the agent roster live
+ * elsewhere (the sidebar, the composer's agent chip), so the page carries
+ * only what starts this conversation.
  *
  * The workspace picker + send path come from the shared `useNewSessionDraft`
  * hook; /new is the single new-session surface (Ctrl+N and the sidebar button
@@ -22,31 +21,39 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useLocation, useSearchParams } from 'react-router-dom';
 
 import { Composer } from './Composer';
+import { fsSearchRequestBody, type FsSearchPageArgs } from '../lib/fsSearchFeed';
 import { Icon } from './icons';
-import { AgentCapabilitiesPanel } from './AgentCapabilitiesPanel';
 import { ContextBreakdownProvider } from './ContextMeter';
 import { useConversationShell, useRegisterSeat, type ConversationSeat } from './ConversationShell';
-import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, type NewSessionDraftState } from './NewSessionDraft';
+import { AUTO_WORKSPACE_ID, WorkspacePickerFields, useNewSessionDraft, isAutoCreatedWorkspace, type NewSessionDraftState } from './NewSessionDraft';
 import { Wordmark } from './Wordmark';
 import { WorktreeOption } from './WorktreeOption';
 import { PersonaAvatar, personaAvatarOf } from './persona/PersonaAvatar';
 import { usePersonaList } from './persona/usePersonas';
 import { EphemeralOption } from './EphemeralOption';
 import { LocalSessionsEntry } from './localSessions/LocalSessionsEntry';
+import { useSidebarContext } from './sidebarContext';
 import { useI18n } from '../i18n';
 import { useImportHistoryEnabled } from '../lib/importHistory';
 import { useMediaQuery } from '../lib/layoutHooks';
 import { staggerStyle } from '../lib/motion';
+import { importHistoryPath } from '@kiki/session-core/settings';
 import { useConnection } from '../state/connection';
 
-/** Basename label for the workspace chip; separator-only paths echo raw. */
+/**
+ * What the target row and the starters name this session's home. A typed cwd
+ * reads as its own folder; a workspace the user chose reads as its name; and a
+ * workspace kiki had to create for itself reads as that fact rather than as the
+ * internal name the server filed it under — the date and id in that name are
+ * never the user's words. `undefined` means the target is still undecided.
+ */
 function workspaceChipLabel(state: NewSessionDraftState): string | undefined {
   const cwd = state.cwd.trim();
   if (cwd !== '') {
     const base = cwd.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? '';
     return base !== '' ? base : cwd;
   }
-  return state.effectiveWorkspace?.name;
+  return isAutoCreatedWorkspace(state.effectiveWorkspace) ? undefined : state.effectiveWorkspace?.name;
 }
 
 /**
@@ -80,7 +87,6 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const label = workspaceChipLabel(state);
-  const catalogMode = state.agentProfileCatalogMode;
 
   return (
     <div className="relative" data-hero-workspace>
@@ -102,7 +108,7 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
           />
         </svg>
         <span className="min-w-0 truncate">
-          {label ?? (state.autoWorkspace
+          {label ?? (state.autoWorkspace || isAutoCreatedWorkspace(state.effectiveWorkspace)
             ? state.dailyPersonaName === undefined ? t('new.autoWorkspace') : t('persona.workspaceAuto', { name: state.dailyPersonaName })
             : state.workspacesLoading ? t('hero.workspaceLoading') : t('hero.chooseWorkspace'))}
         </span>
@@ -116,15 +122,6 @@ function HeroWorkspaceChip({ state }: { state: NewSessionDraftState }) {
       {open ? (
         <div className="anim-enter absolute top-9 left-0 z-30 w-[26rem] max-w-[calc(100vw-32px)] rounded-[10px] border border-hairline bg-panel p-3 text-left shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
           <WorkspacePickerFields state={state} />
-          {/* What the chosen agent can dispatch here depends on the target,
-              so the diagnostic lives with the target, folded. */}
-          {catalogMode.mode === 'cwd' || catalogMode.mode === 'workspace' ? (
-            <div data-hero-capabilities className="mt-3 border-t border-hairline pt-3">
-              <AgentCapabilitiesPanel query={catalogMode.mode === 'cwd'
-                ? { cwd: catalogMode.cwd, profile: state.agentProfile }
-                : { workspace_id: catalogMode.workspaceId, profile: state.agentProfile }} />
-            </div>
-          ) : null}
         </div>
       ) : null}
     </div>
@@ -327,13 +324,9 @@ function NewSessionPageContent({
       // (kap-server `POST /workspace/fs:search`); a custom cwd rides
       // the same `workspace` slot as an absolute root.
       cwd !== '' || state.effectiveWorkspace !== undefined
-        ? (query: string) =>
-            client
-              .workspaceFsSearch(cwd !== '' ? cwd : state.effectiveWorkspace!.id, {
-                query,
-                limit: 30,
-              })
-              .then((result) => result.items)
+        ? (query: string, page?: FsSearchPageArgs) =>
+            client.workspaceFsSearch(cwd !== '' ? cwd : state.effectiveWorkspace!.id,
+              fsSearchRequestBody(query, page, { limit: 30 }), page?.signal)
         : undefined,
     [client, cwd, state.effectiveWorkspace],
   );
@@ -429,6 +422,8 @@ function NewSessionPageContent({
   );
   useRegisterSeat(seat);
 
+  const { sidebarOpen } = useSidebarContext();
+
   return (
     <>
       {slots.header !== null
@@ -438,6 +433,8 @@ function NewSessionPageContent({
                 type="button"
                 onClick={onToggleSidebar}
                 aria-label={t('sv.openMenuAria')}
+                aria-expanded={sidebarOpen}
+                aria-controls="app-sidebar"
                 className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden pointer-coarse:h-11 pointer-coarse:w-11"
               >
                 <Icon name="menu" size={16} />
@@ -540,9 +537,9 @@ function NewSessionPageContent({
             <p className="mt-2 max-w-md text-[12px] text-ink-faint">{t('new.noTargetHint')}</p>
           ) : null}
           {state.workspacesError !== null && cwd === '' ? (
-            <div role="alert" className="mt-2 text-[12px] text-danger">
+            <div role="alert" data-hero-workspace-failure className="mt-2 text-[12px] text-danger">
               <p>{t('new.workspaceLoadFailed', { detail: state.workspacesError })}</p>
-              <button type="button" onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
+              <button type="button" data-hero-workspace-retry onClick={state.retryWorkspaces} className="mt-1 rounded px-1 py-0.5 font-medium underline underline-offset-2 focus-visible:ring-2 focus-visible:ring-selected-ink/40">{t('common.retry')}</button>
             </div>
           ) : null}
           {state.workspaceId !== '' && state.workspaceId !== AUTO_WORKSPACE_ID && cwd === '' && !state.workspacesLoading && state.workspacesError === null && state.effectiveWorkspace === undefined ? (
@@ -594,7 +591,7 @@ function NewSessionPageContent({
                     <button
                       type="button"
                       data-hero-import
-                      onClick={() => { void navigate('/capabilities?view=import'); }}
+                      onClick={() => { void navigate(importHistoryPath()); }}
                       className="motion-press inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-[13px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
                     >
                       <Icon name="read" size={12} className="text-ink-faint" />

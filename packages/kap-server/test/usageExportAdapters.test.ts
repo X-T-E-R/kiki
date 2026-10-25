@@ -15,7 +15,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { UsageExportAdapterContext } from '../src/usage/export/adapter';
 import { armUsageExportHandoff, confirmNativeHandoff, nativeHandoffScope, planUsageExportHandoff, planUsageExportRollback, recordLegacyHandoffReceipt, usageExportHandoffSchema } from '../src/usage/export/migration';
 import { createScriptUsageAdapter } from '../src/usage/export/script';
-import { createVibeUsageAdapter, mapVibeUsageBatch, parseVibeUsageReceipt, vibeUsagePayloadSchema } from '../src/usage/export/vibe';
+import { VIBE_LEGACY_MAPPING_VERSION, VIBE_MAPPING_VERSION, createVibeUsageAdapter, mapVibeUsageBatch, parseVibeUsageReceipt, requiresVibeRemoteRebuild, vibeUsagePayloadSchema } from '../src/usage/export/vibe';
 
 const stream = 'a'.repeat(32);
 const hash = 'a'.repeat(64);
@@ -43,7 +43,7 @@ function scriptContext(mode = 'success', timeout_ms = 5000, signal = new AbortCo
 describe('vibe bucket adapter', () => {
   it('preserves four-counter mapped total, opaque namespace and known slash model without TTL/cost/content', async () => {
     const payload = mapVibeUsageBatch(batch());
-    expect(payload.buckets[0]).toEqual({ source: 'kimi-code', model: 'Qwen/Qwen3.8-Flash', project: 'unknown', hostname: `kiki-${stream}`, bucketStart: new Date(cutoff).toISOString(), inputTokens: 120, cachedInputTokens: 900, outputTokens: 50, reasoningOutputTokens: 0, cacheCreation5mTokens: 0, cacheCreation1hTokens: 0, totalTokens: 170 });
+    expect(payload.buckets[0]).toEqual({ source: 'kiki', model: 'Qwen/Qwen3.8-Flash', project: 'unknown', hostname: `kiki-${stream}`, bucketStart: new Date(cutoff).toISOString(), inputTokens: 120, cachedInputTokens: 900, outputTokens: 50, reasoningOutputTokens: 0, cacheCreation5mTokens: 0, cacheCreation1hTokens: 0, totalTokens: 170 });
     expect(payload.buckets[0]!.totalTokens + payload.buckets[0]!.cachedInputTokens).toBe(1070);
     const context = vibeContext({ ingested: 1, sessions: 0 });
     const result = await createVibeUsageAdapter().send(batch(), context);
@@ -102,6 +102,24 @@ describe('vibe bucket adapter', () => {
     const body = gunzipSync(vi.mocked(context.post).mock.calls[0]![0].body).toString();
     expect(body).not.toContain('previousAcknowledged');
     expect(JSON.parse(body).buckets[0].inputTokens).toBe(120);
+    expect(JSON.parse(body).buckets[0].source).toBe('kiki');
+  });
+  it('freezes a legacy kimi-code acknowledgement instead of uploading it again as Kiki', async () => {
+    const previousAcknowledged = batch().items;
+    const grown = batch();
+    grown.items[0]!.revision++;
+    grown.items[0]!.bucket!.tokens.input_other += 10;
+    expect(requiresVibeRemoteRebuild(previousAcknowledged[0]!, grown.items[0]!, VIBE_MAPPING_VERSION)).toBe(false);
+    expect(requiresVibeRemoteRebuild(previousAcknowledged[0]!, grown.items[0]!, VIBE_LEGACY_MAPPING_VERSION)).toBe(true);
+    expect(requiresVibeRemoteRebuild(previousAcknowledged[0]!, batch().items[0]!, VIBE_LEGACY_MAPPING_VERSION)).toBe(true);
+    for (const next of [batch(), grown]) {
+      const context = Object.assign(vibeContext({ ingested: 1 }), { previousAcknowledged, acknowledgedMappingVersion: () => VIBE_LEGACY_MAPPING_VERSION });
+      expect(await createVibeUsageAdapter().send(next, context)).toEqual({ outcome: 'remote-diverged', errorCategory: 'remote_diverged' });
+      expect(context.post).not.toHaveBeenCalled();
+    }
+    const unknown = Object.assign(vibeContext({ ingested: 1 }), { previousAcknowledged, acknowledgedMappingVersion: () => 'vibe-unregistered' });
+    expect(await createVibeUsageAdapter().send(grown, unknown)).toEqual({ outcome: 'invalid', errorCategory: 'invalid_protocol' });
+    expect(unknown.post).not.toHaveBeenCalled();
   });
   it.each([
     [{ ingested: 0 }, 'retry', 'vibe_partial_receipt'],

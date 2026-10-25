@@ -1,7 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
 import { join } from 'pathe';
-import { ulid } from 'ulid';
 
 import type { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
@@ -10,6 +9,7 @@ import {
   type ISessionScopeHandle,
 } from '#/_base/di/scope';
 import { unwrapErrorCause } from '#/_base/errors/errors';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { AsyncEmitter, Emitter, type Event, type IWaitUntil } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { drainLogCloses } from '#/_base/log/logService';
@@ -20,8 +20,6 @@ import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
-import { CRON_SESSION_TAG, type CronTask } from '#/app/cron/cronTask';
-import { ICronTaskPersistence } from '#/app/cron/cronTaskPersistence';
 import { IConfigService } from '#/app/config/config';
 import { IEventService } from '#/app/event/event';
 import {
@@ -38,6 +36,7 @@ import { IRetainedUsageService } from '#/app/retainedUsage/retainedUsage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ErrorCodes, Error2, isError2 } from '#/errors';
 import { IHostFileSystem, type HostDirEntry } from '#/os/interface/hostFileSystem';
+import { SESSION_LOCK_SCOPE, sessionLockKey } from '#/persistence/backends/node-fs/fileLock';
 import {
   type AppendLogTruncation,
   IAppendLogStore,
@@ -47,15 +46,18 @@ import {
   IFileSystemStorageService,
   type IStorageLock,
 } from '#/persistence/interface/storage';
-import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
+import { IAgentLifecycleService, MAIN_AGENT_ID, type AgentRemovalMode } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
 import { IAgentProfileService } from '#/agent/profile/profile';
-import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { ISessionDeliveryService, resolveCreateDeliveryMode } from '#/session/delivery/delivery';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { labelsFromAgentMeta } from '#/session/agentLifecycle/subagentMetadata';
 import { ISessionActivityView } from '#/session/sessionActivity/sessionActivity';
 import { ISessionContext, sessionContextSeed } from '#/session/sessionContext/sessionContext';
-import { sessionEphemeralMcpServersSeed } from '#/session/mcp/ephemeralMcpServers';
+import {
+  sessionEphemeralMcpServersSeed,
+  sessionPluginMcpServersSeed,
+} from '#/session/mcp/ephemeralMcpServers';
 import { sessionAgentProfileCatalogSeed } from '#/session/sessionAgentProfileCatalog/agentProfileCatalogSeed';
 import { externalClientMetaOf, ISessionMetadata, type SessionMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { ISessionSkillCatalogData } from '#/session/sessionSkillCatalog/skillCatalogData';
@@ -114,6 +116,7 @@ import {
   type ForkSessionOptions,
   type ResumeSessionOptions,
   type SessionArchivedEvent,
+  type SessionCleanupReceipt,
   type SessionClosedEvent,
   type SessionCreatedEvent,
   type SessionForkedEvent,
@@ -128,7 +131,6 @@ type MaterializeSessionOptions = Omit<CreateSessionOptions, 'sessionId'> & {
 };
 
 const NO_ABORT = new AbortController().signal;
-const SESSION_LOCK_SCOPE = 'session-locks';
 const CHECKPOINT_IDLE_DELAY_MS = 1_000;
 
 const SESSION_CREATE_RELOAD_SKILL_SOURCES: readonly string[] = [
@@ -149,6 +151,12 @@ function addUsageByModel(
     total = total === undefined ? { ...usage } : addUsage(total, usage);
   }
   return total;
+}
+
+function isPersistenceFailure(error: unknown): boolean {
+  if (error instanceof AggregateError) return error.errors.some(isPersistenceFailure);
+  const code = (error as { readonly code?: unknown } | undefined)?.code;
+  return typeof code === 'string' && (code.startsWith('storage.') || code.startsWith('persistence.'));
 }
 
 function aggregateSessionUsage(handle: ISessionScopeHandle): SessionUsageSummary | undefined {
@@ -192,6 +200,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     this._onWillCloseSession.event;
   private readonly _onDidCloseSession = this._register(new Emitter<SessionClosedEvent>());
   readonly onDidCloseSession: Event<SessionClosedEvent> = this._onDidCloseSession.event;
+  private readonly _onDidCleanup = this._register(new Emitter<SessionCleanupReceipt>());
+  readonly onDidCleanup: Event<SessionCleanupReceipt> = this._onDidCleanup.event;
   private readonly _onDidArchiveSession = this._register(new Emitter<SessionArchivedEvent>());
   readonly onDidArchiveSession: Event<SessionArchivedEvent> = this._onDidArchiveSession.event;
   private readonly _onDidForkSession = this._register(new Emitter<SessionForkedEvent>());
@@ -219,7 +229,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @ILogService private readonly log: ILogService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
-    @ICronTaskPersistence private readonly cronStore: ICronTaskPersistence,
     @IEventService private readonly event: IEventService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IWorkspaceAgentProfileLoader
@@ -247,22 +256,23 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (onDispose !== undefined) this._register({ dispose: onDispose });
     this._register({
       dispose: () => {
-        for (const sessionId of this.sessionLocks.keys()) void this.releaseSessionLock(sessionId);
+        const pending = [...this.sessionLocks.keys()].map((sessionId) => this.releaseSessionLock(sessionId));
+        Promise.all(pending).catch(onUnexpectedError);
       },
     });
   }
 
-  override dispose(): void {
+  override async dispose(): Promise<void> {
     for (const timer of this.checkpointTimers.values()) clearTimeout(timer);
     this.checkpointTimers.clear();
-    for (const subscription of this.checkpointSubscriptions.values()) subscription.dispose();
+    for (const subscription of this.checkpointSubscriptions.values()) await subscription.dispose();
     this.checkpointSubscriptions.clear();
     this.checkpointSaves.clear();
     for (const [sessionId, handle] of [...this.sessions].reverse()) {
       this.sessions.delete(sessionId);
-      handle.dispose();
+      await handle.dispose();
     }
-    super.dispose();
+    await super.dispose();
   }
 
   private get workspaceId(): string {
@@ -284,10 +294,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (this.sessionLocks.has(sessionId)) return;
     const releasing = this.lockReleases.get(sessionId);
     if (releasing !== undefined) await releasing;
-    const lockKey = `${createHash('sha256')
-      .update(this.sessionScope(sessionId))
-      .digest('hex')}.lock`;
-    const lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, lockKey, {
+    const lock = await this.storage.acquireLock(SESSION_LOCK_SCOPE, sessionLockKey(this.sessionScope(sessionId)), {
       waitForMs: Math.max(0, waitForSessionMs),
       owner: {
         sessionId,
@@ -356,8 +363,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             });
       if (main !== undefined || opts.delivery !== undefined) {
         const delivery = handle.accessor.get(ISessionDeliveryService);
-        const profileDelivery = main?.accessor.get(IAgentProfileService).data().persona?.definition.delivery;
-        await delivery.set(opts.delivery ?? profileDelivery ?? delivery.mode());
+        const persona = main?.accessor.get(IAgentProfileService).data().persona?.definition;
+        await delivery.set(resolveCreateDeliveryMode({
+          requested: opts.delivery,
+          personaDelivery: persona?.delivery,
+          hasPersona: persona !== undefined || opts.mainAgentBinding?.persona !== undefined,
+        }));
       }
       if (this.config.get<boolean>(DEFAULT_PLAN_MODE_SECTION) === true) {
         const planAgent = main ?? (await ensureMainAgent(handle));
@@ -403,7 +414,17 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       scope: (subKey?: string): string =>
         subKey === undefined || subKey === '' ? sessionScope : `${sessionScope}/${subKey}`,
     };
+    const [allPluginMcpServers, sessionPluginMcpServers] = await Promise.all([
+      this.plugins.enabledMcpServers('*'),
+      this.plugins.enabledMcpServers(workspaceId, opts.sessionId),
+    ]);
     let workspaceReference: IDisposable | undefined;
+    const releaseWorkspaceReference = (): void | Promise<void> => {
+      const reference = workspaceReference;
+      workspaceReference = undefined;
+      return reference?.dispose();
+    };
+    let sessionContainer: IInstantiationService | undefined;
     let handle: ISessionScopeHandle;
     try {
       await this.acquireSessionLock(opts.sessionId, opts.waitForSessionMs);
@@ -428,8 +449,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
               reload: async () => {
                 const beforeInstructions = JSON.stringify(this.workspaceInstructions.snapshot);
                 const beforePlugins = JSON.stringify({
-                  systemPrompts: await this.plugins.enabledSystemPrompts(),
-                  sessionStarts: await this.plugins.enabledSessionStarts(),
+                  systemPrompts: await this.plugins.enabledSystemPrompts(workspaceId),
+                  sessionStarts: await this.plugins.enabledSessionStarts(workspaceId),
                 });
                 await this.plugins.reloadPlugins();
                 await Promise.all([
@@ -442,8 +463,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
                   this.workspaceInstructions.reload(),
                 ]);
                 const afterPlugins = JSON.stringify({
-                  systemPrompts: await this.plugins.enabledSystemPrompts(),
-                  sessionStarts: await this.plugins.enabledSessionStarts(),
+                  systemPrompts: await this.plugins.enabledSystemPrompts(workspaceId),
+                  sessionStarts: await this.plugins.enabledSessionStarts(workspaceId),
                 });
                 return {
                   instructionsChanged: beforeInstructions !== JSON.stringify(this.workspaceInstructions.snapshot),
@@ -454,15 +475,20 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
             [ISessionMcpHandle, this.workspaceMcp.sessionHandle()],
             [ISessionWorkspaceInfo, this.workspaceDirs.sessionInfo()],
             ...sessionEphemeralMcpServersSeed(opts.mcpServers ?? {}),
+            ...sessionPluginMcpServersSeed({
+              allNames: Object.keys(allPluginMcpServers),
+              enabled: sessionPluginMcpServers,
+            }),
           ],
           configureContainer: (container) => {
+            sessionContainer = container;
             if (this.hookWorkspace !== undefined) container.provide(ISessionHookWorkspace, this.hookWorkspace);
             container.anchorKernelEntry(
-              () => void this.releaseSessionLock(opts.sessionId),
+              () => this.releaseSessionLock(opts.sessionId),
               'sessionLifecycle:sessionLock',
             );
             container.anchorKernelEntry(
-              () => workspaceReference?.dispose(),
+              releaseWorkspaceReference,
               'sessionLifecycle:workspaceReference',
             );
             this._onWillCreateSession.fire({
@@ -479,8 +505,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         },
       ) as ISessionScopeHandle;
     } catch (error) {
-      workspaceReference?.dispose();
-      await this.releaseSessionLock(opts.sessionId);
+      try {
+        await sessionContainer?.dispose();
+      } finally {
+        await releaseWorkspaceReference();
+        await this.releaseSessionLock(opts.sessionId);
+      }
       throw error;
     }
     try {
@@ -498,7 +528,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (opts.rollbackOnMaterializationFailure === true) {
         return this.rollbackSession(opts.sessionId, handle, sessionDir, error);
       }
-      handle.dispose();
+      await handle.dispose();
       await this.releaseSessionLock(opts.sessionId);
       throw error;
     }
@@ -515,7 +545,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       workDir,
       ...(sourceRoot === undefined ? {} : { sourceRoot }),
     });
-    await this.appendLogStore.flush();
+    await this.appendLogStore.flush('', 'session_index.jsonl');
   }
 
   private async announceCreated(event: SessionCreatedEvent): Promise<void> {
@@ -583,7 +613,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       await this.announceCreated({ sessionId, handle, source: 'resume' });
     } catch (error) {
       this.sessions.delete(sessionId);
-      handle.dispose();
+      await handle.dispose();
       throw error;
     }
     return handle;
@@ -598,15 +628,15 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
   }
 
   private installCheckpointScheduling(sessionId: string, handle: ISessionScopeHandle): void {
-    this.checkpointSubscriptions.get(sessionId)?.dispose();
+    const previous = this.checkpointSubscriptions.get(sessionId)?.dispose();
+    if (previous instanceof Promise) previous.catch(onUnexpectedError);
     try {
       const activity = handle.accessor.get(ISessionActivityView);
       this.checkpointSubscriptions.set(
         sessionId,
         activity.onDidChange((event) => {
           if (event.cause !== 'turn_ended' && event.cause !== 'background') return;
-          if (event.state.busy || event.state.pendingInteraction !== 'none') return;
-          this.scheduleCheckpoint(sessionId, handle);
+          this.scheduleCheckpoint(sessionId, handle, CHECKPOINT_IDLE_DELAY_MS);
         }),
       );
     } catch {
@@ -614,13 +644,39 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
-  private scheduleCheckpoint(sessionId: string, handle: ISessionScopeHandle): void {
-    const previous = this.checkpointTimers.get(sessionId);
-    if (previous !== undefined) clearTimeout(previous);
+  private scheduleCheckpoint(sessionId: string, handle: ISessionScopeHandle, delay: number, attempt = 0): void {
+    if (this.checkpointTimers.has(sessionId)) return;
     const timer = setTimeout(() => {
       this.checkpointTimers.delete(sessionId);
-      void this.saveReplayCheckpoints(sessionId, handle).catch(() => undefined);
-    }, CHECKPOINT_IDLE_DELAY_MS);
+      if (this.sessions.get(sessionId) !== handle) return;
+      const activity = handle.accessor.get(ISessionActivityView).state();
+      if (activity.busy || activity.pendingInteraction !== 'none') return;
+      const retry = () => {
+        if (attempt < 3) this.scheduleCheckpoint(sessionId, handle, [100, 500, 2_000][attempt]!, attempt + 1);
+      };
+      void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
+        if (saved || this.sessions.get(sessionId) !== handle) return;
+        const reasons = handle.accessor.get(IAgentLifecycleService).list().map((agent) => ({
+          agentId: agent.id,
+          reason: agent.accessor.get(IEventDispatcher).replayCheckpointSkipReason?.(),
+        }));
+        if (attempt < 3) {
+          this.log.debug('session replay checkpoint deferred', { sessionId, attempt, reasons });
+          retry();
+        } else {
+          this.log.warn('session replay checkpoint recovery exhausted', { sessionId, attempts: attempt + 1, reasons });
+        }
+      }, (error: unknown) => {
+        if (this.sessions.get(sessionId) !== handle) return;
+        this.log.warn('session replay checkpoint failed', {
+          sessionId,
+          attempt: attempt + 1,
+          retrying: attempt < 3,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        retry();
+      });
+    }, delay);
     timer.unref?.();
     this.checkpointTimers.set(sessionId, timer);
   }
@@ -633,9 +689,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (current !== handle) return false;
     const ongoing = this.checkpointSaves.get(sessionId);
     if (ongoing !== undefined) return ongoing;
-    const activity = handle.accessor.get(ISessionActivityView).state();
-    if (activity.busy || activity.pendingInteraction !== 'none') return false;
-    const save = this.writeReplayCheckpoints(handle);
+    const save = this.writeReplayCheckpoints(sessionId, handle);
     this.checkpointSaves.set(sessionId, save);
     try {
       return await save;
@@ -644,12 +698,21 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
-  private async writeReplayCheckpoints(handle: ISessionScopeHandle): Promise<boolean> {
+  private async writeReplayCheckpoints(sessionId: string, handle: ISessionScopeHandle): Promise<boolean> {
     let saved = true;
     for (const agent of handle.accessor.get(IAgentLifecycleService).list()) {
-      const dispatcher = agent.accessor.get(IEventDispatcher);
-      if (dispatcher.saveReplayCheckpoint === undefined || !(await dispatcher.saveReplayCheckpoint())) {
+      try {
+        const dispatcher = agent.accessor.get(IEventDispatcher);
+        if (dispatcher.saveReplayCheckpoint !== undefined && !(await dispatcher.saveReplayCheckpoint())) {
+          saved = false;
+        }
+      } catch (error) {
         saved = false;
+        this.log.warn('agent replay checkpoint failed; keeping canonical journal', {
+          sessionId,
+          agentId: agent.id,
+          error: error instanceof Error ? error.message : String(error),
+        });
       }
     }
     return saved;
@@ -659,27 +722,93 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const timer = this.checkpointTimers.get(sessionId);
     if (timer !== undefined) clearTimeout(timer);
     this.checkpointTimers.delete(sessionId);
-    this.checkpointSubscriptions.get(sessionId)?.dispose();
+    const previous = this.checkpointSubscriptions.get(sessionId)?.dispose();
+    if (previous instanceof Promise) previous.catch(onUnexpectedError);
     this.checkpointSubscriptions.delete(sessionId);
   }
 
-  async close(sessionId: string): Promise<void> {
+  async close(sessionId: string, mode: AgentRemovalMode = 'preserve-pending'): Promise<void> {
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
-    await this.announceWillClose({ sessionId, handle, reason: 'exit' });
-    await this.saveReplayCheckpoints(sessionId, handle);
-    this.disposeCheckpointScheduling(sessionId);
-    const usageFallback = aggregateSessionUsage(handle);
-    this.sessions.delete(sessionId);
-    await this.drainAgents(handle);
-    await this.persistUsage(handle, usageFallback);
-    await this.appendLogStore.drainRetirements();
-    await drainSessionMetadataWrites(false);
-    await this.indexMirror.drain();
-    handle.dispose();
-    await drainLogCloses();
-    await this.releaseSessionLock(sessionId);
-    this._onDidCloseSession.fire({ sessionId, reason: 'exit' });
+    const operationId = randomUUID();
+    const cleanupReason = mode === 'cancel' ? 'delete' : 'exit';
+    let sessionDisposed = false;
+    let lockReleased = false;
+    let failureDomain: SessionCleanupReceipt['failureDomain'];
+    try {
+      const failures: Array<{ readonly error: unknown; readonly domain: SessionCleanupReceipt['failureDomain'] }> = [];
+      const collect = async (
+        stage: string,
+        operation: () => void | Promise<void>,
+        domain: SessionCleanupReceipt['failureDomain'],
+      ): Promise<void> => {
+        this.log.info('session cleanup waiting', { operationId, sessionId, reason: cleanupReason, stage });
+        try {
+          await operation();
+        } catch (error) {
+          failures.push({ error, domain });
+          this.log.warn('session cleanup stage rejected', { operationId, sessionId, stage, failureDomain: domain });
+        }
+      };
+      await collect('will_close', () => this.announceWillClose({ sessionId, handle, reason: 'exit' }), 'cleanup');
+      await collect('replay_checkpoints', () => {
+        const activity = handle.accessor.get(ISessionActivityView).state();
+        if (activity.busy || activity.pendingInteraction !== 'none') return;
+        void this.saveReplayCheckpoints(sessionId, handle).then((saved) => {
+          if (!saved) this.log.warn('session replay checkpoint was not saved during close', { sessionId });
+        }, (error: unknown) => {
+          this.log.warn('session replay checkpoint failed during close', {
+            sessionId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        });
+      }, 'cleanup');
+      await collect('checkpoint_scheduling', () => this.disposeCheckpointScheduling(sessionId), 'cleanup');
+      let usageFallback: SessionUsageSummary | undefined;
+      await collect('usage_snapshot', () => { usageFallback = aggregateSessionUsage(handle); }, 'cleanup');
+      this.sessions.delete(sessionId);
+      await collect('agents', () => this.drainAgents(handle, mode), undefined);
+      if (failures.length > 0 && failures.at(-1)?.domain === undefined) {
+        const failure = failures.at(-1)!;
+        failures[failures.length - 1] = {
+          error: failure.error,
+          domain: isPersistenceFailure(failure.error) ? 'persistence' : 'cleanup',
+        };
+      }
+      await collect('usage_persistence', () => this.persistUsage(handle, usageFallback), 'persistence');
+      await collect('append_retirements', () => this.appendLogStore.drainRetirements(), 'persistence');
+      await collect('metadata_writes', () => drainSessionMetadataWrites(false), 'persistence');
+      await collect('index_mirror', () => this.indexMirror.drain(), 'persistence');
+      await collect('session_scope', async () => {
+        await handle.dispose();
+        sessionDisposed = true;
+      }, 'cleanup');
+      await collect('log_closes', () => drainLogCloses(), 'cleanup');
+      await collect('session_lock', async () => {
+        await this.releaseSessionLock(sessionId);
+        lockReleased = true;
+      }, 'cleanup');
+      this._onDidCloseSession.fire({ sessionId, reason: 'exit' });
+      if (failures.length > 0) {
+        const persistenceFailure = failures.find((failure) => failure.domain === 'persistence');
+        const primary = persistenceFailure ?? failures[0]!;
+        failureDomain = primary.domain;
+        throw primary.error;
+      }
+      this.emitCleanupReceipt(sessionId, cleanupReason, 'resolved', 'closed', undefined, undefined, 0, operationId);
+    } catch (error) {
+      this.emitCleanupReceipt(
+        sessionId,
+        cleanupReason,
+        'rejected',
+        'cleanup_failed',
+        error,
+        failureDomain ?? (isPersistenceFailure(error) ? 'persistence' : 'cleanup'),
+        sessionDisposed && lockReleased ? 0 : 1,
+        operationId,
+      );
+      throw error;
+    }
   }
 
   async unload(sessionId: string, canCommit: () => boolean = () => true): Promise<boolean> {
@@ -710,10 +839,11 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle.accessor.get(ISessionTerminalService).countLiveTerminals() > 0) return false;
     if (this.hasUnloadBlockers(handle)) return false;
     this.sessions.delete(sessionId);
-    handle.dispose();
+    await handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidCloseSession.fire({ sessionId, reason: 'evict' });
+    this.emitCleanupReceipt(sessionId, 'evict', 'resolved', 'closed');
     return true;
   }
 
@@ -723,7 +853,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       if (prompts.active !== undefined || prompts.launching !== undefined || prompts.pending.length > 0 || prompts.hold !== undefined) return true;
       const loop = agent.accessor.get(IAgentLoopService).status();
       if (loop.state !== 'idle' || loop.pendingTurnIds.length > 0 || loop.hasPendingRequests) return true;
-      if (agent.accessor.get(IAgentExecutionService).status().state !== 'idle') return true;
+      const executionState = agent.accessor.get(IAgentExecutionService).status().state;
+      if (executionState !== 'idle' && executionState !== 'closed') return true;
     }
     return false;
   }
@@ -732,22 +863,23 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     const handle = this.sessions.get(sessionId);
     if (handle === undefined) return;
     const meta = handle.accessor.get(ISessionMetadata);
-    await meta.setArchived(true);
     await this.saveReplayCheckpoints(sessionId, handle);
     this.disposeCheckpointScheduling(sessionId);
     const usageFallback = aggregateSessionUsage(handle);
     await this.drainAgents(handle);
     await this.persistUsage(handle, usageFallback);
     await this.appendLogStore.drainRetirements();
+    await meta.setArchived(true);
     this.event.publish(new SessionArchived({ payload: { sessionId } }));
     await this.announceWillClose({ sessionId, handle, reason: 'archive' });
     this.sessions.delete(sessionId);
     await drainSessionMetadataWrites(false);
     await this.indexMirror.drain();
-    handle.dispose();
+    await handle.dispose();
     await drainLogCloses();
     await this.releaseSessionLock(sessionId);
     this._onDidArchiveSession.fire({ sessionId });
+    this.emitCleanupReceipt(sessionId, 'archive', 'resolved', 'closed');
   }
 
   async restore(
@@ -786,6 +918,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       lastPrompt: meta.lastPrompt,
       createdAt: meta.createdAt,
       updatedAt: Math.max(meta.updatedAt, meta.activityUpdatedAt ?? 0),
+      ownUpdatedAt: meta.updatedAt,
       archived: meta.archived,
       archivedAt: meta.archivedAt,
       custom: meta.custom,
@@ -808,7 +941,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     if (handle === undefined && !persistedHere && !ephemeral) {
       throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
     }
-    if (handle !== undefined) await this.close(sessionId);
+    if (handle !== undefined) await this.close(sessionId, 'cancel');
     if (ephemeral) await this.retainedUsage.retainEphemeralUsage?.(this.sessionScope(sessionId), this.workspaceId);
     else await this.retainedUsage.retainDeletedSession((await this.index.get(sessionId))!);
     await this.hostFs.remove(join(this.bootstrap.homeDir, this.sessionScope(sessionId)));
@@ -830,6 +963,35 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
   }
 
+  private emitCleanupReceipt(
+    sessionId: string,
+    reason: SessionCleanupReceipt['reason'],
+    callerOutcome: SessionCleanupReceipt['callerOutcome'],
+    cleanupOutcome: SessionCleanupReceipt['cleanupOutcome'],
+    error?: unknown,
+    failureDomain?: SessionCleanupReceipt['failureDomain'],
+    resourcesAfter = cleanupOutcome === 'closed' ? 0 : 1,
+    operationId = randomUUID(),
+  ): void {
+    const normalized = error instanceof Error ? error : undefined;
+    const errorCode = normalized === undefined ? undefined : (normalized as { readonly code?: unknown }).code;
+    this.log.info('session cleanup settled', { operationId, sessionId, reason, callerOutcome, cleanupOutcome, resourcesAfter });
+    this._onDidCleanup.fire({
+      operationId,
+      sessionId,
+      reason,
+      callerOutcome,
+      terminalOwner: 'session',
+      cleanupOutcome,
+      resourcesBefore: 1,
+      resourcesAfter,
+      ...(failureDomain === undefined ? {} : { failureDomain }),
+      ...(typeof errorCode === 'string' ? { errorCode } : {}),
+      ...(normalized === undefined ? {} : { errorName: normalized.name, errorMessage: normalized.message }),
+      settledAt: Date.now(),
+    });
+  }
+
   private async announceWillClose(event: SessionWillCloseEvent): Promise<void> {
     await this._onWillCloseSession.fireAsync(event, NO_ABORT);
   }
@@ -845,10 +1007,21 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     await metadata.update({ usage }, { touchUpdatedAt: false });
   }
 
-  private async drainAgents(handle: ISessionScopeHandle): Promise<void> {
+  private async drainAgents(handle: ISessionScopeHandle, mode: AgentRemovalMode = 'cancel'): Promise<void> {
     const agentLifecycle = handle.accessor.get(IAgentLifecycleService);
+    const failures: unknown[] = [];
     for (const agent of agentLifecycle.list()) {
-      await agentLifecycle.remove(agent.id);
+      try {
+        await agentLifecycle.remove(agent.id, mode);
+      } catch (error) {
+        failures.push(error);
+      }
+    }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) {
+      const persistence = failures.find((failure) => isPersistenceFailure(failure));
+      if (persistence instanceof Error) throw persistence;
+      throw new AggregateError(failures, 'Failed to drain one or more agents.');
     }
   }
 
@@ -875,7 +1048,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     }
     if (handle !== undefined) {
       try {
-        handle.dispose();
+        await handle.dispose();
       } catch (cleanupError) {
         cleanupErrors.push(cleanupError);
       }
@@ -909,7 +1082,8 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     throw error;
   }
 
-  /** Forks a session into a new Session scope. Fails before allocating or copying a target when the
+  /** Forks conversation context into a new Session scope without inheriting scheduled tasks.
+   *  Fails before allocating or copying a target when the
    *  source holds an external-delegation root: that root is Session-scoped authority rather than
    *  ordinary conversation state, and with no authority-transfer protocol in the MVP, cloning it
    *  would leave its child ownership dangling. */
@@ -1046,6 +1220,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         const sourceAgent = sourceAgents[agentId] ?? { type: 'main' as const };
         await target.accessor.get(IAgentLifecycleService).create({
           agentId,
+          copiedIdentity: true,
           forkedFrom: sourceAgent.forkedFrom,
           labels: labelsFromAgentMeta(sourceAgent),
           delegator: sourceAgent.delegator,
@@ -1059,7 +1234,7 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
       }
       await targetMeta.update({
         title,
-        titleKind: opts.title !== undefined ? 'custom' : 'replaceable',
+        titleKind: opts.title !== undefined ? 'custom' : sourceMeta?.titleKind,
         forkedFrom: sourceId,
         archived: false,
         updatedAt: toEpochMs(sourceMeta?.updatedAt) || Date.now(),
@@ -1068,10 +1243,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         usage: aggregateSessionUsage(target),
         custom: forkedCustom,
       });
-
-      if (turnSlice === undefined) {
-        await this.duplicateCronTasks(sourceId, targetId);
-      }
 
       await this.appendSessionIndexEntry(targetId, this.workspaceContext.cwd);
       this._onDidForkSession.fire({
@@ -1119,10 +1290,9 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
     readonly targetSessionId: string;
     readonly records?: readonly WireRecord[];
   }): Promise<void> {
-    const records = [
-      ...(args.records ??
-        (await this.readSourceWireRecords(args.sourceHandle, args.sourceSessionId, args.agentId))),
-    ];
+    const records = (args.records ??
+      (await this.readSourceWireRecords(args.sourceHandle, args.sourceSessionId, args.agentId)))
+      .filter((record) => record.type !== 'cron.add' && record.type !== 'cron.delete' && record.type !== 'cron.cursor');
     if (records.length === 0) {
       records.push(createWireMetadataRecord());
     } else if (records[0]?.type !== 'metadata') {
@@ -1258,19 +1428,6 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         await this.hostFs.mkdir(targetDir, { recursive: true });
         await this.hostFs.writeBytes(targetPath, data);
       }
-    }
-  }
-
-  private async duplicateCronTasks(sourceId: string, targetId: string): Promise<void> {
-    const tasks = await this.cronStore.list({ workspaceId: this.workspaceId });
-    for (const task of tasks) {
-      if (task.tags?.[CRON_SESSION_TAG] !== sourceId) continue;
-      const clone: CronTask = {
-        ...task,
-        id: ulid(),
-        tags: { ...task.tags, [CRON_SESSION_TAG]: targetId },
-      };
-      await this.cronStore.save(this.workspaceId, clone);
     }
   }
 

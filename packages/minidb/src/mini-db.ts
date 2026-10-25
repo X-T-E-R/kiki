@@ -128,6 +128,8 @@ export class MiniDb<V = unknown> {
   compactWalRatio = 1;
   compactMinWalBytes = 4 * 1024 * 1024;
   autoCompact = true;
+  autoCompactionRetry = { nextAt: 0, delayMs: 5_000 };
+  private autoCompactionFlight: Promise<void> | undefined;
   compacting = false;
   _compactDone: Promise<void> | null = null;
   /** Set only during compaction's short rotation critical section; writers park
@@ -507,14 +509,21 @@ export class MiniDb<V = unknown> {
       this.maintenanceTaskCtx = ctx;
       try {
         await compact(this);
+        this.autoCompactionRetry.nextAt = 0;
+        this.autoCompactionRetry.delayMs = 5_000;
+      } catch (error) {
+        this.autoCompactionRetry.nextAt = Date.now() + this.autoCompactionRetry.delayMs;
+        this.autoCompactionRetry.delayMs = Math.min(this.autoCompactionRetry.delayMs * 2, 60_000);
+        throw error;
       } finally {
         this.maintenanceTaskCtx = null;
       }
     });
   }
 
-  static async open<V = unknown>(opts: OpenOptions): Promise<MiniDb<V>> {
+  static async open<V = unknown>(opts: OpenOptions, autoCompactionRetry?: MiniDb<V>['autoCompactionRetry']): Promise<MiniDb<V>> {
     const db = new MiniDb<V>();
+    if (autoCompactionRetry !== undefined) db.autoCompactionRetry = autoCompactionRetry;
     await openMiniDb(db, opts, db.lifecycleHooks);
     return db;
   }
@@ -1016,7 +1025,11 @@ export class MiniDb<V = unknown> {
   }
 
   private maybeAutoCompact(): void {
-    if (this.autoCompact && !this.compacting && shouldCompact(this)) this.submitCompaction().catch(() => {});
+    if (this.autoCompact && !this.compacting && this.autoCompactionFlight === undefined && Date.now() >= this.autoCompactionRetry.nextAt && shouldCompact(this)) {
+      this.autoCompactionFlight = this.submitCompaction().catch(() => {}).finally(() => {
+        this.autoCompactionFlight = undefined;
+      });
+    }
     this.maybeAutoGenerationBuild();
   }
 

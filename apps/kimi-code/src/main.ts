@@ -32,11 +32,13 @@ import { formatStartupError } from './cli/startup-error';
 import { runPluginNodeEntry } from './cli/sub/plugin-run-node';
 import { getVersion } from './cli/version';
 import { PROCESS_NAME } from './constant/app';
-import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile } from './native/native-assets';
+import { SOURCE_OWNED_ADAPTER_ROOT_ENV } from '../../../scripts/external-harness/production-manifest.mjs';
+import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryImportEntryFile, getKapSqliteQueryWorkerFile, getSourceOwnedAdapterRoot, getWindowsProcessHelperFile } from './native/native-assets';
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
 import { installKapSearchWorker } from './native/search-worker';
+import { installKapUsageWorker } from './native/usage-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
 
@@ -100,8 +102,13 @@ function bootstrap(): void {
   installNativeModuleHook();
   const pluginHostRunner = getPluginHostRunnerFile();
   if (pluginHostRunner !== null) process.env['KIKI_PLUGIN_HOST_RUNNER'] = pluginHostRunner;
+  const windowsProcessHelper = getWindowsProcessHelperFile();
+  if (windowsProcessHelper !== null) process.env['KIKI_WINDOWS_PROCESS_HELPER'] = windowsProcessHelper;
   const historyEntry = getHistoryImportEntryFile();
   if (historyEntry !== null) process.env['KIKI_HISTORY_IMPORT_ENTRY'] = historyEntry;
+  const sourceOwnedAdapterRoot = getSourceOwnedAdapterRoot();
+  if (sourceOwnedAdapterRoot !== null) process.env[SOURCE_OWNED_ADAPTER_ROOT_ENV] = sourceOwnedAdapterRoot;
+  else if (!isSea()) delete process.env[SOURCE_OWNED_ADAPTER_ROOT_ENV];
   // Best-effort SEA worker installation. Diagnostics are trace-only and avoid
   // exposing the user's cache path; failure keeps MiniDb's bounded inline mode.
   const workerInstall = installMinidbTextBuildWorker();
@@ -123,11 +130,16 @@ function bootstrap(): void {
         ? `search-worker:failed code=${searchWorkerInstall.errorCode} sha256=${searchWorkerInstall.assetSha256 ?? 'unknown'}`
         : `search-worker:${searchWorkerInstall.status}`,
   );
+  const usageWorkerInstall = installKapUsageWorker();
+  startupTrace(usageWorkerInstall.status === 'failed'
+    ? `usage-worker:failed code=${usageWorkerInstall.errorCode}`
+    : `usage-worker:${usageWorkerInstall.status}`);
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();
     if (queryWorker) process.env['KIKI_SQLITE_QUERY_WORKER_PATH'] = queryWorker;
     process.env['KIKI_SQLITE_INDEXER_SEA'] = '1';
   } else {
+    delete process.env['KIKI_SQLITE_INDEXER_SEA'];
     const indexer = fileURLToPath(new URL('./sqlite-indexer.mjs', import.meta.url));
     const queryWorker = fileURLToPath(new URL('./sqlite-query-worker.mjs', import.meta.url));
     if (existsSync(indexer) && existsSync(queryWorker)) {

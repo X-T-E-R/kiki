@@ -24,7 +24,7 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { goalKey } from '#/agent/goal/goalOps';
 import { permissionModeKey } from '#/agent/permissionMode/permissionModeOps';
 import { planKey } from '#/features/plan/planOps';
-import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IAgentMemorySnapshot, memoryEntryReference } from '#/app/memory/memorySnapshot';
 import { readTodoState, todoKey } from '#/session/todo/todoOps';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
@@ -183,7 +183,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       if (this.states.get(modelSwitchCompletionsKey).has(active.input.operationId)) return this.recovering(active, error);
       active.receipt = { ...active.receipt, state: signal.aborted ? 'cancelled' : 'failed', error: this.errorPayload(error) };
       this.active = undefined;
-      active.quiescence.dispose();
+      await active.quiescence.dispose();
       this.changes.fire(active.receipt);
       return active.receipt;
     }
@@ -209,7 +209,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       this.confirmedCompletions.set(active.input.operationId, completed.receipt);
       this.active = undefined;
       this.changes.fire(active.receipt);
-      active.quiescence.dispose();
+      await active.quiescence.dispose();
       return active.receipt;
     } catch (error) {
       return this.recovering(active, error);
@@ -253,7 +253,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
         this.states.has(permissionModeKey) ? `## Permission state\n${this.states.get(permissionModeKey)}` : '',
         this.states.has(planKey) ? `## Plan state\n${JSON.stringify(this.states.get(planKey))}` : '',
       ].filter(Boolean),
-      memoryEntries: memoryEntries.map((entry) => `- [${entry.id}] ${entry.title}`), memoryReferences,
+      memoryEntries: memoryEntries.map((entry) => memoryEntryReference(entry)), memoryReferences,
     };
   }
 

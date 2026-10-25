@@ -3,7 +3,19 @@ import type { StepUsage } from './turn';
 
 export type GoalStatus = 'active' | 'paused' | 'blocked' | 'complete';
 
+export interface GoalMarkerChange {
+  readonly kind: 'created' | 'updated' | 'paused' | 'resumed' | 'blocked' | 'completed' | 'cleared';
+  readonly reason?: string;
+  readonly actor?: string;
+}
+
 export interface GoalMeta {
+  readonly goalId?: string;
+  readonly turnsUsed?: number;
+  readonly wallClockMs?: number;
+  readonly turnBudget?: number;
+  readonly wallClockBudgetMs?: number;
+  readonly terminalReason?: string;
   readonly objective: string;
   readonly status: GoalStatus;
   readonly completionCriterion?: string;
@@ -11,23 +23,6 @@ export interface GoalMeta {
   readonly controlRevision?: number;
   readonly budgetUsed?: number;
   readonly budgetLimit?: number;
-  readonly goalId?: string;
-  readonly turnsUsed?: number;
-  readonly tokensUsed?: number;
-  readonly wallClockMs?: number;
-  readonly terminalReason?: string;
-  readonly budget?: {
-    readonly tokenBudget: number | null;
-    readonly turnBudget: number | null;
-    readonly wallClockBudgetMs: number | null;
-    readonly remainingTokens: number | null;
-    readonly remainingTurns: number | null;
-    readonly remainingWallClockMs: number | null;
-    readonly tokenBudgetReached: boolean;
-    readonly turnBudgetReached: boolean;
-    readonly wallClockBudgetReached: boolean;
-    readonly overBudget: boolean;
-  };
 }
 
 /** Mode badges (plan mode) mirrored at session level. */

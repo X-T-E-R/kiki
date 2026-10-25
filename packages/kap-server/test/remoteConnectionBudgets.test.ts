@@ -8,8 +8,8 @@ import { gzipSync } from 'node:zlib';
 import Fastify from 'fastify';
 import { WebSocket, WebSocketServer } from 'ws';
 import { afterEach, describe, expect, it } from 'vitest';
-import { readBoundedJsonBody } from '@kiki/klient/transports/http/bounded-body';
-import { ConnectionAdmission } from '../src/services/connections/admission';
+import { readBoundedJsonBody, SESSION_READ_BODY_BYTES } from '@kiki/klient/transports/http/bounded-body';
+import { AdmissionError, ConnectionAdmission } from '../src/services/connections/admission';
 import { RemoteConnectionManager } from '../src/services/connections/manager';
 import { registerRemoteConnectionRoutes } from '../src/routes/remoteConnections';
 
@@ -42,7 +42,58 @@ async function fixture() {
   return { target, source, events, broker, manager, start };
 }
 describe('broker budgets against explicit adversarial transport fixtures', () => {
-  it('counts decompressed HTTP bytes before JSON parsing and cancels an oversized decoded reader', async () => {
+  it('forwards an allowlisted preview denial and reports other target denials as unapproved', async () => {
+    const f = await fixture(); let writes = 0;
+    const passed = { code: 40301, msg: 'html_preview_target_owner_grant_required', data: null };
+    const denied = { code: 40301, msg: 'operation_denied', data: null };
+    f.target.post('/api/fs:html-preview', async (_request, reply) => { writes++; return reply.code(403).send(passed); });
+    f.target.post('/api/sessions', async (_request, reply) => { writes++; return reply.code(403).send(denied); });
+    f.target.get('/api/meta', async () => ({ code: 0, data: { readable: true } }));
+    const { call, record } = await f.start();
+    const preview = await call('call', { operation: 'htmlPreviewOpen', body: {} });
+    expect(preview.status).toBe(403); expect(await preview.json()).toEqual(passed);
+    expect(writes).toBe(1); expect(f.manager.get(record.id).state).toBe('online');
+    const reading = await call('call', { operation: 'meta' });
+    expect(reading.status).toBe(200); expect(await reading.json()).toEqual({ code: 0, data: { readable: true } });
+    expect(writes).toBe(1);
+    const response = await call('call', { operation: 'sessionCreate', body: { cwd: '/example' } });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ code: 40101, msg: 'connection_not_approved' });
+    expect(writes).toBe(2); expect(f.manager.get(record.id).state).not.toBe('online');
+  });
+  it('forwards a legal history response over the former HTTP cap and cancels an unfinished read', async () => {
+    const f = await fixture(); let producerClosed = false;
+    const envelope = (prompt: string) => ({ code: 0, msg: 'success', data: { items: [{ prompt }] } });
+    const overhead = Buffer.byteLength(JSON.stringify(envelope('')));
+    const expected = envelope('x'.repeat(SESSION_READ_BODY_BYTES - overhead));
+    const oversized = envelope('界'.repeat(400000));
+    f.target.get('/api/klient/session-view/:sessionId/snapshot', async (request, reply) => {
+      const sessionId = (request.params as { sessionId: string }).sessionId;
+      if (sessionId === 'over') return oversized;
+      if (sessionId !== 'slow') return expected;
+      return reply.type('application/json').send(Readable.from((async function* () {
+        try { yield '{"code":0,"msg":"success","data":"';
+          for (let index = 0; index < 100; index += 1) { await new Promise<void>((resolve) => setTimeout(resolve, 10)); yield 'x'.repeat(4096); }
+          yield '"}';
+        } finally { producerClosed = true; }
+      })()));
+    });
+    const { call } = await f.start();
+    const response = await call('call', { operation: 'snapshot', params: { sessionId: 'fixture' } });
+    expect(Buffer.byteLength(JSON.stringify(expected))).toBe(SESSION_READ_BODY_BYTES);
+    expect(response.status).toBe(200); expect(await response.json()).toEqual(expected);
+    const refused = await call('call', { operation: 'snapshot', params: { sessionId: 'over' } });
+    expect(refused.status).toBe(500);
+    expect(await refused.text()).toContain(`exceeded ${SESSION_READ_BODY_BYTES} decoded bytes`);
+    const controller = new AbortController();
+    const pending = call('call', { operation: 'snapshot', params: { sessionId: 'slow' } }, controller.signal);
+    const failure = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+    await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(1);
+    controller.abort(); await failure;
+    await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(0);
+    await expect.poll(() => producerClosed).toBe(true);
+  });
+  it('rejects malformed compressed history while keeping explicit non-history decoded budgets', async () => {
     const f = await fixture();
     const compressed = gzipSync('not-json'.repeat(40000));
     for (const route of ['/api/klient/session-view/:sessionId/snapshot', '/api/sessions/:sessionId/transcript/details']) {
@@ -51,7 +102,7 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     const { call } = await f.start();
     for (const operation of ['snapshot', 'transcriptDetails']) {
       const response = await call('call', { operation, params: { sessionId: 'fixture' } });
-      expect(response.status).toBe(500); expect(await response.text()).toContain('98304 decoded bytes');
+      expect(response.status).toBe(500); expect(await response.text()).toContain('Unexpected token');
     }
     let pulls = 0; let cancelled: unknown;
     const stream = new ReadableStream<Uint8Array>({ pull(controller) { pulls++; controller.enqueue(new Uint8Array(16384)); }, cancel(reason) { cancelled = reason; } });
@@ -90,6 +141,17 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     await expect.poll(() => f.manager.list()[0]?.activeLeases, { timeout: 3000 }).toBe(0);
     await expect.poll(() => producerClosed, { timeout: 3000 }).toBe(true); expect(produced).toBeLessThan(100);
   });
+  it('passes a 512 KiB derived preview through the broker unchanged', async () => {
+    const f = await fixture();
+    const bytes = Buffer.alloc(512 * 1024, 42);
+    f.target.get('/api/sessions/:sessionId/media/:fileId/preview', async (_request, reply) => reply.type('image/png').send(bytes));
+    const { call } = await f.start();
+    const response = await call('download', { operation: 'mediaPreview', params: { sessionId: 'fixture', fileId: 'image' } });
+    expect(response.status).toBe(200);
+    expect(Buffer.from(await response.arrayBuffer())).toEqual(bytes);
+    expect(f.manager.list()[0]?.activeLeases).toBe(0);
+  });
+
   it('forwards the source preview route and MIME hint without accepting arbitrary query fields', async () => {
     const f = await fixture(); let hits = 0;
     f.target.get('/api/sessions/:sessionId/media/:fileId/preview', async (request, reply) => {
@@ -107,18 +169,62 @@ describe('broker budgets against explicit adversarial transport fixtures', () =>
     expect(invalid.status).toBe(400); expect(await invalid.text()).toContain('invalid_preview_query'); expect(hits).toBe(1);
     expect(f.manager.list()[0]?.activeLeases).toBe(0);
   });
-  it('stops a native paused consumer at the broker buffer budget with an explicit recovery reason', async () => {
+  it('drains legal oversized history resets to a paused reader and cancels the stream on disconnect', async () => {
     const f = await fixture(); const { sourceUrl, record } = await f.start();
     const client = new WebSocket(sourceUrl.replace('http:', 'ws:') + `/api/remote-connections/${record.id}/events`);
-    cleanups.push(async () => { client.terminate(); }); await once(client, 'open'); client.pause();
+    cleanups.push(async () => { client.terminate(); }); await once(client, 'open');
     await expect.poll(() => f.events.clients.size).toBe(1);
-    const remote = [...f.events.clients][0]!; const local = [...f.broker.clients][0]!;
-    const chunk = JSON.stringify({ type: 'pong', data: 'x'.repeat(24576) }); let sent = 0;
-    const flood = () => { if (remote.readyState !== WebSocket.OPEN || sent >= 4096) return; for (let index = 0; index < 8 && remote.readyState === WebSocket.OPEN; index++) { remote.send(chunk); sent++; } setImmediate(flood); };
-    flood();
-    await expect.poll(() => local.readyState, { timeout: 10000 }).toBe(WebSocket.CLOSING);
-    const closed = once(client, 'close'); client.resume(); const [code, reason] = await closed;
-    expect(code).toBe(4008); expect(String(reason)).toContain('slow consumer; reload current window');
-    await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(0); expect(sent).toBeLessThan(4096);
+    const remote = [...f.events.clients][0]!;
+    const reset = JSON.stringify({ type: 'view_signal', id: 'history', data: { type: 'transcript', event: { type: 'transcript.reset', snapshot: { items: [{ kind: 'turn', prompt: '界'.repeat(400000) }] } } } });
+    expect(Buffer.byteLength(reset)).toBeGreaterThan(1024 * 1024);
+    client.pause();
+    remote.send(reset);
+    await new Promise<void>((resolve) => setTimeout(resolve, 30));
+    expect(client.readyState).toBe(WebSocket.OPEN);
+    const messages: string[] = [];
+    client.on('message', (body) => {
+      const bytes = Array.isArray(body) ? Buffer.concat(body) : Buffer.from(body as Uint8Array);
+      messages.push(bytes.toString('utf8'));
+    });
+    client.resume();
+    await expect.poll(() => messages.length, { timeout: 3000 }).toBe(1);
+    expect(messages[0]).toBe(reset);
+    remote.send(JSON.stringify({ type: 'pong', seq: 2 }));
+    await expect.poll(() => messages.length, { timeout: 3000 }).toBe(2);
+    expect(messages[1]).toContain('"seq":2');
+    client.terminate();
+    await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(0);
+    await expect.poll(() => remote.readyState).toBe(WebSocket.CLOSED);
+  });
+
+  it('still rejects oversized client-to-server commands', async () => {
+    const f = await fixture(); const { sourceUrl, record } = await f.start();
+    const client = new WebSocket(sourceUrl.replace('http:', 'ws:') + `/api/remote-connections/${record.id}/events`);
+    cleanups.push(async () => { client.terminate(); }); await once(client, 'open');
+    await expect.poll(() => f.events.clients.size).toBe(1);
+    const closed = once(client, 'close');
+    client.send(JSON.stringify({ type: 'ping', data: 'x'.repeat(129 * 1024) }));
+    expect((await closed)[0]).toBe(1009);
+    await expect.poll(() => f.manager.list()[0]?.activeLeases).toBe(0);
+  });
+  it('keeps identity_changed after a later transport failure and pauses every purpose', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kiki-identity-sticky-'));
+    cleanups.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const manager = new RemoteConnectionManager(home, identity());
+    await manager.ready();
+    const record = await manager.registerBridgeTarget({ label: 'Drift', endpoint: 'http://127.0.0.1:9/', target: identity() });
+    const gui = manager.lease(record.id);
+    const bridge = manager.lease(record.id, undefined, 'bridge');
+    manager.failed(record.id, new AdmissionError(409, 'identity_changed'));
+    expect(manager.get(record.id).state).toBe('identity_changed');
+    expect(gui.signal.aborted).toBe(true);
+    expect(bridge.signal.aborted).toBe(true);
+    manager.failed(record.id, new Error('socket hang up'));
+    expect(manager.get(record.id).state).toBe('identity_changed');
+    expect(manager.get(record.id).lastError).toBe('identity_changed');
+    expect(gui.signal.aborted).toBe(true);
+    expect(bridge.signal.aborted).toBe(true);
+    expect(() => manager.lease(record.id)).toThrow(AdmissionError);
+    expect(() => manager.lease(record.id, undefined, 'bridge')).toThrow(AdmissionError);
   });
 });

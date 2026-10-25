@@ -97,8 +97,8 @@ function GuardHarness() {
   });
   return <DirtyGuardContext.Provider value={guard.value}>
     <div data-page-dirty={String(guard.value.dirty)}>
-      <button onClick={() => { guard.navigate('/other'); }}>Leave page</button>
-      <button onClick={() => { guard.navigate('/'); }}>Return to identities</button>
+      <button onClick={() => { void guard.navigate('/other'); }}>Leave page</button>
+      <button onClick={() => { void guard.navigate('/'); }}>Return to identities</button>
       {location.pathname === '/' ? <IdentitySection /> : null}
     </div>
     <ConfirmDialog open={guard.pending} title={t('st.dirty.leaveTitle')} body={t('st.dirty.leaveBody')}

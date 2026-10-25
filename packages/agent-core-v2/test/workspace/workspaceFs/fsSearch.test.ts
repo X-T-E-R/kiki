@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { readSearchCursor, writeSearchCursor } from '#/workspace/workspaceFs/internal/searchCursor';
+
 import {
   compileGrepPattern,
   computeFuzzyScore,
@@ -109,5 +111,20 @@ describe('rgPath', () => {
 
   it('returns undefined for missing input', () => {
     expect(rgPath(undefined)).toBeUndefined();
+  });
+});
+
+
+describe('search cursor paths', () => {
+  it.each(['a:b', 'a\\b'])('preserves POSIX %s and rejects Windows special characters', (path) => {
+    const stack = [{ path: '', offset: 1 }, { path, offset: 0 }];
+    const cursor = writeSearchCursor(stack, 'conditions')!;
+    expect(readSearchCursor(cursor, 'conditions', '/')).toEqual(stack);
+    expect(() => readSearchCursor(cursor, 'conditions', '\\')).toThrow('invalid or changed file search cursor');
+  });
+
+  it.each(['../outside', '/outside', 'a/../outside', '.git'])('rejects malformed or metadata frame %s', (path) => {
+    const cursor = Buffer.from(JSON.stringify({ version: 2, binding: 'conditions', stack: [{ path: '', offset: 1 }, { path, offset: 0 }] })).toString('base64url');
+    expect(() => readSearchCursor(cursor, 'conditions', '/')).toThrow('invalid or changed file search cursor');
   });
 });

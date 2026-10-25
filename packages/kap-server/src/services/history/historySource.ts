@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
-import { open, stat } from 'node:fs/promises';
+import { stat } from 'node:fs/promises';
+
+import { readLogicalWireRange } from './logicalWireRead';
 
 export type HistoryRefKind = 'turn' | 'step' | 'frame';
 
@@ -70,29 +72,13 @@ export async function verifyHistorySource(wirePath: string, anchor: HistorySourc
   const incarnation = await historySourceIncarnation(wirePath);
   if (incarnation === undefined) return { status: 'source_missing' };
   if (incarnation !== anchor.incarnation) return { status: 'stale_ref' };
-  const file = await open(wirePath, 'r').catch((error: unknown) => {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined;
-    throw error;
-  });
-  if (file === undefined) return { status: 'source_missing' };
-  try {
-    const size = anchor.end - anchor.start;
-    if (size <= 0 || size > MAX_RECORD_BYTES) return { status: 'stale_ref' };
-    const hash = createHash('sha256');
-    let read = 0;
-    while (read < size) {
-      const chunk = Buffer.allocUnsafe(Math.min(64 << 10, size - read));
-      const result = await file.read(chunk, 0, chunk.length, anchor.start + read);
-      if (result.bytesRead === 0) return { status: 'stale_ref' };
-      hash.update(chunk.subarray(0, result.bytesRead));
-      read += result.bytesRead;
-    }
-    if (hash.digest('hex') !== anchor.digest) return { status: 'stale_ref' };
-    return await historySourceIncarnation(wirePath) === anchor.incarnation
-      ? { status: 'ok' } : { status: 'stale_ref' };
-  } finally {
-    await file.close();
-  }
+  const size = anchor.end - anchor.start;
+  if (size <= 0 || size > MAX_RECORD_BYTES) return { status: 'stale_ref' };
+  const bytes = await readLogicalWireRange(wirePath, anchor.start, size);
+  if (bytes === undefined) return { status: 'source_missing' };
+  if (bytes.byteLength !== size || hashHistoryRecord(bytes) !== anchor.digest) return { status: 'stale_ref' };
+  return await historySourceIncarnation(wirePath) === anchor.incarnation
+    ? { status: 'ok' } : { status: 'stale_ref' };
 }
 
 export function hashHistoryRecord(bytes: Uint8Array): string {

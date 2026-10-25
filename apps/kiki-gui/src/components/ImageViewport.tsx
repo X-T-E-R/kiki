@@ -10,8 +10,19 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 
 import { useI18n } from '../i18n';
+import { Icon } from './icons';
 
 export type ImageZoom = 'fit' | 'actual';
+
+/** One image pixel per device pixel is 100%; the ceiling is a deliberate 5×. */
+export const MAX_ZOOM = 500;
+export const MIN_ZOOM = 10;
+export const ZOOM_STEPS = [10, 25, 50, 75, 100, 150, 200, 300, 400, 500] as const;
+
+/** `100` reads as "actual size" whatever the device ratio is. */
+export function zoomPercentOf(scale: number, dpr: number): number {
+  return Math.round(scale * dpr * 100);
+}
 
 /** Live devicePixelRatio: re-reads when the window moves to another display or zooms. */
 export function useDevicePixelRatio(): number {
@@ -118,12 +129,12 @@ export function ImageViewport({
 }) {
   const { t } = useI18n();
   const dpr = useDevicePixelRatio();
-  const [zoom, setZoom] = useState<ImageZoom>('fit');
+  const [zoom, setZoom] = useState<'fit' | number>('fit');
   const [natural, setNatural] = useState<{ readonly width: number; readonly height: number } | null>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
   const anchor = useRef<ZoomAnchor | null>(null);
-  const pan = useDragPan(zoom === 'actual');
+  const pan = useDragPan(zoom !== 'fit');
 
   useEffect(() => {
     setNatural(null);
@@ -141,7 +152,7 @@ export function ImageViewport({
     scroller.scrollTop = image.offsetTop + target.fy * image.offsetHeight - target.py;
   }, [zoom]);
 
-  const switchZoom = (next: ImageZoom, point?: { readonly x: number; readonly y: number }) => {
+  const switchZoom = (next: 'fit' | number, point?: { readonly x: number; readonly y: number }) => {
     const scroller = scrollerRef.current;
     const image = imageRef.current;
     if (next === zoom) return;
@@ -160,7 +171,15 @@ export function ImageViewport({
     setZoom(next);
   };
 
-  const actualWidth = natural === null ? undefined : natural.width / dpr;
+  const percent = zoom === 'fit' ? 100 : zoom;
+  const mode = zoom === 'fit' ? 'fit' : percent === 100 ? 'actual' : 'custom';
+  const displayWidth = zoom === 'fit' || natural === null ? undefined : natural.width * (zoom / (100 * dpr));
+  const zoomBy = (direction: 1 | -1) => {
+    const next = direction === 1
+      ? ZOOM_STEPS.find((step) => step > percent) ?? MAX_ZOOM
+      : ZOOM_STEPS.toReversed().find((step) => step < percent) ?? MIN_ZOOM;
+    switchZoom(next);
+  };
   const dimensions = natural === null ? undefined : `${natural.width} × ${natural.height}`;
   const detail = [dimensions, meta].filter((part) => part !== undefined).join(' · ');
 
@@ -171,32 +190,44 @@ export function ImageViewport({
         {detail !== '' ? (
           <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-image-meta>{detail}</span>
         ) : null}
-        <span role="group" aria-label={t('preview.zoomGroup')} className="flex shrink-0 items-center gap-0.5 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
+        <span role="group" aria-label={t('preview.zoomGroup')} className="flex shrink-0 items-center gap-1 rounded-md bg-ink/[0.05] p-0.5 text-[11px]">
           {(['fit', 'actual'] as const).map((option) => (
             <button
               key={option}
               type="button"
-              aria-pressed={zoom === option}
+              aria-pressed={mode === option}
               data-image-zoom={option}
-              onClick={() => { switchZoom(option); }}
+              onClick={() => { switchZoom(option === 'fit' ? 'fit' : 100); }}
               className={`${SEGMENT_CLASS} ${
-                zoom === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
+                mode === option ? 'bg-paper font-medium text-ink shadow-[var(--kiki-sheet-shadow)]' : 'text-ink-faint hover:text-ink-soft'
               }`}
             >
               {option === 'fit' ? t('preview.zoomFit') : t('preview.zoomActual')}
             </button>
           ))}
+          <button type="button" aria-label={t('media.zoomOut')} title={t('media.zoomOut')} disabled={percent <= MIN_ZOOM} onClick={() => { zoomBy(-1); }}
+            className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+            <Icon name="dash" size={12} />
+          </button>
+          <input type="range" min={MIN_ZOOM} max={MAX_ZOOM} step={1} value={percent} aria-label={t('preview.zoomGroup')} aria-valuetext={`${percent}%`} data-image-zoom-slider
+            onChange={(event) => { switchZoom(Number(event.currentTarget.value)); }}
+            className="h-1 w-16 cursor-pointer accent-accent" />
+          <button type="button" aria-label={t('media.zoomIn')} title={t('media.zoomIn')} disabled={percent >= MAX_ZOOM} onClick={() => { zoomBy(1); }}
+            className="flex h-5 w-5 items-center justify-center rounded-[4px] text-ink-faint transition-colors hover:text-ink disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink">
+            <Icon name="plus" size={12} />
+          </button>
+          {mode === 'custom' ? <span data-image-zoom-percent className="w-9 shrink-0 text-right font-mono text-[11px] text-ink-faint">{percent}%</span> : null}
         </span>
         {actions}
       </div>
       <div
         ref={scrollerRef}
         tabIndex={0}
-        data-image-viewport={zoom}
+        data-image-viewport={mode}
         aria-label={alt}
         onClick={(event) => {
           if (pan.consumePan()) return;
-          switchZoom(zoom === 'fit' ? 'actual' : 'fit', { x: event.clientX, y: event.clientY });
+          switchZoom(zoom === 'fit' ? 100 : 'fit', { x: event.clientX, y: event.clientY });
         }}
         {...pan.handlers}
         className={`relative min-h-0 flex-1 select-none overflow-auto p-3 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
@@ -214,7 +245,7 @@ export function ImageViewport({
             setNatural({ width: image.naturalWidth, height: image.naturalHeight });
           }}
           onError={onError}
-          style={zoom === 'actual' && actualWidth !== undefined ? { width: actualWidth, maxWidth: 'none' } : undefined}
+          style={displayWidth === undefined ? undefined : { width: displayWidth, maxWidth: 'none' }}
           className={`mx-auto block h-auto rounded-lg border border-hairline ${zoom === 'fit' ? 'max-w-full' : ''}`}
         />
       </div>

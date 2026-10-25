@@ -8,7 +8,7 @@
 
 import { providerIdSchema } from '@kiki/protocol';
 import type { ValidationIssue } from '@kiki/session-core/i18n';
-import { validateProviderDraft, type ProviderDraft } from '@kiki/session-core/settings';
+import { DEFAULT_MODEL_CAPABILITIES, DEFAULT_MODEL_SUPPORT_EFFORTS, validateProviderDraft, type ProviderDraft } from '@kiki/session-core/settings';
 
 export type ProviderWireType = ProviderDraft['type'];
 
@@ -148,8 +148,8 @@ export function blankModelRow(contextSize: number): ProviderDraft['models'][numb
     remoteId: '',
     maxContextSize: contextSize,
     displayName: '',
-    capabilities: ['thinking', 'tool_use'],
-    supportEfforts: [],
+    capabilities: [...DEFAULT_MODEL_CAPABILITIES],
+    supportEfforts: [...DEFAULT_MODEL_SUPPORT_EFFORTS],
     requestIdentityChoice: 'inherit',
     requestIdentityOverridesJson: '',
     imageAcceptedTypes: null,

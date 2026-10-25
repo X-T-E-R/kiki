@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import { acpMcpServers } from '#/app/agentExecutor/acpMcpServers';
+import { BUILTIN_AGENT_EXECUTORS } from '#/app/agentExecutor/builtinDescriptorData';
+import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
+import { IHarnessMcpService, type HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
+import { acquireHarnessMcp } from '#/agent/execution/harnessMcpLease';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import type { McpConnectionView, McpServerStatus } from '#/mcpCore/connection-manager';
 
@@ -17,6 +23,33 @@ function view(servers: Record<string, { config: McpServerConfig; status?: McpSer
 }
 
 describe('ACP session MCP forwarding', () => {
+  it.each(Object.entries(BUILTIN_AGENT_EXECUTORS))('binds %s to the existing native tool bridge only when its transport supports it', async (id, descriptor) => {
+    const acquired: unknown[] = [];
+    const lease: HarnessMcpLease = { server: { name: 'kiki', command: 'fixture-mcp', args: [], env: [] }, dispose: () => {} };
+    const services = new Map<unknown, unknown>([
+      [IAgentScopeContext, { parentAgentId: 'main' }],
+      [ISessionContext, { sessionId: 'session-example' }],
+      [IHarnessMcpService, { acquire: async (request: unknown) => { acquired.push(request); return lease; } }],
+    ]);
+    const context: AgentExecutorContext = {
+      descriptor: { ...descriptor, id, revision: 'fixture-revision' },
+      binding: { executorId: id, systemPrompt: '', thinkingLevel: 'off' },
+      agent: { id: 'child-example', accessor: { get: <T>(token: unknown) => services.get(token) as T } },
+    };
+    const supported = id !== 'openclaw-acp' && id !== 'pi-acp';
+    expect(await acquireHarnessMcp(context, '/example')).toBe(supported ? lease : undefined);
+    expect(acquired).toHaveLength(supported ? 1 : 0);
+    const optedOut = { ...context, binding: { ...context.binding, injectKikiMcp: false } };
+    expect(await acquireHarnessMcp(optedOut, '/example')).toBeUndefined();
+    services.set(IAgentScopeContext, { parentAgentId: undefined });
+    expect(await acquireHarnessMcp(context, '/example')).toBeUndefined();
+    if (supported) {
+      expect(await acquireHarnessMcp({ ...context, binding: { ...context.binding, injectKikiMcp: true } }, '/example')).toBe(lease);
+    } else {
+      await expect(acquireHarnessMcp({ ...context, binding: { ...context.binding, injectKikiMcp: true } }, '/example'))
+        .rejects.toMatchObject({ code: 'config.invalid' });
+    }
+  });
   it('serializes enabled session servers with ACP transport shapes and bearer headers', () => {
     const servers = acpMcpServers(view({
       local: { config: { transport: 'stdio', command: 'node', args: ['mcp.js'], env: { TOKEN: 'secret' } } },

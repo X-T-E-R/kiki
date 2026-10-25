@@ -324,6 +324,32 @@ describe('http transport', () => {
     }
   });
 
+  it('coalesces turn-grade-only expansions into one ordered-view attach', async () => {
+    const server = new FakeWebSocketServer();
+    const klient = createKlient({ endpoint: 'http://example.test', WebSocket: fakeWebSocket(server) });
+    const subscription = klient.session('s1').view.subscribe({
+      sessionCursor: { seq: 1 }, transcriptGrades: { '*': 'off', main: 'delta' },
+    }, () => undefined);
+    try {
+      await tick(10);
+      const initial = server.frames.filter((frame) => frame['type'] === 'view_attach').length;
+      subscription.setTranscriptGrades({ '*': 'off', main: 'delta', 'child-1': 'turn' });
+      subscription.setTranscriptGrades({ '*': 'off', main: 'delta', 'child-1': 'turn', 'child-2': 'turn' });
+      expect(server.frames.filter((frame) => frame['type'] === 'view_attach')).toHaveLength(initial);
+      await tick(300);
+      const attaches = server.frames.filter((frame) => frame['type'] === 'view_attach');
+      expect(attaches).toHaveLength(initial + 1);
+      expect(attaches.at(-1)?.['data']).toMatchObject({ input: {
+        transcriptGrades: { '*': 'off', main: 'delta', 'child-1': 'turn', 'child-2': 'turn' },
+      } });
+      subscription.setTranscriptGrades({ '*': 'off', main: 'delta', 'child-1': 'block', 'child-2': 'turn' });
+      expect(server.frames.filter((frame) => frame['type'] === 'view_attach')).toHaveLength(initial + 2);
+    } finally {
+      subscription.close();
+      await klient.close();
+    }
+  });
+
   it('reattaches ordered views on the shared socket and ignores old generations', async () => {
     const server = new FakeWebSocketServer();
     const klient = createKlient({ endpoint: 'http://127.0.0.1:58627', fetch: vi.fn() as unknown as typeof fetch, WebSocket: fakeWebSocket(server) });

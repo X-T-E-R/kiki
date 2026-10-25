@@ -137,7 +137,7 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     const entry = matches[0];
     if (entry === undefined) throw new Error2(ErrorCodes.MCP_SERVER_NOT_FOUND, `MCP server "${name}" was not found`);
     if (matches.length !== 1 || entry.config.transport !== 'stdio' || !isComputerMcpConfig(entry.config)) {
-      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Stop requires one unambiguous cua-driver stdio MCP configuration');
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Stop requires one unambiguous computer stdio MCP configuration');
     }
     const stop = captureComputerMcpStop(name, entry.config, target.cwd);
     let saved = false;
@@ -375,13 +375,13 @@ export class McpManagementService extends Disposable implements IMcpManagementSe
     await active.flow.cancel();
   }
 
-  override dispose(): void {
+  override async dispose(): Promise<void> {
     for (const active of this.authFlows.values()) {
       clearTimeout(active.idleTimer);
-      void active.flow.cancel();
+      await active.flow.cancel();
     }
     this.authFlows.clear();
-    super.dispose();
+    await super.dispose();
   }
 
   async resetServerAuth(locator: McpServerLocator, query: McpRegistryQuery = {}, expectedCanonicalUrl?: string): Promise<void> {

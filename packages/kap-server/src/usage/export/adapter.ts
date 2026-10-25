@@ -14,6 +14,7 @@ export interface UsageExportAdapterContext {
   readonly target: UsageExportTarget;
   readonly signal: AbortSignal;
   readonly previousAcknowledged?: readonly UsageExportItem[];
+  readonly acknowledgedMappingVersion?: (item: UsageExportItem) => string;
   readonly post: (request: UsageExportHttpRequest) => Promise<UsageExportHttpResponse>;
 }
 export const USAGE_EXPORT_ERROR_CATEGORIES = [

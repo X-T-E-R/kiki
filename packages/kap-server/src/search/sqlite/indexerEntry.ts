@@ -14,41 +14,59 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   const hardMb = Number(process.env['KIKI_SEARCH_INDEXER_HARD_MB'] ?? 768);
   const softMb = Number(process.env['KIKI_SEARCH_INDEXER_SOFT_MB'] ?? 384);
   if (!(hardMb > 0 && softMb > 0)) throw new Error('invalid indexer memory budget');
+  let stopped = false;
+  const noteClose = (message: IndexerRequest): void => { if (message.type === 'close') stopped = true; };
+  process.on('message', noteClose);
   await mkdir(dirname(path), { recursive: true });
-  const lease = new DatabaseSync(`${path}.writer.sqlite`);
+  if (stopped) return;
+  const lease = new DatabaseSync(`${path}.writer.sqlite`, { timeout: 1000 });
+  const releaseLease = (): void => {
+    try { if (lease.isTransaction) lease.exec('ROLLBACK'); } catch {}
+    try { lease.close(); } catch {}
+  };
   lease.exec('PRAGMA busy_timeout=100');
   let writer = true;
   try { lease.exec('BEGIN IMMEDIATE'); }
   catch (error) {
-    if (!/SQLITE_BUSY|database is locked/i.test(String(error))) { lease.close(); throw error; }
+    if (!/SQLITE_BUSY|database is locked/i.test(String(error))) { releaseLease(); throw error; }
     writer = false;
   }
+  if (stopped) { releaseLease(); return; }
   if (!writer) {
     report({ type: 'ready', pid: process.pid, writer: false });
     const elected = await new Promise<boolean>((resolve) => {
       const heartbeat = setInterval(() => report({ type: 'heartbeat' }), 1000);
-      const election = setInterval(() => {
+      let election: NodeJS.Timeout | undefined;
+      let electionDelay = 2000;
+      const onMessage = (message: IndexerRequest): void => { if (message.type === 'close') finish(false); };
+      const onDisconnect = (): void => finish(false);
+      const finish = (won: boolean): void => {
+        clearInterval(heartbeat);
+        if (election) clearTimeout(election);
+        process.off('message', onMessage);
+        process.off('disconnect', onDisconnect);
+        resolve(won);
+      };
+      const attemptElection = (): void => {
         try { lease.exec('BEGIN IMMEDIATE'); finish(true); }
         catch (error) {
           if (!/SQLITE_BUSY|database is locked/i.test(String(error))) {
             report({ type: 'error', message: String(error) });
             finish(false);
+            return;
           }
+          electionDelay = Math.min(electionDelay * 2, 30_000);
+          election = setTimeout(attemptElection, electionDelay);
+          election.unref();
         }
-      }, 2000);
-      const onMessage = (message: IndexerRequest): void => { if (message.type === 'close') finish(false); };
-      const onDisconnect = (): void => finish(false);
-      const finish = (won: boolean): void => {
-        clearInterval(heartbeat);
-        clearInterval(election);
-        process.off('message', onMessage);
-        process.off('disconnect', onDisconnect);
-        resolve(won);
       };
       process.on('message', onMessage);
       process.on('disconnect', onDisconnect);
+      if (stopped) { finish(false); return; }
+      election = setTimeout(attemptElection, electionDelay);
+      election.unref();
     });
-    if (!elected) { lease.close(); return; }
+    if (!elected) { releaseLease(); return; }
   }
   let index: SqliteSearchIndex | undefined;
   let pending = new Map<string, SqliteSessionInput>();
@@ -56,9 +74,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
   let rebuilding = false;
   let lastDrainError: string | undefined;
   let lastHeartbeat = Date.now();
-  let soft = false;
   let nearSoft = false;
-  let stopped = false;
   let opened = false;
   let lastBatchMs = 0;
   let lastLogAt = 0;
@@ -78,11 +94,13 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       }
     }
     if (memory.rss > hardMb * MiB) {
-      if (index) index.clearInflightOnBudgetExit();
+      try { index?.clearInflightOnBudgetExit(); } catch {}
+      try { index?.close(); } catch {}
+      index = undefined;
+      releaseLease();
       process.stderr.write(`search indexer memory_budget rss=${memory.rss} limit=${hardMb * MiB}\n`);
       process.exit(MEMORY_BUDGET_EXIT);
     }
-    soft = memory.rss > softMb * MiB;
     nearSoft = memory.rss > (softMb - 32) * MiB;
   };
   const drain = async (): Promise<void> => {
@@ -106,8 +124,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
         lastBatchMs = Date.now() - started;
         report({ type: 'synced', sessionId: id });
         status();
-        const elapsed = lastBatchMs;
-        if (pending.size && elapsed > 0) await new Promise((resolve) => setTimeout(resolve, elapsed));
+        if (pending.size) await new Promise<void>((resolve) => setImmediate(resolve));
       }
     } catch (error) {
       lastDrainError = error instanceof Error ? error.message : String(error);
@@ -115,12 +132,13 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     } finally { syncing = false; }
   };
   const openOptions = {
+    isStopped: () => stopped,
     batchMaxDocs: () => nearSoft ? 250 : 500,
     batchMaxChars: () => nearSoft ? 2 * MiB : 4 * MiB,
     afterBatch: async () => {
       status();
       if (nearSoft) index!.db.exec('PRAGMA shrink_memory');
-      if (soft) await new Promise((resolve) => setTimeout(resolve, 5000));
+      await new Promise<void>((resolve) => setImmediate(resolve));
     },
   };
   const recover = async (error: unknown): Promise<void> => {
@@ -141,11 +159,12 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       indexSubagents: process.env['KIKI_SEARCH_INDEX_SUBAGENTS'] === '1' });
     if (opened) report({ type: 'ready', pid: process.pid, writer: true });
   };
+  if (stopped) { releaseLease(); return; }
   const free = await statfs(dirname(path)).then((value) => value.bavail * value.bsize);
+  if (stopped) { releaseLease(); return; }
   if (free < 2 * 1024 * MiB) {
     report({ type: 'error', message: 'disk_low' });
-    lease.exec('ROLLBACK');
-    lease.close();
+    releaseLease();
     throw new Error('disk_low');
   }
   const probeDir = await mkdtemp(join(dirname(path), '.search-selfcheck-'));
@@ -159,12 +178,45 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     } finally { probe.close(); }
   } catch (error) {
     report({ type: 'error', message: 'sqlite_unavailable' });
+    releaseLease();
     throw error;
   } finally { await rm(probeDir, { recursive: true, force: true }); }
-  try { index = await SqliteSearchIndex.open(path, { ...openOptions,
-    indexSubagents: process.env['KIKI_SEARCH_INDEX_SUBAGENTS'] === '1' }); }
-  catch (error) { await recover(error); }
-  index!.db.prepare("INSERT INTO meta(k,v) VALUES('selfcheck','passed') ON CONFLICT(k) DO UPDATE SET v=excluded.v").run();
+  if (stopped) { releaseLease(); return; }
+  const opening = SqliteSearchIndex.open(path, { ...openOptions,
+    indexSubagents: process.env['KIKI_SEARCH_INDEX_SUBAGENTS'] === '1' });
+  let openWatch: ((message: IndexerRequest) => void) | undefined;
+  const stopOpening = new Promise<void>((resolve) => {
+    if (stopped) { resolve(); return; }
+    openWatch = (message: IndexerRequest): void => { if (message.type === 'close') resolve(); };
+    process.on('message', openWatch);
+  });
+  try {
+    const opened = await Promise.race([opening, stopOpening.then(() => undefined)]);
+    if (opened === undefined || stopped) {
+      void opening.then((value) => { try { value.close(); } catch {} }).catch(() => {});
+      releaseLease();
+      return;
+    }
+    index = opened;
+  } catch (error) {
+    try { await recover(error); }
+    catch (failure) {
+      if (stopped) { releaseLease(); return; }
+      if (process.memoryUsage().rss > hardMb * MiB) {
+        releaseLease();
+        process.stderr.write(`search indexer memory_budget rss=${process.memoryUsage().rss} limit=${hardMb * MiB}\n`);
+        process.exit(MEMORY_BUDGET_EXIT);
+      }
+      releaseLease();
+      throw failure;
+    }
+  } finally { if (openWatch) process.off('message', openWatch); }
+  if (stopped || index === undefined) {
+    try { index?.close(); } catch {}
+    releaseLease();
+    return;
+  }
+  index.db.prepare("INSERT INTO meta(k,v) VALUES('selfcheck','passed') ON CONFLICT(k) DO UPDATE SET v=excluded.v").run();
   report({ type: 'ready', pid: process.pid, writer: true });
   opened = true;
   status();
@@ -236,7 +288,6 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       }
     });
   });
-  index?.close();
-  lease.exec('ROLLBACK');
-  lease.close();
+  try { index?.close(); } catch {}
+  releaseLease();
 }

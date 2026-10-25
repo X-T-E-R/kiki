@@ -9,7 +9,6 @@ import type {
   ModelGenerationMigrationPreviewResponse,
   ModelProtocol,
   ModelSteeringSource,
-  SessionTitleTrigger,
 } from '@kiki/protocol';
 
 import { errorText, issueText, type I18nKey } from '@kiki/session-core/i18n';
@@ -24,7 +23,6 @@ import {
   requestIdentityLayerDraftFromPolicy,
   requestIdentityPolicyFromDraft,
   sessionTitleModelPatch,
-  sessionTitleSettingsPatch,
   sortThinkingEffortsForDisplay,
   validateImagePolicyDraft,
   validateRequestIdentityLayerDraft,
@@ -332,7 +330,6 @@ export function ModelCatalogCard() {
   };
 
   const catalogEmpty = !modelsQuery.isLoading && !modelsQuery.isError && items.length === 0;
-  const defaultItem = items.find((item) => item.id === defaultModel);
   const editingItem = items.find((item) => item.id === editing);
 
   const renderRow = (item: ModelCatalogItem) => (
@@ -352,22 +349,11 @@ export function ModelCatalogCard() {
   return (
     <SectionCard id="st-card-models" title={t('st.models.defaultTitle')}>
       <div className="space-y-3">
-        {/* The one global default, stated once, above the list it is picked from. */}
-        <div data-default-model-line className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[13px]">
-          <span className="text-ink-soft">{t('st.models.newSessionsUse')}</span>
-          {defaultItem !== undefined ? (
-            <span className="inline-flex min-w-0 items-center gap-1.5 font-medium text-ink">
-              <Icon name="starFilled" size={12} className="text-ink" />
-              <span className="truncate">{defaultItem.display_name ?? defaultItem.id}</span>
-              <span className="truncate text-[12px] font-normal text-ink-faint">{groupLabel(defaultItem.provider_id)}</span>
-            </span>
-          ) : (
-            <span className="text-ink-faint">{defaultModel ?? t('st.models.noDefault')}</span>
-          )}
-          <span className="ml-auto"><SavedTick show={tick} /></span>
-        </div>
+        {/* The new-session default is stated once, in the bar above the tabs;
+            here it is the starred row with its Default badge. */}
         {items.length > 0 ? (
           <ListToolbar view={view} total={items.length} filters={filters}
+            actions={tick ? <SavedTick show /> : undefined}
             searchLabel={t('st.models.searchAria')} searchPlaceholder={t('st.models.searchWide')} />
         ) : null}
         {items.length > 0 && view.visible.length === 0 ? (
@@ -400,7 +386,7 @@ export function ModelCatalogCard() {
           <ListEmpty kind="none" title={t('st.models.emptyCatalog')}
             action={(
               <button type="button" className={SECONDARY_BUTTON}
-                onClick={() => { navigate('/settings/ai?tab=providers#st-card-providers-add'); }}>
+                onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}>
                 {t('st.models.goProviders')}
               </button>
             )} />
@@ -414,6 +400,9 @@ export function ModelCatalogCard() {
           key={editingItem.id}
           item={editingItem}
           inheritedImageTypes={providers.get(editingItem.provider_id)?.images?.accepted_types}
+          isDefault={editingItem.id === defaultModel}
+          defaultBusy={busy}
+          onSetDefault={() => void selectDefaultModel(editingItem)}
           onSaved={refreshCatalog}
           onClose={() => { setEditing(null); }}
         />
@@ -423,33 +412,28 @@ export function ModelCatalogCard() {
 }
 
 /**
- * Tab 3 opener (redesign §3.3): the GLOBAL default provider/model new
- * sessions start with. The provider is a plain select; the model is chosen
- * by starring a row on the Available models tab, so this card links there
- * instead of duplicating the picker. This is deliberately distinct from the
- * per-provider default edited inside each provider.
+ * Picker look for the per-job default rows below. The new-session default is
+ * not one of them: it is the bar above every Models & providers tab
+ * (`DefaultModelBar`), so it is stated in exactly one place.
  */
 const DEFAULT_PICKER =
   'flex h-8 w-full min-w-0 items-center justify-between gap-1.5 rounded-md bg-ink/[0.04] px-3 text-left text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.07] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:cursor-not-allowed disabled:text-ink-faint';
 
 /**
- * Every "which model does X" choice in one place: new sessions, then the
- * background jobs that run on their own model (session titles). Each row
- * applies on pick. The new-session pick carries its connection along as the
- * default provider, the same rule the star in the model list follows.
+ * Every "which model does this job use" choice besides new sessions: titles,
+ * the fast model and subagents. Each row applies on pick.
  */
 export function GlobalDefaultsCard() {
   const { client } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
-  const [busy, setBusy] = useState<'model' | 'title' | 'subagent' | 'fast' | null>(null);
+  const [busy, setBusy] = useState<'title' | 'subagent' | 'fast' | null>(null);
   const [feedback, setFeedback] = useState<Feedback>(null);
   const [tick, ping] = useSavedTick();
 
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });
   const modelsQuery = useQuery({ queryKey: ['models'], queryFn: () => client.listModels(), staleTime: 60_000 });
   const models = modelsQuery.data?.items ?? [];
-  const defaultModel = configQuery.data?.default_model ?? '';
   const titleModel = configQuery.data?.session_title?.model ?? '';
   const subagentModel = configQuery.data?.subagent?.defaultModel ?? '';
   const fastModel = configQuery.data?.fast_model ?? '';
@@ -472,35 +456,14 @@ export function GlobalDefaultsCard() {
     }
   };
 
-  const pickDefault = async (modelId: string) => {
-    const item = models.find((candidate) => candidate.id === modelId);
-    if (item === undefined) return;
-    setBusy('model');
-    setFeedback(null);
-    const selection = selectGlobalDefaultModel(client, queryClient, item);
-    try {
-      if (await selection.completed) ping();
-    } catch (error) {
-      if (selection.isCurrent()) setFeedback({ tone: 'error', text: errorText(locale, error) });
-    } finally {
-      setBusy(null);
-    }
-  };
-
   const pickTitle = async (modelId: string) => {
     if (modelId === titleModel) return;
     setBusy('title');
     setFeedback(null);
     try {
-      // The patch replaces the whole `session_title` domain, so it carries the
-      // stored moments: picking a model here must not clear them. An absent
-      // list is the engine default, so the model-only patch is left alone.
-      const stored = (await client.getConfig()).session_title?.triggers;
-      queryClient.setQueryData(['config'], await client.patchConfig(
-        stored === undefined
-          ? sessionTitleModelPatch(modelId)
-          : sessionTitleSettingsPatch(modelId, stored as readonly SessionTitleTrigger[]),
-      ));
+      // The patch writes only the model, so the moments and the title
+      // instruction configured elsewhere are left exactly as they are.
+      queryClient.setQueryData(['config'], await client.patchConfig(sessionTitleModelPatch(modelId)));
       ping();
     } catch (error) {
       setFeedback({ tone: 'error', text: errorText(locale, error) });
@@ -510,25 +473,6 @@ export function GlobalDefaultsCard() {
   };
 
   const rows = [
-    {
-      id: 'new-session',
-      origin: { domain: 'default_model', keyPath: [] },
-      label: t('st.defaults.row.newSession'),
-      help: t('st.defaults.row.newSessionHelp'),
-      picker: (
-        <SearchableSelect
-          id="st-default-model"
-          value={defaultModel}
-          options={options}
-          onChange={(value) => void pickDefault(value)}
-          ariaLabel={t('st.defaults.row.newSession')}
-          searchPlaceholder={t('st.models.searchPlaceholder')}
-          emptyText={t('st.models.noDefault')}
-          disabled={busy !== null || models.length === 0}
-          buttonClassName={DEFAULT_PICKER}
-        />
-      ),
-    },
     {
       id: 'session-title',
       origin: { domain: 'session_title', keyPath: ['model'] },
@@ -599,7 +543,7 @@ export function GlobalDefaultsCard() {
     },
   ];
   const pickerId: Record<string, string> = {
-    'new-session': 'st-default-model', 'session-title': 'st-default-title-model',
+    'session-title': 'st-default-title-model',
     fast: 'st-default-fast-model', subagent: 'st-default-subagent-model',
   };
 
@@ -773,7 +717,7 @@ function ThinkingKeepField({ stored }: { stored: string | undefined }) {
  * An explicit list, including an empty one, is never widened.
  */
 function defaultCapabilitiesFor(discovered: readonly string[] | undefined): string[] {
-  return [...(discovered ?? DEFAULT_MODEL_CAPABILITIES)];
+  return [...new Set(discovered ?? DEFAULT_MODEL_CAPABILITIES)];
 }
 
 /**
@@ -1111,6 +1055,7 @@ const MODEL_ISSUE_KEYS: Readonly<Record<string, I18nKey>> = {
   'model.max_context_size_missing': 'st.models.issue.contextMissing',
   'model.protocol_unresolved': 'st.models.issue.protocolUnresolved',
   'model.request_identity_invalid': 'st.models.issue.requestIdentityInvalid',
+  'model.override_routing_rejected': 'st.models.issue.overrideRouting',
 };
 
 function hasCapability(item: ModelCatalogItem, capability: string): boolean {
@@ -1182,7 +1127,14 @@ function ModelRow({
         <span className={`min-w-0 flex-1 ${compact ? 'flex items-baseline gap-2' : ''}`}>
           <span className={`flex min-w-0 items-center gap-2 ${compact ? 'shrink' : ''}`}>
             <span className="truncate text-[13px] font-medium text-ink">{item.display_name ?? item.id}</span>
-            {isDefault ? <span className="sr-only">{t('st.models.default')}</span> : null}
+            {isDefault ? (
+              <span
+                data-default-badge
+                className="inline-flex shrink-0 items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-medium text-selected-ink"
+              >
+                {t('st.models.default')}
+              </span>
+            ) : null}
             {attention ? <span className="shrink-0 text-attention" title={t('st.models.providerAttention')}><Icon name="warning" size={12} /></span> : null}
           </span>
           <span className="flex min-w-0 items-center gap-1.5 text-[12px] leading-4 text-ink-faint">
@@ -1206,9 +1158,20 @@ function ModelRow({
  * the row. Closing with unsaved changes asks first; the list and its scroll
  * position stay exactly where they were.
  */
-function ModelDetailPanel({ item, inheritedImageTypes, onSaved, onClose }: {
+function ModelDetailPanel({
+  item,
+  inheritedImageTypes,
+  isDefault = false,
+  defaultBusy = false,
+  onSetDefault,
+  onSaved,
+  onClose,
+}: {
   item: ModelCatalogItem;
   inheritedImageTypes: readonly string[] | undefined;
+  isDefault?: boolean;
+  defaultBusy?: boolean;
+  onSetDefault?: () => void;
   onSaved: () => Promise<void>;
   onClose: () => void;
 }) {
@@ -1229,6 +1192,9 @@ function ModelDetailPanel({ item, inheritedImageTypes, onSaved, onClose }: {
         <ModelCatalogRowEditor
           item={item}
           inheritedImageTypes={inheritedImageTypes}
+          isDefault={isDefault}
+          defaultBusy={defaultBusy}
+          onSetDefault={onSetDefault}
           onSaved={onSaved}
           onDirtyChange={setDirty}
           onClose={requestClose}
@@ -1261,12 +1227,18 @@ function ModelDetailPanel({ item, inheritedImageTypes, onSaved, onClose }: {
 function ModelCatalogRowEditor({
   item,
   inheritedImageTypes,
+  isDefault = false,
+  defaultBusy = false,
+  onSetDefault,
   onSaved,
   onDirtyChange,
   onClose,
 }: {
   item: ModelCatalogItem;
   inheritedImageTypes: readonly string[] | undefined;
+  isDefault?: boolean;
+  defaultBusy?: boolean;
+  onSetDefault?: () => void;
   onSaved: () => Promise<void>;
   onDirtyChange: (dirty: boolean) => void;
   onClose: () => void;
@@ -1332,6 +1304,7 @@ function ModelCatalogRowEditor({
   const [steerSourcesBaseline, setSteerSourcesBaseline] = useState<ModelSteerSourcesDraft | null>(null);
   const [steerIssue, setSteerIssue] = useState<ModelSteeringSource | undefined>(undefined);
   const steerSourcesDirty = steerSources !== null && steerSourcesBaseline !== null && !steerSourcesEqual(steerSources, steerSourcesBaseline);
+  const [activeEditorTab, setActiveEditorTab] = useState<'basics' | 'advanced'>('basics');
 
   useEffect(() => {
     if (entity === undefined || steerSourcesDirty) return;
@@ -1813,43 +1786,95 @@ function ModelCatalogRowEditor({
   const resolvedProtocol: ModelProtocol | undefined = protocolBaseline === 'inherit' ? entity.effective_protocol : undefined;
 
   const sectionId = (section: EditorSectionName) => `model-editor-${section}-${entity.id}`;
-  const jumpTo = (section: EditorSectionName) => {
-    const target = document.getElementById(sectionId(section));
-    // jsdom has no scrollIntoView; every browser does.
-    target?.scrollIntoView?.({ block: 'start' });
-    target?.querySelector<HTMLElement>('h3')?.focus({ preventScroll: true });
-  };
 
   return (
     <div className="min-w-0 space-y-7" data-model-editor-layout>
-      {/*
-        One bar of section names, pinned while the long form scrolls. It is a
-        table of contents, not tabs: every section stays mounted and in the
-        reading order, so search, focus order and unsaved edits work the same
-        whether or not anyone uses the bar.
-      */}
-      <nav
-        aria-label={t('st.modelEditor.navAria')}
-        className="sticky -top-4 z-10 -mx-5 -mt-4 flex gap-1 overflow-x-auto border-b border-hairline bg-panel px-5 py-2"
-      >
-        {EDITOR_SECTIONS.map((section) => (
+      <div className="sticky -top-4 z-10 -mx-5 -mt-4 flex flex-wrap items-center justify-between gap-3 border-b border-hairline bg-panel px-5 py-2.5">
+        <div role="tablist" aria-label={t('st.modelEditor.navAria')} className="flex items-center gap-1">
           <button
-            key={section}
             type="button"
-            data-model-editor-jump={section}
-            onClick={() => { jumpTo(section); }}
-            className="h-7 shrink-0 rounded-md px-2.5 text-[12.5px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            role="tab"
+            aria-selected={activeEditorTab === 'basics'}
+            data-model-editor-tab="basics"
+            onClick={() => { setActiveEditorTab('basics'); }}
+            className={`h-7 shrink-0 rounded-md px-3 text-[12.5px] transition-colors ${
+              activeEditorTab === 'basics'
+                ? 'bg-ink/[0.08] font-medium text-ink'
+                : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+            }`}
           >
-            {t(EDITOR_SECTION_LABEL[section])}
+            {t('st.modelEditor.tab.basics')}
           </button>
-        ))}
-      </nav>
-      <EditorSection id={sectionId('basics')} title={t('st.modelEditor.nav.basics')} note={t('st.modelEditor.basicsNote')}>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={activeEditorTab === 'advanced'}
+            data-model-editor-tab="advanced"
+            onClick={() => { setActiveEditorTab('advanced'); }}
+            className={`h-7 shrink-0 rounded-md px-3 text-[12.5px] transition-colors ${
+              activeEditorTab === 'advanced'
+                ? 'bg-ink/[0.08] font-medium text-ink'
+                : 'text-ink-soft hover:bg-ink/[0.04] hover:text-ink'
+            }`}
+          >
+            {t('st.modelEditor.tab.advanced')}
+          </button>
+        </div>
+        <ModelEditScopeSwitch
+          scope={editScope}
+          summary={scopeSummary}
+          differences={scopeDifferences}
+          onScopeChange={(next) => { setEditScope(next); setUsageScope(next); }}
+        />
+      </div>
+      <div hidden={activeEditorTab !== 'basics'} className="space-y-6">
+        <div
+          data-model-default-control={item.id}
+          data-is-default={isDefault ? 'true' : 'false'}
+          className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-hairline bg-paper/60 p-3"
+        >
+          <div className="min-w-0 flex-1 space-y-0.5">
+            <div className="flex items-center gap-2">
+              <Icon name={isDefault ? 'starFilled' : 'star'} size={14} className={isDefault ? 'text-ink' : 'text-ink-faint'} />
+              <span className="text-[12.5px] font-medium text-ink">
+                {isDefault ? t('st.models.currentDefault') : t('st.models.setDefaultAction')}
+              </span>
+              {isDefault ? (
+                <span
+                  data-default-badge
+                  className="inline-flex items-center rounded bg-selected-ink/10 px-1.5 py-0.5 text-[11px] font-medium text-selected-ink"
+                >
+                  {t('st.models.default')}
+                </span>
+              ) : null}
+            </div>
+            <p className="text-[11.5px] leading-snug text-ink-faint">
+              {t('st.models.defaultScopeHint')}
+            </p>
+          </div>
+          {!isDefault && onSetDefault !== undefined ? (
+            <button
+              type="button"
+              data-set-default-button
+              className={`${SECONDARY_BUTTON} shrink-0 text-[12px]`}
+              disabled={defaultBusy || isDefault}
+              onClick={onSetDefault}
+            >
+              {t('st.models.unstarredTitle')}
+            </button>
+          ) : null}
+        </div>
+        <EditorSection id={sectionId('basics')} title={t('st.modelEditor.nav.basics')} note={t('st.modelEditor.basicsNote')}>
         {entity.issues.length > 0 ? (
           <p role="status" className="rounded-md bg-amber-card px-3 py-1.5 text-[12px] leading-4 text-amber-ink">
             {entity.issues.map((issue) => {
               const key = MODEL_ISSUE_KEYS[issue.code];
-              return `${issue.path}: ${key === undefined ? issue.message : t(key)}`;
+              const text = key === undefined
+                ? issue.message
+                : issue.code === 'model.override_routing_rejected'
+                  ? t(key, { fields: issue.message })
+                  : t(key);
+              return `${issue.path}: ${text}`;
             }).join(' · ')}
           </p>
         ) : null}
@@ -1872,6 +1897,13 @@ function ModelCatalogRowEditor({
               emptyText={t('st.providers.catalogEmpty')}
               disabled={saving}
               buttonClassName={`${INPUT} flex items-center justify-between gap-2 text-left font-mono`}
+            />
+            <input
+              type="text"
+              className="sr-only"
+              aria-label={t('st.models.remoteIdAria', { model: entity.id })}
+              value={draft.remoteId}
+              onChange={(event) => { setDraft({ ...draft, remoteId: event.target.value }); }}
             />
             <p className="truncate font-mono text-[11px] text-ink-faint" title={entity.id}>{t('st.models.aliasLine', { alias: entity.id })}</p>
           </div>
@@ -1905,6 +1937,11 @@ function ModelCatalogRowEditor({
               model={entity.id}
               value={protocol}
               resolved={resolvedProtocol}
+              source={protocolBaseline === 'inherit' ? entity.protocol_source : undefined}
+              endpointSource={entity.endpoint_source}
+              authSource={entity.auth_source}
+              endpointEnv={entity.endpoint_env}
+              authEnv={entity.auth_env}
               onChange={setProtocol}
               disabled={saving}
               showHint={false}
@@ -1956,18 +1993,9 @@ function ModelCatalogRowEditor({
           <Hint>{t('st.models.capabilitiesHint')}</Hint>
         </div>
       </EditorSection>
+      </div>
+      <div hidden={activeEditorTab !== 'advanced'} className="space-y-6">
       <EditorSection id={sectionId('identity')} title={t('st.modelEditor.nav.identity')} note={t('st.modelEditor.identityNote')}>
-        {/*
-          One scope for the section. It heads the three groups that have a real
-          per-identity layer on the wire, so switching it re-points those rows
-          instead of showing a second copy of the form.
-        */}
-        <ModelEditScopeSwitch
-          scope={editScope}
-          summary={scopeSummary}
-          differences={scopeDifferences}
-          onScopeChange={(next) => { setEditScope(next); setUsageScope(next); }}
-        />
         {/*
           The prompt prose, always open and right under the scope switch. What a
           model is told is the reason to open this section. Editing a readable
@@ -2101,6 +2129,7 @@ function ModelCatalogRowEditor({
           </div>
         </AdvancedDisclosure>
       </EditorSection>
+      </div>
       {/*
         The actions stay pinned to the bottom of the panel: on a form this long
         the save button used to be a scroll away from the field just edited.
@@ -2130,13 +2159,6 @@ function ModelCatalogRowEditor({
 }
 
 type EditorSectionName = 'basics' | 'identity' | 'recipe' | 'advanced';
-const EDITOR_SECTIONS: readonly EditorSectionName[] = ['basics', 'identity', 'recipe', 'advanced'];
-const EDITOR_SECTION_LABEL: Readonly<Record<EditorSectionName, I18nKey>> = {
-  basics: 'st.modelEditor.nav.basics',
-  identity: 'st.modelEditor.nav.identity',
-  recipe: 'st.modelEditor.nav.recipe',
-  advanced: 'st.modelEditor.nav.advanced',
-};
 
 /**
  * One section of the model editor: a quiet heading with the one fact that

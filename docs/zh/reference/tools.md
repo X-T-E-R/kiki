@@ -50,6 +50,10 @@
 
 前台模式会阻塞当前轮次，直到命令结束或超时；命令运行期间，TUI 会把 stdout 和 stderr 流式显示在正在运行的 `Bash` 工具卡片中。前台命令超时后默认不会被终止，而是转为后台任务继续运行（受 600 秒默认后台超时约束，即超时转入后台的命令会重新获得最多 600 秒的运行时间）；如需恢复超时即终止的行为，将 `[background]` 的 [`bash_auto_background_on_timeout`](../configuration/config-files.md#background) 设为 `false`。600 秒的默认后台超时可通过 [`bash_task_timeout_s`](../configuration/config-files.md#background) 配置（`0` = 无超时），且在 print 模式（`kiki -p`）下默认无超时。后台模式立即返回任务 ID，任务结束时自动通知 Agent。stdin 始终被关闭，交互式命令会立即收到 EOF。任务被停止或后台超时时采用两阶段终止策略（SIGTERM → 5 秒宽限期 → SIGKILL），确保进程可靠结束。Windows 平台默认使用 Git Bash。
 
+在 Windows 上，本地 `Bash` 命令结束后，它拉起的进程还可以继续跑。这些进程归启动它们的那个 Kiki 后端。[仅退出桌面](../getting-started/desktop-app.md#窗口、托盘与打开文件)时它们继续运行。该后端停止或异常退出时，会清掉这些命令各自的进程树，机器上的其他程序留在原地。
+
+`TaskStop`，或把前台超时设为终止而不是转入后台，仍会立刻结束这棵进程树。远端 SSH 上的命令不跟随本机后端一起结束；关掉或停止本机 Kiki，不会用这套清理去处理那条远端命令。如果 `Bash` 报告 Windows Bash process helper（随 Kiki 安装的 Windows 进程组件）缺失，或报告 Windows process helper 不支持 "owner lifetime"（命令结束后仍由 Kiki 后端托管这些进程），请用同一 Release 重装 Kiki，让该组件和应用来自同一次安装。
+
 ## 动态工具
 
 MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 `SelectTools` 选择公告中的名称；模型会在下一步收到该工具的 schema。已列在工具列表中的普通工具可直接调用。Kimi provider 在消息内携带所选工具的 schema；OpenAI chat、OpenAI Responses 和 Anthropic provider 在 system 文本中携带 schema，只要还有延迟工具可用，就在顶层工具列表提供稳定的 `CallTool` 桥接工具。模型也可以直接用真实名称调用已加载工具。审批、访问检查和界面工具卡片都使用真实工具名。模型具备工具调用能力时，这些 provider 默认启用 `tool-select`；不要求声明 `dynamically_loaded_tools`。关闭该 flag 会恢复内联工具提供方式。
@@ -58,17 +62,23 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 ## 历史工具
 
-`HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中的常驻内置工具。启用后，它们会直接出现在工具列表中，无需使用 `SelectTools`。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。
+`HistorySearch`、`HistoryRead` 和 `HistoryList` 是 `history` 工具组中的常驻内置工具。启用后，它们会直接出现在工具列表中，无需使用 `SelectTools`。它们按照既有工作区访问权限读取会话原文；来源 `ref` 是证据位置，不授予额外权限。已知 `session_id` 可以省略 `workspace_id`，工具会用会话索引里的工作区，工作区外的读取仍走访问审批。显式传入的工作区如果不包含该会话，会返回指向索引目标的恢复调用，并且这次不会读取它。未知会话不会被换成当前会话。`scope: "workspace"` 会搜索工作区，不接受 `session_id`。
 
-**从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent；此前默认在整个工作区进行词元 AND 检索。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
+**从旧版 Search 默认值迁移：**`HistorySearch({"query":"有辨识度的词"})` 现在默认以 `mode: "auto"`（完整词组匹配）搜索当前会话、当前 Agent 的用户与 Assistant 正文；此前默认在整个工作区进行词元 AND 检索。设置 `include_tool_output: true` 可纳入工具结果，`role: "tool"` 则只搜索工具结果。勾选工具输出也不搜索思考块、工具名称或工具输入；`role: "record"` 显式选择已保存的外部材料。改变内容范围须去掉旧 cursor 重新查询，`HistoryRead` 仍可读取原始来源块。仍持有旧工具描述的窗口也执行新默认值，执行契约不会按模型见过的 schema 版本锁定。每次 Search 都返回 `scope_used`、`mode_used` 和 `target`。会话范围内的结果少于 `limit` 时，`expand_hint.next_call` 给出可直接调用的 `scope: "workspace"` 扩大范围方案；对 auto/all/any 会明确切换到索引支持的 `mode: "terms"`（词元 AND），返回值会回显这一模式变化。需要明确保留旧检索方式时，传 `{"scope":"workspace","mode":"terms"}`；`scope: "this_session"` 仍是锁定当前会话的兼容别名。搜索已知旧会话须显式给 `session_id`；扩大 Agent 范围须指定 `agent_id` 或 `include_subagents`。检查 `coverage` 和 `next_cursor`：空结果且状态为 partial 表示已扫描或已索引范围尚未覆盖完整。扫描 cursor 续接有界片段；cursor 过期后重新发起原查询。
 
 在服务端的 transcript 回退检索中，`sort: "newest"` 和 `"oldest"` 按时间戳排列命中文本，跨页用稳定来源 ID 处理同时间命中；缺失的时间戳按零排序。导航先构建到固定来源水位，确认当前可见性，因此冷态大会话可能先返回空的 `navigation_building` 准备页，再返回命中。用 `next_cursor` 继续；投影准备和原文读取共享每次调用的预算。导航就绪后，最新优先检索会直接读取近期文本片段，不再从 wire 开头扫起。
 
-默认的 `sort: "relevance"` 只在当前有界页收集到的命中之间按词法得分排序：完整查询命中和更多词组命中提高分值，再以较新时间戳和稳定 ID 打破平分。跨页按最新时间优先扫描，并非全局相关度排序；后续页可能有更相关的命中。部分页会在 coverage 中披露 `page_local_relevance`。新版扫描 cursor 绑定查询、来源指纹和导航 generation；来源追加、undo、clear 或改写都会使其失效，失效后应重新发起查询。旧版扫描 cursor 仍能按来源顺序续扫，但会提示重新查询以使用排序导航。
+默认的 `sort: "relevance"` 只在当前有界页收集到的命中之间按词法得分排序：完整查询命中和更多词组命中提高分值，再以较新时间戳和稳定 ID 打破平分。跨页按最新时间优先扫描，并非全局相关度排序；后续页可能有更相关的命中。部分页会在 coverage 中披露 `page_local_relevance`。
 
-省略新版的 scope 和 mode 参数时，会按当前 session 和 `auto` 模式处理。不要假定旧版默认值，请读取响应中的 `scope_used` 和 `mode_used`；如果结果范围太窄，按 `expand_hint.next_call` 的建议改用 `scope: "workspace"` 重试。
+新版扫描 cursor 固定本次查询在开始时的历史范围；来源正常追加后仍可翻页，但新增内容不在本次结果里，要查看它们需重新查询。已固定的来源内容改变、查询条件改变，或共享导航已推进到本次范围之后时，按返回提示重新发起查询。旧版扫描 cursor 仍按原兼容规则续读。
 
-不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。导航目录尚在构建时，coverage 会披露已扫描范围。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会明确报错，不会跳到同号的新轮次。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
+检索期间的正常追加不需要暂停写入：本次读取会完成已固定的历史范围，而不是最新内容。若这一范围改变，或来源被替换、截短，`HistorySearch` 会返回 `source_changed`；按 `error.next_call` 去掉 cursor 重新查询。cursor 与来源、共享导航或查询不再匹配时，同样需要重新查询。两类错误都不会把旧位置套到不同内容上。
+
+会话或工作区无法定位时，按结构化错误中的 `next_call` 继续。已知会话保留索引中的工作区及相应访问审批；未知会话转向浏览发现，而不是在另一个会话中读取同号轮次。失效 cursor 可能先去掉 cursor 重试原会话；如果该会话仍不存在，就使用返回的浏览调用，不再重复缺失的 id。
+
+不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。cursor 已携带原来的目标，续页时只传 cursor。导航目录尚在构建时，返回的是 `partial` 准备页，会披露已扫描范围并带上 cursor——用它继续，而不是把当前列表当成完整结果。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会返回结构化恢复错误：丢弃 `ref` 或 cursor，按 `next_call` 重新定位，不要原样重试。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
+
+`HistoryRead` 正常返回 `partial` 时，会带上已扫描到的 block 和续读 cursor。`no_match` 表示扫描已完成、这个定位没有内容。`source_pending` 表示持久化转录末尾是一条未写完的记录，还无法判断该定位是否命中，等写入方稳定后重试。导航目录仍在准备时同样是 `partial`，但带的是准备 cursor 和进度；此时的空 block 列表表示「还没扫到」而不是「没有」，先用该 cursor 续读再判断。若该 Agent 的持久化转录整体不可用，错误会指向 `HistoryList` 的 `kind: "agents"` 去核对 agent id。来源已变化时返回错误，不会读到另一轮内容。
 
 只检索跨线程消息时，使用 `HistorySearch({"query":"交接","scope":"peer"})`。它搜索当前工作区内的双向往来，也可指定经批准访问的 `workspace_id`；可选 `session_id` 限定一个会话。Peer 检索复用既有词法匹配模式，但始终按最新时间优先排列：省略 `sort` 或使用 `"newest"`。它排除子 Agent 和普通用户输入，不接受 `source: "transcript"`；指定 Agent 时只接受 `agent_id: "main"`。结果来源为 `source: "mailbox"`，命中带有 `communication` 元数据，包含消息身份、两端和投递状态，不会编造会话轮次号或 HistoryRead ref。完整正文和导航身份见[沟通记录 REST 读取](../server/rest-api.md#沟通记录)。部分页或空页应使用 `next_cursor` 继续读取；此视图覆盖邮箱仍保留的记录，不包含旧版本已淘汰的更早消息。
 
@@ -76,7 +86,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 ## 网络类
 
-两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。免密钥的仓库搜索 lane 和 URL 抓取链无需配置即可使用；通用网页搜索需选择其他 lane。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。
+两个工具都由 Kiki 内置的搜索与抓取模块支撑，随产品一起安装，不需要额外的安装步骤。通用网页搜索和 URL 抓取无需配置或 API 密钥即可使用。配置入口见 [`nb_search`](../configuration/config-files.md#nb-search)。
 
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
@@ -87,7 +97,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 通过 Kiki 内置的 `nb-search` 模块进行搜索。最小调用为 `{ "query": "搜索词" }`，对应 `action: "run"`，其余字段沿用 `[nb_search]` 默认值。`query` 可以是单个字符串或字符串数组。
 
-零配置下，默认使用 `github.repositories`，只检索 GitHub 仓库，而非全网。查阅库文档请显式选择 `context7.docs`（返回 typed 结果）；免密钥通用网页检索可显式选择 `duckduckgo.search`，但公共 HTML 端点可能触发 CAPTCHA。需要可靠的通用检索时，建议配置 `exa.search` 等提供商。若显式删除默认 lane，且调用时未指定 `lane`、`lanes` 或 `preset`，工具仍会拒绝运行；显式选择会覆盖默认值，选择无效或不可用时也不会悄悄换成其他 provider。
+零配置下，默认使用 `duckduckgo.search` 检索通用网页，无需注册、API 密钥或手选 lane。公共 HTML 端点可能触发验证或限流；等待后再试，或显式选择其他已配置的来源。这些失败会报告错误，不会伪装为空结果。仓库检索和库文档可显式选择 `github.repositories`、`context7.docs`（后者返回 typed 结果）。若显式删除默认 lane，且调用时未指定 `lane`、`lanes` 或 `preset`，工具仍会拒绝运行；显式选择会覆盖默认值，选择无效或不可用时也不会悄悄换成其他 provider。
 
 `run` 接受以下几组真正影响行为的参数：
 
@@ -110,7 +120,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 ### `FetchURL`
 
-通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。URL 的免密钥默认链先尝试 `direct.fetch`，失败时用 `jina.reader` 抽取正文；直连成功但内容无用时，需显式配置质量规则才会回退。默认链返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
+通过 Kiki 内置的 `nb-search` 模块抓取或抽取内容。`direct.fetch` 读取给定 URL，不是 `WebSearch` 的搜索 lane。最小调用为 `{ "url": "https://example.com" }`，对应 `action: "run"` 的 URL 简写；不要把简写 `url` 与 `source` 形式混用。URL 的免密钥默认链先尝试 `direct.fetch`，失败时用 `jina.reader` 抽取正文；直连成功但内容无用时，需显式配置质量规则才会回退。默认链返回 Markdown；HTML 响应被抽取为正文文本，纯文本或 Markdown 页面则直接透传。
 
 Direct 使用 Kiki 服务器进程的 `HTTP_PROXY`、`HTTPS_PROXY`、`ALL_PROXY` 和 `NO_PROXY` 设置，也支持小写形式（小写优先）。请把已有代理环境传给启动 Kiki 的进程，无需新增 `nb_search` 配置。公开 hostname 只有实际选中代理时，其 `198.18.0.0/15` Fake-IP DNS 答案才作为代理占位，原 hostname 交给代理连接，保留 TLS 证书校验。直连、IP 字面量 URL 和真实私网地址仍受目标检查，重定向每跳同样检查。远端 DNS 与目标访问由已配置代理负责，Kiki 不新增第三方 DNS 服务；仅开启 TUN、未选中显式代理时不启用此兼容路径。
 
@@ -153,17 +163,21 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 
 ## 浏览器类
 
-浏览器工具只在 `native_browser` 实验开关打开时出现，它们通过 Kiki 服务机上随附的受管 agent-browser 后端驱动已保存的连接。设置页与各接法指向的目标见[浏览器控制](../guides/settings.md#浏览器控制)。
+浏览器工具只在 `native_browser` 实验开关打开时出现。已保存的连接决定使用 Kiki 服务机上的受管 agent-browser 后端、扩展桥或 Ego Lite。设置页与各接法指向的目标见[浏览器控制](../guides/settings.md#浏览器控制)。
 
-**`BrowserConnections`** 操作连接本身：`action: "list"`（默认）返回已保存的连接与新会话默认项，`"select"` 绑定本 Agent 要用的连接，`"status"` 与 `"check"` 读取运行状态，`"connect"` 与 `"disconnect"` 启动或附着、以及释放连接，`"tools"` 按需加载后端的页面操作。连接只按已保存的 id 指定，显示名称不会被解析成 id。省略 `browser` 时使用本 Agent 绑定的连接或新会话默认项，不会退回到猜测的或仅仅处于就绪状态的浏览器。
+**`BrowserConnections`** 操作连接本身：`action: "list"`（默认）返回已保存的连接、新会话默认项，以及发现到但尚未保存的 Ego Lite 候选；`"select"` 绑定本 Agent 要用的连接，`"status"` 与 `"check"` 读取运行状态，`"connect"` 与 `"disconnect"` 启动或附着、以及释放连接，`"tools"` 按需加载后端的页面操作。选中发现到的 Ego 候选时才会明确保存并连接；之后连接按已保存的 id 指定，包括自定义 id，显示名称不会被解析成 id。省略 `browser` 时使用本 Agent 绑定的连接或新会话默认项，不会退回到猜测的或仅仅处于就绪状态的浏览器。
 
 `"tools"` 只注册你点名的分组或工具名。每个已加载操作会成为名为 `browser__agent_browser_<名称>` 的工具，保留后端自己的 schema，并额外接受 `browser` 与 `browserTab`。快照返回的元素引用只在产生它的浏览器、标签和 frame 内有效，页面变化后需重新读取快照。浏览器安装、插件与跨会话管理类操作不作为页面工具提供。
 
-**`BrowserTabs`** 管理一条连接内的目标：`list`、`open`、`window`、`select`、`close` 与 `frame`（`main` 回到顶层 frame）。目标使用后端的 CDP target ID，不是标签序号或标签名，这些工具也不会跟随用户的前台标签。切换标签或 frame、或重新连接后，元素引用需要重新读取快照。
+**`BrowserTabs`** 管理一条连接内的目标：`list`、`open`、`window`、`select`、`close` 与 `frame`（`main` 回到顶层 frame）。请使用该连接返回的准确目标身份，不要传标签序号；这些工具不会跟随用户的前台标签。切换标签或 frame、或重新连接后，元素引用需要重新读取快照。
+
+**WebBridge command 连接**使用 `wb:<十进制 id>` 目标。每个 Agent 拥有独立命令会话，只能操作、选择或关闭自己最近一次 navigate 打开的标签。先通过 `BrowserTabs` 打开标签，再执行快照、点击、填写、evaluate、截图、网络、上传、PDF 或扩展 CDP 操作。扩展 CDP 操作是一条命令，不是附着 DevTools 端点。不支持按 URL 选择另一标签，也不支持 window 和 frame。断开连接会保留标签；只有用户要求关闭该 Agent 命令会话的标签时，才使用 `agent_browser_end_session`。应答丢失或发出后取消会留下 `unconfirmed` 状态，不会重试：先检查连接，返回 `idle` 后重新连接，再打开并观察标签，然后执行下一个页面动作。
+
+**Ego Lite** 是另一种连接。请自行安装 Ego Lite，完成它自己的设置窗口，在浏览器设置里检查，再选中这条连接。Kiki 不会安装它，也不会导入 Chrome 的数据。Agent 选中 Ego 连接后，省略 `browser` 的后续调用会继续使用这条选择；需要在多条 Ego 连接间切换时，请传入已保存的 id。`browser__ego_run` 接受可选的 `browser` id 和必填的 `script`，并在该连接里运行这段脚本。脚本里的 `shotDir` 是这次调用的绝对目录。截图要写成绝对文件，例如 `page.screenshot({ path: shotDir + '/shot.png' })`。写到这个目录里的 png 和 jpeg，在 20 MiB 以内会附到时间线。省略 `path` 时文件落在系统临时目录，不会被附上。在 Ego Lite 连接上，`BrowserTabs` 可以列出、打开、选中和关闭页面；标签 id 是页面标签，例如 `p1`，关闭只作用于 Agent 打开的标签。这里没有 window 和 frame。禁止浏览器工具时，Ego 脚本一并被禁止。子 Agent 需要点名这个脚本工具。
 
 结果会带上解析后的连接、运行会话、标签与 frame。由 Kiki 为该次调用命名的产物——截图、HAR、trace、profiler 输出或录制——在 20 MiB 以内会自动附到时间线；更大的文件留在执行主机上，需要通过现有文件通道取回。超时不代表动作已确认：重发之前先对同一目标重新观察。
 
-取消工具调用时，如果取消在动作发出之前生效——仍处于队列中，或已找到目标但动作尚未发出——浏览器操作会停下。尚未发出的取消不会影响该连接，也不会关闭其它工作正在使用的浏览器。动作一旦发出，取消不会把它收回：调用仍会运行到结束，其结果依然生效，Kiki 也不会替你重放或重试。请读取实际结果，不要假设取消已经撤销了动作。
+取消工具调用时，如果取消在动作发出之前生效——仍处于队列中，或已找到目标但动作尚未发出——浏览器操作会停下。尚未发出的取消不会影响该连接，也不会关闭其它工作正在使用的浏览器。动作一旦发出，取消不会把它收回。受管 agent-browser 调用仍会运行到结束，其结果依然生效；WebBridge command 调用在应答丢失时则可能变成 `unconfirmed`。两条路径都不会替你重放或重试动作。请读取实际结果，不要假设取消已经撤销了动作。
 
 ## Plan 模式
 
@@ -172,7 +186,7 @@ URL 简写与 `source` 形式接受同样的选项。inline 与 file 内容不�
 | `EnterPlanMode` | 自动放行 | 进入 Plan 模式 |
 | `ExitPlanMode` | 自动放行（需用户确认计划） | 退出 Plan 模式并提交计划 |
 
-Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite`、`TaskStop`、`Cron` 的 `create` 和 `delete` 操作、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截（`BoardWrite` 的细节见[状态管理](#状态管理)）。`EnterPlanMode` 与 `ExitPlanMode` 是常驻内置工具，在普通策略允许时始终可用。
+Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`、`Cron` 的 `create` 和 `delete` 操作、`AgentSend`，以及通过 `AgentRun` 恢复已有子 Agent 的操作均被拦截。`EnterPlanMode` 与 `ExitPlanMode` 是常驻内置工具，在普通策略允许时始终可用。
 
 新的 `AgentRun` 调用可以使用原生执行器创建研究子 Agent。这些子 Agent 只能使用其 profile 和既有策略允许的内置 `Read`、`ReadMediaFile`、`Glob`、`Grep`、`WebSearch`、`FetchURL`，不能运行 `Bash`、调用 MCP 或用户自定义工具，也不能继续派遣任务。此类调用不支持外部执行器。退出 Plan 模式或恢复会话后，研究子 Agent 仍保留只读限制；需要写入权限来实施时，应在退出 Plan 模式后创建新的子 Agent。
 
@@ -187,8 +201,6 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 | 工具 | 默认审批 | 说明 |
 | --- | --- | --- |
 | `TodoList` | 自动放行 | 管理任务待办列表 |
-| `BoardRead` | 自动放行 | 读取工作区任务看板上持久化的需求卡 |
-| `BoardWrite` | 需审批 | 在工作区任务看板上创建或更新持久化的需求卡 |
 
 **`TodoList`** 分别管理调用方 Agent 的执行清单和工作笔记，两者独立更新。省略 `todos` 就不改清单，省略 `notes` 就不改任何笔记；传入 `{}` 才读取两者。`todos` 数组会完整替换清单，每项含 `title` 和 `status`（`pending` / `in_progress` / `done`）；`todos: []` 只清空清单。
 
@@ -196,11 +208,9 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 主 Agent 与各子 Agent 的清单和笔记相互独立，工具不能读取或修改其他 Agent 的状态。两者随所属 Agent 恢复，并遵循会话撤销。换窗保留已有笔记，摘要中的候选要求留待核对，不会自动写入。只有将接力摘要和人类输入与当前笔记、原始来源核对后，才用 `review_handoff: true` 确认已核对到本次工具调用；普通单节更新不会代替这项确认。超限候选完整保留在接力摘要中，并显示提示；未核对输入会继续传递。GUI 保留未知文本节的原字段名；更新无法读取时会显示提示并保留上次可读笔记，而非显示为空。历史共享清单仍归主 Agent，不从旧工具消息推测并重建各子 Agent 的历史清单。
 
-任务看板是跨会话持久化的需求记录。`BoardRead` 支持 `preview` / `list` / `show` / `overview`，可查看当前工作区或其他已授权工作区中的卡。`BoardWrite` 的 `create` 始终以 `active` 开始，因此不要传 `status`；`update` 只有在改状态时才显式传 `status`。允许的状态值包括 `active`、`in_progress`、`paused`、`done`、`cancelled` 和 `superseded`；`done`、`cancelled`、`superseded` 是终态，将 `status` 改回 `active`、`in_progress` 或 `paused` 即可重开，重开会清空 `completedAt`。修改必须使用卡片当前的 `revision`；发生冲突后，重新读取卡片再重试。
+任务看板由可选官方插件 `kiki-task-board` 提供，其工具不是内置工具。没安装插件时，用过它的对话仍能打开并发送普通消息。历史里的 `BoardRead`、`BoardWrite` 调用及已记录的结果保持不变。再次调用不可用的工具时才报告缺少工具，不会伪造成功结果或重放旧的写入。
 
-卡是持久化需求记录，不是 Agent 运行，也不是每个 Agent 自己的 `TodoList`。读卡不会改卡；各 Agent 的 `TodoList` 相互独立；Todo 全部 `done` 也不会自动改卡。两个工具默认只提供给主 Agent，并受 `task_board` 实验开关控制。原生 subagent 默认不能使用这两个工具；可通过其 profile 的 `tools` 列表或 [`subagent.allowed_tools`](../configuration/config-files.md#subagent) 显式允许其中任一工具，但不会绕过其他工具限制。Plan 模式下可以用 `BoardRead` 读取，但 `BoardWrite` 会在审批前直接拒绝（见[Plan 模式](#plan-模式)）。写卡遵循普通权限策略，不额外要求 workspace trust（工作区信任）。
-
-在「设置 → 任务」中选择 `auto`、`global` 或 `fixed` 存储方式。固定位置可以是绝对路径，也可以是相对工作区的路径；不会执行脚本。任务看板为内置功能，无需单独安装。选择 `auto` 时，优先复用项目已有的兼容存储，否则使用会话数据区。
+安装并启用插件后，智能体看到的工具名是 `plugin__kiki_task_board__BoardRead` 和 `plugin__kiki_task_board__BoardWrite`。读取支持 `preview`、`list`、`show`、`overview`。创建从 `active` 开始，不要传 `status`。只有在改状态时，更新才带 `status`：`active`、`in_progress`、`paused`、`done`、`cancelled`、`superseded`。后三个是终态；把 `status` 改回 `active`、`in_progress` 或 `paused` 会重开卡片并清空 `completedAt`。更新必须带上卡片当前的 `revision` 和原来的存储地址。冲突后先重新读取再重试。读卡片不会改写卡片文件。卡片是需求记录，不是 Agent 运行，也不是 `TodoList`。存储仍写在 `config.toml` 的 `taskBoard.storage`（`auto`、`global` 或 `fixed`）。改这项设置不会搬迁旧卡片。见[任务看板](../guides/sessions.md#任务看板)。
 
 ## 记忆类
 
@@ -240,7 +250,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 ### 搜索与读取
 
-`MemorySearch` 可以用 `mode: "search"`（默认，需要 `query`）或 `mode: "list"`（不带 query，浏览清单）。`page_size` 取 1–20，search 默认 8、list 默认 20；翻页只带 `cursor`，改动任何过滤条件都会让它失效。每一项都带完整标题、type、status、revision、所属范围、可直接复制进 `MemoryWrite` 的 `target`、`basis_kind`，以及 `expired` / `recheck` / `unrecorded` 三态的 `applicability`。响应里的 `coverage` 说明实际查了哪些范围和状态、有没有跳过什么。search 额外给最多 200 字符的 `snippet` 和 `score`，list 两者都没有。片段会省略条件，所以要依赖、合并或替换一条记忆前先完整读出来。
+`MemorySearch` 可以用 `mode: "search"`（默认，需要 `query`）或 `mode: "list"`（不带 query，浏览清单）。`page_size` 取 1–20，search 默认 8、list 默认 20；翻页只带 `cursor`，改动任何过滤条件都会让它失效。每一项都带完整标题、type、status、revision、所属范围、可直接复制进 `MemoryWrite` 的 `target`、`basis_kind`，以及 `expired` / `recheck` / `unrecorded` 三态的 `applicability`。响应里的 `coverage` 说明实际查了哪些范围和状态、有没有跳过什么。只要 `exhausted` 为 false，空准备页也要接续；扫描预算不会截掉剩余源内容。搜索相关性排序针对每个有界源片段。search 额外给最多 200 字符的 `snippet` 和 `score`，list 两者都没有。片段会省略条件，所以要依赖、合并或替换一条记忆前先完整读出来。
 
 `MemoryRead` 在 `id` 和 `ids`（最多 10 个）中恰好取一个，默认读取生效、已归档和被替代的条目，只有显式传 `include_pending: true` 才包含待审提议。结果是完整条目而不是摘要，并带所属范围、target 字段和适用性，所以一次读取可以直接作为 `update` 的来源。
 
@@ -248,22 +258,26 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`BoardWrite
 
 ## 协作类
 
-主 Agent 默认提供 5 个线程工具：`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`。`ThreadCreate` 创建独立的顶层会话；另外 4 个工具通过 `host_id`、`workspace_id` 与 `session_id` 访问现有会话。`ThreadSend` 仍仅限主 Agent，但 subagent profile 可以显式开放 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`（见 [`subagent`](../configuration/config-files.md#subagent)）。
+默认主 Agent profile 提供 5 个线程工具（`ThreadCreate`、`ThreadList`、`ThreadRead`、`ThreadSend` 和 `ThreadWait`）及 2 个房间工具（`RoomRead` 和 `RoomAdd`）。`ThreadCreate` 创建独立的顶层会话；另外 4 个线程工具通过 `host_id`、`workspace_id` 与 `session_id` 访问现有会话。`ThreadSend`、`RoomRead` 和 `RoomAdd` 仅限主 Agent。Subagent profile 可以显式开放 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`（见 [`subagent`](../configuration/config-files.md#subagent)），但不能获得房间访问权限。
 
 省略 `host_id`、留空或设为 `"local"` 都表示执行 Agent 所属 home，不是 GUI 当前打开的空间。同 home 可以跨工作区通信；另一个本机或远端空间需要 owner 批准的单向 [thread bridge](./command.md#kiki-bridges)，使用返回的完整主机引用及 `bridge_id` 或 `connection_id`。不同 home 中相同 Session ID 仍是不同线程，GUI 浏览权限也不等于 bridge 权限。
 
 - `ThreadCreate` 仅在用户明确要求新建线程或会话时使用，不能用于常规委派。可选 `cwd` 必须是已存在目录的绝对路径，可以在当前工作区之外；省略时采用当前会话的工作区根目录。可选 `profile` 必须是已启用的主 Agent profile；省略时使用默认主 Agent。可选 `prompt` 最多 100,000 字符，会作为新线程的首条用户消息立即启动；省略时保持空会话，等待用户输入。可选 `title` 优先于自动标题；省略时若提供了 `prompt`，取首行前 80 个字符作为标题，否则沿用会话的默认名称。结果返回 `id`、`title`、`cwd`、`profile` 和 `prompt_started`。新线程几秒内会出现在左侧会话列表中；之后可用 `ThreadSend` 和 `ThreadWait` 继续交互。
 - `ThreadList` 列出已启用且未归档的会话，可用 `workspace_id` 筛选。不选 bridge 时列执行 home，选定 bridge 时仅列批准的目标范围，需要 `read`。本地结果按更新时间从新到旧排列。`limit` 默认为 50，取值为 1–100；用返回的不透明 cursor 继续翻页。
-- `ThreadRead` 在本地读取已完成的主 Agent turn，不恢复冷会话。跨 bridge 需要 `read`，返回有界的 `view.transcript`、coverage 和 cursor；省略的正文或 frame 带 `contentRefs`。将返回的引用作为 `content_ref` 传入，可读取下一段有界 `view.segment`。`limit` 默认为 20，取值为 1–100。
-- `ThreadSend` 持久保存显式消息，执行中的主 Agent 会话作为已验证来源。传入目标、非空且最多 100,000 字符的 `content`，以及最多 256 字符的 `idempotency_key`。没有来源参数，同一个 key 只能用于同一条消息。Bridge 需要 `send`，投递到模型 prompt 或恢复冷线程还需 `wake`；没有 wake 时保持 pending。`delivered` 仅确认 prompt 投递，不代表已回复。Pending 使用原 key 最多重试 15 分钟，拒绝原因可查看 bridge receipts。普通 Assistant 正文不会自动转发。
+- `ThreadRead` 在本地读取已完成的主 Agent turn，不恢复冷会话。较小的本地 turn 保留完整的 input 和 output。若本地 input 或 output 过大，turn 会保留预览并返回稳定的 `contentRefs` 引用；将它作为同一 thread 的 `content_ref` 传入，可读取每段最多 16,384 个 UTF-16 单元的有界 `view.segment`，持续使用 `next` 直到没有下一段。准备本地历史投影时，可能返回 `turns: []`、`incomplete: "history_preparing"` 和不透明的 `nextCursor`；这表示历史尚未准备好，不表示 thread 没有对话。准备游标会绑定投影代次和固定的源水位，同时保留原先的较旧轮次边界。使用同一 thread 和 bridge 范围继续传入该游标，直到准备完成。跨 bridge 需要 `read`，返回有界的 `view.transcript`、coverage 和 cursor；省略的正文或 frame 带 `contentRefs`。`limit` 默认为 20，取值为 1–100，正常返回顺序保持不变。旧版 read cursor 仍然接受；重写或代次变化会使游标失效，服务端拒绝时须从首页重新读取。
+- `ThreadSend` 持久保存显式消息，执行中的主 Agent 会话作为已验证来源。传入目标、非空且最多 100,000 字符的 `content`，以及最多 256 字符的 `idempotency_key`。没有来源参数，同一个 key 只能用于同一条消息。Bridge 需要 `send`，投递到模型 prompt 或恢复冷线程还需 `wake`；没有 wake 时保持 pending。`delivered` 仅确认 prompt 投递，不代表已回复。消息持久受理后，投递较慢会返回 `pending`，不再让发送方一直等待；投递会在后台继续。取消这次等待不会撤回已受理消息。Bridge 的 pending 记录使用原 key 最多重试 15 分钟，拒绝原因可查看 bridge receipts。普通 Assistant 正文不会自动转发。
 - `ThreadSend({ room, content, mentions? })` 在当前线程已加入的房间发言。房间正文最多 20,000 字符，mentions 使用线程会话 ID 或角色 ID，省略重试键时使用工具调用 ID。ThreadSend 是这条线程在房间里说话的方式，线程里的正文留在线程里。用户消息没有 mention 时交给房间 host。成员发出的消息只唤醒被 mention 的成员。房间发送的 `delivered` 表示已记入房间日志，不表示所有成员已经回复；线程成员默认忙时排队。
 - `ThreadWait` 等待 1–8 条互不重复的本地或已批准 bridge 线程的 terminal、attention、lifecycle 或消息无法投递活动。跨 bridge 需要 `wait`，不会唤醒目标。`timeout_ms` 默认为 30,000，取值为 0–60,000，`0` 只检查一次；下次调用带上各自返回的 cursor，取消工具调用即可停止等待。
+- `RoomRead({ room: "room-id", limit: 50 })` 返回房间 host、成员名单、暂停与归档状态，以及已保存的日志。`limit` 取值为 1–100，默认为 50；将返回的 `nextCursor` 作为 `after_id` 传入可继续翻页。名单中的 `id` 就是房间 mentions 接受的线程或角色 ID。读取不会唤醒成员、把通知标为已读或更改成员关系；`entries` 为空表示没有新的已保存消息，不表示成员已经退出。
+- `RoomAdd({ room: "room-id", session_id: "thread-id" })` 仅在用户要求时，把已有且未归档的顶层线程加入房间。用 `ThreadList` 查找其 `session_id`。房间保留原 host、已有成员设置、最多 6 名成员的限制，以及各线程原有的权限。线程已在房间时原样返回，`added` 为 `false`。此工具不创建房间、角色或会话，也不能把调用方线程加入房间。
 
-`ThreadCreate` 默认启用，设置页的「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信受 [`[thread_communication] enabled`](../configuration/config-files.md#thread-communication) 与持久化 workspace 覆盖控制。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
+两个房间工具都要求已开启线程通信，且调用方是当前房间成员线程的主 Agent。`room` 使用执行 home 中的房间 ID，不接受 bridge 选择器。请先在界面创建房间或把当前线程加入房间，再让 Agent 读取或添加另一条已有线程。
 
-只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的外部客户端输入。详见 [Agent 与子 Agent](../customization/agents.md#peer-thread-通信)。
+`ThreadCreate` 默认仍可用，设置页「权限 → 工具」可单独关闭，不影响另外 4 个线程工具。Peer 通信允许使用且默认关闭。用户把 `[thread_communication] enabled` 写成 `false` 是完全关闭；写成 `true` 会保持原先的默认开启，直到写入 [`optional_capabilities.defaults.thread`](../configuration/config-files.md#optional-capabilities)。当前会话关闭后，即使该会话的 Profile 点了这些工具，本会话的 peer 工具仍然关闭。只有这次子任务点名这些工具，才会打开该子任务。持久化的 workspace 邮箱覆盖仍然生效。Bridge 入站另行默认关闭，由目标 owner 明确批准；关闭目标通信或入站会停止 bridge 投递，不删除会话。
 
-Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 [`coder` 与 `explore` profile](../customization/agents.md) 没有这组工具。
+只有来源 thread 的主 Agent 调用 `ThreadSend` 才会记录 peer 归属；REST 与 Klient 发送属于只指定目标的外部客户端输入。详见 [Agent 与子 Agent](../customization/agents-and-subagents.md#peer-thread-通信)。
+
+Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRun`、`AgentList` 和 `AgentSend`。这些工具只管理调用方的直属子 Agent——用 `AgentRun` 里可选的 `name`，或用 agent id。它们不需要实验开关。内置的 [`coder` 与 `explore` profile](../customization/agents-and-subagents.md) 没有这组工具。
 
 `AgentList` 返回这些直属子 Agent，不会列出孙级。`AgentSend` 把消息排进某个直属子 Agent 的邮箱，之后发生什么取决于该子 Agent 的状态——细节见本页下方 `AgentSend` 条目。
 协作类工具负责 Agent 间协作、用户交互和 Skill 调用。
@@ -293,13 +307,13 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 `tools` 和 `disallowed_tools` 都省略时，新建子 Agent 使用配置默认，`resume` 保留已保存的覆盖。两者都要求原生 executor；不支持它们的外部 executor 会在子 Agent 启动前报错。
 
-**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析；都不提供时该调用失败。
+**模型与档位。** 新派生项按此顺序选模型：`model_alias` 参数 → 生效 profile、route 或 caller lease 上的 pin → 显式配置的 `[subagent].default_model`。这些来源都不存在时以 `model.not_configured` 失败，不会创建子 Agent——调用方模型与主 Agent 的 `default_model` 都不是静默回退来源。`AgentRun` 拒绝 `model_alias: "inherit"`，请写具体的已配置模型名或省略该参数；subagent profile、route、caller lease 里仍可写 `model_alias: inherit` 跟随调用方。其他情况下，思考强度按工具 `effort` → route 上锁定的 effort（route 未锁定时改用 caller lease 的）→ 匹配的 `model_profiles` 档位 → 所绑定模型与 profile pin 匹配时的 `thinking_effort` → 所绑定模型自身的默认档位解析。未声明档位时，能力明确不支持思考的模型使用 `off`；思考模型没有可解析默认档位时仍需显式选择。未知能力不视为 `off`。完整规则见[绑定解析](../customization/agents-and-subagents.md#具名-profile-route-实验功能)。
 
 `preferred_models`、`discouraged_models`、`preferred_efforts` 是建议，选到列表之外的模型仍然能跑。`allowed_models`、`deny_models`、`allowed_efforts` 是硬限制：绑定、人工切换与恢复都会拒绝违规，机器级 deny 与不可用能力同样如此。
 
 **恢复。** `resume` 按名称或 agent id 继续已有直属子 Agent，与 `name`、`profile`、`profile_file`、`route` 互斥。同时省略 `model_alias` 和 `effort` 会保留已保存的绑定，也可以传 `effort` 让下一次空闲运行使用。恢复时同样拒绝 `model_alias: "inherit"`——显式换模请写具体模型名，解析到不同模型时再加 `allow_model_change: true`。外部 executor 无法修改已恢复 thread 的绑定时会报错，不会重建 thread。
 
-**超时与模式。** Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents.md)。
+**超时与模式。** Agent 任务默认 2 小时超时，通过 `[subagent] timeout_ms` 或 `KIKI_SUBAGENT_TIMEOUT_MS` 配置全局限制（`0` 表示禁用），print 模式默认无超时；不提供单次调用 timeout。前台模式下父 Agent 等待结果；后台模式立即返回任务 ID，结果会通过之后的合成 User 消息送达。TUI 会把同一步中的多个前台调用合并展示，并显示状态与耗时。完整 profile 与生命周期契约见 [Agent 与子 Agent](../customization/agents-and-subagents.md)。
 
 `AgentRun` 的默认值按调用方的运行时身份决定，不取决于目标 profile；每次 `resume` 重新应用同一规则，goal mode 也不改变默认值。Main 省略 `background` 或显式传 `true` 时，要求 `TaskList`、`TaskOutput`、`TaskStop` 可用；不可用则在启动前报错，提示启用这些工具或显式用 `background:false` 同步重试，不会静默回退到前台。Main 前台调用遇到 steer / Send now 时，等待会转入后台而不停止子 Agent；下一安全步骤读取新输入，子 Agent 完成后仍自动通知。普通排队消息不会触发转后台。停止当前 main 轮次不等于停止已脱离等待的子 Agent；需要停止某个跟踪任务时，显式调用 `TaskStop`。
 
@@ -311,7 +325,7 @@ Kiki 桌面端和 `kiki` CLI/TUI 会给主 `agent` profile 始终提供 `AgentRu
 
 **`AgentSend`** 把非空的 `message` 发给直属子 Agent。`target` 可以是 `AgentRun` 当时传入的 `name`，也可以是 agent id。子 Agent 以 native 方式运行时，消息会在下一个 step 边界进入当前工作；Codex 和支持 steer 的 ACP 子 Agent 可以在运行期间收到。已经停止的子 Agent，包括运行在消息进入上下文之前结束的情况，会沿用原来的模型、profile、工具和上下文继续。外部子 Agent 已保存的消息按到达顺序进入这同一个绑定，一封接一封，不需要另一次 resume。调度容量已满时，这次继续会等到一个正在运行的子 Agent 结束，不会超出上限再开一跑。如果没有运行会释放容量，或者外部 resume 打不开原来的会话，这条消息仍留在原来的 `message_id` 下。发送方随后会收到原因、error code、目标和这个 id。用 AgentRun 继续同一个子 Agent：`resume` 设为该 agent id，`prompt` 设为空字符串，`description` 设为简短标签。不要再次调用 AgentSend，不要在 `prompt` 里重复这条已保存的消息，也不要设置 `new_window`。这次失败不会另开一个新的远端会话。这次继续是普通的子任务，完成时父 Agent 照常收到通知。匹配到多个直属子 Agent、或一个都匹配不到时调用失败——先用 `AgentList` 再换成不含糊的值重试。邮箱满了说明未读排队消息太多，等子 Agent 消化一些再发。
 
-返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理，不表示已经有一次运行在进行。投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。
+返回结果包含 `message_id` 和 `queued` 或 `delivered` 状态。`queued` 表示邮箱已受理，不表示已经有一次运行在进行。投递可以并发完成，所以它并不说明这条消息此刻一定还没进上下文。`delivered` 只表示消息已送达收件方上下文，不代表子 Agent 已按它采取行动。`resumed: true` 表示确实观测到一次新运行启动；没有观测到运行启动时该字段会被省略，所以看不到它并不等于否定答案。收件方上下文持久化且邮箱确认投递后，发送者的 transcript 会记录投递回执，GUI 的「待送达」标记随之清除，即使没有打开子 Agent 的 transcript。回执在页面重载和历史回放后仍然有效。邮箱领取或确认消息遇到暂态故障时，会在同一安全执行边界内最多进行三次有界、可取消的恢复尝试，保留请求身份与投递回执，不重放外部动作。恢复仍失败时，诊断会说明消息已保留及如何恢复同一 Agent；永久错误和取消不重试。
 
 **`AskUserQuestion`** 以结构化多选题的形式向用户提问，适用于需要消歧或选择方案的场景。`questions` 参数接受 1–4 道题，每道题需提供 `question`（以 `?` 结尾）、`options`（2–4 个选项，每项含 `label` 和 `description`）以及可选的 `header`（最多 12 字符）和 `multi_select`（默认 false）。系统自动附加"其他"选项。`background` 为 true 时启动后台问题任务并立即返回任务 ID。宿主未实现交互式提问能力时返回失败提示，Agent 应改为在文本回复中直接提问。
 
@@ -334,9 +348,9 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 **`TaskList`** 返回后台任务列表。可选参数包括 `active_only`（默认 true，仅列出运行中的任务）、`limit`（默认 20，范围 1–100）和 `offset`（默认 0）。只要 `has_more` 为 true，就把返回的 `next_offset` 传给下一页；任务列表在翻页期间发生变化可能导致位置移动。已完成的 subagent 条目包含回执元数据和 `receipt_verification`：只有 `verified` 回执可以作为完整结果；`contentState: unavailable` 不表示拿到了最终报告。`legacy_unverified` 和 `invalid` 不提供可信的回执路径。
 
-**`TaskOutput`** 根据 `task_id` 返回任务状态与输出。省略分页参数时返回最近 32 KB 的预览；当 `full_output_available` 为 true 时，可传入 `offset: 0` 和可选的 `max_bytes`（范围 4–32768，默认 16384），并在 `has_more` 为 true 时继续使用 `next_offset`。偏移量按 UTF-8 字节计算，不是字符数；如果从字符中间开始，会跳到下一个完整字符，返回的 `offset` 表示实际起点。工具还会在完整日志可用时返回 `output_path`，也可使用 `Read` 查看。无效或未验证的终止任务回执不能作为完整输出分页读取。该调用始终非阻塞；任务完成会通过自动通知送达。
+**`TaskOutput`** 根据 `task_id` 返回任务状态与输出。省略分页参数时返回最近 32 KB 的预览；当 `full_output_available` 为 true 时，可传入 `offset: 0` 和可选的 `max_bytes`（范围 4–32768，默认 16384），并在 `has_more` 为 true 时继续使用 `next_offset`。偏移量按 UTF-8 字节计算，不是字符数；如果从字符中间开始，会跳到下一个完整字符，返回的 `offset` 表示实际起点。工具还会在完整日志可用时返回 `output_path`，也可使用 `Read` 查看。无效或未验证的终止任务回执不能作为完整输出分页读取。该调用始终非阻塞；任务完成会通过自动通知送达。若 `lost` 任务的诊断说明恢复 scope 时未重新挂载执行跟踪，其执行结果仍未确认，并不证明执行器已停止。先检查保留的成果与输出，再用新 prompt ID 恢复同一 Agent；不要重复结果未确认的外部动作。
 
-**`TaskStop`** 接受 `task_id` 和可选的 `reason`（默认 `Stopped by TaskStop`）。对已处于终止状态的任务也能安全调用。停止 Agent 任务会级联终止其各级子孙 subagent：每一层先停止自己子 Agent 的任务与执行（先深后浅），再中止该 Agent 本身，同时保留它们的可恢复 scope 与邮箱消息，供之后 resume。结果会报告停止后仍在运行的直属子 Agent（一个都不剩时不提示，最多 5 个名称）。
+**`TaskStop`** 接受 `task_id` 和可选的 `reason`（默认 `Stopped by TaskStop`）。对已处于终止状态的任务也能安全调用。停止 Agent 任务会级联终止其各级子孙 subagent：每一层先停止自己子 Agent 的任务与执行（先深后浅），再中止该 Agent 本身，同时保留它们的可恢复 scope 与邮箱消息，供之后 resume。结果会报告停止后仍在运行的直属子 Agent（一个都不剩时不提示，最多 5 个名称）。进程或子孙任务清理失败时，任务保留可恢复的 `running` 状态，不写结束时间或终态回执；诊断会保留清理错误及可用详情。对同一任务重试 `TaskStop`，确认清理完成后再启动替代工作。
 
 **`TaskWait`** 用于显式同步等待，把当前轮次挂起，直到后台任务结束或超时。参数：`timeout`（必填，有限正整数，单位秒，范围 1–86400），以及可选的 `task_id`、`sync_wait` 和 `sync_reason`。这个上限只约束本次等待，不延长任务运行时限或调用者的生命周期；任务结束、新输入或取消都可能提前结束等待。超时不是错误：结果会列出仍在运行的任务，不会停止它们。此时应重新判断同轮同步需求，不要自动重复等待。已通过 `TaskWait` 汇报结果的任务不会再推送自动完成通知。
 
@@ -354,13 +368,21 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 | `Cron`（`action: "list"`） | 自动放行 | 列出已安排的定时任务 |
 | `Cron`（`action: "delete"`） | 需审批 | 取消已安排的定时任务 |
 
-`Cron` 用 `action` 指定操作；旧名称 `CronCreate`、`CronList` 和 `CronDelete` 仍可被已有 profile 和审批规则引用，但不再作为单独的工具提供给模型。`action: "create"` 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB）以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）。成功时返回 8 位 16 进制 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
+`Cron` 用 `action` 指定操作；旧名称 `CronCreate`、`CronList` 和 `CronDelete` 仍可被已有 profile 和审批规则引用，但不再作为单独的工具提供给模型。`action: "create"` 接受 `cron`（用户本地时区下标准的 5 段 cron 表达式：`minute hour day-of-month month day-of-week`）、`prompt`（触发时要注入的文本，UTF-8 上限 8 KB）以及可选的 `recurring`（默认 `true`；传 `false` 表示一次性提醒，触发后自动删除）。成功时返回 ULID 格式的 `id`、人类可读的 `humanSchedule`（如 `every 5 minutes`）、`deliveryMode` 和 `nextFireAt`（下次触发时间的 ISO 时间戳）。
+
+可选参数 `delivery_mode` 决定投递时机：
+
+- `idle`（空闲时插入，默认）：等当前工作完成后，优先普通排队消息执行。同一任务等待期间重复触发会合成一条消息，并在 `coalescedCount` 中保留总次数；不同任务各自保留，按首次投递顺序执行。
+- `queue`（排队）：每次触发的投递都按正常消息顺序保留。
+- `steer`（立即插入）：在当前轮次的下一安全步骤插入，不取消正在进行的请求；空闲时优先普通排队消息执行。
+
+旧任务未保存投递模式时，下次触发采用 `idle`。已经入队的消息保留原有模式与位置，旧版定时消息不会被暗中重排。重启后，待投递消息保留模式和次数，等待原有队列恢复操作。删除或暂停任务只阻止未来自动触发，不撤回已经投递的消息。
 
 为避免整批用户在整点同时触发，调度器会做确定性抖动：周期任务向后偏移 `min(周期的 10%, 15 分钟)`；一次性任务若恰好落在 `:00` 或 `:30` 则向前提前最多 90 秒。如果调度器错过了若干触发时刻（如笔记本合盖），唤醒后只会触发一次，prompt 会包裹在 `<cron-fire>` 信封里并附带 `coalescedCount`。周期任务存活超过 7 天后会以 `stale="true"` 做最后一次触发后自动删除；想继续保留时，再次调用 `Cron` 的 `action: "create"` 即可。
 
-**`Cron` 的 `action: "list"`** 是只读操作，除了 `action` 不需要其他参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`ageDays` 和 `stale`。记录用 `---` 分隔，按调度时间排列。
+**`Cron` 的 `action: "list"`** 是只读操作，除了 `action` 不需要其他参数。为每个生效中的任务返回一条记录，字段包括 `id`、`cron`、`humanSchedule`、`nextFireAt`、`recurring`、`deliveryMode`、`ageDays` 和 `stale`。记录用 `---` 分隔，按创建顺序排列。
 
-**`Cron` 的 `action: "delete"`** 接受一个 `id`。对周期任务，未来所有触发立即停止；对一次性任务，挂起的那次触发会被取消。已触发的一次性任务会自动删除，因此删除已触发过的一次性任务会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次执行 `action: "create"`。Plan 模式下此操作会被拦截。
+**`Cron` 的 `action: "delete"`** 接受一个 `id`。对周期任务，未来所有触发立即停止；对一次性任务，尚未投递的触发会被取消。已触发的一次性任务会自动删除，因此删除已触发过的一次性任务会返回 `No cron job with id ...`。删除不可撤销，需要还原时只能再次执行 `action: "create"`。Plan 模式下此操作会被拦截。
 
 报告成功的 `create` 或 `delete` 表示该变化已经落盘。保存本身失败时，工具返回错误且已存储的调度保持原样，因此成功回执不会对应一个只存在于内存中的任务。
 
@@ -372,6 +394,6 @@ Root 不应为了等待该结果，使用 `TaskWait`、`TaskOutput` 或 `AgentLi
 
 ## 下一步
 
-- [Agent 与 subagent](../customization/agents.md) — `AgentRun` 工具的调度机制与上下文隔离
+- [Agent 与 subagent](../customization/agents-and-subagents.md) — `AgentRun` 工具的调度机制与上下文隔离
 - [Hooks](../customization/hooks.md) — 在工具调用前后触发本地脚本
 - [斜杠命令](./slash-commands.md) — TUI 内置控制命令速查

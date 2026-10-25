@@ -31,11 +31,14 @@ import {
   type StreamedMessagePart,
   type ToolCall,
 } from '#/kosong/contract/message';
-import { type TokenUsage } from '#/kosong/contract/usage';
+import { addUsage, type TokenUsage } from '#/kosong/contract/usage';
+import { ChatProviderError, noteExecutedRequestDelivery, readProviderEventErrorCode } from '#/kosong/contract/errors';
+import { readGenerateFailureFacts } from '#/kosong/contract/generate';
 import { BugIndicatingError, ErrorCodes, Error2, isError2, toKimiErrorPayload } from '#/errors';
 import { OrderedHookSlot } from '#/hooks';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { deliveryOriginOf, newDeliveryId } from '#/agent/contextMemory/messageDelivery';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import { isVacuousContentPart } from '#/agent/contextMemory/vacuousContent';
@@ -71,6 +74,7 @@ import {
   type TurnResult,
 } from './loop';
 import {
+  ThinkingOnlyContinuationStepRequest,
   type StepRequest,
   type TurnSeed,
 } from './stepRequest';
@@ -89,6 +93,7 @@ import {
   TurnStepStarted,
   type TurnInterruptReason,
 } from './turnEvents';
+import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
 import { TurnCancel, TurnEnded, turnKey, TurnPrompt } from './turnOps';
 
 export type LoopInterruptReason = 'aborted' | 'max_steps' | 'error';
@@ -104,6 +109,7 @@ export const loopLastRequestTraceIdKey = defineState<string | undefined>(
 export const loopDisposingKey = defineState<boolean>('loop.disposing', () => false);
 
 const MAX_STEP_SIGNAL_LISTENERS = 64;
+const PERSISTENCE_RECOVERY_DELAYS_MS = [100, 500, 2000] as const;
 
 export class AgentLoopService extends Disposable implements IAgentLoopService {
   declare readonly _serviceBrand: undefined;
@@ -131,7 +137,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     readonly result: ReturnType<typeof createControlledPromise<void>>;
   }> = [];
   private activeRequestTrace: LLMRequestTrace | undefined;
-  private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; error?: unknown } | undefined;
+  private finalization: { readonly turn: Turn; readonly result: TurnResult; readonly event: TurnEnded; recoveryAttempts?: number; error?: unknown } | undefined;
+  private persistenceRecoveryTimer?: ReturnType<typeof setTimeout>;
 
   constructor(
     @IAgentContextMemoryService private readonly context: IAgentContextMemoryService,
@@ -177,9 +184,11 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.states.set(loopDisposingKey, value);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     if (this.disposing) return;
     this.disposing = true;
+    clearTimeout(this.persistenceRecoveryTimer);
+    this.persistenceRecoveryTimer = undefined;
     const reason = abortError('Agent loop disposed');
     for (const job of this.pendingTurns.slice()) this.cancel(job.turn.id, reason);
     this.activeTurnJob?.turn.cancel(reason);
@@ -192,7 +201,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       this.rejectAssignment(request, reason);
     }
     this.maybeSettle();
-    super.dispose();
+    return super.dispose();
   }
 
   enqueue(request: StepRequest, options?: StepEnqueueOptions): EnqueueReceipt {
@@ -204,6 +213,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     if (this.quiescenceDepth > 0 || this.finalization !== undefined) {
       if (options?.at === 'head') this.heldAdmissions.unshift({ request, options });
       else this.heldAdmissions.push({ request, options });
+      if (this.finalization?.error !== undefined) void this.recoverPersistence();
     } else {
       this.admit(request, options);
     }
@@ -434,6 +444,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     const queue = new StepRequestQueue();
     const steps = new Map<string, MutableStep>();
     void ready.catch(() => undefined);
+    void result.catch(() => undefined);
     const turn: MutableTurn = {
       id,
       state: 'queued',
@@ -669,9 +680,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     } catch (error) {
       finalization.error = error;
       onUnexpectedError(error);
+      this.schedulePersistenceRecovery(finalization);
       return false;
     }
     if (this.finalization !== finalization) return true;
+    clearTimeout(this.persistenceRecoveryTimer);
+    this.persistenceRecoveryTimer = undefined;
     this.finalization = undefined;
     if (this.activeTurnJob?.turn === finalization.turn) {
       this.activeRequestTrace = undefined;
@@ -681,6 +695,19 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     this.releaseActiveTurn(finalization.turn, finalization.result);
     this.releaseQuiescence();
     return true;
+  }
+
+  private schedulePersistenceRecovery(finalization: NonNullable<AgentLoopService['finalization']>): void {
+    if (this.disposing || this.finalization !== finalization || this.persistenceRecoveryTimer !== undefined) return;
+    const attempt = finalization.recoveryAttempts ?? 0;
+    const delay = PERSISTENCE_RECOVERY_DELAYS_MS[attempt];
+    if (delay === undefined) return;
+    finalization.recoveryAttempts = attempt + 1;
+    this.persistenceRecoveryTimer = setTimeout(() => {
+      this.persistenceRecoveryTimer = undefined;
+      if (!this.disposing && this.finalization === finalization) void this.recoverPersistence();
+    }, delay);
+    this.persistenceRecoveryTimer.unref?.();
   }
 
   private resultFromTurnError(turn: Turn, error: unknown): TurnResult {
@@ -767,6 +794,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             options.onStarted,
             runtime.job?.steerController.signal,
             { stepId: begun.step.uuid, logicalStepId: `${runtime.turnId}/${begun.step.batch.driver.id}`, attempt: begun.step.attempt },
+            runtime,
+            begun.step.batch.driver instanceof ThinkingOnlyContinuationStepRequest,
           );
           const completed = this.completeLoopStep(runtime, result);
           if (completed !== undefined) return completed;
@@ -788,6 +817,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       job,
       queue: job?.queue ?? this.standaloneStepQueue,
       steps: 0,
+      thinkingOnlyContinuations: 0,
+      thinkingOnlySnapshotActive: false,
       attempts: new Map(),
       lastStopReason: undefined,
       current: undefined,
@@ -796,6 +827,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
   private beginLoopStep(runtime: LoopRuntime): BeginStepResult {
     runtime.current = undefined;
+    runtime.thinkingOnlySnapshotActive = false;
     runtime.turnSignal.throwIfAborted();
     if (!runtime.queue.hasPendingRequests()) {
       return {
@@ -862,8 +894,21 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
   ): Promise<LoopErrorDisposition> {
     const cancellation = this.handleLoopCancellation(runtime, error);
     if (cancellation !== undefined) return cancellation;
+    if (
+      readProviderEventErrorCode(error) === THINKING_ONLY_PROVIDER_ERROR_CODE ||
+      runtime.thinkingOnlySnapshotActive ||
+      runtime.current?.batch.driver instanceof ThinkingOnlyContinuationStepRequest
+    ) return this.failLoopStep(runtime, error);
     const recovery = await this.tryRecoverLoopError(runtime, error);
     return recovery ?? this.failLoopStep(runtime, error);
+  }
+
+  private thinkingOnlyContinuationEnabled(): boolean {
+    return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.thinkingOnlyContinuation !== false;
+  }
+
+  private zeroOutputContinuationEnabled(): boolean {
+    return this.config.get<LoopControl>(LOOP_CONTROL_SECTION)?.zeroOutputContinuation === true;
   }
 
   private handleLoopCancellation(
@@ -984,6 +1029,8 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     onStarted: ((step: number) => void) | undefined,
     steerSignal: AbortSignal | undefined,
     stepIdentity: Pick<BeforeStepContext, 'stepId' | 'logicalStepId' | 'attempt'>,
+    continuationBudget: Pick<LoopRuntime, 'thinkingOnlyContinuations' | 'thinkingOnlySnapshotActive'>,
+    thinkingOnlyFollowup: boolean,
   ): Promise<StepExecutionResult> {
     this.activeRequestTrace = undefined;
     await this.hooks.onWillBeginStep.run({ turnId, step: currentStep, firstStepOfTurn, signal, ...stepIdentity });
@@ -995,9 +1042,12 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         currentStep,
         stepUuid,
         markStepStarted,
+        signal,
       );
+      const snapshot = sealedGoogleRequestSnapshot(this.context.get());
       const request = this.llmRequester.start(
         {
+          retry: thinkingOnlyFollowup ? 'never' : undefined,
           source: { type: 'turn', turnId, step: currentStep },
           onAttemptRetry: () => {
             streamParts.discardAttemptParts();
@@ -1010,12 +1060,135 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       let response: AgentLLMRequestFinish;
       try {
         response = await request.result;
+        signal.throwIfAborted();
       } catch (error) {
-        this.appendInterruptedStreamContent(turnId, currentStep, stepUuid, streamParts);
+        const retained = this.appendInterruptedStreamContent(turnId, currentStep, stepUuid, streamParts);
+        if (retained.hasOutput) noteExecutedRequestDelivery(error);
+        const facts = readGenerateFailureFacts(error);
+        if (
+          !signal.aborted &&
+          !turnSignal.aborted &&
+          !isAbortError(error) &&
+          readProviderEventErrorCode(error) === THINKING_ONLY_PROVIDER_ERROR_CODE &&
+          facts !== undefined &&
+          facts.message.partial !== true &&
+          retained.thinkingOnly &&
+          retained.hasRealThinking &&
+          this.thinkingOnlyContinuationEnabled() &&
+          continuationBudget.thinkingOnlyContinuations < 1
+        ) {
+          const usage = facts.usage ?? undefined;
+          this.context.appendLoopEvent({
+            type: 'step.end',
+            uuid: stepUuid,
+            turnId: String(turnId),
+            step: currentStep,
+            finishReason: 'other',
+            usage,
+          });
+          stepEndAppended = true;
+          continuationBudget.thinkingOnlyContinuations += 1;
+          this.enqueue(new ThinkingOnlyContinuationStepRequest());
+          await this.runBoundaryRequests(turnId, signal);
+          return { stopReason: 'other', hookStopTurn: false };
+        }
         throw error;
       }
       this.lastRequestTraceId = request.trace.traceId;
       this.appendResponseContent(turnId, currentStep, stepUuid, response, streamParts);
+      if (
+        isThinkOnlyCompletion(response) &&
+        this.llmRequester.supportsAssistantPrefill?.() === false
+      ) {
+        if (continuationBudget.thinkingOnlyContinuations >= 1) {
+          this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+          stepEndAppended = true;
+          throw googleThinkSnapshotExhausted(response);
+        }
+        continuationBudget.thinkingOnlyContinuations += 1;
+        await this.dispatcher.dispatch(new TurnStepRetrying({
+          turnId,
+          step: currentStep,
+          stepId: stepUuid,
+          failedAttempt: 1,
+          nextAttempt: 2,
+          maxAttempts: 2,
+          delayMs: 0,
+          errorName: 'GeminiThinkOnlyStop',
+          errorMessage:
+            'Gemini finished with STOP and only thinking. Official continuation requires finishReason CONTINUATION plus a continuationToken, which this SDK cannot send. Retrying the original request snapshot once.',
+        }));
+        continuationBudget.thinkingOnlySnapshotActive = true;
+        const retryTask = this.llmRequester.start(
+          {
+            messages: snapshot,
+            retry: 'never',
+            source: { type: 'turn', turnId, step: currentStep },
+            onAttemptRetry: () => {
+              streamParts.discardAttemptParts();
+            },
+          },
+          streamParts.handle,
+          signal,
+        );
+        this.activeRequestTrace = retryTask.trace;
+        let retry: AgentLLMRequestFinish;
+        try {
+          retry = await retryTask.result;
+          signal.throwIfAborted();
+        } catch (error) {
+          this.appendInterruptedStreamContent(turnId, currentStep, stepUuid, streamParts);
+          this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+          stepEndAppended = true;
+          throw error;
+        }
+        this.lastRequestTraceId = retryTask.trace.traceId;
+        this.appendResponseContent(turnId, currentStep, stepUuid, retry, streamParts);
+        response = { ...retry, usage: addUsage(response.usage, retry.usage) };
+        if (response.rawFinishReason === 'CONTINUATION' || !hasAnswerOrToolCall(response)) {
+          this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+          stepEndAppended = true;
+          throw response.rawFinishReason === 'CONTINUATION'
+            ? googleContinuationUnsupported(response)
+            : googleThinkSnapshotExhausted(response);
+        }
+      }
+      if (response.rawFinishReason === 'CONTINUATION') {
+        this.sealGoogleProtocolStep(turnId, currentStep, stepUuid, response, markStepStarted);
+        stepEndAppended = true;
+        throw googleContinuationUnsupported(response);
+      }
+      if (
+        this.scope.parentAgentId !== undefined &&
+        response.providerFinishReason === 'completed' &&
+        response.message.content.length === 0 &&
+        response.message.toolCalls.length === 0 &&
+        !(this.zeroOutputContinuationEnabled() && isZeroOutputCompletion(response))
+      ) {
+        markStepStarted();
+        this.context.appendLoopEvent({
+          type: 'step.end',
+          uuid: stepUuid,
+          turnId: String(turnId),
+          step: currentStep,
+          finishReason: 'error',
+          usage: response.usage,
+          messageId: response.providerMessageId,
+          providerFinishReason: response.providerFinishReason,
+          rawFinishReason: response.rawFinishReason,
+        });
+        stepEndAppended = true;
+        throw new Error2(ErrorCodes.LOOP_EMPTY_COMPLETION,
+          'The subagent provider completed without content or tool calls; no task receipt was produced. Inspect preserved work before resuming with a new prompt ID.',
+          { details: {
+            turnId,
+            step: currentStep,
+            messageId: response.providerMessageId,
+            providerFinishReason: response.providerFinishReason,
+            rawFinishReason: response.rawFinishReason,
+            usage: response.usage,
+          } });
+      }
       const finishReason = await this.executeStepTools(
         turnId,
         signal,
@@ -1027,6 +1200,9 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
       );
       this.finishStep(turnId, signal, currentStep, stepUuid, response, finishReason, markStepStarted);
       stepEndAppended = true;
+      if (thinkingOnlyFollowup && !hasAnswerOrToolCall(response)) {
+        throw thinkingOnlyContinuationExhausted(response);
+      }
       const hookStopTurn = await this.runAfterStep(
         turnId,
         signal,
@@ -1036,6 +1212,25 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         finishReason,
         stepIdentity,
       );
+      if (!hookStopTurn && isThinkOnlyCompletion(response)) {
+        if (this.llmRequester.supportsAssistantPrefill?.() === false) {
+          throw googleThinkSnapshotExhausted(response);
+        }
+        if (this.thinkingOnlyContinuationEnabled()) {
+          if (continuationBudget.thinkingOnlyContinuations >= 1) throw thinkingOnlyContinuationExhausted(response);
+          continuationBudget.thinkingOnlyContinuations += 1;
+          this.enqueue(new ThinkingOnlyContinuationStepRequest());
+        }
+      }
+      if (
+        !hookStopTurn &&
+        continuationBudget.thinkingOnlyContinuations < 1 &&
+        this.zeroOutputContinuationEnabled() &&
+        isZeroOutputCompletion(response)
+      ) {
+        continuationBudget.thinkingOnlyContinuations += 1;
+        this.enqueue(new ThinkingOnlyContinuationStepRequest());
+      }
       await this.runBoundaryRequests(turnId, signal);
       return { stopReason: finishReason, hookStopTurn };
     } catch (error) {
@@ -1101,8 +1296,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     currentStep: number,
     stepUuid: string,
     streamParts: StreamPartCollector,
-  ): void {
-    for (const entry of streamParts.drainInterruptedContent()) {
+  ): InterruptedThinkingOnly {
+    const hasToolCallOutput = streamParts.hasToolCallOutput();
+    const entries = streamParts.drainInterruptedContent();
+    for (const entry of entries) {
       this.context.appendLoopEvent({
         type: 'content.part',
         uuid: entry.id,
@@ -1113,6 +1310,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         responseInstanceId: entry.responseInstanceId,
       });
     }
+    return interruptedThinkingOnly(entries, hasToolCallOutput);
   }
 
   private async executeStepTools(
@@ -1228,6 +1426,34 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     }
     finishReason = stopTurn ? 'completed' : 'tool_calls';
     return finishReason;
+  }
+
+  private sealGoogleProtocolStep(
+    turnId: number,
+    currentStep: number,
+    stepUuid: string,
+    response: AgentLLMRequestFinish,
+    markStepStarted: () => void,
+  ): void {
+    markStepStarted();
+    const timing = response.timing;
+    this.context.appendLoopEvent({
+      type: 'step.end',
+      uuid: stepUuid,
+      turnId: String(turnId),
+      step: currentStep,
+      finishReason: 'other',
+      usage: response.usage,
+      llmFirstTokenLatencyMs: timing?.firstTokenLatencyMs,
+      llmStreamDurationMs: timing?.streamDurationMs,
+      llmRequestBuildMs: timing?.requestBuildMs,
+      llmServerFirstTokenMs: timing?.serverFirstTokenMs,
+      llmServerDecodeMs: timing?.serverDecodeMs,
+      llmClientConsumeMs: timing?.clientConsumeMs,
+      messageId: response.providerMessageId,
+      providerFinishReason: response.providerFinishReason,
+      rawFinishReason: response.rawFinishReason,
+    });
   }
 
   private finishStep(
@@ -1348,12 +1574,18 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
     step: number,
     stepId: string,
     onResponseEvent: () => void,
+    signal: AbortSignal,
   ): StreamPartCollector {
     const callsByIndex = new Map<number | string | undefined, { id: string; name: string }>();
     const partialContent: Array<{ id: string; part: ContentPart; responseInstanceId?: string }> = [];
     let responseInstanceId: string | undefined;
     const emittedToolCallIds = new Set<string>();
     let forceContentPartBoundary = false;
+    const beginResponseEvent = () => {
+      signal.throwIfAborted();
+      onResponseEvent();
+      signal.throwIfAborted();
+    };
     const discardAttemptParts = () => {
       const partIds = partialContent.map((entry) => entry.id);
       const toolCallIds = [...emittedToolCallIds];
@@ -1379,13 +1611,14 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
 
     return {
       handle: (part, instanceId) => {
+        signal.throwIfAborted();
         if (instanceId !== responseInstanceId) {
           discardAttemptParts();
           responseInstanceId = instanceId;
         }
         switch (part.type) {
           case 'text': {
-            onResponseEvent();
+            beginResponseEvent();
             const partId = accumulate(part);
             void this.dispatcher.dispatch(
               new AssistantDelta({ turnId, step, stepId, partId, delta: part.text }),
@@ -1393,9 +1626,10 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             return;
           }
           case 'think': {
-            onResponseEvent();
+            beginResponseEvent();
             if (isVacuousContentPart(part) && partialContent.at(-1)?.part.type === 'text') return;
             const partId = accumulate(part);
+            if (part.hidden === true) return;
             void this.dispatcher.dispatch(
               new ThinkingDelta({ turnId, step, stepId, partId, delta: part.think, responseInstanceId }),
             );
@@ -1403,10 +1637,16 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
           }
           case 'image_url':
           case 'audio_url':
-          case 'video_url':
+          case 'video_url': {
+            beginResponseEvent();
+            const partId = accumulate(part);
+            void this.dispatcher.dispatch(
+              new AssistantDelta({ turnId, step, stepId, partId, delta: '', part }),
+            );
             return;
+          }
           case 'function': {
-            onResponseEvent();
+            beginResponseEvent();
             forceContentPartBoundary = true;
             callsByIndex.set(part._streamIndex, { id: part.id, name: part.name });
             emittedToolCallIds.add(part.id);
@@ -1426,7 +1666,7 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
             if (part.argumentsPart === null) return;
             const toolCall = callsByIndex.get(part.index);
             if (toolCall === undefined) return;
-            onResponseEvent();
+            beginResponseEvent();
             void this.dispatcher.dispatch(
               new ToolCallDelta({
                 turnId,
@@ -1446,19 +1686,139 @@ export class AgentLoopService extends Disposable implements IAgentLoopService {
         }
       },
       resolveContent: (content) => {
+        signal.throwIfAborted();
         const unused = partialContent.filter((entry) => entry.responseInstanceId === responseInstanceId);
-        return content.map((part) => {
+        const resolved = content.map((part) => {
           const index = unused.findIndex((entry) => entry.part.type === part.type);
-          if (index === -1) return { id: randomUUID(), part, responseInstanceId };
+          if (index === -1) {
+            const id = randomUUID();
+            if (part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url') {
+              void this.dispatcher.dispatch(new AssistantDelta({ turnId, step, stepId, partId: id, delta: '', part }));
+            }
+            return { id, part, responseInstanceId };
+          }
           const [entry] = unused.splice(index, 1);
           return { id: entry!.id, part, responseInstanceId: entry!.responseInstanceId };
         });
+        signal.throwIfAborted();
+        partialContent.length = 0;
+        return resolved;
       },
+      hasToolCallOutput: () => emittedToolCallIds.size > 0,
       discardAttemptParts,
       drainInterruptedContent: () =>
         partialContent.splice(0).filter((entry) => !isVacuousContentPart(entry.part)),
     };
   }
+}
+
+function sealedGoogleRequestSnapshot(messages: readonly ContextMessage[]): ContextMessage[] {
+  return messages.filter((message) => message.partial !== true).map((message) => ({
+    ...message,
+    content: message.content.slice(),
+    toolCalls: message.toolCalls.slice(),
+  }));
+}
+
+function googleContinuationUnsupported(response: AgentLLMRequestFinish): ChatProviderError {
+  return new ChatProviderError(
+    'Gemini finished with CONTINUATION. Official continuation resends the same contents, system instruction, tools, and config with the latest continuationToken and does not append this partial output. This SDK cannot send a continuationToken, so the turn stopped with the partial response kept and no completed answer.',
+    undefined,
+    { details: {
+      google_stop: 'continuation_unsupported',
+      raw_finish_reason: response.rawFinishReason ?? 'CONTINUATION',
+    } },
+  );
+}
+
+function googleThinkSnapshotExhausted(response: AgentLLMRequestFinish): ChatProviderError {
+  return new ChatProviderError(
+    'Gemini returned no answer or tool call after the single thinking-only recovery allowed in this turn. The turn stopped with the thinking kept in history.',
+    undefined,
+    { details: {
+      google_stop: 'think_snapshot_exhausted',
+      google_think_snapshot_retries: 1,
+      raw_finish_reason: response.rawFinishReason ?? 'STOP',
+    } },
+  );
+}
+
+function isThinkOnlyCompletion(response: AgentLLMRequestFinish): boolean {
+  if (response.completionAuthority !== 'normal') return false;
+  if (response.message.partial === true) return false;
+  if (response.providerFinishReason !== 'completed') return false;
+  if (response.message.toolCalls.length > 0) return false;
+  let realThink = false;
+  for (const part of response.message.content) {
+    if (part.type === 'text') {
+      if (!isVacuousContentPart(part)) return false;
+      continue;
+    }
+    if (part.type === 'think') {
+      if (part.think.trim().length > 0) realThink = true;
+      continue;
+    }
+    return false;
+  }
+  return realThink;
+}
+
+function isZeroOutputCompletion(response: AgentLLMRequestFinish): boolean {
+  if (response.completionAuthority !== 'normal') return false;
+  if (response.message.partial === true) return false;
+  if (response.providerFinishReason !== 'completed') return false;
+  if (response.message.toolCalls.length > 0) return false;
+  return response.message.content.every(isZeroOutputContentPart);
+}
+
+function isZeroOutputContentPart(part: ContentPart): boolean {
+  if (part.type === 'think') {
+    return part.think.trim().length === 0 && (part.redacted?.length ?? 0) === 0 && (part.reasoningDetails?.length ?? 0) === 0;
+  }
+  return isVacuousContentPart(part);
+}
+
+const THINKING_ONLY_PROVIDER_ERROR_CODE = 'antigravity_thinking_only';
+
+interface InterruptedThinkingOnly {
+  readonly thinkingOnly: boolean;
+  readonly hasRealThinking: boolean;
+  readonly hasOutput: boolean;
+}
+
+function interruptedThinkingOnly(
+  entries: ReadonlyArray<{ readonly part: ContentPart }>,
+  hasToolCallOutput: boolean,
+): InterruptedThinkingOnly {
+  let thinkingOnly = !hasToolCallOutput;
+  let hasRealThinking = false;
+  for (const { part } of entries) {
+    if (part.type !== 'think') {
+      thinkingOnly = false;
+      continue;
+    }
+    if (part.think.trim().length > 0) hasRealThinking = true;
+  }
+  return { thinkingOnly, hasRealThinking, hasOutput: hasToolCallOutput || entries.length > 0 };
+}
+
+function hasAnswerOrToolCall(response: AgentLLMRequestFinish): boolean {
+  return response.message.toolCalls.length > 0 || response.message.content.some((part) =>
+    part.type !== 'think' && !isVacuousContentPart(part));
+}
+
+function thinkingOnlyContinuationExhausted(response: AgentLLMRequestFinish): Error2 {
+  return new Error2(
+    ErrorCodes.LOOP_EMPTY_COMPLETION,
+    'The model returned no answer or tool call after the single automatic continuation. The turn stopped with the thinking kept in history.',
+    {
+      name: 'ThinkingOnlyContinuationError',
+      details: {
+        thinking_only: 'continuation_exhausted',
+        raw_finish_reason: response.rawFinishReason ?? 'STOP',
+      },
+    },
+  );
 }
 
 function normalizeFinishReason(reason: FinishReason): string {
@@ -1512,6 +1872,8 @@ interface LoopRuntime {
   readonly queue: StepRequestQueue;
   readonly attempts: Map<string, number>;
   steps: number;
+  thinkingOnlyContinuations: number;
+  thinkingOnlySnapshotActive: boolean;
   lastStopReason: FinishReason | undefined;
   current: StepRuntime | undefined;
 }
@@ -1537,6 +1899,7 @@ interface StreamPartCollector {
   readonly handle: (part: StreamedMessagePart, responseInstanceId?: string) => void;
   discardAttemptParts(): void;
   resolveContent(content: readonly ContentPart[]): Array<{ id: string; part: ContentPart; responseInstanceId?: string }>;
+  hasToolCallOutput(): boolean;
   drainInterruptedContent(): Array<{ id: string; part: ContentPart; responseInstanceId?: string }>;
 }
 

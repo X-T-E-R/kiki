@@ -17,9 +17,7 @@ import { stubLog } from '../../_base/log/stubs';
 import { stubBootstrap } from '../bootstrap/stubs';
 
 const disposables = new DisposableStore();
-afterEach(() => {
-  disposables.clear();
-});
+afterEach(() => disposables.clear());
 
 function createConfig(storage = new InMemoryStorageService()): { config: IConfigService; storage: InMemoryStorageService } {
   const ix = disposables.add(new TestInstantiationService());

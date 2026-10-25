@@ -61,9 +61,11 @@ export function PersonaSessionIdentity({ session, title }: PersonaSessionIdentit
   const personasQuery = usePersonaList();
   const summary = personasQuery.data?.find((entry) => entry.id === personaId);
 
+  // Only the workspace's display name is read here, so the metadata-only
+  // catalog answers it without the full listing's counts and Git probe.
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
   });
   const workspaceOptions = workspacesQuery.data?.items ?? [];

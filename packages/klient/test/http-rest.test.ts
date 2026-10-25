@@ -1,4 +1,5 @@
-import { createServer, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { isValid, ulid } from 'ulid';
 import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -22,6 +23,126 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it.each([undefined, 'child/example'])('resumes a durable prompt with the GUI recovery request shape (agent=%s)', async (agentId) => {
+    const body = {
+      admission: 'durable' as const,
+      prompt_id: 'prompt/example',
+      content: [{ type: 'text' as const, text: 'Restore the retained message.' }],
+    };
+    const receipt = { ...body, user_message_id: body.prompt_id, status: 'queued', admission: 'restoring', created_at: '2026-06-04T10:00:00.000Z' };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toBe('/api/sessions/session%2Fexample/prompts/prompt%2Fexample:resume');
+      expect(url.searchParams.get('admission')).toBe('durable');
+      expect(url.searchParams.get('agent_id')).toBe(agentId ?? null);
+      expect(init?.method).toBe('POST');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
+      expect(jsonRequestBody(init?.body)).toEqual(body);
+      return envelope(receipt);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.sessions.resumePrompt('session/example', body.prompt_id, body, { agent_id: agentId })).resolves.toEqual(receipt);
+      expect(fetchMock).toHaveBeenCalledOnce();
+    } finally { await channel.close(); }
+  });
+
+  it('lists and permanently deletes archives through the authenticated native home routes', async () => {
+    const calls: { path: string; query: string; method: string; body: unknown }[] = [];
+    const result = { deleted_ids: ['saved'], failed: [{ id: 'blocked', title: 'Retained', message: 'Deletion failed' }] };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      calls.push({ path: url.pathname, query: url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope(url.pathname.endsWith('/sessions') ? { items: [], has_more: false } : result);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.sessions.list({ archived_only: true, q: 'Saved', before_id: 'cursor', page_size: 2 });
+      expect(await channel.rest.sessions.deleteArchived('saved/id', { exclude_session_ids: ['independent'] })).toEqual(result);
+      expect(await channel.rest.sessions.deleteAllArchived()).toEqual(result);
+      expect(calls).toEqual([
+        { path: '/api/sessions', query: '?page_size=2&before_id=cursor&archived_only=true&q=Saved', method: 'GET', body: undefined },
+        { path: '/api/sessions/saved%2Fid:delete-archived', query: '', method: 'POST', body: { exclude_session_ids: ['independent'] } },
+        { path: '/api/sessions:delete-archived', query: '', method: 'POST', body: {} },
+      ]);
+    } finally { await channel.close(); }
+  });
+  it('keeps permanent archive deletion pending beyond the ordinary call deadline', async () => {
+    vi.useFakeTimers();
+    let finish!: (response: Response) => void;
+    let signal: AbortSignal | null | undefined;
+    const channel = new HttpChannel({ endpoint: 'http://example.test', timeoutMs: 10, fetch: ((_input, init) => {
+      signal = init?.signal;
+      return new Promise<Response>((resolve) => { finish = resolve; });
+    }) as typeof fetch });
+    try {
+      const pending = channel.rest.sessions.deleteAllArchived();
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(signal?.aborted).not.toBe(true);
+      finish(envelope({ deleted_ids: ['saved'], failed: [] }));
+      expect(await pending).toEqual({ deleted_ids: ['saved'], failed: [] });
+    } finally { await channel.close(); vi.useRealTimers(); }
+  });
+  it('sends workspace plugin selection and panel or command targets over authenticated REST', async () => {
+    const calls: { path: string; query: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      calls.push({ path: url.pathname, query: url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope({});
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.plugins.usage({ session_id: 'session/example' });
+      await channel.rest.plugins.setUsage({ target: { workspace_id: 'workspace-a' }, plugin_id: 'example', override: 'off' });
+      await channel.rest.plugins.panels({ workspace_id: 'workspace-a' });
+      await channel.rest.plugins.panelDocument('example', 'office', { session_id: 'session/example' });
+      await channel.rest.plugins.commands({ workspace_id: 'workspace-a' });
+      expect(calls).toEqual([
+        { path: '/api/plugins/usage', query: '?session_id=session%2Fexample', method: 'GET', body: undefined },
+        { path: '/api/plugins/usage', query: '', method: 'POST', body: { target: { workspace_id: 'workspace-a' }, plugin_id: 'example', override: 'off' } },
+        { path: '/api/plugins/panels', query: '?workspace_id=workspace-a', method: 'GET', body: undefined },
+        { path: '/api/plugins/example/panels/office/document', query: '?session_id=session%2Fexample', method: 'GET', body: undefined },
+        { path: '/api/plugins/commands', query: '?workspace_id=workspace-a', method: 'GET', body: undefined },
+      ]);
+    } finally { await channel.close(); }
+  });
+  it('forwards optional session identity for output-layer configuration without changing global reads', async () => {
+    const urls: URL[] = [];
+    const fetchMock = vi.fn(async (input: string | URL) => {
+      urls.push(new URL(String(input)));
+      return envelope({ enabled: true, presets: [], settings: { groupChars: 600, preloadBefore: 1, preloadAfter: 1, historyTokens: 16384 } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    try {
+      await channel.rest.outputLayer.configuration();
+      await channel.rest.outputLayer.configuration({ sessionId: 'session/example' });
+      expect(urls[0]!.search).toBe('');
+      expect(urls[1]!.searchParams.get('session_id')).toBe('session/example');
+    } finally { await channel.close(); }
+  });
+
+  it('streams output-layer Unicode events through authenticated REST with no prompt submission', async () => {
+    const encoder = new TextEncoder();
+    const bytes = encoder.encode('{"type":"delta","text":"译文😀"}\n{"type":"completed","text":"译文😀"}\n');
+    const fetchMock = vi.fn(async (url: string | URL, init?: RequestInit) => {
+      expect(new URL(String(url)).pathname).toBe('/api/output-layer/stream');
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
+      expect(jsonRequestBody(init?.body)).toMatchObject({ sessionId: 'example-session', text: 'Visible Assistant text', history: [] });
+      return new Response(new ReadableStream({ start(controller) {
+        controller.enqueue(bytes.slice(0, 27)); controller.enqueue(bytes.slice(27)); controller.close();
+      } }), { headers: { 'content-type': 'application/x-ndjson' } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    try {
+      const events: unknown[] = [];
+      await channel.rest.outputLayer.stream({ sessionId: 'example-session', sourceId: 'frame:0', sourceRevision: '1', text: 'Visible Assistant text',
+        preset: { id: 'translate', label: 'Translate', instruction: 'Translate into Chinese', contextWindow: 32768, maxOutputTokens: 2048 }, history: [], historyTokens: 16384, cycleId: 'cycle' }, (event) => events.push(event));
+      expect(events).toEqual([{ type: 'delta', text: '译文😀' }, { type: 'completed', text: '译文😀' }]);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    } finally { await channel.close(); }
+  });
   it('reads validated owner-aware metadata pages through authenticated REST without opening an agent', async () => {
     const page = { items: [{ id: 'test-00000001', session_id: 'session/example', owner_agent_id: 'owner', agent_id: 'target',
       source: 'live', kind: 'subagent', description: 'example dispatch', status: 'running', created_at: '2026-06-04T10:00:00.000Z' }],
@@ -92,8 +213,9 @@ describe('HTTP REST domains', () => {
   it('reads and explicitly applies persona settings through typed authenticated session routes', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const projected = { personaId: 'example', boundRevision: 'old', latestRevision: 'new', hasUpdate: true, overrides: { model: 'chosen' } };
-    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
-      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+    const fetchMock = vi.fn(async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      calls.push({ path: new URL(inputUrl).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
       expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
       return envelope(projected);
     });
@@ -157,6 +279,81 @@ describe('HTTP REST domains', () => {
       expect(calls).toEqual([{ path: '/api/workspaces:inspect', method: 'POST', body: { root: 'C:/example/project' } }]);
     } finally { await channel.close(); }
   });
+  it('reads the metadata catalog separately from the full list and one workspace detail', async () => {
+    const catalog = { items: [{ id: 'workspace-a', name: 'Example', root: 'C:/example/project', created_at: '2026-01-01', last_opened_at: '2026-01-01' }] };
+    const detail = { ...catalog.items[0], session_count: 3, isGit: true };
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      expect(init?.method ?? 'GET').toBe('GET');
+      return envelope(url.pathname.endsWith('/workspace%2Fa') ? detail : catalog);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.workspaces.listCatalog()).resolves.toEqual(catalog);
+      await expect(channel.rest.workspaces.detail('workspace/a')).resolves.toEqual(detail);
+      await expect(channel.rest.workspaces.list()).resolves.toEqual(catalog);
+      expect(calls).toEqual(['/api/workspaces?view=catalog', '/api/workspaces/workspace%2Fa', '/api/workspaces']);
+    } finally { await channel.close(); }
+  });
+  it('PATCHes rename and pin through the metadata catalog view while the full-workspace PATCH stays the default', async () => {
+    const entry = {
+      id: 'wd_example_0123456789ab',
+      root: 'C:/example/project',
+      name: 'Renamed',
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_opened_at: '2026-01-01T00:00:00.000Z',
+      pinned: true,
+    };
+    const full = { ...entry, session_count: 7, isGit: true };
+    const calls: { path: string; query: string; method: string; body: unknown }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname, query: url.search, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope(url.searchParams.get('view') === 'catalog' ? entry : full);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      const renamed = await channel.rest.workspaces.updateCatalog(entry.id, { name: 'Renamed' });
+      const pinned = await channel.rest.workspaces.updateCatalog(entry.id, { pinned: true });
+      expect(renamed).toEqual(entry);
+      expect(pinned).toEqual(entry);
+      expect(Object.keys(renamed).sort()).toEqual(['created_at', 'id', 'last_opened_at', 'name', 'pinned', 'root']);
+      expect(renamed).not.toHaveProperty('session_count');
+      expect(renamed).not.toHaveProperty('isGit');
+      expect(await channel.rest.workspaces.rename(entry.id, 'Renamed')).toEqual(full);
+      expect(await channel.rest.workspaces.setPinned(entry.id, true)).toEqual(full);
+      expect(calls).toEqual([
+        { path: `/api/workspaces/${entry.id}`, query: '?view=catalog', method: 'PATCH', body: { name: 'Renamed' } },
+        { path: `/api/workspaces/${entry.id}`, query: '?view=catalog', method: 'PATCH', body: { pinned: true } },
+        { path: `/api/workspaces/${entry.id}`, query: '', method: 'PATCH', body: { name: 'Renamed' } },
+        { path: `/api/workspaces/${entry.id}`, query: '', method: 'PATCH', body: { pinned: true } },
+      ]);
+    } finally { await channel.close(); }
+  });
+  it('reads and explicitly changes trust for the addressed workspace only', async () => {
+    const calls: { path: string; method: string }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      calls.push({ path: new URL(String(input)).pathname, method: init?.method ?? 'GET' });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope({ trusted: !String(input).endsWith('/untrust') });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.workspaces.trust('workspace-a')).resolves.toEqual({ trusted: true });
+      await expect(channel.rest.workspaces.setTrust('workspace-a', true)).resolves.toEqual({ trusted: true });
+      await expect(channel.rest.workspaces.setTrust('workspace-a', false)).resolves.toEqual({ trusted: false });
+      expect(calls).toEqual([
+        { path: '/api/workspaces/workspace-a/trust', method: 'GET' },
+        { path: '/api/workspaces/workspace-a/trust', method: 'POST' },
+        { path: '/api/workspaces/workspace-a/untrust', method: 'POST' },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('lists room rows and sends pin, archive, rename and delete through authenticated room routes', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
@@ -180,6 +377,28 @@ describe('HTTP REST domains', () => {
         { path: '/api/rooms/example', method: 'DELETE', body: undefined },
         { path: '/api/rooms/missing', method: 'PATCH', body: { archived: true } },
       ]);
+    } finally { await channel.close(); }
+  });
+  it('sends repeated usage source filters without joining or replacing their identities', async () => {
+    const calls: string[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push(url.pathname + url.search);
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      expect(url.searchParams.getAll('profile')).toEqual(['explore', 'profile/with space']);
+      expect(url.searchParams.getAll('provider')).toEqual(['provider-a', 'provider-b']);
+      expect(url.searchParams.getAll('model')).toEqual(['shared-alias', 'model-b']);
+      return envelope({ query: { profiles: ['explore', 'profile/with space'] } });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      const result = await channel.rest.usage({
+        dimension: 'profile', profile: ['explore', 'profile/with space'],
+        provider: ['provider-a', 'provider-b'], model: ['shared-alias', 'model-b'],
+        'workspace.id': 'workspace-a', range: 'custom', start_at: 100, end_at: 200,
+      });
+      expect(result.query.profiles).toEqual(['explore', 'profile/with space']);
+      expect(calls).toEqual(['/api/usage?dimension=profile&profile=explore&profile=profile%2Fwith+space&provider=provider-a&provider=provider-b&model=shared-alias&model=model-b&workspace.id=workspace-a&range=custom&start_at=100&end_at=200']);
     } finally { await channel.close(); }
   });
   it('reads repeated pricing model ids and writes overrides through the shared authenticated transport', async () => {
@@ -329,6 +548,29 @@ describe('HTTP REST domains', () => {
     }
   });
 
+  it('manages checksum-pinned executor installations through typed authenticated REST endpoints', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const status = { id: 'codex-acp', phase: 'idle', release: { package_name: 'example-adapter',
+      version: '1.0.0', integrity: 'sha512-example', source: 'https://example.test/adapter.tgz', entry: 'dist/index.js' } };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const path = new URL(String(input)).pathname;
+      calls.push({ path, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer example-token');
+      return envelope(path.endsWith('/installations') ? { items: [status] } : status);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'example-token', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.executors.listInstallations()).resolves.toEqual({ items: [status] });
+      await expect(channel.rest.executors.install('codex/acp')).resolves.toEqual(status);
+      await expect(channel.rest.executors.rollback('codex/acp')).resolves.toEqual(status);
+      expect(calls).toEqual([
+        { path: '/api/executors/installations', method: 'GET', body: undefined },
+        { path: '/api/executors/codex%2Facp/install', method: 'POST', body: {} },
+        { path: '/api/executors/codex%2Facp/rollback', method: 'POST', body: {} },
+      ]);
+    } finally { await channel.close(); }
+  });
+
   it('browses and attaches local sessions using encoded source IDs and typed REST requests', async () => {
     const calls: { path: string; method: string; body: unknown }[] = [];
     const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
@@ -348,6 +590,37 @@ describe('HTTP REST domains', () => {
         { path: '/api/executors/claude-acp/local-sessions?limit=10', method: 'GET', body: undefined },
         { path: '/api/executors/claude-acp/local-sessions/external%3Aclaude%3Asource', method: 'GET', body: undefined },
         { path: '/api/executors/claude-acp/local-sessions/external%3Aclaude%3Asource/resume', method: 'POST', body: { source_home: '/vendor' } },
+      ]);
+    } finally { await channel.close(); }
+  });
+
+  it('reads cached executor models and explicitly refreshes through typed REST endpoints', async () => {
+    const calls: { path: string; method: string; body: unknown }[] = [];
+    const catalog = {
+      executor_id: 'agy-cli-909', source: 'cli_probe', provenance: 'read_only_cli_probe', revision: 'r1',
+      apply_state: 'ready', observed_at: 1, executor_version: '0.1.0', catalog_program_version: '1.3.1',
+      effective: {
+        models: { state: 'ready', values: ['gemini-3.8-flash-medium'] },
+        thinking_levels: { state: 'unknown' }, context: { state: 'unknown' },
+        controls: {
+          model_switch: { advertised: true, applicability: 'next_binding', apply_state: 'pending' },
+          thinking_switch: { advertised: true, applicability: 'next_binding', apply_state: 'pending' },
+          manual_compact: { advertised: false, applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope(catalog);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', fetch: fetchMock as typeof fetch });
+    try {
+      await expect(channel.rest.executors.getModels('agy-cli-909')).resolves.toMatchObject({ catalog_program_version: '1.3.1' });
+      await expect(channel.rest.executors.refreshModels('agy-cli-909')).resolves.toMatchObject({ effective: { models: { values: ['gemini-3.8-flash-medium'] } } });
+      expect(calls).toEqual([
+        { path: '/api/executors/agy-cli-909/models', method: 'GET', body: undefined },
+        { path: '/api/executors/agy-cli-909/models:refresh', method: 'POST', body: {} },
       ]);
     } finally { await channel.close(); }
   });
@@ -558,6 +831,28 @@ describe('HTTP REST domains', () => {
     } finally {
       await channel.close();
     }
+  });
+
+  it('reads full cron details and sends create/update bodies with separate source and target sessions', async () => {
+    const calls: { path: string; method: string; body: unknown; session: string | null }[] = [];
+    const task = { id: 'task/example', prompt: 'full prompt' };
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body), session: url.searchParams.get('session_id') });
+      expect(init?.headers).toMatchObject({ authorization: 'Bearer secret' });
+      return envelope({ task });
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'secret', fetch: fetchMock as typeof fetch });
+    try {
+      expect((await channel.rest.cron.get('task/example', { session_id: 'source' })).task.prompt).toBe('full prompt');
+      await channel.rest.cron.create({ session_id: 'target', cron: '0 * * * *', prompt: 'new' });
+      await channel.rest.cron.update('task/example', { session_id: 'target', prompt: 'edit' }, { session_id: 'source' });
+      expect(calls).toEqual([
+        { path: '/api/cron/task%2Fexample', method: 'GET', body: undefined, session: 'source' },
+        { path: '/api/cron', method: 'POST', body: { session_id: 'target', cron: '0 * * * *', prompt: 'new' }, session: null },
+        { path: '/api/cron/task%2Fexample', method: 'PATCH', body: { session_id: 'target', prompt: 'edit' }, session: 'source' },
+      ]);
+    } finally { await channel.close(); }
   });
 
   it('routes cron list and task actions through /api/cron with the disambiguating session query', async () => {
@@ -777,8 +1072,8 @@ describe('HTTP REST domains', () => {
 });
 
 describe('native HTTP response lifecycle', () => {
-  const server = createServer((_request, response) => handler(response));
-  let handler: (response: ServerResponse) => void;
+  const server = createServer((request, response) => handler(response, request));
+  let handler: (response: ServerResponse, request: IncomingMessage) => void;
   let channel: HttpChannel;
   const timers = new Set<ReturnType<typeof setTimeout>>();
 
@@ -817,23 +1112,94 @@ describe('native HTTP response lifecycle', () => {
     expect(input.text.length).toBe(4 * 1024 * 1024);
   });
 
+  it('locates a delayed-header create deadline without exposing payloads or retrying', async () => {
+    let receivedId: string | undefined;
+    let requests = 0;
+    handler = (response, request) => {
+      requests += 1;
+      receivedId = request.headers['x-request-id'] as string;
+      later(() => response.end(JSON.stringify({ code: 0, msg: 'success', data: { id: 'created' } })), 200);
+    };
+    const failure = await channel['requestJson']('/sessions?private=QUERY_SECRET#FRAGMENT_SECRET', {
+      method: 'POST', body: { title: 'BODY_SECRET' }, headers: { authorization: 'Bearer AUTH_SECRET' },
+    }).catch((error: unknown) => error) as RPCError;
+    expect(requests).toBe(1);
+    expect(isValid(receivedId!)).toBe(true);
+    expect(failure).toMatchObject({ code: 50001, reason: HTTP_TRANSPORT_TIMEOUT_REASON, requestId: receivedId });
+    expect(failure.details).toEqual({ method: 'POST', path: '/api/sessions', phase: 'headers', timeoutMs: 100, elapsedMs: expect.any(Number), request_id: receivedId });
+    expect((failure.details as { elapsedMs: number }).elapsedMs).toBeGreaterThanOrEqual(90);
+    expect(JSON.stringify(failure)).not.toMatch(/QUERY_SECRET|FRAGMENT_SECRET|BODY_SECRET|AUTH_SECRET|127\.0\.0\.1/);
+  });
+
   it.each(['json', 'binary'] as const)('bounds a stalled %s body after headers on a real socket', async (kind) => {
-    handler = (response) => {
-      response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream' });
+    const responseId = ulid();
+    let receivedId: string | undefined;
+    handler = (response, request) => {
+      receivedId = request.headers['x-request-id'] as string;
+      response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream', 'x-request-id': responseId });
       response.write(kind === 'json' ? '{"code":0,' : 'partial file');
     };
     const operation = kind === 'json' ? channel.rest.meta() : channel.rest.sessions.media('s', 'f');
-    await expect(operation).rejects.toMatchObject({ code: 50001, reason: HTTP_TRANSPORT_TIMEOUT_REASON });
+    const failure = await operation.catch((error: unknown) => error) as RPCError;
+    expect(isValid(receivedId!)).toBe(true);
+    expect(receivedId).not.toBe(responseId);
+    expect(failure).toMatchObject({ code: 50001, reason: HTTP_TRANSPORT_TIMEOUT_REASON, requestId: responseId });
+    expect(failure.details).toEqual({ method: 'GET', path: kind === 'json' ? '/api/meta' : '/api/sessions/s/media/f', phase: 'body', timeoutMs: 100, elapsedMs: expect.any(Number), request_id: responseId });
+  });
+
+  it('preserves a valid caller id and propagates an authoritative envelope id without changing success', async () => {
+    const callerId = ulid();
+    const headerId = ulid();
+    const envelopeId = ulid();
+    let receivedId: string | undefined;
+    handler = (response, request) => {
+      receivedId = request.headers['x-request-id'] as string;
+      response.writeHead(200, { 'content-type': 'application/json', 'x-request-id': headerId });
+      response.end(JSON.stringify({ code: 0, msg: 'success', request_id: envelopeId, data: { ok: true } }));
+    };
+    await expect(channel['requestJson']('/fixture', { headers: { 'X-Request-ID': callerId } })).resolves.toEqual({ ok: true });
+    expect(receivedId).toBe(callerId);
+    await expect(channel['requestJson']('/fixture', { headers: { 'x-request-id': '11111111-1111-4111-8111-111111111111' } })).resolves.toEqual({ ok: true });
+    expect(isValid(receivedId!)).toBe(true);
+    handler = (response) => {
+      response.writeHead(200, { 'content-type': 'application/json', 'x-request-id': headerId });
+      response.end(JSON.stringify({ code: 40001, msg: 'refused', request_id: envelopeId }));
+    };
+    await expect(channel.rest.meta()).rejects.toMatchObject({ code: 40001, requestId: envelopeId, reason: undefined });
   });
 
   it.each(['json', 'binary'] as const)('reports a severed %s body as connection failure, not malformed JSON or timeout', async (kind) => {
-    handler = (response) => {
-      response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream', 'content-length': '1024' });
-      response.write(kind === 'json' ? '{"code":0,' : 'partial file');
-      later(() => response.destroy(), 15);
-    };
-    const operation = kind === 'json' ? channel.rest.meta() : channel.rest.sessions.media('s', 'f');
-    await expect(operation).rejects.toMatchObject({ name: 'RPCError', code: -1 });
+    await channel.close();
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('missing TCP address');
+    let resolveHeaders!: () => void;
+    const headersReceived = new Promise<void>((resolve) => { resolveHeaders = resolve; });
+    const nativeFetch = globalThis.fetch;
+    channel = new HttpChannel({
+      endpoint: `http://127.0.0.1:${address.port}`, timeoutMs: 100,
+      fetch: async (...args) => {
+        const response = await nativeFetch(...args);
+        resolveHeaders();
+        return response;
+      },
+    });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      handler = (response) => {
+        response.writeHead(200, { 'content-type': kind === 'json' ? 'application/json' : 'application/octet-stream', 'content-length': '1024' });
+        response.write(kind === 'json' ? '{"code":0,' : 'partial file');
+        later(() => response.destroy(), 15);
+      };
+      const operation = kind === 'json' ? channel.rest.meta() : channel.rest.sessions.media('s', 'f');
+      const rejected = expect(operation).rejects.toMatchObject({ name: 'RPCError', code: -1 });
+      await headersReceived;
+      await vi.advanceTimersByTimeAsync(15);
+      await rejected;
+    } finally {
+      for (const timer of timers) clearTimeout(timer);
+      timers.clear();
+      vi.useRealTimers();
+    }
   });
 
   it('distinguishes a complete malformed document from a server failure envelope', async () => {
@@ -852,6 +1218,62 @@ describe('native HTTP response lifecycle', () => {
       response.end(JSON.stringify({ code: 0, msg: 'success', data: { ok: true } }));
     };
     await expect(channel.rest.meta()).rejects.toMatchObject({ code: 503 });
+  });
+
+  it.each(['skill', 'preview', 'original'] as const)('applies explicit reading deadlines and body cancellation to %s text reads', async (kind) => {
+    const read = (options: import('../src/index.js').HttpRestRequestOptions) => kind === 'skill'
+      ? channel.rest.skills.readBuiltinContent('example', options)
+      : kind === 'preview' ? channel.rest.filesystem.previewHostFile('/example', 8, options)
+        : channel.rest.filesystem.readHostFile('/example', options);
+    const document = kind === 'skill' ? JSON.stringify({ code: 0, msg: 'success', data: { name: 'example', content: '# instructions' } }) : 'preview!';
+    handler = (response) => {
+      response.writeHead(kind === 'preview' ? 206 : 200, { 'content-type': kind === 'skill' ? 'application/json' : 'text/plain', 'content-range': 'bytes 0-7/24' });
+      response.write(document.slice(0, 1));
+      later(() => response.end(document.slice(1)), 180);
+    };
+    const result = await read({ timeoutMs: 0 });
+    expect(result).toEqual(kind === 'skill' ? { name: 'example', content: '# instructions' } : kind === 'preview' ? { text: 'preview!', truncated: true } : 'preview!');
+    await expect(read({ timeoutMs: 10 })).rejects.toMatchObject({ reason: HTTP_TRANSPORT_TIMEOUT_REASON });
+    let notifyHeaders!: () => void;
+    const headers = new Promise<void>((resolve) => { notifyHeaders = resolve; });
+    let disconnected = false;
+    handler = (response) => {
+      response.once('close', () => { disconnected = true; });
+      response.writeHead(200, { 'content-type': kind === 'skill' ? 'application/json' : 'text/plain' });
+      response.write(document.slice(0, 1));
+      notifyHeaders();
+    };
+    const controller = new AbortController();
+    const operation = read({ signal: controller.signal, timeoutMs: 0 }).catch((error: unknown) => error);
+    await headers;
+    controller.abort();
+    expect(await operation).toBeInstanceOf(Error);
+    await vi.waitFor(() => expect(disconnected).toBe(true));
+  });
+
+  it('cancels session-list body reads and applies explicit list deadlines', async () => {
+    const document = JSON.stringify({ code: 0, msg: 'success', data: { items: [], has_more: false } });
+    handler = (response) => {
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.write(document.slice(0, 1));
+      later(() => response.end(document.slice(1)), 180);
+    };
+    await expect(channel.rest.sessions.list({}, { timeoutMs: 10 })).rejects.toMatchObject({ reason: HTTP_TRANSPORT_TIMEOUT_REASON });
+    let notifyHeaders!: () => void;
+    const headers = new Promise<void>((resolve) => { notifyHeaders = resolve; });
+    let disconnected = false;
+    handler = (response) => {
+      response.once('close', () => { disconnected = true; });
+      response.writeHead(200, { 'content-type': 'application/json' });
+      response.write(document.slice(0, 1));
+      notifyHeaders();
+    };
+    const controller = new AbortController();
+    const operation = channel.rest.sessions.list({ page_size: 50 }, { signal: controller.signal, timeoutMs: 0 }).catch((error: unknown) => error);
+    await headers;
+    controller.abort();
+    expect(await operation).toBeInstanceOf(Error);
+    await vi.waitFor(() => expect(disconnected).toBe(true));
   });
 
   it('keeps long export body consumption alive without the default deadline', async () => {
@@ -884,7 +1306,7 @@ describe('native HTTP response lifecycle', () => {
       notifyHeaders();
     };
     const controller = new AbortController();
-    const operation = channel.call({}, 'example', 'read', [], { signal: controller.signal, timeoutMs: 0 }).catch((error: unknown) => error);
+    const operation = channel.call({}, 'example', 'read', [], { signal: controller.signal, timeoutMs: 100 }).catch((error: unknown) => error);
     await headersSent;
     if (action === 'caller') controller.abort();
     else await channel.close();
@@ -1069,4 +1491,70 @@ describe('fixed connection transport error normalization', () => {
       expect(fetchMock).toHaveBeenCalledOnce();
     } finally { await client.close(); }
   });
+});
+
+
+describe('guided browser setup HTTP facade', () => {
+  it('uses typed preset routes and explicit preparation consent without rewriting browser connections', async () => {
+    const calls: Array<{ path: string; method: string; body: unknown }> = [];
+    const status = { preset: 'kimi-webbridge', state: 'needs_user_action' };
+    const fetchMock: typeof fetch = async (input, init) => {
+      const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      calls.push({ path: new URL(inputUrl).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+      return envelope(status);
+    };
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture', fetch: fetchMock });
+    try {
+      await channel.rest.browser.setupPresets();
+      await channel.rest.browser.setupStatus('kimi-webbridge');
+      await channel.rest.browser.prepare('kimi-webbridge', { consent: true });
+      await channel.rest.browser.connectPreset('kimi-webbridge');
+      await channel.rest.browser.connectPreset('independent-browser', { connectionId: 'work', name: 'Work', setDefault: true });
+      await channel.rest.browser.openPreset('independent-browser', { connectionId: 'work' });
+      await channel.rest.browser.updatePreset('independent-browser');
+      await channel.rest.browser.createShortcut('independent-browser', { connectionId: 'work', name: 'Work' });
+      await channel.rest.browser.cancelSetup('independent-browser');
+      expect(calls).toEqual([
+        { path: '/api/browser/setup', method: 'GET', body: undefined },
+        { path: '/api/browser/setup/kimi-webbridge', method: 'GET', body: undefined },
+        { path: '/api/browser/setup/kimi-webbridge:prepare', method: 'POST', body: { consent: true } },
+        { path: '/api/browser/setup/kimi-webbridge:connect', method: 'POST', body: {} },
+        { path: '/api/browser/setup/independent-browser:connect', method: 'POST', body: { connectionId: 'work', name: 'Work', setDefault: true } },
+        { path: '/api/browser/setup/independent-browser:open', method: 'POST', body: { connectionId: 'work' } },
+        { path: '/api/browser/setup/independent-browser:update', method: 'POST', body: {} },
+        { path: '/api/browser/setup/independent-browser:shortcut', method: 'POST', body: { connectionId: 'work', name: 'Work' } },
+        { path: '/api/browser/setup/independent-browser:cancel', method: 'POST', body: {} },
+      ]);
+      await channel.rest.browser.saveSettings({ enabled: true, allowed_browsers: ['alpha', 'beta'] });
+      expect(calls.at(-1)).toEqual({ path: '/api/config', method: 'POST', body: { browser_control: { enabled: true, allowed_browsers: ['alpha', 'beta'] } } });
+    } finally { await channel.close(); }
+  });
+});
+
+it('carries IM setup and real channel preferences through authenticated REST', async () => {
+  const calls: { path: string; method: string; body: unknown }[] = [];
+  const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: (async (input, init) => {
+    expect(init?.headers).toMatchObject({ authorization: 'Bearer fixture-token' });
+    const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+    calls.push({ path: new URL(inputUrl).pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body) });
+    return envelope({});
+  }) as typeof fetch });
+  try {
+    await channel.rest.imSessions.setupCatalog();
+    await channel.rest.imSessions.setup({ action: 'save', provider_kind: 'discord', fields: { bot_token: 'example-token' } });
+    await channel.rest.imSessions.channelViews('session/example');
+    await channel.rest.imSessions.setInternalChannel('session/example', false);
+    await channel.rest.imSessions.testBinding('binding/example');
+    await channel.rest.imSessions.setNotificationChannel('session/example', 'channel/example', true);
+    await channel.rest.imSessions.removeNotificationChannel('session/example', 'channel/example');
+    expect(calls).toEqual([
+      { path: '/api/im/sessions/setup', method: 'GET', body: undefined },
+      { path: '/api/im/sessions/setup', method: 'POST', body: { action: 'save', provider_kind: 'discord', fields: { bot_token: 'example-token' } } },
+      { path: '/api/im/sessions/targets/session%2Fexample/channels', method: 'GET', body: undefined },
+      { path: '/api/im/sessions/targets/session%2Fexample/internal', method: 'PUT', body: { enabled: false } },
+      { path: '/api/im/sessions/bindings/binding%2Fexample/test', method: 'POST', body: {} },
+      { path: '/api/im/sessions/targets/session%2Fexample/notify/channel%2Fexample', method: 'PUT', body: { enabled: true } },
+      { path: '/api/im/sessions/targets/session%2Fexample/notify/channel%2Fexample', method: 'DELETE', body: undefined },
+    ]);
+  } finally { await channel.close(); }
 });

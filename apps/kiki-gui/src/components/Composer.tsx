@@ -26,10 +26,11 @@
  */
 
 import { useCallback, useEffect, useId, useMemo, useRef, useState, useSyncExternalStore, type DragEvent, type FocusEvent, type KeyboardEvent, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useFsSearchFeed, type FsSearchFeedSearch, type FsSearchFeedView } from '../lib/fsSearchFeed';
 import { useNavigate } from 'react-router-dom';
 
-import type { DeferredAppendTiming, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
+import type { DeferredAppendTiming, ExecutorModelCatalogResponse, FsSearchHit, PermissionMode, PromptPlanGate, SessionUsageError } from '@kiki/protocol';
 
 import {
   buildSlashItems,
@@ -50,6 +51,9 @@ import {
   hasMention,
   insertDroppedPaths,
   insertThreadRef,
+  isNativeExecutor,
+  NATIVE_EXECUTOR,
+  profileExecutor,
   removeThreadRef,
   subscribeComposerInserts,
   threadRefDeletionRange,
@@ -83,7 +87,9 @@ import {
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
-import { API_CODES, ApiError, type ModelSwitchMode, type NamedAgentProfile } from '../lib/client';
+import { API_CODES, ApiError, type NamedAgentProfile } from '../lib/client';
+import { isExecutorActionAvailable, mapExecutorCapabilities } from '../lib/executorCapabilities';
+import { pendingModelSwitchChange, type PendingModelSwitch } from '@kiki/session-core/session/modelSwitchQueue';
 import { registerOverlay } from '../lib/uiBusy';
 import { useCoarsePointer } from '../lib/layoutHooks';
 import { pastedMediaType } from '../lib/pastedFiles';
@@ -94,7 +100,7 @@ import { useConnection } from '../state/connection';
 import { useProfileFilePreview } from '../lib/profileFilePreview';
 import { ImageTile, QuoteChip, SkillChip, TextTile } from './ContextChips';
 import { ComposerNotes } from './ComposerNotes';
-import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterUsage } from './ContextMeter';
+import { ContextMeter, type ContextMeterAutoCompact, type ContextMeterCompactAvailability, type ContextMeterUsage } from './ContextMeter';
 import { LifeMark } from './LifeMark';
 import { ConfirmDialog } from './ConfirmDialog';
 import { useComposerContextMenu } from './ComposerContextMenu';
@@ -105,10 +111,14 @@ import { RoomRefChip, ThreadRefChip } from './ThreadRefChip';
 import { roomRefFetcher, useRoomRefDirectory } from '../lib/roomRefs';
 import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ExecutionSelect } from './harness/ExecutionSelect';
-import { useExecutorCatalog } from './settings/profileEditor/engines';
+import { ProfileSelect } from './harness/ProfileSelect';
+import { OutputLayerSelect } from './output-layer';
+import { engineLabel, useExecutorCatalog } from './settings/profileEditor/engines';
 import type { ExecutionChoice, ExecutionContextGroup } from '@kiki/session-core/composer';
 import { buildCatalogModelOptions, modelFactBadges, modelTooltip, useProviderGroupLabel } from './modelSelectOptions';
 import { POPOVER_SURFACE_CLASS, SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
+import { SessionRemainder } from './SessionRemainder';
+import type { ContentContinuationHandle } from './transcriptDetail';
 import { PersonaAvatar, type PersonaAvatarData } from './persona/PersonaAvatar';
 import {
   AddMenu,
@@ -129,6 +139,14 @@ import {
   type SendTimingChoice,
 } from './ComposerControls';
 
+import { usePluginPicker } from './capabilities/usePluginPicker';
+import { useMcpPicker } from './capabilities/useMcpPicker';
+
+export interface PendingRuntimeControls {
+  readonly model?: string;
+  readonly profile?: string;
+  readonly thinking?: string;
+}
 
 /** Localized descriptions for the client-side slash shortcuts (skills carry server text). */
 /** `/btw` is listed only where a side question can be opened (not in a side agent's own composer). */
@@ -147,8 +165,21 @@ const SLASH_ACTION_DESCRIPTIONS: Record<SlashActionId, I18nKey> = {
 };
 
 const MENTION_DEBOUNCE_MS = 250;
-const MENTION_ROW_LIMIT = 8;
 const CATALOG_RETRY_INTERVAL_MS = 30_000;
+/**
+ * `/new` has no session id. Its in-flight create stays under this key and is
+ * never copied onto the session id the route later adopts.
+ */
+const DRAFT_SEND_OWNER = '\0composer-draft';
+
+function sendOwnerKey(sessionId: string | undefined): string {
+  return sessionId === undefined ? DRAFT_SEND_OWNER : `s:${sessionId}`;
+}
+
+type SendFlight = {
+  readonly owner: string;
+  readonly generation: number;
+};
 
 const isTransientCatalogError = (error: unknown): boolean =>
   error instanceof ApiError && (error.code === API_CODES.TIMEOUT || error.code === -1);
@@ -198,10 +229,19 @@ export const isConversationProfile = (item: NamedAgentProfile): boolean =>
  * never offered here — dispatch them with AgentRun instead. A previously
  * selected profile that has become unavailable remains visible on the
  * trigger with a diagnostic until the user reselects.
+ *
+ * Profiles are grouped by the engine that runs them, and the group header is
+ * that engine's own name. A profile names the harness it drives, so listing
+ * them under one undifferentiated heading made a Codex profile look like a
+ * Kiki one; grouping by engine puts each one under the engine a reader already
+ * recognises from the execution picker. Native profiles keep the product name
+ * rather than the wire id, and the rows stay in the caller's order inside each
+ * group so the picker's existing sort is preserved.
  */
 export function buildAgentProfileOptions(
   items: readonly NamedAgentProfile[],
   t: (key: I18nKey, params?: I18nParams) => string,
+  nativeLabel?: string,
 ): SearchableSelectOption[] {
   const pickable = items.filter(isConversationProfile);
   const toOption = (item: NamedAgentProfile, group: string): SearchableSelectOption => ({
@@ -218,7 +258,17 @@ export function buildAgentProfileOptions(
         : []),
     ],
   });
-  return pickable.map((item) => toOption(item, t('composer.profileGroupMain')));
+  const groupOf = (item: NamedAgentProfile): string => {
+    const executor = profileExecutor(item);
+    if (isNativeExecutor(executor)) {
+      return nativeLabel !== undefined && nativeLabel !== '' ? nativeLabel : t('composer.profileGroupMain');
+    }
+    // A profile whose engine the catalog does not list still has to be
+    // findable, so it is grouped under the raw id rather than dropped or
+    // misfiled under Kiki.
+    return executor;
+  };
+  return pickable.map((item) => toOption(item, groupOf(item)));
 }
 
 /** What the composer needs to know about an external engine driving main. */
@@ -265,14 +315,16 @@ export function Composer({
   serverDefaultModel,
   modelSource,
   pendingModelSwitch,
+  pendingRuntimeControls,
+  onCancelRuntimeControls,
   modelSwitchError,
   agentProfile,
   agentProfilePending = false,
   execution,
+  boundExecution,
   onChangeExecution,
   executionPending = false,
   onCancelExecution,
-  executionGrants,
   permissionMode,
   planMode,
   planGate,
@@ -294,6 +346,8 @@ export function Composer({
   attachments,
   quote,
   onRemoveQuote,
+  quotes,
+  onRemoveQuoteItem,
   annotations,
   onRemoveAnnotation,
   onChangeAttachments,
@@ -302,7 +356,6 @@ export function Composer({
   onSideQuestion,
   onCompactContext,
   onChangeModel,
-  onChangeAgentProfile,
   personaPick,
   onRebuildContext,
   onChangePermissionMode,
@@ -315,6 +368,7 @@ export function Composer({
   onSendNow,
   busySendsNow = false,
   working,
+  sessionRemainder,
   onAbort,
   abortPending = false,
   queueEditing = false,
@@ -367,7 +421,11 @@ export function Composer({
    * A queued model switch: shown beside the model control so the pending
    * target is visible without pretending the actual model already changed.
    */
-  pendingModelSwitch?: { readonly to: string; readonly mode: ModelSwitchMode };
+  pendingModelSwitch?: PendingModelSwitch;
+  /** Controls captured for the next real prompt, not a separate queue item. */
+  pendingRuntimeControls?: PendingRuntimeControls;
+  /** Clears the pending prompt controls without touching the live binding. */
+  onCancelRuntimeControls?: () => void;
   /**
    * A failed read of the queued switch list. Known operations are kept, so this
    * is reported quietly with a retry instead of pretending the queue is empty.
@@ -387,6 +445,8 @@ export function Composer({
    * choice. The pick shown is the pending one when a switch is waiting.
    */
   execution?: ExecutionChoice;
+  /** What this session was bound to before any pending choice. */
+  boundExecution?: ExecutionChoice;
   onChangeExecution?: (next: ExecutionChoice) => void;
   /** A confirmed engine switch applies from the next message — accent tint. */
   executionPending?: boolean;
@@ -449,7 +509,7 @@ export function Composer({
    * File-picker feed for `@` mentions (session `fs:search` on /s, workspace
    * `fs:search` on /new). Omit to disable the picker.
    */
-  fsSearch?: (query: string) => Promise<FsSearchHit[]>;
+  fsSearch?: FsSearchFeedSearch;
   /** Cache scope for picker results (workspace id on /new); defaults to sessionId. */
   mentionScopeKey?: string;
   /** Controlled attachment chips (parent owns them beside the draft). */
@@ -457,6 +517,8 @@ export function Composer({
   /** Selected transcript text quoted into this prompt; rendered as a chip. */
   quote?: string | null;
   onRemoveQuote?: () => void;
+  quotes?: readonly import('@kiki/session-core/composer').SelectionQuote[];
+  onRemoveQuoteItem?: (id: string) => void;
   /** Selection annotations (quote + comment) accumulating beside the quote. */
   annotations?: readonly SelectionAnnotation[];
   onRemoveAnnotation?: (id: string) => void;
@@ -542,18 +604,27 @@ export function Composer({
    * The agent is working on this conversation: the row under the card shows
    * a quiet working line with the age of its latest output. Omit when idle
    * or while the session waits on the user (the tray says that instead).
-   * `continuingCount` names the background work a stop will NOT end;
    * `queued` holds details if a model request is waiting on governance admission.
    */
   working?: {
     readonly lastResponseAt: number | undefined;
-    readonly continuingCount?: number;
     readonly queued?: {
       readonly waitedMs: number;
       readonly modelId?: string;
       readonly blockingRules?: readonly string[];
     };
   };
+  /**
+   * Session structures this window did not carry — the snapshot fields the
+   * header shows and the agent roster. Rendered as one quiet entry at the right
+   * end of the footer row, on the same line as the working sentence, so a reader
+   * at the input can see what is missing without scrolling back through the
+   * transcript. Omitted when nothing is missing.
+   *
+   * Read from the same controller state as the reading column's own outlet, so
+   * both offer the same refs and the same recovery.
+   */
+  sessionRemainder?: ContentContinuationHandle | undefined;
   /** Omit when there is nothing to abort (e.g. /new session creation). */
   onAbort?: () => void;
   /**
@@ -616,6 +687,7 @@ export function Composer({
    */
   engine?: ComposerEngine;
 }) {
+  const quoteItems = quotes ?? (quote === undefined || quote === null ? [] : [{ id: 'legacy-quote', quote }]);
   const host = useHost();
   const vscodeRuntime = isVscodeWebview();
   const vscodeConversationRef = useRef<
@@ -674,6 +746,14 @@ export function Composer({
     return () => { mountedRef.current = false; };
   }, []);
   const ownsAttachmentResult = () => mountedRef.current && attachmentOwnerRef.current === owner;
+  // The inline message editor opens ready to type: it takes the caret itself,
+  // once its field can hold one (an attachment load disables it first). Gated
+  // on props it already takes, so the main composer never steals focus and no
+  // draft is touched (focus alone changes neither).
+  useEffect(() => {
+    if (!messageEditing || !autoFocus || disabled) return;
+    textareaRef.current?.focus();
+  }, [messageEditing, autoFocus, disabled]);
   const pasteDraftRef = useRef({ text, sessionId, connectionId, scopeId });
   pasteDraftRef.current = { text, sessionId, connectionId, scopeId };
   const ownsReservedAttachmentResult = () => mountedRef.current &&
@@ -738,6 +818,19 @@ export function Composer({
   const [activeIndex, setActiveIndex] = useState(0);
   const [attachmentError, setAttachmentError] = useState<string | null>(null);
   const turnInFlightRef = useRef(false);
+  // In-flight submits stay with the session (or the /new draft) that started
+  // them. The visible latch is that owner's entry. A settle removes only its
+  // own generation, so it cannot release another session or a newer submit.
+  const sendFlightsRef = useRef(new Map<string, number>());
+  const sendGenerationRef = useRef(0);
+  // A slash-catalog wait has not been delivered yet. Leaving the session drops
+  // that owner's token so the refetch cannot submit later or clear the next
+  // session's own wait.
+  const slashFlightsRef = useRef(new Map<string, number>());
+  const slashGenerationRef = useRef(0);
+  const composerAliveRef = useRef(true);
+  const sessionIdRef = useRef(sessionId);
+  sessionIdRef.current = sessionId;
   const sendNowRef = useRef(false);
   // One-shot queue-timing pick from the send-timing menu, consumed by the next
   // sendPrompt call (same latch shape as sendNowRef).
@@ -859,13 +952,17 @@ export function Composer({
     retryDelay: catalogRetryDelay,
     refetchInterval: catalogRefetchInterval,
   });
-  const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
-    () => buildAgentProfileOptions(agentProfilesQuery.data?.items ?? [], t),
-    [agentProfilesQuery.data, t],
-  );
   // The engine catalog behind the execution panel. Empty while loading or on a
   // server without the route; the native engine is always offered regardless.
   const executorCatalog = useExecutorCatalog();
+  const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
+    () => buildAgentProfileOptions(
+      agentProfilesQuery.data?.items ?? [],
+      t,
+      engineLabel(NATIVE_EXECUTOR, t('composer.agentDefaultName'), executorCatalog),
+    ),
+    [agentProfilesQuery.data, executorCatalog, t],
+  );
   const frozenMenuQuery = useQuery({
     queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
     queryFn: () => client.getAgentCapabilities({ session_id: sessionId!, agent_id: agentId }),
@@ -876,7 +973,6 @@ export function Composer({
   });
   const frozenProfile = frozenMenuQuery.data?.profile;
   const fromFile = execution?.profile_file !== undefined;
-  const externalFile = fromFile && execution?.executor !== 'native';
   const validateFile = fromFile && (sessionId === undefined || executionPending);
   const filePreviewQuery = useProfileFilePreview(validateFile ? execution?.profile_file : undefined, agentProfileCatalogMode);
   const selectedProfileName = fromFile
@@ -908,45 +1004,127 @@ export function Composer({
       description: reason, title: [row.title ?? row.label, reason].join('\n'),
     };
   }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
-  const validateProfile = !fromFile && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
-  const validatingModel = model ?? selectionDefaultModel ?? serverDefaultModel;
+  const selectedExecution = execution ?? boundExecution;
+  const externalExecution = selectedExecution !== undefined && !isNativeExecutor(selectedExecution.executor);
+  const executorId = externalExecution ? selectedExecution.executor : undefined;
+  const bareExternal = externalExecution && selectedExecution.profile === undefined;
+  const explicitProfileChoice = sessionId === undefined || agentProfilePending === true;
+  const validateProfile = !fromFile && !bareExternal && explicitProfileChoice && agentProfile !== undefined && agentProfileCatalogMode.mode !== 'disabled';
+  const validatingModel = externalExecution
+    ? (typeof selectedExecution.overrides?.model === 'string' ? selectedExecution.overrides.model : undefined)
+    : model || selectionDefaultModel || serverDefaultModel;
   const modelRuleSource = projectedProfileModelRuleSource(modelProjection, models, validatingModel, selectedProfileName);
-  const modelDomainState = externalFile ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
+  const modelDomainState = externalExecution ? 'allowed' : projectedProfileModelState(modelProjection, models, validatingModel, modelSelectionPosition);
   const invalidModelDomain = modelDomainState === 'blocked' || modelDomainState === 'unknown';
-  const selectedModel = validatingModel !== undefined
+  const queryClient = useQueryClient();
+  const executorModelsKey = ['executor-models', connectionId, scopeId, executorId] as const;
+  const executorRefresh = useMutation({
+    mutationFn: ({ id }: { id: string; key: readonly unknown[] }) => client.klient.rest!.executors.refreshModels(id),
+    onSuccess: (response, variables) => { queryClient.setQueryData(variables.key, response); },
+  });
+  const executorRefreshCurrent = executorRefresh.variables?.key.join('\0') === executorModelsKey.join('\0');
+  const executorModelsQuery = useQuery({
+    queryKey: executorModelsKey,
+    queryFn: () => client.klient.rest!.executors.getModels(executorId!),
+    enabled: executorId !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const executorModelResponse = executorModelsQuery.data;
+  const capabilityExecution = boundExecution ?? execution;
+  const boundExecutorId = capabilityExecution !== undefined && !isNativeExecutor(capabilityExecution.executor)
+    ? capabilityExecution.executor
+    : undefined;
+  const boundExecutorModelsQuery = useQuery({
+    queryKey: ['executor-models', connectionId, scopeId, boundExecutorId],
+    queryFn: () => client.klient.rest!.executors.getModels(boundExecutorId!),
+    enabled: boundExecutorId !== undefined,
+    staleTime: 60_000,
+    retry: false,
+  });
+  const capabilityNow = useNow();
+  const compactAvailability = useMemo((): ContextMeterCompactAvailability | undefined => {
+    if (boundExecutorId === undefined) return undefined;
+    const response = boundExecutorId === executorId ? executorModelResponse : boundExecutorModelsQuery.data;
+    const control = mapExecutorCapabilities(response, capabilityNow).controls.manual_compact;
+    if (control.kind === 'absent') return { available: false, reason: t('context.compactUnread') };
+    if (isExecutorActionAvailable(control)) return { available: true };
+    const reason = [
+      t(control.kind === 'unavailable' ? 'context.compactUnavailable' : 'context.compactUnknown'),
+      control.diagnostic,
+    ].filter((part): part is string => part !== undefined && part !== '').join(' · ');
+    return { available: false, reason };
+  }, [boundExecutorId, executorId, executorModelResponse, boundExecutorModelsQuery.data, capabilityNow, t]);
+  const executorCapabilities = mapExecutorCapabilities(executorModelResponse, capabilityNow);
+  const executorModelValues = executorCapabilities.models.kind === 'ready' || executorCapabilities.models.kind === 'partial'
+    ? executorCapabilities.models.values ?? [] : [];
+  const executorModelOptions: readonly SearchableSelectOption[] = [
+    ...(variant === 'subagent' ? [] : [{ value: '', label: t('composer.engineModelFollow') }]),
+    ...executorModelValues.map((value) => ({ value, label: value })),
+    ...(validatingModel !== undefined && !executorModelValues.includes(validatingModel)
+      ? [{ value: validatingModel, label: validatingModel }] : []),
+  ];
+  const executorModelWritable = isExecutorActionAvailable(executorCapabilities.controls.model_switch)
+    && (executorCapabilities.models.kind === 'ready' || executorCapabilities.models.kind === 'partial');
+  const writeExecutorModel = (next: string | undefined) => {
+    if (!executorModelWritable) return;
+    if (onChangeExecution !== undefined && selectedExecution !== undefined) {
+      onChangeExecution({
+        ...selectedExecution,
+        overrides: { ...selectedExecution.overrides, model: next ?? null },
+      });
+      return;
+    }
+    return onChangeModel(next);
+  };
+  const executorEfforts = isExecutorActionAvailable(executorCapabilities.controls.thinking_switch)
+    && (executorCapabilities.thinking_levels.kind === 'ready' || executorCapabilities.thinking_levels.kind === 'partial')
+    ? executorCapabilities.thinking_levels.values : undefined;
+  const selectedModel = !externalExecution && validatingModel !== undefined
     ? resolveCatalogModel(models, validatingModel)
     : undefined;
   // An override holding a bare alias (e.g. a profile-pinned k3-256k) displays
   // as the resolved catalog row, so the trigger names the serving provider's
   // model instead of an unmatched raw id.
-  const resolvedModelKey = model !== undefined
+  const resolvedModelKey = !externalExecution && model !== undefined
     ? resolveCatalogModel(models, model)?.id
     : undefined;
-  // A transport failure says nothing about whether a preserved selection is valid.
-  // During its background retry, React Query is still pending but must not hold send.
-  const selectionLoading =
-    (!externalFile && modelsQuery.isPending && !isTransientCatalogError(modelsQuery.failureReason)) ||
-    (validateProfile && agentProfilesQuery.isPending && !isTransientCatalogError(agentProfilesQuery.failureReason)) ||
-    (validateFile && filePreviewQuery.isPending);
+  // Catalog reads enrich the selection; the server validates the submitted binding.
   const selectionCatalogError = (validateFile ? filePreviewQuery.error : null) ??
-    [externalFile ? null : modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
+    [externalExecution ? null : modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
       .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
-  const invalidFile = validateFile && (!filePreviewQuery.isSuccess || filePreviewQuery.data?.profile.source_file === undefined);
+  const invalidFile = validateFile && (filePreviewQuery.isError ||
+    (filePreviewQuery.isSuccess && filePreviewQuery.data?.profile.source_file === undefined));
   const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
     && !agentProfileOptions.some((item) => item.value === agentProfile);
-  const invalidModel = !externalFile && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
-  const invalidEffort = !externalFile && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
+  const invalidModel = !externalExecution && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
+  const invalidEffort = !externalExecution && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !catalogModelSupportsEffort(selectedModel, effort);
   const isExternalClient = execution?.external_connection_id !== undefined;
-  const selectionBlocked = !isExternalClient && (selectionLoading || selectionCatalogError !== null || invalidFile || invalidProfile || invalidModel || invalidEffort || invalidModelDomain);
+  const selectionBlocked = !isExternalClient && (invalidFile || invalidProfile || invalidModel || invalidEffort || modelDomainState === 'blocked');
 
-  // The composer mount now survives route changes (the conversation shell owns
-  // it), so session-scoped transient UI must reset when the session under it
-  // changes: an open menu would otherwise filter A's catalog with B's draft.
+  // The composer mount survives route changes (the conversation shell owns
+  // it). Menus, the slash confirm, undo, and a painted submit error belong
+  // to the session that was on screen. An in-flight submit does not: the
+  // button follows the owner now shown, so B is not stuck on A's promise and
+  // returning to A while that promise is open keeps A's button disabled.
   const previousSessionIdRef = useRef(sessionId);
   useEffect(() => {
+    composerAliveRef.current = true;
+    return () => { composerAliveRef.current = false; };
+  }, []);
+  useEffect(() => {
     if (previousSessionIdRef.current === sessionId) return;
+    slashFlightsRef.current.delete(sendOwnerKey(previousSessionIdRef.current));
     previousSessionIdRef.current = sessionId;
+    const owner = sendOwnerKey(sessionId);
+    const inFlight = sendFlightsRef.current.has(owner);
+    turnInFlightRef.current = inFlight;
+    setTurnInFlight(inFlight);
+    const slashPending = slashFlightsRef.current.has(owner);
+    slashCatalogPendingRef.current = slashPending;
+    setSlashCatalogPending(slashPending);
+    setAttachmentError(null);
     setMenu(null);
     setSlashConfirm(null);
     setContextRebuildConfirm(false);
@@ -972,6 +1150,11 @@ export function Composer({
     retry: false,
   });
   const skills = skillsQuery.data?.skills ?? [];
+  const pluginPick = usePluginPicker(sessionId, workspaceId);
+  const mcpPick = useMcpPicker(sessionId);
+  const externalEngine = execution !== undefined && execution.executor !== undefined && execution.executor !== '' && execution.executor !== 'native'
+    ? engineLabel(execution.executor, execution.executor, executorCatalog)
+    : undefined;
   const slashMenuOpen = menu?.kind === 'slash';
   const refetchSkills = skillsQuery.refetch;
   const slashMenuWasOpenRef = useRef(false);
@@ -1002,16 +1185,13 @@ export function Composer({
     const timer = setTimeout(() => { setMentionQuery(menu.query); }, MENTION_DEBOUNCE_MS);
     return () => { clearTimeout(timer); };
   }, [menu]);
-  const fsQuery = useQuery({
-    queryKey: ['fs-search', mentionScopeKey ?? sessionId ?? 'none', mentionQuery],
-    queryFn: () => fsSearch!(mentionQuery),
-    enabled: menu?.kind === 'mention' && fsSearch !== undefined,
-    staleTime: 30_000,
+  const fsFeed = useFsSearchFeed({
+    scopeKey: mentionScopeKey ?? sessionId ?? 'none',
+    query: mentionQuery,
+    search: fsSearch ?? (() => Promise.resolve([])),
+    enabled: menu?.kind === 'mention' && menu.query === mentionQuery && fsSearch !== undefined,
   });
-  const mentionItems = useMemo(
-    () => (menu?.kind === 'mention' ? (fsQuery.data ?? []).slice(0, MENTION_ROW_LIMIT) : []),
-    [menu, fsQuery.data],
-  );
+  const mentionItems = menu?.kind === 'mention' && menu.query === mentionQuery ? fsFeed.items : [];
 
   const menuRowCount = menu?.kind === 'slash' ? filteredSlashItems.length : mentionItems.length;
   const menuQuery = menu?.query ?? null;
@@ -1055,12 +1235,12 @@ export function Composer({
 
   // Edits bypass send-only model selection, but still wait for all media.
   const canSend = queueEditing || messageEditing
-    ? (text.trim() !== '' || attachments.length > 0 || (annotations?.length ?? 0) > 0 || quote != null) &&
+    ? (text.trim() !== '' || attachments.length > 0 || (annotations?.length ?? 0) > 0 || quoteItems.length > 0) &&
       !disabled && !sendDisabled && !turnInFlight && !pendingAttachments
     : (text.trim() !== '' ||
         attachments.length > 0 ||
         (annotations !== undefined && annotations.length > 0) ||
-        (quote !== undefined && quote !== null)) &&
+        (quoteItems.length > 0)) &&
       !disabled &&
       !sendDisabled &&
       !selectionBlocked &&
@@ -1113,7 +1293,7 @@ export function Composer({
   const hasTray =
     conversationRefs.length > 0 ||
     draftSkill !== undefined ||
-    (quote !== undefined && quote !== null) ||
+    (quoteItems.length > 0) ||
     (annotations !== undefined && annotations.length > 0) ||
     attachments.length > 0;
   const hasChips =
@@ -1160,7 +1340,7 @@ export function Composer({
   const draftHasContent =
     text.trim() !== '' ||
     attachments.length > 0 ||
-    (quote !== undefined && quote !== null) ||
+    (quoteItems.length > 0) ||
     (annotations !== undefined && annotations.length > 0);
   const takenOver =
     needsYou !== undefined && needsYouCount > 0 && !queueEditing &&
@@ -1237,18 +1417,21 @@ export function Composer({
   };
 
   /**
-   * C-1 recall walk. ArrowUp enters from an empty draft or a caret on the
-   * first line; once browsing, ↑ ages and ↓ youthens, and ↓ past the newest
-   * entry hands the pre-browse draft back. Returns false when the keypress is
-   * not ours (no history, caret mid-text) so the caret keeps its native move.
+   * C-1 recall walk. ↑ steps to an older prompt only when the caret is at the
+   * start of the text; ↓ steps newer, and ↓ past the newest entry hands the
+   * pre-browse draft back, only when the caret is at the end. A wrapped line
+   * is not the start. The same edges apply while already browsing. Returns
+   * false when the keypress is not ours so the caret keeps its native move.
    */
   const recallHistory = (delta: -1 | 1): boolean => {
     if (inputHistory.length === 0) return false;
+    const node = textareaRef.current;
+    if (node === null || node.selectionStart !== node.selectionEnd) return false;
+    const atStart = node.selectionStart === 0;
+    const atEnd = node.selectionStart === node.value.length;
+    if (delta === -1 ? !atStart : !atEnd) return false;
     if (historyIndexRef.current === null) {
       if (delta !== -1) return false;
-      const caret = textareaRef.current?.selectionStart ?? 0;
-      const firstLineEnd = text.indexOf('\n');
-      if (text !== '' && firstLineEnd !== -1 && caret > firstLineEnd) return false;
       historySnapshotRef.current = text;
       historyIndexRef.current = inputHistory.length - 1;
     } else {
@@ -1277,16 +1460,24 @@ export function Composer({
 
   /**
    * Every real hand-off (prompt or skill activation) records the submitted
-   * text for ↑ recall and snapshots it so Ctrl+Z right after a send can
-   * resurrect the prompt. Local shortcut actions (/plan …) are not sent, so
-   * they never land here.
+   * text for ↑ recall under the session key captured when the send started.
+   * The error clear, recall cursor, and undo snapshot touch the resident
+   * composer. Those run only while this submit is still the visible
+   * generation: a VS Code prepare that resolves after a session switch must
+   * not seed the next draft's undo or clear its error. Local shortcut actions
+   * (`/plan` …) are not sent, so they never land here.
    */
-  const recordSubmission = () => {
-    setAttachmentError(null);
+  const recordSubmission = (surface: boolean) => {
     if (historyKey !== undefined) pushInputHistory(historyKey, text);
+    if (!surface) return;
+    setAttachmentError(null);
     historyIndexRef.current = null;
     pushUndoSnapshot({ text, cursor: lastCursorRef.current });
   };
+  const submissionVisible = (flight: SendFlight): boolean =>
+    composerAliveRef.current
+    && sendFlightsRef.current.get(flight.owner) === flight.generation
+    && sendOwnerKey(sessionIdRef.current) === flight.owner;
 
   const runAction = (action: SlashActionId) => {
     switch (action) {
@@ -1529,7 +1720,7 @@ export function Composer({
     const selection = { start: node?.selectionStart ?? lastCursorRef.current, end: node?.selectionEnd ?? lastCursorRef.current };
     try {
       const native = await host.readClipboardFiles?.();
-      const browser = native == null ? await read() : null;
+      const browser = native === null || native === undefined ? await read() : null;
       const latest = pasteDraftRef.current;
       if (!ownsAttachmentResult() || textareaRef.current !== node || node.disabled || latest.sessionId !== draft.sessionId || latest.connectionId !== draft.connectionId || latest.scopeId !== draft.scopeId) return;
       if (latest.text !== draft.text) {
@@ -1695,7 +1886,7 @@ export function Composer({
           }
           // `/btw <question>` goes to a side agent; the main turn never sees it.
           if (classified.item.action === 'btw' && classified.args !== '' && onSideQuestion !== undefined) {
-            recordSubmission();
+            recordSubmission(true);
             onChange('');
             onSideQuestion(classified.args);
             return;
@@ -1751,9 +1942,16 @@ export function Composer({
     }
     setMenu(null);
     if (text.trim().startsWith('/') && skillCatalogReady && !skillsQuery.isSuccess) {
+      const owner = sendOwnerKey(sessionId);
+      const generation = slashGenerationRef.current + 1;
+      slashGenerationRef.current = generation;
+      slashFlightsRef.current.set(owner, generation);
       slashCatalogPendingRef.current = true;
       setSlashCatalogPending(true);
       void refetchSkills({ cancelRefetch: false }).then((result) => {
+        if (!composerAliveRef.current || slashFlightsRef.current.get(owner) !== generation) return;
+        slashFlightsRef.current.delete(owner);
+        if (sendOwnerKey(sessionIdRef.current) !== owner) return;
         slashCatalogPendingRef.current = false;
         setSlashCatalogPending(false);
         const current = currentSlashDraftRef.current;
@@ -1771,22 +1969,34 @@ export function Composer({
   };
 
   /**
-   * Send-intent latch: the ref flips synchronously on the first trigger, so a
-   * rapid second click/Enter during the submit round trip (before the parent
-   * clears the draft or `busy` arrives) is a no-op instead of a duplicate
-   * send. The latch releases once the handler's promise settles — failure
-   * included, so the button comes back for a retry. `canSend` reads the state
-   * twin, disabling the button in the same render.
+   * Send-intent latch, owned by the session (or `/new` draft) that started
+   * it. The map updates synchronously, so a second Enter in that same session
+   * does not call `onSend` again. Switching away does not give the entry to
+   * the next session, and switching back while the promise is open keeps this
+   * session disabled. `busy` is the running turn, not this latch. The entry
+   * is removed when its own promise settles — failure included — and only
+   * when the generation still matches, so an older settle cannot release a
+   * newer submit. The visible button updates only when that owner is the one
+   * on screen. `canSend` reads the state twin.
    */
-  const runAgentTurn = (turn: () => Promise<void>) => {
-    if (turnInFlightRef.current) return;
+  const runAgentTurn = (turn: (flight: SendFlight) => Promise<void>) => {
+    const owner = sendOwnerKey(sessionId);
+    if (sendFlightsRef.current.has(owner)) return;
+    const generation = sendGenerationRef.current + 1;
+    sendGenerationRef.current = generation;
+    const flight: SendFlight = { owner, generation };
+    sendFlightsRef.current.set(owner, generation);
     turnInFlightRef.current = true;
     setTurnInFlight(true);
-    void turn()
+    void turn(flight)
       .catch((error: unknown) => {
+        if (!submissionVisible(flight)) return;
         setAttachmentError(errorText(locale, error));
       })
       .finally(() => {
+        if (!composerAliveRef.current || sendFlightsRef.current.get(flight.owner) !== flight.generation) return;
+        sendFlightsRef.current.delete(flight.owner);
+        if (sendOwnerKey(sessionIdRef.current) !== flight.owner) return;
         turnInFlightRef.current = false;
         setTurnInFlight(false);
       });
@@ -1830,15 +2040,19 @@ export function Composer({
         : onSend(prepared.text, sentAttachments, merged);
     };
     if (!vscodeRuntime) {
-      runAgentTurn(async () => {
-        recordSubmission();
+      runAgentTurn(async (flight) => {
+        recordSubmission(submissionVisible(flight));
         await deliver(content);
       });
       return;
     }
-    runAgentTurn(async () => {
+    // `preparePrompt` yields before the captured handler runs. The handler is
+    // the one from the session that started the send; it is not retargeted at
+    // whoever is on screen, and it is not dropped here. Resident draft
+    // mutations wait until this flight is still that visible generation.
+    runAgentTurn(async (flight) => {
       const prepared = await vscodeHost.preparePrompt(content, vscodeConversationId, true);
-      recordSubmission();
+      recordSubmission(submissionVisible(flight));
       await deliver(prepared);
     });
   };
@@ -1848,15 +2062,15 @@ export function Composer({
       ? [...attachments, ...ssh.snapshot]
       : attachments;
     if (!vscodeRuntime) {
-      runAgentTurn(async () => {
-        recordSubmission();
+      runAgentTurn(async (flight) => {
+        recordSubmission(submissionVisible(flight));
         await onActivateSkill?.(name, args, sentAttachments, text);
       });
       return;
     }
-    runAgentTurn(async () => {
+    runAgentTurn(async (flight) => {
       await vscodeHost.preparePrompt('', vscodeConversationId, false);
-      recordSubmission();
+      recordSubmission(submissionVisible(flight));
       await onActivateSkill?.(name, args, sentAttachments, text);
     });
   };
@@ -1887,6 +2101,16 @@ export function Composer({
   const sendTimingFocusRef = useRef<'first' | 'last' | null>(null);
   const sendTimingAvailable =
     sendTimingDefault !== undefined && busy && !busySendsNow && !queueEditing && canSend && !takenOver;
+  // A pending engine/profile switch cannot join the running turn (the active
+  // turn cannot rebind), so "send now" silently degrades to an ordinary queue
+  // entry. While one is pending, name the real result where the choice is
+  // made: the timing menu omits the send-now row (same omission as an unwired
+  // steer path), the button title says the message queues and carries the
+  // switch, and the working-line hint is omitted too — its "sends now"
+  // wording would promise what the key no longer does. The pending chip
+  // beside it already names the switch, and the ⌘/Ctrl+Enter path itself
+  // keeps working: it queues.
+  const sendNowDegrades = executionPending || pendingRuntimeControls?.model !== undefined;
 
   const clearSendTimingTimers = () => {
     if (sendTimingOpenTimerRef.current !== null) {
@@ -2070,6 +2294,7 @@ export function Composer({
     if (
       (event.key === 'ArrowUp' || event.key === 'ArrowDown') &&
       menu === null &&
+      !event.shiftKey &&
       !event.ctrlKey && !event.metaKey && !event.altKey &&
       recallHistory(event.key === 'ArrowUp' ? -1 : 1)
     ) {
@@ -2114,17 +2339,33 @@ export function Composer({
   // source and provider live in the picker and the tooltip).
   const modelShortLabel = selectedModel?.display_name ?? effectiveModel;
   // The queued switch names its target the same way the picker does.
-  const pendingSwitchLabel = pendingModelSwitch === undefined
-    ? undefined
-    : resolveCatalogModel(models, pendingModelSwitch.to)?.display_name ?? pendingModelSwitch.to;
+  const pendingSwitchChange = pendingModelSwitch === undefined ? undefined : pendingModelSwitchChange({
+    ...pendingModelSwitch,
+    from: pendingModelSwitch.from === undefined ? undefined : resolveCatalogModel(models, pendingModelSwitch.from)?.id ?? pendingModelSwitch.from,
+    to: resolveCatalogModel(models, pendingModelSwitch.to)?.id ?? pendingModelSwitch.to,
+  });
+  const pendingSwitchLabel = pendingModelSwitch === undefined ? undefined
+    : pendingSwitchChange === 'effort' ? pendingModelSwitch.targetThinking
+      : resolveCatalogModel(models, pendingModelSwitch.to)?.display_name ?? pendingModelSwitch.to;
+  const pendingSwitchPrefix = pendingSwitchChange === 'model' ? 'modelSwitch.pendingChipPrefix'
+    : `modelSwitch.pendingChipPrefix.${pendingSwitchChange}` as I18nKey;
+  const pendingSwitchLine = pendingSwitchChange === 'model' ? 'modelSwitch.pendingLine'
+    : `modelSwitch.pendingLine.${pendingSwitchChange}` as I18nKey;
+  const pendingRuntimeControlParts = pendingRuntimeControls === undefined ? [] : [
+    pendingRuntimeControls.profile,
+    pendingRuntimeControls.model === undefined ? undefined : resolveCatalogModel(models, pendingRuntimeControls.model)?.display_name ?? pendingRuntimeControls.model,
+    pendingRuntimeControls.thinking,
+  ].filter((value): value is string => value !== undefined && value !== '');
 
   // Focus continuity across a busy flip: becoming `disabled` force-blurs the
   // textarea (platform behavior), which used to be invisible because the
   // composer remounted on route changes anyway. With the resident shell seat
   // the node survives — so a blur CAUSED by the disable (element already
   // disabled at blur time) arms a one-shot refocus when the composer
-  // re-enables. A deliberate click-away while enabled never arms it, and a
-  // cold session open (never focused) has nothing to restore.
+  // re-enables. The focusin that lands on the document is that platform
+  // fallback, so it does not cancel the arm; a focusin on any other control
+  // does. A deliberate click-away while enabled never arms it, and a cold
+  // session open (never focused) has nothing to restore.
   //
   // The arming listener is NATIVE: Chromium fires `blur` but not `focusout`
   // when disabling a focused element, and React's onBlur is focusout-based —
@@ -2137,7 +2378,9 @@ export function Composer({
       if (textarea.disabled) refocusOnEnableRef.current = true;
     };
     const cancelOnFocusElsewhere = (event: globalThis.FocusEvent) => {
-      if (event.target !== textarea) refocusOnEnableRef.current = false;
+      const target = event.target;
+      if (target === textarea || target === document.body || target === document.documentElement) return;
+      refocusOnEnableRef.current = false;
     };
     textarea.addEventListener('blur', armOnDisableBlur);
     document.addEventListener('focusin', cancelOnFocusElsewhere);
@@ -2187,9 +2430,9 @@ export function Composer({
     onChangeGoalObjective,
   };
 
-  // A picked persona still rides the chip (personaPick.value) on /new: the
-  // panel behind it stays the execution list, and the persona's own manager is
-  // reached from its chip menu.
+  // A picked persona rides the chip (personaPick.value) on /new; the panel
+  // behind it offers both execution profiles and direct persona selection,
+  // while the persona's own manager is reached from its dedicated surface.
   const pickedPersona = personaPick?.value;
 
   // The status line under the input: ordered segments, each a quiet trigger
@@ -2206,67 +2449,120 @@ export function Composer({
     if (runMode !== 'normal') statusSegments.push({ key: 'run-mode', node: chip });
   }
   if (onChangeExecution !== undefined && execution !== undefined) {
-    // The engine and its profile are ONE control: which program runs, and
-    // whether Kiki's profile layer shapes it. A persona still rides the same
-    // control on /new — the face names who answers, the panel behind it chooses
-    // what runs, and its ✕ removes the identity without touching the engine.
     statusSegments.push({
-      key: 'agent',
+      key: 'profile',
       node: (
         <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
-        <ExecutionSelect
-          choice={execution}
-          pending={executionPending}
-          busy={busy}
-          onChange={(next) => {
-            // An engine without a profile is the bare harness: no persona can
-            // ride it, so a carried persona steps aside rather than silently
-            // binding Kiki's layer to a harness that was picked as-is.
-            if (next.profile === undefined) personaPick?.onChange(undefined);
-            onChangeExecution(next);
-          }}
-          catalog={executorCatalog}
-          profiles={agentProfilesQuery.data?.items ?? []}
-          catalogMode={agentProfileCatalogMode}
-          pickableProfile={isConversationProfile}
-          nativeLabel={t('composer.agentDefaultName')}
-          contextGroups={executionGrants?.kikiContext}
-          allowKikiSubagents={executionGrants?.allowKikiSubagents}
-          persona={pickedPersona === undefined ? undefined : {
-            id: pickedPersona.id,
-            name: pickedPersona.name,
-            avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
-          }}
-          onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
-          onCancelPending={executionPending ? onCancelExecution : undefined}
-        />
+          <ProfileSelect
+            choice={execution}
+            pending={executionPending || pendingRuntimeControls !== undefined}
+            busy={busy}
+            disabled={variant === 'subagent' && disabled}
+            onChange={(next) => {
+              if (next.profile === undefined && next.profile_file === undefined) {
+                personaPick?.onChange(undefined);
+              }
+              onChangeExecution(next);
+            }}
+            catalog={executorCatalog}
+            profiles={agentProfilesQuery.data?.items ?? []}
+            catalogMode={agentProfileCatalogMode}
+            pickableProfile={isConversationProfile}
+            nativeLabel={t('composer.agentDefaultName')}
+            persona={pickedPersona === undefined ? undefined : {
+              id: pickedPersona.id,
+              name: pickedPersona.name,
+              avatar: <PersonaAvatar persona={pickedPersona} size={20} decorative className="!rounded-full" />,
+            }}
+            onClearPersona={pickedPersona === undefined ? undefined : () => { personaPick?.onChange(undefined); }}
+            onSelectPersona={personaPick === undefined ? undefined : (id) => {
+              personaPick.onChange(id);
+            }}
+            onCancelPending={executionPending ? onCancelExecution : pendingRuntimeControls !== undefined ? onCancelRuntimeControls : undefined}
+            boundExecution={boundExecution}
+          />
+        </ComposerPanelOrigin>
+      ),
+    });
+    statusSegments.push({
+      key: 'execution',
+      node: (
+        <ComposerPanelOrigin className="flex min-w-0 items-center [&>div]:min-w-0">
+          <ExecutionSelect
+            choice={execution}
+            pending={executionPending || pendingRuntimeControls !== undefined}
+            busy={busy}
+            disabled={variant === 'subagent' && disabled}
+            onChange={(next) => {
+              if (next.profile === undefined && next.profile_file === undefined) {
+                personaPick?.onChange(undefined);
+              }
+              onChangeExecution(next);
+            }}
+            catalog={executorCatalog}
+            profiles={agentProfilesQuery.data?.items ?? []}
+            nativeLabel={t('composer.agentDefaultName')}
+            models={models}
+            modelOptions={modelOptions}
+            currentModel={externalExecution ? validatingModel : model}
+            effectiveModel={effectiveModel}
+            modelShortLabel={modelShortLabel}
+            modelSource={modelSource}
+            currentEffort={effort}
+            efforts={externalExecution ? executorEfforts : efforts}
+            onChangeModel={(next) => {
+              if (externalExecution) return writeExecutorModel(next);
+              const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
+              if (state === 'blocked' || state === 'unknown') return;
+              return onChangeModel(next);
+            }}
+            onChangeEffort={onChangeEffort}
+            executorResponse={executorModelResponse}
+            executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
+            executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
+            onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
+          />
         </ComposerPanelOrigin>
       ),
     });
   }
-  if (!isExternalClient) {
+  if (execution === undefined && !isExternalClient) {
     statusSegments.push({
       key: 'model',
-      node: (
+      node: externalExecution && variant !== 'subagent' ? (
+        <ExternalModelChoice
+          key={executorModelsKey.join('\0')}
+          choice={{ ...selectedExecution, overrides: { ...selectedExecution.overrides, model: validatingModel } }}
+          engineLabel={engineLabel(executorId!, executorId!, executorCatalog)}
+          executorResponse={executorModelResponse}
+          executorRefreshBusy={executorRefreshCurrent && executorRefresh.isPending}
+          executorRefreshFailed={executorRefreshCurrent && executorRefresh.isError}
+          onRefreshExecutorModels={() => { executorRefresh.mutate({ id: executorId!, key: executorModelsKey }); }}
+          onChange={(next) => {
+            if (onChangeExecution !== undefined) onChangeExecution({ ...selectedExecution, overrides: { ...selectedExecution.overrides, model: next ?? null, thinking: next === undefined ? null : selectedExecution.overrides?.thinking } });
+            else void onChangeModel(next);
+          }}
+        />
+      ) : (
         <ModelChip
-          modelOptions={modelOptions}
-          // An external engine's model is its own id, set on the profile: shown
-          // read-only here, with the engine named in the tooltip.
-          hasCatalog={!externalFile && engine === undefined && models.length > 0}
-          engineLabel={externalFile ? executorCatalog.find((item) => item.id === execution?.executor)?.label ?? execution?.executor : engine?.label}
+          modelOptions={externalExecution ? executorModelOptions : modelOptions}
+          hasCatalog={externalExecution ? executorModelWritable : engine === undefined && models.length > 0}
+          engineLabel={externalExecution && !executorModelWritable ? engineLabel(executorId!, executorId!, executorCatalog) : engine?.label}
+          executorLabel={externalExecution ? engineLabel(executorId!, executorId!, executorCatalog) : undefined}
           openSignal={modelMenuSignal}
-          model={model}
+          model={externalExecution ? validatingModel : model}
           resolvedModelKey={resolvedModelKey}
           effectiveModel={effectiveModel}
           shortLabel={modelShortLabel}
           modelSource={modelSource}
           disabled={variant === 'subagent' && disabled}
           onChangeModel={(next) => {
+            if (externalExecution) return writeExecutorModel(next);
             const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
             if (state === 'blocked' || state === 'unknown') return;
             return onChangeModel(next);
           }}
-          efforts={efforts}
+          efforts={externalExecution ? executorEfforts : efforts}
           effort={effort}
           onChangeEffort={onChangeEffort}
         />
@@ -2279,7 +2575,7 @@ export function Composer({
       node: (
         <span
           data-model-switch-pending={pendingModelSwitch.mode}
-          title={`${pendingModelSwitch.to} — ${t('modelSwitch.pendingChipTitle')}`}
+          title={`${t(pendingSwitchPrefix)}${pendingSwitchLabel} — ${t('modelSwitch.pendingChipTitle')}`}
           // A narrow composer drops this chip entirely and says the same thing
           // in words above the input instead of clipping it to "fixture/…".
           className="@max-[30rem]/composer:hidden flex h-7 max-w-56 min-w-0 items-center px-1.5 text-[12px] font-medium text-accent-ink"
@@ -2287,9 +2583,38 @@ export function Composer({
           {/* The width cap matches the model chip's, so a long target id
               truncates where the model beside it would. */}
           <span className="truncate">
-            {t('modelSwitch.pendingChipPrefix')}
-            {pendingModelSwitch.to}
+            {t(pendingSwitchPrefix)}
+            {pendingSwitchLabel}
           </span>
+        </span>
+      ),
+    });
+  }
+  if (execution === undefined && pendingRuntimeControls !== undefined && pendingRuntimeControlParts.length > 0) {
+    const label = pendingRuntimeControlParts.join(' · ');
+    statusSegments.push({
+      key: 'runtime-controls-pending',
+      node: (
+        <span
+          data-runtime-controls-pending
+          title={pendingRuntimeControls.model !== undefined || pendingRuntimeControls.thinking !== undefined
+            ? t('modelSwitch.pendingChipTitle')
+            : t('composer.execution.pendingTitle')}
+          className="flex h-7 max-w-64 min-w-0 items-center gap-1 px-1.5 text-[12px] font-medium text-accent-ink"
+        >
+          <span className="min-w-0 truncate">{t('composer.execution.pendingSuffix', { name: label })}</span>
+          {onCancelRuntimeControls !== undefined ? (
+            <button
+              type="button"
+              data-runtime-controls-cancel
+              aria-label={t('modelSwitch.action.cancel')}
+              title={t('modelSwitch.action.cancel')}
+              onClick={onCancelRuntimeControls}
+              className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-8 pointer-coarse:w-8"
+            >
+              <Icon name="close" size={12} />
+            </button>
+          ) : null}
         </span>
       ),
     });
@@ -2306,6 +2631,12 @@ export function Composer({
         />
       ),
     });
+    if (sessionId !== undefined) {
+      statusSegments.push({
+        key: 'output-layer',
+        node: <OutputLayerSelect sessionId={sessionId} />,
+      });
+    }
   }
 
   return (
@@ -2357,15 +2688,15 @@ export function Composer({
           >
             <Icon name="arrowRight" size={12} className="mt-[3px]" />
             <span className="min-w-0 break-words">
-              {t('modelSwitch.pendingLine', {
+              {t(pendingSwitchLine, {
                 model: pendingSwitchLabel ?? pendingModelSwitch.to,
+                effort: pendingModelSwitch.targetThinking ?? '',
                 mode: t(`modelSwitch.modeName.${pendingModelSwitch.mode}` as I18nKey),
               })}
             </span>
           </p>
         ) : null}
-        {selectionBlocked ? <div data-selection-diagnostic role={selectionLoading ? 'status' : 'alert'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
-          {selectionLoading ? <p className="text-ink-soft">{t('selection.loading')}</p> : null}
+        {selectionBlocked || selectionCatalogError !== null ? <div data-selection-diagnostic role={selectionBlocked ? 'alert' : 'status'} className="mb-2 space-y-1 rounded-lg border border-hairline bg-paper px-3 py-2 text-[11.5px] text-danger">
           {selectionCatalogError !== null ? <p>{t('selection.catalogError', { detail: selectionCatalogError.message })}</p> : null}
           {invalidProfile ? <p>{t('selection.profileInvalid', { value: agentProfile! })}</p> : null}
           {invalidModel ? (
@@ -2468,9 +2799,9 @@ export function Composer({
                 <>
                   <span className="shrink-0">{t('composer.needsYou.draftKept')}</span>
                   <span data-needs-you-draft className="min-w-0 flex-1 truncate text-ink-soft">{text.split('\n')[0]}</span>
-                  {attachments.length + (annotations?.length ?? 0) + (quote !== undefined && quote !== null ? 1 : 0) > 0 ? (
+                  {attachments.length + (annotations?.length ?? 0) + quoteItems.length > 0 ? (
                     <span className="shrink-0 tabular-nums">
-                      {tp('composer.needsYou.extras', attachments.length + (annotations?.length ?? 0) + (quote !== undefined && quote !== null ? 1 : 0))}
+                      {tp('composer.needsYou.extras', attachments.length + (annotations?.length ?? 0) + quoteItems.length)}
                     </span>
                   ) : null}
                   <span className="shrink-0 font-medium text-ink-soft">{t('composer.needsYou.backToInput')}</span>
@@ -2562,9 +2893,9 @@ export function Composer({
               {draftSkill !== undefined ? (
                 <SkillChip name={draftSkill.name} description={draftSkill.description} onRemove={removeDraftSkill} />
               ) : null}
-              {quote !== undefined && quote !== null ? (
-                <QuoteChip quote={quote} onRemove={onRemoveQuote} />
-              ) : null}
+              {quoteItems.map((item) => (
+                <QuoteChip key={item.id} quote={item.quote} onRemove={quotes === undefined ? onRemoveQuote : onRemoveQuoteItem === undefined ? undefined : () => onRemoveQuoteItem(item.id)} />
+              ))}
               {annotations !== undefined && annotations.length > 0 ? (
                 <ComposerNotes
                   annotations={annotations}
@@ -2594,9 +2925,9 @@ export function Composer({
                     }
                     if (attachment.kind === 'retained') {
                       const part = attachment.content;
-                      const src = part.type === 'image' && part.source.kind === 'base64'
+                      const src = attachment.previewUrl ?? (part.type === 'image' && part.source.kind === 'base64'
                         ? `data:${part.source.media_type};base64,${part.source.data}`
-                        : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined;
+                        : part.type === 'image' && part.source.kind === 'url' && /^(?:data:|blob:|https?:)/.test(part.source.url) ? part.source.url : undefined);
                       if (src !== undefined) return (
                         <ImageTile key={`retained-${index}`} src={src} name={attachment.name}
                           onOpen={onOpenImage === undefined ? undefined : () => { onOpenImage(src, attachment.name); }}
@@ -2744,8 +3075,8 @@ export function Composer({
                   <MentionMenuBody
                     items={mentionItems}
                     activeIndex={activeIndex}
-                    loading={fsQuery.isLoading || fsQuery.isFetching}
-                    failed={fsQuery.isError}
+                    feed={fsFeed}
+                    loading={fsFeed.pendingInitial || menu.query !== mentionQuery}
                     query={menu.query}
                     onAccept={acceptMentionItem}
                   />
@@ -2779,6 +3110,9 @@ export function Composer({
               ref={textareaRef}
               data-composer-input
               rows={1}
+              // The accessible name stays fixed; the placeholder below carries
+              // the per-state hint (busy, disabled, reply) and keeps changing.
+              aria-label={t('composer.inputAria')}
               enterKeyHint={coarsePointer ? 'enter' : undefined}
               // A catalog/seat rerender can precede the browser's IME input
               // event. Never restore an older controlled prop over preedit text.
@@ -2900,6 +3234,29 @@ export function Composer({
                 onInsert: insertSkillFromMenu,
                 onShow: () => { if (skillsQuery.isStale && !skillsQuery.isFetching) void skillsQuery.refetch(); },
               } : undefined}
+              plugins={pluginPick.available ? {
+                items: pluginPick.items,
+                loading: pluginPick.loading,
+                failed: pluginPick.failed,
+                ...(pluginPick.busyId !== undefined ? { busyId: pluginPick.busyId } : {}),
+                onToggle: pluginPick.toggle,
+              } : undefined}
+              optional={{ sessionId }}
+              mcp={mcpPick.available ? {
+                items: mcpPick.items,
+                loading: mcpPick.loading,
+                failed: mcpPick.failed,
+                writable: mcpPick.writable,
+                busyName: mcpPick.busyName,
+                busyAction: mcpPick.busyAction,
+                busyOn: mcpPick.busyOn,
+                failure: mcpPick.failure,
+                onDismissFailure: mcpPick.dismissFailure,
+                onShow: mcpPick.onShow,
+                onOverride: mcpPick.setOverride,
+                onReconnect: mcpPick.reconnect,
+                externalEngine,
+              } : undefined}
               files={fsSearch === undefined ? undefined : {
                 search: fsSearch,
                 scopeKey: mentionScopeKey ?? sessionId ?? 'none',
@@ -2907,7 +3264,7 @@ export function Composer({
               }}
               timing={sendTimingAvailable && sendTimingDefault !== undefined ? {
                 defaultTiming: sendTimingDefault,
-                canSendNow: onSendNow !== undefined,
+                canSendNow: onSendNow !== undefined && !sendNowDegrades,
                 onPick: (choice: SendTimingChoice) => {
                   if (choice === 'default') send();
                   else if (choice === 'now') send(true);
@@ -2931,6 +3288,8 @@ export function Composer({
                   className={`flex min-w-0 items-center [&>div]:flex [&>div]:min-w-0 ${
                     segment.key === 'permission'
                       ? 'ml-auto shrink-0 pl-1'
+                      : segment.key === 'output-layer'
+                        ? 'shrink-0 pl-1'
                       : segment.key === 'run-mode'
                         ? 'mr-1 shrink-0'
                         : segment.key === 'agent'
@@ -2951,8 +3310,10 @@ export function Composer({
                   usageError={sessionUsageError}
                   usageScope={variant === 'subagent' ? 'agent' : 'session'}
                   sessionId={sessionId}
+                  agentId={agentId}
                   onCompact={onCompactContext}
                   autoCompact={contextAutoCompact}
+                  compactAvailability={compactAvailability}
                 />
               ) : null}
               {queueEditing && onQueueEditRemove !== undefined ? (
@@ -3025,6 +3386,24 @@ export function Composer({
                   has a mouse path too (Enter works as before). The wrapper is
                   the send-timing menu's hover/focus zone and its positioning
                   context; the menu floats above the button. */}
+              {/* Message editing ends where it is decided: one quiet circular X
+                  left of Send abandons this edit (the message itself is never
+                  touched) instead of a second row of controls below the
+                  composer. Escape keeps the same meaning, and the X waits while
+                  the edit is in flight. */}
+              {messageEditing && onQueueEditCancel !== undefined ? (
+                <button
+                  type="button"
+                  data-edit-cancel=""
+                  disabled={turnInFlight}
+                  onClick={() => { onQueueEditCancel(); }}
+                  title={t('common.cancel')}
+                  aria-label={t('common.cancel')}
+                  className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-ink-faint transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40 pointer-coarse:h-10 pointer-coarse:w-10"
+                >
+                  <Icon name="close" size={12} />
+                </button>
+              ) : null}
               <div
                 ref={sendTimingRootRef}
                 data-send-timing-root
@@ -3048,6 +3427,8 @@ export function Composer({
                       ? t(sendShortcut === 'cmd-enter' ? 'composer.queueEditConfirmTitleCmdEnter' : 'composer.queueEditConfirmTitle')
                       : sendDisabled && !disabled && sendDisabledTitle !== undefined
                         ? sendDisabledTitle
+                        : busy && sendNowDegrades
+                          ? t(sendShortcut === 'cmd-enter' ? 'composer.queueTitlePendingSwitchCmdEnter' : 'composer.queueTitlePendingSwitch')
                         : busy && busySendsNow
                           ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowTitleCmdEnter' : 'composer.sendNowTitle')
                         : busy
@@ -3117,7 +3498,7 @@ export function Composer({
                     <p className={POPOVER_LABEL_CLASS}>{t('composer.sendTimingAria')}</p>
                     <SendTimingRows
                       defaultTiming={sendTimingDefault}
-                      canSendNow={onSendNow !== undefined}
+                      canSendNow={onSendNow !== undefined && !sendNowDegrades}
                       onPick={(choice) => {
                         closeSendTiming();
                         if (choice === 'default') send();
@@ -3137,19 +3518,26 @@ export function Composer({
             (right). Key hints teach an empty draft only while the composer
             holds focus. The row never changes height, so the card never hops. */}
         <div data-composer-status-line className="mt-1.5 flex h-4 min-w-0 items-center gap-3 px-1">
-          {working !== undefined || statusNotice !== undefined || (takenOver && busy && onAbort !== undefined) ? (
+          {working !== undefined || statusNotice !== undefined || sessionRemainder !== undefined || (takenOver && busy && onAbort !== undefined) ? (
             <>
               {working !== undefined ? (
                 <ComposerWorkingLine
                   lastResponseAt={working.lastResponseAt}
-                  continuingCount={working.continuingCount}
                   queued={working.queued}
-                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver
+                  sendNowHint={text.trim() !== '' && onSendNow !== undefined && !busySendsNow && !queueEditing && !takenOver && !sendNowDegrades
                     ? t(sendShortcut === 'cmd-enter' ? 'composer.sendNowHintCmdEnter' : 'composer.sendNowHint')
                     : undefined}
                 />
               ) : null}
               <span className="flex-1" />
+              {/* The right end of the footer: one quiet entry, on the working
+                  line's own row, that says the session is not fully here yet and
+                  opens the same per-structure reading and recovery the
+                  transcript outlet offers. It sits before the notice and Stop so
+                  neither of them is pushed off a narrow row. */}
+              {sessionRemainder === undefined ? null : (
+                <SessionRemainder className="shrink" handle={sessionRemainder} />
+              )}
               {statusNotice === undefined ? null : (
                 <span data-composer-status-notice className="flex min-w-0 shrink items-center gap-1.5 text-[12px] font-medium text-amber-ink">
                   {statusNotice}
@@ -3323,41 +3711,32 @@ function MentionMenuBody({
   items,
   activeIndex,
   loading,
-  failed,
+  feed,
   query,
   onAccept,
 }: {
   items: readonly FsSearchHit[];
   activeIndex: number;
   loading: boolean;
-  failed: boolean;
+  feed: FsSearchFeedView;
   query: string;
   onAccept: (item: FsSearchHit) => void;
 }) {
   const { t } = useI18n();
-  if (failed) {
-    return (
-      <p className="px-3 py-2 text-[12px] text-danger">
-        {t('composer.filesFailed')}
-      </p>
-    );
-  }
-  if (items.length === 0) {
-    return (
-      <p className="px-3 py-2 text-[11.5px] text-ink-faint">
-        {loading
-          ? t('composer.filesSearching')
-          : query === ''
-            ? t('composer.filesEmpty')
-            : t('composer.filesNoMatch', { query })}
-      </p>
-    );
-  }
+  const pending = feed.pendingMore || feed.pendingRestart;
   return (
     <>
-      <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">
-        {t('composer.filesHeader')}
-      </p>
+      {feed.failed ? <p className="px-3 py-2 text-[12px] text-danger">{t('composer.filesFailed')}</p> : null}
+      {loading || (items.length === 0 && feed.exhausted && !feed.failed) ? (
+        <p className="px-3 py-2 text-[12px] text-ink-faint">
+          {loading ? t('composer.filesSearching') : query === '' ? t('composer.filesEmpty') : t('composer.filesNoMatch', { query })}
+        </p>
+      ) : null}
+      {items.length > 0 ? <p className="px-3 pt-1.5 pb-1 text-[12px] font-medium text-ink-faint">{t('composer.filesHeader')}</p> : null}
+      <div data-mention-file-list className="max-h-64 overflow-y-auto" onScroll={(event) => {
+        const node = event.currentTarget;
+        if (!loading && !pending && !feed.failed && !feed.exhausted && node.scrollHeight - node.scrollTop - node.clientHeight <= 32) feed.loadMore();
+      }}>
       {items.map((item, index) => {
         const active = index === activeIndex;
         const isDir = item.kind === 'directory';
@@ -3383,7 +3762,147 @@ function MentionMenuBody({
           </button>
         );
       })}
+      </div>
+      {!loading && (!feed.exhausted || feed.failed || pending) ? (
+        <button type="button" data-mention-file-more={feed.failed ? 'retry' : pending ? 'pending' : 'more'}
+          disabled={pending} onClick={feed.failed ? feed.retry : feed.loadMore}
+          className="flex w-full rounded-md px-3 py-2 text-left text-[12px] text-ink-soft hover:bg-paper disabled:cursor-wait">
+          {feed.failed ? t('common.retry') : pending ? t('sidebar.loadingMore') : t('sidebar.searchLoadMore')}
+        </button>
+      ) : null}
     </>
+  );
+}
+
+function ExternalModelChoice({ choice, engineLabel, executorResponse, executorRefreshBusy, executorRefreshFailed, onRefreshExecutorModels, onChange }: {
+  choice: ExecutionChoice;
+  engineLabel: string;
+  executorResponse?: ExecutorModelCatalogResponse;
+  executorRefreshBusy: boolean;
+  executorRefreshFailed: boolean;
+  onRefreshExecutorModels: () => void;
+  onChange: (model: string | undefined) => void;
+}) {
+  const { t } = useI18n();
+  const now = useNow();
+  const executorCapabilities = mapExecutorCapabilities(executorResponse, now);
+  const model = typeof choice.overrides?.model === 'string' ? choice.overrides.model : undefined;
+  const modelDimension = executorCapabilities.models;
+  const modelState = modelDimension.kind;
+  const reportedValues = modelState === 'ready' || modelState === 'partial'
+    ? modelDimension.values ?? []
+    : [];
+  const currentModelIsUnlisted = modelState === 'ready'
+    && model !== undefined
+    && model !== ''
+    && !reportedValues.includes(model);
+  const modelOptions: readonly SearchableSelectOption[] = [
+    { value: '', label: t('composer.engineModelFollow') },
+    ...reportedValues.map((value) => ({ value, label: value })),
+    ...(model !== undefined && model !== '' && !reportedValues.includes(model)
+      ? [{
+        value: model,
+        label: model,
+        badges: currentModelIsUnlisted
+          ? [{ label: t('composer.engineModelNotInList'), tone: 'caution' as const }]
+          : undefined,
+      }]
+      : []),
+  ];
+  const statusMessage = modelState === 'loading'
+    ? t('composer.engineModelLoading')
+    : modelState === 'partial'
+      ? t('composer.engineModelPartial', { count: reportedValues.length })
+      : modelState === 'unavailable'
+        ? t('composer.engineModelUnavailable')
+        : modelState === 'unknown' ? t('composer.engineModelUnknown') : undefined;
+  // One compact status line, in the order a person needs it: a failed refresh
+  // first (the list on screen is stale by definition), then the model catalog's
+  // own state with its real reason, then the age of the read. A stale read
+  // collapses the model state to unknown, so its age — not "not known yet" —
+  // is the honest line, with Refresh beside it as the recovery.
+  const stale = executorCapabilities.freshness === 'stale';
+  const modelDiagnostic = modelDimension.diagnostic !== undefined && modelDimension.diagnostic !== ''
+    ? modelDimension.diagnostic
+    : undefined;
+  const modelNote = statusMessage === undefined || (stale && modelState === 'unknown')
+    ? undefined
+    : (modelState === 'unavailable' || modelState === 'unknown') && modelDiagnostic !== undefined
+      ? `${statusMessage} · ${modelDiagnostic}`
+      : statusMessage;
+  const statusLine = executorRefreshFailed
+    ? t('composer.engineCapabilityRefreshFailed')
+    : [modelNote, stale ? t('composer.engineCapabilityStale') : undefined]
+      .filter((part): part is string => part !== undefined)
+      .join(' · ') || undefined;
+  // The one capability that changes what this selector itself may do. Unknown
+  // is not a refusal, so only a declared-unsupported control earns the line.
+  const switchControl = executorCapabilities.controls.model_switch;
+  const switchLine = switchControl.kind === 'unavailable'
+    ? [t('composer.engineModelSwitchUnavailable'), switchControl.diagnostic]
+      .filter((part): part is string => part !== undefined && part !== '')
+      .join(' · ')
+    : undefined;
+  const panelFooter = (
+    <div data-external-model-footer className="flex items-center gap-2 border-t border-hairline px-3 py-1.5 text-[12px] leading-snug text-ink-faint">
+      <div data-external-model-status className="min-w-0 flex-1">
+        {statusLine !== undefined ? (
+          <p
+            data-external-model-refresh-error={executorRefreshFailed ? true : undefined}
+            className="truncate"
+            title={statusLine}
+          >
+            {statusLine}
+          </p>
+        ) : null}
+        {switchLine !== undefined ? (
+          <p data-external-model-switch className="truncate" title={switchLine}>{switchLine}</p>
+        ) : null}
+      </div>
+      <button
+        type="button"
+        data-external-model-refresh
+        aria-label={t('composer.engineCapabilityRefreshAria')}
+        title={t('composer.engineCapabilityRefreshAria')}
+        disabled={executorRefreshBusy}
+        onClick={onRefreshExecutorModels}
+        className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-ink-soft hover:bg-ink/[0.06] hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none disabled:cursor-wait disabled:opacity-60"
+      >
+        {executorRefreshBusy ? t('composer.engineCapabilityRefreshing') : t('composer.engineCapabilityRefresh')}
+      </button>
+    </div>
+  );
+  const writable = isExecutorActionAvailable(switchControl) && (modelState === 'ready' || modelState === 'partial');
+  if (!writable) return <span className="flex min-w-0 items-center gap-1" data-external-model-readonly>
+    <span data-composer-engine-model={engineLabel} className="max-w-56 truncate px-1.5 text-[13px] text-ink-soft" title={[engineLabel, statusLine, switchLine].filter(Boolean).join(' · ')}>
+      {model ?? t('composer.engineModelFollow')}
+    </span>
+    <button type="button" data-external-model-refresh disabled={executorRefreshBusy} onClick={onRefreshExecutorModels}
+      aria-label={t('composer.engineCapabilityRefreshAria')} title={statusLine ?? t('composer.engineCapabilityRefreshAria')}
+      className="rounded p-1 text-ink-faint hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40">
+      <Icon name="refresh" size={12} />
+    </button>
+  </span>;
+  return (
+    <ComposerPanelOrigin className="flex min-w-0 [&>div]:min-w-0">
+      <SearchableSelect
+        id="composer-engine-model-select"
+        value={model ?? ''}
+        options={modelOptions}
+        searchPlaceholder={t('composer.engineModelId')}
+        allowCustomValue
+        onChange={(next) => { onChange(next === '' ? undefined : next); }}
+        ariaLabel={t('composer.modelAria')}
+        title={engineLabel}
+        emptyText={t('composer.engineModelFollow')}
+        density="compact"
+        placement="above"
+        hideChevron
+        panelClassName={`anim-enter ${COMPOSER_PANEL_START} w-80 ${POPOVER_SURFACE_CLASS}`}
+        panelFooter={panelFooter}
+        buttonClassName={`${STATUS_SEGMENT_CLASS} max-w-full ${model === undefined ? '' : STATUS_SEGMENT_SET}`}
+      />
+    </ComposerPanelOrigin>
   );
 }
 
@@ -3393,9 +3912,8 @@ function MentionMenuBody({
  * so the two facts never squeeze each other out. The agent profile is a
  * separate toolbar control, not part of this panel.
  *
- * With an empty catalog the trigger degrades to the read-only effective model
- * (nothing to pick) while the panel still carries the effort row; with neither
- * available it is inert text.
+ * Native sessions keep the panel available even without a catalog so setup
+ * remains reachable. External engines keep their own read-only model label.
  */
 function ModelChip({
   modelOptions,
@@ -3411,11 +3929,13 @@ function ModelChip({
   effort,
   onChangeEffort,
   engineLabel,
+  executorLabel,
   openSignal,
 }: {
   readonly modelOptions: readonly SearchableSelectOption[];
   /** Set when an external engine serves the model: the label is read-only. */
   readonly engineLabel?: string;
+  readonly executorLabel?: string;
   /** The invalid-model diagnostic bumps this to open the menu as its recovery. */
   readonly openSignal?: number;
   /** False when `GET /models` returned nothing — no model is pickable. */
@@ -3434,16 +3954,18 @@ function ModelChip({
   readonly onChangeEffort: (effort: string) => void;
 }) {
   const { t } = useI18n();
+  const navigate = useNavigate();
   const displayEfforts = sortThinkingEffortsForDisplay(efforts ?? []);
   const showEffort = displayEfforts.length > 0 && effort !== undefined;
   const sourceTitle = t('composer.modelTitle', { source: t(`composer.modelProvenance.${modelSource}`) });
   // The trigger shows only the display name + effort; the tooltip carries the
   // full picture (raw id and where the choice came from).
-  const title = engineLabel !== undefined
-    ? t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: engineLabel })
-    : effectiveModel !== undefined ? `${effectiveModel} — ${sourceTitle}` : sourceTitle;
+  const servingEngine = executorLabel ?? engineLabel;
+  const title = servingEngine !== undefined
+    ? `${t('composer.engineModelTitle', { model: effectiveModel ?? t('composer.engineModelDefault'), engine: servingEngine })} · ${sourceTitle}`
+    : effectiveModel !== undefined ? `${effectiveModel} · ${sourceTitle}` : sourceTitle;
 
-  if (engineLabel !== undefined || (!hasCatalog && !showEffort)) {
+  if (engineLabel !== undefined) {
     return (
       <span
         data-composer-engine-model={engineLabel}
@@ -3483,7 +4005,7 @@ function ModelChip({
       openSignal={openSignal}
       title={title}
       ariaLabel={t('composer.modelAria')}
-      emptyText={t('composer.inheritDefault')}
+      emptyText={t(effectiveModel === undefined ? 'composer.chooseModel' : 'composer.inheritDefault')}
       searchPlaceholder={t('composer.modelSearchPlaceholder')}
       density="compact"
       placement="above"
@@ -3512,9 +4034,9 @@ function ModelChip({
       panelHeader={
         <div data-model-provenance className="flex items-center gap-2 border-b border-hairline px-3 py-2">
           <span className="min-w-0 flex-1 truncate text-[12px] font-medium text-ink-faint">
-            {t(`composer.modelProvenance.${modelSource}`)}
+            {[executorLabel, t(`composer.modelProvenance.${modelSource}`)].filter(Boolean).join(' · ')}
           </span>
-          {model !== undefined && hasCatalog && !disabled ? (
+          {executorLabel === undefined && model !== undefined && hasCatalog && !disabled ? (
             <button
               type="button"
               data-model-reset
@@ -3527,7 +4049,8 @@ function ModelChip({
         </div>
       }
       panelFooter={
-        showEffort ? (
+        <>
+        {showEffort ? (
           <div className="flex items-center gap-2 border-t border-hairline px-3 py-2">
             <span className="shrink-0 text-[12px] font-medium text-ink-faint">
               {t('composer.effortHeading')}
@@ -3557,7 +4080,16 @@ function ModelChip({
               ))}
             </div>
           </div>
-        ) : null
+        ) : null}
+        {executorLabel === undefined ? <button
+          type="button"
+          data-model-configure
+          onClick={() => { void navigate('/settings/ai?tab=providers#st-card-providers-add'); }}
+          className="w-full border-t border-hairline px-3 py-2 text-left text-[12px] font-medium text-ink-soft hover:bg-paper hover:text-ink focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
+        >
+          {t('composer.configureModels')}
+        </button> : null}
+        </>
       }
     />
     </ComposerPanelOrigin>
@@ -3613,12 +4145,10 @@ function EffortGauge({
  */
 function ComposerWorkingLine({
   lastResponseAt,
-  continuingCount,
   queued,
   sendNowHint,
 }: {
   readonly lastResponseAt: number | undefined;
-  readonly continuingCount: number | undefined;
   readonly queued?: {
     readonly waitedMs: number;
     readonly modelId?: string;
@@ -3689,9 +4219,6 @@ function ComposerWorkingLine({
         ) : (
           <span className="min-w-0 truncate tabular-nums">{status}</span>
         )}
-        {continuingCount !== undefined && continuingCount > 0 ? (
-          <span data-composer-continuing className="hidden shrink-0 sm:inline">· {t('composer.continuing', { count: continuingCount })}</span>
-        ) : null}
         {sendNowHint !== undefined ? (
           <span data-composer-send-now-hint className="hidden shrink-0 sm:inline">· {sendNowHint}</span>
         ) : null}

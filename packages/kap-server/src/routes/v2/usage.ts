@@ -7,10 +7,9 @@ import { z } from 'zod';
 import { defineRoute } from '../../middleware/defineRoute';
 import { errEnvelope, okEnvelope } from '../../protocol/envelope';
 import { ErrorCode } from '../../protocol/error-codes';
-import {
-  UsageAggregationService,
-  UsagePageTokenMismatchError,
-} from '../../usage/usageAggregationService';
+import { UsagePageTokenMismatchError } from '../../usage/usageAggregationService';
+import { usageRuntime } from '../../usage/usageRuntime';
+import { withReplyCloseSignal } from '../../procedures/requestSignal';
 
 interface V2UsageRouteHost {
   post(
@@ -56,7 +55,7 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
     reply.send(okEnvelope(core.accessor.get(IRequestGovernance).agentSnapshot(), req.id));
   });
   app.get(agents.path, agents.options, agents.handler as Parameters<V2UsageRouteHost['get']>[2]);
-  const service = new UsageAggregationService(core);
+  const { service } = usageRuntime(core);
   const rescanStatus = defineRoute({
     method: 'GET', path: '/usage/rescan', success: { data: usageRescanStatusSchema },
     operationId: 'getUsageRescan', tags: ['usage'],
@@ -86,7 +85,12 @@ export function registerV2UsageRoutes(app: V2UsageRouteHost, core: Scope): void 
     },
     async (req, reply) => {
       try {
-        reply.send(okEnvelope(await service.query(req.query), req.id));
+        const result = await withReplyCloseSignal(
+          reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+          (signal) => service.query(req.query, signal),
+          req,
+        );
+        reply.send(okEnvelope(result, req.id));
       } catch (error) {
         if (error instanceof UsagePageTokenMismatchError) {
           reply.send(errEnvelope(ErrorCode.PAGE_TOKEN_MISMATCH, error.message, req.id));

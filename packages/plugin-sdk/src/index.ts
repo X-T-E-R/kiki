@@ -1,6 +1,10 @@
 import type { SessionSourceDefinition, ImportProbe, ImportParsePage, ImportDiscoveryPage } from './session-import.js';
 export * from './session-import.js';
 export * from './media.js';
+export * from './im.js';
+export * from './messages.js';
+import type { PluginMessagesApi } from './messages.js';
+import type { PluginImAdapterDefinition, PluginImAdapter } from './im.js';
 import type { MediaProviderDefinition, MediaProviderAdapter, PluginMediaApi } from './media.js';
 
 export interface SessionSourceContext {
@@ -42,9 +46,13 @@ export interface PluginExecutionContext {
   readonly signal: AbortSignal;
   readonly settings: Readonly<Record<string, unknown>>;
   readonly workspaceRoot?: string;
+  readonly workspaceId?: string;
+  /** Kiki data home supplied by hosts supporting plugin protocol 0.4.1 or later. */
+  readonly kikiHome?: string;
   readonly approvedPaths: readonly string[];
   readonly imageIn: boolean;
   readonly media: PluginMediaApi;
+  readonly messages: PluginMessagesApi;
   progress(update: { kind: 'progress' | 'status' | 'stdout' | 'stderr'; text?: string; percent?: number }): void;
 }
 
@@ -57,6 +65,7 @@ export interface PluginRegistrationApi {
   registerTool(definition: PluginToolDefinition, execute: PluginTool['execute']): void;
   registerSessionSource(definition: SessionSourceDefinition, adapter: SessionSourceAdapter): void;
   registerMediaProvider(definition: MediaProviderDefinition, adapter: MediaProviderAdapter): void;
+  registerImAdapter(definition: PluginImAdapterDefinition, adapter: PluginImAdapter): void;
 }
 
 export function definePlugin(tools: readonly PluginTool[]) {
@@ -68,6 +77,66 @@ export function definePlugin(tools: readonly PluginTool[]) {
   };
 }
 
+/** Outbound-only bridge to a channel the user already configured. Old hosts omit it. */
+export interface PluginImCapabilities {
+  readonly outbound: boolean;
+  /** This host has no inbound IM contract. */
+  readonly inbound: false;
+}
+
+/** A sendable notification route. No credentials, endpoints, or message text. */
+export interface PluginImRoute {
+  readonly channelId: string;
+  readonly providerId: string;
+  readonly label?: string;
+  readonly routeRevision: string;
+}
+
+export type PluginImSendStatus =
+  | 'queued'
+  | 'accepted'
+  | 'failed'
+  | 'unknown'
+  | 'suppressed'
+  | 'cancelled';
+
+export type PluginImErrorKind =
+  | 'auth'
+  | 'forbidden'
+  | 'not_found'
+  | 'rate_limited'
+  | 'transient'
+  | 'too_long'
+  | 'bad_format'
+  | 'dependency_missing'
+  | 'configuration'
+  | 'protocol'
+  | 'unknown';
+
+/** UTF-8 byte budget for one digest. Not a per-provider chat limit, and not `string.length`. */
+export const PLUGIN_IM_DIGEST_MAX_UTF8_BYTES = 16 * 1024;
+
+export interface PluginImSendRequest {
+  readonly channelId: string;
+  readonly routeRevision: string;
+  readonly idempotencyKey: string;
+  readonly accountRef: string;
+  readonly text: string;
+}
+
+export interface PluginImSendReceipt {
+  readonly status: PluginImSendStatus;
+  readonly retryable: boolean;
+  readonly diagnosticCode?: string;
+  readonly errorKind?: PluginImErrorKind;
+}
+
+export interface PluginImBridge {
+  capabilities(signal: AbortSignal): Promise<PluginImCapabilities>;
+  listRoutes(signal: AbortSignal): Promise<readonly PluginImRoute[]>;
+  send(request: PluginImSendRequest, signal: AbortSignal): Promise<PluginImSendReceipt>;
+}
+
 /** Settings and owned lifetime supplied only to an explicitly App-activated plugin. */
 export interface PluginAppContext {
   readonly settings: Readonly<Record<string, unknown>>;
@@ -77,6 +146,8 @@ export interface PluginAppContext {
   updateSettings(values: Record<string, string | number | boolean | null>): Promise<unknown>;
   onActivity(listener: (activity: readonly PluginSessionActivity[]) => void): () => void;
   focusSession(sessionId: string): Promise<unknown>;
+  /** Absent on hosts that predate the digest bridge. */
+  readonly im?: PluginImBridge;
 }
 
 /** Privacy-filtered live activity; no prompts, tool arguments, paths or credentials. */

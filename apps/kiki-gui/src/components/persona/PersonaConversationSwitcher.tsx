@@ -22,7 +22,7 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { sessionRowState } from '@kiki/session-core/sessions';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
@@ -74,7 +74,7 @@ export interface PersonaConversationSwitcherProps {
    */
   readonly status?: { readonly loading?: boolean; readonly error?: string };
   readonly activeSessionId?: string;
-  readonly workspaceOptions?: readonly Workspace[];
+  readonly workspaceOptions?: readonly WorkspaceCatalogEntry[];
   readonly seen?: SessionSeenMap;
   /** Room names, when the opener already has them; ids resolve to titles otherwise. */
   readonly roomNames?: ReadonlyMap<string, string>;
@@ -310,7 +310,7 @@ export function PersonaConversationSwitcher({
           data-persona-switcher-settings
           onClick={() => {
             onClose();
-            navigate(`/personas?persona=${encodeURIComponent(persona.id)}&view=settings`);
+            void navigate(`/personas?persona=${encodeURIComponent(persona.id)}&view=settings`);
           }}
           className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
           title={t('persona.settingsTitle')}
@@ -350,7 +350,7 @@ export function PersonaConversationSwitcher({
                 aria-current={item.isCurrent ? 'true' : undefined}
                 onClick={() => {
                   onClose();
-                  navigate(item.targetUrl);
+                  void navigate(item.targetUrl);
                 }}
                 className="row-interactive flex w-full items-start gap-2 py-1.5 pr-1 pl-2 text-left"
               >
@@ -414,7 +414,7 @@ export function PersonaConversationSwitcher({
             onClose();
             // A new topic started from a project conversation stays in that
             // project; the daily pointer is untouched either way.
-            navigate(personaNewConversationUrl(persona.id, currentWorkspaceId));
+            void navigate(personaNewConversationUrl(persona.id, currentWorkspaceId));
           }}
           className="flex items-center gap-1.5 rounded-md px-2 py-1 text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
         >
@@ -426,7 +426,7 @@ export function PersonaConversationSwitcher({
           data-persona-switcher-all
           onClick={() => {
             onClose();
-            navigate(`/personas?persona=${encodeURIComponent(persona.id)}&view=conversations`);
+            void navigate(`/personas?persona=${encodeURIComponent(persona.id)}&view=conversations`);
           }}
           className="flex items-center gap-1 rounded-md px-2 py-1 text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink"
         >

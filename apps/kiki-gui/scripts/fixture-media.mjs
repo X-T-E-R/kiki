@@ -25,6 +25,14 @@
  * carry a `file_id` and never a path.
  */
 
+import { createHash } from 'node:crypto';
+
+import { tsImport } from 'tsx/esm/api';
+
+// The production range reader, so a fixture that answers `Range:` reads it
+// exactly the way kap-server's playback route does.
+const { parseRangeHeader, pickHeader } = await tsImport('../../../packages/kap-server/src/lib/httpRange.ts', import.meta.url);
+
 /** Same shape the klient dispatcher throws, so one catch site handles both. */
 function invalid(message, code = 40001) {
   return Object.assign(new Error(message), { code });
@@ -55,27 +63,227 @@ export function sessionMediaBytes(server, sessionId, fileId, variant) {
     throw invalid(`media file not found: ${fileId}`, 40409);
   }
   const bytes = Buffer.from(file.base64, 'base64');
-  // The preview is the same picture at a fraction of the size in the real
-  // server. Serving identical bytes would make a "Preview" label unfalsifiable,
-  // so the fixture downscales the declared size and says so in the MIME type.
+  // A video's preview is a poster frame in the real server, not the clip; a
+  // seed that carries `preview` bytes answers with them so the timeline's
+  // thumbnail is a real picture and the original stays the playable file.
   if (variant === 'preview') {
+    if (typeof file.preview === 'string') {
+      return { bytes: Buffer.from(file.preview, 'base64'), mime: file.previewMime ?? 'image/png', name: file.name };
+    }
+    // The preview is the same picture at a fraction of the size in the real
+    // server. Serving identical bytes would make a "Preview" label unfalsifiable,
+    // so the fixture downscales the declared size and says so in the MIME type.
     return { bytes, mime: `${file.mime}; preview`, name: file.name };
   }
   return { bytes, mime: file.mime, name: file.name };
 }
 
+// ---------------------------------------------------------------------------
+// Session media playback grants
+// ---------------------------------------------------------------------------
+
+const PLAYBACK_TTL_MS = 30 * 60 * 1000;
+const PLAYBACK_MAX_GRANTS = 64;
+const PLAYBACK_ID = /^[a-f0-9]{64}$/u;
+
+/**
+ * Playback grants, mirroring kap-server's route trio
+ * (`packages/kap-server/src/routes/hostMediaPreview.ts`):
+ *
+ *   POST   /api/sessions/:sessionId/media-playback   { file_id } → grant
+ *   GET    /media-preview/:previewId                  bearer-free bytes, Range
+ *   DELETE /api/sessions/media-playback/:previewId   release
+ *
+ * The minted URL is a capability of its own, so the byte route deliberately
+ * sits outside the fixture token check — an `<video src>` cannot send an
+ * Authorization header. The grant expires on its own too, and the fixture
+ * keeps the mint / request / revocation log so a proof can show the element's
+ * Range reads and the release that follows closing the preview.
+ */
+function playbackState(server) {
+  server.mediaPlayback ??= { grants: new Map(), minted: [], requests: [], revocations: [] };
+  return server.mediaPlayback;
+}
+
+function sweepPlayback(state) {
+  const now = Date.now();
+  for (const [id, grant] of state.grants) if (grant.expiresAt <= now) state.grants.delete(id);
+}
+
+/** Audio and video play; anything else is not a playback source (the real 400). */
+function playbackMime(file) {
+  const typed = String(file.mime ?? '').toLowerCase();
+  return typed.startsWith('video/') || typed.startsWith('audio/') ? file.mime : undefined;
+}
+
+function unsatisfiableRange(raw, size) {
+  if (raw === undefined || !raw.startsWith('bytes=')) return false;
+  const spec = raw.slice('bytes='.length);
+  if (spec.includes(',')) return false;
+  const dash = spec.indexOf('-');
+  if (dash <= 0) return false;
+  const start = Number.parseInt(spec.slice(0, dash), 10);
+  if (!Number.isFinite(start) || start < 0) return false;
+  return start >= size;
+}
+
+export function mintSessionPlayback(server, { sessionId, fileId, host }) {
+  const file = server.scenario?.data.mediaFiles?.[fileId];
+  if (file === undefined) return { failure: { status: 404, code: 40409, message: 'media_preview_not_found' } };
+  const mime = playbackMime(file);
+  if (mime === undefined) return { failure: { status: 400, code: 40001, message: 'media_preview_type_unsupported' } };
+  const state = playbackState(server);
+  sweepPlayback(state);
+  if (state.grants.size >= PLAYBACK_MAX_GRANTS) return { failure: { status: 429, code: 42901, message: 'too_many_media_previews' } };
+  const previewId = createHash('sha256').update(JSON.stringify({ sessionId, fileId, minted: state.minted.length })).digest('hex');
+  const size = Buffer.from(file.base64, 'base64').byteLength;
+  const expiresAt = Date.now() + PLAYBACK_TTL_MS;
+  state.grants.set(previewId, { sessionId, fileId, mime, size, expiresAt });
+  state.minted.push({ previewId, sessionId, fileId, mime, size });
+  const path = `/media-preview/${previewId}`;
+  return {
+    settled: {
+      preview_id: previewId,
+      url: typeof host === 'string' && host.length > 0 ? `http://${host}${path}` : path,
+      mime,
+      size,
+      expires_at: expiresAt,
+    },
+  };
+}
+
+export function releaseSessionPlayback(server, previewId) {
+  const state = playbackState(server);
+  const revoked = state.grants.delete(previewId);
+  state.revocations.push({ previewId, revoked });
+  return revoked;
+}
+
+/** Answers one grant read with the same headers, range semantics and 416. */
+export function serveSessionPlayback(server, req, res, previewId) {
+  const state = playbackState(server);
+  sweepPlayback(state);
+  const rawRange = pickHeader(req.headers, 'range');
+  const grant = PLAYBACK_ID.test(previewId) ? state.grants.get(previewId) : undefined;
+  if (grant === undefined) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 404 });
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ code: 40409, msg: 'media_preview_not_found', data: null }));
+    return false;
+  }
+  const file = server.scenario?.data.mediaFiles?.[grant.fileId];
+  if (file === undefined) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 404 });
+    res.writeHead(404, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ code: 40409, msg: 'media_preview_not_found', data: null }));
+    return false;
+  }
+  const bytes = Buffer.from(file.base64, 'base64');
+  const headers = {
+    'accept-ranges': 'bytes',
+    'cache-control': 'private, no-store',
+    'x-content-type-options': 'nosniff',
+    'content-type': grant.mime,
+  };
+  if (unsatisfiableRange(rawRange, bytes.length)) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 416 });
+    res.writeHead(416, { ...headers, 'content-range': `bytes */${bytes.length}`, 'content-length': 0 });
+    res.end();
+    return true;
+  }
+  const range = parseRangeHeader(rawRange, bytes.length);
+  if (range === null) {
+    state.requests.push({ previewId, range: rawRange ?? null, status: 200 });
+    res.writeHead(200, { ...headers, 'content-length': bytes.length });
+    res.end(bytes);
+    return true;
+  }
+  state.requests.push({ previewId, range: rawRange ?? null, status: 206 });
+  res.writeHead(206, { ...headers, 'content-range': `bytes ${range.start}-${range.end}/${bytes.length}`, 'content-length': range.length });
+  res.end(bytes.subarray(range.start, range.end + 1));
+  return true;
+}
+
 function seed(server) {
   server.media ??= {
     providers: structuredClone(server.scenario?.data.mediaProviders ?? []),
+    managed: structuredClone(server.scenario?.data.mediaManagedSources ?? []),
     settings: structuredClone(server.scenario?.data.mediaSettings ?? {}),
     jobs: structuredClone(server.scenario?.data.mediaJobs ?? []),
     voices: structuredClone(server.scenario?.data.mediaVoices ?? {}),
     subscriptions: structuredClone(server.scenario?.data.mediaSubscriptions ?? []),
     /** Every capability and voice read is recorded, so a test can prove the
-     *  list view asked for none of them. */
+     *  list view asked for none of them. Every managed-source write is
+     *  recorded too, so a test can prove a write moved the one source it named
+     *  and no sibling from the same package. */
     reads: [],
+    writes: [],
   };
   return server.media;
+}
+
+/** The settings a source declares, minus the lifecycle keys the host owns. */
+const LIFECYCLE_KEYS = new Set(['enabled', 'removed', 'cleared']);
+
+function sourceSchemaOf(source) {
+  return {
+    schemaVersion: 1,
+    schema: {
+      type: 'object',
+      properties: Object.fromEntries(Object.entries(source.schema.schema.properties).filter(([key]) => !LIFECYCLE_KEYS.has(key))),
+      ...(source.schema.schema.required === undefined ? {} : { required: source.schema.schema.required }),
+    },
+  };
+}
+
+/**
+ * The one source a read or write named, or `undefined`.
+ *
+ * Addressing is by `provider` and by a source's own id, exactly as the real
+ * host accepts it — a source group answers to any of its adapter ids. It is
+ * deliberately *not* keyed by `pluginId`: one package carries many sources,
+ * and a fixture that resolved a write by package would make a bug that moved
+ * every vendor's settings at once look correct here.
+ */
+function findManaged(state, provider) {
+  return state.managed.find((item) => item.provider === provider
+    || item.definitions.some((definition) => `${item.pluginId}/${definition.id}` === provider));
+}
+
+/**
+ * The keys a source is actually missing, recomputed after a write.
+ *
+ * A fixture that returned a fixed list would report a source as unconfigured
+ * after the reader saved the very key it named, which is the one thing this
+ * page must never do. A required field is met by a stored value or a stored
+ * secret, and `connectionId` covers the key and the endpoint — the same rule
+ * the real host applies.
+ */
+function missingOf(source) {
+  const effective = new Map();
+  for (const [key, property] of Object.entries(source.schema.schema.properties)) {
+    if (property.default !== undefined) effective.set(key, property.default);
+  }
+  for (const [key, value] of Object.entries(source.values)) effective.set(key, value);
+  for (const key of source.secretsConfigured) effective.set(key, 'stored');
+  return (source.schema.schema.required ?? []).filter((key) => {
+    const value = effective.get(key);
+    const borrowed = typeof effective.get('connectionId') === 'string' && effective.get('connectionId') !== '';
+    return !value && !(borrowed && (key === 'apiKey' || key === 'baseUrl'));
+  });
+}
+
+/**
+ * A deferred envelope, for a call that should arrive late.
+ *
+ * The dispatcher is synchronous, so the delay belongs on the RESPONSE rather
+ * than on the handler: the route returns immediately and the answer is written
+ * when the timer fires. That is what makes an in-flight write real — the
+ * browser has an open request, and any GET issued meanwhile answers at once,
+ * which is precisely the situation a read-back-as-proof cannot survive.
+ */
+function deferred(envelope, ms) {
+  setTimeout(envelope, Math.min(ms, 2_000));
 }
 
 function requireMedia(server) {
@@ -116,6 +324,99 @@ export function callMediaService(server, method, args) {
 
     case 'providers':
       return structuredClone(state.providers);
+
+    // The one read that answers for the whole list: every source in every
+    // package, with the settings form it declares, the values stored against
+    // it, which secrets are stored, and which required settings are missing.
+    // A fixture that answered this from `providers` plus a settings join would
+    // be re-implementing the host, so the scenario seeds the answers instead.
+    case 'managedSources':
+      state.reads.push({ method: 'managedSources', count: state.managed.length });
+      return structuredClone(state.managed);
+
+    case 'sourceSettings': {
+      const provider = args[0]?.provider;
+      const source = findManaged(state, provider);
+      if (source === undefined) throw invalid(`media source not found: ${provider}`, 40409);
+      state.reads.push({ method: 'sourceSettings', provider });
+      return structuredClone(source);
+    }
+
+    // A write is a real write against the one source it named, and the
+    // answer is the host's own re-read — never the caller's optimism. A
+    // `null` value removes a stored key; an absent one keeps it.
+    case 'updateSource': {
+      const input = args[0] ?? {};
+      const source = findManaged(state, input.provider);
+      if (source === undefined) throw invalid(`media source not found: ${input.provider}`, 40409);
+      state.writes.push({ method: 'updateSource', provider: source.provider, values: structuredClone(input.values ?? {}), enabled: input.enabled, removed: input.removed });
+      // Per-source behaviour, so a scenario can make ONE source refuse, or
+      // answer late, while the rest of the page still works.
+      const behaviour = server.scenario?.data.mediaWriteBehaviour?.[source.sourceId];
+      if (behaviour?.refuseWrites === true) {
+        throw invalid(`the host refused this write for ${source.label}`, 40001);
+      }
+      for (const [key, value] of Object.entries(input.values ?? {})) {
+        const property = source.schema.schema.properties[key];
+        if (property === undefined) throw invalid(`unknown media source setting ${key}`, 40001);
+        if (value === null) {
+          delete source.values[key];
+          source.secretsConfigured = source.secretsConfigured.filter((item) => item !== key);
+        } else if (property.secret === true) {
+          // A secret is write-only: stored, reported as configured, never
+          // echoed. An empty secret is not a removal, so a value that was
+          // stored stays stored.
+          if (value !== '') source.secretsConfigured = [...new Set([...source.secretsConfigured, key])];
+        } else {
+          source.values[key] = value;
+        }
+      }
+      if (input.enabled !== undefined) source.enabled = input.enabled;
+      if (input.removed !== undefined) source.removed = input.removed;
+      source.schema = sourceSchemaOf(source);
+      source.missing = missingOf(source);
+      const settled = structuredClone(source);
+      const delayMs = behaviour?.delayMs;
+      if (delayMs === undefined) return settled;
+      return { __deferred: true, settled, delayMs };
+    }
+
+    // A reader's own script source: a new row in the same package, with the
+    // command line and protocol the reader typed. Nothing here installs
+    // anything, and a duplicate id is refused rather than silently replacing
+    // a source whose jobs and handles are kept.
+    case 'addScriptSource': {
+      const input = args[0] ?? {};
+      state.writes.push({ method: 'addScriptSource', id: input.id, protocol: input.protocol, kinds: structuredClone(input.kinds ?? []) });
+      if (state.managed.some((item) => item.sourceId === input.id)) {
+        throw invalid('Script source id already exists; restore a removed source rather than replacing its saved handles', 40001);
+      }
+      const created = {
+        provider: `kiki-media/script-${input.id}`,
+        sourceId: input.id,
+        pluginId: 'kiki-media',
+        label: input.label,
+        custom: true,
+        enabled: true,
+        removed: false,
+        definitions: [{ schemaVersion: 1, id: `script-${input.id}`, kinds: structuredClone(input.kinds ?? ['image']), label: input.label, resumeVersion: 1 }],
+        schema: { schemaVersion: 1, schema: { type: 'object', properties: { environment: { type: 'string', title: 'Environment variables (JSON)', secret: true } } } },
+        values: {
+          command: input.command,
+          args: JSON.stringify(input.args ?? []),
+          cwd: input.cwd ?? '',
+          protocol: input.protocol ?? 'file',
+          format: input.format ?? '',
+          mime: input.mime ?? '',
+        },
+        // A script's environment is stored as a secret and never read back,
+        // so the answer says "configured" and nothing else.
+        secretsConfigured: input.environment === undefined ? [] : ['environment'],
+        missing: [],
+      };
+      state.managed = [...state.managed, created];
+      return structuredClone(created);
+    }
 
     case 'capabilities': {
       const query = args[0] ?? {};

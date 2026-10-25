@@ -22,9 +22,16 @@ const result = await runProof({
   root: join(dirname(fileURLToPath(import.meta.url)), '..'),
   argv: process.argv.slice(2), label: 'ssh-composer-regression', workers: 1, jobTimeoutMs: 120_000,
   scenarios: [{ name: 'ssh-composer-regression', fixture: 'ssh-composer-regression', run: async ({ page, shot, control, link, view }) => {
-    const scopeLabel = view.locale === 'zh' ? '本会话 SSH' : 'Session SSH';
-    const draftLabel = view.locale === 'zh' ? '待加入 SSH' : 'SSH to join';
+    // The strip names the thing, not the scope: both the draft and the session
+    // control read "SSH", because both are this conversation's host context.
+    const scopeLabel = 'SSH';
     await page.waitForSelector('[data-session-group="week"]');
+    // A fresh /new has no session and no pick: no SSH line at all, and the
+    // ＋ menu is already the way in.
+    await page.waitForSelector('[data-add-menu-trigger]');
+    assert((await page.locator('[data-composer-ssh-strip]').count()) === 0, '/new drew an SSH strip with nothing joined');
+    assert((await page.locator('text=/SSH\\s*0/').count()) === 0, '/new shows a zero-count SSH line');
+    await shot('new-no-ssh-line');
 
     await page.click('[data-add-menu-trigger]');
     await page.waitForSelector('[data-add-menu-ssh]');
@@ -34,7 +41,7 @@ const result = await runProof({
     await page.waitForSelector('[data-composer-ssh-host="gpu-box"][aria-checked="true"]');
     await page.click('[data-add-menu-trigger]');
     // The draft strip names the join, not a message part.
-    await page.waitForSelector(`[data-composer-ssh-strip]:has-text("${draftLabel}")`);
+    await page.waitForSelector(`[data-composer-ssh-strip]:has-text("${scopeLabel}")`);
     await page.waitForSelector('[data-composer-ssh-chip="gpu-box"]');
     await page.fill('[data-composer-variant="main"] textarea', 'Inspect the SSH host');
     await shot('new-ssh-preselected-before-send');
@@ -90,8 +97,16 @@ const result = await runProof({
     await page.waitForSelector('[data-composer-ssh-chip="gpu-box"] [data-composer-ssh-chip-remove]');
     await page.click('[data-composer-ssh-chip="gpu-box"] [data-composer-ssh-chip-remove]');
     await page.waitForFunction(() => document.querySelectorAll('[data-composer-ssh-chip]').length === 0, null, { timeout: 15_000 });
+    // The last host leaving takes the whole strip: a session with no SSH
+    // context gets no SSH line, not an "SSH 0" the reader has to clear.
+    await page.waitForSelector('[data-composer-ssh-strip]', { state: 'detached', timeout: 15_000 });
     assert((await page.locator('[data-user-ssh-host]').count()) === 0, 'timeline drew a host row');
+    assert((await page.locator('text=/SSH\\s*0/').count()) === 0, 'a zero-count SSH line is still on screen');
+    // The way back in survives: the ＋ menu still opens the host list.
+    await page.click('[data-add-menu-trigger]');
+    await page.waitForSelector('[data-add-menu-ssh]');
     await shot('session-ssh-after-unjoin');
+    await page.keyboard.press('Escape');
 
     // Another session shows its own list: switching re-reads the server.
     await page.goto(link('/s/session_ssh_hosts'));

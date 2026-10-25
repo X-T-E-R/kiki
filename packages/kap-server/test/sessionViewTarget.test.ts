@@ -11,6 +11,11 @@ function durable(seq: number) {
   return { type: 'turn.ended', session_id: 's1', seq, epoch: 'session-epoch', timestamp: '2026-01-01T00:00:00.000Z', payload: { type: 'turn.ended' } };
 }
 
+function coldPageReader(read: (sessionId: string, agentId: string, signal: AbortSignal) => Promise<AgentTranscriptSnapshot>) {
+  return vi.fn(async (sessionId: string, agentId: string, project: (snapshot: AgentTranscriptSnapshot) => AgentTranscriptSnapshot, signal: AbortSignal) =>
+    project(await read(sessionId, agentId, signal)));
+}
+
 describe('SessionViewTarget', () => {
   it('deduplicates replay and live durable work before acknowledging the latest watermark', () => {
     const signals: SessionViewSignal[] = [];
@@ -52,6 +57,26 @@ describe('SessionViewTarget', () => {
     ]);
   });
 
+  it('refreshes child roster activity at the existing durable watermark without progress churn', () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    const activity = (agentId: string, kind: string) => ({
+      ...durable(12), type: 'agent.status.updated', volatile: true,
+      payload: { type: 'agent.status.updated', agentId, phase: { kind, turnId: 1 } },
+    });
+    target.begin(1);
+    target.send(durable(12));
+    target.send(activity('child', 'running'));
+    target.send(activity('child', 'streaming'));
+    target.send(activity('main', 'running'));
+    target.finish({ seq: 12, epoch: 'session-epoch' }, false);
+    expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(1);
+    target.send(activity('child', 'idle'));
+    target.send(activity('child', 'idle'));
+    expect(signals.at(-1)).toEqual({ type: 'sessionCursorAdvanced', rosterAgentId: 'child', cursor: { seq: 12, epoch: 'session-epoch' }, generation: 1 });
+    expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child')).toHaveLength(2);
+  });
+
   it('preserves rewrite and epoch invalidation signals', () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
@@ -60,6 +85,24 @@ describe('SessionViewTarget', () => {
     target.sendControl({ type: 'resync_required', payload: { reason: 'epoch_changed', current_seq: 0, epoch: 'new-epoch' } });
     target.finish({ seq: 0, epoch: 'new-epoch' }, false);
     expect(signals).toEqual([{ type: 'resyncRequired', reason: 'epoch_changed', currentSessionCursor: { seq: 0, epoch: 'new-epoch' }, generation: 2 }]);
+  });
+
+  it('refreshes a child binding change within the same idle phase without token churn', () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    const status = (model: string, thinkingEffort: string, contextTokens = 1) => ({
+      ...durable(12), type: 'agent.status.updated', volatile: true,
+      payload: { type: 'agent.status.updated', agentId: 'child', phase: { kind: 'idle' },
+        model, thinkingEffort, contextTokens },
+    });
+    target.begin(1);
+    target.finish({ seq: 12, epoch: 'session-epoch' }, false);
+    target.send(status('example/old', 'high'));
+    target.send(status('example/new', 'high'));
+    target.send(status('example/new', 'xhigh'));
+    target.send(status('example/new', 'xhigh', 500));
+    expect(signals.filter((signal) => signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === 'child'))
+      .toHaveLength(3);
   });
 
   it('ignores other sessions global fanout while retaining its suppressed durable cursor', () => {
@@ -98,12 +141,12 @@ describe('SessionViewTarget', () => {
   it.each([false, true])('projects only the requested cold child and cancels detached reads (%s)', async (detach) => {
     const manager = { get: vi.fn(() => undefined), resume: vi.fn(), acquire: vi.fn(), onDidCreateSession: vi.fn(() => ({ dispose: vi.fn() })) };
     const core = { accessor: { get: () => manager } };
-    let resolveRead: ((snapshot: unknown) => void) | undefined;
+    let resolveRead: ((snapshot: AgentTranscriptSnapshot) => void) | undefined;
     let readSignal: AbortSignal | undefined;
     const service = {
       reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => Array.from({ length: 456 }, (_, i) => ({ agentId: `agent-${i}`, type: 'sub' }))),
-      readColdSnapshot: vi.fn((_sessionId, _agentId, _query, signal: AbortSignal) => {
+      readColdPageSnapshot: coldPageReader((_sessionId, _agentId, signal: AbortSignal) => {
         readSignal = signal;
         return new Promise((resolve) => { resolveRead = resolve; });
       }),
@@ -118,13 +161,24 @@ describe('SessionViewTarget', () => {
       input: { sessionCursor: { seq: 0 }, transcriptGrades: { '*': 'turn', main: 'off', 'agent-27': 'delta' } } } });
     await vi.waitFor(() => expect(resolveRead).toBeDefined());
     if (detach) connection.receive({ type: 'view_detach', id: 'v1' });
-    resolveRead!({ ...new AgentTranscript('agent-27').snapshot(), toolCallCountKnown: true });
+    const prompt = 'x'.repeat(160_000);
+    const snapshot: AgentTranscriptSnapshot = { ...new AgentTranscript('agent-27').snapshot(), toolCallCountKnown: true,
+      items: [{ kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt, steps: [] }] };
+    resolveRead!(snapshot);
     await vi.waitFor(() => {
       if (detach) expect(readSignal?.aborted).toBe(true);
       else expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready' }) }));
     });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(service.readColdSnapshot).toHaveBeenCalledExactlyOnceWith('s1', 'agent-27', undefined, expect.any(AbortSignal));
+    expect(service.readColdPageSnapshot).toHaveBeenCalledExactlyOnceWith('s1', 'agent-27', expect.any(Function), expect.any(AbortSignal));
+    const result = service.readColdPageSnapshot.mock.results[0];
+    if (result?.type !== 'return') throw new Error('Cold page reader must complete the projection');
+    const projected = (await result.value).items[0]!;
+    expect(projected.kind).toBe('turn');
+    if (projected.kind !== 'turn') throw new Error('Cold projection must preserve the turn header');
+    expect(projected.prompt).not.toBe(prompt);
+    expect(projected.contentRefs).toContainEqual(expect.objectContaining({ source: { kind: 'turn', id: 't0' }, path: ['prompt'], total: prompt.length }));
+    expect(snapshot.items[0]).toEqual(expect.objectContaining({ prompt }));
     expect(broadcaster.subscribe).not.toHaveBeenCalled();
     expect(manager.resume).not.toHaveBeenCalled();
     expect(manager.acquire).not.toHaveBeenCalled();
@@ -150,7 +204,7 @@ describe('SessionViewTarget', () => {
     const service = {
       reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => [{ agentId: 'main', type: 'main' }]),
-      readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: true })),
+      readColdPageSnapshot: coldPageReader(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: true })),
     };
     const broadcaster = {
       subscribe: vi.fn(async () => true), unsubscribe: vi.fn(),
@@ -194,12 +248,12 @@ describe('SessionViewTarget', () => {
   });
 
   it('discards a superseded cold generation even when its read ignores cancellation', async () => {
-    let finishFirst!: (snapshot: unknown) => void;
+    let finishFirst!: (snapshot: AgentTranscriptSnapshot) => void;
     const readSignals: AbortSignal[] = [];
     const service = {
       reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => []),
-      readColdSnapshot: vi.fn((_session, agent, _query, signal: AbortSignal) => {
+      readColdPageSnapshot: coldPageReader((_session, agent, signal: AbortSignal) => {
         readSignals.push(signal);
         if (agent === 'old-child') return new Promise((resolve) => { finishFirst = resolve; });
         return Promise.resolve({ ...new AgentTranscript(agent).snapshot(), toolCallCountKnown: true });
@@ -231,7 +285,7 @@ describe('SessionViewTarget', () => {
     const service = {
       reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => []),
-      readColdSnapshot: vi.fn(async (_sessionId, agentId) => {
+      readColdPageSnapshot: coldPageReader(async (_sessionId, agentId) => {
         if (agentId === 'sibling') await blocked;
         return { ...new AgentTranscript(agentId).snapshot(), toolCallCountKnown: true };
       }),
@@ -250,7 +304,7 @@ describe('SessionViewTarget', () => {
         type: 'transcript', event: expect.objectContaining({ agent_id: 'visible-child' }),
       }) })));
       expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript']);
-      expect(service.readColdSnapshot.mock.calls.map((call) => call[1])).toEqual(['visible-child', 'sibling']);
+      expect(service.readColdPageSnapshot.mock.calls.map((call) => call[1])).toEqual(['visible-child', 'sibling']);
     } finally {
       release();
     }
@@ -432,7 +486,7 @@ describe('SessionViewTarget', () => {
     const service = {
       reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
       readColdRoster: vi.fn(async () => []),
-      readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('child').snapshot(), toolCallCountKnown: true })),
+      readColdPageSnapshot: coldPageReader(async () => ({ ...new AgentTranscript('child').snapshot(), toolCallCountKnown: true })),
     };
     const connection = new SessionViewHttpConnection({
       getCursor: async () => ({ seq: 7, epoch: 'session-epoch' }), unsubscribe: vi.fn(),
@@ -458,7 +512,7 @@ describe('SessionViewTarget', () => {
   });
 
   it('keeps an unverified empty cold baseline unknown instead of certifying a blank session', async () => {
-    const service = { reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot, readColdSnapshot: vi.fn(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: false })) };
+    const service = { reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot, readColdPageSnapshot: coldPageReader(async () => ({ ...new AgentTranscript('main').snapshot(), toolCallCountKnown: false })) };
     const event = await readColdSessionViewBaseline(service as never, 's1', 'main', 'delta', new AbortController().signal);
     expect(event).toMatchObject({ cursor: { seq: 0, epoch: 'cold:s1:main' }, coverage: { kind: 'unknown', hasMoreOlder: true } });
   });

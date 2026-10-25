@@ -23,6 +23,7 @@ import {
 } from './agentTree';
 import {
   liveSourcesFromAgentSnapshots,
+  rosterFromTranscriptAgents,
   sessionAgentForestFromAgentSnapshots,
   taskItemsFromSessionTasks,
 } from './transcript/forest';
@@ -104,6 +105,40 @@ function page(
 function snapshotJson<T>(value: T): string {
   return JSON.stringify(value);
 }
+
+describe('agent birth projection', () => {
+  it('keeps birth independent of resumed run generations and never guesses legacy birth', () => {
+    const birth = new Date(100).toISOString();
+    const oldRun = new Date(200).toISOString();
+    const resumedRun = new Date(400).toISOString();
+    const forest = buildAgentForest([live({ subagentId: 'child', startedAt: resumedRun })], [
+      roster({ agentId: 'child', createdAt: birth, startedAt: oldRun, endedAt: new Date(300).toISOString(), status: 'completed' }),
+      roster({ agentId: 'agent-999', startedAt: resumedRun }),
+    ]);
+    expect(forest.byId['child']).toMatchObject({ createdAt: birth, startedAt: resumedRun, status: 'running' });
+    expect(forest.byId['agent-999']?.createdAt).toBeUndefined();
+    const transcriptRoster = rosterFromTranscriptAgents([{ agentId: 'child', createdAt: birth }]);
+    expect(buildAgentForest([], transcriptRoster).byId['child']).toMatchObject({ createdAt: birth, startedAt: undefined });
+    const queued = sessionAgentForestFromAgentSnapshots(new Map(), [compactSnapshot({ id: 'child',
+      created_at: birth, started_at: resumedRun, status: 'running', activity_status: 'running', subagent_phase: 'queued', live: true })]);
+    expect(queued.byId['child']).toMatchObject({ createdAt: birth, startedAt: resumedRun });
+    const changed = buildAgentForest([], [roster({ agentId: 'child', createdAt: birth })]);
+    const unknown = buildAgentForest([], [roster({ agentId: 'child' })]);
+    expect(stabilizeAgentForest(unknown, changed).byId['child']).not.toBe(unknown.byId['child']);
+  });
+});
+
+describe('executor identity projection', () => {
+  it('keeps executor identity separate from model and profile hints across roster and live sources', () => {
+    const forest = buildAgentForest(
+      [live({ subagentId: 'agent-1', model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1' })],
+      [roster({ agentId: 'agent-1', name: 'worker', model: 'shared-model' })],
+    );
+    expect(forest.byId['agent-1']).toMatchObject({
+      model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1',
+    });
+  });
+});
 
 describe('compareAgentIds', () => {
   it('puts main first and sorts agent-N numerically', () => {
@@ -1736,8 +1771,7 @@ describe('applyNewestAgentPage / resetAgentHistoryCache', () => {
     expect(resetAgentHistoryCache(cache, 'agent-1')).toBe(cache);
   });
 });
-
-describe('executor identity projection', () => {
+describe('live executor identity projection', () => {
   it('keeps executor identity separate from model and profile hints across roster and live sources', () => {
     const forest = buildAgentForest(
       [live({ subagentId: 'agent-1', model: 'shared-model', executorId: 'claude-acp', executorProtocol: 'acp-v1' })],
@@ -1748,6 +1782,7 @@ describe('executor identity projection', () => {
     });
   });
 });
+
 
 describe('session task metadata projection', () => {
   it('carries the session task effort and executor provenance into the roster item', () => {
@@ -1777,5 +1812,36 @@ describe('session task metadata projection', () => {
       executor_id: 'claude-acp',
       executor_protocol: 'acp-v1',
     });
+  });
+});
+
+describe('historical metadata roster', () => {
+  const at = '2026-01-01T00:00:00.000Z';
+  const end = '2026-01-01T00:01:00.000Z';
+  const registered = (id: string, status: SnapshotSubagent['status'] = 'completed'): SnapshotSubagent => ({
+    id, agent_id: id, session_id: 'fixture-session', kind: 'subagent', description: 'Protocol investigation',
+    label: 'Protocol investigation', profile: 'researcher', model: 'fixture/model',
+    status, live: false, status_source: 'metadata', name_source: 'user_label',
+    activity_status: status === 'running' ? 'unknown' : status,
+    created_at: at, completed_at: status === 'running' ? undefined : end,
+  });
+  const main = (state: 'running' | 'completed' = 'running', startedAt = at): AgentTranscriptSnapshot => ({
+    items: [], tasks: [{ taskId: 'old-dispatch', kind: 'subagent', state, detached: false,
+      agentId: 'child', startedAt, outputTail: '' }], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
+  });
+
+  it('retains named terminal inventory rows and outranks a historical running dispatch without loading child bodies', () => {
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', main()]]), [registered('child'), registered('unopened', 'failed')]);
+    expect(forest.byId['child']).toMatchObject({ label: 'Protocol investigation', name: 'Protocol investigation', status: 'completed', busy: false, model: 'fixture/model' });
+    expect(forest.byId['unopened']).toMatchObject({ label: 'Protocol investigation', status: 'failed', busy: false, startedAt: undefined });
+  });
+
+  it('does not time a cold unfinished registration as running, and accepts a newer live generation', () => {
+    const cold = sessionAgentForestFromAgentSnapshots(new Map(), [registered('child', 'running')]);
+    expect(cold.byId['child']).toMatchObject({ status: 'unknown', busy: false, label: 'Protocol investigation' });
+    const tracked = sessionAgentForestFromAgentSnapshots(new Map([['main', main()]]), [registered('child', 'running')]);
+    expect(tracked.byId['child']).toMatchObject({ status: 'running', busy: true, startedAt: at });
+    const live = sessionAgentForestFromAgentSnapshots(new Map([['main', main('running', '2026-01-01T00:02:00.000Z')]]), [registered('child')]);
+    expect(live.byId['child']).toMatchObject({ status: 'running', busy: true, startedAt: '2026-01-01T00:02:00.000Z' });
   });
 });

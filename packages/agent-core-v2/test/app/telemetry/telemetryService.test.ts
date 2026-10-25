@@ -87,7 +87,7 @@ describe('TelemetryService (unit)', () => {
     expect(b.events).toEqual([{ event: 'evt', properties: { x: 1 } }]);
   });
 
-  it('addAppender registers an appender and its disposable removes it', () => {
+  it('addAppender registers an appender and its disposable removes it', async () => {
     const a = new CapturingAppender();
     const b = new CapturingAppender();
     const svc = telemetryWithAppenders(a);
@@ -95,7 +95,7 @@ describe('TelemetryService (unit)', () => {
     svc.track('first');
     expect(a.events).toHaveLength(1);
     expect(b.events).toHaveLength(1);
-    disposable.dispose();
+    await disposable.dispose();
     svc.track('second');
     expect(a.events).toHaveLength(2);
     expect(b.events).toHaveLength(1);
@@ -228,10 +228,10 @@ describe('ITelemetryService (scoped)', () => {
     );
   });
 
-  it('resolves from the App scope', () => {
+  it('resolves from the App scope', async () => {
     const host = createScopedTestHost();
     const svc = host.app.accessor.get(ITelemetryService);
     expect(() => svc.track('scoped')).not.toThrow();
-    host.dispose();
+    await host.dispose();
   });
 });

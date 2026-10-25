@@ -30,10 +30,9 @@ import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
 import { Icon } from '../icons';
-import { PageHeader } from '../PageChrome';
-import { Toggle } from '../controls';
+import { PAGE_WIDTH, PageHeader } from '../PageChrome';
+import { InlineError, Toggle } from '../controls';
 import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
-import { errorText } from '@kiki/session-core/i18n';
 import { segmentClass } from '../WorkspaceScopeControl';
 import { SettingsPageScopeContext } from '../settings/SectionCard';
 import { PersonaAvatar, personaAvatarOf } from './PersonaAvatar';
@@ -43,7 +42,7 @@ import { PersonaConversationsSection } from './PersonaConversationsSection';
 import { matchesPersona, sortPersonas, usePersonaList } from './usePersonas';
 
 export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: () => void }) {
-  const { t, locale } = useI18n();
+  const { t } = useI18n();
   const [params, setParams] = useSearchParams();
   const [search, setSearch] = useState('');
   const [showArchived, setShowArchived] = useState(false);
@@ -60,8 +59,8 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
 
   const { client } = useConnection();
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 60_000,
   });
 
@@ -90,10 +89,7 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
 
   return (
     <div data-personas-page className="flex min-h-0 min-w-0 flex-1 flex-col bg-paper">
-      <PageHeader title={t('persona.title')} onToggleSidebar={onToggleSidebar}>
-        <button type="button" data-persona-import onClick={() => { setImporting(true); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
-          {t('persona.import')}
-        </button>
+      <PageHeader title={t('persona.title')} onToggleSidebar={onToggleSidebar} width="split">
         <AskKikiButton
           label={t('persona.askKiki')}
           labelAria={t('persona.askKikiAria')}
@@ -104,23 +100,25 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
           testId="data-persona-ask-kiki"
           onAsk={() => { void ask({ skill: 'kiki-persona', promptKey: 'persona.askKiki.prompt', location: kikiWorkspace.location }); }}
         />
+        <button type="button" data-persona-import onClick={() => { setImporting(true); }} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>
+          {t('persona.import')}
+        </button>
         <button type="button" data-persona-new onClick={() => { select(undefined, { creating: true }); }} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>
           {t('persona.new')}
         </button>
       </PageHeader>
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-2 pb-10 lg:px-6">
-        <div className="mx-auto max-w-[1040px]">
-          <p className={`mb-5 max-w-[62ch] text-[13px] leading-relaxed text-ink-soft ${detailOpen ? 'max-md:hidden' : ''}`}>{t('persona.lede')}</p>
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-3 pb-10 lg:px-6">
+        <div className={`mx-auto ${PAGE_WIDTH.split}`}>
           {listQuery.isPending ? (
             <p role="status" className="flex items-center gap-2 py-8 text-[13px] text-ink-faint">
               <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
               {t('persona.loading')}
             </p>
           ) : listQuery.isError ? (
-            <div data-persona-error className="rounded-xl border border-danger/30 bg-danger/5 p-4">
+            <div data-persona-error className="py-4">
               <p className="text-[13px] font-medium text-danger">{t('persona.loadFailed')}</p>
-              <p className="mt-1 font-mono text-[11px] text-danger">{errorText(locale, listQuery.error)}</p>
-              <button type="button" onClick={() => { void listQuery.refetch(); }} className="mt-2 text-[12px] font-medium text-danger underline">
+              <div className="mt-1"><InlineError error={listQuery.error} /></div>
+              <button type="button" onClick={() => { void listQuery.refetch(); }} className={`mt-3 ${SECONDARY_BUTTON}`}>
                 {t('common.retry')}
               </button>
             </div>
@@ -167,28 +165,38 @@ export function PersonasPage({ onToggleSidebar }: { readonly onToggleSidebar: ()
                   <PersonaEditor key="new" personaId={undefined} takenIds={new Set(all.map((item) => item.id))} onSaved={(id) => { select(id); }} onClosed={() => { select(undefined); }} />
                 ) : selected !== undefined ? (
                   <div className="space-y-5">
-                    {/* Segmented Control for [对话 | 设置] */}
-                    <div className="flex items-center justify-between border-b border-hairline pb-3">
-                      <div role="tablist" aria-label={t('persona.viewModeAria', { defaultValue: '视图选择' })} className="flex items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
+                    {/* The default view leads; the conversations view keeps a
+                        small face and name, since its list has no masthead and
+                        the roster is off screen on narrow layouts. */}
+                    <div className="flex min-w-0 items-center justify-between gap-3 border-b border-hairline pb-3">
+                      <div role="tablist" aria-label={t('persona.viewModeAria')} className="flex shrink-0 items-center gap-0.5 rounded-[9px] border border-hairline bg-paper p-0.5">
                         <button
                           type="button"
                           role="tab"
-                          aria-selected={viewMode === 'conversations'}
-                          onClick={() => select(selected.id, { view: 'conversations' })}
-                          className={segmentClass(viewMode === 'conversations', 'h-7 px-3 text-[13px] pointer-coarse:h-10')}
-                        >
-                          {t('persona.tabConversations', { defaultValue: '全部对话' })}
-                        </button>
-                        <button
-                          type="button"
-                          role="tab"
+                          data-persona-view="settings"
                           aria-selected={viewMode === 'settings'}
                           onClick={() => select(selected.id, { view: 'settings' })}
                           className={segmentClass(viewMode === 'settings', 'h-7 px-3 text-[13px] pointer-coarse:h-10')}
                         >
-                          {t('persona.tabSettings', { defaultValue: '角色设置' })}
+                          {t('persona.tabSettings')}
+                        </button>
+                        <button
+                          type="button"
+                          role="tab"
+                          data-persona-view="conversations"
+                          aria-selected={viewMode === 'conversations'}
+                          onClick={() => select(selected.id, { view: 'conversations' })}
+                          className={segmentClass(viewMode === 'conversations', 'h-7 px-3 text-[13px] pointer-coarse:h-10')}
+                        >
+                          {t('persona.tabConversations')}
                         </button>
                       </div>
+                      {viewMode === 'conversations' ? (
+                        <span data-persona-view-identity className="flex min-w-0 items-center gap-2 text-[13px] text-ink-soft">
+                          <PersonaAvatar persona={personaAvatarOf(selected)} size={22} decorative />
+                          <span className="min-w-0 truncate">{selected.name}</span>
+                        </span>
+                      ) : null}
                     </div>
 
                     {viewMode === 'conversations' ? (
@@ -271,6 +279,7 @@ function PersonasEmpty({ onCreate, onImport }: {
         ))}
       </div>
       <p className="mt-4 font-display text-[18px] text-ink">{t('persona.empty')}</p>
+      <p className="mt-2 max-w-[62ch] text-[13px] leading-relaxed text-ink-soft">{t('persona.lede')}</p>
       <div className="mt-4 flex flex-wrap gap-2">
         <button type="button" onClick={onCreate} className={`${PRIMARY_BUTTON} pointer-coarse:min-h-11`}>{t('persona.new')}</button>
         <button type="button" onClick={onImport} className={`${SECONDARY_BUTTON} pointer-coarse:min-h-11`}>{t('persona.import')}</button>

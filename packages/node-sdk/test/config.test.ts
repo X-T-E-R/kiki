@@ -65,6 +65,8 @@ provider = "kimi-for-coding"
 model = "kimi-for-coding"
 max_context_size = 262144
 capabilities = ["image_in", "thinking", "video_in"]
+support_efforts = ["low", "high"]
+default_effort = "high"
 display_name = "Kimi for Coding"
 
 [loop_control]
@@ -161,6 +163,39 @@ describe('resolveModelAlias', () => {
 });
 
 describe('SDK config TOML', () => {
+  it('round-trips scoped retry policies with selector and attempt keys intact', async () => {
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString(`
+[retry]
+max_attempts = 5
+
+[[retry.policies]]
+match = '^provider\\.rate_limit$'
+models = ['gemini-4-argon']
+providers = ['google-native']
+max_attempts = 20
+backoff = 15000
+`);
+
+    expect(config.retry).toEqual({
+      maxAttempts: 5,
+      policies: [{
+        match: '^provider\\.rate_limit$',
+        models: ['gemini-4-argon'],
+        providers: ['google-native'],
+        maxAttempts: 20,
+        backoff: 15_000,
+        retry: true,
+      }],
+    });
+    await writeConfigFile(path, config);
+    expect(readConfigFile(path).retry).toEqual(config.retry);
+    const saved = await readFile(path, 'utf8');
+    expect(saved).toContain('max_attempts = 20');
+    expect(saved).toContain('models = [ "gemini-4-argon" ]');
+    expect(saved).not.toContain('maxAttempts');
+  });
+
   it('round-trips native multiline cognition and clears a former file slot without resurrecting raw references', async () => {
     const path = join(await makeTempDir(), 'config.toml');
     const config = parseConfigString('[models.example]\nprovider="example"\nmodel="remote-example"\nmax_context_size=8192\n[models.example.cognition]\noverlay="cognition/author.md"\nsteering="cognition/old.md"\nindependent="off"\n');
@@ -178,12 +213,27 @@ describe('SDK config TOML', () => {
     expect(() => parseConfigString('[models.example]\nprovider="example"\nmodel="remote"\nmax_context_size=8192\n[models.example.cognition]\noverlay={text=42}\n')).toThrow();
   });
 
+  it('round-trips an explicit provider variable name without storing the runtime credential', async () => {
+    vi.stubEnv('EXAMPLE_PROVIDER_KEY', 'runtime-fixture');
+    const path = join(await makeTempDir(), 'config.toml');
+    const config = parseConfigString('[providers.edge]\ntype="openai"\napi_key_env="EXAMPLE_PROVIDER_KEY"\nbase_url="https://edge.example.test/v1"\n');
+    expect(config.providers['edge']?.apiKeyEnv).toBe('EXAMPLE_PROVIDER_KEY');
+    expect(KimiConfigPatchSchema.parse({ providers: { edge: { apiKeyEnv: 'EXAMPLE_PROVIDER_KEY' } } }).providers?.['edge']?.apiKeyEnv).toBe('EXAMPLE_PROVIDER_KEY');
+    await writeConfigFile(path, config);
+    expect(readConfigFile(path).providers['edge']?.apiKeyEnv).toBe('EXAMPLE_PROVIDER_KEY');
+    const text = await readFile(path, 'utf8');
+    expect(text).toContain('api_key_env = "EXAMPLE_PROVIDER_KEY"');
+    expect(text).not.toContain('runtime-fixture');
+    await expect(stat(join(path, '..', 'credentials', 'credentials.toml'))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(() => parseConfigString('[providers.edge]\ntype="openai"\napi_key_env=" "\n')).toThrow();
+  });
+
   it.each(['openai', 'openai_responses', 'anthropic', 'google-genai'] as const)('round-trips model protocol %s without changing its provider', async (protocol) => {
     const path = join(await makeTempDir(), 'config.toml');
     const config = parseConfigString(`[providers.edge]\ntype="openai"\napi_key="fixture-key"\n[models.example]\nprovider="edge"\nmodel="remote-example"\nmax_context_size=8192\nprotocol="${protocol}"\n`);
     expect(config.models?.['example']?.protocol).toBe(protocol);
     await writeConfigFile(path, config);
-    const saved = await readConfigFile(path);
+    const saved = readConfigFile(path);
     expect(saved.models?.['example']?.protocol).toBe(protocol);
     expect(saved.providers?.['edge']?.type).toBe('openai');
   });
@@ -475,6 +525,12 @@ maxRunningTasks = 2
     expect(rawProviders['local']?.['unsupported_provider_field']).toBe('raw-only');
     expect(rawModels['camel-model']?.['custom_model_field']).toBe('raw-only');
   });
+
+  it('keeps an explicit zero-output continuation and leaves it unset when omitted', () => {
+    expect(parseConfigString('[loop_control]\nzero_output_continuation = true\n').loopControl?.zeroOutputContinuation).toBe(true);
+    expect(parseConfigString('[loop_control]\nzero_output_continuation = false\n').loopControl?.zeroOutputContinuation).toBe(false);
+    expect(parseConfigString('[loop_control]\nmax_steps_per_turn = 3\n').loopControl?.zeroOutputContinuation).toBeUndefined();
+  });
 });
 
 describe('KimiHarness config API', () => {
@@ -611,7 +667,7 @@ describe('KimiHarness config API', () => {
       nbSearchSource: { reuse_local_config: true },
       mergeAllAvailableSkills: true,
       extraSkillDirs: [],
-      loopControl: { compactionSoftContextSize: 0 },
+      loopControl: { compactionSoftContextSize: 0, thinkingOnlyContinuation: true, zeroOutputContinuation: false },
       background: {},
       subagent: { timeoutMs: 7_200_000, maxDirectChildren: 16, maxTotalSubagents: 0, defaultProfile: 'general', allowedTools: [] },
       mcp: {},
@@ -629,23 +685,25 @@ describe('KimiHarness config API', () => {
 
     const features = await harness.getExperimentalFeatures();
 
-    // The registry order is the engine's; the SDK must forward the whole
-    // catalog, not a filtered subset. (secondary-model left the registry with
-    // the model-inheritance removal.)
+    // The registry order is the engine's import order; the SDK must forward the
+    // whole catalog, not a filtered subset. native_browser registers from
+    // app/browser/flag.ts when optionalCapability/policyService loads it, and
+    // auto_session_title registers later from session/sessionTitle/flag.ts.
+    // (secondary-model left the registry with the model-inheritance removal.)
     expect(features.map((feature) => feature.id)).toEqual([
+      'plugin_app_lifecycle',
+      'recipes',
       'agent-profile-routes',
       'native_ssh',
       'session_idle_eviction',
-      'auto_session_title',
-      'native_browser',
-      'local_session_resume',
-      'plugin_import',
-      'media_generation',
       'task_wait',
+      'native_browser',
+      'auto_session_title',
+      'local_session_resume',
+      'plugin_workspace_usage',
       'tool-select',
       'subagent_release_idle',
       'persistence_minidb_readmodel',
-      'task_board',
       'image_format_conversion',
       'external_delegation_mcp',
     ]);

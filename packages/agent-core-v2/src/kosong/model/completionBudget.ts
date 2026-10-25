@@ -9,6 +9,7 @@ export function resolveCompletionBudget(args: {
   readonly maxOutputSize?: number;
   readonly reservedContextSize?: number;
   readonly maxCompletionTokensCap?: number;
+  readonly allowFallback?: boolean;
 }): CompletionBudgetConfig | undefined {
   if (args.maxCompletionTokensCap !== undefined) {
     if (args.maxCompletionTokensCap <= 0) return undefined;
@@ -17,6 +18,7 @@ export function resolveCompletionBudget(args: {
   if (args.maxOutputSize !== undefined && args.maxOutputSize > 0) {
     return { hardCap: args.maxOutputSize };
   }
+  if (args.allowFallback === false) return undefined;
   if (args.reservedContextSize !== undefined && args.reservedContextSize > 0) {
     return { fallback: args.reservedContextSize };
   }

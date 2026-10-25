@@ -24,7 +24,7 @@ How does the event loop in src/runtime work? Where do events originate, and what
 How is "permission approval" implemented in this project? Which files are involved, and what are the key types?
 ```
 
-For a large investigation, ask the main agent (the one you are talking to) to split the work across sub-agents, which work in parallel on pieces of it. [Agents and sub-agents](../customization/agents.md) covers how to prompt for that.
+For a large investigation, ask the main agent (the one you are talking to) to split the work across sub-agents, which work in parallel on pieces of it. [Agents and sub-agents](../customization/agents-and-subagents.md) covers how to prompt for that.
 
 ## Implementing a new feature
 
@@ -101,6 +101,30 @@ Research the main dependency injection options for TypeScript (tsyringe, inversi
 
 For a batch of work you already trust, you can stop approving each call. Start the CLI with `--yolo` or type `/yolo` in a session — both switch the session to YOLO mode, where tool calls including reads of sensitive files run without asking, unless a permission rule denies them. Exiting Plan mode is still reviewed. For a narrower option, pre-approve specific tools in the `[permission]` section of [Configuration files](../configuration/config-files.md#permission).
 
+## Documents, spreadsheets, and research
+
+The folder does not have to hold code. Local documents need the catalog plugin for the format you have: [Kiki Extract](../customization/plugins.md#local-document-extraction) converts PDF, Office, HTML, or text into Markdown that the agent can read and search, and PDF or Office input needs Python with MarkItDown prepared once and pointed at in the plugin's settings. Ask for the check and the sources in the same message:
+
+```text
+Read every PDF in ./sources, check each figure against budget.xlsx, and write summary.md listing the file and page each number came from. Flag any figure that does not match, and do not change budget.xlsx.
+```
+
+CSV and TSV keys are [Kiki Work](../customization/plugins.md#official-plugins)'s job: it audits the keys and reconciles two tables locally, without modifying or uploading either. Word, Excel, and PowerPoint files are created and edited by [Kiki Office Suite](../customization/plugins.md#official-plugins).
+
+For a long draft, have the main agent inventory the material before it writes, so the outline carries the evidence instead of being invented afterwards:
+
+```text
+Read the notes in ./research, then give me an outline where every section names the notes that support it. Once I approve the outline, draft report.md section by section and keep each claim tied to a note. Mark anything the notes do not cover.
+```
+
+The main agent can send a read-only subagent to inventory those notes while it works on the structure — [Agents and sub-agents](../customization/agents-and-subagents.md) has the wording. A dedicated writing surface is available too: the [Kiki Writing](../customization/plugins.md#official-plugins) plugin adds a manuscript panel and a draft command.
+
+Pages behind a login, or figures you would otherwise copy by hand, are browser and datasource work. Browser control has several sources: drive the browser you already use with the [Kimi Browser Extension](../customization/plugins.md#kimi-browser-extension), which also needs its extension installed from the store and approved there; let Kiki run a browser of its own; attach a browser that is already running over CDP; or select an Ego Lite installation you set up yourself. [Browser control](../guides/settings.md#browser-control) covers each route. Market, macro, company, literature, and Chinese-law lookups come from the [Kimi Datasource](../customization/plugins.md#kimi-datasource) plugin, which needs a Kimi Code OAuth sign-in and spends plan quota.
+
+```text
+The product pages are open in my browser. Build one table with the price, plan, and main limit for each, and screenshot every page you read.
+```
+
 ## Scheduled tasks and reminders
 
 In an interactive session, ask the agent for a one-time reminder or a recurring task. It writes a cron expression (the standard way to express "when to run") in your local timezone and re-sends the prompt into the same session each time it fires:
@@ -143,6 +167,6 @@ To keep a record or do a retrospective, `kiki export <sessionId>` packages a ses
 
 ## Next steps
 
-- [Agents and sub-agents](../customization/agents.md) — how to have the agent dispatch sub-tasks for parallel execution
+- [Agents and sub-agents](../customization/agents-and-subagents.md) — how to have the agent dispatch sub-tasks for parallel execution
 - [Hooks](../customization/hooks.md) — trigger local scripts at task-completion and other lifecycle points
 - [Built-in tools](../reference/tools.md) — full reference of all tools the agent can call

@@ -277,12 +277,22 @@ describe('SessionCronSection', () => {
     expect(rowIds()).toEqual(['task-1']);
   });
 
-  it('states an empty list in one line and keeps the way to manage it', async () => {
-    seed([]);
-    const block = await mount();
-    expect(block.querySelector('[data-rail-cron-empty]')!.textContent).toBe('暂无定时任务');
-    expect(rowIds()).toHaveLength(0);
-    expect(block.querySelector<HTMLElement>('[data-rail-cron-manage]')!.textContent).toBe('管理定时任务');
+  it('omits the block when confirmed empty while keeping pending and error states visible', async () => {
+    let resolveRead: ((value: ListCronTasksResponse) => void) | undefined;
+    listCronTasks.mockImplementation(() => new Promise<ListCronTasksResponse>((resolve) => {
+      resolveRead = resolve;
+    }));
+    await render();
+    await settle(2);
+    // Loading state stays visible until the read confirms zero tasks.
+    expect(container.querySelector('[data-rail-cron]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-cron-manage]')).not.toBeNull();
+    await act(async () => {
+      resolveRead?.({ items: [], has_more: false });
+    });
+    await settle();
+    expect(container.querySelector('[data-rail-cron]')).toBeNull();
+    expect(container.querySelector('[data-rail-cron-empty]')).toBeNull();
   });
 
   it('claims nothing at all without a connection', async () => {
@@ -314,5 +324,28 @@ describe('SessionCronSection', () => {
     expect(head.textContent).toContain('本对话定时任务');
     expect(head.textContent).toContain('2');
     expect(head.textContent).toContain('剩余');
+  });
+});
+
+describe('SessionCronSection delivery timing', () => {
+  it('names the timing on each row, and reads a task with no recorded timing as the default', async () => {
+    seed([
+      makeTask({ id: 'idle-task', delivery_mode: 'idle' }),
+      makeTask({ id: 'queue-task', delivery_mode: 'queue' }),
+      makeTask({ id: 'steer-task', delivery_mode: 'steer' }),
+      makeTask({ id: 'legacy-task' }),
+    ]);
+    await mount();
+    // The block folds after three rows; the fourth is behind "show more",
+    // and every mode has to be readable without opening anything.
+    const more = container.querySelector<HTMLButtonElement>('[data-rail-cron-more]');
+    if (more !== null) await act(async () => { more.click(); });
+    const text = (id: string) => container.querySelector(`[data-rail-cron-row="${id}"] [data-rail-cron-delivery]`)?.textContent;
+    expect(text('idle-task')).toBe('空闲时插入');
+    expect(text('queue-task')).toBe('排队');
+    expect(text('steer-task')).toBe('立即插入');
+    // No recorded timing: the default the host will apply, never a mode it
+    // never reported.
+    expect(text('legacy-task')).toBe('空闲时插入');
   });
 });

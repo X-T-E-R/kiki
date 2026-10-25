@@ -2,12 +2,13 @@ import { mkdtemp, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import { join } from 'pathe';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import type { IConfigService } from '#/app/config/config';
 import { SubagentTool } from '#/agent/tools/agent/agentTool';
 import { SubagentToolInputSchema } from '#/agent/tools/agent/agent';
+import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
 import {
   DEFAULT_SUBAGENT_PROFILE,
   SUBAGENT_SECTION,
@@ -23,6 +24,7 @@ import { projectAgentProfileCatalog } from '@kiki/agent-profiles/profileCatalog'
 import { renderSystemPromptResult } from '#/app/agentProfileCatalog/profile-shared';
 import { ShippedAgentProfileManagerService } from '#/app/shippedAgentProfiles/shippedAgentProfileManagerService';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
+import { subagentWorkspaceRoots, workspaceRootsLabels } from '#/session/agentLifecycle/subagentMetadata';
 import { agentProfilesHostFs } from '#/workspace/workspaceAgentProfileLoader/internal/hostFs';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
@@ -82,6 +84,66 @@ describe('SubagentToolInputSchema', () => {
     expect(parsed.profile).toBe('explore');
     const blank = SubagentToolInputSchema.parse({ prompt: 'do it', description: 'a task', profile: '' });
     expect(blank.profile).toBeUndefined();
+  });
+
+  it('accepts typed workspace roots for new agents', () => {
+    const parsed = SubagentToolInputSchema.parse({
+      prompt: 'write it', description: 'a task', workDir: 'C:/writer', additionalDirs: ['C:/materials'],
+    });
+    expect(parsed.workDir).toBe('C:/writer');
+    expect(parsed.additionalDirs).toEqual(['C:/materials']);
+  });
+
+  it('freezes workspace roots on resume', () => {
+    expect(() => SubagentToolInputSchema.parse({
+      prompt: 'continue', description: 'a task', resume: 'child', workDir: 'C:/other',
+    })).toThrow(/workspace roots are fixed/);
+    expect(() => SubagentToolInputSchema.parse({
+      prompt: 'continue', description: 'a task', resume: 'child', additionalDirs: ['C:/other'],
+    })).toThrow(/workspace roots are fixed/);
+  });
+});
+
+describe('subagent workspace roots', () => {
+  it('round-trips persisted roots and rejects malformed metadata closed', () => {
+    const meta = { labels: workspaceRootsLabels({ workDir: 'C:/writer', additionalDirs: ['C:/materials'] }) };
+    expect(subagentWorkspaceRoots(meta)).toEqual({ workDir: 'C:/writer', additionalDirs: ['C:/materials'] });
+    expect(() => subagentWorkspaceRoots({ labels: { agentWorkspaceRoots: '{"workDir":3}' } }, 'child'))
+      .toThrow(/Persisted workspace roots for agent "child" are invalid/);
+    expect(() => subagentWorkspaceRoots({ labels: { agentWorkspaceRoots: '{' } }, 'child'))
+      .toThrow(/invalid JSON/);
+  });
+
+  it('uses persisted roots on cold restore instead of caller roots and fails closed when they are corrupt', async () => {
+    const persisted = { workDir: 'C:/writer', additionalDirs: ['C:/materials'] };
+    const startCreate = vi.fn((_agentId: string, opts: unknown) => Promise.resolve(opts));
+    const service = Object.create(AgentLifecycleService.prototype) as {
+      readonly createInternal: (input: Record<string, unknown>) => Promise<unknown>;
+      sessionMetadata: { read: () => Promise<unknown> };
+      slots: Map<string, unknown>;
+      startCreate: typeof startCreate;
+    };
+    service.slots = new Map();
+    service.startCreate = startCreate;
+    service.sessionMetadata = {
+      read: async () => ({ agents: { child: { labels: workspaceRootsLabels(persisted) } } }),
+    };
+
+    await service.createInternal({ agentId: 'child', workspaceRoots: { workDir: 'C:/caller' } });
+    expect(startCreate).toHaveBeenCalledWith('child', expect.objectContaining({ workspaceRoots: persisted }));
+
+    startCreate.mockClear();
+    for (const raw of ['{', 'null', '[]', 'false', '42', '"writer"']) {
+      service.sessionMetadata = {
+        read: async () => ({ agents: { child: { labels: { agentWorkspaceRoots: raw } } } }),
+      };
+      await expect(service.createInternal({ agentId: 'child', workspaceRoots: { workDir: 'C:/caller' } })).rejects.toMatchObject({
+        code: ErrorCodes.CONFIG_INVALID,
+        details: { agentId: 'child', label: 'agentWorkspaceRoots',
+          reason: raw === '{' ? 'invalid JSON' : 'workspace roots must be an object' },
+      });
+    }
+    expect(startCreate).not.toHaveBeenCalled();
   });
 });
 

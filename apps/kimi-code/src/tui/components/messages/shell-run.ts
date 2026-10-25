@@ -25,7 +25,7 @@ const TRUNCATED_RUNNING_NOTICE = '... (output truncated)';
  *  - running: dim, ANSI-stripped tail of the combined output (the last
  *    RUNNING_TAIL_LINES lines, or the whole buffer when expanded via
  *    ctrl+o), a `+N lines` overflow marker, an elapsed `(Xs)` timer that
- *    ticks every second, and a `(ctrl+b to run in background)` hint —
+ *    ticks every second, and a `(Ctrl+B to run in background)` hint —
  *    matching claude-code's running card so warnings are grey rather than
  *    red while the command works.
  *  - finished: the standard `formatBashOutputForDisplay` view (stderr red only
@@ -174,7 +174,7 @@ export class ShellRunComponent extends Container {
         body = tail.map((line) => `  ${dim(line)}`).join('\n');
       }
       const timing = `  ${dim(`${extra > 0 ? `+${extra} lines ` : ''}(${elapsed}s)`)}`;
-      const hint = `  ${dim('(ctrl+b to run in background)')}`;
+      const hint = `  ${dim('(Ctrl+B to run in background)')}`;
       return `${body}\n${timing}\n${hint}`;
     } catch {
       return '  (output unavailable)';

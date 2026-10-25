@@ -29,6 +29,7 @@ import { useConnection } from '../../state/connection';
 import { AvatarStack } from '../bot/SidebarBotRoomGroups';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { useGuardedNavigate } from '../dirtyGuard';
+import { useSidebarContext } from '../sidebarContext';
 import { Icon } from '../icons';
 import { QuestionCard } from '../Interactions';
 import { Markdown } from '../Markdown';
@@ -89,11 +90,18 @@ export function RoomPage({
 
 function RoomShell({ onToggleSidebar, title, children }: { readonly onToggleSidebar: () => void; readonly title?: string; readonly children: React.ReactNode }) {
   const { t } = useI18n();
+  const { sidebarOpen } = useSidebarContext();
   return (
     <div className="flex h-full min-h-0 flex-col bg-paper">
       <header className="flex min-h-12 shrink-0 items-center gap-2 px-4">
-        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden">
+        <button
+          type="button"
+          onClick={onToggleSidebar}
+          aria-label={t('sv.openMenuAria')}
+          aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
+        >
           <Icon name="menu" size={16} />
         </button>
         {title !== undefined ? <h1 className="truncate text-[15px] font-semibold text-ink">{title}</h1> : null}
@@ -237,7 +245,7 @@ function RoomView({
       queryClient.removeQueries({ queryKey: roomQueryKey(room.id) });
       void queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-      navigate('/');
+      void navigate('/');
     },
     onError: (error) => {
       setConfirmDelete(false);
@@ -253,13 +261,20 @@ function RoomView({
   });
   const roster = room.members.map((member) => ({ personaId: roomMemberId(member) }));
   const faces = new Map(room.members.map((member) => [roomMemberId(member), faceOf(roomMemberId(member))] as const));
+  const { sidebarOpen } = useSidebarContext();
 
   return (
     <div className="flex h-full min-h-0 bg-paper" data-room-page={room.id} data-room-paused={room.paused || undefined}>
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="flex min-h-12 shrink-0 items-center gap-1.5 px-3 lg:px-5" data-room-header>
-          <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden">
+          <button
+            type="button"
+            onClick={onToggleSidebar}
+            aria-label={t('sv.openMenuAria')}
+            aria-expanded={sidebarOpen}
+            aria-controls="app-sidebar"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
+          >
             <Icon name="menu" size={16} />
           </button>
           <h1 className="flex min-w-0 shrink items-baseline gap-1.5 truncate text-[15px] font-semibold text-ink">

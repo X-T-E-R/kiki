@@ -41,10 +41,9 @@ export interface SessionListPreferences {
 }
 
 /** Sidebar navigation destinations the user can show or tuck away. */
-export type SidebarNavKey = 'board' | 'cron' | 'memory' | 'personas' | 'usage' | 'capabilities' | 'discover';
+export type SidebarNavKey = 'cron' | 'memory' | 'personas' | 'usage' | 'capabilities' | 'discover';
 
 export const ALL_SIDEBAR_NAV_KEYS: readonly SidebarNavKey[] = [
-  'board',
   'cron',
   'memory',
   'personas',
@@ -53,14 +52,12 @@ export const ALL_SIDEBAR_NAV_KEYS: readonly SidebarNavKey[] = [
   'discover',
 ];
 
-/** Task board, scheduled tasks and capabilities start tucked into "More
- * tools": the everyday destinations (what Kiki remembers, who talks to you,
- * what it costs, where the tour of the product starts) lead the nav. */
+/** Scheduled tasks, capabilities and discovery start in "More
+ * tools"; memory, personas and usage lead the navigation. */
 export const DEFAULT_PINNED_NAV_ITEMS: readonly SidebarNavKey[] = [
   'memory',
   'personas',
   'usage',
-  'discover',
 ];
 
 export interface LayoutPreferences extends SessionListPreferences {

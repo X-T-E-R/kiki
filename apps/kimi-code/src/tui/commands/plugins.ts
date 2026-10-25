@@ -30,6 +30,7 @@ import { UsagePanelComponent } from '../components/messages/usage-panel';
 import { createMarkdownTheme } from '../theme/pi-tui-theme';
 import { formatErrorMessage } from '../utils/event-payload';
 import { createMarkdownOptions } from '../utils/markdown-options';
+import { parsePluginInstallArgs } from '../utils/plugin-install-args';
 import {
   formatPluginSourceLabel,
   isOfficialPluginInstall,
@@ -121,9 +122,16 @@ export async function handlePluginsCommand(host: SlashCommandHost, rawArgs: stri
       return;
     }
     if (sub === 'install') {
-      const source = rest.join(' ').trim();
+      let parsed: ReturnType<typeof parsePluginInstallArgs>;
+      try {
+        parsed = parsePluginInstallArgs(rest.join(' '));
+      } catch (error) {
+        host.showError(formatErrorMessage(error));
+        return;
+      }
+      const source = parsed.source;
       if (source.length === 0) {
-        host.showError('Usage: /plugins install <local-path-or-zip-url>');
+        host.showError('Usage: /plugins install [--trust] [--sha256 <64-hex>] <local-path-or-zip-url>');
         return;
       }
       if (!(await confirmInstallTrust(host, source, isOfficialPluginSource(source)))) {
@@ -132,7 +140,7 @@ export async function handlePluginsCommand(host: SlashCommandHost, rawArgs: stri
       }
       const spinner = host.showProgressSpinner(`Installing plugin from ${truncateForStatus(source)}…`);
       try {
-        await installPluginFromSource(host, source);
+        await installPluginFromSource(host, source, { sha256: parsed.sha256, consent: true });
         spinner.stop({ ok: true, label: `Install finished — see details below.` });
       } catch (error) {
         spinner.stop({ ok: false, label: `Install failed: ${formatErrorMessage(error)}` });
@@ -644,6 +652,7 @@ async function installFromPanel(
   source: string,
   label: string,
   official: boolean,
+  sha256?: string,
 ): Promise<void> {
   if (!(await confirmInstallTrust(host, label, official))) {
     host.showStatus(`Install cancelled: ${label}.`);
@@ -660,7 +669,7 @@ async function installFromPanel(
   }
   host.state.ui.requestRender();
   try {
-    await installPluginFromSource(host, source);
+    await installPluginFromSource(host, source, { sha256, consent: true });
   } catch (error) {
     if (official) {
       panel.clearInstalling();
@@ -751,6 +760,7 @@ async function handlePluginsPanelSelection(
         selection.entry.displayName,
         (catalogIsDefault && selection.entry.tier === 'official') ||
           isOfficialPluginSource(selection.entry.source),
+        selection.entry.sha256,
       );
       return;
     case 'install-source':
@@ -835,14 +845,18 @@ async function renderPluginInfo(host: SlashCommandHost, id: string): Promise<voi
 async function installPluginFromSource(
   host: SlashCommandHost,
   source: string,
+  options?: { readonly sha256?: string; readonly consent?: boolean },
 ): Promise<void> {
   const session = await resolvePluginApi(host);
   const beforeList = await session.listPlugins();
-  const consent = source.startsWith('--trust ');
-  const resolved = resolvePluginInstallSource(consent ? source.slice('--trust '.length).trim() : source, host.state.appState.workDir);
-  const plan = await session.previewPlugin({ source: resolved });
+  const resolved = resolvePluginInstallSource(source, host.state.appState.workDir);
+  const sha256 = options?.sha256;
+  const plan = await session.previewPlugin(sha256 === undefined ? { source: resolved } : { source: resolved, sha256 });
+  const consent = options?.consent === true;
   if (plan.consentRequired && !consent) throw new Error(`Plugin ${plan.id} (${plan.contributions.join(', ')}) runs trusted code with full account permissions. Consent once with /plugins install --trust <source>.`);
-  const summary = await session.installPlugin(resolved, { fingerprint: plan.fingerprint, consent });
+  const summary = await session.installPlugin(resolved, sha256 === undefined
+    ? { fingerprint: plan.fingerprint, consent }
+    : { fingerprint: plan.fingerprint, consent, sha256 });
   showPluginInstallResult(host, beforeList, summary);
 }
 

@@ -165,11 +165,16 @@ export function threadRefStatusOf(session: Session | undefined): ThreadRefStatus
   return session.busy ? 'running' : 'idle';
 }
 
-/** Everything the GUI can say about a linked thread; only the id when it is not loaded. */
+/**
+ * Everything the GUI can say about a linked thread; only the id when it is not
+ * loaded. The workspace is read for its display name alone, so the
+ * metadata-only catalog entry names a referenced thread exactly like the full
+ * wire `Workspace`.
+ */
 export function threadRefInfoOf(
   sessionId: string,
   session: Session | undefined,
-  workspace: Workspace | undefined,
+  workspace: Pick<Workspace, 'name'> | undefined,
   hostId?: string,
 ): ThreadRefInfo {
   if (session === undefined) return { sessionId, hostId, status: 'unknown' };

@@ -25,6 +25,7 @@ function makePluginSummary(overrides: Partial<PluginSummary> = {}): PluginSummar
     displayName: 'Kimi Datasource',
     version: '3.3.0',
     enabled: true,
+    globalEnabled: true,
     state: 'ok',
     skillCount: 0,
     mcpServerCount: 1,

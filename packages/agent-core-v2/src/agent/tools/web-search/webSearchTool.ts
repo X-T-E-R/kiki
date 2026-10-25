@@ -94,7 +94,8 @@ function renderSearchResult(envelope: SearchRunSyncEnvelope): ExecutableToolResu
     return builder.ok();
   }
 
-  const detail = classifySearchFailure(envelope.error, envelope.status);
+  const error = envelope.error ?? envelope.output.lane_outcomes.find((outcome) => outcome.error !== undefined)?.error;
+  const detail = classifySearchFailure(error, envelope.status);
   if (envelope.output.results.length === 0) {
     return { isError: true, output: detail };
   }
@@ -171,6 +172,13 @@ function classifySearchFailure(error: PublicError | undefined, status: string): 
   }
   if (error?.code === 'PROVIDER_AUTH') {
     return `Search failed (authentication): ${error.message}`;
+  }
+  if (error?.code === 'PROVIDER_RATE_LIMIT') {
+    const wait = error.retry_after_ms === undefined ? 'Wait before retrying' : `Retry after ${Math.ceil(error.retry_after_ms / 1000)} seconds`;
+    return `Search failed (PROVIDER_RATE_LIMIT): ${error.message} ${wait}, or explicitly choose another configured source.`;
+  }
+  if (error?.code === 'PROVIDER_UNAVAILABLE') {
+    return `Search failed (PROVIDER_UNAVAILABLE): ${error.message} Try again later, or explicitly choose another configured source.`;
   }
   if (error?.code === 'DEFAULT_NOT_CONFIGURED') {
     return `Search unavailable: ${error.message}`;

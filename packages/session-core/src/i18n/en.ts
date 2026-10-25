@@ -305,6 +305,40 @@ export const en = {
   'cron.toast.deleted': 'Scheduled task deleted',
   'cron.error.notFound': 'This task no longer exists; the list was refreshed.',
   'cron.error.ambiguous': 'This task id exists in several sessions; refresh and try again.',
+  // Schedule phrasing. `{days}` and `{times}` are joined with
+  // `cron.schedule.times`, so each locale picks its own separator.
+  'cron.schedule.times': ', ',
+  'cron.schedule.everyMinute': 'Every minute',
+  'cron.schedule.everyNMinutes': 'Every {n} minutes',
+  'cron.schedule.hourlyOnTheHour': 'Every hour on the hour',
+  'cron.schedule.hourly': 'Every hour at minute {m}',
+  'cron.schedule.everyNHours': 'Every {n} hours at minute {m}',
+  'cron.schedule.everyNHoursOnTheHour': 'Every {n} hours on the hour',
+  'cron.schedule.daily': 'Every day at {times}',
+  'cron.schedule.weekdays': 'Every weekday at {times}',
+  'cron.schedule.weekends': 'Every weekend day at {times}',
+  'cron.schedule.weekly': 'Every {days} at {times}',
+  'cron.schedule.monthly': 'Day {day} of every month at {times}',
+  'cron.schedule.yearly': 'Every {month} {day} at {times}',
+  'cron.schedule.day.sunday': 'Sunday',
+  'cron.schedule.day.monday': 'Monday',
+  'cron.schedule.day.tuesday': 'Tuesday',
+  'cron.schedule.day.wednesday': 'Wednesday',
+  'cron.schedule.day.thursday': 'Thursday',
+  'cron.schedule.day.friday': 'Friday',
+  'cron.schedule.day.saturday': 'Saturday',
+  'cron.schedule.month.january': 'January',
+  'cron.schedule.month.february': 'February',
+  'cron.schedule.month.march': 'March',
+  'cron.schedule.month.april': 'April',
+  'cron.schedule.month.may': 'May',
+  'cron.schedule.month.june': 'June',
+  'cron.schedule.month.july': 'July',
+  'cron.schedule.month.august': 'August',
+  'cron.schedule.month.september': 'September',
+  'cron.schedule.month.october': 'October',
+  'cron.schedule.month.november': 'November',
+  'cron.schedule.month.december': 'December',
   'st.prompt.title': 'Prompt fields',
   'st.prompt.expand': 'Edit prompt fields',
   'st.prompt.hint': 'Override registered prompt fields, add reusable variables, or load prompt configuration files.',
@@ -464,6 +498,10 @@ export const en = {
   'capabilityReason.research_readonly_dispatch_forbidden': 'Research-only agents cannot dispatch subagents.',
   'capabilityReason.plan_resume_forbidden': 'AgentRun cannot resume existing children in plan mode. Exit plan mode first.',
   'capabilityReason.native_executor_required': 'Research-only dispatch requires the native executor.',
+  'capabilityReason.tool_not_registered': 'This tool is not registered.',
+  'capabilityReason.plugin_catalog_failed': 'The plugin tool catalog could not be loaded.',
+  'capabilityReason.plugin_usage_disabled': 'This plugin is disabled for the current scope.',
+  'capabilityReason.plugin_usage_unavailable': 'Plugin usage could not be checked.',
   'agentProfileDiagnostic.agent_profile_source.invalid_path': 'The source path is invalid.',
   'agentProfileDiagnostic.agent_profile_source.path_escape': 'The source path escapes its contribution root.',
   'agentProfileDiagnostic.agent_profile_source.symlink_escape': 'The source path resolves outside its contribution root.',
@@ -486,6 +524,18 @@ export const en = {
   'agentPanel.viewSkillMd': 'View SKILL.md',
   'agentPanel.hideSkillMd': 'Hide SKILL.md',
   'agentPanel.loadingSkillMd': 'Loading SKILL.md…',
+  'agentPanel.skillMdSource': 'SKILL.md',
+  'agentPanel.skillMdReadFailed': 'Could not read this SKILL.md. Open the original file to check it still exists.',
+  'agentPanel.skillMdMissing': 'This SKILL.md is no longer at that location. Open the original file to find where it moved.',
+  'agentPanel.skillMdForbidden': 'This SKILL.md cannot be read from here. Open the original file to read it another way.',
+  'agentPanel.skillMdTruncated': 'Showing the first part of this file while the rest is read.',
+  'agentPanel.skillMdLoadingRest': 'Reading the rest of this file…',
+  'agentPanel.skillMdIncomplete': 'The rest of this file could not be read. What is shown is the beginning of it.',
+  'agentPanel.skillMdOpenFile': 'Open the original file',
+  'agentPanel.skillMdCopy': 'Copy SKILL.md',
+  'agentPanel.skillMdCopyShown': 'Copy what is shown',
+  'agentPanel.skillMdCopied': 'SKILL.md copied',
+  'agentPanel.skillMdCopiedShown': 'Copied what is shown',
   'agentPanel.skillType': 'Type: {type}',
   'agentPanel.skillTypeLabel': 'Type',
   'agentPanel.disableModelInvocationBadge': 'Manual only',
@@ -654,6 +704,7 @@ export const en = {
   'app.closeSidebar': 'Close sidebar',
   'app.unexpectedError': 'Kiki hit an unexpected error.',
   'app.reload': 'Reload',
+  'app.trayLocaleSaveFailed': 'The tray menu is still in the previous language. Change it again to retry.',
 
   // ---- sidebar ----
   'sidebar.newSession': 'New session',
@@ -673,6 +724,9 @@ export const en = {
   'sidebar.noSessions': 'No sessions yet — start one above.',
   'sidebar.untitled': 'Untitled session',
   'sidebar.archived': 'archived',
+  'sidebar.archiving': 'Archiving…',
+  'sidebar.archivingAria': 'Archiving {title}',
+  'sidebar.archiveFailedAria': 'Archive of {title} failed',
   'sidebar.showArchived': 'Show archived',
   'sidebar.loadMore': 'Load more sessions',
   'sidebar.loadingMore': 'Loading…',
@@ -686,6 +740,7 @@ export const en = {
   'sidebar.pinWorkspace': 'Pin this workspace to the top',
   'sidebar.unpinWorkspace': 'Unpin this workspace',
   'sidebar.pinWorkspaceFor': 'Pin the workspace {name} to the top',
+  'sidebar.newSessionInWorkspace': 'New session in {name}',
   'sidebar.unpinWorkspaceFor': 'Unpin the workspace {name}',
   'sidebar.workspaceAll': 'All workspaces',
   'sidebar.collapseSidebar': 'Collapse sidebar',
@@ -741,6 +796,9 @@ export const en = {
   'menu.showNested': 'Show nested',
   'menu.archive': 'Archive',
   'menu.copyLink': 'Copy link',
+  'menu.copyThreadLink': 'Copy thread link',
+  'menu.copyWorkingDirectory': 'Copy working directory',
+  'menu.openWorkingDirectory': 'Open working directory',
   'menu.copyPath': 'Copy path',
   'menu.openFolder': 'Open containing folder',
   'menu.openDefaultApp': 'Open with default app',
@@ -761,6 +819,48 @@ export const en = {
   'file.openDefaultApp': 'Open with default app',
   'file.open': 'Open',
 
+  // ---- output layer preset dialog ----
+  'outputPreset.addAria': 'Add output layer preset',
+  'outputPreset.editAria': 'Edit output layer preset',
+  'outputPreset.addTitle': 'New preset',
+  'outputPreset.editTitle': 'Edit preset',
+  'outputPreset.defaultLabel': 'New preset',
+  'outputPreset.templateLabel': 'Built-in template',
+  'outputPreset.nameLabel': 'Preset name',
+  'outputPreset.namePlaceholder': 'e.g. Streaming translation',
+  'outputPreset.modelLabel': 'Processing model',
+  'outputPreset.modeCatalog': 'Pick from the model catalog',
+  'outputPreset.modeCustom': 'Custom model ID over a saved connection',
+  'outputPreset.selectModelAria': 'Choose a model',
+  'outputPreset.connectionLabel': 'Saved connection',
+  'outputPreset.connectionPlaceholder': 'Choose a connection / provider…',
+  'outputPreset.customModelLabel': 'Custom model ID',
+  'outputPreset.customModelPlaceholder': 'Enter a custom model ID (e.g. gemini-2.0-flash)',
+  'outputPreset.instructionLabel': 'Prompt instructions',
+  'outputPreset.instructionPlaceholder': 'Prompt instructions…',
+  'outputPreset.advancedToggle': 'Advanced (grouping, preload, token budget)',
+  'outputPreset.groupCharsLabel': 'Characters per group (Unicode)',
+  'outputPreset.groupCharsHint': 'Default 600',
+  'outputPreset.preloadBeforeLabel': 'Groups to preload before',
+  'outputPreset.preloadAfterLabel': 'Groups to preload after',
+  'outputPreset.preloadHint': 'Default 1',
+  'outputPreset.maxOutputLabel': 'Output budget per run (tokens)',
+  'outputPreset.maxOutputPlaceholder': 'No limit',
+  'outputPreset.maxOutputHint': 'Max output tokens per group (no limit by default)',
+  'outputPreset.historyLabel': 'History budget (tokens)',
+  'outputPreset.historyHint': 'History context cap; 0 disables it (default 16,384)',
+  'outputPreset.errorCustomPair': 'A custom model needs both a saved connection and a model ID.',
+  'outputPreset.errorMaxTokens': 'The output cap must be a positive integer; leave it empty for no extra limit.',
+  'outputPreset.errorRequired': 'Fill in the preset name and prompt.',
+  'outputPreset.errorSave': 'Save failed. Try again.',
+  'outputPreset.errorDelete': 'Delete failed. Try again.',
+  'outputPreset.delete': 'Delete preset',
+  'outputPreset.save': 'Save preset',
+  'outputPreset.saving': 'Saving…',
+  'outputPreset.noModelLabel': 'No model (keeps the text as-is; no processing)',
+  'outputPreset.noModelGroup': 'Not set',
+  'outputPreset.noModelKeywords': 'none empty unset blank',
+
   // ---- composer right-click menu ----
   'composer.contextMenuAria': 'Input actions',
   'contextMenu.cut': 'Cut',
@@ -779,7 +879,8 @@ export const en = {
   'execution.switchFreshContextPlain': 'The new engine starts with a fresh context. Kiki does not hand it the old conversation, and the old engine’s session is not resumed.',
   'execution.switchHistoryKept': 'This conversation stays here and remains readable.',
   'execution.switchBareEffects': 'No Kiki profile prompt, tools or context is added, and the model, effort and approval mode are the engine’s own.',
-  'execution.switchProfileEffects': 'The {profile} profile supplies Kiki’s prompt, tools and context, and pins its model and thinking effort.',
+  'execution.switchProfileEffects': 'The {profile} profile supplies Kiki’s prompt, tools and context.',
+  'execution.switchNativeContext': 'Kiki continues with this conversation’s context.',
   'execution.switchRunningTurn': 'The turn that is running now finishes on the current engine.',
   'execution.switchConfirm': 'Switch engine',
   'composer.execution.aria': 'Execution — {engine}, {profile}',
@@ -813,27 +914,48 @@ export const en = {
   'profile.switchTitle': 'Switch to {profile}?',
   'profile.switchBody': 'The new agent profile takes effect from your next message in this session.',
   'profile.switchModelReset':
-    'The model and thinking effort on this page switch to the new profile’s defaults. You can still change them before sending.',
+    'The profile’s model and thinking defaults apply where configured; without a model default, the current model stays. You can change these before sending.',
   'profile.switchSubagents': 'Subagent dispatch policy switches with the new profile.',
   'profile.switchRunningTurn': 'The turn that is running now finishes on the current profile.',
   'profile.switchConfirm': 'Switch profile',
+  // Switching engine mid-session: the new engine starts a context of its own,
+  // and what is already in this session stays here.
+
+
+
+
+
+
+
+
+
   'profile.actionsGroup': 'Profile actions',
   'profile.rebuildMenu': 'Rebuild context',
-  'profile.rebuildMenuDescription': 'Reload the current profile, prompt fields, skills, instructions, and plugin injections.',
-  'profile.rebuildBusy': 'Wait for the current turn to finish before rebuilding context.',
+  'profile.rebuildMenuDescription': 'Reload the current profile, prompt fields, skills, instructions, plugin content, and this conversation’s MCP servers.',
+  'profile.rebuildBusy': 'A rebuild needs a turn boundary: it is unavailable while this conversation is busy or has queued work.',
   'profile.rebuildTitle': 'Rebuild this session’s context?',
-  'profile.rebuildBody': 'Kiki will reload the current agent’s system prompt and injected context from the latest files on disk.',
-  'profile.rebuildKeepsHistory': 'Conversation messages and history are kept.',
-  'profile.rebuildLatestSources': 'The profile, prompt fields, skills, AGENTS.md instructions, plugin injections, and other runtime injections are rebuilt.',
+  'profile.rebuildBody': 'Kiki re-reads the current agent’s system prompt and injected context from their current sources — the profile, prompt fields, skills, AGENTS.md instructions, plugin content, and MCP servers.',
+  'profile.rebuildKeepsHistory': 'This is the same conversation: its messages and history are kept.',
+  'profile.rebuildLatestSources': 'The profile, prompt fields, skills, AGENTS.md instructions, plugin injections, and other runtime injections are rebuilt, and this conversation’s MCP servers are re-read: ones the configuration enabled since the session started join the list, and anything switched off stays off.',
   'profile.rebuildConfirm': 'Rebuild context',
-  'profile.rebuildDoneChanged': 'Context rebuilt from the latest sources.',
-  'profile.rebuildDoneUnchanged': 'Context rebuilt; the sources were already up to date.',
+  'profile.rebuildDoneChanged': 'Context rebuilt from the current sources.',
+  'profile.rebuildDoneUnchanged': 'Context reloaded; what it contains did not change.',
   'profile.rebuildFailed': 'Context rebuild failed: {detail}',
   'rename.title': 'Rename session',
   'action.exportDone': 'Archive downloaded for “{title}”.',
   'action.exportDoneSession': 'Session archive downloaded.',
   'action.compactRequested': 'Compaction requested for “{title}”.',
-  'action.compactRequestedSession': 'Compaction requested — older context will be summarized.',
+  'action.compactRequestedSession': 'Manual compaction requested.',
+  'context.compaction.manual.queued': 'Manual compaction queued',
+  'context.compaction.manual.running': 'Manual compaction running',
+  'context.compaction.manual.completed': 'Manual compaction complete',
+  'context.compaction.manual.cancelled': 'Manual compaction cancelled',
+  'context.compaction.manual.failed': 'Manual compaction failed',
+  'context.compaction.auto.queued': 'Automatic compaction queued',
+  'context.compaction.auto.running': 'Automatic compaction running',
+  'context.compaction.auto.completed': 'Automatic compaction complete',
+  'context.compaction.auto.cancelled': 'Automatic compaction cancelled',
+  'context.compaction.auto.failed': 'Automatic compaction failed',
   'action.undoDone': 'Last turn removed from “{title}”.',
   'action.undoDoneSession': 'Last turn removed.',
   'action.forkDoneSession': 'Forked — opened the copy.',
@@ -846,7 +968,7 @@ export const en = {
   'action.editFailed': 'Edit failed: {detail}',
   'action.regenerateFailed': 'Re-run failed: {detail}',
   'error.nothingToUndo': 'Nothing to undo — there is no earlier turn to roll back to.',
-  'error.nothingToCompact': 'Nothing to compact yet — the history is too short.',
+  'error.nothingToCompact': 'There is no safe earlier context to compact.',
   'error.sessionBusy': 'The session is busy — try again when the current turn finishes.',
   'error.messageActionUnavailable': 'This message can no longer be edited or re-run.',
   'error.sessionCursorMismatch': 'This session was updated elsewhere — review the latest state, then try again.',
@@ -878,7 +1000,9 @@ export const en = {
   'shortcuts.group.terminal': 'Terminal',
   'shortcuts.newSession': 'New session',
   'shortcuts.switcher': 'Quick switcher',
-  'shortcuts.nextSession': 'Jump to the other recent session',
+  'shortcuts.nextSession': 'Next running thread',
+  'shortcuts.previousSession': 'Previous running thread',
+  'shortcuts.runningThreadsNote': 'Cycles loaded running threads by creation time, newest first. Browsers own Ctrl+Tab / Ctrl+Shift+Tab; rebind these actions to use them on the web.',
   'shortcuts.settings': 'Open settings',
   'shortcuts.thisPanel': 'This shortcuts panel',
   'shortcuts.showHide': 'Show or hide the Kiki window',
@@ -908,7 +1032,7 @@ export const en = {
   'context.agentUsage': 'Agent cumulative',
   'context.sessionUsageHint': 'lifetime',
   'context.usageReadFailed': 'Cumulative usage could not be read, so it is not shown.',
-  'context.agentUsageIncomplete': 'Some agents’ usage could not be read, so these totals are incomplete.',
+  'context.agentUsageIncomplete': 'Some usage or prices are unknown, so these totals are incomplete.',
   'context.windowTitle': 'Context window',
   'context.windowHint': 'right now',
   'context.breakdownTitle': 'Breakdown',
@@ -920,6 +1044,9 @@ export const en = {
   'context.available': 'Available',
   'context.limit': 'Limit',
   'context.compactAction': 'Compact older context',
+  'context.compactUnavailable': 'This engine does not offer manual compaction.',
+  'context.compactUnknown': 'This engine has not said whether manual compaction works.',
+  'context.compactUnread': 'This engine has not reported its capabilities, so manual compaction is not offered.',
   'context.meterCompactTitle': 'Context {used} of {limit}, compacts at {point}. Click for details',
   'context.meterCompactDueTitle': 'Context {used} is past the compaction point {point}. Compacts before the next step',
   'context.compact.layer.session': 'this session',
@@ -967,9 +1094,9 @@ export const en = {
   'context.strategy.option.summarize': 'Summarize',
   'context.strategy.option.fresh': 'Fresh start',
   'context.strategy.option.auto': 'Auto',
-  'context.strategy.hint.summarize': 'Default. Older messages are replaced by a summary.',
+  'context.strategy.hint.summarize': 'Older messages are replaced by a summary.',
   'context.strategy.hint.fresh': 'Clears the context and continues from the agent’s work notes.',
-  'context.strategy.hint.auto': 'Starts fresh when the work notes cover the work, otherwise summarizes.',
+  'context.strategy.hint.auto': 'Built-in main-agent default. Starts fresh when the work notes cover the work, otherwise summarizes.',
   'context.strategy.source.session': 'This session',
   'context.strategy.source.profile': 'From profile {profile}',
   'context.strategy.source.profileUnnamed': 'From profile',
@@ -1081,6 +1208,48 @@ export const en = {
   'composer.addMenu.sessionGroup': 'Session',
   'composer.addMenu.attachHint': 'or drop, paste',
   'composer.addMenu.skills': 'Skills',
+  'composer.addMenu.plugins': 'Plugins',
+  'composer.addMenu.searchPlugins': 'Search installed plugins',
+  'composer.addMenu.pluginsLoading': 'Reading what this conversation can use…',
+  'composer.addMenu.pluginsFailed': 'Plugin usage could not be read right now.',
+  'composer.addMenu.pluginsEmpty': 'No plugins installed yet. Find one on the plugins page.',
+  'composer.addMenu.pluginsHint': 'Turning one on applies to this conversation.',
+  'composer.addMenu.pluginToggle': '{name} in this conversation',
+  'composer.addMenu.pluginOnSession': 'On for this conversation',
+  'composer.addMenu.pluginOffSession': 'Off for this conversation',
+  'composer.addMenu.pluginOnWorkspace': 'On for this workspace',
+  'composer.addMenu.pluginOffWorkspace': 'Off for this workspace',
+  'composer.addMenu.pluginFromGlobal': 'On everywhere by default',
+  'composer.addMenu.pluginOffGlobal': 'Off by the global default',
+  'composer.addMenu.pluginBlocked': 'The master switch is off',
+  'composer.addMenu.mcp': 'MCP servers',
+  'composer.addMenu.searchMcp': 'Search MCP servers',
+  'composer.addMenu.mcpLoading': 'Reading this conversation’s MCP servers…',
+  'composer.addMenu.mcpFailed': 'MCP servers could not be read right now.',
+  'composer.addMenu.mcpCatalogFailed': 'The MCP configuration could not be read, so servers this conversation does not have are missing from this list.',
+  'composer.addMenu.mcpEmpty': 'No MCP servers are configured yet. Add one in Settings, then it appears here.',
+  'composer.addMenu.mcpHint': 'Adding one applies to this conversation.',
+  'composer.addMenu.mcpPluginHint': 'A server that comes from a plugin is switched with that plugin.',
+  'composer.addMenu.mcpExternalHint': 'This conversation runs on {engine}. Kiki forwards the MCP servers that engine accepts.',
+  'composer.addMenu.mcpNeedsAuth': 'Sign-in required',
+  'composer.addMenu.mcpConfigOff': 'Turned off in the MCP configuration',
+  'composer.addMenu.mcpSourceOn': 'On in the MCP configuration',
+  'composer.addMenu.mcpOffSession': 'Off for this conversation',
+  'composer.addMenu.mcpPluginMuted': 'Turned off inside plugin {name}',
+  'composer.addMenu.mcpPluginBlocked': 'Plugin {name} is off at the master switch',
+  'composer.addMenu.mcpFromPlugin': 'From plugin {name}',
+  'composer.addMenu.mcpFromConfig': 'From your MCP configuration',
+  'composer.addMenu.mcpFromConversation': 'Added by the client that opened this conversation',
+  'composer.addMenu.mcpToggle': '{name} in this conversation',
+  'composer.addMenu.mcpOnSession': 'On for this conversation',
+  'composer.addMenu.mcpRemoved': 'Removed for this conversation',
+  'composer.addMenu.mcpUseConfig': 'Use config',
+  'composer.addMenu.mcpStateUnknown': 'State not reported',
+  'composer.addMenu.mcpNoWrite': 'This Kiki build cannot add or remove a conversation’s MCP servers; this list shows what it has.',
+  'composer.addMenu.mcpWriteFailed': 'Could not change {name}: {detail}',
+  'composer.addMenu.mcpDismiss': 'Dismiss',
+  'composer.addMenu.mcpReconnect': 'Reconnect',
+  'composer.addMenu.mcpRetrying': 'Reconnecting…',
   'composer.addMenu.mention': 'Mention a file',
   'composer.addMenu.mentionHint': 'Sent as @path with the message.',
   'composer.addMenu.files': 'Files',
@@ -1097,6 +1266,41 @@ export const en = {
   'composer.agentDefaultName': 'Kiki',
   'composer.agentDefaultOption': 'Kiki (default)',
   'composer.agentPendingSuffix': '{name} · next message',
+  // Execution chip: which engine runs this session, and which of its profiles.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'composer.execution.needsSetup': '{engine} is not ready. This session still uses it; configure or check the connection in Settings.',
+  'composer.execution.configure': 'Configure or check engine',
+
+
+  'composer.execution.filePathAria': 'Profile file path',
+  'composer.execution.filePathPlaceholder': '/path/to/profile.md',
+  'composer.execution.fileCheck': 'Check file',
+
+  'composer.execution.fileBack': 'Back to engines',
+  'composer.execution.fileGroupAria': 'Profile file',
+  'composer.execution.fileNote': 'Any valid profile Markdown file works, including one that is not a main profile. The file is read where the session runs; nothing is registered or imported.',
+  'composer.execution.fileUnread': 'Could not read this file where the session runs.',
+
+
+
+
+
+
+
   'composer.modelProvenance.override': 'Chosen for this message',
   'composer.modelProvenance.session': 'From this session',
   'composer.modelProvenance.server-default': 'Server default',
@@ -1124,7 +1328,7 @@ export const en = {
   'goal.edit': 'Edit',
   'goal.editTitle': 'Edit the objective, completion criterion, or follow-up timing',
   'goal.pause': 'Pause',
-  'goal.pauseTitle': 'Pause the goal — follow-up turns stop until it resumes',
+  'goal.pauseTitle': 'Pause the goal — stop its current turn and automatic follow-ups',
   'goal.resume': 'Resume',
   'goal.resumeTitle': 'Resume the goal and continue working',
   'goal.resumeBlockedTitle': 'Resume this blocked goal and start another continuation',
@@ -1141,6 +1345,8 @@ export const en = {
   'goal.budget.turns': 'Goal turns',
   'goal.budget.tokens': 'Output tokens',
   'goal.budget.seconds': 'Active time (seconds)',
+  'goal.budget.increase': 'Increase {unit}',
+  'goal.budget.decrease': 'Decrease {unit}',
   'goal.noLimit': 'No limit',
   'goal.limitReached': 'Limit reached',
   'goal.clearBudgets': 'Clear limits',
@@ -1155,12 +1361,15 @@ export const en = {
   'composer.agentProfileAria': 'Agent profile',
   'composer.agentProfileTitle': 'Agent profile — the persona and toolset this session runs as',
   'composer.agentProfilePendingTitle': 'Profile switch pending — applies from your next message',
+  'composer.agentProfileBusyTitle': 'Agent profile — a pick here applies from your next message',
   'composer.noAgentProfiles': '(no agent profiles)',
   'composer.profileGroupMain': 'Main profiles',
   'composer.profileGroupOther': 'More profiles',
   'composer.profileSearchPlaceholder': 'Search profiles…',
   'composer.profileEffortBadge': 'effort · {effort}',
   'composer.modelSearchPlaceholder': 'Search models…',
+  'composer.chooseModel': 'Choose a model',
+  'composer.configureModels': 'Connect a provider or add models',
   'composer.modelCompactAt': 'auto-compact {tokens}',
   'composer.modelNoVision': 'no vision',
   'composer.placeholder': 'What should Kiki work on…',
@@ -1189,14 +1398,30 @@ export const en = {
   'composer.pasteDraftChanged': 'The draft changed while reading the clipboard. Paste again at the current cursor.',
   'composer.engineModelTitle': '{model} — set on the profile, served by {engine}',
   'composer.engineModelDefault': 'Engine default',
+  'composer.engineModelFollow': 'Follow engine configuration',
+  'composer.engineModelId': 'Engine model ID',
+  'composer.engineModelLoading': 'Reading this engine\'s models…',
+  'composer.engineModelPartial': '{count} models so far; the engine is still reporting.',
+  'composer.engineModelUnavailable': 'This engine did not report its models.',
+  'composer.engineModelUnknown': 'This engine\'s models are not known yet.',
+  'composer.engineModelNotInList': 'not in this engine\'s list',
+  'composer.engineModelSwitchUnavailable': 'This engine does not accept a model change here.',
+  'composer.engineCapabilityStale': 'Last read over a minute ago.',
+  'composer.engineCapabilityRefresh': 'Refresh',
+  'composer.engineCapabilityRefreshing': 'Refreshing…',
+  'composer.engineCapabilityRefreshFailed': 'Refresh failed; showing the last known values.',
+  'composer.engineCapabilityRefreshAria': 'Refresh engine capabilities',
   'composer.abortTitle': 'Stop this turn',
   'composer.sendTitle': 'Send (Enter)',
   'composer.sendTitleCmdEnter': 'Send (⌘/Ctrl+Enter)',
   'composer.queueTitle': 'Queue this prompt (Enter)',
   'composer.queueTitleCmdEnter': 'Queue this prompt (⌘/Ctrl+Enter)',
+  'composer.queueTitlePendingSwitch': 'Queue this prompt (Enter) — the pending switch applies with this message',
+  'composer.queueTitlePendingSwitchCmdEnter': 'Queue this prompt (⌘/Ctrl+Enter) — the pending switch applies with this message',
   'composer.sendAria': 'Send message',
   'composer.queueAria': 'Queue prompt',
   'composer.sendNowAria': 'Send into this turn',
+  'composer.inputAria': 'Message input',
   'composer.sendNowTitle': 'Send into the running turn — read before the next step (Enter)',
   'composer.sendNowTitleCmdEnter': 'Send into the running turn — read before the next step (⌘/Ctrl+Enter)',
   'composer.sendTimingAria': 'Send timing',
@@ -1267,7 +1492,7 @@ export const en = {
   'transcript.editTitle': 'Edit this message and resend it',
   'transcript.editSubmit': 'Resend',
   'transcript.editSubmitTitle': 'Replace the original message and rerun from here',
-  'transcript.editAttachmentsNote': 'Full replacement — attachments are not carried over.',
+  'transcript.editAttachmentsLoadFailed': "This message's attachments did not load.",
   'transcript.regenerate': 're-run',
   'transcript.regenerateTitle': 'Re-run this turn: context is rewound to here and the turn runs again. Files and external actions already taken are not undone.',
   'transcript.fork': 'fork',
@@ -1275,6 +1500,8 @@ export const en = {
   'transcript.actionsBusyTitle': 'Available once the current turn finishes',
   'transcript.showMore': 'Show more',
   'transcript.showLess': 'Show less',
+  'transcript.loadMoreSegment': 'Continue loading segment',
+  'transcript.expandContent': 'Expand full content',
   'transcript.detail.showAll': 'Show full output',
   'transcript.detail.tailOnly': 'Showing the last lines only.',
   'transcript.detail.loading': 'Loading full output…',
@@ -1352,6 +1579,9 @@ export const en = {
   'find.readContent': 'Read matching content',
   'find.readFailed': 'Could not read the matching content. Try again, or open the message to read its original.',
   'find.lookBack': 'Search further back',
+
+
+
   'find.stop': 'Stop',
   'find.compacted': '{count} more in compacted history',
   'find.openGlobal': 'Search all messages',
@@ -1411,9 +1641,20 @@ export const en = {
   'transcript.marker.compactionSource.auto': 'Automatic',
   'transcript.marker.compactionSource.manual': 'Manual',
   'transcript.marker.compactionStartedAt': 'Started {time}',
-  'transcript.marker.compactionFresh': 'Fresh-context compaction complete · handoff retained',
-  'transcript.marker.compactionFallback': 'Fresh start conditions were not met · summarized instead',
-  'transcript.marker.compactionRescue': 'Context compacted · fresh start, fell back from summarize',
+  'transcript.marker.compactionFresh': 'Context compacted · started fresh',
+
+
+
+
+
+
+
+
+
+
+
+  'transcript.marker.compactionFallback': 'Context compacted · summary generated (fresh-start conditions not met)',
+  'transcript.marker.compactionRescue': 'Context compacted · started fresh (summary failed)',
   'transcript.marker.reason.history_unavailable': 'Conversation history could not be read for the fresh start.',
   'transcript.marker.reason.notes_missing': 'The agent has no working notes for the handoff.',
   'transcript.marker.reason.notes_previous_window': 'The working notes cover an earlier context window.',
@@ -1434,6 +1675,13 @@ export const en = {
   'transcript.marker.notice': 'Notice',
   'transcript.marker.cron': 'Scheduled job',
   'transcript.marker.goal': 'Goal updated',
+  'transcript.marker.goal.created': 'Goal set',
+  'transcript.marker.goal.updated': 'Goal updated',
+  'transcript.marker.goal.paused': 'Goal paused',
+  'transcript.marker.goal.resumed': 'Goal resumed',
+  'transcript.marker.goal.blocked': 'Goal blocked',
+  'transcript.marker.goal.completed': 'Goal completed',
+  'transcript.marker.goal.cleared': 'Goal cleared',
   'transcript.marker.plan': 'Plan updated',
   'transcript.marker.interruption': 'You stopped this turn',
   'transcript.marker.modelSwitch': 'Model changed from {from} to {to}',
@@ -1463,7 +1711,15 @@ export const en = {
   'transcript.blank': 'A blank page. Tell Kiki what to do.',
   'transcript.blocked': 'Blocked',
   'transcript.sending': 'Sending…',
-  'transcript.stillSending': 'Still sending… Do not send this message again.',
+  'transcript.sendingSlowTitle': 'Still sending. This message has not appeared in the timeline or queue after 10 seconds. Its content is saved locally.',
+  'transcript.sendingSlowNoBackupTitle': 'Still sending. This message has not appeared in the timeline or queue after 10 seconds.',
+  'transcript.sendUnconfirmed': 'Delivery unconfirmed',
+  'transcript.sendUnconfirmedTitle': 'The connection was interrupted, so delivery could not be confirmed. The content is saved locally; retry with the same message identity.',
+  'transcript.sendUnconfirmedNoBackupTitle': 'The connection was interrupted, so delivery could not be confirmed. Retry with the same message identity.',
+  'transcript.serverSyncing': 'Syncing',
+  'transcript.serverSyncingTitle': 'The server accepted this message; the conversation is syncing it.',
+  'transcript.serverHeld': 'Waiting to recover',
+  'transcript.serverHeldTitle': 'The server kept this message for recovery. Confirm queue recovery or retry it with the same message identity.',
   'transcript.steerSending': 'Sending into this turn…',
   'transcript.steerWaiting': 'Waiting to join',
   'transcript.steerWaitingHint': 'Read into this turn before the next step',
@@ -1511,6 +1767,7 @@ export const en = {
 
   // ---- media + file preview ----
   'media.attachment': 'Attachment',
+  'media.image': 'Image',
   'media.viewImage': 'View image',
   'media.download': 'Download',
   'media.zoomFit': 'Fit to screen',
@@ -1518,6 +1775,8 @@ export const en = {
   'preview.openFile': 'Preview {name}',
   'preview.loading': 'Loading…',
   'preview.failed': 'Could not load this file',
+  'preview.referenceMissing': 'File opened, but the cited location was not found.',
+  'preview.referenceClamped': 'The cited position is outside this file. Showing the nearest available position.',
   'preview.truncated': 'Large file — showing the first part only.',
   'preview.loadFullFile': 'Load full file',
   'preview.unsupported': 'No preview available for this file type.',
@@ -1533,6 +1792,7 @@ export const en = {
   'preview.zoomActual': '100%',
   'preview.empty': 'Click a file path in the conversation to preview it here.',
   'preview.closeTab': 'Close tab',
+  'preview.tabMenuAria': 'Tab actions',
   'preview.closeOthers': 'Close other tabs',
   'preview.closeAll': 'Close all tabs',
   'preview.openAgentFullscreen': 'Open {name}',
@@ -1562,8 +1822,107 @@ export const en = {
   'preview.discardBodyMany': '{count} files have unsaved changes.',
   'preview.discard': 'Discard',
 
+  // ---- document preview (PDF / Office / CSV) ----
+  'preview.rendering': 'Rendering this page…',
+  'preview.tryAgain': 'Try again',
+  'preview.pageOf': 'Page {page} of {count}',
+  'preview.previousPage': 'Previous page',
+  'preview.nextPage': 'Next page',
+  'preview.sheet': 'Sheet',
+  'preview.fidelitySource': 'File text',
+  'preview.pageAlt': '{page} of {name}',
+  'preview.sourceTextNotice': '{name} is shown as its own text, not as a laid-out page.',
+  'preview.loadMore': 'Show more',
+  'preview.rendererShared': 'Installing {name} once makes every file of these kinds preview here.',
+  'preview.installRenderer': 'Install {name}',
+  'preview.installing': 'Installing {name}…',
+  'preview.installFailed': '{name} could not be installed.',
+  'preview.installTimedOut': 'The install did not finish in time. Try again.',
+  'preview.installOfficePlugin': 'Install Office preview',
+  'preview.installOfficePluginConsent': 'Kiki previews this file with the {name} plugin, which is not installed. Installing it also installs {program}, the program that draws the page.',
+  'preview.planningInstall': 'Checking what {name} would install…',
+  'preview.installOfficePluginPlan': 'Install {name} and the {program} program it needs. What is listed below is what gets installed, exactly as shown.',
+  'preview.installOfficePluginPlanNoConsent': 'Install {name} and the {program} program it needs. This plugin asks for no permissions.',
+  'preview.installOfficePluginPermissions': 'It will be able to reach: {permissions}.',
+  'preview.installOfficePluginAdds': 'It adds {count} tools, panels or commands to Kiki.',
+  'preview.installOfficePluginConfirm': 'Install {name}',
+  'preview.enableOfficePlugin': 'Enable Office preview',
+  'preview.enableOfficePluginConsent': 'The {name} plugin is installed but switched off, which is why this file will not open. Turning it back on also installs {program} if it is missing. Nothing else changes.',
+  'preview.pluginUnavailable': '{name} is not offered on this home, so it cannot be installed from here.',
+  'preview.pluginSettings': 'Open the Office plugin settings',
+  'preview.assetFailed': 'This page could not be read.',
+  'preview.pdfFailed': 'This page could not be drawn.',
+  'preview.legacyFormats': 'Kiki previews .docx, .xlsx, .pptx, .pdf and .csv. Older .doc, .xls and .ppt files open in their own app.',
+
+  // ---- work mode: the window's working surface ----
+  'workMode.aria': 'Window mode',
+  'workMode.menu': 'Change window mode',
+  'workMode.appliesToWindow': 'Applies to this window. Other windows on this space keep their own mode.',
+  'workMode.sameSpaceSecondWindow': 'Switching keeps every session, memory and background task. Use a second window to work in two modes at once.',
+  'workMode.enabled': 'Ready',
+  'workMode.needsSetup': 'Not set up here',
+  'workMode.open': 'Open in a new window',
+  'workMode.loadFailed': 'Could not read the modes in this space.',
+  'workMode.retry': 'Try again',
+  'workMode.switchKeptSessions': 'Sessions keep the tools they were created with. This window only changes what it suggests next.',
+
+  // ---- work setup: one flow for a new user and an existing one ----
+  'workSetup.title': 'Work in this space',
+  'workSetup.eyebrow': 'Set up {name}',
+  'workSetup.body': '{description} This adds the parts you are missing and leaves what you already have alone. Your model connections and existing files are reused as they are.',
+  'workSetup.haveHeading': 'What this space already has',
+  'workSetup.addHeading': 'What this adds',
+  'workSetup.itemReady': 'Ready',
+  'workSetup.itemInstalledOn': 'Installed and on',
+  'workSetup.itemMissing': 'Not installed yet',
+  'workSetup.itemOptional': 'Optional',
+  'workSetup.prereqTitle': '{name} — {size}',
+  'workSetup.prereqBody': '{body}',
+  'workSetup.prereqConsent': 'Install it now, in the same step',
+  'workSetup.prereqSkipNote': '{name} works without it. Previews of these formats stay unavailable until it is installed.',
+  'workSetup.confirm': 'Set up {name}',
+  'workSetup.decline': 'Not now',
+  'workSetup.working': 'Setting up…',
+  'workSetup.doneTitle': '{name} is ready',
+  'workSetup.doneBody': 'You can start a task below.',
+  'workSetup.doneAction': 'Start working',
+  'workSetup.partialTitle': '{name} is not on yet',
+  'workSetup.partialBody': '{done} of {total} parts are ready. What worked is kept.',
+  'workSetup.partialAction': 'Retry the rest',
+  'workSetup.close': 'Close',
+  'workSetup.failedItem': '{name} could not be installed. {reason}',
+  'workSetup.reuseNote': 'Existing sessions keep the tools they were created with.',
+
+  // ---- work home: the surface itself ----
+  'workHome.eyebrow': 'Work mode',
+  'workHome.headline': 'Office material in, checked output out.',
+  'workHome.subhead': 'Start from the file you already have. Every task below opens a new session in this window with the tools Work provides.',
+  'workHome.startHeading': 'Start a task',
+  'workHome.task.review': 'Review a document',
+  'workHome.task.reviewBody': 'Read a .docx, .pdf or .pptx and get a written read on it.',
+  'workHome.task.draft': 'Draft from source material',
+  'workHome.task.draftBody': 'Turn notes and extracts into an editable draft.',
+  'workHome.task.extract': 'Pull text out of a file',
+  'workHome.task.extractBody': 'Extract readable material into a note you can search later.',
+  'workHome.task.tables': 'Compare two tables',
+  'workHome.task.tablesBody': 'Match CSV or .xlsx by key and report what changed.',
+
   // ---- subagent cards ----
   'subagent.status.unknown': 'Status unknown',
+  'subagent.status.idle': 'Idle',
+  'subagent.status.lost': 'Lost',
+  'subagent.name.loading': 'Name not read · {id}',
+  'subagent.name.unreported': 'Name not registered · {id}',
+  'subagent.source.name.user_label': 'Name: user label',
+  'subagent.source.name.collaboration_task': 'Name: registered task',
+  'subagent.source.name.profile': 'Name: bound profile',
+  'subagent.source.name.task': 'Name: dispatch task',
+  'subagent.source.name.unreported': 'Name: not registered',
+  'subagent.source.status.metadata': 'Status: session registry',
+  'subagent.source.status.runtime': 'Status: current runtime',
+  'transcript.content.remainder.readingAgents': 'Reading the agent roster automatically…',
+  'inspector.filter.idle': '{count} idle',
+  'inspector.filter.unknown': '{count} status unknown',
   'subagent.status.refreshing': 'Refreshing…',
   'subagent.status.running': 'Running',
   'subagent.status.suspended': 'Suspended',
@@ -1710,6 +2069,16 @@ export const en = {
   'tc.noInput': '(no input)',
   'tc.truncated': '… (truncated)',
   'tc.exit': 'exit {code}',
+  'tc.ext.read': 'Read',
+  'tc.ext.write': 'Write',
+  'tc.ext.edit': 'Edit',
+  'tc.ext.search': 'Search',
+  'tc.ext.fetch': 'Fetch',
+  'tc.ext.run': 'Run',
+  'tc.ext.agent': 'Agent',
+  'tc.ext.task': 'Task',
+  'tc.ext.plan': 'Plan',
+  'tc.ext.permission': 'Allow',
   'tc.plan': 'plan',
   'tc.planPath': 'plan — {path}',
   'tc.planEnter': 'enter plan mode',
@@ -1726,6 +2095,8 @@ export const en = {
   'cb.preparing': 'Preparing to copy…',
   'cb.copyBody': 'Copy {field}',
   'subagent.call.copyFailed': 'Could not copy the full content. Try again.',
+
+
   'cb.copied': 'copied',
   'cb.showLess': 'Show less',
   'cb.viewMore': 'View more ({count} lines)',
@@ -1785,6 +2156,8 @@ export const en = {
   'tc.sem.web.fetchFailed': 'Failed',
   'tc.sem.untitled': 'Untitled',
   'tc.sem.noText': '(no text)',
+  'tc.sem.prompt': 'Prompt',
+  'tc.sem.message': 'Message',
   'tc.sem.notFound': 'Not found',
   'tc.sem.timedOut': 'Timed out',
   'tc.sem.interrupted': 'Interrupted',
@@ -1799,8 +2172,15 @@ export const en = {
   'tc.sem.thread.list': 'List threads',
   'tc.sem.thread.read': 'Read thread',
   'tc.sem.thread.send': 'Send to',
+  'tc.sem.thread.sendRoom': 'Post to room',
+  'tc.sem.thread.roomSending': 'Sending…',
+  'tc.sem.thread.roomLoggedSilent': 'Logged, no one woken',
+  'tc.sem.thread.roomLoggedAsked.one': 'Logged, 1 member asked',
+  'tc.sem.thread.roomLoggedAsked.other': 'Logged, {count} members asked',
+  'tc.sem.thread.roomNoMention': 'No one asked',
   'tc.sem.thread.wait': 'Wait on',
   'tc.sem.thread.undeliverable': 'Not delivered',
+  'tc.sem.openRoom': 'Open room',
   'tc.sem.thread.activity.terminal': 'turn ended',
   'tc.sem.thread.activity.attention': 'needs attention',
   'tc.sem.thread.activity.lifecycle': 'thread changed',
@@ -1860,6 +2240,9 @@ export const en = {
   'tc.sem.plan.approved': 'Approved',
   'tc.sem.skill': 'Use skill',
   'tc.sem.field.thread': 'Thread',
+  'tc.sem.field.room': 'Room',
+  'tc.sem.field.mentions': 'Asked',
+  'tc.sem.field.messageId': 'Message id',
   'tc.sem.field.profile': 'Profile',
   'tc.sem.field.cwd': 'Folder',
   'tc.sem.field.delivery': 'Delivery',
@@ -1915,7 +2298,6 @@ export const en = {
   'sv.spawnInstructionFrom': 'Instruction from {agent}',
   'sv.openParent': 'Open parent agent',
   'sv.subagentNote': 'Subagent transcript — interaction cards resolve for the whole session',
-  'sv.agentReadOnly': 'This agent page is read-only; send, queue, and skill actions stay on the session.',
   'sv.agentContext': 'context {tokens}',
   'sv.agentTokens': '{tokens} tokens cumulative',
   'sv.historyUnavailable': 'history unavailable',
@@ -1928,6 +2310,14 @@ export const en = {
   'sv.agentHistoryLoading':
     'Loading the server transcript. Live events captured by this client are shown meanwhile.',
   'sv.submissionRecovery.degraded': 'Local backup is unavailable; the message will still be submitted. Its content stays in the composer until delivery is confirmed. Reloading or closing now may lose unconfirmed content.',
+  'sv.submissionRecovery.title': 'Some messages have no send confirmation',
+  'sv.submissionRecovery.body': 'Their content is saved and will not be resent automatically. Check the timeline and queue first; dismiss the backup if it already arrived. Restoring it to the composer does not send it.',
+  'sv.submissionRecovery.restore': 'Restore to composer',
+  'sv.submissionRecovery.dismiss': 'Dismiss backup',
+  'sv.submissionRecovery.server': 'Server retained this message for recovery; it has not started yet.',
+  'sv.submissionRecovery.failed': 'Server could not admit this message. Review it before retrying.',
+  'sv.submissionRecovery.cancelled': 'Cancelled; the content is back in the composer for editing or resending.',
+
   'sv.resyncFailed': 'Session recovery failed — retry manually',
   'sv.resyncing': 'Resyncing…',
   'sv.sendPaused': 'Sending is paused until the session is in sync.',
@@ -1951,14 +2341,16 @@ export const en = {
   'sv.queueBar.one': '{count} queued',
   'sv.queueBar.other': '{count} queued',
   'sv.queueAria': 'Queued prompts',
-  'sv.queueSendNow': 'Send into this turn',
+  'sv.queueSendNow': 'Send now',
   'sv.queueSendNowTitle': 'Insert this prompt into the running turn — read before the next step',
+
+
   'sv.queueRemove': 'Remove',
   'sv.queueRemoveTitle': 'Take this prompt out of the queue',
   'sv.queueClearAll': 'Clear all',
   'sv.queueClearAllTitle': 'Remove every queued item — messages and model switches',
   'sv.queueClearTitle': 'Clear {count} queued items?',
-  'sv.queueClearBody': 'Each queued message and model switch will be removed. Items that fail stay in the queue so you can retry.',
+  'sv.queueClearBody': 'Each queued message, scheduled job and model switch will be removed. Items that fail stay in the queue so you can retry. The schedules themselves are not deleted.',
   'sv.queueClearFailed': '{failed} of {total} queued items could not be cleared — they remain in the queue.',
   'sv.queueNoText': '(attachment only)',
   'sv.queueEdit': 'Edit',
@@ -1966,9 +2358,9 @@ export const en = {
   'sv.queueExpandAria': 'Show or hide the queued prompts',
   'sv.queueRecovered.title': 'Queue restored',
   'sv.queueRecovered.body.one':
-    '{count} queued message was restored with this session and is waiting for your go-ahead.',
+    '{count} queued item (message or model switch) was restored with this session and is waiting for your go-ahead.',
   'sv.queueRecovered.body.other':
-    '{count} queued messages were restored with this session and are waiting for your go-ahead.',
+    '{count} queued items (messages or model switches) were restored with this session and are waiting for your go-ahead.',
   'sv.queueRecovered.confirm': 'Resume queue',
   'sv.queueRecovered.dismiss': 'Later',
   'sv.queueRecovered.failed': 'Could not resume the queue: {detail}',
@@ -1976,7 +2368,15 @@ export const en = {
   'sv.steerFailed': 'Couldn’t send now: {detail}. The message is back in the composer.',
   'sv.steerRefused': 'This message changes a mode, so it needs a turn of its own. It’s back in the composer; send it again to queue it.',
   'sv.steerUnknown': 'Couldn’t confirm the message arrived: {detail}. Check the timeline before sending it again.',
-  'sv.steerTurnEnded': 'The turn ended first — this message runs next as its own turn.',
+  'sv.steerQueued': 'This message is queued — it didn’t join the running turn and starts on its own.',
+  'sv.steerQueuedNoActiveTurn': 'No turn is running right now — this message starts on its own.',
+  'sv.steerQueuedTargetChanged': 'The running turn changed before this message arrived. It stays queued and starts on its own turn.',
+  'sv.steerQueuedNotPending': 'This message already left the queue — check the timeline for where it landed.',
+  'sv.steerQueuedRejected': 'The running turn couldn’t take this message. It stays queued and starts on its own turn.',
+  'sv.steerQueuedExternal': 'This message didn’t go into the running turn; the agent’s executor keeps it queued.',
+  'sv.steerQueuedModelBoundary': 'The model switch applies at the turn boundary — the message is queued to join then.',
+  'sv.sendNowOwnTurnBinding': 'The profile or engine change needs its own turn. The message is queued and starts on its own turn.',
+  'sv.sendNowOwnTurnModel': 'The model switch needs its own turn. The message is queued and starts on its own turn.',
   'sv.sessionGone': 'This session no longer exists — taking you back to start a new session.',
   'sv.approveAll': 'Approve all',
   'sv.approveAllTitle': 'Approve {count} pending requests?',
@@ -2040,6 +2440,8 @@ export const en = {
   'new.noTargetHint': 'Choose another workspace, select automatic creation, or enter an absolute project path.',
   'new.browse': 'Browse folder…',
   'new.firstRunHint': 'Choose a project folder, or send now and Kiki will create a workspace in Kiki Home.',
+
+  'new.workspacesFailed': 'Kiki could not list your workspaces.',
   'new.setupTitle': 'Connect a model first',
   'new.setupBody': 'No provider is configured yet, so kiki has no model to answer with. Sign in with OAuth, or add your own API key.',
   'new.setupSignIn': 'OAuth sign-in',
@@ -2111,8 +2513,72 @@ export const en = {
   'rail.feed.compacted': 'Context compacted',
   'rail.feed.earlier': '{count} earlier',
   'rail.capabilities.title': 'Capabilities',
-  'rail.capabilities.summary': 'Tools {tools} · Skills {skills} · Subagents {subagents} · Extensions {extensions}',
+  'rail.capabilities.observeTitle': 'Capability inventory',
+  'rail.capabilities.controlTitle': 'Capability controls',
+  'rail.capabilities.systemTitle': 'System capabilities',
   'rail.capabilities.unavailable': "Capabilities can't be read right now.",
+  'cap.browser': 'Browser',
+  'cap.computer': 'Computer',
+  'cap.memory': 'Memory',
+  'cap.thread': 'Thread communication',
+  'cap.web': 'Web',
+  'cap.defaultOn': 'On by default',
+  'cap.choice.inherit': 'Default',
+  'cap.choice.on': 'On',
+  'cap.choice.off': 'Off',
+  'cap.fact.hardOff': 'Completely off',
+  'cap.fact.workspaceOff': 'Off in workspace',
+  'cap.fact.unbound': 'Default',
+  'cap.fact.sessionOff': 'Off in session',
+  'cap.fact.sessionOn': 'On in session',
+  'cap.fact.named': 'Named by agent',
+  'cap.fact.inheritOn': 'Default',
+  'cap.fact.defaultOff': 'Default',
+  'cap.sentence.hardOff': 'Completely off',
+  'cap.sentence.sessionOff': 'Off for this conversation',
+  'cap.sentence.sessionOn': 'On for this conversation',
+  'cap.sentence.inheritOn': 'Following the default, currently on',
+  'cap.source.session': 'this conversation',
+  'cap.source.default': 'default',
+  'cap.source.off': 'completely off',
+  'cap.applies.nextModel': 'Next model request',
+  'cap.applies.nextStep': 'Next step',
+  'cap.unavailable': "These switches can't be read right now.",
+  'composer.addMenu.optional': 'Capabilities',
+  'composer.addMenu.optionalHint': 'Browser, computer, memory, thread communication, and web for this conversation.',
+  'rail.mcp.title': 'MCP servers',
+  'rail.mcp.hint': 'Each server, for this conversation.',
+  'rail.plugins.scope': 'This workspace · {name}',
+  'rail.plugins.hint': 'These switches apply to this conversation.',
+  'rail.plugins.browse': 'Catalog',
+  'rail.plugins.addSource': 'From a source',
+  'rail.plugins.browseTitle': 'Add a plugin to this conversation',
+  'rail.plugins.browseBody': 'Pick one, then read what it adds and confirm before anything installs.',
+  'rail.plugins.addHere': 'Add',
+  'rail.plugins.toggle': '{name} in this conversation',
+  'rail.plugins.restore': 'Restore default',
+  'rail.plugins.reason.homeOff': 'Completely off',
+  'rail.plugins.reason.invalid': 'Not loading correctly',
+  'rail.plugins.reason.workspaceOff': 'Off for this workspace',
+  'rail.plugins.reason.sessionOff': 'Off for this conversation',
+  'rail.plugins.reason.globalOff': 'Default is off',
+  'rail.plugins.source.session': 'this session',
+  'rail.plugins.source.workspace': 'this workspace',
+  'rail.plugins.source.global': 'default',
+  'rail.plugins.source.home': 'on everywhere',
+  'rail.plugins.appService': 'Shared home service',
+  // Scope-neutral on purpose: the same hint is read on the rail and on one
+  // workspace's page, and only the part that is true on both travels. Each
+  // surface's own switch already says which scope it writes.
+  'rail.plugins.appServiceHint': 'One home-level service shared by the workspaces in this space, not a process per workspace.',
+  'rail.plugins.counts.skill': '{count} skills',
+  'rail.plugins.counts.mcp': '{count} MCP',
+  'rail.plugins.loading': 'Reading plugin usage…',
+  'rail.plugins.applying': 'Applying, your change is already saved.',
+  'rail.plugins.saving': 'Saving…',
+  'rail.plugins.unavailable': "This conversation's plugin usage can't be read right now.",
+  'rail.plugins.empty': 'No plugins installed yet. Add one from the catalog or a source.',
+  'rail.plugins.manageHome': 'Plugin settings',
   'rail.cron.title': 'Scheduled tasks here',
   'rail.cron.empty': 'No scheduled tasks',
   'rail.cron.more': '{count} more',
@@ -2131,11 +2597,35 @@ export const en = {
   'rail.cockpit.state.done': 'Done',
   'rail.cockpit.state.failed': 'Failed',
   'rail.cockpit.state.stopped': 'Stopped',
+  'rail.cockpit.state.unknown': 'Not reported',
   'rail.cockpit.summary.suspended': '{count} suspended',
   'rail.cockpit.duration.underMinute': '<1m',
   'rail.cockpit.lanes.aria': 'Agent timeline',
   'rail.cockpit.lane.untimed': 'No start time recorded',
   'rail.cockpit.close': 'Exit cockpit',
+  'rail.cockpit.title': 'This session',
+  'rail.cockpit.graph.aria': 'Session execution graph',
+  'rail.cockpit.graph.title': 'Session execution',
+  'rail.cockpit.graph.range': '{count} branches in this graph',
+  'rail.cockpit.graph.folded': '{count} agents sit inside the folded branches above. Open one to see them.',
+  'rail.cockpit.expandBranch': 'Open {label}, {count} agents',
+  'rail.cockpit.openBranch': 'Open {label}',
+  'rail.cockpit.collapseAll': 'Fold all',
+  'rail.cockpit.taskCoverage': 'Background work is read from {covered} of {total} agents.',
+  'rail.cockpit.taskWindowed': "Some agents' task lists are only partly loaded, so this list is not complete.",
+  'rail.cockpit.taskReading': 'Reading background work across the session...',
+  'rail.cockpit.taskReadFailed': "This session's background work could not be read. Showing what is already known.",
+  'rail.cockpit.taskReadPartial': 'Background work is only partly read. Showing what is already known.',
+  'rail.cockpit.taskInventoryIncomplete': 'The server could not list every agent, so the count covers only the ones it found.',
+  'rail.cockpit.taskOwnersUnknown': 'No agent was listed for this session, so its background work is not known.',
+  'rail.cockpit.taskRetry': 'Read again',
+  'rail.cockpit.taskOwnersFailed': 'Background work could not be read for {count} agents.',
+  'rail.cockpit.taskColdOwner': 'recorded, not running',
+  'rail.cockpit.taskLiveOwner': 'running',
+  'rail.cockpit.scope.agent': 'Selected agent',
+  'rail.cockpit.scope.tree': 'Whole session',
+  'rail.cockpit.scope.treePartial': 'Whole session, partly reported',
+  'rail.cockpit.treePartial': 'These figures cover the agents reported so far, not every agent in the session.',
 
   // ---- tasks page (/s/:id/tasks) ----
   'tasks.title': 'Tasks',
@@ -2209,6 +2699,8 @@ export const en = {
   'usage.dimension.agent': 'Agent',
   'usage.dimension.project': 'Workspace',
   'usage.dimension.session': 'Session',
+  'usage.dimension.provider': 'Provider',
+  'usage.dimension.profile': 'Agent profile',
   'usage.allHistoryChip': 'All history · no time filter applied',
   'usage.customRange.start': 'Start date',
   'usage.customRange.end': 'End date',
@@ -2217,6 +2709,8 @@ export const en = {
   'usage.workspace.all': 'All workspaces',
   'usage.includeArchived': 'Include archived',
   'usage.loading': 'Loading usage…',
+  'usage.scanIncomplete': 'Counting is not complete. Only the records read so far are shown.',
+  'usage.continueScan': 'Continue counting',
   'usage.loadFailed': 'Could not load usage',
   'usage.card.cost': 'Total cost',
   'usage.card.tokens': 'Total tokens',
@@ -2272,7 +2766,7 @@ export const en = {
   'usage.trend.title': 'Trend',
   'usage.trend.metric.cost': 'Cost',
   'usage.trend.metric.tokens': 'Tokens',
-  'usage.trend.clickHint': 'Select a bucket for the session drilldown',
+  'usage.trend.clickHint': 'Select a period to read its sources',
   'usage.drilldown.title': 'Sessions in this bucket',
   'usage.drilldown.turns': '{count} turns',
   'usage.drilldown.unknownTurns': '{count} records without turn attribution',
@@ -2347,6 +2841,77 @@ export const en = {
   'usage.col.share': 'Share',
   'usage.reliability.complete': 'Complete',
   'usage.reliability.partial': 'Partial',
+
+  // ---- usage: sources, comparison, filters ----
+  'common.reload': 'Reload',
+  'usage.loadFailedKeep': 'Usage could not be loaded. Your time range and filters are kept — reload to continue.',
+  'usage.timezoneNote': 'local time, {offset}',
+  'usage.kpi.recordedCost': 'Recorded estimated cost',
+  'usage.kpi.costPartiallyUnknown': 'Some records have no price; this is the priced part.',
+  'usage.sources.title': 'Consumption sources',
+  'usage.sources.wholeRange': 'the whole range',
+  'usage.sources.selectedPeriod': 'Selected period',
+  'usage.sources.subtotal': 'Period total',
+  'usage.sources.viewWholeRange': 'View the whole range',
+  'usage.sources.grouping': 'Group sources by',
+  'usage.sources.grouping.model': 'Model',
+  'usage.sources.grouping.provider': 'Provider',
+  'usage.sources.grouping.profile': 'Agent profile',
+  'usage.sources.grouping.workspace': 'Workspace',
+  'usage.sources.search': 'Find a source',
+  'usage.sources.searchPlaceholder': 'Find a source',
+  'usage.sources.noMatch': 'No source matches that name. Try another.',
+  'usage.sources.sortHint': 'Highest cost first',
+  'usage.sources.expand': 'Show the token composition for {name}',
+  'usage.sources.tokenComposition': 'Token composition',
+  'usage.sources.modelCount': '{count} models',
+  'usage.sources.mobileDetail': 'Share {share} · {tokens} tokens',
+  'usage.sources.onlyThis.model': 'Only this model',
+  'usage.sources.onlyThis.provider': 'Only this provider',
+  'usage.sources.onlyThis.profile': 'Only this profile',
+  'usage.sources.onlyThis.workspace': 'Only this workspace',
+  'usage.sources.noExactFilter': 'This source has no exact filter — it is missing or mixed, so it is not turned into a query.',
+  'usage.sources.openSessions': 'View sessions in this period',
+  'usage.sources.unknownProviderProfile': 'unknown provider / profile',
+  'usage.sources.unknownRowHint': 'Older records do not record a source. Their cost is kept, not dropped.',
+  'usage.sources.unknownNote': 'Records without a recorded source keep their own amount.',
+  'usage.sources.windowTotal': 'Period total',
+  'usage.tab.sources': 'Sources',
+  'usage.compare.enable': 'Compare with the previous period',
+  'usage.compare.unavailable': 'Comparison needs a bounded range',
+  'usage.compare.prior': 'Prior',
+  'usage.compare.change': 'Change',
+  'usage.compare.priorZero': 'Prior: 0',
+  'usage.compare.points': 'pp',
+  'usage.compare.rowUnavailable': 'Not comparable',
+  'usage.compare.loadFailed': 'Prior usage could not be loaded.',
+  'usage.compare.retry': 'Retry comparison',
+  'usage.compare.priorCacheHint': 'Cache hit rate for the prior period is in the source table.',
+  'usage.filter.open': 'Filters',
+  'usage.filter.any': 'Any',
+  'usage.filter.model': 'Model',
+  'usage.filter.provider': 'Provider',
+  'usage.filter.profile': 'Agent profile',
+  'usage.filter.profilePlaceholder': 'profile name',
+  'usage.filter.field.model': 'model',
+  'usage.filter.field.provider': 'provider',
+  'usage.filter.field.profile': 'profile',
+  'usage.filter.field.workspace': 'workspace',
+  'usage.filter.modelChip': 'Model: {value}',
+  'usage.filter.providerChip': 'Provider: {value}',
+  'usage.filter.profileChip': 'Profile: {value}',
+  'usage.live.reference': 'Current run',
+  'usage.live.show': 'Show the current run',
+  'usage.live.hide': 'Hide the current run',
+  'usage.sessions.panelTitle': 'Sessions in this period',
+  'usage.sessions.filtered': 'Filtered to {field} {value}.',
+  'usage.sessions.noExactFilter': 'This source has no exact API filter, so this lists every session in the period.',
+  'usage.sessions.loadFailed': 'These sessions could not be loaded.',
+  'usage.sessions.loadMoreFailed': 'Continue loading sessions',
+  'usage.sessions.locateRaw': 'Locate the original record',
+  'usage.sessions.hideRaw': 'Hide the original records',
+  'usage.sessions.moreTurns': '+{count} more turns',
+  'usage.sessions.noTurnAttribution': 'No turn attribution in this period. Open the session to read the record.',
   'context.viewInUsage': 'View this session in Usage',
 
   // ---- quick switcher page actions ----
@@ -2374,20 +2939,20 @@ export const en = {
   'st.group.modelsAgents': 'Models & agents',
   'st.group.capabilities': 'Capabilities',
   'st.group.connection': 'Connection & remote',
-  'st.group.workspace': 'Workspaces',
   'st.group.advanced': 'Advanced',
   'st.scope.label': 'Scope',
   'st.scope.app': 'App',
   'st.scope.server': 'Server',
   'st.scope.workspace': 'Workspace',
+  'st.scope.space': 'this space',
   'st.scope.appliesTo': 'Applies to:',
   'st.scope.device': 'this device',
   'st.scope.connectedServer': 'connected server',
   'st.scope.diagnostic': 'diagnostic view',
-  'st.purpose.general': 'Language, composer, and desktop behaviour for this device. Every change applies immediately.',
-  'st.purpose.ai': 'Manage models, providers, sign-in, and new-session defaults.',
+  'st.purpose.general': 'Language, composer, and desktop behaviour for this device.',
+  'st.purpose.ai': 'Manage models, providers, sign-in, new-session defaults, and request identity.',
   'st.purpose.connectionServices': 'Manage external connections, listeners, and external client access on this machine.',
-  'st.purpose.agents': 'Create and edit main and subagents in one list. Workspace agents apply only to their workspace.',
+  'st.purpose.agents': 'Manage main and subagent profiles, dispatch defaults, model governance, tools, and runtime limits.',
   'st.purpose.subagents': 'Set subagent defaults, model rules, tools, and runtime limits. Edit agent definitions under Agents.',
   'st.purpose.search': 'Choose search sources and page-fetching behavior; manage credentials and timeouts.',
   'st.purpose.connection': 'Which server this app talks to and how long it waits. A whole remote environment is set up under "Connect to a remote Kiki" on the Workspaces page.',
@@ -2409,7 +2974,6 @@ export const en = {
   'st.appearance.theme.light': 'Light',
   'st.appearance.theme.dark': 'Dark',
   'st.appearance.theme.system': 'Follow system',
-  'st.appearance.themeHint': 'Applies immediately on this device. Following the system switches with your OS setting.',
   'st.skin.title': 'Skin',
   'st.skin.hint': 'Pick an interface palette. Light and dark stay a separate choice above.',
   'st.skin.builtin': 'Built in',
@@ -2450,7 +3014,6 @@ export const en = {
   'st.font.placeholderMono': 'e.g. Fira Code, Sarasa Mono SC',
   'st.font.present': '{name} is installed and in use.',
   'st.font.missing': '{name} is not detected on this device. Fallback font is in use.',
-  'st.font.typeHint': 'Type a family name; it applies as you type.',
   'st.font.sample.sans': 'Settings, sessions and buttons · 设置、会话与按钮 0123',
   'st.font.sample.mono': 'const answer = items.filter((x) => x !== null); // 注释',
   'st.font.sample.prose': 'A long answer reads like a printed page. 长回答读起来像一页印刷品。',
@@ -2487,11 +3050,11 @@ export const en = {
   'st.appearance.restored': 'Appearance is back to the defaults.',
   'st.appearance.undo': 'Undo',
   'st.appearance.previewAria': 'Preview of the current appearance',
-  'st.appearance.preview.session': 'Release notes for 0.31',
+  'st.appearance.preview.session': 'Release notes',
   'st.appearance.preview.waiting': 'Needs you',
   'st.appearance.preview.otherSession': 'Migration spike',
   'st.appearance.preview.time': '6m ago',
-  'st.appearance.preview.user': 'Summarize what changed since 0.30.',
+  'st.appearance.preview.user': 'Summarize the recent changes.',
   'st.appearance.preview.reply': 'Three areas moved: settings, skins, and motion. Run the check below before tagging.',
   'st.appearance.preview.composer': 'Reply to Kiki…',
   'st.skin.accentHint': 'Replaces the skin\'s accent for dots, focus rings and the main button.',
@@ -2512,7 +3075,8 @@ export const en = {
   'st.bg.rejectSize': 'That file is too large. Pictures can be up to {image}, videos up to {video}.',
   'st.bg.urlFailed': 'Could not fetch that link: {reason}',
   'st.bg.urlUnsupported': 'The connected server cannot fetch links. Download the file and choose it instead.',
-  'st.bg.missing': 'The background file is gone from this device. Choose it again.',
+  'st.bg.loadFailed': 'Could not load this file. Your current background is unchanged. Choose a supported picture or playable MP4/WebM and retry.',
+  'st.bg.missing': 'The selected background could not be loaded. Your selection is saved; choose the file again to restore it.',
   'st.bg.notPersistent': 'This browser is not keeping files, so the background lasts until you reload.',
   'st.bg.heavyVideo': 'This video is larger than 1440p, which uses a lot of graphics memory. A 1080p copy looks the same behind the window.',
   'st.bg.largeVideo': 'Large video ({size}). A shorter or lower-bitrate copy saves memory.',
@@ -2548,9 +3112,9 @@ export const en = {
   'st.bg.scrimHint': 'Lays the window color over the picture so it sits back.',
   'st.bg.surface': 'Panel opacity',
   'st.bg.surfaceHint': 'Only affects where the background shows through.',
-  'st.bg.surfaceRaised': 'Only affects where the background shows through. Text areas get a stronger layer automatically.',
+  'st.bg.surfaceRaised': 'Panel opacity stays where you set it. Readability comes from lifted text contrast, not from raising the panels.',
   'st.bg.assist': 'Readability assist',
-  'st.bg.assistHint': 'Adds a soft layer under text so it stays easy to read on any picture.',
+  'st.bg.assistHint': 'Softens the picture behind the app and lifts text contrast.',
   'st.bg.assistOff': 'Text may be hard to read on this picture.',
   'st.bg.surfaceBlur': 'Panel blur',
   'st.bg.more': 'More adjustments',
@@ -2649,12 +3213,11 @@ export const en = {
   'st.defaults.planGateTimeoutInvalid': 'Timeout must be at least 5 seconds.',
   'st.defaults.planModeHint': 'New sessions start in plan mode: the model proposes a plan before acting. Whether it waits for your confirmation depends on the permission mode.',
   'st.defaults.planGateTimeoutHint': 'Only used while approval is required. Unanswered entry requests are rejected after this many seconds.',
-  'st.defaults.hint': 'Applies to sessions created after the change.',
   'st.defaults.globalTitle': 'Default models',
   'st.defaults.globalModelLabel': 'Default model',
   'st.defaults.pickModel': 'Browse available models',
   'st.defaults.tabHint': 'Defaults for brand-new sessions; sessions already running keep their own choices.',
-  'st.defaults.globalHint': 'Which model each job uses. Applies on pick; running sessions keep their own model.',
+  'st.defaults.globalHint': 'Running sessions keep their own model.',
   'st.composer.title': 'Composer & session',
   'st.composer.questions': 'Questions from the agent',
   'st.composer.questionsDontBlock': 'Don’t block',
@@ -2908,6 +3471,7 @@ export const en = {
   'st.source.homeDirHint': 'Leave empty to look where {app} keeps it by default. This is the machine Kiki’s server runs on, which is not always the one you are looking at.',
   'st.source.foundAccount': 'Found {account} on this machine.',
   'st.source.foundAccountUnknown': 'Found a sign-in on this machine, but it does not say which account it belongs to.',
+  'st.source.foundSignIn': 'Found the sign-in {app} already has on this machine.',
   'st.source.connect': 'Use this sign-in',
   'st.source.connecting': 'Connecting…',
   'st.source.connected': 'This connection now uses the sign-in already on this machine.',
@@ -2941,6 +3505,7 @@ export const en = {
   'st.models.vision': 'Vision',
   'st.ai.tab.models': 'Models',
   'st.ai.tab.defaults': 'Defaults',
+  'st.ai.tab.identity': 'Identity',
   'st.modelMigration.title': 'Legacy model parameter migration',
   'st.modelMigration.hint': 'Preview model parameters before migration. Changes only take effect upon confirmation.',
   'st.modelMigration.preview': 'Preview migration',
@@ -3034,6 +3599,10 @@ export const en = {
   'st.models.starAria': 'Set {model} as the default model',
   'st.models.starredTitle': 'Default model',
   'st.models.unstarredTitle': 'Set as default model',
+  'st.models.setDefaultAction': 'Set as global default model',
+  'st.models.currentDefault': 'Current global default for new sessions',
+  'st.models.defaultScopeHint': 'Sets as the global default for new sessions; does not affect pinned profiles or active sessions.',
+  'st.models.setDefaultSuccess': 'Set as global default model.',
   'st.models.editAria': 'Edit parameters for {model}',
   'st.models.editTitle': 'Edit parameters',
   'st.models.remoteIdAria': 'Remote ID for {model}',
@@ -3048,6 +3617,7 @@ export const en = {
   'st.models.issue.contextMissing': 'Set a maximum context size before using this model.',
   'st.models.issue.protocolUnresolved': 'The protocol cannot be resolved from this model or its provider.',
   'st.models.issue.requestIdentityInvalid': 'The model request identity policy is invalid.',
+  'st.models.issue.overrideRouting': 'These override fields were ignored: {fields}. Set them on the model itself.',
   'st.thinking.title': 'Default thinking',
   'st.thinking.enable': 'Enable thinking by default',
   'st.thinking.placeholder': 'for example: high',
@@ -3071,15 +3641,21 @@ export const en = {
   'st.conn.version': 'Version',
   'st.conn.backend': 'Backend',
   'st.conn.reconnect': 'Reconnect now',
+  'st.conn.noToken': 'No token set',
+  'st.conn.dropsSinceStart': '{closes} drops since start',
+  'st.conn.busySessions': '{count} running',
   'st.conn.tokenHint':
     'The token is stored only on this device and rides along with every request to prove your identity.',
   'st.conn.statusTitle': 'Connection status',
   'st.conn.timeoutTitle': 'HTTP requests',
   'st.conn.timeoutLabel': 'Request timeout (seconds)',
-  'st.conn.timeoutHint': 'Applies to subsequent requests. Enter a whole number from {minimum} to {maximum}; opening large sessions may continue beyond this limit.',
+  'st.conn.timeoutHint': 'Applies to subsequent ordinary requests. Enter a whole number from {minimum} to {maximum}.',
+  'st.conn.readingTimeoutLabel': 'Reading timeout (seconds)',
+  'st.conn.readingTimeoutHint': '0 = no deadline. Applies to subsequent history and content reads.',
+  'val.readingTimeoutSeconds': 'Enter a whole number from 0 to 2147483 seconds.',
   'st.conn.timeoutSaved': 'Request timeout saved. New requests use the updated limit.',
   'st.conn.logTitle': 'Connection log',
-  'st.conn.logBody': 'Why the live connection dropped, most recent last: close codes, heartbeat timing, and whether the window was hidden. Kept on this device until the app restarts.',
+  'st.conn.logBody': 'Drop history for the live connection, stored on this device and copyable for bug reports.',
   'st.conn.logSummary': '{closes} drops · {gaps} paused-timer gaps · {total} entries',
   'st.conn.logEmpty': 'No drops recorded since the app started.',
   'st.conn.logCopy': 'Copy connection log',
@@ -3087,7 +3663,7 @@ export const en = {
   'st.conn.logCopyFailed': 'Could not copy the log: {reason}',
   'st.conn.ownedTitle': 'Owned desktop server',
   'st.conn.ownedBody':
-    'Kiki desktop owns the sidecar lifecycle. Restart waits for shutdown, launches a new sidecar, and verifies its authenticated endpoint before returning.',
+    'Restart the local Kiki service and reconnect automatically when ready.',
   'st.conn.restart': 'Restart server',
   'st.conn.restarting': 'Restarting server…',
   'st.conn.restarted': 'The desktop server restarted and passed its authenticated health check.',
@@ -3095,7 +3671,7 @@ export const en = {
     'This action is only available in the desktop app.',
   'st.conn.disconnectTitle': 'Disconnect',
   'st.conn.disconnectBody':
-    'Forget this server and return to the connect screen. Sessions stay on the server; only the stored URL and token are cleared.',
+    'Clear the saved URL and token on this device and return to the connect screen; sessions stay on the server.',
   'st.conn.disconnectConfirmTitle': 'Disconnect from this server?',
   'st.conn.disconnectConfirmBody':
     'Kiki forgets the saved URL and token and goes back to the connect screen. Running turns keep going on the server.',
@@ -3113,6 +3689,7 @@ export const en = {
   'st.conn.ext.retry': 'Retry',
   'st.conn.ext.installing': 'Installing…',
   'st.conn.ext.installPlugin': 'Install Cloudflare plugin',
+  'st.conn.ext.catalogMissing': 'The plugin market did not list Cloudflare, so Kiki cannot install it from here. Open Plugins and install Cloudflare from the market.',
   'st.conn.ext.disabled': 'Cloudflare plugin is currently disabled.',
   'st.conn.ext.enablePlugin': 'Enable plugin',
   'st.conn.ext.installConfirmTitle': 'Install Cloudflare Tunnel plugin?',
@@ -3470,6 +4047,21 @@ export const en = {
   'st.hostSkill.previewAgain': 'Check again',
   'st.hostSkill.stale': 'The file changed after the check. Check again, then confirm the new target.',
   'st.plugins.title': 'Plugins',
+  'st.plugins.installedTitle': 'Installed plugins',
+  'st.plugins.globalDefaultOn': 'On by default',
+  'st.plugins.globalDefaultOff': 'Off by default',
+  'st.plugins.globalDefaultHint': 'The global default is where a new workspace starts. The switch beside a name is the master switch, which no workspace can override.',
+  'st.plugins.masterOn': 'Master switch on',
+  'st.plugins.masterOff': 'Master switch off',
+  'st.plugins.enableEverywhere': 'Enable everywhere',
+  'st.plugins.enableEverywhereHint': 'Turn this plugin on by default in every workspace. The master switch stays as it is.',
+  'st.plugins.browseMarket': 'Find plugins in the market',
+  'st.plugins.noneInstalledBody': 'No plugin is installed on this server yet.',
+  'st.plugins.openSettings': 'Open settings for {name}',
+  'st.plugins.backToInstalled': 'Installed plugins',
+  'st.plugins.brokenState': 'This plugin reported errors, so its settings may not take effect until they are fixed.',
+  'st.plugins.notInstalledTitle': 'Plugin not installed',
+  'st.plugins.notInstalledBody': 'This server has no plugin with the id {id}. It may have been removed since this link was made.',
   'st.plugins.hint': 'Enable, disable, or uninstall plugins on the connected Server. Open a plugin to inspect its manifest, MCP servers, and diagnostics.',
   'st.plugins.loading': 'Loading plugins…',
   'st.plugins.empty': 'No plugins installed.',
@@ -3514,9 +4106,9 @@ export const en = {
   'st.plugins.install': 'Install',
   'st.plugins.installing': 'Installing…',
   'st.plugins.installOk': 'Installed {name}.',
-  'st.plugins.sourceLabel': 'Marketplace catalog URL',
+  'st.plugins.sourceLabel': 'Plugin catalog URL',
   'st.plugins.sourcePlaceholder': 'https://example.test/marketplace.json',
-  'st.plugins.sourceHint': 'A JSON list of installable plugins. Leave it empty to browse only what you have already added.',
+  'st.plugins.sourceHint': 'Optional. A published catalog to use instead of the official plugins that ship with Kiki.',
   'st.plugins.sourceSave': 'Save catalog URL',
   'st.plugins.sourceSaved': 'Catalog saved.',
   'st.plugins.sourceCatalogHint': 'Save a catalog URL to show its plugins here.',
@@ -3608,7 +4200,7 @@ export const en = {
   'st.cron.pollPlaceholder': 'empty or null',
   'st.communication.title': 'Communication and token counting',
   'st.communication.hint': 'Messaging between threads, and how token usage is reported outward.',
-  'st.communication.threadCommunication': 'Messages between threads',
+  'st.communication.threadCommunication': 'Allow threads',
   'st.communication.tokenCounting': 'Reported token-count strategy',
   'st.communication.saved': 'Communication settings saved and echoed by the server.',
   'st.resourceLimits.title': 'Workspace and image limits',
@@ -3711,6 +4303,26 @@ export const en = {
     'This model writes the title, one request per moment below. An automatic title never replaces one you typed.',
   'st.sessionTitleModel.saved': 'Title model saved.',
   'st.sessionTitleModel.unconfigured': 'No model chosen, so Kiki sends no request to write a title.',
+  // The prompt is an instruction, not a setting value: it is read as prose,
+  // written as prose, and the point is that a reader can see what the engine
+  // was actually told.
+  'st.sessionTitlePrompt.source': 'Instruction',
+  'st.sessionTitlePrompt.sourceDefault': 'Built-in default',
+  'st.sessionTitlePrompt.sourceCustom': 'Your version',
+  'st.sessionTitlePrompt.defaultTitle': 'Built-in default instruction',
+  'st.sessionTitlePrompt.expand': 'Show',
+  'st.sessionTitlePrompt.collapse': 'Hide',
+  'st.sessionTitlePrompt.defaultUnavailable':
+    'The server did not return a built-in default instruction. You can still edit your own.',
+  'st.sessionTitlePrompt.customLabel': 'Your instruction',
+  'st.sessionTitlePrompt.customPlaceholder': 'Tell the model how to name a conversation.',
+  'st.sessionTitlePrompt.customHelp': 'Replaces the built-in instruction for the next title Kiki writes. Titles already written stay as they are.',
+  'st.sessionTitlePrompt.save': 'Save instruction',
+  'st.sessionTitlePrompt.restore': 'Restore the built-in default',
+  'st.sessionTitlePrompt.restoreConfirm': 'Restore the built-in default instruction? Your version is removed.',
+  'st.sessionTitlePrompt.restored': 'Built-in default restored.',
+  'st.sessionTitlePrompt.saved': 'Instruction saved.',
+  'st.sessionTitlePrompt.blank': 'Empty means the built-in default. Save it to switch back.',
   'st.advanced.title': 'Raw engine configuration',
   'st.advanced.hint': 'Advanced configuration for permissions, loop controls, and background tasks. Validated on save.',
   'st.advanced.performanceTitle': 'Performance, storage & extensions',
@@ -4482,6 +5094,7 @@ export const en = {
   'selection.modelMenuError': 'Could not read the profile’s available model set. Try again.',
   'st.profiles.addModel': 'Add model',
   'st.profiles.tools': 'Tools',
+  'st.profiles.inspectToolPermissions': 'Inspect in tool permissions',
   'st.profiles.advanced': 'Advanced',
   'st.profiles.advancedSummary': 'Effort limits, denied models, budgets, rare fields',
   'st.profiles.allowedEfforts': 'Allowed efforts (hard limit)',
@@ -4597,6 +5210,7 @@ export const en = {
   'st.namedAgents.workspaces': 'workspaces',
   'st.namedAgents.availableSubagents': 'Available subagents',
   'st.namedAgents.workspaceHint': 'Agents resolve against this workspace; workspace files apply only to it.',
+  'st.namedAgents.workspaceMissing': 'Not in this server’s workspace list; the profiles below are still read for it, not for another workspace.',
   'st.namedAgents.modelPin': 'pinned model alias',
   'st.namedAgents.whenToUse': 'When to use',
   'st.namedAgents.defaultModelThinkingEffort': 'Default model thinking effort',
@@ -5157,24 +5771,19 @@ export const en = {
   'st.about.stable': 'Stable',
   'st.about.beta': 'Beta',
   'st.about.betaHint': 'Beta builds may change more often and can be less stable.',
-  'st.about.autoUpdate': 'Automatic updates',
-  'st.about.autoUpdateOff': 'Off',
   'st.about.autoUpdateNotify': 'Notify me',
   'st.about.autoUpdateInstall': 'Download and install',
   'st.about.updatesUnavailable': 'Automatic updates are not configured for this build.',
   'st.about.checkUpdate': 'Check for updates',
   'st.about.checking': 'Checking…',
   'st.about.upToDate': 'Kiki is up to date.',
+  'st.about.checkFailed': 'Kiki could not check for updates. Check your connection and try again.',
+  'st.about.prefsSaveFailed': 'Kiki could not save that choice, so it was put back. Check that its settings folder can be written to, then try again.',
+  'st.about.installFailed': 'The update did not complete. Try again.',
   'st.about.install': 'Install {version}',
   'st.about.installing': 'Installing…',
   'st.about.installConfirm': 'Install Kiki {version}? Kiki and its running tasks will exit.',
-  'st.about.updateAvailable': 'Kiki {version} is available. Open Settings → About to install it.',
   'st.about.installedRestart': 'The update is installed. Restart Kiki to finish updating.',
-
-  // ---- connection provider ----
-  'st.about.checkFailed': 'Kiki could not check for updates. Check your connection and try again.',
-  'st.about.installFailed': 'The update did not complete. Try again.',
-  'st.about.prefsSaveFailed': 'Kiki could not save that choice, so it was put back. Check that its settings folder can be written to, then try again.',
   'st.about.autoCheck': 'Check for updates automatically',
   'st.about.autoCheckHint': 'Kiki looks for a new version once a day.',
   'st.about.autoCheckOffHint': 'Kiki only checks when you press Check for updates.',
@@ -5193,6 +5802,29 @@ export const en = {
   'st.about.updateDialog.skip': 'Skip this version',
   'st.about.updateDialog.skipDone': 'Kiki will not ask about {version} again. Newer versions still come.',
   'st.about.updateDialog.fromTo': 'Kiki {from} to {to}',
+
+  // ---- connection provider ----
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   'conn.desktopNoServer': 'The Kiki desktop backend did not register a local server.',
   'conn.desktopStartFailed': 'The Kiki desktop backend could not start: {detail}',
 
@@ -5386,6 +6018,11 @@ export const en = {
   'roomRef.remove': 'Remove link to room {title}',
   'roomRef.members.one': '{count} member',
   'roomRef.members.other': '{count} members',
+
+
+
+
+  'roomRef.unknown': 'Room {id}',
   'sidebar.ws.open': 'connected',
   'new.cwdAria': 'Working directory (absolute path)',
   'new.cwdPlaceholder': 'Absolute path to the project folder',
@@ -5509,8 +6146,8 @@ export const en = {
   'onboarding.back': 'Back',
   'onboarding.next': 'Next',
   'onboarding.saveNext': 'Save & continue',
-  'onboarding.finish': 'Start',
   'onboarding.close': 'Close setup',
+  'onboarding.closeRun': 'Close setup',
   'onboarding.welcome.body': 'Pick a language and a look. The window behind this dialog changes as you choose.',
   'onboarding.model.body':
     'Choose any supported model provider. An API key works with the widest range of services; you can also sign in with a supported account. Finish this later in Settings if you prefer.',
@@ -5522,12 +6159,27 @@ export const en = {
   'onboarding.model.model': 'Model',
   'onboarding.model.modelHint':
     'Test the connection to pick from the provider’s list, or type a model id directly.',
+  'onboarding.model.modelHintFetched': 'Type a model id to enter one the provider did not list.',
   'onboarding.model.test': 'Test connection',
   'onboarding.model.testHint':
     'Testing only checks the values in this form — nothing is saved until you choose “Save & continue”.',
   'onboarding.model.testedOk': 'Connection works — {count} models available. Tap one to fill it in.',
-  'onboarding.model.advancedHint':
-    'Context size and capabilities use sensible defaults — fine-tune them later in Settings.',
+  'onboarding.model.advanced': 'Advanced',
+  'onboarding.model.identity': 'Request identity',
+  'onboarding.model.identityHint': 'The client shape this provider\'s requests take.',
+  'onboarding.model.identityAria': 'Request identity for this provider',
+  'onboarding.model.contextSize': 'Context length',
+  'onboarding.model.autoCompact': 'Auto-compact at',
+  'onboarding.model.inheritAutoCompact': 'Inherit',
+  'onboarding.model.autoCompactInvalid': 'Use a whole number of tokens, 1 or more.',
+  'onboarding.model.tokenUnit': 'tok',
+  'onboarding.model.efforts': 'Supported thinking levels',
+  'onboarding.model.capabilities': 'Model capabilities',
+  'onboarding.model.advancedBody': 'Optional. Everything here has a working default.',
+  'onboarding.model.useCustomId': 'Use "{id}"',
+  'onboarding.model.searchModels': 'Search the provider’s models',
+  'onboarding.model.noModelsYet': 'No models listed yet',
+  'onboarding.model.noModelsFetched': 'This provider reported no models. Type a model id to enter one anyway.',
   'onboarding.permissions.body': 'This becomes the default for new sessions. You can change it per session from the composer, or any time in Settings.',
   'onboarding.permissions.recommended': 'Recommended',
   'onboarding.permissions.auto.line': 'Works on its own inside the workspace; asks before sensitive or external actions.',
@@ -5536,37 +6188,37 @@ export const en = {
   'onboarding.permissions.yolo.line': 'Approves everything, including sensitive files. Use only where that is safe.',
   'onboarding.reenter': 'Replay setup wizard',
   'onboarding.reenterHint': 'Runs the first-run setup again: look, defaults and the guided tour.',
-  'onboarding.step.capabilities': 'What else Kiki can do',
-  'onboarding.caps.body': 'None of this is needed to start. Set up what you want now, or come back to it any time.',
-  'onboarding.caps.group.find': 'Find and remember',
-  'onboarding.caps.group.reach': 'Reach further',
-  'onboarding.caps.group.run': 'Keep work going',
-  'onboarding.caps.search.name': 'Web search and history',
-  'onboarding.caps.search.line': 'Search the web, read pages, and search past sessions through the full-text index. General web search needs a search provider key.',
-  'onboarding.caps.search.prompt': '/kiki-ops Help me set up web search: check what is configured, then walk me through adding a search provider and its key.',
-  'onboarding.caps.memory.name': 'Memory',
-  'onboarding.caps.memory.line': 'Keeps your preferences and project facts across sessions, on this machine.',
-  'onboarding.caps.ssh.name': 'SSH remote hosts',
-  'onboarding.caps.ssh.line': 'Run commands and sessions on machines from your SSH config.',
-  'onboarding.caps.ssh.prompt': '/kiki-ops Help me set up an SSH remote host: check my SSH config and what Kiki needs, then add the host step by step.',
-  'onboarding.caps.engines.name': 'External engines',
-  'onboarding.caps.engines.line': 'Let Kiki drive other coding agents, reusing the sign-in they already have on this machine.',
-  'onboarding.caps.extensions.name': 'Plugins, skills and MCP',
-  'onboarding.caps.extensions.line': 'Add tools and know-how from plugins, skill folders and MCP servers.',
-  'onboarding.caps.extensions.prompt': '/kiki-ops Help me add an MCP server or a plugin: ask me which one I want, then set it up and check that its tools load.',
-  'onboarding.caps.hostSkill.name': 'Use Kiki from other agents',
-  'onboarding.caps.hostSkill.line': 'Install the kiki-as-subagent skill so another agent can hand long tasks to Kiki. You see the file location before anything is written.',
-  'onboarding.caps.hostSkill.installed': 'Installed for {hosts}.',
-  'onboarding.caps.cron.name': 'Scheduled tasks',
-  'onboarding.caps.cron.line': 'Run a prompt on a schedule, such as a daily summary or a weekly check.',
-  'onboarding.caps.cron.prompt': '/kiki-ops Help me set up a scheduled task: ask me what should run and when, then create it and show me where to find it.',
-  'onboarding.caps.board.name': 'Task board',
-  'onboarding.caps.board.line': 'Track requirements and the agent work behind them on one board per workspace.',
-  'onboarding.caps.bots.name': 'Bots and rooms',
-  'onboarding.caps.bots.line': 'Give a persona its own resident conversation, or put several personas in a room to discuss one topic.',
-  'onboarding.caps.ask': 'Let Kiki set it up',
-  'onboarding.caps.asking': 'Opening…',
-  'onboarding.caps.askFailed': 'Could not open a session: {detail}',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   'onboarding.skill.kikiAsSubagent.name': 'Use Kiki from that agent',
   'onboarding.skill.kikiAsSubagent.purpose': 'Lets the agent hand tasks to Kiki.',
   'onboarding.skill.kikiOps.name': 'Let that agent set Kiki up',
@@ -5609,11 +6261,16 @@ export const en = {
   'onboarding.depart.agent.copy': 'the line to paste',
   'onboarding.depart.browse.title': '③ Just look around first',
   'askKiki.failed': 'Could not open a session: {detail}. Press it again to retry.',
-  'onboarding.caps.openSettings': 'Settings',
-  'onboarding.caps.openBoard': 'Open board',
-  'onboarding.caps.openCron': 'Open schedule',
-  'onboarding.caps.openPersonas': 'Personas',
-  'onboarding.caps.bots.prompt': '/kiki-ops Help me set up a bot: explain what bot mode turns on, help me pick or create a persona, and make it a bot.',
+
+
+
+
+
+
+  'onboarding.step.discover': 'Look around Kiki',
+  'onboarding.discover.body': 'Start from a place that interests you.',
+  'onboarding.discover.overviewLine': 'The workspace, sessions, memory, capabilities, and schedules.',
+
   // Queue strip + composer queue-edit round-trip (drag reorder, armed remove).
   'queue.editTitle': 'Edit in the composer — confirming puts it back at the same queue position',
   'queue.editingBadge': 'Editing in the composer',
@@ -5623,10 +6280,23 @@ export const en = {
   'queue.sortMode': 'Reorder',
   'queue.sortDone': 'Done',
   'queue.sortHint': 'Drag a handle to reorder',
+  'queue.moreRecords': 'More message records',
+  'queue.records': 'Message records',
+  'queue.recordsLoaded': '{shown} / {total} message records loaded',
+  'queue.recordsFailed': 'Could not load more message records.',
   'queue.waitsForEdit': 'waits for your edit',
   'queue.holdNotice': 'Paused while you edit — the queue resumes in order when you finish.',
   'queue.holdNoticeAhead': 'Paused while you edit — the {count} ahead still send; the rest resume when you finish.',
+  // A scheduled prompt in the queue: `queue` mode joins the user's own send
+  // order, so it shows as one more queued message. The other two modes are
+  // held by the engine outside that order; each row names its own timing, and
+  // the header only says that scheduled prompts are waiting.
+  'queue.scheduledBadge': 'Scheduled job',
+  'queue.scheduledMode': '{mode}',
+  'queue.heldSummary': '· {count} scheduled waiting',
+  'queue.heldOnlySummary': '{count} scheduled waiting',
   'goal.doneWhen': 'done when · {criterion}',
+  'goal.criterionLabel': 'Completion criterion',
   'queue.removeConfirm': 'Remove?',
   'queue.removeConfirmTitle': 'Click again to remove this queued prompt',
   'queue.dragHandleAria': 'Reorder this queued prompt',
@@ -5690,6 +6360,92 @@ export const en = {
   'cron.summary.active.other': '{count} active',
   'cron.summary.paused.one': '{count} paused',
   'cron.summary.paused.other': '{count} paused',
+  'cron.panel.create': 'New scheduled task',
+  'cron.action.edit': 'Edit',
+  'cron.action.expand': 'Show details',
+  'cron.action.collapse': 'Hide details',
+  'cron.action.runAria': 'Trigger {schedule} now',
+  'cron.action.editAria': 'Edit {schedule}',
+  'cron.action.expandAria': 'Show details for {schedule}',
+  'cron.action.collapseAria': 'Hide details for {schedule}',
+  'cron.detail.heading': 'Task details',
+  'cron.detail.prompt': 'Full prompt',
+  'cron.detail.schedule': 'Runs',
+  'cron.detail.expression': 'Cron expression',
+  'cron.detail.expressionHint': 'For tools and other clients. The interface reads the schedule above.',
+  'cron.detail.owner': 'Conversation',
+  'cron.detail.workspace': 'Workspace',
+  'cron.detail.created': 'Created',
+  'cron.detail.age': 'Running for {days} days',
+  'cron.detail.bindingSame': 'You can rebind to another conversation in this workspace.',
+  'cron.detail.bindingMove': 'Moving to a conversation in another workspace is not saved.',
+  'cron.detail.unbound': 'No conversation',
+  'cron.detail.unboundHint': 'This task belongs to the workspace and runs in no conversation.',
+  'cron.detail.nextFireHint': 'The server decides when this runs next; this panel shows the time it computed.',
+  // Delivery timing. The label is what the row advertises; the hint is the
+  // consequence, and it is also the only place the difference between the
+  // three is stated in full.
+  'cron.delivery.queue': 'Queue',
+  'cron.delivery.steer': 'Insert immediately',
+  'cron.delivery.idle': 'Insert when idle',
+  'cron.delivery.hint.queue': 'Waits its turn with your queued messages, in the order they were sent.',
+  'cron.delivery.hint.steer': 'The conversation reads this at its next safe step, without stopping the request in flight.',
+  'cron.delivery.hint.idle': 'Waits for the current work to finish, then goes before the messages waiting in the queue.',
+  'cron.form.delivery': 'Delivery timing',
+  'cron.form.delivery.queue': 'Queue',
+  'cron.form.delivery.steer': 'Insert immediately',
+  'cron.form.delivery.idle': 'Insert when idle',
+  'cron.form.delivery.hint.queue': 'Waits its turn with your queued messages, in the order they were sent.',
+  'cron.form.delivery.hint.steer': 'The conversation reads this at its next safe step, without stopping the request in flight.',
+  'cron.form.delivery.hint.idle': 'Waits for the current work to finish, then goes before the messages waiting in the queue.',
+  'cron.form.delivery.unsupported': 'This server does not report a delivery timing for existing tasks. It keeps the current setting; a task with none runs as “insert when idle” from its next run.',
+  'cron.detail.delivery': 'Delivery timing',
+  'cron.form.createTitle': 'New scheduled task',
+  'cron.form.editTitle': 'Edit scheduled task',
+  'cron.form.kind': 'Repeats',
+  'cron.form.kind.once': 'Once',
+  'cron.form.kind.recurring': 'On a schedule',
+  'cron.form.repeat': 'Repeats by',
+  'cron.form.cadence.hourly': 'Hour',
+  'cron.form.cadence.daily': 'Day',
+  'cron.form.cadence.weekly': 'Week',
+  'cron.form.cadence.monthly': 'Month',
+  'cron.form.everyNHours': 'Every {n} hours',
+  'cron.form.everyHour': 'Every hour',
+  'cron.form.at': 'at',
+  'cron.form.minute': 'minute {m}',
+  'cron.form.minuteOf': 'minute {m}',
+  'cron.form.minuteOnTheHour': 'on the hour',
+  'cron.form.hour': ':',
+  'cron.form.onDays': 'On these days',
+  'cron.form.dayOfMonth': 'Day {day}',
+  'cron.form.prompt': 'Prompt',
+  'cron.form.promptPlaceholder': 'For example: check last night\'s logs and summarize new design and verification requirements.',
+  'cron.form.promptLoading': 'Reading the full prompt…',
+  'cron.form.promptStillLoading': 'The full prompt is still loading. Try saving once it has arrived.',
+  'cron.form.bind': 'Conversation',
+  'cron.form.bindHint': 'Pick the conversation this runs in.',
+  'cron.form.bindSearch': 'Search conversations',
+  'cron.form.bindEmpty': 'There are no conversations to pick.',
+  'cron.form.bindSearchEmpty': 'No conversation matches “{query}”.',
+  'cron.form.bindCurrent': 'This conversation',
+  'cron.form.bindUnbound': 'No conversation',
+  'cron.form.advanced': 'Advanced cron expression',
+  'cron.form.advancedHint': 'This schedule is an expression. Saving keeps it exactly as written.',
+  'cron.form.advancedSwitch': 'Use an expression instead',
+  'cron.form.advancedBack': 'Use the repeat controls',
+  'cron.form.advancedLabel': 'Cron expression',
+  'cron.form.advancedPlaceholder': 'minute hour day month weekday',
+  'cron.form.advancedInvalid': 'Not a valid cron expression. Check the minute, hour, day, month and weekday fields.',
+  'cron.form.error.promptRequired': 'Write what this task should run.',
+  'cron.form.detailUnavailable': 'Could not read the full prompt. Retry, or write the prompt you want this task to run.',
+  'cron.form.discardBody': 'This form has changes you have not saved. Closing will lose them.',
+  'cron.form.discardConfirm': 'Discard changes',
+  'cron.form.error.weekdaysRequired': 'Pick at least one day.',
+  'cron.form.error.saveFailed': 'Could not save your changes. The draft is still here, try again.',
+  'cron.form.error.createFailed': 'Could not create the task. The draft is still here, try again.',
+  'cron.toast.created': 'Scheduled task created',
+  'cron.toast.updated': 'Scheduled task saved',
   'sidebar.statusRunning': 'Running',
   'sidebar.statusNeedsMe': 'Needs me',
   'sidebar.statusIdle': 'Idle',
@@ -5870,11 +6626,10 @@ export const en = {
   'inspector.cap.tools': 'Tools',
   'inspector.cap.skills': 'Skills',
   'inspector.cap.subagents': 'Subagents',
-  'inspector.cap.extensions': 'Extensions',
+  'inspector.cap.plugins': 'Plugins',
   'inspector.cap.noTools': 'No tools are on for this agent.',
   'inspector.cap.noSkills': 'No skills are available to this agent.',
   'inspector.cap.noSubagents': 'This agent cannot dispatch subagents.',
-  'inspector.cap.noExtensions': 'No MCP servers or plugins are connected.',
   'inspector.cap.unavailable': 'Unavailable',
   'inspector.cap.asks': 'Asks first',
   'inspector.cap.off.one': '{count} off',
@@ -5885,6 +6640,7 @@ export const en = {
   'inspector.cap.plugin': 'Plugin',
   'inspector.cap.loadFailed': "Could not load this agent's tools.",
   'inspector.cap.loading': 'Loading tools…',
+  'inspector.cap.reading': 'Reading capabilities…',
   'inspector.cap.more': '{count} more',
   'inspector.cap.less': 'Show fewer',
   'inspector.cap.filter': 'Filter {tab}',
@@ -5915,10 +6671,10 @@ export const en = {
   'inspector.cap.userTools': 'Custom tools',
   'inspector.cap.ownerUnreported': 'Provider not reported',
   'inspector.cap.noToolsReported': 'This agent reports no listable tools.',
-  'inspector.cap.noOwnTools': 'No built-in or custom tools here.',
   'inspector.cap.moreGroups.one': '{count} more group',
   'inspector.cap.moreGroups.other': '{count} more groups',
   'inspector.cap.fewerGroups': 'Show fewer groups',
+  'inspector.cap.previewHint': 'Click the group to open all of its tools',
   'inspector.failedNoDetail': 'Stopped with an error. Open the agent for details.',
   'rail.source.builtin': 'Built-in',
   'rail.source.workspace': 'Workspace',
@@ -5932,7 +6688,7 @@ export const en = {
   'memory.off.title': 'Memory is off',
   'memory.off.body': 'When it is on, Kiki keeps your preferences and project facts across sessions, and every write shows up as one line in the conversation.',
   'memory.off.storage': 'Saved only on the machine running Kiki, in {path}.',
-  'memory.toggle': 'Use memory',
+  'memory.toggle': 'Allow memory',
   'memory.toggleFailed': 'Could not change the memory switch: {detail}',
   'memory.scope.aria': 'Memory scope',
   'memory.scope.global': 'Global',
@@ -5972,7 +6728,10 @@ export const en = {
   'memory.empty.body': 'Tell Kiki “remember …” in a conversation, or add one here.',
   'memory.empty.filtered': 'Nothing matches these filters.',
   'memory.empty.clear': 'Clear filters',
+  'memory.detailNone': 'Select a memory on the left to inspect its details and history.',
   'memory.loading': 'Loading memory…',
+  'memory.readingMore': 'Reading remaining memory… Available entries are ready to use.',
+  'memory.readIncomplete': 'Some memory records could not be read. Available entries are shown below.',
   'memory.loadFailed': 'Could not load memory.',
   'memory.field.title': 'Title',
   'memory.field.type': 'Type',
@@ -6064,10 +6823,37 @@ export const en = {
   'memory.tool.undoConflict': 'Changed since — review it in Memory',
   'memory.tool.undoFailed': 'Could not undo: {detail}',
   'memory.tool.reason': 'Why',
+  'memory.tool.query': 'Searched for',
+
+
+
+
+
+
   'memory.scopeTag.global': 'Global',
   'memory.scopeTag.workspace': 'Workspace',
   'memory.scopeTag.persona': 'Persona',
   'memory.scopeTag.personaWorkspace': 'Persona · Workspace',
+
+
+  'memory.basis.label': 'Content basis',
+  'memory.basis.human': 'Something you asked for or accepted',
+  'memory.basis.observed': 'Checkable material or an observation',
+  'memory.basis.derived': 'Kiki inference or relay',
+  'memory.basis.unknown': 'Basis not recorded',
+  'memory.basis.unrecorded': 'Not recorded',
+  'memory.basis.refs': '· {count} sources',
+  'memory.validity.label': 'Before relying on it',
+  'memory.validity.recheck': 'Check again',
+  'memory.validity.expired': 'Past its endpoint',
+  'memory.validity.unrecorded': 'No check was recorded',
+  'memory.validity.recheckShort': 'Check first',
+  'memory.validity.expiredShort': 'Expired',
+  'memory.coveredBy.label': 'Merged into',
+  'memory.coveredBy.short': 'merged into another entry',
+  'memory.coveredBy.changed': 'The retained entry has changed since this merge. Read its current version.',
+  'memory.coveredBy.unavailable': 'The retained entry could not be loaded.',
+  'memory.savedUnchanged': 'The content did not change, so no new version was created.',
   'st.memory.title': 'Memory',
   'st.memory.hint': 'Keeps preferences and project facts across sessions, on this machine only. On by default.',
   'st.memory.open': 'Open memory',
@@ -6132,10 +6918,26 @@ export const en = {
   'st.purpose.memory': 'Choose how memory is saved across sessions and workspaces.',
   'st.section.permissions': 'Permissions',
   'st.section.hooks': 'Hooks',
-  'st.section.developer': 'Developer',
+  'st.section.developer': 'Developer & labs',
   'st.section.labs': 'Labs',
   'st.group.device': 'App',
   'st.group.work': 'How work runs',
+  'st.group.modelsAccounts': 'Models & accounts',
+  'st.group.agents': 'Agents',
+  'st.group.sessionsWork': 'Sessions & work',
+  'st.group.rulesAlerts': 'Rules & alerts',
+  'st.group.connectionSpaces': 'Connection & spaces',
+  'st.group.system': 'System',
+  'st.ia.prototype': 'Settings navigation (experiment)',
+  'st.ia.current': 'Current',
+  'st.ia.taskflow': 'Task groups',
+  'st.ia.objects': 'Object pages',
+  'st.ia.purpose': 'Purpose groups',
+  'st.group.permissionsRules': 'Permissions & rules',
+  'st.section.serverConnection': 'Server connection',
+  'st.section.externalAccess': 'Access from elsewhere',
+  'st.section.tasksBackground': 'Tasks & background',
+  'st.ai.tab.providersAccounts': 'Providers & accounts',
   'st.storage.workspace': 'Workspace: {name}',
   'st.storage.unsaved': 'Unsaved changes',
   'st.storage.pageServerRemote': 'Saved on the remote server you’re connected to.',
@@ -6177,35 +6979,50 @@ export const en = {
   'st.exp.searchWorker.name': 'Search index in a worker',
   'st.exp.searchWorker.desc': 'Run the global search index in its own worker so large searches don’t slow the server.',
   'st.exp.desktopSearch.name': 'Desktop content search',
-  'st.exp.desktopSearch.desc': 'Build the SQLite index in the background and search conversations from the desktop. Requires a restart; the first build can take 20–30 minutes and needs at least 2 GB free disk space.',
+  'st.exp.desktopSearch.desc': 'Search conversations from the desktop. The first index builds in the background; indexing pauses when its disk has less than 2 GiB free.',
   'st.exp.imageConversion.name': 'Convert unsupported images',
   'st.exp.imageConversion.desc': 'Convert images a model can’t read into a format it accepts before sending them.',
   'st.exp.nativeSsh.name': 'SSH hosts',
   'st.exp.nativeSsh.desc': 'Use machines from your SSH config as places where sessions run.',
   'st.exp.nativeBrowser.name': 'Native browser control',
   'st.exp.nativeBrowser.desc': 'Run saved browser connections through the managed agent-browser backend.',
-  'st.exp.readModel.name': 'Session read model',
-  'st.exp.readModel.desc': 'Serve session lists and replay from a derived index instead of reading raw history.',
-  'st.exp.usageExport.name': 'Send usage to other tools',
-  'st.exp.usageExport.desc': 'Let this server send model, token, quality and cost buckets to a destination you choose. Conversation text, titles and paths are never sent.',
-  'st.exp.pluginImport.name': 'Import history from other tools',
-  'st.exp.pluginImport.desc': 'Read conversations from an installed source and keep them as read-only archives. They are history, not sessions you can continue.',
+  'st.exp.readModel.name': 'Session list index',
+  'st.exp.readModel.desc': 'Use an index to list sessions and look up their metadata when reopening them.',
+
+
+
+
   'st.exp.pluginAppLifecycle.name': 'App plugin services',
   'st.exp.pluginAppLifecycle.desc': 'Start installed, enabled App plugins with Kiki and stop their services when Kiki shuts down.',
+
+
+  'st.exp.localSessionResume.name': 'Continue local external sessions',
+  'st.exp.localSessionResume.desc': 'Continue existing Claude Code and Codex sessions on this machine.',
+  'st.exp.recipes.name': 'Model Recipes',
+  'st.exp.recipes.desc': 'Install reusable model prompts and parameters. Script hooks require confirmation once during installation.',
+  'st.exp.pluginWorkspaceUsage.name': 'Workspace plugin selection',
+  'st.exp.pluginWorkspaceUsage.desc': 'Choose which installed plugins each workspace uses without uninstalling them.',
+
+
+  'st.exp.workPresets.name': 'Space work modes',
+  'st.exp.workPresets.desc': 'Use work modes in each space. Installing their packages still requires confirmation.',
+  'st.exp.externalClients.name': 'External MCP clients',
+  'st.exp.externalClients.desc': 'Let clients use Kiki sessions and tools through connections you explicitly authorize.',
   'st.exp.unknown.name': 'Server-specific feature',
   'st.exp.unknown.desc': 'This server reports a feature this app has no description for.',
   'st.labs.openIn': 'Open in {page}',
   'st.labs.empty': 'This server reports no experimental features.',
   'st.labs.indexTitle': 'Where experimental features live',
   'st.effect.newSessions': 'Applies to new sessions',
-  'st.purpose.sessions': 'How new sessions start, when agents may interrupt you, and how agents message each other.',
+  'st.purpose.sessions': 'How new sessions start, when agents may interrupt you, agent messaging, and background tasks.',
   'st.purpose.skills': 'Where the server looks for skills.',
-  'st.purpose.plugins': 'Where to find plugins, and whether browser control is set up.',
+
   'st.purpose.hooks': 'Rules that run when an event happens.',
+
   'st.purpose.workspaces': 'Folders the server knows about. Removing one keeps its files and sessions.',
   'st.purpose.about': 'Version, build, server identity, and updates.',
   'st.purpose.permissions': 'Default mode, persistent tool rules, dangerous Bash checks, reviewer, and available tools.',
-  'st.purpose.developer': 'Engine parameters, low-level configuration, and system diagnostics.',
+  'st.purpose.developer': 'Engine parameters, low-level configuration, system diagnostics, and experimental feature index.',
   'st.purpose.labs': 'Experimental features and feature flags.',
   'st.perm.defaultTitle': 'Default permission mode',
   'st.perm.dangerousBash': 'Dangerous Bash commands',
@@ -6237,6 +7054,55 @@ export const en = {
   'st.perm.delete': 'Delete',
   'st.perm.moveUp': 'Move up',
   'st.perm.moveDown': 'Move down',
+  'st.sessions.archivedTitle': 'Archived conversations',
+  'st.sessions.archivedHint':
+    'Archived conversations stay readable outside the sidebar. Deleting one removes it from this Kiki for good.',
+  'st.sessions.archivedOpen': 'Manage archived conversations',
+  'archive.title': 'Archived conversations',
+  'archive.backSettings': 'Session settings',
+  'archive.lede':
+    'Every archived conversation on this connection. Read one, or delete them all when they are in the way.',
+  'archive.searchPlaceholder': 'Search archived conversations',
+  'archive.searchAria': 'Search archived conversations',
+  'archive.listAria': 'Archived conversations',
+  'archive.loading': 'Reading the archive',
+  'archive.loadFailed': 'The archive could not be read',
+  'archive.empty': 'No archived conversations',
+  'archive.emptyHint': 'Conversations you archive are kept here and stay readable.',
+  'archive.emptySearch': 'No archived conversation matches {query}',
+  'archive.emptySearchHint': 'Search matches titles and workspaces on this connection. Clear it to see the whole archive again.',
+  'archive.untitled': 'Untitled conversation',
+  'archive.workspaceUnknown': 'Unknown workspace',
+  'archive.openHint': 'Open conversation history',
+  'archive.loadOlder': 'Load older',
+  'archive.allLoaded': 'That is the whole archive',
+  'archive.delete': 'Delete',
+  'archive.deleteOneTitle': 'Delete this conversation?',
+  'archive.deleteOneBody':
+    'This removes {title} and everything in it from this Kiki. There is no way to undo it.',
+  'archive.deleteOneFamily': 'The archived conversations attached to it are deleted with it.',
+  'archive.deleteOneTopLevel': 'Conversations you promoted to the top level are not deleted with it.',
+  'archive.deleteOneConfirm': 'Delete conversation',
+  'archive.deleteOneDone': 'Deleted {title}',
+  'archive.deleteAll': 'Delete all archived conversations',
+  'archive.deleteAllTitle': 'Delete every archived conversation?',
+  'archive.deleteAllBody':
+    'This permanently deletes every archived conversation on this connection, regardless of the current search or loaded pages. It cannot be undone.',
+  'archive.deleteAllScope': 'Unarchived conversations stay. Archived conversations inside a room are deleted; the room stays.',
+  'archive.deleteAllConfirm': 'Delete every archived conversation',
+  'archive.deleteAllDone': 'Deleted {count} archived conversations',
+  'archive.deleteNoneDone': 'There was nothing archived to delete',
+  'archive.deleteFailed': 'Nothing was deleted',
+  'archive.keptTitle': 'Not deleted',
+  'archive.dismiss': 'Dismiss',
+  'archive.deletePartial': 'Deleted {deleted} of {total}. {failed} could not be deleted and are still listed.',
+  'archive.pending': 'Deleting',
+  'archive.refreshList': 'Refresh list',
+  'archive.scopeNote': 'This connection only',
+  'archive.scopeNoteHint':
+    'Switching connections changes this list and what deletion reaches.',
+  'st.sessions.importPageNote': 'Import history ships with Kiki. Nothing here needs a plugin.',
+  'st.sessions.importBrowsePlugins': 'Browse plugins',
   'st.sessions.questionsTitle': 'Questions from agents',
   'st.sessions.questionsLabel': 'While a question waits',
   'st.sessions.questionsHint':
@@ -6316,6 +7182,10 @@ export const en = {
   'cap.action.updateNamed': 'Update {name}',
   'cap.action.remove': 'Remove plugin',
   'cap.action.rollback': 'Roll back to {version}',
+  'cap.shelf.recommended': 'For this workspace',
+  'cap.shelf.official': 'Official plugins',
+  'cap.shelf.community': 'Community plugins',
+  'cap.shelf.media': 'Media providers',
   'cap.shelf.featured': 'Featured',
   'cap.shelf.productivity': 'Productivity',
   'cap.shelf.coding': 'Coding',
@@ -6372,6 +7242,7 @@ export const en = {
   'cap.plugins.addFromSource': 'Add from source',
   'cap.plugins.updates': 'Updates',
   'cap.detail.back': 'Plugins',
+  'cap.detail.openSettings': 'Plugin settings',
   'cap.detail.updateAvailable': 'Update available',
   'cap.detail.broken': 'This plugin could not load. Its diagnostics are under Advanced.',
   'cap.detail.adds': 'What it adds',
@@ -6383,6 +7254,8 @@ export const en = {
   'cap.settings.secretReplace': 'Type a new value to replace',
   'cap.settings.secretRemove': 'Remove',
   'cap.settings.secretRemovePending': 'Removed when you save',
+  'cap.settings.none': 'This plugin has no additional settings.',
+  'cap.settings.panelOff': 'Turn on this plugin to open its settings panel.',
   'cap.detail.addsAfterInstall': 'The full list of tools, panels, commands and skins appears here after installing. The install sheet shows it before anything is installed.',
   'cap.detail.needs': 'What it needs',
   'cap.detail.needsOnPreview': 'Permissions and required programs are listed before you install.',
@@ -6415,13 +7288,16 @@ export const en = {
   'cap.panel.open': 'Open panel',
   'cap.panel.loading': 'Loading the panel…',
   'cap.panel.session': 'Acts on your last session',
+  'cap.panel.settings': 'Settings panel',
   'cap.panel.noSession': 'Open a session to use this panel',
   'cap.import.entry': 'Import history',
   'cap.import.title': 'Import history',
   'cap.import.intro': 'Bring a conversation from another tool into this Kiki as a session you can keep working in. Importing needs no model; sending your next message does.',
   'cap.import.loading': 'Checking what this server can import…',
-  'cap.import.unavailableTitle': 'Import history is off on this server.',
-  'cap.import.unavailableBody': 'Start this Kiki with {flag} to turn it on.',
+  'cap.import.unavailableTitle': 'This server cannot import history.',
+  'cap.import.unavailableBody': 'Import is part of Kiki, so there is nothing to turn on. This server did not offer its sources, which usually means it is an older build.',
+  'cap.import.settingsHint': 'Bring a conversation from another tool into this Kiki as a session you can keep working in. Importing needs no model and installs nothing; sending your next message does.',
+  'cap.import.open': 'Import history',
   'cap.import.unwiredBody': 'This server has not registered the import routes yet. Update Kiki to import history.',
   'cap.import.destinationTitle': 'Import as',
   'cap.import.destinationAria': 'What to import as',
@@ -6571,6 +7447,21 @@ export const en = {
   'cap.install.installing': 'Installing…',
   'cap.install.done': '{name} is installed and on.',
   'cap.install.finish': 'Done',
+  'cap.install.scope.title': 'Where should this plugin be available?',
+  'cap.install.scope.global': 'Everywhere',
+  'cap.install.scope.globalHint': 'On by default in every workspace and conversation. Turn it off per workspace later if you like.',
+  'cap.install.scope.later': 'Here only, decide later',
+  'cap.install.scope.laterHint': 'Installed now, with the global default off. Switch it on wherever you want it.',
+  'cap.install.scope.workspace': 'This workspace only',
+  'cap.install.scope.workspaceHint': 'Installed with the global default off, and on for {workspace}. No other workspace changes.',
+  // Only for a plan that reports an app service. It says the one thing no scope
+  // hint can: the plugin is one shared home-level service, so deferring the
+  // install does not start it either.
+  'cap.install.appServiceHint': 'Shares one home background service across workspaces; installing for later does not start it.',
+  'cap.install.done.later': '{plugin} is installed. Its global default is off.',
+  'cap.install.done.workspace': '{plugin} is installed and on for {workspace}.',
+  'cap.install.usageFailed': '{plugin} is installed, but turning it on here failed. Retrying does not install it again.',
+  'cap.install.retryUsage': 'Try turning it on again',
   'cap.prereq.title': 'Install {id}?',
   'cap.prereq.body': 'This downloads the pinned {id} {version} release, verifies its checksum and saves it in the plugin\'s data folder.',
   'cap.prereq.action': 'Install {id}',
@@ -6681,7 +7572,7 @@ export const en = {
   'st.ssh.hostKeys.refresh': 'Read again',
   'st.ssh.hostKeys.localNote': 'Entries found in the known_hosts files on this computer. The host itself is not contacted.',
   'st.ssh.hostKeys.unrecorded': 'No entry for this host in the known_hosts files on this computer.',
-  'st.ssh.hostKeys.ambiguous': 'Which known_hosts file this host uses cannot be determined from its configuration, so no entries were read. The paths it resolves to are listed below.',
+  'st.ssh.hostKeys.ambiguous': 'The known_hosts file paths cannot be separated unambiguously, so no entries were read. Check this host’s SSH configuration.',
   'st.ssh.hostKeys.unavailable': 'The entries for this host could not be read.',
   'st.ssh.hostKeys.noFingerprint': 'Fingerprint unavailable',
   'st.ssh.hostKeys.copy': 'Copy the {algorithm} fingerprint',
@@ -6756,6 +7647,11 @@ export const en = {
   'st.ssh.form.saveOverride': 'Save as Kiki host',
   'composer.addMenu.ssh': 'SSH hosts for this session',
   'composer.ssh.heading': 'SSH hosts in this session',
+  'composer.ssh.enabled': 'Enabled',
+  'composer.ssh.disabled': 'Off',
+  'composer.ssh.expand': 'Show all ({count})',
+  'composer.ssh.collapse': 'Collapse',
+  'composer.ssh.switchLabel': '{name}: {status}',
   'composer.ssh.loading': 'Loading hosts…',
   'composer.ssh.empty': 'No hosts configured yet.',
   'composer.ssh.fromConfig': 'From ~/.ssh/config',
@@ -6765,6 +7661,7 @@ export const en = {
   'composer.ssh.removeChip': 'Remove {name} from this session',
   'composer.ssh.addFailed': 'Could not add {name}: {detail}',
   'composer.ssh.removeFailed': 'Could not remove {name}: {detail}',
+  'composer.execution.keptEngine': 'The current {engine} binding is preserved. Manage new engine choices in Settings.',
   'ia.ssh.title': 'Connect to host',
   'ia.ssh.promptsTitle': 'Sign-in step',
   'ia.ssh.hostKeyTitle': 'New host key',
@@ -6874,7 +7771,7 @@ export const en = {
   'st.xc.listenerOffBody': 'Local clients still work. Remote clients cannot connect.',
   'st.xc.listenerOn': 'On',
   'st.xc.listenerOnBody': 'Serving MCP on {origin}.',
-  'st.xc.listenerDiscoveryHint': 'Clients check this address for capabilities and login instructions.',
+  'st.xc.listenerDiscoveryHint': 'A reachable address means a client could complete the handshake there. A tunnel reporting ready only means it is connected to Cloudflare, not that this address works.',
   'st.xc.publicUrl': 'Public address',
   'st.xc.publicUrlHint': 'The https address a remote client will use. Leave it empty to serve local clients only.',
   'st.xc.publicUrlInvalid': 'A public address must start with https://.',
@@ -6972,8 +7869,241 @@ export const en = {
   'st.xs.linkConnections': 'Manage this client in Settings',
   'st.engines.externalClientsEntry': 'Let an outside client use Kiki',
   'st.engines.externalClientsEntryHint': 'The other direction: a ChatGPT conversation or another MCP client calling this machine’s tools.',
+  // ---- external clients (Settings › External clients, externally driven sessions) ----
+  // The reverse of external engines: those are agents Kiki drives, these are
+  // clients that drive Kiki. The copy never calls the client an engine and
+  // never implies Kiki saw the conversation it happened in.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // A save that narrows access stops this connection's unfinished work. The
+  // count is not stated because the panel has no way to know it.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // Local path: a native config the user copies into their own MCP client.
+
+
+
+
+
+
+
+
+  // Remote path: an address, OAuth, and what the client can actually do.
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // The listener, with its four states kept apart on purpose.
+
+
+
+
+
+
+  'st.xc.listenerStart': 'Start the listener',
+  'st.xc.listenerStop': 'Stop the listener',
+  'st.xc.listenerStarting': 'Starting',
+  'st.xc.listenerState.stopped': 'Stopped',
+  'st.xc.listenerState.listening': 'Listening',
+  'st.xc.listenerState.error': 'Not serving',
+  'st.xc.listenerOrigin': 'Local address',
+  'st.xc.listenerPublic': 'Public address',
+  'st.xc.listenerPublicNone': 'None set',
+  'st.xc.listenerDiscovery.unchecked': 'Not checked',
+  'st.xc.listenerDiscovery.reachable': 'Reachable',
+  'st.xc.listenerDiscovery.failed': 'Not reachable',
+
+  'st.xc.listenerCheck': 'Check this address',
+  'st.xc.listenerChecking': 'Checking',
+
+
+
+
+
+  // Authorizations a client is waiting on.
+
+
+
+
+
+
+
+
+  // A failure has to say what failed and what the reader can do next.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // The listener's five states. A bound port is deliberately not "reachable":
+  // nothing has proved a client could get in.
+
+
+
+
+
+
+  // ---- externally driven sessions ----
+
+
+
+
+
+
+
+
+
+
+  // The right rail on a driven session: no Kiki model, and the figures below
+  // are Kiki's own sub-agent usage rather than the client's.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  // The server reports what a branch will carry; nothing reported is not the
+  // same as a session that saved nothing.
+
+  // "Not read yet" and "there is nothing" are different facts, and a list that
+  // is only part of the story must say so rather than look complete.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
   'ia.ssh.method.agent': 'My SSH setup',
   'ia.ssh.method.agentHint': 'Uses ssh-agent and the keys named in ~/.ssh/config. Nothing is sent from here.',
+
+
   'ia.ssh.method.password': 'Password',
   'ia.ssh.method.keyFile': 'Key file',
   'ia.ssh.method.keyText': 'Paste key',
@@ -6995,7 +8125,7 @@ export const en = {
   'ia.ssh.sendAnswer': 'Send',
   'ia.ssh.cancelSignIn': 'Cancel sign-in',
   'ia.ssh.keyFirstSeen': '{algorithm} key fingerprint',
-  'ia.ssh.keyCheckHint': 'Compare it with the fingerprint from the server’s owner before trusting. Trusting adds it to ~/.ssh/known_hosts.',
+  'ia.ssh.keyCheckHint': 'Compare it with the fingerprint from the server’s owner before trusting. Trusting saves it to the first configured known_hosts file. With UserKnownHostsFile none, it is not saved and each connection asks again.',
   'ia.ssh.trustKey': 'Trust this host key',
   'ia.ssh.dontTrust': 'Don’t connect',
   'ia.ssh.sent': 'Sent',
@@ -7034,6 +8164,12 @@ export const en = {
   'st.engines.versionUnknown': 'Not reported',
   'st.engines.login': 'Sign-in',
   'st.engines.loginStale': 'Run a check to read the sign-in status.',
+  'st.engines.showInList': 'Offer {engine} in new profile and execution choices',
+  'st.engines.showInListHint': 'This engine becomes a new choice only while this is on. Turning it off removes it from new choices; profiles and sessions already bound to it keep that engine. Refresh, another check, and another import do not turn it back on.',
+  'st.engines.showAllInList': 'Allow enabled external engines in new choices',
+  'st.engines.showAllInListHint': 'While this is off, new choices contain no external engines. Profiles and sessions already bound to one keep that engine.',
+  'st.engines.showAllInListOffHint': 'No external engine is offered in the pickers. They stay installed and still run in sessions already using them.',
+  'st.engines.hiddenByGlobal': 'The main switch is off. Reopening it brings back only explicitly enabled engines; engines explicitly turned off stay off.',
   'st.engines.loginCommand': 'Sign-in command',
   'st.engines.apiKeyCommand': 'API key',
   'st.engines.loginOrKey': 'Kiki reuses whichever credential this machine already has, so one of these two routes is enough.',
@@ -7112,6 +8248,14 @@ export const en = {
   'st.engines.notFoundBody': '{program} was not found on this machine. Install it, then check again.',
   'st.engines.integrations': 'Kiki tools for this engine',
   'st.engines.integrationsBody': 'A main profile on this engine can dispatch Kiki subagents: turn on Allow dispatching Kiki subagents in its profile. Sharing memory and skills is not available yet.',
+  'st.engines.mcpInject.title': 'Default inject Kiki MCP',
+  'st.engines.mcpInject.hint': 'Default injects the Kiki MCP bridge when starting new bindings on this engine. Explicit profile or session settings take precedence.',
+  'st.engines.mcpInject.unsupported': 'MCP bridge unsupported',
+  'st.engines.mcpInject.unsupportedHint': 'This engine does not declare or support the stdio MCP bridge.',
+  'st.engines.mcpInject.on': 'On',
+  'st.engines.mcpInject.off': 'Off',
+  'st.engines.mcpInject.inherit': 'Default (inherit)',
+  'st.engines.mcpInject.saved': 'MCP injection default saved.',
   'st.engines.configHint': 'Engines are configured under [agent_executors.<id>] in config.toml.',
   'st.engines.empty': 'No external engines are configured on this server.',
   'st.engines.loading': 'Loading engines…',
@@ -7125,6 +8269,18 @@ export const en = {
   'st.engines.stepFailedBody': '{program} was found but did not start. Reinstall it with this command, then check again.',
   'st.engines.loginUnknownBody': 'Kiki could not read the credential. Sign in with the command below, or set the API key this engine reads.',
   'st.engines.defaultProfile': 'A ready-made profile for this engine is not available yet. Pick it as the engine of a profile under Agents.',
+  // Per-engine defaults: what this engine gets from Kiki on a bare run.
+  'st.engines.defaults.title': 'What Kiki adds when this engine runs',
+  'st.engines.defaults.hint': 'By default {engine} runs with its own configuration and no Kiki profile. Set anything here and it applies to every {engine} session that does not override it for itself.',
+  'st.engines.defaults.modelAlias': 'Model',
+  'st.engines.defaults.modelAliasHint': 'The engine’s own model id, not a Kiki model alias. Leave it empty to let the engine choose.',
+  'st.engines.defaults.modelAliasPlaceholder': 'engine default',
+  'st.engines.defaults.thinkingEffort': 'Thinking effort',
+  'st.engines.defaults.permissionMode': 'Approval mode',
+  'st.engines.defaults.inheritPlaceholder': 'Engine default',
+  'st.engines.defaults.save': 'Save engine defaults',
+  'st.engines.defaults.saved': 'Engine defaults saved. Sessions already running keep the values they started with.',
+  'st.engines.defaults.applyNote': 'Applies from the next session; running sessions keep their current values.',
   'st.executorPrompt.title': 'Executor prompt',
   'st.executorPrompt.nativeNote': 'Used only when this profile runs on an external engine.',
   'st.executorPrompt.scope': 'Applies to',
@@ -7215,12 +8371,18 @@ export const en = {
   'transcript.exec.compacted': 'The engine compacted its context',
   'transcript.exec.turnDiff': 'Changes this turn',
   'transcript.exec.turnDiffFiles': '{count} files',
-  'transcript.exec.unknownUpdate': 'The engine sent an update Kiki can’t show',
+  'transcript.exec.unknownUpdate': 'Unrecognized engine update',
   'transcript.exec.engineContextUsed': 'Engine context: {used} tokens',
   'transcript.exec.engineContextOf': 'Engine context: {used} of {size} tokens',
   'transcript.exec.imageDropped': 'The engine dropped an image you sent',
   'transcript.exec.imageDroppedReason': 'The engine dropped an image you sent: {reason}',
   'transcript.exec.engineModel': 'The engine is running {model}',
+
+
+
+
+
+
   'st.executorPrompt.overrideNote': 'An override keeps its own list of blocks; changes to all engines don’t reach it.',
   'st.profiles.fieldsAfterSave': 'Save to see which settings {engine} uses.',
   'st.profiles.fieldValueSet': 'set in this file',
@@ -7232,14 +8394,245 @@ export const en = {
   'transcript.loss.additional_directories_dropped': 'extra workspace folders were not passed to the engine',
   'transcript.loss.thought_level_unconfigured': 'the engine has no thinking-level setting, so it used its default',
   'st.section.notifications': 'Notifications & messages',
-  'st.purpose.notifications': 'Get pinged on your phone or in a team chat when work finishes or a question waits.',
+  'st.purpose.notifications': 'Get Kiki’s messages on your phone, in team chats, or on this computer — and reply from there.',
   'st.notify.rulesTitle': 'Notification rules',
+  'st.im.title': 'IM accounts & channels',
+  'st.im.hint': 'Connect an account, then add its chats, contacts, groups or topics below.',
+  'st.im.loading': 'Loading IM accounts…',
+  'st.im.loadError': 'Could not load IM accounts. Try again.',
+  'st.im.catalogError': 'Could not load personas and threads. Try again.',
+  'st.im.searchError': 'Could not search threads. Change the search to try again.',
+  'st.im.newAccount': 'New account',
+  'st.im.chatId': 'Chat',
+  'st.im.senderId': 'Sender',
+  'st.im.topicId': 'Topic',
+  'st.im.removeConfirm': 'Remove {name}? Messages from this channel will no longer reach Kiki.',
+  'st.im.stateAuthExpired': 'Authorization expired',
+  'st.im.stateListenerStopped': 'Connection stopped',
+  'st.im.authExpiredHint': 'Authorize this account again to resume listening.',
+  'st.im.reauthorize': 'Authorize again',
+  'st.im.retryConnection': 'Retry connection',
+  'st.im.failure.transport_error': 'Network request failed.',
+  'st.im.failure.http_error': 'The platform returned an HTTP error.',
+  'st.im.failure.api_error': 'The platform reported an API error.',
+  'st.im.failure.invalid_response': 'The platform response could not be read.',
+  'st.im.failure.auth_expired': 'Authorize this account again to resume listening.',
+  'st.im.failure.loop_failed': 'The connection stopped unexpectedly. Retry the connection.',
+  'st.im.failureCount': 'Failures: {count}',
+  'st.im.retryDelay': 'Retry delay: {seconds}s',
+  'st.im.wechatDirectOnly': 'This WeChat connection supports direct messages only. Group chats are not supported.',
+  'st.im.wechatDiscover': 'Send a direct message from each contact you want to add, then choose a persona or thread for each one.',
+  'st.im.wechatAwaitingListen': 'Start listening, then send a direct message from the contact you want to add.',
+  'st.im.paste': 'Setup',
+  'st.im.pastePlaceholder': 'Bot token, or one field per line',
+  'st.im.instance': 'Existing connection',
+  'st.im.check': 'Check',
+  'st.im.listen': 'Listen',
+  'st.im.stop': 'Stop',
+  'st.im.webhook': 'This bot already has a webhook. Remove it on the platform, then check again. Nothing here deletes it.',
+  'st.im.discovery': 'A message arrived',
+  'st.im.confirm': 'Bind',
+  'st.im.dismiss': 'Dismiss',
+  'st.im.target': 'Bind to',
+  'st.im.persona': 'Persona daily session',
+  'st.im.session': 'Existing session',
+  'st.im.busy': 'While busy',
+  'st.im.queue': 'Queue',
+  'st.im.steer': 'Steer',
+  'st.im.text': 'Message text',
+  'st.im.final': 'Full text',
+  'st.im.edit': 'Live text',
+  'st.im.actions': 'Approvals & questions',
+  'st.im.qqText': 'QQ sends the full text and cannot change a sent message.',
+  'st.im.wechatText': 'WeChat sends the full text and cannot change a sent message.',
+  'st.im.fileNote': 'QQ cannot take a file.',
+  'st.im.railOffAllowed': 'Two-way messaging is off.',
+  'st.im.railOffBinding': 'This IM binding is disabled.',
+  'st.im.railBusy': 'Updating',
+  'st.im.on': 'On',
+  'st.im.off': 'Off',
+  'st.im.allowed': 'Two-way messaging',
+  'st.im.default': 'Bindings on by default',
+  'st.im.sessionSwitch': 'IM conversation',
+  'st.im.disable': 'Disable',
+  'st.im.enable': 'Enable',
+  'st.im.remove': 'Remove',
+  'st.im.strangers': 'Unconfirmed senders',
+  'st.im.ignored': 'Ignored fields',
+  'st.im.chatHint': 'The pasted chat ID was ignored. Send a message in the channel you want to add.',
+  'st.im.empty': 'Connect an IM account to add channels.',
+  'st.im.missing': 'This platform has no live connection in this build.',
+  'st.im.voice': 'Voice sent as a file',
+  'st.im.alsoHome': 'Also set as the daily session',
+  'st.im.error': 'Could not update the IM conversation.',
+  'st.im.retry': 'Try again',
+  'st.im.followDefault': 'Use default',
+  'st.im.wechatScan': 'Scan with WeChat',
+  'st.im.wechatWaiting': 'Waiting for a scan.',
+  'st.im.wechatScanned': 'Scanned.',
+  'st.im.wechatExpired': 'This code expired.',
+  'st.im.wechatVerify': 'Enter the code shown on the phone.',
+  'st.im.wechatBlocked': 'Too many attempts. Start again.',
+  'st.im.wechatBound': 'Already bound on this account.',
+  'st.im.wechatCancel': 'Cancel',
+  'st.notify.tab.im': 'Two-way chat',
+  'st.notify.tab.channels': 'Push channels',
+  'st.notify.tab.away': 'System alerts',
+  'st.im.provider.wechat_bridge': 'WeChat',
+  'st.im.provider.telegram': 'Telegram',
+  'st.im.provider.feishu_app': 'Feishu',
+  'st.im.provider.onebot_v11': 'QQ (OneBot)',
+  'st.im.provider.discord': 'Discord',
+  'st.im.provider.slack': 'Slack',
+  'st.im.provider.matrix': 'Matrix',
+  'st.im.accountsTitle': 'Connected accounts',
+  'st.im.stateListening': 'Listening',
+  'st.im.stateStarting': 'Connecting',
+  'st.im.stateReconnecting': 'Reconnecting',
+  'st.im.stateStopped': 'Paused',
+  'st.im.connectNew': 'Add or update account',
+  'st.im.connectHide': 'Hide setup',
+  'st.im.bindAction': 'Add channel',
+  'st.im.bindTitle': 'Discover a channel',
+  'st.im.bindStepTarget': 'Target',
+  'st.im.bindStepIdentity': 'Channel',
+  'st.im.kindPersona': 'Persona',
+  'st.im.kindSession': 'Thread',
+  'st.im.searchTarget': 'Search threads…',
+  'st.im.noTargetMatch': 'No match.',
+  'st.im.noTargetsYet': 'No personas or threads yet.',
+  'st.im.awaitingListenBody': 'Start listening, then send a message from the contact, group or topic you want to add.',
+  'st.im.startListenNow': 'Start listening',
+  'st.im.waitingTitle': 'Waiting for a channel message…',
+  'st.im.waitingBody': 'Send a message from the contact, group or topic you want to add, then choose its own persona or thread below.',
+  'st.im.refreshDiscovery': 'Refresh',
+  'st.im.advancedOptions': 'Options',
+  'st.im.bindingsTitle': 'Bound chats',
+  'st.im.changeTarget': 'Target',
+  'st.im.bindingOptions': 'Options',
+  'st.im.closeBindFlow': 'Close',
+  'st.im.routeExisting': 'Route to target',
+  'st.im.railBind': 'Bind here',
+  'st.im.railRoute': 'Route here',
+  'st.im.setup.platform': 'Platform setup',
+  'st.im.setup.catalogError': 'Could not load Discord, Slack and Matrix setup options. Try again.',
+  'st.im.setup.pasteMode': 'Paste / Other',
+  'st.im.setup.portalLink': 'Developer portal',
+  'st.im.setup.saveSlot': 'Save credential',
+  'st.im.setup.savedNotice': 'Credential saved for {id}. Check and start listening below when ready.',
+  'st.im.setup.generatedLink': 'Authorization link',
+  'st.im.setup.openLink': 'Open link',
+  'st.im.setup.field.bot_token': 'Bot token',
+  'st.im.setup.field.app_token': 'App-level token (xapp)',
+  'st.im.setup.field.homeserver': 'Homeserver URL',
+  'st.im.setup.field.access_token': 'Access token',
+  'st.im.setup.discord.appId': 'Application ID',
+  'st.im.setup.discord.guildId': 'Server ID (optional)',
+  'st.im.setup.discord.installLink': 'Generate bot invite link',
+  'st.im.setup.slack.appName': 'App name (optional)',
+  'st.im.setup.slack.manifestLink': 'Create app from manifest',
+  'st.im.setup.slack.oauthToggle': 'Exchange Bot token via OAuth',
+  'st.im.setup.slack.clientId': 'Client ID',
+  'st.im.setup.slack.clientSecret': 'Client Secret',
+  'st.im.setup.slack.redirectUri': 'Redirect URI',
+  'st.im.setup.slack.oauthBegin': 'Generate OAuth link',
+  'st.im.setup.slack.code': 'Callback code',
+  'st.im.setup.slack.state': 'Callback state',
+  'st.im.setup.slack.oauthComplete': 'Exchange & save',
+  'st.im.setup.matrix.server': 'Matrix domain or user ID',
+  'st.im.setup.matrix.discover': 'Discover homeserver',
+  'st.im.setup.matrix.discovered': 'Homeserver: {homeserver} · Login flows: {flows}',
+  'st.im.setup.matrix.authMethod': 'Sign-in method',
+  'st.im.setup.matrix.methodToken': 'Access token',
+  'st.im.setup.matrix.methodPassword': 'Password login',
+  'st.im.setup.matrix.methodSso': 'SSO login',
+  'st.im.setup.matrix.user': 'Matrix user',
+  'st.im.setup.matrix.password': 'Password',
+  'st.im.setup.matrix.passwordSubmit': 'Sign in & save token',
+  'st.im.setup.matrix.redirectUri': 'Callback URI',
+  'st.im.setup.matrix.idpId': 'Identity provider ID (optional)',
+  'st.im.setup.matrix.ssoBegin': 'Start SSO login',
+  'st.im.setup.matrix.callbackUri': 'Returned callback URL',
+  'st.im.setup.matrix.loginToken': 'Login token',
+  'st.im.setup.matrix.ssoComplete': 'Exchange login token & save',
+  'st.im.cap.matrixUnencrypted': 'Unencrypted rooms only (E2EE not supported; outbound plaintext to encrypted rooms is refused).',
+  'st.im.cap.voiceUnsupported': 'Outbound voice messages are not supported on this platform; ordinary audio files are sent as {rendering}.',
+  'st.im.cap.outboundMedia': 'Outbound media: {kinds}',
+  'st.im.internalChannel': 'Local conversation delivery',
+  'st.im.internalChannelHint': 'Replies remain visible in this Kiki conversation.',
+  'st.im.bindSteps': '1. Send a message to the bot · 2. Discover identity · 3. Choose session or persona · 4. Bind',
+  'st.im.preselectTarget': 'Pre-select target for next discovered message',
+  'st.im.pendingStepHint': 'Waiting for an incoming message to discover the sender identity before binding can be confirmed.',
+  'st.im.testBinding': 'Test binding',
+  'st.im.testingBinding': 'Testing…',
+  'st.im.testBinding.delivered': 'Test message delivered.',
+  'st.im.testBinding.failed.binding_disabled': 'Binding is disabled. Turn it on before sending a test.',
+  'st.im.testBinding.failed.channel_not_connected': 'Account is not listening. Start listening before sending a test.',
+  'st.im.testBinding.failed': 'Test message failed: {detail}',
+  'st.im.testBinding.unknown': 'Delivery outcome is unknown. Check the chat before sending again — do not auto-resend.',
+  'st.im.channels': 'Channels',
+  'st.im.addBinding': '+ Bind',
+  'st.im.sendMessageTitle': 'Active messaging (SendMessage)',
+  'st.im.toolBadge': 'Tool',
+  'st.im.personaDefault': 'Persona',
+  'st.im.sm.personaActive': 'Persona messaging enabled · {count} outputs',
+  'st.im.sm.personaOff': 'Active messaging is off for this conversation',
+  'st.im.sm.sessionActive': 'Enabled for this conversation · {count} outputs',
+  'st.im.sm.defaultOff': 'Active messaging is off. Enable it for this conversation.',
+  'st.im.sm.globalActive': 'Enabled by default · {count} outputs',
+  'st.im.sm.hostLocked': 'Disabled by host policy',
+  'st.im.sm.hardOff': 'Current policy does not allow this tool',
+  'st.im.sm.loading': 'Loading tool status…',
+  'st.im.sm.unresolved': 'Tool status is unavailable',
+  'st.im.group.im': 'Messaging channels',
+  'st.im.group.notify': 'Outbound notifications',
+  'st.im.dir.in': 'in',
+  'st.im.dir.out': 'out',
+  'st.im.dir.inOut': 'in · out',
+  'st.im.tag.bi': 'two-way',
+  'st.im.tag.in': 'input',
+  'st.im.tag.out': 'output',
+  'st.im.tag.off': 'off',
+  'st.im.pill.in': 'in',
+  'st.im.pill.out': 'out',
+  'st.im.noBindings': 'No messaging channels are bound to this conversation.',
+  'st.im.noNotify': 'No notification channels are bound to this conversation.',
+  'st.im.unbind': 'Unbind',
+  'st.im.internalAlwaysOn': 'Replies remain visible here',
+  'st.im.borrowing': 'Unbound channel access',
+  'st.im.settingsLink': 'Settings ↗',
+  'st.im.picker.title': 'Bind a channel to this conversation',
+  'st.im.picker.close': 'Close',
+  'st.im.picker.empty': 'No channels available to bind.',
+  'st.im.rebindButton': 'Transfer here…',
+  'st.im.pendingReanchor': 'Confirm ownership',
+  'st.im.occupiedBy': 'Bound to',
+  'st.im.unknownSession': 'Unknown conversation',
+  'st.im.rebind.title': 'Transfer this channel?',
+  'st.im.rebind.confirm': 'Confirm transfer',
+  'st.im.rebind.cancel': 'Cancel',
+  'st.im.rebind.description': 'New messages and replies will use this conversation. The previous conversation keeps its history.',
+  'st.im.rebind.variant': 'Channel',
+  'st.im.rebind.identity': 'Identity',
+  'st.im.rebind.currentOwner': 'Current conversation',
+  'st.im.rebind.targetOwner': 'Move to',
+  'st.im.allowBorrowing': 'Allow sending to unbound channels',
+  'st.im.allowBorrowingHint': 'SendMessage may explicitly select an available channel that is not bound to this conversation.',
+  'st.im.defaultSendMessage': 'Enable active messaging by default for ordinary conversations',
+  'st.im.channelDisabledHint': 'This channel is disabled by its policy or settings',
+  'st.im.notifyBound': 'Bound to this conversation',
+  'st.im.notifyCandidate': 'Available to bind',
+  'st.im.bindNotify': 'Bind here',
+  'st.im.removeNotify': 'Unbind',
+  'st.im.testBinding.partial': 'Part of the test message was delivered; some content remains incomplete.',
+  'st.notify.paused': 'Notifications are paused; no channel will send.',
+  'st.notify.pausedShort': 'Paused',
   'st.notify.enabled': 'Send notifications',
   'st.notify.enabledHint': 'Master switch for every channel below. On by default.',
   'st.notify.viewing': 'Skip the session you are viewing',
   'st.notify.viewingHint': 'Nothing is sent while the session is open in front of you.',
-  'st.notify.minWork': 'Skip short turns',
-  'st.notify.minWorkHint': 'Turns shorter than this send no completion notice. Default 60 seconds.',
+  'st.notify.minWork': 'Skip short work',
+  'st.notify.minWorkHint': 'Assigned work shorter than this sends no completion notice. Default 0 seconds, including short replies.',
   'st.notify.seconds': 'seconds',
   'st.notify.minWorkInvalid': 'Enter whole seconds from 0 to 86400.',
   'st.notify.quiet': 'Quiet hours',
@@ -7249,7 +8642,7 @@ export const en = {
   'st.notify.quietZone': 'Time zone',
   'st.notify.timeInvalid': 'Use 24-hour time, such as 22:00.',
   'st.notify.privacyLabel': 'What is sent',
-  'st.notify.privacy': 'Only what happened, such as “a turn finished”. Session titles, questions and file paths stay on this computer.',
+  'st.notify.privacy': 'Only what happened, such as “the assigned work finished”. Session titles, questions and file paths stay on this computer.',
   'st.notify.runtimeLabel': 'When they arrive',
   'st.notify.runtime.tray': 'Closing the window keeps Kiki in the tray, so notifications keep going out. Quitting Kiki stops them.',
   'st.notify.runtime.quit': 'Closing the window quits Kiki. Nothing is sent until you open it again.',
@@ -7278,7 +8671,7 @@ export const en = {
   'st.notify.connectionShared.other': 'Shared with {n} other channels. Changes here apply to all of them.',
   'st.notify.target': 'Target',
   'st.notify.scenes': 'Notify me when',
-  'st.notify.scene.work_complete': 'A turn finishes',
+  'st.notify.scene.work_complete': 'The conversation finishes',
   'st.notify.scene.question_pending': 'A question is waiting',
   'st.notify.check': 'Check credential',
   'st.notify.checking': 'Checking…',
@@ -7720,6 +9113,7 @@ export const en = {
   'st.web.revokeAllDone': 'Signed out every browser. Web access is still on.',
   'st.web.revoked': 'Signed out {name}.',
   'st.web.insecureLive': 'This connection is not encrypted. Anyone on the network can read what is sent.',
+  'st.web.openFailed': 'The browser did not open. Open this address yourself:',
   'st.web.addressPending': 'An address appears here once the entry is open.',
   'st.web.linkExpires': 'This link can be redeemed for {duration}.',
   'st.web.hostField': 'Listen on',
@@ -7760,19 +9154,21 @@ export const en = {
   'st.web.failed': 'That did not work. {reason}',
   // ---- away notifications, activity inbox ----
   'st.away.title': 'System notifications',
-  'st.away.hint': 'Shown when Kiki is in the background or hidden. Clicking one opens the session.',
-  'st.away.enabled': 'Notify me while Kiki is in the background',
-  'st.away.completed': 'A turn finished',
+  'st.away.hint': 'Controls session notifications and pending-input reminders from other spaces on this device. Click a notification to return.',
+  'st.away.enabled': 'Allow system notifications',
+  'st.away.completed': 'Notify when the conversation finishes',
+  'st.away.completedHint': 'On by default. Waits for the main agent, finite background tasks and result handling to settle. Resident services and future schedules do not block it.',
   'st.away.failed': 'A turn failed',
   'st.away.question': 'A question is waiting for an answer',
   'st.away.approval': 'An approval is waiting',
   'st.away.kindsLabel': 'Notify for',
-  'st.away.browserHint': 'This browser tab cannot show system notifications. The desktop app and the VS Code extension can.',
+  'st.away.browserHint': 'This browser cannot show system notifications. Use the desktop app or the VS Code extension.',
+  'st.away.permissionDenied': 'Your browser has blocked notifications. Allow notifications in the address bar’s site permissions, then return here.',
   'away.completed.title': 'Finished · {title}',
   'away.failed.title': 'Failed · {title}',
   'away.question.title': 'Question · {title}',
   'away.approval.title': 'Approval needed · {title}',
-  'away.completed.body': 'The turn finished. Open the session to see the result.',
+  'away.completed.body': 'Your assigned work has settled. Open the conversation to see the result.',
   'away.failed.body': 'The turn did not finish. Open the session to see what went wrong.',
   'away.question.body': 'Kiki is waiting for your answer.',
   'away.approval.body': 'An action is waiting for your approval.',
@@ -7894,16 +9290,18 @@ export const en = {
   'agentPanel.notes.loadFailed': 'Could not read working notes',
   'agentPanel.notes.notRead': 'Working notes have not been read yet',
   'agentPanel.notes.partial': 'Showing read version, latest notes not yet confirmed.',
+
+
   'agentPanel.notes.unavailable': 'Working notes cannot be read right now.',
   'agentPanel.notes.stale': 'The latest notes could not be read. Showing the last readable version.',
   'agentPanel.notes.unknown': 'Newer notes field: {field}',
   'agentPanel.notes.cleared': 'Working notes are empty · revision {rev}',
-  'agentPanel.hooks': 'Injected rules',
+  'agentPanel.hooks': 'Automatic rules',
   'agentPanel.hooks.summary': '{count} active',
-  'agentPanel.hooks.empty': 'No injected rules are active.',
-  'agentPanel.hooks.loading': 'Reading injected rules…',
-  'agentPanel.hooks.unavailable': 'This server cannot show injected rules yet.',
-  'agentPanel.hooks.loadFailed': 'Could not read injected rules',
+  'agentPanel.hooks.summaryFaulty': 'Check sources',
+  'agentPanel.hooks.loading': 'Reading automatic rules…',
+  'agentPanel.hooks.unavailable': 'This server cannot show automatic rules yet.',
+  'agentPanel.hooks.loadFailed': 'Could not read automatic rules',
   'agentPanel.hooks.inactive': 'inactive',
   'agentPanel.hooks.steps': '{count} steps counted',
   'agentPanel.hooks.nextDue': 'next at step {step}',
@@ -7923,6 +9321,12 @@ export const en = {
   'transcript.agents.progress': '{done}/{total} done',
   'transcript.agents.open': 'Open',
   'transcript.agents.openAria': 'Open {name}',
+  'subagent.otherGroup': 'Other subagents',
+  'subagent.otherGroupCount.one': '{count} subagent',
+  'subagent.otherGroupCount.other': '{count} subagents',
+  'subagent.otherGroupRunning': '{count} running',
+  'subagent.otherGroupFailed': '{count} failed',
+  'subagent.otherGroupAria': '{summary}. Expand or collapse',
   'transcript.agentEnd.completed': 'Completed',
   'transcript.agentEnd.failed': 'Failed',
   'transcript.agentEnd.cancelled': 'Stopped',
@@ -8084,6 +9488,8 @@ export const en = {
   'persona.importIdLabel': 'Import as ID',
   'persona.importedToast': 'Imported “{name}”.',
   'persona.importMemoryPending': 'Imported “{name}”; memories are still being written',
+  'persona.importMemoryFailed': 'Imported “{name}”, but memories could not be written',
+  'persona.importMemoryView': 'View memory',
   'persona.importChooseOther': 'Choose another',
   'persona.headerTitle': 'Persona: {name}',
   'persona.memoryGroup': 'Persona',
@@ -8174,7 +9580,7 @@ export const en = {
   'room.system.wakeConnectionFailed': 'Could not wake {name}: cannot connect to {provider}. Check the network and model service, then send another room message.',
   'room.system.wakeSessionUnavailable': 'Could not wake {name}: the member’s session is unavailable or archived. Open it to check, or remove and re-add the member.',
   'room.system.wakeWorkspaceUnavailable': 'Could not wake {name}: the workspace is unavailable. Check the room’s workspace path and access permissions, then send another room message.',
-  'room.namePlaceholder': 'For example: 0.31 release',
+  'room.namePlaceholder': 'For example: Product discussion',
   'room.membersHint': 'Choose 2–6 personas; the first one hosts by default.',
   'room.noPersonas': 'No personas yet. Create some on the Personas page first.',
   'room.allPersonasIn': 'Every persona is already in this room.',
@@ -8227,6 +9633,9 @@ export const en = {
   'room.fromThreadsCount': 'Pull {count} threads into a new room',
   'room.joinRoom': 'Add to room…',
   'room.joinRoomTitle': 'Add “{name}” to a room',
+  'room.joinRoomCountTitle': 'Add {count} threads to a room',
+  'room.chooseNewRoom': 'New room…',
+  'room.joinRoomLoadFailed': 'Could not load rooms. Retry or create a new room.',
   'room.joinRoomNone': 'No rooms yet. Pull threads into a new room first.',
   'room.joinRoomFull': 'Full',
   'room.joinRoomMember': 'Already in',
@@ -8251,9 +9660,10 @@ export const en = {
   // ---- message view ----
   'message.view': 'Messages',
   'message.process': 'Process',
+  'message.body': 'Message body',
   'message.internal': 'Internal',
   'message.replyDelivery': 'Replies to you',
-  'message.messageDelivery': 'Sent messages only',
+  'message.messageDelivery': 'Delivered as messages',
   'message.noReply': '{name} did not reply · View process',
   'message.failed': 'Message not sent · View process',
   'message.cancelled': 'Message cancelled · View process',
@@ -8276,10 +9686,21 @@ export const en = {
   'message.ranSoFar': 'Ran {count} commands so far',
   'message.viewSwitchAria': 'Timeline view',
   'message.deliveryLabel': 'Delivery',
-  'message.deliveryMessageHint': 'Only what it sends with SendMessage reaches you.',
+  'message.deliveryMessageHint': 'Its final reply each turn reaches you as a message.',
   'message.deliveryReplyHint': 'Its ordinary replies show up for you directly.',
   'message.deliveryNextTurn': 'Takes effect next turn',
   'message.deliverySwitchFailed': 'Delivery was not switched: {detail}',
+  'message.deliveryElsewhere': 'Sent to {channels} · not to this conversation',
+  'message.deliveryUnconfirmed': 'Delivery not confirmed · View process',
+  'message.internalUnsupported': 'Not received here: {kinds}',
+  'message.channelUnsupported': '{channel} did not receive {kinds}',
+  'message.channelFailed': '{channel}: not delivered',
+  'message.channelUnknown': '{channel}: delivery unknown',
+  'message.media.image': 'Image',
+  'message.media.file': 'File',
+  'message.media.audio': 'Audio',
+  'message.media.voice': 'Voice',
+  'message.media.video': 'Video',
   'st.section.shortcuts': 'Shortcuts',
   'st.purpose.shortcuts': 'Remap the app’s keyboard shortcuts for each platform. Keys that are part of how a control works are listed at the end.',
   'st.shortcuts.title': 'App shortcuts',
@@ -8381,11 +9802,43 @@ export const en = {
   'st.workspaces.noMatchTitle': 'No workspaces match',
   'st.workspaces.searchPlaceholder': 'Search by name or path…',
   'st.workspaces.more': 'More actions for {name}',
-  'st.models.filter.inUse': 'In use',
+  'st.workspaces.detail.back': 'All workspaces',
+  'st.workspaces.detail.open': 'Open {name} settings',
+  'st.workspaces.detail.renamed': 'Renamed to {name}.',
+  'st.workspaces.detail.pinHelp': 'A pinned workspace stays at the top of the list and in the space switcher.',
+  'st.workspaces.detail.plugins': 'Plugins',
+  'st.workspaces.detail.pluginsScope': 'What this workspace uses · {name}',
+  'st.workspaces.detail.pluginsScopePending': 'What this workspace uses',
+  'st.workspaces.detail.pluginsEmpty': 'No plugins installed yet. Add one from the catalog or a source.',
+  'st.workspaces.detail.browseTitle': 'Add a plugin to this workspace',
+  'st.workspaces.detail.browseBody': 'Pick one, then read what it adds and confirm before anything installs. Where it lands is your choice in the next step.',
+  'st.workspaces.detail.pluginsUnsupported': 'This server does not report per-workspace plugin usage.',
+  'st.workspaces.detail.pluginToggle': '{name} in this workspace',
+  'st.workspaces.detail.trust': 'Workspace trust',
+  'st.workspaces.detail.trustGrant': 'Trust {name}',
+  'st.workspaces.detail.trustRevoke': 'Stop trusting {name}',
+  // Named after what actually reads it (the project config file, project MCP
+  // servers, project hooks, and the executor a project profile may name), so
+  // the line never promises a boundary the trust record does not draw.
+  'st.workspaces.detail.trustOn': 'Its own config file, MCP servers and hooks are loaded for this workspace’s sessions, and its profiles may name an external executor.',
+  'st.workspaces.detail.trustOff': 'Its own config file, MCP servers and hooks are skipped, and a profile that names an external executor is refused.',
+  'st.workspaces.detail.trustUnsupported': 'This server does not report workspace trust.',
+  'st.workspaces.detail.trustGranted': 'This workspace is trusted.',
+  'st.workspaces.detail.trustRemoved': 'Trust removed from this workspace.',
+  'st.workspaces.detail.inherit': 'Same as the global default',
+  'st.workspaces.detail.memoryFor': 'Applies to sessions in {name}.',
+  'st.workspaces.detail.resources': 'Also scoped to this workspace',
+  'st.workspaces.detail.profiles': 'Agent profiles',
+  'st.workspaces.detail.mcp': 'MCP servers',
+  'st.workspaces.detail.skills': 'Skills',
+  'st.workspaces.detail.count': '{count} here',
+  'st.workspaces.detail.openResource': 'Open {name}',
+  'st.workspaces.detail.unreadable': 'Not readable right now',
+  'st.workspaces.detail.missingTitle': 'That workspace is gone',
+  'st.workspaces.detail.missingBody': 'It is no longer registered on this server, so there is nothing to configure. The list has the workspaces that are still here.',
   'st.models.filter.attention': 'Needs attention',
   'st.models.filter.reasoning': 'Reasoning',
   'st.models.filter.vision': 'Vision',
-  'st.models.group.inUse': 'In use',
   'st.models.inUseAs': 'Used for {roles}',
   'st.models.providerAttention': 'Connection not working',
   'st.models.providerUnconfigured': 'No key set',
@@ -8444,8 +9897,11 @@ export const en = {
   'subagent.call.details': 'Invocation Details',
   'subagent.call.noOutputYet': 'Executing, no output recorded yet.',
   'subagent.call.noOutput': 'No output was recorded.',
-  'subagent.call.loading': 'Loading the earlier invocation…',
-  'subagent.call.unavailable': 'The original invocation is not available in this transcript.',
+  'subagent.call.loading': 'Loading the invocation…',
+  'subagent.call.preparing': 'Locating the recorded invocation…',
+  'subagent.call.failed': 'Could not read this invocation. Try again.',
+
+  'subagent.call.unavailable': 'No original invocation was found in the recorded source.',
   'subagent.call.taskId': 'Task ID',
   'subagent.call.actualProfile': 'Actual Profile',
   'subagent.call.advisories': 'Binding Advisories',
@@ -8456,10 +9912,6 @@ export const en = {
   'subagent.call.targetAgent': 'Target Agent',
   'subagent.call.expandDetails': 'Expand invocation details',
   'subagent.call.collapseDetails': 'Collapse invocation details',
-  'subagent.call.expandPrompt': 'Show prompt ({count} chars)',
-  'subagent.call.collapsePrompt': 'Hide prompt',
-  'subagent.call.expandMessage': 'Show message ({count} chars)',
-  'subagent.call.collapseMessage': 'Hide message',
   'usage.governance.realtime': 'Live',
   'usage.governance.history': 'History',
   'usage.governance.stale': 'This view may be out of date · last update {time}',
@@ -8485,7 +9937,7 @@ export const en = {
   'usage.governance.unavailable': 'Live request state unavailable',
   'usage.governance.running': 'Running',
   'usage.governance.queued': 'Queued',
-  'usage.governance.details': 'Request details',
+  'usage.governance.details': 'Details',
   'usage.governance.limitsTitle': 'Concurrency limits',
   'usage.governance.byDimension': 'By dimension',
   'usage.governance.idleNow': 'No model requests are running or queued right now.',
@@ -8523,7 +9975,7 @@ export const en = {
   'usage.governance.subagents': 'Subagents',
   'usage.governance.independentAgents': 'Independent',
   'usage.governance.totalAgents': 'Total agents',
-  'usage.governance.activeAgents': 'In-flight agents',
+  'usage.governance.activeAgents': 'Active agents',
   'usage.governance.queuedAgents': 'Queued agents',
   'usage.governance.idleAgents': 'No agents are active right now.',
   'usage.governance.executor': 'Executor',
@@ -8544,13 +9996,25 @@ export const en = {
   'usage.governance.tagLiveAgent': '[Live agent]',
   'usage.governance.tagAgentExecution': '[Agent execution]',
   'usage.governance.tagModelRequest': '[Model request]',
-  'usage.governance.ancestorLimitTitle': 'Parent agent occupying slot',
+  'usage.governance.ancestorLimitTitle': 'Parent agent is occupying the execution slot',
   'usage.governance.ancestorLimitMessage': 'A parent agent is occupying the execution slot for this rule. Choose to restrict subagents only, separate main and subagent rules, or increase the limit.',
   'usage.quota.nav': 'Quotas',
   'usage.quota.title': 'Provider & Service Remaining Quotas',
   'usage.quota.subtitle': 'Realtime balances, credits, and reset schedules across OAuth accounts, API keys, and external services.',
   'usage.quota.refresh': 'Refresh quotas',
+  'usage.quota.refreshAll': 'Refresh all',
   'usage.quota.refreshing': 'Refreshing…',
+  'usage.quota.notQueried': 'Not queried yet',
+  'usage.quota.queryNow': 'Query',
+  'usage.quota.attentionTitle': 'Needs attention',
+  'usage.quota.ledgerTitle': 'Queryable quotas',
+  'usage.quota.value.remaining': 'Remaining {value}',
+  'usage.quota.value.balance': 'Balance {value}',
+  'usage.quota.value.used': 'Used {value}',
+  'usage.quota.action.localUsage': 'View local usage',
+  'usage.quota.action.disable': 'Turn off quota check',
+  'usage.quota.action.manageConnections': 'Manage connections',
+  'usage.quota.off.summary': '{n} connections with quota checks turned off',
   'usage.quota.source': 'Source: {source}',
   'usage.quota.balance': 'Balance',
   'usage.quota.credits': 'Credits',
@@ -8571,7 +10035,7 @@ export const en = {
   'usage.quota.status.network_error': 'Network error',
   'usage.quota.status.error': 'Error',
   'usage.governance.unknownExecutor': 'Unknown executor',
-  'usage.governance.unknownModelByExecutor': 'Unknown / executor default',
+  'usage.governance.unknownModelByExecutor': 'Unknown / determined by executor',
   'usage.governance.allRules': 'All rules',
   'usage.quota.status.partial': 'Partial',
   'usage.quota.status.unknown': 'Unknown',
@@ -8581,6 +10045,16 @@ export const en = {
   'usage.quota.kind.provider': 'Provider',
   'usage.quota.kind.external_service': 'External service',
   'usage.quota.kind.executor': 'Executor',
+  'usage.quota.engines.title': 'External engines',
+  'usage.quota.engines.manage': 'Manage engines',
+  'usage.quota.engines.note': 'Connection status is shown here. Check each engine for its remaining allowance.',
+  'usage.quota.engines.hidden': '{n} engines not enabled are hidden.',
+  'usage.quota.engines.configError': 'Engine preferences could not be loaded. Showing registered engines until you retry.',
+  'usage.quota.unsupported.summary': '{n} connections without quota queries',
+  'usage.quota.unsupported.note': 'These connections do not provide a supported quota query. Their allowance is unknown.',
+  'usage.quota.off.title': 'Quota checks turned off',
+  'usage.quota.off.blocked': 'The quota check is still off. Open Settings to review this connection.',
+  'usage.quota.signedOut': 'This account is signed out. Sign in before refreshing its allowance.',
   'usage.export.nav': 'External sync',
   'usage.export.sourceLabel': 'Reporting from',
   'usage.export.sourceValue': '{server} · home {home}',
@@ -8588,11 +10062,9 @@ export const en = {
   'usage.export.add': 'Add destination',
   'usage.export.loading': 'Loading external sync…',
   'usage.export.loadFailed': 'Could not load external sync',
-  'usage.export.unavailable.title': 'External sync is off on this server',
-  'usage.export.unavailable.body': 'This server reports no destinations and sends nothing. Turn on the {flag} experimental flag on the server, then reload.',
   'usage.export.noTransport': 'This connection cannot manage external sync. Connect to the Kiki server over HTTP or IPC.',
   'usage.export.readonly.title': 'Another instance is responsible here',
-  'usage.export.readonly.body': 'Another Kiki instance is the export writer for this home, so this list is read-only. Manage it where the data lives.',
+  'usage.export.readonly.body': 'Another Kiki instance manages external sync for this data home. This list is read-only; manage destinations in that instance.',
   'usage.export.empty.title': 'No destinations yet',
   'usage.export.empty.body': 'Kiki can send model, token, quality and cost buckets — never conversation content, titles or paths — to vibecafe.ai, to a Kiki usage webhook, or to a script you write.',
   'usage.export.empty.add': 'Add destination',
@@ -8786,6 +10258,7 @@ export const en = {
   'usage.export.form.privateHint': 'Approves exactly this host, address, port and protocol — not all private networks. Loopback, link-local and cloud metadata addresses stay refused.',
   'usage.export.form.schedule': 'How often',
   'usage.export.form.historyFrom': 'History starts at',
+  'usage.export.form.historyBounded': 'Up to a specific date',
   'usage.export.form.historyHint': 'Any moment is rounded down to the UTC half-hour boundary containing it. Buckets recorded later are added as they happen.',
   'usage.export.form.historyInvalid': 'Enter a date and time.',
   'usage.export.form.excluded': 'Workspaces to exclude',
@@ -8893,8 +10366,7 @@ export const en = {
   'usage.export.handoff.sameAccount': 'The handoff compares the destination with the collector’s own recorded configuration. If they disagree, Kiki asks you to check the settings instead of claiming the same account.',
   'usage.export.handoff.mismatch': 'The collector’s recorded target does not match this destination. Check the collector’s configuration; Kiki will not report the same account as proven.',
   'usage.export.handoff.technicalShow': 'How the collector and Kiki are matched',
-  'composer.ssh.sessionHosts': 'Session SSH',
-  'composer.ssh.draftHosts': 'SSH to join',
+  'composer.ssh.hosts': 'SSH',
   'composer.ssh.draftHint': 'Selected hosts join the session before its first message, then stay until removed. Adding a host does not connect it.',
   'composer.ssh.sessionHint': 'These hosts belong to this session and stay until removed. Adding a host does not connect it.',
   'st.promptIdentity.common': 'Common content',
@@ -8997,6 +10469,10 @@ export const en = {
   'agentPanel.prompt.diskChanged': 'Saved settings differ from this binding. They apply at the next binding or context rebuild.',
   'agentPanel.prompt.lease.preserve': 'The caller keeps the role’s model-specific prompts; caller entries apply afterwards.',
   'agentPanel.prompt.lease.replace': 'The caller replaces the role’s model-specific prompts.',
+  'agentPanel.prompt.recipeSources': 'Recipes in this binding',
+  'agentPanel.prompt.recipeSurface.model': 'Model',
+  'agentPanel.prompt.recipeSurface.profile': 'Profile',
+  'agentPanel.prompt.recipeCompositeRevision': 'Combined revision {revision} covers all of these; it belongs to no single package.',
   'agentPanel.prompt.anchorUnknown': 'This request did not record whether the anchor was applied.',
   'agentPanel.prompt.anchorSteps': 'First {count} request steps',
   'agentPanel.prompt.files.title': 'Prompt files',
@@ -9050,9 +10526,9 @@ export const en = {
   'persona.tabSettings': 'Persona settings',
   'persona.workspaceAuto': 'Auto · {name}’s workspace',
   'persona.homeWorkspaceHint': 'New conversations start in this workspace by default. When omitted, uses a dedicated directory automatically.',
-  'persona.deliveryHint': 'Direct reply speaks inline; message mode delivers only via SendMessage tool.',
-  'persona.deliveryReply': 'Direct reply (default)',
-  'persona.deliveryMessage': 'Message mode',
+  'persona.deliveryHint': 'Direct reply answers inline; message mode brings each turn’s final reply to you as a message.',
+  'persona.deliveryReply': 'Direct reply',
+  'persona.deliveryMessage': 'Message mode (default)',
   'persona.noCronTasks': 'No scheduled tasks assigned to this persona yet',
   'persona.menu.conversations': 'All conversations',
   'persona.menu.settings': 'Persona settings',
@@ -9109,6 +10585,14 @@ export const en = {
   'transcript.modelSwitch.preparing.fresh': 'Preparing the new context…',
   'transcript.modelSwitch.preparing.direct': 'Switching to {to}…',
   'transcript.modelSwitch.done': 'Switched to {to}',
+  'transcript.modelSwitch.pending.binding': 'Will apply model settings when idle · {to}',
+  'transcript.modelSwitch.preparing.binding': 'Applying model settings · {to}…',
+  'transcript.modelSwitch.done.resume': 'Resumed · continuing with {to}',
+  'transcript.modelSwitch.done.effort': 'Thinking effort updated · {to}',
+  'transcript.modelSwitch.done.binding': 'Model settings applied · {to}',
+  'transcript.modelSwitch.done.sameModelCompact': 'Context rebuilt · continuing with {to}',
+  'transcript.modelSwitch.failed.binding': 'Couldn’t apply model settings · {to}',
+  'transcript.modelSwitch.cancelled.binding': 'Model settings update cancelled · {to}',
   'transcript.modelSwitch.done.direct': 'Kept the current context',
   'transcript.modelSwitch.done.compact': '{from} summarized the conversation',
   'transcript.modelSwitch.done.compactNone': 'Nothing to summarize; handed over directly',
@@ -9183,8 +10667,17 @@ export const en = {
   'modelSwitch.recoverFailed': 'Recovery failed: {detail}',
   'modelSwitch.prefsSaveFailed': 'The switch went through, but the preference wasn’t saved: {detail}',
   'modelSwitch.pendingChipPrefix': 'Switching to ',
-  'modelSwitch.pendingChipTitle': 'Queued model switch — runs when the agent goes idle',
-  'modelSwitch.pendingLine': 'Switching to {model} when idle · {mode}',
+  'modelSwitch.pendingChipPrefix.effort': 'Reasoning change → ',
+  'modelSwitch.pendingChipPrefix.fresh': 'New context · ',
+  'modelSwitch.pendingChipPrefix.compact': 'Compress context · ',
+  'modelSwitch.pendingChipPrefix.binding': 'Model settings · ',
+  'modelSwitch.pendingChipTitle': 'Queued — Send now applies it at a safe step boundary',
+  'modelSwitch.pendingLine': 'Switching to {model} · {mode}',
+  'modelSwitch.pendingLine.effort': 'Reasoning change → {effort} · {mode}',
+  'modelSwitch.pendingLine.fresh': 'New context pending · continuing with {model}',
+  'modelSwitch.pendingLine.compact': 'Context compression pending · continuing with {model}',
+  'modelSwitch.pendingLine.binding': 'Model settings pending · {model}',
+  'modelSwitch.preparingEffort': 'Applying reasoning level → {effort}',
   'modelSwitch.listFailed': 'Queued model switches could not be loaded',
   'modelSwitch.menuFreshContext': 'Continue with a new context…',
 
@@ -9192,7 +10685,12 @@ export const en = {
   'st.section.computerControl': 'Computer control',
   'st.purpose.computerControl': 'Observe the desktop and send input on this server through the open-source executor.',
   'st.computer.title': 'Computer control',
+  'st.computer.enabledLabel': 'Allow computer control',
+  'st.computer.enabledHint': 'Allows the main agent to use desktop observation and input tools (screen capture, mouse, keyboard).',
+  'st.computer.toolPolicyDenied': 'Computer control tools are denied by tool policy.',
+  'st.computer.toolPolicyPartial': 'Some computer control tools are denied by tool policy.',
   'st.computer.machineLabel': 'Kiki server',
+  'st.computer.machineTitle': 'This server',
   'st.computer.machineUnknown': 'The server reported no platform',
   'st.computer.machineHint': 'These facts come from the connected Kiki server itself; Check status re-reads the executor and its connections.',
   'st.computer.machineHintSsh': 'The connected host is “{label}”; observing and driving a desktop happens in that host’s own graphical session.',
@@ -9270,48 +10768,187 @@ export const en = {
   'st.computer.stop.disables': 'This is an editable global connection, so stopping also disables its configuration.',
   'st.computer.stop.readOnly': 'A read-only configuration is not rewritten; this stop applies to this service process only.',
   'st.computer.stop.confirmTitle': 'Stop control for “{name}”?',
-  'st.computer.stop.confirmBody': 'Running cua processes will be ended. This stop covers only the processes this service started; it does not mean nobody controls the desktop.',
+  'st.computer.stop.confirmBody': 'Running computer-control processes will be ended. This stop covers only the processes this service started; it does not mean nobody controls the desktop.',
   'st.computer.create': 'Create connection',
+  'st.computer.activeConnectionLabel': 'Active connection',
+  'st.computer.activeConnectionDefault': 'CUA default (unset)',
+  'st.computer.activeConnectionDefaultHint': 'Admits configured CUA connections (such as kiki-computer) and never spawns Windows-MCP.',
+  'st.computer.activeConnectionHint': 'Unset keeps the default CUA path; selecting a connection admits only that server without auto-installing or migrating.',
+  'st.computer.kind.cua': 'CUA',
+  'st.computer.kind.windowsMcp': 'Windows-MCP 0.8.8',
+  'st.computer.windowsMcp.foregroundHint': 'Runs on the active interactive desktop; calls (including screenshots and display checks) use real mouse/keyboard hooks and hold a short input lease rather than CUA background delivery.',
+  'st.computer.windowsMcp.notServeReady': 'Launch arguments or environment do not match the required stdio contract; admission is held.',
+  'st.computer.windowsMcp.registerSummary': 'Register an installed Windows-MCP 0.8.8 environment',
+  'st.computer.windowsMcp.registerHint': 'Records an existing Python 3.14 interpreter and config file on this server without installing packages, starting a process, or switching the active connection.',
+  'st.computer.windowsMcp.pythonLabel': 'Python interpreter path',
+  'st.computer.windowsMcp.pythonPlaceholder': 'e.g. C:\\...\\venv\\Scripts\\python.exe',
+  'st.computer.windowsMcp.configLabel': 'Config file path',
+  'st.computer.windowsMcp.configPlaceholder': 'e.g. C:\\...\\windows-mcp\\config.toml',
+  'st.computer.windowsMcp.registerButton': 'Register environment',
+  'st.computer.windowsMcp.registering': 'Registering…',
+  'st.computer.windowsMcp.registered': 'Registered as {name}. Select it under Active connection above when ready.',
+  'st.computer.windowsMcp.reused': 'Reused existing {name} configuration.',
 
   // ---- Browser control settings ----
-  'st.section.browserControl': 'Browser control',
-  'st.purpose.browserControl': 'Manage browser connections on this server: independent profiles Kiki starts, or an existing/remote browser.',
-  'st.browser.setup.title': 'Prepare browser components',
-  'st.browser.setup.flagOff': 'Native browser execution is off on this service. Enable it before connecting.',
-  'st.browser.setup.host': 'Components run on the connected Kiki service machine, not necessarily this window’s computer.',
-  'st.browser.setup.hostSsh': 'Components run on the Kiki service at {label}.',
-  'st.browser.setup.detecting': 'Checking browser components…',
-  'st.browser.setup.driver': 'Managed driver',
-  'st.browser.setup.chrome': 'Independent Chrome',
-  'st.browser.setup.ready': 'Ready',
-  'st.browser.setup.missing': 'Not prepared',
-  'st.browser.setup.check': 'Recheck',
-  'st.browser.setup.install': 'Install components',
-  'st.browser.setup.retry': 'Retry install',
-  'st.browser.setup.installing': 'Installing…',
-  'st.browser.setup.driverDownload': 'Downloading verified driver',
-  'st.browser.setup.chromeMetadata': 'Looking up Chrome for Testing',
-  'st.browser.setup.chromeDownload': 'Downloading Chrome',
-  'st.browser.setup.extract': 'Extracting Chrome',
-  'st.browser.setup.verify': 'Verifying components',
-  'st.browser.setup.cancelled': 'Installation cancelled. Completed components are kept; retry to install the rest.',
-  'st.browser.setup.next': 'Add a connection below, save it, then check and connect.',
-  'st.browser.setup.scope': 'Installs only the selected components under Kiki home. An independent browser has its own login state; CDP uses an existing browser.',
-  'st.browser.setup.unsupported': 'Automatic setup currently supports Windows x64. Other hosts can use a compatible fixed driver and an existing browser; no system packages will be installed.',
-  'st.browser.setup.details': 'Installation details',
-  'st.browser.setup.integrity': 'The fixed Kiki driver is SHA-256 verified. Chrome comes from Google’s Chrome for Testing Stable metadata over HTTPS; Google supplies no SHA-256 here. Local hashes detect later file changes.',
-  'st.browser.setup.mode': 'Prepare for',
-  'st.browser.setup.modeProfile': 'Independent profile',
-  'st.browser.setup.modeCdp': 'CDP / existing Chrome',
-  'st.browser.setup.modeCdpHint': 'Only the driver is needed. CDP requires an already running browser with a CDP endpoint; a custom executable is set in Advanced.',
+  'st.section.browserControl': 'Browser & computer',
+  'st.purpose.browserControl': 'Set up and manage the browsers and desktop environment Kiki drives for agent tasks.',
+  'st.browser.title': 'Browser control',
+  'st.browser.enabledLabel': 'Allow browser',
+  'st.browser.enabledHint': 'Allows the main agent to use browser control tools (navigation, clicks, inputs, screenshots).',
+  'st.browser.toolPolicyDenied': 'Browser control tools are denied by tool policy.',
+  'st.browser.toolPolicyPartial': 'Some browser control tools are denied by tool policy.',
+  'st.browser.sessionPolicyPending': 'This conversation still uses an older tool selection. Apply the current profile’s tool settings to make newly added tools available.',
+  'st.browser.sessionPolicyRestricted': 'This conversation’s tool settings restrict browser control. Enabling browser control does not override those restrictions.',
+  'st.browser.sessionPolicyUnavailable': 'The current conversation’s effective tool settings could not be checked. Return to an open conversation and try again.',
+  'st.browser.refreshToolPolicy': 'Apply current tool settings',
+  'st.browser.refreshToolPolicyBody': 'Apply only the current profile’s tool settings to the conversation below. Its prompt, model and history stay unchanged; denied tools remain denied.',
+  'st.browser.allowedCount': '{count} allowed',
+  'st.browser.source.allowedOf': '{allowed} of {total} allowed',
+  'st.browser.found.title': 'Found here, not saved yet. Tick one to save it and let the Agent use it.',
+  'st.browser.found.allow': 'Save and allow {name}',
+  'st.browser.found.notSaved': 'Not saved',
+  'st.browser.row.allow': 'Let the Agent use {name}',
+  'st.browser.row.makeDefault': 'Make {name} the default',
+  'st.browser.row.sourceOff': '{source} (source off)',
+  'st.browser.defaultNotAllowed': 'The default, {name}, isn’t allowed, so the Agent can’t use it right now.',
+  'st.browser.sourceName.kimi-webbridge': 'Kimi Browser Extension',
+  'st.browser.sourceName.independent-browser': 'Independent browser',
+  'st.browser.sourceName.codex-browser': 'Codex browser extension',
+  'st.browser.sourceName.ego-lite': 'Ego Lite',
+  'st.browser.allowedTotal': '{count} browsers currently allowed',
+  'st.browser.allowCheckbox': 'Allow agent use',
+  'st.browser.source.enable': 'Enable {name}',
+  'st.browser.source.disabled': 'Off',
+  'st.browser.source.disabledHint': 'Source off; checked connections are kept.',
+  'st.browser.status.available': 'Available',
+  'st.browser.status.allowed': 'Allowed',
+  'st.browser.status.ready': 'Ready',
+  'st.browser.status.authUnknown': 'Auth pending',
+  'st.browser.status.denied': 'Denied by policy',
+  'st.browser.status.partial': 'Partially restricted',
+  'st.browser.status.disconnected': 'Disconnected',
+  'st.browser.setup.title': 'Browser sources',
+  'st.browser.setup.host': 'What Kiki installs runs on the connected Kiki service machine, not necessarily this window’s computer.',
+  'st.browser.setup.hostSsh': 'What Kiki installs runs on the Kiki service at {label}.',
+  'st.browser.setup.detecting': 'Checking which browsers are ready…',
+  'st.browser.route.none': 'This server reported no browser routes.',
+  'st.browser.route.blurb.kimi-webbridge': 'Drive the browser you already use, with your own sign-ins. Kiki installs a plugin and a local bridge; you add the extension to your browser once.',
+  'st.browser.route.blurb.independent-browser': 'Kiki starts and keeps its own browser, with its own sign-ins that never touch your everyday browser.',
+  'st.browser.route.blurb.codex-browser': 'Use with the Codex / ChatGPT desktop app and browser extension protocol. Prepare components, select a connection and save.',
+  'st.browser.route.blurb.ego-lite': 'Download Ego Lite yourself, finish its own setup window, then check it here. Kiki does not install it and does not import Chrome data.',
+  'st.browser.route.preparing': 'Preparing…',
+  'st.browser.route.turnOn': 'Turn on browser control',
+  'st.browser.route.needsAction': 'Needs setup',
+  'st.browser.route.ready': 'Ready to connect',
+  'st.browser.route.connected': 'Connected',
+  'st.browser.route.unsupported': 'Unsupported',
+  'st.browser.route.failed': 'Setup failed',
+  'st.browser.route.forcedOff': 'Disabled by policy',
+  'st.browser.route.blocked': 'Blocked',
+  'st.browser.route.external': 'Set up in another app',
+  'st.browser.route.prepare': 'Set up',
+  'st.browser.route.connect': 'Connect',
+  'st.browser.route.saveConnection': 'Save connection',
+  'st.browser.route.cancelSelection': 'Revert selection',
+  'st.browser.route.connecting': 'Connecting…',
+  'st.browser.route.open': 'Open browser',
+  'st.browser.route.opening': 'Opening…',
+  'st.browser.route.advanced': 'Advanced options',
+  'st.browser.route.update': 'Check and update',
+  'st.browser.route.updating': 'Updating…',
+  'st.browser.route.shortcut': 'Create desktop shortcut',
+  'st.browser.route.creatingShortcut': 'Creating shortcut…',
+  'st.browser.route.shortcutHostLocal': 'Creates a shortcut on your local desktop.',
+  'st.browser.route.shortcutHostRemote': 'Creates a shortcut on the remote host desktop ({host}).',
+  'st.browser.route.cancel': 'Cancel setup',
+  'st.browser.route.addExtension': 'Add the extension to {store}',
+  'st.browser.route.instructions': 'Official instructions',
+  'st.browser.route.downloadEgo': 'Download Ego Lite',
+  'st.browser.route.checkEgo': 'Check Ego Lite',
+  'st.browser.route.otherApps': 'Driven by another app',
+  'st.browser.route.hostLine': 'Everything here runs on:',
+  'st.browser.route.diagnostics': 'What this server checked',
+
+
+  'st.browser.stepState.ready': 'Ready',
+  'st.browser.stepState.missing': 'Not installed',
+  'st.browser.stepState.running': 'Working',
+  'st.browser.stepState.user_action': 'Needs you',
+  'st.browser.stepState.failed': 'Failed',
+  'st.browser.stepState.warning': 'Warning',
+  'st.browser.route.installing': 'Setting up: {step}',
+  'st.browser.route.blocking': 'Still needs {step}.',
+  'st.browser.route.warning': 'Worth checking before relying on this: {step}.',
+  'st.browser.route.alreadyInstalled': 'Everything Kiki can install is already in place.',
+  'st.browser.route.connectedAt': 'Connected, verified {at}',
+  'st.browser.route.connectedNow': 'just now',
+  'st.browser.route.checkedAt': 'Last checked {at}',
+  'st.browser.route.done.prepare': 'Set up finished. Check what it reports, then connect.',
+  'st.browser.route.done.connect': 'Connected.',
+  'st.browser.route.done.savedApprovalUnproven': 'Connection saved. Extension protocol will perform required authorization on invocation.',
+  'st.browser.route.done.open': 'Browser opened.',
+  'st.browser.route.done.update': 'Updated successfully.',
+  'st.browser.route.done.updateDisk': 'Files updated on disk.',
+  'st.browser.route.done.updateRunningUnchanged': 'Files updated on disk. The running browser or daemon remains on its current version.',
+  'st.browser.route.done.shortcut': 'Desktop shortcut created.',
+  'st.browser.route.done.cancel': 'Setup cancelled. Anything already installed is kept.',
+  'st.browser.route.openFailed': 'Failed to open browser.',
+  'st.browser.route.confirmTitle': 'Set up {name}?',
+  'st.browser.route.confirmBody': 'Kiki installs and verifies what this route needs, enables its plugin, and switches browser control on for this server.',
+  'st.browser.route.consequenceHost': 'Installed on {host}',
+  'st.browser.route.consequencePlugin': 'Enables the plugin {name}',
+  'st.browser.route.consequenceFeature': 'Turns browser control on for this server',
+  'st.browser.route.consequenceConnection': 'Creates or reuses the connection {name}',
+  'st.browser.store.chrome': 'Chrome',
+  'st.browser.store.edge': 'Edge',
+  'st.browser.store.docs': 'their documentation',
+  'st.browser.step.daemonBinary': 'the local bridge program',
+  'st.browser.step.daemon': 'the local bridge running',
+  'st.browser.step.skill': 'the Kimi browser plugin enabled',
+  'st.browser.step.plugin': 'the Kimi browser plugin enabled',
+  'st.browser.step.extension': 'the browser extension connected',
+  'st.browser.step.detect': 'detection finished',
+  'st.browser.step.compatibility': 'the bridge and the plugin reporting the same version',
+  'st.browser.step.feature': 'browser control',
+  'st.browser.step.desktopApp': 'the Codex / ChatGPT desktop app',
+  'st.browser.step.driver': 'the browser driver',
+  'st.browser.step.chrome': 'the independent browser',
+  'st.browser.step.install': 'the components',
+  'st.browser.reason.featureDisabled': 'Browser control is off for this server; the button below turns it on.',
+  'st.browser.reason.forcedOff': 'Something outside this page keeps {step} off, so no action here can change it.',
+  'st.browser.reason.forcedOffCause': 'See what holds it off',
+  'st.browser.reason.versionMismatch': 'The installed bridge reports a different version than the plugin expects.',
+  'st.browser.reason.preparingPlugin': 'Enabling the plugin.',
+  'st.browser.reason.externalApp': 'Complete first-time approval in the desktop app or browser extension.',
+  'st.browser.reason.connectionConflict': 'A connection with that name already exists and points somewhere else. Choose a different connection in Advanced.',
+  'st.browser.reason.connectionDisabled': 'This browser connection is disabled.',
+  'st.browser.reason.extensionNotConnected': 'Add and enable the extension in your browser, then connect.',
+  'st.browser.reason.artifactMissing': 'Required bridge component is not installed. Click Prepare to download and install.',
+  'st.browser.reason.artifactMismatch': 'Installed bridge component version does not match. Click Prepare to update.',
+  'st.browser.reason.chooseConnection': 'Select a discovered extension connection.',
+  'st.browser.reason.approvalUnproven': 'Connection saved; complete first-time approval in the desktop app or extension.',
+  'st.browser.reason.pipeDiscoveryFailed': 'Extension pipe discovery failed. No pipe was opened.',
+  'st.browser.reason.egoInstalled': 'Ego Lite is installed. Finish its own setup window, then check it here.',
+  'st.browser.reason.egoOnboarding': 'Finish Ego Lite’s own setup window, then check again.',
+  'st.browser.reason.egoChooseCli': 'More than one Ego Lite program was found. Choose one here, then check.',
+  'st.browser.reason.egoMissing': 'Download Ego Lite yourself, finish its own setup window, then check it here. Kiki does not install it and does not import Chrome data.',
+  'st.browser.reason.egoReady': 'Ego Lite is ready. Allow this connection, then select it for the agent.',
+  'st.browser.reason.egoAdmitted': 'This Ego Lite connection is open. Select it for the agent to use the page.',
+  'st.browser.reason.egoFailed': 'Ego Lite did not become ready.',
+  'st.browser.route.egoCliPlaceholder': 'Choose the installed Ego Lite program',
+  'st.browser.candidates.label': 'Available extension connection',
+  'st.browser.candidates.placeholder': 'Select a connection...',
+  'st.browser.candidates.empty': 'No running extension connections found. Start the desktop app and enable its extension.',
   'st.browser.defaultTitle': 'Default browser for new sessions',
   'st.browser.defaultLabel': 'Default connection',
+  'st.browser.defaultActive': 'Default',
+  'st.browser.setDefaultAction': 'Set as default',
   'st.browser.defaultHint': 'Applies to sessions created afterwards. Disabling a connection never swaps in another one.',
   'st.browser.defaultEmpty': 'No browser connection yet — add one first, then pick a default.',
   'st.browser.defaultNone': 'Choose each time',
   'st.browser.defaultNoneHint': 'No default is stored; a call has to name the connection id.',
   'st.browser.connectionsTitle': 'Browser connections',
-  'st.browser.intro': 'Each connection is one controllable browser location. The driver runs on this Kiki server; a CDP connection drives whatever machine its address names. Creating, checking and connecting never copy your everyday browser sign-in.',
+  'st.browser.intro': 'Drivers run on the Kiki server; a CDP connection drives the machine its address names. Your everyday sign-ins are never copied.',
   'st.browser.add': 'Add browser',
   'st.browser.loading': 'Reading connections…',
   'st.browser.emptyTitle': 'No browser connection yet',
@@ -9331,6 +10968,11 @@ export const en = {
   'st.browser.type.cdpLong': 'Existing or remote browser (CDP address)',
   'st.browser.type.cdpHint': 'Attach to a browser that already exposes CDP; start nothing new.',
   'st.browser.type.codex-extension': 'Codex extension',
+  'st.browser.type.ego-lite': 'Ego Lite',
+  'st.browser.type.kimi-webbridge': 'Kimi WebBridge',
+  'st.browser.type.webbridgeHint': 'Reaches your installed browser extension through the local HTTP bridge.',
+  'st.browser.type.egoLiteLong': 'Ego Lite',
+  'st.browser.type.egoLiteHint': 'Uses the Ego Lite app you install yourself. Kiki does not import Chrome data.',
   'st.browser.type.codexExtensionLong': 'Official browser extension (Codex)',
   'st.browser.type.codexExtensionHint': 'Connect via official browser extension with session-level approval.',
   'st.browser.runtimeRoot': 'Runtime root',
@@ -9358,8 +11000,19 @@ export const en = {
   'st.browser.fieldDriverPathHint': 'The managed agent-browser native executable, an absolute path on the server. Kiki requires the {version} {markers} build: it prevents automatic replay after a lost response and the Windows MCP output hang, so any other build is refused.',
   'st.browser.advanced': 'Advanced',
   'st.browser.fieldEndpoint': 'CDP endpoint',
+  'st.browser.fieldCliPath': 'CLI path',
+  'st.browser.fieldCliPathHint': 'Absolute path to ego-browser.exe. Leave this blank to use the installed copy Kiki found.',
+  'st.browser.fieldProfileId': 'Profile id',
+  'st.browser.fieldProfileIdHint': 'Optional Ego Lite profile id.',
+  'st.browser.fieldServerName': 'Service name',
+  'st.browser.fieldServerNameHint': 'Optional Ego Lite service name.',
+  'st.browser.checkEgo': 'Check Ego Lite',
+  'st.browser.checkHintEgo': 'Runs Ego Lite’s own check. It does not open a site.',
+  'st.browser.connectEgo': 'Connect Ego Lite',
+  'st.browser.deleteConsequenceEgo': 'Removes this connection from Kiki. Ego Lite stays installed.',
   'st.browser.endpointSource': 'Stored in the browser control configuration on the server',
   'st.browser.fieldEndpointHint': 'An http, https, ws or wss address that points at the browser really serving CDP — not a provider’s REST API URL.',
+  'st.browser.bridgeHint': 'Kimi’s local HTTP bridge carries these calls to your installed browser extension — there is no CDP or DevTools address to enter.',
   'st.browser.endpointHostLine': 'Target host {host}',
   'st.browser.driverLine': 'driver {version}',
   'st.browser.checkedAt': 'checked {at}',
@@ -9368,9 +11021,12 @@ export const en = {
   'st.browser.checkCdp': 'Check connection',
   'st.browser.checkHintProfile': 'Checking starts the managed driver and reads its session and tab state; it does not open a browser page.',
   'st.browser.checkHintCdp': 'Checks the managed driver. After attachment it also reads targets; checking alone does not attach to the CDP endpoint.',
+  'st.browser.checkWebbridge': 'Check bridge',
+  'st.browser.checkHintWebbridge': 'Asks the local bridge whether it is running and the extension is connected. It starts nothing and opens no page.',
   'st.browser.connecting': 'Connecting…',
   'st.browser.connectProfile': 'Start browser',
   'st.browser.connectCdp': 'Attach browser',
+  'st.browser.connectWebbridge': 'Connect bridge',
   'st.browser.disconnecting': 'Disconnecting…',
   'st.browser.disconnect': 'Disconnect',
   'st.browser.callerLine': 'Session {session} · agent {agent} is running {tool}.',
@@ -9399,10 +11055,15 @@ export const en = {
   'st.browser.catalog.title': 'Tool catalogue',
   'st.browser.catalog.readHint': 'Reads the tool list for this connection from its managed backend. It does not open a browser or a page.',
   'st.browser.catalog.readHintIdle': 'Nothing is connected, so this starts the managed backend and does not connect it. It does not open a browser or a page.',
+  'st.browser.catalog.readHintWebbridge': 'Lists the tools the bridge exposes to sessions. It starts nothing and opens no page.',
   'st.browser.catalog.read': 'Read the catalogue',
   'st.browser.catalog.loading': 'Asking the backend for its tools…',
   'st.browser.catalog.backendCount': 'tools reported by the backend',
   'st.browser.catalog.isolation': 'context isolation',
+  'st.browser.catalog.isolation.window': 'opaque window context',
+  'st.browser.catalog.isolation.officialTabs': 'extension tab ids',
+  'st.browser.catalog.isolation.mainFrame': 'main frame only',
+  'st.browser.catalog.isolation.commandSession': 'extension command session',
   'st.browser.catalog.empty': 'This backend reported no retrievable tools.',
   'st.browser.catalog.searchLabel': 'Filter the tool catalogue',
   'st.browser.catalog.searchPlaceholder': 'Filter by name, description or group',
@@ -9423,11 +11084,13 @@ export const en = {
   'st.browser.detail.ownership': 'Ownership',
   'st.browser.ownership.managedProfile': 'Started and managed by Kiki (independent profile)',
   'st.browser.ownership.externalBrowser': 'Borrowed existing browser (CDP)',
+  'st.browser.ownership.webbridge': 'Your own browser, driven through the local bridge',
   'st.browser.ownership.unknown': 'Not reported by the server',
   'st.browser.detail.runtimeSession': 'Runtime session',
   'st.browser.detail.resolvedProfile': 'Resolved profile path',
   'st.browser.detail.generation': 'Generation',
   'st.browser.detail.driverVersion': 'Driver version',
+  'st.browser.detail.bridgeVersion': 'Bridge version',
   'st.browser.detail.driverRequirement': 'managed build required: {version} {markers}',
   'st.browser.detail.driverUnknown': 'unknown',
   'st.browser.detail.checkedAt': 'Last checked',
@@ -9435,8 +11098,10 @@ export const en = {
   'st.browser.detail.currentCall': 'Current call',
   'st.browser.disconnectMeaningExternal': 'Disconnecting only ends Kiki’s control session; the borrowed browser stays. The next attach re-checks its pages.',
   'st.browser.disconnectMeaningManaged': 'Disconnecting ends this browser instance, which Kiki started.',
+  'st.browser.disconnectMeaningWebbridge': 'Disconnecting only ends Kiki’s control session; your browser, its tabs and the bridge stay.',
   'st.browser.disconnectMeaningUnknown': 'Disconnecting ends Kiki’s control session; an instance Kiki started is closed, a borrowed browser stays.',
   'st.browser.outcome.checkOk': 'Check passed · driver {version}',
+  'st.browser.outcome.checkOkWebbridge': 'Check passed · bridge {version}',
   'st.browser.outcome.connected': 'Connected; the state was read back.',
   'st.browser.outcome.connectIncomplete': 'Connecting did not reach a usable state; the server’s state follows.',
   'st.browser.outcome.disconnected': 'Control disconnected.',
@@ -9448,25 +11113,17 @@ export const en = {
   'st.browser.deleteBody': 'This removes the connection and Kiki’s own control session only.',
   'st.browser.deleteConsequenceProfile': 'Sign-in data in the profile directory is not deleted.',
   'st.browser.deleteConsequenceCdp': 'The browser you borrowed is not closed and its pages are not deleted.',
+  'st.browser.deleteConsequenceWebbridge': 'The browser extension and the local bridge stay installed.',
   'st.browser.deleteEndsSession': 'This connection has a running session right now; deleting ends it first.',
   'st.browser.deleteDefault': 'It is the default browser for new sessions; after deletion the default goes back to “Choose each time”.',
   'st.browser.deleted': 'Connection “{name}” deleted.',
   'st.browser.save': 'Save changes',
   'st.browser.create': 'Create connection',
-  'st.browser.otherTitle': 'How other browser ecosystems would attach',
-  'st.browser.otherHint': 'WebBridge uses its own plugin and extension setup. Cloud browsers that expose CDP can use a CDP connection above; their provisioning and billing stay with the provider.',
-  'st.browser.other.webbridge.action': 'Set up WebBridge',
-  'st.browser.other.state': 'Not wired',
-  'st.browser.other.webbridge.name': 'Browser extension',
-  'st.browser.other.webbridge': 'Uses the user browser that the extension is attached to. Installation and source stay on the plugins page; one extension instance cannot stand in for several profiles.',
-  'st.browser.other.cloud.name': 'Hosted cloud',
-  'st.browser.other.cloud': 'Needs a service account and API key, and creating a session may be billed; sessions and files come back through the provider’s interface.',
-  'st.browser.other.codex.name': 'Codex official browser',
-  'st.browser.other.codex': 'Needs that installation’s browser bridge to be available in the selected execution mode; an executable alone does not make a usable browser.',
-  'st.browser.other.executors.name': 'Other executors',
-  'st.browser.other.executors': 'Keeps the public CDP and low-level library routes (Browser Use, Browse, …); no release is pinned yet.',
+  'st.browser.otherHint': 'The Kimi browser plugin and its extension are also managed from the plugins page.',
+  'st.browser.other.webbridge.action': 'Open plugins',
   'st.browser.modelNotice': 'Pages read here and their screenshots go to the model the current session uses.',
   'st.browser.location.server': 'Server',
+  'st.browser.location.webbridge': 'Local bridge',
   'st.browser.location.unknown': 'address not set',
   'st.browser.idRequired': 'Enter a connection id.',
   'st.browser.idInvalid': 'An id may hold letters, digits, dots, hyphens and underscores, and must start with a letter or digit.',
@@ -9495,6 +11152,8 @@ export const en = {
   // Media sources (D12): one provider object — what it is, whether it works,
   // which modalities it is the default for, and the jobs it produced.
   'cap.media.title': 'Media sources',
+  'cap.media.open': 'Open media sources',
+  'cap.media.manageHint': 'Providers, their credentials, and the default for each kind of media.',
   'cap.media.back': 'Back to plugins',
   'cap.media.loading': 'Reading media sources…',
   'cap.media.saving': 'Saving…',
@@ -9529,10 +11188,6 @@ export const en = {
   'cap.media.status.needs-config': 'Needs setup',
   'cap.media.status.blocked': 'Blocked',
   'cap.media.status.broken': 'Unavailable',
-  'cap.media.status.unchecked': 'Not checked',
-  'cap.media.flagOff': 'Media generation is not enabled on this server. Your sources, settings and past generations stay exactly as they are; new generations cannot be started until it is turned on in Experimental settings.',
-  'cap.media.filter.unchecked': 'Not checked',
-  'cap.media.row.unchecked': 'From {plugin}. Open it to check its settings.',
   'cap.media.row.missing': 'Still needs {keys}',
   'cap.media.row.needsKey': 'A required setting is not filled in.',
   'cap.media.row.blocked': 'A generation is waiting for this source to come back.',
@@ -9561,7 +11216,6 @@ export const en = {
   'cap.media.detail.unavailable': 'This server does not offer media sources yet.',
   'cap.media.default.on': 'Default',
   'cap.media.default.off': 'Make default',
-  'cap.media.setting.saved': 'Saved.',
   'cap.media.setting.choice': 'Pick one of the listed choices.',
   'cap.media.setting.notSet': '(not set)',
   'cap.media.artifact.preview': 'Preview',
@@ -9611,6 +11265,84 @@ export const en = {
   'cap.media.subscriptions.added': 'Added “{id}”.',
   'cap.media.subscriptions.removed': 'Removed “{id}”. Installed providers and their keys are unchanged.',
   'cap.media.detail.noModelsYet': 'This provider has not reported its models yet. It can still be set as the default for a modality.',
+  'cap.media.addScript': 'Add a script',
+  'cap.media.status.off': 'Off',
+  'cap.media.status.removed': 'Removed',
+  'cap.media.filter.off': 'Off',
+  'cap.media.filter.removed': 'Removed',
+  'cap.media.row.script': 'Script',
+  'cap.media.row.scriptRuns': 'Runs {command}',
+  'cap.media.row.selfManaged': 'Brings its own environment and command.',
+  'cap.media.row.off': 'Switched off. Its settings and past results are kept.',
+  'cap.media.row.removed': 'Taken out of use. Its settings, jobs and saved results are kept.',
+  'cap.media.row.packageFailed': 'The {plugin} plugin did not load.',
+  'cap.media.detail.inUse': 'Use this source',
+  'cap.media.detail.inUseHint': 'Turning one source off leaves every other source in this plugin alone. Its settings and past results stay either way.',
+  'cap.media.detail.remove': 'Remove this source',
+  'cap.media.detail.removeHint': 'The tools stop offering it. Its settings, its finished files and its jobs stay, so this can be undone here.',
+  'cap.media.detail.restore': 'Restore this source',
+  'cap.media.detail.restoreHint': 'It goes back into use with the settings it already had.',
+  'cap.media.detail.removed': 'Removed. Its settings and finished files are kept.',
+  'cap.media.detail.restored': 'Back in use.',
+  'cap.media.detail.sourceId': 'Source id',
+  'cap.media.detail.adapters': 'Adapters',
+  'cap.media.detail.secrets': 'Stored secrets',
+  'cap.media.detail.noSecrets': 'None stored',
+  'cap.media.detail.secretCount.one': '{count} stored (values are never shown)',
+  'cap.media.detail.secretCount.other': '{count} stored (values are never shown)',
+  'cap.media.script.title': 'Add a script source',
+  'cap.media.script.body': 'Run a command you already have when a generation needs this source. The command prints a file path, or answers with JSON, and Kiki keeps the file it produced.',
+  'cap.media.script.trust': 'The command runs as you, with your own access to files and the network — the same trust a plugin you install gets. Add only commands you would run yourself.',
+  'cap.media.script.id': 'Id',
+  'cap.media.script.label': 'Name',
+  'cap.media.script.labelPlaceholder': 'My local renderer',
+  'cap.media.script.kinds': 'What it makes',
+  'cap.media.script.command': 'Command',
+  'cap.media.script.args': 'Arguments',
+  'cap.media.script.argsHint': 'One per line. They are passed to the command as they are, without a shell, so a value with spaces stays one argument.',
+  'cap.media.script.cwd': 'Working directory',
+  'cap.media.script.cwdPlaceholder': 'Leave empty for the current one',
+  'cap.media.script.protocol': 'Output',
+  'cap.media.script.protocolFile': 'Path to a file on stdout',
+  'cap.media.script.protocolJson': 'JSON on stdout',
+  'cap.media.script.format': 'File format',
+  'cap.media.script.mime': 'Media type',
+  'cap.media.script.environment': 'Environment variables',
+  'cap.media.script.environmentHint': 'A JSON object of name to value, stored as a secret and never shown again. Leave it empty if the command reads its own environment.',
+  'cap.media.script.add': 'Add source',
+  'cap.media.script.added': 'Added “{label}”. Its settings are open.',
+  'cap.media.script.needId': 'Give the source an id: lowercase letters, digits and dashes.',
+  'cap.media.script.badId': 'An id is up to 48 lowercase letters, digits or dashes, and cannot start with a dash.',
+  'cap.media.script.needLabel': 'Give the source a name.',
+  'cap.media.script.longLabel': 'A name is at most 200 characters.',
+  'cap.media.script.needKind': 'Choose at least one kind of media this command makes.',
+  'cap.media.script.needCommand': 'Name the command to run.',
+  'cap.media.script.badFormat': 'A file format is lowercase letters and digits, with no dot — “png”, not “.png”.',
+  'cap.media.script.badEnvironment': 'Environment variables are a JSON object of names to text values, like {"NAME": "value"}.',
+  'cap.media.script.noArgs': 'None',
+  'cap.media.script.untitled': 'Not set',
+  'media.previousImage': 'Previous image',
+  'media.nextImage': 'Next image',
+  'media.copyImage': 'Copy image',
+  'media.imagePosition': '{current} / {total}',
+  'media.annotate': 'Annotate',
+  'media.startAnnotation': 'Annotate image',
+  'media.annotationMode': 'Annotation mode',
+  'media.annotationDone': 'Done',
+  'media.annotationSelect': 'Select / move',
+  'media.annotationArrow': 'Arrow',
+  'media.annotationRectangle': 'Rectangle',
+  'media.annotationPen': 'Pen',
+  'media.annotationUndo': 'Undo',
+  'media.annotationClear': 'Clear annotations',
+  'media.annotationDelete': 'Delete selected annotation',
+  'media.downloadAnnotated': 'Save annotated image',
+  'media.annotationSaveFailed': 'Could not save the annotated image. Your annotations are still here.',
+  'media.zoomIn': 'Zoom in',
+  'media.zoomOut': 'Zoom out',
+  'media.details': 'Image details',
+  'media.copyFailed': 'Could not copy the image. Try downloading it instead.',
+  'agentPanel.metrics.settleFailed': 'Usage totals did not finish',
   'nav.scope.failed.target-missing.body': 'The session or page you came from is no longer there.',
   // ---- model editor and Recipe surfaces (ported with the model-panel slice) ----
   'st.modelEditor.navAria': 'Model settings sections',
@@ -9626,9 +11358,19 @@ export const en = {
   'st.modelProtocol.label': 'Request format',
   'st.modelProtocol.aria': 'Request format for {model}',
   'st.modelProtocol.hint':
-    'Changes only how this model’s requests are shaped. Provider, key, default model and request identity stay as they are. A resolved format is not a connection check.',
+    'Changes only how this model’s requests are shaped. Provider, key, default model and request identity stay as they are. A format that differs from the provider is a valid gateway choice, not an error. A resolved format is not a connection check.',
   'st.modelProtocol.inherit': 'Provider default',
   'st.modelProtocol.inheritResolved': 'Provider default · {format}',
+  'st.modelProtocol.effective': 'Effective format: {format} · {source}',
+  'st.modelProtocol.bindingOrigins': 'endpoint {endpoint} · credential {credential}',
+  'st.modelProtocol.source.model': 'this model',
+  'st.modelProtocol.source.provider': 'provider type',
+  'st.modelProtocol.source.vendor': 'vendor default',
+  'st.modelProtocol.origin.model': 'model',
+  'st.modelProtocol.origin.provider': 'provider',
+  'st.modelProtocol.origin.env': 'env',
+  'st.modelProtocol.origin.vendor': 'vendor',
+  'st.modelProtocol.origin.none': 'none',
   'st.modelProtocol.openai': 'Chat Completions',
   'st.modelProtocol.openai_responses': 'Responses',
   'st.modelProtocol.anthropic': 'Messages',
@@ -9861,7 +11603,7 @@ export const en = {
   'discovery.route.understand.title': 'Understand and direct work',
   'discovery.route.understand.summary': 'See progress and responsibilities, and add direction when needed.',
   'discovery.route.sustain.title': 'Keep work going',
-  'discovery.route.sustain.summary': 'Keep experience, track tasks, and arrange the next step.',
+  'discovery.route.sustain.summary': 'Keep experience, and arrange the next step.',
   'discovery.route.extend.title': 'Extend Kiki when needed',
   'discovery.route.extend.summary': 'Personas, skills, plugins, and other work environments.',
   'discovery.station.workspace.title': 'Make your task clear',
@@ -9924,9 +11666,9 @@ export const en = {
   'onboarding.intro.appearance': 'Appearance',
   'onboarding.intro.appearanceHint': 'Theme, colors, and an optional background picture. Changes apply right away.',
   'onboarding.notNow': 'Not now',
-  'onboarding.step.discover': 'Look around Kiki',
-  'onboarding.discover.body': 'Start from a place that interests you.',
-  'onboarding.discover.overviewLine': 'The workspace, sessions, memory, capabilities, and schedules.',
+
+
+
   'onboarding.discover.unavailable': 'This route can’t open right now. Try another one, or come back later from Discover Kiki in the sidebar.',
   'new.connect.quiet': 'No model connected yet. Connect one when you are ready to send.',
   'new.connect.title': 'Connect a model to send',
@@ -9954,21 +11696,404 @@ export const en = {
   'transcript.lossSpoken.permission_mode_unverified': 'The engine did not confirm the permission mode.',
   'transcript.lossSpoken.additional_directories_dropped': 'Extra workspace folders were not given to the engine.',
   'transcript.lossSpoken.thought_level_unconfigured': 'This engine has no thinking-level control, so it used its own default.',
-  'context.compaction.manual.queued': 'Manual compaction queued',
-  'context.compaction.manual.running': 'Manual compaction running',
-  'context.compaction.manual.completed': 'Manual compaction complete',
-  'context.compaction.manual.cancelled': 'Manual compaction cancelled',
-  'context.compaction.manual.failed': 'Manual compaction failed',
-  'context.compaction.auto.queued': 'Automatic compaction queued',
-  'context.compaction.auto.running': 'Automatic compaction running',
-  'context.compaction.auto.completed': 'Automatic compaction complete',
-  'context.compaction.auto.cancelled': 'Automatic compaction cancelled',
-  'context.compaction.auto.failed': 'Automatic compaction failed',
-  'subagent.status.idle': 'Idle',
-  'subagent.status.lost': 'Lost',
-  'sv.submissionRecovery.title': 'Some messages have no send confirmation',
-  'sv.submissionRecovery.body': 'Their content is saved and will not be resent automatically. Check the timeline and queue first; dismiss the backup if it already arrived. Restoring it to the composer does not send it.',
-  'sv.submissionRecovery.restore': 'Restore to composer',
-  'sv.submissionRecovery.dismiss': 'Dismiss backup',
-  'val.readingTimeoutSeconds': 'Enter a whole number from 0 to 2147483 seconds.',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.recipe.none': 'No Recipe',
+  'st.recipe.noneHelp': 'This model uses its own saved prompt settings.',
+
+
+
+
+
+  'st.recipe.view': 'View Recipe',
+  'st.recipe.install': 'Install',
+  'st.recipe.installed': 'Installed {name}.',
+
+
+  'st.recipe.fromUrl': 'Add from a link',
+
+  'st.recipe.fromUrlHelp': 'A recipe.toml on HTTPS, or a local file or folder.',
+  'st.recipe.market': 'Recipe markets',
+
+
+
+
+
+
+  'st.recipe.loadFailed': 'This Recipe could not be read. {detail}',
+  'st.recipe.selectAria': 'Recipe for {model}',
+
+
+
+
+
+
+
+
+  'st.recipe.updateKeptOld': 'The update did not verify. Version {version} is still in use. {reason}',
+  'st.recipe.checkNow': 'Check for updates',
+  'st.recipe.updated': 'Recipe updated.',
+  'st.recipe.updateFailed': 'The Recipe could not be updated. {detail}',
+  'st.recipe.pin': 'Pin this version',
+  'st.recipe.follow': 'Follow updates',
+  'st.recipe.tabRead': 'Read',
+  'st.recipe.tabEdit': 'Customize',
+  'st.recipe.position.main': 'Main agent',
+  'st.recipe.position.sub': 'Sub agent',
+  'st.recipe.position.independent': 'Delegated agent',
+
+
+
+
+  'st.recipe.branchOff': 'This Recipe sends nothing to this identity.',
+
+
+
+  'st.recipe.readOnlySource': 'This package follows its source. Copy it, or extend it, to change anything.',
+
+  'st.recipe.editHint': 'Changing a Recipe never edits its source. Make a copy, or a child that inherits from it.',
+  'st.recipe.forkId': 'New id',
+
+
+  'st.recipe.forked': 'Created {name}.',
+
+  'st.recipe.saved': 'Recipe saved.',
+
+  'st.recipe.ignoredNotice': 'This model uses a Recipe for the items it declares.',
+  'st.recipe.ignoredKept': 'The agent’s role, persona and workspace instructions are unchanged.',
+  'st.recipe.ignoredCount': '{count} saved model prompt item(s) are kept; this recipe only contributes what it declares.',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.modelPrompt.modeInherit': 'Inherit shared',
+  'st.modelPrompt.modeCustom': 'Custom for this',
+  'st.modelPrompt.groupOff': 'Off for this',
+  'st.modelPrompt.groupOffHint': 'This identity does not use this group of model prompts.',
+  'st.modelPrompt.inheritedReadonly': 'Read-only: this is what the identity receives.',
+  'st.modelPrompt.inheritedEmpty': 'The shared group is empty.',
+  'st.modelPrompt.explicitSame': 'The source states “same” explicitly; leaving it alone keeps that.',
+  'st.modelPrompt.fieldsTitle': 'Prompt field overrides',
+  'st.modelPrompt.fieldFiles': 'Source file',
+  'st.modelPrompt.removeField': 'Remove',
+
+
+
+
+  'st.modelPrompt.cadenceIntervalHelp': 'Steps. 0 does not repeat per step.',
+  'st.modelPrompt.cadenceDefaultNote': 'Not set here, so the engine default applies: on, on, 0.',
+  'st.modelPrompt.cadenceTiming': 'New input and reminders enter the next safe model request; a request already being answered is unchanged.',
+  'st.modelPrompt.cadenceNoContent': 'No reminder content yet, so these timing settings send nothing.',
+  'st.modelPrompt.fromRecipe': 'From Recipe {name}',
+  'st.steerSource.disclosure': 'Steering by message source',
+
+  'st.steerSource.aria': 'Steering by message source',
+  'st.steerSource.hint': 'Everything above governs messages you send. These nine rows govern the messages that start a turn by themselves.',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.recipe.slotProse': 'Prose',
+
+  'st.recipe.slotUseFile': 'Use a file instead',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.recipe.proseFirstHint': 'These are the words the model receives. Both stay open, even when empty.',
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+  'st.modelPrompt.keepAsModelBody': 'Keep this text on the model',
+  'st.modelPrompt.promptWords': 'Prompt words',
+  'composer.profileGroupPassthrough': 'Built-in passthrough (default)',
+  'composer.profileGroupCustom': 'Custom profiles',
+  'composer.profilePassthroughBadge': 'passthrough',
+  'composer.execution.effortHeading': 'Thinking effort',
+  'composer.execution.defaultModelOption': 'Default model',
+  'onboarding.step.appearance': 'Appearance & theme',
+  'onboarding.depart.model.readyBadge': 'Model service ready',
+  'onboarding.depart.model.notReadyBadge': 'Model service not connected',
+  'onboarding.depart.model.configureCta': 'Configure model service in Settings →',
+  'onboarding.depart.model.startChatCta': 'Start your first conversation',
+  'onboarding.depart.tour.title': '1-minute interactive spotlight tour',
+  'onboarding.depart.tour.subtitle': 'Walk through the core workflow right on the live interface — no model connection required.',
+  'onboarding.depart.tour.startBtn': 'Start spotlight tour →',
+  'onboarding.returnBanner.text': 'Once your model service is configured, head back to start chatting',
+  'onboarding.returnBanner.action': 'Return to start your first conversation →',
+  'discovery.tour.stepBadge': '{current} / {total}',
+  'discovery.tour.nextShort': 'Next →',
+  'discovery.tour.exitEsc': 'Exit Esc',
+  'st.group.preferences': 'Preferences & appearance',
+  'st.group.workspacesMemory': 'Workspaces & memory',
+  'st.group.capabilitiesSafety': 'Capabilities & safety',
+  'st.group.systemConnection': 'System & connection',
+  'st.section.generalMerged': 'General & appearance',
+  'st.section.providers': 'Model providers',
+  'st.purpose.providers': 'Connect model services through APIs, subscription accounts, or local HTTP and CLI services.',
+  'st.section.models': 'Model catalog & defaults',
+  'st.purpose.models': 'Configure default models and thinking effort for new sessions, and manage the model catalog.',
+  'st.section.agentsMerged': 'Profiles & subagents',
+  'st.section.workspacesMerged': 'Workspaces & sessions',
+  'st.section.memoryMerged': 'Memory & knowledge',
+  'st.section.permissionsMerged': 'Permissions, tasks & hooks',
+  'st.section.extensions': 'Extensions & tools',
+  'st.purpose.extensions': 'Manage skills, MCP tool servers, and installed plugins.',
+  'st.section.environmentTools': 'Web, browser & computer control',
+  'st.purpose.environmentTools': 'Configure web search and fetching, browser automation, and desktop computer control.',
+  'st.section.remote': 'Remote daemon & SSH',
+  'st.purpose.remote': 'Manage the server connection, SSH hosts, and external client access.',
+  'st.section.system': 'Developer, labs & about',
+  'st.purpose.system': 'Engine diagnostics, experimental feature index, logs, and updates.',
+  'st.providers.zone1.title': '② Account sign-in (subscription)',
+  'st.providers.zone1.hint': 'Sign in directly with your existing Codex, Grok, Claude, or Kimi subscription account.',
+  'st.providers.zone2.title': '③ Local CLI harnesses',
+  'st.providers.localConnectionsTitle': 'Local HTTP and CLI',
+  'st.providers.zone2.hint': 'Detect local AGY CLI, Codex, and Claude Code harnesses; once enabled, select them from the conversation’s runtime picker.',
+  'st.providers.zone3.title': '① API key providers',
+  'st.providers.zone3.hint': 'Connect with vendor templates or custom endpoints using an API key, then test and fetch models.',
+  'st.providers.advancedProtocol': 'Advanced protocol settings (protocol override, request identity & image policy)',
+  'st.modelEditor.tab.basics': 'Basic settings',
+  'st.modelEditor.tab.advanced': 'Advanced protocol & capabilities',
+  'composer.profile.retained': 'Read-only retained identity',
+  'composer.profile.searchPlaceholder': 'Search profiles…',
+  'composer.model.searchPlaceholder': 'Search models…',
+  'composer.execution.defaultEffort': 'Default',
+  'composer.model.useCustomId': 'Use model ID "{id}"',
+  'st.agents.tab.profiles': 'Agent profiles',
+  'st.agents.tab.dispatch': 'Subagents & dispatch',
+  'st.extensions.tab.plugins': 'Plugins',
+  'st.extensions.tab.skills': 'Skills',
+  'st.extensions.tab.mcp': 'MCP',
+  'st.browserControl.tab.browser': 'Browser control',
+  'st.browserControl.tab.computer': 'Computer control',
+  'st.settingsTransfer.title': 'Settings transfer',
+  'st.settingsTransfer.description': 'Move selected settings, with credentials included only when you choose.',
+  'st.settingsTransfer.open': 'Import or export',
+  'st.settingsTransfer.export': 'Export',
+  'st.settingsTransfer.import': 'Import',
+  'st.settingsTransfer.exportTitle': 'Export settings',
+  'st.settingsTransfer.importTitle': 'Import settings',
+  'st.settingsTransfer.exportHint': 'Choose the settings to include. Credentials stay out unless you opt in.',
+  'st.settingsTransfer.importHint': 'Choose what to preview before anything is written to the target home.',
+  'st.settingsTransfer.categories': 'Settings',
+  'st.settingsTransfer.selectAll': 'Select all',
+  'st.settingsTransfer.clearAll': 'Clear all',
+  'st.settingsTransfer.category.models': 'Models & providers',
+  'st.settingsTransfer.category.agents': 'Agents & prompts',
+  'st.settingsTransfer.category.permissions': 'Permissions & sessions',
+  'st.settingsTransfer.category.tools': 'Tools, MCP & plugins',
+  'st.settingsTransfer.category.browser': 'Browser & computer',
+  'st.settingsTransfer.category.notifications': 'Notifications & IM',
+  'st.settingsTransfer.category.appearance': 'Appearance & device',
+  'st.settingsTransfer.categoryCount': '{count} items',
+  'st.settingsTransfer.credentials': 'Include credentials',
+  'st.settingsTransfer.credentialsHint': 'Credentials are excluded by default. Only include them when this file will stay private.',
+  'st.settingsTransfer.file': 'Settings package',
+  'st.settingsTransfer.chooseFile': 'Choose JSON file',
+  'st.settingsTransfer.fileHint': 'Use a kiki.settings JSON package up to 8 MiB.',
+  'st.settingsTransfer.fileSelected': 'Selected file: {name}',
+  'st.settingsTransfer.fileTooLarge': 'This file is larger than 8 MiB.',
+  'st.settingsTransfer.fileReadFailed': 'We could not read this file. Choose the JSON package again.',
+  'st.settingsTransfer.fileInvalid': 'This file is not a valid Kiki settings package.',
+  'st.settingsTransfer.mode': 'Conflict handling',
+  'st.settingsTransfer.modeAppend': 'Keep existing',
+  'st.settingsTransfer.modeOverwrite': 'Replace selected',
+  'st.settingsTransfer.appendHint': 'Existing values stay unchanged. New values are added.',
+  'st.settingsTransfer.overwriteHint': 'Only selected keys in this package replace the target values.',
+  'st.settingsTransfer.preview': 'Preview changes',
+  'st.settingsTransfer.previewing': 'Preparing preview',
+  'st.settingsTransfer.previewFailed': 'We could not prepare the preview. Check the package and try again.',
+  'st.settingsTransfer.previewRequired': 'Choose at least one setting to preview.',
+  'st.settingsTransfer.applyNeedsPreview': 'Preview the selected changes before applying them.',
+  'st.settingsTransfer.target': 'Target',
+  'st.settingsTransfer.targetHome': 'Home: {home}',
+  'st.settingsTransfer.targetSpace': 'Space: {space}',
+  'st.settingsTransfer.summaryHeading': 'Changes in this preview',
+  'st.settingsTransfer.summaryItems': '{count} package items',
+  'st.settingsTransfer.summaryAdded': '{count} new',
+  'st.settingsTransfer.summaryConflicts': '{count} conflicts',
+  'st.settingsTransfer.summaryUnchanged': '{count} unchanged',
+  'st.settingsTransfer.summarySkipped': '{count} skipped',
+  'st.settingsTransfer.noticeHeading': 'Transfer scope',
+  'st.settingsTransfer.notice.localScope': 'Only explicit settings from the current home move. Inherited values, environment variables, chat history, and caches do not.',
+  'st.settingsTransfer.notice.externalLogins': 'External sign-ins are not included.',
+  'st.settingsTransfer.notice.localPaths': 'Machine-specific paths and commands may need reconfiguration on the target device.',
+  'st.settingsTransfer.notice.omittedCredentials': 'Credentials were left out.',
+  'st.settingsTransfer.notice.omittedBrowserConnections': 'Browser connections that cannot be moved safely were left out.',
+  'st.settingsTransfer.notice.pluginCode': 'Plugin code and installed components are not included.',
+  'st.settingsTransfer.notice.profileScope': 'Only valid user Profiles, SYSTEM.md, and referenced prompt files from the current home are included. Built-in, project, and system-wide directories are not.',
+  'st.settingsTransfer.localPreferences': 'Saved device preferences',
+  'st.settingsTransfer.localPreferencesHint': 'Saved device preferences include interaction, notifications, appearance, layout, and more. Skin assets are not copied.',
+  'st.settingsTransfer.localApplied': 'Device preferences updated.',
+  'st.settingsTransfer.localNothing': 'No saved device preferences are in this package.',
+  'st.settingsTransfer.localReadbackFailed': 'Some device preferences could not be verified. The import is partial.',
+  'st.settingsTransfer.apply': 'Apply',
+  'st.settingsTransfer.applying': 'Applying',
+  'st.settingsTransfer.cancel': 'Cancel',
+  'st.settingsTransfer.close': 'Close',
+  'st.settingsTransfer.exporting': 'Preparing export',
+  'st.settingsTransfer.exported': 'Settings package saved.',
+  'st.settingsTransfer.exportFailed': 'We could not save the settings package. Try again.',
+  'st.settingsTransfer.imported': 'Settings reloaded. Profiles and settings marked for new sessions take effect in a new session.',
+  'st.settingsTransfer.importPartial': 'Settings import is partial. Review the item statuses below.',
+  'st.settingsTransfer.importFailed': 'Settings were not fully imported. Review the item statuses below.',
+  'st.settingsTransfer.failure.changed': 'The target changed after the preview. Preview again before applying.',
+  'st.settingsTransfer.failure.expired': 'The preview expired. Preview again before applying.',
+  'st.settingsTransfer.failure.writeFailed': 'Some settings could not be written. Review the item statuses and try again.',
+  'st.settingsTransfer.failure.readbackFailed': 'Some settings could not be verified after writing. Review the item statuses.',
+  'st.settingsTransfer.itemStatusHeading': 'Item status',
+  'st.settingsTransfer.itemStatus.applied': 'Applied',
+  'st.settingsTransfer.itemStatus.unchanged': 'Unchanged',
+  'st.settingsTransfer.itemStatus.failed': 'Failed',
+  'st.settingsTransfer.itemStatus.unverified': 'Unverified',
+  'st.settingsTransfer.noCategories': 'Select at least one setting.',
+  'st.settingsTransfer.catalogLoading': 'Loading the settings catalog',
+  'st.settingsTransfer.catalogFailed': 'We could not load the settings catalog. Try again.',
+  'st.settingsTransfer.retry': 'Retry',
+  'transcript.noReply': 'No reply in this turn',
+  'transcript.noReplyBackground': 'Background work is still running',
+  'transcript.noReplyIdle': 'No work is executing now',
+  'transcript.noReplyUnknown': 'Background activity unknown',
 } as const;

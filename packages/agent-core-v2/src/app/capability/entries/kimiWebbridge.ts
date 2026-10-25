@@ -1,10 +1,11 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { constants, createReadStream } from 'node:fs';
 import { access, chmod, copyFile, link, mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { downloadToFile, runCommand } from '../host';
+import { promoteResourcePath } from './browserResourceStore';
 import { isRecognizedWebbridgePluginSource } from '../../plugin/prerequisites';
 import { webbridgeArtifact } from '../verifiedArtifacts';
 import type { CapabilityDetectResult, CapabilityEntry, CapabilityInstallReporter, CapabilityStep } from '../types';
@@ -72,7 +73,7 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
       plugin.hasErrors !== true && plugin.enabledMcpServerCount === plugin.mcpServerCount;
     const knownSource = isRecognizedWebbridgePluginSource(PLUGIN_ID, plugin?.originalSource);
     const steps: CapabilityStep[] = [
-      { id: 'daemon-binary', state: binaryVerified ? 'ok' : 'missing', optional: running,
+      { id: 'daemon-binary', state: binaryUsable ? 'ok' : binaryPresent ? 'failed' : 'missing', optional: running,
         reason: binaryPresent && !binaryUsable ? 'binary_not_executable'
           : binaryUsable && !binaryVerified ? 'binary_unverified' : undefined,
         detail: binaryPresent && !binaryUsable ? 'not executable' :
@@ -80,7 +81,7 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
       { id: 'daemon', state: running ? 'ok' : 'missing',
         reason: running ? 'daemon_loopback_unauthenticated' : undefined,
         detail: running ? `Loopback status reports running (${daemon.version}); responding process identity is not authenticated` : undefined },
-      { id: 'skill', state: pluginEnabled ? 'ok' : 'missing',
+      { id: 'skill', state: pluginEnabled ? 'ok' : 'missing', optional: true,
         reason: plugin === undefined ? 'plugin_not_installed'
           : !plugin.enabled ? 'plugin_disabled'
           : plugin.state !== 'ok' || plugin.hasErrors === true ? 'plugin_error'
@@ -127,9 +128,10 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
         await rm(sibling, { force: true }).catch(() => undefined);
         await rm(workDir, { recursive: true, force: true });
       }
-    }
-    if (await sha256Of(binPath) !== artifact.sha256) {
-      throw new Error(`Existing WebBridge binary is not the pinned ${artifact.version} artifact; no overwrite or launch was attempted`);
+    } else {
+      if (ctx.platform !== 'win32' && !(await access(binPath, constants.X_OK).then(() => true, () => false))) {
+        throw new Error('WebBridge binary is not executable');
+      }
     }
     report('daemon');
     const started = await runCommand(ctx.hostProcess, binPath, ['start'], { timeout: 30_000 });
@@ -141,6 +143,31 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
     throw new Error('WebBridge daemon did not report a valid status on 127.0.0.1:10086');
   }
 
+  async function update(report: CapabilityInstallReporter): Promise<string | undefined> {
+    if (artifact === undefined) throw new Error(`WebBridge has no verified artifact for ${ctx.platform}/${ctx.arch}`);
+    report('download', 0);
+    const workDir = await mkdtemp(path.join(tmpdir(), 'kiki-webbridge-update-'));
+    const staging = path.join(workDir, 'daemon');
+    const sibling = path.join(binDir, `.${path.basename(binPath)}.update-${randomUUID()}`);
+    try {
+      await downloadToFile(artifact.url, staging, (percent) => report('download', percent),
+        ctx.fetchImpl, { sha256: artifact.sha256, maxBytes: artifact.maxBytes });
+      if (await sha256Of(staging) !== artifact.sha256) throw new Error('WebBridge staging checksum changed');
+      await mkdir(binDir, { recursive: true });
+      await copyFile(staging, sibling, constants.COPYFILE_EXCL);
+      if (await sha256Of(sibling) !== artifact.sha256) throw new Error('WebBridge copy checksum changed');
+      if (ctx.platform !== 'win32') await chmod(sibling, 0o755);
+      await promoteResourcePath(sibling, binPath);
+      if (await sha256Of(binPath) !== artifact.sha256) throw new Error('WebBridge update did not land the verified bytes');
+      const daemon = await fetchDaemonStatus();
+      if (daemon?.running === true) return 'webbridge-disk-updated-running-daemon-unchanged';
+      return 'webbridge-disk-updated';
+    } finally {
+      await rm(sibling, { force: true }).catch(() => undefined);
+      await rm(workDir, { recursive: true, force: true });
+    }
+  }
+
   return {
     id: 'kimi-webbridge',
     pluginId: PLUGIN_ID,
@@ -150,9 +177,10 @@ export function createKimiWebbridgeEntry(ctx: CapabilityEntryContext): Capabilit
     plan: artifact === undefined ? undefined : {
       artifact, destination: binPath,
       browserExtensionUrl: BROWSER_EXTENSION_URL,
-      note: 'The pinned SHA-256 comes from the publisher release metadata, not an independently verified signature. The plugin package and browser extension require separate user action. Existing binaries are never replaced.',
+      note: 'The pinned SHA-256 comes from the publisher release metadata, not an independently verified signature. The plugin package and browser extension require separate user action. Install does not replace an existing binary. Explicit update replaces the on-disk file after a verified download and does not stop a running daemon.',
     },
     detect,
     install,
+    update,
   };
 }

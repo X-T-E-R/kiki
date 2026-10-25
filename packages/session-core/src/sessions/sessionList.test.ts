@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
-import type { PageResponse, Session, Workspace } from '@kiki/protocol';
+import type { PageResponse, Session, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
+  adjacentRunningSession,
   arrangePinnedFirst,
   dedupeSessions,
   filterSessions,
@@ -12,8 +13,9 @@ import {
   sessionStatusOf,
   groupSessionsByWorkspace,
   isPinnedSession,
-  mergeSessionActivity,
   mergeSessionFirstPage,
+  mergeSessionActivity,
+  mergeSessionWorkChanged,
   pinMetadataPatch,
   SESSION_PIN_META_KEY,
   sortSessionItems,
@@ -80,6 +82,29 @@ describe('activity recency', () => {
     expect(merged?.pages.map((entry) => entry.has_more)).toEqual([true, false]);
     expect(sortSessionItems(dedupeSessions(merged), 'updated-desc').map((entry) => entry.id)).toEqual(['parent', 'newer']);
     expect(mergeSessionActivity(merged, session('parent', '2025-01-01T00:00:00Z'))?.pages[1]?.items[0]).toBe(fresh);
+  });
+  it('orders by the same instant displayed by RelativeTime, rather than ISO spelling', () => {
+    const newer = session('newer', '2026-10-05T00:30:00+08:00');
+    const older = session('older', '2026-10-04T20:00:00+08:00');
+    const canonical = { ...newer, updated_at: '2026-10-04T16:30:00.000Z' };
+    expect(sortSessionItems([older, canonical], 'updated-desc').map((entry) => entry.id)).toEqual(['newer', 'older']);
+    expect(sortSessionItems([older, newer], 'updated-desc').map((entry) => entry.id)).toEqual(['newer', 'older']);
+  });
+});
+
+describe('work_changed cache merge', () => {
+  it('updates busy and optional executing on every loaded page without changing other rows', () => {
+    const old = data(page(['newer'], true), page(['target', 'other'], false));
+    const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: true, executing: false });
+    expect(merged?.pages[1]?.items[0]).toMatchObject({ id: 'target', busy: true, executing: false });
+    expect(merged?.pages[0]?.items[0]).toEqual(old.pages[0]?.items[0]);
+    expect(merged?.pages[1]?.items[1]).toEqual(old.pages[1]?.items[1]);
+  });
+
+  it('clears stale execution facts when an old-server change omits them', () => {
+    const old = data({ ...page(['target'], false), items: [session('target', '2026-01-01T00:00:00.000Z', { busy: true, executing: true, main_turn_active: true })] });
+    const merged = mergeSessionWorkChanged(old, { sessionId: 'target', busy: false });
+    expect(merged?.pages[0]?.items[0]).toMatchObject({ busy: false, executing: undefined, main_turn_active: undefined });
   });
 });
 
@@ -171,6 +196,18 @@ function workspace(id: string, name: string): Workspace {
   };
 }
 
+/** Exactly the fields the catalog route sends: no `session_count` / `isGit`. */
+function catalogEntryOf(workspace: Workspace): WorkspaceCatalogEntry {
+  return {
+    id: workspace.id,
+    root: workspace.root,
+    name: workspace.name,
+    created_at: workspace.created_at,
+    last_opened_at: workspace.last_opened_at,
+    pinned: workspace.pinned,
+  };
+}
+
 describe('groupSessionsByWorkspace', () => {
   const wa = workspace('wd_a_000000000000', 'Alpha');
   const wb = workspace('wd_b_000000000000', 'Beta');
@@ -236,6 +273,31 @@ describe('groupSessionsByWorkspace', () => {
     });
     const groups = groupSessionsByWorkspace([pinned], [wa, wb]);
     expect(groups.map((g) => g.key)).toEqual([wb.id]);
+  });
+
+  it('groups and labels a metadata-only catalog listing exactly like full workspaces', () => {
+    const rows = [
+      session('s2', '2026-01-03T00:00:00.000Z', { workspace_id: wb.id }),
+      session('s1', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id }),
+    ];
+    const list = [wc, wa, wb];
+    const catalog = list.map((entry) => catalogEntryOf(entry));
+    const full = groupSessionsByWorkspace(rows, list);
+    const fromCatalog = groupSessionsByWorkspace(rows, catalog);
+    expect(fromCatalog.map((group) => [group.key, group.label, group.items.map((s) => s.id)]))
+      .toEqual(full.map((group) => [group.key, group.label, group.items.map((s) => s.id)]));
+    expect(fromCatalog.map((group) => [group.key, group.label])).toEqual([[wa.id, 'Alpha'], [wb.id, 'Beta']]);
+  });
+
+  it('resolves labels through the caller own element type', () => {
+    const rows = [wa, wb].map((entry) => ({ id: entry.id, name: entry.name, label: `${entry.name} ~ ${entry.root}` }));
+    const groups = groupSessionsByWorkspace(
+      [session('s1', '2026-01-03T00:00:00.000Z', { workspace_id: wa.id })],
+      rows,
+      (row) => row.label,
+      'Ungrouped',
+    );
+    expect(groups.map((group) => [group.key, group.label])).toEqual([[wa.id, `${wa.name} ~ ${wa.root}`]]);
   });
 });
 
@@ -307,15 +369,21 @@ describe('groupSessionsByTime', () => {
 });
 
 describe('sessionStatusOf / filterSessions', () => {
-  const running = session('running', '2026-01-03T00:00:00.000Z', { busy: true, workspace_id: 'ws-a' });
-  const waiting = session('waiting', '2026-01-03T00:00:00.000Z', { busy: true, pending_interaction: 'approval', workspace_id: 'ws-b' } as Partial<Session>);
+  const running = session('running', '2026-01-03T00:00:00.000Z', { busy: true, executing: true, workspace_id: 'ws-a' });
+  const waiting = session('waiting', '2026-01-03T00:00:00.000Z', { busy: true, executing: true, pending_interaction: 'approval', workspace_id: 'ws-b' } as Partial<Session>);
   const idle = session('idle', '2026-01-02T00:00:00.000Z', { workspace_id: 'ws-a' });
+  const settledBusy = session('settled-busy', '2026-01-02T00:00:00.000Z', { busy: true, executing: false, workspace_id: 'ws-a' });
   const archived = session('archived', '2026-01-01T00:00:00.000Z', { archived: true, workspace_id: 'ws-b' } as Partial<Session>);
   const all = [running, waiting, idle, archived];
   const none = { status: [], workspaces: [], archived: 'hide' } as const;
 
   it('reads a pending interaction as needs-me ahead of busy', () => {
     expect([running, waiting, idle].map(sessionStatusOf)).toEqual(['running', 'needs-me', 'idle']);
+  });
+
+  it('does not color or filter queued work as currently running', () => {
+    expect(sessionStatusOf(settledBusy)).toBe('idle');
+    expect(filterSessions([settledBusy], { ...none, status: ['running'] })).toEqual([]);
   });
 
   it('hides archived rows by default, includes them, or shows only them', () => {
@@ -376,9 +444,53 @@ describe('poll boundary coverage', () => {
     expect(calls).toEqual([undefined]);
   });
 
+  it('stops a displaced-head bridge on scope cancellation before any later page or merge', async () => {
+    const { readSessionFirstPage } = await import('./sessionList');
+    const controller = new AbortController();
+    const old = data(page(['s3', 's2'], true), page(['s1'], false));
+    const calls: (string | undefined)[] = [];
+    const read = async (cursor?: string) => {
+      calls.push(cursor);
+      controller.abort();
+      return { ...page(['new-b', 'new-a'], true), next_cursor: 'new-a' };
+    };
+    await expect(readSessionFirstPage(read, old, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toEqual([undefined]);
+    expect(dedupeSessions(old).map((entry) => entry.id)).toEqual(['s3', 's2', 's1']);
+    await expect(readSessionFirstPage(read, old, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(calls).toEqual([undefined]);
+  });
+
   it('drops absent cached rows only when the refreshed head is complete', () => {
     const merged = mergeSessionFirstPage(data(page(['deleted', 's2'], true), page(['s1'], false)), page(['s2'], false));
     expect(dedupeSessions(merged).map((entry) => entry.id)).toEqual(['s2']);
     expect(merged?.pageParams).toEqual([undefined]);
+  });
+});
+
+
+describe('adjacentRunningSession', () => {
+  const entries = [
+    session('idle-pin', '2026-10-06', { metadata: { cwd: 'C:/example', 'kiki.pinned': true } }),
+    ...['c', 'a', 'b'].map((id) => session(id, '2026-10-06', { busy: true, executing: true })),
+    session('waiting', '2026-10-06', { pending_interaction: 'approval' }),
+  ];
+  it('cycles all three running threads in both directions, never idle/pinned/waiting-only rows', () => {
+    expect(['a', 'b', 'c'].map((id) => adjacentRunningSession(entries, id, 1))).toEqual(['b', 'c', 'a']);
+    expect(['a', 'b', 'c'].map((id) => adjacentRunningSession(entries, id, -1))).toEqual(['c', 'a', 'b']);
+    expect(adjacentRunningSession(entries, 'idle-pin', 1)).toBe('a');
+    expect(adjacentRunningSession(entries, undefined, -1)).toBe('c');
+  });
+  it('uses creation order rather than list order, pins, updates or pending-interaction priority', () => {
+    const changed = entries.map((entry) => entry.id === 'b' ? { ...entry, created_at: '2026-10-06', pending_interaction: 'question' as const, metadata: { 'kiki.pinned': true } } : entry);
+    expect(adjacentRunningSession(changed.reverse(), undefined, 1)).toBe('b');
+    expect(adjacentRunningSession(changed, 'b', 1)).toBe('a');
+  });
+  it('reflects completed/newly-running threads and safely handles zero/one candidate', () => {
+    expect(adjacentRunningSession([], 'a', 1)).toBeUndefined();
+    const changed = entries.map((entry) => ({ ...entry, busy: entry.id === 'waiting', executing: entry.id === 'waiting' }));
+    expect(adjacentRunningSession(changed, 'a', 1)).toBe('waiting');
+    expect(adjacentRunningSession(changed, 'waiting', -1)).toBe('waiting');
+    expect(adjacentRunningSession(entries.map((entry) => ({ ...entry, busy: false, executing: false })), 'a', -1)).toBeUndefined();
   });
 });

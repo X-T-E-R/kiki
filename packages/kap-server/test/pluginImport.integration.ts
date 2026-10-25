@@ -256,11 +256,26 @@ it('rolls back pre-publication failures, preserves old archives, isolates change
   const manager = target.server.core.accessor.get(ISessionManager);
   const publish = vi.spyOn(target.server.core.accessor.get(IFileSystemStorageService), 'moveDirectory').mockRejectedValueOnce(new Error('fixture before publication'));
   const preview = await target.client.global.imports.preview(fixture.input);
+  let resolveFailed!: () => void;
+  const failed = new Promise<void>((resolve) => { resolveFailed = resolve; });
+  const documents = target.server.core.accessor.get(IAtomicDocumentStore);
+  const set = documents.set.bind(documents);
+  const persisted = vi.spyOn(documents, 'set').mockImplementation(async (...args) => {
+    await set(...args);
+    const [scope, key, value] = args;
+    const job = value as Partial<ImportJob> | null | undefined;
+    if (scope === 'plugin-import-v1' && key === `jobs.${job?.id}` && job?.previewId === preview.id && job.status === 'failed') resolveFailed();
+  });
   const started = await target.client.global.imports.start({ previewId: preview.id, acknowledge: true });
-  await vi.waitFor(async () => expect((await target.client.global.imports.job(started.id)).status).toBe('failed'));
-  expect((await target.client.global.sessions.list({})).items).toHaveLength(0);
-  expect(manager.listEphemeral()).toHaveLength(0);
-  publish.mockRestore();
+  try {
+    await failed;
+    expect((await target.client.global.imports.job(started.id)).status).toBe('failed');
+    expect((await target.client.global.sessions.list({})).items).toHaveLength(0);
+    expect(manager.listEphemeral()).toHaveLength(0);
+  } finally {
+    persisted.mockRestore();
+    publish.mockRestore();
+  }
   await target.client.global.imports.resume(started.id);
   await vi.waitFor(async () => expect((await target.client.global.imports.job(started.id)).status).toBe('completed'));
   const original = await target.client.global.imports.job(started.id);
@@ -302,9 +317,13 @@ it('keeps a published native session non-ephemeral when the ancillary session in
     try { await save(id); } catch (error) { observed = error; throw error; }
   });
   vi.spyOn(storage, 'moveDirectory').mockImplementation(async (...args) => { await move(...args); moved = true; });
-  vi.spyOn(logs, 'flush').mockImplementation(async () => {
-    if (moved) { moved = false; throw failure; }
-    await flush();
+  vi.spyOn(logs, 'flush').mockImplementation(async (...target: [] | [string, string]) => {
+    if (moved && target.length === 2 && target[0] === '' && target[1] === 'session_index.jsonl') {
+      moved = false;
+      throw failure;
+    }
+    if (target.length === 2) await flush(target[0], target[1]);
+    else await flush();
   });
   const job = await importNative(target, input);
   expect(observed).toBe(failure);
@@ -385,7 +404,6 @@ it('offers native rules in a clean home, runs a selected custom script and conti
     await vi.waitFor(async () => expect((await target.client.global.imports.job(archiveStart.id)).status).toBe('completed'));
     expect((await target.client.global.imports.job(archiveStart.id)).archiveId).toBeTruthy();
     expect(await target.client.global.plugins.list()).toEqual([]);
-    vi.stubEnv('KIKI_EXPERIMENTAL_PLUGIN_IMPORT', 'false');
     const settingsHome = await mkdtemp(path.join(scratch, 'native-rule-settings-'));
     const fixtureSettings = { 'kiki-history': { customScript: script }, example_plugin: { some_key: 'kept', plugin_token_secret: 'fixture-not-a-secret' } };
     await writeFile(path.join(settingsHome, 'config.toml'), `[plugin_settings.kiki-history]\ncustomScript = ${JSON.stringify(script)}\n[plugin_settings.example_plugin]\nsome_key = "kept"\nplugin_token_secret = "fixture-not-a-secret"\n`);
@@ -400,7 +418,7 @@ it('offers native rules in a clean home, runs a selected custom script and conti
     const savedFixtureCredentials = await readFile(path.join(settingsHome, 'credentials/credentials.toml'), 'utf8');
     expect(savedFixtureCredentials).toContain('[plugin_settings.example_plugin]');
     expect(savedFixtureCredentials).toContain('plugin_token_secret = "fixture-not-a-secret"');
-    await expect(disabled.client.global.imports.sources()).rejects.toThrow('disabled');
+    expect((await disabled.client.global.imports.sources()).map((item) => item.id)).toEqual(['claude-code', 'codex', 'pi', 'grok', 'opencode', 'custom']);
   } finally {
     await new Promise<void>((resolve, reject) => provider.close((error) => { if (error) reject(error); else resolve(); }));
   }

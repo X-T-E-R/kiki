@@ -1,8 +1,8 @@
 import { dirname } from 'pathe';
 
 import type { HostFileStat, IHostFileSystem } from '#/os/interface/hostFileSystem';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { unwrapErrorCause } from '#/_base/errors/errors';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -44,13 +44,10 @@ export class WriteTool implements IWriteTool {
     args = { ...args, path: target.path ?? args.path };
     const inspected = await prepareToolRuntime(this.runtime, target.host);
     const generation = inspected.identity.generation;
-    const view = new RuntimeWorkspaceView(inspected, {
-      workDir: this.workspaceCtx.workDir,
-      additionalDirs: this.workspaceCtx.additionalDirs,
-    });
+    const view = new RuntimeWorkspaceView(inspected, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
     const env = { _serviceBrand: undefined, ...inspected.environment, ready: Promise.resolve() };
     const workspace = this.workspaceConfig(view);
-    const pathOptions = { env, workspace, operation: 'write' as const };
+    const pathOptions = { env, workspace, operation: 'write' as const, shellPathBridge: runtimeShellPathBridge(inspected) };
     const preparation = acquireToolRuntime(this.runtime, target.host, ['fs']);
     let path: string;
     let external = false;

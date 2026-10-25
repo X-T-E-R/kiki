@@ -1,0 +1,12 @@
+{
+  "type": "error",
+  "status": 400,
+  "error": {
+    "type": "invalid_request_error",
+    "code": "connection_retiring",
+    "message": "This connection is retiring; this event was not executed. Reconnect and send full input.",
+    "param": ""
+  },
+  "execution": "not_executed",
+  "stream_id": "synthetic-queued-lane"
+}

@@ -1,12 +1,18 @@
-import OpenAI from 'openai';
+import OpenAI, { APIError as OpenAIAPIError, OpenAIError } from 'openai';
 
-import { Error2 } from '#/_base/errors/errors';
+import { Error2, attachErrorDetails } from '#/_base/errors/errors';
+import { addDiagnosticCount, attachStreamDiagnostics, createStreamDiagnostics, safeProviderFailureDetails, safeStreamDiagnostics, type StreamDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import {
   APIContextOverflowError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
+  APIStatusError,
   ChatProviderError,
+  ambiguousRequestDelivery,
+  createAbortError,
+  isAbortError,
   isContextOverflowErrorCode,
+  providerStreamErrorDetails,
 } from '#/kosong/contract/errors';
 import type {
   ContentPart,
@@ -27,6 +33,12 @@ import type {
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import type { ResponsesWebSocketConfig } from '#/kosong/contract/responsesTransport';
+import { ResponsesWebSocketError } from './responses-websocket';
+import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
+import { guardRequestDelivery } from '../request-delivery';
+import { matchesProviderTarget } from '../../providerTarget';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import { RequestIdentityErrors } from '#/kosong/requestIdentity/errors';
 
@@ -45,6 +57,7 @@ import {
   type ToolMessageConversion,
 } from './openai-common';
 import {
+  finalizeProviderRequestHeaders,
   mergeProviderRequestAuth,
   requestIdentityFetchForAuth,
   mergeRequestHeaders,
@@ -114,6 +127,13 @@ function asRawObject(value: unknown): RawObject | null {
     return null;
   }
   return value as RawObject;
+}
+
+function transportStatusError(error: unknown): APIStatusError | undefined {
+  if (!(error instanceof ResponsesWebSocketError) || error.status === undefined || error.status < 400 || error.status > 599) return undefined;
+  return attachErrorDetails(new APIStatusError(error.status, error.message), {
+    errorSource: 'provider_event', nativeCode: error.code, execution: error.execution,
+  });
 }
 
 function readStringField(object: RawObject, key: string): string | undefined {
@@ -257,20 +277,32 @@ function errorFromOpenAIResponsesEvent(
 ): ChatProviderError {
   const formatted = formatResponsesErrorEvent(code, message, param);
   const fullMessage = `${prefix}: ${formatted}`;
+  const raw = asRawObject(options?.rawEvent);
+  const failedResponse = raw === null ? undefined : readObjectField(raw, 'response');
+  const body = failedResponse === undefined ? raw : readObjectField(failedResponse, 'error');
+  const metadata = providerStreamErrorDetails({
+    error: body ?? { type: 'error', code },
+    request_id: raw?.['request_id'],
+  });
+  const withEventDetails = (error: ChatProviderError): ChatProviderError => attachErrorDetails(error, {
+    ...metadata,
+    ...Object.fromEntries(Object.entries(safeProviderFailureDetails(error.details)).filter(([, value]) => value !== null)),
+    errorSource: 'provider_event',
+  });
   const hooked = options?.convertErrorHook?.(options.rawEvent ?? { code, message, param });
   if (hooked !== undefined) {
-    return hooked;
+    return withEventDetails(hooked);
   }
   if (isContextOverflowErrorCode(code)) {
-    return new APIContextOverflowError(400, fullMessage);
+    return withEventDetails(new APIContextOverflowError(400, fullMessage));
   }
   if (isOpenAIInsufficientQuotaCode(code)) {
-    return new APIProviderQuotaExhaustedError(fullMessage);
+    return withEventDetails(new APIProviderQuotaExhaustedError(fullMessage));
   }
   if (code === 'rate_limit_exceeded' || readEmbeddedStatusCode(message) === 429) {
-    return new APIProviderRateLimitError(fullMessage);
+    return withEventDetails(new APIProviderRateLimitError(fullMessage));
   }
-  return new ChatProviderError(fullMessage);
+  return withEventDetails(new ChatProviderError(fullMessage));
 }
 
 function parseNestedGatewayStreamError(message: string):
@@ -369,6 +401,8 @@ export interface OpenAIResponsesOptions {
   thinkingEffort?: ThinkingEffort | undefined;
   httpClient?: unknown;
   defaultHeaders?: Record<string, string>;
+  requestCompression?: RequestCompression;
+  responsesWebSocket?: ResponsesWebSocketConfig;
   toolMessageConversion?: ToolMessageConversion | undefined;
   clientFactory?: (auth: ProviderRequestAuth) => OpenAI;
   convertError?: (error: unknown) => ChatProviderError | undefined;
@@ -626,6 +660,56 @@ function convertMessage(
   return result;
 }
 
+function projectRepresentableResponseOutput(output: readonly unknown[], model: string, toolConversion: ToolMessageConversion): { input: readonly unknown[]; incremental: boolean } | undefined {
+  const expected: Message = { role: 'assistant', content: [], toolCalls: [] };
+  let incremental = true;
+  const append = (part: ContentPart): void => {
+    const last = expected.content.at(-1);
+    if (last?.type === 'text' && part.type === 'text') last.text += part.text;
+    else if (last?.type === 'think' && part.type === 'think' && last.encrypted === undefined) {
+      last.think += part.think;
+      last.encrypted = part.encrypted;
+    } else expected.content.push(part);
+  };
+  for (const raw of output) {
+    const item = asRawObject(raw);
+    if (item === null || (item['status'] !== undefined && item['status'] !== 'completed')) return undefined;
+    const type = item['type'];
+    const allowed = type === 'message' ? ['type', 'id', 'status', 'role', 'content']
+      : type === 'function_call' ? ['type', 'id', 'status', 'call_id', 'name', 'arguments']
+      : type === 'reasoning' ? ['type', 'id', 'status', 'summary', 'encrypted_content'] : [];
+    if (allowed.length === 0) { incremental = false; continue; }
+    if (Object.keys(item).some((key) => !allowed.includes(key))) incremental = false;
+    if (type === 'message') {
+      if (item['role'] !== 'assistant' || !Array.isArray(item['content'])) return undefined;
+      for (const rawContent of item['content']) {
+        const content = asRawObject(rawContent);
+        if (content === null) return undefined;
+        if (content['type'] !== 'output_text') { incremental = false; continue; }
+        if (typeof content['text'] !== 'string') return undefined;
+        if (Object.keys(content).some((key) => !['type', 'text', 'annotations', 'logprobs'].includes(key)) ||
+          (content['annotations'] !== undefined && (!Array.isArray(content['annotations']) || content['annotations'].length !== 0)) ||
+          (content['logprobs'] !== undefined && (!Array.isArray(content['logprobs']) || content['logprobs'].length !== 0))) incremental = false;
+        if (content['text']) append({ type: 'text', text: content['text'] });
+      }
+    } else if (type === 'function_call') {
+      if (typeof item['call_id'] !== 'string' || typeof item['name'] !== 'string' || typeof item['arguments'] !== 'string') return undefined;
+      expected.toolCalls.push({ type: 'function', id: item['call_id'], name: item['name'], arguments: item['arguments'] });
+    } else {
+      if (!Array.isArray(item['summary']) || (item['encrypted_content'] !== undefined && typeof item['encrypted_content'] !== 'string')) return undefined;
+      let text = '';
+      for (const rawSummary of item['summary']) {
+        const summary = asRawObject(rawSummary);
+        if (summary === null || summary['type'] !== 'summary_text' || typeof summary['text'] !== 'string' ||
+          Object.keys(summary).some((key) => !['type', 'text'].includes(key))) return undefined;
+        text += summary['text'];
+      }
+      append({ type: 'think', think: text, encrypted: item['encrypted_content'] as string | undefined });
+    }
+  }
+  return { input: convertMessage(expected, model, toolConversion), incremental };
+}
+
 function convertTool(tool: Tool): ResponseToolParam {
   return {
     type: 'function',
@@ -677,6 +761,19 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private readonly _controller?: AbortController;
+  private _diagnostics?: { -readonly [K in keyof StreamDiagnostics]: StreamDiagnostics[K] };
+  private _completedNormally = false;
+  private _continuationBlocked = false;
+  private _cancelled = false;
+
+  get completionAuthority(): 'normal' | undefined {
+    return this._completedNormally && !this._continuationBlocked ? 'normal' : undefined;
+  }
+
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._continuationBlocked; }
+
+  cancel(): void { this._cancelled = true; this._controller?.abort(); }
 
   constructor(
     response: unknown,
@@ -684,12 +781,19 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     private readonly _convertErrorHook?:
       | ((error: unknown) => ChatProviderError | undefined)
       | undefined,
+    private readonly _commitMessage?: (responseId: string, message: Message) => void,
   ) {
     if (isStream) {
+      this._controller = (response as { controller?: AbortController }).controller;
+      this._diagnostics = createStreamDiagnostics();
       this._iter = this._convertStreamResponse(response as AsyncIterable<RawObject>);
     } else {
       this._iter = this._convertNonStreamResponse(response as RawObject);
     }
+  }
+
+  commitMessage(message: Message): void {
+    if (this._id !== null) this._commitMessage?.(this._id, message);
   }
 
   get id(): string | null {
@@ -708,8 +812,52 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     return this._rawFinishReason;
   }
 
+  get diagnostics(): StreamDiagnostics | undefined {
+    return safeStreamDiagnostics(this._diagnostics);
+  }
+
   async *[Symbol.asyncIterator](): AsyncIterator<StreamedMessagePart> {
-    yield* this._iter;
+    for await (const part of this._iter) {
+      if (this._diagnostics !== undefined) {
+        if (part.type === 'text') this._diagnostics.emittedTextChars = addDiagnosticCount(this._diagnostics.emittedTextChars, part.text.length);
+        if (part.type === 'function') this._diagnostics.emittedToolHeaders = addDiagnosticCount(this._diagnostics.emittedToolHeaders);
+      }
+      yield part;
+    }
+  }
+
+  private _captureTerminalDiagnostics(response: RawObject, status: 'completed' | 'incomplete' | 'failed'): void {
+    const diagnostics = this._diagnostics;
+    if (diagnostics === undefined) return;
+    diagnostics.terminalStatus = status;
+    diagnostics.terminalTextParts = null;
+    diagnostics.terminalTextChars = null;
+    diagnostics.terminalToolCalls = null;
+    const output = response['output'];
+    if (!Array.isArray(output)) return;
+    let textParts = 0;
+    let textChars = 0;
+    let toolCalls = 0;
+    for (const value of output) {
+      const item = asRawObject(value);
+      if (item === null) return;
+      if (item['type'] === 'function_call') toolCalls = addDiagnosticCount(toolCalls);
+      if (item['type'] !== 'message') continue;
+      const content = item['content'];
+      if (!Array.isArray(content)) return;
+      for (const value of content) {
+        const part = asRawObject(value);
+        if (part === null) return;
+        if (part['type'] !== 'output_text') continue;
+        const text = readStringField(part, 'text');
+        if (text === undefined) return;
+        textParts = addDiagnosticCount(textParts);
+        textChars = addDiagnosticCount(textChars, text.length);
+      }
+    }
+    diagnostics.terminalTextParts = textParts;
+    diagnostics.terminalTextChars = textChars;
+    diagnostics.terminalToolCalls = toolCalls;
   }
 
   private _captureFinishReasonFromResponse(response: RawObject): void {
@@ -719,6 +867,19 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     const normalized = normalizeResponsesFinishReason(status, incompleteReason);
     this._finishReason = normalized.finishReason;
     this._rawFinishReason = normalized.rawFinishReason;
+    const output = readObjectArrayField(response, 'output');
+    for (const item of output ?? []) this._observeOutputItem(item);
+    this._completedNormally = status === 'completed' && incomplete === undefined &&
+      readObjectField(response, 'error') === undefined && output !== undefined;
+  }
+
+  private _observeOutputItem(item: RawObject): void {
+    if (!['message', 'reasoning', 'function_call'].includes(String(item['type'])) || item['status'] === 'incomplete') {
+      this._continuationBlocked = true;
+    }
+    if ((readObjectArrayField(item, 'content') ?? []).some(part => part['type'] === 'refusal')) {
+      this._continuationBlocked = true;
+    }
   }
 
   private _extractUsage(usage: RawObject): void {
@@ -909,13 +1070,28 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       yield part;
     };
 
+    const diagnostics = this._diagnostics!;
+    const counters = new Map<string, keyof Pick<StreamDiagnostics, 'textDeltaCount' | 'textDoneCount' | 'contentPartAddedCount' | 'outputItemAddedCount' | 'outputItemDoneCount' | 'terminalEventCount' | 'errorEventCount'>>([
+      ['response.output_text.delta', 'textDeltaCount'], ['response.output_text.done', 'textDoneCount'],
+      ['response.content_part.added', 'contentPartAddedCount'], ['response.output_item.added', 'outputItemAddedCount'],
+      ['response.output_item.done', 'outputItemDoneCount'], ['response.completed', 'terminalEventCount'],
+      ['response.incomplete', 'terminalEventCount'], ['response.failed', 'terminalEventCount'],
+      ['error', 'errorEventCount'],
+    ]);
+    let readingEvent = true;
     try {
       for await (const chunk of response) {
+        readingEvent = false;
+        diagnostics.eventCount = addDiagnosticCount(diagnostics.eventCount);
         const type = readStringField(chunk, 'type');
+        const counter = type === undefined ? undefined : counters.get(type);
+        if (counter !== undefined) diagnostics[counter] = addDiagnosticCount(diagnostics[counter]);
         if (type === undefined) {
           if (!hasOwn(chunk, 'type')) {
             const message = readStringField(chunk, 'message');
             if (message !== undefined) {
+              diagnostics.endSource = 'event_error';
+              diagnostics.errorEventCount = addDiagnosticCount(diagnostics.errorEventCount);
               throw malformedStreamErrorEvent(message, this._convertErrorHook);
             }
           }
@@ -952,6 +1128,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           }
           case 'response.content_part.added': {
             const part = requireObjectField(chunk, 'part', type);
+            if (part['type'] === 'refusal') this._continuationBlocked = true;
             if (part['type'] === 'output_text') {
               yield* yieldFinalTextSuffix(
                 requireStringField(part, 'text', type),
@@ -963,6 +1140,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'response.output_item.added': {
+            this._observeOutputItem(requireObjectField(chunk, 'item', type));
             const item = readResponseOutputItem(chunk['item'], `${type}.item`);
             const outputIndex = readNumberField(chunk, 'output_index');
             yield* yieldFinalMessageText(item, outputIndex);
@@ -983,6 +1161,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'response.output_item.done': {
+            this._observeOutputItem(requireObjectField(chunk, 'item', type));
             const item = readResponseOutputItem(chunk['item'], `${type}.item`);
             const outputIndex = readNumberField(chunk, 'output_index');
             yield* yieldFinalMessageText(item, outputIndex);
@@ -1030,9 +1209,15 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.reasoning_summary_text.delta':
             yield { type: 'think', think: requireStringField(chunk, 'delta', type) };
             break;
+          case 'response.refusal.delta':
+          case 'response.refusal.done':
+            this._continuationBlocked = true;
+            break;
           case 'response.completed':
           case 'response.incomplete': {
             const responseObject = requireObjectField(chunk, 'response', type);
+            diagnostics.endSource = 'terminal';
+            this._captureTerminalDiagnostics(responseObject, type === 'response.completed' ? 'completed' : 'incomplete');
             const respId = readStringField(responseObject, 'id');
             if (respId !== undefined) {
               this._id = respId;
@@ -1042,12 +1227,14 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               this._extractUsage(usage);
             }
             this._captureFinishReasonFromResponse(responseObject);
+            if (type !== 'response.completed') this._completedNormally = false;
             for (const [outputIndex, item] of (readObjectArrayField(responseObject, 'output') ?? []).entries()) {
               yield* yieldFinalMessageText(readResponseOutputItem(item, `${type}.output item`), outputIndex);
             }
             break;
           }
           case 'error': {
+            diagnostics.endSource = 'event_error';
             const message = requireStringField(chunk, 'message', type);
             throw errorFromOpenAIResponsesEvent(
               'OpenAI Responses stream error',
@@ -1058,7 +1245,13 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             );
           }
           case 'response.failed': {
+            diagnostics.endSource = 'event_error';
+            diagnostics.errorEventCount = addDiagnosticCount(diagnostics.errorEventCount);
             const responseObject = requireObjectField(chunk, 'response', type);
+            this._captureTerminalDiagnostics(responseObject, 'failed');
+            const usage = readObjectField(responseObject, 'usage');
+            if (usage !== undefined) this._extractUsage(usage);
+            for (const item of readObjectArrayField(responseObject, 'output') ?? []) this._observeOutputItem(item);
             const error = readResponsesFailedResponseError(responseObject);
             if (error !== undefined) {
               throw errorFromOpenAIResponsesEvent(
@@ -1069,16 +1262,30 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
                 { rawEvent: chunk, convertErrorHook: this._convertErrorHook },
               );
             }
-            throw new ChatProviderError(
+            throw attachErrorDetails(new ChatProviderError(
               `OpenAI Responses response.failed: ${formatResponsesFailedResponse(responseObject)}`,
-            );
+            ), { ...providerStreamErrorDetails({ type, code: null }), errorSource: 'provider_event' });
           }
           default:
             break;
         }
+        readingEvent = true;
+      }
+      if (diagnostics.endSource === 'in_progress') {
+        diagnostics.endSource = 'eof';
+        throw new ChatProviderError('OpenAI Responses stream ended before a terminal response event.');
       }
     } catch (error: unknown) {
-      throw convertOpenAIError(error, this._convertErrorHook);
+      if (this._cancelled || isAbortError(error)) {
+        diagnostics.endSource = 'cancelled';
+        throw attachStreamDiagnostics(createAbortError(), diagnostics);
+      }
+      if (readingEvent && diagnostics.endSource === 'terminal' && this.completionAuthority === 'normal' &&
+        !(error instanceof OpenAIAPIError && error.error !== undefined)) return;
+      if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
+      throw attachStreamDiagnostics(transportStatusError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
+    } finally {
+      if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'cancelled';
     }
   }
 }
@@ -1091,6 +1298,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string> | undefined;
+  private readonly _requestCompression: ReturnType<typeof createRequestCompressionFetch>;
+  private readonly _responsesWebSocket: ResponsesWebSocketConfig | undefined;
+  private readonly _guardDelivery: boolean;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
   private readonly _offEffort: string | undefined;
   private readonly _generationKwargs: OpenAIResponsesGenerationKwargs;
@@ -1105,6 +1315,10 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
     this._apiKey = apiKey === undefined || apiKey.length === 0 ? undefined : apiKey;
     this._baseUrl = options.baseUrl ?? 'https://api.openai.com/v1';
     this._defaultHeaders = options.defaultHeaders;
+    this._requestCompression = createRequestCompressionFetch(options.requestCompression);
+    this._responsesWebSocket = options.responsesWebSocket;
+    this._guardDelivery = options.requestCompression !== undefined && options.requestCompression.encoding !== 'off' &&
+      matchesProviderTarget(`${this._baseUrl.replace(/\/$/, '')}/responses`, options.requestCompression.targets);
     this._model = options.model;
     this._stream = true;
     this._thinkingEffort = options.thinkingEffort;
@@ -1266,25 +1480,55 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
         );
       }
 
-      options?.onRequestSent?.();
-      const responsePromise = (
-        client.responses as {
-          create(params: unknown, opts?: unknown): Promise<unknown> & {
-            withResponse?: () => Promise<{ data: unknown; response: Response }>;
-          };
+      const transport = options?.responsesTransport;
+      if (transport !== undefined && this._responsesWebSocket !== undefined &&
+        matchesProviderTarget(`${client.baseURL.replace(/\/$/, '')}/responses`, this._responsesWebSocket.targets)) {
+        const auth = mergeProviderRequestAuth(options?.auth, options?.headers);
+        const headers = finalizeProviderRequestHeaders(mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers), auth);
+        let fullInput: readonly unknown[] | undefined;
+        try {
+          options?.onRequestSent?.();
+          const response = await transport.request(createParams, {
+            baseUrl: client.baseURL,
+            apiKey: requireProviderApiKey('OpenAIResponsesChatProvider', auth, this._apiKey),
+            headers: Object.fromEntries(headers),
+            signal: options?.signal,
+            canonicalOutput: (output) => projectRepresentableResponseOutput(output, this._model, this._toolMessageConversion),
+            onFullInput: (input) => { fullInput = input; },
+          });
+          return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, true, this._convertErrorHook,
+            (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion))), true);
+        } catch (error) {
+          if (isAbortError(error)) throw error;
+          if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) throw transportStatusError(error) ?? ambiguousRequestDelivery(error);
+          if (fullInput !== undefined) createParams['input'] = fullInput;
         }
-      ).create(createParams, options?.signal ? { signal: options.signal } : undefined);
-      const response =
-        options?.requestIdentity?.onResponseHeaders !== undefined &&
-        responsePromise.withResponse !== undefined
-          ? await responsePromise.withResponse().then(({ data, response: rawResponse }) => {
+      }
+      options?.onRequestSent?.();
+      const response = await withRequestCompressionDelivery(options?.signal, async () => {
+        const responsePromise = (
+          client.responses as {
+            create(params: unknown, opts?: unknown): Promise<unknown> & {
+              withResponse?: () => Promise<{ data: unknown; response: Response }>;
+            };
+          }
+        ).create(createParams, options?.signal ? { signal: options.signal } : undefined);
+        return options?.requestIdentity?.onResponseHeaders !== undefined &&
+          responsePromise.withResponse !== undefined
+          ? responsePromise.withResponse().then(({ data, response: rawResponse }) => {
               options.requestIdentity?.onResponseHeaders?.(rawResponse.headers);
               return data;
             })
-          : await responsePromise;
-      return new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook);
+          : responsePromise;
+      });
+      return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, this._stream, this._convertErrorHook), this._guardDelivery);
     } catch (error: unknown) {
-      throw convertOpenAIError(error, this._convertErrorHook);
+      const diagnostics: StreamDiagnostics | undefined = this._stream ? {
+        ...createStreamDiagnostics(),
+        endSource: isAbortError(error) ? 'cancelled' : error instanceof OpenAIError ? 'sdk_error' : 'local_error',
+      } : undefined;
+      if (isAbortError(error)) throw attachStreamDiagnostics(createAbortError(), diagnostics);
+      throw attachStreamDiagnostics(convertOpenAIError(error, this._convertErrorHook), diagnostics);
     }
   }
 
@@ -1302,7 +1546,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
-      fetch: requestIdentityFetchForAuth(auth),
+      fetch: this._requestCompression(requestIdentityFetchForAuth(auth)),
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {

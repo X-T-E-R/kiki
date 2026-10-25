@@ -9,6 +9,7 @@ import {
   KAP_MODEL_PRICES_ASSET,
   KAP_SEARCH_WORKER_ASSET,
   KAP_SQLITE_QUERY_WORKER_ASSET,
+  KAP_USAGE_PARSER_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION,
@@ -19,6 +20,8 @@ import {
 import { nativeDeps, resolveTargetDeps, SUPPORTED_TARGETS } from './native-deps.mjs';
 import { collectBrowserDriverAssets } from './browser-assets.mjs';
 import { collectHistoryImportAssets } from './history-assets.mjs';
+import { collectSourceOwnedAdapterAssets } from './external-harness-assets.mjs';
+import { collectWindowsProcessAssets } from './windows-process-assets.mjs';
 import { copyKikiDocs } from '../local-docs.mjs';
 
 export { NATIVE_ASSET_MANIFEST_VERSION };
@@ -377,6 +380,10 @@ export async function collectNativeAssets({ appRoot, target }) {
       KAP_SQLITE_QUERY_WORKER_ASSET,
     ],
     [
+      resolve(appRoot, 'dist-native', 'intermediates', 'usage-parser-worker.mjs'),
+      KAP_USAGE_PARSER_WORKER_ASSET,
+    ],
+    [
       resolve(appRoot, '..', '..', 'packages', 'agent-core-v2', 'src', 'app', 'plugin', 'hostRunner.mjs'),
       PLUGIN_HOST_RUNNER_ASSET,
     ],
@@ -417,6 +424,14 @@ export async function collectNativeAssets({ appRoot, target }) {
   const history = await collectHistoryImportAssets({ appRoot, target });
   runtimeFiles.push(...history.runtimeFiles);
   Object.assign(assets, history.assets);
+
+  const externalHarness = await collectSourceOwnedAdapterAssets({ appRoot, target });
+  runtimeFiles.push(...externalHarness.runtimeFiles);
+  Object.assign(assets, externalHarness.assets);
+
+  const windowsProcess = await collectWindowsProcessAssets({ appRoot, target });
+  runtimeFiles.push(...windowsProcess.runtimeFiles);
+  Object.assign(assets, windowsProcess.assets);
 
   const manifest = {
     version: NATIVE_ASSET_MANIFEST_VERSION,

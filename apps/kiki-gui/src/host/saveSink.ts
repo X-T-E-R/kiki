@@ -20,6 +20,20 @@ export function bufferedSaveSink(save: (blob: Blob) => Promise<boolean>): HostSa
   };
 }
 
+export function browserAnchorSaveSink(filename: string): HostSaveSink {
+  return bufferedSaveSink(async (blob) => {
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.append(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    return true;
+  });
+}
+
 export async function browserSaveSink(filename: string): Promise<HostSaveSink | null> {
   const picker = (globalThis as unknown as { showSaveFilePicker?: (options: { suggestedName: string }) => Promise<{ createWritable(): Promise<WritableStream<Uint8Array>> }> }).showSaveFilePicker;
   if (picker !== undefined) {
@@ -38,15 +52,5 @@ export async function browserSaveSink(filename: string): Promise<HostSaveSink | 
       throw error;
     }
   }
-  return bufferedSaveSink(async (blob) => {
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = filename;
-    document.body.append(link);
-    link.click();
-    link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    return true;
-  });
+  return browserAnchorSaveSink(filename);
 }

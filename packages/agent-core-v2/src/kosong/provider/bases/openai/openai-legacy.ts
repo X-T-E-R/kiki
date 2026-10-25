@@ -23,6 +23,10 @@ import type {
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
+import { guardRequestDelivery } from '../request-delivery';
+import { matchesProviderTarget } from '../../providerTarget';
 
 import {
   convertChatCompletionStreamToolCall,
@@ -49,6 +53,7 @@ import {
   toolToOpenAI,
 } from './openai-common';
 import { ReasoningKeyDialect } from './reasoning-key';
+import { readReasoningParts, writeReasoningParts } from './reasoning-details';
 import {
   mergeProviderRequestAuth,
   requestIdentityFetchForAuth,
@@ -57,8 +62,6 @@ import {
   resolveAuthBackedClient,
 } from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeToolCallId } from '../tool-call-id';
-
-const CHAT_COMPLETIONS_MAX_OUTPUT_TOKENS_CEILING = 128 * 1024;
 
 export const OPENAI_CHAT_TOOL_CALL_ID_POLICY: ToolCallIdPolicy = {
   normalize: (id) => sanitizeToolCallId(id, 64),
@@ -108,6 +111,7 @@ export interface OpenAILegacyOptions {
   thinkingEffort?: ThinkingEffort | undefined;
   httpClient?: unknown;
   defaultHeaders?: Record<string, string>;
+  requestCompression?: RequestCompression;
   toolMessageConversion?: ToolMessageConversion | undefined;
   clientFactory?: (auth: ProviderRequestAuth) => OpenAI;
   hooks?: OpenAIChatCompletionsHooks | undefined;
@@ -190,14 +194,12 @@ function convertMessage(
   preserveThinking: boolean,
   allowToolResultExtraction: boolean,
 ): OpenAIMessage {
-  let reasoningContent = '';
-  let hasReasoningPart = false;
+  const reasoningParts: Extract<ContentPart, { type: 'think' }>[] = [];
   const nonThinkParts: ContentPart[] = [];
 
   for (const part of message.content) {
     if (part.type === 'think') {
-      hasReasoningPart = true;
-      reasoningContent += part.think;
+      reasoningParts.push(part);
     } else {
       nonThinkParts.push(part);
     }
@@ -251,7 +253,7 @@ function convertMessage(
 
   if (
     message.role === 'assistant' &&
-    hasReasoningPart &&
+    reasoningParts.length > 0 &&
     result.content === undefined &&
     result.tool_calls === undefined
   ) {
@@ -262,8 +264,9 @@ function convertMessage(
     result.content = null;
   }
 
-  if (hasReasoningPart || (preserveThinking && message.role === 'assistant')) {
-    result[reasoningKey] = reasoningContent;
+  Object.assign(result, writeReasoningParts(reasoningParts, reasoningKey));
+  if (reasoningParts.length === 0 && preserveThinking && message.role === 'assistant') {
+    result[reasoningKey] = '';
   }
 
   return result;
@@ -347,6 +350,16 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private readonly _controller?: AbortController;
+  private _refused = false;
+
+  get completionAuthority(): 'normal' | undefined {
+    return this._rawFinishReason === 'stop' && !this._refused ? 'normal' : undefined;
+  }
+
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._refused; }
+
+  cancel(): void { this._controller?.abort(); }
 
   constructor(
     response: OpenAI.Chat.ChatCompletion | AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
@@ -361,6 +374,7 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
       | undefined,
   ) {
     if (isStream) {
+      this._controller = (response as { controller?: AbortController }).controller;
       this._iter = this._convertStreamResponse(
         response as AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
         reasoningKeyDialect,
@@ -421,11 +435,9 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
 
     const message = response.choices[0]?.message;
     if (!message) return;
+    this._refused = typeof message.refusal === 'string' && message.refusal.length > 0;
 
-    const reasoning = reasoningKeyDialect.observe(message);
-    if (reasoning !== undefined) {
-      yield { type: 'think', think: reasoning } satisfies StreamedMessagePart;
-    }
+    yield* readReasoningParts(message, reasoningKeyDialect);
 
     if (message.content) {
       yield { type: 'text', text: message.content } satisfies StreamedMessagePart;
@@ -449,6 +461,8 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
     reasoningKeyDialect: ReasoningKeyDialect,
   ): AsyncGenerator<StreamedMessagePart> {
     const bufferedToolCalls = new Map<number | string, BufferedChatCompletionToolCall>();
+    const details: Extract<ContentPart, { type: 'think' }>[] = [];
+    let visibleReasoningKey: string | undefined;
 
     try {
       for await (const chunk of response) {
@@ -470,10 +484,16 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
         }
 
         const delta = choice.delta;
+        if (typeof delta.refusal === 'string' && delta.refusal.length > 0) this._refused = true;
 
-        const reasoning = reasoningKeyDialect.observe(delta);
-        if (reasoning !== undefined) {
-          yield { type: 'think', think: reasoning } satisfies StreamedMessagePart;
+        for (const part of readReasoningParts(delta, reasoningKeyDialect)) {
+          if (part.reasoningDetails !== undefined) {
+            details.push(part);
+            yield { ...part, think: '', hidden: true };
+          } else {
+            if (part.think.length > 0) visibleReasoningKey ??= part.reasoningKey;
+            yield { ...part, hidden: part.think.length > 0 && part.reasoningKey !== visibleReasoningKey || undefined };
+          }
         }
 
         if (delta.content) {
@@ -485,6 +505,10 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
             yield part;
           }
         }
+      }
+      if (visibleReasoningKey === undefined) {
+        const text = details.map((part) => part.think).join('');
+        if (text.length > 0) yield { type: 'think', think: text, reasoningDetails: [] };
       }
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._convertErrorHook);
@@ -500,6 +524,8 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string> | undefined;
+  private readonly _requestCompression: ReturnType<typeof createRequestCompressionFetch>;
+  private readonly _guardDelivery: boolean;
   private readonly _reasoningKeyDialect: ReasoningKeyDialect;
   private readonly _offEffort: string | undefined;
   private readonly _thinkingEffort: ThinkingEffort | undefined;
@@ -520,6 +546,9 @@ export class OpenAILegacyChatProvider implements ChatProvider {
     this._apiKey = apiKey === undefined || apiKey.length === 0 ? undefined : apiKey;
     this._baseUrl = options.baseUrl ?? 'https://api.openai.com/v1';
     this._defaultHeaders = options.defaultHeaders;
+    this._requestCompression = createRequestCompressionFetch(options.requestCompression);
+    this._guardDelivery = options.requestCompression !== undefined && options.requestCompression.encoding !== 'off' &&
+      matchesProviderTarget(`${this._baseUrl.replace(/\/$/, '')}/chat/completions`, options.requestCompression.targets);
     this._model = options.model;
     this._stream = options.stream ?? true;
     this._hooks = options.hooks;
@@ -635,13 +664,13 @@ export class OpenAILegacyChatProvider implements ChatProvider {
         mergeProviderRequestAuth(options?.auth, options?.headers),
       );
       options?.onRequestSent?.();
-      const { data, response } = await client.chat.completions
+      const { data, response } = await withRequestCompressionDelivery(options?.signal, () => client.chat.completions
         .create(
           finalParams as unknown as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
           options?.signal ? { signal: options.signal } : undefined,
         )
-        .withResponse();
-      return new OpenAILegacyStreamedMessage(
+        .withResponse());
+      return guardRequestDelivery(new OpenAILegacyStreamedMessage(
         data as unknown as
           | OpenAI.Chat.ChatCompletion
           | AsyncIterable<OpenAI.Chat.ChatCompletionChunk>,
@@ -650,7 +679,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
         parseTraceId(response.headers),
         this._hooks?.extractUsage,
         this._hooks?.convertError,
-      );
+      ), this._guardDelivery);
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._hooks?.convertError);
     }
@@ -726,8 +755,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       if (hooked !== undefined) {
         kwargs = { ...kwargs, ...hooked };
       } else {
-        const capped = Math.min(cap, CHAT_COMPLETIONS_MAX_OUTPUT_TOKENS_CEILING);
-        kwargs = { ...kwargs, ...completionTokenKwargs(this._model, Math.max(1, capped)) };
+        kwargs = { ...kwargs, ...completionTokenKwargs(this._model, cap) };
       }
     }
 
@@ -759,7 +787,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
       apiKey,
       baseURL: this._baseUrl,
       maxRetries: 0,
-      fetch: requestIdentityFetchForAuth(auth),
+      fetch: this._requestCompression(requestIdentityFetchForAuth(auth)),
     };
     const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
     if (defaultHeaders !== undefined) {

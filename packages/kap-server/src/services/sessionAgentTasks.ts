@@ -61,7 +61,7 @@ const storedBaseSchema = z.object({
 });
 const storedTaskSchema = z.discriminatedUnion('kind', [
   storedBaseSchema.extend({ kind: z.literal('process'), command: z.string(), exitCode: z.number().int().nullable() }),
-  storedBaseSchema.extend({ kind: z.literal('agent'), agentId: z.string().optional(), profile: z.string().optional(), subagentType: z.string().optional(), model: z.string().optional(), thinkingEffort: z.string().optional(), parentToolCallId: z.string().optional() }),
+  storedBaseSchema.extend({ kind: z.literal('agent'), agentId: z.string().optional(), profile: z.string().optional(), subagentType: z.string().optional(), model: z.string().optional(), thinkingEffort: z.string().optional(), thinkingEffortExplicit: z.boolean().optional(), executorId: z.string().optional(), executorProtocol: z.string().optional(), parentToolCallId: z.string().optional() }),
   storedBaseSchema.extend({ kind: z.literal('question') }),
   storedBaseSchema.extend({ kind: z.literal('media') }),
 ]);
@@ -109,6 +109,9 @@ function toSummary(sessionId: string, ownerId: string, source: 'live' | 'persist
     profile: info.kind === 'agent' ? info.profile ?? info.subagentType : undefined,
     model: info.kind === 'agent' ? info.model : undefined,
     thinking_effort: info.kind === 'agent' ? info.thinkingEffort : undefined,
+    thinking_effort_explicit: info.kind === 'agent' ? info.thinkingEffortExplicit : undefined,
+    executor_id: info.kind === 'agent' ? info.executorId : undefined,
+    executor_protocol: info.kind === 'agent' ? info.executorProtocol : undefined,
     parent_tool_call_id: info.kind === 'agent' ? info.parentToolCallId : undefined,
     receipt: receipt.success ? receipt.data : undefined,
     total_bytes: receipt.success ? receipt.data.bytes : undefined,

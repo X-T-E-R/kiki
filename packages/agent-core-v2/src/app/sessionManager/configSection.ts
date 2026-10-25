@@ -12,6 +12,7 @@ export const SessionResidencyConfigSchema = z
     sweepIntervalMs: z.number().int().min(1_000).max(300_000).optional(),
     maxConcurrentRestores: z.number().int().min(1).max(4).optional(),
     maxQueuedRestores: z.number().int().min(0).max(64).optional(),
+    maxResidentHeapBytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
   })
   .strict();
 
@@ -24,6 +25,7 @@ export const DEFAULT_SESSION_RESIDENCY_CONFIG: Required<SessionResidencyConfig> 
   sweepIntervalMs: 30_000,
   maxConcurrentRestores: 1,
   maxQueuedRestores: 8,
+  maxResidentHeapBytes: 1536 << 20,
 };
 
 registerConfigSection(SESSION_RESIDENCY_SECTION, SessionResidencyConfigSchema, {

@@ -8,12 +8,14 @@ import {
   isFullyUndoable,
   readContextCompactedCount,
 } from './contextOps';
-import { createLoopEventFold, type LoopRecordedEvent } from './loopEventFold';
+import { createLoopEventFold, findProviderMessageRevision, type LoopRecordedEvent } from './loopEventFold';
 import type { ContextMessage, ContextMessageSource } from './types';
 
 export interface ContextTranscript {
   readonly entries: readonly ContextMessage[];
   readonly times: readonly (number | undefined)[];
+  readonly logicalEntries: readonly ContextMessage[];
+  readonly logicalTimes: readonly (number | undefined)[];
   readonly foldedLength: number;
 }
 
@@ -24,6 +26,7 @@ export interface ContextTranscriptReducer {
 
 interface MutableMessage {
   id?: string;
+  providerMessageId?: string;
   role: ContextMessage['role'];
   content: ContentPart[];
   toolCalls: ToolCall[];
@@ -86,7 +89,13 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       push(toMutableEntry(message, time));
     },
     pushMessage: (message: ContextMessage, time: number | undefined) => {
-      push(toMutableEntry(message, time));
+      const revision = findProviderMessageRevision(logical, message, (entry) => entry.message);
+      if (revision !== undefined) {
+        const entry = logical[revision.index]!;
+        entry.message = toMutableEntry(revision.message, entry.time).message;
+      } else {
+        push(toMutableEntry(message, time));
+      }
     },
   };
   let fold = createLoopEventFold(sink);
@@ -158,9 +167,12 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
       case 'context.apply_compaction':
         applyCompaction(record);
         break;
-      case 'context.undo':
+      case 'context.undo': {
         applyUndo(record['count'] as number);
+        const prompt = record['replacementPrompt'] as import('#/agent/prompt/promptService').PromptEnqueuedPayload | undefined;
+        if (prompt !== undefined) fold.appendMessage(prompt.message, record.time);
         break;
+      }
       case 'context.clear':
         logical = [];
         resetOpenState();
@@ -175,6 +187,8 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
     result: () => ({
       entries: transcript.map((e) => e.message),
       times: transcript.map((e) => e.time),
+      logicalEntries: logical.map((e) => e.message),
+      logicalTimes: logical.map((e) => e.time),
       foldedLength: logical.length,
     }),
   };
@@ -183,7 +197,8 @@ export function createContextTranscriptReducer(): ContextTranscriptReducer {
 function toMutableEntry(message: ContextMessage, time: number | undefined): MutableEntry {
   return {
     message: {
-      ...(message.id !== undefined ? { id: message.id } : {}),
+      id: message.id,
+      providerMessageId: message.providerMessageId,
       role: message.role,
       content: [...message.content],
       toolCalls: [...message.toolCalls],
@@ -205,10 +220,10 @@ function removeEntry(entries: MutableEntry[], entry: MutableEntry): void {
 }
 
 function readCompactionSummaryText(record: WireRecord): string {
-  const summary = record['summary'];
-  if (typeof summary === 'string') return summary;
   const contextSummary = record['contextSummary'];
   if (typeof contextSummary === 'string') return contextSummary;
+  const summary = record['summary'];
+  if (typeof summary === 'string') return summary;
   if (isContextMessageLike(summary)) return textOfParts(summary.content);
   return '';
 }

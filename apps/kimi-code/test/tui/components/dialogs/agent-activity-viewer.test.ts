@@ -173,7 +173,7 @@ describe('AgentActivityViewer', () => {
 
     const collapsed = makeViewer({ record: makeRecord() });
     const collapsedText = renderPlain(collapsed);
-    expect(collapsedText).toContain('ctrl+o to expand');
+    expect(collapsedText).toContain('Ctrl+O to expand');
     expect(collapsedText).not.toContain('line 10');
 
     collapsed.handleInput(CTRL_O);

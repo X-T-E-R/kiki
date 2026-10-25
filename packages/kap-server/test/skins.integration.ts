@@ -340,9 +340,12 @@ describe('server-v2 skin routes', () => {
 
   it('hides the themes of a plugin that is installed but disabled', async () => {
     await writeThemePlugin(false);
+    expect((await post('/plugins/skin-plugin:disable')).code).toBe(0);
     const data = await list();
     expect(data.items).toEqual([]);
     expect((await get('skin-plugin:sea-glass')).code).toBe(40409);
+    expect((await post('/plugins/skin-plugin:enable')).code).toBe(0);
+    expect((await list()).items.map((item) => item.id)).toEqual(['skin-plugin:sea-glass']);
   });
 
   it('404s a plugin skin whose plugin or theme does not exist', async () => {

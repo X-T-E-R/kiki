@@ -1,6 +1,8 @@
 import type { Message, StreamedMessagePart, VideoURLPart } from './message';
 import type { Tool } from './tool';
 import type { TokenUsage } from './usage';
+import type { StreamDiagnostics } from './streamDiagnostics';
+import type { ResponsesRequestTransport } from './responsesTransport';
 
 export type ThinkingEffort = 'off' | 'on' | (string & {});
 
@@ -42,6 +44,11 @@ export interface StreamedMessage {
   readonly finishReason: FinishReason | null;
   readonly rawFinishReason: string | null;
   readonly traceId?: string | null;
+  readonly diagnostics?: StreamDiagnostics;
+  readonly completionAuthority?: 'normal';
+  readonly thinkingOnlyRecoveryBlocked?: boolean;
+  commitMessage?(message: Message): void;
+  cancel?(): void | Promise<void>;
 }
 
 export interface ProviderRequestAuth {
@@ -83,7 +90,14 @@ export interface VideoUploadInput {
   readonly filename?: string | undefined;
 }
 
+export interface RawResponseObserver {
+  start(response: { status: number; contentType: string | null; requestId: string | null; alternateRequestId: string | null; traceId: string | null }): void;
+  chunk(bytes: Uint8Array): void;
+  end(outcome: string): void;
+}
+
 export interface GenerateOptions {
+  rawResponseObserver?: RawResponseObserver;
   signal?: AbortSignal;
   auth?: ProviderRequestAuth;
   responseFormat?: ResponseFormat;
@@ -101,6 +115,7 @@ export interface GenerateOptions {
   onStreamEnd?: (stats?: StreamDecodeStats) => void;
   onTraceId?: (traceId: string | null) => void;
   requestIdentity?: RequestIdentityWireOptions;
+  responsesTransport?: ResponsesRequestTransport;
 }
 
 /** The L0 `ChatProvider` wire contract (the file is named `provider`, but this is the contract, not an

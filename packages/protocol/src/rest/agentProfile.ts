@@ -122,11 +122,27 @@ export const declaredAgentModelMenuSchema = z.object({
 });
 export type DeclaredAgentModelMenu = z.infer<typeof declaredAgentModelMenuSchema>;
 
+export const executorCapabilityStateSchema = z.enum(['unknown', 'loading', 'ready', 'partial', 'unavailable']);
+export const executorCapabilityDimensionSchema = z.object({
+  state: executorCapabilityStateSchema,
+  values: z.array(z.string()).optional(),
+  diagnostic: z.string().optional(),
+});
+export const executorCapabilityProjectionSchema = z.object({
+  source: z.enum(['negotiated', 'cli_probe']),
+  version: z.string().optional(),
+  observed_at: z.number().int().nonnegative(),
+  models: executorCapabilityDimensionSchema,
+  thinking_levels: executorCapabilityDimensionSchema,
+});
+export type ExecutorCapabilityProjection = z.infer<typeof executorCapabilityProjectionSchema>;
+
 export const agentModelMenuProjectionSchema = z.object({
   restrict_models_to_menu: z.boolean(),
   declared_model_menu: declaredAgentModelMenuSchema,
   effective_model_aliases: z.array(z.string()),
   model_constraints_active: z.boolean().optional(),
+  executor_capabilities: executorCapabilityProjectionSchema.optional(),
 });
 export type AgentModelMenuProjection = z.infer<typeof agentModelMenuProjectionSchema>;
 
@@ -239,6 +255,12 @@ export const agentCapabilitiesQuerySchema = z.union([
     session_id: z.string().trim().min(1),
     agent_id: z.string().trim().min(1),
     check_all_prompt_files: z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')]).optional(),
+    metrics_settle: z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')]).optional(),
+    metrics_only: z.union([z.boolean(), z.enum(['true', 'false']).transform((value) => value === 'true')]).optional(),
+    metrics_agent_ids: z.union([
+      z.array(z.string().trim().min(1)).min(1),
+      z.string().trim().min(1).transform((value) => value.split(',').map((item) => item.trim()).filter((item) => item.length > 0)).pipe(z.array(z.string().min(1)).min(1)),
+    ]).optional(),
   }).strict(),
   z.object({
     workspace_id: z.string().trim().min(1),
@@ -265,6 +287,10 @@ export const agentCapabilityReasonCodeSchema = z.enum([
   'persisted_metadata_unavailable',
   'persisted_profile_unavailable',
   'snapshot_launch_unavailable',
+  'tool_not_registered',
+  'plugin_catalog_failed',
+  'plugin_usage_disabled',
+  'plugin_usage_unavailable',
   'agent_run_inactive',
   'agent_run_draft_disabled',
   'draft_inventory_only',
@@ -362,6 +388,8 @@ export const agentPanelToolSchema = z.object({
   category: z.string(),
   group: z.string().optional(),
   state: agentPanelCapabilityStateSchema,
+  policy_allowed: z.boolean().optional(),
+  request_state: z.enum(['available', 'loadable', 'unavailable']).optional(),
   unavailable_reason: z.string().optional(),
   unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   parameters: z.record(z.string(), z.unknown()).optional(),
@@ -433,6 +461,7 @@ export const agentPanelMetricsSchema = z.object({
   contextLimit: z.number().nonnegative().nullable(),
   compactionCount: z.number().int().nonnegative().nullable(),
   usagePartial: z.boolean().optional(),
+  usageComplete: z.boolean().optional(),
   costPartial: z.boolean().optional(),
   usageSource: z.enum(['live', 'persisted']).optional(),
 });

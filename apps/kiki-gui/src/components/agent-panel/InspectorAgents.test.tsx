@@ -4,7 +4,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@kiki/transcript';
-import { sessionAgentForestFromAgentSnapshots, type AgentForest } from '@kiki/session-core/session';
+import { buildAgentForest, sessionAgentForestFromAgentSnapshots, type AgentForest } from '@kiki/session-core/session';
 
 import { I18nProvider } from '../../i18n';
 import { AgentRoster } from './InspectorAgents';
@@ -21,6 +21,7 @@ afterEach(async () => {
     await act(async () => { root.unmount(); });
     container.remove();
   }
+  vi.useRealTimers();
 });
 afterAll(() => {
   actEnvironment.IS_REACT_ACT_ENVIRONMENT = false;
@@ -83,4 +84,122 @@ describe('AgentRoster busy state', () => {
     expect(text).toContain('Working');
     expect(text).not.toContain('Background');
   });
+});
+
+
+describe('AgentRoster metadata identity and state', () => {
+  it('renders recorded names and distinct completed, idle, lost and unknown states without historical running timers', async () => {
+    const at = '2026-01-01T00:00:00.000Z';
+    const old = replay('main', [{ op: 'task.upsert', task: { taskId: 'old', kind: 'subagent', state: 'running', agentId: 'named', detached: false, startedAt: at, outputTail: '' } }]);
+    const row = { session_id: 'fixture-session', kind: 'subagent' as const, created_at: at, status: 'running' as const, live: false,
+      status_source: 'metadata' as const, name_source: 'user_label' as const };
+    const forest = sessionAgentForestFromAgentSnapshots(new Map([['main', old]]), [
+      { ...row, id: 'named', description: 'Protocol investigation', label: 'Protocol investigation', status: 'completed', activity_status: 'completed', completed_at: '2026-01-01T00:01:00.000Z', model: 'fixture/model' },
+      { ...row, id: 'idle', description: 'Idle worker', activity_status: 'idle', status_source: 'runtime', live: true },
+      { ...row, id: 'unknown', description: 'unknown', activity_status: 'unknown', name_source: 'unreported' },
+      { ...row, id: 'lost', description: 'Lost worker', status: 'failed', activity_status: 'lost' },
+    ]);
+    const container = await renderRoster(forest);
+    const named = container.querySelector('[data-agent-id="named"]');
+    expect(named?.textContent).toContain('Protocol investigation');
+    expect(named?.querySelector('[data-agent-status]')?.getAttribute('data-agent-status')).toBe('completed');
+    expect(named?.getAttribute('data-agent-name-source')).toBe('user_label');
+    expect(named?.getAttribute('title')).toContain('Status: session registry');
+    expect(container.querySelector('[data-agent-id="idle"]')?.getAttribute('data-roster-bucket')).toBe('idle');
+    expect(container.querySelector('[data-roster-unknown-group]')).toBeNull();
+    const unknown = container.querySelector('[data-agent-id="unknown"]');
+    expect(unknown?.getAttribute('data-roster-bucket')).toBe('unknown');
+    expect(unknown?.querySelector('[data-agent-status]')?.textContent).toBe('Status unknown');
+    expect(unknown?.querySelector('[data-life]')).toBeNull();
+    expect(unknown?.textContent).toContain('Name not registered');
+    expect(unknown?.textContent).not.toContain('Idle');
+    expect(container.querySelector('[data-agent-id="lost"]')?.textContent).toContain('Lost');
+    expect(container.textContent).not.toContain('Working');
+  });
+});
+
+
+it('keeps historical duration fixed, omits missing execution timing and only ticks a real running row', async () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date('2026-01-04T00:00:00.000Z'));
+  const at = '2026-01-01T00:00:00.000Z';
+  const end = '2026-01-01T00:01:00.000Z';
+  const row = { session_id: 'fixture-session', kind: 'subagent' as const, created_at: at,
+    description: 'Recorded worker', status_source: 'metadata' as const, name_source: 'profile' as const, live: false };
+  const forest = sessionAgentForestFromAgentSnapshots(new Map(), [
+    { ...row, id: 'done', status: 'completed', activity_status: 'completed', started_at: at, completed_at: end },
+    { ...row, id: 'untimed', status: 'completed', activity_status: 'completed', completed_at: end },
+    { ...row, id: 'idle', status: 'running', activity_status: 'idle', started_at: at },
+    { ...row, id: 'unknown', status: 'running', activity_status: 'unknown', started_at: at },
+    { ...row, id: 'live', status: 'running', activity_status: 'running', started_at: at, status_source: 'runtime', live: true },
+  ]);
+  const container = await renderRoster(forest);
+  const state = (id: string) => container.querySelector(`[data-agent-id="${id}"] [data-agent-status]`);
+  const fixed = state('done')?.textContent;
+  expect(fixed).toBe('Completed · 1m 0s');
+  expect(state('untimed')?.textContent).toBe('Completed');
+  expect(state('idle')?.textContent).toBe('Idle');
+  expect(state('unknown')?.textContent).toBe('Status unknown');
+  expect(state('unknown')?.getAttribute('data-agent-status')).toBe('unknown');
+  expect(container.querySelector('[data-roster-unknown-group]')).toBeNull();
+  expect(state('live')?.textContent).toBe('72h 0m');
+  for (const id of ['done', 'untimed', 'idle', 'unknown']) {
+    expect(state(id)?.className).not.toContain('text-success');
+    expect(container.querySelector(`[data-agent-id="${id}"] .bg-success`)).toBeNull();
+  }
+  await act(async () => { vi.advanceTimersByTime(60_000); });
+  expect(state('done')?.textContent).toBe(fixed);
+  expect(state('untimed')?.textContent).toBe('Completed');
+  expect(state('live')?.textContent).toBe('72h 1m');
+});
+
+it('folds a large unknown history, names it unknown, and keeps an active unknown parent', async () => {
+  const forest = buildAgentForest([], [
+    { agentId: 'main', name: 'Main' },
+    { agentId: 'parent', parentAgentId: 'main', name: 'Parent', status: 'unknown' },
+    { agentId: 'child', parentAgentId: 'parent', name: 'Child', status: 'running' },
+    ...Array.from({ length: 4 }, (_, index) => ({
+      agentId: `old-${index}`, parentAgentId: 'main', name: `Old ${index}`, status: 'unknown' as const,
+    })),
+    ...Array.from({ length: 4 }, (_, index) => ({
+      agentId: `done-${index}`, parentAgentId: 'main', name: `Done ${index}`, status: 'completed' as const,
+    })),
+  ]);
+  const container = await renderRoster(forest);
+  expect(container.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(container.querySelector('[data-agent-id="old-0"]')).toBeNull();
+  expect(container.querySelector('[data-agent-id="done-0"]')).toBeNull();
+  const unknown = container.querySelector<HTMLButtonElement>('[data-roster-unknown-group]');
+  const done = container.querySelector<HTMLButtonElement>('[data-roster-done-group]');
+  expect(unknown?.textContent).toContain('4 status unknown');
+  expect(unknown?.textContent).not.toContain('Idle');
+  expect(unknown?.textContent).not.toContain('finished');
+  expect(unknown?.querySelector('[data-life]')).toBeNull();
+  expect(unknown?.getAttribute('aria-expanded')).toBe('false');
+  expect(done?.textContent).toContain('finished');
+  expect(done?.getAttribute('aria-expanded')).toBe('false');
+
+  await act(async () => { unknown?.click(); });
+  const old = container.querySelector('[data-agent-id="old-0"]');
+  expect(old?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(old?.querySelector('[data-agent-status]')?.textContent).toBe('Status unknown');
+  expect(old?.textContent).not.toContain('Idle');
+  expect(old?.querySelector('[data-life]')).toBeNull();
+  expect(container.querySelector('[data-roster-done-group]')?.getAttribute('aria-expanded')).toBe('false');
+  expect(container.querySelector('[data-agent-id="done-0"]')).toBeNull();
+
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-roster-toggle="parent"]')?.click(); });
+  expect(container.querySelector('[data-agent-id="child"]')?.getAttribute('data-roster-bucket')).toBe('running');
+
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-roster-done-group]')?.click(); });
+  expect(container.querySelector('[data-agent-id="done-0"]')).not.toBeNull();
+  expect(container.querySelector('[data-agent-id="old-0"]')).not.toBeNull();
+  expect(container.querySelector('[data-roster-unknown-group]')?.getAttribute('aria-expanded')).toBe('true');
+
+  await act(async () => { container.querySelector<HTMLButtonElement>('[data-roster-filter="unknown"]')?.click(); });
+  expect(container.querySelector('[data-roster-unknown-group]')).toBeNull();
+  expect(container.querySelector('[data-agent-id="old-0"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(container.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+  expect(container.querySelector('[data-agent-id="child"]')).toBeNull();
+  expect(container.querySelector('[data-agent-id="done-0"]')).toBeNull();
 });

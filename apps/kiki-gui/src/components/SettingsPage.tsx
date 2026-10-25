@@ -2,12 +2,19 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { useLocation, useNavigate, useParams } from 'react-router-dom';
 
 import {
+  AGENTS_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_DEFAULT_TAB,
+  BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
+  EXTENSIONS_SETTINGS_DEFAULT_TAB,
+  SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
   experimentalTabForSection,
+  pluginSettingsIdFromQuery,
   resolveSettingsRoute,
   settingsGroupForSection,
   settingsSectionIsDeviceOnly,
+  settingsSectionSupportsSpace,
+  workspaceSettingsIdFromQuery,
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../i18n';
@@ -17,14 +24,18 @@ import { useDirtyGuard, useGuardedNavigate } from './dirtyGuard';
 import { AboutSection } from './settings/AboutSection';
 import { DesktopLogCard } from './settings/DesktopLogCard';
 import { AppearanceSection } from './settings/AppearanceSection';
+import { useSidebarContext } from './sidebarContext';
 import { Icon } from './icons';
 import { AgentsSection } from './settings/AgentsSection';
 import { AiSection } from './settings/AiSection';
-import { ExternalClientsSection } from './settings/ExternalClientsSection';
+import { ProvidersSection } from './settings/ProvidersSection';
+import { DefaultsTab, ModelsTab } from './settings/ModelsSection';
 import { HooksSection } from './settings/hooks/HooksSection';
 import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
 import { ExperimentalRows } from './settings/ExperimentalRows';
+import { ExtensionsSection } from './settings/ExtensionsSection';
+import { ExternalClientsSection } from './settings/ExternalClientsSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { LabsSection } from './settings/LabsSection';
 import { McpSection } from './settings/McpSection';
@@ -38,18 +49,19 @@ import { BrowserControlSection } from './settings/BrowserControlSection';
 import { ComputerControlSection } from './settings/ComputerControlSection';
 import { SECTIONS, type SectionId } from './settings/sections';
 import { SettingsCardMountContext, SettingsFlashContext, SettingsPageScopeContext } from './settings/SectionCard';
+import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { SessionsSection } from './settings/SessionsSection';
+import { SessionsImportPage } from './settings/SessionsImportPage';
 import { ShortcutsSection } from './settings/ShortcutsSection';
 import { SettingsNav, SettingsNavTree, SettingsSearch } from './settings/SettingsNav';
 import { SkillsSection } from './settings/SkillsSection';
 import { SpacesSection } from './settings/SpacesSection';
 import { SpaceDot } from './settings/spaces/SpaceDot';
 import { currentSpace } from '../lib/spaces';
-import { SubagentsSection } from './settings/SubagentsSection';
-import { UnifiedAgentManager } from './settings/UnifiedAgentManager';
+import { spaceSettingsTargetIsSpace, spaceSettingsTargetOf } from '../lib/spaceSettings';
 import { TasksSection } from './settings/TasksSection';
 import { UnknownSettingsSection } from './settings/UnknownSection';
-import { SettingsWorkspaceScopeContext } from './settings/workspaceScope';
+import { SettingsWorkspaceScopeContext, WorkspaceDetailNameContext } from './settings/workspaceScope';
 import { WorkspacesSection } from './settings/WorkspacesSection';
 import { SshSection } from './ssh/SshSection';
 import { NavBackButton } from './NavBackButton';
@@ -59,6 +71,25 @@ export { mcpConfigFromDraft, parseNamedAgentTools } from '@kiki/session-core/set
 
 /** Keys that move the pane by themselves — the ones that mean "I am scrolling". */
 const SCROLL_KEYS: ReadonlySet<string> = new Set(['ArrowUp', 'ArrowDown', 'PageUp', 'PageDown', 'Home', 'End', ' ']);
+
+/**
+ * The card that owns an object section's *list* page (`InstalledPluginsList`'s
+ * `st-card-plugins`, `WorkspacesSection`'s `st-card-workspaces`). That one hash
+ * means "the list", so a bookmark to the leaf still lands there even when the
+ * query names an object.
+ *
+ * Every other hash stays a jump *inside* the page the query names: an object
+ * page's own card hash opens that object and flashes the card, and a hash that
+ * names nothing (a stale anchor from another section, a copied address with a
+ * fragment on it) still opens the object — the query is what the address is
+ * for, and a page that silently fell back to its list would read as a dead
+ * link rather than as a link to a thing.
+ */
+const OBJECT_LIST_CARD_HASH: Readonly<Partial<Record<SectionId, string>>> = {
+  plugins: '#st-card-plugins',
+  extensions: '#st-card-plugins',
+  workspaces: '#st-card-workspaces',
+};
 
 /**
  * Address of the connected server, only when it is somewhere else. The
@@ -88,21 +119,29 @@ function useRemoteServerAddress(): string | null {
  * mentioned), the workspace a picker targets, or unsaved changes, so a draft
  * deep in a long page is never invisible.
  */
-function SectionIntro({ section, workspaceName, remoteAddress, dirty }: {
+function SectionIntro({ section, workspaceName, remoteAddress, dirty, hidePurpose }: {
   section: SectionId;
   workspaceName: string | null;
   remoteAddress: string | null;
   dirty: boolean;
+  /** A sub-page that answers its own question, which the section line would
+   *  contradict rather than introduce (a single plugin's own settings). */
+  hidePurpose?: boolean;
 }) {
   const { t } = useI18n();
   const meta = SETTINGS_SECTION_META[section];
   if (meta === undefined) return null;
+  // Hiding a redundant orientation line is not hiding the status. Where a
+  // change is written, and whether one is unsaved, are facts the reader needs on
+  // every page that can hold a draft — including a plugin's own page, which is
+  // exactly where an unsaved draft is easiest to lose.
+  const purposeKey = hidePurpose === true ? undefined : meta.purposeKey;
   // Device pages (General, Appearance, Connection) never write to the server.
   const remote = remoteAddress !== null && !settingsSectionIsDeviceOnly(section);
   const status = remote || workspaceName !== null || dirty;
-  if (meta.purposeKey === undefined && !status) return null;
+  if (purposeKey === undefined && !status) return null;
   return <div className="space-y-2 pb-6">
-    {meta.purposeKey !== undefined ? <p data-settings-intro className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t(meta.purposeKey)}</p> : null}
+    {purposeKey !== undefined ? <p data-settings-intro className="max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t(purposeKey)}</p> : null}
     {status ? <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-[12px] text-ink-faint" data-settings-page-status>
       {remote ? (
         <span data-settings-remote-line title={t('st.storage.remoteTitle', { address: remoteAddress })}>
@@ -143,26 +182,56 @@ function SpaceBand() {
  * Narrow-viewport navigation: the old flat <select> could not express the
  * group hierarchy, so the current location is a button that opens a drawer
  * holding the same grouped tree the desktop rail shows.
+ *
+ * The drawer owns Escape while it is open the same way Dialog does: a
+ * capture-phase window listener that prevents and stops the event, so the
+ * app-level "Escape leaves settings" handler (App.tsx) never sees it. Focus
+ * moves to the active leaf on open and returns to the trigger on close.
  */
 function MobileSettingsDrawer({
   active,
+  activeTab,
+  activePluginId,
   open,
   onClose,
   onNavigate,
 }: {
   active: SectionId;
+  activeTab?: string | null;
+  activePluginId: string | null;
   open: boolean;
   onClose: () => void;
   onNavigate: (section: SectionId) => void;
 }) {
   const { t } = useI18n();
+  const closeRef = useRef(onClose);
+  closeRef.current = onClose;
+  useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+      closeRef.current();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    const drawer = document.querySelector('[data-settings-nav-drawer]');
+    const activeLeaf = drawer?.querySelector<HTMLElement>('[data-settings-nav-leaf][aria-current="page"]');
+    (activeLeaf ?? drawer?.querySelector<HTMLElement>('button'))?.focus();
+    return () => {
+      window.removeEventListener('keydown', onKeyDown, true);
+      previous?.focus();
+    };
+  }, [open]);
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label={t('st.nav.browse')}>
+    <div className="fixed inset-0 z-50 lg:hidden" role="dialog" aria-modal="true" aria-label={t('st.nav.browse')} id="settings-nav-drawer" data-settings-nav-drawer>
       <button
         type="button"
         aria-label={t('common.close')}
-        onClick={onClose}
+        onClick={() => { closeRef.current(); }}
         className="absolute inset-0 bg-shell/20"
       />
       <div className="absolute inset-y-0 left-0 flex w-[280px] flex-col overflow-y-auto overscroll-y-contain bg-canvas p-3 shadow-[var(--kiki-sheet-shadow)]">
@@ -177,7 +246,7 @@ function MobileSettingsDrawer({
             <Icon name="close" size={16} />
           </button>
         </div>
-        <SettingsNavTree active={active} onNavigate={onNavigate} onAfterNavigate={onClose} />
+        <SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} onAfterNavigate={onClose} />
       </div>
     </div>
   );
@@ -190,6 +259,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   const rawNavigate = useNavigate();
   const dirty = useDirtyGuard()?.dirty === true;
   const remoteAddress = useRemoteServerAddress();
+  const { client, meta } = useConnection();
+  const inSpace = spaceSettingsTargetIsSpace(spaceSettingsTargetOf(client, meta));
   const [cardRequest, setCardRequest] = useState<{ cardId: string; section: string; locationKey: string; nonce: number } | null>(null);
   const [flashCard, setFlashCard] = useState<{ cardId: string; nonce: number } | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -198,13 +269,22 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   // the app (the /new readiness card) can point at the exact control instead
   // of dropping the user at the top of a long section.
   const { hash, search, state, key } = useLocation();
+
   const resolution = resolveSettingsRoute(section, hash);
   const active: SectionId | null =
     resolution.status === 'ok' ? (resolution.section as SectionId) : null;
+  const pageScope = active === null ? 'server'
+    : settingsSectionSupportsSpace(active) && inSpace ? 'space'
+    : settingsSectionIsDeviceOnly(active) ? 'app'
+    : 'server';
   // Workspace-scoped sections (Skills' catalog, MCP's config card) report
   // the workspace their edits target; the scope header names it. Reset on
   // page change — the next section reports its own selection.
   const [workspaceScopeName, setWorkspaceScopeName] = useState<string | null>(null);
+  // One workspace's own page names itself in the breadcrumb. Set by the page
+  // itself (the same handshake the scope header already uses) rather than
+  // resolved here, so the header and the breadcrumb cannot disagree.
+  const [workspaceDetailName, setWorkspaceDetailName] = useState<string | null>(null);
   useEffect(() => { setWorkspaceScopeName(null); }, [active]);
 
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -245,6 +325,12 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     void rawNavigate(`/settings/${resolution.section}${query === '' ? '' : `?${query}`}${targetHash}`, { replace: true });
   }, [resolution, section, search, hash, rawNavigate]);
 
+  // Import history is a built-in session surface with exactly one address. The
+  // redirect that carries an old `/capabilities?view=import` bookmark here
+  // lives on the Capabilities page, because that is the address being changed;
+  // this page needs no effect of its own, and one that navigated to the address
+  // it was already on would only churn the location key.
+
   // Ctrl+, arrives with this flag; clicking Settings in the sidebar does not,
   // so an ordinary visit still leaves focus where the user put it. The location
   // key changes on every press, so Ctrl+, from inside settings refocuses too.
@@ -258,8 +344,13 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     // again when the reader comes back: the snapshot outranks the older target.
     const visit = getCurrentVisit();
     if (visit !== null && getUiSnapshot<{ scrollTop?: number }>(visit.visitId)?.scrollTop !== undefined) return;
-    setCardRequest({ cardId, section: resolution.section, locationKey: key, nonce: Date.now() });
-  }, [hash, resolution.section, key]);
+    // The request keys on the page that must mount the card. In objects mode
+    // the resolver still names the shipped leaf (identity) while the card
+    // actually mounts on its host page (ai) — the handshake must use the
+    // mapped page or the flash never fires on a re-homed deep link.
+    if (active === null) return;
+    setCardRequest({ cardId, section: active, locationKey: key, nonce: Date.now() });
+  }, [hash, active, key]);
 
   // Locating one card is a handshake, not a deadline: `/settings/<section>#
   // st-card-…` and a search hit both ask for a card id, and the page waits until
@@ -317,7 +408,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
   }, [dirty]);
 
   const guardedNavigate = useCallback((target: string) => {
-    navigate(`/settings/${target}`);
+    void navigate(`/settings/${target}`);
   }, [navigate]);
 
   const onSearchHit = (entry: SettingsSearchEntry) => {
@@ -336,17 +427,47 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
 
   const activeGroup = active === null ? undefined : settingsGroupForSection(active);
   const activeLabelKey = active === null ? undefined : SECTIONS.find((candidate) => candidate.id === active)?.labelKey;
+  // One installed plugin's own settings page, or the installed list. Only the
+  // list's own card hash means the list (see `OBJECT_LIST_CARD_HASH`); the
+  // query selects the plugin for every other address, so a copied or bookmarked
+  // link to a plugin opens that plugin instead of quietly showing the list.
+  const onListCard = active !== null && OBJECT_LIST_CARD_HASH[active] === hash;
+  const activePluginId = (active === 'plugins' || active === 'extensions') && !onListCard
+    ? pluginSettingsIdFromQuery(search)
+    : null;
 
+  // One workspace's own page, or the list. A workspace is the unit a reader
+  // configures, so it gets a page rather than a dialog; the query selects it,
+  // exactly as `?plugin=` selects a plugin's own settings page.
+  const activeWorkspaceId = active === 'workspaces' && !onListCard
+    ? workspaceSettingsIdFromQuery(search)
+    : null;
+
+  const currentTab = new URLSearchParams(search).get('tab')
+    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB
+      : active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
+      : active === 'extensions' ? EXTENSIONS_SETTINGS_DEFAULT_TAB
+      : active === 'browser-control' ? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB
+      : active === 'search' ? 'overview'
+      : null);
+  const fromOnboarding = new URLSearchParams(search).get('from') === 'onboarding';
+
+  // Import history is a built-in session surface, not a plugin sub-view. It
+  // answers `/settings/sessions/import` directly; the legacy plugin address is
+  // redirected there above, so it has exactly one home.
   const pane = active === null ? null
+    : section === 'sessions/import' ? <SessionsImportPage />
     : active === 'general' ? <GeneralSection />
     : active === 'appearance' ? <AppearanceSection />
     : active === 'shortcuts' ? <ShortcutsSection />
     : active === 'connection' ? <ConnectionSection />
     : active === 'ai' ? <AiSection />
+    : active === 'providers' ? <ProvidersSection />
+    : active === 'models' ? <div className="space-y-6"><DefaultsTab /><ModelsTab /></div>
     : active === 'connection-services' ? <ExternalClientsSection />
     : active === 'identity' ? <IdentitySection />
-    : active === 'agents' ? <><UnifiedAgentManager /><AgentsSection /></>
-    : active === 'subagents' ? <SubagentsSection />
+    : active === 'agents' ? <AgentsSection />
+    : active === 'subagents' ? <AgentsSection />
     : active === 'sessions' ? <SessionsSection />
     : active === 'notifications' ? <NotificationsSection />
     : active === 'memory' ? <MemorySection />
@@ -354,34 +475,55 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'tasks' ? <TasksSection />
     : active === 'skills' ? <SkillsSection />
     : active === 'mcp' ? <McpSection />
-    : active === 'plugins' ? <PluginsSection />
+    : active === 'external-clients' ? <ExternalClientsSection />
+    : active === 'plugins' ? <PluginsSection pluginId={activePluginId} />
     : active === 'browser-control' ? <BrowserControlSection />
     : active === 'computer-control' ? <ComputerControlSection />
     : active === 'search' ? <NbSearchSection />
     : active === 'hooks' ? <HooksSection />
     : active === 'spaces' ? <SpacesSection />
-    : active === 'workspaces' ? <WorkspacesSection />
+    : active === 'workspaces' ? <WorkspacesSection key={activeWorkspaceId ?? 'catalog'} workspaceId={activeWorkspaceId} />
     : active === 'ssh' ? <SshSection />
     : active === 'developer' ? <DeveloperSection />
     : active === 'labs' ? <LabsSection />
+    : active === 'extensions' ? <ExtensionsSection pluginId={activePluginId} />
+    : active === 'environment-tools' ? (
+        currentTab === 'search' ? <NbSearchSection />
+        : currentTab === 'browser-control' ? <BrowserControlSection />
+        : currentTab === 'computer-control' ? <ComputerControlSection />
+        : <div className="space-y-6"><NbSearchSection /><BrowserControlSection /><ComputerControlSection /></div>
+      )
+    : active === 'remote' ? <div className="space-y-6"><ConnectionSection /><SshSection /><ExternalClientsSection /></div>
+    : active === 'system' ? <div className="space-y-6"><DeveloperSection /><AboutSection /><DesktopLogCard /></div>
     : <><AboutSection /><DesktopLogCard /></>;
 
   // A feature page ends with the experimental flags that change it; tabbed
   // pages show them on one tab only, so a hit on the rows lands where they are.
   const experimentalTab = active === null ? undefined : experimentalTabForSection(active);
-  const currentTab = new URLSearchParams(search).get('tab')
-    ?? (active === 'ai' ? AI_SETTINGS_DEFAULT_TAB : active === 'search' ? 'overview' : null);
   const showExperimental = active !== null && active !== 'labs'
     && (experimentalTab === undefined || currentTab === experimentalTab);
 
-  const activeLabel = activeLabelKey === undefined ? undefined : t(activeLabelKey);
+  // A workspace's own page names the workspace in the breadcrumb, the way an
+  // open plugin's page names its plugin: the page IS that object, and the
+  // section label alone would not say which one.
+  const activeLabel = workspaceDetailName ?? (activeLabelKey === undefined ? undefined : t(activeLabelKey));
+
+  const { sidebarOpen } = useSidebarContext();
 
   return (
     <SettingsCardMountContext.Provider value={locateCard}>
     <SettingsFlashContext.Provider value={flashCard?.cardId ?? null}>
     <SettingsWorkspaceScopeContext.Provider value={setWorkspaceScopeName}>
+      <WorkspaceDetailNameContext.Provider value={setWorkspaceDetailName}>
       <header className="flex h-12 shrink-0 items-center gap-2 px-4 lg:px-6">
-        <button type="button" onClick={onToggleSidebar} aria-label={t('sv.openMenuAria')} className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink md:hidden">
+        <button
+          type="button"
+          onClick={onToggleSidebar}
+          aria-label={t('sv.openMenuAria')}
+          aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar"
+          className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-ink/[0.04] hover:text-ink md:hidden"
+        >
           <Icon name="menu" size={16} />
         </button>
         <NavBackButton />
@@ -392,17 +534,21 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         </h1>
       </header>
       <main className="flex min-h-0 flex-1 border-t border-hairline">
-        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
+        <div className="hidden shrink-0 border-r border-hairline lg:block"><SettingsNav active={active} activeTab={currentTab} activePluginId={activePluginId} searchFocusToken={searchFocusToken} onNavigate={guardedNavigate} onSearchHit={onSearchHit} /></div>
         <div className="flex min-w-0 flex-1 flex-col">
           {active !== null ? (
             <div className="border-b border-hairline px-4 py-2 lg:hidden">
               <SettingsSearch
                 focusToken={searchFocusToken}
                 onSearchHit={onSearchHit}
+                navTree={SETTINGS_NAV_TREE}
                 idle={
                   <button
                     type="button"
                     data-settings-nav-trigger
+                    aria-haspopup="dialog"
+                    aria-expanded={drawerOpen}
+                    aria-controls="settings-nav-drawer"
                     onClick={() => { setDrawerOpen(true); }}
                     className="mt-2 flex h-11 w-full items-center justify-between gap-2 rounded-md px-2 text-[13px] text-ink outline-none transition-colors hover:bg-ink/[0.04]"
                   >
@@ -418,6 +564,8 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
               />
               <MobileSettingsDrawer
                 active={active}
+                activeTab={currentTab}
+                activePluginId={activePluginId}
                 open={drawerOpen}
                 onClose={() => { setDrawerOpen(false); }}
                 onNavigate={guardedNavigate}
@@ -431,16 +579,35 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
           ) : (
             <div ref={scrollRef} data-settings-scroll className="relative min-h-0 flex-1 overflow-y-auto px-4 pb-16 pt-6 lg:px-10 lg:pt-8">
               <div className="mx-auto max-w-[720px]">
+                {fromOnboarding ? (
+                  <div
+                    className="mb-5 flex flex-wrap items-center justify-between gap-3 rounded-[var(--radius-card)] border border-accent/30 bg-accent/10 px-4 py-3 text-[13px] text-ink"
+                    data-settings-onboarding-return
+                  >
+                    <span>{t('onboarding.returnBanner.text')}</span>
+                    <button
+                      type="button"
+                      className="btn-primary px-3 py-1.5 text-[12px] font-medium"
+                      data-settings-onboarding-return-action
+                      onClick={() => { void navigate('/new'); }}
+                    >
+                      {t('onboarding.returnBanner.action')}
+                    </button>
+                  </div>
+                ) : null}
                 <SpaceBand />
-                <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} />
-                <SettingsPageScopeContext.Provider value={settingsSectionIsDeviceOnly(active) ? 'app' : 'server'}>
-                  <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
+                <SectionIntro section={active} workspaceName={workspaceScopeName} remoteAddress={remoteAddress} dirty={dirty} hidePurpose={activePluginId !== null} />
+                <SettingsPageScopeContext.Provider value={pageScope}>
+                  <SettingsPaneBoundary resetKey={`${active}\u0000${search}\u0000${key}`}>
+                    <div className="space-y-6">{pane}{showExperimental ? <ExperimentalRows section={active} /> : null}</div>
+                  </SettingsPaneBoundary>
                 </SettingsPageScopeContext.Provider>
               </div>
             </div>
           )}
         </div>
       </main>
+      </WorkspaceDetailNameContext.Provider>
     </SettingsWorkspaceScopeContext.Provider>
     </SettingsFlashContext.Provider>
     </SettingsCardMountContext.Provider>

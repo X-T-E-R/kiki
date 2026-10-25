@@ -30,6 +30,7 @@ import { McpRegistryService } from '#/app/mcpRegistry/mcpRegistryService';
 import { IPluginService } from '#/app/plugin/plugin';
 import type { PluginMcpServerEntry } from '#/app/plugin/types';
 import { ErrorCodes, Error2 } from '#/errors';
+import { windowsMcpStdioConfig } from '#/mcpCore/computer';
 import { McpOAuthService, type McpOAuthEvent } from '#/mcpCore/oauth/service';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
@@ -163,7 +164,7 @@ describe('McpManagementService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await oauth.dispose();
     vi.unstubAllEnvs();
     await Promise.all(httpServers.map((server) => server.close()));
@@ -179,6 +180,20 @@ describe('McpManagementService', () => {
     expect(await store.get(server.name)).toEqual({ ...server, enabled: false });
     expect((await management.getServer(server.name)).config).toMatchObject({ enabled: false, envKeys: ['TOKEN'] });
     await management.updateServer(server);
+  });
+
+  it('stops a registered Windows-MCP server and still refuses an ordinary Python server', async () => {
+    const server: GlobalMcpServerConfig = {
+      name: 'kiki-windows-mcp',
+      ...windowsMcpStdioConfig('C:\\Env\\python.exe', 'C:\\Kiki\\windows-mcp\\config.toml'),
+    };
+    await management.addServer(server);
+    const result = await management.stopServer({ name: server.name });
+    expect(result.state).toBe('idle');
+    expect(await store.get(server.name)).toMatchObject({ enabled: false, command: server.command });
+    await management.addServer({ name: 'python-tools', transport: 'stdio', command: 'C:\\Python\\python.exe', args: ['server.py'] });
+    await expect(management.stopServer({ name: 'python-tools' })).rejects.toMatchObject({ code: ErrorCodes.REQUEST_INVALID });
+    expect((await store.get('python-tools')).enabled).not.toBe(false);
   });
 
   it('rejects non-cua and ambiguous stop requests before disabling any configuration', async () => {

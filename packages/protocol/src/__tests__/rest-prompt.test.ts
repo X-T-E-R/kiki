@@ -16,6 +16,12 @@ import {
 } from '../rest/prompt';
 
 describe('promptSubmissionSchema', () => {
+  it.each(['engine-default', 'specialist', null])('carries native agent %s through the public executor selection without a role file', (nativeAgent) => {
+    const input = { content: [{ type: 'text', text: 'Neutral task' }], execution: { executor: 'neutral-harness', overrides: { native_agent: nativeAgent, inject_kiki_mcp: false } } };
+    expect(promptSubmissionSchema.parse(input)).toEqual(input);
+    expect(promptSubmissionSchema.safeParse({ ...input, execution: { executor: 'neutral-harness', overrides: { native_agent: ' ' } } }).success).toBe(false);
+  });
+
   it('accepts a minimal text-only submission with no controls', () => {
     const parsed = promptSubmissionSchema.parse({
       content: [{ type: 'text', text: 'hi' }],
@@ -26,6 +32,15 @@ describe('promptSubmissionSchema', () => {
     expect(parsed.permission_mode).toBeUndefined();
     expect(parsed.plan_gate).toBeUndefined();
     expect(parsed.plan_mode).toBeUndefined();
+  });
+
+  it('preserves immediate delivery intent and distinguishes admission from steering assignment', () => {
+    const body = { admission: 'durable', delivery_mode: 'steer', prompt_id: 'immediate-example', content: [{ type: 'text', text: 'Apply this note.' }] };
+    expect(promptSubmissionSchema.parse(body)).toEqual(body);
+    expect(promptSubmissionSchema.safeParse({ ...body, delivery_mode: 'unknown' }).success).toBe(false);
+    const receipt = { prompt_id: body.prompt_id, user_message_id: body.prompt_id, status: 'queued', admission: 'admitted',
+      delivery_state: 'steered', content: body.content, created_at: '2026-01-01T00:00:00.000Z' };
+    expect(promptSubmitResultSchema.parse(receipt)).toEqual(receipt);
   });
 
   it('preserves the prompt-bound model switch mode with model and effort', () => {
@@ -202,6 +217,17 @@ describe('promptSubmissionSchema', () => {
     ).toBe(false);
   });
 
+  it('accepts null thinking as restore-default and leaves an omission undefined', () => {
+    const cleared = promptSubmissionSchema.safeParse({
+      content: [{ type: 'text', text: 'hi' }],
+      thinking: null,
+    });
+    expect(cleared.success).toBe(true);
+    if (cleared.success) expect(cleared.data.thinking).toBeNull();
+    const kept = promptSubmissionSchema.parse({ content: [{ type: 'text', text: 'hi' }] });
+    expect(kept.thinking).toBeUndefined();
+  });
+
   it('rejects unknown permission_mode', () => {
     expect(
       promptSubmissionSchema.safeParse({
@@ -357,7 +383,9 @@ describe('promptSteerResultSchema', () => {
     const parsed = promptSteerResultSchema.parse({
       steered: true,
       prompt_ids: ['prompt_a', 'prompt_b'],
+      delivery_state: 'queued', delivery_reason: 'executor_deferred',
     });
+    expect(parsed.delivery_reason).toBe('executor_deferred');
     expect(parsed.steered).toBe(true);
     expect(parsed.prompt_ids).toEqual(['prompt_a', 'prompt_b']);
   });

@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { gt, valid } from 'semver';
 import { pluginRelevanceSchema, type PluginRelevance } from './relevance';
+import { resolveInstallSource } from './source';
 
 export const KIKI_PLUGIN_MARKETPLACE_URL_ENV = 'KIKI_PLUGIN_MARKETPLACE_URL';
 
@@ -289,6 +290,37 @@ function sha256Field(value: unknown, id: string): string | undefined {
     throw new TypeError(`Plugin marketplace entry ${id} "sha256" must be 64 hex characters.`);
   }
   return digest.toLowerCase();
+}
+
+const CATALOG_SHA256_RE = /^[0-9a-f]{64}$/;
+
+export function catalogSha256ForSource(
+  plugins: readonly Pick<PluginMarketplaceEntry, 'source' | 'sha256'>[],
+  source: string,
+): string | undefined {
+  const target = source.trim();
+  if (target.length === 0) return undefined;
+  let agreed: string | undefined;
+  for (const entry of plugins) {
+    if (entry.source.trim() !== target) continue;
+    const digest = entry.sha256?.trim().toLowerCase();
+    if (digest === undefined || !CATALOG_SHA256_RE.test(digest)) continue;
+    if (agreed !== undefined && agreed !== digest) return undefined;
+    agreed = digest;
+  }
+  return agreed;
+}
+
+export function isMarketplaceEntryInstallable(entry: Pick<PluginMarketplaceEntry, 'source' | 'sha256'>): boolean {
+  const source = entry.source.trim();
+  if (source.length === 0) return false;
+  try {
+    if (resolveInstallSource(source).kind !== 'zip-url') return true;
+  } catch {
+    return false;
+  }
+  const digest = entry.sha256?.trim().toLowerCase() ?? '';
+  return CATALOG_SHA256_RE.test(digest);
 }
 
 function localizationsField(

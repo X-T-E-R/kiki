@@ -77,6 +77,7 @@ export interface WorkspaceDeletedEvent {
 export interface SessionWorkChangedEvent {
   readonly type: 'event.session.work_changed';
   readonly busy: boolean;
+  readonly executing?: boolean;
   readonly main_turn_active?: boolean;
   readonly pending_interaction?: SessionPendingInteraction;
   readonly last_turn_reason?: 'completed' | 'cancelled' | 'failed';

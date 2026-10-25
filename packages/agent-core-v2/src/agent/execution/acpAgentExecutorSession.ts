@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 
 import { createControlledPromise } from '@antfu/utils';
 import {
@@ -48,7 +49,7 @@ import type { ContextMessage, PromptOrigin } from '#/agent/contextMemory/types';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
@@ -57,7 +58,7 @@ import { ISessionApprovalService } from '#/session/approval/approval';
 import { ISessionQuestionService } from '#/session/question/question';
 import { IAgentCollaborationMessagingService } from '#/session/agentCollaboration/messageMailbox';
 import { acpFormFields, acpFormResponse } from './acpElicitation';
-import { authorizeExternalTool, externalPermissionConstraints, externalPermissionHostGate, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
+import { authorizeExternalTool, externalPermissionConstraints, externalPermissionMeta, externalPermissionMode, externalToolPermission } from './externalPermission';
 import { ISessionInteractionService } from '#/session/interaction/interaction';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
@@ -66,6 +67,7 @@ import type {
   AgentRunRequest,
   RunAgentOptions,
 } from '#/session/subagent/subagent';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import {
@@ -92,7 +94,7 @@ interface AcpClientLike {
   startTurn(
     request: Parameters<AcpProcessClientType['startTurn']>[0],
   ): Promise<AcpTurnHandle<NormalizedExecutorEvent>>;
-  steer?(prompt: Parameters<AcpProcessClientType['steer']>[0]): Promise<boolean>;
+  steer?(prompt: Parameters<AcpProcessClientType['steer']>[0]): Promise<boolean | 'unknown'>;
   cancel(reason?: unknown): Promise<boolean>;
   shutdown(reason?: unknown): Promise<void>;
 }
@@ -129,7 +131,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   readonly #client: AcpClientLike;
   readonly #states: IAgentStateService;
   readonly #dispatcher: IEventDispatcher;
-  readonly #workspace: ISessionWorkspaceContext;
+  readonly #workspace: RuntimeWorkspaceRoots;
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
   #active: ActiveExternalTurn | undefined;
@@ -183,7 +185,10 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     }
     this.#states = context.agent.accessor.get(IAgentStateService);
     this.#dispatcher = context.agent.accessor.get(IEventDispatcher);
-    this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
+    this.#workspace = inspectAgentWorkspaceRoots(
+      runtime,
+      context.agent.accessor.get(ISessionWorkspaceContext),
+    );
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
@@ -254,10 +259,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('additional_directories_dropped');
     }
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
-    const configured = await this.#configure(opened, options.signal, losses);
+    const configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']);
     const negotiated: NegotiatedExecutorCapabilities = {
-      models: configured.configOptions.filter((option) => option.category === 'model').flatMap(selectValues),
-      thinkingLevels: configured.configOptions.filter((option) => option.category === 'thought_level').flatMap(selectValues),
+      models: advertisedSelectValues(configured.configOptions, 'model'),
+      thinkingLevels: advertisedSelectValues(configured.configOptions, 'thought_level'),
+      nativeAgents: advertisedSelectValues(configured.configOptions, 'native_agent') ?? [],
       authMethods: opened.initialize.authMethods?.map((method) => method.id),
       agentVersion: opened.initialize.agentInfo?.version,
       image: opened.capabilities.promptCapabilities?.image === true || this.context.descriptor.id === 'grok-acp',
@@ -310,7 +316,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       handoff: handoff?.text,
     });
     const resumeMode: ExecutorResumeMode = handoff === undefined
-      ? configured.mode
+      ? opened.mode
       : 'handoff';
     const recorder = new ExternalTurnRecorder(
       this.context.agent,
@@ -474,7 +480,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     return negotiated?.resume !== false || negotiated?.load !== false;
   }
 
-  async steer(message: ContextMessage): Promise<boolean> {
+  async steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     if (active === undefined || active.turn.signal.aborted || this.#client.steer === undefined) return false;
     const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('\n');
@@ -535,13 +541,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     },
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
     const pump = (async () => {
-      for await (const event of handle.events) {
-        await recorder.record(event as ExternalExecutorEvent);
+      try {
+        for await (const event of handle.events) {
+          await recorder.record(event as ExternalExecutorEvent);
+        }
+      } catch (error) {
+        await handle.cancel(error);
+        throw error;
       }
     })();
     try {
-      const completed = await handle.completion;
-      await pump;
+      const [completed] = await Promise.all([handle.completion, pump]);
       if (completed.response._meta?.['usage'] !== undefined) await recorder.reportedUsage(completed.response._meta['usage']);
       const turnResult = turnResultFromAcp(completed);
       if (turnResult.type === 'completed') {
@@ -635,24 +645,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'Imported local session binding fingerprint changed');
     }
     const systemPrompt = this.context.binding.systemPrompt;
-    const servers = this.context.descriptor.supportsMcp === false || mcp === undefined
-      ? [] : acpMcpServers(mcp.connectionManager, roots.workDir,
-        (name) => process.env[name], this.context.descriptor.mcpTransports);
-    if (this.context.binding.allowKikiSubagents === true || this.context.binding.kikiContext?.length) {
-      this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
-      if (this.#harnessMcp !== undefined) {
-        if (servers.some((server) => server.name === this.#harnessMcp!.server.name)) {
-          throw new Error2(ErrorCodes.CONFIG_INVALID, 'The reserved Kiki harness MCP name is already configured');
-        }
-        servers.push(this.#harnessMcp.server);
-      }
-    }
+    this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
+    const servers = this.#harnessMcp !== undefined ? [this.#harnessMcp.server]
+      : this.context.descriptor.supportsMcp === false || mcp === undefined ? []
+        : acpMcpServers(mcp.connectionManager, roots.workDir,
+          (name) => process.env[name], this.context.descriptor.mcpTransports);
     return {
       cwd: roots.workDir,
       additionalDirectories: roots.additionalDirs,
       mcpServers: servers,
       sessionMeta: { ...this.#harnessMcp?.sessionMeta,
-        'kiki.permission': externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs) },
+        'kiki.permission': { ...externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs), requestId: randomUUID() } },
       ...originalRemoteResumeFields(this.context.binding, this.context.descriptor, state),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
@@ -666,6 +669,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     opened: AcpOpenSessionResult,
     signal: AbortSignal,
     losses: Set<ExecutorLossCode>,
+    permission: unknown,
   ): Promise<AcpOpenSessionResult> {
     const modelBinding = this.context.descriptor.modelBinding ?? 'session_config';
     if (modelBinding !== 'session_config' && modelBinding !== 'argv') {
@@ -675,6 +679,16 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       );
     }
     let configured = opened;
+    const nativeAgent = this.context.binding.execution?.effective.native_agent;
+    if (nativeAgent !== undefined && nativeAgent !== 'engine-default') {
+      const choices = configured.configOptions.filter((option) => option.category === 'native_agent');
+      if (choices.length !== 1) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'External ACP native agent selection is unsupported or ambiguous');
+      }
+      const agent = selectConfig(choices, choices[0]!.id, 'native_agent', nativeAgent, 'native agent');
+      configured = await this.#client.configureSession({ configOptions: [agent.selection], signal });
+      assertConfigured(configured.configOptions, agent.selection, 'native agent');
+    }
     if (modelBinding === 'session_config' && this.context.binding.modelAlias !== undefined) {
       const model = selectConfig(
         configured.configOptions,
@@ -737,6 +751,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
           manual: declared.manual, auto: declared.auto, yolo: declared.yolo }
       : undefined);
     const mode = externalPermissionMode(this.context);
+    if (mode !== undefined && declared === undefined && mapping === undefined && appliedHostPermission(opened, permission)) return configured;
     const vendorMode = externalPermissionConstraints(this.context) || mode === 'review' ? 'manual' : mode ?? 'manual';
     if (mapping !== undefined) {
       const permission = permissionConfig(configured.configOptions, mapping, vendorMode);
@@ -908,6 +923,21 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       return { outcome: 'cancelled' };
     }
   }
+}
+
+function appliedHostPermission(opened: AcpOpenSessionResult, expected: unknown): boolean {
+  const current = objectOf(expected);
+  const requested = objectOf(opened.sessionRequestMeta?.['kiki.permission']);
+  const receipt = objectOf(opened.sessionResponseMeta?.['kiki.permission']);
+  if (current?.['hostGate'] !== true || objectOf(current['override']) === undefined ||
+      requested?.['hostGate'] !== true || typeof requested['requestId'] !== 'string' || requested['requestId'].length === 0 ||
+      receipt?.['version'] !== 1 || receipt['sessionId'] !== opened.sessionId || receipt['gate'] !== 'pre-tool-hook' ||
+      !['new', 'load'].includes(String(receipt['openMode'])) ||
+      opened.mode !== 'live' && receipt['openMode'] !== opened.mode ||
+      !isDeepStrictEqual(receipt['applied'], requested)) return false;
+  const { requestId: currentRequestId, ...currentPolicy } = current;
+  const { requestId: appliedRequestId, ...appliedPolicy } = requested;
+  return (opened.mode === 'live' || currentRequestId === appliedRequestId) && isDeepStrictEqual(JSON.parse(JSON.stringify(currentPolicy)), appliedPolicy);
 }
 
 function sessionIdFromState(ref: ExecutorSessionRefEnvelope | undefined): string | undefined {
@@ -1127,6 +1157,12 @@ function resolveSelectConfig(
 
 function uncategorizedSelectOptions(option: AcpSessionConfigOption): boolean {
   return option.category === null || option.category === undefined;
+}
+
+function advertisedSelectValues(options: readonly AcpSessionConfigOption[], category: string): readonly string[] | undefined {
+  const matched = options.filter((option) => option.category === category);
+  if (matched.length === 0) return undefined;
+  return matched.flatMap(selectValues);
 }
 
 function selectValues(option: AcpSessionConfigOption): string[] {

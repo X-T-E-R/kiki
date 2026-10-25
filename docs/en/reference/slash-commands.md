@@ -120,7 +120,7 @@ Kiki ships with a set of built-in Skills that appear directly as `/<name>` slash
 | Command | Description |
 | --- | --- |
 | `/kiki-ops [<request>]` | Configure, operate, or troubleshoot Kiki itself: product questions, first-run provider/model setup, search and retrieval, sessions, subagents, tasks, MCP, permission modes, scheduled tasks, plugins, and themes |
-| `/kiki-profile [<request>]` | Create or modify agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents.md) |
+| `/kiki-profile [<request>]` | Create or modify agent profile files and `SYSTEM.md`. See [Agents and Sub-Agents](../customization/agents-and-subagents.md) |
 | `/kiki-persona [<request>]` | Create or repair a persona's identity, voice, greetings, dialogue examples, and avatar. See [Personas, bots, and rooms](../customization/personas.md) |
 | `/kiki-hooks [<request>]` | Write or fix guidance, event observation, and legacy script hooks, then verify their effect. See [Hooks](../customization/hooks.md) |
 

@@ -144,6 +144,17 @@ describe('sessionCreateSchema', () => {
     ).toEqual({ workspace_id: 'wd_kimi_0123456789ab' });
   });
 
+  it('accepts a UUID creation_id without accepting a caller-owned session id', () => {
+    const creationId = '5d4f1b95-5ad5-4b7f-9a14-28ad2f8d1c42';
+    expect(sessionCreateSchema.parse({ creation_id: creationId })).toEqual({ creation_id: creationId });
+    expect(sessionCreateSchema.parse({ creation_id: creationId.toUpperCase() }).creation_id).toBe(creationId);
+    expect(sessionCreateSchema.safeParse({ creation_id: 'session_existing' }).success).toBe(false);
+  });
+
+  it('rejects a non-UUID creation_id', () => {
+    expect(sessionCreateSchema.safeParse({ creation_id: 'not-a-uuid' }).success).toBe(false);
+  });
+
   it('parses a create with BOTH workspace_id and metadata.cwd (route layer enforces agreement)', () => {
     const parsed = sessionCreateSchema.parse({
       workspace_id: 'wd_kimi_0123456789ab',
@@ -195,6 +206,7 @@ describe('agent_config read and write shapes', () => {
 
   it('echoes only the fields the server projects', () => {
     expect(Object.keys(sessionAgentConfigSchema.shape).sort()).toEqual([
+      'execution',
       'model',
       'permission_mode',
       'persona',
@@ -256,6 +268,12 @@ describe('sessionUpdateSchema', () => {
         agent_config: { thinking: 'mega' as unknown },
       }).success,
     ).toBe(true);
+  });
+
+  it('accepts null thinking on agent_config and rejects an empty effort', () => {
+    expect(sessionAgentConfigPartialSchema.parse({ thinking: null }).thinking).toBeNull();
+    expect(sessionAgentConfigPartialSchema.safeParse({ thinking: '' }).success).toBe(false);
+    expect(sessionAgentConfigPartialSchema.parse({}).thinking).toBeUndefined();
   });
 
   it('rejects an unknown permission_mode in agent_config', () => {

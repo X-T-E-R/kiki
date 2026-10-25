@@ -19,7 +19,11 @@ export function compactRouteDescriptions(routes: readonly AgentProfileRouteCatal
 }
 
 function firstSentence(text: string): string {
-  return text.replaceAll(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0]!.slice(0, 180);
+  const sentence = text.replaceAll(/\s+/g, ' ').trim().split(/(?<=[.!?])\s/)[0]!;
+  if (sentence.length <= 180) return sentence;
+  const prefix = sentence.slice(0, 179);
+  const boundary = prefix.lastIndexOf(' ');
+  return `${boundary > 0 ? prefix.slice(0, boundary) : prefix}…`;
 }
 
 export function buildRouteDescriptions(

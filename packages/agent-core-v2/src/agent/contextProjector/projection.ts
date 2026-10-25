@@ -115,7 +115,8 @@ type Block =
       readonly source: ContextMessage;
       readonly content: ContentPart[];
     }
-  | { readonly kind: 'exchange'; readonly exchange: Exchange };
+  | { readonly kind: 'exchange'; readonly exchange: Exchange }
+  | { readonly kind: 'boundary' };
 
 function pairBlocks(
   history: readonly ContextMessage[],
@@ -130,12 +131,19 @@ function pairBlocks(
   };
 
   for (const [index, message] of history.entries()) {
-    if (message.partial === true) continue;
+    if (message.partial === true) {
+      blocks.push({ kind: 'boundary' });
+      continue;
+    }
     if (message.role === 'tool' && !layout.sizing) {
-      if (message.toolCallId === undefined) continue;
+      if (message.toolCallId === undefined) {
+        blocks.push({ kind: 'boundary' });
+        continue;
+      }
       const open = openCalls.get(message.toolCallId);
       if (open === undefined) {
         markForeignBetween();
+        blocks.push({ kind: 'boundary' });
         onAnomaly?.({ kind: 'orphan_tool_result_dropped', toolCallId: message.toolCallId });
         continue;
       }
@@ -149,8 +157,12 @@ function pairBlocks(
 
     const content = projectedContent(message, onAnomaly);
     if (message.toolCalls.length === 0 && !hasDeclaredTools(message)) {
-      if (content.length === 0) continue;
+      if (content.length === 0) {
+        blocks.push({ kind: 'boundary' });
+        continue;
+      }
       if (content.every(isVacuousContentPart)) {
+        blocks.push({ kind: 'boundary' });
         onAnomaly?.({ kind: 'vacuous_message_dropped', role: message.role });
         continue;
       }
@@ -181,10 +193,14 @@ function pairBlocks(
   return blocks;
 }
 
+interface UserMergeAnchor {
+  readonly turnId: number;
+  readonly stepId: string;
+}
+
 interface MergeState {
-  single: { readonly source: ContextMessage; readonly content: ContentPart[] } | undefined;
-  readonly texts: string[];
-  readonly parts: ContentPart[];
+  readonly anchor: UserMergeAnchor;
+  readonly messages: Array<{ readonly source: ContextMessage; readonly content: ContentPart[] }>;
 }
 
 function flattenBlocks(
@@ -197,16 +213,14 @@ function flattenBlocks(
 
   const flushMerge = (): void => {
     if (merge === undefined) return;
-    if (merge.single !== undefined) {
-      out.push(toWireMessage(merge.single.source, merge.single.content));
+    if (merge.messages.length === 1) {
+      const single = merge.messages[0]!;
+      out.push(toWireMessage(single.source, single.content));
     } else {
-      const text = merge.texts.join('\n\n');
-      const content: ContentPart[] = text === '' ? [] : [{ type: 'text', text }];
-      content.push(...merge.parts);
       out.push({
         role: 'user',
         name: undefined,
-        content,
+        content: mergeUserContent(merge.messages),
         toolCalls: [],
         toolCallId: undefined,
         partial: undefined,
@@ -216,16 +230,18 @@ function flattenBlocks(
   };
 
   for (const block of blocks) {
+    if (block.kind === 'boundary') {
+      flushMerge();
+      continue;
+    }
     if (block.kind === 'message') {
-      if (canMergeUserMessage(block.source)) {
-        if (merge === undefined) {
-          merge = { single: block, texts: [], parts: [] };
+      const anchor = userMergeAnchor(block.source);
+      if (anchor !== undefined) {
+        if (merge === undefined || !sameUserMergeAnchor(merge.anchor, anchor)) {
+          flushMerge();
+          merge = { anchor, messages: [block] };
         } else {
-          if (merge.single !== undefined) {
-            appendMergeContent(merge, merge.single.content);
-            merge.single = undefined;
-          }
-          appendMergeContent(merge, block.content);
+          merge.messages.push(block);
         }
         continue;
       }
@@ -326,13 +342,65 @@ function dropLeadingNonUserMessages(messages: readonly Message[], onAnomaly?: On
   return start === 0 ? [...messages] : messages.slice(start);
 }
 
-function appendMergeContent(group: MergeState, content: readonly ContentPart[]): void {
-  let text = '';
-  for (const part of content) {
-    if (part.type === 'text') text += part.text;
-    else group.parts.push(part);
+function mergeUserContent(
+  messages: readonly { readonly source: ContextMessage; readonly content: ContentPart[] }[],
+): ContentPart[] {
+  const prefixes: ContentPart[] = [];
+  const body: ContentPart[] = [];
+  let previousBodyHadText = false;
+  let hasPreviousBody = false;
+
+  for (const message of messages) {
+    const prefixCount = skillPrefixCount(message.source);
+    const split = prefixCount > 0 && message.content.slice(0, prefixCount).every((part) => part.type === 'text')
+      ? prefixCount
+      : 0;
+    prefixes.push(...message.content.slice(0, split));
+    const current = message.content.slice(split);
+    if (current.length === 0) continue;
+
+    const currentHasText = current.some((part) => part.type === 'text');
+    if (hasPreviousBody && previousBodyHadText && currentHasText) {
+      const firstTextIndex = current.findIndex((part) => part.type === 'text');
+      const firstText = current[firstTextIndex];
+      if (firstText?.type === 'text') {
+        const previous = body.at(-1);
+        if (firstTextIndex === 0 && canCombineTextParts(previous, firstText)) {
+          body[body.length - 1] = {
+            ...previous,
+            text: `${previous.text}\n\n${firstText.text}`,
+          };
+          current.splice(firstTextIndex, 1);
+        } else {
+          current[firstTextIndex] = { ...firstText, text: `\n\n${firstText.text}` };
+        }
+      }
+    }
+    body.push(...current);
+    hasPreviousBody = true;
+    previousBodyHadText = currentHasText;
   }
-  if (text.length > 0) group.texts.push(text);
+
+  return [...prefixes, ...body];
+}
+
+function canCombineTextParts(
+  previous: ContentPart | undefined,
+  current: ContentPart,
+): previous is Extract<ContentPart, { type: 'text' }> {
+  return previous?.type === 'text' && current.type === 'text' &&
+    previous.presentation === undefined && previous.attachment === undefined && previous.resourceLink === undefined &&
+    current.presentation === undefined && current.attachment === undefined && current.resourceLink === undefined;
+}
+
+function skillPrefixCount(message: ContextMessage): number {
+  const count = (origin: ContextMessage['origin']): number => {
+    if (origin?.kind === 'merged') return origin.origins.reduce((total, item) => total + count(item), 0);
+    if (origin?.kind === 'user') return origin.skillActivations?.length ?? 0;
+    if (origin?.kind === 'skill_activation') return 1;
+    return 0;
+  };
+  return count(message.origin);
 }
 
 function projectedContent(source: ContextMessage, onAnomaly?: OnAnomaly): ContentPart[] {
@@ -406,8 +474,15 @@ function isBlankText(part: ContentPart): boolean {
   return part.type === 'text' && part.text.trim().length === 0;
 }
 
-function canMergeUserMessage(message: ContextMessage): boolean {
-  return message.role === 'user' && message.origin?.kind === 'user';
+function userMergeAnchor(message: ContextMessage): UserMergeAnchor | undefined {
+  if (message.role !== 'user') return undefined;
+  const source = message.source;
+  if (source?.turnId === undefined || source.stepId === undefined || source.stepId.trim().length === 0) return undefined;
+  return { turnId: source.turnId, stepId: source.stepId };
+}
+
+function sameUserMergeAnchor(a: UserMergeAnchor, b: UserMergeAnchor): boolean {
+  return a.turnId === b.turnId && a.stepId === b.stepId;
 }
 
 function hasDeclaredTools(message: ContextMessage): boolean {

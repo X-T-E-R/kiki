@@ -512,7 +512,7 @@ describe('the update record reaches the native side', () => {
       host: { ...host, checkDesktopUpdate: async () => again },
     });
     await settle();
-    await act(async () => { retry.current.onSkip(retry.current.offer!); });
+    await act(async () => { await retry.current.onSkip(retry.current.offer!); });
     expect(native.store.updateState?.skipped).toEqual({ stable: ['0.3.2'], beta: null });
     expect(retry.current.persistError).toBeNull();
   });

@@ -1,9 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
 
+import type { QueryClient } from '@tanstack/react-query';
+
 import type { ExecutorCatalogItem } from '@kiki/protocol';
 import { isNativeExecutor, NATIVE_EXECUTOR, profileExecutor } from '@kiki/session-core/composer';
 
-import type { NamedAgentProfile } from '../../../lib/client';
+import type { ExecutorCheckResult, NamedAgentProfile } from '../../../lib/client';
 import { useConnection } from '../../../state/connection';
 
 export const EXECUTORS_QUERY_KEY = ['executors'] as const;
@@ -65,11 +67,30 @@ export function configuredEngineDescriptors(config: { readonly raw?: unknown } |
   return asConfigRecord(asConfigRecord(config?.raw)?.['agent_executors']);
 }
 
-/** Engines the editor can offer: native, every catalog engine, and any id a loaded profile names. */
-export function engineChoices(profiles: readonly NamedAgentProfile[], catalog: readonly ExecutorCatalogItem[]): string[] {
-  const ids = new Set(catalog.map((item) => item.id).filter((id) => id !== 'native'));
-  for (const profile of profiles) {
-    if (profile.executor !== undefined && profile.executor !== 'native') ids.add(profile.executor);
+/**
+ * Engines a profile may newly choose: native, plus external engines explicitly
+ * turned on. `retain` keeps the ids this profile or session is already bound
+ * to, including hidden and unavailable ones, so the current value stays a
+ * restore entry. Other profiles' engines are not added.
+ */
+export function engineChoices(
+  _profiles: readonly NamedAgentProfile[],
+  catalog: readonly ExecutorCatalogItem[],
+  choice?: {
+    readonly overrides?: Readonly<Record<string, unknown>>;
+    readonly display?: Readonly<Record<string, unknown>>;
+    readonly retain?: readonly string[];
+  },
+): string[] {
+  const prefs = engineVisibilityOf(choice?.overrides, choice?.display);
+  const ids = new Set<string>();
+  if (prefs.externalsVisible) {
+    for (const item of catalog) {
+      if (item.id !== 'native' && prefs.enabled.has(item.id)) ids.add(item.id);
+    }
+  }
+  for (const id of choice?.retain ?? []) {
+    if (id !== '' && id !== 'native') ids.add(id);
   }
   return ['', ...[...ids].toSorted((a, b) => engineLabel(a, a, catalog).localeCompare(engineLabel(b, b, catalog)))];
 }
@@ -92,39 +113,57 @@ export function engineChoices(profiles: readonly NamedAgentProfile[], catalog: r
  * Settings, and still runs whatever a session was already bound to. Only the
  * list in the profile and execution pickers reads it.
  *
- * Reads defensively. Both sections are free-form records on the wire, so an
- * absent value — or one in a shape this build does not know — means "show". The
- * failure mode of a preference is a hidden engine someone still uses, which is
- * worse than an engine they never chose to hide.
+ * Reads defensively. An absent per-engine flag is not a choice: only an
+ * explicit `true` turns an external engine on, and only an explicit `false`
+ * turns it off. An unknown shape is neither, so a preference this build does
+ * not understand cannot hide an engine the user turned on or revive one they
+ * turned off. `externals_visible: false` is the only global value that blocks
+ * every external engine; an absent global section leaves the per-engine flags
+ * in force and does not turn them all on.
  */
 export interface EngineVisibilityPrefs {
-  /** False hides every external engine at once, whatever the per-engine flags say. */
+  /** False blocks every external engine at once, whatever the per-engine flags say. */
   readonly externalsVisible: boolean;
-  /** Per-engine opt-out, by executor id. Absent means visible. */
-  readonly hidden: ReadonlySet<string>;
+  /** Per-engine opt-in. Absent is not a member. */
+  readonly enabled: ReadonlySet<string>;
+  /** Per-engine opt-out. Absent is not a member; a member stays off across refresh and re-import. */
+  readonly disabled: ReadonlySet<string>;
 }
 
 export const DEFAULT_ENGINE_VISIBILITY: EngineVisibilityPrefs = {
   externalsVisible: true,
-  hidden: new Set<string>(),
+  enabled: new Set<string>(),
+  disabled: new Set<string>(),
 };
 
+/** `true` or `false` when the user has said so; `undefined` when they have not. */
+export function showInProfileListOf(
+  overrides: Readonly<Record<string, unknown>> | undefined,
+  id: string,
+): boolean | undefined {
+  const flag = asConfigRecord(overrides?.[id])?.['show_in_profile_list'];
+  return flag === true ? true : flag === false ? false : undefined;
+}
+
 /**
- * Read the visibility choice off the two echoed records. Both are optional, and
- * both read as "show" when absent.
+ * Read the visibility choice off the two echoed records.
+ *
+ * The global switch defaults to open. A per-engine flag defaults to neither
+ * on nor off.
  */
 export function engineVisibilityOf(
   overrides: Readonly<Record<string, unknown>> | undefined,
   display: Readonly<Record<string, unknown>> | undefined = undefined,
 ): EngineVisibilityPrefs {
-  // `externals_visible: false` is the only value that changes anything; an
-  // absent section is an empty `{}` on the server, which is also "show".
   const externalsVisible = display?.['externals_visible'] !== false;
-  const hidden = new Set<string>();
+  const enabled = new Set<string>();
+  const disabled = new Set<string>();
   for (const [id, entry] of Object.entries(overrides ?? {})) {
-    if (asConfigRecord(entry)?.['show_in_profile_list'] === false) hidden.add(id);
+    const flag = asConfigRecord(entry)?.['show_in_profile_list'];
+    if (flag === true) enabled.add(id);
+    else if (flag === false) disabled.add(id);
   }
-  return { externalsVisible, hidden };
+  return { externalsVisible, enabled, disabled };
 }
 
 /**
@@ -146,7 +185,8 @@ export function engineVisibilityPatch(
   // A per-engine flag only means anything while the global switch allows it;
   // otherwise the engine is hidden for a reason no per-engine value can fix.
   if (!current.externalsVisible && !visible) return undefined;
-  if (current.hidden.has(id) === !visible) return undefined;
+  const already = visible ? current.enabled.has(id) : current.disabled.has(id);
+  if (already) return undefined;
   return { agent_executor_overrides: { [id]: { show_in_profile_list: visible } } };
 }
 
@@ -205,7 +245,12 @@ export function isRunnableEngine(
   return item.connection?.login_status !== 'logged_out';
 }
 
-/** Runnable engines offered for a new choice; Settings retains the full catalog. */
+/**
+ * New execution choices: native, plus external engines the user has turned on
+ * that can still be launched. An explicit off, a closed global switch, a
+ * missing binary and a confirmed sign-out stay out. A profile binding is not
+ * an on switch. Settings still lists the whole catalog.
+ */
 export function visibleEngines(
   catalog: readonly ExecutorCatalogItem[],
   _profiles: readonly NamedAgentProfile[],
@@ -216,7 +261,60 @@ export function visibleEngines(
   const prefs = engineVisibilityOf(overrides, display);
   return catalog.filter((item) => {
     if (item.id === NATIVE_EXECUTOR) return true;
-    if (!prefs.externalsVisible || prefs.hidden.has(item.id)) return false;
+    if (!prefs.externalsVisible || !prefs.enabled.has(item.id)) return false;
     return isRunnableEngine(item, overrides, descriptors);
   });
+}
+
+/** Success may turn an engine on only while the user has never said on or off. */
+export function shouldAutoEnableEngine(
+  overrides: Readonly<Record<string, unknown>> | undefined,
+  id: string,
+  status: ExecutorCheckResult['status'],
+): boolean {
+  return status !== 'unavailable' && showInProfileListOf(overrides, id) === undefined;
+}
+
+/** One engine's check, written into that scope's catalog cache and nowhere else. */
+export function applyExecutorCheck(
+  queryClient: QueryClient,
+  queryKey: readonly unknown[],
+  id: string,
+  result: ExecutorCheckResult,
+  checkedAt: string,
+): void {
+  queryClient.setQueryData(queryKey, (current: { readonly items?: readonly ExecutorCatalogItem[] } | undefined) => {
+    if (current?.items === undefined) return current;
+    return {
+      ...current,
+      items: current.items.map((item) => item.id === id ? mergeCheckedEngine(item, result, checkedAt) : item),
+    };
+  });
+}
+
+function mergeCheckedEngine(item: ExecutorCatalogItem, result: ExecutorCheckResult, checkedAt: string): ExecutorCatalogItem {
+  const programFailed = result.requirements?.some((requirement) => requirement.role === 'program' && requirement.status !== 'ok') === true;
+  const unavailable = result.status === 'unavailable' || programFailed;
+  const connection = item.connection;
+  return {
+    ...item,
+    status: unavailable ? 'unavailable' : 'ready',
+    version: result.version ?? item.version,
+    check_status: result.status,
+    checked_at: checkedAt,
+    check_stale: false,
+    connection: {
+      command: result.command || connection?.command,
+      source: result.selected_source ?? connection?.source,
+      install_hint: connection?.install_hint,
+      login_command: connection?.login_command,
+      api_key_env: connection?.api_key_env,
+      login_status: result.login_status,
+      credential_source: result.credential_source ?? connection?.credential_source,
+      credential_detail: result.credential_detail ?? connection?.credential_detail,
+      home_env: connection?.home_env,
+      override: connection?.override,
+      default_args: result.resolved_args.length > 0 ? [...result.resolved_args] : connection?.default_args ?? [],
+    },
+  };
 }

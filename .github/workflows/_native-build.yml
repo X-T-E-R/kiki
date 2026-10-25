@@ -137,6 +137,16 @@ jobs:
       - name: Package native artifact
         run: pnpm --filter @kiki/cli run package:native
 
+      - name: Stage Windows process helper for npm distribution
+        if: matrix.target == 'win32-x64'
+        shell: bash
+        run: |
+          helper="apps/kimi-code/dist-native/intermediates/native-assets/win32-x64/windows-process/windows-process-helper.exe"
+          test -f "$helper"
+          destination="apps/kimi-code/dist-native/artifacts/windows-process-helper/win32-x64"
+          mkdir -p "$destination"
+          cp "$helper" "$destination/windows-process-helper.exe"
+
       - name: Upload native artifact
         uses: actions/upload-artifact@v7
         with:
@@ -146,4 +156,5 @@ jobs:
             apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}${{ matrix.extension }}
             apps/kimi-code/dist-native/artifacts/kiki-${{ matrix.target }}${{ matrix.extension }}.sha256
             apps/kimi-code/dist-native/artifacts/auth-native/${{ matrix.target }}/
+            apps/kimi-code/dist-native/artifacts/windows-process-helper/${{ matrix.target }}/
           if-no-files-found: error

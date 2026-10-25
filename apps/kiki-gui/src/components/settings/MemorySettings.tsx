@@ -3,8 +3,9 @@ import { useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
+import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../i18n';
-import type { MemoryApproval, MemorySettings } from '../../lib/client';
+import type { KikiConfigResponse, MemoryApproval, MemorySettings } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
@@ -27,15 +28,36 @@ export function MemorySettingsCard() {
   const [saved, ping] = useSavedTick();
   // The text budget keeps its system default; it surfaces only behind Advanced.
   const [advanced, setAdvanced] = useState(false);
+  const [defaultError, setDefaultError] = useState<unknown>();
   const settingsQuery = useQuery({
     queryKey: MEMORY_SETTINGS_KEY,
     queryFn: () => client.getMemorySettings(),
     staleTime: 15_000,
   });
+  const configQuery = useQuery({
+    queryKey: ['config', 'memory-default'],
+    queryFn: () => client.getConfig(),
+    enabled: typeof client.getConfig === 'function',
+    staleTime: 30_000,
+  });
+  const memoryCapability = optionalCapabilityState(configQuery.data, 'memory');
   const update = useMutation({
     mutationFn: (patch: MemoryPatch) => client.patchMemorySettings(patch),
-    onSuccess: async (next: MemorySettings) => {
+    onSuccess: async (next: MemorySettings, patch: MemoryPatch) => {
       queryClient.setQueryData(MEMORY_SETTINGS_KEY, next);
+      if (patch.enabled !== undefined) {
+        queryClient.setQueryData(['config', 'memory-default'], (current: KikiConfigResponse | undefined) => {
+          const memory = current?.optional_capabilities?.memory;
+          if (current?.optional_capabilities === undefined || memory === undefined) return current;
+          return {
+            ...current,
+            optional_capabilities: {
+              ...current.optional_capabilities,
+              memory: { ...memory, allowed: next.enabled },
+            },
+          };
+        });
+      }
       // The global switch decides every workspace's effective state, so a save
       // that touched it has to re-read all of them, not just the ones this
       // card happens to be holding.
@@ -53,7 +75,9 @@ export function MemorySettingsCard() {
     ? { tone: 'error', text: t('st.memory.loadFailed', { detail: errorText(locale, settingsQuery.error) }) }
     : update.isError
       ? { tone: 'error', text: t('st.memory.saveFailed', { detail: errorText(locale, update.error) }) }
-      : null;
+      : defaultError !== undefined
+        ? { tone: 'error', text: t('st.memory.saveFailed', { detail: errorText(locale, defaultError) }) }
+        : null;
 
   return (
     <SectionCard id="st-card-memory" title={t('st.memory.title')}>
@@ -64,11 +88,23 @@ export function MemorySettingsCard() {
             id="memory-enabled"
             layout="bare"
             label={t('memory.toggle')}
-            checked={settingsQuery.data?.enabled === true}
-            disabled={busy}
+            checked={memoryCapability?.allowed ?? settingsQuery.data?.enabled === true}
+            disabled={busy || memoryCapability?.host_locked === true}
             onChange={(enabled) => { update.mutate({ enabled }); }}
           />
         </SettingField>
+        <DefaultOnSwitch
+          id="memory"
+          state={memoryCapability}
+          disabled={busy}
+          onChange={(next) => {
+            setDefaultError(undefined);
+            void client.patchConfig({ optional_capabilities: { defaults: { memory: next } } }).then((echoed) => {
+              queryClient.setQueryData(['config', 'memory-default'], echoed);
+              ping();
+            }).catch((cause: unknown) => { setDefaultError(cause); });
+          }}
+        />
         <SettingField label={t('st.memory.approval')} labelId="memory-approval-label">
           {status('approval')}
           <SettingsSelect<MemoryApproval>
@@ -112,7 +148,7 @@ export function MemorySettingsCard() {
         <button
           type="button"
           data-memory-settings-link
-          onClick={() => { navigate('/memory'); }}
+          onClick={() => { void navigate('/memory'); }}
           className="inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink transition-colors hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
         >
           {t('st.memory.open')}
@@ -131,7 +167,7 @@ export function MemoryWorkspaceSettingsCard() {
   const queryClient = useQueryClient();
   const [params, setParams] = useSearchParams();
   const [saved, ping] = useSavedTick();
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const settingsQuery = useQuery({ queryKey: MEMORY_SETTINGS_KEY, queryFn: () => client.getMemorySettings(), staleTime: 15_000 });
   const workspaces = workspacesQuery.data?.items ?? [];
   const requestedWorkspace = params.get('workspace');

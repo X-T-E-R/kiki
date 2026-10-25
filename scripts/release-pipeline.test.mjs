@@ -1,16 +1,18 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { spawnSync } from 'node:child_process';
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
 
 import { seaRuntimeOptions } from '../apps/kimi-code/scripts/native/02-sea-blob.mjs';
 import { macosSigningOptions } from '../apps/kimi-code/scripts/native/04-sign.mjs';
+import { NODE_RUNTIME_RANGE, nodeRuntimeAccepted, nodeRuntimeRejection } from '../apps/kimi-code/scripts/native/node-runtime.mjs';
 import { NPM_DISTRIBUTIONS, stageNpmDistributions } from '../apps/kimi-code/scripts/npm/stage.mjs';
 
 const root = resolve(import.meta.dirname, '..');
 const read = (path) => readFile(join(root, path), 'utf8');
 
-test('public CLI and desktop sidecar builds use the release SEA policy independently of signing', async () => {
+void test('public CLI and desktop sidecar builds use the release SEA policy independently of signing', async () => {
   assert.deepEqual(seaRuntimeOptions('release'), { execArgv: [], execArgvExtension: 'env' });
   assert.deepEqual(seaRuntimeOptions('local'), {
     execArgv: ['--max-old-space-size=8192'], execArgvExtension: 'cli',
@@ -33,7 +35,7 @@ test('public CLI and desktop sidecar builds use the release SEA policy independe
   assert.match(build, /runSignStep\(macosSigningOptions\(values\['sign-macos'\]\)\)/);
 });
 
-test('every Pages artifact contains feeds before upload and deployment', async () => {
+void test('every Pages artifact contains feeds before upload and deployment', async () => {
   const workflows = join(root, '.github/workflows');
   let deployments = 0;
   for (const name of await readdir(workflows)) {
@@ -53,7 +55,7 @@ test('every Pages artifact contains feeds before upload and deployment', async (
   assert.match(feed, /- Kiki Desktop Release/);
 });
 
-test('npm stages preserve public distribution names and synchronized workspace version', async (t) => {
+void test('npm stages preserve public distribution names and synchronized workspace version', async (t) => {
   await mkdir(join(root, '.tmp'), { recursive: true });
   const scratch = await mkdtemp(join(root, '.tmp/release-stage-test-'));
   t.after(() => rm(scratch, { recursive: true, force: true }));
@@ -81,6 +83,7 @@ test('npm stages preserve public distribution names and synchronized workspace v
     assert.equal(staged.version, source.version);
     assert.equal(staged.publishConfig.registry, 'https://registry.npmjs.org/');
     assert.equal(staged.scripts?.postinstall, kind === 'full' ? 'node scripts/desktop-postinstall.mjs' : undefined);
+    assert.equal(staged.engines.node, NODE_RUNTIME_RANGE);
     assert.equal(await readFile(join(app, 'dist-npm', kind, 'dist/main.mjs'), 'utf8'), 'export {};');
   }
   await writeFile(join(gui, 'package.json'), JSON.stringify({ version: '1.2.4' }));
@@ -91,4 +94,190 @@ test('npm stages preserve public distribution names and synchronized workspace v
   for (const [, name] of NPM_DISTRIBUTIONS) assert.ok(setup.includes(`\`${name}\``));
   assert.ok(!setup.includes('kiki-cli-lite'));
   assert.match(setup, /separate workspace-package channel using `changeset publish`/);
+});
+
+void test('local and release Node gates accept patched lines and reject affected 26.x', async () => {
+  const accepted = ['24.22.1', '24.23.0', '26.12.1', '26.13.4', '27.0.0', 'v24.22.1'];
+  const rejected = [
+    '24.22.0', '24.21.0', '24.19.0', '24.15.0', '24.14.1',
+    '26.12.0', '26.11.0', '26.0.0', '25.0.0', '25.9.1',
+    '22.23.4', '23.11.0', '24.22.1-rc.1', '26.12.1-rc.0', '27.0.0-rc.1',
+  ];
+  for (const version of accepted) {
+    assert.equal(nodeRuntimeAccepted(version), true, version);
+    assert.equal(nodeRuntimeRejection(version), null, version);
+  }
+  for (const version of rejected) {
+    assert.equal(nodeRuntimeAccepted(version), false, version);
+    assert.match(nodeRuntimeRejection(version) ?? '', new RegExp(`current ${version.replaceAll('.', '\\.')}`));
+  }
+
+  const build = await read('apps/kimi-code/scripts/native/build.mjs');
+  const check = build.indexOf('nodeRuntimeRejection(process.versions.node)');
+  const bundle = build.indexOf('await runBundleStep()');
+  assert.ok(check >= 0 && bundle >= 0 && check < bundle);
+  assert.match(build, /default: 'local'/);
+  assert.equal(await read('.nvmrc'), '24.22.1\n');
+  assert.equal(NODE_RUNTIME_RANGE, '>=24.22.1 <25 || >=26.12.1');
+
+  const manifests = [
+    'package.json',
+    'apps/kimi-code/package.json',
+    'packages/auth-native/package.json',
+    'packages/pi-tui/package.json',
+  ];
+  for (const manifest of manifests) {
+    assert.equal(JSON.parse(await read(manifest)).engines.node, NODE_RUNTIME_RANGE, manifest);
+  }
+
+  const flake = await read('flake.nix');
+  assert.match(flake, /minNodeVersion = "24\.22\.1"/);
+  assert.match(flake, /node-v24\.22\.1\.tar\.xz/);
+  assert.match(flake, /sha256-T1N5eWKAza6wwvNY\/QS2oWzE\+336g7WoyRqdljtDUjE=/);
+  assert.match(flake, /packaged\.overrideAttrs/);
+  assert.match(flake, /pkgs\.nodejs_24/);
+  assert.match(flake, /configureFlags = lib\.filter/);
+  assert.match(flake, /flag != "--shared-libuv"/);
+  assert.match(flake, /lib\.strings\.hasPrefix "--shared-libuv-libpath="/);
+  assert.match(flake, /flag != "--shared-sqlite"/);
+  assert.match(flake, /lib\.strings\.hasPrefix "--shared-sqlite-libpath="/);
+  assert.match(flake, /input != pkgs\.libuv/);
+  assert.match(flake, /input != pkgs\.sqlite/);
+  assert.match(flake, /lib\.getDev pkgs\.sqlite/);
+  assert.match(flake, /postInstall = lib\.replaceStrings/);
+
+  const nixWorkflow = await read('.github/workflows/nix-build.yml');
+  assert.match(nixWorkflow, /nix_path: nixpkgs=channel:nixos-unstable/);
+  assert.doesNotMatch(nixWorkflow, /nix-path:/);
+});
+
+void test('Nix cache keys and stages preserve the verified Node boundary', async () => {
+  const flake = await read('flake.nix');
+  const workflow = await read('.github/workflows/nix-build.yml');
+  const actionCommit = '7df957e333c1e5da7721f60227dbba6d06080569';
+
+  assert.match(flake, /ci-nodejs = nodejs;/);
+  assert.match(flake, /pnpm --filter=@kiki\/plugin-sdk run build/);
+  assert.match(workflow, /pull_request:\r?\n\s+branches:\r?\n\s+- main\r?\n\s+- kiki/);
+  assert.match(workflow, /push:\r?\n\s+branches:\r?\n\s+- main\r?\n\s+- kiki/);
+  assert.match(workflow, /NIX_STORE_COMPAT_EPOCH: 1/);
+  assert.match(workflow, /DRV_PATH="\$\(nix eval --raw "\.#packages\.\$\{SYSTEM\}\.ci-nodejs\.drvPath"\)"/);
+  assert.match(workflow, /DRV_IDENTITY="\$\(basename "\$DRV_PATH"\)"/);
+  assert.match(workflow, /CACHE_KEY="nix-node-v1-\$\{SYSTEM\}-\$\{NIX_STORE_COMPAT_EPOCH\}-\$\{DRV_IDENTITY\}"/);
+
+  const restore = workflow.indexOf(`nix-community/cache-nix-action/restore@${actionCommit}`);
+  const nodeBuild = workflow.indexOf("nix build '.#ci-nodejs^*' --print-build-logs");
+  const saveStep = workflow.indexOf('- name: Save verified Node store cache');
+  const save = workflow.indexOf(`nix-community/cache-nix-action/save@${actionCommit}`);
+  const appBuild = workflow.indexOf('nix build .#kiki --print-build-logs');
+  assert.ok(restore >= 0 && restore < nodeBuild && nodeBuild < saveStep && saveStep < save && save < appBuild);
+
+  const restoreBlock = workflow.slice(restore, nodeBuild);
+  assert.match(restoreBlock, /primary-key: \$\{\{ steps\.node\.outputs\.cache-key \}\}/);
+  assert.match(restoreBlock, /save: false/);
+  assert.doesNotMatch(restoreBlock, /restore-prefixes/);
+  assert.doesNotMatch(restoreBlock, /paths:/);
+  assert.match(workflow, /cold_node_cache/);
+  assert.match(workflow, /Reject an unsafe cache restore/);
+  assert.match(workflow, /partially restored store/);
+
+  const verifiedNodeBlock = workflow.slice(nodeBuild, save);
+  assert.match(verifiedNodeBlock, /nix-store --query --outputs/);
+  assert.match(verifiedNodeBlock, /--add-root/);
+  assert.match(verifiedNodeBlock, /nix path-info --json --recursive/);
+  assert.match(verifiedNodeBlock, /store bytes before save/);
+  assert.doesNotMatch(verifiedNodeBlock, /--no-check|doCheck\s*=\s*false/);
+
+  const saveBlock = workflow.slice(saveStep, appBuild);
+  assert.match(saveBlock, /steps\.restore-node-cache\.outputs\.hit-primary-key != 'true'/);
+  assert.match(saveBlock, /env\.TRUSTED_CACHE_WRITE == 'true'/);
+  assert.match(saveBlock, /continue-on-error: true/);
+  assert.match(saveBlock, /gc-max-store-size-linux: 3G/);
+  assert.match(saveBlock, /store bytes after save GC/);
+  assert.match(saveBlock, /reported cache bytes/);
+  assert.doesNotMatch(saveBlock, /restore-prefixes|purge: true|pnpmDeps|\/home\//);
+  assert.match(workflow, /github\.event_name == 'push'.*github\.event\.repository\.default_branch/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'.*inputs\.trusted_cache_write/);
+  assert.match(workflow, /\.\/result\/bin\/kiki --version/);
+
+  const cacheKey = ({ system, epoch, drvPath }) =>
+    `nix-node-v1-${system}-${epoch}-${drvPath.split('/').at(-1)}`;
+  const baseline = cacheKey({
+    system: 'x86_64-linux', epoch: 1, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv',
+  });
+  assert.equal(
+    baseline,
+    cacheKey({ system: 'x86_64-linux', epoch: 1, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv' }),
+  );
+  assert.notEqual(
+    baseline,
+    cacheKey({ system: 'x86_64-linux', epoch: 1, drvPath: '/nix/store/bbbbbbbb-nodejs-24.22.1.drv' }),
+  );
+  assert.notEqual(
+    baseline,
+    cacheKey({ system: 'aarch64-linux', epoch: 1, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv' }),
+  );
+  assert.notEqual(
+    baseline,
+    cacheKey({ system: 'x86_64-linux', epoch: 2, drvPath: '/nix/store/aaaaaaaa-nodejs-24.22.1.drv' }),
+  );
+});
+
+void test('Nix prepares the host PTY offline before collecting native assets', async () => {
+  const flake = await read('flake.nix');
+  const buildInputs = flake.slice(flake.indexOf('nativeBuildInputs = ['), flake.indexOf('dontStrip = true;'));
+  assert.match(buildInputs, /pkgs\.python3/);
+  assert.match(flake, /export npm_config_nodedir=\$\{nodejs\}/);
+  assert.match(flake, /export npm_config_python=\$\{pkgs\.python3\}\/bin\/python3/);
+  assert.match(flake, /export npm_config_build_from_source=true/);
+  assert.ok(flake.includes('printf \'["node-pty"]\\n\' > "$TMPDIR/kiki-native-build-allowlist.json"'));
+  const rebuild = flake.indexOf('pnpm --config.onlyBuiltDependenciesFile="$TMPDIR/kiki-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty');
+  const load = flake.indexOf('pnpm --filter @kiki/agent-core-v2 exec node -e \'require("node-pty")\'');
+  const sdk = flake.indexOf('pnpm --filter=@kiki/plugin-sdk run build');
+  const sea = flake.indexOf('pnpm --filter=@kiki/cli run build:native:sea');
+  assert.ok(rebuild >= 0 && rebuild < load && load < sdk && sdk < sea);
+});
+
+void test('Nix application build failure cannot be hidden by a stale successful result', async (t) => {
+  const workflow = await read('.github/workflows/nix-build.yml');
+  const buildStep = workflow.indexOf('      - name: Build\n');
+  const runBody = workflow.indexOf('        run: |\n', buildStep) + '        run: |\n'.length;
+  const nextStep = workflow.indexOf('\n      - name:', runBody);
+  assert.ok(buildStep >= 0 && runBody > buildStep && nextStep > runBody);
+  const buildScript = workflow.slice(runBody, nextStep).split('\n')
+    .map((line) => line.startsWith('          ') ? line.slice(10) : line)
+    .join('\n');
+
+  await mkdir(join(root, '.tmp'), { recursive: true });
+  const scratch = await mkdtemp(join(root, '.tmp/nix-build-shell-test-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, 'fake-bin');
+  const resultBin = join(scratch, 'result/bin');
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(resultBin, { recursive: true });
+  const fakeNix = join(fakeBin, 'nix');
+  const staleKiki = join(resultBin, 'kiki');
+  await writeFile(fakeNix, '#!/usr/bin/env bash\nprintf "fake nix\\n"\nexit "$FAKE_NIX_EXIT"\n');
+  await writeFile(staleKiki, '#!/usr/bin/env bash\nprintf "smoke\\n" >> "$PWD/smoke-marker"\n');
+  await chmod(fakeNix, 0o755);
+  await chmod(staleKiki, 0o755);
+
+  const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' : 'bash';
+  const harness = `export PATH="$PWD/fake-bin:$PATH"\nexport GITHUB_OUTPUT="$PWD/github-output"\n${buildScript}`;
+  const execute = async (nixExit) => {
+    await rm(join(scratch, 'github-output'), { force: true });
+    await rm(join(scratch, 'smoke-marker'), { force: true });
+    const result = spawnSync(bash, ['-c', harness], {
+      cwd: scratch,
+      encoding: 'utf8',
+      env: { ...process.env, FAKE_NIX_EXIT: String(nixExit) },
+    });
+    assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    return readFile(join(scratch, 'github-output'), 'utf8');
+  };
+
+  assert.match(await execute(1), /^BUILD_FAILED=true$/m);
+  await assert.rejects(readFile(join(scratch, 'smoke-marker')), /ENOENT/);
+  assert.match(await execute(0), /^BUILD_FAILED=false$/m);
+  assert.equal(await readFile(join(scratch, 'smoke-marker'), 'utf8'), 'smoke\n');
 });

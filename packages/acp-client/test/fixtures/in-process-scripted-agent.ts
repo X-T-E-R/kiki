@@ -1,10 +1,12 @@
 import {
   agent,
   methods,
+  ndJsonStream,
   RequestError,
   type AgentApp,
   type AgentCapabilities,
   type PermissionOption,
+  type RequestPermissionRequest,
   type SessionConfigOption,
   type StopReason,
 } from '@agentclientprotocol/sdk';
@@ -19,9 +21,14 @@ export interface InProcessAgentScript {
   readonly loadReplay?: readonly unknown[];
   readonly promptUpdates?: readonly unknown[];
   readonly permissionOptions?: readonly PermissionOption[];
+  readonly permissionToolCall?: RequestPermissionRequest['toolCall'];
+  readonly permissionSessionId?: string;
   readonly stopReason?: StopReason;
   readonly hangPrompt?: boolean;
   readonly modeUpdate?: string;
+  readonly sessionResponseMeta?: Record<string, unknown>;
+  readonly initializeMeta?: Record<string, unknown>;
+  readonly steeringOutcome?: 'injected' | 'promptRequired' | 'startedNewTurn' | 'unknown' | 'reject' | 'abort' | 'hang';
 }
 
 export interface InProcessAgentHistory {
@@ -34,6 +41,7 @@ export interface InProcessAgentHistory {
   readonly sessionLoadParams: unknown[];
   readonly sessionForkParams: unknown[];
   readonly promptParams: unknown[];
+  readonly steeringParams: unknown[];
   cancelCount: number;
 }
 
@@ -81,6 +89,7 @@ export function createInProcessScriptedAgent(
     sessionLoadParams: [],
     sessionForkParams: [],
     promptParams: [],
+    steeringParams: [],
     cancelCount: 0,
   };
   let settlePrompt: ((stopReason: StopReason) => void) | undefined;
@@ -96,12 +105,13 @@ export function createInProcessScriptedAgent(
           sessionCapabilities: { resume: {} },
         },
         agentInfo: { name: 'scripted-agent', version: '1.0.0' },
+        ...(script.initializeMeta === undefined ? {} : { _meta: script.initializeMeta }),
       };
     })
     .onRequest(methods.agent.session.new, ({ params }) => {
       history.methods.push('session/new');
       history.sessionNewParams.push(params);
-      return { sessionId, configOptions };
+      return { sessionId, configOptions, _meta: script.sessionResponseMeta };
     })
     .onRequest(methods.agent.session.fork, ({ params }) => {
       history.methods.push('session/fork');
@@ -124,7 +134,7 @@ export function createInProcessScriptedAgent(
           update,
         });
       }
-      return { configOptions };
+      return { configOptions, _meta: script.sessionResponseMeta };
     })
     .onRequest(methods.agent.session.setConfigOption, ({ params }) => {
       history.methods.push('session/set_config_option');
@@ -152,8 +162,8 @@ export function createInProcessScriptedAgent(
       }
       if (script.permissionOptions !== undefined) {
         const response = await client.request(methods.client.session.requestPermission, {
-          sessionId,
-          toolCall: {
+          sessionId: script.permissionSessionId ?? sessionId,
+          toolCall: script.permissionToolCall ?? {
             toolCallId: 'tool-1',
             title: 'Scripted tool',
             status: 'pending',
@@ -170,6 +180,18 @@ export function createInProcessScriptedAgent(
       }
       return { stopReason: script.stopReason ?? 'end_turn' };
     })
+    .onRequest('_session/steering', (params: unknown) => params, async ({ params }) => {
+      history.methods.push('_session/steering');
+      history.steeringParams.push(params);
+      if (script.steeringOutcome === 'reject') throw RequestError.methodNotFound('_session/steering');
+      if (script.steeringOutcome === 'abort') {
+        const error = new Error('steering aborted');
+        error.name = 'AbortError';
+        throw error;
+      }
+      if (script.steeringOutcome === 'hang') await new Promise<void>(() => undefined);
+      return { outcome: script.steeringOutcome ?? 'injected' };
+    })
     .onNotification(methods.agent.session.cancel, () => {
       history.cancelCount += 1;
       settlePrompt?.('cancelled');
@@ -177,4 +199,11 @@ export function createInProcessScriptedAgent(
     });
 
   return { app, history };
+}
+
+export function connectInProcessScriptedAgent(
+  app: AgentApp,
+  ...streams: Parameters<typeof ndJsonStream>
+): void {
+  app.connect(ndJsonStream(...streams));
 }

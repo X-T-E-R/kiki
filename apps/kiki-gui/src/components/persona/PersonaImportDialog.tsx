@@ -9,6 +9,7 @@
  */
 
 import { useId, useRef, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import type { PersonaImportPreview } from '@kiki/protocol';
@@ -35,6 +36,7 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
 }) {
   const { t, locale } = useI18n();
   const { client } = useConnection();
+  const navigate = useNavigate();
   const queryClient = useQueryClient();
   const inputRef = useRef<HTMLInputElement>(null);
   const formId = useId();
@@ -58,7 +60,19 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
       void invalidatePersonas(queryClient, result.snapshot.definition.id, { avatar: true });
       pushToast({
         tone: result.memory.status === 'failed' ? 'error' : 'success',
-        text: t(result.memory.status === 'committed' ? 'persona.importedToast' : 'persona.importMemoryPending', { name: result.snapshot.definition.name }),
+        text: t(
+          result.memory.status === 'failed'
+            ? 'persona.importMemoryFailed'
+            : result.memory.status === 'committed'
+              ? 'persona.importedToast'
+              : 'persona.importMemoryPending',
+          { name: result.snapshot.definition.name },
+        ),
+        detail: result.memory.status === 'failed' ? result.memory.error : undefined,
+        retry: result.memory.status === 'failed' ? {
+          label: t('persona.importMemoryView'),
+          run: () => { void navigate(`/memory?persona=${encodeURIComponent(result.snapshot.definition.id)}`); },
+        } : undefined,
       });
       onImported(result.snapshot.definition.id);
     },
@@ -79,7 +93,7 @@ export function PersonaImportDialog({ takenIds, onClose, onImported }: {
     : takenIds.has(id.trim()) || (commit.error instanceof ApiError && commit.error.code === PERSONA_ALREADY_EXISTS) ? t('persona.idTaken')
     : null;
   const definition = preview?.definition;
-  const avatar = preview?.avatar === undefined || definition === undefined ? undefined
+  const avatar = preview?.avatar === undefined || preview?.avatar === null || definition === undefined ? undefined
     : { id: definition.id, name: definition.name, avatarUrl: `data:${preview.avatar.mimeType};base64,${preview.avatar.data}` };
 
   return (

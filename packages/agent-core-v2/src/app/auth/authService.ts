@@ -5,6 +5,7 @@ import {
   KIMI_CODE_PLATFORM_ID,
   KIMI_CODE_PROVIDER_NAME,
   KimiOAuthToolkit,
+  KimiOriginalOAuthService,
   kimiCodeBaseUrl,
   kimiRegionLoginHosts,
   OAuthError,
@@ -36,6 +37,7 @@ import {
 import { connectOriginalOAuthRequestSchema, originalOAuthRequestSchema, type ConnectOriginalOAuthRequest, type OriginalOAuthProbe, type OriginalOAuthRequest } from '@kiki/protocol';
 import { parse as parseToml } from 'smol-toml';
 import { originalOAuthKeyring } from '#/persistence/backends/node-fs/originalOAuthKeyring';
+import { kimiOAuthKeyring } from '#/persistence/backends/node-fs/kimiOAuthKeyring';
 import type {
   OAuthFlowSnapshot,
   OAuthFlowStart,
@@ -151,7 +153,20 @@ export class OAuthService extends Disposable implements IOAuthService {
     return this.enqueueAuthMutation(async () => {
       const source = await this.originalSources().connect(input.provider, input.home_dir, input.expected_account_id);
       const accessToken = await this.originalSources().getAccessToken(source);
-      await this.provisionDeviceMethod(provider, accessToken, undefined, source);
+      if (source.provider === 'kimi-code') {
+        const models = await fetchManagedKimiCodeModels({ accessToken });
+        await this.config.reload();
+        const next = structuredClone(this.readUserConfigShape());
+        applyManagedKimiCodeConfig(next, { models, preserveDefaultModel: true });
+        const configured = next.providers[KIMI_CODE_PROVIDER_NAME];
+        next.providers[KIMI_CODE_PROVIDER_NAME] = { ...configured, oauth: { storage: 'file', key: 'oauth/kimi-code', source } };
+        await this.config.replace(PROVIDERS_SECTION, next.providers);
+        await this.config.replace(MODELS_SECTION, next.models ?? {});
+        await this.config.replace(DEFAULT_MODEL_SECTION, next.defaultModel);
+        await this.config.replace(THINKING_SECTION, next.thinking);
+      } else {
+        await this.provisionDeviceMethod(provider, accessToken, undefined, source);
+      }
       return this.originalProbeDto(await this.originalSources().probe(source.provider, source.homeDir, source));
     });
   }
@@ -373,10 +388,12 @@ export class OAuthService extends Disposable implements IOAuthService {
       provider === KIMI_CODE_PROVIDER_NAME
         ? this.resolveRuntimeOAuthRef(provider)
         : this.readOAuthRefOptional(provider);
-    const result = await this.toolkit.logout(provider, oauthRef);
+    const source = this.originalSource(provider, oauthRef);
+    if (source !== undefined) await this.originalSources().disconnect(source);
+    else await this.toolkit.logout(provider, oauthRef);
     this.abortExisting(provider);
     await this.deprovisionProvider(provider);
-    return { logged_out: true, provider: result.providerName };
+    return { logged_out: true, provider };
   }
 
   async status(provider = KIMI_CODE_PROVIDER_NAME): Promise<AuthStatus> {
@@ -639,6 +656,7 @@ export class OAuthService extends Disposable implements IOAuthService {
         oauthHost: auth.oauthRef.oauthHost,
         preserveDefaultModel: true,
       });
+      next.providers[KIMI_CODE_PROVIDER_NAME] = { ...next.providers[KIMI_CODE_PROVIDER_NAME], ...provider, oauth: auth.oauthRef };
       const refreshedAliasKeys = providerRefreshAliasKeys(
         current,
         next,
@@ -1184,13 +1202,16 @@ function managedModel(
 class OAuthToolkitService extends KimiOAuthToolkit implements IOAuthToolkit {
   declare readonly _serviceBrand: undefined;
   readonly deviceMethods: OAuthDeviceMethods;
-  readonly originalSources = new LocalOriginalOAuthService({ keyring: originalOAuthKeyring, parseConfig: parseToml });
+  readonly originalSources: LocalOriginalOAuthService;
   constructor(@IBootstrapService bootstrap: IBootstrapService) {
+    const originalKimi = new KimiOriginalOAuthService({ storageDeps: { loadKeyring: () => kimiOAuthKeyring } });
     super({
       homeDir: bootstrap.modelAccountHomeDir,
       credentialsDir: `${bootstrap.modelAccountHomeDir}/credentials`,
       identity: bootstrap.clientIdentity,
+      originalKimi,
     });
+    this.originalSources = new LocalOriginalOAuthService({ keyring: originalOAuthKeyring, parseConfig: parseToml, kimi: originalKimi });
     this.deviceMethods = new OAuthDeviceMethods({
       homeDir: bootstrap.modelAccountHomeDir,
       credentialsDir: `${bootstrap.modelAccountHomeDir}/credentials`,

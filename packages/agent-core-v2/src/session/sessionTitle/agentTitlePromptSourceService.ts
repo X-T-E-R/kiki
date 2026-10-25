@@ -82,6 +82,8 @@ export class AgentTitlePromptSourceService implements IAgentTitlePromptSource {
     const queue = this.prompt.list();
     const all = [...this.context.get()];
     if (queue.active !== undefined) all.push(queue.active.message);
+    const launching = queue.launching?.message;
+    if (launching !== undefined && (launching.id === undefined || !all.some((message) => message.id === launching.id))) all.push(launching);
     for (const item of queue.pending) all.push(item.message);
     return all;
   }

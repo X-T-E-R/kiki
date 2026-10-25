@@ -15,31 +15,29 @@ import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
 import { ScopedMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStoreService';
 import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
-import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import {
   agentScopeOf,
   sessionScopeOf,
   workspacePersistenceScope,
 } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 import type { Scope } from '@kiki/agent-core-v2/_base/di/scope';
-import { isPlainAgentId } from '@kiki/transcript';
+import { parseMediaBlobRef } from '@kiki/transcript';
 import { z } from 'zod';
 
 import { buildContentDisposition } from '../lib/contentDisposition';
 import { parseRangeHeader, pickHeader } from '../lib/httpRange';
 import { requestLog } from '../lib/requestLog';
-import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
+import { acquireSessionOperation, createDeferredCleanup, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { openApiDocumentJsonSchema } from '../middleware/schema';
 import { ErrorCode } from '../protocol/error-codes';
 import { envelopeSchema, errEnvelope } from '../protocol/envelope';
 import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { createMediaPreview, MediaPreviewUnavailableError } from '../services/mediaPreview';
-import { inlineMediaFile, inlineMediaId } from '../services/inlineMedia';
+import { publishedInlineMediaReader } from '../services/publishedMedia';
 import type { TranscriptService } from '../services/transcript/transcriptService';
-import { readSessionViewCanonicalEntity } from '../transport/klient/sessionViewReads';
-import type { TranscriptAttachment } from '@kiki/transcript';
 import { openContentOriginal } from '../services/contentOriginal';
 import { ContentChangedError } from '../transport/klient/boundedContent';
 
@@ -59,7 +57,7 @@ interface SessionMediaRequest {
 }
 
 interface SessionMediaReply extends Pick<FastifyReply, 'then'> {
-  readonly raw: { once(event: 'finish' | 'close', listener: () => void): unknown };
+  readonly raw: { readonly destroyed: boolean; once(event: 'finish' | 'close', listener: () => void): unknown };
   type(mime: string): SessionMediaReply;
   header(name: string, value: string | number): SessionMediaReply;
   code(status: number): SessionMediaReply;
@@ -92,6 +90,7 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
       const { session_id, file_id } = req.params;
       let operation: SessionOperationLease | undefined;
       let stream: Readable | undefined;
+      let responseCleanup: ReturnType<typeof createDeferredCleanup> | undefined;
       try {
         const opened = await openSessionMedia(core, session_id, file_id, transcriptService);
         operation = opened.operation;
@@ -122,19 +121,27 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
         }
         stream = Readable.from(file.stream(range === null ? undefined : { start: range.start, end: range.end }));
         const downloadStream = stream;
+        responseCleanup = createDeferredCleanup(
+          () => operation?.dispose(),
+          (error) => {
+            requestLog(req)?.error({ session_id, file_id, err: error }, 'session media cleanup failed');
+            downloadStream.destroy(error instanceof Error ? error : new Error(String(error)));
+          },
+        );
         downloadStream.on('error', (error: unknown) => {
           requestLog(req)?.warn({ session_id, file_id, err: error }, 'session media stream error');
           downloadStream.destroy();
         });
-        r.raw.once('finish', () => operation?.dispose());
-        r.raw.once('close', () => { downloadStream.destroy(); operation?.dispose(); });
+        r.raw.once('finish', () => { responseCleanup?.release(); });
+        r.raw.once('close', () => { downloadStream.destroy(); responseCleanup?.release(); });
         return r.send(downloadStream) as void;
       } catch (error) {
         stream?.destroy();
-        operation?.dispose();
+        responseCleanup?.release();
+        await responseCleanup?.wait();
         throw error;
       } finally {
-        if (stream === undefined) operation?.dispose();
+        if (stream === undefined) await operation?.dispose();
       }
     },
   );
@@ -163,27 +170,34 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
   }, async (req, reply) => {
     const r = reply as unknown as SessionMediaReply;
     const { session_id, file_id } = req.params;
-    const opened = await openSessionMedia(core, session_id, file_id, transcriptService);
-    try {
-      if (!opened.sessionExists) return r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id)) as void;
-      const file = opened.file;
-      if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
-      const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
-      r.header('etag', etag).header('accept-ranges', 'bytes');
-      if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(undefined) as void;
-      const result = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => createMediaPreview(file, req.query.media_type, signal));
-      r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
-      const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
-      const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
-      if (range !== null) r.code(206).header('content-range', `bytes ${range.start}-${range.end}/${result.bytes.byteLength}`);
-      else r.code(200);
-      return r.header('content-length', bytes.byteLength).send(Buffer.from(bytes)) as void;
-    } catch (error) {
-      if (!(error instanceof MediaPreviewUnavailableError)) throw error;
-      return r.code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
-    } finally {
-      opened.operation?.dispose();
-    }
+    return withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
+      let operation: SessionOperationLease | undefined;
+      try {
+        const opened = await openSessionMedia(core, session_id, file_id, transcriptService, signal);
+        operation = opened.operation;
+        signal.throwIfAborted();
+        if (!opened.sessionExists) return r.code(404).send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, 'session not found', req.id)) as void;
+        const file = opened.file;
+        if (file === undefined) return r.code(404).send(errEnvelope(ErrorCode.FILE_NOT_FOUND, 'file not found', req.id)) as void;
+        const etag = `"preview-v2-${session_id}-${file_id}-${file.size}-${req.query.media_type ?? file.mediaType}"`;
+        r.header('etag', etag).header('accept-ranges', 'bytes');
+        if (pickHeader(req.headers, 'range') === undefined && pickHeader(req.headers, 'if-none-match') === etag) return r.code(304).send(undefined) as void;
+        const result = await createMediaPreview(file, req.query.media_type, signal);
+        if (r.raw.destroyed) return;
+        r.type(result.mime).header('content-disposition', buildContentDisposition(file.name, result.mime));
+        const range = parseRangeHeader(pickHeader(req.headers, 'range'), result.bytes.byteLength);
+        const bytes = range === null ? result.bytes : result.bytes.subarray(range.start, range.end + 1);
+        if (range !== null) r.code(206).header('content-range', `bytes ${range.start}-${range.end}/${result.bytes.byteLength}`);
+        else r.code(200);
+        return r.header('content-length', bytes.byteLength).send(Buffer.from(bytes)) as void;
+      } catch (error) {
+        if (r.raw.destroyed) return;
+        if (!(error instanceof MediaPreviewUnavailableError)) throw error;
+        return r.type('application/json').code(415).send(errEnvelope(ErrorCode.VALIDATION_FAILED, error.message, req.id)) as void;
+      } finally {
+        await operation?.dispose();
+      }
+    });
   });
   app.get(preview.path, preview.options, preview.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
   const canonicalIdRoute = defineRoute({
@@ -208,15 +222,10 @@ export function registerSessionMediaRoutes(app: SessionMediaRouteHost, core: Sco
   app.get(canonicalIdRoute.path, canonicalIdRoute.options, canonicalIdRoute.handler as unknown as Parameters<SessionMediaRouteHost['get']>[2]);
 }
 
-async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
+export async function openSessionMedia(core: Scope, sessionId: string, fileId: string, service?: TranscriptService, signal?: AbortSignal): Promise<{ readonly sessionExists: boolean; readonly file?: SessionMediaFile; readonly operation?: SessionOperationLease }> {
   if (fileId.startsWith('raw:')) return { sessionExists: true, file: service === undefined ? undefined : await openContentOriginal(service, sessionId, fileId) };
-  if (fileId.startsWith('inline:')) {
-    const parts = fileId.split(':');
-    if (service === undefined || parts.length !== 4 || !isPlainAgentId(parts[1]!) || !/^[A-Za-z0-9_-]+$/u.test(parts[2]!) || !/^[0-9a-f]{64}$/u.test(parts[3]!)) return { sessionExists: true };
-    const attachmentId = Buffer.from(parts[2]!, 'base64url').toString('utf8');
-    const entity = await readSessionViewCanonicalEntity(service, sessionId, { agentId: parts[1]!, ref: { source: { kind: 'attachment', id: attachmentId } } });
-    const attachment = entity as TranscriptAttachment | undefined;
-    return { sessionExists: true, file: attachment === undefined || inlineMediaId(attachment, parts[1]!) !== fileId ? undefined : inlineMediaFile(attachment) };
+  if (fileId.startsWith('inline-content:') || fileId.startsWith('inline:')) {
+    return { sessionExists: true, file: service === undefined ? undefined : await publishedInlineMediaReader(service, sessionId, signal)(fileId) };
   }
   if (fileId.startsWith('blobref:')) {
     const summary = await core.accessor.get(ISessionIndex).get(sessionId);
@@ -242,7 +251,7 @@ async function openSessionMedia(core: Scope, sessionId: string, fileId: string, 
     const file = await operation.handle.accessor.get(ISessionMediaStore).open(fileId) ?? await openStagedUpload(core, fileId);
     return { sessionExists: true, file, operation };
   } catch (error) {
-    operation.dispose();
+    await operation.dispose();
     throw error;
   }
 }
@@ -253,23 +262,23 @@ async function openPersistedToolMedia(
   workspaceId: string,
   fileId: string,
 ): Promise<SessionMediaFile | undefined> {
-  const match = /^blobref:([A-Za-z0-9._-]{1,128}):([0-9a-f]{64})$/.exec(fileId);
-  if (match === null || !isPlainAgentId(match[1]!)) return undefined;
+  const ref = parseMediaBlobRef(fileId);
+  if (ref?.kind !== 'agent') return undefined;
   const sessionScope = sessionScopeOf(
     workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), workspaceId),
     sessionId,
   );
   const blobs = core.accessor.get(IBlobStore);
-  const scope = `${agentScopeOf(sessionScope, match[1]!)}/blobs`;
-  const bytes = blobs.size === undefined ? await blobs.get(scope, match[2]!) : undefined;
-  const size = blobs.size === undefined ? bytes?.byteLength : await blobs.size(scope, match[2]!);
+  const scope = `${agentScopeOf(sessionScope, ref.agentId)}/blobs`;
+  const bytes = blobs.size === undefined ? await blobs.get(scope, ref.hash) : undefined;
+  const size = blobs.size === undefined ? bytes?.byteLength : await blobs.size(scope, ref.hash);
   if (size === undefined) return undefined;
   return {
     name: 'tool-result.bin',
     mediaType: 'application/octet-stream',
     size,
     stream: bytes === undefined
-      ? (range) => blobs.getStream(scope, match[2]!, range)
+      ? (range) => blobs.getStream(scope, ref.hash, range)
       : async function* (range) {
           yield range === undefined ? bytes : bytes.subarray(range.start, range.end + 1);
         },

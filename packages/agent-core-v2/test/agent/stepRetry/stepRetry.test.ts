@@ -1,18 +1,38 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { attachErrorDetails, unwrapErrorCause } from '#/errors';
 import {
   APIConnectionError,
   APIProviderOverloadedError,
   APIProviderRateLimitError,
   APIStatusError,
+  requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
+import { guardRequestDelivery } from '#/kosong/provider/bases/request-delivery';
+import type { StreamedMessage } from '#/kosong/contract/provider';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
 import { MAX_RETRY_AFTER_MS, readRetryAfterMs, retryBackoffDelays } from '#/_base/utils/retry';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { ContinuationStepRequest } from '#/agent/loop/stepRequest';
 import { TurnStarted } from '#/agent/loop/turnEvents';
-import { TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
+import { AgentStepRetryService, TurnStepRetrying } from '#/agent/stepRetry/stepRetryService';
+import { IAgentStepRetryService } from '#/agent/stepRetry/stepRetry';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { resolveRetryPolicy } from '#/agent/stepRetry/retryPolicy';
+import { IModelCatalog, type Model } from '#/kosong/model/catalog';
+import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
+import { ILogService } from '#/_base/log/log';
+import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { createServices } from '#/_base/di/test';
+import { IConfigService } from '#/app/config/config';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import type { LoopErrorContext, LoopErrorHandler } from '#/agent/loop/loop';
+import { IEventDispatcher } from '#/state/eventDispatcher';
+import { registerLogServices } from '../../_base/log/stubs';
+import { registerStateServices } from '../../state/stubs';
+import { StubConfigService } from '../../kosong/stubs';
+import { stubLoopWithHooks } from '../loop/stubs';
 
 import {
   createTestAgent,
@@ -428,10 +448,12 @@ describe('stepRetry plugin', () => {
     ctx = createRetryTestAgent(
       llmGenerateServices(async () => {
         calls += 1;
+        setTimeout(() => {
+          controller.abort(new Error('stop'));
+        }, 100);
         throw new APIStatusError(400, 'endpoint broken');
       }),
     );
-    setTimeout(() => controller.abort(new Error('stop')), 100);
 
     const result = await runTurn(1, controller.signal);
 
@@ -505,6 +527,137 @@ describe('stepRetry plugin', () => {
         }),
       }),
     ]);
+  });
+
+  it('applies a policy only when both model and provider selectors match the bound request', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('slow down');
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{
+              match: '^provider\\.rate_limit$',
+              models: ['mock-model'],
+              providers: ['test-provider'],
+              maxAttempts: 2,
+              backoff: 0,
+            }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 2, delayMs: 0 }) }),
+    ]);
+  });
+
+  it('skips selector-mismatched policies without changing the default retry budget', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('slow down');
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{
+              match: '^provider\\.rate_limit$',
+              models: ['other-model'],
+              providers: ['other-provider'],
+              maxAttempts: 1,
+              backoff: 0,
+            }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(5);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(4);
+    expect(rpcEvents('turn.step.retrying')[0]).toEqual(
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 5 }) }),
+    );
+  });
+
+  it('keeps first-match order among policies whose selectors match', async () => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw new APIProviderRateLimitError('slow down');
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [
+              { match: '^provider\\.rate_limit$', models: ['other-model'], maxAttempts: 1 },
+              { match: '^provider\\.rate_limit$', providers: ['test-provider'], maxAttempts: 3, backoff: 0 },
+              { match: '^provider\\.rate_limit$', maxAttempts: 4 },
+            ],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(3);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(2);
+    expect(rpcEvents('turn.step.retrying')[0]).toEqual(
+      expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 3, delayMs: 0 }) }),
+    );
+  });
+
+  it.each([
+    ['HTTP 400', () => new APIStatusError(400, 'invalid request')],
+    ['unknown delivery', () => Object.assign(new Error('delivery outcome unknown'), { name: 'UnknownDeliveryError' })],
+    ['partial output', () => Object.assign(new Error('partial output retained'), { name: 'PartialOutputError' })],
+    ['already executed', () => Object.assign(new Error('request already executed'), { name: 'AlreadyExecutedError' })],
+  ])('does not let retry = true force a non-retryable %s failure', async (_case, makeError) => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw makeError();
+      }),
+      {
+        initialConfig: {
+          retry: {
+            policies: [{
+              match: '.*',
+              models: ['mock-model'],
+              providers: ['test-provider'],
+              maxAttempts: 10,
+              retry: true,
+            }],
+          },
+        },
+      },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
   });
 
   it('honors the retry section attempt budget when no policy matches', async () => {
@@ -672,7 +825,103 @@ describe('stepRetry plugin', () => {
       expect.objectContaining({ args: expect.objectContaining({ maxAttempts: 2 }) }),
     ]);
   });
+
+  it('bounds retries for an unknown connection drop with no observed output', async () => {
+    vi.useFakeTimers();
+    const failure = await caughtDelivery(deliveryStream(new APIConnectionError('terminated')));
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw failure;
+      }),
+      { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', maxAttempts: 2 }] } } },
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    if (result.type !== 'failed') throw new Error('Expected the turn to fail');
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(1);
+    expect(requestDeliveryProvenance(result.error)).toBe('unknown');
+    expect(requestDeliveryProvenance(unwrapErrorCause(result.error))).toBe('unknown');
+    expect(unwrapErrorCause(result.error)).toMatchObject({ name: 'APIConnectionError', message: 'terminated' });
+  });
+
+  it('retries a parsed temporary provider event with no output using the shared classification', async () => {
+    vi.useFakeTimers();
+    const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-temporary'), {
+      errorSource: 'provider_event', upstreamErrorCode: 'rate_limit_exceeded',
+    });
+    const failure = await caughtDelivery(deliveryStream(parsed));
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw failure;
+        return { id: 'recovered', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+      }),
+    );
+    const result = await runTurn(1);
+    expect(result.type).toBe('completed');
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(1);
+  });
+
+  it('does not replay a parsed 429 after output, and keeps the provider status', async () => {
+    vi.useFakeTimers();
+    const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-429'), {
+      errorSource: 'provider_event',
+    });
+    const failure = await caughtDelivery(deliveryStream(parsed, { parts: [{ type: 'text', text: 'partial' }] }));
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        throw failure;
+      }),
+    );
+
+    const result = await runTurn(1);
+
+    expect(result.type).toBe('failed');
+    if (result.type !== 'failed') throw new Error('Expected the turn to fail');
+    expect(calls).toBe(1);
+    expect(rpcEvents('turn.step.retrying')).toEqual([]);
+    expect(result.error).toBe(parsed);
+    expect(result.error).toMatchObject({ statusCode: 429, message: 'slow down', requestId: 'req-429' });
+    expect(requestDeliveryProvenance(result.error)).toBe('executed');
+  });
 });
+
+function deliveryStream(
+  error: unknown,
+  options?: { readonly id?: string | null; readonly parts?: ReadonlyArray<{ readonly type: 'text'; readonly text: string }> },
+): StreamedMessage {
+  const parts = options?.parts ?? [];
+  return {
+    id: options?.id ?? null,
+    usage: null,
+    finishReason: null,
+    rawFinishReason: null,
+    async *[Symbol.asyncIterator]() {
+      for (const part of parts) yield part;
+      throw error;
+    },
+  };
+}
+
+async function caughtDelivery(stream: StreamedMessage): Promise<unknown> {
+  const guarded = guardRequestDelivery(stream, true);
+  try {
+    for await (const _part of guarded) {
+    }
+  } catch (error) {
+    return error;
+  }
+  throw new Error('expected the guarded stream to fail');
+}
 
 describe('retryBackoffDelays', () => {
   it('starts at 500 milliseconds and doubles with up to 25 percent jitter', () => {
@@ -710,5 +959,192 @@ describe('readRetryAfterMs', () => {
     expect(readRetryAfterMs({ retryAfterMs: 600_000, statusCode: 429 })).toBe(600_000);
     expect(readRetryAfterMs({ retryAfterMs: 120_000, statusCode: 502 })).toBe(MAX_RETRY_AFTER_MS);
     expect(readRetryAfterMs({ retryAfterMs: 120_000, details: { statusCode: 429 } })).toBe(120_000);
+  });
+});
+
+describe('stepRetry binding lookup', () => {
+  let disposables: DisposableStore;
+  let config: StubConfigService;
+  let handler: LoopErrorHandler;
+  let context: LoopErrorContext;
+  let getModel: ReturnType<typeof vi.fn<IModelCatalog['get']>>;
+  let logError: ReturnType<typeof vi.fn<ILogService['error']>>;
+  let dispatch: ReturnType<typeof vi.fn<IEventDispatcher['dispatch']>>;
+  const lookupFailure = new Error('catalog unavailable');
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    disposables = new DisposableStore();
+    config = new StubConfigService();
+    const loop = stubLoopWithHooks();
+    const register = vi.spyOn(loop, 'registerLoopErrorHandler');
+    getModel = vi.fn<IModelCatalog['get']>(() => {
+      throw lookupFailure;
+    });
+    logError = vi.fn<ILogService['error']>();
+    dispatch = vi.fn(async () => {});
+    const ix = createServices(disposables, {
+      base: [registerLogServices, registerStateServices],
+      additionalServices: (reg) => {
+        reg.defineInstance(IConfigService, config);
+        reg.defineInstance(IAgentLoopService, loop);
+        reg.definePartialInstance(IEventBus, { subscribe: () => toDisposable(() => {}) });
+        reg.definePartialInstance(IEventDispatcher, { dispatch });
+        reg.definePartialInstance(IAgentProfileService, {
+          data: () => ({
+            modelAlias: 'model-alias', modelCapabilities: UNKNOWN_CAPABILITY,
+            thinkingLevel: 'off', systemPrompt: '',
+          }),
+          getRecipeModelSettings: () => undefined,
+        });
+        reg.definePartialInstance(IModelCatalog, { get: getModel });
+        reg.define(IAgentStepRetryService, AgentStepRetryService);
+      },
+    });
+    ix.get(ILogService).error = logError;
+    ix.get(IAgentStepRetryService);
+    const registered = register.mock.calls[0]?.[0];
+    if (registered === undefined) throw new Error('Expected the step-retry handler to register');
+    handler = registered;
+    context = {
+      error: new APIProviderRateLimitError('slow down'),
+      turnId: 1,
+      step: 1,
+      signal: new AbortController().signal,
+      failedDriver: new ContinuationStepRequest(),
+      retry: vi.fn<LoopErrorContext['retry']>(),
+    };
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    await disposables.dispose();
+  });
+
+  async function exhaustAttempts(): Promise<number> {
+    let attempts = 1;
+    while (handler.match(context)) {
+      const recovery = handler.handle(context);
+      await vi.runAllTimersAsync();
+      if (!(await recovery)) break;
+      attempts += 1;
+      if (attempts > 10) throw new Error('Retry budget did not stop recovery');
+    }
+    return attempts;
+  }
+
+  it.each<{ label: string; retry?: RetryConfig; attempts: number }>([
+    { label: 'no retry section', attempts: 5 },
+    { label: 'empty policies', retry: { policies: [] }, attempts: 5 },
+    { label: 'section budget only', retry: { maxAttempts: 3 }, attempts: 3 },
+    {
+      label: 'selector-free policy', attempts: 2,
+      retry: { policies: [{ match: 'provider.rate_limit', maxAttempts: 2, backoff: 0, retry: true }] },
+    },
+    {
+      label: 'selector-free off policy', attempts: 1,
+      retry: { policies: [{ match: 'provider.rate_limit', retry: false }] },
+    },
+    {
+      label: 'unmatched selector policy', attempts: 5,
+      retry: { policies: [{ match: 'SomeOtherError', models: ['model-alias'], retry: false }] },
+    },
+    {
+      label: 'earlier selector-free policy', attempts: 1,
+      retry: { policies: [
+        { match: 'provider.rate_limit', retry: false },
+        { match: 'provider.rate_limit', models: ['model-alias'], retry: true },
+      ] },
+    },
+  ])('avoids retry binding lookup for $label', async ({ retry, attempts }) => {
+    config.setSilent(RETRY_SECTION, retry);
+
+    expect(await exhaustAttempts()).toBe(attempts);
+    expect(dispatch).toHaveBeenCalledTimes(attempts - 1);
+    expect(getModel).not.toHaveBeenCalled();
+    expect(logError).not.toHaveBeenCalled();
+  });
+
+  it.each(['model', 'provider', 'both'] as const)(
+    'reports retry binding resolution failure for %s selectors without replacing the provider failure',
+    async (selector) => {
+      const failure = context.error;
+      config.setSilent(RETRY_SECTION, { policies: [{
+        match: '^provider\\.rate_limit$',
+        models: selector === 'provider' ? undefined : ['model-alias'],
+        providers: selector === 'model' ? undefined : ['test-provider'],
+        retry: false,
+      }] });
+
+      expect(await exhaustAttempts()).toBe(5);
+      expect(context.error).toBe(failure);
+      expect(dispatch).toHaveBeenCalledTimes(4);
+      expect(getModel).toHaveBeenCalled();
+      expect(logError).toHaveBeenCalledWith(
+        'failed to resolve model identity for retry policy selectors; selector policies are skipped',
+        { modelAlias: 'model-alias', error: lookupFailure },
+      );
+    },
+  );
+
+  it('keeps selector-free rules and section budget after retry binding resolution fails', async () => {
+    config.setSilent(RETRY_SECTION, { maxAttempts: 3, policies: [
+      { match: '^provider\\.rate_limit$', models: ['model-alias'], retry: false },
+      { match: '^provider\\.rate_limit$', providers: ['test-provider'], retry: false },
+      { match: '^provider\\.rate_limit$', backoff: 17, retry: true },
+    ] });
+
+    expect(await exhaustAttempts()).toBe(3);
+    expect(getModel).toHaveBeenCalledTimes(6);
+    expect(dispatch).toHaveBeenCalledTimes(2);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 3, delayMs: 17 }));
+  });
+
+  it('resolves the canonical model and provider for a matching 429 policy', async () => {
+    const model: Model = {
+      id: 'canonical-model', name: 'remote-model', aliases: ['model-alias'],
+      protocol: 'openai', headers: {}, capabilities: UNKNOWN_CAPABILITY,
+      maxContextSize: 10_000, alwaysThinking: false, providerName: 'test-provider',
+      authProvider: { getAuth: async () => undefined },
+      imagePolicy: { acceptedTypes: new Set(), convertUnsupported: 'off' },
+    };
+    getModel.mockReturnValue(model);
+    config.setSilent(RETRY_SECTION, { policies: [{
+      match: '^provider\\.rate_limit$', models: ['canonical-model'], providers: ['test-provider'],
+      maxAttempts: 2, backoff: 23, retry: true,
+    }] });
+
+    expect(await exhaustAttempts()).toBe(2);
+    expect(getModel).toHaveBeenCalledWith('model-alias', undefined);
+    expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ maxAttempts: 2, delayMs: 23 }));
+    expect(logError).not.toHaveBeenCalled();
+  });
+
+  it('does not resolve selectors or retry after observed partial output', async () => {
+    const failure = await caughtDelivery(deliveryStream(new APIConnectionError('terminated'), { parts: [{ type: 'text', text: 'partial' }] }));
+    context = { ...context, error: failure };
+    config.setSilent(RETRY_SECTION, { policies: [{
+      match: 'APIConnectionError', models: ['model-alias'], providers: ['test-provider'], retry: true,
+    }] });
+
+    expect(handler.match(context)).toBe(false);
+    expect(await handler.handle(context)).toBe(false);
+    expect(requestDeliveryProvenance(context.error)).toBe('executed');
+    expect(getModel).not.toHaveBeenCalled();
+    expect(context.retry).not.toHaveBeenCalled();
+  });
+
+  it('keeps an explicit retry false on the wrapper when matching its unwrapped cause', () => {
+    const failure = attachErrorDetails(new Error('wrapper', {
+      cause: new APIProviderRateLimitError('slow down'),
+    }), { retry: false });
+    expect(resolveRetryPolicy({ policies: [{ match: 'provider.rate_limit', retry: true }] }, failure))
+      .toEqual({ retry: false });
+  });
+
+  it('preserves selector-free policy calls without a binding argument', () => {
+    expect(resolveRetryPolicy({ policies: [{ match: 'provider.rate_limit', maxAttempts: 7, retry: true }] }, context.error))
+      .toEqual({ retry: true, maxAttempts: 7, backoffMs: undefined });
   });
 });

@@ -3,6 +3,7 @@ import test from 'node:test';
 
 import {
   compareSemver,
+  feedRequestHeaders,
   generateUpdaterFeeds,
   parseSemver,
   selectFeedReleases,
@@ -116,4 +117,12 @@ test('downloads selected manifests through anonymous release asset URLs', async 
     'https://example.test/2.1.0-beta.1/latest.json',
   ]);
   assert.ok(requested.every(({ options }) => options.headers['User-Agent'] === 'kiki-desktop-feed'));
+  assert.ok(requested.every(({ options }) => options.headers.Authorization === undefined));
+});
+
+test('release index can authenticate while an empty token stays anonymous', () => {
+  assert.equal(feedRequestHeaders('index-token').Authorization, 'Bearer index-token');
+  assert.equal(feedRequestHeaders('index-token')['User-Agent'], 'kiki-desktop-feed');
+  assert.equal(feedRequestHeaders('').Authorization, undefined);
+  assert.equal(feedRequestHeaders(undefined).Authorization, undefined);
 });

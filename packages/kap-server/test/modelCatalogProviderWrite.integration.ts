@@ -314,6 +314,10 @@ describe('server-v2 /api provider write endpoints', () => {
         max_context_size: 1047576,
         capabilities: ['vision'],
         effective_capabilities: ['image_in', 'tool_use'],
+        effective_protocol: 'openai',
+        protocol_source: 'provider',
+        endpoint_source: 'provider',
+        auth_source: 'provider',
       },
       {
         id: 'my-openai/gpt-4o-mini',
@@ -322,6 +326,10 @@ describe('server-v2 /api provider write endpoints', () => {
         display_name: 'gpt-4o-mini',
         max_context_size: 128000,
         effective_capabilities: ['image_in', 'tool_use'],
+        effective_protocol: 'openai',
+        protocol_source: 'provider',
+        endpoint_source: 'provider',
+        auth_source: 'provider',
       },
     ]);
   });
@@ -426,6 +434,10 @@ describe('server-v2 /api provider write endpoints', () => {
           max_context_size: 1047576,
           capabilities: ['vision'],
           effective_capabilities: ['image_in', 'tool_use'],
+          effective_protocol: 'openai',
+          protocol_source: 'provider',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
           request_identity: firstIdentity,
         },
         {
@@ -435,6 +447,10 @@ describe('server-v2 /api provider write endpoints', () => {
           display_name: 'gpt-4o-mini',
           max_context_size: 128000,
           effective_capabilities: ['image_in', 'tool_use'],
+          effective_protocol: 'openai',
+          protocol_source: 'provider',
+          endpoint_source: 'provider',
+          auth_source: 'provider',
         },
       ]);
 

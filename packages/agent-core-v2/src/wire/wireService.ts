@@ -13,9 +13,10 @@ import {
   type AppendLogTruncation,
   IAppendLogStore,
 } from '#/persistence/interface/appendLogStore';
-import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
+import { logicalByteSize, readLogicalBytes } from '#/persistence/coldSegmentLog';
+import { IFileSystemStorageService, StorageError, StorageErrors, type StorageReadRange } from '#/persistence/interface/storage';
 
-import { IWireService, type WireJournalIdentity } from './wire';
+import { IWireService, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError, type WireJournalIdentity, type WireJournalReadOptions } from './wire';
 import { WireError, WireErrors } from './errors';
 import { repairWireJournal } from './repair';
 import {
@@ -41,7 +42,6 @@ import {
   type WireTranscriptReceipt,
 } from './transcriptReceipt';
 
-const JOURNAL_HEAD_HASH_BYTES = 64 * 1024;
 const JOURNAL_HEAD_HASH_HEX_LENGTH = 32;
 
 export class WireService extends Service implements IWireService {
@@ -60,6 +60,18 @@ export class WireService extends Service implements IWireService {
   private epochExpectedHash: Hash | undefined;
   private epochExpectedSize = 0;
   private verifiedAcceptedRecords = -1;
+  private sealedPrefix: { readonly size: number; readonly sha256: string } | undefined;
+  private prefixHash: Hash | undefined;
+  private prefixHashLength = 0;
+  private journalGeneration = 0;
+  private journalHashOperation: Promise<void> = Promise.resolve();
+  private appendedBytes = 0;
+  private readonly appendListeners = new Set<(appendedBytes: number) => void>();
+  private transcriptVerification: {
+    readonly epoch: WireTranscriptReceipt;
+    readonly accepted: number;
+    readonly promise: Promise<boolean>;
+  } | undefined;
 
   constructor(
     @IAgentScopeContext scopeContext: IAgentScopeContext,
@@ -89,7 +101,7 @@ export class WireService extends Service implements IWireService {
     await this.flush();
     const previousBytes = await this.storage.read(this.wireScope, WIRE_TRANSCRIPT_RECEIPT_KEY);
     const expectedHash = createHash('sha256');
-    const source = this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY);
+    const source = this.journalBytes();
     const hashed = async function* (): AsyncIterable<Uint8Array> {
       for await (const chunk of source) {
         expectedHash.update(chunk);
@@ -104,6 +116,9 @@ export class WireService extends Service implements IWireService {
         previous = parseWireTranscriptReceipt(JSON.parse(Buffer.from(previousBytes).toString('utf8')));
       } catch {
         previous = undefined;
+      }
+      if (previous?.state === 'sealed' && previous.trusted && previous.wire !== undefined) {
+        this.sealedPrefix = { size: previous.wire.size, sha256: previous.wire.sha256 };
       }
       trusted = previous?.state === 'sealed' && previous.trusted && previous.wire !== undefined &&
         identity.size === previous.wire.size && identity.sha256 === previous.wire.sha256;
@@ -133,18 +148,32 @@ export class WireService extends Service implements IWireService {
   }
 
   async sealTranscriptEpoch(): Promise<void> {
-    const epoch = this.transcriptEpoch;
-    if (epoch?.state !== 'open') throw new Error('Transcript epoch is not open');
+    if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
     await this.flush();
-    const digest = await digestWireBytes(this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY));
-    if (epoch.trusted && (digest.size === 0 || !digest.endsWithNewline ||
-        digest.lines !== this.epochBaselineLines + this.epochAcceptedRecords ||
-        this.epochExpectedHash === undefined || digest.size !== this.epochExpectedSize ||
-        digest.sha256 !== this.epochExpectedHash.copy().digest('hex'))) {
-      throw new Error('Transcript wire contents do not match accepted events');
+    let digest = await digestWireBytes(this.journalBytes());
+    if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
+    if (this.transcriptEpoch.trusted && !this.transcriptDigestMatches(digest, this.epochAcceptedRecords)) {
+      await this.flush();
+      if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
+      digest = await digestWireBytes(this.journalBytes());
+      if (this.transcriptEpoch?.state !== 'open') throw new Error('Transcript epoch is not open');
     }
-    const wire = { size: digest.size, sha256: digest.sha256 };
-    const sealed: WireTranscriptReceipt = { ...epoch, state: 'sealed', wire };
+    const open = this.transcriptEpoch;
+    if (open?.state !== 'open') throw new Error('Transcript epoch is not open');
+    const certified = open.trusted && this.transcriptDigestMatches(digest, this.epochAcceptedRecords);
+    if (open.trusted && !certified) {
+      this.verifiedAcceptedRecords = -1;
+      this.transcriptEpoch = { ...open, trusted: false };
+      onUnexpectedError(new Error('Transcript wire contents do not match accepted events'));
+    }
+    const sealing = this.transcriptEpoch;
+    if (sealing?.state !== 'open') throw new Error('Transcript epoch is not open');
+    const sealed: WireTranscriptReceipt = {
+      ...sealing,
+      state: 'sealed',
+      trusted: sealing.trusted,
+      wire: { size: digest.size, sha256: digest.sha256 },
+    };
     await this.storage.write(
       this.wireScope,
       WIRE_TRANSCRIPT_RECEIPT_KEY,
@@ -156,20 +185,41 @@ export class WireService extends Service implements IWireService {
 
   async verifyTranscriptLiveEpoch(): Promise<boolean> {
     const epoch = this.transcriptEpoch;
-    this.verifiedAcceptedRecords = -1;
     if (epoch?.state !== 'open' || !epoch.trusted || this.persistFailure !== undefined) return false;
     const accepted = this.epochAcceptedRecords;
+    const pending = this.transcriptVerification;
+    if (pending?.epoch === epoch && pending.accepted === accepted) return pending.promise;
+    this.verifiedAcceptedRecords = -1;
+    const verification = { epoch, accepted, promise: this.verifyTranscriptFence(epoch, accepted) };
+    this.transcriptVerification = verification;
+    try {
+      return await verification.promise;
+    } finally {
+      if (this.transcriptVerification === verification) this.transcriptVerification = undefined;
+    }
+  }
+
+  private async verifyTranscriptFence(epoch: WireTranscriptReceipt, accepted: number): Promise<boolean> {
     await this.flush();
     const stored = await this.storage.read(this.wireScope, WIRE_TRANSCRIPT_RECEIPT_KEY);
     if (stored === undefined || Buffer.from(stored).toString('utf8') !== JSON.stringify(epoch)) return false;
-    const digest = await digestWireBytes(this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY));
+    const digest = await digestWireBytes(this.journalBytes());
     const verified = this.transcriptEpoch === epoch && this.persistFailure === undefined &&
-      this.epochAcceptedRecords === accepted && digest.size > 0 && digest.endsWithNewline &&
-      digest.lines === this.epochBaselineLines + accepted &&
+      this.epochAcceptedRecords === accepted && this.transcriptDigestMatches(digest, accepted);
+    if (this.transcriptEpoch === epoch && this.epochAcceptedRecords === accepted) {
+      this.verifiedAcceptedRecords = verified ? accepted : -1;
+    }
+    return verified;
+  }
+
+  private transcriptDigestMatches(
+    digest: { size: number; sha256: string; lines: number; endsWithNewline: boolean },
+    acceptedRecords: number,
+  ): boolean {
+    return digest.size > 0 && digest.endsWithNewline &&
+      digest.lines === this.epochBaselineLines + acceptedRecords &&
       this.epochExpectedHash !== undefined && digest.size === this.epochExpectedSize &&
       digest.sha256 === this.epochExpectedHash.copy().digest('hex');
-    this.verifiedAcceptedRecords = verified ? accepted : -1;
-    return verified;
   }
 
   isTranscriptLiveEpochVerified(): boolean {
@@ -211,7 +261,11 @@ export class WireService extends Service implements IWireService {
     });
   }
 
-  async *readJournal(): AsyncIterable<WireRecord> {
+  async *readJournal(options?: WireJournalReadOptions): AsyncIterable<WireRecord> {
+    if (options?.startByte !== undefined && options.startByte > 0) {
+      yield* this.readJournalTail(options.startByte);
+      return;
+    }
     let truncation: AppendLogTruncation | undefined;
     const source = this.log.read<WireRecord>(this.wireScope, AGENT_WIRE_RECORD_KEY, {
       onTruncate: (info) => {
@@ -271,8 +325,10 @@ export class WireService extends Service implements IWireService {
       if (this.transcriptEpoch?.state === 'open') this.transcriptEpoch = { ...this.transcriptEpoch, trusted: false };
     }
     if (truncation !== undefined) {
+      this.resetJournalPrefix();
       await this.repairJournal(truncation, rewrittenRecords);
     } else if (rewrittenRecords !== undefined) {
+      this.resetJournalPrefix();
       await this.log.rewrite(this.wireScope, AGENT_WIRE_RECORD_KEY, rewrittenRecords);
     }
   }
@@ -310,6 +366,7 @@ export class WireService extends Service implements IWireService {
   private async repairPendingJournal(): Promise<void> {
     const pending = this.pendingRepair;
     if (pending === undefined) return;
+    this.resetJournalPrefix();
     await this.repairJournal(pending.truncation, pending.records);
     if (this.pendingRepair !== undefined) {
       const error = new WireError(
@@ -338,10 +395,109 @@ export class WireService extends Service implements IWireService {
     if (this.persistFailure !== undefined) throw this.persistFailure.error;
   }
 
+  sealedJournalDigest(): { readonly size: number; readonly sha256: string } | undefined {
+    return this.sealedPrefix;
+  }
+
+  appendedByteCount(): number {
+    return this.appendedBytes;
+  }
+
+  onDidAppendBytes(listener: (appendedBytes: number) => void): { dispose(): void } {
+    this.appendListeners.add(listener);
+    return { dispose: () => { this.appendListeners.delete(listener); } };
+  }
+
+  async journalSha256(byteLength: number): Promise<string | undefined> {
+    if (!Number.isSafeInteger(byteLength) || byteLength < 0) return undefined;
+    const previous = this.journalHashOperation;
+    const operation = previous.then(() => this.computeJournalSha256(byteLength));
+    this.journalHashOperation = operation.then(() => undefined, () => undefined);
+    return operation;
+  }
+
+  private async computeJournalSha256(byteLength: number): Promise<string | undefined> {
+    await this.flush();
+    const generation = this.journalGeneration;
+    const size = await this.journalSize() ?? 0;
+    if (byteLength > size) return undefined;
+    const hash = this.prefixHash !== undefined && this.prefixHashLength <= byteLength
+      ? this.prefixHash.copy()
+      : createHash('sha256');
+    const start = this.prefixHash !== undefined && this.prefixHashLength <= byteLength
+      ? this.prefixHashLength
+      : 0;
+    if (start < byteLength) {
+      let read = 0;
+      for await (const chunk of this.journalBytes({
+        start,
+        end: byteLength - 1,
+      })) {
+        hash.update(chunk);
+        read += chunk.byteLength;
+      }
+      if (read !== byteLength - start || generation !== this.journalGeneration) return undefined;
+    }
+    if (generation !== this.journalGeneration) return undefined;
+    this.prefixHash = hash;
+    this.prefixHashLength = byteLength;
+    return hash.copy().digest('hex');
+  }
+
+  private resetJournalPrefix(): void {
+    this.journalGeneration += 1;
+    this.prefixHash = undefined;
+    this.prefixHashLength = 0;
+    this.appendedBytes = 0;
+    for (const listener of this.appendListeners) listener(0);
+  }
+
+  private async *readJournalTail(startByte: number): AsyncIterable<WireRecord> {
+    if (!Number.isSafeInteger(startByte) || startByte <= 0) throw new JournalTailUnreadableError();
+    const size = await this.journalSize() ?? 0;
+    if (startByte > size) throw new JournalTailUnreadableError();
+    let marker: number | undefined;
+    for await (const chunk of this.journalBytes({
+      start: startByte - 1,
+      end: startByte - 1,
+    })) {
+      marker = chunk[0];
+    }
+    if (marker !== 0x0a) throw new JournalTailUnreadableError();
+    if (startByte === size) return;
+    const decoder = new TextDecoder();
+    let pending = '';
+    for await (const chunk of this.journalBytes({
+      start: startByte,
+      end: size - 1,
+    })) {
+      pending += decoder.decode(chunk, { stream: true });
+      let newline = pending.indexOf('\n');
+      while (newline !== -1) {
+        const raw = pending.slice(0, newline);
+        pending = pending.slice(newline + 1);
+        const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+        if (line.length > 0) {
+          let parsed: unknown;
+          try {
+            parsed = JSON.parse(line);
+          } catch {
+            throw new JournalTailUnreadableError();
+          }
+          if (!isWireRecord(parsed)) throw new JournalTailUnreadableError();
+          yield parsed;
+        }
+        newline = pending.indexOf('\n');
+      }
+    }
+    pending += decoder.decode();
+    if (pending.length > 0) throw new JournalTailUnreadableError();
+  }
+
   async journalIdentity(): Promise<WireJournalIdentity> {
     await this.flush();
     return {
-      size: await this.storage.size(this.wireScope, AGENT_WIRE_RECORD_KEY) ?? 0,
+      size: await this.journalSize() ?? 0,
       mtimeMs: await this.storage.mtime(this.wireScope, AGENT_WIRE_RECORD_KEY) ?? 0,
       headHash: await this.journalHeadHash(),
     };
@@ -349,13 +505,21 @@ export class WireService extends Service implements IWireService {
 
   private async journalHeadHash(): Promise<string> {
     const hash = createHash('sha256');
-    for await (const chunk of this.storage.readStream(this.wireScope, AGENT_WIRE_RECORD_KEY, {
+    for await (const chunk of this.journalBytes({
       start: 0,
       end: JOURNAL_HEAD_HASH_BYTES - 1,
     })) {
       hash.update(chunk);
     }
     return hash.digest('hex').slice(0, JOURNAL_HEAD_HASH_HEX_LENGTH);
+  }
+
+  private journalBytes(range?: StorageReadRange): AsyncIterable<Uint8Array> {
+    return readLogicalBytes(this.storage, this.wireScope, AGENT_WIRE_RECORD_KEY, range);
+  }
+
+  private journalSize(): Promise<number | undefined> {
+    return logicalByteSize(this.storage, this.wireScope, AGENT_WIRE_RECORD_KEY);
   }
 
   private reportPersistFailure(error: unknown): void {
@@ -385,6 +549,8 @@ export class WireService extends Service implements IWireService {
     this.log.append(this.wireScope, AGENT_WIRE_RECORD_KEY, record, {
       onError: onUnexpectedError,
     });
+    this.appendedBytes += Buffer.byteLength(`${JSON.stringify(record)}\n`);
+    for (const listener of this.appendListeners) listener(this.appendedBytes);
     if (expectedBytes !== undefined) {
       this.epochExpectedHash!.update(expectedBytes);
       this.epochExpectedSize += expectedBytes.byteLength;

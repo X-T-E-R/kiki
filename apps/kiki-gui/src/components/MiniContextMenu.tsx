@@ -12,7 +12,7 @@ import { createPortal } from 'react-dom';
 
 import { clampOverlayPosition } from '../lib/overlayPosition';
 import { runToastAction } from '../lib/toasts';
-import { nextModalDepth, registerOverlay } from '../lib/uiBusy';
+import { floatingSurfaceZIndex, registerOverlay } from '../lib/uiBusy';
 
 export type MiniMenuEntry =
   | {
@@ -43,12 +43,28 @@ export function MiniContextMenu({
   readonly modalOwnerId?: string;
 }) {
   const menuRef = useRef<HTMLDivElement>(null);
+  // Whatever held focus when the menu opened — the link/chip/button for a
+  // keyboard trigger, or just where the caret was for a right-click. Escape
+  // and item activation hand focus back to it; an outside pointerdown never
+  // does (the pointer's own target takes focus, and stealing it back reads as
+  // a glitch).
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const [size, setSize] = useState<{ width: number; height: number } | undefined>(undefined);
-  // Layout effect: the clamped position lands before the first paint.
+  // Layout effect: the clamped position lands before the first paint. Focus
+  // moves to the first item the same way (SpaceRowMenu's pattern), so the
+  // menu is operable the moment it appears.
   useLayoutEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const node = menuRef.current;
     if (node !== null) setSize({ width: node.offsetWidth, height: node.offsetHeight });
+    node?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
   }, []);
+
+  const restoreTriggerFocus = () => {
+    const trigger = returnFocusRef.current;
+    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
+    trigger.focus();
+  };
   const position = clampOverlayPosition(x, y, size ?? { width: 200, height: 0 }, {
     width: window.innerWidth,
     height: window.innerHeight,
@@ -63,7 +79,13 @@ export function MiniContextMenu({
   useEffect(() => {
     const unregister = registerOverlay(overlayId);
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      // Hand focus back only when the menu still owns it; focus that the user
+      // moved elsewhere (a Tab out of this transient layer) is left alone.
+      const owned = menuRef.current?.contains(document.activeElement) === true;
+      closeRef.current();
+      if (owned) restoreTriggerFocus();
     };
     const onPointerDown = (event: PointerEvent) => {
       if (
@@ -93,8 +115,41 @@ export function MiniContextMenu({
       data-modal-escape={modalOwnerId}
       role="menu"
       aria-label={ariaLabel}
-      className="anim-enter fixed z-50 w-52 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-      style={{ left: position.left, top: position.top, zIndex: modalOwnerId === undefined ? undefined : 50 + nextModalDepth() }}
+      onKeyDown={(event) => {
+        // Menu-keyboard semantics on the items only; Enter/Space stay the
+        // buttons' own activation and Tab keeps its native transient behavior.
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0
+          : event.key === 'End' ? items.length - 1
+          : event.key === 'ArrowDown' ? (index + 1) % items.length
+          : (index - 1 + items.length) % items.length;
+        items[next]?.focus();
+      }}
+      onClick={(event) => {
+        // Item activation hands focus back to the opener — but only after
+        // the click's commit has landed: an in-place toggle keeps this menu
+        // mounted and keeps its focus, and a dialog/route the action opened
+        // claims focus on its own mount. Checking post-commit restores
+        // exactly when neither happened.
+        if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
+        const menuNode = menuRef.current;
+        queueMicrotask(() => {
+          if (menuNode === null || menuNode.isConnected) return;
+          const active = document.activeElement;
+          if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
+          restoreTriggerFocus();
+        });
+      }}
+      className="anim-enter fixed w-52 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+      // Above whatever dialog is up: a context menu opened from inside one is
+      // drawn under that dialog's own panel otherwise, and reads as a menu that
+      // opened and then vanished. The shared helper resolves the owning modal's
+      // own depth, and lands on the page-level layer outside one.
+      style={{ left: position.left, top: position.top, zIndex: floatingSurfaceZIndex(null) }}
     >
       {entries.map((entry, index) =>
         'separator' in entry ? (
@@ -105,7 +160,7 @@ export function MiniContextMenu({
             type="button"
             role="menuitem"
             data-menu-item={entry.key}
-            className={`w-full rounded-md px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-paper ${
+            className={`w-full rounded-md px-3 py-1.5 text-left text-[12px] transition-colors hover:bg-paper focus-visible:bg-paper ${
               entry.danger === true ? 'text-ink hover:text-danger' : 'text-ink'
             }`}
             onClick={() => {

@@ -3,10 +3,11 @@ import { realpath } from 'node:fs/promises';
 import { platform } from 'node:os';
 import { normalize, resolve } from 'node:path';
 
-import { createExternalClientStdioBridge, kikiMcpConfigFromEnv, runKikiMcpStdio } from '@kiki/kap-server';
+import { createExternalClientStdioBridge, kikiMcpConfigFromEnv, runExternalClientStdioBridge, runKikiMcpStdio } from '@kiki/kap-server';
 import type { Command } from 'commander';
 
 import { resolveKikiHome } from './home';
+import { mcpModeError } from './mcpMode';
 import { createSeatOnConnection, daemonRequest } from './seat';
 import { ensureServer } from './serve';
 
@@ -35,23 +36,31 @@ export function registerMcpCommand(program: Command, dependencies: McpCommandDep
     .option('--client <id>', 'Use an external-client connection through the local owner channel.')
     .option('--tools', 'Expose the external-client native tool catalog over stdio.')
     .action(async (options: { readonly workspace?: string; readonly home?: string; readonly attached?: boolean; readonly client?: string; readonly tools?: boolean }) => {
+      const modeError = mcpModeError(options);
+      if (modeError !== undefined) throw new Error(modeError);
       if (options.client !== undefined) {
-        if (options.tools !== true) throw new Error('--tools is required with --client.');
-        if (options.attached === true || options.workspace !== undefined) throw new Error('--client cannot be combined with --attached or --workspace.');
         const connection = await ensureServerImpl({ homeDir: resolveKikiHome(options.home) });
-        await createExternalClientStdioBridgeImpl({
+        const bridge = {
           connectionId: options.client,
-          resolveCredential: (connectionId) => daemonRequestImpl<ExternalClientLocalCredential>(
+          resolveCredential: (connectionId: string) => daemonRequestImpl<ExternalClientLocalCredential>(
             connection,
             'POST',
             `/api/external-clients/${encodeURIComponent(connectionId)}/credential`,
             {},
           ),
-        });
+        };
+        if (dependencies.createExternalClientStdioBridge !== undefined) {
+          await createExternalClientStdioBridgeImpl(bridge);
+          return;
+        }
+        await finishMcpStdio(() => runExternalClientStdioBridge(bridge));
         return;
       }
       if (options.attached === true) {
-        await runKikiMcpStdioImpl(kikiMcpConfigFromEnvImpl(process.env));
+        await finishMcpStdio(
+          () => runKikiMcpStdioImpl(kikiMcpConfigFromEnvImpl(process.env)),
+          dependencies.runKikiMcpStdio === undefined,
+        );
         return;
       }
       if (options.workspace === undefined) throw new Error('--workspace is required for delegation MCP mode.');
@@ -61,13 +70,31 @@ export function registerMcpCommand(program: Command, dependencies: McpCommandDep
         workspace,
         principal: mcpPrincipal(workspace),
       });
-      await runKikiMcpStdioImpl({
-        endpoint: connection.url,
-        delegationToken: seat.delegationToken,
-        sessionId: seat.sessionId,
-        workspacePath: seat.workspace,
-      });
+      await finishMcpStdio(
+        () => runKikiMcpStdioImpl({
+          endpoint: connection.url,
+          delegationToken: seat.delegationToken,
+          sessionId: seat.sessionId,
+          workspacePath: seat.workspace,
+        }),
+        dependencies.runKikiMcpStdio === undefined,
+      );
     });
+}
+
+async function finishMcpStdio(run: () => Promise<void>, exitProcess = true): Promise<void> {
+  try {
+    await run();
+  } catch (error) {
+    if (!exitProcess) throw error;
+    const code = process.exitCode;
+    if (typeof code !== 'number' || code <= 0) {
+      process.stderr.write(`${error instanceof Error ? error.message : String(error)}\n`);
+      process.exit(1);
+    }
+    process.exit(code);
+  }
+  if (exitProcess) process.exit(0);
 }
 
 type ExternalClientLocalCredential = {

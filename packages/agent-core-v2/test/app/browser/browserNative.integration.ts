@@ -8,7 +8,7 @@ import { describe, expect, it } from 'vitest';
 import { StdioMcpClient } from '#/mcpCore/client-stdio';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
-import { BrowserConnectionsTool, BrowserTabsTool, projectBrowserToolSchema, validateBrowserValues } from '#/agent/tools/browser/browserTools';
+import { BrowserConnectionsTool, BrowserTabsTool, projectBrowserToolSchema, validateBrowserValues, type IAgentBrowserService } from '#/agent/tools/browser/browserTools';
 import { estimateTokensForTools } from '#/kosong/contract/tokens';
 import { browserResponse, BrowserControlService, isBrowserOperation } from '#/app/browser/browserControlService';
 import { browserRuntimeResolver, IBrowserBackendFactory } from '#/app/browser/browserBackend';
@@ -69,7 +69,7 @@ describe.skipIf(driver === undefined || process.platform !== 'win32')('real mana
       expect((await control.disconnect('controlled')).state).toBe('disconnected');
       expect(child.exitCode).toBe(0);
     } finally {
-      ix.dispose();
+      await ix.dispose();
       await client.close();
       if (child.exitCode === null) { const exited = new Promise<void>((resolve) => child.once('exit', () => resolve())); child.kill(); await exited; }
       await rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -89,7 +89,7 @@ describe.skipIf(driver === undefined || process.platform !== 'win32')('real mana
       await expect(client.callTool(tools[155]!.name, {})).rejects.toThrow('message must be a string');
       const operations = tools.filter((tool) => isBrowserOperation(tool.name));
       for (const tool of operations) compileToolArgsValidator(projectBrowserToolSchema(tool));
-      const service = { _serviceBrand: undefined, connections: async () => ({ output: '' }), tabs: async () => ({ output: '' }) };
+      const service = { _serviceBrand: undefined, connections: async () => ({ output: '' }), tabs: async () => ({ output: '' }) } as unknown as IAgentBrowserService;
       const native = [new BrowserConnectionsTool(service), new BrowserTabsTool(service)].map(({ name, description, parameters }) => ({ name, description, parameters }));
       const selected = operations.filter((tool) => ['agent_browser_snapshot', 'agent_browser_fill', 'agent_browser_network_requests', 'agent_browser_eval'].includes(tool.name)).map((tool) => ({ name: `browser__${tool.name}`, description: tool.description, parameters: projectBrowserToolSchema(tool) }));
       console.log('Browser schema footprint', JSON.stringify({ catalogCount: tools.length, operationCount: operations.length,

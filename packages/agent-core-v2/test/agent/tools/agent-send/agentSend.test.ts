@@ -294,7 +294,7 @@ function createTool(options: {
   const tool = new AgentSendTool(
     { agentId: options.callerAgentId ?? CALLER_ID } as IAgentScopeContext,
     {
-      read: async () => ({ agents: options.agents ?? {} }),
+      read: async () => ({ id: 'session-1', createdAt: 0, updatedAt: 0, archived: false, agents: options.agents ?? {} }),
       getAgentExecutor: async (agentId: string) => options.agents?.[agentId]?.executor,
     } as ISessionMetadata,
     { send } as unknown as IAgentCollaborationMessagingService,

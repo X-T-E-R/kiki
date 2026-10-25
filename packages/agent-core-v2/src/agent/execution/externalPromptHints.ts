@@ -9,6 +9,40 @@ export interface ExternalPromptHint {
   readonly text: string;
 }
 
+const BOUNDARY_HOOK_EVENTS = new Set(['SessionStart', 'UserPromptSubmit', 'PreInvocation']);
+
+export function externalBoundaryHookEvent(event: string): boolean {
+  return BOUNDARY_HOOK_EVENTS.has(event.slice(event.lastIndexOf(':') + 1));
+}
+
+export function externalTurnHasModelContent(history: readonly ContextMessage[], turnId: number): boolean {
+  return history.some((message) => {
+    if (message.source?.turnId !== turnId) return false;
+    if (message.role === 'tool') return true;
+    if (message.role !== 'assistant') return false;
+    return message.toolCalls.length > 0 || message.content.some((part) =>
+      part.type === 'think' || part.type === 'image_url' || part.type === 'audio_url' || part.type === 'video_url'
+      || (part.type === 'text' && part.text.length > 0));
+  });
+}
+
+export function externalHintAlreadyRecorded(
+  history: readonly ContextMessage[],
+  text: string,
+  turnId?: number,
+): boolean {
+  const body = text.trim();
+  if (body.length === 0) return false;
+  const lastAssistant = history.findLastIndex((message) => message.role === 'assistant');
+  return history.slice(lastAssistant + 1).some((message) => {
+    const visible = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
+    if (!visible.includes(body)) return false;
+    const kind = message.origin?.kind;
+    if (kind !== 'injection' && kind !== 'hook_result' && kind !== 'task' && kind !== 'agent_message') return false;
+    return turnId === undefined || message.source?.turnId === undefined || message.source.turnId === turnId;
+  });
+}
+
 export function externalPromptHints(history: readonly ContextMessage[], delivered: ReadonlySet<string>): ExternalPromptHint[] {
   const lastReply = history.findLastIndex((message) => message.role === 'assistant');
   const hints: ExternalPromptHint[] = [];

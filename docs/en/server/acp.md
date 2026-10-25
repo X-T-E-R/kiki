@@ -77,6 +77,18 @@ When an ACP client provides `mcpServers` in `session/new`, `session/load`, or `s
 
 To use an IDE that sends stdio MCP servers, explicitly start Kiki with `kiki acp --allow-client-stdio-mcp` in that IDE's ACP agent configuration. This trusts the IDE to choose local executables and arguments: its stdio MCP servers run inside Kiki's process tree with Kiki's environment, without a separate Bash approval request. Use this option only for an IDE and MCP configuration you trust. HTTP and SSE MCP servers do not require this option.
 
+### Kiki tools in an external harness
+
+The forwarding above is inbound: an IDE supplies MCP servers to `kiki acp`. When Kiki runs an external harness, it can supply a session-local bridge bound to the exact Kiki session and agent. The adapter must accept stdio MCP; OpenClaw and Pi cannot receive this bridge. Model settings, vendor login and permissions remain the harness's own. You do not copy the managed bridge's temporary credentials into vendor configuration.
+
+Set `inject_kiki_mcp` under `[agent_executor_overrides.<executor-id>.defaults]` to choose the engine default. A Profile's `inject_kiki_mcp` overrides it, and `execution.overrides.inject_kiki_mcp` overrides the Profile for a session. Set the session value to `null` to inherit again. These choices take effect on the next binding, including named external child profiles; cold restore keeps the saved choice. Once an agent binds `false`, existing bridge credentials can no longer list or call its tools.
+
+When injection is omitted at every layer, existing behavior remains: compatible children receive their allowed native tools, while a bare main agent gets a bridge only when context or delegation is requested. Turning injection on does not open extra tool groups. Explicit `kiki_context: []` and `allow_kiki_subagents: false` keep those groups closed.
+
+Opening the bridge does not grant a tool the binding already denies. When an external tool is checked under both its vendor name and the mapped native name, each allow list must include at least one of those names, and a deny of either name blocks the call.
+
+The bridge exposes tools as `kiki_<native tool name>` and rechecks listing and calls under the same identity. It includes allowed plugin and MCP tools for children without bypassing their policy through a second direct forwarding path. Configuration, parent notifications and legacy connection names are covered in [External main-agent delegation](../customization/agents-and-subagents.md#external-main-agent-delegation) and [Kiki context in external main agents](../customization/agents-and-subagents.md#kiki-context-in-external-main-agents). MCP connectivity does not establish whether a particular adapter accepts image or audio prompts; that remains part of the adapter's input contract.
+
 ## Next steps
 
 - [Using in IDEs](./ide.md) — Zed / JetBrains configuration steps and troubleshooting

@@ -1,7 +1,7 @@
 import { readFile, realpath, stat } from 'node:fs/promises';
 import path from 'node:path';
 
-import { skinFileSchema, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, type MediaProviderDefinition, type SessionSourceDefinition, type SkinFile } from '@kiki/protocol';
+import { skinFileSchema, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, type PluginImAdapterDefinition, type MediaProviderDefinition, type SessionSourceDefinition, type SkinFile } from '@kiki/protocol';
 import { satisfies, validRange } from 'semver';
 import { z } from 'zod';
 
@@ -9,7 +9,7 @@ import { ProtocolSchema } from '#/kosong/protocol/protocol';
 
 import type { PluginDiagnostic } from './types';
 
-export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.0';
+export const KIKI_PLUGIN_ENGINE_VERSION = '0.4.1';
 export const PLUGIN_EXTENSION_VERSION = 1;
 
 const schemaVersion = z.literal(PLUGIN_EXTENSION_VERSION);
@@ -66,7 +66,7 @@ export const panelContributionSchema = z.object({
   schemaVersion,
   id: slug,
   label: z.string().min(1).max(64),
-  slot: z.enum(['sidebar', 'workspace']),
+  slot: z.enum(['sidebar', 'workspace', 'settings']),
   path: z.string().startsWith('./').endsWith('.html'),
   assets: z.array(z.string().startsWith('./')).max(30).optional(),
 }).strict();
@@ -88,6 +88,17 @@ export const settingsContributionSchema = z.object({
       description: z.string().optional(),
       secret: z.boolean().optional(),
       default: z.union([z.string(), z.number(), z.boolean()]).optional(),
+      hidden: z.boolean().optional(),
+      group: z.string().min(1).max(80).optional(),
+      groupTitle: z.string().min(1).max(80).optional(),
+      localizations: z.record(z.string().min(2).max(35), z.object({
+        title: z.string().optional(),
+        description: z.string().optional(),
+        groupTitle: z.string().min(1).max(80).optional(),
+      }).strict()).optional(),
+      enum: z.array(z.string().min(1)).max(2000).optional(),
+      multiline: z.boolean().optional(),
+      advanced: z.boolean().optional(),
     }).strict()),
     required: z.array(z.string()).optional(),
   }).strict(),
@@ -101,6 +112,9 @@ export type PluginPanel = z.infer<typeof panelContributionSchema> & { readonly f
 export type PluginDeclarativeCommand = z.infer<typeof commandContributionSchema>;
 export type PluginSettings = z.infer<typeof settingsContributionSchema>;
 
+export const mediaSourceGroupSchema = z.object({ id: slug, label: z.string().min(1), providerIds: z.array(slug).min(1), settingsPrefix: z.string().regex(/^[a-z0-9]+__$/), legacyPluginId: z.string().optional(), required: z.array(z.string()).default([]) }).strict();
+export type PluginMediaSourceGroup = z.infer<typeof mediaSourceGroupSchema>;
+
 export interface PluginExtension {
   readonly engines?: { readonly kiki: string };
   readonly permissions?: PluginPermissions;
@@ -109,6 +123,10 @@ export interface PluginExtension {
   readonly tools?: readonly PluginTool[];
   readonly sessionSources?: readonly SessionSourceDefinition[];
   readonly mediaProviders?: readonly MediaProviderDefinition[];
+  readonly imAdapters?: readonly PluginImAdapterDefinition[];
+  readonly dependencies?: Readonly<Record<string, string>>;
+  readonly mediaSources?: readonly PluginMediaSourceGroup[];
+  readonly mediaScriptProvider?: string;
   readonly panels?: readonly PluginPanel[];
   readonly commands?: readonly PluginDeclarativeCommand[];
   readonly entry?: string;
@@ -135,7 +153,11 @@ export async function parsePluginExtension(
     providerPresets: z.array(providerPresetSchema).optional(),
     tools: z.array(toolContributionSchema).optional(),
     sessionSources: z.array(sessionSourceDefinitionSchema).max(20).optional(),
-    mediaProviders: z.array(mediaProviderDefinitionSchema).max(20).optional(),
+    mediaProviders: z.array(mediaProviderDefinitionSchema).max(1000).optional(),
+    imAdapters: z.array(pluginImAdapterDefinitionSchema).max(20).optional(),
+    dependencies: z.record(z.string().regex(/^[a-z0-9][a-z0-9_-]{0,63}$/), z.string().refine((range) => validRange(range) !== null)).optional(),
+    mediaSources: z.array(mediaSourceGroupSchema).max(1000).optional(),
+    mediaScriptProvider: slug.optional(),
     panels: z.array(panelContributionSchema).optional(),
     commands: z.array(commandContributionSchema).optional(),
     entry: z.string().startsWith('./').optional(),
@@ -150,7 +172,7 @@ export async function parsePluginExtension(
   }
   const value = envelope.data;
   const hasContributions = value.themes !== undefined || value.providerPresets !== undefined ||
-    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.panels !== undefined || value.commands !== undefined ||
+    value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.imAdapters !== undefined || value.dependencies !== undefined || value.panels !== undefined || value.commands !== undefined ||
     value.entry !== undefined || value.settings !== undefined;
   if (hasContributions && value.engines === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.engines.kiki is required for Kiki contributions' });
@@ -159,10 +181,10 @@ export async function parsePluginExtension(
     !satisfies(KIKI_PLUGIN_ENGINE_VERSION, value.engines.kiki))) {
     diagnostics.push({ severity: 'error', message: `Plugin requires Kiki ${value.engines.kiki}; engine is ${KIKI_PLUGIN_ENGINE_VERSION}` });
   }
-  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.activation !== undefined) && value.entry === undefined) {
+  if ((value.tools !== undefined || value.sessionSources !== undefined || value.mediaProviders !== undefined || value.imAdapters !== undefined || value.activation !== undefined) && value.entry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry is required for executable contributions' });
   }
-  for (const definitions of [value.sessionSources, value.mediaProviders]) {
+  for (const definitions of [value.sessionSources, value.mediaProviders, value.imAdapters]) {
     if (new Set(definitions?.map((item) => item.id)).size !== (definitions?.length ?? 0)) {
       diagnostics.push({ severity: 'error', message: 'Duplicate executable contribution id' });
     }
@@ -172,6 +194,13 @@ export async function parsePluginExtension(
       diagnostics.push({ severity: 'error', message: `Media provider ${provider.id} connectionSetting must name a declared string setting` });
     }
   }
+  const groups = value.mediaSources ?? [];
+  const groupedIds = groups.flatMap((group) => group.providerIds);
+  if (new Set(groups.map((group) => group.id)).size !== groups.length || new Set(groups.map((group) => group.settingsPrefix)).size !== groups.length || new Set(groupedIds).size !== groupedIds.length || groupedIds.some((id) => !value.mediaProviders?.some((provider) => provider.id === id))) diagnostics.push({ severity: 'error', message: 'Media source groups require unique ids, prefixes and declared providers' });
+  for (const group of groups) {
+    if (group.required.some((key) => value.settings?.schema.properties[group.settingsPrefix + key] === undefined)) diagnostics.push({ severity: 'error', message: `Media source ${group.id} required settings must be declared` });
+  }
+  if (value.mediaScriptProvider !== undefined && (!value.mediaProviders?.some((provider) => provider.id === value.mediaScriptProvider) || value.settings?.schema.properties['scriptSources']?.type !== 'string')) diagnostics.push({ severity: 'error', message: 'Media scripts require a declared provider and scriptSources string setting' });
   const resolvedEntry = value.entry === undefined ? undefined : await safePluginFile(root, value.entry);
   if (value.entry !== undefined && resolvedEntry === undefined) {
     diagnostics.push({ severity: 'error', message: 'x-kiki.entry must be an existing file inside the plugin' });
@@ -222,6 +251,10 @@ export async function parsePluginExtension(
     tools: value.tools,
     sessionSources: value.sessionSources,
     mediaProviders: value.mediaProviders,
+    imAdapters: value.imAdapters,
+    dependencies: value.dependencies,
+    mediaSources: value.mediaSources,
+    mediaScriptProvider: value.mediaScriptProvider,
     panels,
     commands: value.commands,
     entry: resolvedEntry,

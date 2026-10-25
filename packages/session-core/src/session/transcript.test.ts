@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
-import { AgentTranscript, type AgentTranscriptSnapshot, type TranscriptOperation } from '@kiki/transcript';
+import { AgentTranscript, type AgentTranscriptSnapshot, type ContentRef, type TranscriptOperation, type TranscriptPrompt, type TranscriptTurn } from '@kiki/transcript';
 import type { Message, Session, SessionSnapshotResponse, SnapshotSubagent } from '@kiki/protocol';
 
 import {
@@ -22,6 +22,8 @@ import {
 } from './__fixtures__/canonicalTranscript';
 
 import type { AgentTranscriptResponse } from '../transport';
+import { selectionCarryoverPresentation } from '../composer/selectionQuote';
+import { parseSelectionCarryovers } from '../composer/timelineAnnotations';
 
 import { buildAgentForest } from './agentTree';
 import { foldHistory, groupBlocks } from './grouping';
@@ -39,6 +41,7 @@ import {
   EARLIER_PROMPT_OUTCOMES_ID,
   filterBlocksToDirectChildren,
   floorPreview,
+  isOrdinaryQueueItem,
   latestFinalAssistantBlockId,
   liveSourcesFromAgentSnapshots,
   overlayLiveSourcesWithSnapshotSubagents,
@@ -46,16 +49,24 @@ import {
   prependOlderTranscriptSnapshot,
   projectAgentTranscriptView,
   projectMessageContent,
+  projectMessageView,
   reminderCategory,
   queuedPromptPreviews,
   resolveActiveFloorId,
   rosterFromSnapshotSubagents,
+  sessionAgentForest,
   sessionAgentForestFromAgentSnapshots,
+  SessionAgentForestQuery,
   splitSystemReminders,
   turnExecutionFromItem,
+  turnReplyGap,
   type AssistantBlock,
+  type Block,
+  type MessageBlock,
+  type SessionViewState,
   type SubagentBlock,
   type ToolBlock,
+  type TurnTailInfo,
   type UserBlock,
 } from './transcript';
 
@@ -261,7 +272,10 @@ describe('classifyTranscriptText', () => {
       expect.objectContaining({
         kind: 'user',
         text: 'Message from thread "Design review" (sess-source):\n\nping',
-        peerThread: { sessionId: 'sess-source', messageId: 'thread-message-1', personaId: undefined, senderName: undefined },
+        peerThread: {
+          hostId: 'local', workspaceId: 'ws-a', sessionId: 'sess-source',
+          messageId: 'thread-message-1', personaId: undefined, senderName: undefined,
+        },
       }),
     ]);
   });
@@ -684,6 +698,17 @@ describe('transcript authority projection', () => {
     expect(first.attachments.map((attachment) => attachment.attachmentId)).toEqual(['a1', 'a2']);
   });
 
+  it('restores message-bound model controls without an independent queue item', () => {
+    const runtimeControls = { model: 'example/model', thinking: 'max', profile: 'example-profile', execution: { executor: 'native' } };
+    const prompt = { promptId: 'bound-message', userMessageId: 'bound-message', status: 'queued' as const, content: [{ type: 'text' as const, text: 'continue' }], createdAt: FIXED_AT, runtimeControls, queuePosition: 0 };
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [prompt] }));
+    expect(state.queuedPromptIds).toEqual(['bound-message']);
+    expect(queuedPromptPreviews(state)).toEqual([expect.objectContaining({ promptId: 'bound-message', text: 'continue', runtimeControls })]);
+    expect(state.blocks.filter(block => block.kind === 'user')).toEqual([expect.objectContaining({ runtimeControls })]);
+    const restored = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [prompt] }));
+    expect(queuedPromptPreviews(restored)[0]?.runtimeControls).toEqual(runtimeControls);
+  });
+
   it('covers a readonly queue lifecycle and reaches the delivered row through an older page', () => {
     const promptId = 'p-queue';
     const userMessageId = 'um-queue';
@@ -767,6 +792,33 @@ describe('transcript authority projection', () => {
     const loadedRows = loaded.blocks.filter((block): block is UserBlock => block.kind === 'user' && block.userMessageId === userMessageId);
     expect(loadedRows).toHaveLength(1);
     expect(loadedRows[0]).toMatchObject({ id: `user-${userMessageId}`, text: body, turnId: 't111', promptId, userMessageId });
+  });
+
+  it('keeps leading marker and taskref page boundaries in source order while prepending', () => {
+    const at = (minute: number) => `2026-10-01T00:${String(minute).padStart(2, '0')}:00.000Z`;
+    const turn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal,
+      startedAt: at(ordinal * 10), state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] });
+    const marker = { kind: 'marker' as const, markerId: 'm4', marker: 'message.delivery', at: at(40) };
+    const ref = { kind: 'taskref' as const, refId: 'r4', taskId: 'task4', at: at(41) };
+    const latest = { ...emptySnapshot(), items: [marker, ref, turn(5)] };
+    const middle = [turn(3), { kind: 'marker' as const, markerId: 'm3', marker: 'message.delivery', at: at(35) }];
+    const first = [turn(0), turn(1)];
+    const merged = prependOlderTranscriptSnapshot(prependOlderTranscriptSnapshot(latest,
+      { items: middle, attachments: [], hasMoreOlder: true }), { items: first, attachments: [], hasMoreOlder: false });
+    expect(merged.items).toEqual([...first, ...middle, ...latest.items]);
+    expect(merged.items.at(-1)).toBe(latest.items.at(-1));
+    expect(prependOlderTranscriptSnapshot(merged, { items: middle, attachments: [], hasMoreOlder: true }).items).toEqual(merged.items);
+  });
+
+  it('places a recovered middle gap before the following turn’s leading activity without moving earlier activity', () => {
+    const turn = (ordinal: number) => ({ kind: 'turn' as const, turnId: `t${ordinal}`, ordinal,
+      startedAt: `2026-10-01T00:0${ordinal}:00.000Z`, state: 'completed' as const, origin: { kind: 'user' as const }, steps: [] });
+    const marker = (ordinal: number) => ({ kind: 'marker' as const, markerId: `m${ordinal}`, marker: 'message.delivery',
+      at: `2026-10-01T00:0${ordinal}:30.000Z` });
+    const current = { ...emptySnapshot(), items: [turn(0), marker(0), turn(1), marker(3), turn(4)] };
+    const gap = [turn(2), marker(2), turn(3)];
+    expect(prependOlderTranscriptSnapshot(current, { items: gap, attachments: [], hasMoreOlder: true }).items)
+      .toEqual([...current.items.slice(0, 3), ...gap, ...current.items.slice(3)]);
   });
 
   it('anchors Agent entries on the real tool frame agentRefs', () => {
@@ -995,6 +1047,74 @@ describe('transcript authority projection', () => {
     ]);
   });
 
+  it('preserves immutable birth through the live-source snapshot overlay', () => {
+    const source = { subagentId: CHILD_AGENT_ID, name: CHILD_AGENT_ID, status: 'running', startedAt: FIXED_AT_2 };
+    const row = compactSnapshotSubagent({ id: CHILD_AGENT_ID, created_at: FIXED_AT, started_at: FIXED_AT_2 });
+    const fallback = overlayLiveSourcesWithSnapshotSubagents([source], [row]);
+    expect(fallback[0]).toMatchObject({ createdAt: FIXED_AT, startedAt: FIXED_AT_2 });
+    expect(buildAgentForest(fallback).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, startedAt: FIXED_AT_2,
+    });
+
+    const knownSource = { ...source, createdAt: FIXED_AT_1 };
+    for (const created_at of [FIXED_AT, undefined]) {
+      const overlaid = overlayLiveSourcesWithSnapshotSubagents([knownSource], [{ ...row, created_at }]);
+      expect(overlaid[0]).toMatchObject({ createdAt: FIXED_AT_1, startedAt: FIXED_AT_2 });
+      expect(buildAgentForest(overlaid).byId[CHILD_AGENT_ID]?.createdAt).toBe(FIXED_AT_1);
+    }
+    expect(overlayLiveSourcesWithSnapshotSubagents([{ ...source, createdAt: '' }], [row])[0]?.createdAt).toBe(FIXED_AT);
+    const inactiveRoster = [{ agentId: CHILD_AGENT_ID, status: 'idle', statusSource: 'runtime' as const }];
+    expect(buildAgentForest(fallback, inactiveRoster).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, status: 'idle', startedAt: undefined,
+    });
+    expect(buildAgentForest(fallback, [{ ...inactiveRoster[0]!, createdAt: FIXED_AT_1 }])
+      .byId[CHILD_AGENT_ID]?.createdAt).toBe(FIXED_AT_1);
+    const legacy = overlayLiveSourcesWithSnapshotSubagents([source], [{ ...row, created_at: undefined }]);
+    expect(legacy[0]).toMatchObject({ createdAt: undefined, startedAt: FIXED_AT_2 });
+    expect(buildAgentForest(legacy).byId[CHILD_AGENT_ID]?.createdAt).toBeUndefined();
+  });
+
+  it('projects immutable birth from SessionView snapshots without a separate roster', () => {
+    const queued = {
+      ...createViewState('session_test'),
+      blocks: [unknownChildBlock()],
+      snapshotSubagents: [compactSnapshotSubagent({ id: CHILD_AGENT_ID, created_at: FIXED_AT, status: undefined, subagent_phase: 'queued' })],
+    };
+    expect(sessionAgentForest(queued).byId[CHILD_AGENT_ID]).toMatchObject({ createdAt: FIXED_AT, startedAt: undefined });
+    const resumed = {
+      ...queued,
+      blocks: [{ ...unknownChildBlock(), status: 'running' as const, startedAt: FIXED_AT_2 }],
+      snapshotSubagents: [{ ...queued.snapshotSubagents[0]!, status: 'running' as const, subagent_phase: 'working' as const, started_at: FIXED_AT_2 }],
+    };
+    expect(sessionAgentForest(resumed).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: FIXED_AT, startedAt: FIXED_AT_2,
+    });
+    const legacy = { ...resumed, snapshotSubagents: [{ ...resumed.snapshotSubagents[0]!, created_at: undefined }] };
+    expect(sessionAgentForest(legacy).byId[CHILD_AGENT_ID]).toMatchObject({
+      createdAt: undefined, startedAt: FIXED_AT_2,
+    });
+  });
+
+  it('projects snapshot roster rows without a live transcript block', () => {
+    const state = {
+      ...createViewState('session_test'),
+      snapshotSubagents: [compactSnapshotSubagent({
+        id: CHILD_AGENT_ID,
+        parent_agent_id: 'main',
+        status: 'completed',
+        activity_status: 'completed',
+        status_source: 'metadata',
+        live: false,
+        created_at: FIXED_AT,
+      })],
+    };
+    expect(sessionAgentForest(state).byId[CHILD_AGENT_ID]).toMatchObject({
+      agentId: CHILD_AGENT_ID,
+      parentAgentId: 'main',
+      status: 'completed',
+    });
+  });
+
   it('stops a retained snapshot row from claiming a live run in the forest', () => {
     const retained = [
       compactSnapshotSubagent({
@@ -1103,6 +1223,132 @@ describe('transcript authority projection', () => {
       status: 'running',
       busy: true,
     });
+  });
+
+  it('preserves detached snapshot activity without needing a materialized task', () => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot()]]);
+    const rows = [compactSnapshotSubagent({
+      id: CHILD_AGENT_ID,
+      agent_id: CHILD_AGENT_ID,
+      status: 'running',
+      subagent_phase: 'working',
+      live: true,
+      run_in_background: true,
+      started_at: FIXED_AT_1,
+    })];
+    expect(rosterFromSnapshotSubagents(rows)[0]?.detached).toBe(true);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, rows).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'background', busy: true,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...rows[0]!, live: false }]).byId[CHILD_AGENT_ID]).toBeUndefined();
+  });
+
+  it.each(['running', 'suspended'] as const)('keeps a runtime %s child busy before its transcript catches up', (activityStatus) => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([
+      ['main', emptySnapshot()],
+      [CHILD_AGENT_ID, emptySnapshot({ meta: { agent: { phase: { kind: 'idle' } } } })],
+    ]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, parent_agent_id: 'main',
+      status: 'running', activity_status: activityStatus, status_source: 'runtime', live: true,
+      started_at: FIXED_AT_1, subagent_phase: activityStatus === 'suspended' ? 'suspended' : 'working',
+    });
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, [row]);
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({ status: activityStatus, busy: true });
+    expect(forest.byId['main']?.busy).toBe(false);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row, run_in_background: true }]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ status: activityStatus === 'running' ? 'background' : 'suspended', busy: true });
+    for (const status of ['idle', 'completed', 'failed', 'cancelled'] as const) {
+      expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+        status: status === 'idle' ? 'running' : status, activity_status: status,
+        completed_at: FIXED_AT_2, subagent_phase: undefined,
+      }]).byId[CHILD_AGENT_ID]).toMatchObject({ status, busy: false });
+    }
+  });
+
+  it('keeps durable task completion over cold identity-only metadata without locking a later run', () => {
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot({ tasks: [{
+      taskId: 'completed-dispatch', kind: 'subagent', state: 'completed', detached: true,
+      agentId: CHILD_AGENT_ID, description: 'Inspect the protocol', outputTail: '',
+      startedAt: FIXED_AT_1, endedAt: FIXED_AT_2,
+    }] })]]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, status: 'running',
+      activity_status: 'unknown', status_source: 'metadata', live: false,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [row]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'completed', busy: false,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      activity_status: 'running', status_source: 'runtime', live: true,
+      subagent_phase: 'queued', run_in_background: true,
+      started_at: '2026-01-01T00:00:03.000Z',
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'background', busy: true });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      activity_status: 'idle', status_source: 'runtime', live: true,
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
+  });
+
+  it('lets current runtime idle outrank a running subagent dispatch task', () => {
+    const running = emptySnapshot({
+      meta: { agent: { phase: { kind: 'idle' } } },
+      tasks: [{
+        taskId: 'subagent-dispatch', kind: 'subagent', state: 'running', detached: false,
+        agentId: 'agent-38', description: 'delegated work', outputTail: '', startedAt: FIXED_AT_1,
+      }],
+    });
+    const idle = compactSnapshotSubagent({
+      id: 'agent-38', agent_id: 'agent-38', status: 'running', activity_status: 'idle',
+      status_source: 'runtime', live: true, started_at: FIXED_AT_1,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(new Map([['main', running]]), [idle]).byId['agent-38']).toMatchObject({
+      status: 'idle', busy: false,
+    });
+  });
+
+  it('keeps a finite background task busy when the runtime row is idle', () => {
+    const running = emptySnapshot({
+      meta: { agent: { phase: { kind: 'idle' } } },
+      tasks: [{
+        taskId: 'finite-shell', kind: 'shell', state: 'running', detached: true,
+        description: 'bounded job', outputTail: '', startedAt: FIXED_AT_2,
+      }],
+    });
+    const idle = compactSnapshotSubagent({
+      id: 'agent-38', agent_id: 'agent-38', status: 'running',
+      activity_status: 'idle', status_source: 'runtime', live: true, started_at: FIXED_AT_1,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(new Map([['agent-38', running]]), [idle]).byId['agent-38']).toMatchObject({
+      status: 'background', busy: true,
+    });
+    const finished = emptySnapshot({
+      meta: { agent: { phase: { kind: 'idle' } } },
+      tasks: [{
+        taskId: 'finite-shell', kind: 'shell', state: 'completed', detached: true,
+        description: 'bounded job', outputTail: '', startedAt: FIXED_AT_1, endedAt: FIXED_AT_2,
+      }],
+    });
+    expect(sessionAgentForestFromAgentSnapshots(new Map([['agent-38', finished]]), [idle]).byId['agent-38']).toMatchObject({
+      status: 'idle', busy: false,
+    });
+  });
+
+  it('does not let a pre-launch runtime idle row overwrite the newer detached task', () => {
+    const startedAt = '2026-01-01T00:00:03.000Z';
+    const snapshots = new Map<string, AgentTranscriptSnapshot>([['main', emptySnapshot({ tasks: [{
+      taskId: 'new-dispatch', kind: 'subagent', state: 'running', detached: true,
+      agentId: CHILD_AGENT_ID, description: 'Inspect the protocol', outputTail: '', startedAt,
+    }] })]]);
+    const row = compactSnapshotSubagent({
+      id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, status: 'running',
+      activity_status: 'idle', status_source: 'runtime', live: true, started_at: FIXED_AT_2,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [row]).byId[CHILD_AGENT_ID]).toMatchObject({
+      status: 'background', busy: true,
+    });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [{ ...row,
+      started_at: startedAt, completed_at: '2026-01-01T00:00:04.000Z',
+    }]).byId[CHILD_AGENT_ID]).toMatchObject({ status: 'idle', busy: false });
   });
 
   it('lets a run that starts after the retained row revive the forest node', () => {
@@ -1323,8 +1569,71 @@ describe('transcript projection cache', () => {
     });
   });
 
-  it('reprojects a settled task-backed shell when the global task entity changes', () => {
-    const item: AgentTranscriptSnapshot['items'][number] = {
+  it('carries a tool result\'s canonical attachments into the tool block media', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-media', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'make a picture',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-media.1', turnId: 't-tool-media', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-media', toolCallId: 'call-media', name: 'external_paint',
+          state: 'done' as const, output: [{ type: 'text', text: 'painted' }],
+          attachmentIds: ['f-tool-media.att1'],
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({
+      agent_id: 'main', items,
+      attachments: [{
+        attachmentId: 'f-tool-media.att1', mediaType: 'image/png', name: 'answer.png', size: 42,
+        source: { kind: 'session_media', fileId: 'f_acp_deadbeef' },
+      }],
+    });
+    const tool = blocks.find((block) => block.kind === 'tool');
+    expect(tool).toMatchObject({
+      media: [{ kind: 'image', fileId: 'f_acp_deadbeef', name: 'answer.png', mime: 'image/png', size: 42 }],
+    });
+  });
+
+  it('keeps a tool result attachment readable when the window omitted the entity', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-media-gone', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'make a picture',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-media-gone.1', turnId: 't-tool-media-gone', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-gone', toolCallId: 'call-gone', name: 'external_paint',
+          state: 'done' as const, attachmentIds: ['f-tool-gone.att1'],
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items, attachments: [] });
+    const tool = blocks.find((block) => block.kind === 'tool');
+    expect(tool).toMatchObject({
+      media: [{ kind: 'file', detail: { agentId: 'main', attachmentId: 'f-tool-gone.att1' } }],
+    });
+  });
+
+  it('leaves a tool block without result media when the frame names none', () => {
+    const items = [{
+      kind: 'turn' as const, turnId: 't-tool-plain', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'run it',
+      startedAt: FIXED_AT,
+      steps: [{
+        kind: 'step' as const, stepId: 't-tool-plain.1', turnId: 't-tool-plain', ordinal: 1, state: 'completed' as const,
+        frames: [{
+          kind: 'tool' as const, frameId: 'f-tool-plain', toolCallId: 'call-plain', name: 'Read',
+          state: 'done' as const, output: 'plain output',
+        }],
+      }],
+    }];
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items, attachments: [] });
+    expect(blocks.find((block) => block.kind === 'tool')).toMatchObject({ media: undefined });
+  });
+
+  it('reprojects a settled task-backed shell when the global task entity changes', () => {    const item: AgentTranscriptSnapshot['items'][number] = {
       kind: 'turn',
       turnId: 't-task-cache',
       ordinal: 1,
@@ -1456,6 +1765,52 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       content: [{ type: 'text', text: 'hello', presentation: second }],
     });
     expect(replaced.blocks.find((block): block is UserBlock => block.kind === 'user')?.presentation).toEqual(second);
+  });
+
+  it.each(['queued', 'blocked'] as const)('keeps message identity and presentation in %s previews', (status) => {
+    const selection = selectionCarryoverPresentation([{ quote: 'Selected requirement.', comment: 'Keep this complete note.' }], []);
+    const content: Message['content'] = [{ type: 'text', text: selection.prefix + 'Read the report.', presentation: selection.presentation },
+      { type: 'file', file_id: 'file-report', name: 'report.txt', media_type: 'text/plain', size: 12 }];
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts: [{
+      promptId: 'p-preview', userMessageId: 'um-preview', status, content, createdAt: FIXED_AT,
+    }] }));
+    const block = view.blocks.find((block): block is UserBlock => block.kind === 'user')!;
+    expect(block).toMatchObject({ promptStatus: status, contentSource: { kind: 'prompt', id: 'p-preview' } });
+    const preview = status === 'queued' ? queuedPromptPreviews(view)[0]! : block;
+    expect(preview).toMatchObject({ promptId: 'p-preview', userMessageId: 'um-preview', presentation: selection.presentation,
+      media: [{ kind: 'file', fileId: 'file-report', name: 'report.txt', mime: 'text/plain', size: 12 }] });
+    if (status === 'queued') expect(queuedPromptPreviews(view)[0]?.content).toEqual(content);
+    expect(parseSelectionCarryovers(preview.text, preview.presentation)).toMatchObject({ body: 'Read the report.', annotations: [{ comment: 'Keep this complete note.' }] });
+  });
+
+  it('keeps media-only canonical messages and empty bounded frames without replacing their source', () => {
+    const ref: ContentRef = { source: { kind: 'frame', id: 'f-bounded', turnId: 't-bounded', stepId: 's-bounded' },
+      path: ['text'], kind: 'text', offset: 0, total: 100, revision: 'bounded-v1' };
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{ kind: 'turn', turnId: 't-media', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: '', attachmentIds: ['att-media'], steps: [] },
+        { kind: 'turn', turnId: 't-bounded', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [{ kind: 'step', stepId: 's-bounded', turnId: 't-bounded', ordinal: 1, state: 'completed',
+          frames: [{ kind: 'text', frameId: 'f-bounded', role: 'user', text: '', contentRefs: [ref] }] }] }],
+      attachments: [{ attachmentId: 'att-media', mediaType: 'image/png', source: { kind: 'url', url: 'https://example.test/photo.png' } }],
+    }));
+    const users = view.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(2);
+    expect(users[0]).toMatchObject({ text: '', contentSource: { kind: 'turn', id: 't-media' }, media: [{ kind: 'image', url: 'https://example.test/photo.png' }] });
+    expect(users[1]).toMatchObject({ text: '', contentSource: ref.source });
+  });
+
+  it('does not let a media-only turn shell suppress its canonical user frame', () => {
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [{
+      kind: 'turn', turnId: 't-frame', ordinal: 0, state: 'completed', prompt: '', attachmentIds: ['att-frame'],
+      origin: { kind: 'user', payload: { userMessageId: 'um-frame' } }, steps: [{
+        kind: 'step', stepId: 's-frame', turnId: 't-frame', ordinal: 1, state: 'completed', frames: [{
+          kind: 'text', frameId: 'f-frame', role: 'user', text: 'Frame-owned message.', attachmentIds: ['att-frame'],
+          part: { partId: 'part-frame', messageId: 'um-frame', revision: 1, provenance: { source: 'engine' } },
+        }],
+      }],
+    }], attachments: [{ attachmentId: 'att-frame', mediaType: 'image/png', source: { kind: 'url', url: 'https://example.test/photo.png' } }] }));
+    const users = view.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ text: 'Frame-owned message.', contentSource: { kind: 'frame', id: 'f-frame', turnId: 't-frame', stepId: 's-frame' }, media: [{ kind: 'image', url: 'https://example.test/photo.png' }] });
   });
 
   it('projects attachment presentation spans into queue media and contentless turn/frame user blocks', () => {
@@ -1738,7 +2093,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     const journal = [{ type: 'prompt.model_switch_queued', entry: { receipt: pending }, queueIndex: 0, time: 1000 }];
     const queued = projectAgentTranscriptView(createViewState('session_test'), 'main', replayAgentWire('main', journal));
     expect(queued.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
-      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'pending' }, i18n: undefined })]);
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'pending', change: 'model' }, i18n: undefined })]);
     const committedJournal = [...journal,
       { type: 'agent.model_switch', operationId: 'switch-example', fromModel: 'example/old', toModel: 'example/new', mode: 'fresh', newEpoch: 1, summaryGenerated: false, time: 2000 },
     ];
@@ -1748,7 +2103,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       { type: 'prompt.model_switch_status', operationId: 'switch-example', receipt: { ...pending, state: 'completed', windowEpoch: 1, summaryGenerated: false }, time: 3000 },
     ]));
     expect(completed.blocks).toEqual([expect.objectContaining({ kind: 'notice', id: 'agent-marker-model-switch:switch-example',
-      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'completed', windowEpoch: 1, summaryGenerated: false },
+      modelSwitch: { operationId: 'switch-example', from: 'example/old', to: 'example/new', mode: 'fresh', state: 'completed', change: 'model', windowEpoch: 1, summaryGenerated: false },
       i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } } })]);
   });
 
@@ -1763,6 +2118,20 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       kind: 'notice', tone: 'neutral', text: 'model.switch', createdAt: new Date(3000).toISOString(),
       i18n: { key: 'transcript.marker.modelSwitch', params: { from: 'example/old', to: 'example/new' } },
     })]);
+  });
+
+  it('projects same-model resume and actual effort/context changes without claiming an alias switch', () => {
+    const snapshot = replayAgentWire('child', [
+      { type: 'profile.bind', modelAlias: 'example/model', thinkingEffort: 'high', time: 1000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:1', fromModel: 'example/model', toModel: 'example/model', thinking: 'high', mode: 'direct', oldEpoch: 0, newEpoch: 0, time: 2000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:2', fromModel: 'example/model', toModel: 'example/model', thinking: 'low', mode: 'direct', oldEpoch: 0, newEpoch: 0, time: 3000 },
+      { type: 'agent.model_switch', operationId: 'resume:parent:3', fromModel: 'example/model', toModel: 'example/model', thinking: 'low', mode: 'fresh', oldEpoch: 0, newEpoch: 1, time: 4000 },
+    ]);
+    const blocks = projectAgentTranscriptView(createViewState('session_test'), 'child', snapshot).blocks;
+    expect(blocks).toHaveLength(3);
+    expect(blocks[0]).toMatchObject({ i18n: { key: 'transcript.modelSwitch.done.resume' }, modelSwitch: { change: 'resume' } });
+    expect(blocks[1]).toMatchObject({ i18n: { key: 'transcript.modelSwitch.done.effort' }, modelSwitch: { change: 'effort' } });
+    expect(blocks[2]).toMatchObject({ modelSwitch: { change: 'context', windowEpoch: 1 } });
   });
 
   it('counts only separate committed compactions and retains every folded time and reason', () => {
@@ -1791,6 +2160,42 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(queued.blocks[0]).toMatchObject({ compactionPhase: 'queued', i18n: { key: 'transcript.marker.compactionQueued' } });
   });
 
+  it('keeps token accounting out of goal notices while preserving canonical budget state', () => {
+    const records = [
+      { type: 'goal.create', goalId: 'goal-example', objective: 'Ship', time: 1000 },
+      ...Array.from({ length: 12 }, (_, index) => ({ type: 'goal.update', tokensUsed: index + 1, time: 2000 + index })),
+    ];
+    const snapshot = replayAgentWire('main', records);
+    const first = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(snapshot.items).toHaveLength(1);
+    const latest = snapshot.items.at(-1);
+    expect(first.blocks).toEqual([expect.objectContaining({
+      id: `agent-marker-${latest?.kind === 'marker' ? latest.markerId : ''}`,
+      kind: 'notice', text: 'goal', goalChange: { kind: 'created' }, createdAt: new Date(1000).toISOString(),
+    })]);
+    expect(snapshot.meta.goal?.budgetUsed).toBe(12);
+    const reset = projectAgentTranscriptView(first, 'main', snapshot);
+    expect(reset.blocks).toEqual(first.blocks);
+    const appended = projectAgentTranscriptView(reset, 'main', replayAgentWire('main', [
+      ...records, { type: 'goal.update', tokensUsed: 13, time: 3000 },
+    ]));
+    expect(appended.blocks).toEqual(first.blocks);
+    const lifecycle = projectAgentTranscriptView(appended, 'main', replayAgentWire('main', [
+      ...records,
+      { type: 'goal.update', budgetLimits: { tokenBudget: 20, turnBudget: 3, wallClockBudgetMs: 1000 }, time: 3000 },
+      { type: 'goal.update', turnsUsed: 1, wallClockMs: 200, time: 3001 },
+      { type: 'goal.update', status: 'paused', reason: 'User paused', actor: 'user', time: 4000 },
+      { type: 'goal.update', status: 'active', time: 5000 },
+      { type: 'goal.update', status: 'blocked', reason: 'Needs input', time: 6000 },
+      { type: 'goal.update', status: 'active', time: 7000 },
+      { type: 'goal.update', status: 'complete', time: 8000 },
+    ]));
+    expect(lifecycle.blocks.filter((block) => block.kind === 'notice').map((block) => block.goalChange?.kind))
+      .toEqual(['created', 'updated', 'paused', 'resumed', 'blocked', 'resumed', 'completed']);
+    expect(lifecycle.goal).toMatchObject({ goalId: 'goal-example', tokensUsed: 12, turnsUsed: 1, wallClockMs: 200,
+      budget: { remainingTokens: 8, remainingTurns: 2, remainingWallClockMs: 800 } });
+  });
+
   it('projects complete goal budget snapshots from replay and preserves explicit clears', () => {
     const records = [
       { type: 'goal.create', goalId: 'goal-budget', objective: 'Ship' },
@@ -1805,28 +2210,6 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ]));
     expect(cleared.goal).toMatchObject({ status: 'blocked', tokensUsed: 50,
       budget: { tokenBudget: null, turnBudget: null, wallClockBudgetMs: null, overBudget: false } });
-  });
-
-  it('folds token-accounting goal markers from cold replay without changing canonical history', () => {
-    const records = [
-      { type: 'goal.create', goalId: 'goal-example', objective: 'Ship', time: 1000 },
-      ...Array.from({ length: 12 }, (_, index) => ({ type: 'goal.update', tokensUsed: index + 1, time: 2000 + index })),
-    ];
-    const snapshot = replayAgentWire('main', records);
-    const first = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
-    expect(snapshot.items).toHaveLength(13);
-    const latest = snapshot.items.at(-1);
-    expect(first.blocks).toEqual([expect.objectContaining({
-      id: `agent-marker-${latest?.kind === 'marker' ? latest.markerId : ''}`,
-      kind: 'notice', text: 'goal', markerRepeatCount: 13, createdAt: new Date(2011).toISOString(),
-    })]);
-    expect(snapshot.meta.goal?.budgetUsed).toBe(12);
-    const reset = projectAgentTranscriptView(first, 'main', snapshot);
-    expect(reset.blocks).toEqual(first.blocks);
-    const appended = projectAgentTranscriptView(reset, 'main', replayAgentWire('main', [
-      ...records, { type: 'goal.update', tokensUsed: 13, time: 3000 },
-    ]));
-    expect(appended.blocks).toEqual([expect.objectContaining({ markerRepeatCount: 14, createdAt: new Date(3000).toISOString() })]);
   });
 
   it('folds live marker operations idempotently and recomputes counts when older history arrives', () => {
@@ -1881,8 +2264,9 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     if (driver === 'external') {
       expect(note).toEqual({
         recordId: 'text_example', markerId: 'marker_example', kind: 'handoff', text: payload.text,
-        title: 'Shared notes', sourceUrl: 'https://example.test/notes',
-        source: { connectionId: 'conn_example', clientName: 'Example client', sessionRef: 'ext_example' },
+        title: 'Shared notes', sourceUrl: 'https://example.test/notes', clientTime: FIXED_AT_1,
+        source: { driver: 'external', connectionId: 'conn_example', clientName: 'Example client', sessionRef: 'ext_example' },
+        turn: 3,
       });
       expect(blocks[0]).toMatchObject({ kind: 'notice', createdAt: FIXED_AT, turnId: 't3' });
     } else {
@@ -1900,6 +2284,68 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     ] })).blocks;
     expect(blocks).toHaveLength(3);
     expect(blocks.at(-1)).toMatchObject({ id: 'agent-marker-c2', createdAt: FIXED_AT_2, reasonCodes: ['tool_error'], markerRepeatCount: 2 });
+  });
+
+  it('carries an external client saved record as a note with its body, kind and source', () => {
+    const source = {
+      driver: 'external',
+      connectionId: 'xc-1',
+      clientName: 'Example local client',
+      sessionRef: 'ref-1',
+    };
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [
+          {
+            kind: 'marker',
+            markerId: 'external-text:native-ui-save',
+            marker: 'external.text',
+            at: FIXED_AT,
+            payload: {
+              recordId: 'native-ui-save',
+              turnId: 1,
+              text: 'Saved handoff from the real native host.',
+              kind: 'handoff',
+              title: 'Handoff',
+              source,
+            },
+          },
+        ],
+      }),
+    );
+    expect(projected.blocks).toEqual([
+      expect.objectContaining({
+        kind: 'notice',
+        id: 'agent-marker-external-text:native-ui-save',
+        text: 'Saved handoff from the real native host.',
+        externalText: {
+          recordId: 'native-ui-save',
+          // The marker's own id, not the `agent-marker-…` display id above it: a
+          // cut body is read back through an address the server will reject
+          // unless it names the real marker.
+          markerId: 'external-text:native-ui-save',
+          kind: 'handoff',
+          text: 'Saved handoff from the real native host.',
+          title: 'Handoff',
+          source,
+          turn: 1,
+        },
+      }),
+    ]);
+  });
+
+  it('falls back to the marker name for an external record with no usable payload', () => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({
+        items: [{ kind: 'marker', markerId: 'external-text:broken', marker: 'external.text', payload: { recordId: 'broken' } }],
+      }),
+    );
+    expect(projected.blocks).toEqual([expect.objectContaining({ kind: 'notice', text: 'external.text' })]);
+    expect(projected.blocks[0]).not.toHaveProperty('externalText');
   });
 
   it('summarizes skill markers even when their payload contains the full loaded document', () => {
@@ -2051,7 +2497,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       'main',
       emptySnapshot({
         items: [
-          marker('d-1', 'executor.degradation', { turnId: 2, kind: 'unknown', value: { updateType: 'thread/rateLimits/updated' } }),
+          marker('d-1', 'executor.degradation', { turnId: 2, kind: 'unknown', value: { updateType: 'thread/rateLimits/updated', method: '_x.ai/session_notification', payload: { update: { sessionUpdate: 'future_update', facts: { count: 1 } } } } }),
           marker('h-1', 'executor.prompt.delivery', { turnId: 2, origin: 'user', method: 'next_turn_preamble', status: 'queued' }),
           marker('h-bad', 'executor.prompt.delivery', { method: 'teleport', status: 'delivered' }),
           marker('c-1', 'executor.compaction', { turnId: 2, kind: 'compaction', value: { threadId: 'thr' } }),
@@ -2061,7 +2507,7 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     );
     const notes = projected.blocks.map((block) => (block.kind === 'notice' ? [block.turnId, block.executor] : undefined));
     expect(notes).toEqual([
-      ['t2', { kind: 'unknown', updateType: 'thread/rateLimits/updated' }],
+      ['t2', { kind: 'unknown', updateType: 'thread/rateLimits/updated', method: '_x.ai/session_notification', payload: { update: { sessionUpdate: 'future_update', facts: { count: 1 } } } }],
       ['t2', { kind: 'hint', method: 'next_turn_preamble', status: 'queued', origin: 'user' }],
       // An unrecognized delivery shape falls back to a plain marker notice.
       [undefined, undefined],
@@ -2496,6 +2942,121 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(folded[0]).toMatchObject({ kind: 'history-fold', thoughts: 2 });
   });
 
+  it('does not project an empty assistant text frame between same-turn process rows', () => {
+    const command = (ordinal: number, name: 'Read' | 'Bash') => ({
+      kind: 'tool' as const,
+      frameId: `tool-${ordinal}`,
+      toolCallId: `call-${ordinal}`,
+      name,
+      state: 'done' as const,
+      input: name === 'Bash' ? { command: `printf '${ordinal}\\n'` } : { file_path: `/w/${ordinal}.ts` },
+      output: 'ok',
+    });
+    const empty = (ordinal: number) => ({ kind: 'text' as const, frameId: `empty-${ordinal}`, role: 'assistant' as const, text: ordinal === 2 ? '   ' : '' });
+    const snapshot = emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, prompt: 'Run the commands.',
+        steps: [
+          { kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed', frames: [{ kind: 'thinking', frameId: 'think-1', text: 'look' }, empty(1), command(1, 'Read')] },
+          { kind: 'step', stepId: 's2', turnId: 't1', ordinal: 2, state: 'completed', frames: [empty(2), command(2, 'Bash')] },
+          { kind: 'step', stepId: 's3', turnId: 't1', ordinal: 3, state: 'completed', frames: [empty(3), command(3, 'Bash')] },
+        ],
+      }],
+    });
+    const source = structuredClone(snapshot.items);
+    const blocks = agentTranscriptToBlocks({ ...snapshot, agent_id: 'main' });
+    expect(snapshot.items).toEqual(source);
+    expect(blocks.filter((block) => block.kind === 'assistant')).toEqual([]);
+    const folded = foldHistory(groupBlocks(blocks), undefined);
+    expect(folded.filter((node) => node.kind === 'history-fold')).toEqual([
+      expect.objectContaining({ steps: 3, thoughts: 1 }),
+    ]);
+  });
+
+  it('keeps a real assistant row and a pending approval as fold boundaries', () => {
+    const bash = (ordinal: number) => ({
+      kind: 'tool' as const, frameId: `tool-${ordinal}`, toolCallId: `call-${ordinal}`, name: 'Bash', state: 'done' as const,
+      input: { command: `printf '${ordinal}\\n'` }, output: 'ok',
+    });
+    const spoken = emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+        steps: [{
+          kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed',
+          frames: [
+            { kind: 'text' as const, frameId: 'gap-1', role: 'assistant' as const, text: '' },
+            bash(1),
+            { kind: 'text' as const, frameId: 'said', role: 'assistant' as const, text: 'Between the commands.' },
+            { kind: 'text' as const, frameId: 'gap-2', role: 'assistant' as const, text: '' },
+            bash(2),
+          ],
+        }],
+      }],
+    });
+    const spokenFold = foldHistory(agentTranscriptToBlocks({ ...spoken, agent_id: 'main' }), undefined);
+    expect(spokenFold.map((node) => node.kind)).toEqual(['history-fold', 'assistant', 'history-fold']);
+    expect(spokenFold[1]).toMatchObject({ text: 'Between the commands.' });
+
+    const gated = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+        steps: [{
+          kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed',
+          frames: [bash(1), bash(2)],
+        }],
+      }],
+      interactions: [{
+        interactionId: 'apr-1', interactionKind: 'approval', toolCallId: 'call-1', state: 'pending',
+        anchor: { kind: 'tool_call', toolCallId: 'call-1' },
+        request: { toolName: 'Bash', action: 'Run printf' },
+      }],
+    }));
+    const gatedFold = foldHistory(gated.blocks, undefined);
+    expect(gatedFold.map((node) => node.kind)).toEqual(['history-fold', 'approval', 'history-fold']);
+  });
+
+  it('keeps an empty assistant frame when it still has media or unread text, and shows the first streamed characters', () => {
+    const kept = agentTranscriptToBlocks({
+      ...emptySnapshot({
+        items: [{
+          kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+          steps: [{
+            kind: 'step', stepId: 's1', turnId: 't1', ordinal: 1, state: 'completed',
+            frames: [
+              { kind: 'text', frameId: 'continued', role: 'assistant', text: '', contentRefs: [{ source: { kind: 'frame', id: 'continued' }, revision: 'r', path: ['text'], kind: 'text', offset: 0, total: 4 }] },
+              { kind: 'text', frameId: 'picture', role: 'assistant', text: '', attachmentIds: ['att0'] },
+            ],
+          }],
+        }],
+        attachments: [{ attachmentId: 'att0', mediaType: 'image/png', source: { kind: 'session_media', fileId: 'file0' } }],
+      }),
+      agent_id: 'main',
+    });
+    expect(kept.map((block) => block.kind === 'assistant' ? block.frameId : block.kind)).toEqual(['continued', 'picture']);
+    expect(kept[1]).toMatchObject({ media: [expect.objectContaining({ kind: 'image', fileId: 'file0' })] });
+
+    const tx = new AgentTranscript('main');
+    tx.apply([
+      { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't0', ordinal: 0, state: 'running', origin: { kind: 'user' } } },
+      { op: 'step.upsert', turnId: 't0', step: { kind: 'step', stepId: 's1', turnId: 't0', ordinal: 1, state: 'running' } },
+      { op: 'frame.upsert', turnId: 't0', stepId: 's1', frame: { kind: 'text', frameId: 'body', role: 'assistant', text: '' } },
+    ]);
+    const project = () => {
+      const snapshot = tx.snapshot();
+      const before = structuredClone(snapshot);
+      const blocks = agentTranscriptToBlocks({ ...snapshot, agent_id: 'main' });
+      expect(snapshot).toEqual(before);
+      return blocks;
+    };
+    expect(project().some((block) => block.kind === 'assistant')).toBe(false);
+    tx.apply([{ op: 'append', target: { type: 'frame', turnId: 't0', stepId: 's1', frameId: 'body' }, offset: 0, text: 'Hi' }]);
+    expect(project()).toEqual([expect.objectContaining({ kind: 'assistant', frameId: 'body', text: 'Hi', streaming: true })]);
+    const turn = tx.snapshot().items.find((item) => item.kind === 'turn');
+    expect(turn?.kind === 'turn' ? turn.steps.flatMap((step) => step.frames) : []).toEqual([
+      expect.objectContaining({ kind: 'text', frameId: 'body', text: 'Hi' }),
+    ]);
+  });
+
   it('recovers only explicit successful response associations and respects prose and tool barriers', () => {
     const cold = (messageId?: string) => replayAgentWire('main', [
       { type: 'context.append_loop_event', event: { type: 'step.begin', uuid: 'old-step', turnId: '0', step: 1 } },
@@ -2887,6 +3448,57 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
   });
 
   describe('subagent lifecycle event blocks', () => {
+    const lifecycleSnapshot = (assistantText?: string, endedAt?: string): AgentTranscriptSnapshot => emptySnapshot({
+      items: [
+        { kind: 'taskref', refId: 'ref-agent-1', taskId: 'task-agent-1', at: FIXED_AT_1 },
+        {
+          kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' },
+          prompt: 'delegate', startedAt: FIXED_AT,
+          steps: [{
+            kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'running', startedAt: FIXED_AT_1,
+            frames: [
+              {
+                kind: 'tool', frameId: 'spawn-frame', toolCallId: 'spawn-call', name: 'AgentRun', state: 'done',
+                input: { profile: 'Researcher', prompt: 'map the surface' },
+                agentRefs: [{ agentId: 'agent-1', role: 'child' }], startedAt: FIXED_AT_1,
+              },
+              ...(assistantText === undefined ? [] : [{ kind: 'text' as const, frameId: 'assistant-current', role: 'assistant' as const, text: assistantText }]),
+            ],
+          }],
+        },
+      ],
+      tasks: [{
+        taskId: 'task-agent-1', kind: 'subagent', state: 'completed', detached: false,
+        subagentName: 'Researcher', agentId: 'agent-1', description: 'map the surface', outputTail: '',
+        startedAt: FIXED_AT_1, endedAt,
+      }],
+    });
+
+    it('places a timestamped terminal event before an undated latest assistant in its running turn', () => {
+      let projected = projectAgentTranscriptView(createViewState('session_test'), 'main', lifecycleSnapshot(undefined, FIXED_AT_2));
+      for (const text of ['first current answer', 'second current answer', 'latest current answer']) {
+        projected = projectAgentTranscriptView(projected, 'main', lifecycleSnapshot(text, FIXED_AT_2));
+        const terminalIndex = projected.blocks.findIndex((block) => block.id === 'subagent-event-agent-1-completed-task-agent-1');
+        const latestAssistantIndex = projected.blocks.findLastIndex((block) => block.kind === 'assistant');
+        expect(terminalIndex).toBeGreaterThanOrEqual(0);
+        expect(latestAssistantIndex).toBeGreaterThanOrEqual(0);
+        expect(terminalIndex).toBeLessThan(latestAssistantIndex);
+      }
+    });
+
+    it('keeps a timestamp-less terminal event beside its card across appends', () => {
+      let projected = createViewState('session_test');
+      for (const text of ['first current answer', 'latest current answer']) {
+        projected = projectAgentTranscriptView(projected, 'main', lifecycleSnapshot(text));
+        const cardIndex = projected.blocks.findIndex((block) => block.id === 'subagent-agent-1');
+        const terminalIndex = projected.blocks.findIndex((block) => block.id === 'subagent-event-agent-1-completed-task-agent-1');
+        expect(cardIndex).toBeGreaterThanOrEqual(0);
+        expect(terminalIndex).toBe(cardIndex + 1);
+        expect(projected.blocks[terminalIndex]).toMatchObject({ kind: 'subagent-event', at: undefined });
+        expect(projected.blocks.find((block) => block.id === 'subagent-agent-1')).toMatchObject({ endedAt: undefined });
+      }
+    });
+
     it('emits in-place spawned and terminal compact entries for a taskref-backed subagent', () => {
       const projected = projectAgentTranscriptView(
         createViewState('session_test'),
@@ -4248,6 +4860,34 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
     expect(replayed.blocks.some((block) => block.id === 'notice-aborted-p-queued')).toBe(false);
   });
 
+  it.each(['running', 'completed'] as const)('does not erase a %s turn when an unstarted request for its logical message is cancelled', (state) => {
+    const snapshot = emptySnapshot({ items: [{ kind: 'turn', turnId: 't-original', ordinal: 0, state,
+      origin: { kind: 'user' }, promptId: 'accepted-request', message: { messageId: 'logical-user', role: 'user', revision: 0, provenance: { source: 'engine' } },
+      prompt: 'Already delivered message', startedAt: FIXED_AT, steps: [] }],
+      prompts: [{ promptId: 'cancelled-retry', userMessageId: 'logical-user', status: 'aborted', abortedBeforeStart: true,
+        content: [{ type: 'text', text: 'Never delivered replacement' }], createdAt: FIXED_AT_1, finishedAt: FIXED_AT_2 }] });
+    for (const previous of [createViewState('session_test'), projectAgentTranscriptView(createViewState('session_test'), 'main', { ...snapshot, prompts: [] })]) {
+      const projected = projectAgentTranscriptView(previous, 'main', snapshot);
+      const users = projected.blocks.filter(block => block.kind === 'user');
+      expect(users).toEqual([expect.objectContaining({ turnId: 't-original', userMessageId: 'logical-user', text: 'Already delivered message' })]);
+      expect(users[0]?.promptOutcome).toBeUndefined();
+      expect(projected.blocks.some(block => block.kind === 'notice')).toBe(false);
+      expect(projected.queuedPromptIds).toEqual([]);
+    }
+  });
+
+  it('does not remove a newer queued resend with the same logical identity', () => {
+    const snapshot = emptySnapshot({ prompts: [
+      { promptId: 'new-request', userMessageId: 'logical-user', status: 'queued', content: [{ type: 'text', text: 'New draft' }], createdAt: FIXED_AT_2 },
+      { promptId: 'cancelled-request', userMessageId: 'logical-user', status: 'aborted', abortedBeforeStart: true,
+        content: [{ type: 'text', text: 'Cancelled draft' }], createdAt: FIXED_AT, finishedAt: FIXED_AT_1 },
+    ] });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(projected.blocks.filter(block => block.kind === 'user')).toEqual([expect.objectContaining({ promptId: 'new-request', text: 'New draft', promptStatus: 'queued' })]);
+    expect(projected.queuedPromptIds).toEqual(['new-request']);
+    expect(projected.blocks.some(block => block.kind === 'notice')).toBe(false);
+  });
+
   it('keeps the settled user bubble and marks it when the matching prompt fails', () => {
     const previous = projectAgentTranscriptView(
       createViewState('session_test'),
@@ -4331,6 +4971,123 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
       promptId: 'p-failed',
       promptOutcome: { status: 'failed', at: FIXED_AT_1, delivered: true },
     });
+  });
+
+  it('does not speak a failed turn’s partial text as the message-view reply', () => {
+    // The provider filtered a turn that had already written ordinary text. The
+    // turn's own bubble carries the failure; the text stays process-only, and
+    // the message view must not present it as the reply the reader received.
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [{
+        kind: 'turn',
+        turnId: 't9',
+        ordinal: 9,
+        state: 'failed',
+        error: 'provider filtered the response',
+        origin: { kind: 'user', payload: { promptId: 'p-failed', userMessageId: 'um-failed' } },
+        prompt: 'check the build',
+        startedAt: FIXED_AT,
+        endedAt: FIXED_AT_1,
+        steps: [{
+          kind: 'step', stepId: 't9.1', turnId: 't9', ordinal: 1, state: 'failed',
+          startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+          frames: [{ kind: 'text', frameId: 'f9', role: 'assistant', text: 'The build looked green, but' }],
+        }],
+      }],
+      prompts: [{ promptId: 'p-failed', status: 'failed', userMessageId: 'um-failed', createdAt: FIXED_AT, finishedAt: FIXED_AT_1 }],
+    }));
+    const user = projected.blocks.find((block) => block.kind === 'user');
+    expect(user).toMatchObject({ promptOutcome: { status: 'failed', delivered: true, error: 'provider filtered the response' } });
+    const assistant = projected.blocks.find((block) => block.kind === 'assistant');
+    expect(assistant).toMatchObject({ text: 'The build looked green, but', streaming: false });
+
+    const view = projectMessageView(projected.blocks, { completedTurnIds: ['t9'], failedTurnIds: projected.failedTurnIds });
+    expect(view.some((node) => node.kind === 'message')).toBe(false);
+    const summary = view.find((node) => node.kind === 'activity-summary');
+    expect(summary?.kind === 'activity-summary' && summary.members.some((member) => member.kind === 'assistant')).toBe(true);
+    // The bubble already carries the failure, so the view adds no second line.
+    expect(view.some((node) => node.kind === 'notice')).toBe(false);
+
+    // The same blocks without the failure do speak it, so the exclusion rests
+    // on the turn's own outcome rather than on the text.
+    const completed = projected.blocks.map((block) => (block.kind === 'user' ? { ...block, promptOutcome: undefined } : block));
+    const spoken = projectMessageView(completed, { completedTurnIds: ['t9'] });
+    expect(spoken.some((node) => node.kind === 'message' && node.origin === 'ordinary_final')).toBe(true);
+  });
+
+  it('keeps an older failed turn out of the message view while a later turn speaks', () => {
+    const turn = (n: number, state: 'failed' | 'completed', text: string): TranscriptTurn => ({
+      kind: 'turn',
+      turnId: `t${n}`,
+      ordinal: n,
+      state,
+      error: state === 'failed' ? 'provider filtered the response' : undefined,
+      origin: { kind: 'user', payload: { promptId: `p${n}`, userMessageId: `p${n}` } },
+      prompt: `message ${n}`,
+      startedAt: FIXED_AT,
+      endedAt: FIXED_AT_1,
+      steps: [{
+        kind: 'step', stepId: `t${n}.1`, turnId: `t${n}`, ordinal: 1, state,
+        startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+        frames: [{ kind: 'text', frameId: `f${n}`, role: 'assistant', text }],
+      }],
+    });
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [turn(7, 'failed', 'The first attempt got cut off'), turn(8, 'completed', 'Here is the answer')],
+      prompts: [
+        { promptId: 'p7', status: 'failed', userMessageId: 'p7', createdAt: FIXED_AT, finishedAt: FIXED_AT_1 },
+        { promptId: 'p8', status: 'completed', userMessageId: 'p8', createdAt: FIXED_AT, finishedAt: FIXED_AT_1 },
+      ],
+    }));
+    expect(projected.failedTurnIds).toEqual(['t7']);
+    const view = projectMessageView(projected.blocks, {
+      completedTurnIds: ['t7', 't8'], failedTurnIds: projected.failedTurnIds,
+    });
+    expect(view.flatMap((node) => (node.kind === 'message' ? [node.text] : []))).toEqual(['Here is the answer']);
+    // Both bubbles carry their own outcome, so the view repeats neither.
+    expect(view.some((node) => node.kind === 'notice')).toBe(false);
+
+    // The same page with no prompt records: the bubbles cannot say what
+    // happened, and the older failed turn must still be readable as failed —
+    // one line, its own turn, with the later turn's answer untouched.
+    const windowless = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({
+      items: [turn(7, 'failed', 'The first attempt got cut off'), turn(8, 'completed', 'Here is the answer')],
+    }));
+    expect(windowless.failedTurnIds).toEqual(['t7']);
+    const quiet = projectMessageView(windowless.blocks, {
+      completedTurnIds: ['t7', 't8'], failedTurnIds: windowless.failedTurnIds,
+    });
+    expect(quiet.flatMap((node) => (node.kind === 'message' ? [node.text] : []))).toEqual(['Here is the answer']);
+    const lines = quiet.flatMap((node) => (node.kind === 'notice' ? [node] : []));
+    expect(lines.map((node) => ({ id: node.id, turnId: node.turnId, tone: node.tone, key: node.i18n?.key })))
+      .toEqual([{ id: 'message-turn-failed-t7', turnId: 't7', tone: 'danger', key: 'notice.turnFailedDetail' }]);
+    // The cut-off text is still readable where it belongs: the process.
+    expect(windowless.blocks.some((block) => block.kind === 'assistant' && block.text === 'The first attempt got cut off')).toBe(true);
+  });
+
+  it('excludes a failed turn whose prompt sits outside the loaded window', () => {
+    // No prompt record, so the bubble carries no outcome: only the turn’s own
+    // loaded state says the text is not a reply.
+    const failed: TranscriptTurn = {
+      kind: 'turn', turnId: 't4', ordinal: 4, state: 'failed', error: 'provider filtered the response',
+      origin: { kind: 'user', payload: { promptId: 'p4', userMessageId: 'p4' } },
+      prompt: 'message 4', startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+      steps: [{
+        kind: 'step', stepId: 't4.1', turnId: 't4', ordinal: 1, state: 'failed',
+        startedAt: FIXED_AT, endedAt: FIXED_AT_1,
+        frames: [{ kind: 'text', frameId: 'f4', role: 'assistant', text: 'Cut off mid-sentence' }],
+      }],
+    };
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [failed] }));
+    const user = projected.blocks.find((block) => block.kind === 'user');
+    expect(user?.kind === 'user' ? user.promptOutcome : 'missing').toBeUndefined();
+    expect(projected.failedTurnIds).toEqual(['t4']);
+    const view = projectMessageView(projected.blocks, { completedTurnIds: ['t4'], failedTurnIds: projected.failedTurnIds });
+    expect(view.some((node) => node.kind === 'message')).toBe(false);
+    // Nothing else on the page says the turn failed, so the message view does.
+    expect(view.flatMap((node) => (node.kind === 'notice' ? [node.turnId] : []))).toEqual(['t4']);
+    // The text itself is still on the page for the process reading.
+    expect(projected.blocks.some((block) => block.kind === 'assistant' && block.text === 'Cut off mid-sentence')).toBe(true);
   });
 
   // Shapes from a real long session: the reset window carries the last turns
@@ -4469,6 +5226,104 @@ describe('canonical product gates via projectAgentTranscriptView', () => {
         }),
       ]);
     }
+  });
+
+  function annotatedRunningPrompt() {
+    const annotations = [
+      { quote: 'First selected paragraph. '.repeat(60), comment: 'Keep the first requirement.\nRetain its supporting detail.' },
+      { quote: 'Second selected paragraph.', comment: 'Keep the second requirement.' },
+      { quote: 'Third selected paragraph.', comment: 'Keep the third requirement.' },
+    ];
+    const quotes = [{ quote: 'An additional cited paragraph.' }];
+    const selection = selectionCarryoverPresentation(annotations, quotes);
+    const body = 'Use the approved build targets only.';
+    const text = selection.prefix + body;
+    const turn: TranscriptTurn = {
+      kind: 'turn', turnId: 't-preview', ordinal: 1, state: 'running', promptId: 'p-preview',
+      origin: { kind: 'user', payload: { promptId: 'p-preview', userMessageId: 'um-preview' } },
+      prompt: text, presentation: selection.presentation, attachmentIds: ['att-preview'], startedAt: FIXED_AT, steps: [],
+    };
+    const ref: ContentRef = {
+      source: { kind: 'prompt', id: 'p-preview' }, path: ['content', 0, 'text'], kind: 'text',
+      offset: 1024, total: text.length, revision: 'prompt-preview-v1',
+    };
+    const prompt: TranscriptPrompt = {
+      promptId: 'p-preview', userMessageId: 'um-preview', status: 'running', createdAt: FIXED_AT,
+      content: [{ type: 'text', text: text.slice(0, ref.offset), presentation: selection.presentation }], contentRefs: [ref],
+    };
+    const attachments: AgentTranscriptSnapshot['attachments'] = [{
+      attachmentId: 'att-preview', mediaType: 'image/png', name: 'example.png',
+      source: { kind: 'session_media', fileId: 'file-preview' },
+    }];
+    return { annotations, quotes, body, text, turn, prompt, attachments };
+  }
+
+  it.each(['preview first', 'turn first', 'cold baseline'] as const)(
+    'keeps the delivered annotated message when a running prompt is bounded (%s)',
+    (order) => {
+      const fixture = annotatedRunningPrompt();
+      const store = new AgentTranscript('main');
+      let view = createViewState('session_test');
+      const turn: TranscriptOperation = { op: 'turn.upsert', turn: fixture.turn };
+      const prompt: TranscriptOperation = { op: 'prompt.upsert', prompt: fixture.prompt };
+      const initial = emptySnapshot({ attachments: fixture.attachments });
+      if (order === 'cold baseline') {
+        store.apply([{ op: 'reset', agentId: 'main', snapshot: { ...initial, items: [fixture.turn], prompts: [fixture.prompt] } }]);
+        view = projectAgentTranscriptView(view, 'main', store.snapshot(), { cold: true });
+      } else {
+        store.apply([{ op: 'reset', agentId: 'main', snapshot: initial }]);
+        for (const op of order === 'preview first' ? [prompt, turn] : [turn, prompt]) {
+          store.apply([op]);
+          view = projectAgentTranscriptView(view, 'main', store.snapshot());
+        }
+      }
+      const users = view.blocks.filter((block): block is UserBlock => block.kind === 'user');
+      expect(users).toHaveLength(1);
+      expect(users[0]).toMatchObject({
+        id: 'user-um-preview', promptId: 'p-preview', userMessageId: 'um-preview', promptStatus: 'running',
+        text: fixture.text, presentation: fixture.turn.presentation, contentSource: { kind: 'turn', id: 't-preview' },
+        sourceOrigin: { kind: 'user' }, media: [{ kind: 'image', fileId: 'file-preview', name: 'example.png' }],
+      });
+      expect(parseSelectionCarryovers(users[0]!.text, users[0]!.presentation)).toMatchObject({
+        body: fixture.body, annotations: fixture.annotations, quotes: fixture.quotes,
+      });
+    },
+  );
+
+  it('keeps a bounded canonical message on its own content source until its body is read', () => {
+    const fixture = annotatedRunningPrompt();
+    const visiblePrefix = 'Read this introduction.\n';
+    const text = visiblePrefix + fixture.text;
+    const presentation = { spans: fixture.turn.presentation!.spans.map((span) => ({
+      ...span, start: span.start + visiblePrefix.length, end: span.end + visiblePrefix.length,
+    })) };
+    const ref: ContentRef = {
+      source: { kind: 'turn', id: fixture.turn.turnId }, path: ['prompt'], kind: 'text',
+      offset: 1024, total: text.length, revision: 'turn-preview-v1',
+    };
+    const partial = { ...fixture.turn, prompt: text.slice(0, ref.offset), presentation, contentRefs: [ref] };
+    const snapshot = emptySnapshot({ items: [partial], prompts: [fixture.prompt], attachments: fixture.attachments });
+    const previous = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const user = previous.blocks.find((block): block is UserBlock => block.kind === 'user');
+    expect(user).toMatchObject({ text: partial.prompt, presentation, contentSource: ref.source });
+    expect(parseSelectionCarryovers(user!.text, user!.presentation).body).toBe(visiblePrefix);
+    const complete = projectAgentTranscriptView(previous, 'main', {
+      ...snapshot, items: [{ ...fixture.turn, prompt: text, presentation }],
+    });
+    const users = complete.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ id: user!.id, text, presentation, contentSource: ref.source });
+    expect(parseSelectionCarryovers(users[0]!.text, users[0]!.presentation).body).toBe(visiblePrefix + fixture.body);
+  });
+
+  it('keeps a delivered replacement authoritative even when prompt content is longer', () => {
+    const fixture = annotatedRunningPrompt();
+    const turn = { ...fixture.turn, prompt: 'Edited replacement.', presentation: undefined };
+    const prompt = { ...fixture.prompt, content: [{ type: 'text', text: fixture.text, presentation: fixture.turn.presentation }] };
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ items: [turn], prompts: [prompt] }));
+    const users = projected.blocks.filter((block): block is UserBlock => block.kind === 'user');
+    expect(users).toHaveLength(1);
+    expect(users[0]).toMatchObject({ text: 'Edited replacement.', presentation: undefined, promptStatus: 'running', contentSource: { kind: 'turn', id: turn.turnId } });
   });
 
   it('clears a running chip once the matching prompt completes so edit/fork return', () => {
@@ -5421,6 +6276,43 @@ describe('honest unknown timing', () => {
   });
 });
 
+function snapshotWithLaterTurn(snapshot: AgentTranscriptSnapshot): AgentTranscriptSnapshot {
+  const source = snapshot.items[0];
+  if (source === undefined || source.kind !== 'turn') throw new Error('expected a turn');
+  const step = source.steps[0];
+  if (step === undefined) throw new Error('expected a step');
+  const frame = step.frames[0];
+  if (frame === undefined || frame.kind !== 'text') throw new Error('expected a text frame');
+  const turn = {
+    ...source,
+    turnId: 't2',
+    ordinal: 2,
+    prompt: 'later user message',
+    startedAt: '2026-01-01T00:02:00.000Z',
+    endedAt: '2026-01-01T00:03:00.000Z',
+    steps: [{
+      ...step,
+      turnId: 't2',
+      stepId: 't2.1',
+      startedAt: '2026-01-01T00:02:00.000Z',
+      endedAt: '2026-01-01T00:03:00.000Z',
+      frames: [{ ...frame, frameId: 'asst-later', text: 'later assistant reply' }],
+    }],
+  };
+  return {
+    ...snapshot,
+    items: [...snapshot.items, turn],
+    prompts: [...snapshot.prompts, {
+      promptId: 'p-later',
+      userMessageId: 'um-later',
+      status: 'completed',
+      content: [{ type: 'text', text: 'later user message' }],
+      createdAt: '2026-01-01T00:02:00.000Z',
+      finishedAt: '2026-01-01T00:03:00.000Z',
+    }],
+  };
+}
+
 function applyOpsToSnapshot(
   snapshot: AgentTranscriptSnapshot,
   ops: readonly TranscriptOperation[],
@@ -5534,6 +6426,18 @@ describe('queued prompt scheduling projection', () => {
     expect(previews[0]?.appendTiming).toBe('tasks_done');
     expect(previews[0]?.revision).toBe(4);
     expect(previews[1]?.appendTiming).toBe('agent_idle');
+  });
+
+  it('previews scheduled text from queue content without fabricating user bubbles or attachments', () => {
+    const content = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Controller self-check\nKeep existing work running.</prompt></cron-fire>' }];
+    const prompts = ['scheduled-1', 'scheduled-2'].map((promptId, queuePosition) => ({ promptId, userMessageId: promptId, originKind: 'cron_job' as const, content, status: 'queued' as const, createdAt: FIXED_AT, queuePosition }));
+    const projected = projectAgentTranscriptView(createViewState('session_test'), 'main', emptySnapshot({ prompts }));
+    expect(projected.blocks.filter((block) => block.kind === 'user')).toEqual([]);
+    expect(queuedPromptPreviews(projected)).toEqual(prompts.map((prompt) => expect.objectContaining({ promptId: prompt.promptId, originKind: 'cron_job', text: 'Controller self-check\nKeep existing work running.', media: [], content })));
+    const settled = projectAgentTranscriptView(projected, 'main', emptySnapshot({ prompts: prompts.map((prompt) => ({ ...prompt, status: 'completed' })) }));
+    expect(queuedPromptPreviews(settled)).toEqual([]);
+    expect(settled.queuedPromptMeta).toEqual({});
+    expect(settled.blocks.filter((block) => block.kind === 'user')).toEqual([]);
   });
 
   it('shows the media and exact content of an attachment-only queued prompt', () => {
@@ -5848,11 +6752,215 @@ describe('durable subagent turn outcomes', () => {
   });
 });
 
+describe('resumed agent forest bindings and retained graph reads', () => {
+  const roster = compactSnapshotSubagent({
+    id: CHILD_AGENT_ID, status: 'running', activity_status: 'running', status_source: 'runtime',
+    model: 'example/old', thinking_effort: 'high', live: true,
+  });
+
+  it('uses the child committed binding independently of the parent run status and spawn model', () => {
+    const parent = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const child = emptySnapshot({ meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } } });
+    const snapshots = new Map([['main', parent], [CHILD_AGENT_ID, child]]);
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [roster]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    snapshots.set(CHILD_AGENT_ID, { ...child, meta: { agent: { model: 'example/new', thinkingEffort: 'low' } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots, [roster]).byId[CHILD_AGENT_ID])
+      .toMatchObject({ model: 'example/new', thinkingEffort: 'low' });
+  });
+
+  it('does not roll a current roster binding back to a retained cold child binding', () => {
+    const snapshots = new Map([
+      ['main', applyOpsToSnapshot(emptySnapshot(), spawnChildOps())],
+      [CHILD_AGENT_ID, emptySnapshot({ meta: { agent: { model: 'example/old', thinkingEffort: 'high' } } })],
+    ]);
+    const forest = sessionAgentForestFromAgentSnapshots(snapshots, [
+      { ...roster, model: 'example/new', thinking_effort: 'xhigh' },
+    ], new Set([CHILD_AGENT_ID]));
+    expect(forest.byId[CHILD_AGENT_ID]).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+  });
+
+  it('reuses retained transcript relation scans without dropping nested nodes or drill-in links', () => {
+    let scans = 0;
+    const source = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const items = source.items.map((item) => item.kind !== 'turn' ? item : {
+      ...item, get steps() { scans += 1; return item.steps; },
+    });
+    const snapshots = new Map([['main', { ...source, items, meta: { agent: { phase: { kind: 'idle' as const } } } }]]);
+    const first = sessionAgentForestFromAgentSnapshots(snapshots);
+    const coldScans = scans;
+    expect(coldScans).toBeGreaterThan(0);
+    const retained = sessionAgentForestFromAgentSnapshots(snapshots);
+    expect(retained).toEqual(first);
+    expect(retained.byId[CHILD_AGENT_ID]?.parentAgentId).toBe('main');
+    expect(retained.byId['main']?.childIds).toContain(CHILD_AGENT_ID);
+    expect(scans).toBe(coldScans);
+    const nested = applyOpsToSnapshot(emptySnapshot(), spawnChildOps().map((op) =>
+      op.op === 'frame.upsert' && op.frame.kind === 'tool'
+        ? { ...op, frame: { ...op.frame, agentRefs: [{ agentId: 'nested', role: 'child' as const }] } }
+        : op));
+    snapshots.set('main', { ...source, items: [...items, ...nested.items], meta: { agent: { phase: { kind: 'idle' } } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId['nested']?.parentToolCallId).toBe(TOOL_CALL_ID);
+    expect(scans).toBe(coldScans);
+    snapshots.set('main', { ...source, items: [], tasks: [], meta: { agent: { phase: { kind: 'idle' } } } });
+    expect(sessionAgentForestFromAgentSnapshots(snapshots).byId[CHILD_AGENT_ID]).toBeUndefined();
+  });
+
+  it('retains the whole query until binding, task, inventory, count or cold ownership changes', () => {
+    const query = new SessionAgentForestQuery();
+    const child = emptySnapshot({ meta: { agent: { model: 'example/old', thinkingEffort: 'high' } } });
+    const parent = applyOpsToSnapshot(emptySnapshot(), spawnChildOps());
+    const snapshots = new Map([['main', parent], [CHILD_AGENT_ID, child]]);
+    const rows = [roster];
+    const first = query.read(snapshots, rows);
+    expect(query.read(new Map([...snapshots].map(([id, snap]) => [id, { ...snap }])), rows)).toBe(first);
+    const changed = { ...child, meta: { agent: { model: 'example/new', thinkingEffort: 'xhigh' } } };
+    snapshots.set(CHILD_AGENT_ID, changed);
+    const next = query.read(snapshots, rows);
+    expect(next).not.toBe(first);
+    expect(next.byId[CHILD_AGENT_ID]).toMatchObject({ model: 'example/new', thinkingEffort: 'xhigh' });
+    const cold = query.read(snapshots, rows, new Set([CHILD_AGENT_ID]));
+    expect(cold.byId[CHILD_AGENT_ID]?.model).toBe('example/old');
+    expect(query.read(snapshots, rows, new Set([CHILD_AGENT_ID]))).toBe(cold);
+    snapshots.set(CHILD_AGENT_ID, { ...changed, toolCallCount: 7 });
+    expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.toolCallCount).toBe(7);
+    snapshots.set('main', { ...parent, tasks: [...parent.tasks, {
+      taskId: 'nested-task', kind: 'subagent', agentId: 'nested', state: 'completed',
+      detached: false, outputTail: '',
+    }] });
+    expect(query.read(snapshots, rows).byId['nested']?.parentAgentId).toBe('main');
+    snapshots.delete(CHILD_AGENT_ID);
+    const afterRemoval = query.read(snapshots, rows);
+    expect(afterRemoval.byId[CHILD_AGENT_ID]?.model).toBe('example/old');
+    expect(query.read(snapshots, [{ ...roster, model: 'example/latest' }]).byId[CHILD_AGENT_ID]?.model).toBe('example/latest');
+  });
+
+  it('expires a refreshing roster lease even when the inputs retain their identities', () => {
+    const query = new SessionAgentForestQuery();
+    const now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const rows = [{ ...roster, refreshing: true, refreshing_until: new Date(now + 10).toISOString() }];
+      const snapshots = new Map([['main', emptySnapshot()]]);
+      expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.refreshing).toBe(true);
+      clock.mockReturnValue(now + 11);
+      expect(query.read(snapshots, rows).byId[CHILD_AGENT_ID]?.refreshing).toBeUndefined();
+    } finally { clock.mockRestore(); }
+  });
+
+  it('invalidates the query when reordered evidence changes a shared child parent', () => {
+    const query = new SessionAgentForestQuery();
+    const source = (name: string) => emptySnapshot({ tasks: [{
+      taskId: name, kind: 'subagent', agentId: 'shared-child', name, state: 'running',
+      detached: false, outputTail: '',
+    }] });
+    const a = source('first');
+    const b = source('second');
+    expect(query.read(new Map([['parent-a', a], ['parent-b', b]])).byId['shared-child']?.parentAgentId).toBe('parent-b');
+    expect(query.read(new Map([['parent-b', b], ['parent-a', a]])).byId['shared-child']?.parentAgentId).toBe('parent-a');
+  });
+});
+
 
 describe('question history answers', () => {
   const questions = [{ id: 'q1', question: 'Which checks?', options: [
     { id: 'a', label: 'Typecheck' }, { id: 'b', label: 'Visual proof' },
   ] }];
+
+  it('retires a previously visible answered question with no loaded anchor or request time', () => {
+    const snapshot = userTurnSnapshot();
+    const pendingSnapshot = { ...snapshot, interactions: [{
+      interactionId: 'unanchored-question', interactionKind: 'question' as const, state: 'pending' as const,
+      toolCallId: 'off-page-tool', origin: { agentId: 'main', turnId: 0 }, request: { questions },
+    }] };
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', pendingSnapshot);
+    expect(pending.blocks.at(-1)).toMatchObject({ id: 'question-unanchored-question', request: { questions } });
+    expect(projectAgentTranscriptView(pending, 'main', pendingSnapshot).blocks).toEqual(pending.blocks);
+    const answeredSnapshot = { ...pendingSnapshot, interactions: [{
+      ...pendingSnapshot.interactions[0]!, state: 'answered' as const, request: undefined,
+      response: { answers: { q1: { kind: 'other', text: 'Read the complete appendix.' } }, resolved_at: FIXED_AT_2 },
+    }] };
+    const answered = projectAgentTranscriptView(pending, 'main', answeredSnapshot);
+    expect(answered.blocks.some((block) => block.id === 'question-unanchored-question')).toBe(false);
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', answeredSnapshot);
+    expect(answered.blocks).toEqual(cold.blocks);
+    expect(answeredSnapshot.interactions[0]?.response.answers.q1.text).toBe('Read the complete appendix.');
+  });
+
+  it('anchors an answered question to its recorded request time ahead of later messages, including after it sat at the tail', () => {
+    const history = snapshotWithLaterTurn(userTurnSnapshot());
+    const pendingSnapshot = {
+      ...history,
+      interactions: [{
+        interactionId: 'restored-question', interactionKind: 'question' as const, state: 'pending' as const,
+        toolCallId: 'off-page-tool', request: { questions },
+      }],
+    };
+    const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', pendingSnapshot);
+    expect(pending.blocks.at(-1)?.id).toBe('question-restored-question');
+    const answeredSnapshot = {
+      ...history,
+      interactions: [{
+        ...pendingSnapshot.interactions[0]!, state: 'answered' as const,
+        request: { questions, created_at: FIXED_AT },
+        response: { answers: { q1: { kind: 'other', text: 'Read the complete appendix.' } }, resolved_at: '2026-01-01T00:05:00.000Z' },
+      }],
+    };
+    const restored = projectAgentTranscriptView(pending, 'main', answeredSnapshot);
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', answeredSnapshot);
+    for (const view of [restored, cold]) {
+      const questionAt = view.blocks.findIndex((block) => block.id === 'question-restored-question');
+      const laterAt = view.blocks.findIndex((block) => block.kind === 'user' && block.text === 'later user message');
+      expect(questionAt).toBeGreaterThanOrEqual(0);
+      expect(laterAt).toBeGreaterThan(questionAt);
+      expect(view.blocks[questionAt]).toMatchObject({
+        request: { created_at: FIXED_AT },
+        outcome: { kind: 'answered', at: '2026-01-01T00:05:00.000Z' },
+      });
+    }
+    expect(restored.blocks.map((block) => block.id)).toEqual(cold.blocks.map((block) => block.id));
+  });
+
+  it('keeps a turn-anchored answered question with that turn when a later message follows', () => {
+    const history = snapshotWithLaterTurn(userTurnSnapshot());
+    const interaction = {
+      interactionId: 'turn-question', interactionKind: 'question' as const, state: 'answered' as const,
+      origin: { agentId: 'main', turnId: 1 }, request: { questions },
+      response: { answers: { q1: { kind: 'other', text: 'Read the complete appendix.' } }, resolved_at: '2026-01-01T00:05:00.000Z' },
+    };
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...history, interactions: [interaction] });
+    const questionAt = cold.blocks.findIndex((block) => block.id === 'question-turn-question');
+    const laterAt = cold.blocks.findIndex((block) => block.kind === 'user' && block.text === 'later user message');
+    const earlyUser = cold.blocks.findIndex((block) => block.kind === 'user' && block.text === 'canonical user prompt');
+    expect(questionAt).toBeGreaterThan(earlyUser);
+    expect(laterAt).toBeGreaterThan(questionAt);
+    expect(questionAt).toBeLessThan(cold.blocks.length - 1);
+  });
+
+  it('keeps answered questions with a loaded tool, turn or recorded request time and their full answers', () => {
+    const snapshot = applyOpsToSnapshot(userTurnSnapshot(), spawnChildOps());
+    const fullAnswer = 'Read the complete appendix.\nThen run the selected checks.';
+    const cases = [
+      { toolCallId: TOOL_CALL_ID, request: { questions }, origin: undefined },
+      { toolCallId: undefined, request: { questions }, origin: { agentId: 'main', turnId: 1 } },
+      { toolCallId: undefined, request: { questions, created_at: FIXED_AT_1 }, origin: undefined },
+    ];
+    for (const placement of cases) {
+      const interaction = { ...placement, interactionId: 'placed-question', interactionKind: 'question' as const, state: 'pending' as const };
+      const pending = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...snapshot, interactions: [interaction] });
+      const settledSnapshot = { ...snapshot, interactions: [{ ...interaction, state: 'answered' as const,
+        response: { answers: { q1: { kind: 'other', text: fullAnswer } }, resolved_at: FIXED_AT_2 },
+      }] };
+      const settled = projectAgentTranscriptView(pending, 'main', settledSnapshot);
+      const block = settled.blocks.find((candidate) => candidate.id === 'question-placed-question');
+      expect(block).toMatchObject({ request: { questions }, outcome: { kind: 'answered', answers: { q1: fullAnswer } } });
+      expect(projectAgentTranscriptView(createViewState('session_test'), 'main', settledSnapshot).blocks).toEqual(settled.blocks);
+      if (placement.toolCallId !== undefined) {
+        const toolIndex = settled.blocks.findIndex((candidate) => candidate.kind === 'tool' && candidate.toolCallId === placement.toolCallId);
+        expect(settled.blocks[toolIndex + 1]?.id).toBe(block?.id);
+      }
+    }
+  });
 
   it.each([
     { name: 'saved text keyed by question', answers: { 'Which checks?': 'Typecheck, Visual proof' }, expected: 'Typecheck, Visual proof' },
@@ -5886,6 +6994,135 @@ describe('question history answers', () => {
   });
 });
 
+/** A long background question: asked mid-turn, answered while the turn ran on. */
+const BACKGROUND_ASKED_AT = '2026-01-01T00:00:02.500Z';
+const backgroundQuestions = [{ id: 'q1', question: 'Choose the next step', options: [
+  { id: 'a', label: 'Keep going' }, { id: 'b', label: 'Stop' },
+] }];
+
+function backgroundQuestionSnapshot(options: { readonly steps: 'full' | 'page-tail'; readonly extraStep?: boolean }): AgentTranscriptSnapshot {
+  const steps: TranscriptTurn['steps'] = [
+    {
+      kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed',
+      startedAt: FIXED_AT, endedAt: '2026-01-01T00:00:01.000Z',
+      frames: [{ kind: 'text', frameId: 'asst-plan', role: 'assistant', text: 'Planning the long task.' }],
+    },
+    {
+      kind: 'step', stepId: 't1.2', turnId: 't1', ordinal: 2, state: 'completed',
+      startedAt: '2026-01-01T00:00:02.000Z', endedAt: '2026-01-01T00:00:03.000Z',
+      frames: [{ kind: 'tool', frameId: 'tool-ask-bg', toolCallId: 'tc-ask-bg', name: 'AskUserQuestion', state: 'done',
+        input: { questions: backgroundQuestions }, output: 'task_id: question-bg-background',
+        startedAt: '2026-01-01T00:00:02.000Z', endedAt: '2026-01-01T00:00:02.400Z' }],
+    },
+    {
+      kind: 'step', stepId: 't1.3', turnId: 't1', ordinal: 3, state: 'completed',
+      startedAt: '2026-01-01T00:00:20.000Z', endedAt: '2026-01-01T00:00:26.000Z',
+      frames: [{ kind: 'tool', frameId: 'tool-bash-tail', toolCallId: 'tc-bash-tail', name: 'Bash', state: 'done',
+        input: { command: 'pnpm test' }, output: 'ok',
+        startedAt: '2026-01-01T00:00:20.000Z', endedAt: '2026-01-01T00:00:26.000Z' }],
+    },
+    {
+      kind: 'step', stepId: 't1.4', turnId: 't1', ordinal: 4, state: 'running',
+      startedAt: '2026-01-01T00:00:30.000Z',
+      frames: [{ kind: 'text', frameId: 'asst-live', role: 'assistant', text: 'Still working through the queue.' }],
+    },
+    ...(options.extraStep === true ? [{
+      kind: 'step' as const, stepId: 't1.5', turnId: 't1', ordinal: 5, state: 'running' as const,
+      startedAt: '2026-01-01T00:00:40.000Z',
+      frames: [{ kind: 'tool' as const, frameId: 'tool-bash-new', toolCallId: 'tc-bash-new', name: 'Bash',
+        state: 'running' as const, input: { command: 'pnpm lint' }, startedAt: '2026-01-01T00:00:40.000Z' }],
+    }] : []),
+  ];
+  const keep = options.steps === 'full' ? steps : steps.filter((step) => step.stepId !== 't1.1' && step.stepId !== 't1.2');
+  return emptySnapshot({
+    items: [{
+      kind: 'turn', turnId: 't1', ordinal: 1, state: 'running',
+      origin: { kind: 'user', payload: { promptId: 'p-bg', userMessageId: 'um-bg' } },
+      prompt: 'Work the long task.',
+      startedAt: FIXED_AT,
+      steps: keep,
+    }],
+    prompts: [{
+      promptId: 'p-bg', userMessageId: 'um-bg', status: 'running',
+      content: [{ type: 'text', text: 'Work the long task.' }], createdAt: FIXED_AT,
+    }],
+  });
+}
+
+function backgroundQuestion(
+  overrides: Partial<AgentTranscriptSnapshot['interactions'][number]>,
+): AgentTranscriptSnapshot['interactions'][number] {
+  return {
+    interactionId: 'question-bg', interactionKind: 'question', toolCallId: 'tc-ask-bg',
+    origin: { agentId: 'main', turnId: 1 },
+    anchor: { kind: 'tool_call', toolCallId: 'tc-ask-bg' },
+    state: 'answered',
+    request: { questions: backgroundQuestions, question_id: 'question-bg', created_at: BACKGROUND_ASKED_AT, turn_id: 1, turnId: 1, tool_call_id: 'tc-ask-bg' },
+    response: { answers: { q1: { kind: 'other', text: 'Keep going.' } }, resolved_at: '2026-01-01T00:05:00.000Z' },
+    ...overrides,
+  };
+}
+
+function backgroundOrder(snapshot: AgentTranscriptSnapshot): readonly string[] {
+  const view = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+  return view.blocks.map((block) => block.kind === 'question' ? `question:${block.outcome?.kind ?? 'pending'}` : block.kind === 'tool' ? `tool:${block.toolCallId}` : block.kind === 'shell' ? `shell:${block.commandId}` : block.kind);
+}
+
+describe('background question placement', () => {
+  it('keeps an answered question at its own moment when the page arrives without its asking step', () => {
+    const page = backgroundQuestionSnapshot({ steps: 'page-tail' });
+    const view = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...page, interactions: [backgroundQuestion({})] });
+    const order = backgroundOrder({ ...page, interactions: [backgroundQuestion({})] });
+    // The asking tool is not on this page; the recorded request time still
+    // puts the record before the turn's later work instead of behind it.
+    expect(order).toEqual(['user', 'question:answered', 'shell:tc-bash-tail', 'assistant']);
+    const at = view.blocks.findIndex((block) => block.kind === 'question');
+    const live = view.blocks.findIndex((block) => block.kind === 'assistant' && block.text === 'Still working through the queue.');
+    expect(at).toBeLessThan(live);
+    // A turn that keeps producing work does not drag the record down with it.
+    const longer = { ...backgroundQuestionSnapshot({ steps: 'page-tail', extraStep: true }), interactions: [backgroundQuestion({})] };
+    const after = projectAgentTranscriptView(view, 'main', longer);
+    expect(after.blocks.findIndex((block) => block.kind === 'question')).toBe(at);
+  });
+
+  it('sits the answered question on its asking tool when that step is on the page', () => {
+    const snapshot = backgroundQuestionSnapshot({ steps: 'full', extraStep: true });
+    const order = backgroundOrder({ ...snapshot, interactions: [backgroundQuestion({})] });
+    expect(order.slice(0, 4)).toEqual(['user', 'assistant', 'tool:tc-ask-bg', 'question:answered']);
+    expect(order.indexOf('question:answered')).toBeLessThan(order.indexOf('shell:tc-bash-tail'));
+  });
+
+  it('holds a dismissed question at its own moment too', () => {
+    const snapshot = { ...backgroundQuestionSnapshot({ steps: 'page-tail' }), interactions: [backgroundQuestion({
+      state: 'dismissed',
+      response: { dismissed_at: '2026-01-01T00:06:00.000Z' },
+    })] };
+    expect(backgroundOrder(snapshot)).toEqual(['user', 'question:dismissed', 'shell:tc-bash-tail', 'assistant']);
+  });
+
+  it('places an answered question after the step its anchor names, not after the turn tail', () => {
+    const snapshot = backgroundQuestionSnapshot({ steps: 'full', extraStep: true });
+    const stepAnchored = backgroundQuestion({
+      toolCallId: undefined,
+      anchor: { kind: 'step', turnId: '1', stepId: 't1.2' },
+      request: { questions: backgroundQuestions, question_id: 'question-bg', turn_id: 1 },
+    });
+    const order = backgroundOrder({ ...snapshot, interactions: [stepAnchored] });
+    expect(order.slice(0, 4)).toEqual(['user', 'assistant', 'tool:tc-ask-bg', 'question:answered']);
+    expect(order.indexOf('question:answered')).toBeLessThan(order.indexOf('shell:tc-bash-new'));
+  });
+
+  it('keeps a pending question without a recorded moment at the running turn edge so it stays answerable', () => {
+    const snapshot = { ...backgroundQuestionSnapshot({ steps: 'page-tail' }), interactions: [backgroundQuestion({
+      toolCallId: undefined,
+      anchor: undefined,
+      state: 'pending',
+      request: { questions: backgroundQuestions, question_id: 'question-bg', turn_id: 1 },
+      response: undefined,
+    })] };
+    expect(backgroundOrder(snapshot)).toEqual(['user', 'shell:tc-bash-tail', 'question:pending', 'assistant']);
+  });
+});
 
 describe('external tool identity in timeline projection', () => {
   it.each(['Bash', 'TodoList', 'WebSearch', 'FetchURL', 'SendMessage', 'AgentRun', 'AgentSend'])('preserves external %s as a tool and its raw package', (name) => {
@@ -5912,5 +7149,146 @@ describe('external tool identity in timeline projection', () => {
       }],
     }] });
     expect(blocks.find((block) => block.kind === 'shell')).toMatchObject({ commandId: 'native-call', command: 'echo hi', output: 'hi', done: true });
+  });
+});
+
+describe('scheduled delivery modes in the queue projection', () => {
+  const content = [{ type: 'text' as const, text: '<cron-fire jobId="job-1"><prompt>Controller self-check</prompt></cron-fire>' }];
+  const previewOf = (promptId: string, originDeliveryMode: 'queue' | 'steer' | 'idle' | undefined) => {
+    const projected = projectAgentTranscriptView(
+      createViewState('session_test'),
+      'main',
+      emptySnapshot({ prompts: [{ promptId, userMessageId: promptId, originKind: 'cron_job' as const, originDeliveryMode, content, status: 'queued' as const, createdAt: FIXED_AT, queuePosition: 0 }] }),
+    );
+    return queuedPromptPreviews(projected)[0]!;
+  };
+
+  it('carries the origin mode onto the preview so consumers can tell the three apart', () => {
+    expect(previewOf('idle-1', 'idle')).toMatchObject({ cronDeliveryMode: 'idle', originKind: 'cron_job' });
+    expect(previewOf('steer-1', 'steer')).toMatchObject({ cronDeliveryMode: 'steer' });
+    expect(previewOf('queue-1', 'queue')).toMatchObject({ cronDeliveryMode: 'queue' });
+    // A record admitted before modes existed carries none, and must not be
+    // given one by projection.
+    expect(previewOf('legacy-1', undefined).cronDeliveryMode).toBeUndefined();
+  });
+
+  it('counts only user messages and queue-mode jobs as ordinary pending messages', () => {
+    // A `queue` job really is in the person's send order, and so is a legacy
+    // record that was admitted into it.
+    expect(isOrdinaryQueueItem({ promptId: 'user-1', text: 'mine' })).toBe(true);
+    expect(isOrdinaryQueueItem(previewOf('queue-1', 'queue'))).toBe(true);
+    expect(isOrdinaryQueueItem(previewOf('legacy-1', undefined))).toBe(true);
+    // `idle` and `steer` are held ahead of that order and were never queued
+    // by the person, so they are not one of their waiting messages.
+    expect(isOrdinaryQueueItem(previewOf('idle-1', 'idle'))).toBe(false);
+    expect(isOrdinaryQueueItem(previewOf('steer-1', 'steer'))).toBe(false);
+  });
+});
+
+describe('a finished turn that left nothing to read', () => {
+  const tail = (turnId: string, state: TurnTailInfo['state'] = 'completed'): TurnTailInfo => ({
+    turnId, state, endedAt: FIXED_AT_1, durationMs: 1_000, ttftMs: undefined, usage: undefined, tokensPerSecond: undefined,
+  });
+  const view = (
+    blocks: readonly Block[],
+    options: { executing?: boolean; mainTurnActive?: boolean; tail?: TurnTailInfo } = {},
+  ): SessionViewState => ({
+    ...applyTranscriptShell('session_test', {
+      as_of_seq: 1,
+      epoch: 'e1',
+      session: { ...session, executing: options.executing, main_turn_active: options.mainTurnActive ?? false },
+      messages: { items: [], has_more: false },
+      in_flight_turn: null,
+      pending_approvals: [],
+      pending_questions: [],
+    }),
+    blocks,
+    transcriptReady: true,
+    turnTail: options.tail ?? tail('t25'),
+  });
+  const prompt: UserBlock = { kind: 'user', id: 'user-um25', text: '看一下后台进度', turnId: 't25', createdAt: FIXED_AT };
+  const read: ToolBlock = {
+    kind: 'tool', id: 'tool-read', toolCallId: 'call-read', name: 'Read', argsText: '{}', args: {}, display: undefined,
+    description: undefined, status: 'done', output: 'ok', isError: false, durationMs: 40, durationSource: 'frame',
+    progressText: undefined, turnId: 't25',
+  };
+  const reply: AssistantBlock = {
+    kind: 'assistant', id: 'agent-frame-answer', text: '已经看过了。', streaming: false, createdAt: FIXED_AT_1, turnId: 't25',
+  };
+
+  it('names the turn and the work still running when the session still executes', () => {
+    expect(turnReplyGap(view([prompt, read], { executing: true }))).toEqual({
+      turnId: 't25', endedAt: FIXED_AT_1, work: 'running',
+    });
+  });
+
+  it('settles when nothing is executing', () => {
+    expect(turnReplyGap(view([prompt, read], { executing: false }))?.work).toBe('idle');
+  });
+
+  it('keeps the background answer unknown for a host that never reports executing', () => {
+    expect(turnReplyGap(view([prompt, read]))?.work).toBe('unknown');
+    // A window that cannot vouch for live facts does not inherit the last
+    // reading either.
+    expect(turnReplyGap(view([prompt, read], { executing: false }), { connected: false })?.work).toBe('unknown');
+  });
+
+  it('says nothing when the turn left text, media or a message to read', () => {
+    expect(turnReplyGap(view([prompt, read, reply], { executing: false }))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, { ...reply, text: '', media: [{ kind: 'image', url: 'blob:x' }] }], { executing: false })))
+      .toBeUndefined();
+    // A SendMessage reaches the timeline as its own speech row, not as the call.
+    const sent: MessageBlock = {
+      kind: 'message', id: 'message-send', toolCallId: 'call-send', messageId: 'msg_1', origin: 'send_message',
+      status: 'sent', text: '在跑', attachments: [], deliveredTo: ['user'], turnId: 't25',
+    };
+    expect(turnReplyGap(view([prompt, sent], { executing: false }))).toBeUndefined();
+  });
+
+  it('does not borrow another turn’s reply for the empty one', () => {
+    const earlier: AssistantBlock = { ...reply, id: 'agent-frame-earlier', turnId: 't24' };
+    expect(turnReplyGap(view([prompt, earlier], { executing: false }))?.turnId).toBe('t25');
+  });
+
+  it('stays quiet for a failure, a stop, or a turn that is still running', () => {
+    expect(turnReplyGap(view([prompt, read], { tail: tail('t25', 'failed') }))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, read], { tail: tail('t25', 'cancelled') }))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, read], { mainTurnActive: true }))).toBeUndefined();
+  });
+
+  it('reads a legal tool-only turn as a turn with no reply, not as a failure', () => {
+    expect(turnReplyGap(view([prompt, read], { executing: false }))).toMatchObject({ work: 'idle' });
+    expect(turnReplyGap(view([prompt, { ...reply, text: '  \n' }], { executing: false }))?.work).toBe('idle');
+  });
+
+  it('does not confuse undelivered receipts or historical running tasks with execution', () => {
+    const idle = view([prompt], { executing: false });
+    expect(turnReplyGap({ ...idle, session: { ...session, executing: false, busy: true } })?.work).toBe('idle');
+    const historical = { ...idle, tasks: [{ id: 'old-task', status: 'running' }] };
+    expect(turnReplyGap(historical)?.work).toBe('idle');
+    expect(turnReplyGap({ ...idle, session: undefined })?.work).toBe('unknown');
+  });
+
+  it('suppresses the gap for tool media and normalizes turn ids', () => {
+    expect(turnReplyGap(view([prompt, { ...read, media: [{ kind: 'image', url: 'https://example.test/image.png' }] }]))).toBeUndefined();
+    expect(turnReplyGap(view([prompt, { ...reply, turnId: '25' }]))).toBeUndefined();
+  });
+
+  it('does not flash a gap while a session transcript loads or resynchronizes', () => {
+    const ready = view([prompt]);
+    for (const patch of [
+      { loaded: false }, { transcriptReady: false }, { resyncing: true }, { resyncFailed: true }, { loadError: 'offline' },
+    ]) expect(turnReplyGap({ ...ready, ...patch })).toBeUndefined();
+  });
+
+  it('waits for unread reply text and turn structure, not unrelated history or tool output', () => {
+    const ready = view([prompt]);
+    const ref = { source: { kind: 'turn' as const, id: 't25' }, revision: 'r1', path: ['steps'], kind: 'array' as const, offset: 0, total: 1 };
+    expect(turnReplyGap({ ...ready, contentRefs: [ref] })).toBeUndefined();
+    expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, path: ['steps', 0, 'frames'] }] })).toBeUndefined();
+    const text = { ...ref, source: { kind: 'frame' as const, id: 'answer', turnId: 't25' }, path: ['text'], kind: 'text' as const };
+    expect(turnReplyGap({ ...ready, contentRefs: [text] })).toBeUndefined();
+    expect(turnReplyGap({ ...ready, contentRefs: [{ ...ref, source: { kind: 'turn', id: 't24' } }] })?.work).toBe('unknown');
+    expect(turnReplyGap({ ...ready, contentRefs: [{ ...text, path: ['output'] }] })?.work).toBe('unknown');
   });
 });

@@ -151,7 +151,7 @@ function queuedItem(destination, index) {
 export function resetUsageExport(server, data) {
   // The seed stays a plain object (other fixture domains keep their seeds that
   // way); `usageExportDestinations` is the live map the routes mutate.
-  server.usageExport = data.usageExport === undefined ? null : structuredClone(data.usageExport);
+  server.usageExport = data.usageExport === undefined ? {} : structuredClone(data.usageExport);
   server.usageExportEnabled = server.usageExport !== null;
   server.usageExportWriter = server.usageExport?.writer ?? true;
   server.usageExportCapacity = server.usageExport?.queue_capacity_bytes ?? 52_428_800;

@@ -1,17 +1,26 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
   ISessionManager,
   ISessionMetadata,
+  ISessionIndex,
+  IWorkspaceService,
+  IWorkspaceInstanceManager,
   IAgentLifecycleService,
   IAgentLoopService,
+  IAgentUsageService,
+  IAgentExecutorRegistry,
+  IEventDispatcher,
   IModelService,
   ensureMainAgent,
   resumeSessionById,
   type Scope,
 } from '@kiki/agent-core-v2';
+import { SessionIndexBuildingError } from '@kiki/agent-core-v2/app/sessionIndex/errors';
+import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
+import { IFileSystemStorageService } from '@kiki/agent-core-v2/persistence/interface/storage';
 import { createKlient } from '@kiki/klient/http';
 import type { SessionViewSignal } from '@kiki/klient/session-view';
 import Fastify from 'fastify';
@@ -23,6 +32,7 @@ import { registerKlientHttp } from '../src/transport/klient/registerKlientHttp';
 import { TerminalHttpConnection } from '../src/transport/klient/terminalHttp';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { fixedTokenAuth } from './helpers/fixedAuth';
+import { startInProcessSseMcpServer } from '../../agent-core-v2/test/mcpCore/stubs';
 
 let TOKEN: string;
 
@@ -31,6 +41,12 @@ function rawToString(data: RawData): string {
   if (Buffer.isBuffer(data)) return data.toString('utf8');
   if (Array.isArray(data)) return Buffer.concat(data).toString('utf8');
   return Buffer.from(data).toString('utf8');
+}
+
+function promiseWithResolvers<T>(): { promise: Promise<T>; resolve: (value?: T) => void } {
+  let resolve: (value?: T) => void = () => {};
+  const promise = new Promise<T>((done) => { resolve = (value) => done(value as T); });
+  return { promise, resolve };
 }
 
 it('rejects every PTY control before resolving a session when exposure disables terminals', async () => {
@@ -115,12 +131,53 @@ describe('klient HTTP host', () => {
       expect(live.profile?.name).toBeTypeOf('string');
       expect(live.tools?.length).toBeGreaterThan(0);
       expect(live.metrics?.['main']).toHaveProperty('totalCostUsd');
-      await expect(klient.global.board.read({ action: 'preview', workspaceId: 'wd_missing' })).resolves.toMatchObject({ ok: false, error: { code: 'WORKSPACE_NOT_FOUND' } });
-      await expect(klient.global.board.write({ action: 'create', workspaceId: 'wd_missing', requestKey: 'create-one', title: 'Example task' })).resolves.toMatchObject({ ok: false, error: { code: 'WORKSPACE_NOT_FOUND' } });
+      await expect(klient.global.board.read({ action: 'preview', workspaceId: 'wd_missing' })).rejects.toThrow(/unknown service: taskBoardService/);
+      await expect(klient.global.board.write({ action: 'create', workspaceId: 'wd_missing', requestKey: 'create-one', title: 'Example task' })).rejects.toThrow(/unknown service: taskBoardService/);
       await expect(klient.global.agentPanel.read({ profile: 'missing', workspace_id: 'wd_missing' })).rejects.toMatchObject({ code: 40410 });
     } finally {
       await klient.close();
     }
+  });
+
+  it('delivers settled usage globally before the next HTTP usage and session read, without duplication', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    try {
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Usage fixture' });
+      const handle = await resumeSessionById(server.core.accessor, created.id);
+      if (handle === undefined) throw new Error('Fixture session did not resume');
+      const main = await ensureMainAgent(handle);
+      const before = await klient.rest.usage({ range: 'today' });
+      const settled = vi.fn();
+      const subscription = klient.events.on('usage.settled', settled);
+      await subscription.ready;
+      main.accessor.get(IAgentUsageService).record('example-model', { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 });
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledExactlyOnceWith({ sessionId: created.id, agentId: 'main' }));
+      const after = await klient.rest.usage({ range: 'today' });
+      expect(after.summary.tokens.input_other - before.summary.tokens.input_other).toBe(3);
+      expect(after.summary.tokens.output - before.summary.tokens.output).toBe(2);
+      expect((await klient.rest.usage({ range: 'today' })).summary).toEqual(after.summary);
+      const sessionRead = await fetch(`${endpoint}/api/sessions/${created.id}`, { headers: { authorization: `Bearer ${TOKEN}` } })
+        .then((response) => response.json()) as { data: { usage: unknown } };
+      expect(sessionRead.data.usage).toMatchObject({ input_tokens: 3, output_tokens: 2, cache_read_tokens: 1 });
+      expect((await klient.global.agentPanel.read({ session_id: created.id, agent_id: 'main' })).metrics?.['main']?.totalTokens).toBe(6);
+      const workspace = await klient.global.workspaces.createOrTouch({ root: homeDir });
+      const temporary = await klient.rest.sessions.create({ workspace_id: workspace.id, ephemeral: true, title: 'Temporary usage fixture' });
+      const temporaryHandle = server.core.accessor.get(ISessionManager).get(temporary.id);
+      if (temporaryHandle === undefined) throw new Error('Fixture temporary session is not live');
+      const temporaryMain = await ensureMainAgent(temporaryHandle);
+      temporaryMain.accessor.get(IAgentUsageService).record('example-model', { inputOther: 4, output: 1, inputCacheRead: 0, inputCacheCreation: 0 });
+      await temporaryMain.accessor.get(IEventDispatcher).flush();
+      expect(settled).toHaveBeenCalledTimes(1);
+      await klient.rest.sessions.endEphemeral(temporary.id);
+      await vi.waitFor(() => expect(settled).toHaveBeenCalledTimes(2));
+      expect(settled.mock.calls[1]).toEqual([{}]);
+      const afterTemporary = await klient.rest.usage({ range: 'today' });
+      expect(afterTemporary.summary.tokens.input_other - after.summary.tokens.input_other).toBe(4);
+      expect(afterTemporary.sessions.items.some((item) => item.id === temporary.id)).toBe(false);
+      expect((await klient.rest.usage({ range: 'today' })).summary).toEqual(afterTemporary.summary);
+      subscription.dispose();
+    } finally { await klient.close(); }
   });
 
   it('shares sessions between the typed REST surface and session facade on the unified host', async () => {
@@ -140,6 +197,88 @@ describe('klient HTTP host', () => {
       await klient.close();
     }
   });
+
+  it('lists workspaces without materializing a Program and preserves index-building failures for retry', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const registry = server.core.accessor.get(IWorkspaceService);
+    const index = server.core.accessor.get(ISessionIndex);
+    const runtime = server.core.accessor.get(IWorkspaceInstanceManager);
+    const created = await registry.createOrTouch(homeDir, 'Example workspace');
+    const materialize = vi.spyOn(runtime, 'getOrCreate').mockImplementation(async () => {
+      throw new Error('Workspace listing must not materialize a Program');
+    });
+    const count = vi.spyOn(index, 'count').mockResolvedValue(0);
+    try {
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      const listed = await klient.rest.workspaces.list();
+      expect(listed.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id, session_count: 0 })]));
+      expect(materialize).not.toHaveBeenCalled();
+      count.mockRejectedValueOnce(new SessionIndexBuildingError());
+      await expect(klient.rest.workspaces.list()).rejects.toMatchObject({ code: 40939 });
+      const retried = await klient.rest.workspaces.list();
+      expect(retried.items).toEqual(expect.arrayContaining([expect.objectContaining({ id: created.id })]));
+      expect(materialize).not.toHaveBeenCalled();
+    } finally {
+      count.mockRestore();
+      materialize.mockRestore();
+      await klient.close();
+    }
+  });
+
+  it('creates and opens live and cold views without waiting for an unrelated append', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const store = server.core.accessor.get(IAppendLogStore);
+    const storage = server.core.accessor.get(IFileSystemStorageService);
+    const manager = server.core.accessor.get(ISessionManager);
+    const append = storage.append.bind(storage);
+    const blocked = promiseWithResolvers<void>();
+    const entered = promiseWithResolvers<void>();
+    const spy = vi.spyOn(storage, 'append').mockImplementation(async (scope, key, data, options) => {
+      if (scope === 'example-unrelated-agent') {
+        entered.resolve();
+        await blocked.promise;
+      }
+      return append(scope, key, data, options);
+    });
+    const subscriptions: Array<{ close(): void }> = [];
+    let sessionId: string | undefined;
+    try {
+      store.append('example-unrelated-agent', 'events.jsonl', { type: 'example' });
+      await entered.promise;
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'Example create and open' });
+      sessionId = created.id;
+      const handle = manager.get(created.id);
+      expect(handle).toBeDefined();
+      await ensureMainAgent(handle!);
+      const open = async () => {
+        const snapshot = await klient.session(created.id).view.snapshot();
+        expect(snapshot.session.id).toBe(created.id);
+        const signals: SessionViewSignal[] = [];
+        const subscription = klient.session(created.id).view.subscribe({
+          sessionCursor: { seq: snapshot.as_of_seq, epoch: snapshot.epoch },
+          transcriptGrades: { main: 'delta' },
+        }, signal => signals.push(signal));
+        subscriptions.push(subscription);
+        await vi.waitFor(() => expect(signals.some(signal => signal.type === 'ready')).toBe(true), { timeout: 5000 });
+        expect(signals.some(signal => signal.type === 'protocolError')).toBe(false);
+        subscription.close();
+      };
+      await open();
+      blocked.resolve();
+      await store.flush('example-unrelated-agent', 'events.jsonl');
+      await manager.close(created.id);
+      expect(manager.get(created.id)).toBeUndefined();
+      await open();
+      expect(manager.get(created.id)).toBeUndefined();
+    } finally {
+      blocked.resolve();
+      await store.flush('example-unrelated-agent', 'events.jsonl');
+      spy.mockRestore();
+      for (const subscription of subscriptions) subscription.close();
+      await klient.close();
+      if (sessionId !== undefined && manager.get(sessionId) !== undefined) await manager.close(sessionId);
+    }
+  }, 30_000);
 
   it('restores session harness fields on REST and klient snapshots after closing and resuming', async () => {
     const klient = createKlient({ endpoint, token: TOKEN });
@@ -179,7 +318,7 @@ describe('klient HTTP host', () => {
       await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'keep me' }], toolCalls: [] });
       const before = await agent.getContext();
       await expect(agent.rebuildContext()).resolves.toMatchObject({
-        rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'],
+        rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
       });
       await expect(agent.getContext()).resolves.toEqual(before);
 
@@ -194,11 +333,124 @@ describe('klient HTTP host', () => {
           message: expect.stringContaining('session is busy'),
         });
       } finally {
-        quiescence.dispose();
+        await quiescence.dispose();
       }
     } finally {
       await klient.close();
     }
+  });
+
+  it('applies real session MCP selection over HTTP and rebuilds without bypassing plugin master denial', async () => {
+    const klient = createKlient({ endpoint, token: TOKEN });
+    const mcp = await startInProcessSseMcpServer();
+    const pluginDir = await mkdtemp(join(tmpdir(), 'kap-session-mcp-plugin-'));
+    let sessionId: string | undefined;
+    const callPlugin = async (path: string, body: unknown = {}) => {
+      const response = await fetch(`${endpoint}/api/${path}`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json() as { code: number; msg: string; data: { fingerprint?: string } };
+      expect(result.code, result.msg).toBe(0);
+      return result;
+    };
+    try {
+      await klient.global.mcp.add({ server: { name: 'selection-disabled', transport: 'sse', url: mcp.url, enabled: false } });
+      const created = await klient.global.sessions.create({ workDir: homeDir, title: 'MCP selection proof' });
+      sessionId = created.id;
+      if (klient.rest === undefined) throw new Error('HTTP client must expose its REST facade');
+      await klient.rest.sessions.updateProfile(created.id, { agent_config: { permission_mode: 'manual' } });
+      const agent = klient.session(created.id).agent('main');
+      await agent.getUsage();
+      await agent.appendContext({ role: 'user', content: [{ type: 'text', text: 'preserve MCP proof history' }], toolCalls: [] });
+      const locator = { source: 'global' as const, name: 'selection-disabled' };
+      expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
+        runtimeName: locator.name, override: 'inherit', connection: 'disabled',
+      }));
+      expect(await agent.setMcpSessionOverride({ locator, override: 'on' })).toMatchObject({
+        override: 'on', connection: 'connected',
+      });
+      expect((await agent.getMcpServers()).find((entry) => entry.name === locator.name)?.status).toBe('connected');
+      await agent.setMcpSessionOverride({ locator, override: 'off' });
+      expect(await agent.listMcpSessionCapabilities()).toContainEqual(expect.objectContaining({
+        runtimeName: locator.name, override: 'off', connection: 'disabled',
+      }));
+      await klient.global.mcp.add({ server: { name: 'selection-new', transport: 'sse', url: mcp.url, enabled: true } });
+      const before = await agent.getContext();
+      const rebuild = await agent.rebuildContext();
+      expect(rebuild).toMatchObject({ rebuilt: expect.arrayContaining(['mcp']) });
+      expect(await agent.getContext()).toEqual(before);
+      const rebuilt = await agent.listMcpSessionCapabilities();
+      expect(rebuild.readiness.mcp).toEqual(rebuilt.map(({ runtimeName, connection, error }) => ({ runtimeName, connection, error })));
+      expect(rebuilt).toContainEqual(expect.objectContaining({ runtimeName: 'selection-new', connection: 'connected' }));
+      expect(rebuilt).toContainEqual(expect.objectContaining({ runtimeName: locator.name, override: 'off', connection: 'disabled' }));
+      expect((await agent.getMcpServers()).find((entry) => entry.name === 'selection-new')?.status).toBe('connected');
+      await writeFile(join(pluginDir, 'kimi.plugin.json'), JSON.stringify({
+        name: 'selection-denied', version: '1.0.0',
+        mcpServers: { echo: { transport: 'sse', url: mcp.url } },
+      }));
+      const preview = await callPlugin('plugins:preview', { source: pluginDir });
+      await callPlugin('plugins', { source: pluginDir, fingerprint: preview.data.fingerprint, consent: true });
+      await callPlugin('plugins/selection-denied:disable');
+      const plugin = (await klient.global.mcp.list({ cwd: homeDir })).find((entry) => entry.source === 'plugin' && entry.plugin?.id === 'selection-denied');
+      expect(plugin).toBeDefined();
+      if (plugin === undefined) throw new Error('Plugin MCP source was not registered');
+      await expect(agent.setMcpSessionOverride({
+        locator: { source: 'plugin', pluginId: 'selection-denied', serverName: 'echo' }, override: 'on',
+      })).rejects.toMatchObject({
+        code: 40001,
+        message: 'MCP server locator plugin:selection-denied:echo is disabled by its plugin source',
+      });
+    } finally {
+      if (sessionId !== undefined) await server.core.accessor.get(ISessionManager).close(sessionId);
+      await callPlugin('plugins/selection-denied:remove').catch(() => undefined);
+      await klient.global.mcp.remove({ name: 'selection-disabled' }).catch(() => undefined);
+      await klient.global.mcp.remove({ name: 'selection-new' }).catch(() => undefined);
+      await klient.close();
+      await mcp.close();
+      await rm(pluginDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  }, 30_000);
+
+  it('projects a deterministic observed executor catalog through the production HTTP route', async () => {
+    const registry = server.core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.list().find((entry) => entry.protocol !== 'native');
+    if (descriptor === undefined || registry.recordExecutorCapabilityCatalog === undefined) throw new Error('Executor catalog producer is required');
+    registry.recordExecutorCapabilityCatalog({
+      executorId: descriptor.id, descriptorRevision: descriptor.revision,
+      version: descriptor.version, source: 'negotiated', provenance: 'acp_negotiation', observedAt: Date.now(),
+      models: { state: 'ready', values: ['fixture/model-a', 'fixture/model-b'] },
+      thinkingLevels: { state: 'ready', values: ['low', 'high'] },
+      context: { state: 'ready', contextWindow: 128_000, maxInputTokens: 120_000, maxOutputTokens: 8_000, compactionThreshold: 0.8 },
+      controls: {
+        modelSwitch: { advertised: true, applicability: 'fresh_binding', applyState: 'applied' },
+        thinkingSwitch: { advertised: true, applicability: 'fresh_binding', applyState: 'applied' },
+        manualCompact: { advertised: false, applicability: 'unsupported', applyState: 'unsupported' },
+      },
+    });
+    const response = await fetch(`${endpoint}/api/executors/${encodeURIComponent(descriptor.id)}/models`, {
+      headers: { authorization: `Bearer ${TOKEN}` },
+    });
+    expect(response.status).toBe(200);
+    const envelope = await response.json() as { code: number; data: Record<string, unknown> };
+    expect(envelope.code).toBe(0);
+    expect(envelope.data).toMatchObject({
+      executor_id: descriptor.id,
+      source: 'negotiated',
+      provenance: 'acp_negotiation',
+      effective: {
+        models: { state: 'ready', values: ['fixture/model-a', 'fixture/model-b'] },
+        thinking_levels: { state: 'ready', values: ['low', 'high'] },
+        context: { state: 'ready', context_window: 128_000, max_input_tokens: 120_000, max_output_tokens: 8_000 },
+        controls: {
+          model_switch: { advertised: true, applicability: 'fresh_binding', apply_state: 'applied' },
+          thinking_switch: { advertised: true, applicability: 'fresh_binding', apply_state: 'applied' },
+          manual_compact: { advertised: false, applicability: 'unsupported', apply_state: 'unsupported' },
+        },
+      },
+    });
+    expect(envelope.data['executor_version']).toBe(descriptor.version);
   });
 
   it('sets a subagent effort through the authenticated klient route and rejects unsupported values', async () => {

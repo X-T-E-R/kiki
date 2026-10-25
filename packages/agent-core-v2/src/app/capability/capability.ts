@@ -15,6 +15,7 @@ export interface ICapabilityService {
   getCapability(id: string): Promise<CapabilityStatus>;
 
   installCapability(id: string, expectedSha256?: string, browserMode?: 'driver-only' | 'managed-browser'): Promise<CapabilityStatus>;
+  updateCapability(id: string, expectedSha256?: string): Promise<CapabilityStatus>;
   cancelCapability(id: string): Promise<CapabilityStatus>;
 }
 

@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import type { ExperimentalFeatureState } from '@kiki/agent-core-v2';
 import type { Kaos } from '@kiki/kaos';
 
@@ -47,6 +49,18 @@ import type {
   WorkspaceTrustInfo,
 } from '#/types';
 
+export interface KimiHarnessExitReceipt {
+  readonly operationId: string;
+  readonly owner: 'sdk_instance';
+  readonly callerOutcome: 'resolved' | 'rejected';
+  readonly cleanupOutcome: 'closed' | 'cleanup_failed';
+  readonly resourcesBefore: number;
+  readonly resourcesAfter: number;
+  readonly errorName?: string;
+  readonly errorMessage?: string;
+  readonly settledAt: number;
+}
+
 export interface KimiHarnessRuntimeOptions {
   readonly identity?: KimiHostIdentity;
   readonly uiMode?: string;
@@ -79,6 +93,8 @@ export class KimiHarness {
   private readonly ensureConfigFileImpl: () => Promise<void>;
   private readonly closeImpl: () => void | Promise<void>;
   private closePromise: Promise<void> | undefined;
+  private readonly exitReceiptPromise: Promise<KimiHarnessExitReceipt>;
+  private resolveExitReceipt!: (receipt: KimiHarnessExitReceipt) => void;
   private readonly sessionStartedProperties: TelemetryProperties;
 
   /**
@@ -99,12 +115,19 @@ export class KimiHarness {
     this.auth = options.auth;
     this.ensureConfigFileImpl = options.ensureConfigFile;
     this.closeImpl = options.onClose;
+    this.exitReceiptPromise = new Promise<KimiHarnessExitReceipt>((resolve) => {
+      this.resolveExitReceipt = resolve;
+    });
     this.sessionStartedProperties = options.sessionStartedProperties ?? {};
     this.imageLimits = options.imageLimits;
   }
 
   get sessions(): ReadonlyMap<string, Session> {
     return this.activeSessions;
+  }
+
+  get exitReceipt(): Promise<KimiHarnessExitReceipt> {
+    return this.exitReceiptPromise;
   }
 
   get interactiveAgentId(): string {
@@ -611,6 +634,8 @@ export class KimiHarness {
 
   close(): Promise<void> {
     return this.closePromise ??= (async () => {
+      const operationId = randomUUID();
+      const resourcesBefore = this.activeSessions.size + 1;
       const errors: unknown[] = [];
       try {
         const results = await Promise.allSettled(Array.from(this.activeSessions.values(), (session) => session.close()));
@@ -624,6 +649,17 @@ export class KimiHarness {
           errors.push(error);
         }
       }
+      const normalized = errors.length === 0 ? undefined : errors[0] instanceof Error ? errors[0] : new Error(String(errors[0]));
+      this.resolveExitReceipt({
+        operationId,
+        owner: 'sdk_instance',
+        callerOutcome: errors.length === 0 ? 'resolved' : 'rejected',
+        cleanupOutcome: errors.length === 0 ? 'closed' : 'cleanup_failed',
+        resourcesBefore,
+        resourcesAfter: this.activeSessions.size + (errors.length === 0 ? 0 : 1),
+        ...(normalized === undefined ? {} : { errorName: normalized.name, errorMessage: normalized.message }),
+        settledAt: Date.now(),
+      });
       if (errors.length === 1) throw errors[0];
       if (errors.length > 1) throw new AggregateError(errors, 'Failed to close sessions and harness host.');
     })();

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
+import { ServerResponse } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
@@ -7,6 +8,7 @@ import { JsonAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/backend
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { ToolListChangedNotificationSchema } from '@modelcontextprotocol/sdk/types.js';
 import { describe, expect, it } from 'vitest';
 
@@ -115,24 +117,244 @@ describe('external client transport', () => {
     const host: ExternalClientTransportHost = { ...fixture.host,
       onCatalogChanged: (listener) => { catalogChanged = listener; return { dispose() { catalogChanged = undefined; } }; },
     };
-    const listener = createExternalClientListener({ host, port: 0 });
+    const listener = createExternalClientListener({ host, port: 0, oauthOptions: { scopesSupported: ['read'] } });
     const client = new Client({ name: 'catalog-fixture', version: '1.0.0' });
     let deadline: ReturnType<typeof setTimeout> | undefined;
     try {
       await listener.start();
       const resource = `${listener.address()!.origin}/mcp`;
       fixture.setGrant({ ...fixture.current(), resource, audience: resource });
-      const changed = new Promise<void>((resolve, reject) => {
-        deadline = setTimeout(() => reject(new Error('Catalog notification timed out.')), 1000);
-        client.setNotificationHandler(ToolListChangedNotificationSchema, () => resolve());
+      let notices = 0;
+      let resolveChanged!: () => void;
+      let rejectChanged!: (error: Error) => void;
+      const changed = new Promise<void>((resolve, reject) => { resolveChanged = resolve; rejectChanged = reject; });
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        notices += 1;
+        resolveChanged();
       });
       await client.connect(new StreamableHTTPClientTransport(new URL(resource), {
         requestInit: { headers: { authorization: 'Bearer local-fixture-token' } },
       }));
       expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
+      catalogChanged!('unrelated-id');
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(notices).toBe(0);
+      deadline = setTimeout(() => {
+        rejectChanged(new Error('Catalog notification timed out.'));
+      }, 1000);
       catalogChanged!(fixture.current().id);
       await changed;
+      expect(notices).toBe(1);
     } finally {
+      clearTimeout(deadline);
+      await client.close();
+      await listener.close();
+    }
+  });
+
+  it('keeps a catalog change from before the listener stream opens', async () => {
+    const fixture = createFixtureHost();
+    let catalogChanged: ((grantId: string) => void) | undefined;
+    const host: ExternalClientTransportHost = { ...fixture.host,
+      onCatalogChanged: (listener) => {
+        catalogChanged = listener;
+        listener('unrelated-id');
+        listener(fixture.current().id);
+        return { dispose() { catalogChanged = undefined; } };
+      },
+    };
+    const listener = createExternalClientListener({ host, port: 0, oauthOptions: { scopesSupported: ['read'] } });
+    const client = new Client({ name: 'catalog-before-open-fixture', version: '1.0.0' });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await listener.start();
+      const resource = `${listener.address()!.origin}/mcp`;
+      fixture.setGrant({ ...fixture.current(), resource, audience: resource });
+      let notices = 0;
+      let resolveChanged!: () => void;
+      let rejectChanged!: (error: Error) => void;
+      const changed = new Promise<void>((resolve, reject) => { resolveChanged = resolve; rejectChanged = reject; });
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        notices += 1;
+        resolveChanged();
+      });
+      deadline = setTimeout(() => {
+        rejectChanged(new Error('Catalog notification timed out.'));
+      }, 1000);
+      await client.connect(new StreamableHTTPClientTransport(new URL(resource), {
+        requestInit: { headers: { authorization: 'Bearer local-fixture-token' } },
+      }));
+      await changed;
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(notices).toBe(1);
+      expect(catalogChanged).toBeTypeOf('function');
+    } finally {
+      clearTimeout(deadline);
+      await client.close();
+      await listener.close();
+    }
+  });
+
+  it('keeps a matching catalog change while the listener stream is down until the client reconnects', async () => {
+    const fixture = createFixtureHost();
+    let catalogChanged: ((grantId: string) => void) | undefined;
+    const host: ExternalClientTransportHost = { ...fixture.host,
+      onCatalogChanged: (listener) => { catalogChanged = listener; return { dispose() { catalogChanged = undefined; } }; },
+    };
+    const listener = createExternalClientListener({ host, port: 0, oauthOptions: { scopesSupported: ['read'] } });
+    const client = new Client({ name: 'catalog-reconnect-fixture', version: '1.0.0' });
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    let releaseReconnect = () => {};
+    const reconnectHeld = new Promise<void>((resolve) => { releaseReconnect = resolve; });
+    let abortOpenGet = () => {};
+    let markGetOpen = () => {};
+    const getOpen = new Promise<void>((resolve) => { markGetOpen = resolve; });
+    let resolveSseClosed = () => {};
+    let sseCloseArmed = false;
+    const sseClosed = new Promise<void>((resolve) => { resolveSseClosed = resolve; });
+    const originalWriteHead = ServerResponse.prototype.writeHead;
+    ServerResponse.prototype.writeHead = function (this: ServerResponse, ...args: unknown[]): ServerResponse {
+      const result = (originalWriteHead as (...inner: unknown[]) => ServerResponse).apply(this, args);
+      const headers = typeof args[1] === 'string' ? args[2] : args[1];
+      const type = typeof headers === 'object' && headers !== null && !Array.isArray(headers)
+        ? (headers as Record<string, unknown>)['content-type']
+        : undefined;
+      if (!sseCloseArmed && this.req?.method === 'GET' && Number(args[0]) === 200 && typeof type === 'string' && type.includes('text/event-stream')) {
+        sseCloseArmed = true;
+        const mark = () => {
+          if (this.destroyed || this.closed || this.writableEnded || this.socket?.destroyed || this.req?.destroyed || this.req?.aborted) {
+            resolveSseClosed();
+          }
+        };
+        this.on('close', mark);
+        this.req?.on('aborted', mark);
+        this.req?.on('close', mark);
+      }
+      return result;
+    } as typeof ServerResponse.prototype.writeHead;
+    let rejectWait!: (error: Error) => void;
+    const failed = new Promise<never>((_, reject) => { rejectWait = reject; });
+    try {
+      await listener.start();
+      const resource = `${listener.address()!.origin}/mcp`;
+      fixture.setGrant({ ...fixture.current(), resource, audience: resource });
+      let notices = 0;
+      let resolveChanged!: () => void;
+      const changed = new Promise<void>((resolve) => { resolveChanged = resolve; });
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        notices += 1;
+        resolveChanged();
+      });
+      let getCount = 0;
+      await client.connect(new StreamableHTTPClientTransport(new URL(resource), {
+        requestInit: { headers: { authorization: 'Bearer local-fixture-token' } },
+        reconnectionOptions: {
+          initialReconnectionDelay: 0,
+          maxReconnectionDelay: 0,
+          reconnectionDelayGrowFactor: 1,
+          maxRetries: 2,
+        },
+        fetch: async (input, init) => {
+          const method = (init?.method ?? 'GET').toUpperCase();
+          if (method !== 'GET') return fetch(input, init);
+          getCount += 1;
+          if (getCount === 1) {
+            const controller = new AbortController();
+            abortOpenGet = () => {
+              controller.abort();
+            };
+            const signal = init?.signal === undefined || init.signal === null ? controller.signal : AbortSignal.any([init.signal, controller.signal]);
+            const opened = await fetch(input, { ...init, signal });
+            markGetOpen();
+            return opened;
+          }
+          await reconnectHeld;
+          return fetch(input, init);
+        },
+      }));
+      expect(client.getServerCapabilities()?.tools?.listChanged).toBe(true);
+      deadline = setTimeout(() => {
+        rejectWait(new Error('Catalog notification timed out.'));
+      }, 1000);
+      await Promise.race([getOpen, failed]);
+      abortOpenGet();
+      await Promise.race([sseClosed, failed]);
+      catalogChanged!('unrelated-id');
+      catalogChanged!(fixture.current().id);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(notices).toBe(0);
+      releaseReconnect();
+      await Promise.race([changed, failed]);
+      expect(notices).toBe(1);
+    } finally {
+      ServerResponse.prototype.writeHead = originalWriteHead;
+      clearTimeout(deadline);
+      releaseReconnect();
+      await client.close();
+      await listener.close();
+    }
+  });
+
+  it('reports a rejected catalog send once and still delivers a later notification', async () => {
+    const fixture = createFixtureHost();
+    let catalogChanged: ((grantId: string) => void) | undefined;
+    const reports: unknown[] = [];
+    const host: ExternalClientTransportHost = { ...fixture.host,
+      onCatalogChanged: (listener) => { catalogChanged = listener; return { dispose() { catalogChanged = undefined; } }; },
+    };
+    const listener = createExternalClientListener({
+      host,
+      port: 0,
+      oauthOptions: { scopesSupported: ['read'] },
+      onError: (error) => { reports.push(error); },
+    });
+    const client = new Client({ name: 'catalog-error-fixture', version: '1.0.0' });
+    const originalSend = Server.prototype.sendToolListChanged;
+    let failSend = false;
+    Server.prototype.sendToolListChanged = async function (this: Server) {
+      if (failSend) {
+        failSend = false;
+        throw new Error('forced catalog send failure');
+      }
+      return originalSend.call(this);
+    };
+    let deadline: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await listener.start();
+      const resource = `${listener.address()!.origin}/mcp`;
+      fixture.setGrant({ ...fixture.current(), resource, audience: resource });
+      let notices = 0;
+      let resolveChanged!: () => void;
+      let rejectChanged!: (error: Error) => void;
+      const changed = new Promise<void>((resolve, reject) => { resolveChanged = resolve; rejectChanged = reject; });
+      client.setNotificationHandler(ToolListChangedNotificationSchema, () => {
+        notices += 1;
+        resolveChanged();
+      });
+      await client.connect(new StreamableHTTPClientTransport(new URL(resource), {
+        requestInit: { headers: { authorization: 'Bearer local-fixture-token' } },
+      }));
+      deadline = setTimeout(() => {
+        rejectChanged(new Error('Catalog notification timed out.'));
+      }, 1000);
+      catalogChanged!(fixture.current().id);
+      await changed;
+      expect(notices).toBe(1);
+      expect(reports).toHaveLength(0);
+      failSend = true;
+      catalogChanged!(fixture.current().id);
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(reports.map((error) => error instanceof Error ? error.message : String(error))).toEqual(['forced catalog send failure']);
+      expect(notices).toBe(1);
+      let resolveNext!: () => void;
+      const next = new Promise<void>((resolve) => { resolveNext = resolve; });
+      resolveChanged = resolveNext;
+      catalogChanged!(fixture.current().id);
+      await next;
+      expect(notices).toBe(2);
+      expect(reports).toHaveLength(1);
+    } finally {
+      Server.prototype.sendToolListChanged = originalSend;
       clearTimeout(deadline);
       await client.close();
       await listener.close();

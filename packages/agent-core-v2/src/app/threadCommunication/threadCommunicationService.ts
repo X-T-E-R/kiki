@@ -1,23 +1,24 @@
+import { randomUUID } from 'node:crypto';
+
 import { createKimiDeviceId } from '@kiki/oauth';
 
 import { Disposable, DisposableStore, toDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type ISessionScopeHandle } from '#/_base/di/scope';
-import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IThreadTurnStore, type ThreadTurnSource } from './threadTurnStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
+import { IInstantiationService } from '#/_base/di/instantiation';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
-import type { ContentPart } from '#/kosong/contract/message';
 import { IAgentPromptService, type PromptHandle } from '#/agent/prompt/prompt';
-import {
-  type PeerThreadOrigin,
-  type PromptOrigin,
-} from '#/agent/contextMemory/types';
-import type { LoopRecordedEvent } from '#/agent/contextMemory/loopEventFold';
+import { type PeerThreadOrigin, type PromptOrigin } from '#/agent/contextMemory/types';
 import { Error2, ErrorCodes, fromErrorPayload, isError2, toErrorPayload, type ErrorPayload } from '#/errors';
 import { IAgentLifecycleService, MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ensureMainAgent } from '#/session/agentLifecycle/mainAgent';
@@ -29,7 +30,6 @@ import {
   workspacePersistenceScope,
 } from '#/workspace/sessionLifecycle/internal/addressing';
 import { IWireService } from '#/wire/wire';
-import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 
 import {
   IThreadCommunicationService,
@@ -51,7 +51,6 @@ import {
   type ThreadCaller,
   type ThreadRef,
   type ThreadSummary,
-  type ThreadTurn,
   type WaitThreadResult,
   type WaitThreadsInput,
   type WaitThreadsResult,
@@ -86,6 +85,7 @@ const MAX_WAIT_TIMEOUT_MS = 60_000;
 const WAIT_POLL_MS = 200;
 const WAIT_ACTIVITY_LIMIT = 64;
 const DELIVERY_LEASE_MS = 30_000;
+const FAST_DELIVERY_TIMEOUT_MS = 5_000;
 const ROOM_DELIVERY_RECEIPT_TTL_MS = 5 * 60_000;
 const ROOM_DELIVERY_RECEIPT_SCOPE = 'thread-communication';
 
@@ -103,6 +103,7 @@ interface ReadCursor {
   readonly kind: 'read';
   readonly beforeTurnId: number;
   readonly thread: string;
+  readonly source?: ThreadTurnSource;
 }
 
 interface ActivityCursor {
@@ -111,14 +112,6 @@ interface ActivityCursor {
   readonly epoch: string;
   readonly seq: number;
   readonly thread: string;
-}
-
-interface MutableTurn {
-  readonly turnId: number;
-  readonly origin: PromptOrigin;
-  readonly input: string;
-  readonly startedAt?: number;
-  readonly output: string[];
 }
 
 interface TargetDrainState {
@@ -182,6 +175,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     target: ThreadRef;
     content: string;
     idempotencyKey: string;
+    signal?: AbortSignal;
+    deliveryTimeoutMs?: number;
   }): Promise<SendThreadMessageResult> {
     if (this.connector === undefined) throw new Error2(ErrorCodes.THREAD_CROSS_HOST, 'No space bridge is installed.');
     await this.connector.beforeDelivery({ ...input, messageId: '', acceptedAt: Date.now(), targetSeq: 0 });
@@ -201,6 +196,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   private recovery: Promise<void> | undefined;
   private readonly detached = new Set<Promise<void>>();
   private readonly targetDrains = new Map<string, TargetDrainState>();
+  private readonly claimRequestIds = new Map<string, string>();
   private readonly roomDeliveryTargets = new Map<string, RoomDeliveryTarget>();
   private readonly roomDeliveryReceipts = new Map<string, RoomDeliveryReceipt>();
   private readonly mailboxController = new AbortController();
@@ -216,17 +212,18 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     @ISessionIndex private readonly sessions: ISessionIndex,
     @ISessionManager private readonly sessionManager: ISessionManager,
     @IThreadMailboxStore private readonly mailbox: IThreadMailboxStore,
-    @IAppendLogStore private readonly appendLog: IAppendLogStore,
+    @IThreadTurnStore private readonly turns: IThreadTurnStore,
     @IAtomicDocumentStore private readonly documents: IAtomicDocumentStore,
     @ILogService private readonly log: ILogService,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     this.hostId = createKimiDeviceId(bootstrap.homeDir);
     this.shutdownSignal = new Promise((resolve) => {
       this.resolveShutdown = resolve;
     });
-    this._register(toDisposable(() => {
-      for (const store of this.observedSessions.values()) store.dispose();
+    this._register(toDisposable(async () => {
+      for (const store of this.observedSessions.values()) await store.dispose();
       this.observedSessions.clear();
     }));
     this._register(this.followLifecycle(this.sessionManager));
@@ -247,7 +244,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     this.roomDeliveryTargets.clear();
     this.mailboxController.abort(new Error('Thread communication is shutting down.'));
     this.resolveShutdown();
-    this.dispose();
+    await this.dispose();
     await this.recovery?.catch(() => {});
     while (this.detached.size > 0) {
       await Promise.all(this.detached);
@@ -407,19 +404,20 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (decoded !== undefined && decoded.thread !== identity) {
       throw cursorError('Read cursor does not match the requested thread.');
     }
-    await this.flushLiveMain(summary.id);
-    const turns = await this.readCompletedTurns(summary);
+    const handlerScope = workspacePersistenceScope(this.bootstrap.scope('sessions'), summary.workspaceId);
+    const wireScope = agentScopeOf(sessionScopeOf(handlerScope, summary.id), MAIN_AGENT_ID);
+    if (input.contentRef !== undefined) return { thread: input.thread, turns: [], view: { segment: await this.turns.content(wireScope, input.contentRef, input.signal) } };
+    await waitWithSignal(this.flushLiveMain(summary.id), input.signal);
     const beforeTurnId = decoded?.beforeTurnId ?? Number.MAX_SAFE_INTEGER;
-    const eligible = turns.filter((turn) => turn.turnId < beforeTurnId);
-    const page = eligible.slice(Math.max(0, eligible.length - limit));
-    const hasOlder = eligible.length > page.length;
+    const page = await this.turns.read(wireScope, beforeTurnId, limit, decoded?.source, input.signal);
+    const nextBefore = page.preparing ? beforeTurnId : page.turns[0]?.turnId;
     return {
       thread: input.thread,
-      turns: page,
-      nextCursor:
-        hasOlder && page[0] !== undefined
-          ? encodeCursor({ v: 1, kind: 'read', beforeTurnId: page[0].turnId, thread: identity })
-          : undefined,
+      turns: page.turns,
+      incomplete: page.preparing ? 'history_preparing' : undefined,
+      nextCursor: page.hasMore && nextBefore !== undefined
+        ? encodeCursor({ v: 1, kind: 'read', beforeTurnId: nextBefore, thread: identity, source: page.source })
+        : undefined,
     };
   }
 
@@ -430,6 +428,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
+      signal: input.signal,
+      deliveryTimeoutMs: input.deliveryTimeoutMs,
     });
   }
 
@@ -442,6 +442,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       target: input.target,
       content: input.content,
       idempotencyKey: input.idempotencyKey,
+      signal: input.signal,
+      deliveryTimeoutMs: input.deliveryTimeoutMs,
     }, input.requireCommunication === true);
   }
 
@@ -488,25 +490,43 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
   async [SEND_PEER_THREAD_MESSAGE](input: SendPeerThreadMessageInput): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
-    input = { ...input, source: this.requireLocalHost(input.source) };
-    await this.requireThread(input.source, input.source, this.needsBridge(input.target) || input.allowWhenDisabled !== true);
-    if (this.needsBridge(input.target)) return this.requireConnector().send(input);
-    input = { ...input, target: this.requireLocalHost(input.target) };
-    if (sameThread(input.source, input.target)) {
+    const source = this.requireLocalHost(input.source);
+    const caller: ThreadCaller = {
+      sessionId: source.sessionId,
+      workspaceId: source.workspaceId,
+      ...(input.executingAgentId === undefined ? {} : { agentId: input.executingAgentId }),
+    };
+    const peer: SendPeerThreadMessageInput = {
+      signal: input.signal,
+      deliveryTimeoutMs: input.deliveryTimeoutMs,
+      cause: input.cause,
+      source,
+      target: input.target,
+      content: input.content,
+      idempotencyKey: input.idempotencyKey,
+      sender: input.sender,
+      allowWhenDisabled: input.allowWhenDisabled,
+    };
+    await this.requireThread(peer.source, caller, this.needsBridge(peer.target) || peer.allowWhenDisabled !== true);
+    if (this.needsBridge(peer.target)) return this.requireConnector().send(peer);
+    const target = this.requireLocalHost(peer.target);
+    if (sameThread(peer.source, target)) {
       throw new Error2(ErrorCodes.THREAD_SELF_SEND, 'A thread cannot send a message to itself.');
     }
     return this.sendProducedMessage({
       producer: {
         kind: 'peer_thread',
-        source: input.source,
-        sender: input.sender,
-        allowWhenDisabled: input.allowWhenDisabled,
+        source: peer.source,
+        sender: peer.sender,
+        allowWhenDisabled: peer.allowWhenDisabled,
       },
-      caller: input.source,
-      target: input.target,
-      content: input.content,
-      idempotencyKey: input.idempotencyKey,
-    }, input.allowWhenDisabled !== true);
+      caller,
+      target,
+      content: peer.content,
+      idempotencyKey: peer.idempotencyKey,
+      signal: peer.signal,
+      deliveryTimeoutMs: peer.deliveryTimeoutMs,
+    }, peer.allowWhenDisabled !== true);
   }
 
   private async sendProducedMessage(input: {
@@ -515,6 +535,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     readonly target: ThreadRef;
     readonly content: string;
     readonly idempotencyKey: string;
+    readonly signal?: AbortSignal;
+    readonly deliveryTimeoutMs?: number;
   }, requireCommunication = true): Promise<SendThreadMessageResult> {
     await this.ensureRecovery();
     validateSendInput(input);
@@ -563,7 +585,11 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (delivery === 'undeliverable') this.roomDeliveryTargets.delete(accepted.message.messageId);
     }
     if (delivery === 'pending') {
-      delivery = await this.deliverMessage(accepted.message);
+      delivery = await waitBoundedDelivery(
+        this.deliverMessage(accepted.message),
+        input.signal,
+        input.deliveryTimeoutMs,
+      );
     }
     return {
       messageId: accepted.message.messageId,
@@ -668,7 +694,21 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private async globalEnabled(caller?: ThreadCaller): Promise<boolean> {
     await this.capabilities.ready;
+    const policy = this.optionalPolicy();
+    if (policy !== undefined && caller?.sessionId !== undefined) {
+      await policy.load(caller.sessionId);
+      return policy.admit('thread', { sessionId: caller.sessionId, workspaceId: caller.workspaceId, agentId: caller.agentId }).admitted;
+    }
+    if (policy !== undefined) return policy.anyMayUse('thread');
     return this.capabilities.threadEnabled(caller?.workspaceId, caller?.sessionId);
+  }
+
+  private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private async workspaceEnabled(workspaceId: string): Promise<boolean> {
@@ -782,13 +822,18 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     let observed: SendThreadMessageResult['delivery'] = 'pending';
     for (;;) {
       if (this.closing) return observed;
+      const key = threadIdentity(target);
+      const requestId = this.claimRequestIds.get(key) ?? randomUUID();
+      this.claimRequestIds.set(key, requestId);
       const claim = await this.mailbox.claimNext({
         target,
         consumerId: `thread-communication/${this.hostId}`,
         leaseMs: DELIVERY_LEASE_MS,
       }, {
+        requestId,
         signal: this.mailboxController.signal,
       });
+      this.claimRequestIds.delete(key);
       if (claim === undefined || this.closing) return observed;
       const delivery = await this.deliverClaim(claim);
       if (claim.message.messageId === observedMessageId) observed = delivery;
@@ -1039,7 +1084,9 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
   private ensureRecovery(): Promise<void> {
     if (this.recovery !== undefined) return this.recovery;
-    const flight = this.recoverPendingDeliveries().catch((error) => {
+    const flight = this.recoverPendingDeliveries().then((completed) => {
+      if (!completed && this.recovery === flight) this.recovery = undefined;
+    }).catch((error) => {
       if (this.recovery === flight) this.recovery = undefined;
       throw error;
     });
@@ -1047,101 +1094,25 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     return flight;
   }
 
-  private async recoverPendingDeliveries(): Promise<void> {
-    if (this.bootstrap.interactive === false) return;
+  private async recoverPendingDeliveries(): Promise<boolean> {
+    if (this.bootstrap.interactive === false) return false;
     await this.config.ready;
-    if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return;
+    if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return false;
     const targets = await this.mailbox.listPendingTargets({
       signal: this.mailboxController.signal,
     });
     for (const target of targets) {
-      if (this.closing) return;
+      if (this.closing || (!(await this.globalEnabled()) && !this.capabilities.anySessionThreadEnabled())) return false;
       if (target.hostId !== this.hostId) continue;
       await this.requestTargetDrain(target);
     }
+    return true;
   }
 
   private async flushLiveMain(sessionId: string): Promise<void> {
     const live = this.liveSession(sessionId);
     const main = live?.accessor.get(IAgentLifecycleService).get(MAIN_AGENT_ID);
     await main?.accessor.get(IWireService).flush();
-  }
-
-  private async readCompletedTurns(summary: SessionSummary): Promise<ThreadTurn[]> {
-    const handlerScope = workspacePersistenceScope(
-      this.bootstrap.scope('sessions'),
-      summary.workspaceId,
-    );
-    const wireScope = agentScopeOf(sessionScopeOf(handlerScope, summary.id), MAIN_AGENT_ID);
-    const turns = new Map<number, MutableTurn>();
-    const completed: ThreadTurn[] = [];
-    let nextTurnId = 0;
-    const cancelledTurnIds = new Set<number>();
-    for await (const record of this.appendLog.read<WireRecord>(wireScope, AGENT_WIRE_RECORD_KEY)) {
-      if (record.type === 'turn.cancel') {
-        const cancelled = readNumber(record, 'turnId');
-        if (
-          cancelled !== undefined &&
-          typeof record['target'] === 'string' &&
-          (record['target'] === 'active' || record['target'] === 'queued') &&
-          cancelled >= nextTurnId
-        ) {
-          cancelledTurnIds.add(cancelled);
-          nextTurnId = advanceReadTurnClock(nextTurnId, cancelledTurnIds);
-        }
-        continue;
-      }
-      if (record.type === 'turn.prompt') {
-        const origin = readPromptOrigin(record['origin']);
-        const input = readContentText(record['input']);
-        if (origin !== undefined) {
-          turns.set(nextTurnId, {
-            turnId: nextTurnId,
-            origin,
-            input,
-            startedAt: readNumber(record, 'time'),
-            output: [],
-          });
-        }
-        nextTurnId = advanceReadTurnClock(nextTurnId + 1, cancelledTurnIds);
-        continue;
-      }
-      if (record.type === 'context.append_loop_event') {
-        const event = record['event'] as LoopRecordedEvent | undefined;
-        if (event?.type !== 'tool.result' && event?.turnId !== undefined) {
-          const observedTurnId = Number.parseInt(event.turnId, 10);
-          if (Number.isInteger(observedTurnId) && observedTurnId >= nextTurnId) {
-            nextTurnId = advanceReadTurnClock(observedTurnId + 1, cancelledTurnIds);
-          }
-        }
-        if (event?.type !== 'content.part' || event.part.type !== 'text') continue;
-        const turnId = event.turnId === undefined ? undefined : Number.parseInt(event.turnId, 10);
-        if (turnId === undefined || !Number.isInteger(turnId)) continue;
-        turns.get(turnId)?.output.push(event.part.text);
-        continue;
-      }
-      if (record.type !== 'turn.ended') continue;
-      const turnId = readNumber(record, 'turnId');
-      const reason = readTurnReason(record['reason']);
-      if (turnId === undefined || reason === undefined) continue;
-      const turn = turns.get(turnId);
-      turns.delete(turnId);
-      if (turn === undefined) continue;
-      const origin = publicTurnOrigin(turn.origin);
-      if (origin === undefined) continue;
-      completed.push({
-        turnId,
-        startedAt: turn.startedAt,
-        endedAt: readNumber(record, 'time') ?? turn.startedAt ?? 0,
-        reason,
-        origin: origin.kind,
-        peer: origin.peer,
-        bridgedPeer: origin.bridgedPeer,
-        input: turn.input,
-        output: turn.output.join(''),
-      });
-    }
-    return completed.toSorted((left, right) => left.turnId - right.turnId);
   }
 
   private followLifecycle(lifecycle: ISessionManager): DisposableStore {
@@ -1231,7 +1202,8 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     if (key === undefined) return undefined;
     const store = this.observedSessions.get(key);
     this.observedSessions.delete(key);
-    store?.dispose();
+    const result = store?.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     return parseThreadIdentity(key);
   }
 
@@ -1341,52 +1313,6 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
 
 }
 
-function publicTurnOrigin(
-  origin: PromptOrigin,
-): { readonly kind: ThreadTurn['origin']; readonly peer?: ThreadTurn['peer']; readonly bridgedPeer?: ThreadTurn['bridgedPeer'] } | undefined {
-  if (origin.kind === 'bridged_peer') return { kind: 'bridged_peer', bridgedPeer: origin };
-  if (origin.kind === 'peer_thread') {
-    return { kind: 'peer', peer: { source: origin.source, messageId: origin.messageId } };
-  }
-  if (origin.kind === 'user') return { kind: 'user' };
-  if (origin.kind === 'external_thread') return { kind: 'external' };
-  if (origin.kind === 'merged') return { kind: 'mixed' };
-  if (origin.kind === 'unknown') return { kind: 'unknown' };
-  if (origin.kind === 'system_trigger' && origin.name === 'thread_create') return { kind: 'thread_created' };
-  if (
-    (origin.kind === 'skill_activation' || origin.kind === 'plugin_command') &&
-    origin.trigger === 'user-slash'
-  ) {
-    return { kind: 'user' };
-  }
-  return undefined;
-}
-
-function readPromptOrigin(value: unknown): PromptOrigin | undefined {
-  if (value === null || typeof value !== 'object') return undefined;
-  return value as PromptOrigin;
-}
-
-function readContentText(value: unknown): string {
-  if (!Array.isArray(value)) return '';
-  return value
-    .filter((part): part is ContentPart => part !== null && typeof part === 'object' && 'type' in part)
-    .filter((part) => part.type === 'text')
-    .map((part) => part.text)
-    .join('');
-}
-
-function readNumber(record: WireRecord, key: string): number | undefined {
-  const value = record[key];
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function readTurnReason(value: unknown): ThreadTurn['reason'] | undefined {
-  return value === 'completed' || value === 'cancelled' || value === 'failed' || value === 'blocked'
-    ? value
-    : undefined;
-}
-
 function boundedLimit(value: number | undefined, fallback: number, max: number): number {
   const resolved = value ?? fallback;
   if (!Number.isInteger(resolved) || resolved < 1 || resolved > max) {
@@ -1446,12 +1372,13 @@ function decodeCursor<K extends CursorPayload['kind']>(
     const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as CursorPayload;
     if (parsed.v !== 1 || parsed.kind !== kind) throw new Error('kind');
     if (kind === 'list' && typeof (parsed as ListCursor).before !== 'string') throw new Error('list');
-    if (
-      kind === 'read' &&
-      (!Number.isSafeInteger((parsed as ReadCursor).beforeTurnId) ||
-        typeof (parsed as ReadCursor).thread !== 'string')
-    ) {
-      throw new Error('read');
+    if (kind === 'read') {
+      const read = parsed as ReadCursor;
+      if (!Number.isSafeInteger(read.beforeTurnId) || typeof read.thread !== 'string') throw new Error('read');
+      const source = read.source;
+      if (source !== undefined && (source === null || typeof source !== 'object' ||
+        typeof source.generation !== 'string' || typeof source.epoch !== 'string' ||
+        !Number.isSafeInteger(source.watermark) || source.watermark < 0 || typeof source.proof !== 'string')) throw new Error('read source');
     }
     if (
       kind === 'activity' &&
@@ -1480,14 +1407,6 @@ function sameThread(left: ThreadRef, right: ThreadRef): boolean {
   return threadIdentity(left) === threadIdentity(right);
 }
 
-function advanceReadTurnClock(nextTurnId: number, cancelledTurnIds: Set<number>): number {
-  for (const cancelled of cancelledTurnIds) {
-    if (cancelled < nextTurnId) cancelledTurnIds.delete(cancelled);
-  }
-  while (cancelledTurnIds.delete(nextTurnId)) nextTurnId++;
-  return nextTurnId;
-}
-
 function isTerminalPromptState(state: PromptHandle['state']): boolean {
   return state === 'completed' || state === 'failed' || state === 'cancelled' || state === 'blocked';
 }
@@ -1512,6 +1431,32 @@ function waitWithSignal<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T
         reject(error);
       },
     );
+  });
+}
+
+function waitBoundedDelivery(
+  deliveryPromise: Promise<SendThreadMessageResult['delivery']>,
+  signal?: AbortSignal,
+  timeoutMs = FAST_DELIVERY_TIMEOUT_MS,
+): Promise<SendThreadMessageResult['delivery']> {
+  if (signal?.aborted || timeoutMs <= 0) return Promise.resolve('pending');
+  void deliveryPromise.catch(() => {});
+  let timer: NodeJS.Timeout | undefined;
+  let onAbort: (() => void) | undefined;
+  return new Promise<SendThreadMessageResult['delivery']>((resolve, reject) => {
+    onAbort = () => resolve('pending');
+    signal?.addEventListener('abort', onAbort, { once: true });
+    timer = setTimeout(() => resolve('pending'), timeoutMs);
+    timer.unref?.();
+    deliveryPromise.then(
+      (delivery) => resolve(delivery),
+      (error) => reject(error),
+    );
+  }).finally(() => {
+    if (timer !== undefined) clearTimeout(timer);
+    if (signal !== undefined && onAbort !== undefined) {
+      signal.removeEventListener('abort', onAbort);
+    }
   });
 }
 

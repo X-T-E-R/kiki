@@ -337,7 +337,18 @@ describe('the model row editor', () => {
     listModels.mockResolvedValue({ items: [{ id: 'demo/model', provider_id: 'demo', remote_id: 'demo-v1', max_context_size: 200_000 }] });
     listProviders.mockResolvedValue({ items: [{ id: 'demo', type: 'openai_compatible', display_name: 'Demo' }] });
     getModel.mockImplementation(async () => entity(behavior));
-    updateModel.mockImplementation(async (_id: string, patch: unknown) => ({ ...entity(), ...(patch as object) }));
+    updateModel.mockImplementation(async (_id: string, patch: unknown) => {
+      const patchBehavior = (patch as { behavior?: { ask_user_question_guard?: Record<string, unknown> } }).behavior;
+      const guardPatch = patchBehavior?.ask_user_question_guard;
+      if (guardPatch === undefined) return entity(behavior);
+      const currentGuard = (behavior as { ask_user_question_guard?: Record<string, unknown> } | undefined)?.ask_user_question_guard ?? {};
+      const nextGuard = { ...currentGuard };
+      for (const [key, value] of Object.entries(guardPatch)) {
+        if (value === null) delete nextGuard[key];
+        else nextGuard[key] = value;
+      }
+      return entity(Object.keys(nextGuard).length === 0 ? undefined : { ask_user_question_guard: nextGuard });
+    });
     const container = await render(<ModelCatalogCard />);
     const row = container.querySelector<HTMLElement>('[data-model-row="demo/model"]')!;
     // The row's first button is the default-model star; the second opens the

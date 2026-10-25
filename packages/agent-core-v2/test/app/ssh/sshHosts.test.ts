@@ -2,7 +2,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { SSHKaos } from '@kiki/kaos/ssh';
 import { utils } from 'ssh2';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -28,8 +28,8 @@ afterEach(async () => {
   vi.unstubAllEnvs();
 });
 
-async function fixture(): Promise<{ home: string; config: string; hosts: SshHostStore }> {
-  const home = await mkdtemp(join(tmpdir(), 'kiki-ssh-hosts-'));
+async function fixture(root = tmpdir()): Promise<{ home: string; config: string; hosts: SshHostStore }> {
+  const home = await mkdtemp(join(root, 'kiki-ssh-hosts-'));
   directories.push(home);
   vi.stubEnv('KIKI_HOME', home);
   const sshDir = join(home, '.ssh');
@@ -76,7 +76,11 @@ describe('SSH host store', () => {
   });
 
   it('recovers native path boundaries for Windows lists, spaces, Includes and expanded tokens', async () => {
-    const { home, config } = await fixture();
+    const { home, config } = await fixture(process.platform === 'win32' ? homedir() : tmpdir());
+    if (process.platform === 'win32') {
+      vi.stubEnv('HOME', home);
+      vi.stubEnv('USERPROFILE', home);
+    }
     const defaults = await resolveSshConfig('dev', config);
     expect(defaults.userKnownHostsFiles).toHaveLength(2);
     expect(defaults.userKnownHostsFiles[0]).toMatch(/[/\\]known_hosts$/);
@@ -87,7 +91,8 @@ describe('SSH host store', () => {
     expect((await resolveSshConfig('dev', config)).userKnownHostsFiles).toEqual([first, second]);
     const spaced = join(home, '.ssh', 'known hosts');
     await writeFile(join(home, '.ssh', 'fragments', 'paths'), `Host dev\n  UserKnownHostsFile "${spaced}" "~/.ssh/%h-%p-%r-%%"\n`);
-    await writeFile(config, `Include "${join(home, '.ssh', 'fragments', 'paths')}"\nHost dev\n  HostName example.test\n  User tester\n  Port 2200\n`);
+    const include = process.platform === 'win32' ? '~/.ssh/fragments/paths' : join(home, '.ssh', 'fragments', 'paths');
+    await writeFile(config, `Include "${include}"\nHost dev\n  HostName example.test\n  User tester\n  Port 2200\n`);
     const paths = (await resolveSshConfig('dev', config)).userKnownHostsFiles;
     expect(paths[0]).toBe(spaced);
     expect(paths[1]).toMatch(/[/\\]example\.test-2200-tester-%$/);

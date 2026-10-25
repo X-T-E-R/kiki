@@ -1,5 +1,8 @@
+import { Error2, ErrorCodes } from '#/errors';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import type { AgentMeta, DelegatorRef } from '#/session/sessionMetadata/sessionMetadata';
 
+const AGENT_WORKSPACE_ROOTS_LABEL = 'agentWorkspaceRoots';
 const REQUEST_IDENTITY_PARENT_TURN_LABEL = 'requestIdentityParentTurn';
 const REQUEST_IDENTITY_ROOT_AGENT_LABEL = 'requestIdentityRootAgent';
 const REQUEST_IDENTITY_ROOT_TURN_LABEL = 'requestIdentityRootTurn';
@@ -9,6 +12,52 @@ const REQUEST_IDENTITY_ROOT_TURN_LABEL = 'requestIdentityRootTurn';
  *  parentage itself. */
 export function subagentLabels(parentAgentId: string): Readonly<Record<string, string>> {
   return { parentAgentId };
+}
+
+export function workspaceRootsLabels(roots: RuntimeWorkspaceRoots): Readonly<Record<string, string>> {
+  return {
+    [AGENT_WORKSPACE_ROOTS_LABEL]: JSON.stringify({
+      workDir: roots.workDir,
+      additionalDirs: [...new Set(roots.additionalDirs ?? [])],
+    }),
+  };
+}
+
+export function subagentWorkspaceRoots(
+  meta: AgentMeta | undefined,
+  agentId?: string,
+): RuntimeWorkspaceRoots | undefined {
+  const raw = meta?.labels?.[AGENT_WORKSPACE_ROOTS_LABEL];
+  if (raw === undefined) return undefined;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw invalidWorkspaceRoots(agentId, 'invalid JSON');
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    throw invalidWorkspaceRoots(agentId, 'workspace roots must be an object');
+  }
+  const parsed = value as { workDir?: unknown; additionalDirs?: unknown };
+  if (typeof parsed.workDir !== 'string' || parsed.workDir.trim().length === 0) {
+    throw invalidWorkspaceRoots(agentId, 'workDir must be a non-empty string');
+  }
+  if (parsed.additionalDirs !== undefined && (!Array.isArray(parsed.additionalDirs) ||
+    parsed.additionalDirs.some((dir) => typeof dir !== 'string' || dir.trim().length === 0))) {
+    throw invalidWorkspaceRoots(agentId, 'additionalDirs must be an array of non-empty strings');
+  }
+  return {
+    workDir: parsed.workDir,
+    additionalDirs: parsed.additionalDirs as string[] | undefined,
+  };
+}
+
+function invalidWorkspaceRoots(agentId: string | undefined, reason: string): Error2 {
+  return new Error2(
+    ErrorCodes.CONFIG_INVALID,
+    `Persisted workspace roots${agentId === undefined ? '' : ` for agent "${agentId}"`} are invalid: ${reason}`,
+    { details: { agentId, label: AGENT_WORKSPACE_ROOTS_LABEL, reason } },
+  );
 }
 
 export function withSubagentProfile(

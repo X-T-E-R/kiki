@@ -1,24 +1,36 @@
 import {
+  admitEgoAfterAllow,
   ConfigChanged,
   ConfigTarget,
   IBootstrapService,
   FAST_MODEL_SECTION,
+  IBrowserControlService,
   IConfigService,
   IEventService,
   IModelService,
   type Scope,
 } from '@kiki/agent-core-v2';
 import { splitConfigCredentials } from '@kiki/agent-core-v2/app/config/credentials';
+import { agentExecutorOverridesFromToml, agentExecutorOverridesToToml } from '@kiki/agent-core-v2/app/agentExecutor/executorOverrides';
+import { agentExecutorsToToml } from '@kiki/agent-core-v2/app/agentExecutor/configSection';
 import { MODEL_SWITCH_SECTION, modelSwitchPreferencesToToml } from '@kiki/agent-core-v2/app/modelSwitchPreferences/configSection';
 import { modelGenerationMigrationApplyRequestSchema, modelGenerationMigrationApplyResponseSchema, modelGenerationMigrationPreviewSchema, modelGenerationMigrationRestoreRequestSchema, modelGenerationMigrationRestoreResponseSchema } from '@kiki/protocol';
-import { REQUEST_IDENTITY_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
+import { REQUEST_COMPRESSION_SECTION, REQUEST_IDENTITY_SECTION, RESPONSES_WEB_SOCKET_SECTION } from '@kiki/agent-core-v2/app/kosongConfig/configSection';
 import { IRequestIdentityCatalog } from '@kiki/agent-core-v2/app/requestIdentity/requestIdentityCatalog';
 import { providerCredentialFields } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ProviderConfig } from '@kiki/agent-core-v2/kosong/provider/provider';
 import { TASK_BOARD_SECTION } from '@kiki/agent-core-v2/app/taskBoard/configSection';
-import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, type ComputerConfig } from '@kiki/agent-core-v2/app/computer/configSection';
+import { COMPUTER_CONFIG_SECTION, DEFAULT_COMPUTER_USAGE_PREFERENCE, computerToolsEnabled, type ComputerConfig } from '@kiki/agent-core-v2/app/computer/configSection';
+import { BROWSER_CONFIG_SECTION, readBrowserControlSettings, type BrowserConfig, type BrowserControlSettings } from '@kiki/agent-core-v2/app/browser/browserConfig';
+import { IBrowserConnectionStore } from '@kiki/agent-core-v2/app/browser/browserConnectionStore';
+import { EXPERIMENTAL_SECTION, IFlagService } from '@kiki/agent-core-v2/app/flag/flag';
+import { IOptionalCapabilityPolicy } from '@kiki/agent-core-v2/app/optionalCapability/policy';
+import { OPTIONAL_CAPABILITIES_SECTION } from '@kiki/agent-core-v2/app/optionalCapability/configSection';
+import { THREAD_COMMUNICATION_SECTION } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
 import type { ConfigOrigin } from '@kiki/agent-core-v2/app/config/config';
 import { SUBAGENT_SECTION } from '@kiki/agent-core-v2/session/subagent/configSection';
+import { SESSION_TITLE_SECTION, type SessionTitleConfig } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
+import { DEFAULT_SESSION_TITLE_PROMPT, sessionTitlePromptOverride } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { INbSearchService } from '@kiki/agent-core-v2/app/nbSearch/nbSearch';
 import {
   NB_SEARCH_SECTION,
@@ -29,6 +41,16 @@ import {
   type NbSearchConfig,
   type NbSearchSourceConfig,
 } from '@kiki/agent-core-v2/app/nbSearch/configSection';
+import {
+  requestCompressionFromWire,
+  requestCompressionToWire,
+  RequestCompressionSystemSchema,
+  responsesWebSocketFromWire,
+  responsesWebSocketToWire,
+  ResponsesWebSocketSystemSchema,
+  type RequestCompressionLayer,
+  type ResponsesWebSocketLayer,
+} from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
@@ -81,7 +103,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
     async (req, reply) => {
       const config = core.accessor.get(IConfigService);
       await config.ready;
-      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']), req.id));
+      reply.send(okEnvelope(toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core)), req.id));
     },
   );
   app.get(getRoute.path, getRoute.options, getRoute.handler as Parameters<ConfigRouteHost['get']>[2]);
@@ -104,15 +126,25 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         const config = core.accessor.get(IConfigService);
         await config.ready;
         const requestIdentity = req.body.request_identity;
+        const requestCompression = req.body.request_compression;
+        const responsesWebSocket = req.body.responses_web_socket;
         const camelPatch = convertKeysSnakeToCamel(req.body) as Record<string, unknown>;
         const replaceDomains = new Set(
           ((camelPatch['replaceDomains'] as string[] | undefined) ?? []).map(snakeToCamel),
         );
         delete camelPatch['replaceDomains'];
         delete camelPatch[REQUEST_IDENTITY_SECTION];
+        delete camelPatch[REQUEST_COMPRESSION_SECTION];
+        delete camelPatch[RESPONSES_WEB_SOCKET_SECTION];
         if (requestIdentity !== undefined && requestIdentity !== null) {
           await core.accessor.get(IRequestIdentityCatalog).ready;
           resolveRequestIdentityLayers(requestIdentityFromWire(requestIdentity));
+        }
+        if (requestCompression !== undefined && requestCompression !== null) {
+          RequestCompressionSystemSchema.parse(requestCompressionFromWire(requestCompression));
+        }
+        if (responsesWebSocket !== undefined && responsesWebSocket !== null) {
+          ResponsesWebSocketSystemSchema.parse(responsesWebSocketFromWire(responsesWebSocket));
         }
         const subagent = camelPatch[SUBAGENT_SECTION];
         const requestedModels = [
@@ -134,6 +166,32 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         }
         delete camelPatch['yolo'];
         await clearReviewerApiKey(config, camelPatch);
+        if (isPlainObject(camelPatch['browserControl'])) {
+          const patch = camelPatch['browserControl'] as Record<string, unknown>;
+          if ('allowedBrowsers' in patch) {
+            const allowed = patch['allowedBrowsers'];
+            const store = core.accessor.get(IBrowserConnectionStore);
+            const before = (await store.list()).allowedBrowsers;
+            const after = allowed === null ? undefined : allowed as string[];
+            await store.setAllowed(after);
+            await admitEgoAfterAllow(core.accessor.get(IBrowserControlService), before, after);
+          }
+          if ('disabledSources' in patch) {
+            const disabled = patch['disabledSources'];
+            const store = core.accessor.get(IBrowserConnectionStore);
+            const after = disabled === null ? undefined : disabled as ('kimi-webbridge' | 'independent-browser' | 'codex-browser' | 'ego-lite')[];
+            await store.setDisabledSources?.(after);
+          }
+          if ('enabled' in patch) {
+            const explained = core.accessor.get(IFlagService).explain('native_browser');
+            if (explained?.source === 'env' && patch['enabled'] !== explained.enabled) {
+              throw new Error('KIKI_EXPERIMENTAL_NATIVE_BROWSER fixes browser control on this host');
+            }
+            if (patch['enabled'] === null) await config.removeOverride(EXPERIMENTAL_SECTION, ['native_browser']);
+            else if (typeof patch['enabled'] === 'boolean') await config.set(EXPERIMENTAL_SECTION, { native_browser: patch['enabled'] }, ConfigTarget.User);
+          }
+          delete camelPatch['browserControl'];
+        }
         if (camelPatch[NB_SEARCH_SECTION] !== undefined || camelPatch[NB_SEARCH_SOURCE_SECTION] !== undefined) {
           const write = nbSearchWrites.then(async () => {
             const nbSections: Record<string, unknown> = {};
@@ -160,13 +218,32 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
         }
         delete camelPatch[NB_SEARCH_SECTION];
         delete camelPatch[NB_SEARCH_SOURCE_SECTION];
+        if (isPlainObject(camelPatch['optionalCapabilities'])) {
+          await applyOptionalCapabilityPatch(config, camelPatch['optionalCapabilities']);
+          delete camelPatch['optionalCapabilities'];
+        }
         for (const domain of Object.keys(camelPatch)) {
           if (domain === TASK_BOARD_SECTION) {
             await config.replaceSections({ [TASK_BOARD_SECTION]: camelPatch[domain] }, ConfigTarget.User);
-          } else if (domain === COMPUTER_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['usagePreference'] === null) {
-            await config.removeOverride(COMPUTER_CONFIG_SECTION, ['usagePreference']);
+          } else if (domain === COMPUTER_CONFIG_SECTION && isPlainObject(camelPatch[domain]) && (camelPatch[domain]['usagePreference'] === null || camelPatch[domain]['enabled'] === null || camelPatch[domain]['connection'] === null)) {
+            const patch = { ...camelPatch[domain] };
+            if (patch['usagePreference'] === null) {
+              await config.removeOverride(COMPUTER_CONFIG_SECTION, ['usagePreference']);
+              delete patch['usagePreference'];
+            }
+            if (patch['enabled'] === null) {
+              await config.removeOverride(COMPUTER_CONFIG_SECTION, ['enabled']);
+              delete patch['enabled'];
+            }
+            if (patch['connection'] === null) {
+              await config.removeOverride(COMPUTER_CONFIG_SECTION, ['connection']);
+              delete patch['connection'];
+            }
+            if (Object.keys(patch).length > 0) await config.set(domain, patch);
           } else if (domain === SUBAGENT_SECTION && isSubagentDefaultModelClear(camelPatch[domain])) {
             await clearSubagentDefaultModel(config, camelPatch[domain] as Record<string, unknown>);
+          } else if (domain === THREAD_COMMUNICATION_SECTION && isPlainObject(camelPatch[domain]) && camelPatch[domain]['enabled'] === null) {
+            await config.removeOverride(THREAD_COMMUNICATION_SECTION, ['enabled']);
           } else if (domain === FAST_MODEL_SECTION && camelPatch[domain] === null) {
             await config.replace(FAST_MODEL_SECTION, null, ConfigTarget.User);
           } else if (domain === 'prompt' && replaceDomains.has(domain)) {
@@ -185,7 +262,21 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
             ConfigTarget.User,
           );
         }
-        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']);
+        if (requestCompression !== undefined) {
+          await config.replace(
+            REQUEST_COMPRESSION_SECTION,
+            requestCompression === null ? null : requestCompressionFromWire(requestCompression),
+            ConfigTarget.User,
+          );
+        }
+        if (responsesWebSocket !== undefined) {
+          await config.replace(
+            RESPONSES_WEB_SOCKET_SECTION,
+            responsesWebSocket === null ? null : responsesWebSocketFromWire(responsesWebSocket),
+            ConfigTarget.User,
+          );
+        }
+        const response = toConfigResponse(config.getAll(), core.accessor.get(IBootstrapService).spaceId === undefined ? undefined : config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core));
         const changedFields = Object.keys(req.body as Record<string, unknown>).filter(
           (field) => field !== 'replace_domains',
         );
@@ -220,7 +311,7 @@ export function registerConfigRoutes(app: ConfigRouteHost, core: Scope): void {
       const config = core.accessor.get(IConfigService);
       const domain = snakeToCamel(req.body.domain);
       await config.removeOverride(domain, req.body.key_path);
-      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference']);
+      const response = toConfigResponse(config.getAll(), config, config.origins(COMPUTER_CONFIG_SECTION)['usagePreference'], controlProjection(core), capabilityWire(core));
       core.accessor.get(IEventService).publish(new ConfigChanged({ payload: { changedFields: [req.body.domain], config: response } }));
       reply.send(okEnvelope(response, req.id));
     } catch (error) {
@@ -339,7 +430,42 @@ async function clearSubagentDefaultModel(config: IConfigService, patch: Record<s
   }
 }
 
-function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default'): ConfigResponse {
+function controlProjection(core: Scope): { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin } {
+  const config = core.accessor.get(IConfigService);
+  const browser = config.get<BrowserConfig>(BROWSER_CONFIG_SECTION);
+  return {
+    browser: readBrowserControlSettings(core.accessor.get(IFlagService), {
+      experimental: config.origins(EXPERIMENTAL_SECTION)['native_browser'],
+      allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
+    }, browser?.allowedBrowsers, browser?.disabledSources),
+    computerEnabledSource: config.origins(COMPUTER_CONFIG_SECTION)['enabled'] ?? 'default',
+  };
+}
+
+function capabilityWire(core: Scope): Record<string, unknown> | undefined {
+  try {
+    return core.accessor.get(IOptionalCapabilityPolicy).wireProjection();
+  } catch {
+    return undefined;
+  }
+}
+
+async function applyOptionalCapabilityPatch(config: IConfigService, patch: Record<string, unknown>): Promise<void> {
+  const defaults = patch['defaults'];
+  if (isPlainObject(defaults)) {
+    for (const [id, value] of Object.entries(defaults)) {
+      if (value === null) await config.removeOverride(OPTIONAL_CAPABILITIES_SECTION, ['defaults', id]);
+      else if (typeof value === 'boolean') await config.set(OPTIONAL_CAPABILITIES_SECTION, { defaults: { [id]: value } });
+    }
+  }
+  if ('webAllowed' in patch) {
+    const value = patch['webAllowed'];
+    if (value === null) await config.removeOverride(OPTIONAL_CAPABILITIES_SECTION, ['web', 'allowed']);
+    else if (typeof value === 'boolean') await config.set(OPTIONAL_CAPABILITIES_SECTION, { web: { allowed: value } });
+  }
+}
+
+function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigService, computerPreferenceSource: ConfigOrigin = 'default', projection?: { browser: BrowserControlSettings; computerEnabledSource: ConfigOrigin }, capabilities?: Record<string, unknown>): ConfigResponse {
   const wire: Record<string, unknown> = {};
   if (config !== undefined) {
     wire['origins'] = Object.fromEntries(Object.keys(resolved).filter((domain) => domain !== 'services' && domain !== 'telemetry')
@@ -354,6 +480,10 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       wire['model_switch'] = modelSwitchPreferencesToToml(value, {});
     } else if (domain === REQUEST_IDENTITY_SECTION) {
       wire['request_identity'] = requestIdentityToWire(value as RequestIdentityPolicy);
+    } else if (domain === REQUEST_COMPRESSION_SECTION) {
+      wire['request_compression'] = requestCompressionToWire(value as RequestCompressionLayer);
+    } else if (domain === RESPONSES_WEB_SOCKET_SECTION) {
+      wire['responses_web_socket'] = responsesWebSocketToWire(value as ResponsesWebSocketLayer);
     } else if (domain === 'permission' && isPlainObject(value)) {
       const publicValue = splitConfigCredentials({ [domain]: value }).config[domain];
       if (isPlainObject(publicValue)) {
@@ -377,6 +507,25 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
       if (publicValue !== undefined) wire[camelToSnake(domain)] = publicValue;
     }
   }
+  const raw = isPlainObject(wire['raw']) ? { ...wire['raw'] } : {};
+  if (wire['agent_executor_overrides'] !== undefined) raw['agent_executor_overrides'] = agentExecutorOverridesToToml(wire['agent_executor_overrides']);
+  if (wire['agent_executors'] !== undefined) raw['agent_executors'] = agentExecutorsToToml(wire['agent_executors']);
+  const display = wire['agent_executor_display'];
+  if (isPlainObject(display)) {
+    const echoed: Record<string, unknown> = {};
+    if (display['externalsVisible'] !== undefined) echoed['externals_visible'] = display['externalsVisible'];
+    if (display['discoveryInitialized'] !== undefined) echoed['discovery_initialized'] = display['discoveryInitialized'];
+    raw['agent_executor_display'] = echoed;
+  }
+  wire['raw'] = raw;
+  const sessionTitle = resolved[SESSION_TITLE_SECTION] as SessionTitleConfig | undefined;
+  const prompt = sessionTitlePromptOverride(sessionTitle?.prompt);
+  wire['session_title'] = {
+    ...sessionTitle,
+    prompt,
+    default_prompt: DEFAULT_SESSION_TITLE_PROMPT,
+    prompt_source: prompt === undefined ? 'default' : 'custom',
+  };
   const defaultPermissionMode = resolved['defaultPermissionMode'];
   if (typeof defaultPermissionMode === 'string') {
     wire['yolo'] = defaultPermissionMode === 'yolo';
@@ -385,10 +534,22 @@ function toConfigResponse(resolved: Record<string, unknown>, config?: IConfigSer
     wire['providers'] = {};
   }
   const computer = resolved[COMPUTER_CONFIG_SECTION] as ComputerConfig | undefined;
-  wire['computer_control'] = {
+  wire['browser_control'] = projection?.browser ?? { enabled: true, enabledSource: 'default', allowedBrowsers: [], allowedBrowsersConfigured: false, allowedBrowsersSource: 'default' };
+  delete wire['optional_capabilities'];
+  if (capabilities !== undefined) wire['optional_capabilities'] = capabilities;
+  const computerWire = {
+    enabled: computerToolsEnabled(computer),
+    enabledSource: projection?.computerEnabledSource ?? 'default',
     usagePreference: computer?.usagePreference ?? DEFAULT_COMPUTER_USAGE_PREFERENCE,
     usagePreferenceSource: computerPreferenceSource,
-    appliesOn: 'next-model-request',
+    appliesOn: 'next-model-request' as const,
+    toolsApplyOn: 'next-step' as const,
+  };
+  const connection = computer?.connection;
+  wire['computer_control'] = connection === undefined ? computerWire : {
+    ...computerWire,
+    connection,
+    connectionSource: config?.origins(COMPUTER_CONFIG_SECTION)['connection'] ?? 'home',
   };
   return configResponseWireSchema.parse(wire);
 }
@@ -430,7 +591,9 @@ function convertKeysSnakeToCamel(obj: unknown, preserveKeys = false): unknown {
     const result: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(obj)) {
       const targetKey = preserveKeys ? key : snakeToCamel(key);
-      if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
+      if (!preserveKeys && key === 'agent_executor_overrides') {
+        result[targetKey] = agentExecutorOverridesFromToml(value);
+      } else if (!preserveKeys && (key === 'nb_search' || key === 'nb_search_source' || key === 'prompt')) {
         result[targetKey] = value;
       } else {
         result[targetKey] = convertKeysSnakeToCamel(

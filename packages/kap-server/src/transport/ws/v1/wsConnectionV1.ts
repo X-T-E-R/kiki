@@ -137,6 +137,9 @@ export class WsConnectionV1 implements BroadcastTarget {
   /** Per-session subscription state: legacy agent allowlist + opt-in transcript grades. */
   readonly subscriptions = new Map<string, SessionSubscription>();
   private readonly pendingAttaches = new Set<string>();
+  private readonly replayHolds = new Set<string>();
+  private readonly heldDuringReplay = new Map<string, EventEnvelope[]>();
+  private heldBytes = 0;
   private lastFragmentProgressAt = 0;
   /**
    * Serializes control-frame handling in receive order. Frames arrive
@@ -230,8 +233,47 @@ export class WsConnectionV1 implements BroadcastTarget {
 
   /** BroadcastTarget — buffer subscription traffic; public traffic is a FIFO barrier. */
   send(envelope: EventEnvelope, delivery: BroadcastDelivery = 'subscription'): void {
+    const sessionId = envelope.session_id;
+    if (delivery !== 'immediate' && sessionId !== undefined && this.replayHolds.has(sessionId)) {
+      this.holdReplayFrame(envelope);
+      return;
+    }
     if (delivery === 'immediate') this.sendImmediateFrame(envelope);
     else this.sendSubscribedFrame(envelope);
+  }
+
+  private holdReplayFrame(envelope: EventEnvelope): void {
+    if (this.closed) return;
+    const sessionId = envelope.session_id;
+    if (sessionId === undefined) return;
+    const serialized = serializeOutboundFrame(envelope);
+    const held = this.heldDuringReplay.get(sessionId);
+    if (held === undefined) this.heldDuringReplay.set(sessionId, [envelope]);
+    else held.push(envelope);
+    this.heldBytes += serialized.bytes;
+    if (this.outboundBytes + this.heldBytes > this.maxOutboundBufferBytes) {
+      this.terminateSlowOrSilent('slow_consumer', {
+        cause: 'queued_bytes',
+        queuedBytes: this.outboundBytes + this.heldBytes,
+        limitBytes: this.maxOutboundBufferBytes,
+      });
+    }
+  }
+
+  private takeReplayHeld(sid: string): EventEnvelope[] {
+    const held = this.heldDuringReplay.get(sid) ?? [];
+    this.discardReplayHeld(sid);
+    return held;
+  }
+
+  private discardReplayHeld(sid?: string): void {
+    if (sid === undefined) this.heldDuringReplay.clear();
+    else this.heldDuringReplay.delete(sid);
+    let total = 0;
+    for (const frames of this.heldDuringReplay.values()) {
+      for (const frame of frames) total += serializeOutboundFrame(frame).bytes;
+    }
+    this.heldBytes = total;
   }
 
   private fragmenting = false;
@@ -771,6 +813,7 @@ export class WsConnectionV1 implements BroadcastTarget {
     if (this.closed) return;
     const { accepted, resyncRequired, serverCursors, notFound } = collectors;
     this.pendingAttaches.add(sid);
+    if (cursor !== undefined) this.replayHolds.add(sid);
     let attached = false;
     try {
       const ok = await this.broadcaster.subscribe(sid, this, filter, transcriptGrades, {
@@ -795,6 +838,8 @@ export class WsConnectionV1 implements BroadcastTarget {
       attached = true;
     } finally {
       this.pendingAttaches.delete(sid);
+      this.replayHolds.delete(sid);
+      this.discardReplayHeld(sid);
       if (!attached) {
         this.broadcaster.unsubscribe(sid, this);
         this.subscriptions.delete(sid);
@@ -811,15 +856,26 @@ export class WsConnectionV1 implements BroadcastTarget {
     serverCursors: Record<string, { seq: number; epoch?: string }>,
   ): Promise<void> {
     const result = await this.broadcaster.getBufferedSince(sid, cursor, filter, transcriptGrades);
+    this.replayHolds.delete(sid);
+    const held = this.takeReplayHeld(sid);
+    let seq = result.currentSeq;
     if (result.resyncRequired !== false) {
       this.sendImmediateFrame(
         buildResyncRequired(sid, result.resyncRequired as ResyncReason, result.currentSeq, result.epoch),
       );
       resyncRequired.push(sid);
     } else {
-      for (const { envelope } of result.events) this.sendSubscribedFrame(envelope);
+      const deliver = (envelope: EventEnvelope): void => {
+        this.sendSubscribedFrame(envelope);
+        if (envelope.volatile !== true && envelope.seq > seq) seq = envelope.seq;
+      };
+      for (const { envelope } of result.events) deliver(envelope);
+      for (const envelope of held) {
+        if (envelope.volatile !== true && envelope.seq <= seq) continue;
+        deliver(envelope);
+      }
     }
-    serverCursors[sid] = { seq: result.currentSeq, epoch: result.epoch };
+    serverCursors[sid] = { seq, epoch: result.epoch };
   }
 
   private async authorize(frame: InboundFrame): Promise<boolean> {
@@ -875,10 +931,10 @@ export class WsConnectionV1 implements BroadcastTarget {
     this.outbound.push(msg);
     this.outboundSerialized.push(serialized.text);
     this.outboundBytes += serialized.bytes;
-    if (this.outboundBytes > this.maxOutboundBufferBytes) {
+    if (this.outboundBytes + this.heldBytes > this.maxOutboundBufferBytes) {
       this.terminateSlowOrSilent('slow_consumer', {
         cause: 'queued_bytes',
-        queuedBytes: this.outboundBytes,
+        queuedBytes: this.outboundBytes + this.heldBytes,
         limitBytes: this.maxOutboundBufferBytes,
       });
       return false;
@@ -994,7 +1050,7 @@ export class WsConnectionV1 implements BroadcastTarget {
         connectionId: this.id,
         remoteAddress: this.remoteAddress,
         reason,
-        queuedBytes: this.outboundBytes,
+        queuedBytes: this.outboundBytes + this.heldBytes,
         socketBufferedBytes: this.socket.bufferedAmount,
         ...details,
       },
@@ -1036,6 +1092,8 @@ export class WsConnectionV1 implements BroadcastTarget {
     }
     this.subscriptions.clear();
     this.pendingAttaches.clear();
+    this.replayHolds.clear();
+    this.discardReplayHeld();
     this.fsWatchBridge?.detachConnection(this);
     const terminalServices = new Set(this.terminalAttachments.values());
     for (const service of terminalServices) {

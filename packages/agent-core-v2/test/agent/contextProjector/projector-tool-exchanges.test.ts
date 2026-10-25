@@ -52,6 +52,21 @@ function user(text: string): ContextMessage {
   return { role: 'user', content: [{ type: 'text', text }], toolCalls: [], origin: { kind: 'user' } };
 }
 
+function anchoredUser(
+  text: string,
+  turnId: number | undefined,
+  stepId: string | undefined,
+  origin?: ContextMessage['origin'],
+): ContextMessage {
+  return {
+    role: 'user',
+    content: [{ type: 'text', text }],
+    toolCalls: [],
+    origin: origin ?? { kind: 'user' },
+    source: turnId === undefined && stepId === undefined ? undefined : { turnId, stepId },
+  };
+}
+
 function reminder(text: string): ContextMessage {
   return {
     role: 'user',
@@ -134,6 +149,159 @@ describe('projector tool-exchange normalization', () => {
     const history = [user('go'), assistant('', ['c1']), toolResult('c1', 'one'), user('next')];
     expect(shape(history)).toEqual(['user', 'assistant', 'tool:c1', 'user']);
     expect(project(history)).toHaveLength(4);
+  });
+
+  it('merges same-step user messages without changing canonical identities', () => {
+    const history: ContextMessage[] = [
+      {
+        ...anchoredUser('first', 7, 'step-1'),
+        id: 'user-1',
+        content: [
+          { type: 'text', text: 'first' },
+          { type: 'image_url', imageUrl: { url: 'data:image/png;base64,ONE', id: 'image-1' } },
+        ],
+      },
+      {
+        ...anchoredUser('second', 7, 'step-1'),
+        id: 'user-2',
+        content: [
+          { type: 'text', text: 'second' },
+          { type: 'image_url', imageUrl: { url: 'data:image/png;base64,TWO', id: 'image-2' } },
+        ],
+      },
+    ];
+    const canonical = structuredClone(history);
+
+    const projected = project(history);
+
+    expect(projected).toEqual([
+      {
+        role: 'user',
+        name: undefined,
+        content: [
+          { type: 'text', text: 'first' },
+          { type: 'image_url', imageUrl: { url: 'data:image/png;base64,ONE', id: 'image-1' } },
+          { type: 'text', text: '\n\nsecond' },
+          { type: 'image_url', imageUrl: { url: 'data:image/png;base64,TWO', id: 'image-2' } },
+        ],
+        toolCalls: [],
+        toolCallId: undefined,
+        partial: undefined,
+      },
+    ]);
+    expect(projected[0]).not.toHaveProperty('id');
+    expect(projected[0]).not.toHaveProperty('source');
+    expect(history).toEqual(canonical);
+  });
+
+  it('keeps skill prefixes at the merged input prefix and accepts non-user origins', () => {
+    const review = {
+      activationId: 'activation-review',
+      skillName: 'review',
+    };
+    const security = {
+      activationId: 'activation-security',
+      skillName: 'security',
+    };
+    const history: ContextMessage[] = [
+      {
+        ...anchoredUser('first', 8, 'step-1', { kind: 'user', skillActivations: [review] }),
+        content: [
+          { type: 'text', text: '<skill>review</skill>' },
+          { type: 'text', text: 'first' },
+        ],
+      },
+      {
+        ...anchoredUser('second', 8, 'step-1', {
+          kind: 'merged',
+          origins: [
+            {
+              kind: 'peer_thread',
+              source: { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-session' },
+              messageId: 'peer-1',
+              acceptedAt: 1,
+            },
+            { kind: 'user', skillActivations: [security] },
+          ],
+        }),
+        content: [
+          { type: 'text', text: '<skill>security</skill>' },
+          { type: 'text', text: 'second' },
+        ],
+      },
+    ];
+
+    const projected = project(history);
+
+    expect(projected[0]?.content).toEqual([
+      { type: 'text', text: '<skill>review</skill>' },
+      { type: 'text', text: '<skill>security</skill>' },
+      { type: 'text', text: 'first\n\nsecond' },
+    ]);
+  });
+
+  it('does not merge users across anchors or model/tool boundaries', () => {
+    const sameTurnDifferentSteps = project([
+      anchoredUser('step one', 9, 'step-1'),
+      anchoredUser('step two', 9, 'step-2'),
+    ]);
+    const differentTurns = project([
+      anchoredUser('turn one', 9, 'step-1'),
+      anchoredUser('turn two', 10, 'step-1'),
+    ]);
+    const missingAnchor = project([anchoredUser('anchored', 9, 'step-1'), user('unanchored')]);
+    const turnOnlyAnchor = project([
+      anchoredUser('anchored', 9, 'step-1'),
+      anchoredUser('turn-only', 9, undefined),
+    ]);
+    const emptyStepAnchor = project([
+      anchoredUser('anchored', 9, 'step-1'),
+      anchoredUser('empty-step', 9, '   '),
+    ]);
+    const emptyAssistantBoundary = project([
+      assistant('history'),
+      anchoredUser('before', 9, 'step-1'),
+      assistant(''),
+      anchoredUser('after', 9, 'step-1'),
+    ]);
+    const orphanToolBoundary = project([
+      assistant('history'),
+      anchoredUser('before', 9, 'step-1'),
+      toolResult('orphan', 'dropped'),
+      anchoredUser('after', 9, 'step-1'),
+    ]);
+    const acrossExchange = project([
+      anchoredUser('before', 9, 'step-1'),
+      assistant('', ['boundary']),
+      toolResult('boundary', 'done'),
+      anchoredUser('after', 9, 'step-1'),
+    ]);
+
+    expect(sameTurnDifferentSteps).toHaveLength(2);
+    expect(differentTurns).toHaveLength(2);
+    expect(missingAnchor).toHaveLength(2);
+    expect(turnOnlyAnchor).toHaveLength(2);
+    expect(emptyStepAnchor).toHaveLength(2);
+    expect(emptyAssistantBoundary.filter((message) => message.role === 'user')).toHaveLength(2);
+    expect(orphanToolBoundary.filter((message) => message.role === 'user')).toHaveLength(2);
+    expect(shape([
+      anchoredUser('before', 9, 'step-1'),
+      assistant('', ['boundary']),
+      toolResult('boundary', 'done'),
+      anchoredUser('after', 9, 'step-1'),
+    ])).toEqual(['user', 'assistant', 'tool:boundary', 'user']);
+    expect(acrossExchange).toHaveLength(4);
+  });
+
+  it('applies the same anchored merge before strict structural repairs', () => {
+    const projected = projectStrict([
+      assistant('stale'),
+      anchoredUser('first', 11, 'step-1'),
+      anchoredUser('second', 11, 'step-1'),
+    ]);
+
+    expect(projected.map((message) => message.role)).toEqual(['user']);
+    expect(projected[0]?.content).toEqual([{ type: 'text', text: 'first\n\nsecond' }]);
   });
 
   it('synthesizes a result for a trailing unanswered call', () => {

@@ -191,9 +191,11 @@ describe('continuity cadence', () => {
     const history = [user('以后模型只能用 example-model')];
     const result = new TodoListReminderTracker().evaluate({ ...base, active: false, memoryAvailable: true, history });
     expect(result?.disclosure.triggers).toEqual(['E1']);
-    expect(result?.content).toContain('approval policy');
-    expect(result?.content).toContain('entry as the complete current rule');
-    expect(result?.content).toContain('Put the correction history in reason');
+    expect(result?.disclosure.memory?.reason).toBe('M1');
+    expect(result?.content).toContain('choose its durable home');
+    expect(result?.content).toContain('Read complete related entries before changing them');
+    expect(result?.content).not.toContain('This human input may change guidance beyond the current task');
+    expect(result?.content).not.toContain('type=feedback');
     expect(new TodoListReminderTracker().evaluate({ ...base, humanAuthorized: false, history })).toBeUndefined();
   });
   it('retrieves named earlier artifacts without treating unrelated notes as coverage', () => {
@@ -236,13 +238,14 @@ describe('review regression boundaries', () => {
     expect(classifyDirectives(text)[0]).toMatchObject({ subject: 'agent.behavior', scope: 'agent', lifetime: 'persistent' });
     const result = new TodoListReminderTracker().evaluate({ ...base, history: [user(text)], memoryAvailable: true });
     expect(result?.disclosure.triggers).toEqual(['E1']);
-    expect(result?.content).toContain('short quote + t1');
-    expect(result?.content).toContain('MemoryWrite type=feedback');
+    expect(result?.content).toContain('short faithful quote and t1');
+    expect(result?.content).toContain('reconcile existing memory when needed');
+    expect(result?.content).toContain('Do not write for a one-off request, an unchanged rule');
     expect(result?.content).not.toContain('agent.behavior');
   });
   it('does not instruct unavailable TodoList notes writes', () => {
     const result = new TodoListReminderTracker().evaluate({ ...base, active: false, history: [user('never push to main')], memoryAvailable: true });
-    expect(result?.content).toContain('MemoryWrite type=feedback');
+    expect(result?.content).toContain('reconcile existing memory when needed');
     expect(result?.content).not.toContain('notes.');
     expect(result?.content).not.toContain('TodoList');
   });

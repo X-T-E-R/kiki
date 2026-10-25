@@ -8,6 +8,7 @@
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { IMcpManagementService } from '@kiki/agent-core-v2/app/mcpManagement/mcpManagement';
 import { IAgentGoalService } from '@kiki/agent-core-v2/agent/goal/goal';
+import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
 import { IFlagService as importFlags } from '@kiki/agent-core-v2/app/flag/flag';
 
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
@@ -21,9 +22,10 @@ import { getLiveSessionById } from '@kiki/agent-core-v2/app/sessionManager/sessi
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
 import { IAgentPromptService, reservePrompt } from '@kiki/agent-core-v2/agent/prompt/prompt';
+import { IModelService } from '@kiki/agent-core-v2/kosong/model/model';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
-import { ConfigTarget, IConfigService } from '@kiki/agent-core-v2';
+import { ConfigTarget, IConfigService, IEventService, PluginChanged } from '@kiki/agent-core-v2';
 import { IAgentContextMemoryService } from '@kiki/agent-core-v2/agent/contextMemory/contextMemory';
 import { IAgentPermissionModeService } from '@kiki/agent-core-v2/agent/permissionMode/permissionMode';
 import { ensureMainAgent } from '@kiki/agent-core-v2/session/agentLifecycle/mainAgent';
@@ -41,6 +43,38 @@ export interface KlientConformanceTarget {
    */
   readonly app: TestEngine['app'];
   cleanup(): Promise<void>;
+}
+
+const TERMINAL_WIRE_MODEL = 'terminal-wire-model';
+
+/** Bind an explicit model and thinking effort so prompt launch reaches the terminal hook. */
+async function bindTerminalWireModel(
+  target: KlientConformanceTarget,
+  agent: { setModel(model: string): Promise<unknown>; setThinking(level: string): Promise<void> },
+): Promise<void> {
+  const models = target.app.accessor.get(IModelService);
+  if (models.get(TERMINAL_WIRE_MODEL) === undefined) {
+    await target.klient.global.kosong.addProvider({
+      id: TERMINAL_WIRE_MODEL,
+      model: TERMINAL_WIRE_MODEL,
+      protocol: 'openai',
+      baseUrl: 'http://127.0.0.1:1',
+      maxContextSize: 8192,
+      auth: { method: 'api-key', apiKey: 'test-key' },
+    });
+  }
+  const record = models.get(TERMINAL_WIRE_MODEL);
+  if (record === undefined) throw new Error('terminal-wire model was not registered');
+  if (record.defaultEffort !== 'high' || !record.supportEfforts?.includes('high')) {
+    await models.set(TERMINAL_WIRE_MODEL, {
+      ...record,
+      capabilities: ['thinking'],
+      supportEfforts: ['high'],
+      defaultEffort: 'high',
+    });
+  }
+  await agent.setModel(TERMINAL_WIRE_MODEL);
+  await agent.setThinking('high');
 }
 
 async function waitFor(predicate: () => boolean, timeoutMs: number): Promise<void> {
@@ -67,6 +101,37 @@ export function defineKlientConformance(
 
     afterAll(async () => {
       await target.cleanup();
+    });
+
+    it('transfers selected settings through a validated preview and a zero-write cancellation', async () => {
+      const transfer = target.klient.global.settingsTransfer;
+      const catalog = await transfer.catalog();
+      expect(catalog.categories.map((entry) => entry.id)).toContain('permissions');
+      const bundle = await transfer.export({ categories: ['permissions'], includeCredentials: false });
+      expect(bundle).toMatchObject({ format: 'kiki.settings', version: 1, includesCredentials: false, categories: ['permissions'] });
+      const original = await target.klient.global.config.inspect('defaultPlanMode');
+      const input = { ...bundle, config: { defaultPlanMode: original.userValue !== true }, resources: [] };
+      const cancelled = await transfer.preview({ bundle: input, categories: ['permissions'], mode: 'overwrite', includeCredentials: false });
+      await transfer.cancel({ previewId: cancelled.previewId });
+      expect(await transfer.apply({ previewId: cancelled.previewId })).toMatchObject({ status: 'failed', failure: 'expired', items: [] });
+      expect((await target.klient.global.config.inspect('defaultPlanMode')).userValue).toEqual(original.userValue);
+      try {
+        const preview = await transfer.preview({ bundle: input, categories: ['permissions'], mode: 'overwrite', includeCredentials: false });
+        expect((await transfer.apply({ previewId: preview.previewId })).status).toBe('complete');
+        expect(await target.klient.global.config.get('defaultPlanMode')).toBe(original.userValue !== true);
+      } finally {
+        await target.klient.global.config.replace({ domain: 'defaultPlanMode', value: original.userValue });
+      }
+    });
+
+    it('forwards plugin changes on the global bus without requiring a plugin reload', async () => {
+      const received: Record<string, never>[] = [];
+      const sub = target.klient.events.on('plugins.changed', (event) => { received.push(event); });
+      try {
+        await sub.ready;
+        target.app.accessor.get(IEventService).publish(new PluginChanged({ payload: {} }));
+        await vi.waitFor(() => { expect(received).toEqual([{}]); });
+      } finally { sub.dispose(); }
     });
 
     it.skipIf(transport !== 'memory' && transport !== 'ipc')('explicitly rejects the HTTP-only terminal capability', async () => {
@@ -537,6 +602,35 @@ export function defineKlientConformance(
       }
     });
 
+    it('config requestCompression merges a partial set and rejects it without a complete system value', async () => {
+      const config = target.klient.global.config;
+      const before = await config.inspect('requestCompression');
+      try {
+        await config.replace({
+          domain: 'requestCompression',
+          value: {
+            encoding: 'zstd',
+            targets: ['https://example.test/v1'],
+            minBytes: 1024,
+          },
+        });
+        await config.set({ domain: 'requestCompression', patch: { minBytes: 0 } });
+        expect(await config.get('requestCompression')).toEqual({
+          encoding: 'zstd',
+          targets: ['https://example.test/v1'],
+          minBytes: 0,
+        });
+
+        await config.replace({ domain: 'requestCompression', value: undefined });
+        await expect(
+          config.set({ domain: 'requestCompression', patch: { minBytes: 0 } }),
+        ).rejects.toThrow();
+        expect(await config.get('requestCompression')).toBeUndefined();
+      } finally {
+        await config.replace({ domain: 'requestCompression', value: before.userValue });
+      }
+    });
+
     it('config replaceSections writes several domains and clears undefined ones', async () => {
       const config = target.klient.global.config;
       const beforeProviders = await config.inspect<Record<string, unknown>>('providers');
@@ -953,6 +1047,22 @@ export function defineKlientConformance(
       expect(await target.klient.session('missing-resume-session').resume()).toBe(false);
     });
 
+    it('shuts down only one local agent execution while preserving the session and records', async () => {
+      const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
+      const session = target.klient.session(created.id);
+      await session.agent('main').getRuntime();
+      const live = getLiveSessionById(target.app.accessor, created.id)!;
+      const main = await ensureMainAgent(live);
+      const child = await live.accessor.get(IAgentLifecycleService).create({ agentId: 'shutdown-child' });
+      try {
+        await session.agent(child.id).shutdownExecution('failed-external-cleanup');
+        expect(child.accessor.get(IAgentExecutionService).status().state).toBe('closed');
+        expect(main.accessor.get(IAgentExecutionService).status().state).toBe('idle');
+        expect((await session.agents())[child.id]).toBeDefined();
+        expect((await session.get()).id).toBe(created.id);
+      } finally { await session.close(); }
+    });
+
     it('keeps local permission changes local and default changes broadcast', async () => {
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const session = target.klient.session(created.id);
@@ -1023,6 +1133,16 @@ export function defineKlientConformance(
           name: 'RPCError',
           code: 40404,
         });
+        await session.agent('main').setModel(initialModel);
+        await session.close();
+        expect(getLiveSessionById(target.app.accessor, created.id)).toBeUndefined();
+        await expect(session.agent('main').getModel()).rejects.toMatchObject({ name: 'RPCError', code: 40404 });
+        expect(getLiveSessionById(target.app.accessor, created.id)).toBeUndefined();
+        await expect(session.agent('main').setModel(targetModel)).resolves.toMatchObject({ model: targetModel });
+        await expect(session.agent('main').getModel()).resolves.toBe(targetModel);
+        await session.close();
+        await expect(session.agent(child.id).setEffort('off')).resolves.toEqual({ effort: 'off' });
+        await expect(session.agent(child.id).getModel()).resolves.toBe(targetModel);
       } finally {
         await session.close();
         await kosong.removeProvider(initialModel);
@@ -1124,6 +1244,7 @@ export function defineKlientConformance(
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const agent = target.klient.session(created.id).agent('main');
       await agent.getRuntime();
+      await bindTerminalWireModel(target, agent);
       const live = getLiveSessionById(target.app.accessor, created.id)!;
       const prompts = live.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
       const hook = prompts.hooks.onBeforeSubmitPrompt.register('conformance-terminal-block', async (event, next) => {
@@ -1138,7 +1259,7 @@ export function defineKlientConformance(
         expect(receipt.turnId).toBeUndefined();
         await waitFor(() => seen.includes('terminal-wire'), 2_000);
       } finally {
-        sub.dispose(); hook.dispose();
+        sub.dispose(); await hook.dispose();
         await target.klient.session(created.id).close();
       }
     });
@@ -1147,6 +1268,7 @@ export function defineKlientConformance(
       const created = await target.klient.global.sessions.create({ workDir: process.cwd() });
       const agent = target.klient.session(created.id).agent('main');
       await agent.getRuntime();
+      await bindTerminalWireModel(target, agent);
       const live = getLiveSessionById(target.app.accessor, created.id)!;
       const prompts = live.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentPromptService);
       const hook = prompts.hooks.onBeforeSubmitPrompt.register('conformance-terminal-error', async () => {
@@ -1158,7 +1280,7 @@ export function defineKlientConformance(
           message: 'launch failed', cause: { message: 'underlying cause' },
         } } });
       } finally {
-        hook.dispose(); await target.klient.session(created.id).close();
+        await hook.dispose(); await target.klient.session(created.id).close();
       }
     });
 
@@ -1277,7 +1399,7 @@ export function defineKlientConformance(
           }),
         ).rejects.toMatchObject({ name: 'RPCError', code: 40938 });
       } finally {
-        reservation.dispose();
+        await reservation.dispose();
         await target.klient.session(created.id).close();
       }
     });

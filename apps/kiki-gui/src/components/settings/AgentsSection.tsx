@@ -1,18 +1,24 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useLocation, useSearchParams } from 'react-router-dom';
 
 import { errorText } from '@kiki/session-core/i18n';
 import {
+  AGENTS_SETTINGS_DEFAULT_TAB,
+  AGENTS_SETTINGS_TABS,
+  agentsTabLabelKey,
   disabledProfilePatch,
   mergeNamedAgentProfiles,
   namedAgentNewSessionBlocked,
   namedAgentOverrideRelations,
   namedAgentSessionHref,
+  normalizeAgentsTab,
   partitionNamedAgentProfiles,
   shippedEntryForProfile,
   subagentGovernanceFromConfig,
   subagentGovernancePatch,
   workspaceChipDisplay,
+  type AgentsSettingsTab,
   type NamedAgentOverrideRelation,
   type SubagentGovernanceDraft,
 } from '@kiki/session-core/settings';
@@ -33,7 +39,7 @@ import type {
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SavedTick, Toggle, type Feedback } from '../controls';
 import { useGuardedNavigate } from '../dirtyGuard';
-import { INPUT, SECONDARY_BUTTON } from '../ui';
+import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
 import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
 import { AgentProfileEditorDialog } from './AgentProfileEditorDialog';
@@ -41,6 +47,9 @@ import { AgentRuntimeCard } from './AgentRuntimeSettings';
 import { PromptConfigCard } from './PromptConfigCard';
 import { ShippedProfileControls } from './ShippedProfileControls';
 import { SubagentLimitsSettings } from './SubagentLimitsSettings';
+import { SubagentDefaultTargetCard, SubagentOpenModeCard } from './SubagentsSection';
+import { UnifiedAgentManager } from './UnifiedAgentManager';
+import { SubagentToolSettingsCard } from './subagentTools/ToolSettingsCard';
 import { useSavedTick } from './useSavedTick';
 import { AliasChips } from './profileEditor/fields';
 import { dispatchFieldsOf } from './profileEditor/profileDraft';
@@ -324,7 +333,7 @@ export function NamedAgentProfileRow({
             />
             <span
               data-toggle-scope="server"
-              className={embedded ? 'sr-only' : 'shrink-0 rounded-full border border-hairline bg-panel px-1.5 py-px font-mono text-[11px] text-ink-faint'}
+              className="sr-only"
             >
               {t('st.namedAgents.namedToggleScope')}
             </span>
@@ -336,7 +345,7 @@ export function NamedAgentProfileRow({
           />}
           {embedded && subagentDispatch.key === 'undeclared' ? null : <span
             data-subagent-policy={subagentDispatch.key}
-            className={embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint'}
+            className={subagentDispatch.key === 'undeclared' ? 'sr-only' : embedded ? 'rounded-[4px] bg-hairline/60 px-1.5 py-px text-[12px] text-ink-faint' : 'rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-faint'}
           >
             {subagentDispatch.label}
           </span>}
@@ -357,7 +366,7 @@ export function NamedAgentProfileRow({
             disabled={newSessionBlocked}
             title={newSessionTitle}
             data-new-session-href={sessionHref}
-            onClick={() => navigate(sessionHref)}
+            onClick={() => { void navigate(sessionHref); }}
           >
             {t('st.namedAgents.newSession')}
           </button>
@@ -369,7 +378,7 @@ export function NamedAgentProfileRow({
         </div>
       </div>
       {profile.source !== 'builtin' ? (
-        <p data-toggle-scope-hint className="mt-1 text-[12px] text-ink-faint">
+        <p data-toggle-scope-hint className="sr-only">
           {t('st.namedAgents.namedToggleHint')}
         </p>
       ) : null}
@@ -472,13 +481,24 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const [toggleSaving, setToggleSaving] = useState<string | null>(null);
-  const [workspaceId, setWorkspaceId] = useState<string>();
+  // The address is the only source of truth for which workspace this page is
+  // about: `?workspace=` wins over recency, so a link from one workspace's own
+  // page lands on THAT workspace rather than on whichever was opened most
+  // recently. A second copy in state would survive a query-only move — Back,
+  // Forward, or a link naming another workspace while this page stays mounted —
+  // and the card would keep reading and editing the workspace the address no
+  // longer names. An address with no `workspace` is not a choice, so it answers
+  // with the most recently opened workspace, exactly as a first visit does.
+  const [params, setParams] = useSearchParams();
+  const requestedWorkspaceId = params.get('workspace') ?? undefined;
+  // The picker and the effective-workspace default need identity, name and
+  // recency only, so the metadata-only catalog answers this section.
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
   });
-  const selectedWorkspaceId = workspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
+  const selectedWorkspaceId = requestedWorkspaceId ?? sortWorkspacesByRecency(workspacesQuery.data?.items ?? [])[0]?.id;
   const profilesQueryKey = ['named-agent-profiles', selectedWorkspaceId ?? 'global'];
   const profilesQuery = useQuery({
     queryKey: profilesQueryKey,
@@ -561,6 +581,12 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     ? shippedEntryForProfile(profile, shippedEntries) !== undefined && !profile.disabled
     : effectiveQuery.data?.items.some((item) => item.name === profile.name
       && item.source === profile.source && item.source_file === profile.source_file) === true;
+  // A link that names a workspace this server no longer lists must not read as
+  // "no workspace chosen" — the rows below are still read for the linked id,
+  // and the picker cannot show it. Saying so is the difference between a dead
+  // link and silently editing whichever workspace came first.
+  const linkedWorkspaceMissing = requestedWorkspaceId !== undefined && workspacesQuery.isSuccess
+    && !(workspacesQuery.data?.items ?? []).some((workspace) => workspace.id === requestedWorkspaceId);
   const workspaceSelector = (workspacesQuery.data?.items.length ?? 0) > 0 ? (
     <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
       <span className="text-[12px] font-medium text-ink-soft">{t('new.workspace')}</span>
@@ -569,10 +595,23 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
         ariaLabel={t('new.workspace')}
         className="max-w-64"
         value={selectedWorkspaceId ?? ''}
-        onChange={(id) => { setWorkspaceId(id); }}
+        onChange={(id) => {
+          // Only the address changes: the choice lives there, so a reload, Back
+          // and a fresh link all land on the workspace they name instead of on
+          // whichever one was picked first in this mount.
+          const next = new URLSearchParams(params);
+          if (id === '') next.delete('workspace');
+          else next.set('workspace', id);
+          setParams(next, { replace: true });
+        }}
         choices={(workspacesQuery.data?.items ?? []).map((workspace) => ({ value: workspace.id, label: workspace.name ?? workspace.root, hint: workspace.root }))}
       />
       <Hint>{t('st.namedAgents.workspaceHint')}</Hint>
+      {linkedWorkspaceMissing ? (
+        <Hint>
+          <span data-named-agents-workspace-missing>{t('st.namedAgents.workspaceMissing')}</span>
+        </Hint>
+      ) : null}
     </div>
   ) : null;
   // `main === true` lands in the main-agent card; everything else is a
@@ -676,11 +715,65 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
   );
 }
 
-export function AgentsSection() {
+export function SubagentsSection() {
   return (
     <div className="space-y-4">
-      <AgentRuntimeCard />
-      <PromptConfigCard />
+      <SubagentDefaultTargetCard />
+      <SubagentGovernanceCard />
+      <SubagentOpenModeCard />
+      <SubagentToolSettingsCard />
+    </div>
+  );
+}
+
+export function AgentsSection() {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const { search } = useLocation();
+  const rawTab = new URLSearchParams(search).get('tab');
+  const tab: AgentsSettingsTab = normalizeAgentsTab(rawTab) ?? AGENTS_SETTINGS_DEFAULT_TAB;
+
+  const selectTab = (next: AgentsSettingsTab) => {
+    if (next === tab) return;
+    const params = new URLSearchParams(search);
+    params.set('tab', next);
+    params.delete('object');
+    void navigate(`/settings/agents?${params.toString()}`);
+  };
+
+  return (
+    <div className="space-y-4">
+      <div role="tablist" aria-label={t('st.section.agents')} className="flex flex-wrap gap-1 border-b border-hairline">
+        {AGENTS_SETTINGS_TABS.map((candidate) => {
+          const active = candidate === tab;
+          return (
+            <button
+              key={candidate}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              data-agents-tab={candidate}
+              onClick={() => { selectTab(candidate); }}
+              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors ${
+                active
+                  ? 'border-ink font-medium text-ink'
+                  : 'border-transparent text-ink-soft hover:text-ink'
+              }`}
+            >
+              {t(agentsTabLabelKey(candidate))}
+            </button>
+          );
+        })}
+      </div>
+      {tab === 'dispatch' ? (
+        <SubagentsSection />
+      ) : (
+        <div className="space-y-4">
+          <UnifiedAgentManager />
+          <AgentRuntimeCard />
+          <PromptConfigCard />
+        </div>
+      )}
     </div>
   );
 }

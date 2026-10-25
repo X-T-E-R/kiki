@@ -14,7 +14,7 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { ErrorCodes, Error2 } from '#/errors';
 import { type HostDirEntry, IHostFileSystem } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
-import { IWorkspaceFsService } from '#/workspace/workspaceFs/fs';
+import { fsSearchRequestSchema, IWorkspaceFsService } from '#/workspace/workspaceFs/fs';
 import { WorkspaceFsService } from '#/workspace/workspaceFs/fsService';
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
@@ -90,6 +90,7 @@ function fakeFs(
     symlinkSet.add(abs);
     addAncestors(rel);
   }
+  const directoryEntries = new Map<string, HostDirEntry[]>();
   const isDir = (p: string): boolean => p === WORK_DIR || dirSet.has(p);
   const enoent = (p: string): NodeJS.ErrnoException => {
     const err = new Error(`ENOENT: ${p}`) as NodeJS.ErrnoException;
@@ -146,6 +147,8 @@ function fakeFs(
     },
     readdir: async (p) => {
       if (!isDir(p)) throw enoent(p);
+      const cached = directoryEntries.get(p);
+      if (cached !== undefined) return [...cached];
       const prefix = `${p}/`;
       const children = new Map<string, HostDirEntry>();
       const addDir = (name: string): void => {
@@ -176,9 +179,12 @@ function fakeFs(
       for (const d of dirSet) visit(d, 'dir');
       for (const f of fileMap.keys()) visit(f, 'file');
       for (const s of symlinkSet) visit(s, 'symlink');
-      return [...children.values()];
+      const entries = [...children.values()];
+      directoryEntries.set(p, entries);
+      return [...entries];
     },
     mkdir: async (p, options) => {
+      directoryEntries.clear();
       const recursive = options?.recursive ?? false;
       const exists = isDir(p) || fileMap.has(p);
       if (recursive) {
@@ -332,8 +338,8 @@ beforeEach(() => {
 
 let host: ReturnType<typeof createScopedTestHost> | undefined;
 
-afterEach(() => {
-  host?.dispose();
+afterEach(async () => {
+  await host?.dispose();
   host = undefined;
 });
 
@@ -362,6 +368,7 @@ function makeSession(
   symlinks: readonly string[] = [],
   runner?: IHostProcessService,
   symlinkTargets: Record<string, string> = {},
+  hostFsOverride?: IHostFileSystem,
 ): IWorkspaceFsService {
   host = createScopedTestHost([
     stubPair(IHostEnvironment, {
@@ -386,7 +393,7 @@ function makeSession(
   const workspace = host.child('program', 'w1', [
     stubPair(IWorkspaceContext, stubWorkspaceContext()),
     stubPair(IWorkspaceDirs, stubWorkspaceDirs()),
-    stubPair(IHostFileSystem, fakeFs(files, symlinks, symlinkTargets)),
+    stubPair(IHostFileSystem, hostFsOverride ?? fakeFs(files, symlinks, symlinkTargets)),
     stubPair(IHostProcessService, runner ?? fakeRunner(handler)),
     stubPair(ITelemetryService, telemetryStub(events)),
     stubPair(IWorkspaceGitService, workspaceGitStub(git)),
@@ -536,6 +543,178 @@ describe('WorkspaceFsService.search', () => {
     );
     const result = await fs.search({ query: '', limit: 50, follow_gitignore: true });
     expect(result.items.map((i) => i.path)).toEqual(['kept.ts']);
+  });
+
+  it('bounds directory IO and drains every hit without dropping page overflow', async () => {
+    const files = Object.fromEntries(Array.from({ length: 180 }, (_, i) => [`d${String(i).padStart(3, '0')}/match.ts`, '']));
+    const backing = fakeFs(files);
+    const reads: string[] = [];
+    const fs = makeSession(files, emptyHandler, [], defaultGitStub(), [], undefined, {}, {
+      ...backing,
+      readdir: async (path) => { reads.push(path); return backing.readdir(path); },
+    });
+    const request = { query: 'match', limit: 30, follow_gitignore: false };
+    let page = await fs.search(request);
+    expect(page.items).toHaveLength(30);
+    expect(reads).toHaveLength(31);
+    expect(page.sort_scope).toBe('page');
+    const all = [...page.items];
+    while (page.next_cursor !== undefined) {
+      const before = reads.length;
+      page = await fs.search({ ...request, cursor: page.next_cursor });
+      expect(reads.length - before).toBeLessThanOrEqual(32);
+      expect(page.items.map((hit) => hit.path)).toEqual(page.items.map((hit) => hit.path).sort((a, b) => a.localeCompare(b)));
+      all.push(...page.items);
+    }
+    expect(new Set(all.map((hit) => hit.path))).toEqual(new Set(Object.keys(files)));
+    expect(all).toHaveLength(180);
+    expect(page.truncated).toBe(false);
+    process.stdout.write(`${JSON.stringify({ case: 'fs-search-multi-directory', fixture_directories: 181, first_page_directory_reads: 31, total_directory_reads: reads.length, unique_directories_read: new Set(reads).size, hits: all.length })}\n`);
+  });
+
+  it('keeps a no-match budget page resumable and supports a wide single directory', async () => {
+    const files = Object.fromEntries(Array.from({ length: 800 }, (_, i) => [`file${String(i).padStart(4, '0')}.ts`, '']));
+    files['zneedle.ts'] = '';
+    const fs = makeSession(files, emptyHandler);
+    const request = { query: 'needle', limit: 30, follow_gitignore: false };
+    let page = await fs.search(request);
+    expect(page.items).toEqual([]);
+    expect(page.next_cursor).toBeDefined();
+    let pages = 1;
+    const hits = [...page.items];
+    while (page.next_cursor !== undefined) {
+      page = await fs.search({ ...request, cursor: page.next_cursor });
+      hits.push(...page.items);
+      pages += 1;
+    }
+    expect(pages).toBe(4);
+    expect(hits.map((hit) => hit.path)).toEqual(['zneedle.ts']);
+  });
+
+  it('continues below the former depth cap and preserves ignore, glob and reparse semantics', async () => {
+    const deep = `${Array.from({ length: 80 }, () => 'sub').join('/')}/needle.ts`;
+    const files = { [deep]: '', '.gitignore': 'ignored/\n', 'ignored/needle.ts': '', '.git/needle.ts': '', 'kept/needle.ts': '', 'kept/needle.js': '' };
+    const fs = makeSession(files, emptyHandler, [], defaultGitStub(), ['link']);
+    const request = { query: 'needle', limit: 30, follow_gitignore: true, include_globs: ['**/*.ts'], exclude_globs: ['kept/**'] };
+    let page = await fs.search(request);
+    const hits = [...page.items];
+    while (page.next_cursor !== undefined) {
+      page = await fs.search({ ...request, cursor: page.next_cursor });
+      hits.push(...page.items);
+    }
+    expect(hits.map((hit) => hit.path)).toEqual([deep]);
+    const unignored = await fs.search({ query: 'needle', limit: 30, follow_gitignore: false });
+    expect(unignored.items.map((hit) => hit.path)).toContain('ignored/needle.ts');
+    expect(unignored.items.map((hit) => hit.path)).not.toContain('.git/needle.ts');
+  });
+
+  it('binds cursors to effective conditions and rejects escaping or symlink frames', async () => {
+    const fs = makeSession({ 'a/needle.ts': '', 'b/needle.ts': '' }, emptyHandler, [], defaultGitStub(), ['link']);
+    const request = { query: 'needle', limit: 1, follow_gitignore: false };
+    const page = await fs.search(request);
+    for (const changed of [{ query: 'other' }, { limit: 2 }, { follow_gitignore: true }, { include_globs: ['*.ts'] }]) {
+      await expect(fs.search({ ...request, ...changed, cursor: page.next_cursor })).rejects.toMatchObject({ code: ErrorCodes.VALIDATION_FAILED });
+    }
+    const token = JSON.parse(Buffer.from(page.next_cursor!, 'base64url').toString('utf8'));
+    for (const path of ['../outside', '/outside', 'C:/outside', 'link']) {
+      token.stack = [{ path: '', offset: 1 }, { path, offset: 0 }];
+      await expect(fs.search({ ...request, cursor: Buffer.from(JSON.stringify(token)).toString('base64url') })).rejects.toMatchObject({ code: ErrorCodes.VALIDATION_FAILED });
+    }
+  });
+
+  it('stops at the in-flight directory read on cancellation and leaves a fresh search usable', async () => {
+    const files = { 'a/needle.ts': '', 'b/needle.ts': '' };
+    const backing = fakeFs(files);
+    const controller = new AbortController();
+    const reads: string[] = [];
+    const fs = makeSession(files, emptyHandler, [], defaultGitStub(), [], undefined, {}, {
+      ...backing,
+      readdir: async (path) => {
+        reads.push(path);
+        if (path === '/repo/a') controller.abort();
+        return backing.readdir(path);
+      },
+    });
+    await expect(fs.search({ query: 'needle', limit: 30, follow_gitignore: false }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(reads).toEqual(['/repo', '/repo/a']);
+    const normal = await fs.search({ query: 'needle', limit: 30, follow_gitignore: false });
+    expect(normal.items.map((hit) => hit.path)).toEqual(['a/needle.ts', 'b/needle.ts']);
+    const before = reads.length;
+    await expect(fs.search({ query: 'needle', limit: 30, follow_gitignore: false }, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(reads).toHaveLength(before);
+  });
+
+  it('continues through POSIX names containing colons and backslashes', async () => {
+    const fs = makeSession({ 'a:b/needle.ts': '', 'a:b/needle2.ts': '', 'a\\b/needle.ts': '', 'a\\b/needle2.ts': '' }, emptyHandler);
+    const request = { query: 'needle', limit: 1, follow_gitignore: false };
+    let page = await fs.search(request);
+    const paths = page.items.map((hit) => hit.path);
+    while (page.next_cursor !== undefined) {
+      page = await fs.search({ ...request, cursor: page.next_cursor });
+      paths.push(...page.items.map((hit) => hit.path));
+    }
+    expect(new Set(paths)).toEqual(new Set(['a:b/needle.ts', 'a:b/needle2.ts', 'a\\b/needle.ts', 'a\\b/needle2.ts']));
+  });
+
+  it.each(['deleted', 'replaced', 'mtime', 'inode'] as const)('rejects %s cursor directory drift and allows a fresh search after recovery', async (change) => {
+    const files = { 'a/needle.ts': '', 'a/needle2.ts': '' };
+    const backing = fakeFs(files);
+    let drift = false;
+    const mutate = async (path: string) => {
+      const original = await backing.lstat(path);
+      if (!drift || path !== '/repo/a') return original;
+      if (change === 'deleted') throw Object.assign(new Error('directory deleted'), { code: 'ENOENT' });
+      if (change === 'replaced') return { ...original, isFile: true, isDirectory: false };
+      return { ...original, mtimeMs: change === 'mtime' ? 2000 : 1000, ino: change === 'inode' ? 2 : 1 };
+    };
+    const fs = makeSession(files, emptyHandler, [], defaultGitStub(), [], undefined, {}, { ...backing, lstat: mutate });
+    const request = { query: 'needle', limit: 1, follow_gitignore: false };
+    const page = await fs.search(request);
+    drift = true;
+    await expect(fs.search({ ...request, cursor: page.next_cursor })).rejects.toMatchObject({ code: ErrorCodes.VALIDATION_FAILED });
+    drift = false;
+    expect((await fs.search(request)).items).toHaveLength(1);
+  });
+
+  it('maps a deleted cursor ancestor to validation but a missing fresh root to not found', async () => {
+    const files = { 'a/needle.ts': '', 'a/needle2.ts': '' };
+    const backing = fakeFs(files);
+    let deleted = false;
+    const fs = makeSession(files, emptyHandler, [], defaultGitStub(), [], undefined, {}, {
+      ...backing,
+      realpath: async (path) => {
+        if (deleted && path === WORK_DIR) throw Object.assign(new Error('root deleted'), { code: 'ENOENT' });
+        return backing.realpath(path);
+      },
+    });
+    const request = { query: 'needle', limit: 1, follow_gitignore: false };
+    const page = await fs.search(request);
+    expect((await fs.search({ ...request, query: 'NEEDLE', cursor: page.next_cursor })).items).toHaveLength(1);
+    deleted = true;
+    await expect(fs.search({ ...request, cursor: page.next_cursor })).rejects.toMatchObject({ code: ErrorCodes.VALIDATION_FAILED });
+    await expect(fs.search(request)).rejects.toMatchObject({ code: ErrorCodes.FS_PATH_NOT_FOUND });
+  });
+
+  it('keeps a 650-level sparse search cursor within its own wire limit through exhaustion', async () => {
+    const deep = `${Array.from({ length: 650 }, () => 'sub').join('/')}/needle.ts`;
+    const fs = makeSession({ [deep]: '' }, emptyHandler);
+    const request = { query: 'needle', limit: 30, follow_gitignore: false };
+    let page = await fs.search(request);
+    let pages = 1;
+    let largest = 0;
+    const hits = [...page.items];
+    while (page.next_cursor !== undefined) {
+      largest = Math.max(largest, page.next_cursor.length);
+      expect(page.next_cursor.length).toBeLessThanOrEqual(1_048_576);
+      const continuation = fsSearchRequestSchema.parse({ ...request, cursor: page.next_cursor });
+      page = await fs.search(continuation);
+      hits.push(...page.items);
+      pages += 1;
+    }
+    expect(hits.map((hit) => hit.path)).toEqual([deep]);
+    expect(page.truncated).toBe(false);
+    expect(largest).toBeLessThan(100_000);
+    process.stdout.write(`${JSON.stringify({ case: 'fs-search-deep-cursor', depth: 650, pages, largest_cursor_chars: largest, hits: hits.length })}\n`);
   });
 });
 

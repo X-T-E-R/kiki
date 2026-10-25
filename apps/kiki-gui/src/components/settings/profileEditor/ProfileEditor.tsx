@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { useQuery } from '@tanstack/react-query';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import type { ModelCatalogItem, NamedAgentExecutorField } from '@kiki/protocol';
@@ -9,6 +10,7 @@ import { useConnection } from '../../../state/connection';
 import { FeedbackLine, Toggle, type Feedback } from '../../controls';
 import { Icon } from '../../icons';
 import { SearchableSelect } from '../../SearchableSelect';
+import { useGuardedNavigate } from '../../dirtyGuard';
 import { sourceBadgeLabel } from '../../agent-panel/SourceBadge';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { CompactPointField } from '../CompactPointField';
@@ -16,7 +18,7 @@ import { FORM_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from '../
 import { ShippedProfileControls } from '../ShippedProfileControls';
 import { DiagnosticsList } from './DiagnosticsList';
 import type { ProfileDiagnostic } from './diagnostics';
-import { engineChoices, engineLabel, useExecutorCatalog } from './engines';
+import { engineChoices, engineDisplayOf, engineLabel, engineOverridesOf, useExecutorCatalog } from './engines';
 import { ExecutorPromptField } from './ExecutorPromptField';
 import { KikiContextField } from './KikiContextField';
 import type { ExecutorPromptDraft } from './executorPromptDraft';
@@ -97,6 +99,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
 }) {
   const { client } = useConnection();
   const { t, tp, locale } = useI18n();
+  const navigate = useGuardedNavigate();
   const [mode, setMode] = useState<Mode>('form');
   const [baseline, setBaseline] = useState(() => draftFromProfile(profile));
   const [draft, setDraft] = useState(baseline);
@@ -115,6 +118,9 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   }, [profile]);
   const set = <K extends keyof ProfileDraft>(key: K, value: ProfileDraft[K]) => setDraft((current) => ({ ...current, [key]: value }));
   const catalog = useExecutorCatalog();
+  const engineConfig = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000, retry: false });
+  const engineOverrides = engineOverridesOf(engineConfig.data);
+  const engineDisplay = engineDisplayOf(engineConfig.data);
   const external = isExternalExecutor(draft.executor);
   const engine = engineLabel(draft.executor, t('st.profiles.engineNative'), catalog);
   // Reserved applicability data applies only to the saved engine; an unsaved
@@ -126,7 +132,8 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
     const field = fieldState(key);
     return field?.state === 'ignored' ? [[key, field] as const] : [];
   });
-  const pinned = models.find((model) => model.id === draft.modelAlias.trim());
+  const profileModels = external ? [] : models;
+  const pinned = profileModels.find((model) => model.id === draft.modelAlias.trim());
   const aliasMissing = (alias: string) => !external && alias !== '' && alias !== 'inherit' && models.length > 0 && !models.some((model) => model.id === alias);
 
   const accept = (updated: NamedAgentProfile) => {
@@ -148,7 +155,11 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
   };
   const disabled = !writable || saving;
   const problemText = problems.length === 0 ? null : t(`st.profiles.problem.${problems[0]}` as I18nKey);
-  const engines = useMemo(() => engineChoices(profiles, catalog), [profiles, catalog]);
+  const engines = useMemo(() => engineChoices(profiles, catalog, {
+    overrides: engineOverrides,
+    display: engineDisplay,
+    retain: [baseline.executor, draft.executor],
+  }), [profiles, catalog, engineOverrides, engineDisplay, baseline.executor, draft.executor]);
   const engineStatus = (id: string) => catalog.find((item) => item.id === id)?.status;
   const promptDeliveries = catalog.find((item) => item.id === draft.executor)?.capabilities?.prompt_deliveries;
   const promptDelivery = draft.executorPrompt?.per_engine?.[draft.executor]?.delivery ?? draft.executorPrompt?.delivery
@@ -193,12 +204,12 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
       <Field label={t('st.profiles.model')} htmlFor="profile-model" applicability={fieldState('pinned_model_alias')} engine={engine} dataField="model"
         hint={aliasMissing(draft.modelAlias.trim()) ? <span className="text-amber-ink">{t('st.profiles.aliasMissingTitle', { alias: draft.modelAlias.trim() })}</span>
           : external && fieldState('pinned_model_alias') === undefined ? t('st.profiles.modelExternal', { engine }) : undefined}>
-        <ModelPicker id="profile-model" value={draft.modelAlias} models={external ? [] : models} allowInherit={!draft.main} disabled={disabled}
+        <ModelPicker id="profile-model" value={draft.modelAlias} models={profileModels} allowInherit={!draft.main} disabled={disabled}
           missing={aliasMissing(draft.modelAlias.trim())} onChange={(value) => setDraft((current) => ({
             ...current, modelAlias: value,
             // A new model may not support the old effort; keep it only if it does.
-            effort: value.trim() !== current.modelAlias.trim()
-              && (models.find((model) => model.id === value)?.support_efforts?.includes(current.effort) !== true) ? '' : current.effort,
+            effort: !external && value.trim() !== current.modelAlias.trim()
+              && (profileModels.find((model) => model.id === value)?.support_efforts?.includes(current.effort) !== true) ? '' : current.effort,
           }))} />
       </Field>
       <Field label={t('st.profiles.effort')} htmlFor="profile-effort" applicability={fieldState('thinking_effort')} engine={engine} dataField="effort">
@@ -268,9 +279,9 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         <ModelMenuField checked={draft.restrictModelsToMenu} baselineChecked={baseline.restrictModelsToMenu} disabled={disabled}
           onChange={(value) => set('restrictModelsToMenu', value)} preview={menuPreview.value}
           pending={menuPreview.pending} error={menuPreview.error} onRetry={menuPreview.retry} />
-        <ModelProfilesField values={draft.modelProfiles} models={models} disabled={disabled} onChange={(next) => set('modelProfiles', next)} />
+        <ModelProfilesField values={draft.modelProfiles} models={profileModels} disabled={disabled} onChange={(next) => set('modelProfiles', next)} />
         <Field label={t('st.profiles.allowedModels')} hint={t('st.profiles.allowedModelsHint')} dataField="allowedModels">
-          <AliasChips id="allowed-models" values={draft.allowedModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+          <AliasChips id="allowed-models" values={draft.allowedModels} models={profileModels} disabled={disabled} addLabel={t('st.profiles.addModel')}
             onChange={(next) => set('allowedModels', next)} />
         </Field>
       </Section>
@@ -288,11 +299,11 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
         defaultOpen={draft.preferredModels.length + draft.discouragedModels.length + draft.preferredEfforts.length > 0}>
         <p className="text-[11.5px] leading-snug text-ink-soft">{t('st.profiles.softAdviceHint')}</p>
         <Field label={t('st.profiles.preferredModels')} dataField="preferredModels">
-          <AliasChips id="preferred-models" values={draft.preferredModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+          <AliasChips id="preferred-models" values={draft.preferredModels} models={profileModels} disabled={disabled} addLabel={t('st.profiles.addModel')}
             onChange={(next) => set('preferredModels', next)} />
         </Field>
         <Field label={t('st.profiles.discouragedModels')} dataField="discouragedModels">
-          <AliasChips id="discouraged-models" values={draft.discouragedModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+          <AliasChips id="discouraged-models" values={draft.discouragedModels} models={profileModels} disabled={disabled} addLabel={t('st.profiles.addModel')}
             onChange={(next) => set('discouragedModels', next)} />
         </Field>
         <Field label={t('st.profiles.preferredEfforts')} dataField="preferredEfforts">
@@ -306,6 +317,17 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           applicability={fieldState('tools')} engine={engine} onChange={(next) => set('tools', next)} />
         <ToolList id="disallowedTools" label={t('st.namedAgents.disallowedTools')} field={draft.disallowedTools} disabled={disabled} deny
           applicability={fieldState('disallowed_tools')} engine={engine} onChange={(next) => set('disallowedTools', next)} />
+        {!draft.main ? (
+          <button
+            type="button"
+            data-profile-inspect-tools
+            onClick={() => { void navigate(`/settings/agents?tab=dispatch&object=${encodeURIComponent(profile.name)}#st-card-subagent-tool-defaults`); }}
+            className="inline-flex items-center gap-1 text-[12px] text-ink-soft underline decoration-dotted underline-offset-2 transition-colors hover:text-ink"
+          >
+            {t('st.profiles.inspectToolPermissions')}
+            <Icon name="arrowRight" size={12} />
+          </button>
+        ) : null}
       </Section>
       <Section title={t('st.profiles.advanced')} dataSection="advanced" count={advancedSet} summary={t('st.profiles.advancedSummary')}>
         <Field label={t('st.profiles.allowedEfforts')} dataField="allowedEfforts">
@@ -319,7 +341,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
           </div>
         </Field>
         <Field label={t('st.profiles.denyModels')} dataField="denyModels">
-          <AliasChips id="deny-models" values={draft.denyModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+          <AliasChips id="deny-models" values={draft.denyModels} models={profileModels} disabled={disabled} addLabel={t('st.profiles.addModel')}
             onChange={(next) => set('denyModels', next)} />
         </Field>
         <Field label={t('st.namedAgents.serviceTier')} applicability={fieldState('service_tier')} engine={engine} dataField="serviceTier">
@@ -336,7 +358,7 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
               : t('st.compact.profileHint')} />
         </div>
         {profile.routes.map((route) => <Field key={route.id} label={t('st.namedAgents.routeModel', { route: route.id })} dataField={`route-${route.id}`}>
-          <ModelPicker id={`route-${route.id}`} value={draft.routeAliases[route.id] ?? ''} models={models} allowInherit={false} disabled={disabled}
+          <ModelPicker id={`route-${route.id}`} value={draft.routeAliases[route.id] ?? ''} models={profileModels} allowInherit={false} disabled={disabled}
             onChange={(value) => set('routeAliases', { ...draft.routeAliases, [route.id]: value })} />
         </Field>)}
         <div data-profile-field="spawnConstraints" data-field-applicability={fieldState('spawn_constraints')?.state}
@@ -351,11 +373,11 @@ export function ProfileEditor({ profile, writable, profiles, models, diagnostics
               className="h-7 shrink-0 rounded-md px-2 text-[12px] text-ink-soft hover:bg-ink/[0.04] hover:text-ink disabled:opacity-50">{t('st.profiles.spawnClear')}</button> : null}
           </div>
           <Field label={t('st.profiles.spawnAllowedModels')} dataField="spawnAllowedModels">
-            <AliasChips id="spawn-allowed-models" values={spawn.allowedModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+            <AliasChips id="spawn-allowed-models" values={spawn.allowedModels} models={profileModels} disabled={disabled} addLabel={t('st.profiles.addModel')}
               onChange={(next) => setSpawn({ allowedModels: next })} />
           </Field>
           <Field label={t('st.profiles.spawnDenyModels')} dataField="spawnDenyModels">
-            <AliasChips id="spawn-deny-models" values={spawn.denyModels} models={models} disabled={disabled} addLabel={t('st.profiles.addModel')}
+            <AliasChips id="spawn-deny-models" values={spawn.denyModels} models={profileModels} disabled={disabled} addLabel={t('st.profiles.addModel')}
               onChange={(next) => setSpawn({ denyModels: next })} />
           </Field>
           <Field label={t('st.profiles.spawnAllowedEfforts')} dataField="spawnAllowedEfforts">

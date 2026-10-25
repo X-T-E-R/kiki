@@ -7,7 +7,7 @@ import {
   workspaceRootKey,
   workDirKeyAliases,
 } from '#/_base/utils/workdir-slug';
-import { IWorkspaceService, type Workspace } from '#/app/workspace/workspace';
+import type { Workspace } from '#/app/workspace/workspace';
 import {
   readSessionIndexEntries,
   SESSION_INDEX_KEY,
@@ -60,10 +60,8 @@ export class WorkspaceAliasesService extends Disposable implements IWorkspaceAli
     | Promise<{ snapshot: SessionIndexSnapshot; generation: number }>
     | undefined;
   private invalidationGeneration = 0;
-  private catalogMergePrimed = false;
 
   constructor(
-    @IWorkspaceService private readonly workspaces: IWorkspaceService,
     @IWorkspacePersistence private readonly store: IWorkspacePersistence,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IAppendLogStore private readonly appendLogs: IAppendLogStore,
@@ -115,10 +113,6 @@ export class WorkspaceAliasesService extends Disposable implements IWorkspaceAli
 
   private async loadCatalog(): Promise<{ snapshot: CatalogSnapshot; generation: number }> {
     try {
-      if (!this.catalogMergePrimed) {
-        await this.workspaces.list();
-        this.catalogMergePrimed = true;
-      }
       const generation = this.invalidationGeneration;
       const workspaces = (await this.store.load())?.workspaces ?? [];
       const snapshot: CatalogSnapshot = {

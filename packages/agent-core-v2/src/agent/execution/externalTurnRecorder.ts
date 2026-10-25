@@ -5,13 +5,15 @@ import { StringDecoder } from 'node:string_decoder';
 import { redactCtx } from '#/_base/log/formatter';
 import { redactMemorySecrets } from '#/app/memory/memorySafety';
 
-import type {
-  NormalizedExecutorContent,
-  NormalizedExecutorEvent,
+import {
+  externalToolKindConflicts,
+  projectExternalToolDisplay,
+  type NormalizedExecutorContent,
+  type NormalizedExecutorEvent,
 } from '@kiki/protocol';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { newDeliveryId } from '#/agent/contextMemory/messageDelivery';
+import { deliveryOriginOf, newDeliveryId, type MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import { newMessageId } from '#/agent/contextMemory/messageId';
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import {
@@ -142,8 +144,14 @@ export class ExternalTurnRecorder {
   readonly #usage: IAgentUsageService;
   readonly #mediaStore: ISessionMediaStore | undefined;
   #segment: Segment | undefined;
+  #prompt = '';
+  #promptId: string | undefined;
+  #outboundEchoSuppressed = false;
+  #promptEchoSuppressed = false;
   readonly #userSegments: UserSegment[] = [];
+  readonly #committedUsers = new Map<string, { text: string; origin: PromptOrigin }>();
   readonly #tools = new Map<string, RecordedTool>();
+  readonly #toolInputs = new Map<number, { toolCallId: string; name?: string; inputText: string }>();
   #partOrdinal = 0;
   #ended = false;
   #lastAssistantText = '';
@@ -168,6 +176,8 @@ export class ExternalTurnRecorder {
   }
 
   async begin(prompt: string, origin: PromptOrigin, attachments: readonly ContentPart[] = [], promptId?: string): Promise<void> {
+    this.#prompt = prompt;
+    this.#promptId = promptId;
     await this.#dispatcher.dispatch(
       new TurnPrompt({
         turnId: this.turnId,
@@ -191,6 +201,9 @@ export class ExternalTurnRecorder {
   }
 
   async record(event: ExternalExecutorEvent): Promise<void> {
+    if (!(event.type === 'message.delta' && event.role === 'user')) {
+      this.#commitUserSegments();
+    }
     switch (event.type) {
       case 'message.delta':
         await this.#messageDelta(event);
@@ -203,6 +216,16 @@ export class ExternalTurnRecorder {
         return;
       case 'tool.update':
         await this.#toolUpdate(event);
+        return;
+      case 'tool.input.delta':
+        await this.#toolInputDelta(event);
+        return;
+      case 'tool.interaction':
+        await this.#toolInteraction(event);
+        return;
+      case 'response.completed':
+        this.#toolInputs.clear();
+        await this.#runtimeUpdate('session', boundedUnknown({ response: event.meta }));
         return;
       case 'plan.update':
         if (event.unstable) this.losses.add('unstable_acp_plan');
@@ -254,7 +277,10 @@ export class ExternalTurnRecorder {
         return;
       case 'unknown':
         this.losses.add('unknown_update_dropped');
-        await this.#runtimeUpdate('unknown', { updateType: event.updateType });
+        await this.#runtimeUpdate('unknown', {
+          updateType: event.updateType.slice(0, 256), method: event.method,
+          payload: diagnosticPayload(event.payload),
+        });
     }
   }
 
@@ -529,6 +555,40 @@ export class ExternalTurnRecorder {
     });
   }
 
+  async #toolInputDelta(event: Extract<ExternalExecutorEvent, { type: 'tool.input.delta' }>): Promise<void> {
+    this.#flushSegment();
+    const previous = this.#toolInputs.get(event.toolIndex);
+    const toolCallId = event.toolCallId ?? previous?.toolCallId;
+    if (toolCallId === undefined) {
+      await this.record({ type: 'unknown', updateType: 'tool_call_delta_chunk:missing_tool_call_id', payload: event });
+      return;
+    }
+    if (this.#tools.get(toolCallId)?.terminal) return;
+    const sameTool = previous?.toolCallId === toolCallId;
+    const text = (sameTool ? previous.inputText : '') + (event.delta ?? '');
+    const inputText = new StringDecoder('utf8').write(Buffer.from(text).subarray(0, MAX_BOUNDED_JSON_BYTES));
+    if (inputText !== text) this.losses.add('tool_input_partial');
+    const input = { toolCallId, name: event.name ?? (sameTool ? previous.name : undefined), inputText };
+    this.#toolInputs.set(event.toolIndex, input);
+    await this.#runtimeUpdate('tool_input', {
+      toolCallId: this.toolCallId(toolCallId), stepId: this.stepId,
+      name: input.name, inputText, truncated: inputText !== text,
+    });
+  }
+
+  async #toolInteraction(event: Extract<ExternalExecutorEvent, { type: 'tool.interaction' }>): Promise<void> {
+    await this.#runtimeUpdate('session', { interaction: event });
+    const tool = this.#tools.get(event.toolCallId);
+    if (tool === undefined || tool.terminal) return;
+    const text = event.state === 'resolved' ? 'Interaction resolved'
+      : event.kind === 'permission' ? 'Waiting for permission'
+      : event.kind === 'plan_approval' ? 'Waiting for plan review'
+      : 'Waiting for input';
+    const update = { kind: 'status' as const, text, customData: { interaction: event.state, kind: event.kind } };
+    await this.#runtimeUpdate('tool_progress', { toolCallId: tool.namespacedId, update });
+    await this.#dispatcher.dispatch(new ToolProgress({ turnId: this.turnId, toolCallId: tool.namespacedId, update }));
+  }
+
   async #toolCall(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): Promise<void> {
     this.#flushSegment();
     if (this.#tools.has(event.toolCallId)) {
@@ -557,6 +617,7 @@ export class ExternalTurnRecorder {
       args: tool.rawInput,
       extras: boundedRecord({
         remoteToolCallId: event.toolCallId,
+        display: externalToolDisplay(event),
         kind: event.kind,
         status: event.status,
         locations: event.locations,
@@ -722,11 +783,11 @@ export class ExternalTurnRecorder {
   }
 
   async #runtimeUpdate(
-    kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'unknown',
+    kind: ExecutorRuntimeUpdate['kind'],
     value: unknown,
   ): Promise<void> {
     await this.#dispatcher.dispatch(
-      new ExecutorRuntimeUpdate({ turnId: this.turnId, executorId: this.metadata.executorId, kind, value }),
+      new ExecutorRuntimeUpdate({ id: randomUUID(), turnId: this.turnId, executorId: this.metadata.executorId, kind, value }),
     );
   }
 
@@ -739,6 +800,7 @@ export class ExternalTurnRecorder {
     if (this.#ended) return;
     this.#ended = true;
     this.#flushSegment();
+    this.#commitUserSegments();
     for (const tool of this.#tools.values()) {
       if (tool.terminal) continue;
       if (tool.acp !== undefined) {
@@ -809,7 +871,6 @@ export class ExternalTurnRecorder {
       usage,
       rawFinishReason: finishReason,
     });
-    this.#appendExternalUserMessages();
     if (reason === 'completed') {
       await this.#dispatcher.dispatch(
         new TurnStepCompleted({
@@ -845,40 +906,104 @@ export class ExternalTurnRecorder {
     await this.#wire.flush();
   }
 
-  #appendExternalUserMessages(): void {
-    let promptEchoSuppressed = false;
-    for (const segment of this.#userSegments) {
-      if (
-        !promptEchoSuppressed &&
-        this.metadata.outboundPrompt !== undefined &&
-        segment.text === this.metadata.outboundPrompt
-      ) {
-        promptEchoSuppressed = true;
+  #commitUserSegments(): void {
+    const segments = this.#userSegments.splice(0);
+    for (const segment of segments) {
+      if (segment.text.length === 0 || this.#suppressEcho(segment.text)) continue;
+      const committed = segment.messageId === undefined ? undefined : this.#committedUsers.get(segment.messageId);
+      if (committed !== undefined && segment.messageId !== undefined) {
+        const text = committed.text + segment.text;
+        const variant = preambleVariant(text, this.metadata.outboundPrompt, this.#prompt);
+        const origin: PromptOrigin = variant === undefined
+          ? committed.origin
+          : { kind: 'injection', variant, ownerPromptId: this.#promptId };
+        this.#committedUsers.set(segment.messageId, { text, origin });
+        this.#appendUserMessage(segment.messageId, text, origin, false, segment.messageId);
         continue;
       }
+      const variant = preambleVariant(segment.text, this.metadata.outboundPrompt, this.#prompt);
+      const origin: PromptOrigin = variant === undefined
+        ? { kind: 'unknown' }
+        : { kind: 'injection', variant, ownerPromptId: this.#promptId };
       const messageId = segment.messageId ?? newMessageId();
-      this.#context.appendManaged({
-        role: 'user',
-        content: [{ type: 'text', text: segment.text }],
-        toolCalls: [],
-        id: messageId,
-        providerMessageId: segment.messageId,
-        origin: {
-          kind: 'system_trigger',
-          name: `external-executor:${this.metadata.executorId}`,
-        },
-      }, {
-        deliveryId: newDeliveryId(),
-        messageId,
-        turnId: this.turnId,
-        deliveredAt: new Date().toISOString(),
-        origin: 'user',
-      });
+      if (segment.messageId !== undefined) this.#committedUsers.set(segment.messageId, { text: segment.text, origin });
+      this.#appendUserMessage(messageId, segment.text, origin, variant !== undefined, segment.messageId);
     }
+  }
+
+  #appendUserMessage(messageId: string, text: string, origin: PromptOrigin, place: boolean, providerMessageId?: string): void {
+    const delivery: MessageDelivery = {
+      deliveryId: newDeliveryId(),
+      messageId,
+      turnId: this.turnId,
+      stepId: this.stepId,
+      step: 1,
+      deliveredAt: new Date().toISOString(),
+      origin: deliveryOriginOf(origin),
+      placement: place ? 'safety_boundary' : undefined,
+    };
+    this.#context.appendManaged({
+      role: 'user',
+      content: [{ type: 'text', text }],
+      toolCalls: [],
+      id: messageId,
+      providerMessageId,
+      origin,
+    }, delivery);
+  }
+
+  #suppressEcho(text: string): boolean {
+    if (!this.#outboundEchoSuppressed && this.metadata.outboundPrompt !== undefined && text === this.metadata.outboundPrompt) {
+      this.#outboundEchoSuppressed = true;
+      return true;
+    }
+    if (!this.#promptEchoSuppressed && this.#prompt.length > 0 && text === this.#prompt) {
+      this.#promptEchoSuppressed = true;
+      return true;
+    }
+    return false;
   }
 }
 
+function preambleVariant(text: string, outbound: string | undefined, prompt: string): string | undefined {
+  if (outbound === undefined || text.length === 0 || text === outbound || text === prompt) return undefined;
+  const separated = `\n\n${prompt}`;
+  const head = prompt.length === 0 ? ''
+    : outbound.endsWith(separated) ? outbound.slice(0, -separated.length)
+      : outbound.endsWith(prompt) ? outbound.slice(0, -prompt.length)
+        : '';
+  if (head.length === 0 || !head.includes(text)) return undefined;
+  const labeled = /^\[Kiki ([^\]]+)\]\n/.exec(text);
+  if (labeled?.[1] !== undefined) return labeled[1];
+  if (text.includes('<system-reminder>')) return 'system_reminder';
+  return undefined;
+}
+
 export function externalToolDisplay(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): ToolInputDisplay {
+  const projected = projectExternalToolDisplay({
+    name: event.name,
+    title: event.title,
+    kind: event.kind,
+    rawInput: event.rawInput,
+    content: event.content,
+    locations: event.locations,
+    summary: event.title,
+    titleFallback: true,
+  });
+  if (projected.kind !== 'generic') return projected;
+  const detail = projected.detail;
+  if (typeof detail === 'object' && detail !== null && !Array.isArray(detail)) {
+    const record = detail as Readonly<Record<string, unknown>>;
+    if (Array.isArray(record['diffs']) || Array.isArray(record['paths'])) return projected;
+  }
+  const input = objectOf(event.rawInput);
+  if (input?.['truncated'] === true || externalToolKindConflicts({ name: event.name, title: event.title, kind: event.kind })) {
+    return { kind: 'generic', summary: event.title, detail: boundedUnknown({ kind: event.kind, locations: event.locations }) };
+  }
+  return legacyExternalToolDisplay(event);
+}
+
+function legacyExternalToolDisplay(event: Extract<ExternalExecutorEvent, { type: 'tool.call' }>): ToolInputDisplay {
   const input = objectOf(event.rawInput);
   const location = objectOf(event.locations?.[0]);
   const change = Array.isArray(event.rawInput) ? objectOf(event.rawInput[0]) : undefined;

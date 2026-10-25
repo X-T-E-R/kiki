@@ -99,7 +99,7 @@ function describeMethods(
   let proto: object | null = ctor.prototype;
   while (proto !== null && proto !== Object.prototype && proto !== Disposable.prototype) {
     for (const name of Object.getOwnPropertyNames(proto)) {
-      if (name === 'constructor' || name.startsWith('_') || methods.has(name)) continue;
+      if (name === 'constructor' || name === 'dispose' || name.startsWith('_') || methods.has(name)) continue;
       const desc = Object.getOwnPropertyDescriptor(proto, name);
       if (desc === undefined) continue;
       if (typeof desc.get === 'function') {

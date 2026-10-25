@@ -82,6 +82,21 @@ function rpc(
   return `/api/debug/session/${ids.sid}/agent/${ids.aid}/${String(service)}/${method}`;
 }
 
+const STUB_MODEL_TOML = [
+  'default_model = "stub"',
+  '[providers.stub]',
+  'type = "openai"',
+  'base_url = "http://127.0.0.1:9999"',
+  'api_key = "stub"',
+  '[models.stub]',
+  'provider = "stub"',
+  'model = "stub"',
+  'max_context_size = 1000',
+  'capabilities = ["thinking"]',
+  'support_efforts = ["low", "high"]',
+  'default_effort = "high"',
+].join('\n');
+
 describe('server-v2 /api/debug RPC', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
@@ -89,6 +104,7 @@ describe('server-v2 /api/debug RPC', () => {
 
   beforeEach(async () => {
     home = await mkdtemp(join(tmpdir(), 'kimi-server-v2-rpc-'));
+    await writeFile(join(home, 'config.toml'), STUB_MODEL_TOML);
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', debugEndpoints: true });
     base = `http://127.0.0.1:${server.port}`;
   });
@@ -534,7 +550,7 @@ describe('server-v2 /api/debug RPC', () => {
       { input: [{ type: 'text', text: 'hello title' }] },
     );
     expect(body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const meta = await call<SessionMetaWire>('POST', rpc('session', ISessionMetadata, 'read', { sid: id }));
     expect(meta.body.code).toBe(0);
@@ -849,7 +865,7 @@ describe('server-v2 /api/debug scoped operation residency', () => {
 
       const restored = await manager.acquire!(sessionId, 'test-setup');
       expect(restored).toBeDefined();
-      restored!.dispose();
+      await restored!.dispose();
       const errorResponse = await fetch(`${base}${rpc('session', ISessionMetadata, 'missingMethod', { sid: sessionId })}`, { method: 'POST', headers });
       expect(((await errorResponse.json()) as Envelope<null>).code).toBe(40001);
       expect(await manager.evictIfIdle!(sessionId)).toBe(true);
@@ -971,7 +987,7 @@ describe('server-v2 /api/debug deadline and scoped residency', () => {
       await gate;
       return {
         handle: lease.handle,
-        dispose: () => { lease.dispose(); dispose(); },
+        dispose: async () => { await lease.dispose(); dispose(); },
       };
     });
 
@@ -1031,7 +1047,7 @@ describe('server-v2 /api/debug deadline and scoped residency', () => {
       await gate;
       return {
         handle: lease.handle,
-        dispose: () => { lease.dispose(); dispose(); },
+        dispose: async () => { await lease.dispose(); dispose(); },
       };
     });
 

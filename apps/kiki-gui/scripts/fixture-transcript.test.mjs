@@ -3,6 +3,8 @@ import test from 'node:test';
 
 import {
   TranscriptProjector,
+  applyOps,
+  emptySnapshot,
   filterOpsForGrade,
   gradeFor,
   redactSnapshotForGrade,
@@ -23,6 +25,21 @@ function userFrames(snapshot) {
       })),
   );
 }
+
+test('frame.upsert splices a new safety-boundary frame and revises that id in place', () => {
+  const snapshot = applyOps(emptySnapshot(), [
+    { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 0, state: 'running', origin: { kind: 'user' }, steps: [] } },
+    { op: 'step.upsert', turnId: 't1', step: { kind: 'step', stepId: 's1', turnId: 't1', ordinal: 0, state: 'running', frames: [] } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'user-a', role: 'user', text: 'already' } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'reply', role: 'assistant', text: 'answer' } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', place: 'safety_boundary', frame: { kind: 'text', frameId: 'injection', role: 'user', text: 'memory', origin: { kind: 'injection', variant: 'memory' } } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'injection', role: 'user', text: 'memory revised' } },
+    { op: 'frame.upsert', turnId: 't1', stepId: 's1', frame: { kind: 'text', frameId: 'follow', role: 'user', text: 'later' } },
+  ]);
+  const frames = snapshot.items[0].steps[0].frames;
+  assert.deepEqual(frames.map((frame) => frame.frameId), ['user-a', 'injection', 'reply', 'follow']);
+  assert.equal(frames[1].text, 'memory revised');
+});
 
 test('projects a basic stream of session_event frames into reset/ops', () => {
   const projector = new TranscriptProjector('session_fixture_basic');
@@ -73,6 +90,63 @@ test('full tool result upserts retain the started tool name and display metadata
   assert.deepEqual(frame.display, { kind: 'file_io', operation: 'edit', path: 'C:/fixture/plan.ts' });
   assert.equal(frame.state, 'done');
   assert.equal(frame.output, 'updated');
+});
+
+test('a tool result carries its own attachment entities instead of inline parts', () => {
+  const projector = new TranscriptProjector('session_fixture_tool_media');
+  projector.ingestFrame({
+    type: 'turn.started',
+    payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'Paint something.' },
+  });
+  projector.ingestFrame({
+    type: 'tool.call.started',
+    payload: { turnId: 1, toolCallId: 'call-paint', name: 'external_paint' },
+  });
+  projector.ingestFrame({
+    type: 'tool.result',
+    payload: {
+      turnId: 1,
+      toolCallId: 'call-paint',
+      output: 'painted',
+      attachmentIds: ['tool-call-paint.att1'],
+      attachments: [{
+        attachmentId: 'tool-call-paint.att1',
+        mediaType: 'image/png',
+        name: 'render.png',
+        size: 12,
+        source: { kind: 'session_media', fileId: 'f_fixture_tool_media' },
+      }],
+    },
+  });
+  const snapshot = projector.snapshot('main');
+  assert.equal(snapshot.items[0].steps[0].frames[0].attachmentIds[0], 'tool-call-paint.att1');
+  assert.deepEqual(snapshot.attachments, [{
+    attachmentId: 'tool-call-paint.att1',
+    mediaType: 'image/png',
+    name: 'render.png',
+    size: 12,
+    source: { kind: 'session_media', fileId: 'f_fixture_tool_media' },
+  }]);
+});
+
+test('a tool result without attachments keeps the frame exactly as before', () => {
+  const projector = new TranscriptProjector('session_fixture_tool_plain');
+  projector.ingestFrame({
+    type: 'turn.started',
+    payload: { turnId: 1, origin: { kind: 'user' }, prompt: 'Run it.' },
+  });
+  projector.ingestFrame({
+    type: 'tool.call.started',
+    payload: { turnId: 1, toolCallId: 'call-plain', name: 'Read' },
+  });
+  projector.ingestFrame({
+    type: 'tool.result',
+    payload: { turnId: 1, toolCallId: 'call-plain', output: 'plain' },
+  });
+  const snapshot = projector.snapshot('main');
+  assert.equal(snapshot.attachments.length, 0);
+  assert.equal('attachmentIds' in snapshot.items[0].steps[0].frames[0], true);
+  assert.equal(snapshot.items[0].steps[0].frames[0].attachmentIds, undefined);
 });
 
 test('filters ops and redacts snapshots by grade', () => {
@@ -580,4 +654,32 @@ test('projects a terminated foreground task-id subagent as cancelled', () => {
     usage: undefined,
   });
   assert.equal(projector.snapshot('agent-worker').meta.agent.phase.reason, 'cancelled');
+});
+
+test('seedMessages copies an optional tool display onto the frame', () => {
+  const projector = new TranscriptProjector('session_fixture_external_display');
+  const display = { kind: 'command', command: 'rg -n tool src', cwd: '/workspace/example' };
+  seedMessages(projector, [
+    {
+      id: 'um-ext',
+      role: 'user',
+      content: [{ type: 'text', text: 'Look.' }],
+      created_at: '2026-01-01T00:00:00.000Z',
+    },
+    {
+      id: 'am-ext',
+      role: 'assistant',
+      content: [{
+        type: 'tool_use',
+        tool_call_id: 'external:agy:run',
+        tool_name: 'run_command',
+        input: { CommandLine: 'rg -n tool src' },
+        display,
+      }],
+      created_at: '2026-01-01T00:00:01.000Z',
+    },
+  ]);
+  const frame = projector.snapshot('main').items[0].steps[0].frames.find((entry) => entry.kind === 'tool');
+  assert.deepEqual(frame.display, display);
+  assert.equal(frame.name, 'run_command');
 });

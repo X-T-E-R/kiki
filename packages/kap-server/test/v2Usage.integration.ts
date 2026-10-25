@@ -2,13 +2,15 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
+import { IAppendLogStore, ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
 import { Event } from '@kiki/agent-core-v2/_base/event';
 import { usageResponseSchema, usageRescanStatusSchema, type UsageResponse } from '@kiki/protocol';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { type RunningServer, startServer } from '../src/start';
+import { UsageAggregationService } from '../src/usage/usageAggregationService';
+import { UsageSourceTracker } from '../src/usage/usageSourceTracker';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 
@@ -75,6 +77,7 @@ function stubSessionIndex(): ISessionIndex {
       };
     },
     get: async (id) => summaries.find((item) => item.id === id),
+    archiveFamily: async () => [],
     count: async () => summaries.length,
     remove: async () => {},
   };
@@ -199,6 +202,39 @@ describe('server /api/usage', () => {
     }
   });
 
+  it('refreshes warmed usage after committed live appends, external wire rewrites and new agents', async () => {
+    const core = (server as RunningServer).core;
+    const sources = new UsageSourceTracker(core);
+    const service = new UsageAggregationService(core, Date.now, {}, sources);
+    const changed: Array<string | undefined> = [];
+    sources.onDidChange((key) => { changed.push(key); });
+    try {
+      expect(sources.ready).toBe(true);
+      const cold = await service.query({});
+      expect(cold.summary.tokens.output).toBe(160);
+      expect(await service.query({})).toEqual(cold);
+      const logs = core.accessor.get(IAppendLogStore);
+      const wireScope = `sessions/${WS_A}/session-high/agents/main`;
+      logs.append(wireScope, 'wire.jsonl', usageRecord(BASE_TIME + 4 * DAY, 'billing-a', 7));
+      await logs.flush(wireScope, 'wire.jsonl');
+      const live = await service.query({});
+      expect(live.summary.tokens.output).toBe(167);
+      expect(live.reliability.complete).toBe(true);
+      await writeWire(home as string, WS_A, 'session-high', 'main', [usageRecord(BASE_TIME + DAY, 'billing-a', 5)]);
+      await vi.waitFor(async () => {
+        const rewritten = await service.query({});
+        expect(rewritten.summary.tokens.output, JSON.stringify(changed)).toBe(15);
+        expect(rewritten.reliability.complete).toBe(true);
+      });
+      await writeWire(home as string, WS_A, 'session-high', 'child', [usageRecord(BASE_TIME + DAY, 'billing-a', 3)]);
+      await vi.waitFor(async () => { expect((await service.query({})).summary.tokens.output).toBe(18); });
+      expect((await service.query({})).reliability.complete).toBe(true);
+    } finally {
+      service.dispose();
+      sources.dispose();
+    }
+  });
+
   it('starts a full rescan through REST and exposes validated progress including archived sessions', async () => {
     const readStatus = async () => {
       const response = await authedFetch(server as RunningServer, base, '/api/usage/rescan');
@@ -271,6 +307,52 @@ describe('server /api/usage', () => {
     expect(typeof body.request_id).toBe('string');
     return usageResponseSchema.parse(body.data);
   }
+
+  it('serves native source grouping and repeated profile filters with precise session attribution', async () => {
+    const at = BASE_TIME + 100 * DAY;
+    const identity = { modelAlias: 'shared-alias', agentId: 'same-agent' };
+    await writeWire(home!, WS_A, 'session-high', 'main', [
+      usageRecord(at - 1, 'billing-a', 99, { ...identity, provider: 'provider-a', profileName: 'explore' }),
+      usageRecord(at, 'billing-a', 10, { ...identity, provider: 'provider-a', profileName: 'explore', turnId: 1 }),
+      usageRecord(at + 1, 'billing-a', 20, { ...identity, provider: 'provider-b', profileName: 'general', turnId: 2 }),
+      usageRecord(at + 2, 'billing-a', 5, identity),
+      usageRecord(at + 3, 'unknown-price', 2, { ...identity, provider: 'provider-b', profileName: 'general' }),
+      usageRecord(at + 10, 'billing-a', 99, { ...identity, provider: 'provider-a', profileName: 'explore' }),
+    ]);
+    await writeWire(home!, WS_A, 'session-low', 'main', [
+      usageRecord(at, 'billing-a', 3, { ...identity, provider: 'provider-a', profileName: 'explore', turnId: 3 }),
+    ]);
+    const window = `range=custom&start_at=${at}&end_at=${at + 10}&workspace.id=${WS_A}&granularity=five_hour&timezone_offset_minutes=480`;
+    const provider = await getData(`?${window}&dimension=provider`);
+    expect(provider.query.profiles).toEqual([]);
+    expect(provider.summary).toMatchObject({ cost_usd_estimated: 0.152, cost_unknown: true, session_count: 2 });
+    expect(provider.trend[0]?.groups).toEqual(expect.arrayContaining([
+      expect.objectContaining({ key: 'provider:"provider-a"', provider: 'provider-a', cost_usd_estimated: expect.closeTo(0.052, 12) }),
+      expect.objectContaining({ key: 'provider:"provider-b"', provider: 'provider-b', cost_usd_estimated: 0.08, cost_unknown: true }),
+      expect.objectContaining({ key: 'provider:null', provider: null, cost_usd_estimated: 0.02 }),
+    ]));
+    const profile = await getData(`?${window}&dimension=profile`);
+    expect(profile.summary).toEqual(provider.summary);
+    expect(profile.trend[0]?.groups.map((group) => group.profile_name)).toEqual(['general', 'explore', null]);
+    const filtered = await getData(`?${window}&dimension=profile&profile=explore&profile=explore&provider=provider-a&model=shared-alias&agent.id=same-agent&page_size=1`);
+    expect(filtered.query).toMatchObject({ profiles: ['explore'], providers: ['provider-a'], models: ['shared-alias'] });
+    expect(filtered.summary).toMatchObject({ cost_usd_estimated: expect.closeTo(0.052, 12), cost_unknown: false, session_count: 2 });
+    expect(filtered.sessions.items[0]).toMatchObject({ id: 'session-high', usage: { cost_usd_estimated: 0.04 }, profile_names: ['explore'] });
+    expect(filtered.trend[0]?.drilldown.sessions).toEqual([
+      expect.objectContaining({ session_id: 'session-high', turn_ids: [1] }),
+      expect.objectContaining({ session_id: 'session-low', turn_ids: [3] }),
+    ]);
+    const token = filtered.sessions.next_page_token;
+    const next = await getData(`?${window}&dimension=profile&profile=explore&provider=provider-a&model=shared-alias&agent.id=same-agent&page_size=1&page_token=${token}`);
+    expect(next.sessions.items[0]).toMatchObject({ id: 'session-low', usage: { cost_usd_estimated: 0.012 } });
+    const changed = await get(`?${window}&dimension=profile&profile=general&provider=provider-a&model=shared-alias&agent.id=same-agent&page_size=1&page_token=${token}`);
+    expect(changed.body.code).toBe(40922);
+    const repeated = await getData(`?${window}&dimension=profile&profile=general&profile=explore`);
+    expect(repeated.query.profiles).toEqual(['explore', 'general']);
+    expect(repeated.summary.cost_usd_estimated).toBeCloseTo(0.132);
+    expect(repeated.trend[0]?.groups).toHaveLength(2);
+    expect((await get('?dimension=profile&profile=')).body.code).toBe(40001);
+  });
 
   it('carries wire accounting provenance through the public response without hiding unpriced tokens', async () => {
     const at = BASE_TIME + 100 * DAY;

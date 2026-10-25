@@ -1,19 +1,8 @@
-/**
- *   GET    /v1/workspaces                       → ListWorkspacesResponse  { items }
- *   POST   /v1/workspaces                       body: WorkspaceCreate      → Workspace
- *   PATCH  /v1/workspaces/{workspace_id}        body: WorkspaceUpdate      → Workspace
- *   DELETE /v1/workspaces/{workspace_id}                                   → { deleted: true }
- *
- * Errors:
- *   - 40001 validation.failed       (root not absolute, name too long, etc.)
- *   - 40409 fs.path_not_found       (POST /workspaces { root } where root doesn't exist)
- *   - 40410 workspace.not_found     (PATCH/DELETE unknown id)
- */
-
 import { z } from 'zod';
 
 import {
   workspaceCreateSchema,
+  workspaceCatalogEntrySchema,
   workspaceIdSchema,
   workspaceSchema,
   workspaceUpdateSchema,
@@ -23,6 +12,17 @@ export const listWorkspacesResponseSchema = z.object({
   items: z.array(workspaceSchema),
 });
 export type ListWorkspacesResponse = z.infer<typeof listWorkspacesResponseSchema>;
+
+/**
+ * GET /api/workspaces?view=catalog reads persisted registration metadata only.
+ * PATCH /api/workspaces/{workspace_id}?view=catalog returns the changed metadata
+ * without discovery, session counting or Git inspection. Omitting view preserves
+ * the full Workspace response; GET /api/workspaces/{workspace_id} reads one
+ * registered workspace with measured details. Unknown registered IDs return 40410.
+ */
+export const workspaceViewQuerySchema = z.object({ view: z.enum(['catalog']).optional() });
+export const listWorkspaceCatalogResponseSchema = z.object({ items: z.array(workspaceCatalogEntrySchema) });
+export type ListWorkspaceCatalogResponse = z.infer<typeof listWorkspaceCatalogResponseSchema>;
 
 export const inspectWorkspaceRequestSchema = z.object({
   root: z.string().min(1),

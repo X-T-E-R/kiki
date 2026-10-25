@@ -1,7 +1,9 @@
 import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 import { parseImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-format-policy';
-import type { TranscriptAttachment } from '@kiki/transcript';
-import { contentRevision } from '../transport/klient/boundedContent';
+import { validateImageDataUrl } from '@kiki/agent-core-v2/agent/media/image-compress';
+import { isPlainAgentId, mediaUrlFromPart, type ContentRef, type ContentSource, type TranscriptAttachment, type TranscriptTurn } from '@kiki/transcript';
+import { z } from 'zod';
+import { contentRevision } from '../transport/klient/contentRevision';
 
 export function inlineMediaId(attachment: TranscriptAttachment, agentId: string): string | undefined {
   const source = attachment.source;
@@ -9,9 +11,125 @@ export function inlineMediaId(attachment: TranscriptAttachment, agentId: string)
   return `inline:${agentId}:${Buffer.from(attachment.attachmentId).toString('base64url')}:${contentRevision(source.url)}`;
 }
 
-export function inlineMediaFile(attachment: TranscriptAttachment): SessionMediaFile | undefined {
+export function inlineToolMedia(part: unknown): { readonly kind: 'image' | 'video'; readonly url: string } | undefined {
+  const media = mediaUrlFromPart(part);
+  return media?.url.startsWith(`data:${media.kind}/`) ? media : undefined;
+}
+
+const inlineAddressSchema = z.object({
+  source: z.discriminatedUnion('kind', [
+    z.object({ kind: z.literal('frame'), id: z.string().min(1).max(256), turnId: z.string().min(1).max(256), stepId: z.string().min(1).max(256) }).strict(),
+    z.object({ kind: z.literal('prompt'), id: z.string().min(1).max(256) }).strict(),
+  ]),
+  path: z.array(z.union([z.string().max(256), z.number().int().nonnegative()])).min(1).max(16),
+}).strict();
+
+export type InlineMediaIdentity = {
+  readonly agentId: string;
+  readonly revision: string;
+} & (
+  | { readonly kind: 'attachment'; readonly attachmentId: string }
+  | { readonly kind: 'content'; readonly source: ContentSource; readonly path: ContentRef['path'] }
+);
+
+export type PublishedMediaEntityReader = (agentId: string, source: ContentSource) => Promise<unknown>;
+
+export function parseInlineMediaIdentity(fileId: string): InlineMediaIdentity | undefined {
+  const [kind, agentId, address, revision, extra] = fileId.split(':');
+  if ((kind !== 'inline' && kind !== 'inline-content') || agentId === undefined || !isPlainAgentId(agentId) ||
+    address === undefined || address.length > 8192 || !/^[A-Za-z0-9_-]+$/u.test(address) ||
+    revision === undefined || !/^[0-9a-f]{64}$/u.test(revision) || extra !== undefined) return undefined;
+  if (kind === 'inline') {
+    const attachmentId = Buffer.from(address, 'base64url').toString('utf8');
+    return attachmentId.length > 0 ? { kind: 'attachment', agentId, attachmentId, revision } : undefined;
+  }
+  let decoded: unknown;
+  try { decoded = JSON.parse(Buffer.from(address, 'base64url').toString('utf8')); }
+  catch { return undefined; }
+  const parsed = inlineAddressSchema.safeParse(decoded);
+  if (!parsed.success || !isInlineMediaAddress(parsed.data.source, parsed.data.path)) return undefined;
+  return { kind: 'content', agentId, ...parsed.data, revision };
+}
+
+const INLINE_MEDIA_CACHE_BYTES = 16 * 1024 * 1024;
+const inlineMediaCache = new Map<string, SessionMediaFile>();
+let inlineMediaCacheBytes = 0;
+
+export async function openPublishedInlineMedia(fileId: string, readEntity: PublishedMediaEntityReader): Promise<SessionMediaFile | undefined> {
+  const identity = parseInlineMediaIdentity(fileId);
+  if (identity === undefined) return undefined;
+  let url: string;
+  let name: string;
+  if (identity.kind === 'attachment') {
+    const attachment = await readEntity(identity.agentId, { kind: 'attachment', id: identity.attachmentId }) as TranscriptAttachment | undefined;
+    if (attachment === undefined || inlineMediaId(attachment, identity.agentId) !== fileId || attachment.source?.kind !== 'url') return undefined;
+    url = attachment.source.url;
+    name = attachment.name ?? attachment.attachmentId;
+  } else {
+    let selected = await readEntity(identity.agentId, identity.source);
+    for (const key of identity.path) {
+      if (selected === null || typeof selected !== 'object' || !Object.hasOwn(selected, key)) return undefined;
+      selected = (selected as Record<string | number, unknown>)[key];
+    }
+    const media = inlineToolMedia(selected);
+    if (media === undefined || contentRevision(media.url) !== identity.revision) return undefined;
+    const selectedName = (selected as { name?: unknown }).name;
+    url = media.url;
+    name = typeof selectedName === 'string' && selectedName.length > 0 ? selectedName : `${identity.source.id}.${media.kind}`;
+  }
+  const cached = inlineMediaCache.get(fileId);
+  if (cached !== undefined) {
+    inlineMediaCache.delete(fileId);
+    inlineMediaCache.set(fileId, cached);
+    return { ...cached, name };
+  }
+  const file = await inlineDataMediaFile(url, name);
+  if (file !== undefined && file.mediaType.startsWith('image/') && file.size <= INLINE_MEDIA_CACHE_BYTES) {
+    const previous = inlineMediaCache.get(fileId);
+    if (previous !== undefined) inlineMediaCacheBytes -= previous.size;
+    inlineMediaCache.delete(fileId);
+    inlineMediaCache.set(fileId, file);
+    inlineMediaCacheBytes += file.size;
+    while (inlineMediaCacheBytes > INLINE_MEDIA_CACHE_BYTES || inlineMediaCache.size > 128) {
+      const oldest = inlineMediaCache.keys().next().value!;
+      inlineMediaCacheBytes -= inlineMediaCache.get(oldest)!.size;
+      inlineMediaCache.delete(oldest);
+    }
+  }
+  return file;
+}
+
+export function projectInlineToolMedia(value: unknown, path: ContentRef['path'], source: ContentSource, entity: object, agentId: string): object | undefined {
+  let frameSource = source;
+  let framePath = path;
+  if (source.kind === 'turn' && path[0] === 'steps' && typeof path[1] === 'number' && path[2] === 'frames' && typeof path[3] === 'number') {
+    const turn = entity as TranscriptTurn;
+    const step = turn.steps?.[path[1]];
+    const frame = step?.frames[path[3]];
+    if (frame === undefined || step === undefined) return undefined;
+    frameSource = { kind: 'frame', id: frame.frameId, turnId: turn.turnId, stepId: step.stepId };
+    framePath = path.slice(4);
+  }
+  if (!isInlineMediaAddress(frameSource, framePath)) return undefined;
+  const media = inlineToolMedia(value);
+  if (media === undefined) return undefined;
+  const address = Buffer.from(JSON.stringify({ source: frameSource, path: framePath })).toString('base64url');
+  const fileId = `inline-content:${agentId}:${address}:${contentRevision(media.url)}`;
+  const name = source.kind === 'prompt' ? (value as { name?: unknown }).name : undefined;
+  return { type: media.kind, source: { kind: 'session_media', file_id: fileId }, name: typeof name === 'string' ? name : undefined };
+}
+
+export function isInlineMediaAddress(source: ContentSource, path: ContentRef['path']): boolean {
+  return source.kind === 'frame' && source.turnId !== undefined && source.stepId !== undefined && path[0] === 'output' ||
+    source.kind === 'prompt' && path.length === 2 && path[0] === 'content' && typeof path[1] === 'number' && Number.isInteger(path[1]) && path[1] >= 0;
+}
+
+export async function inlineMediaFile(attachment: TranscriptAttachment): Promise<SessionMediaFile | undefined> {
   if (attachment.source?.kind !== 'url') return undefined;
-  const url = attachment.source.url;
+  return inlineDataMediaFile(attachment.source.url, attachment.name ?? attachment.attachmentId);
+}
+
+export async function inlineDataMediaFile(url: string, name: string): Promise<SessionMediaFile | undefined> {
   const comma = url.indexOf(',');
   if (!/^data:/iu.test(url) || comma < 0) return undefined;
   const parsed = parseImageDataUrl(url);
@@ -19,11 +137,31 @@ export function inlineMediaFile(attachment: TranscriptAttachment): SessionMediaF
   const mime = (parsed?.mimeType ?? header.split(';')[0]) || 'text/plain';
   const base64 = /;base64\s*$/iu.test(header);
   const payload = url.slice(comma + 1);
+  if (mime.startsWith('image/')) {
+    let validationUrl = url;
+    if (parsed === null || /[%\s]/u.test(payload)) {
+      try {
+        validationUrl = `data:${mime};base64,${Buffer.concat([...decodePayload(payload, base64)]).toString('base64')}`;
+      } catch { return undefined; }
+    }
+    const validated = await validateImageDataUrl(validationUrl);
+    if (validated === null) return undefined;
+    const bytes = validated.bytes;
+    return {
+      name, mediaType: mime, size: bytes.byteLength,
+      stream: async function* (range) {
+        const start = Math.max(0, range?.start ?? 0);
+        const end = Math.min(bytes.byteLength - 1, range?.end ?? bytes.byteLength - 1);
+        if (start <= end) yield bytes.subarray(start, end + 1);
+      },
+    };
+  }
   let size = 0;
-  try { for (const chunk of decodePayload(payload, base64)) size += chunk.byteLength; }
-  catch { return undefined; }
+  try {
+    for (const chunk of decodePayload(payload, base64)) size += chunk.byteLength;
+  } catch { return undefined; }
   return {
-    name: attachment.name ?? attachment.attachmentId, mediaType: mime, size,
+    name, mediaType: mime, size,
     stream: async function* (range) {
       let offset = 0;
       const start = range?.start ?? 0;

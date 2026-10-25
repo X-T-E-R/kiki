@@ -41,6 +41,45 @@ describe('config REST protocol', () => {
     }
   });
 
+  it('keeps system transport sections, explicit off, partial fields, and null clears', () => {
+    const request_compression = {
+      encoding: 'zstd' as const,
+      targets: ['https://b.example.test/v1', 'https://a.example.test/v1'],
+      min_bytes: 0,
+      dictionary: false,
+    };
+    const responses_web_socket = { targets: ['https://example.test/v1'] };
+    expect(configResponseSchema.parse({ request_compression, responses_web_socket })).toMatchObject({
+      request_compression,
+      responses_web_socket,
+    });
+    expect(patchConfigRequestSchema.parse({ request_compression, responses_web_socket })).toEqual({
+      request_compression,
+      responses_web_socket,
+    });
+    expect(patchConfigRequestSchema.parse({
+      request_compression: { encoding: 'off' },
+      responses_web_socket: { off: true },
+    })).toEqual({
+      request_compression: { encoding: 'off' },
+      responses_web_socket: { off: true },
+    });
+    expect(patchConfigRequestSchema.parse({
+      request_compression: { min_bytes: 0, targets: request_compression.targets },
+    }).request_compression).toEqual({ min_bytes: 0, targets: request_compression.targets });
+    expect(patchConfigRequestSchema.parse({})).not.toHaveProperty('request_compression');
+    expect(patchConfigRequestSchema.parse({})).not.toHaveProperty('responses_web_socket');
+    expect(patchConfigRequestSchema.parse({ request_compression: null, responses_web_socket: null })).toEqual({
+      request_compression: null,
+      responses_web_socket: null,
+    });
+    expect(configResponseSchema.safeParse({ request_compression: null }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({
+      request_compression: { encoding: 'gzip', dictionary: true, targets: ['https://example.test/v1'] },
+    }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({ responses_web_socket: {} }).success).toBe(false);
+  });
+
   it('omits removed host dispatch policies from the typed request and response', () => {
     expect(patchConfigRequestSchema.parse({ subagent: {
       main_dispatch_policy: 'strict', subagent_dispatch_policy: 'advisory', allowed_tools: ['Read'],
@@ -72,6 +111,53 @@ describe('config REST protocol', () => {
       subagent: { defaultModel: 'explore/fast' },
       fast_model: 'kimi-code/kimi-k2',
     });
+  });
+
+  it('validates scoped retry policies on patch and response surfaces', () => {
+    const patch = {
+      retry: {
+        max_attempts: 5,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          max_attempts: 20,
+          backoff: 15_000,
+          retry: true,
+        }],
+      },
+    };
+    expect(patchConfigRequestSchema.parse(patch)).toEqual(patch);
+    expect(configResponseSchema.parse({
+      providers: {},
+      retry: {
+        maxAttempts: 5,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          maxAttempts: 20,
+          backoff: 15_000,
+          retry: true,
+        }],
+      },
+    }).retry).toEqual({
+      maxAttempts: 5,
+      policies: [{
+        match: '^provider\\.rate_limit$',
+        models: ['gemini-4-argon'],
+        providers: ['google-native'],
+        maxAttempts: 20,
+        backoff: 15_000,
+        retry: true,
+      }],
+    });
+    expect(patchConfigRequestSchema.safeParse({
+      retry: { policies: [{ match: '429', models: [] }] },
+    }).success).toBe(false);
+    expect(patchConfigRequestSchema.safeParse({
+      retry: { policies: [{ match: '429', provider: 'google-native' }] },
+    }).success).toBe(false);
   });
 
   it('omits the retired telemetry patch field', () => {
@@ -106,6 +192,20 @@ describe('config REST protocol', () => {
     expect(configResponseSchema.parse({ nb_search_source: { reuse_local_config: false } }).nb_search_source).toEqual({ reuse_local_config: false });
     expect(nbSearchConfigPatchSchema.safeParse({ reuse_local_config: false }).success).toBe(false);
     expect(patchConfigRequestSchema.safeParse({ nb_search_source: { reuse_local_config: false, api_key: 'fixture-private-key' } }).success).toBe(false);
+  });
+
+  it('accepts optional capability availability separately from defaults', () => {
+    const state = { allowed: true, host_locked: false, default_on: false, origin: 'default' as const, unresolved: false };
+    expect(configResponseSchema.parse({
+      providers: {},
+      optional_capabilities: { browser: state, computer: state, memory: state, thread: { ...state, allowed: true }, web: { ...state, default_on: true }, send_message: state },
+    }).optional_capabilities?.thread).toEqual({ ...state, allowed: true });
+    expect(patchConfigRequestSchema.parse({
+      optional_capabilities: { defaults: { thread: true, web: null, send_message: false }, web_allowed: false },
+    })).toEqual({
+      optional_capabilities: { defaults: { thread: true, web: null, send_message: false }, web_allowed: false },
+    });
+    expect(patchConfigRequestSchema.safeParse({ optional_capabilities: { enabled: true } }).success).toBe(false);
   });
 
   it('accepts the explicit nb_search config contract', () => {

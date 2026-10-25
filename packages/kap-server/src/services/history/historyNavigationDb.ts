@@ -7,7 +7,7 @@ import type { NavigationAdapterCursor, NavigationScalarState } from '@kiki/trans
 import type { HistoryNavigationProof } from './historyNavigationProof';
 
 import { HISTORY_NAV_COLLECTION, type HistoryNavRow } from './historyLocatorStore';
-import { SqliteNavigationAnchorSequence, SqliteNavigationMap,
+import { navigationStatement, SqliteNavigationAnchorSequence, SqliteNavigationMap,
   SqliteNavigationSet, SqliteNavigationTurnSequence } from './historyNavigationState';
 
 type NavigationStore = Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>;
@@ -116,7 +116,7 @@ export class HistoryNavigationDb implements NavigationStore {
   static lazy(path: string): LazyHistoryNavigationDb { return new LazyHistoryNavigationDb(path); }
 
   readManifest(scope: string): HistoryNavManifest | undefined {
-    const row = this.db.prepare('SELECT value FROM manifest WHERE scope=?').get(scope) as { value: string } | undefined;
+    const row = navigationStatement(this.db, 'SELECT value FROM manifest WHERE scope=?').get(scope) as { value: string } | undefined;
     if (row === undefined || Buffer.byteLength(row.value) > MANIFEST_MAX_BYTES) return undefined;
     let value: Partial<HistoryNavManifest>;
     try { value = JSON.parse(row.value) as Partial<HistoryNavManifest>; }
@@ -130,7 +130,7 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   readAdapterCursor(scope: string): NavigationAdapterCursor | undefined {
-    const row = this.db.prepare("SELECT value FROM state WHERE scope=? AND bucket='cursor' AND key='adapter'")
+    const row = navigationStatement(this.db, "SELECT value FROM state WHERE scope=? AND bucket='cursor' AND key='adapter'")
       .get(scope) as { value: string } | undefined;
     if (row === undefined) return undefined;
     let value: Partial<NavigationAdapterCursor>;
@@ -144,42 +144,42 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   hasCanonicalSources(scope: string): boolean {
-    return this.db.prepare("SELECT 1 FROM state WHERE scope=? AND bucket='cursor' AND key='canonicalSources'")
+    return navigationStatement(this.db, "SELECT 1 FROM state WHERE scope=? AND bucket='cursor' AND key='canonicalSources'")
       .get(scope) !== undefined;
   }
 
   markCanonicalCall(scope: string, callId: string, located: boolean, turnId: string | undefined, ordinal: number): void {
-    if (located) this.db.prepare("DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls' AND key=?").run(scope, callId);
-    else this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalUnlocatedCalls',?,?)
+    if (located) navigationStatement(this.db, "DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls' AND key=?").run(scope, callId);
+    else navigationStatement(this.db, `INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalUnlocatedCalls',?,?)
       ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`).run(scope, callId, JSON.stringify({ turnId, ordinal }));
   }
 
   hasUnlocatedCanonicalCall(scope: string, callId: string): boolean {
-    return this.db.prepare("SELECT 1 FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls' AND key=?")
+    return navigationStatement(this.db, "SELECT 1 FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls' AND key=?")
       .get(scope, callId) !== undefined;
   }
 
   clearUnlocatedCanonicalCalls(scope: string): void {
-    this.db.prepare("DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls'").run(scope);
+    navigationStatement(this.db, "DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls'").run(scope);
   }
 
   addCanonicalSource(scope: string, span: HistoryCanonicalSpan, seed: HistoryCanonicalSeed): void {
-    this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalSeeds',?,?)
+    navigationStatement(this.db, `INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalSeeds',?,?)
       ON CONFLICT(scope,bucket,key) DO NOTHING`).run(scope, span.turnId, JSON.stringify(seed));
-    this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalRecords',?,?)
+    navigationStatement(this.db, `INSERT INTO state(scope,bucket,key,value) VALUES(?,'canonicalRecords',?,?)
       ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`)
       .run(scope, String(span.ordinal), JSON.stringify(span));
   }
 
   canonicalSeed(scope: string, turnId: string): HistoryCanonicalSeed | undefined {
-    const row = this.db.prepare("SELECT value FROM state WHERE scope=? AND bucket='canonicalSeeds' AND key=?")
+    const row = navigationStatement(this.db, "SELECT value FROM state WHERE scope=? AND bucket='canonicalSeeds' AND key=?")
       .get(scope, turnId) as { value: string } | undefined;
     return row === undefined ? undefined : JSON.parse(row.value) as HistoryCanonicalSeed;
   }
 
   canonicalSources(scope: string, turnId: string, afterOrdinal: number, limit: number): HistoryCanonicalSpan[] {
     if (!Number.isInteger(limit) || limit < 1 || limit > 128) throw new Error('invalid canonical source page');
-    const rows = this.db.prepare(`SELECT value FROM state WHERE scope=? AND bucket='canonicalRecords'
+    const rows = navigationStatement(this.db, `SELECT value FROM state WHERE scope=? AND bucket='canonicalRecords'
       AND json_extract(value,'$.turnId')=? AND CAST(key AS INTEGER)>?
       ORDER BY CAST(key AS INTEGER) LIMIT ?`).all(scope, turnId, afterOrdinal, limit) as Array<{ value: string }>;
     return rows.map((row) => JSON.parse(row.value) as HistoryCanonicalSpan);
@@ -195,10 +195,10 @@ export class HistoryNavigationDb implements NavigationStore {
     if (!this.scanTransactionOpen || manifest.ordinal !== cursor.ordinal) throw new Error('invalid navigation checkpoint');
     const value = JSON.stringify(manifest);
     if (Buffer.byteLength(value) > MANIFEST_MAX_BYTES) throw new Error('navigation manifest exceeds 16 KiB');
-    this.db.prepare(`INSERT INTO state(scope,bucket,key,value) VALUES(?,'cursor','adapter',?)
+    navigationStatement(this.db, `INSERT INTO state(scope,bucket,key,value) VALUES(?,'cursor','adapter',?)
       ON CONFLICT(scope,bucket,key) DO UPDATE SET value=excluded.value`).run(scope, JSON.stringify(cursor));
-    this.db.prepare("INSERT OR REPLACE INTO state(scope,bucket,key,value) VALUES(?,'cursor','canonicalSources','1')").run(scope);
-    this.db.prepare(`INSERT INTO manifest(scope,value) VALUES(?,?)
+    navigationStatement(this.db, "INSERT OR REPLACE INTO state(scope,bucket,key,value) VALUES(?,'cursor','canonicalSources','1')").run(scope);
+    navigationStatement(this.db, `INSERT INTO manifest(scope,value) VALUES(?,?)
       ON CONFLICT(scope) DO UPDATE SET value=excluded.value`).run(scope, value);
     this.db.exec('COMMIT');
     this.scanTransactionOpen = false;
@@ -212,21 +212,21 @@ export class HistoryNavigationDb implements NavigationStore {
 
   clearProjection(scope: string, workspace: string, session: string, agent: string): void {
     this.clearState(scope);
-    this.db.prepare('DELETE FROM manifest WHERE scope=?').run(scope);
+    navigationStatement(this.db, 'DELETE FROM manifest WHERE scope=?').run(scope);
     const lower = `${scope}\0`;
     const upper = `${scope}\u0001`;
     for (const table of ['state', 'turn_sequence', 'anchor_sequence', 'manifest']) {
-      this.db.prepare(`DELETE FROM ${table} WHERE scope>=? AND scope<?`).run(lower, upper);
+      navigationStatement(this.db, `DELETE FROM ${table} WHERE scope>=? AND scope<?`).run(lower, upper);
     }
-    this.db.prepare('DELETE FROM rows WHERE workspace=? AND session=? AND agent=?')
+    navigationStatement(this.db, 'DELETE FROM rows WHERE workspace=? AND session=? AND agent=?')
       .run(workspace, session, agent);
-    this.db.prepare('DELETE FROM rows WHERE key=?').run(`${scope}\0checkpoint`);
+    navigationStatement(this.db, 'DELETE FROM rows WHERE key=?').run(`${scope}\0checkpoint`);
   }
 
   clearState(scope: string): void {
-    this.db.prepare('DELETE FROM state WHERE scope=?').run(scope);
-    this.db.prepare('DELETE FROM turn_sequence WHERE scope=?').run(scope);
-    this.db.prepare('DELETE FROM anchor_sequence WHERE scope=?').run(scope);
+    navigationStatement(this.db, 'DELETE FROM state WHERE scope=?').run(scope);
+    navigationStatement(this.db, 'DELETE FROM turn_sequence WHERE scope=?').run(scope);
+    navigationStatement(this.db, 'DELETE FROM anchor_sequence WHERE scope=?').run(scope);
   }
 
   scalarState(scope: string): NavigationScalarState {
@@ -237,12 +237,12 @@ export class HistoryNavigationDb implements NavigationStore {
       anchors: new SqliteNavigationAnchorSequence(this.db, scope),
       purgeRemovedTurns: (range) => {
         for (const bucket of ['turnStart', 'turnStates', 'canonicalTurns', 'currentStep', 'canonicalSeeds']) {
-          this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket=? AND key IN (${removed})`)
+          navigationStatement(this.db, `DELETE FROM state WHERE scope=? AND bucket=? AND key IN (${removed})`)
             .run(scope, bucket, scope, range[0], range[1]);
         }
-        this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket IN ('steps','tools','canonicalRecords','canonicalUnlocatedCalls')
+        navigationStatement(this.db, `DELETE FROM state WHERE scope=? AND bucket IN ('steps','tools','canonicalRecords','canonicalUnlocatedCalls')
           AND json_extract(value,'$.turnId') IN (${removed})`).run(scope, scope, range[0], range[1]);
-        this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket='unpairedSteerCredits'
+        navigationStatement(this.db, `DELETE FROM state WHERE scope=? AND bucket='unpairedSteerCredits'
           AND substr(key,1,instr(key,char(0))-1) IN (${removed})`).run(scope, scope, range[0], range[1]);
       },
       canonicalTurns: new SqliteNavigationSet(this.db, scope, 'canonicalTurns'),
@@ -261,26 +261,26 @@ export class HistoryNavigationDb implements NavigationStore {
   deactivateRange(input: { scope: string; workspace: string; session: string; agent: string;
     range?: readonly [number, number]; retain?: { turn: number; beforeOrdinal: number } }): void {
     if (input.range !== undefined) {
-      this.db.prepare(`UPDATE rows SET active=0,value=json_set(value,'$.active',json('false'))
+      navigationStatement(this.db, `UPDATE rows SET active=0,value=json_set(value,'$.active',json('false'))
         WHERE workspace=? AND session=? AND agent=? AND active=1 AND turn IN
         (SELECT CAST(substr(id,2) AS INTEGER) FROM turn_sequence WHERE scope=? AND seq>=? AND seq<=?)`)
         .run(input.workspace, input.session, input.agent, input.scope, input.range[0], input.range[1]);
     }
     if (input.retain !== undefined) {
-      this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls'
+      navigationStatement(this.db, `DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls'
         AND json_extract(value,'$.turnId')=? AND json_extract(value,'$.ordinal')>=?`)
         .run(input.scope, `t${input.retain.turn}`, input.retain.beforeOrdinal);
-      this.db.prepare(`DELETE FROM state WHERE scope=? AND bucket='canonicalRecords'
+      navigationStatement(this.db, `DELETE FROM state WHERE scope=? AND bucket='canonicalRecords'
         AND json_extract(value,'$.turnId')=? AND CAST(key AS INTEGER)>=?`)
         .run(input.scope, `t${input.retain.turn}`, input.retain.beforeOrdinal);
-      this.db.prepare(`UPDATE rows SET active=0,value=json_set(value,'$.active',json('false'))
+      navigationStatement(this.db, `UPDATE rows SET active=0,value=json_set(value,'$.active',json('false'))
         WHERE workspace=? AND session=? AND agent=? AND active=1 AND turn=? AND kind<>'turn' AND position>=?`)
         .run(input.workspace, input.session, input.agent, input.retain.turn, input.retain.beforeOrdinal * 1024);
     }
   }
 
   rowsAtSource(workspace: string, session: string, agent: string, start: number): HistoryNavRow[] {
-    const rows = this.db.prepare(`SELECT value FROM rows WHERE workspace=? AND session=? AND agent=? AND active=1
+    const rows = navigationStatement(this.db, `SELECT value FROM rows WHERE workspace=? AND session=? AND agent=? AND active=1
       AND json_extract(value, '$.anchor.start')=? LIMIT 1024`)
       .all(workspace, session, agent, start) as Array<{ value: string }>;
     return rows.map((row) => JSON.parse(row.value) as HistoryNavRow);
@@ -298,8 +298,10 @@ export class HistoryNavigationDb implements NavigationStore {
     if (input.role !== undefined) {
       where.push("coalesce(json_extract(r.value,'$.role'),'user')=?");
       values.push(input.role);
-    } else if (input.includeToolOutput !== true) {
-      where.push("coalesce(json_extract(r.value,'$.role'),'user')!='tool'");
+    } else if (input.includeToolOutput === true) {
+      where.push("coalesce(json_extract(r.value,'$.role'),'user')!='record'");
+    } else {
+      where.push("coalesce(json_extract(r.value,'$.role'),'user') NOT IN ('tool','record')");
     }
     if (input.startTime !== undefined) { where.push('r.time>=?'); values.push(input.startTime); }
     if (input.endTime !== undefined) { where.push('r.time<?'); values.push(input.endTime); }
@@ -309,7 +311,7 @@ export class HistoryNavigationDb implements NavigationStore {
       where.push(`(coalesce(r.time,0),r.key) ${comparator} (?,?)`);
       values.push(input.after.time, input.after.key);
     }
-    const rows = this.db.prepare(`SELECT CAST(r.key AS BLOB) AS key,coalesce(r.time,0) AS time,r.value FROM rows r
+    const rows = navigationStatement(this.db, `SELECT CAST(r.key AS BLOB) AS key,coalesce(r.time,0) AS time,r.value FROM rows r
       WHERE ${where.join(' AND ')} ORDER BY coalesce(r.time,0) ${direction},r.key ${direction} LIMIT ?`)
       .all(...values, input.limit) as Array<{ key: Uint8Array; time: number; value: string }>;
     return rows.map(({ key, time, value }) => ({ key: Buffer.from(key).toString('utf8'), time, row: JSON.parse(value) as HistoryNavRow }));
@@ -317,7 +319,7 @@ export class HistoryNavigationDb implements NavigationStore {
 
   async get<T>(collection: string, key: string): Promise<T | undefined> {
     this.assertCollection(collection);
-    const row = this.db.prepare('SELECT value FROM rows WHERE key=?').get(key) as { value: string } | undefined;
+    const row = navigationStatement(this.db, 'SELECT value FROM rows WHERE key=?').get(key) as { value: string } | undefined;
     return row === undefined ? undefined : JSON.parse(row.value) as T;
   }
 
@@ -332,7 +334,7 @@ export class HistoryNavigationDb implements NavigationStore {
       for (const op of ops) {
         this.assertCollection(op.collection);
         if (op.kind === 'put') this.write(op.key, op.value);
-        else this.db.prepare('DELETE FROM rows WHERE key=?').run(op.key);
+        else navigationStatement(this.db, 'DELETE FROM rows WHERE key=?').run(op.key);
       }
       if (!this.scanTransactionOpen) this.db.exec('COMMIT');
     } catch (error) {
@@ -361,7 +363,7 @@ export class HistoryNavigationDb implements NavigationStore {
       if (value !== undefined) { where.push(`${query.column}${sql}?`); values.push(value); }
     }
     const direction = query.dir === 'desc' ? 'DESC' : 'ASC';
-    const statement = this.db.prepare(`SELECT value FROM rows WHERE ${where.join(' AND ')} ORDER BY ${query.column} ${direction}, key ${direction} LIMIT ?`);
+    const statement = navigationStatement(this.db, `SELECT value FROM rows WHERE ${where.join(' AND ')} ORDER BY ${query.column} ${direction}, key ${direction} LIMIT ?`);
     const rows = statement.all(...values, query.limit) as Array<{ value: string }>;
     return { items: rows.map((row) => JSON.parse(row.value) as T) };
   }
@@ -379,7 +381,7 @@ export class HistoryNavigationDb implements NavigationStore {
 
   private write(key: string, value: unknown): void {
     const row = value as Partial<HistoryNavRow>;
-    this.db.prepare(`INSERT INTO rows(key,workspace,session,agent,kind,turn,step,active,position,time,value)
+    navigationStatement(this.db, `INSERT INTO rows(key,workspace,session,agent,kind,turn,step,active,position,time,value)
       VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(key) DO UPDATE SET
       workspace=excluded.workspace,session=excluded.session,agent=excluded.agent,kind=excluded.kind,
       turn=excluded.turn,step=excluded.step,active=excluded.active,position=excluded.position,

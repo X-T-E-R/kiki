@@ -18,6 +18,8 @@ import { SpaceSettingsDetail } from '../components/settings/spaces/SpaceSettings
 import { I18nProvider } from '../i18n';
 import { applyCurrentSkin, startSkinSync } from './skins/sync';
 import { effectiveBackgroundPrefs, readStoredBackgroundPrefs } from './skins/background';
+import { browserHost } from '../host/browser';
+import { startThemeSync } from './theme';
 
 let surfaceConnection: { client: KikiClient; meta: { server_id: string; current_space_id?: string } };
 vi.mock('../state/connection', () => ({ useConnection: () => surfaceConnection }));
@@ -81,6 +83,76 @@ afterEach(async () => {
 
 // All clients here are local mocks. No account, transport, or real home is used.
 describe('production React preference frame', () => {
+  it('never paints unauthoritative defaults while device import is pending or fails, including refresh and remount', async () => {
+    localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'dark' }));
+    const pending = deferred<{ detail: SpaceDetail; imported: boolean; device_conflict: boolean }>();
+    const empty = detail({ preference_authority: false, preferences: { ...DEFAULT_SPACE_PREFERENCES } });
+    const importPreferences = vi.fn().mockReturnValueOnce(pending.promise).mockRejectedValue(new Error('offline'));
+    const client = mockClient({ detail: () => Promise.resolve(empty), importPreferences });
+    const setTheme = vi.fn();
+    const stop = startThemeSync({ ...browserHost, setTheme });
+    try {
+      await render(client);
+      expect(importPreferences.mock.calls[0]?.[1].values.theme).toBe('dark');
+      expect(readSettings().theme).toBe('dark');
+      await act(async () => { pending.resolve({ detail: empty, imported: false, device_conflict: false }); });
+      await flush();
+      await act(async () => { await query.invalidateQueries({ queryKey: [...spaceSettingsKeys.detail('main'), 'server-a'] }); });
+      await flush();
+      await act(async () => { root.render(null); });
+      await render(client);
+      window.dispatchEvent(new Event('resize'));
+      expect(readSettings().theme).toBe('dark');
+      expect(document.documentElement.dataset['theme']).toBe('dark');
+      expect(setTheme.mock.calls.every(([theme]) => theme === 'dark')).toBe(true);
+    } finally { stop(); }
+  });
+
+  it.each(['dark', 'light'] as const)('keeps explicit space %s authoritative over a conflicting device through refresh', async (theme) => {
+    const device = theme === 'dark' ? 'light' : 'dark';
+    localStorage.setItem('kiki.settings', JSON.stringify({ theme: device }));
+    const importPreferences = vi.fn();
+    const space = detail({ preferences: { ...DEFAULT_SPACE_PREFERENCES, theme } });
+    const stop = startThemeSync(browserHost);
+    try {
+      await render(mockClient({ detail: () => Promise.resolve(space), importPreferences }));
+      await act(async () => { await query.invalidateQueries({ queryKey: [...spaceSettingsKeys.detail('main'), 'server-a'] }); });
+      await flush();
+      expect(readSettings().theme).toBe(theme);
+      expect(document.documentElement.dataset['theme']).toBe(theme);
+      expect(spaceAuthoritySnapshot().deviceConflict).toBe(true);
+      expect(deviceSpacePreferences().theme).toBe(device);
+      expect(importPreferences).not.toHaveBeenCalled();
+    } finally { stop(); }
+  });
+
+  it('formal Settings writes preview an empty space immediately and keep the confirmed choice on refresh and remount', async () => {
+    localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'system' }));
+    let current = detail({ preference_authority: false, preferences: { ...DEFAULT_SPACE_PREFERENCES } });
+    const pending = deferred<{ detail: SpaceDetail }>();
+    const preview = vi.fn().mockResolvedValue({ token: 'theme', rows: [{ id: 'pref:theme' }] });
+    const apply = vi.fn().mockReturnValue(pending.promise);
+    const client = mockClient({ detail: () => Promise.resolve(current), preview, apply });
+    const stop = startThemeSync(browserHost);
+    try {
+      await render(client);
+      await act(async () => { writeSettings({ theme: 'dark' }); });
+      expect(document.documentElement.dataset['theme']).toBe('dark');
+      expect(preview).toHaveBeenCalledWith('main', { action: 'edit', changes: [{ id: 'pref:theme', value: 'dark' }] });
+      expect(apply).toHaveBeenCalledWith('main', { token: 'theme', selected: ['pref:theme'] });
+      current = detail();
+      await act(async () => { pending.resolve({ detail: current }); });
+      await flush();
+      await act(async () => { await query.invalidateQueries({ queryKey: [...spaceSettingsKeys.detail('main'), 'server-a'] }); });
+      await act(async () => { root.render(null); });
+      await render(client);
+      expect(readSettings().theme).toBe('dark');
+      expect(document.documentElement.dataset['theme']).toBe('dark');
+      expect(deviceSpacePreferences().theme).toBe('system');
+      expect(spaceAuthoritySnapshot().writes.theme).toBeUndefined();
+    } finally { stop(); }
+  });
+
   it('reads the device’s raw portable settings while the bridge displays server values', async () => {
     localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light', proseFont: 'sans', foldSteps: true, motion: 'reduce', sendShortcut: 'cmd-enter' }));
     const importPreferences = vi.fn();

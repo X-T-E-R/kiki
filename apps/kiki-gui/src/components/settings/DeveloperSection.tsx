@@ -1,14 +1,13 @@
 import { AdvancedSection } from './AdvancedSection';
 import { TokenCountingCard } from './CommunicationSection';
 import { ResourceLimitsCard } from './EngineLimitSettings';
+import { LabsSection } from './LabsSection';
 import { RetryPolicyCard } from './RetryPolicyCard';
 import { SessionResidencyCard } from './SessionResidencyCard';
-import { CronRuntimeCard } from './TaskRuntimeSettings';
 
 /**
- * Developer: engine knobs a person tunes on purpose, then the raw JSON escape
- * hatch, then read-only diagnostics. Ordered from "typed field" to "read
- * only" so the most dangerous editor is never the first thing on the page.
+ * Developer & labs: engine knobs a person tunes on purpose, then the raw JSON
+ * escape hatch, then the experimental-features index and developer-owned flags.
  */
 export function DeveloperSection() {
   return (
@@ -18,7 +17,7 @@ export function DeveloperSection() {
       <SessionResidencyCard />
       <TokenCountingCard />
       <AdvancedSection />
-      <CronRuntimeCard />
+      <LabsSection />
     </>
   );
 }

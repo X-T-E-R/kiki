@@ -17,6 +17,13 @@ const capability = (maxContextTokens: number): ModelCapability => ({
 });
 
 describe('resolveCompletionBudget', () => {
+  it('omits fallback budgets when the protocol uses server defaults while keeping explicit limits', () => {
+    expect(resolveCompletionBudget({ allowFallback: false })).toBeUndefined();
+    expect(resolveCompletionBudget({ allowFallback: false, reservedContextSize: 50000 })).toBeUndefined();
+    expect(resolveCompletionBudget({ allowFallback: false, maxOutputSize: 0 })).toBeUndefined();
+    expect(resolveCompletionBudget({ allowFallback: false, maxOutputSize: 800 })).toEqual({ hardCap: 800 });
+    expect(resolveCompletionBudget({ allowFallback: false, maxCompletionTokensCap: 600 })).toEqual({ hardCap: 600 });
+  });
   it('prefers the explicit cap, then maxOutputSize, then reservedContextSize', () => {
     expect(
       resolveCompletionBudget({ maxCompletionTokensCap: 100, maxOutputSize: 200, reservedContextSize: 300 }),

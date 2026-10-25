@@ -42,7 +42,7 @@ text = "继续前核对目标、已有证据和下一步。"
 
 规则来自用户配置、已信任项目的 `.kiki/hooks.toml` 和已启用插件的 manifest，并各自带上 `user/evidence-check`、`workspace/check` 这样的全限定 id。`priority` 小的先执行，同优先级按全限定 id 排序。同一命名空间内 id 重复是错误，不同命名空间用相同短 id 没问题。未信任项目的规则仍可见但不激活，纯文本规则同样如此。
 
-`match.models`、`profiles`、`routes`、`executors` 和 `agent_roles` 取精确值：你写了几个字段就必须同时命中，同一字段里的多个值是备选项，省略即不限。模型别名在加载时解析，拼错会在第一个请求前报出来。工具名写在 `match.tools`，工具结果写在 `match.statuses`（`success`、`error`、`cancelled`、`denied`）。`prompt.submit` 默认只匹配 `source = user`，包括通过「立即发送」投递的人类输入；任务或邮箱来源需在 `match.sources` 中写 `task` 或 `mailbox`。`sources = ["steering"]` 匹配「立即发送」投递路径，不限原生产者，也不会把邮箱消息变成用户输入。无法原生拦截 step 或 tool 的外部 executor 会被标为不支持，而不是靠工具调用次数模拟。
+`match.models`、`profiles`、`routes`、`executors` 和 `agent_roles` 取精确值：你写了几个字段就必须同时命中，同一字段里的多个值是备选项，省略即不限。模型别名在加载时解析，拼错会在第一个请求前报出来。工具名写在 `match.tools`，工具结果写在 `match.statuses`（`success`、`error`、`cancelled`、`denied`）。`prompt.submit` 默认只匹配 `source = user`，包括通过「立即发送」投递的人类输入；任务或邮箱来源需在 `match.sources` 中写 `task` 或 `mailbox`。任务完成通知在安全消费时触发 `prompt.submit`，包括从磁盘恢复的未消费通知；指导文本跟在回执之后、进入下一次模型请求，不触发人类提交事件，已消费通知不重复触发。`sources = ["steering"]` 匹配「立即发送」投递路径，不限原生产者，也不会把邮箱消息变成用户输入。无法原生拦截 step 或 tool 的外部 executor 会被标为不支持，而不是靠工具调用次数模拟。
 
 长文本可以用 `text_file = "reminders/check.md"` 代替 `text`（二者互斥），`[hooks] files = ["hooks.toml"]` 可以引入其他 v2 文档。路径相对于声明文件，解析后必须仍在其来源作用域内；include 不能是 URL、不能重复或形成循环。缺文件、空文本、不支持的动作、无效节拍以及超过 8 KiB 的注入都是加载期错误。注入的指导文本是带来源标记的对话上下文，不替换系统提示词，也无法覆盖更高优先级的指令。
 
@@ -56,9 +56,9 @@ text = "继续前核对目标、已有证据和下一步。"
 await klient.session(sessionId).agent("main").runCommand({ name: "hooks-inspect" });
 ```
 
-结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会进入模型对话。GUI 里会话 Agent 面板的 **Hooks** 显示同样的信息，读取 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`——规则保存成功但在该会话未激活时，原因就显示在这里。
+结果是 `hook.result` 诊断事件（`hookEvent = "hooks.inspect"`），不会进入模型对话。GUI 里会话 Agent 面板的**自动规则**显示同样的信息，读取 `GET /api/sessions/{session_id}/agents/{agent_id}/hooks`——规则保存成功但在该会话未激活时，原因就显示在这里。没有配置任何规则、也没有需要修复的来源时，这个区块整个不出现。
 
-在**设置 → 能力 → 钩子**（`/settings/hooks`）里编辑用户配置：选中规则直接编辑，或用 **高级：编辑 JSON** 处理整个 legacy 数组或 v2 对象。添加第一条声明式规则会把 legacy 数组切换为 v2，原命令保留在 `legacy` 下；打开或保存这个页面都不会执行它们。**保存自动操作** 校验完整的 hooks 值并显示服务器实际保存的内容，保存失败时你的草稿还在。v2 开关和停用 id 只影响声明式规则。
+在**设置 → 权限与规则 → 钩子**（`/settings/hooks`）里编辑用户配置：选中规则直接编辑，或用 **高级：编辑 JSON** 处理整个 legacy 数组或 v2 对象。添加第一条声明式规则会把 legacy 数组切换为 v2，原命令保留在 `legacy` 下；打开或保存这个页面都不会执行它们。**保存自动操作** 校验完整的 hooks 值并显示服务器实际保存的内容，保存失败时你的草稿还在。v2 开关和停用 id 只影响声明式规则。
 
 TOML 不能在同一个 key 下同时写 `[[hooks]]` 和 `[hooks]`，已有数组继续照常工作。要在 v2 文档里保留 legacy 命令，把它们显式移到 `[[hooks.legacy]]`，保留 `event`、`matcher`、`command` 和以秒计的 `timeout`；它们仍按 legacy runner 和输出协议执行。
 
@@ -252,4 +252,4 @@ process.stdin.on('end', () => {
 ## 下一步
 
 - [Legacy 规则字段](#legacy-规则字段) — `[[hooks]]` 的完整字段说明
-- [Agent 与 subagent](./agents.md) — 用 `SubagentStop` 事件在 subagent 完成后触发通知
+- [Agent 与 subagent](./agents-and-subagents.md) — 用 `SubagentStop` 事件在 subagent 完成后触发通知

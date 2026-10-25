@@ -4,7 +4,7 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AppendLogCorruptedError, IAppendLogStore, type AppendLogTruncation } from '#/persistence/interface/appendLogStore';
-import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IFileSystemStorageService, StorageError, StorageErrors } from '#/persistence/interface/storage';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 
@@ -64,6 +64,28 @@ describe('AppendLogStore', () => {
     return out;
   }
 
+  it('reports exact source record bytes including whitespace, CRLF and unterminated Unicode', async () => {
+    const first = ' {"text":"你好"} \r\n';
+    const last = '{"text":"𠮷"}';
+    await storage.write(SCOPE, KEY, enc.encode(`\n${first}\n${last}`));
+    const bytes: number[] = [];
+    const values: unknown[] = [];
+    for await (const value of record.read(SCOPE, KEY, { onRecordBytes: (size) => { bytes.push(size); }, chunkBytes: 3 })) {
+      values.push(value);
+    }
+    expect(values).toEqual([{ text: '你好' }, { text: '𠮷' }]);
+    expect(bytes).toEqual([Buffer.byteLength(first), Buffer.byteLength(last)]);
+  });
+
+  it('stops within an already buffered chunk when its reader aborts', async () => {
+    await storage.write(SCOPE, KEY, enc.encode('{"n":1}\n{"n":2}\n'));
+    const controller = new AbortController();
+    const reader = record.read<Rec>(SCOPE, KEY, { signal: controller.signal })[Symbol.asyncIterator]();
+    expect(await reader.next()).toMatchObject({ value: { n: 1 }, done: false });
+    controller.abort();
+    await expect(reader.next()).rejects.toMatchObject({ name: 'AbortError' });
+  });
+
   it('reads nothing from an empty log', async () => {
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([]);
   });
@@ -73,6 +95,54 @@ describe('AppendLogStore', () => {
     record.append<Rec>(SCOPE, KEY, { n: 2 });
     record.append<Rec>(SCOPE, KEY, { n: 3 });
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }, { n: 3 }]);
+  });
+
+  it('projects committed batches with exact positions without rereading the written payload', async () => {
+    const observed: { start: number; end: number; generation: string; records: unknown[] }[] = [];
+    record.registerProjection({
+      key: KEY,
+      prepare: (_scope, records) => records.map((value) => value),
+      commit: async (position, records) => {
+        expect(await storage.size(SCOPE, KEY)).toBe(position.end);
+        observed.push({ start: position.start, end: position.end, generation: position.generation, records });
+      },
+      onError: () => { throw new Error('unexpected projection failure'); },
+    });
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, KEY, { text: '中文' });
+    await record.flush(SCOPE, KEY);
+    record.append(SCOPE, KEY, { n: 2 });
+    await record.flush(SCOPE, KEY);
+    expect(observed).toEqual([
+      { start: 0, end: Buffer.byteLength('{"n":1}\n{"text":"中文"}\n'), generation: 'legacy', records: [{ n: 1 }, { text: '中文' }] },
+      { start: Buffer.byteLength('{"n":1}\n{"text":"中文"}\n'), end: Buffer.byteLength('{"n":1}\n{"text":"中文"}\n{"n":2}\n'), generation: 'legacy', records: [{ n: 2 }] },
+    ]);
+  });
+
+  it('does not reject canonical success when derived projection fails', async () => {
+    const errors: unknown[] = [];
+    record.registerProjection({ key: KEY, prepare: () => 1, commit: async () => { throw new Error('projection unavailable'); }, onError: (error) => { errors.push(error); } });
+    record.append(SCOPE, KEY, { n: 1 });
+    await record.flush();
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }]);
+    expect(errors).toHaveLength(1);
+  });
+
+  it('changes the durable generation before a managed rewrite, including a failed rewrite', async () => {
+    record.append(SCOPE, KEY, { n: 1 });
+    await record.flush();
+    expect(await record.generation(SCOPE, KEY)).toBe('legacy');
+    await record.rewrite(SCOPE, KEY, [{ n: 2 }]);
+    const generation = await record.generation(SCOPE, KEY);
+    expect(generation).not.toBe('legacy');
+    const write = storage.write.bind(storage);
+    storage.write = async (scope, key, value, options) => {
+      if (key === KEY) throw new Error('rewrite failed');
+      return write(scope, key, value, options);
+    };
+    await expect(record.rewrite(SCOPE, KEY, [{ n: 3 }])).rejects.toThrow('rewrite failed');
+    expect(await record.generation(SCOPE, KEY)).not.toBe(generation);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":2}\n');
   });
 
   it('batches many appends into a single durable append', async () => {
@@ -111,8 +181,8 @@ describe('AppendLogStore', () => {
 
     releaseBlocked();
     await record.flush();
-    firstOwner.dispose();
-    blockedOwner.dispose();
+    await firstOwner.dispose();
+    await blockedOwner.dispose();
   });
 
   it('treats missing and retired scoped targets as a no-op', async () => {
@@ -123,12 +193,124 @@ describe('AppendLogStore', () => {
     const owner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 1 });
     await record.flush(SCOPE, KEY);
-    owner.dispose();
+    await owner.dispose();
     await record.drainRetirements();
     expect(logs.size).toBe(0);
 
     await record.flush(SCOPE, KEY);
     expect(logs.size).toBe(0);
+  });
+
+  function uncommittedBusy(): StorageError {
+    return new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'storage append failed: unrecognized I/O error', {
+      details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'EBUSY', committed: false },
+      cause: Object.assign(new Error('EBUSY'), { code: 'EBUSY', syscall: 'open' }),
+    });
+  }
+
+  it('retries an uncommitted EBUSY batch and writes it once', async () => {
+    let attempts = 0;
+    const original = storage.append.bind(storage);
+    storage.append = async (...args) => {
+      attempts += 1;
+      if (attempts === 1) throw uncommittedBusy();
+      await original(...args);
+    };
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, KEY, { n: 2 });
+    await expect(record.flush(SCOPE, KEY)).rejects.toBeInstanceOf(StorageError);
+    await record.flush(SCOPE, KEY);
+    expect(attempts).toBe(2);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":1}\n{"n":2}\n');
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  it('writes an uncommitted EBUSY batch once after more than eight explicit flushes', async () => {
+    let attempts = 0;
+    let blocked = true;
+    const original = storage.append.bind(storage);
+    storage.append = async (...args) => {
+      attempts += 1;
+      if (blocked) throw uncommittedBusy();
+      await original(...args);
+    };
+    record.append(SCOPE, KEY, { n: 1 });
+    record.append(SCOPE, KEY, { n: 2 });
+    for (let i = 0; i < 12; i += 1) {
+      await expect(record.flush(SCOPE, KEY)).rejects.toBeInstanceOf(StorageError);
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    expect(attempts).toBeGreaterThan(8);
+    const stalled = attempts;
+    await expect(record.flush(SCOPE, KEY)).rejects.toBeInstanceOf(StorageError);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(attempts).toBeGreaterThan(stalled);
+    expect(await storage.read(SCOPE, KEY)).toBeUndefined();
+    blocked = false;
+    await record.flush(SCOPE, KEY);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":1}\n{"n":2}\n');
+    expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 1 }, { n: 2 }]);
+  });
+
+  it('does not retry an uncommitted append failure that is not transient', async () => {
+    let attempts = 0;
+    const failure = new StorageError(StorageErrors.codes.STORAGE_DISK_FULL, 'storage append failed: no space left on device', {
+      details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'ENOSPC', committed: false },
+    });
+    let reportFailure!: (error: unknown) => void;
+    const reportedFailure = new Promise<unknown>((resolve) => {
+      reportFailure = resolve;
+    });
+    storage.append = async () => {
+      attempts += 1;
+      throw failure;
+    };
+    record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
+    expect(await reportedFailure).toBe(failure);
+    await expect(record.flush(SCOPE, KEY)).rejects.toBe(failure);
+    expect(attempts).toBe(1);
+    expect(await storage.read(SCOPE, KEY)).toBeUndefined();
+  });
+
+  it('does not retry an append that already wrote before it threw', async () => {
+    const failure = new Error('append failed after commit');
+    let markAppendStarted!: () => void;
+    const appendStarted = new Promise<void>((resolve) => {
+      markAppendStarted = resolve;
+    });
+    let releaseAppend!: () => void;
+    const appendGate = new Promise<void>((resolve) => {
+      releaseAppend = resolve;
+    });
+    let reportFailure!: (error: unknown) => void;
+    const reportedFailure = new Promise<unknown>((resolve) => {
+      reportFailure = resolve;
+    });
+    let appendAttempts = 0;
+    const originalAppend = storage.append.bind(storage);
+    const committedFailure = new StorageError(StorageErrors.codes.STORAGE_IO_FAILED, 'storage append failed: unrecognized I/O error', {
+      details: { path: `${SCOPE}/${KEY}`, op: 'append', errno: 'EIO', committed: true },
+      cause: failure,
+    });
+    storage.append = async (...args) => {
+      appendAttempts++;
+      markAppendStarted();
+      await appendGate;
+      await originalAppend(...args);
+      throw committedFailure;
+    };
+
+    record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
+    record.append(SCOPE, KEY, { n: 2 });
+    await appendStarted;
+    releaseAppend();
+    expect(await reportedFailure).toBe(committedFailure);
+
+    await expect(record.flush()).rejects.toBe(committedFailure);
+    expect(appendAttempts).toBe(1);
+    expect(new TextDecoder().decode(await storage.read(SCOPE, KEY))).toBe('{"n":1}\n{"n":2}\n');
+    await expect(record.flush()).rejects.toBe(committedFailure);
+    expect(appendAttempts).toBe(1);
   });
 
   it('later flush reports an ambiguous auto-flush failure after one retried drain', async () => {
@@ -215,7 +397,7 @@ describe('AppendLogStore', () => {
     const retiringOwner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
     await appendStarted;
-    retiringOwner.dispose();
+    await retiringOwner.dispose();
     const replacementOwner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 2 });
     const orderedFlush = record.flush();
@@ -239,7 +421,7 @@ describe('AppendLogStore', () => {
     releaseReplacementAppend();
     await Promise.all([orderedFlush, currentFlush]);
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 2 }]);
-    replacementOwner.dispose();
+    await replacementOwner.dispose();
   });
 
   it('final release retirement is awaited by drainRetirements', async () => {
@@ -261,7 +443,7 @@ describe('AppendLogStore', () => {
     const owner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 1 });
     await appendStarted;
-    owner.dispose();
+    await owner.dispose();
 
     let drained = false;
     const draining = record.drainRetirements().then(() => {
@@ -344,15 +526,15 @@ describe('AppendLogStore', () => {
     record.append(SCOPE, KEY, { n: 1 }, { onError: reportFailure });
     expect(await reportedFailure).toBe(failure);
 
-    firstOwner.dispose();
+    await firstOwner.dispose();
     await expect(record.flush()).rejects.toBe(failure);
 
-    finalOwner.dispose();
+    await finalOwner.dispose();
     const replacementOwner = record.acquire(SCOPE, KEY);
     record.append(SCOPE, KEY, { n: 2 });
     await record.flush();
     expect(await collect<Rec>(SCOPE, KEY)).toEqual([{ n: 2 }]);
-    replacementOwner.dispose();
+    await replacementOwner.dispose();
   });
 
   it('rewrite atomically replaces the whole log', async () => {
@@ -548,8 +730,10 @@ describe('AppendLogStore', () => {
     let writeAttempts = 0;
     const originalWrite = storage.write.bind(storage);
     storage.write = async (...args) => {
-      writeAttempts++;
-      if (writeAttempts === 1) throw failure;
+      if (args[1] === KEY) {
+        writeAttempts++;
+        if (writeAttempts === 1) throw failure;
+      }
       return originalWrite(...args);
     };
     record.append<Rec>(SCOPE, KEY, { n: 2 });

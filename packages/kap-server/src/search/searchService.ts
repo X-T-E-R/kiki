@@ -22,7 +22,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { normalizeLiteral, tokenize } from '@kiki/minidb';
 import type { SearchMessagesResponse } from '../protocol/rest-search';
-import type { TranscriptStore } from '@kiki/transcript';
+import { projectTranscriptUserOrigin, type TranscriptStore } from '@kiki/transcript';
 
 import {
   GlobalSearchError,
@@ -114,7 +114,7 @@ registerFlagDefinition({
   title: 'desktop content search',
   description: 'Enable the SQLite content search index in the desktop runtime after its selfcheck.',
   env: 'KIKI_EXPERIMENTAL_DESKTOP_SEARCH',
-  default: false,
+  default: true,
   surface: 'core',
 });
 
@@ -480,7 +480,7 @@ export class GlobalSearchService implements IGlobalSearchService {
       this.drainSettled = true;
     })();
     pendingDisposals.add(pending);
-    void pending.finally(() => pendingDisposals.delete(pending));
+    pending.finally(() => pendingDisposals.delete(pending)).catch(() => {});
   }
 
   private requestSync(): void {
@@ -509,7 +509,10 @@ export class GlobalSearchService implements IGlobalSearchService {
   private clearSessionIndexStatusWaiter(): void {
     const waiter = this.sessionIndexStatusWaiter;
     this.sessionIndexStatusWaiter = null;
-    waiter?.dispose();
+    const disposed = waiter?.dispose();
+    if (!(disposed instanceof Promise)) return;
+    pendingDisposals.add(disposed);
+    disposed.finally(() => pendingDisposals.delete(disposed)).catch(() => {});
   }
 
   private sessionIndexUsable(status: ReturnType<ISessionIndex['status']>): boolean {
@@ -826,7 +829,9 @@ export class GlobalSearchService implements IGlobalSearchService {
         for (const step of item.steps) {
           const stepTime = parseTime(step.endedAt ?? step.startedAt ?? item.startedAt);
           for (const frame of step.frames) {
-            const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text' && frame.role === 'assistant' ? 'assistant' : undefined;
+            const role = frame.kind === 'tool' ? 'tool' : frame.kind === 'text'
+              ? frame.role === 'assistant' ? 'assistant' : projectTranscriptUserOrigin(frame.origin) !== undefined ? 'user' : undefined
+              : undefined;
             if (role === undefined || role === 'tool' && !includeToolOutput) continue;
             const output = frame.kind === 'tool' ? frame.output : frame.kind === 'text' ? frame.text : undefined;
             const text = (typeof output === 'string' ? output :
@@ -1088,8 +1093,10 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   retryIndexer(): void {
-    if (this.sqliteHost === undefined || this.sqliteDisabled) return;
-    this.sqliteHost.retryIndexer();
+    if (this.workerRuntimeDisabled() || this.disposed) return;
+    if (this.sqliteHost !== undefined) this.sqliteHost.retryIndexer();
+    else if (this.backend instanceof SearchWorkerHost) this.backend.retryIndexer();
+    else return;
     this.requestSync();
   }
 

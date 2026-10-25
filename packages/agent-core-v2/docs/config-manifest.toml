@@ -8,7 +8,8 @@
 # commented "# field: type" lines describe the remaining schema fields.
 # Values resolve as: default -> config.toml -> env overlay -> memory.
 
-# Index (51 sections · 1 overlay(s))
+# Index (55 sections · 1 overlay(s))
+#   agentExecutorDisplay            src/app/agentExecutor/executorOverrides.ts
 #   agentExecutorOverrides          src/app/agentExecutor/executorOverrides.ts
 #   agentExecutors                  src/app/agentExecutor/configSection.ts
 #   agents                          src/session/agentCollaboration/configSection.ts
@@ -38,6 +39,7 @@
 #   nbSearch                        src/app/nbSearch/configSection.ts
 #   nbSearchSource                  src/app/nbSearch/configSection.ts
 #   notifications                   src/app/notifications/configSection.ts
+#   optionalCapabilities            src/app/optionalCapability/configSection.ts
 #   permission                      src/agent/permissionRules/configSection.ts
 #   plan                            src/features/plan/configSection.ts
 #   plugins                         src/app/plugin/configSection.ts
@@ -45,8 +47,10 @@
 #   prompt                          src/app/prompt/configSection.ts
 #   providers                       src/app/kosongConfig/configSection.ts
 #   recipes                         src/app/recipes/configSection.ts
+#   requestCompression              src/app/kosongConfig/configSection.ts
 #   requestGovernance               src/app/requestGovernance/configSection.ts
 #   requestIdentity                 src/app/kosongConfig/configSection.ts
+#   responsesWebSocket              src/app/kosongConfig/configSection.ts
 #   retry                           src/agent/stepRetry/configSection.ts
 #   sessionResidency                src/app/sessionManager/configSection.ts
 #   sessionTitle                    src/session/sessionTitle/configSection.ts
@@ -63,6 +67,17 @@
 #   (overlay) kimiModelEnvOverlay  src/app/kosongConfig/envOverlay.ts
 
 # ##########################################################################
+# agentExecutorDisplay (config.toml: agent_executor_display)
+#   owner: src/app/agentExecutor/executorOverrides.ts
+#   scope: core
+#   hooks: custom merge · custom toToml
+# ##########################################################################
+
+[agent_executor_display]
+# externals_visible: boolean
+# discovery_initialized: boolean
+
+# ##########################################################################
 # agentExecutorOverrides (config.toml: agent_executor_overrides)
 #   owner: src/app/agentExecutor/executorOverrides.ts
 #   scope: core
@@ -76,9 +91,11 @@
   # defaults: object
     # model_alias: string
     # thinking_effort: string
+    # native_agent: string
     # permission_mode: "manual" | "auto" | "review" | "yolo"
     # kiki_context: "memory" | "board" | "cron" | "threads" | "history" | "hooks"[]
     # allow_kiki_subagents: boolean
+    # inject_kiki_mcp: boolean
     # executor_prompt: object
       # delivery: "append" | "replace" | "preamble"
       # include: "agents_md" | "memory_snapshot" | "skill_catalog" | "workspace_info" | "system.*" | "delegation.*" | string[]
@@ -89,6 +106,7 @@
   # home_dir: string
   # env: record<string, string>
   # args: string[]
+  # show_in_profile_list: boolean
 
 # ##########################################################################
 # agentExecutors (config.toml: agent_executors)
@@ -108,6 +126,15 @@
   # source: string
   # version_probe: object
     # args: string[]
+  # model_probe: object
+    # command: string
+    # args: string[]
+    # format: "lines" | "tab" | "columns" | "json" (default: "lines")
+    # json_path: string[]
+    # version_probe: object
+      # args: string[]
+    # timeout_ms: integer
+    # max_output_bytes: integer
   # diagnostics: object | object | object | object | object | object[]
   # auth: object | object | object
   # args: string[] (default: [])
@@ -119,6 +146,10 @@
   # model_args: string[]
   # model_config_category: string
   # model_config_id: string
+  # control_capabilities: object
+    # model_switch: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
+    # thinking_switch: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
+    # manual_compact: "live" | "next_binding" | "fresh_binding" | "unsupported" | "unknown"
   # thought_config_category: string
   # thought_config_id: string
   # permission_mode_mapping: object
@@ -204,6 +235,9 @@ room_budget = 12
 [browser_control]
 connections = {  }
 # default_browser: string
+# allowed_browsers: string[]
+# disabled_sources: "kimi-webbridge" | "independent-browser" | "codex-browser" | "ego-lite"[]
+# webbridge_preset_route: boolean
 
 # ##########################################################################
 # builtinProductSkills (config.toml: builtin_product_skills)
@@ -224,6 +258,8 @@ builtin_product_skills = true
 
 [computer_control]
 usage_preference = "avoid"
+# enabled: boolean
+# connection: string
 
 # ##########################################################################
 # cron
@@ -241,12 +277,13 @@ usage_preference = "avoid"
 # ##########################################################################
 
 [cron]
-# (schema uses transforms; fields below come from the registered default)
 debug = false
 no_jitter = false
 no_stale = false
 disabled = false
 manual_tick = false
+# clock: string
+# poll_interval_ms: integer | null
 
 # ##########################################################################
 # defaultPermissionMode (config.toml: default_permission_mode)
@@ -374,6 +411,8 @@ advertise_as_kimi_code = false
 [loop_control]
 # max_steps_per_turn: integer
 # max_attempts_per_step: integer
+thinking_only_continuation = true
+zero_output_continuation = false
 # max_ralph_iterations: integer
 # reserved_context_size: integer
 # context_strategy: "summarize" | "auto" | "fresh"
@@ -448,7 +487,7 @@ merge_all_available_skills = true
     # oauth_host: string
     # source: object
       # kind: "local_original"
-      # provider: "openai-codex" | "grok-build"
+      # provider: "openai-codex" | "grok-build" | "kimi-code"
       # home_dir: string
       # storage_backend: "file" | "keyring" | "encrypted"
       # auth_file: string
@@ -604,11 +643,21 @@ reuse_local_config = true
 # ##########################################################################
 
 [notifications]
-global = { enabled = false, suppress_viewing_session = true, min_work_ms = 30000, work_stable_ms = 3000, que…
+global = { enabled = true, suppress_viewing_session = true, min_work_ms = 0, work_stable_ms = 3000, question…
 provider_instances = {  }
 channels = {  }
 credential_slots = {  }
 credential_values = {  }
+
+# ##########################################################################
+# optionalCapabilities (config.toml: optional_capabilities)
+#   owner: src/app/optionalCapability/configSection.ts
+#   scope: core
+# ##########################################################################
+
+[optional_capabilities]
+defaults = { browser = false, computer = false, memory = true, thread = true, web = true, send_message = false }
+web = { allowed = true }
 
 # ##########################################################################
 # permission
@@ -734,18 +783,27 @@ enter_approval_timeout_ms = 60000
         # responses: "prompt_cache_key" | "none"
         # messages: "metadata_user_id" | "none"
       # responses_metadata: "codex" | "none"
+  # request_compression: object
+    # encoding: "off" | "gzip" | "zstd"
+    # targets: string[]
+    # min_bytes: integer
+    # dictionary: boolean
+  # responses_web_socket: object
+    # off: true
+    # targets: string[]
   # images: object
     # accepted_types: "image/png" | "image/jpeg" | "image/gif" | "image/webp" | "image/bmp" | "image/heic" | "image/heif" | "image/avif" | "image/tiff" | "image/x-icon"[]
     # convert_unsupported: "off" | "auto" | "png" | "jpeg"
   # type: string
   # api_key: string
+  # api_key_env: string
   # oauth: object
     # storage: "file" | "keyring"
     # key: string
     # oauth_host: string
     # source: object
       # kind: "local_original"
-      # provider: "openai-codex" | "grok-build"
+      # provider: "openai-codex" | "grok-build" | "kimi-code"
       # home_dir: string
       # storage_backend: "file" | "keyring" | "encrypted"
       # auth_file: string
@@ -763,6 +821,19 @@ enter_approval_timeout_ms = 60000
 
 [recipes]
 markets = []
+
+# ##########################################################################
+# requestCompression (config.toml: request_compression)
+#   owner: src/app/kosongConfig/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[request_compression]
+# encoding: "off" | "gzip" | "zstd"
+# targets: string[]
+# min_bytes: integer
+# dictionary: boolean
 
 # ##########################################################################
 # requestGovernance (config.toml: request_governance)
@@ -810,6 +881,17 @@ rules = []
   # responses_metadata: "codex" | "none"
 
 # ##########################################################################
+# responsesWebSocket (config.toml: responses_web_socket)
+#   owner: src/app/kosongConfig/configSection.ts
+#   scope: core
+#   hooks: custom fromToml · custom toToml
+# ##########################################################################
+
+[responses_web_socket]
+# off: true
+# targets: string[]
+
+# ##########################################################################
 # retry
 #   owner: src/agent/stepRetry/configSection.ts
 #   scope: core
@@ -820,6 +902,8 @@ rules = []
 # max_attempts: integer
 # policies: object[] — one entry per item:
   # match: string
+  # models: string[]
+  # providers: string[]
   # max_attempts: integer
   # backoff: integer
   # retry: boolean (default: true)
@@ -837,16 +921,19 @@ min_idle_ms = 60000
 sweep_interval_ms = 30000
 max_concurrent_restores = 1
 max_queued_restores = 8
+max_resident_heap_bytes = 1610612736
 
 # ##########################################################################
 # sessionTitle (config.toml: session_title)
 #   owner: src/session/sessionTitle/configSection.ts
 #   scope: core
+#   hooks: custom merge
 # ##########################################################################
 
 [session_title]
 # model: string
 # triggers: "first_user_message" | "first_turn_completed" | "context_compacted"[]
+# prompt: string
 
 # ##########################################################################
 # skipBuiltinProfileInstallation (config.toml: skip_builtin_profile_installation)

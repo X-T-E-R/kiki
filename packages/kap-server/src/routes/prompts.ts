@@ -39,7 +39,9 @@ import {
   type PromptWithSkillsResult,
   reservePrompt,
   promptRetryFor,
+  bundledSkillActivations,
   ISessionContext,
+  ISessionManager,
   ITelemetryService,
   applyPromptMetadataUpdate,
   isError2,
@@ -51,9 +53,9 @@ import {
 } from '@kiki/agent-core-v2';
 import { turnAbortResponseSchema } from '@kiki/protocol';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
-import { bundledSkillActivations } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
@@ -88,16 +90,21 @@ import {
   type PromptMediaPreparation,
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { publishedInlineMediaReader } from '../services/publishedMedia';
+import type { TranscriptService } from '../services/transcript/transcriptService';
 import { acquireSessionOperation, withSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import { ensureMainAgent, MAIN_AGENT_ID } from '../transport/mainAgent';
 import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { parseActionSuffix } from './action-suffix';
 import { KLIENT_CALL_BODY_LIMIT_BYTES } from '../transport/klient/registerKlientHttp';
+import { PromptIngress, type PromptIngressExecution, type PromptIngressResult } from '../services/promptIngress';
 
 export const PROMPT_BODY_LIMIT_BYTES = KLIENT_CALL_BODY_LIMIT_BYTES;
 
 interface PromptRouteHost {
+  addHook?(name: 'preClose', hook: () => Promise<void>): unknown;
   get(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> },
@@ -122,6 +129,7 @@ const sessionIdParamSchema = z.object({
 
 const promptActionQuerySchema = z.object({
   agent_id: z.string().min(1).optional(),
+  admission: z.literal('durable').optional(),
 });
 
 const validationDetailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
@@ -135,6 +143,16 @@ function promptPayloadFingerprint(payload: z.infer<typeof promptSubmissionSchema
       : value,
   );
   return createHash('sha256').update(canonical).digest('hex');
+}
+
+function projectPromptRetryReceipt(id: string, receipt: import('@kiki/agent-core-v2').PromptRetryReceipt, fallbackContent: z.infer<typeof promptSubmissionSchema>['content']) {
+  return promptSubmitResultSchema.parse({
+    prompt_id: id, user_message_id: receipt.userMessageId ?? id, status: receipt.status,
+    origin: receipt.message?.origin,
+    content: receipt.message === undefined ? fallbackContent : projectPromptContentParts(
+      receipt.message.content.slice(bundledSkillActivations(receipt.message.origin).length)),
+    created_at: receipt.createdAt, append_timing: receipt.appendTiming, revision: receipt.revision,
+  });
 }
 
 function requireSession(session: ISessionScopeHandle | undefined, sessionId: string): ISessionScopeHandle {
@@ -181,6 +199,7 @@ async function resolvePromptFromSession(
         routeId: snapshot.routeId,
         modelAlias: snapshot.modelAlias,
         thinkingEffort: snapshot.thinkingLevel,
+        thinkingEffortExplicit: snapshot.thinkingEffortExplicit,
         executorId: snapshot.executorId,
         executorProtocol: snapshot.executorProtocol,
       },
@@ -370,7 +389,31 @@ async function validateProfileSelection(
   );
 }
 
-export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
+export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcriptService?: TranscriptService): void {
+  const ingress = new PromptIngress(core, {
+    submit: async (sessionId, execution) => {
+      let result: PromptIngressResult | undefined;
+      await executeSubmit({ id: execution.body.prompt_id!, params: { session_id: sessionId }, body: execution.body, query: {} },
+        { send: payload => {
+          const data = (payload as { data: PromptIngressResult }).data;
+          result = { ...promptSubmitResultSchema.parse(data), resolved_parts: data.resolved_parts };
+        } }, execution);
+      if (result === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt admission returned no receipt.');
+      return result;
+    },
+    cancel: async (sessionId, agentId, promptId, signal) => {
+      const lease = await acquireSessionOperation(core, sessionId, 'prompt-ingress-cancel', signal);
+      try {
+        const resolved = await abortable(resolvePromptFromSession(core, requireSession(lease.handle, sessionId), agentId), signal);
+        signal.throwIfAborted();
+        if (resolved.prompt.lookup(promptId) === undefined) return;
+        resolved.prompt.abort(promptId);
+      } catch (error) {
+        if (!isError2(error) || error.code !== ErrorCodes.PROMPT_ALREADY_COMPLETED) throw error;
+      } finally { await lease.dispose(); }
+    },
+  });
+  app.addHook?.('preClose', () => ingress.close());
   const switchParams = z.object({ session_id: z.string().min(1), agent_id: z.string().min(1) });
   const operationParams = switchParams.extend({ operation_id: z.string().min(1) });
   const switchPath = '/sessions/{session_id}/agents/{agent_id}/model-switches';
@@ -434,6 +477,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
       method: 'GET',
       path: '/sessions/{session_id}/prompts',
       params: sessionIdParamSchema,
+      querystring: z.object({ admission: z.literal('durable').optional(), agent_id: z.string().min(1).optional(), cursor: z.string().optional() }),
       success: { data: promptListResponseSchema },
       errors: { [ErrorCode.SESSION_NOT_FOUND]: {} },
       description: 'List the active prompt and queued prompts for a session',
@@ -443,6 +487,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     async (req, reply) => {
       try {
         const { session_id } = req.params;
+        if (req.query.admission === 'durable') {
+          const page = await ingress.list(session_id, req.query.agent_id ?? MAIN_AGENT_ID, req.query.cursor);
+          reply.send(okEnvelope({ active: null, queued: [], ingress: page.items, ingress_next_cursor: page.nextCursor }, req.id));
+          return;
+        }
         await withSessionOperation(core, session_id, async (handle) => {
           const session = requireSession(handle, session_id);
           const result = projectPromptList((await resolvePromptFromSession(core, session)).prompt.list());
@@ -454,6 +503,19 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
     },
   );
   app.get(listRoute.path, listRoute.options, listRoute.handler as Parameters<PromptRouteHost['get']>[2]);
+  const ingressRead = defineRoute({ method: 'GET', path: '/sessions/{session_id}/prompts/{prompt_id}',
+    params: sessionIdParamSchema.extend({ prompt_id: z.string().min(1).max(256) }),
+    querystring: z.object({ admission: z.literal('durable'), agent_id: z.string().min(1).optional() }),
+    success: { data: promptSubmitResultSchema }, errors: { [ErrorCode.SESSION_NOT_FOUND]: {}, [ErrorCode.PROMPT_NOT_FOUND]: {} },
+    description: 'Read a saved durable request without restoring its agent', tags: ['prompts'], operationId: 'getDurablePrompt' }, async (req, reply) => {
+    try {
+      const item = await ingress.lookup(req.params.session_id, req.query.agent_id ?? MAIN_AGENT_ID, req.params.prompt_id);
+      if (item === undefined) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'Saved request not found.');
+      reply.send(okEnvelope(promptSubmitResultSchema.parse(item), req.id));
+    }
+    catch (error) { sendMappedError(reply, req, error); }
+  });
+  app.get(ingressRead.path, ingressRead.options, ingressRead.handler as Parameters<PromptRouteHost['get']>[2]);
 
   const submitRoute = defineRoute(
     {
@@ -475,72 +537,82 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         [ErrorCode.PROMPT_ID_CONFLICT]: {},
         [ErrorCode.PROMPT_ALREADY_COMPLETED]: { dataSchema: z.object({ aborted: z.literal(false) }) },
       },
-      description: 'Submit a prompt; text-only native child requests with a client prompt_id replay an accepted matching receipt',
+      description: 'Submit a prompt; requests with a client prompt_id replay an accepted matching receipt',
       tags: ['prompts'],
       operationId: 'submitPrompt',
     },
-    async (req, reply) => {
+    (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], signal => executeSubmit(req, reply, undefined, signal)),
+  );
+  async function executeSubmit(
+    req: { id: string; params: { session_id: string }; body: z.infer<typeof promptSubmissionSchema>; query: { receipt?: 'true' } },
+    reply: { send(payload: unknown): unknown },
+    ingressExecution?: PromptIngressExecution,
+    requestSignal?: AbortSignal,
+  ): Promise<void> {
+      const signal = ingressExecution?.signal ?? requestSignal;
       const { session_id } = req.params;
+      const live = core.accessor.get(ISessionManager).get(session_id);
+      const liveAgent = req.body.delivery_mode === 'steer'
+        ? live?.accessor.get(IAgentLifecycleService).get(req.body.agent_id ?? MAIN_AGENT_ID) : undefined;
+      const steerTarget = ingressExecution === undefined
+        ? { turnId: liveAgent?.accessor.get(IAgentLoopService).status().activeTurnId,
+          promptId: liveAgent?.accessor.get(IAgentPromptService).list().active?.id }
+        : ingressExecution.steerTarget;
       let preparedMedia: PromptMediaPreparation | undefined;
       let reservation: PromptReservation | undefined;
       let lease: SessionOperationLease | undefined;
       let enqueued = false;
-      const sendResult = (result: z.input<typeof promptSubmitResultSchema>) => reply.send(okEnvelope(
-        req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({
-          ...result,
-          resolved_parts: preparedMedia?.sourceRanges.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) })),
-        }) : result,
-        req.id,
-      ));
+      let retryContentRanges: readonly import('@kiki/agent-core-v2').PromptContentRange[] | undefined;
+      const sendResult = (result: z.input<typeof promptSubmitResultSchema> & Pick<PromptIngressResult, 'resolved_parts'>) => {
+        const resolved_parts = result.resolved_parts ?? (retryContentRanges ?? preparedMedia?.sourceRanges)?.map(({ index, start, end }) => ({ index, content: result.content.slice(start, end) }));
+        const data = req.query.receipt === 'true' ? promptSubmitReceiptSchema.parse({ ...result, resolved_parts })
+          : ingressExecution === undefined ? result : { ...result, resolved_parts };
+        return reply.send(okEnvelope(data, req.id));
+      };
       try {
-        await assertPromptFileRefs(req.body.content, core.accessor.get(IFileService));
-        lease = await acquireSessionOperation(core, session_id, 'operation');
-        const session = requireSession(lease.handle, session_id);
-        if (req.body.skills !== undefined) {
-          if (req.body.prompt_id !== undefined) {
-            throw new Error2(
-              ErrorCodes.REQUEST_INVALID,
-              'prompt_id cannot be combined with a bundled skill submission',
-            );
-          }
-          await assertActivatableSkills(
-            session.accessor.get(ISessionSkillCatalog),
-            req.body.skills,
-          );
+        if (req.body.admission === 'durable' && ingressExecution === undefined) {
+          const body = { ...req.body, admission: undefined };
+          sendResult(await ingress.submit(session_id, body, promptPayloadFingerprint(body), steerTarget));
+          return;
         }
-        const resolved = await resolvePromptFromSession(core, session, req.body.agent_id);
-        const retryPromptId = resolved.agentId !== MAIN_AGENT_ID &&
-          req.body.content.every((part) => part.type === 'text') &&
-          req.body.skills === undefined
-          ? req.body.prompt_id
-          : undefined;
-        const retryFingerprint = retryPromptId === undefined ? undefined : promptPayloadFingerprint(req.body);
+        lease = await acquireSessionOperation(core, session_id, 'operation', signal);
+        const session = requireSession(lease.handle, session_id);
+        if (req.body.prompt_id === undefined && req.body.skills !== undefined) {
+          await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
+        }
+        if (req.body.prompt_id === undefined) {
+          await assertPromptFileRefs(req.body.content, ingressExecution?.files ?? core.accessor.get(IFileService));
+        }
+        const restoring = resolvePromptFromSession(core, session, req.body.agent_id);
+        const resolved = await (signal === undefined ? restoring : abortable(restoring, signal));
+        const retryPromptId = req.body.prompt_id;
+        signal?.throwIfAborted();
+        const retryFingerprint = retryPromptId === undefined ? undefined : ingressExecution?.fingerprint ?? promptPayloadFingerprint(req.body);
+        let replayedSubmission = false;
+        const submit = async () => {
         if (retryPromptId !== undefined && retryFingerprint !== undefined) {
           const receipt = await promptRetryFor(resolved.prompt).lookup(retryPromptId, retryFingerprint);
           if (receipt !== undefined) {
-            sendResult({
-              prompt_id: retryPromptId,
-              user_message_id: retryPromptId,
-              status: receipt.status,
-              content: req.body.content,
-              created_at: receipt.createdAt,
-              append_timing: receipt.appendTiming,
-              revision: receipt.revision,
-            });
-            return;
+            replayedSubmission = true;
+            retryContentRanges = receipt.contentRanges;
+            return projectPromptRetryReceipt(retryPromptId, receipt, req.body.content);
           }
         }
-        const submittedContent = await resolvePromptSessionMediaRefs(
-          req.body.content,
+        if (req.body.skills !== undefined) await assertActivatableSkills(session.accessor.get(ISessionSkillCatalog), req.body.skills);
+        const files = ingressExecution?.files ?? core.accessor.get(IFileService);
+        await assertPromptFileRefs(req.body.content, files);
+        const resolveContent = (signal: AbortSignal) => resolvePromptSessionMediaRefs(req.body.content,
           session.accessor.get(ISessionMediaStore),
-        );
-        reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined);
+          transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal));
+        const submittedContent = ingressExecution === undefined
+          ? await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], resolveContent)
+          : await resolveContent(ingressExecution.signal);
         await ensurePromptAuthReady(session, resolved.accessor, req.body);
 
         const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
         preparedMedia = await resolvePromptMediaFiles(
           submittedContent,
-          core.accessor.get(IFileService),
+          files,
           core.accessor.get(IBootstrapService).cacheDir,
           {
             telemetry,
@@ -552,12 +624,16 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           },
         );
         const resolvedContent = preparedMedia.content;
+        reservation = reservePrompt(resolved.prompt, req.body.prompt_id, retryPromptId !== undefined || req.query.receipt === 'true', retryFingerprint, {
+          waitForLaunch: req.query.receipt === 'true' || ingressExecution !== undefined ? false : undefined,
+          contentRanges: preparedMedia.sourceRanges,
+        });
 
         if (req.body.profile !== undefined) {
           await validateProfileSelection(session, resolved.profile, req.body.profile);
         }
         const execution: PromptExecutionBinding | undefined =
-          req.body.profile === undefined &&
+          req.body.execution === undefined && req.body.profile === undefined &&
             req.body.model === undefined &&
             req.body.model_switch_mode === undefined &&
             req.body.thinking === undefined &&
@@ -572,6 +648,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             req.body.after_model_switch === undefined
             ? undefined
             : {
+                execution: req.body.execution,
                 afterModelSwitch: req.body.after_model_switch,
                 modelSwitchMode: req.body.model_switch_mode,
                 profile: req.body.profile,
@@ -603,6 +680,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           }
         }
         const parts = contentToCoreParts(resolvedContent);
+        await ingressExecution?.beforeSubmit();
         const admission = await admitPromptRun(core, session, resolved, reservation);
         try {
           await applyPromptMetadataUpdate({
@@ -622,12 +700,17 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
                 deferredDisabledTools,
               }, admission.reservation);
             } catch (error) {
-              settlement.dispose();
+              await settlement.dispose();
               throw error;
             }
             enqueued = true;
             settlement.settle(result.prompt_id, () => preparedMedia?.discard());
-            sendResult({
+            if (retryFingerprint !== undefined) {
+              const receipt = await promptRetryFor(resolved.prompt).lookup(result.prompt_id, retryFingerprint);
+              if (receipt === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt receipt is missing.');
+              return projectPromptRetryReceipt(result.prompt_id, receipt, req.body.content);
+            }
+            return {
               prompt_id: result.prompt_id,
               user_message_id: result.prompt_id,
               status: result.state,
@@ -635,8 +718,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
               created_at: result.created_at,
               append_timing: result.append_timing,
               revision: result.revision,
-            });
-            return;
+            };
           }
           const handle = await admission.reservation.submit({
             role: 'user',
@@ -650,29 +732,60 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
             () => staging?.discard(),
             () => staging?.discard(),
           );
-          const result = promptSubmitResultSchema.parse(projectPromptHandle(handle));
           if (retryFingerprint !== undefined) {
-            await promptRetryFor(resolved.prompt).commit(handle.id, retryFingerprint, {
-              status: result.status,
-              createdAt: result.created_at,
-              appendTiming: result.append_timing ?? 'agent_idle',
-              revision: result.revision ?? 0,
-            });
+            const receipt = await promptRetryFor(resolved.prompt).lookup(handle.id, retryFingerprint);
+            if (receipt === undefined) throw new Error2(ErrorCodes.INTERNAL, 'Prompt receipt is missing.');
+            return projectPromptRetryReceipt(handle.id, receipt, req.body.content);
           }
-          sendResult(result);
+          return promptSubmitResultSchema.parse(projectPromptHandle(handle));
         } catch (error) {
           if (!enqueued) admission.fail(error);
           throw error;
         }
+        };
+        const submitAndDeliver = async () => {
+          const result = await submit();
+          if (req.body.delivery_mode !== 'steer') return result;
+          if (!resolved.prompt.list().pending.some(item => item.id === result.prompt_id)) {
+            return { ...result, delivery_reason: 'prompt_no_longer_pending' as const };
+          }
+          if (replayedSubmission && (resolved.profile.data().executorId ?? 'native') !== 'native') {
+            if (resolved.prompt.list().hold?.reason === 'recovery') {
+              throw new Error2(ErrorCodes.REQUEST_INVALID, 'The external delivery result is unknown. Check the executor result before explicitly releasing the held prompt queue.');
+            }
+            return { ...result, delivery_state: 'queued' as const, delivery_reason: 'external_retry' as const };
+          }
+          signal?.throwIfAborted();
+          const activeTurnId = resolved.accessor.get(IAgentLoopService).status().activeTurnId;
+          const activePromptId = resolved.prompt.list().active?.id;
+          if ((activeTurnId !== undefined && activeTurnId !== steerTarget?.turnId) ||
+              (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
+            return { ...result, delivery_state: 'queued' as const, delivery_reason: 'target_changed' as const };
+          }
+          try {
+            const [handle] = await resolved.prompt.steer([result.prompt_id]);
+            return { ...result,
+              status: handle?.state === 'blocked' ? 'blocked' as const : handle?.state === 'running' ? 'running' as const : result.status,
+              delivery_state: handle?.state === 'steered' ? 'steered' as const : handle?.state === 'pending' ? 'queued' as const : undefined,
+              delivery_reason: handle?.deliveryReason };
+          } catch (error) {
+            if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
+            return { ...result, delivery_state: resolved.prompt.list().pending.some(item => item.id === result.prompt_id) ? 'queued' as const : undefined,
+              delivery_reason: error.code === ErrorCodes.REQUEST_INVALID ? 'steer_rejected' as const : 'prompt_no_longer_pending' as const };
+          }
+        };
+        const result = retryPromptId === undefined || retryFingerprint === undefined ? await submitAndDeliver()
+          : await promptRetryFor(resolved.prompt).run(retryPromptId, retryFingerprint, submitAndDeliver);
+        sendResult(result);
       } catch (error) {
         if (!enqueued) await preparedMedia?.discard();
+        if (ingressExecution !== undefined) throw error;
         sendMappedError(reply, req, error);
       } finally {
-        reservation?.dispose();
-        lease?.dispose();
+        await reservation?.dispose();
+        await lease?.dispose();
       }
-    },
-  );
+  }
   app.post(
     submitRoute.path,
     { ...submitRoute.options, bodyLimit: PROMPT_BODY_LIMIT_BYTES },
@@ -700,8 +813,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         const { session_id } = req.params;
         await withSessionOperation(core, session_id, async (handle) => {
           const resolved = await resolvePromptFromSession(core, requireSession(handle, session_id));
-          await resolved.prompt.steer(req.body.prompt_ids);
-          reply.send(okEnvelope({ steered: true, prompt_ids: [...req.body.prompt_ids] }, req.id));
+          const handles = await resolved.prompt.steer(req.body.prompt_ids);
+          reply.send(okEnvelope(projectSteerResult(handles, req.body.prompt_ids), req.id));
         });
       } catch (error) {
         sendMappedError(reply, req, error);
@@ -751,13 +864,27 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
         const { session_id, tail } = req.params as { session_id: string; tail: string };
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['abort', 'move', 'replace', 'timing', 'hold', 'steer'] as const,
+          allowedActions: ['abort', 'move', 'replace', 'timing', 'hold', 'steer', 'resume'] as const,
           resourceLabel: 'prompt',
         });
         if (parsed.kind !== 'action') {
           const message = parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, message, req.id));
           return;
+        }
+        if (parsed.action === 'resume') {
+          if (req.query.admission !== 'durable') throw new Error2(ErrorCodes.REQUEST_INVALID, 'Durable admission is required to resume a saved request.');
+          const item = await ingress.resume(session_id, req.query.agent_id ?? MAIN_AGENT_ID, parsed.id);
+          if (item === undefined) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'Saved request not found.');
+          reply.send(okEnvelope(item, req.id));
+          return;
+        }
+        if (parsed.action === 'abort') {
+          const aborted = await ingress.abort(session_id, req.query.agent_id ?? MAIN_AGENT_ID, parsed.id);
+          if (aborted !== undefined) { reply.send(okEnvelope({ aborted }, req.id)); return; }
+        }
+        if (req.query.admission === 'durable' && parsed.action !== 'abort') {
+          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Cancel the saved request and send a new request to edit it.');
         }
         if (parsed.action === 'replace') {
           const replacement = promptReplaceRequestSchema.safeParse(req.body);
@@ -767,10 +894,11 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           await assertPromptFileRefs(replacement.data.content, core.accessor.get(IFileService));
           lease = await acquireSessionOperation(core, session_id, 'operation');
           const session = requireSession(lease.handle, session_id);
-          const replacementContent = await resolvePromptSessionMediaRefs(
+          const replacementContent = await withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], (signal) => resolvePromptSessionMediaRefs(
             replacement.data.content,
             session.accessor.get(ISessionMediaStore),
-          );
+            transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+          ));
           const resolved = await resolvePromptFromSession(core, session);
           preparedMedia = await resolvePromptMediaFiles(
             replacementContent,
@@ -840,14 +968,14 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope): void {
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
           reply.send(okEnvelope({ aborted: true }, req.id));
         } else {
-          await resolved.prompt.steer([parsed.id]);
-          reply.send(okEnvelope({ steered: true, prompt_ids: [parsed.id] }, req.id));
+          const handles = await resolved.prompt.steer([parsed.id]);
+          reply.send(okEnvelope(projectSteerResult(handles, [parsed.id]), req.id));
         }
       } catch (error) {
         if (!replaced) await preparedMedia?.discard();
         sendMappedError(reply, req, error);
       } finally {
-        lease?.dispose();
+        await lease?.dispose();
       }
     },
   );
@@ -902,6 +1030,16 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
   };
 }
 
+function projectSteerResult(handles: readonly PromptHandle[], promptIds: readonly string[]): z.infer<typeof promptSteerResultSchema> {
+  const single = handles.length === 1 ? handles[0] : undefined;
+  return {
+    steered: true,
+    prompt_ids: [...promptIds],
+    delivery_state: single?.state === 'steered' ? 'steered' : single?.state === 'pending' ? 'queued' : undefined,
+    delivery_reason: single?.deliveryReason,
+  };
+}
+
 export function projectPromptHandle(handle: PromptHandle) {
   return projectPromptSnapshot(handle);
 }
@@ -944,11 +1082,18 @@ export function projectPromptSnapshot(prompt: PromptQueueSnapshot['pending'][num
 
 export function watchPromptSettlements(events: IEventBus): {
   settle(promptId: string, discard: () => void | Promise<void>): void;
-  dispose(): void;
+  dispose(): Promise<void>;
 } {
   const settledIds = new Set<string>();
   const parentOf = new Map<string, string>();
   let armed: { id: string; discard: () => void | Promise<void> } | undefined;
+  let pending = Promise.resolve();
+  const schedule = (task: () => void | Promise<void>): void => {
+    pending = pending.then(task);
+  };
+  const stop = (): void => {
+    schedule(() => subscription.dispose());
+  };
   const subscription = events.subscribe((event) => {
     if (event.type === 'prompt.steered') {
       const steered = event as {
@@ -972,22 +1117,23 @@ export function watchPromptSettlements(events: IEventBus): {
     if (armed !== undefined && armed.id === id) {
       const { discard } = armed;
       armed = undefined;
-      subscription.dispose();
-      void discard();
+      stop();
+      schedule(discard);
     }
   });
   return {
     settle(promptId: string, discard: () => void | Promise<void>): void {
       if (settledIds.has(promptId) || settledIds.has(parentOf.get(promptId) ?? '')) {
-        subscription.dispose();
-        void discard();
+        stop();
+        schedule(discard);
         return;
       }
       armed = { id: promptId, discard };
     },
-    dispose(): void {
+    async dispose(): Promise<void> {
       armed = undefined;
-      subscription.dispose();
+      stop();
+      await pending;
     },
   };
 }

@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { open, stat } from 'node:fs/promises';
 import type { HistoryHit } from '@kiki/agent-core-v2/agent/tools/history/historyTools';
+import { openLogicalWire, readLogicalInto } from './logicalWireRead';
 import type { HistoryNavigationDb } from './historyNavigationDb';
 import type { HistoryNavRow, HistoryNavScan, HistoryNavSearch } from './historyLocatorStore';
 import { historyNavigationProof, matchesNavigationProof } from './historyNavigationProof';
@@ -20,6 +21,7 @@ export interface HistorySortedCursor {
   readonly phase: 'prepare' | 'query';
   readonly after?: HistorySortedBoundary;
   readonly skippedOversize?: boolean;
+  readonly proof?: import('./historyNavigationProof').HistoryNavigationProof;
 }
 
 export function decodeHistorySortedCursor(value: string): HistorySortedCursor {
@@ -36,6 +38,10 @@ export function decodeHistorySortedCursor(value: string): HistorySortedCursor {
       cursor.after !== undefined && (!Number.isFinite(cursor.after?.time) ||
         typeof cursor.after?.key !== 'string' || !cursor.after.key || cursor.after.key.length > 2048) ||
       cursor.skippedOversize !== undefined && typeof cursor.skippedOversize !== 'boolean' ||
+      cursor.proof !== undefined && (cursor.proof === null || typeof cursor.proof !== 'object' ||
+        cursor.proof.identity !== cursor.incarnation || !Number.isSafeInteger(cursor.proof.size) || cursor.proof.size < cursor.asOf! ||
+        !/^[a-f0-9]{64}$/.test(cursor.proof.head) || !/^[a-f0-9]{64}$/.test(cursor.proof.tail) ||
+        typeof cursor.proof.mtimeNs !== 'string' || typeof cursor.proof.ctimeNs !== 'string') ||
       cursor.phase === 'prepare' && cursor.after !== undefined) throw new Error('invalid_scan_cursor');
   return cursor as HistorySortedCursor;
 }
@@ -60,14 +66,17 @@ interface SortedSearchInput {
 export async function searchSortedHistory(input: SortedSearchInput): Promise<HistoryNavScan> {
   const { db, search } = input;
   const source = await stat(input.wirePath, { bigint: true });
-  const asOf = Number(source.size);
+  const cursor = search.orderedCursor;
+  const asOf = cursor?.asOf ?? Number(source.size);
   const fingerprint = `${source.size}:${source.mtimeNs}:${source.ctimeNs}`;
   const order = search.sort ?? 'relevance';
   const requestHash = createHash('sha256').update(JSON.stringify([input.workspace, input.session, input.agent,
     search.query, search.mode, search.includeToolOutput, order, search.role, search.after, search.before, search.pageSize])).digest('hex');
-  const cursor = search.orderedCursor;
-  if (cursor !== undefined && (cursor.asOf !== asOf || cursor.fingerprint !== fingerprint ||
+  if (cursor !== undefined && (asOf > Number(source.size) ||
+      cursor.proof === undefined && cursor.fingerprint !== fingerprint ||
       cursor.incarnation !== input.incarnation || cursor.requestHash !== requestHash)) throw new Error('stale_scan_cursor');
+  const proof = await historyNavigationProof(input.wirePath, asOf);
+  if (cursor?.proof !== undefined && !matchesNavigationProof(cursor.proof, proof)) throw new Error('stale_scan_cursor');
   let saved = db.readManifest(input.key);
   if (saved !== undefined && (saved.incarnation !== input.incarnation ||
       !await historyNavigationProof(input.wirePath, saved.offset)
@@ -86,28 +95,30 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
     recordsRead += preparation.recordsRead;
     saved = db.readManifest(input.key);
   }
-  const identity = { v: 2 as const, asOf, fingerprint, incarnation: input.incarnation, requestHash,
+  if (saved !== undefined && saved.offset > asOf) throw new Error('stale_scan_cursor');
+  const identity = { v: 2 as const, asOf, fingerprint, proof, incarnation: input.incarnation, requestHash,
     generation: saved?.generation ?? '', offset: saved?.offset ?? 0 };
   const unchanged = async () => {
-    const current = await stat(input.wirePath, { bigint: true });
-    if (`${current.size}:${current.mtimeNs}:${current.ctimeNs}` !== fingerprint ||
-        `${current.dev}:${current.ino}:${current.birthtimeNs}` !== input.incarnation) throw new Error('stale_scan_cursor');
+    const current = await historyNavigationProof(input.wirePath, asOf);
+    if (!matchesNavigationProof(proof, current)) throw new Error('stale_scan_cursor');
   };
   if (saved === undefined || saved.offset < asOf) {
     await unchanged();
-    const progressed = saved !== undefined && saved.offset > (cursor?.offset ?? 0);
+    const pending = preparation?.incompleteReason === 'partial_tail';
+    const progressed = !pending && saved !== undefined && saved.offset > (cursor?.offset ?? 0);
+    const reason = pending ? 'source_pending' : progressed ? 'navigation_building' : preparation?.incompleteReason ?? 'projection_stalled';
     return { complete: false, nextByteOffset: saved?.offset ?? 0, ordinal: saved?.ordinal ?? 0,
       bytesRead, recordsRead, incarnation: input.incarnation, hits: [], ordered: true,
       orderedNext: progressed ? { ...identity, phase: 'prepare' } : undefined,
-      incompleteReason: progressed ? 'navigation_building' : preparation?.incompleteReason ?? 'projection_stalled',
-      gaps: [progressed ? 'navigation_building' : 'projection_stalled'] };
+      incompleteReason: reason, gaps: [reason] };
   }
   const plan = planHistoryQuery(search.query, search.mode);
   const matches: Array<{ hit: HistoryHit; score: number; time: number; key: string }> = [];
   const gaps = new Set<string>(cursor?.skippedOversize ? ['record_exceeds_page_budget'] : []);
   let after = cursor?.after;
   let complete = false;
-  const file = await open(input.wirePath, 'r');
+  const logical = await openLogicalWire(input.wirePath);
+  const file = logical === undefined ? await open(input.wirePath, 'r') : undefined;
   try {
     outer: while (bytesRead < input.maxBytes && recordsRead < input.maxRecords) {
       input.signal?.throwIfAborted();
@@ -131,10 +142,12 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
           let received = 0;
           while (received < size) {
             input.signal?.throwIfAborted();
-            const read = await file.read(raw, received, Math.min(64 << 10, size - received), row.anchor.start + received);
-            if (read.bytesRead === 0) throw new Error('stale_scan_cursor');
-            received += read.bytesRead;
-            bytesRead += read.bytesRead;
+            const count = logical !== undefined
+              ? await readLogicalInto(logical, raw, received, Math.min(64 << 10, size - received), row.anchor.start + received)
+              : (await file!.read(raw, received, Math.min(64 << 10, size - received), row.anchor.start + received)).bytesRead;
+            if (count === 0) throw new Error('stale_scan_cursor');
+            received += count;
+            bytesRead += count;
           }
           if (hashHistoryRecord(raw) !== row.anchor.digest) throw new Error('stale_scan_cursor');
           const record = JSON.parse(raw.toString('utf8')) as Record<string, unknown>;
@@ -153,7 +166,10 @@ export async function searchSortedHistory(input: SortedSearchInput): Promise<His
       }
       if (complete) break;
     }
-  } finally { await file.close(); }
+  } finally {
+    logical?.close();
+    await file?.close();
+  }
   await unchanged();
   if (order === 'relevance') {
     matches.sort((left, right) => right.score - left.score || right.time - left.time || right.key.localeCompare(left.key));

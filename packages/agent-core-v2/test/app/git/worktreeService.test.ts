@@ -43,7 +43,7 @@ describe('worktree outcome persistence', () => {
     try {
       await expect(ix.get(IWorktreeService).remove('fixture')).rejects.toBe(failure);
       expect(update).toHaveBeenCalledOnce();
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 });
 
@@ -96,8 +96,8 @@ describe('managed worktree removal', () => {
     worktrees = ix.get(IWorktreeService);
   });
 
-  afterEach(() => {
-    services.dispose();
+  afterEach(async () => {
+    await services.dispose();
     rmSync(root, { recursive: true, force: true });
   });
 

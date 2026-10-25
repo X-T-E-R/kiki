@@ -18,6 +18,8 @@ import { McpOAuthService } from '#/mcpCore/oauth/service';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { stubPluginUsageService } from '../../app/pluginUsage/stubs';
 import type { PluginReloadEvent } from '#/app/plugin/types';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
@@ -61,7 +63,7 @@ describe('Workspace MCP initialization', () => {
 
   afterEach(async () => {
     await manager?.shutdown();
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.all([
       rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
       rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }),
@@ -74,6 +76,7 @@ describe('Workspace MCP initialization', () => {
       additionalServices: (reg) => {
         reg.definePartialInstance(IBootstrapService, { homeDir });
         reg.definePartialInstance(IWorkspaceContext, { cwd, workspaceId: 'test-workspace' });
+        reg.defineInstance(IPluginUsageService, stubPluginUsageService());
         reg.definePartialInstance(IPluginService, {
           enabledMcpServers: async () => ({}),
           onDidReload: Event.None as Event<PluginReloadEvent>,

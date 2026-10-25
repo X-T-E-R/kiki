@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setPriority } from 'node:os';
 import { resolve, sep } from 'node:path';
+import { isSea } from 'node:sea';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Worker } from 'node:worker_threads';
 
@@ -23,6 +24,7 @@ export interface SqliteHostOptions {
   readonly queryTimeoutMs?: number;
   readonly indexSubagents?: boolean;
   readonly onStateChange?: (snapshot: SqliteHostSnapshot) => void;
+  readonly scheduleRestart?: (callback: () => void, delay: number) => NodeJS.Timeout;
 }
 
 export interface SqliteHostSnapshot {
@@ -48,8 +50,9 @@ export interface SqliteHostSnapshot {
 }
 
 const INDEXER_BACKOFF = [1000, 10_000, 60_000, 600_000];
-const MEMORY_BACKOFF = [60_000, 600_000, 3_600_000];
+const MEMORY_BACKOFF = [1000, 10_000, 60_000];
 const QUERY_ACTIVE_SLOTS = 8;
+const QUERY_WORKER_COUNT = 1;
 
 export function seaIndexerArgs(database: string, execArgv: readonly string[]): string[] {
   return [
@@ -58,10 +61,14 @@ export function seaIndexerArgs(database: string, execArgv: readonly string[]): s
   ];
 }
 
+export function seaIndexerSelected(flag: string | undefined, runningInsideSea: boolean): boolean {
+  return flag === '1' && runningInsideSea;
+}
+
 export class SqliteSearchHost {
   private child?: ChildProcess;
   private readonly readers: Worker[] = [];
-  private readonly readerLoads = [0, 0, 0];
+  private readonly readerLoads = [0];
   private readonly bootSalt = randomUUID();
   private readonly pending = new Map<string, SqliteSessionInput>();
   private readonly sent = new Set<string>();
@@ -114,7 +121,6 @@ export class SqliteSearchHost {
   async open(): Promise<void> {
     if (this.stopped) throw new GlobalSearchError('index_unavailable', 'search host is closed');
     this.startIndexer();
-    await this.openReader();
   }
 
   retryIndexer(): void {
@@ -228,18 +234,19 @@ export class SqliteSearchHost {
       clearTimeout(waiter.timer);
       waiter.reject(new Error('search host closed'));
     }
-    const readerExit = Promise.all(readers.map((reader) => reader.terminate()));
-    const childExit = child && child.exitCode === null ? new Promise<void>((resolve) => {
-      const deadline = setTimeout(() => child.kill(), 5000);
-      child.once('exit', () => { clearTimeout(deadline); resolve(); });
-      child.send({ type: 'close' } satisfies IndexerRequest, () => {});
-    }) : undefined;
-    await Promise.all([readerExit, childExit]);
+    await Promise.all(readers.map((reader) => reader.terminate()));
+    if (child && child.exitCode === null) {
+      await new Promise<void>((resolve) => {
+        const deadline = setTimeout(() => child.kill(), 5000);
+        child.once('exit', () => { clearTimeout(deadline); resolve(); });
+        child.send({ type: 'close' } satisfies IndexerRequest, (error) => { if (error) child.kill(); });
+      });
+    }
   }
 
   private startIndexer(): void {
     if (this.stopped || this.terminal || this.child || this.restart || this.retryAt > Date.now()) return;
-    const sea = process.env['KIKI_SQLITE_INDEXER_SEA'] === '1';
+    const sea = seaIndexerSelected(process.env['KIKI_SQLITE_INDEXER_SEA'], isSea());
     const entry = this.options.indexerEntry ?? process.env['KIKI_SQLITE_INDEXER_PATH'] ??
       fileURLToPath(new URL('./indexerDev.ts', import.meta.url));
     const source = entry.endsWith('.ts');
@@ -346,7 +353,8 @@ export class SqliteSearchHost {
       this.options.onStateChange?.(this.snapshot());
       process.stderr.write(`search indexer exited code=${code} signal=${signal} reason=${this.reason} backoffMs=${terminal ? 0 : delay}\n`);
       if (terminal) return;
-      this.restart = setTimeout(() => { this.restart = undefined; this.startIndexer(); }, delay);
+      const arm = this.options.scheduleRestart ?? ((callback: () => void, wait: number) => setTimeout(callback, wait));
+      this.restart = arm(() => { this.restart = undefined; this.retryAt = 0; this.startIndexer(); }, delay);
       this.restart.unref();
     };
     child.on('error', (error) => {
@@ -376,9 +384,9 @@ export class SqliteSearchHost {
   }
 
   private async openReader(): Promise<void> {
-    if (this.readers.length === 3 || this.readerOpening) return this.readerOpening;
+    if (this.readers.length >= QUERY_WORKER_COUNT || this.readerOpening) return this.readerOpening;
     this.readerOpening = (async () => {
-      while (this.readers.length < 3) await this.spawnReader();
+      while (this.readers.length < QUERY_WORKER_COUNT) await this.spawnReader();
     })().finally(() => { this.readerOpening = undefined; });
     return this.readerOpening;
   }

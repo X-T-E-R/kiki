@@ -32,6 +32,7 @@ export abstract class AgentProfileLoaderBase extends Service {
       this.sourceId,
       this.workspaceKey,
       this.readyPromise,
+      (sourcePath) => this.enqueue({ sourcePath }),
     );
     void this.readyPromise.catch(() => undefined);
   }
@@ -73,17 +74,22 @@ export abstract class AgentProfileLoaderBase extends Service {
     this.lastGoodContribution = contribution;
   }
 
-  private enqueue(): Promise<void> {
-    const current = this.tail.catch(() => undefined).then(() => this.loadAndContribute());
+  private enqueue(validation?: { readonly sourcePath: string | undefined }): Promise<void> {
+    const current = this.tail.catch(() => undefined).then(() => this.loadAndContribute(validation));
     this.tail = current;
     return current;
   }
 
-  private async loadAndContribute(): Promise<void> {
+  private async loadAndContribute(validation?: { readonly sourcePath: string | undefined }): Promise<void> {
     try {
-      this.publish(this.withLastGoodEntries(await this.load()));
+      const loaded = await this.load();
+      this.publish(this.withLastGoodEntries(loaded));
+      if (validation !== undefined && (loaded.skipped ?? []).some((failure) =>
+        validation.sourcePath === undefined || this.matchesFailedPath(validation.sourcePath, new Set([this.pathKey(failure.path)])))) {
+        throw new Error('The current agent profile source failed to load; retained last-good entries cannot authorize a tool refresh');
+      }
     } catch (error) {
-      if (this.fatal) throw error;
+      if (this.fatal || validation !== undefined) throw error;
       this.log.warn(`agent profile loader "${this.sourceId}" load failed: ${String(error)}`);
     }
   }

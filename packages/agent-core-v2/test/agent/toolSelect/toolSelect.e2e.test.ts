@@ -1,6 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentPluginToolService } from '#/agent/userTool/pluginToolService';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { capabilitySourceMessage } from '#/agent/contextInjector/capabilityDelta';
 import { IAgentProfileAnnouncementsService } from '#/agent/tools/agent/agentProfileAnnouncementsService';
@@ -15,9 +17,16 @@ import { IAgentToolSelectService } from '#/agent/toolSelect/toolSelect';
 import { IAgentToolSelectAnnouncementsService } from '#/agent/toolSelect/toolSelectAnnouncements';
 import { IAgentToolSelectSchemasService } from '#/agent/toolSelect/toolSelectSchemas';
 import { IAgentProfileCapabilityChangesService } from '#/agent/toolSelect/profileCapabilityChanges';
+import { IPluginHostService } from '#/app/plugin/pluginHostService';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { ISessionPluginUsageService } from '#/session/pluginUsage/sessionPluginUsageService';
+import { stubPluginService } from '../../app/plugin/stubs';
 import { IAgentCapabilityRebuildService } from '#/agent/capabilityRebuild/capabilityRebuild';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IConfigService } from '#/app/config/config';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { THREAD_COMMUNICATION_SECTION } from '#/app/threadCommunication/configSection';
@@ -29,7 +38,7 @@ import { SessionSkillCatalogService } from '#/session/sessionSkillCatalog/skillC
 import { IAgentUserToolService } from '#/agent/userTool/userTool';
 import '#/agent/tools/select-tools/selectToolsTool';
 
-import { appService, createTestAgent, type TestAgentContext } from '../../harness';
+import { appService, createTestAgent, InMemoryWireRecordPersistence, type TestAgentContext } from '../../harness';
 
 const MCP_ALPHA = 'mcp__srv__alpha';
 const DASHBOARD_TOOL = 'dashboard_create';
@@ -136,6 +145,12 @@ function historyText(history: readonly ContextMessage[]): string {
     .join('\n');
 }
 
+async function closeMemoryAndThread(agent: TestAgentContext): Promise<void> {
+  const config = agent.get(IConfigService);
+  await config.replace(MEMORY_SECTION, { enabled: false, approval: 'auto', budget: 2_000, workspaces: {} } satisfies MemoryConfig);
+  await config.replace(THREAD_COMMUNICATION_SECTION, { enabled: false });
+}
+
 describe('progressive tool disclosure end-to-end', () => {
   let ctx: TestAgentContext;
   let alpha: StubMcpTool;
@@ -144,6 +159,7 @@ describe('progressive tool disclosure end-to-end', () => {
   beforeEach(async () => {
     vi.stubEnv(TOOL_SELECT_FLAG_ENV, '1');
     ctx = createTestAgent();
+    await closeMemoryAndThread(ctx);
     ctx.get(IAgentToolSelectService);
     ctx.get(IAgentToolSelectAnnouncementsService);
     ctx.get(IAgentToolSelectSchemasService);
@@ -158,6 +174,125 @@ describe('progressive tool disclosure end-to-end', () => {
     registration?.dispose();
     vi.unstubAllEnvs();
     await ctx.dispose();
+  });
+
+  it('restores a persisted old session, hot-enables a deferred plugin, loads its real schema and executes a read without rebinding', async () => {
+    registration?.dispose();
+    registration = undefined;
+    await ctx.dispose();
+    const persistence = new InMemoryWireRecordPersistence();
+    const documents = new Map<string, unknown>();
+    const store: IAtomicDocumentStore = {
+      _serviceBrand: undefined,
+      get: async <T>(scope: string, key: string) => documents.get(`${scope}:${key}`) as T | undefined,
+      set: async <T>(scope: string, key: string, value: T) => { documents.set(`${scope}:${key}`, value); },
+      update: async <T>(scope: string, key: string, update: (current: T | undefined) => T | undefined) => {
+        const value = update(documents.get(`${scope}:${key}`) as T | undefined);
+        if (value === undefined) documents.delete(`${scope}:${key}`);
+        else documents.set(`${scope}:${key}`, value);
+        return value;
+      },
+      delete: async (scope, key) => { documents.delete(`${scope}:${key}`); },
+      list: async (scope, prefix = '') => [...documents.keys()].filter(key => key.startsWith(`${scope}:${prefix}`)).map(key => key.slice(scope.length + 1)),
+      watch: () => () => ({ dispose() {} }),
+      acquire: () => ({ dispose() {} }),
+    };
+    const name = 'plugin__example_mail__Mailbox';
+    const execute = vi.fn(async () => ({ output: 'fixture folders: 2' }));
+    let finishLoading: (() => void) | undefined;
+    let loading: Promise<void> | undefined;
+    const hosts = {
+      list: async () => {
+        await loading;
+        return [{ pluginId: 'example-mail', definition: { schemaVersion: 1, name: 'Mailbox', description: 'List fixture folders.',
+          disclosure: 'deferred', accesses: [], parameters: { type: 'object', properties: { action: { const: 'folders' } }, required: ['action'], additionalProperties: false } } }];
+      },
+      execute,
+    } as unknown as IPluginHostService;
+    let initialConfig: ReturnType<IConfigService['getAll']> | undefined;
+    const open = (restore: boolean) => createTestAgent(
+      { sessionId: 'persisted-capability-session', persistence, autoConfigure: !restore, initialConfig },
+      appService(IAtomicDocumentStore, store),
+      appService(IPluginService, stubPluginService({ sessionStarts: [] })),
+      appService(IPluginHostService, hosts),
+    );
+    ctx = open(false);
+    ctx.configure({ provider: OPENAI_PROVIDER, tools: ['*'], modelCapabilities: DISCLOSURE_CAPABILITIES });
+    await ctx.get(IAgentProfileService).bind({
+      resolvedProfile: normalizeAgentProfile({ name: 'fixture-main', tools: ['*'], systemPrompt: () => 'Use the available fixture tools.' }),
+      model: OPENAI_PROVIDER.model,
+    });
+    await ctx.rpc.setPermission({ mode: 'yolo' });
+    await ctx.get(ISessionPluginUsageService).set('example-mail', 'off');
+    ctx.mockNextResponse({ type: 'text', text: 'saved before plugin activation' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'baseline old session' }] });
+    await ctx.untilTurnEnd();
+    await ctx.expectResumeMatches();
+    initialConfig = structuredClone(ctx.get(IConfigService).getAll());
+    await ctx.dispose();
+    ctx = open(true);
+    await ctx.restorePersisted();
+    await ctx.get(IAgentPluginToolService).ready();
+    const usage = ctx.get(IPluginUsageService);
+    usage.registerPluginStateReader(() => ({ allowed: true, globalEnabled: false }));
+    expect(ctx.get(IAgentToolRegistryService).resolve(name)).toBeUndefined();
+    const binding = ctx.get(IAgentProfileService).data().boundProfile;
+    expect(binding).toBeDefined();
+    loading = new Promise<void>((resolve) => { finishLoading = resolve; });
+    const enabled = ctx.get(ISessionPluginUsageService).set('example-mail', 'on');
+    await vi.waitFor(async () => { expect((await usage.readSession(ctx.get(ISessionContext).workspaceId, 'persisted-capability-session')).applyState).toBe('pending'); });
+    ctx.mockNextResponse(selectToolsCall('select-fixture-mail', [name]));
+    ctx.mockNextResponse({ type: 'function', id: 'read-fixture-mail', name, arguments: '{"action":"folders"}' });
+    ctx.mockNextResponse({ type: 'text', text: 'read complete' });
+    const prompting = ctx.rpc.prompt({ input: [{ type: 'text', text: 'list fixture folders' }] });
+    await Promise.resolve();
+    expect(ctx.llmCalls).toHaveLength(0);
+    finishLoading!();
+    await Promise.all([enabled, prompting]);
+    await ctx.untilTurnEnd();
+    expect(ctx.get(IAgentProfileService).data().boundProfile).toEqual(binding);
+    expect(historyText(ctx.llmCalls[0]!.history)).toContain(name);
+    expect(ctx.llmCalls[0]!.tools.some(tool => tool.name === name)).toBe(false);
+    expect(historyText(ctx.llmCalls[1]!.history)).toContain('"action":{"const":"folders"}');
+    expect(execute).toHaveBeenCalledTimes(1);
+    await ctx.get(ISessionPluginUsageService).set('example-mail', 'off');
+    ctx.mockNextResponse({ type: 'text', text: 'off observed' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'confirm the current catalog' }] });
+    await ctx.untilTurnEnd();
+    const last = ctx.llmCalls.at(-1)!;
+    expect(historyText(last.history)).toContain(`<tools_removed>\n${name}\n</tools_removed>`);
+    expect(last.history.flatMap(message => message.tools ?? []).some(tool => tool.name === name)).toBe(false);
+    expect(ctx.get(IAgentToolRegistryService).resolve(name)).toBeUndefined();
+  });
+
+  it('discloses and executes only valid browser namespace tools under the same selection', async () => {
+    registration?.dispose();
+    registration = undefined;
+    const name = 'browser__codex_browser_js';
+    const browser = new StubMcpTool(name);
+    const rejected = new StubMcpTool('browser__unrelated_admin');
+    ctx.get(IAgentToolRegistryService).register(browser, { source: 'builtin' });
+    ctx.get(IAgentToolRegistryService).register(rejected, { source: 'builtin' });
+    const session = ctx.get(ISessionContext);
+    await ctx.get(IOptionalCapabilityPolicy).setChoice(session.sessionId, 'browser', 'on', session.workspaceId);
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES, tools: ['browser__*'] });
+    ctx.mockNextResponse({ type: 'function', id: 'call-browser', name, arguments: '{}' });
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'use the mock browser operation' }] });
+    await ctx.untilTurnEnd();
+    expect(browser.calls).toBe(1);
+    expect(rejected.calls).toBe(0);
+    expect(toolNames(ctx.llmCalls[0]!.tools)).toContain(name);
+    expect(toolNames(ctx.llmCalls[0]!.tools)).not.toContain(rejected.name);
+  });
+
+  it('reports a resident tool as already available rather than policy denied', async () => {
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.mockNextResponse(selectToolsCall('resident-read', ['Read']));
+    ctx.mockNextResponse({ type: 'text', text: 'done' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect the resident tool' }] });
+    await ctx.untilTurnEnd();
+    expect(historyText(ctx.get(IAgentContextMemoryService).get())).toContain('Already available: Read');
   });
 
   it('does not reannounce unchanged loadable tools on consecutive steps in one turn', async () => {
@@ -377,7 +512,7 @@ describe('progressive tool disclosure end-to-end', () => {
       expect(historyText(ctx.llmCalls[2]!.history)).toContain('mcp__srv__beta —');
       expect(historyText(ctx.llmCalls[2]!.history).match(/<tools_added>/g)).toHaveLength(2);
       expect(ctx.llmCalls[2]!.tools).toEqual(ctx.llmCalls[0]!.tools);
-    } finally { extra.dispose(); }
+    } finally { await extra.dispose(); }
   });
 
   it.each(PREFIX_PROTOCOL_CASES)('announces one new plugin tool on $name, not an identical re-registration', async ({ provider }) => {
@@ -396,13 +531,13 @@ describe('progressive tool disclosure end-to-end', () => {
       expect(added.split('<tools_added>')[2]).toContain(`${name} —`);
       expect(added.split('<tools_added>')[2]).not.toContain(MCP_ALPHA);
       expect(ctx.llmCalls[1]!.tools).toEqual(ctx.llmCalls[0]!.tools);
-      plugin.dispose();
+      await plugin.dispose();
       plugin = ctx.get(IAgentToolRegistryService).register(new StubMcpTool(name), { source: 'plugin' });
       ctx.mockNextResponse({ type: 'text', text: 'third' });
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'third' }] });
       await ctx.untilTurnEnd();
       expect(historyText(ctx.llmCalls[2]!.history).match(/<tools_added>/g)).toHaveLength(2);
-    } finally { plugin.dispose(); }
+    } finally { await plugin.dispose(); }
   });
 
   it.each(PREFIX_PROTOCOL_CASES)('coalesces effective skill revisions on the next $name sampling boundary', async ({ provider }) => {
@@ -511,7 +646,7 @@ describe('progressive tool disclosure end-to-end', () => {
     ctx.mockNextResponse({ type: 'text', text: 'next done' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next' }] });
     await ctx.untilTurnEnd();
-    registration.dispose();
+    await registration.dispose();
     expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('ThreadList');
     expect(toolNames(ctx.llmCalls[2]!.tools)).toContain('MemorySearch');
     const notices = ctx.get(IAgentContextMemoryService).get().filter((message) =>
@@ -581,7 +716,7 @@ describe('progressive tool disclosure end-to-end', () => {
         capabilitySourceMessage(message, 'capabilities_rebuilt') !== undefined)).toHaveLength(1);
     } finally {
       release();
-      registration.dispose();
+      await registration.dispose();
       await b.dispose();
     }
   });

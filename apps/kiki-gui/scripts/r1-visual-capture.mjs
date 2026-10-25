@@ -8,11 +8,19 @@
  *  - Build: the script builds its own production bundle (`.tmp/r1-proof/dist`,
  *    `--no-build` to reuse the last one) and prints the provenance (asset
  *    names + sha256 of the bundle and of the sources it covers).
- *  - Theme: dark/light go through the app's real preference (`.kiki.settings`
- *    + the storage event the shell listens to, `src/lib/theme.ts`), and each
- *    dark shot asserts the resolved token actually changed. Writing
- *    `classList.add('dark')` does nothing — the palette follows
- *    `<html data-theme>`.
+ *  - Theme: dark/light go through the preference the shell resolves.
+ *    `theme` is space-portable, and once that bridge is installed
+ *    `readSettings` uses it over the device `kiki.settings` key. A
+ *    same-window storage event therefore republishes the old space theme,
+ *    `<html data-theme>` never moves, and the wait used to expire at 10s.
+ *    The switch posts `pref:theme` through the fixture settings preview/apply
+ *    (the contract the Appearance control posts), mirrors the device boot
+ *    value, and reloads. Permission, plan, and the plan gate live in
+ *    in-memory composer chrome, and the open panel unmounts with the page,
+ *    so the scenario opens that state again with the same controls. The wait
+ *    is still `data-theme` at 10s, and each dark shot still asserts
+ *    `--color-paper`.
+ *    Writing `classList.add('dark')` does nothing.
  *  - K06 runs on the `send-timing` fixture: the turn parks on a release gate,
  *    so the composer really is busy without a pending interaction. The
  *    `basic-stream` fixture used before gates the same turn on an approval;
@@ -41,11 +49,22 @@ import { fileURLToPath } from 'node:url';
 import { chromium } from 'playwright';
 
 import { FIXTURE_TOKEN, startFixtureServer } from './fixture-server.mjs';
+import { applyFixtureTheme } from './lib/theme-preference.mjs';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const OUT = resolve(join(ROOT, '.tmp', 'r1-proof'));
 const DIST = resolve(process.env['R1_DIST'] ?? join(OUT, 'dist'));
 const BUILD = !process.argv.includes('--no-build');
+const SCENARIO_NAMES = ['k01', 'k06', 'k02', 'k07'];
+const onlyIndex = process.argv.indexOf('--only');
+const ONLY = onlyIndex === -1 ? null : new Set((process.argv[onlyIndex + 1] ?? '').split(',').filter(Boolean));
+if (ONLY !== null && ONLY.size === 0) throw new Error('--only needs a scenario name: k01, k06, k02, k07');
+if (ONLY !== null) {
+  for (const name of ONLY) {
+    if (!SCENARIO_NAMES.includes(name)) throw new Error(`--only unknown scenario ${name} (${SCENARIO_NAMES.join(', ')})`);
+  }
+}
+const wants = (name) => ONLY === null || ONLY.has(name);
 
 if (!existsSync(OUT)) {
   mkdirSync(OUT, { recursive: true });
@@ -145,21 +164,119 @@ const governance = (sessionId) => ({
 });
 
 const PAPER_DARK = '#1b2226';
+let activeFixtureUrl = '';
 
-async function setTheme(page, theme) {
+async function alignDeviceTheme(page, theme) {
   await page.evaluate((next) => {
     const key = 'kiki.settings';
-    const oldValue = localStorage.getItem(key);
-    const settings = oldValue === null ? {} : JSON.parse(oldValue);
-    const newValue = JSON.stringify({ ...settings, theme: next });
-    localStorage.setItem(key, newValue);
-    window.dispatchEvent(new StorageEvent('storage', { key, oldValue, newValue, storageArea: localStorage }));
+    const raw = localStorage.getItem(key);
+    const settings = raw === null ? {} : JSON.parse(raw);
+    localStorage.setItem(key, JSON.stringify({ ...settings, theme: next }));
   }, theme);
-  await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
-  // Prove the palette followed, not just the attribute.
+}
+
+async function setTheme(page, theme) {
+  const fixtureUrl = activeFixtureUrl;
+  if (fixtureUrl === '') throw new Error('theme switch needs the fixture server for this capture');
+  // Boot value only. The space preference is what the reloaded shell resolves.
+  await alignDeviceTheme(page, theme);
+  await applyFixtureTheme(fixtureUrl, theme, FIXTURE_TOKEN);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
+  try {
+    await page.waitForFunction((next) => document.documentElement.dataset['theme'] === next, theme, { timeout: 10_000 });
+  } catch (error) {
+    const actual = await page.evaluate(() => document.documentElement.dataset['theme'] ?? null);
+    throw new Error(`theme did not resolve to ${theme} (data-theme=${actual})`, { cause: error });
+  }
   const paper = await page.evaluate(() => getComputedStyle(document.documentElement).getPropertyValue('--color-paper').trim());
   if (theme === 'dark') return paper.toLowerCase() === PAPER_DARK;
   return paper.toLowerCase() !== PAPER_DARK;
+}
+
+/**
+ * Reload drops the open panel and the in-memory permission / plan / plan-gate
+ * chrome. The promise line renders only for manual permission with the gate
+ * off, and the gate switch itself is present in other modes, so this repeats
+ * the same control sequence as the first manual shot.
+ */
+async function showManualPlanCaveat(page) {
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(200);
+  await page.locator('[data-permission-tone]').click();
+  await page.waitForSelector('[data-permission-panel]', { timeout: 5_000 });
+  await page.locator('[data-permission-mode="manual"]').click();
+  await page.waitForTimeout(300);
+  await page.locator('textarea').focus();
+  await page.keyboard.press('Control+Shift+M');
+  await page.waitForSelector('[data-run-mode-panel]', { timeout: 10_000 });
+  const plan = page.locator('[data-mode-switch="plan"]');
+  if (await plan.getAttribute('aria-checked') !== 'true') {
+    await plan.click();
+    await page.waitForTimeout(300);
+  }
+  const gate = page.locator('[data-mode-switch="planGate"]');
+  await gate.waitFor({ timeout: 5_000 });
+  if (await gate.getAttribute('aria-checked') === 'true') {
+    await gate.click();
+    await page.waitForTimeout(300);
+  }
+  await page.waitForSelector('[data-plan-gate-effective]', { timeout: 5_000 });
+}
+
+/**
+ * A reload closes the queued popover. The typed draft is the contract under
+ * test: it must still be in the composer. Reopen only the popover. Do not
+ * fill the textarea back to the expected text.
+ */
+async function showQueuedPopover(page, draft) {
+  await page.waitForSelector('textarea:not([disabled])', { timeout: 20_000 });
+  const trigger = page.locator('[data-composer-queued-trigger]');
+  await trigger.waitFor({ timeout: 15_000 });
+  let kept = '';
+  let stored = '';
+  try {
+    await page.waitForFunction((expected) => {
+      const field = document.querySelector('textarea');
+      return field instanceof HTMLTextAreaElement && field.value === expected;
+    }, draft, { timeout: 5_000 });
+    kept = draft;
+  } catch {
+    kept = await page.inputValue('textarea');
+    stored = await page.evaluate(() => {
+      const rows = [];
+      for (let index = 0; index < localStorage.length; index += 1) {
+        const key = localStorage.key(index);
+        if (key !== null && (key.includes('draft') || key.includes('composer'))) {
+          rows.push(`${key}=${localStorage.getItem(key)}`);
+        }
+      }
+      return rows.join(' | ');
+    });
+  }
+  expect(
+    kept === draft,
+    'K06: queued draft still in the composer after reload',
+    stored === '' ? undefined : `textarea=${JSON.stringify(kept)} stored=${stored}`,
+  );
+  if (await page.locator('[data-composer-queued-popover]').count() === 0) {
+    await trigger.click();
+    await page.waitForSelector('[data-composer-queued-popover]', { timeout: 5_000 });
+  }
+}
+
+/** A reload folds the rail section. The same toggle opens the rows again. */
+async function showUnfoldedHooks(page) {
+  await page.waitForSelector('[data-rail-toggle]', { timeout: 15_000 });
+  const railToggle = page.locator('[data-rail-toggle]');
+  if (await railToggle.count() > 0 && await railToggle.getAttribute('aria-expanded') === 'false') {
+    await railToggle.click();
+  }
+  const hooksSection = page.locator('[data-agent-hooks-section]');
+  await hooksSection.waitFor({ timeout: 10_000 });
+  const toggle = hooksSection.locator('button[aria-expanded]');
+  if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
 }
 
 async function enterWorkingSession(page, link, sessionId, prompt) {
@@ -178,6 +295,7 @@ async function capture() {
   const fixture = await startFixtureServer({ port: 0, scenario: 'basic-stream' });
   const fixturePort = fixture.http.address().port;
   const fixtureUrl = `http://127.0.0.1:${fixturePort}`;
+  activeFixtureUrl = fixtureUrl;
 
   console.log('Starting static server on', DIST);
   const web = await startStatic(DIST);
@@ -228,9 +346,13 @@ async function capture() {
     const page = await context.newPage();
     await page.addInitScript(() => {
       try {
-        localStorage.setItem('kiki.locale', 'zh');
-        localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light' }));
-        localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+        if (localStorage.getItem('kiki.locale') === null) localStorage.setItem('kiki.locale', 'zh');
+        if (localStorage.getItem('kiki.settings') === null) {
+          localStorage.setItem('kiki.settings', JSON.stringify({ theme: 'light' }));
+        }
+        if (localStorage.getItem('kiki.onboarding') === null) {
+          localStorage.setItem('kiki.onboarding', JSON.stringify({ completedAt: '2026-01-01T00:00:00.000Z' }));
+        }
       } catch { /* ignore */ }
     });
     return { context, page };
@@ -240,8 +362,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 1: K01 - Plan Mode in Auto vs Manual
     // ----------------------------------------------------
-    console.log('\n--- Scenario 1: K01 Plan Mode in Auto vs Manual ---');
-    {
+    if (wants('k01')) console.log('\n--- Scenario 1: K01 Plan Mode in Auto vs Manual ---');
+    if (wants('k01')) {
       const { context, page } = await newPage(browser, { width: 1440, height: 900 });
       await page.goto(link('/s/session_fixture_basic'), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('textarea:not([disabled])', { timeout: 15_000 });
@@ -279,19 +401,19 @@ async function capture() {
       await shot(page, 'k01-plan-mode-manual-light-1440');
 
       expect(await setTheme(page, 'dark'), 'K01 dark: palette switched to the dark paper token');
-      await page.waitForTimeout(300);
+      await showManualPlanCaveat(page);
       await shot(page, 'k01-plan-mode-manual-dark-1440');
 
       expect(await setTheme(page, 'light'), 'K01: palette restored to light');
+      await showManualPlanCaveat(page);
 
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.waitForTimeout(300);
       const narrowVisible = await page.locator('[data-plan-gate-effective]').isVisible();
       expect(narrowVisible, 'K01 narrow 390: promise line still rendered');
       await shot(page, 'k01-plan-mode-manual-narrow-390');
 
       // Negative control: switching the gate back on removes the caveat again.
-      await gateSwitch.click();
+      await page.locator('[data-mode-switch="planGate"]').click();
       await page.waitForTimeout(300);
       expect(await page.locator('[data-plan-gate-effective]').count() === 0, 'K01: caveat disappears when the gate is switched back on');
 
@@ -301,8 +423,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 2: K06 - Working Line "排队中" + Inline Details
     // ----------------------------------------------------
-    console.log('\n--- Scenario 2: K06 Working Line Queued & Details ---');
-    {
+    if (wants('k06')) console.log('\n--- Scenario 2: K06 Working Line Queued & Details ---');
+    if (wants('k06')) {
       await control({ action: 'scenario', name: 'send-timing' });
       const SESSION = 'session_fixture_send_timing';
       const DRAFT = '排队期间继续打草稿，不受打扰';
@@ -334,7 +456,8 @@ async function capture() {
         trigger: document.querySelector('[data-composer-queued-trigger]')?.textContent?.trim() ?? '',
         draft: document.querySelector('textarea')?.value ?? '',
       }));
-      expect(concise.trigger === '排队中', 'K06 concise: status reads 排队中', concise.line);
+      // This dist's button is zh `composer.queued` ("等待限额"), not the older "排队中".
+      expect(concise.trigger === '等待限额', 'K06 concise: status reads 等待限额', concise.trigger);
       expect(!/\d+\s*秒/.test(concise.line), 'K06 concise: no standing second-count noise', concise.line);
       expect(concise.draft === DRAFT, 'K06 concise: draft typed while queued is kept');
       await shot(page, 'k06-queued-concise-light-1440');
@@ -357,13 +480,13 @@ async function capture() {
       await shot(page, 'k06-queued-details-popover-light-1440');
 
       expect(await setTheme(page, 'dark'), 'K06 dark: palette switched to the dark paper token');
-      await page.waitForTimeout(200);
+      await showQueuedPopover(page, DRAFT);
       await shot(page, 'k06-queued-details-popover-dark-1440');
 
       expect(await setTheme(page, 'light'), 'K06: palette restored to light');
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.waitForTimeout(200);
-      expect(await popover.isVisible(), 'K06 narrow 390: popover stays on screen');
+      await showQueuedPopover(page, DRAFT);
+      expect(await page.locator('[data-composer-queued-popover]').isVisible(), 'K06 narrow 390: popover stays on screen');
       await shot(page, 'k06-queued-details-popover-narrow-390');
 
       // The details link is a real route, not decoration.
@@ -378,8 +501,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 3: K02 - SpaceSwitcher in Local & Remote Modes
     // ----------------------------------------------------
-    console.log('\n--- Scenario 3: K02 SpaceSwitcher in Local & Remote Modes ---');
-    {
+    if (wants('k02')) console.log('\n--- Scenario 3: K02 SpaceSwitcher in Local & Remote Modes ---');
+    if (wants('k02')) {
       await control({ action: 'scenario', name: 'basic-stream' });
       // Real multi-space state through the product's own API (what the spaces
       // settings page posts), so the list and shortcut hints are not staged.
@@ -442,8 +565,8 @@ async function capture() {
     // ----------------------------------------------------
     // Scenario 4: K07 - Agent Panel Hooks Section
     // ----------------------------------------------------
-    console.log('\n--- Scenario 4: K07 Agent Panel Injected Rules ---');
-    {
+    if (wants('k07')) console.log('\n--- Scenario 4: K07 Agent Panel Injected Rules ---');
+    if (wants('k07')) {
       await control({ action: 'scenario', name: 'basic-stream' });
 
       const { context, page } = await newPage(browser, { width: 1440, height: 900 });
@@ -521,12 +644,12 @@ async function capture() {
       await shot(page, 'k07-hooks-section-unfolded-light-1440');
 
       expect(await setTheme(page, 'dark'), 'K07 dark: palette switched to the dark paper token');
-      await page.waitForTimeout(300);
+      await showUnfoldedHooks(page);
       await shot(page, 'k07-hooks-section-unfolded-dark-1440');
 
       expect(await setTheme(page, 'light'), 'K07: palette restored to light');
       await page.setViewportSize({ width: 390, height: 844 });
-      await page.waitForTimeout(300);
+      await showUnfoldedHooks(page);
       await shot(page, 'k07-hooks-section-unfolded-narrow-390');
 
       await context.close();

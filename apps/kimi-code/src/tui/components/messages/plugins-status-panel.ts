@@ -34,7 +34,7 @@ export function buildPluginsListLines(input: PluginsListPanelInput): readonly st
   };
   const lines: string[] = [];
   for (const plugin of input.plugins) {
-    const enabled = plugin.enabled ? success('enabled') : muted('disabled');
+    const enabled = plugin.globalEnabled ? success('enabled') : muted('disabled');
     const state = plugin.state === 'ok' ? '' : ` [${plugin.state}]`;
     const version = plugin.version ?? '-';
     const diagnostics = plugin.hasErrors ? warning(' | diagnostics: see /plugins info') : '';
@@ -65,7 +65,7 @@ export function buildPluginsInfoLines(input: PluginsInfoPanelInput): readonly st
   const warning = (text: string) => currentTheme.fg('warning', text);
   const error = (text: string) => currentTheme.fg('error', text);
   const primary = (text: string) => currentTheme.fg('primary', text);
-  const status = info.enabled ? success('enabled') : muted('disabled');
+  const status = info.globalEnabled ? success('enabled') : muted('disabled');
   const trustLine = (() => {
     const label = pluginTrustLabel(info);
     if (label === 'official') {

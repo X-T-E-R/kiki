@@ -3,7 +3,7 @@ import { assertProviderCredential, assertProviderHeaders, parseKimiCodeCustomHea
 import { IRequestAdmission, type RequestAdmissionPort } from './requestAdmission';
 import { Disposable } from '#/_base/di/lifecycle';
 import { applyModelSettings } from './modelSettings';
-import { resolveModelProtocol } from './modelProtocol';
+import { explainModelProtocol, resolveModelProtocol } from './modelProtocol';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2 } from '#/_base/errors/errors';
@@ -29,8 +29,10 @@ import {
 import {
   explainProviderEndpoint,
   getProviderDefinition,
+  resolveProviderApiKey,
 } from '../provider/providerDefinition';
 import { resolveImagePolicy } from '../provider/providerImagePolicy';
+import { resolveRequestCompression, resolveResponsesWebSocket } from '../provider/requestCompression';
 
 import {
   type AuthProvider,
@@ -41,7 +43,6 @@ import {
   type ProviderCatalogItem,
   type ProviderCredentialState,
   type SetDefaultModelResponse,
-  providerCredentialFields,
   StaticAuthProvider,
   toProtocolModel,
   toProtocolModelFallback,
@@ -107,6 +108,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     this._register(this.models.onDidChangeModels(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeProviders(() => this.notifyConfigChanged()));
     this._register(this.providers.onDidChangeDefaultProvider(() => { this.notifyConfigChanged(); }));
+    this._register(this.providers.onDidChangeTransportDefaults(() => this.notifyConfigChanged()));
   }
 
   notifyConfigChanged(): void {
@@ -119,6 +121,16 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
 
   getRequester(id: string, recipeSettings?: Record<string, unknown>): ModelRequester {
     return this.entry(id, recipeSettings).requester;
+  }
+
+  getConnectionRequester(providerId: string, modelName: string, maxContextSize: number): ModelRequester {
+    if (this.providers.get(providerId) === undefined) {
+      throw new Error2(CONFIG_INVALID_ERROR_CODE, `Connection "${providerId}" does not exist`);
+    }
+    const built = this.buildModel(`connection:${providerId}/${modelName}`, new ResolutionTraceCollector(), undefined, {
+      provider: providerId, name: modelName, maxContextSize,
+    });
+    return new ModelRequesterImpl(built.model, this.protocolRegistry, this.admission);
   }
 
   findByName(name: string): readonly string[] {
@@ -223,7 +235,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
       const providerType = this.providerTypeOf(record);
       try {
         const model = this.get(modelId);
-        const option = { item: toProtocolModel(model, record, providerType), model };
+        const option = { item: toProtocolModel(model, record, providerType, this.providerConfigOf(record)), model };
         const identity = this.managedCatalogIdentity(model);
         if (identity === undefined) {
           items.push(option.item);
@@ -240,7 +252,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
           items[existing.index] = option.item;
         }
       } catch {
-        items.push(toProtocolModelFallback(modelId, record, providerType));
+        items.push(toProtocolModelFallback(modelId, record, providerType, this.providerConfigOf(record)));
       }
     }
     return items;
@@ -306,7 +318,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
     await this.models.setDefaultModel(canonicalId);
     return {
       default_model: canonicalId,
-      model: toProtocolModel(model, record, this.providerTypeOf(record)),
+      model: toProtocolModel(model, record, this.providerTypeOf(record), this.providerConfigOf(record)),
     };
   }
 
@@ -321,17 +333,22 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   private providerTypeOf(record: ModelRecord): string | undefined {
+    return this.providerConfigOf(record)?.type ?? record.protocol;
+  }
+
+  private providerConfigOf(record: ModelRecord): ProviderConfig | undefined {
     const providerId =
       record.providerId ?? record.provider ?? this.providers.getDefaultProvider();
-    return this.providers.get(providerId ?? '')?.type ?? record.protocol;
+    return providerId === undefined ? undefined : this.providers.get(providerId);
   }
 
   private buildModel(
     id: string,
     trace: ResolutionTraceCollector,
     recipeSettings?: Record<string, unknown>,
+    transientRecord?: ModelRecord,
   ): { model: Model; credentials: readonly string[] } {
-    const savedModel = this.models.get(id);
+    const savedModel = transientRecord ?? this.models.get(id);
     if (savedModel === undefined) {
       throw new Error2(
         CONFIG_INVALID_ERROR_CODE,
@@ -441,7 +458,16 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
         name: wireName,
         aliases: model.aliases ?? [],
         protocol,
+        protocolSource: explainModelProtocol(routingModel, providerConfig)?.source,
         baseUrl: resolvedBaseUrl,
+        requestCompression: resolveRequestCompression(
+          this.providers.transportDefaults().requestCompression,
+          providerConfig?.requestCompression,
+        ),
+        responsesWebSocket: resolveResponsesWebSocket(
+          this.providers.transportDefaults().responsesWebSocket,
+          providerConfig?.responsesWebSocket,
+        ),
         headers: resolveOutboundHeaders(
           providerConfig?.type,
           providerConfig?.customHeaders,
@@ -607,18 +633,18 @@ export function resolveOutboundHeaders(
 }
 
 /**
- * Connection state shared by catalog reads and config mutations. Inline API
- * keys and declared environment sources are both treated as configured; a
- * cached OAuth token independently marks an OAuth connection as active.
+ * Connection state shared by catalog reads and config mutations. An API key
+ * is configured only when its inline or environment value resolves; a cached
+ * OAuth token independently marks an OAuth connection as active.
  */
 export async function resolveProviderCredentialState(
   providerId: string,
   provider: ProviderConfig,
   oauth: Pick<IModelOAuthTokens, 'hasCachedAccessToken'>,
 ): Promise<ProviderCredentialState> {
-  const key = providerCredentialFields(providerId, provider);
+  const key = resolveProviderApiKey(provider);
   return {
-    hasApiKey: key.api_key !== undefined || key.api_key_env !== undefined,
+    hasApiKey: key.apiKey !== undefined,
     hasOAuthToken:
       provider.oauth === undefined
         ? false
@@ -681,6 +707,10 @@ function buildProtocolProviderOptions(
         options.vertexai = true;
         options.project = project;
         options.location = location;
+      } else if (provider?.type === 'vertexai') {
+        options.vertexai = true;
+        if (project !== undefined) options.project = project;
+        if (location !== undefined) options.location = location;
       }
       break;
     }

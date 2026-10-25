@@ -56,7 +56,7 @@ describe('config.toml writeback preservation', () => {
     try {
       await config.ready;
     } catch (error) {
-      disposables.dispose();
+      await disposables.dispose();
       throw error;
     }
     const readText = async (key = 'config.toml'): Promise<string> => {
@@ -110,7 +110,7 @@ describe('config.toml writeback preservation', () => {
     expect(section(parsed, 'custom')['keep_me']).toBe('yes');
     expect(config.get<ImageConfig>(IMAGE_SECTION)).toEqual({ maxEdgePx: 2000 });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('skips the write entirely when the staged result is byte-identical', async () => {
@@ -125,7 +125,7 @@ describe('config.toml writeback preservation', () => {
     expect(writeSpy).toHaveBeenCalledTimes(1);
     expect(await readText()).toBe(afterFirst);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('appends a new domain at the end with a single trailing newline', async () => {
@@ -142,7 +142,7 @@ describe('config.toml writeback preservation', () => {
     expect(section(parsed, 'thinking')['effort']).toBe('high');
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ effort: 'high' });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('removes a deleted domain region while keeping neighboring trivia', async () => {
@@ -174,7 +174,7 @@ describe('config.toml writeback preservation', () => {
     expect(parsed['image']).toBeUndefined();
     expect(section(parsed, 'thinking')['effort']).toBe('high');
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('preserves CRLF line endings in untouched regions', async () => {
@@ -188,7 +188,7 @@ describe('config.toml writeback preservation', () => {
     const parsed = parseToml(text) as Record<string, unknown>;
     expect(section(parsed, 'image')['max_edge_px']).toBe(3000);
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('migrates thinking effort max to high without dropping the surrounding comments', async () => {
@@ -201,7 +201,7 @@ describe('config.toml writeback preservation', () => {
     expect(text.includes('effort = "max"')).toBe(false);
     expect(config.get<ThinkingConfig>(THINKING_SECTION)).toEqual({ effort: 'high' });
 
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('migrates a matching legacy key once without rewriting the existing credential', async () => {
@@ -225,7 +225,7 @@ describe('config.toml writeback preservation', () => {
     expect(writeSpy).not.toHaveBeenCalled();
     expect(await storage.list('', 'config.toml.bak-')).toEqual(backups);
     expect(await readText(backups[0]!)).toBe(seed);
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps both original files and creates no backup when legacy and stored keys conflict', async () => {
@@ -266,7 +266,7 @@ describe('config.toml writeback preservation', () => {
     await config.replace(PROVIDERS_SECTION, { acme: { type: 'openai', baseUrl: 'https://example.test' } });
     expect(await readText('credentials/credentials.toml')).not.toContain('replaced');
     expect(await readText('credentials/credentials.toml')).toContain('model-secret');
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('creates credential files with restricted mode through the real atomic storage', async () => {
@@ -278,7 +278,7 @@ describe('config.toml writeback preservation', () => {
     if (process.platform !== 'win32') {
       expect(statSync(path).mode & 0o777).toBe(0o600);
     }
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('keeps the last good values and blocks writes when credentials.toml is invalid', async () => {
@@ -294,6 +294,6 @@ describe('config.toml writeback preservation', () => {
     await config.reload();
     expect(config.get<Record<string, { apiKey: string }>>(PROVIDERS_SECTION)['acme']?.apiKey).toBe('fixed-key');
     await config.set(IMAGE_SECTION, { maxEdgePx: 1800 });
-    disposables.dispose();
+    await disposables.dispose();
   });
 });

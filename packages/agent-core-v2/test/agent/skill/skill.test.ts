@@ -15,9 +15,11 @@ import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentPromptService, promptRetryFor } from '#/agent/prompt/prompt';
-import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentSkillService } from '#/agent/skill/skill';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { InMemorySkillCatalog } from '#/app/skillCatalog/registry';
 import { parseSkillText } from '#/app/skillCatalog/parser';
@@ -100,6 +102,9 @@ describe('AgentSkillService', () => {
         reg.definePartialInstance(IAgentLoopService, {
           status: () => ({ state: 'idle', activeTurnId: undefined, pendingTurnIds: [], hasPendingRequests: false, activeTraceId: undefined }),
         });
+        reg.definePartialInstance(IAgentProfileService, {
+          data: () => ({ executorId: 'native', executorProtocol: 'native' } as ProfileData),
+        });
         registerTestAgentWireServices(reg, 'wire/skill-test');
         reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
         reg.definePartialInstance(IAgentToolRegistryService, {
@@ -164,6 +169,23 @@ describe('AgentSkillService', () => {
     expect(skills.getModelSkillListing()).not.toContain('brainstorm');
   });
 
+  it('activate applies the same workspace usage gate as SkillTool', async () => {
+    ix.stub(IPluginService, {
+      pluginSkillOwner: async () => 'demo',
+      getPluginInfo: async () => ({ enabled: true, state: 'ok' }),
+    } as unknown as IPluginService);
+    ix.stub(IPluginUsageService, {
+      enabled: () => true,
+      allows: async () => false,
+    } as unknown as IPluginUsageService);
+
+    const svc = ix.get(IAgentSkillService);
+    await expect(svc.activate({ name: 'commit' })).rejects.toMatchObject({
+      code: ErrorCodes.SKILL_NOT_FOUND,
+      message: expect.stringContaining('disabled in this workspace'),
+    });
+  });
+
   it('activate throws for an unknown skill', async () => {
     const svc = ix.get(IAgentSkillService);
     await expect(svc.activate({ name: 'missing' })).rejects.toThrow(/not found/i);
@@ -224,6 +246,9 @@ describe('SkillTool', () => {
         reg.definePartialInstance(IAgentLoopService, {
           status: () => ({ state: 'idle', activeTurnId: undefined, pendingTurnIds: [], hasPendingRequests: false, activeTraceId: undefined }),
         });
+        reg.definePartialInstance(IAgentProfileService, {
+          data: () => ({ executorId: 'native', executorProtocol: 'native' } as ProfileData),
+        });
         registerTestAgentWireServices(reg, 'wire/skill-test');
         reg.definePartialInstance(ITelemetryService, { track: () => {}, track2: () => {} });
         reg.definePartialInstance(IAgentToolRegistryService, {
@@ -272,7 +297,14 @@ describe('SkillTool', () => {
     };
   }
 
-  function makeTool(ix: TestInstantiationService, depth?: number, text = '# Explicit $ARGUMENTS', fs: Partial<IHostFileSystem> = {}): SkillTool {
+  function makeTool(
+    ix: TestInstantiationService,
+    depth?: number,
+    text = '# Explicit $ARGUMENTS',
+    fs: Partial<IHostFileSystem> = {},
+    plugins?: IPluginService,
+    usage?: IPluginUsageService,
+  ): SkillTool {
     const fake = new FakeRuntime({ workspaceId: 'test', runtimeId: 'test', generation: '1' });
     Object.defineProperty(fake, 'fs', { value: {
       realpath: async (path: string) => path,
@@ -292,9 +324,29 @@ describe('SkillTool', () => {
         acquire: () => ({ runtime, dispose: () => {}, track: (value) => value }),
       },
       stubWorkspaceContext('/workspace'),
+      plugins,
+      usage,
     );
     return depth === undefined ? tool : tool.withInitialQueryDepth(depth);
   }
+
+  it('applies the workspace usage gate to name and explicit-path skill activation', async () => {
+    const plugins = {
+      pluginSkillOwner: async () => 'demo',
+      getPluginInfo: async () => ({ enabled: true, state: 'ok' }),
+    } as unknown as IPluginService;
+    const usage = {
+      enabled: () => true,
+      allows: async () => false,
+    } as unknown as IPluginUsageService;
+    const tool = makeTool(ix, undefined, '# Explicit $ARGUMENTS', {}, plugins, usage);
+
+    const byName = await executeTool(tool, toolContext({ skill: 'commit' }));
+    const byPath = await executeTool(tool, toolContext({ path: 'skills/review.md' }));
+
+    expect(byName).toMatchObject({ isError: true, output: expect.stringContaining('disabled in this workspace') });
+    expect(byPath).toMatchObject({ isError: true, output: expect.stringContaining('disabled in this workspace') });
+  });
 
   it('exposes metadata and schema for model-invoked skills', () => {
     const tool = makeTool(ix);
@@ -609,7 +661,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
     });
     expect(active.turn_id).toBe(0);
     await expect(promptRetry.lookup('skill-active', 'fingerprint-active')).resolves.toMatchObject({
-      status: 'running',
+      status: 'running', userMessageId: 'skill-active',
     });
     await expect(ctx.get(IAgentSkillService).activate({
       name: 'workflow', args: 'active', userInput: '/workflow active', promptId: 'skill-active', retryFingerprint: 'fingerprint-active',
@@ -630,7 +682,7 @@ describe('AgentSkillService busy delivery (harness)', () => {
     });
     expect(idle.turn_id).toBe(1);
     await expect(promptRetry.lookup('skill-idle', 'fingerprint-idle')).resolves.toMatchObject({
-      status: 'running',
+      status: 'running', userMessageId: 'skill-idle',
     });
     const replayIdle = await ctx.get(IAgentSkillService).activate({
       name: 'workflow', args: 'idle', promptId: 'skill-idle', retryFingerprint: 'fingerprint-idle',
@@ -679,6 +731,26 @@ describe('AgentSkillService busy delivery (harness)', () => {
       });
       expect(enqueue).toHaveBeenCalledTimes(1);
     } finally { enqueue.mockRestore(); }
+  });
+
+
+  it('keeps the accepted managed receipt after idle launch failure for retry', async () => {
+    const catalog = new InMemorySkillCatalog();
+    catalog.register(stubSkill('workflow', { content: 'Workflow: $ARGUMENTS', metadata: {} }));
+    const generate: GenerateFn = async () => {
+      throw new Error('fixture provider failed after admission');
+    };
+    ctx = createTestAgent(skillServices(catalog), { generate });
+    const prompt = ctx.get(IAgentPromptService);
+    const launched = await ctx.get(IAgentSkillService).activate({
+      name: 'workflow', args: 'retry-me', promptId: 'skill-launch-failure', retryFingerprint: 'fingerprint-failure',
+    });
+    expect(launched.turn_id).toBe(0);
+    await ctx.untilTurnEnd();
+    await ctx.get(IAgentLoopService).settled();
+    await expect(promptRetryFor(prompt).lookup('skill-launch-failure', 'fingerprint-failure')).resolves.toMatchObject({
+      status: 'running', userMessageId: 'skill-launch-failure',
+    });
   });
 
   it('steers the activation into the running turn and launches a new one when idle', async () => {

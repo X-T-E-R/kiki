@@ -6,6 +6,16 @@ on:
     branches:
       - main
       - kiki
+  workflow_dispatch:
+    inputs:
+      test_mode:
+        description: Run partitioned lanes or the complete root suite with every test dependency
+        required: true
+        default: partitioned
+        type: choice
+        options:
+          - partitioned
+          - full
 
 permissions:
   contents: read
@@ -35,6 +45,7 @@ jobs:
         run: pnpm -C apps/kimi-code run smoke
 
   test:
+    if: ${{ inputs.test_mode == '' || inputs.test_mode == 'partitioned' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -52,10 +63,6 @@ jobs:
           cache: pnpm
 
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install media preview test tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
       - run: pnpm install --frozen-lockfile
       - name: Build host auth binding
         run: pnpm --filter @kiki/auth-native run build
@@ -63,7 +70,114 @@ jobs:
         run: |
           printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
           pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
-      - run: pnpm run test --shard=${{ matrix.shard }}/5
+      - name: Run ordinary test shard
+        run: node scripts/ci-test-partition.mjs run ordinary --shard=${{ matrix.shard }}/5
+
+  test-gui:
+    if: ${{ inputs.test_mode == '' || inputs.test_mode == 'partitioned' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.60.0-noble@sha256:83192064c7510f7ee73dd63dc5f22a5e01a92c81a2e6a9c715d9e3fe55471fd9
+      options: --ipc=host
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - name: Verify GUI test runtime
+        run: |
+          test "$(node --version)" = "v$(cat .nvmrc)"
+          test "$(pnpm --filter @kiki/gui exec playwright --version)" = "Version 1.60.0"
+          pnpm --filter @kiki/gui exec node -e "const { chromium } = require('playwright'); (async () => { const browser = await chromium.launch(); console.log(await browser.version()); await browser.close(); })()"
+      - name: Build GUI assets for rendering tests
+        run: pnpm --filter @kiki/gui run build
+      - name: Run complete GUI project
+        run: node scripts/ci-test-partition.mjs run gui
+
+  test-media-preview:
+    if: ${{ inputs.test_mode == '' || inputs.test_mode == 'partitioned' }}
+    runs-on: ubuntu-24.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install media preview test tools
+        run: |
+          sudo sed -i 's|http://azure.archive.ubuntu.com/ubuntu|http://archive.ubuntu.com/ubuntu|g' /etc/apt/apt-mirrors.txt
+          cat /etc/apt/apt-mirrors.txt
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+          sudo apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ffmpeg
+          apt-cache policy ffmpeg
+          ffmpeg -version
+      - run: pnpm install --frozen-lockfile
+      - name: Build host auth binding
+        run: pnpm --filter @kiki/auth-native run build
+      - name: Rebuild host PTY dependency
+        run: |
+          printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
+          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+      - name: Run real media preview tests
+        run: node scripts/ci-test-partition.mjs run media
+
+  test-full:
+    if: ${{ inputs.test_mode != '' && inputs.test_mode != 'partitioned' }}
+    runs-on: ubuntu-24.04
+    container:
+      image: mcr.microsoft.com/playwright:v1.60.0-noble@sha256:83192064c7510f7ee73dd63dc5f22a5e01a92c81a2e6a9c715d9e3fe55471fd9
+      options: --ipc=host
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install complete test environment
+        run: |
+          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 update
+          apt-get -o Acquire::Retries=2 -o Acquire::http::Timeout=15 -o Acquire::https::Timeout=15 install -y --no-install-recommends ffmpeg
+          apt-cache policy ffmpeg
+          ffmpeg -version
+      - run: pnpm install --frozen-lockfile
+      - name: Verify complete test runtime
+        run: |
+          test "$(node --version)" = "v$(cat .nvmrc)"
+          test "$(pnpm --filter @kiki/gui exec playwright --version)" = "Version 1.60.0"
+          pnpm --filter @kiki/gui exec node -e "const { chromium } = require('playwright'); (async () => { const browser = await chromium.launch(); console.log(await browser.version()); await browser.close(); })()"
+      - name: Build host auth binding
+        run: pnpm --filter @kiki/auth-native run build
+      - name: Rebuild host PTY dependency
+        run: |
+          printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
+          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+      - name: Build GUI assets for rendering tests
+        run: pnpm --filter @kiki/gui run build
+      - name: Run full root test shard
+        run: node scripts/ci-test-partition.mjs run full --shard=${{ matrix.shard }}/5
 
   test-node-packages:
     runs-on: ubuntu-latest
@@ -81,6 +195,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pnpm install --frozen-lockfile
       - run: pnpm --filter @kiki/auth-native run build
+      - name: Test CI partition contract
+        run: |
+          node --test scripts/ci-test-partition.test.mjs
+          node scripts/ci-test-partition.mjs verify --shards=5
       - name: Test release pipeline contracts
         run: node --test scripts/release-pipeline.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
       - name: Test auth-native with its native runner

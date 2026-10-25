@@ -8,8 +8,11 @@
  * still running or has ended; a failed agent ends like any other (its row
  * says so in words, the list never sorts or filters by failure).
  *
- * Ordering: agents that need the user, then running; ended agents fold into
- * one "N finished" group at the end once there are more than three of them.
+ * Ordering: agents that need the user, then running, then idle. A historical
+ * unknown subtree — nothing waiting, running, or idle below it — folds into
+ * one "N status unknown" group once there are more than three, the same
+ * handful as finished agents. An unknown parent with a waiting, running, or
+ * idle descendant stays in the open list. Ended agents keep their own group.
  * A parent sorts by the most urgent agent in its subtree, so a finished lead
  * with a waiting worker stays at the top; within the same urgency the most
  * recently updated subtree (latest start or end) comes first. Below the
@@ -22,11 +25,11 @@
 
 import { MAIN_AGENT_ID, type AgentForest, type AgentTreeNode } from '@kiki/session-core/session';
 
-export type RosterBucket = 'waiting' | 'running' | 'ended';
+export type RosterBucket = 'waiting' | 'running' | 'idle' | 'unknown' | 'ended';
 
-export const ROSTER_BUCKETS: readonly RosterBucket[] = ['waiting', 'running', 'ended'];
+export const ROSTER_BUCKETS: readonly RosterBucket[] = ['waiting', 'running', 'idle', 'unknown', 'ended'];
 
-const RANK: Record<RosterBucket, number> = { waiting: 0, running: 1, ended: 2 };
+const RANK: Record<RosterBucket, number> = { waiting: 0, running: 1, idle: 2, unknown: 3, ended: 4 };
 
 export function rosterBucket(node: AgentTreeNode, waiting: ReadonlySet<string>): RosterBucket {
   if (waiting.has(node.agentId) || node.status === 'suspended') return 'waiting';
@@ -34,6 +37,10 @@ export function rosterBucket(node: AgentTreeNode, waiting: ReadonlySet<string>):
     case 'running':
     case 'background':
       return 'running';
+    case 'idle':
+      return 'idle';
+    case 'unknown':
+      return 'unknown';
     default:
       return 'ended';
   }
@@ -55,6 +62,8 @@ export interface RosterAgentRow {
 
 export interface RosterGroupRow {
   readonly kind: 'group';
+  /** Historical unknown, or settled. Each group has its own open flag. */
+  readonly bucket: 'unknown' | 'ended';
   readonly count: number;
   readonly open: boolean;
 }
@@ -76,7 +85,12 @@ export interface RosterInput {
   readonly expanded: ReadonlySet<string>;
   readonly filter: RosterBucket | 'all';
   readonly query: string;
-  /** The trailing "N finished" group is open. */
+  /**
+   * Historical-unknown group. Omitted or undefined stays closed, independent
+   * of `doneOpen`.
+   */
+  readonly unknownOpen?: boolean;
+  /** The trailing "N finished" group is open. Independent of `unknownOpen`. */
   readonly doneOpen: boolean;
 }
 
@@ -107,9 +121,9 @@ function timeOf(iso: string | undefined): number {
 }
 
 export function buildRoster(input: RosterInput): RosterModel {
-  const { forest, rootId, waiting, expanded, filter, doneOpen } = input;
+  const { forest, rootId, waiting, expanded, filter, unknownOpen = false, doneOpen } = input;
   const needle = input.query.trim().toLowerCase();
-  const counts: Record<RosterBucket, number> = { waiting: 0, running: 0, ended: 0 };
+  const counts: Record<RosterBucket, number> = { waiting: 0, running: 0, idle: 0, unknown: 0, ended: 0 };
   const bucketOf = new Map<string, RosterBucket>();
   const subtreeRank = new Map<string, number>();
   const waitingBelow = new Map<string, number>();
@@ -144,7 +158,7 @@ export function buildRoster(input: RosterInput): RosterModel {
     return true;
   });
   for (const node of top) visit(node);
-  const total = counts.waiting + counts.running + counts.ended;
+  const total = Object.values(counts).reduce((sum, count) => sum + count, 0);
 
   // Within a rank, the most recently updated first: a node's update time is
   // the latest start or end anywhere in its subtree.
@@ -196,19 +210,25 @@ export function buildRoster(input: RosterInput): RosterModel {
     if (!row.expanded) return;
     for (const child of byUrgency(kids.get(node.agentId) ?? [])) emit(child, depth + 1);
   };
+  // More than three is the existing handful. Fewer stay rows.
+  const foldWhenMany = (nodes: readonly AgentTreeNode[], bucket: 'unknown' | 'ended', open: boolean): void => {
+    if (nodes.length === 0) return;
+    if (nodes.length <= 3) {
+      for (const node of nodes) emit(node, 0);
+      return;
+    }
+    rows.push({ kind: 'group', bucket, count: nodes.length, open });
+    if (open) for (const node of nodes) emit(node, 0);
+  };
   const ordered = byUrgency(top);
-  const active = ordered.filter((node) => subtreeRank.get(node.agentId)! < RANK.ended);
+  // Subtree rank, not the parent's own bucket. An unknown parent whose
+  // descendant is waiting, running, or idle stays with the open list.
+  const active = ordered.filter((node) => subtreeRank.get(node.agentId)! < RANK.unknown);
+  const historicalUnknown = ordered.filter((node) => subtreeRank.get(node.agentId)! === RANK.unknown);
   const settled = ordered.filter((node) => subtreeRank.get(node.agentId)! === RANK.ended);
   for (const node of active) emit(node, 0);
-  if (settled.length > 0) {
-    // A handful of settled agents is not worth a fold.
-    if (settled.length <= 3) {
-      for (const node of settled) emit(node, 0);
-    } else {
-      rows.push({ kind: 'group', count: settled.length, open: doneOpen });
-      if (doneOpen) for (const node of settled) emit(node, 0);
-    }
-  }
+  foldWhenMany(historicalUnknown, 'unknown', unknownOpen);
+  foldWhenMany(settled, 'ended', doneOpen);
   return { counts, total, rows };
 }
 

@@ -1,6 +1,8 @@
-import { join } from 'pathe';
+import { basename, join, normalize } from 'pathe';
 
-import type { AgentExecutorDescriptor } from './agentExecutor';
+import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
+
+import type { AgentExecutorDescriptor, AgentExecutorModelProbe } from './agentExecutor';
 
 export interface ManagedAdapterRelease {
   readonly packageName: string;
@@ -29,11 +31,31 @@ export const MANAGED_ADAPTER_RELEASES: Readonly<Record<string, ManagedAdapterRel
 
 export const MANAGED_ADAPTER_SCOPE = 'managed-executors';
 
+export const SOURCE_OWNED_ADAPTER_FILES = Object.freeze([
+  'agy-cli-acp.mjs',
+  'agy-hook-registration.mjs',
+  'agy-permission-hook.mjs',
+  'agy-mcp-plugin.mjs',
+]);
+
+export const SOURCE_OWNED_ADAPTER_ENTRY = 'agy-cli-acp.mjs';
+
+export const SOURCE_OWNED_ADAPTER_VERSION = '0.4.1';
+
+export const SOURCE_OWNED_ADAPTER_SUPPORTS_MCP = true;
+
+export const SOURCE_OWNED_ADAPTER_ROOT_ENV = 'KIKI_SOURCE_OWNED_ADAPTER_ROOT';
+
+export const SOURCE_OWNED_ADAPTER_SOURCE = 'bundled:external-harness';
+
+export const SOURCE_OWNED_ADAPTER_PACKAGE = 'kiki-external-harness';
+
 export interface ManagedAdapterInstallation {
   readonly version: string;
   readonly integrity: string;
   readonly source: string;
   readonly installId: string;
+  readonly targetDir?: string;
 }
 
 export interface ManagedAdapterState {
@@ -52,6 +74,50 @@ export function managedAdapterEntry(
       !/^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/.test(installation.version)) return undefined;
   return join(homeDir, 'tools', 'managed-executors', id,
     `${installation.version}-${installation.installId}`, 'node_modules', release.packageName, release.entry);
+}
+
+/** Vendor `agy models` columns. Not an ACP advertisement and not a stand-in list. */
+export const AGY_CLI_MODEL_PROBE: AgentExecutorModelProbe = {
+  command: 'agy',
+  args: ['models'],
+  format: 'columns',
+  versionProbe: { args: ['--version'] },
+  timeoutMs: 20_000,
+  maxOutputBytes: 65_536,
+};
+
+/**
+ * The descriptor probe when one is configured. A source-owned AGY adapter with
+ * no probe still reads `agy models` at refresh time. That default is not part
+ * of the descriptor revision, so it does not invalidate a resumable session.
+ */
+export function executorModelProbe(descriptor: AgentExecutorDescriptor): AgentExecutorModelProbe | undefined {
+  if (descriptor.modelProbe !== undefined) return descriptor.modelProbe;
+  if (sourceOwnedAdapterScript(descriptor) === undefined) return undefined;
+  const configured = descriptor.env?.['AGY_CLI_PATH']?.trim();
+  return configured === undefined || configured.length === 0
+    ? AGY_CLI_MODEL_PROBE
+    : { ...AGY_CLI_MODEL_PROBE, command: configured };
+}
+
+export function sourceOwnedAdapterScript(descriptor: AgentExecutorDescriptor): string | undefined {
+  const sources = descriptor.sources;
+  if (sources === undefined || sources.length === 0) return undefined;
+  const selected = descriptor.source === undefined
+    ? (sources.length === 1 ? sources : [])
+    : sources.filter((source) => source.id === descriptor.source);
+  const source = selected.length === 1 ? selected[0] : undefined;
+  if (source === undefined || source.kind !== 'node-script') return undefined;
+  if (basename(source.path) !== SOURCE_OWNED_ADAPTER_ENTRY) return undefined;
+  return source.path;
+}
+
+export function expandSourceOwnedAdapterPath(
+  value: string,
+  bootstrap: Pick<IBootstrapService, 'homeDir' | 'osHomeDir'>,
+): string {
+  const homeExpanded = value.replace(/^~(?=$|[\\/])/, bootstrap.osHomeDir);
+  return normalize(homeExpanded.replaceAll('${KIKI_HOME}', bootstrap.homeDir));
 }
 
 export function withManagedAdapterSource(

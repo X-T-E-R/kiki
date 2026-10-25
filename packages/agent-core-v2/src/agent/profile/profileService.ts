@@ -1,10 +1,13 @@
 import { captureProfileModelMenu } from '@kiki/agent-profiles/agentProfile';
 import { loadSteeringSources } from '#/agent/cognition/steeringBinding';
+import { dirname } from 'node:path';
 import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverlay';
+import { isRecipeFileReference, resolveRecipeFileLocator } from '#/app/recipes/recipePrimitives';
+import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { snapshotRecipeModelSettings } from '#/app/recipes/recipeModelSettings';
 import type { AgentPromptDiagnostics, ExecutionSelection } from '@kiki/protocol';
 import { AGENT_EXECUTOR_OVERRIDES_SECTION, type AgentExecutorOverridesConfig } from '#/app/agentExecutor/executorOverrides';
-import { resolveExecutionBinding } from './executionBinding';
+import { resolveSelectedExecutionBinding } from './executionBinding';
 import { agentExecutorBindingFingerprint, agentExecutorBindingMatches } from '#/app/agentExecutor/agentExecutor';
 import { ExecutorSessionUpdated, externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
@@ -14,9 +17,10 @@ import {
   bindingAdvisoryKey,
   type BindingAdvisory,
 } from '@kiki/agent-profiles/bindingAdvisory';
-import type {
-  ExecutorBinding,
-  ExecutorValidationResult,
+import {
+  modelAliasResolverForExecutor,
+  type ExecutorBinding,
+  type ExecutorValidationResult,
 } from '@kiki/agent-profiles/ports';
 
 import { type CollectionView } from '#/_base/di/collection';
@@ -56,6 +60,7 @@ import {
 import { MODELS_SECTION, THINKING_SECTION } from '#/app/kosongConfig/configSection';
 import {
   DEFAULT_AGENT_PROFILE_NAME,
+  type AgentProfile,
   type AgentProfileContext,
   type EnvironmentDisclosureSnapshot,
   type ResolvedAgentProfileRoute,
@@ -103,7 +108,7 @@ import { resolveAgentProfileRoute } from '@kiki/agent-profiles/agentProfileRoute
 import { restoreProfileFileSources } from '#/session/dispatch/profileFile';
 import { loadMainAgentProfileFile } from '#/workspace/workspaceAgentProfileLoader/explicitAgentProfileLoaderService';
 import type { LoopControl } from '#/agent/loop/configSection';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { IHostClock } from '#/os/interface/hostClock';
 import { IEventBus } from '#/app/event/eventBus';
@@ -121,6 +126,7 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import type { ResolvedAgentProfile, SystemPromptContext } from '#/agent/profile/profile';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentAgentsMdReminderService } from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -201,6 +207,7 @@ import {
   profileKey,
   ToolsResetActiveTools,
   ToolsSetActiveTools,
+  ToolsPolicyRefreshed,
   WarningIssued,
   type ActiveToolsState,
   type ConfigUpdatePayload,
@@ -278,8 +285,15 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return (
       this.profileState.toolOverride?.tools ??
       this.activeToolNamesOverlay ??
-      (this.states.get(profileActiveToolsKey) as ActiveToolsState)
+      this.baseActiveToolNames
     );
+  }
+
+  private get baseActiveToolNames(): ActiveToolsState {
+    const source = this.profileState.boundProfile?.toolsSource;
+    if (this.agentScope.agentId === 'main' && this.agentScope.parentAgentId === undefined
+      && (source === 'inherited-default' || source === 'builtin-default')) return this.builtinProfiles.getDefault().tools;
+    return this.states.get(profileActiveToolsKey) as ActiveToolsState;
   }
 
   private activeProfile: ResolvedAgentProfile | undefined;
@@ -296,6 +310,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   private readonly emittedPersonaWarnings = new Set<string>();
   private frozenSkillListing: string | undefined;
   private frozenPluginSections: string | undefined;
+  private frozenPluginBlocks: Map<string, string> | undefined;
+  private pluginUsageDirty = true;
+  private pluginBlockRefresh: Set<string> | 'all' = new Set();
   private systemPromptRefreshTail: Promise<void> = Promise.resolve();
   private promptLayoutMigrationPending = false;
 
@@ -335,6 +352,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     @ref(ISessionActivityView) private readonly sessionActivity: LiveRef<ISessionActivityView>,
     @IPersonaStore private readonly personas?: IPersonaStore,
     @IEventBus eventBus?: IEventBus,
+    @IPluginUsageService private readonly pluginUsage?: IPluginUsageService,
     @IRecipeService private readonly recipes?: IRecipeService,
   ) {
     super();
@@ -386,8 +404,22 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         if (sourceId === BUILTIN_SKILL_SOURCE_ID) {
           void this.refreshSystemPrompt();
         }
+        this.pluginUsageDirty = true;
       }),
     );
+    this._register(this.plugins.onDidReload((event) => {
+      if (!pluginUsage?.enabled()) return;
+      if (event.affected === undefined) this.pluginBlockRefresh = 'all';
+      else if (this.pluginBlockRefresh !== 'all') for (const id of event.affected) this.pluginBlockRefresh.add(id);
+      this.frozenPluginSections = undefined;
+      this.pluginUsageDirty = true;
+    }));
+    if (pluginUsage !== undefined) this._register(pluginUsage.onDidChange((event) => {
+      if (event.workspaceId !== this.sessionContext.workspaceId ||
+        (event.sessionId !== undefined && event.sessionId !== this.sessionContext.sessionId)) return;
+      this.frozenPluginSections = undefined;
+      this.pluginUsageDirty = true;
+    }));
   }
 
   private get activeToolNamesOverlay(): readonly string[] | undefined {
@@ -440,7 +472,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       configChanged = {
         ...configChanged,
         modelAlias: binding.modelAlias,
-        thinkingLevel: binding.thinkingEffort,
+        thinkingLevel: binding.thinkingEffort ?? this.profileState.thinkingLevel,
+        thinkingEffortExplicit: configChanged.thinkingEffortExplicit ?? (configChanged.thinkingLevel === undefined ? undefined : true),
       };
     }
     if (
@@ -498,6 +531,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         executorOptions: snapshot.executorOptions,
         executorPrompt: snapshot.executorPrompt,
         allowKikiSubagents: snapshot.allowKikiSubagents,
+        injectKikiMcp: snapshot.injectKikiMcp,
         kikiContext: snapshot.kikiContext,
         executorDescriptorRevision: snapshot.executorDescriptorRevision,
         thinkingEffort: snapshot.thinkingLevel,
@@ -534,7 +568,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       agentsMdPaths,
       disallowedTools: snapshot.disallowedTools ?? [],
     });
-    this.agentsMdReminder.seedInjected(agentsMdPaths, this.sessionContext.cwd);
+    this.agentsMdReminder.seedInjected(agentsMdPaths, inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
   }
 
   async bind(input: BindAgentInput, assertCurrent?: () => void): Promise<void> {
@@ -565,7 +599,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             route: input.resolvedRoute,
           }
         : input.route === undefined && (selectedProfileName === DEFAULT_AGENT_PROFILE_NAME ||
-            (selectedProfileName === undefined && persona !== undefined))
+            selectedProfileName === undefined)
           ? (() => {
               const base = this.catalog.getDefault();
               return { profile: base, baseProfile: base, route: undefined };
@@ -675,8 +709,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
     }
 
-    if (input.thinking !== undefined) {
-      this.assertThinkingEffortSupported(input.thinking, model, alias);
+    const requestedInputThinking = typeof input.thinking === 'string' ? input.thinking : undefined;
+    if (requestedInputThinking !== undefined) {
+      this.assertThinkingEffortSupported(requestedInputThinking, model, alias);
     }
 
     await this.sessionToolPolicy.ready;
@@ -684,7 +719,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const context = await this.buildSystemPromptContext(renderProfile, undefined, persona ?? null);
     this.assertRouteBindable(selection.route?.id);
     const requestedThinking = resolveMainThinkingCandidate({
-      inputThinking: input.thinking,
+      inputThinking: requestedInputThinking,
       personaThinking: persona?.definition.thinkingEffort,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, alias, (id) => this.models.resolveId(id)),
@@ -712,7 +747,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       (id) => this.models.resolveId(id),
     )?.thinkingEffort;
     const baseThinkingSelection = input.bindingSelection?.thinking ?? {
-      source: input.thinking !== undefined ? 'dispatch-explicit'
+      source: requestedInputThinking !== undefined ? 'dispatch-explicit'
         : selection.route?.lockedThinkingEffort !== undefined ? 'route-default'
           : profileModelThinking !== undefined ? 'model-profile-default'
             : requestedThinking !== undefined ? 'profile-default' : 'model-default',
@@ -735,7 +770,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       models: this.models,
     });
 
-    this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames);
+    await this.assertProfileToolPatterns(renderProfile, input.inheritedUserToolNames, input.unavailableTools);
     const assembled = await this.assembleBoundSystemPrompt(renderProfile, context, alias, undefined, persona, input.roomPrompt ?? this.profileState.roomPrompt, recipe ?? null);
     const systemPrompt = assembled.text;
     this.cacheAgentsMdWarning(context);
@@ -751,7 +786,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       personaId: persona?.definition.id,
       personaRevision: persona?.revision,
       personaOverrides: persona === undefined ? undefined : input.personaOverrides ?? {
-        profile: input.profile ?? input.route, model: input.model, thinking: input.thinking,
+        profile: input.profile ?? input.route, model: input.model, thinking: requestedInputThinking,
       },
       persona,
       roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
@@ -826,61 +861,102 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (requested.profile_file !== undefined) requested = { ...requested, profile_file: selected!.sourcePath };
     const profile = selected === undefined ? undefined : captureProfileModelMenu(selected,
       requested.executor === 'native' ? (id) => this.models.resolveId(id) : (id) => id);
-    if (profile !== undefined && (profile.executor ?? 'native') !== requested.executor) {
-      throw new Error2(ErrorCodes.CONFIG_INVALID, `Profile "${profile.name}" does not use executor "${requested.executor}"`);
-    }
+    const sameGroup = profile !== undefined && (profile.executor ?? 'native') === requested.executor;
     const defaults = this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[requested.executor]?.defaults;
-    const execution = resolveExecutionBinding({ ...requested, overrides: {
-      ...requested.overrides, model: input.model ?? requested.overrides?.model,
-      thinking: input.thinking ?? requested.overrides?.thinking,
-    } }, defaults, profile, this.profileState.execution);
+    const liveModel = this.profileState.execution === undefined
+      && (this.profileState.executorId ?? 'native') === requested.executor
+      ? this.modelAlias
+      : undefined;
+    const execution = resolveSelectedExecutionBinding(requested, input, defaults, profile, this.profileState.execution, {
+      model: this.nativeEngineDefaultModel(),
+      thinkingFor: (model) => this.nativeEngineDefaultThinking(model),
+    }, liveModel);
     if (execution.effective.model === INHERIT_MODEL_ALIAS) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'A main agent execution selection cannot inherit a caller model');
     if (this.profileState.execution === undefined) execution.generation = this.profileState.renderGeneration + 1;
+    const role = profile === undefined ? undefined : executionSelectionProfile(profile, requested.executor, execution.effective);
     if (requested.executor === 'native') {
+      if (execution.effective.native_agent !== undefined && execution.effective.native_agent !== 'engine-default') {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, 'Native Kiki execution does not support vendor agent selection');
+      }
+      const clearedThinking = input.thinking === null;
+      const resolvedSelection = {
+        model: {
+          source: execution.sources['model'] === 'session' ? 'dispatch-explicit' as const
+            : execution.sources['model'] === 'profile' ? 'profile-default' as const : 'config-default' as const,
+          requestedValue: execution.effective.model,
+        },
+        thinking: {
+          source: execution.sources['thinking'] === 'session' ? 'dispatch-explicit' as const
+            : execution.sources['thinking'] === 'harness-default' ? 'model-default' as const
+              : execution.sources['thinking'] === 'profile' ? 'profile-default' as const : 'config-default' as const,
+          requestedValue: execution.effective.thinking,
+        },
+      };
       await this.bind({ ...input, execution: undefined, profile: requested.profile,
-        resolvedProfile: requested.profile_file === undefined ? input.resolvedProfile : profile,
-        model: execution.effective.model, thinking: execution.effective.thinking }, assertCurrent);
+        resolvedProfile: sameGroup || profile === undefined
+          ? requested.profile_file === undefined ? input.resolvedProfile : profile
+          : role,
+        model: execution.effective.model,
+        thinking: execution.effective.thinking,
+        bindingSelection: clearedThinking || !(sameGroup || profile === undefined) ? resolvedSelection : input.bindingSelection,
+      }, assertCurrent);
       this.applyBindingSnapshot({ ...this.data(), execution });
       await this.syncBindingMetadata();
       return;
     }
     assertResearchExecutor(this.profileState.executionRestriction ?? input.executionRestriction, requested.executor);
-    if (profile !== undefined && [profile, ...(profile.modelProfiles ?? [])].some((entry) =>
+    if (profile !== undefined && (profile.executor ?? 'native') !== 'native' && [profile, ...(profile.modelProfiles ?? [])].some((entry) =>
       entry.serviceTier !== undefined || entry.requestParams !== undefined || entry.contextBudget !== undefined || entry.maxCompletionTokens !== undefined)) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, `External executor profile "${profile.name}" cannot declare service_tier, request_params, context_budget, or max_completion_tokens; these parameters require native execution`);
     }
-    const executor = await this.executors.resolveExecutable(requested.executor, profile?.executorOptions);
+    const executor = await this.executors.resolveExecutable(requested.executor, role?.executorOptions);
+    const nativeAgent = execution.effective.native_agent;
+    if (nativeAgent !== undefined && nativeAgent !== 'engine-default') {
+      if (!['acp', 'acp-v1'].includes(executor.descriptor.protocol)) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" does not support native agent selection`);
+      }
+      const discovered = this.executors.lastNegotiated?.(requested.executor);
+      const retained = this.profileState.execution?.selection.executor === requested.executor
+        && this.profileState.execution.effective.native_agent === nativeAgent
+        && this.profileState.executorDescriptorRevision === executor.descriptor.revision;
+      if (discovered === undefined && !retained) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" native agents have not been discovered; keep the current binding and initialize the executor before selecting an agent`);
+      }
+      if (discovered !== undefined && !discovered.nativeAgents?.includes(nativeAgent)) {
+        throw new Error2(ErrorCodes.CONFIG_INVALID, `Executor "${requested.executor}" does not advertise native agent "${nativeAgent}"`);
+      }
+    }
     const validated = this.requireValidBinding(this.executors.validateBinding(requested.executor, executor.options, {
       modelAlias: execution.effective.model, thinkingEffort: execution.effective.thinking,
     }));
-    const bindingAdvisories = profile === undefined ? [] : this.collectBindingAdvisories({
-      profile, profileName: profile.name, model: execution.effective.model ?? '',
+    const bindingAdvisories = role === undefined ? [] : this.collectBindingAdvisories({
+      profile: role, profileName: role.name, model: execution.effective.model ?? '',
       thinking: execution.effective.thinking ?? 'off',
       modelSelection: { source: execution.sources['model'] === 'session' ? 'dispatch-explicit' : 'profile-default', requestedValue: execution.effective.model },
       thinkingSelection: { source: execution.sources['thinking'] === 'session' ? 'dispatch-explicit' : 'profile-default', requestedValue: execution.effective.thinking },
     });
-    const executorPrompt = mergeExecutorPrompt(defaults?.executor_prompt, profile?.executorPrompt, requested.executor);
-    execution.sources['executor_prompt'] = profile?.executorPrompt !== undefined ? 'profile' : defaults?.executor_prompt !== undefined ? 'harness-settings' : 'harness-default';
+    const executorPrompt = mergeExecutorPrompt(defaults?.executor_prompt, role?.executorPrompt, requested.executor);
+    execution.sources['executor_prompt'] = role?.executorPrompt !== undefined ? 'profile' : defaults?.executor_prompt !== undefined ? 'harness-settings' : 'harness-default';
     for (const field of ['delivery', 'include', 'body', 'append'] as const) {
-      execution.sources[`executor_prompt.${field}`] = (profile?.executorPrompt?.per_engine?.[requested.executor]?.[field] ?? profile?.executorPrompt?.[field]) !== undefined ? 'profile'
+      execution.sources[`executor_prompt.${field}`] = (role?.executorPrompt?.per_engine?.[requested.executor]?.[field] ?? role?.executorPrompt?.[field]) !== undefined ? 'profile'
         : (defaults?.executor_prompt?.per_engine?.[requested.executor]?.[field] ?? defaults?.executor_prompt?.[field]) !== undefined ? 'harness-settings' : 'harness-default';
     }
-    const hasPrompt = profile !== undefined || executorPrompt !== undefined;
-    const context = hasPrompt ? await this.buildSystemPromptContext(profile, undefined, null) : {};
+    const hasPrompt = role !== undefined || executorPrompt !== undefined;
+    const context = hasPrompt ? await this.buildSystemPromptContext(role, undefined, null) : {};
     const includesFields = resolveExecutorPrompt(executorPrompt, requested.executor).include.some((id) => id.startsWith('system.') || id.startsWith('delegation.'));
-    const fields = !includesFields ? { values: {}, fields: [] } : profile !== undefined
-      ? await this.resolvePromptFieldSnapshot(profile, execution.effective.model ?? '')
+    const fields = !includesFields ? { values: {}, fields: [] } : role !== undefined
+      ? await this.resolvePromptFieldSnapshot(role, execution.effective.model ?? '')
       : await this.promptFields.resolve({ global: { surface: 'global', overrides: this.config.get<PromptConfig>(PROMPT_SECTION)?.overrides },
         context: { executor: requested.executor, modelAlias: execution.effective.model, delegationPosition: 'main' } });
     const renderContext = { ...context, persona: '', promptVariables: this.config.get<PromptConfig>(PROMPT_SECTION)?.variables, promptFields: fields.values };
-    const body = profile === undefined ? '' : modelPromptLayers(profile).reduce((text, layer) => applyMatchedModelProfilePrompt(text,
-      layer.entries, execution.effective.model ?? '', (id) => id, 'main'), profile.renderSystemPrompt(renderContext).text);
+    const body = role === undefined ? '' : modelPromptLayers(role).reduce((text, layer) => applyMatchedModelProfilePrompt(text,
+      layer.entries, execution.effective.model ?? '', (id) => id, 'main'), role.renderSystemPrompt(renderContext).text);
     const systemPrompt = hasPrompt ? renderExternalPrompt({ executor: requested.executor, executorPrompt }, renderContext,
       fields, body) : '';
     const previous = this.profileState.execution;
     if (previous?.generation === execution.generation) {
       const sameContext = this.profileState.systemPrompt === systemPrompt && this.profileState.executorDescriptorRevision === executor.descriptor.revision &&
-        JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === profile?.definitionId;
+        JSON.stringify(this.profileState.executorPrompt) === JSON.stringify(executorPrompt) && this.profileState.profileDefinitionId === role?.definitionId;
       if (sameContext && JSON.stringify(previous) === JSON.stringify(execution)) return;
       if (!sameContext) execution.generation++;
     }
@@ -897,8 +973,8 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         }));
       }
     }
-    this.activeProfile = profile;
-    this.activeProfileDefinitionId = profile?.definitionId;
+    this.activeProfile = role;
+    this.activeProfileDefinitionId = role?.definitionId;
     this.activeToolNamesOverlay = undefined;
     this.personaSnapshot = undefined;
     this.cognitionBinding = undefined;
@@ -909,20 +985,21 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     await this.dispatcher.dispatch(new ProfileBind({
       execution, bindingAdvisories, executorId: executor.descriptor.id, executorProtocol: executor.descriptor.protocol,
       executorOptions: executor.options, executorDescriptorRevision: executor.descriptor.revision,
-      profileName: profile?.name, profileDefinitionId: profile?.definitionId,
+      profileName: role?.name, profileDefinitionId: role?.definitionId,
       modelAlias: validated.modelAlias, thinkingEffort: (validated.thinkingEffort ?? 'off') as ThinkingEffort,
       thinkingEffortExplicit: execution.effective.thinking !== undefined,
       executorPrompt, kikiContext: execution.effective.kiki_context,
       allowKikiSubagents: execution.effective.allow_kiki_subagents,
-      systemPrompt, agentsMdPaths: [], disallowedTools: profile?.disallowedTools ?? [],
+      injectKikiMcp: execution.effective.inject_kiki_mcp,
+      systemPrompt, agentsMdPaths: [], disallowedTools: role?.disallowedTools ?? [],
       executionRestriction: this.profileState.executionRestriction ?? input.executionRestriction,
-      canSpawnSubagents: profile?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
-      allowedSubagents: profile?.allowedSubagents, preferredSubagents: profile?.preferredSubagents,
-      denySubagents: profile?.denySubagents, subagentLeases: profile?.subagentLeases,
-      boundProfile: profile === undefined ? undefined : freezeBoundProfile(profile),
+      canSpawnSubagents: role?.canSpawnSubagents === false ? false : execution.effective.allow_kiki_subagents,
+      allowedSubagents: role?.allowedSubagents, preferredSubagents: role?.preferredSubagents,
+      denySubagents: role?.denySubagents, subagentLeases: role?.subagentLeases,
+      boundProfile: role === undefined ? undefined : freezeBoundProfile(role),
     }));
-    this.agentsMdReminder.seedInjected([], this.sessionContext.cwd);
-    this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: profile?.name,
+    this.agentsMdReminder.seedInjected([], inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
+    this.afterConfigDispatch({ modelAlias: validated.modelAlias, profileName: role?.name,
       thinkingLevel: validated.thinkingEffort ?? 'off', systemPrompt });
     await this.syncBindingMetadata();
   }
@@ -932,7 +1009,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const binding = this.data();
     const executor = binding.executorId ?? 'native';
     await this.metadata.updateAgent(this.agentScope.agentId, (current) => ({
-      ...current, execution: binding.execution, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+      ...current, execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
       thinkingEffortExplicit: binding.thinkingEffortExplicit,
       executor, executorProtocol: binding.executorProtocol,
       negotiated: (current.executor ?? 'native') === executor ? current.negotiated : undefined,
@@ -1041,7 +1118,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       personaOverrides: persona === undefined ? undefined : input.personaOverrides ?? {
         profile: input.profile ?? input.route,
         model: input.model,
-        thinking: input.thinking,
+        thinking: typeof input.thinking === 'string' ? input.thinking : undefined,
       },
       persona,
       roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
@@ -1068,7 +1145,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       appliedLease: input.lease,
       boundProfile: freezeBoundProfile(renderProfile),
     }));
-    this.agentsMdReminder.seedInjected([], this.sessionContext.cwd);
+    this.agentsMdReminder.seedInjected([], inspectAgentWorkspaceRoots(this.runtime, this.workspace).workDir);
     this.afterConfigDispatch({
       modelAlias: undefined,
       profileName: selection.baseProfile.name,
@@ -1116,20 +1193,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       throw new ProfileError(ProfileErrors.codes.MODEL_NOT_CONFIGURED,
         `model is required to bind external executor profile "${selection.baseProfile.name}"`);
     }
-    const configuredThinking = resolveMainThinkingCandidate({
-      inputThinking: input.thinking,
+    const requestedInputThinking = typeof input.thinking === 'string' ? input.thinking : undefined;
+    const requestedThinking = resolveMainThinkingCandidate({
+      inputThinking: requestedInputThinking,
       personaThinking: persona?.definition.thinkingEffort,
       routeLockedThinking: selection.route?.lockedThinkingEffort,
       profileThinking: resolveProfileThinkingDefault(profile, requestedAlias ?? '', (id) => id),
     });
-    const requestedThinking = configuredThinking ?? 'off';
     const validation = this.executors.validateBinding(executor.descriptor.id, executor.options, {
       modelAlias: requestedAlias,
       thinkingEffort: requestedThinking,
       explicitFields: [
         ...(profile.tools === undefined ? [] : ['tools']),
         ...(profile.disallowedTools === undefined ? [] : ['disallowed_tools']),
-        ...(profile.thinkingEffort === undefined && input.thinking === undefined ? [] : ['thinking_effort']),
+        ...(profile.thinkingEffort === undefined && requestedInputThinking === undefined ? [] : ['thinking_effort']),
         ...(profile.serviceTier === undefined ? [] : ['service_tier']),
         ...(profile.requestParams === undefined ? [] : ['request_params']),
         ...(profile.contextBudget === undefined ? [] : ['context_budget']),
@@ -1139,15 +1216,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     });
     const validated = this.requireValidBinding(validation);
     const alias = validated.modelAlias;
-    const thinkingLevel = validated.thinkingEffort as ThinkingEffort;
-    const normalizedRequestedThinking =
-      normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking.trim().toLowerCase();
-    const thinkingEffortAdjusted = normalizedRequestedThinking !== thinkingLevel;
+    const thinkingLevel = (requestedThinking === undefined ? undefined : validated.thinkingEffort) as ThinkingEffort | undefined;
+    const effectiveThinkingLevel = thinkingLevel ?? 'off';
+    const normalizedRequestedThinking = requestedThinking === undefined
+      ? undefined
+      : normalizeRequestedThinkingEffort(requestedThinking) ?? requestedThinking.trim().toLowerCase();
+    const thinkingEffortAdjusted = normalizedRequestedThinking !== undefined && normalizedRequestedThinking !== effectiveThinkingLevel;
     const routeBinding = selection.route === undefined
       ? undefined
       : this.executors.validateBinding(executor.descriptor.id, executor.options, {
           modelAlias: selection.route.lockedModelAlias ?? alias,
-          thinkingEffort: selection.route.lockedThinkingEffort ?? thinkingLevel,
+          thinkingEffort: selection.route.lockedThinkingEffort ?? requestedThinking,
         });
     const normalizedRouteBinding = routeBinding?.ok === true ? routeBinding.binding : undefined;
     await this.sessionToolPolicy.ready;
@@ -1166,16 +1245,17 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       requestedValue: requestedAlias,
     };
     const baseThinkingSelection = input.bindingSelection?.thinking ?? {
-      source: input.thinking !== undefined ? 'dispatch-explicit'
+      source: requestedInputThinking !== undefined ? 'dispatch-explicit'
         : selection.route?.lockedThinkingEffort !== undefined ? 'route-default'
           : profileModelThinking !== undefined ? 'model-profile-default'
-            : configuredThinking !== undefined ? 'profile-default' : 'model-default',
+            : requestedThinking !== undefined ? 'profile-default' : 'model-default',
       requestedValue: requestedThinking,
     };
-    const thinkingSelection = thinkingLevel === requestedThinking ? baseThinkingSelection : {
-      source: 'executor-normalized' as const,
-      requestedValue: requestedThinking,
-    };
+    const thinkingSelection = requestedThinking === undefined || effectiveThinkingLevel === requestedThinking
+      ? baseThinkingSelection : {
+          source: 'executor-normalized' as const,
+          requestedValue: requestedThinking,
+        };
     const bindingAdvisories = this.collectBindingAdvisories({
       profile: selection.baseProfile,
       profileName: selection.baseProfile.name,
@@ -1183,7 +1263,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       lease: input.lease,
       spawnPolicy: input.spawnPolicy,
       model: alias ?? '',
-      thinking: thinkingLevel,
+      thinking: effectiveThinkingLevel,
       modelSelection,
       thinkingSelection,
     });
@@ -1199,7 +1279,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       personaId: persona?.definition.id,
       personaRevision: persona?.revision,
       personaOverrides: persona === undefined ? undefined : input.personaOverrides ?? {
-        profile: input.profile ?? input.route, model: input.model, thinking: input.thinking,
+        profile: input.profile ?? input.route, model: input.model, thinking: requestedInputThinking,
       },
       persona,
       roomPrompt: input.roomPrompt ?? this.profileState.roomPrompt,
@@ -1219,9 +1299,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       executorOptions: { ...executor.options },
       executorPrompt: profile.executorPrompt,
       allowKikiSubagents: profile.allowKikiSubagents,
+      injectKikiMcp: profile.injectKikiMcp ?? this.config.get<AgentExecutorOverridesConfig>(AGENT_EXECUTOR_OVERRIDES_SECTION)?.[executor.descriptor.id]?.defaults?.inject_kiki_mcp,
       kikiContext: profile.kikiContext,
       executorDescriptorRevision: executor.descriptor.revision,
-      thinkingEffort: thinkingLevel,
+      thinkingEffort: effectiveThinkingLevel,
       thinkingEffortExplicit: requestedThinking === undefined ? false : true,
       thinkingEffortAdjusted: thinkingEffortAdjusted ? true : undefined,
       bindingAdvisories,
@@ -1247,7 +1328,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     this.afterConfigDispatch({
       modelAlias: alias,
       profileName: profile.name,
-      thinkingLevel,
+      thinkingLevel: effectiveThinkingLevel,
       systemPrompt: assembled.text,
       disallowedTools: profile.disallowedTools ?? [],
     });
@@ -1265,7 +1346,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   validateBinding(binding: ExecutorBinding): ExecutorValidationResult {
     const complete = {
       modelAlias: binding.modelAlias ?? this.modelAlias,
-      thinkingEffort: binding.thinkingEffort ?? this.profileState.thinkingLevel,
+      thinkingEffort: binding.thinkingEffort ?? (this.isExternalExecutor
+        ? this.profileState.thinkingEffortExplicit === true ? this.profileState.thinkingLevel : undefined
+        : this.profileState.thinkingLevel),
     };
     if (this.isExternalExecutor) {
       return this.executors.validateBinding(
@@ -1326,7 +1409,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved role constraints cannot be resolved; resume without changing the model.');
     }
     if (constraints !== undefined && input.toolOverride !== undefined) {
-      this.assertProfileToolPatterns({ ...constraints, ...effectiveToolBinding(previous.toolPolicyBase ?? constraints, toolOverride, previous.boundProfile) });
+      await this.assertProfileToolPatterns({ ...constraints, ...effectiveToolBinding(previous.toolPolicyBase ?? constraints, toolOverride, previous.boundProfile) });
     }
     assertSubagentModelNotDenied(this.config, model, this.isExternalExecutor ? undefined : this.models);
     if (!this.isExternalExecutor) {
@@ -1546,7 +1629,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         assertCurrent?.();
         this.update({ modelAlias: externalAlias });
         this.telemetry.track2('model_switch', { model: externalAlias });
-        await this.refreshSystemPrompt();
+        await this.refreshSystemPrompt(true);
       }
       this.refreshCurrentBindingAdvisories(
         { source: validated.modelAlias === alias ? 'runtime-explicit' : 'executor-normalized', requestedValue: alias },
@@ -1629,6 +1712,53 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     }
   }
 
+  restoreDefaultThinking(): void {
+    if (this.profileState.execution !== undefined) return;
+    const external = this.isExternalExecutor;
+    const modelAlias = this.modelAlias;
+    if (!external && modelAlias === undefined) return;
+    const profile = this.profileState.boundProfile ?? this.activeProfile;
+    const resolveId = external ? (id: string) => id : (id: string) => this.models.resolveId(id);
+    const profileModelThinking = !external && modelAlias !== undefined
+      ? resolveModelProfileEntry(profile?.modelProfiles, modelAlias, resolveId)?.thinkingEffort
+      : undefined;
+    const requestedThinking = resolveMainThinkingCandidate({
+      personaThinking: this.currentPersona?.definition.thinkingEffort,
+      routeLockedThinking: this.profileState.lockedThinkingEffort,
+      profileThinking: resolveProfileThinkingDefault(profile, modelAlias ?? '', resolveId),
+    });
+    const effort = external
+      ? requestedThinking ?? 'off'
+      : this.resolveThinkingEffort(requestedThinking, this.tryResolveRawModel(), true);
+    const thinkingSource = this.profileState.lockedThinkingEffort !== undefined ? 'route-default' as const
+      : profileModelThinking !== undefined ? 'model-profile-default' as const
+        : requestedThinking !== undefined ? 'profile-default' as const
+          : 'model-default' as const;
+    const explicit = external ? requestedThinking !== undefined : thinkingSource !== 'model-default';
+    const previousEffort = this.thinkingLevel;
+    const personaOverrides = this.profileState.personaId === undefined
+      ? undefined
+      : { ...this.profileState.personaOverrides };
+    if (personaOverrides !== undefined) delete personaOverrides.thinking;
+    this.update({
+      thinkingLevel: effort,
+      thinkingEffortExplicit: explicit,
+      thinkingEffortAdjusted: false,
+      personaOverrides,
+    });
+    this.refreshCurrentBindingAdvisories(
+      { source: 'resume-existing', requestedValue: modelAlias },
+      { source: external ? (explicit ? 'profile-default' : 'model-default') : thinkingSource, requestedValue: effort },
+    );
+    if (effort !== previousEffort) {
+      this.telemetry.track2('thinking_toggle', {
+        enabled: effort !== 'off',
+        effort,
+        from: previousEffort,
+      });
+    }
+  }
+
   private assertThinkingEffortSupported(
     requested: string,
     model: Model | undefined,
@@ -1671,7 +1801,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
   }
 
   async applyProfile(profile: ResolvedAgentProfile, options?: ApplyProfileOptions): Promise<void> {
-    this.assertProfileToolPatterns(profile);
+    await this.assertProfileToolPatterns(profile);
     const context = await this.buildSystemPromptContext(profile, options);
     this.activeProfile = profile;
     this.activeProfileDefinitionId = profile.definitionId;
@@ -1760,6 +1890,11 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       await this.bind({ execution: current.execution.selection });
       return;
     }
+    if (current.execution !== undefined && current.profileName !== undefined && current.execution.selection.profile_file === undefined
+      && (this.catalog.get(current.profileName)?.executor ?? 'native') !== current.execution.selection.executor) {
+      await this.bind({ execution: current.execution.selection });
+      return;
+    }
     if (current.execution?.selection.profile_file !== undefined) {
       await this.bind({ execution: current.execution.selection, model: current.modelAlias, thinking: current.thinkingLevel,
         personaSnapshot: current.persona ?? this.currentPersona, personaOverrides: current.personaOverrides,
@@ -1803,6 +1938,38 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (memory !== undefined) await this.publishMemoryProjection(memory);
   }
 
+  async reconcilePluginUsage(): Promise<void> {
+    if (!this.pluginUsage?.enabled() || !this.pluginUsageDirty) return;
+    const previous = this.states.get(dynamicPromptKey);
+    if (previous === undefined) return;
+    this.pluginUsageDirty = false;
+    try {
+      await this.skillCatalog.ready;
+      const pluginSections = await this.resolvePluginSections();
+      const skills = this.skillCatalog.catalog.getModelSkillListing();
+      this.frozenSkillListing = skills;
+      const context = { ...previous.context, pluginSections, skills, pluginBlocks: Object.fromEntries(this.frozenPluginBlocks ?? []) };
+      const content = dynamicPromptContent(context);
+      const hash = promptSectionHash(content);
+      if (!previous.enabled) {
+        let systemPrompt = this.profileState.systemPrompt;
+        for (const [before, after] of [[previous.context.pluginSections ?? '', pluginSections], [previous.context.skills ?? '', skills]] as const) {
+          if (before === after) continue;
+          systemPrompt = before.length > 0 && systemPrompt.includes(before)
+            ? systemPrompt.replace(before, after)
+            : after.length > 0 ? `${systemPrompt}\n\n${after}` : systemPrompt;
+        }
+        if (systemPrompt !== this.profileState.systemPrompt) this.update({ systemPrompt });
+      }
+      if (hash !== previous.hash || previous.context.pluginBlocks === undefined) {
+        await this.dispatcher.dispatch(new ProfileDynamicSnapshot({ enabled: previous.enabled, revision: previous.revision + 1, context, content, hash }));
+      }
+    } catch (error) {
+      this.pluginUsageDirty = true;
+      throw error;
+    }
+  }
+
   private async publishMemoryProjection(memory: string): Promise<void> {
     const previous = this.states.get(dynamicPromptKey);
     if (previous?.enabled !== true || previous.context.memory === memory) return;
@@ -1842,13 +2009,20 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       );
       this.promptFieldSnapshot = assembled.promptFields;
       this.promptConfigurationSignature = this.promptFieldSignature(profile, this.modelAlias ?? '', assembled.promptFields);
-      this.update({
-        profileName: profile.name,
-        systemPrompt: assembled.text,
-        promptBase: assembled.promptBase,
-        environmentDisclosure: assembled.environment,
-        agentsMdPaths: extractAgentsMdPathsFromSystemPrompt(assembled.text),
-      });
+      const current = this.profileState;
+      const agentsMdPaths = extractAgentsMdPathsFromSystemPrompt(assembled.text);
+      if (adoptPromptInputs || current.profileName !== profile.name || current.systemPrompt !== assembled.text
+        || (current.boundProfile !== undefined && JSON.stringify(current.boundProfile.promptBase) !== JSON.stringify(assembled.promptBase))
+        || JSON.stringify(current.environmentDisclosure) !== JSON.stringify(assembled.environment)
+        || JSON.stringify(current.agentsMdPaths) !== JSON.stringify(agentsMdPaths)) {
+        this.update({
+          profileName: profile.name,
+          systemPrompt: assembled.text,
+          promptBase: assembled.promptBase,
+          environmentDisclosure: assembled.environment,
+          agentsMdPaths,
+        });
+      }
       this.seedAgentsMdReminder(assembled.text, context);
       this.cacheAgentsMdWarning(context);
       this.publishAgentsMdWarning();
@@ -2087,9 +2261,14 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const references = [{ surface: 'model' as const, id: model?.recipe }, { surface: 'profile' as const, id: profile?.recipe }].filter((entry) => entry.id !== undefined && entry.id !== 'off');
     if (references.length === 0) return undefined;
     if (this.recipes === undefined) throw new ProfileError(ProfileErrors.codes.MODEL_CONFIG_INVALID, 'Recipe service is unavailable');
+    const profileBase = profile?.sourcePath === undefined ? undefined : dirname(profile.sourcePath);
     const layers: import('@kiki/protocol').RecipeResolvedLayer[] = [];
     for (const reference of references) {
-      const installation_id = reference.id!.replace(/^installation:/u, '');
+      const raw = reference.id!;
+      const file = isRecipeFileReference(raw);
+      const installation_id = file ? reference.surface === 'profile'
+        ? resolveRecipeFileLocator(raw, profileBase) : resolveModelRecipeReference(raw, alias, this.config, this.bootstrap)
+        : raw.replace(/^installation:/u, '');
       layers.push({ surface: reference.surface, installation_id, resolved: await this.recipes.resolve(installation_id) });
     }
     return composeRecipeLayers(layers, model?.overrides);
@@ -2438,7 +2617,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       (normalizeRequestedThinkingEffort(lockedThinkingEffort) ?? lockedThinkingEffort.trim().toLowerCase()) !== thinking.effective;
     const routeDetached = this.routeId !== undefined && (routeModelDetached || routeEffortDetached);
     const toolPolicyBase = {
-      tools: this.states.get(profileActiveToolsKey) as ActiveToolsState,
+      tools: this.baseActiveToolNames,
       toolAllowPolicies: this.profileState.toolAllowPolicies,
       disallowedTools: this.profileState.disallowedTools,
     };
@@ -2470,6 +2649,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           : { ...this.profileState.executorOptions },
       executorPrompt: this.profileState.executorPrompt,
       allowKikiSubagents: this.profileState.allowKikiSubagents,
+      injectKikiMcp: this.profileState.injectKikiMcp,
       kikiContext: this.profileState.kikiContext,
       executorDescriptorRevision: this.profileState.executorDescriptorRevision,
       thinkingLevel: this.thinkingLevel,
@@ -2711,6 +2891,59 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       }));
       return false;
     }
+  }
+
+  async inspectToolPolicy(): Promise<import('./profile').ProfileToolPolicyStatus> {
+    await this.catalog.ready;
+    const binding = this.profileState;
+    const activeTools = this.activeToolNames;
+    const definitionId = binding.profileDefinitionId;
+    if (this.agentScope.agentId !== 'main' || this.agentScope.parentAgentId !== undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'main_only' };
+    }
+    if (this.isExternalExecutor || binding.boundProfile === undefined || binding.toolOverride !== undefined
+      || binding.routeId !== undefined || binding.boundProfile.fileSources !== undefined || binding.appliedLease !== undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'binding_restricted' };
+    }
+    const profile = this.catalog.getDefault();
+    if (profile.definitionId === undefined || profile.toolsSource === undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'source_unavailable' };
+    }
+    if (profile.definitionId !== definitionId || this.catalog.sourceRejection?.(profile) !== undefined) {
+      return { definitionId, activeTools, canRefresh: false, reason: 'source_changed' };
+    }
+    const revision = createHash('sha256').update(JSON.stringify({ definitionId, source: profile.toolsSource, tools: profile.tools,
+      fileDefinition: profile.fileDefinition, sourcePath: profile.sourcePath,
+      disallowedTools: profile.disallowedTools, toolAllowPolicies: profile.toolAllowPolicies,
+      disabledToolGroups: profile.disabledToolGroups })).digest('hex');
+    return { definitionId, source: profile.toolsSource, activeTools, currentTools: profile.tools, revision, canRefresh: true };
+  }
+
+  async refreshToolPolicy(revision: string): Promise<import('./profile').ProfileToolPolicyStatus> {
+    const previous = this.profileState;
+    await this.catalog.ready;
+    if (this.catalog.refreshSource === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile source cannot be verified for tool refresh. No tool policy was applied.');
+    }
+    await this.catalog.refreshSource(this.catalog.getDefault());
+    const status = await this.inspectToolPolicy();
+    if (!status.canRefresh || status.revision !== revision || status.definitionId === undefined || status.source === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile tool policy changed or is unavailable. Read it again before applying.');
+    }
+    const profile = this.catalog.getDefault();
+    await this.assertProfileToolPatterns(profile);
+    if (this.profileState !== previous || this.catalog.getDefault() !== profile) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The active binding or tool source changed. No tool policy was applied.');
+    }
+    await this.dispatcher.dispatch(new ToolsPolicyRefreshed({
+      definitionId: status.definitionId, revision, names: status.currentTools, source: status.source,
+      disallowedTools: [...new Set([...(previous.disallowedTools ?? []), ...(profile.disallowedTools ?? [])])],
+      toolAllowPolicies: [...(previous.toolAllowPolicies ?? []), ...(profile.toolAllowPolicies ?? [])],
+      disabledToolGroups: [...new Set([...(previous.disabledToolGroups ?? []), ...(profile.disabledToolGroups ?? [])])],
+    }));
+    this.activeToolNamesOverlay = undefined;
+    this.emitStatusUpdated();
+    return this.inspectToolPolicy();
   }
 
   getActiveToolNames(): readonly string[] | undefined {
@@ -3015,6 +3248,16 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return this.models.resolveId(alias) ?? alias;
   }
 
+  private nativeEngineDefaultModel(): string | undefined {
+    const configured = this.config.get<string>('defaultModel')?.trim();
+    if (configured === undefined || configured.length === 0) return undefined;
+    return this.resolveModelId(configured);
+  }
+
+  private nativeEngineDefaultThinking(model: string): string {
+    return this.resolveThinkingEffort(undefined, this.resolveUsageModel(model), true);
+  }
+
   private tryResolveRawModel(): Model | undefined {
     if (this.isExternalExecutor) return undefined;
     const alias = this.modelAlias;
@@ -3051,16 +3294,25 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.activeProfile !== undefined) return this.activeProfile;
     const bound = this.profileState.boundProfile;
     if (bound !== undefined) {
+      if (this.profileState.execution?.selection.profile_file !== undefined && bound.systemPromptMode === 'inherit' && bound.promptBase !== undefined) {
+        const base = bound.promptBase;
+        return { ...bound, systemPrompt: () => base.text, renderSystemPrompt: () => ({ text: base.text, environment: base.environment }) };
+      }
       const basePrompt = (context: AgentProfileContext) =>
         this.catalog.getDefault().renderSystemPrompt(context);
       const restored = bound.fileSources !== undefined
-        ? restoreProfileFileSources(bound.fileSources, basePrompt, bound.definitionId)
+        ? restoreProfileFileSources(bound.fileSources, basePrompt, bound.definitionId,
+          (context) => this.builtinProfiles.getDefault().renderSystemPrompt(context))
         : bound.fileDefinition !== undefined
           ? agentProfileFromFile(bound.fileDefinition, basePrompt)
           : bound.routeDefinition !== undefined ? this.catalog.get(bound.routeDefinition.profile) : undefined;
       if (restored !== undefined) {
         const rendered = bound.routeDefinition === undefined ? restored : resolveAgentProfileRoute(bound.routeDefinition, restored).effectiveProfile;
         return { ...bound, systemPrompt: rendered.systemPrompt, renderSystemPrompt: rendered.renderSystemPrompt };
+      }
+      if (bound.promptBase !== undefined) {
+        const base = bound.promptBase;
+        return { ...bound, systemPrompt: () => base.text, renderSystemPrompt: () => ({ text: base.text, environment: base.environment }) };
       }
     }
     const profileName = this.profileName;
@@ -3081,7 +3333,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           ? undefined
           : resolveSnapshotProfileDefinition(this.catalog.snapshot(), definitionId, profileName);
     if (catalogProfile === undefined) return undefined;
-    const resolveId = aliasIdentity(this.models);
+    const resolveId = aliasIdentity(modelAliasResolverForExecutor(this.profileState.executorId ?? catalogProfile.executor, this.models));
     const restored = applySpawnPolicy(
       applyLease({ ...catalogProfile, restrictModelsToMenu: false, modelMenuConstraint: undefined }, this.profileState.appliedLease, resolveId),
       this.profileState.spawnPolicy,
@@ -3148,24 +3400,75 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return checks;
   }
 
-  private assertProfileToolPatterns(
+  async warnRestoredUnavailableTools(): Promise<void> {
+    const data = this.data();
+    const known = await this.knownToolNamesWithPlugins();
+    const patterns = [
+      ...(data.activeToolNames ?? []),
+      ...(data.toolPolicyBase?.tools ?? []),
+      ...(data.boundProfile?.tools ?? []),
+    ];
+    this.warnUnknownRestoredTools(patterns, known);
+  }
+
+  private async assertProfileToolPatterns(
     profile: Pick<ResolvedAgentProfile, 'name' | 'routeId' | 'tools' | 'toolAllowPolicies' | 'disallowedTools'>,
     inheritedUserToolNames?: readonly string[],
-  ): void {
-    const known = this.knownToolNames(inheritedUserToolNames);
-    const issues: string[] = [];
+    unavailableTools?: 'restore',
+  ): Promise<void> {
+    const known = await this.knownToolNamesWithPlugins(inheritedUserToolNames);
+    const fatal: string[] = [];
+    const restored: InactiveToolPattern[] = [];
     for (const { context, field, patterns } of this.profileToolPatternChecks(profile)) {
       if (patterns === undefined) continue;
       for (const issue of findInactiveToolPatterns(patterns, (name) => known.has(name))) {
-        issues.push(describeInactiveToolPattern(context, field, issue));
+        if (unavailableTools === 'restore' && issue.kind === 'unknown-tool') restored.push(issue);
+        else fatal.push(describeInactiveToolPattern(context, field, issue));
       }
     }
-    if (issues.length === 0) return;
+    if (unavailableTools === 'restore') {
+      this.warnUnknownRestoredTools(restored.map((issue) => issue.pattern), known);
+    }
+    if (fatal.length === 0) return;
     throw new ProfileError(
       ProfileErrors.codes.TOOL_PATTERN_INACTIVE,
-      issues.join(' '),
-      { profile: profile.name, issues },
+      fatal.join(' '),
+      { profile: profile.name, issues: fatal },
     );
+  }
+
+  private warnUnknownRestoredTools(patterns: readonly string[], known: ReadonlySet<string>): void {
+    const seen = new Set<string>();
+    for (const issue of findInactiveToolPatterns(patterns, (name) => known.has(name))) {
+      if (issue.kind !== 'unknown-tool' || seen.has(issue.pattern)) continue;
+      seen.add(issue.pattern);
+      const key = `restore|${issue.pattern}`;
+      if (this.emittedToolPatternWarnings.has(key)) continue;
+      this.emittedToolPatternWarnings.add(key);
+      void this.dispatcher.dispatch(new WarningIssued({
+        code: 'restore-tool-unavailable',
+        message: describeInactiveToolPattern('the restored profile', 'tools', issue),
+      }));
+    }
+  }
+
+  private async knownToolNamesWithPlugins(additionalNames?: readonly string[]): Promise<Set<string>> {
+    const known = this.knownToolNames(additionalNames);
+    for (const name of await this.enabledPluginToolNames()) known.add(name);
+    return known;
+  }
+
+  private async enabledPluginToolNames(): Promise<readonly string[]> {
+    const installed = await this.plugins.listPlugins();
+    const names: string[] = [];
+    for (const plugin of installed) {
+      if (!plugin.enabled || plugin.state !== 'ok') continue;
+      const info = await this.plugins.getPluginInfo({ id: plugin.id });
+      for (const tool of info.manifest?.kiki?.tools ?? []) {
+        names.push(`plugin__${plugin.id.replaceAll('-', '_')}__${tool.name}`);
+      }
+    }
+    return names;
   }
 
   private publishToolPatternWarnings(): void {
@@ -3205,9 +3508,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     const lease = this.runtime.acquire(fsAvailable ? ['fs'] : []);
     const env = lease.runtime.environment;
     const runtimeId = lease.runtime.identity.runtimeId;
+    const inheritedRoots = inspectAgentWorkspaceRoots(this.runtime, this.workspace);
     const view = new RuntimeWorkspaceView(lease.runtime, {
-      workDir: this.sessionContext.cwd,
-      additionalDirs: options?.additionalDirs ?? this.workspace.additionalDirs,
+      workDir: inheritedRoots.workDir,
+      additionalDirs: options?.additionalDirs ?? inheritedRoots.additionalDirs,
     });
     const previous = this.states.get(dynamicPromptKey);
     const sampled = previous?.context.cwd === view.workDir ? previous.context : undefined;
@@ -3247,6 +3551,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       timeZone,
       skills,
       pluginSections,
+      pluginBlocks: this.frozenPluginBlocks === undefined ? undefined : Object.fromEntries(this.frozenPluginBlocks),
       memory,
       persona: this.currentPersona === undefined ? '' : PERSONA_PROMPT_MARKER,
       skillActive: profile !== undefined && this.isToolActiveForProfile(profile, 'Skill'),
@@ -3317,12 +3622,37 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
 
   private async resolvePluginSections(): Promise<string> {
     if (this.frozenPluginSections !== undefined) return this.frozenPluginSections;
-    const sections = await this.plugins.enabledSystemPrompts();
+    const sections = await this.plugins.enabledSystemPrompts(
+      this.sessionContext.workspaceId,
+      this.sessionContext.sessionId,
+    );
+    if (this.pluginUsage?.enabled()) {
+      const saved = this.states.get(dynamicPromptKey)?.context;
+      this.frozenPluginBlocks ??= saved?.pluginBlocks !== undefined
+        ? new Map(Object.entries(saved.pluginBlocks)) : restoredPluginBlocks(saved?.pluginSections ?? '');
+      const available = new Map(sections.map((section) => [section.pluginId, section.content]));
+      const refresh = this.pluginBlockRefresh;
+      for (const id of refresh === 'all' ? this.frozenPluginBlocks.keys() : refresh) {
+        if (!available.has(id)) this.frozenPluginBlocks.delete(id);
+      }
+      for (const section of sections) {
+        if (!this.frozenPluginBlocks.has(section.pluginId) || refresh === 'all' || refresh.has(section.pluginId)) {
+          this.frozenPluginBlocks.set(section.pluginId, section.content);
+        }
+      }
+      this.pluginBlockRefresh = new Set();
+    }
     const parts: string[] = [];
     const skipped: string[] = [];
     let totalBytes = 0;
     for (const section of sections) {
-      const block = `<!-- From: plugin ${section.pluginId} -->\n${section.content}`;
+      if (this.pluginUsage !== undefined && !await this.pluginUsage.allows(
+        this.sessionContext.workspaceId,
+        section.pluginId,
+        this.sessionContext.sessionId,
+      )) continue;
+      const content = this.frozenPluginBlocks?.get(section.pluginId) ?? section.content;
+      const block = `<!-- From: plugin ${section.pluginId} -->\n${content}`;
       const bytes = Buffer.byteLength(block, 'utf8');
       if (totalBytes + bytes > PLUGIN_SECTIONS_MAX_BYTES) {
         skipped.push(section.pluginId);
@@ -3349,6 +3679,39 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     if (this.plugins.hasLoadedSnapshot()) this.frozenPluginSections = resolved;
     return resolved;
   }
+}
+
+function executionSelectionProfile<T extends AgentProfile>(
+  profile: T,
+  executor: string,
+  effective: { readonly model?: string; readonly thinking?: string },
+): T {
+  if ((profile.executor ?? 'native') === executor) return profile;
+  const native = executor === 'native';
+  return {
+    ...profile,
+    executor,
+    executorOptions: undefined,
+    modelAlias: effective.model,
+    thinkingEffort: effective.thinking,
+    modelProfiles: undefined,
+    modelPromptLayers: undefined,
+    serviceTier: native ? profile.serviceTier : undefined,
+    requestParams: native ? profile.requestParams : undefined,
+    contextBudget: native ? profile.contextBudget : undefined,
+    maxCompletionTokens: native ? profile.maxCompletionTokens : undefined,
+    autoCompact: native ? profile.autoCompact : undefined,
+  };
+}
+
+function restoredPluginBlocks(sections: string): Map<string, string> {
+  const markers = [...sections.matchAll(/^<!-- From: plugin ([a-zA-Z0-9][a-zA-Z0-9._-]*) -->\n/gm)];
+  return new Map(markers.map((marker, index) => {
+    const start = marker.index! + marker[0].length;
+    const next = markers[index + 1]?.index;
+    const end = next === undefined ? sections.length : next - (sections.slice(next - 2, next) === '\n\n' ? 2 : 0);
+    return [marker[1]!, sections.slice(start, end)];
+  }));
 }
 
 function freezePersonaSnapshot(snapshot: PersonaSnapshot | undefined): PersonaSnapshot | undefined {

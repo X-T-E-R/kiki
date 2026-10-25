@@ -1,4 +1,7 @@
 {
   "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM"]
+  },
   "include": ["src", "test", "../agent-core-v2/src/env.d.ts"]
 }

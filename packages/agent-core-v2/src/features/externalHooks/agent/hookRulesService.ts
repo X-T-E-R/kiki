@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto';
 
 import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { ILogService } from '#/_base/log/log';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
@@ -10,6 +12,8 @@ import { IAgentLoopService, type BeforeStepContext } from '#/agent/loop/loop';
 import { TurnEnded } from '#/agent/loop/turnOps';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import type { ContextMessage } from '#/agent/contextMemory/types';
+import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
@@ -20,6 +24,7 @@ import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IHookRulesSession, ISessionHookWorkspace } from '../session/hookRules';
 import { hookHash, matchesHook, renderHookInjection, type EffectiveHookRule, type HookBinding, type HookEvent, type HookEventName, type HookRulesSnapshot } from '../internal/rules';
 import { hookPartition, hookStateKey, HookRulesConfigured, HookStepPrepared, HookObserved, semanticRevision, type HookReceipt } from './hookState';
+import { projectHookInspection } from '../internal/inspection';
 import { IAgentHookRules } from './hookRules';
 import { IAgentExternalHooksService } from './agentExternalHooks';
 
@@ -82,20 +87,15 @@ export class AgentHookRules extends Service implements IAgentHookRules {
         promptId, source: human ? 'user' : origin?.kind === 'task' ? 'task' : mailbox ? 'mailbox' : undefined,
         delivery: ctx.isSteer ? 'steering' : undefined,
       });
-      this.configure(snapshot);
-      for (const rule of snapshot.rules) {
-        const receipt = this.receipt(rule, event);
-        if (receipt === undefined) continue;
-        if (rule.rule.action.type === 'observe') this.observeRule(rule, event, receipt);
-        else {
-          try {
-            const origin = { kind: 'injection' as const, variant: `hook_rule/${rule.id}`, ownerPromptId: promptId, disclosure: receipt };
-            if (ctx.appendMessage !== undefined) ctx.appendMessage({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder(renderHookInjection(rule)) }], toolCalls: [], origin });
-            else this.reminders.appendSystemReminder(renderHookInjection(rule), origin);
-          }
-          catch (error) { this.log.error('hook prompt injection failed; skipping it', { hookId: rule.id, error }); }
-        }
-      }
+      this.applyInputRules(event, snapshot, promptId, ctx.appendMessage);
+    }));
+    const tasks = instantiation.invokeFunction((accessor) => accessor.get(IAgentTaskService));
+    this._register(tasks.hooks.onWillConsumeNotification.register('hook-rules', async ({ origin, signal }, next) => {
+      signal?.throwIfAborted();
+      const { event, snapshot } = await this.event('prompt.submit', `task/${origin.notificationId}`, { source: 'task' });
+      signal?.throwIfAborted();
+      this.applyInputRules(event, snapshot);
+      await next();
     }));
     const tools = instantiation.invokeFunction((accessor) => accessor.get(IAgentToolExecutorService));
     this._register(tools.onBeforeExecuteTool(async (ctx) => {
@@ -108,6 +108,23 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       this.observe(event, snapshot);
       await next();
     }));
+  }
+
+  private applyInputRules(event: HookEvent, snapshot: HookRulesSnapshot, ownerPromptId?: string, appendMessage?: (message: ContextMessage) => void): void {
+    this.configure(snapshot);
+    for (const rule of snapshot.rules) {
+      const receipt = this.receipt(rule, event);
+      if (receipt === undefined) continue;
+      if (rule.rule.action.type === 'observe') this.observeRule(rule, event, receipt);
+      else {
+        try {
+          const origin = { kind: 'injection' as const, variant: `hook_rule/${rule.id}`, ownerPromptId, disclosure: receipt };
+          if (appendMessage !== undefined) appendMessage({ role: 'user', content: [{ type: 'text', text: wrapSystemReminder(renderHookInjection(rule)) }], toolCalls: [], origin });
+          else this.reminders.appendSystemReminder(renderHookInjection(rule), origin);
+        }
+        catch (error) { this.log.error('hook prompt injection failed; skipping it', { hookId: rule.id, error }); }
+      }
+    }
   }
 
   private binding(): HookBinding {
@@ -161,7 +178,8 @@ export class AgentHookRules extends Service implements IAgentHookRules {
       }));
     }
     if (this.providerRevision !== snapshot.revision) {
-      this.providers.clear();
+      const previous = this.providers.clear();
+      if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
       for (const rule of snapshot.rules.filter((entry) => entry.rule.event === 'step.before' && entry.rule.action.type === 'inject')) {
         this.providers.add(this.injector.register(`hook_rule/${rule.id}`, () => {
           const current = this.stepEvent;
@@ -176,6 +194,7 @@ export class AgentHookRules extends Service implements IAgentHookRules {
   }
 
   private receipt(rule: EffectiveHookRule, event: HookEvent): HookReceipt | undefined {
+    if (rule.namespace.startsWith('plugin/') && this.rules.snapshot().rules.find((current) => current.id === rule.id)?.active !== true) return undefined;
     if (!matchesHook(rule, event)) return undefined;
     if (event.executorId !== undefined && event.executorId !== 'native' && ['step.before', 'step.after', 'tool.before', 'tool.after'].includes(event.event)) return undefined;
     const state = this.states.get(hookStateKey).rules[rule.id];
@@ -212,19 +231,6 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     const snapshot = this.rules.snapshot();
     const binding = this.binding();
     const clock = this.states.get(hookStateKey);
-    return { revision: snapshot.revision, sources: [...snapshot.sources ?? []], diagnostics: [...snapshot.diagnostics], binding: { ...binding, executorId: binding.executorId ?? 'native' }, rules: snapshot.rules.map((rule, order) => {
-      const unsupported = binding.executorId !== 'native' && ['step.before', 'step.after', 'tool.before', 'tool.after'].includes(rule.rule.event);
-      const cadence = rule.rule.cadence;
-      const stored = clock.rules[rule.id];
-      const state = stored?.semanticHash === rule.semanticHash ? stored : undefined;
-      const bucket = state?.buckets[hookPartition(binding.modelId ?? '', clock.turnId, cadence?.counterScope ?? 'agent')];
-      const reason = rule.reason ?? (unsupported ? 'unsupported_executor' : undefined);
-      return { id: rule.id, path: rule.path, namespace: rule.namespace, event: rule.rule.event, action: { type: rule.rule.action.type }, active: rule.active && !unsupported, reason, order,
-        resetPending: stored !== undefined && state === undefined,
-        semanticRevision: state === undefined ? undefined : semanticRevision(state),
-        completedSteps: bucket?.completed ?? 0,
-        nextDue: cadence === undefined ? undefined : (Math.floor((bucket?.delivered ?? 0) / cadence.everyCompletedSteps) + 1) * cadence.everyCompletedSteps,
-      };
-    }) };
+    return projectHookInspection(snapshot, binding, clock);
   }
 }

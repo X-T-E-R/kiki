@@ -25,20 +25,24 @@ import { composeRecipeLayers, recipeReferences } from '#/app/recipes/recipeOverl
 import { Error2, ErrorCodes } from '#/errors';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { ConfigTarget, IConfigService } from '#/app/config/config';
+import { ConfigTarget, IConfigService, type ConfigDiagnostic } from '#/app/config/config';
 import { deepEqual } from '#/app/config/sectionDiff';
 import { camelToSnake, transformPlainObject } from '#/app/config/toml';
 import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
-import { toProtocolProvider } from '#/kosong/model/catalog';
+import { modelBindingOriginFields, toProtocolProvider } from '#/kosong/model/catalog';
 import { resolveProviderCredentialState } from '#/kosong/model/catalogService';
 import { ModelCatalogErrors } from '#/kosong/model/errors';
 import { deriveProviderId, nonEmpty } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
 import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters, patchModelUsagePolicy, resolveModelUsage, usagePolicyFromWire, usagePolicyToWire, usageParametersToWire } from '#/kosong/model/parameters';
-import { resolveModelProtocol } from '#/kosong/model/modelProtocol';
+import { explainModelProtocol, resolveModelProtocol } from '#/kosong/model/modelProtocol';
 import type { ProviderConfig, ProvidersSection } from '#/kosong/provider/provider';
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
+import {
+  requestCompressionFromWire,
+  responsesWebSocketFromWire,
+} from '#/kosong/provider/requestCompression';
 import {
   requestIdentityFromWire,
   requestIdentityToWire,
@@ -61,6 +65,8 @@ import {
 } from './modelCatalogMutation';
 
 import { IRecipeService } from '#/app/recipes/recipes';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { resolveModelRecipeReference } from '#/app/recipes/recipeReferenceResolution';
 import { IModelPromptReader } from './modelPromptReader';
 import { modelPromptBodies } from './modelPromptBodies';
 import { patchModelSteeringSources } from './modelSteeringPatch';
@@ -222,13 +228,25 @@ function modelIssues(
   return issues;
 }
 
+function rejectedOverrideFields(id: string, diagnostics: readonly ConfigDiagnostic[]): string | undefined {
+  const prefix = `[models] entry '${id}' overrides rejected `;
+  const hit = diagnostics.find((item) => item.domain === MODELS_SECTION && item.message.startsWith(prefix));
+  if (hit === undefined) return undefined;
+  const fields = hit.message.slice(prefix.length).split(';')[0]?.trim();
+  return fields === undefined || fields.length === 0 ? undefined : fields;
+}
+
 function modelEntity(
   id: string,
   record: ModelRecord,
   providers: ProvidersSection,
   defaultProvider: string | undefined,
+  diagnostics: readonly ConfigDiagnostic[] = [],
 ): ModelEntity {
   const ref = resolveProviderRef(record, defaultProvider);
+  const provider = ref.source === 'flat' ? undefined : providers[ref.providerId];
+  const explained = explainModelProtocol(record, provider);
+  const rejected = rejectedOverrideFields(id, diagnostics);
   const generation = resolveGenerationParameters(providers[ref.providerId], record);
   const usage = {
     main: resolveModelUsage(generation, record, 'main'),
@@ -276,10 +294,21 @@ function modelEntity(
     recipe: record.recipe,
     overrides: shallowSnake(record.overrides),
     protocol: record.protocol,
-    effective_protocol: resolveModelProtocol(record, providers[ref.providerId]),
+    effective_protocol: explained?.protocol,
+    protocol_source: explained?.source,
+    ...modelBindingOriginFields(record, provider),
     base_url: record.baseUrl,
     revision: revisionOf(record),
-    issues: [...modelIssues(record, providers, ref), ...(record.recipe !== undefined ? [{ code: 'recipe-selected', severity: 'warning' as const, path: 'recipe', message: 'Recipe selected; saved model prompts and Recipe-covered settings are retained but ignored. Role, persona and workspace instructions remain active.' }] : [])],
+    issues: [
+      ...modelIssues(record, providers, ref),
+      ...(rejected === undefined ? [] : [{
+        code: ModelIssueCodes.OVERRIDE_ROUTING_REJECTED,
+        severity: 'warning' as const,
+        path: 'overrides',
+        message: rejected,
+      }]),
+      ...(record.recipe !== undefined ? [{ code: 'recipe-selected', severity: 'warning' as const, path: 'recipe', message: 'Recipe selected; saved model prompts and Recipe-covered settings are retained but ignored. Role, persona and workspace instructions remain active.' }] : []),
+    ],
   };
 }
 
@@ -470,6 +499,14 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
       next.requestIdentity = policy;
     }
   }
+  if (patch.request_compression !== undefined) {
+    if (patch.request_compression === null) setCleared(next, 'requestCompression');
+    else next.requestCompression = requestCompressionFromWire(patch.request_compression);
+  }
+  if (patch.responses_web_socket !== undefined) {
+    if (patch.responses_web_socket === null) setCleared(next, 'responsesWebSocket');
+    else next.responsesWebSocket = responsesWebSocketFromWire(patch.responses_web_socket);
+  }
   if (patch.images !== undefined) {
     if (patch.images === null) {
       setCleared(next, 'images');
@@ -490,6 +527,10 @@ function applyProviderPatch(provider: ProviderConfig, patch: PatchProviderReques
     const env = applyNamedValues(provider.env, patch.env);
     if (env === undefined) setCleared(next, 'env');
     else next.env = env;
+  }
+  if (patch.api_key_env !== undefined) {
+    if (patch.api_key_env === null) setCleared(next, 'apiKeyEnv');
+    else next.apiKeyEnv = patch.api_key_env;
   }
   if (patch.api_key !== undefined) {
     if (patch.api_key === '') {
@@ -541,6 +582,7 @@ export class ModelCatalogMutationService
   constructor(
     @IConfigService private readonly config: IConfigService,
     @IModelOAuthTokens private readonly oauth: IModelOAuthTokens,
+    @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IRecipeService private readonly recipes?: IRecipeService,
     @IModelPromptReader private readonly promptReader?: IModelPromptReader,
   ) {
@@ -569,13 +611,13 @@ export class ModelCatalogMutationService
     const entity = this.currentModelEntity(id);
     const cognition = structuredClone(effectiveModelsOf(this.config)[id]?.cognition);
     const saved = { ...entity, cognition_bodies: await modelPromptBodies(cognition, entity.revision, this.promptReader) };
-    if (saved.recipe === undefined) return saved;
+    if (saved.recipe === undefined || saved.recipe === 'off') return saved;
     try {
       if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
-      const resolved = await this.recipes.resolve(saved.recipe);
+      const resolved = await this.recipes.resolve(resolveModelRecipeReference(saved.recipe, id, this.config, this.bootstrap));
       const record = effectiveModelsOf(this.config)[id]!;
       const recipe = composeRecipeLayers([{ surface: 'model', installation_id: saved.recipe, resolved }], record.overrides)!;
-      const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config));
+      const effective = modelEntity(id, applyRecipeModelSettings(record, recipe.model), effectiveProvidersOf(this.config), defaultProviderOf(this.config), this.config.diagnostics());
       const localSources = Object.fromEntries(Object.entries(resolveGenerationParameters(undefined, { overrides: record.overrides }).sources).map(([key, value]) => [key, value.detail]));
       const sources = (values: Record<string, string>) => Object.fromEntries(Object.entries(values).map(([key, source]) => {
         const field = key.replaceAll(/_([a-z])/gu, (_, letter: string) => letter.toUpperCase());
@@ -607,7 +649,7 @@ export class ModelCatalogMutationService
     if (record === undefined) {
       throw new Error2(ModelCatalogErrors.codes.MODEL_NOT_FOUND, `model ${id} does not exist`);
     }
-    return modelEntity(id, record, effectiveProvidersOf(this.config), defaultProviderOf(this.config));
+    return modelEntity(id, record, effectiveProvidersOf(this.config), defaultProviderOf(this.config), this.config.diagnostics());
   }
 
   async createModel(input: CreateModelRequest): Promise<ModelEntity> {
@@ -658,7 +700,7 @@ export class ModelCatalogMutationService
       await this.writeSections({
         [MODELS_SECTION]: { ...models, [id]: record },
       });
-      return modelEntity(id, record, providers, defaultProviderOf(this.config));
+      return modelEntity(id, record, providers, defaultProviderOf(this.config), this.config.diagnostics());
     });
   }
 
@@ -681,9 +723,9 @@ export class ModelCatalogMutationService
         });
       }
       if (deepEqual(next, local)) return this.readModel(id);
-      if (typeof request.recipe === 'string') {
+      if (typeof request.recipe === 'string' && request.recipe !== 'off') {
         if (this.recipes === undefined) throw new Error2(ErrorCodes.VALIDATION_FAILED, 'Recipe service is unavailable');
-        await this.recipes.resolve(request.recipe);
+        await this.recipes.resolve(resolveModelRecipeReference(request.recipe, id, this.config, this.bootstrap, true));
       }
       await this.writeSections(
         { [MODELS_SECTION]: { ...models, [id]: next } },
@@ -743,6 +785,7 @@ export class ModelCatalogMutationService
       }
       const provider: ProviderConfig = { type: request.type };
       if (request.api_key !== undefined && request.api_key !== '') provider.apiKey = request.api_key;
+      if (request.api_key_env !== undefined) provider.apiKeyEnv = request.api_key_env;
       const baseUrl = request.base_url === undefined ? undefined : nonEmpty(request.base_url);
       if (baseUrl !== undefined) provider.baseUrl = baseUrl;
       if (request.defaults !== undefined) provider.defaults = parametersFromWire(request.defaults);
@@ -751,6 +794,12 @@ export class ModelCatalogMutationService
         const policy = requestIdentityFromWire(request.request_identity);
         resolveProviderRequestIdentity({ requestIdentity: policy });
         provider.requestIdentity = policy;
+      }
+      if (request.request_compression !== undefined) {
+        provider.requestCompression = requestCompressionFromWire(request.request_compression);
+      }
+      if (request.responses_web_socket !== undefined) {
+        provider.responsesWebSocket = responsesWebSocketFromWire(request.responses_web_socket);
       }
       const nextModels: ModelsSection = { ...models };
       for (const entry of request.models ?? []) {
@@ -808,7 +857,7 @@ export class ModelCatalogMutationService
         if (request.type !== undefined && request.type !== provider.type) {
           throw oauthManagedError(id, 'use POST /oauth/logout to change it');
         }
-        if (request.api_key !== undefined) {
+        if (request.api_key !== undefined || request.api_key_env !== undefined) {
           throw oauthManagedError(id, 'use POST /oauth/logout to replace its credential');
         }
       }

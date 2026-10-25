@@ -205,8 +205,10 @@ async function measureDeltaUpdates(
   const { container, root } = createContainerRoot();
   let state = initialState;
   let currentProfilerMs = Number.NaN;
+  // A flushSync issued from the loop commits as nested-update once React is
+  // already rendering; both phases are real commits under this profiler.
   const onRender: ProfilerOnRenderCallback = (_id, phase, actualDuration) => {
-    if (phase === 'update') currentProfilerMs = actualDuration;
+    if (phase === 'update' || phase === 'nested-update') currentProfilerMs = actualDuration;
   };
 
   flushSync(() => {

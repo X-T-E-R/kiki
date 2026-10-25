@@ -22,6 +22,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import type { Task, TaskStatus } from '@kiki/protocol';
 
 import { sortTasks } from '@kiki/session-core/sessions';
+import { useSidebarContext } from './sidebarContext';
 import { useI18n } from '../i18n';
 import { DisclosureChevron, Icon } from './icons';
 import { pushToast } from '../lib/toasts';
@@ -199,6 +200,8 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     [tasksQuery.data],
   );
 
+  const { sidebarOpen } = useSidebarContext();
+
   return (
     <>
       <header className="flex h-12 shrink-0 items-center gap-3 border-b border-hairline bg-panel px-4">
@@ -206,6 +209,8 @@ export function TasksPage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
           type="button"
           onClick={onToggleSidebar}
           aria-label={t('sv.openMenuAria')}
+          aria-expanded={sidebarOpen}
+          aria-controls="app-sidebar"
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-hairline text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink md:hidden"
         >
           <Icon name="menu" size={16} />

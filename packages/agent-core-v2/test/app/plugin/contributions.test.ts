@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -35,6 +36,16 @@ async function makeSource(dir: string, data = manifest()): Promise<void> {
 }
 
 describe('plugin extension compatibility and consent', () => {
+  it('accepts a plugin that requires the 0.4.1 home bridge', async () => {
+    const root = await temp();
+    const data = manifest();
+    data['x-kiki'].engines.kiki = '>=0.4.1';
+    await makeSource(root, data);
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.engines).toEqual({ kiki: '>=0.4.1' });
+  });
+
   it('refuses unsupported engine or extension versions, and an unknown wire protocol', async () => {
     const root = await temp();
     await makeSource(root);
@@ -111,6 +122,53 @@ describe('plugin extension compatibility and consent', () => {
     delete (data['x-kiki'] as { permissions?: unknown }).permissions;
     await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(data));
     expect((await parseManifest(root)).diagnostics.map((item) => item.message).join(' ')).toContain('uiPanel');
+  });
+
+  it('accepts a settings panel and grouped settings properties', async () => {
+    const root = await temp();
+    const data = { name: 'writer', 'x-kiki': {
+      engines: { kiki: '^0.4.0' }, permissions: { uiPanel: true },
+      panels: [{ schemaVersion: 1, id: 'settings', label: 'Settings', slot: 'settings', path: './settings.html' }],
+      settings: { schemaVersion: 1, schema: { type: 'object', properties: {
+        defaultImageProvider: { type: 'string', title: 'Default image', enum: ['openai-image'] },
+        openai__removed: { type: 'boolean', hidden: true, group: 'openai', groupTitle: 'OpenAI' },
+        openai__note: { type: 'string', title: 'Note', multiline: true, advanced: true, group: 'openai', groupTitle: 'OpenAI' },
+      } } },
+    } };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(data));
+    await writeFile(path.join(root, 'settings.html'), '<h1>Settings</h1>');
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    expect(parsed.manifest?.kiki?.panels?.[0]?.slot).toBe('settings');
+    expect(parsed.manifest?.kiki?.settings?.schema.properties['openai__removed']?.hidden).toBe(true);
+  });
+
+  it('accepts per-language settings text beside the untranslated string, and still rejects unknown keys', async () => {
+    const root = await temp();
+    const settings = { schemaVersion: 1, schema: { type: 'object', properties: {
+      openai__apiKey: { type: 'string', title: 'API key', secret: true, group: 'openai', groupTitle: 'OpenAI Media',
+        localizations: { zh: { title: 'API 密钥', groupTitle: 'OpenAI 媒体' }, 'zh-Hans': { description: '用于替换的密钥' } } },
+    } } };
+    const data = { name: 'writer', 'x-kiki': { engines: { kiki: '^0.4.0' }, permissions: { secrets: true }, settings } };
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(data));
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics).toEqual([]);
+    const property = parsed.manifest?.kiki?.settings?.schema.properties['openai__apiKey'];
+    expect(property?.title).toBe('API key');
+    expect(property?.localizations?.['zh']?.title).toBe('API 密钥');
+    expect(property?.localizations?.['zh-Hans']?.description).toBe('用于替换的密钥');
+
+    settings.schema.properties.openai__apiKey.localizations.zh = { title: 'API 密钥', help: 'not a settings field' } as never;
+    await writeFile(path.join(root, 'kimi.plugin.json'), JSON.stringify(data));
+    expect((await parseManifest(root)).diagnostics.some((item) => item.severity === 'error')).toBe(true);
+  });
+
+  it('parses the sibling Kiki Media package when that checkout is present', async () => {
+    const root = 'C:/Programs/AI/EasyAgent/systems/kiki-plugins/plugins/official/kiki-media';
+    if (!existsSync(root)) return;
+    const parsed = await parseManifest(root);
+    expect(parsed.diagnostics.filter((item) => item.severity === 'error')).toEqual([]);
+    expect(parsed.manifest?.kiki?.panels?.some((panel) => panel.slot === 'settings' && panel.id === 'settings')).toBe(true);
   });
 
   it('accepts strictly declarative skin tokens but rejects CSS injection', async () => {

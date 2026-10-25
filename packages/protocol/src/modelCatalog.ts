@@ -8,6 +8,13 @@ export * from './questionGuard';
 export const modelProtocolSchema = z.enum(['anthropic', 'openai', 'openai_responses', 'google-genai']);
 export type ModelProtocol = z.infer<typeof modelProtocolSchema>;
 
+export const modelProtocolSourceSchema = z.enum(['model', 'provider', 'vendor']);
+export type ModelProtocolSource = z.infer<typeof modelProtocolSourceSchema>;
+
+/** Where an effective endpoint or credential came from. Values are names, never the URL or the key. */
+export const bindingOriginSchema = z.enum(['model', 'provider', 'env', 'vendor', 'none']);
+export type BindingOrigin = z.infer<typeof bindingOriginSchema>;
+
 export const providerCatalogStatusSchema = z.enum([
   'connected',
   'error',
@@ -90,6 +97,47 @@ export const requestIdentityPolicySchema = z
     message: 'request identity policy cannot set both preset and profile',
   });
 export type RequestIdentityPolicyWire = z.infer<typeof requestIdentityPolicySchema>;
+
+const transportTargetSchema = z.url().refine((value) => {
+  const url = new URL(value);
+  return (url.protocol === 'https:' || url.protocol === 'http:') &&
+    url.username === '' && url.password === '' && url.search === '' && url.hash === '';
+}, 'Use an HTTP(S) API base URL without credentials, query, or fragment');
+const transportTargetsSchema = z.array(transportTargetSchema).min(1);
+
+export const requestCompressionWireSchema = z.object({
+  encoding: z.enum(['off', 'gzip', 'zstd']).optional(),
+  targets: transportTargetsSchema.optional(),
+  min_bytes: z.number().int().nonnegative().safe().optional(),
+  dictionary: z.boolean().optional(),
+}).strict().superRefine((value, ctx) => {
+  const extra = value.targets !== undefined || value.min_bytes !== undefined || value.dictionary !== undefined;
+  if (value.encoding === 'off') {
+    if (extra) ctx.addIssue({ code: 'custom', message: 'encoding off cannot include other request_compression fields' });
+    return;
+  }
+  if (!extra && value.encoding === undefined) {
+    ctx.addIssue({ code: 'custom', message: 'request_compression needs encoding, targets, min_bytes, or dictionary' });
+  }
+  if (value.encoding === 'gzip' && value.dictionary !== undefined) {
+    ctx.addIssue({ code: 'custom', message: 'dictionary applies only to encoding zstd', path: ['dictionary'] });
+  }
+});
+export type RequestCompressionWire = z.infer<typeof requestCompressionWireSchema>;
+
+export const responsesWebSocketWireSchema = z.object({
+  off: z.literal(true).optional(),
+  targets: transportTargetsSchema.optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.off === true) {
+    if (value.targets !== undefined) {
+      ctx.addIssue({ code: 'custom', message: 'responses_web_socket off cannot include targets', path: ['targets'] });
+    }
+    return;
+  }
+  if (value.targets === undefined) ctx.addIssue({ code: 'custom', message: 'responses_web_socket needs targets or off' });
+});
+export type ResponsesWebSocketWire = z.infer<typeof responsesWebSocketWireSchema>;
 
 export const serviceTierSchema = z.enum(['auto', 'default', 'flex', 'priority']);
 export type ServiceTierWire = z.infer<typeof serviceTierSchema>;
@@ -201,6 +249,11 @@ export const modelCatalogItemSchema = z.object({
   effective_capabilities: z.array(z.string()).optional(),
   protocol: modelProtocolSchema.optional(),
   effective_protocol: modelProtocolSchema.optional(),
+  protocol_source: modelProtocolSourceSchema.optional(),
+  endpoint_source: bindingOriginSchema.optional(),
+  endpoint_env: z.string().min(1).optional(),
+  auth_source: bindingOriginSchema.optional(),
+  auth_env: z.string().min(1).optional(),
   support_efforts: z.array(z.string()).optional(),
   default_effort: z.string().optional(),
   service_tier: serviceTierSchema.optional(),
@@ -218,6 +271,8 @@ export const providerCatalogItemSchema = z.object({
   default_model: z.string().min(1).optional(),
   defaults: generationParametersSchema.optional(),
   request_identity: requestIdentityPolicySchema.optional(),
+  request_compression: requestCompressionWireSchema.optional(),
+  responses_web_socket: responsesWebSocketWireSchema.optional(),
   images: imagePolicySchema.optional(),
   api_key: z.string().min(1).optional(),
   api_key_env: z.string().min(1).optional(),
@@ -438,6 +493,11 @@ export const modelEntitySchema = z.object({
   overrides: modelOverridesSchema.optional(),
   protocol: modelProtocolSchema.optional(),
   effective_protocol: modelProtocolSchema.optional(),
+  protocol_source: modelProtocolSourceSchema.optional(),
+  endpoint_source: bindingOriginSchema.optional(),
+  endpoint_env: z.string().min(1).optional(),
+  auth_source: bindingOriginSchema.optional(),
+  auth_env: z.string().min(1).optional(),
   base_url: z.string().min(1).optional(),
   revision: z.string().min(1),
   issues: z.array(modelIssueSchema),
@@ -525,19 +585,23 @@ export type CreateModelRequest = z.infer<typeof createModelRequestSchema>;
 /**
  * Sparse provider patch. It never carries a model list: models are edited as
  * their own entities (`/models`), so saving one field of a connection can no
- * longer rebuild or drop its models. `base_url`, `default_model` and
- * `request_identity` accept `null` to clear; `api_key` stays tri-state
- * (absent keeps the stored key, `""` clears, any other value replaces).
+ * longer rebuild or drop its models. `api_key_env`, `base_url`, `default_model`,
+ * `request_identity`, `request_compression` and `responses_web_socket` accept
+ * `null` to clear; `api_key` stays tri-state (absent keeps the stored key,
+ * `""` clears, any other value replaces).
  */
 export const patchProviderRequestSchema = z
   .object({
     base_revision: z.string().min(1).optional(),
     type: z.string().min(1).optional(),
     api_key: z.string().optional(),
+    api_key_env: z.string().trim().min(1).nullable().optional(),
     base_url: z.string().trim().nullable().optional(),
     default_model: z.string().min(1).nullable().optional(),
     defaults: generationParametersPatchSchema.nullable().optional(),
     request_identity: requestIdentityPolicySchema.nullable().optional(),
+    request_compression: requestCompressionWireSchema.nullable().optional(),
+    responses_web_socket: responsesWebSocketWireSchema.nullable().optional(),
     images: imagePolicyPatchSchema.nullable().optional(),
     model_source: z.enum(['static', 'discover', 'oauth-catalog']).nullable().optional(),
     // Per-name writes: a string sets that entry, null removes it, absent names are kept.
@@ -637,10 +701,13 @@ export const createProviderRequestSchema = z
     id: providerIdSchema,
     type: z.string().min(1),
     api_key: z.string().optional(),
+    api_key_env: z.string().trim().min(1).optional(),
     base_url: z.string().trim().optional(),
     default_model: z.string().min(1).optional(),
     defaults: generationParametersSchema.optional(),
     request_identity: requestIdentityPolicySchema.optional(),
+    request_compression: requestCompressionWireSchema.optional(),
+    responses_web_socket: responsesWebSocketWireSchema.optional(),
     images: imagePolicySchema.optional(),
     models: z.array(createProviderModelSchema).optional(),
   })
@@ -706,6 +773,7 @@ export const catalogProviderItemSchema = z.object({
   wire_type: providerWireTypeSchema.nullable(),
   guessed: z.boolean(),
   needs_base_url: z.boolean(),
+  base_url: z.string().nullable().optional(),
   rejected: z.boolean(),
   /** Absent from older servers and from entries that were not rejected. */
   reject_code: modelsDevRejectCodeSchema.nullable().optional(),

@@ -5,7 +5,7 @@
  *              metadata?: ...,
  *              profile?: string,
  *              model?: string,
- *              thinking?: 'off'|'low'|'medium'|'high'|'xhigh'|'max',
+ *              thinking?: 'off'|'low'|'medium'|'high'|'xhigh'|'max' | null,
  *              permission_mode?: 'manual'|'auto'|'review'|'yolo',
  *              plan_mode?: boolean,
  *              disabled_tools?: string[],
@@ -35,15 +35,15 @@
 
 import { z } from 'zod';
 import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
-import { executionSelectionSchema } from '../execution';
 
 import { messageContentSchema } from '../message';
+import { executionSelectionSchema } from '../execution';
 import { isoDateTimeSchema } from '../time';
 
 // Accept any non-empty, model-declared effort string. Providers normalize
 // unrecognized efforts on the wire, so the REST layer must not reject a value
 // the catalog advertises via `support_efforts`.
-export const promptThinkingSchema = z.string().min(1);
+export const promptThinkingSchema = z.string().min(1).nullable();
 export type PromptThinking = z.infer<typeof promptThinkingSchema>;
 
 export const promptPermissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);
@@ -67,10 +67,12 @@ export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
-  execution: executionSelectionSchema.optional(),
+  admission: z.literal('durable').optional(),
+  delivery_mode: z.literal('steer').optional(),
   content: z.array(messageContentSchema).min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
   agent_id: z.string().min(1).optional(),
+  execution: executionSelectionSchema.optional(),
   // Agent profile captured with this prompt and applied when the prompt starts.
   // A different name replaces the target agent's current base-profile binding.
   profile: z.string().min(1).optional(),
@@ -117,7 +119,21 @@ export type PromptExecutionOverrides = z.infer<typeof promptExecutionOverridesSc
 export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
+export const promptAdmissionStateSchema = z.enum(['restoring', 'admitted', 'failed', 'cancelled', 'held']);
+export type PromptAdmissionState = z.infer<typeof promptAdmissionStateSchema>;
+
+export const promptDeliveryReasonSchema = z.enum([
+  'target_changed', 'prompt_no_longer_pending', 'steer_rejected', 'external_retry',
+  'model_switch_boundary', 'no_active_turn', 'executor_deferred',
+]);
+export type PromptDeliveryReason = z.infer<typeof promptDeliveryReasonSchema>;
+
 export const promptItemSchema = z.object({
+  admission: promptAdmissionStateSchema.optional(),
+  delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_reason: promptDeliveryReasonSchema.optional(),
+  admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),
+  admission_content_truncated: z.boolean().optional(),
   runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
@@ -141,6 +157,8 @@ export type PromptQueueHold = z.infer<typeof promptQueueHoldSchema>;
 export const promptListResponseSchema = z.object({
   active: promptItemSchema.nullable(),
   queued: z.array(promptItemSchema),
+  ingress: z.array(promptItemSchema).optional(),
+  ingress_next_cursor: z.string().optional(),
   recovery_hold: promptQueueHoldSchema.optional(),
 });
 export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
@@ -207,6 +225,8 @@ export type PromptSteerRequest = z.infer<typeof promptSteerRequestSchema>;
 export const promptSteerResultSchema = z.object({
   steered: z.literal(true),
   prompt_ids: z.array(z.string().min(1)).min(1),
+  delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_reason: promptDeliveryReasonSchema.optional(),
 });
 export type PromptSteerResult = z.infer<typeof promptSteerResultSchema>;
 

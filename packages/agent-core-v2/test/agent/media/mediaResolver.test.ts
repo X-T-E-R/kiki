@@ -31,6 +31,7 @@ import {
   type ResolvedImagePolicy,
 } from '#/kosong/provider/providerImagePolicy';
 import { IBlobStore } from '#/persistence/interface/blobStore';
+import { ErrorCodes } from '#/errors';
 
 import { registerStateServices } from '../../state/stubs';
 
@@ -38,7 +39,10 @@ const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 const FILE_ID = 'file_abc';
 const VIDEO_BYTES = Buffer.from('tiny fake mp4 bytes');
-const PNG_BYTES = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00]);
+const PNG_BYTES = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 const BMP_BYTES = Buffer.from(
   'Qk06AAAAAAAAADYAAAAoAAAAAQAAAAEAAAABABgAAAAAAAQAAAATCwAAEwsAAAAAAAAAAAAAAAD/AA==',
   'base64',
@@ -211,7 +215,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  disposables.dispose();
+  await disposables.dispose();
   await rm(sessionDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
 });
 
@@ -553,13 +557,27 @@ describe('AgentMediaResolverService image strategy', () => {
     expect(part.type === 'image_url' ? part.imageUrl.url : '').toMatch(/^data:image\/png;base64,/);
   });
 
-  it('passes accepted corrupt base64 through unchanged when conversion is off', async () => {
-    const res = resolver(new Map());
-    const message = imageMessage('data:image/png;base64,%%%not-base64%%%');
-    const messages = [message];
+  it('accepts a valid unpadded base64 image without rejecting it', async () => {
+    const base64 = PNG_BYTES.toString('base64').replace(/=+$/u, '');
+    const out = await resolver(new Map()).resolve(
+      [imageMessage(`data:image/png;base64,${base64}`)],
+      requester({}),
+    );
+    expect(firstPart(out)).toEqual({
+      type: 'image_url',
+      imageUrl: { url: `data:image/png;base64,${base64}` },
+    });
+  });
 
-    expect(
-      await res.resolve(
+  it.each([
+    { name: 'invalid alphabet', url: 'data:image/png;base64,%%%not-base64%%%' },
+    { name: 'truncated unpadded payload', url: `data:image/png;base64,${'A'.repeat(1022)}` },
+  ])('rejects an incomplete inline image without changing the composition ($name)', async ({ url }) => {
+    const res = resolver(new Map());
+    const messages = [imageMessage(url)];
+
+    await expect(
+      res.resolve(
         messages,
         requester({
           providerType: 'openai',
@@ -569,7 +587,11 @@ describe('AgentMediaResolverService image strategy', () => {
           },
         }),
       ),
-    ).toBe(messages);
+    ).rejects.toMatchObject({
+      code: ErrorCodes.REQUEST_INVALID,
+      details: { mediaType: 'image', urlLength: url.length },
+    });
+    expect(messages[0]!.content[0]).toEqual({ type: 'image_url', imageUrl: { url } });
   });
 
   it('rethrows a cancelled image read instead of degrading to a tag', async () => {
@@ -926,8 +948,8 @@ describe('AgentMediaResolverService scoped registration', () => {
     );
   });
 
-  afterEach(() => {
-    host.dispose();
+  afterEach(async () => {
+    await host.dispose();
   });
 
   function agentScope(files: Map<string, { name: string; bytes: Buffer }>) {

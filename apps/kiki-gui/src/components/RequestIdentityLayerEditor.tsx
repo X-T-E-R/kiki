@@ -115,6 +115,7 @@ export function RequestIdentityLayerEditor({
             <textarea
               className={`${INPUT} mt-1 min-h-24 font-mono ${issue !== null ? 'border-danger' : ''}`}
               aria-invalid={issue !== null}
+              data-request-identity-overrides
               spellCheck={false}
               value={value.requestIdentityOverridesJson}
               onChange={(event) => { writeOverrides(event.target.value); }}

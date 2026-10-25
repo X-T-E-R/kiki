@@ -50,6 +50,8 @@ import { ISessionMetadata, isExternalClientMain } from '#/session/sessionMetadat
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { OrderedHookSlot } from '#/hooks';
+import type { AgentTaskNotificationDeliveryContext } from './task';
 import {
   IAgentTaskService,
   type AgentTaskLoadOptions,
@@ -66,6 +68,7 @@ import {
   type RegisterAgentTaskOptions,
 } from './task';
 import { resolveAgentTaskConfig } from './configSection';
+import { readCommittedAgentRunOutcomes } from './agentOutcome';
 import { AgentTaskPersistence } from './persist';
 import { runningSubagentStatus } from './runningSubagentStatus';
 import {
@@ -171,12 +174,13 @@ interface ManagedTask extends BufferedTaskOutput {
   lifecyclePromise: Promise<void>;
   stopping?: Promise<AgentTaskInfo | undefined>;
   stopCleanup?: Promise<void>;
+  cleanupFailure?: unknown;
   persistWriteQueue: Promise<void>;
   notificationPromise?: Promise<void>;
   timeoutHandle?: ReturnType<typeof setTimeout>;
   timedOut: boolean;
   readonly waiters: Array<() => void>;
-  handleSubscription?: { dispose(): void };
+  handleSubscription?: { dispose(): void | Promise<void> };
   visible: boolean;
 }
 
@@ -269,6 +273,7 @@ export const taskActiveTaskReminderPendingKey = defineState<boolean>(
 
 export class AgentTaskService extends Disposable implements IAgentTaskService {
   declare readonly _serviceBrand: undefined;
+  readonly hooks = { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() };
 
   private readonly tasks = new Map<string, ManagedTask>();
   private readonly localTaskIds = new Set<string>();
@@ -353,11 +358,11 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     );
     this._register(this.loop.hooks.onWillBeginStep.register('task.notificationDelivery', async ({ signal, firstStepOfTurn }, next) => {
       signal.throwIfAborted();
-      await this.commitMaterializedNotifications();
+      await this.commitMaterializedNotifications(signal);
       if (firstStepOfTurn) await this.restoreAgentTaskNotifications();
       signal.throwIfAborted();
       await next();
-    }));
+    }, { before: 'context-injector' }));
     this._register(this.loop.hooks.onDidAppendToolResult.register('task.waitDelivery', async ({ toolCallId, isError }, next) => {
       const pending = this.pendingWaitDeliveries.get(toolCallId);
       if (pending !== undefined) {
@@ -483,6 +488,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         }),
       )
       .catch(async (error: unknown) => {
+        if ((error as { code?: unknown } | null)?.code === 'os.process.kill_failed') {
+          await this.retainCleanupFailure(entry, error);
+          return;
+        }
         const aborted = entry.abortController.signal.aborted;
         let status: AgentTaskStatus;
         if (entry.timedOut) {
@@ -541,7 +550,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.endedAt = Date.now();
       entry.terminalFired = true;
       entry.foregroundSignalCleanup?.();
-      entry.handleSubscription?.dispose();
+      await entry.handleSubscription?.dispose();
       if (entry.timeoutHandle !== undefined) clearTimeout(entry.timeoutHandle);
       entry.abortController.abort(reason);
       entry.foregroundRelease?.resolve('terminal');
@@ -621,7 +630,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     });
 
     entry.handleSubscription = {
-      dispose() {
+      async dispose() {
         outputSub.dispose();
         stateSub.dispose();
       },
@@ -682,6 +691,21 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       }
     }
     return result;
+  }
+
+  hasUnfinishedWork(): boolean {
+    for (const entry of this.tasks.values()) {
+      if (entry.options.lifetime === 'service') continue;
+      if (!TERMINAL_STATUSES.has(entry.status)) return true;
+      if (entry.visible && this.isDetached(entry) && !this.isTerminalNotificationSuppressed(entry.taskId) &&
+        !this.deliveredNotificationKeys.has(entry.taskId)) return true;
+    }
+    for (const info of this.ghosts.values()) {
+      if (this.localTaskIds.has(info.taskId) && info.lifetime !== 'service' && info.detached !== false &&
+        !this.isTerminalNotificationSuppressed(info.taskId) && !this.deliveredNotificationKeys.has(info.taskId)) return true;
+    }
+    return this.buildingNotificationKeys.size > 0 || this.pendingNotificationRequests.size > 0 ||
+      this.pendingWaitDeliveries.size > 0;
   }
 
   private async reconcileNotificationDeliveryAfterUndo(): Promise<void> {
@@ -936,6 +960,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       void this.terminateWithGrace(entry, {
         abortReason: 'Timed out',
         finalStatus: 'timed_out',
+      }).catch((error) => {
+        this.log.error('task timeout could not confirm cleanup; task remains recoverable', { taskId: entry.taskId, error });
       });
     }, timeoutMs);
     entry.timeoutHandle.unref?.();
@@ -1008,14 +1034,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const child = info.kind === 'agent' && info.agentId !== undefined
       ? this.lifecycle.get(info.agentId)
       : undefined;
+    let descendantFailure: unknown;
     if (child !== undefined) {
       entry.stopCleanup = Promise.resolve().then(async () => {
         try {
           await child.accessor.get(IAgentTaskService).stopAll(
             options.stopReason ?? (options.finalStatus === 'timed_out' ? 'Timed out' : undefined),
           );
+          entry.cleanupFailure = undefined;
         } catch (error) {
-          this.log.error('failed to stop descendant tasks', { agentId: child.id, error });
+          descendantFailure = error;
+          await this.retainCleanupFailure(entry, error);
         }
       });
     }
@@ -1025,6 +1054,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.abortController.abort(options.abortReason);
     }
     await entry.stopCleanup;
+    if (descendantFailure !== undefined) throw descendantFailure instanceof Error ? descendantFailure : new Error(errorMessage(descendantFailure), { cause: descendantFailure });
 
     const graceMs = resolveAgentTaskConfig(this.config)?.killGracePeriodMs ?? SIGTERM_GRACE_MS;
     let graceTimer: ReturnType<typeof setTimeout> | undefined;
@@ -1047,13 +1077,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       return this.toInfo(entry);
     }
 
-    if (!graceful) {
+    if (!graceful || entry.cleanupFailure !== undefined) {
       try {
         const forceStop =
           entry.forceStopFn ??
           (entry.task === undefined ? undefined : entry.task.forceStop?.bind(entry.task));
+        if (forceStop === undefined && entry.cleanupFailure !== undefined) throw entry.cleanupFailure instanceof Error ? entry.cleanupFailure : new Error(errorMessage(entry.cleanupFailure), { cause: entry.cleanupFailure });
         await forceStop?.();
-      } catch {
+        entry.cleanupFailure = undefined;
+      } catch (error) {
+        await this.retainCleanupFailure(entry, error);
+        throw error;
       }
     }
 
@@ -1068,6 +1102,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     });
     await entry.persistWriteQueue;
     return this.toInfo(entry);
+  }
+
+  private async retainCleanupFailure(entry: ManagedTask, error: unknown): Promise<void> {
+    entry.cleanupFailure = error;
+    const diagnostic = error as { code?: unknown; details?: unknown } | null;
+    entry.stopReason = `Task cleanup is unconfirmed; retry TaskStop for the same task before replacing its work. ${typeof diagnostic?.code === 'string' || typeof diagnostic?.code === 'number' ? String(diagnostic.code) : 'cleanup_failed'}: ${errorMessage(error)}${diagnostic?.details === undefined ? '' : `; details=${JSON.stringify(diagnostic.details)}`}`;
+    this.log.error('task cleanup failed; execution retained without terminal receipt', { taskId: entry.taskId, error });
+    await this.persistLive(entry);
   }
 
   async stopAll(reason?: string): Promise<readonly AgentTaskInfo[]> {
@@ -1087,7 +1129,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return this.stopAll(reason);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.exitSuppressionArmed = true;
     for (const pending of this.pendingWaitDeliveries.values()) pending.cleanup();
     this.pendingWaitDeliveries.clear();
@@ -1106,7 +1148,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         this.forceStopOnDispose(entry);
       }
     }
-    super.dispose();
+    return super.dispose();
   }
 
   private forceStopOnDispose(entry: ManagedTask): void {
@@ -1114,9 +1156,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       entry.forceStopFn ??
       (entry.task === undefined ? undefined : entry.task.forceStop?.bind(entry.task));
     if (forceStop === undefined) return;
-    try {
-      void forceStop().catch(() => {});
-    } catch {}
+    void Promise.resolve().then(forceStop).catch((error) => this.retainCleanupFailure(entry, error));
   }
 
   private keepAliveOnExit(): boolean {
@@ -1223,6 +1263,15 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
   private async markLoadedTasksLost(): Promise<readonly AgentTaskInfo[]> {
     const lostTasks: AgentTaskInfo[] = [];
     const persistence = this.persistence;
+    const needsOutcome = [...this.ghosts.values()].some((info) =>
+      !TERMINAL_STATUSES.has(info.status) && info.kind === 'agent' && info.agentId !== undefined);
+    const outcomeRead = needsOutcome ? await readCommittedAgentRunOutcomes(this.sessionMetadata) : undefined;
+    if (outcomeRead?.ok === false) {
+      this.log.error('agent run outcome metadata could not be read; unconfirmed tasks stay lost', {
+        error: outcomeRead.error,
+      });
+    }
+    const outcomes = outcomeRead?.ok === true ? outcomeRead.outcomes : undefined;
     for (const [taskId, info] of this.ghosts) {
       if (TERMINAL_STATUSES.has(info.status)) continue;
       if (info.kind === 'media' && this.mediaRecovery !== undefined) {
@@ -1232,10 +1281,41 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
           continue;
         }
       }
+      if (info.kind === 'agent') {
+        const agentId = info.agentId;
+        const known = agentId === undefined ? undefined : outcomes?.get(taskId);
+        if (known !== undefined && known.subagentId === agentId) {
+          const updated: AgentTaskInfo = {
+            ...info,
+            status: known.status,
+            endedAt: known.endedAt ?? info.endedAt ?? Date.now(),
+            stopReason: known.stopReason,
+          };
+          try {
+            const receipt = await persistence.commitTerminalTask(updated, known.finalOutput);
+            const committed = { ...updated, receipt, receiptVerification: 'verified' as const };
+            this.ghosts.set(taskId, committed);
+            lostTasks.push(committed);
+          } catch (error) {
+            this.log.error('known agent outcome receipt persistence failed', { taskId, error });
+            this.ghosts.set(taskId, updated);
+            await persistence.writeTask(updated);
+            lostTasks.push(updated);
+          }
+          continue;
+        }
+      }
       const updated: AgentTaskInfo = {
         ...info,
         status: 'lost',
         endedAt: info.endedAt ?? Date.now(),
+        stopReason: [
+          'Execution tracking was not reattached when this agent scope was restored. The external execution outcome is unconfirmed.',
+          info.kind === 'agent' && info.agentId !== undefined
+            ? `Inspect preserved work and resume the same agent (${info.agentId}) with a new prompt ID. Do not repeat unconfirmed external actions.`
+            : 'Inspect the original execution and preserved output before starting replacement work.',
+          info.stopReason === undefined ? undefined : `Previous diagnostic: ${info.stopReason}`,
+        ].filter((part) => part !== undefined).join(' '),
       };
       try {
         const receipt = await persistence.commitTerminalTask(updated);
@@ -1459,14 +1539,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     settlement: AgentTaskSettlement,
   ): Promise<boolean> {
     if (entry.stopCleanup !== undefined) await entry.stopCleanup;
-    if (TERMINAL_STATUSES.has(entry.status)) return false;
+    if (entry.cleanupFailure !== undefined || TERMINAL_STATUSES.has(entry.status)) return false;
     entry.status = settlement.status;
     entry.endedAt = Date.now();
     entry.stopReason =
       settlement.stopReason ?? (settlement.status === 'killed' ? entry.stopReason : undefined);
     entry.foregroundSignalCleanup?.();
     entry.foregroundSignalCleanup = undefined;
-    entry.handleSubscription?.dispose();
+    await entry.handleSubscription?.dispose();
     entry.handleSubscription = undefined;
     if (entry.timeoutHandle !== undefined) {
       clearTimeout(entry.timeoutHandle);
@@ -1543,14 +1623,14 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     const generation = this.notificationUndoGeneration;
     const context = await this.buildAgentTaskNotificationContext(info);
     if (generation !== this.notificationUndoGeneration || context === undefined) return;
-    if (this.isTerminalNotificationSuppressed(info.taskId)) return;
+    const externalMain = await this.isExternalClientMain();
+    if (generation !== this.notificationUndoGeneration) return;
     const key = notificationKey(context.origin);
-    if (this.deliveredNotificationKeys.has(key)) return;
-    if (this.isTerminalNotificationSuppressed(info.taskId)) {
+    if (this.deliveredNotificationKeys.has(key) || this.isTerminalNotificationSuppressed(info.taskId)) {
       this.scheduledNotificationKeys.delete(key);
       return;
     }
-    if (await this.isExternalClientMain()) {
+    if (externalMain) {
       this.markDeliveredNotification(context.origin);
       this.fireNotificationHook(context.notification);
       return;
@@ -1598,6 +1678,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     if (this.loop.status().lastTurnResult === 'cancelled' || lastEnded?.reason === 'cancelled') {
       return 'activeOrNextTurn';
     }
+    if (goal?.status === 'active') return 'activeOrNewTurn';
     if (goal?.status === 'blocked' && info.goalId === goal.goalId &&
       (goal.budgetLimits.tokenBudget === undefined || goal.tokensUsed < goal.budgetLimits.tokenBudget) &&
       (goal.budgetLimits.turnBudget === undefined || goal.turnsUsed < goal.budgetLimits.turnBudget) &&
@@ -1607,12 +1688,17 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
     return goal !== null || info.goalId !== undefined ? 'activeOrNextTurn' : 'activeOrNewTurn';
   }
 
-  private async commitMaterializedNotifications(): Promise<void> {
+  private async commitMaterializedNotifications(signal: AbortSignal): Promise<void> {
     const materialized = [...this.pendingNotificationRequests].filter(([, request]) => request.state === 'materialized');
     if (materialized.length === 0) return;
     await this.dispatcher.flush();
     for (const [key, request] of materialized) {
       if (this.pendingNotificationRequests.get(key) !== request) continue;
+      signal.throwIfAborted();
+      const origin = request.turnSeed.origin;
+      if (origin.kind === 'task') await this.hooks.onWillConsumeNotification.run({ origin, signal });
+      signal.throwIfAborted();
+      await this.dispatcher.flush();
       this.pendingNotificationRequests.delete(key);
       this.scheduledNotificationKeys.delete(key);
       this.deliveredNotificationKeys.add(key);
@@ -1660,6 +1746,7 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         toolCalls: [],
         origin: context.origin,
       });
+      await this.hooks.onWillConsumeNotification.run({ origin: context.origin });
       await this.dispatcher.flush();
       this.markDeliveredNotification(context.origin);
       this.fireNotificationHook(context.notification);
@@ -1800,6 +1887,8 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
         stopReason: userReason.message,
         abortReason: signal.reason,
         finalStatus: 'killed',
+      }).catch((error) => {
+        this.log.error('task cancellation could not confirm cleanup; task remains recoverable', { taskId: entry.taskId, error });
       });
     };
     if (signal.aborted) {

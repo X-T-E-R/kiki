@@ -141,7 +141,7 @@ export function slashBusyMessage(
   reason: SlashCommandBusyReason,
 ): string {
   if (reason === 'streaming') {
-    return `Cannot /${commandName} while streaming — press Esc or Ctrl-C first.`;
+    return `Cannot /${commandName} while streaming — press Esc or Ctrl+C first.`;
   }
   return `Cannot /${commandName} while compacting — wait for compaction to finish first.`;
 }

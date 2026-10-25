@@ -1,4 +1,4 @@
-import { AcpClientError, type AcpProcessClient } from '@kiki/acp-client';
+import { AcpClientError, mapAcpSessionNotification, parseExecutorSessionRefEnvelope } from '@kiki/acp-client';
 import type {
   AcpOpenSessionOptions,
   AcpOpenSessionResult,
@@ -6,6 +6,7 @@ import type {
   AcpElicitationRequest,
   AcpElicitationResponse,
   AcpPlanApprovalHandler,
+  AcpProcessClient,
   AcpPermissionDecision,
   AcpPermissionHandler,
   AcpSessionConfigOption,
@@ -17,6 +18,7 @@ import type {
 import { describe, expect, it, vi } from 'vitest';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
+import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
 
 import { buildModeOption } from '../../../../acp-server/src/config-options';
@@ -28,7 +30,6 @@ import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInj
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentExecutionService } from '#/agent/execution/execution';
 import { AgentExecutionService } from '#/agent/execution/executionService';
-import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import type { GoalSnapshot } from '#/agent/goal/types';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -88,6 +89,10 @@ import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceCo
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IWireService } from '#/wire/wire';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IHarnessMcpService } from '#/app/agentExecutor/harnessMcp';
+import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
+import { createTestAgent } from '../../harness';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -114,6 +119,7 @@ interface FakeHarnessOptions {
   readonly inheritPermission?: boolean;
   readonly vendorDefaultOption?: boolean;
   readonly permissionToolCall?: Parameters<AcpPermissionHandler>[0]['toolCall'];
+  readonly permissionRequestMeta?: Record<string, unknown>;
   readonly permissionGate?: IAgentPermissionGate['authorize'];
   readonly permissionMapping?: AgentExecutorContext['descriptor']['permissionModeMapping'] | null;
   readonly profileDelivery?: AgentExecutorContext['descriptor']['profileDelivery'];
@@ -123,6 +129,7 @@ interface FakeHarnessOptions {
   readonly executorId?: string;
   readonly executorVersion?: string;
   readonly agentId?: string;
+  readonly parentAgentId?: string;
   readonly providerName?: string;
   readonly modelAlias?: string;
   readonly unpinModel?: boolean;
@@ -134,6 +141,7 @@ interface FakeHarnessOptions {
   readonly deferTurnCompletion?: boolean;
   readonly mcpServers?: Readonly<Record<string, McpServerConfig>>;
   readonly supportsMcp?: boolean;
+  readonly hostPermissionReceipt?: (input: AcpOpenSessionOptions) => Readonly<Record<string, unknown>> | undefined;
   readonly client?: AcpProcessClient;
   readonly clientState?: 'cold' | 'ready' | 'broken';
   readonly permission?: AgentExecutorContext['descriptor']['permission'];
@@ -147,7 +155,7 @@ function asyncEvents(events: readonly NormalizedExecutorEvent[]): AsyncIterable<
   };
 }
 
-function configOptions(permissionSurface = true): AcpSessionConfigOption[] {
+function configOptions(permissionSurface = true, autoApprove = true): AcpSessionConfigOption[] {
   const options: AcpSessionConfigOption[] = [
     {
       id: 'model-id',
@@ -178,7 +186,7 @@ function configOptions(permissionSurface = true): AcpSessionConfigOption[] {
       name: 'Auto approve',
       category: 'mode',
       type: 'boolean',
-      currentValue: true,
+      currentValue: autoApprove,
     });
   }
   return options;
@@ -252,6 +260,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
       }
       if (event instanceof ExecutorSessionUpdated) {
         state.values.set(externalExecutorKey, {
+          executionGeneration: event.executionGeneration,
           executorId: event.executorId,
           descriptorRevision: event.descriptorRevision,
           bindingFingerprint: event.bindingFingerprint,
@@ -337,6 +346,11 @@ function createHarness(options: FakeHarnessOptions = {}) {
     },
   } as unknown as ISessionMcpHandle;
   const services = new Map<unknown, unknown>([
+    [ISessionContext, { sessionId: 'session-fixture' }],
+    [IAgentScopeContext, { parentAgentId: options.parentAgentId }],
+    [IHarnessMcpService, { acquire: vi.fn(async () => ({ server: {
+      name: 'kiki-harness', command: 'fixture-kiki', args: [], env: [],
+    }, dispose() {} })) }],
     [IAgentStateService, state.state],
     [IModelCatalog, modelCatalog],
     [IAgentUsageService, usage],
@@ -378,6 +392,8 @@ function createHarness(options: FakeHarnessOptions = {}) {
     capabilities: options.capabilities ?? {},
     configOptions: configured,
     sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } },
+    sessionRequestMeta: opens.at(-1)?.sessionMeta === undefined ? undefined : JSON.parse(JSON.stringify(opens.at(-1)!.sessionMeta)),
+    sessionResponseMeta: opens.length === 0 ? undefined : options.hostPermissionReceipt?.(opens.at(-1)!),
     loadReplayObserved: options.loadReplayObserved ?? false,
     quarantinedUpdateCount: options.loadReplayObserved === true ? 2 : 0,
   });
@@ -419,6 +435,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
         const decision = await permissionHandler(
           {
             sessionId: 'remote-2',
+            _meta: options.permissionRequestMeta,
             toolCall: options.permissionToolCall ?? {
               toolCallId: 'permission-tool',
               title: 'Apply patch',
@@ -501,6 +518,7 @@ function createHarness(options: FakeHarnessOptions = {}) {
     binding: {
       modelAlias: options.unpinModel === true ? undefined : options.modelAlias ?? 'model-a',
       thinkingLevel: options.thinkingEffort ?? 'high',
+      thinkingEffortExplicit: options.thinkingEffort !== undefined || options.unpinModel !== true,
       systemPrompt: 'Frozen profile',
       executorPrompt: options.profileDelivery === 'system_prompt_override'
         ? { delivery: 'replace', include: [] } : undefined,
@@ -566,11 +584,26 @@ function createHarness(options: FakeHarnessOptions = {}) {
   };
 }
 
-export function createExecutionHarness(options: FakeHarnessOptions = {}) {
+export function createExecutionHarness(options: FakeHarnessOptions = {}): {
+  ix: TestInstantiationService;
+  execution: AgentExecutionService;
+  starts: AcpTurnRequest[];
+  events: Event2[];
+  pendingTurns: Set<number>;
+  interaction: ISessionInteractionService;
+  client: {
+    openSession(options: AcpOpenSessionOptions): Promise<AcpOpenSessionResult>;
+    shutdown(): Promise<void>;
+  };
+  runtimeLease: { dispose(): void };
+  turnCancel(): Promise<boolean>;
+} {
   const harness = createHarness({ ...options, deferTurnCompletion: true });
   const ix = new TestInstantiationService();
   const agentId = harness.executorContext.agent.id;
   ix.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+  ix.stub(ISessionContext, { sessionId: 'session-fixture' });
+  ix.stub(IRequestGovernance, { acquireAgent: async () => ({ release() {} }) });
   ix.set(IAgentContextMemoryService, harness.contextMemory);
   ix.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: async () => {} });
   ix.stub(ISessionTodoService, {
@@ -678,6 +711,27 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it('cancels the active remote prompt when recording fails instead of leaving execution running', async () => {
+    const harness = createHarness({
+      deferTurnCompletion: true,
+      events: [{ type: 'message.delta', role: 'assistant', content: { type: 'text', text: 'answer' } }],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const dispatch = harness.dispatcher.dispatch.bind(harness.dispatcher);
+    harness.dispatcher.dispatch = async (event) => {
+      if (event instanceof AssistantDelta) throw new Error('fixture recording failed');
+      return dispatch(event);
+    };
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await expect(run.completion).rejects.toThrow('fixture recording failed');
+      expect(await run.turn.result).toMatchObject({ type: 'failed' });
+      await harness.session.settled();
+      expect(harness.turnCancel).toHaveBeenCalledOnce();
+      expect(harness.session.status().state).toBe('idle');
+    } finally { await harness.session.shutdown(); }
+  });
+
   it('keeps permission overrides and clear within the same execution context', () => {
     const first = resolveExecutionBinding({ executor: 'example-acp', overrides: { permission_mode: 'yolo' } }, undefined, undefined, undefined);
     const next = resolveExecutionBinding({ executor: 'example-acp', overrides: { permission_mode: 'auto' } }, undefined, undefined, first);
@@ -691,21 +745,139 @@ describe('ACP external executor', () => {
       .toBe(first.generation + 1);
   });
 
+  it('keeps old reminders and previously queued mail out of a bare user turn after delegation is explicitly disabled', async () => {
+    const harness = createExecutionHarness({ unpinModel: true, thinkingEffort: 'off',
+      history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_CONTEXT' }], origin: { kind: 'injection', variant: 'goal_state' } }],
+      todos: [{ title: 'OLD_TODO', status: 'pending' }],
+    });
+    const profile = harness.ix.get(IAgentProfileService);
+    const original = profile.data();
+    const execution = resolveExecutionBinding({ executor: original.executorId! }, undefined, undefined, undefined);
+    const binding = { ...original, execution, modelAlias: undefined, thinkingLevel: 'off' as const, systemPrompt: '', kikiContext: [], allowKikiSubagents: false };
+    const data = vi.spyOn(profile, 'data').mockReturnValue(binding);
+    const reconcile = vi.spyOn(harness.ix.get(IAgentContextInjectorService), 'reconcileAllAtSafeBoundary');
+    const mailbox = attachExternalMailboxHarness(harness.ix, 'external-agent');
+    try {
+      const accepted = await mailbox.messaging.send({ sourceAgentId: 'main', sourceTaskName: 'root', targetAgentId: 'external-agent',
+        targetTaskName: 'external-agent', content: 'OLD_MAIL', idempotencyKey: 'old-mail', waitForRunningDelivery: true });
+      expect(accepted.delivery).toBe('queued');
+      data.mockReturnValue({ ...binding, execution: resolveExecutionBinding({
+        executor: original.executorId!, overrides: { allow_kiki_subagents: false },
+      }, undefined, undefined, execution) });
+      await expect(mailbox.messaging.send({ sourceAgentId: 'main', sourceTaskName: 'root', targetAgentId: 'external-agent',
+        targetTaskName: 'external-agent', content: 'NEW_MAIL', idempotencyKey: 'new-mail', waitForRunningDelivery: true }))
+        .rejects.toThrow(/allow_kiki_subagents is false/);
+      await harness.execution.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
+      expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
+      expect(reconcile).not.toHaveBeenCalled();
+      expect(mailbox.delivered()).toBe(false);
+    } finally { await mailbox.dispose(); await harness.execution.shutdown(); await harness.ix.dispose(); }
+  });
+
+
+  it('keeps direct ACP factory payload bare across a durable generation boundary', async () => {
+    const harness = createHarness({ unpinModel: true, thinkingEffort: 'off',
+      mcpServers: { relay: { transport: 'stdio', command: 'node' } },
+      history: [{ role: 'user', toolCalls: [], content: [{ type: 'text', text: 'OLD_KIKI_HISTORY' }] }],
+      prior: { executorId: 'old-executor', descriptorRevision: 'old-revision', sessionEpoch: 3,
+        sessionRef: { executorId: 'old-executor', version: 1, ref: { sessionId: 'old-session' } } },
+    });
+    const execution = resolveExecutionBinding({ executor: 'example-acp' }, undefined, undefined, undefined);
+    const context = { ...harness.executorContext, binding: { ...harness.executorContext.binding, execution,
+      modelAlias: undefined, thinkingLevel: 'off', systemPrompt: '', kikiContext: [], allowKikiSubagents: false } };
+    const session = harness.createSession(context);
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_NEW_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.opens[0]).toMatchObject({ cwd: harness.workspace.workDir, mcpServers: [] });
+      expect(harness.opens[0]?.sessionRef).toBeUndefined();
+      expect(harness.opens[0]?.systemPromptOverride).toBeUndefined();
+      expect(harness.selections).toEqual([]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_NEW_USER');
+      expect(harness.state.get(externalExecutorKey)).toMatchObject({ executionGeneration: 1, sessionEpoch: 4 });
+      const persistedRef = harness.state.get(externalExecutorKey).sessionRef;
+      expect(() => parseExecutorSessionRefEnvelope(persistedRef)).not.toThrow();
+      expect(persistedRef?.ref).not.toHaveProperty('localSource');
+      await session.shutdown();
+      if (persistedRef === undefined) throw new Error('Expected saved remote reference');
+      harness.state.set(externalExecutorKey, { ...harness.state.get(externalExecutorKey),
+        sessionRef: { ...persistedRef, ref: { ...persistedRef.ref, localSource: undefined } } });
+      const cold = harness.createSession(context);
+      try {
+        const next = await cold.run({ kind: 'prompt', prompt: 'COLD_USER' }, { signal: new AbortController().signal });
+        await next.completion;
+        expect(harness.opens[1]?.sessionRef).toMatchObject({ ref: { sessionId: 'remote-2' } });
+        expect(() => parseExecutorSessionRefEnvelope(harness.opens[1]?.sessionRef)).not.toThrow();
+        expect(harness.starts[1]?.prompt).toBe('COLD_USER');
+      } finally { await cold.shutdown(); }
+    } finally { await session.shutdown(); }
+  });
+
+  it('sends only explicitly selected ACP controls without adding a Kiki preamble', async () => {
+    const harness = createHarness();
+    const execution = resolveExecutionBinding({ executor: 'example-acp', overrides: {
+      model: 'model-a', thinking: 'high', permission_mode: 'auto',
+    } }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.executorContext, binding: {
+      ...harness.executorContext.binding, execution, systemPrompt: '', kikiContext: [], allowKikiSubagents: false,
+    } });
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'ONLY_USER' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.selections).toEqual([
+        { configId: 'model-id', value: 'model-a' }, { configId: 'thought-id', value: 'high' },
+        { configId: 'auto_approve', value: false },
+      ]);
+      expect(harness.starts[0]?.prompt).toBe('ONLY_USER');
+    } finally { await session.shutdown(); }
+  });
+
+  it.each([undefined, 'engine-default', 'specialist'])('negotiates native agent %s independently of the executor name', async (nativeAgent) => {
+    const choices: AcpSessionConfigOption[] = [{ id: 'native-choice', name: 'Native agent', category: 'native_agent', type: 'select',
+      currentValue: 'vendor-main', options: [{ value: 'specialist', name: 'Specialist' }] }];
+    const harness = createHarness({ executorId: 'neutral-harness', inheritPermission: true, unpinModel: true, thinkingEffort: 'off', sessionConfigOptions: choices });
+    const initial = resolveExecutionBinding({ executor: 'neutral-harness' }, undefined, undefined, undefined);
+    const execution = resolveExecutionBinding({ executor: 'neutral-harness', overrides: { native_agent: nativeAgent } }, undefined, undefined, initial);
+    harness.state.set(externalExecutorKey, { executionGeneration: initial.generation, executorId: 'neutral-harness', descriptorRevision: harness.executorContext.descriptor.revision,
+      sessionRef: { executorId: 'neutral-harness', version: 1, ref: { sessionId: 'previous-native-agent' } } });
+    const session = harness.createSession({ ...harness.executorContext, binding: { ...harness.executorContext.binding, execution, systemPrompt: '' } });
+    try {
+      const handle = await session.run({ kind: 'prompt', prompt: 'Neutral user input' }, { signal: new AbortController().signal });
+      await handle.completion;
+      expect(harness.selections).toEqual(nativeAgent === 'specialist' ? [{ configId: 'native-choice', value: nativeAgent }] : []);
+      if (nativeAgent !== undefined) expect(harness.opens[0]?.sessionRef).toBeUndefined();
+      expect(harness.starts[0]?.prompt).toBe('Neutral user input');
+    } finally { await session.shutdown(); }
+  });
+
+  it('rejects a native agent absent from exact negotiation before delivering a user turn', async () => {
+    const harness = createHarness({ inheritPermission: true, unpinModel: true, thinkingEffort: 'off', sessionConfigOptions: [] });
+    const execution = resolveExecutionBinding({ executor: 'example-acp', overrides: { native_agent: 'specialist' } }, undefined, undefined, undefined);
+    const session = harness.createSession({ ...harness.executorContext, binding: { ...harness.executorContext.binding, execution } });
+    try {
+      await expect(session.run({ kind: 'prompt', prompt: 'must not launch' }, { signal: new AbortController().signal })).rejects.toThrow('native agent selection is unsupported');
+      expect(harness.starts).toEqual([]);
+      expect(harness.selections).toEqual([]);
+    } finally { await session.shutdown(); }
+  });
+
   it.each(['0.37.0', '0.39.0', undefined])('forwards MCP to Kimi independently of its probed version %s', async (executorVersion) => {
     const harness = createHarness({
-      executorId: 'kimi-acp', executorVersion,
+      executorId: 'kimi-acp', executorVersion, parentAgentId: 'parent-fixture',
       supportsMcp: BUILTIN_AGENT_EXECUTORS['kimi-acp']!.supportsMcp,
       mcpServers: { relay: { transport: 'stdio', command: 'node', args: ['relay.js'] } },
       thinkingEffort: 'off', unpinModel: true,
     });
     await harness.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
-    expect(harness.opens[0]?.mcpServers).toEqual([{ name: 'relay', command: 'node', args: ['relay.js'], env: [] }]);
+    expect(harness.opens[0]?.mcpServers).toEqual([
+      { name: 'kiki-harness', command: 'fixture-kiki', args: [], env: [] },
+    ]);
     await harness.session.shutdown();
   });
 
   it('passes session MCP servers to the engine and honors the descriptor opt-out', async () => {
     const config = { relay: { transport: 'stdio' as const, command: 'node', args: ['relay.js'] } };
-    const forwarded = createHarness({ mcpServers: config, thinkingEffort: 'off', unpinModel: true });
+    const forwarded = createHarness({ mcpServers: config, supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
     await forwarded.session.run({ kind: 'prompt', prompt: 'Hello' }, { signal: new AbortController().signal });
     expect(forwarded.opens[0]?.mcpServers).toEqual([
       { name: 'relay', command: 'node', args: ['relay.js'], env: [] },
@@ -718,6 +890,32 @@ describe('ACP external executor', () => {
     await optedOut.session.shutdown();
   });
 
+  it('opens ACP mcpServers with the Kiki bridge only when injection is on', async () => {
+    const offExecution = resolveExecutionBinding({ executor: 'example-acp', overrides: {
+      kiki_context: ['memory'], allow_kiki_subagents: true,
+    } }, { inject_kiki_mcp: false, executor_prompt: { include: ['memory_snapshot'] } }, undefined, undefined);
+    const off = createHarness({ supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
+    const offSession = off.createSession({ ...off.executorContext, binding: {
+      ...off.executorContext.binding, execution: offExecution, systemPrompt: '',
+    } });
+    try {
+      await (await offSession.run({ kind: 'prompt', prompt: 'OFF' }, { signal: new AbortController().signal })).completion;
+      expect(off.opens[0]?.mcpServers).toEqual([]);
+      expect(offExecution.effective).toMatchObject({ kiki_context: ['memory'], allow_kiki_subagents: true, inject_kiki_mcp: false });
+    } finally { await offSession.shutdown(); }
+
+    const onExecution = resolveExecutionBinding({ executor: 'example-acp' }, { inject_kiki_mcp: true }, undefined, undefined);
+    const on = createHarness({ supportsMcp: true, thinkingEffort: 'off', unpinModel: true });
+    const onSession = on.createSession({ ...on.executorContext, binding: {
+      ...on.executorContext.binding, execution: onExecution, systemPrompt: '', kikiContext: [], allowKikiSubagents: false,
+    } });
+    try {
+      await (await onSession.run({ kind: 'prompt', prompt: 'ON' }, { signal: new AbortController().signal })).completion;
+      expect(on.opens[0]?.mcpServers).toEqual([{ name: 'kiki-harness', command: 'fixture-kiki', args: [], env: [] }]);
+      expect(onExecution.effective.kiki_context).toEqual([]);
+    } finally { await onSession.shutdown(); }
+  });
+
   it.each([
     ['unknown key', { typo: true }],
     ['approval bypass key', { always_approve: true }],
@@ -728,6 +926,22 @@ describe('ACP external executor', () => {
 
   it('accepts an empty closed executor options mapping', () => {
     expect(AcpAgentExecutorProvider.validateOptions({})).toEqual({});
+  });
+
+  it('records Claude ACP negotiated model metadata as a runtime fact', async () => {
+    const harness = createHarness({ executorId: 'claude-acp', modelAlias: 'model-a' });
+    const handle = await harness.session.run(
+      { kind: 'prompt', prompt: 'work' },
+      { signal: new AbortController().signal },
+    );
+    await handle.completion;
+
+    expect(harness.events).toContainEqual(expect.objectContaining({
+      type: 'executor.runtime.update',
+      kind: 'session',
+      value: { meta: { source: 'claude-acp', actualModel: 'model-a', agentVersion: undefined } },
+    }));
+    await harness.session.shutdown();
   });
 
   it('keeps the generic recorder free of ACP-specific losses and durable wording', async () => {
@@ -992,34 +1206,40 @@ describe('ACP external executor', () => {
     expect(observed.filter((event) => event.type === 'tool.result')).toHaveLength(1);
   });
 
-  it('places a pinned argv model before the harness subcommand', () => {
-    const context = {
-      agent: {} as AgentExecutorContext['agent'],
-      descriptor: {
-        id: 'cursor-acp',
-        protocol: 'acp-v1',
-        command: 'cursor-agent',
-        args: ['acp'],
-        modelBinding: 'argv',
-        modelArgs: ['--model', '{model}'],
-        revision: 'r1',
-      },
-      binding: {
-        modelAlias: 'cursor-model',
-        thinkingLevel: 'off',
-        systemPrompt: 'prompt',
-      },
-    } satisfies AgentExecutorContext;
+  it('places a pinned argv model before the harness subcommand', async () => {
+    const fixture = createTestAgent();
+    try {
+      await fixture.ready;
+      const context = {
+        agent: { id: 'main', accessor: { get: <T>(id: Parameters<AgentExecutorContext['agent']['accessor']['get']>[0]) => fixture.get(id) as T } },
+        descriptor: {
+          id: 'cursor-acp',
+          protocol: 'acp-v1' as const,
+          command: 'cursor-agent',
+          args: ['acp'],
+          modelBinding: 'argv' as const,
+          modelArgs: ['--model', '{model}'],
+          revision: 'r1',
+        },
+        binding: {
+          modelAlias: 'cursor-model',
+          thinkingLevel: 'off',
+          systemPrompt: 'prompt',
+        },
+      } satisfies AgentExecutorContext;
 
-    expect(resolveAcpProcessArgs(context)).toEqual([
-      '--model',
-      'cursor-model',
-      'acp',
-    ]);
-    expect(resolveAcpProcessArgs({
-      ...context,
-      binding: { ...context.binding, modelAlias: undefined },
-    })).toEqual(['acp']);
+      expect(resolveAcpProcessArgs(context)).toEqual([
+        '--model',
+        'cursor-model',
+        'acp',
+      ]);
+      expect(resolveAcpProcessArgs({
+        ...context,
+        binding: { ...context.binding, modelAlias: undefined },
+      })).toEqual(['acp']);
+    } finally {
+      await fixture.dispose();
+    }
   });
 
   it('suppresses an exact outbound prompt echo from external user frames', async () => {
@@ -1073,7 +1293,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1112,7 +1332,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1129,7 +1349,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1153,7 +1373,7 @@ describe('ACP external executor', () => {
       await run.completion.catch(() => undefined);
     } finally {
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1182,9 +1402,9 @@ describe('ACP external executor', () => {
       expect(harness.starts[0]?.prompt).toContain('ordinary ACP resume');
       expect(mailbox.delivered()).toBe(true);
     } finally {
-      mailbox.dispose();
+      await mailbox.dispose();
       await harness.execution.shutdown();
-      harness.ix.dispose();
+      await harness.ix.dispose();
     }
   });
 
@@ -1244,8 +1464,151 @@ describe('ACP external executor', () => {
       role: 'user',
       id: 'external-user-1',
       content: [{ type: 'text', text: 'remote follow-up' }],
-      origin: { kind: 'system_trigger', name: 'external-executor:example-acp' },
+      origin: { kind: 'unknown' },
     })]);
+    expect(JSON.stringify(harness.appendedMessages)).not.toContain('external-executor:');
+  });
+
+  it('delivers external preamble at observation and keeps a late recognized echo on the safety boundary', async () => {
+    const timeline: string[] = [];
+    const managed: { message: ContextMessage; delivery: { origin?: string; placement?: string; turnId?: number; stepId?: string; step?: number } }[] = [];
+    const dispatcher = { dispatch: async () => {}, flush: async () => {} };
+    const wire = { _serviceBrand: undefined, flush: async () => {} };
+    const contextMemory = {
+      _serviceBrand: undefined,
+      appendManaged: (message: ContextMessage, delivery: { origin?: string; placement?: string; turnId?: number; stepId?: string; step?: number }) => {
+        timeline.push(`user:${message.id}`);
+        managed.push({ message, delivery });
+      },
+      appendLoopEvent: (event: { type?: string }) => timeline.push(event.type ?? 'loop'),
+    };
+    const usage = { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) };
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, dispatcher], [IWireService, wire],
+      [IAgentContextMemoryService, contextMemory], [IAgentUsageService, usage],
+    ]);
+    const outbound = '[Kiki memory]\nremember this\n\n[Kiki goal_state]\nGoal (active): land\n\nwork';
+    const recorder = new ExternalTurnRecorder(
+      { id: 'boundary-agent', accessor: { get: (id: unknown) => services.get(id) as never } },
+      7,
+      'boundary-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native', outboundPrompt: outbound },
+    );
+    await recorder.begin('work', { kind: 'user' }, [], 'prompt-1');
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'preamble', content: { type: 'text', text: '[Kiki memory]\nremember this' } });
+    await recorder.record({ type: 'message.delta', role: 'assistant', messageId: 'assistant-1', content: { type: 'text', text: 'doing it' } });
+    await recorder.record({ type: 'tool.call', toolCallId: 'read-1', title: 'Read', status: 'pending' });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'echo', content: { type: 'text', text: outbound } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'prompt-echo', content: { type: 'text', text: 'work' } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'follow-up', content: { type: 'text', text: 'remote follow-up' } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'late', content: { type: 'text', text: '[Kiki goal_state]\nGoal (active): land' } });
+    await recorder.complete('end_turn');
+
+    expect(timeline).toEqual([
+      'step.begin', 'user:preamble', 'content.part', 'tool.call', 'user:follow-up', 'user:late', 'tool.result', 'step.end',
+    ]);
+    expect(timeline.indexOf('user:preamble')).toBeLessThan(timeline.indexOf('content.part'));
+    expect(timeline.indexOf('user:late')).toBeLessThan(timeline.indexOf('step.end'));
+    expect(managed.map((entry) => entry.message.origin)).toEqual([
+      { kind: 'injection', variant: 'memory', ownerPromptId: 'prompt-1' },
+      { kind: 'unknown' },
+      { kind: 'injection', variant: 'goal_state', ownerPromptId: 'prompt-1' },
+    ]);
+    expect(managed.map((entry) => entry.delivery)).toEqual([
+      expect.objectContaining({ origin: 'injection', placement: 'safety_boundary', turnId: 7, step: 1 }),
+      expect.objectContaining({ origin: 'queue', turnId: 7, step: 1 }),
+      expect.objectContaining({ origin: 'injection', placement: 'safety_boundary', turnId: 7, step: 1 }),
+    ]);
+    expect(managed[1]?.delivery.placement).toBeUndefined();
+    expect(managed.every((entry) => entry.delivery.stepId === recorder.stepId)).toBe(true);
+    expect(JSON.stringify(managed)).not.toContain('external-executor:');
+    expect(JSON.stringify(managed)).not.toContain('system_trigger');
+  });
+
+  it('keeps the remainder of one user message when a thought arrives between its deltas', async () => {
+    const managed: { message: ContextMessage; delivery: { placement?: string } }[] = [];
+    const timeline: string[] = [];
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, { dispatch: async () => {}, flush: async () => {} }],
+      [IWireService, { _serviceBrand: undefined, flush: async () => {} }],
+      [IAgentContextMemoryService, {
+        _serviceBrand: undefined,
+        appendManaged: (message: ContextMessage, delivery: { placement?: string }) => {
+          timeline.push(`user:${message.id}:${message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('')}`);
+          managed.push({ message, delivery });
+        },
+        appendLoopEvent: (event: { type?: string }) => timeline.push(event.type ?? 'loop'),
+      }],
+      [IAgentUsageService, { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) }],
+    ]);
+    const recorder = new ExternalTurnRecorder(
+      { id: 'continue-agent', accessor: { get: (id: unknown) => services.get(id) as never } },
+      8,
+      'continue-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native', outboundPrompt: 'work' },
+    );
+    await recorder.begin('work', { kind: 'user' }, [], 'prompt-1');
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'same-user', content: { type: 'text', text: 'hello ' } });
+    await recorder.record({ type: 'thought.delta', messageId: 'think-1', content: { type: 'text', text: 'planning' } });
+    await recorder.record({ type: 'tool.call', toolCallId: 'read-1', title: 'Read', status: 'pending' });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'same-user', content: { type: 'text', text: 'world' } });
+    await recorder.complete('end_turn');
+
+    const same = managed.filter((entry) => entry.message.id === 'same-user');
+    expect(same.map((entry) => entry.message.content)).toEqual([
+      [{ type: 'text', text: 'hello ' }],
+      [{ type: 'text', text: 'hello world' }],
+    ]);
+    expect(new Set(same.map((entry) => entry.message.id)).size).toBe(1);
+    expect(same.every((entry) => entry.message.origin?.kind === 'unknown' && entry.delivery.placement === undefined)).toBe(true);
+    expect(timeline).toEqual([
+      'step.begin', 'user:same-user:hello ', 'content.part', 'tool.call', 'user:same-user:hello world', 'tool.result', 'step.end',
+    ]);
+  });
+
+  it('reclassifies a split known preamble without placing the continuation or promoting a later unknown user', async () => {
+    const managed: { message: ContextMessage; delivery: { placement?: string } }[] = [];
+    const services = new Map<unknown, unknown>([
+      [IEventDispatcher, { dispatch: async () => {}, flush: async () => {} }],
+      [IWireService, { _serviceBrand: undefined, flush: async () => {} }],
+      [IAgentContextMemoryService, {
+        _serviceBrand: undefined,
+        appendManaged: (message: ContextMessage, delivery: { placement?: string }) => {
+          managed.push({ message, delivery });
+        },
+        appendLoopEvent: () => {},
+      }],
+      [IAgentUsageService, { _serviceBrand: undefined, record: () => {}, status: () => ({}), onDidRecord: () => ({ dispose: () => {} }) }],
+    ]);
+    const outbound = '[Kiki memory]\nremember this\n\nwork';
+    const recorder = new ExternalTurnRecorder(
+      { id: 'split-agent', accessor: { get: (id: unknown) => services.get(id) as never } },
+      4,
+      'split-session',
+      { executorId: 'example-acp', protocol: 'acp-v1', model: 'model', resumeMode: 'new', profileDelivery: 'native', outboundPrompt: outbound },
+    );
+    await recorder.begin('work', { kind: 'user' }, [], 'prompt-1');
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'preamble', content: { type: 'text', text: '[Kiki mem' } });
+    await recorder.record({ type: 'thought.delta', messageId: 'think-1', content: { type: 'text', text: 'planning' } });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'preamble', content: { type: 'text', text: 'ory]\nremember this' } });
+    await recorder.record({ type: 'tool.call', toolCallId: 'read-1', title: 'Read', status: 'pending' });
+    await recorder.record({ type: 'message.delta', role: 'user', messageId: 'after', content: { type: 'text', text: 'brand new after tool' } });
+    await recorder.complete('end_turn');
+
+    const preamble = managed.filter((entry) => entry.message.id === 'preamble');
+    const after = managed.filter((entry) => entry.message.id === 'after');
+    expect(preamble.map((entry) => entry.message.origin)).toEqual([
+      { kind: 'unknown' },
+      { kind: 'injection', variant: 'memory', ownerPromptId: 'prompt-1' },
+    ]);
+    expect(preamble.map((entry) => entry.message.content)).toEqual([
+      [{ type: 'text', text: '[Kiki mem' }],
+      [{ type: 'text', text: '[Kiki memory]\nremember this' }],
+    ]);
+    expect(preamble.every((entry) => entry.delivery.placement === undefined)).toBe(true);
+    expect(after.map((entry) => [entry.message.origin, entry.delivery.placement])).toEqual([
+      [{ kind: 'unknown' }, undefined],
+    ]);
   });
 
   it('preserves unkeyed external user frames with an attribution loss', async () => {
@@ -1362,8 +1725,67 @@ describe('ACP external executor', () => {
     await harness.session.shutdown();
   });
 
+  it('replays observed Grok extension shapes into tool input and interaction facts, not assistant prose', async () => {
+    const extension = (update: unknown) => mapAcpSessionNotification({ sessionId: 'session-1', update }, '_x.ai/session_notification').event;
+    const harness = createHarness({ events: [
+      extension({ sessionUpdate: 'session_summary_generated', session_summary: 'Inspect project' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, tool_call_id: 'call-1', name: 'Shell' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: '{"command":"echo ' }),
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, arguments_delta: 'ok"}' }),
+      extension({ sessionUpdate: 'response_completed', stop_reason: 'tool_use', usage: { output_tokens: 7 } }),
+      { type: 'tool.call', toolCallId: 'call-1', title: 'Shell', kind: 'execute', rawInput: { command: 'echo ok' } },
+      extension({ sessionUpdate: 'pending_interaction', tool_call_id: 'call-1', kind: 'permission' }),
+      extension({ sessionUpdate: 'interaction_resolved', tool_call_id: 'call-1' }),
+      { type: 'tool.update', toolCallId: 'call-1', status: 'completed', rawOutput: 'ok' },
+      extension({ sessionUpdate: 'tool_call_delta_chunk', tool_index: 0, tool_call_id: 'call-2', name: 'Read', arguments_delta: '{"path":"example.ts"}' }),
+      { type: 'tool.call', toolCallId: 'call-2', title: 'Read', rawInput: { path: 'example.ts' } },
+      { type: 'tool.update', toolCallId: 'call-2', status: 'completed', rawOutput: 'contents' },
+      extension({ sessionUpdate: 'turn_completed', prompt_id: 'prompt-1', stop_reason: 'end_turn', usage: { inputTokens: 12 }, elapsed_ms: 100 }),
+      { type: 'message.delta', role: 'assistant', messageId: 'message-1', content: { type: 'text', text: 'Actual answer' } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const runtime = harness.events.filter((event): event is ExecutorRuntimeUpdate => event instanceof ExecutorRuntimeUpdate);
+    expect(runtime.filter((event) => event.kind === 'unknown')).toEqual([]);
+    expect(runtime.filter((event) => event.kind === 'tool_input').map((event) => event.value)).toMatchObject([
+      { name: 'Shell', inputText: '' }, { inputText: '{"command":"echo ' },
+      { inputText: '{"command":"echo ok"}' }, { name: 'Read', inputText: '{"path":"example.ts"}' },
+    ]);
+    expect(harness.events.filter((event) => event.type === 'tool.result')).toHaveLength(2);
+    expect(runtime.filter((event) => event.kind === 'tool_progress').map((event) => event.value)).toMatchObject([
+      { update: { text: 'Waiting for permission', customData: { interaction: 'pending' } } },
+      { update: { text: 'Interaction resolved', customData: { interaction: 'resolved' } } },
+    ]);
+    expect(harness.events.filter((event) => event instanceof AssistantDelta).map((event) => event.delta)).toEqual(['Actual answer']);
+    expect(runtime).toContainEqual(expect.objectContaining({ kind: 'session', value: expect.objectContaining({ meta: expect.objectContaining({ completion: expect.objectContaining({ stopReason: 'end_turn' }) }) }) }));
+  });
+
+  it('keeps bounded secret-redacted unknown payloads and does not reuse an index after a response boundary', async () => {
+    const harness = createHarness({ events: [
+      { type: 'tool.input.delta', toolIndex: 0, toolCallId: 'old-call', name: 'Read', delta: '{}' },
+      { type: 'response.completed', meta: { stopReason: 'tool_use' } },
+      { type: 'tool.input.delta', toolIndex: 0, delta: 'unattributed' },
+      { type: 'unknown', updateType: 'future_update', method: '_x.ai/session_notification', payload: {
+        api_key: 'YOUR_API_KEY', nested: { password: 'secret-value', text: 'Bearer abcdefghijklmnopqrstuvwxyz' }, facts: '界'.repeat(10000),
+      } },
+    ] });
+    const run = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    const runtime = harness.events.filter((event): event is ExecutorRuntimeUpdate => event instanceof ExecutorRuntimeUpdate);
+    expect(runtime.filter((event) => event.kind === 'tool_input')).toHaveLength(1);
+    const diagnostic = runtime.find((event) => event.kind === 'unknown' && (event.value as { updateType: string }).updateType === 'future_update')!;
+    const json = JSON.stringify(diagnostic.value);
+    expect(json).not.toContain('YOUR_API_KEY');
+    expect(json).not.toContain('secret-value');
+    expect(json).not.toContain('abcdefghijklmnopqrstuvwxyz');
+    expect(json).not.toContain('�');
+    expect(Buffer.byteLength(json)).toBeLessThan(9000);
+    expect(diagnostic.value).toMatchObject({ method: '_x.ai/session_notification', payload: { truncated: true } });
+  });
+
   it('maps normalized events to live and canonical durable records with stable losses', async () => {
     const harness = createHarness({
+      permissionMode: 'manual',
       events: mappingEvents,
       approval: async () => ({ decision: 'approved', selectedOptionId: 'allow-once' }),
     });
@@ -1422,6 +1844,47 @@ describe('ACP external executor', () => {
       { configId: 'thought-id', value: 'high' },
       { configId: 'auto_approve', value: false },
     ]);
+  });
+
+  it('rejects an unadvertised AGY effort and selects the effort the session menu embeds', async () => {
+    const effortMenu = (values: readonly string[]): AcpSessionConfigOption => ({
+      id: 'effort', name: 'AGY effort', category: 'thought_level', type: 'select', currentValue: 'engine-default',
+      options: values.map((value) => ({ value, name: value })),
+    });
+    const bare = createHarness({
+      modelBinding: 'argv', modelArgs: ['--model', '{model}'], modelAlias: 'anthropic/claude-opus-5-5',
+      thinkingEffort: 'high', thoughtConfigId: 'effort', permissionMapping: null,
+      sessionConfigOptions: [effortMenu(['engine-default'])],
+    });
+    await expect(bare.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toMatchObject({
+      code: 'model.not_found',
+      details: {
+        reason_code: 'executor_thought_level_unavailable', config_id: 'effort', requested_value: 'high',
+        available_values: ['engine-default'],
+      },
+    });
+    expect(bare.starts).toHaveLength(0);
+    expect(bare.selections).toEqual([]);
+
+    const embedded = createHarness({
+      modelBinding: 'argv', modelArgs: ['--model', '{model}'], modelAlias: 'claude-opus-5-5-high',
+      thinkingEffort: 'high', thoughtConfigId: 'effort', permissionMapping: null,
+      sessionConfigOptions: [effortMenu(['engine-default', 'high'])],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const run = await embedded.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(embedded.selections).toEqual([{ configId: 'effort', value: 'high' }]);
+
+    const off = createHarness({
+      modelBinding: 'argv', modelArgs: ['--model', '{model}'], modelAlias: 'claude-opus-5-5-high',
+      thinkingEffort: 'off', thoughtConfigId: 'effort', permissionMapping: null,
+      sessionConfigOptions: [effortMenu(['engine-default', 'high'])],
+      approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
+    });
+    const skipped = await off.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+    await skipped.completion;
+    expect(off.selections).toEqual([]);
   });
 
   it('keeps unpinned external models ambient and diagnoses explicit unadvertised aliases', async () => {
@@ -1920,6 +2383,19 @@ describe('ACP external executor', () => {
     )).toHaveLength(1);
   });
 
+  it.each(['live', 'resume', 'load'] as const)('records the current %s opening mode instead of the cached configuration mode', async (mode) => {
+    const harness = createHarness({ mode });
+    const configure = harness.client.configureSession;
+    vi.spyOn(harness.client, 'configureSession').mockImplementation(async (input) => ({ ...await configure(input), mode: 'new' }));
+    try {
+      const run = await harness.session.run({ kind: 'prompt', prompt: 'continue' }, { signal: new AbortController().signal });
+      await run.completion;
+      const metadata = harness.events.find((event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata);
+      expect(metadata).toMatchObject({ resumeMode: mode });
+      expect(metadata?.losses).not.toContain('resume_new_session_handoff');
+    } finally { await harness.session.shutdown(); }
+  });
+
   it.each(['grok-acp', 'claude-acp'] as const)('resumes an unpinned %s session with the harness default model', async (executorId) => {
     const harness = createHarness({
       executorId, unpinModel: true, thinkingEffort: 'off', mode: 'resume',
@@ -2097,7 +2573,7 @@ describe('ACP external executor', () => {
         expect(interaction.listPending()).toEqual([]);
       } finally {
         await harness.session.shutdown();
-        ix.dispose();
+        await ix.dispose();
       }
     },
   );
@@ -2203,7 +2679,8 @@ describe('ACP external executor', () => {
   });
 
   it.each([false, true])('restores vendor permission value after clearing a runtime override (cold=%s)', async (cold) => {
-    const harness = createHarness({ permissionMode: 'yolo', vendorDefaultOption: true, mode: 'resume' });
+    const harness = createHarness({ permissionMode: 'yolo', vendorDefaultOption: true, mode: 'resume',
+      sessionConfigOptions: configOptions(true, false) });
     const first = await harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal });
     await first.completion;
     await harness.session.settled();
@@ -2227,7 +2704,8 @@ describe('ACP external executor', () => {
 
   it('persists the vendor baseline before permission configuration can fail', async () => {
     const options: FakeHarnessOptions = { permissionMode: 'yolo', vendorDefaultOption: true,
-      mode: 'resume', configureFailureId: 'auto_approve' };
+      mode: 'resume', configureFailureId: 'auto_approve',
+      sessionConfigOptions: configOptions(true, false) };
     const harness = createHarness(options);
     try {
       await expect(harness.session.run({ kind: 'prompt', prompt: 'first' }, { signal: new AbortController().signal })).rejects.toThrow('set_config_option failed');
@@ -2298,7 +2776,7 @@ describe('ACP external executor', () => {
     expect(harness.starts).toHaveLength(1);
   });
 
-  it.each(['sub', 'independent'] as const)('sends the refreshed cold %s identity through the ACP preamble', async (position) => {
+  it.each(['sub', 'independent'] as const)('sends the saved cold %s identity through the ACP preamble', async (position) => {
     const harness = createExecutionHarness();
     const adapter = harness.ix.get(IAgentProfileService);
     const cold = await coldPromptFixture(position, adapter.data(), harness.ix.get(IAgentExecutorRegistry));
@@ -2308,16 +2786,18 @@ describe('ACP external executor', () => {
     try {
       const run = await harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
       const sent = JSON.stringify(harness.starts[0]);
-      expect(sent).toContain('Role NEW');
-      expect(sent).not.toContain('Role OLD');
+      expect(harness.starts[0]?.prompt).toContain(cold.before.systemPrompt);
+      expect(sent).toContain('Role OLD');
+      expect(sent).not.toContain('Role NEW');
       expect(sent).not.toContain('SHARED_NEW');
+      expect(cold.profile.data().boundProfile?.promptBase?.inputs).toEqual(cold.before.boundProfile?.promptBase?.inputs);
       const snippet = cold.before.boundProfile?.promptBase?.delegationSnippet;
       expect(snippet).toBeTruthy();
       expect(sent).not.toContain(snippet!);
       expect(cold.profile.data().executorId).toBe(cold.before.executorId);
       await harness.execution.shutdown();
       await expect(run.completion).rejects.toBeDefined();
-    } finally { harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
+    } finally { await harness.ix.dispose(); await harness.execution.shutdown(); await cold.dispose(); }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it.each(['scope-close', 'shutdown', 'dispose', 'replacement'] as const)(
@@ -2334,7 +2814,7 @@ describe('ACP external executor', () => {
         expect(JSON.stringify(harness.starts[0])).toContain('Frozen profile');
         expect(JSON.stringify(harness.starts[0])).not.toContain('ALL_EXECUTORS_SHARED');
         harness.pendingTurns.add(run.turn.id);
-        if (close === 'scope-close') harness.ix.dispose();
+        if (close === 'scope-close') await harness.ix.dispose();
         if (close === 'replacement') {
           harness.ix.provide(IAgentLoopService, {} as IAgentLoopService);
           await harness.ix.cascade.whenIdle();
@@ -2358,9 +2838,9 @@ describe('ACP external executor', () => {
         expect(harness.interaction.cancelPendingForTurn).toHaveBeenCalledWith(run.turn.id, 'external-agent');
         expect(harness.client.shutdown).toHaveBeenCalledTimes(1);
         expect(harness.runtimeLease.dispose).toHaveBeenCalledTimes(1);
-        expect(harness.execution.status()).toEqual({ state: 'idle' });
+        expect(harness.execution.status()).toEqual({ state: 'closed' });
       } finally {
-        harness.ix.dispose();
+        await harness.ix.dispose();
         await harness.execution.shutdown();
         expect(errors).not.toHaveBeenCalled();
         errors.mockRestore();
@@ -2491,6 +2971,57 @@ describe('ACP external executor', () => {
     } finally { await harness.session.shutdown(); }
   });
 
+  it.each(['new', 'load'] as const)('applies an explicit host gate receipt on %s without changing the saved descriptor', async (mode) => {
+    const authorize = vi.fn<IAgentPermissionGate['authorize']>(async (context) => context.toolCall.name === 'TaskList'
+      ? { veto: { isError: true, output: 'Explicit deny' }, permissionDecision: 'rejected' } : undefined);
+    const harness = createHarness({ mode, permissionMapping: null, permissionMode: 'yolo',
+      prior: mode === 'load' ? { executorId: 'example-acp', descriptorRevision: 'r1',
+        sessionRef: { executorId: 'example-acp', version: 1, ref: { sessionId: 'remote-2' } } } : undefined,
+      hostPermissionReceipt: (input) => ({ 'kiki.permission': { version: 1, sessionId: 'remote-2', openMode: mode,
+        gate: 'pre-tool-hook', applied: JSON.parse(JSON.stringify(input.sessionMeta?.['kiki.permission'])) } }),
+      permissionToolCall: { toolCallId: 'native-task', title: 'manage_task', kind: 'read', rawInput: { Action: 'list' } },
+      permissionRequestMeta: { 'kiki.tool': { name: 'TaskList', nativeName: 'manage_task', input: { Action: 'list' } } },
+      permissionGate: authorize,
+    });
+    try {
+      const turn = await harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal });
+      await turn.completion;
+      expect(harness.starts).toHaveLength(1);
+      expect(harness.permissionDecisions).toEqual([{ outcome: 'selected', optionId: 'reject' }]);
+      expect(authorize.mock.calls.map(([context]) => context.toolCall.name)).toEqual(['manage_task', 'TaskList']);
+      expect(harness.opens[0]?.sessionMeta?.['kiki.permission']).toMatchObject({ override: { mode: 'yolo', source: 'runtime' }, hostGate: true });
+      expect(harness.events.filter((event) => event instanceof ExecutorSessionUpdated).every((event) => event.descriptorRevision === 'r1')).toBe(true);
+    } finally { await harness.session.shutdown(); }
+  });
+
+  it.each(['session', 'mode', 'source', 'policy', 'workspace', 'restriction', 'extra', 'nonce', 'gate', 'version', 'openMode', 'missing'] as const)(
+    'rejects an unapplied or mismatched host gate receipt: %s', async (mismatch) => {
+      const harness = createHarness({ mode: 'load', permissionMapping: null, permissionMode: 'yolo',
+        hostPermissionReceipt: (input) => {
+          const applied = JSON.parse(JSON.stringify(input.sessionMeta?.['kiki.permission'])) as Record<string, unknown>;
+          const receipt: Record<string, unknown> = { version: 1, sessionId: 'remote-2', openMode: 'load', gate: 'pre-tool-hook', applied };
+          if (mismatch === 'missing') return undefined;
+          if (mismatch === 'session') receipt['sessionId'] = 'other-session';
+          if (mismatch === 'mode') applied['override'] = { mode: 'auto', source: 'runtime' };
+          if (mismatch === 'source') applied['override'] = { mode: 'yolo', source: 'ambient' };
+          if (mismatch === 'policy') applied['policyIdentity'] = 'other-policy';
+          if (mismatch === 'workspace') applied['workspace'] = { cwd: '/other', additionalDirectories: [] };
+          if (mismatch === 'restriction') applied['restriction'] = { kind: 'unexpected-restriction' };
+          if (mismatch === 'extra') applied['unexpected'] = true;
+          if (mismatch === 'nonce') applied['requestId'] = 'previous-load';
+          if (mismatch === 'gate') receipt['gate'] = 'echo-only';
+          if (mismatch === 'version') receipt['version'] = 2;
+          if (mismatch === 'openMode') receipt['openMode'] = 'new';
+          return { 'kiki.permission': receipt };
+        },
+      });
+      try {
+        await expect(harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toThrow('cannot verify yolo');
+        expect(harness.starts).toHaveLength(0);
+      } finally { await harness.session.shutdown(); }
+    },
+  );
+
   it('records dropped additional directories when the harness does not declare support for them', async () => {
     const harness = createHarness({
       capabilities: {},
@@ -2509,22 +3040,40 @@ describe('ACP external executor', () => {
     expect(metadata?.losses).toEqual(expect.arrayContaining(['additional_directories_dropped']));
   });
 
-  it('keeps additional directories without a loss once the harness declares support', async () => {
+  it('uses pinned agent roots in ACP open options without changing the parent session cwd', async () => {
     const harness = createHarness({
       capabilities: { sessionCapabilities: { additionalDirectories: {} } },
       approval: async () => ({ decision: 'rejected', selectedOptionId: 'reject' }),
     });
-
-    const run = await harness.session.run(
-      { kind: 'prompt', prompt: 'work' },
-      { signal: new AbortController().signal },
-    );
-    await run.completion;
-
-    const metadata = harness.events.find(
+    Object.assign(harness.workspace, { workDir: 'C:\\parent', additionalDirs: ['C:\\parent-shared'] });
+    Object.assign(harness.runtime, {
+      workspaceRoots: () => ({
+        workDir: 'C:\\worktrees\\child',
+        additionalDirs: ['C:\\materials\\review', 'C:\\materials\\profiles'],
+      }),
+    });
+    for (const prompt of ['work', 'continue']) {
+      const run = await harness.session.run({ kind: 'prompt', prompt }, { signal: new AbortController().signal });
+      await run.completion;
+      await harness.session.settled();
+    }
+    expect(harness.workspace.workDir).toBe('C:\\parent');
+    expect(harness.opens).toHaveLength(2);
+    for (const opened of harness.opens) {
+      expect(opened.cwd).toBe('C:\\worktrees\\child');
+      expect(opened.additionalDirectories).toEqual(['C:\\materials\\review', 'C:\\materials\\profiles']);
+      expect(opened.sessionMeta?.['kiki.permission']).toMatchObject({ workspace: {
+        cwd: 'C:\\worktrees\\child', additionalDirectories: ['C:\\materials\\review', 'C:\\materials\\profiles'],
+      } });
+    }
+    expect(harness.opens[0]?.sessionRef).toBeUndefined();
+    expect(harness.opens[1]?.sessionRef?.ref).toEqual({ sessionId: 'remote-2' });
+    const metadata = harness.events.filter(
       (event): event is ExecutorTurnMetadata => event instanceof ExecutorTurnMetadata,
     );
-    expect(metadata?.losses).not.toContain('additional_directories_dropped');
+    expect(metadata).toHaveLength(2);
+    for (const event of metadata) expect(event.losses).not.toContain('additional_directories_dropped');
+    await harness.session.shutdown();
   });
 
   it('attributes resumed-session usage as a delta of the persisted cumulative counters', async () => {

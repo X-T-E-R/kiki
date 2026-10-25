@@ -1,10 +1,14 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
 import { join, parse } from 'node:path';
+import { get } from 'node:http';
+import * as mediaPreview from '../src/services/mediaPreview';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createKlient } from '@kiki/klient/http';
 import { IHostFileSystem } from '@kiki/agent-core-v2';
+import { WorkspaceFsService } from '@kiki/agent-core-v2/workspace/workspaceFs/fsService';
+import { fsSearchResponseSchema, type FsSearchResponse } from '@kiki/protocol';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -472,6 +476,112 @@ describe('server-v2 /api fs:content', () => {
     expect(body.code).toBe(40001);
   });
 
+  it('ends only the cancelled preview request and closes its source iterator', async () => {
+    const file = join(dir!, 'cancelled.png');
+    await writeFile(file, Buffer.alloc(1024));
+    let started!: () => void;
+    const reading = new Promise<void>((resolve) => { started = resolve; });
+    let sourceClosed!: () => void;
+    const closed = new Promise<void>((resolve) => { sourceClosed = resolve; });
+    const createPreview = mediaPreview.createMediaPreview;
+    const preview = vi.spyOn(mediaPreview, 'createMediaPreview').mockImplementationOnce((source, mime, signal) => createPreview({
+      ...source,
+      stream: async function* () {
+        try {
+          yield new Uint8Array(512);
+          started();
+          await new Promise<void>((resolve) => {
+            if (signal.aborted) resolve();
+            else signal.addEventListener('abort', () => { resolve(); }, { once: true });
+          });
+          signal.throwIfAborted();
+        } finally {
+          sourceClosed();
+        }
+      },
+    }, mime, signal));
+    const request = get(`${contentUrl(file)}&preview=media`, { headers: authHeaders(server!) });
+    request.on('error', () => {});
+    try {
+      await reading;
+      request.destroy();
+      await closed;
+      const normal = await getContent(file);
+      expect(normal.status).toBe(200);
+      expect(new Uint8Array(await normal.arrayBuffer())).toEqual(new Uint8Array(1024));
+      expect(server!.app.server.listening).toBe(true);
+    } finally {
+      request.destroy();
+      preview.mockRestore();
+    }
+  });
+
+  it('does not start source reads when the client closes before preview setup', async () => {
+    const file = join(dir!, 'early-close.png');
+    await writeFile(file, Buffer.alloc(1024));
+    let entered!: () => void;
+    const resolving = new Promise<void>((resolve) => { entered = resolve; });
+    let proceed!: () => void;
+    const gate = new Promise<void>((resolve) => { proceed = resolve; });
+    const hostFs = server!.core.accessor.get(IHostFileSystem);
+    const resolvePath = hostFs.realpath.bind(hostFs);
+    const path = vi.spyOn(hostFs, 'realpath').mockImplementationOnce(async (value) => {
+      entered();
+      await gate;
+      return resolvePath(value);
+    });
+    let finished!: () => void;
+    const handled = new Promise<void>((resolve) => { finished = resolve; });
+    let wasAborted = false;
+    const preview = vi.spyOn(mediaPreview, 'createMediaPreview').mockImplementationOnce(async (_source, _mime, signal) => {
+      wasAborted = signal.aborted;
+      try {
+        signal.throwIfAborted();
+        throw new Error('disconnected preview was not aborted');
+      } finally { finished(); }
+    });
+    const closed = new Promise<void>((resolve) => {
+      server!.app.server.once('request', (_req, response) => { response.once('close', resolve); });
+    });
+    const request = get(`${contentUrl(file)}&preview=media`, { headers: authHeaders(server!) });
+    request.on('error', () => {});
+    try {
+      await resolving;
+      request.destroy();
+      await closed;
+      proceed();
+      await handled;
+      expect(wasAborted).toBe(true);
+      const normal = await getContent(file);
+      expect(normal.status).toBe(200);
+      await normal.arrayBuffer();
+      expect(preview).toHaveBeenCalledTimes(1);
+    } finally {
+      proceed();
+      request.destroy();
+      preview.mockRestore();
+      path.mockRestore();
+    }
+  });
+
+  it.each([
+    [new mediaPreview.MediaPreviewUnavailableError('preview unavailable'), 415, 40001],
+    [new Error('source read failed'), 500, 50001],
+  ])('serializes a rejected preview as JSON without losing the next request', async (error, status, code) => {
+    const file = join(dir!, 'rejected.png');
+    await writeFile(file, Buffer.alloc(1024));
+    const preview = vi.spyOn(mediaPreview, 'createMediaPreview').mockRejectedValueOnce(error);
+    try {
+      const response = await fetch(`${contentUrl(file)}&preview=media`, { headers: authHeaders(server!) });
+      expect(response.status).toBe(status);
+      expect(response.headers.get('content-type')).toContain('application/json');
+      expect(await response.json()).toMatchObject({ code, msg: error.message, data: null });
+      const normal = await getContent(file, { range: 'bytes=2-5' });
+      expect(normal.status).toBe(206);
+      expect((await normal.arrayBuffer()).byteLength).toBe(4);
+    } finally { preview.mockRestore(); }
+  });
+
   it('generates a bounded source media preview under the existing host-file authorization and preserves original bytes', async () => {
     const path = join(dir!, 'preview.bmp');
     const width = 800;
@@ -502,5 +612,117 @@ describe('server-v2 /api fs:content', () => {
       headers: authHeaders(server as RunningServer),
     } as never);
     expect(res.status).toBe(404);
+  });
+});
+
+
+describe('server-v2 bounded file search', () => {
+  let server: RunningServer;
+  let home: string;
+  let instancesDir: string;
+  let root: string;
+  let client: ReturnType<typeof createKlient>;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-search-home-'));
+    instancesDir = await mkdtemp(join(tmpdir(), 'kiki-search-instances-'));
+    root = join(home, 'workspace');
+    await mkdir(root);
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, instancesDir, logLevel: 'silent' });
+    client = createKlient({ endpoint: `http://127.0.0.1:${server.port}`, token: server.localOwnerToken });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    await client?.close();
+    await server?.close();
+    await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    await rm(instancesDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it.each(['workspace', 'session'] as const)('drains %s route pages through the HTTP facade with exact contracts', async (mode) => {
+    for (let i = 0; i < 72; i++) {
+      const directory = join(root, `d${String(i).padStart(3, '0')}`);
+      await mkdir(directory);
+      await writeFile(join(directory, 'needle.ts'), '');
+    }
+    await writeFile(join(root, '.gitignore'), 'd071/\n');
+    const sessionId = mode === 'session' ? (await client.global.sessions.create({ workDir: root })).id : undefined;
+    const body = { query: 'needle', limit: 30, follow_gitignore: true, include_globs: ['**/*.ts'] };
+    const search = (cursor?: string): Promise<FsSearchResponse> => mode === 'workspace'
+      ? client.rest!.filesystem.workspaceFsSearch(root, { ...body, cursor })
+      : client.rest!.sessions.fsSearch(sessionId!, { ...body, cursor });
+    let page = await search();
+    expect(page.items).toHaveLength(30);
+    expect(page.next_cursor).toBeDefined();
+    expect(fsSearchResponseSchema.parse(page)).toEqual(page);
+    const all = [...page.items];
+    const cursor = page.next_cursor;
+    while (page.next_cursor !== undefined) {
+      page = await search(page.next_cursor);
+      expect(page.sort_scope).toBe('page');
+      all.push(...page.items);
+    }
+    expect(all).toHaveLength(71);
+    expect(new Set(all.map((hit) => hit.path)).size).toBe(71);
+    expect(all.map((hit) => hit.path)).not.toContain('d071/needle.ts');
+    expect(page.truncated).toBe(false);
+    await expect(client.rest!.filesystem.workspaceFsSearch(root, { ...body, query: 'changed', cursor })).rejects.toMatchObject({ code: 40001 });
+    expect(server.app.server.listening).toBe(true);
+  });
+
+  it.each(['workspace', 'session'] as const)('stops the %s route walk after HTTP disconnect, then serves a fresh request', async (mode) => {
+    await mkdir(join(root, 'a'));
+    await mkdir(join(root, 'b'));
+    await writeFile(join(root, 'a', 'needle.ts'), '');
+    await writeFile(join(root, 'b', 'needle.ts'), '');
+    const sessionId = mode === 'session' ? (await client.global.sessions.create({ workDir: root })).id : undefined;
+    const search = WorkspaceFsService.prototype.search;
+    const reads: string[] = [];
+    let entered!: () => void;
+    const reading = new Promise<void>((resolve) => { entered = resolve; });
+    let sawAbort!: () => void;
+    const aborted = new Promise<void>((resolve) => { sawAbort = resolve; });
+    let finished!: () => void;
+    const handled = new Promise<void>((resolve) => { finished = resolve; });
+    const spy = vi.spyOn(WorkspaceFsService.prototype, 'search').mockImplementationOnce(async function (this: WorkspaceFsService, request, signal) {
+      const hostFs = (this as unknown as { hostFs: IHostFileSystem }).hostFs;
+      const readdir = hostFs.readdir.bind(hostFs);
+      const observe = vi.spyOn(hostFs, 'readdir').mockImplementation(async (path) => {
+        reads.push(path);
+        entered();
+        await new Promise<void>((resolve) => {
+          if (signal!.aborted) { sawAbort(); resolve(); }
+          else signal!.addEventListener('abort', () => { sawAbort(); resolve(); }, { once: true });
+        });
+        return readdir(path);
+      });
+      try { return await search.call(this, request, signal); }
+      finally { observe.mockRestore(); finished(); }
+    });
+    const controller = new AbortController();
+    const body = { query: 'needle', limit: 30, follow_gitignore: false };
+    const pending = mode === 'workspace'
+      ? client.rest!.filesystem.workspaceFsSearch(root, body, { signal: controller.signal })
+      : client.rest!.sessions.fsSearch(sessionId!, body, { signal: controller.signal });
+    const rejected = expect(pending).rejects.toBeDefined();
+    await reading;
+    const start = performance.now();
+    controller.abort();
+    await aborted;
+    const abortMs = performance.now() - start;
+    await handled;
+    await rejected;
+    expect(abortMs).toBeLessThan(1000);
+    expect(reads).toHaveLength(1);
+    expect(reads[0]).toBe(root);
+    spy.mockRestore();
+    const normal = mode === 'workspace'
+      ? await client.rest!.filesystem.workspaceFsSearch(root, body)
+      : await client.rest!.sessions.fsSearch(sessionId!, body);
+    expect(normal.items.map((hit) => hit.path)).toEqual(['a/needle.ts', 'b/needle.ts']);
+    if (sessionId !== undefined) await client.session(sessionId).close();
+    expect(server.app.server.listening).toBe(true);
+    process.stdout.write(`${JSON.stringify({ case: `fs-search-${mode}-cancel`, abort_ms: abortMs, directory_reads_after_abort: reads.length - 1, directory_reads: reads.length })}\n`);
   });
 });

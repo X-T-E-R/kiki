@@ -23,6 +23,7 @@ export interface CreateManagedSessionOptions extends CreateSessionOptions {
 export interface UnguardedSessionLifecycle {
   archive(): Promise<void>;
   restore(): Promise<ISessionScopeHandle | undefined>;
+  delete(): Promise<void>;
 }
 
 export interface SessionLease extends IDisposable {
@@ -51,10 +52,11 @@ export interface ISessionManager {
   readonly onDidForkSession?: Event<SessionForkedEvent>;
   create(options: CreateManagedSessionOptions): Promise<ISessionScopeHandle>;
   resume(sessionId: string, options?: ResumeSessionOptions): Promise<ISessionScopeHandle | undefined>;
-  acquire?(sessionId: string, reason: string, options?: ResumeSessionOptions): Promise<SessionLease | undefined>;
+  acquire?(sessionId: string, reason: string, options?: ResumeSessionOptions, signal?: AbortSignal): Promise<SessionLease | undefined>;
+  acquireLive?(sessionId: string, reason: string): Promise<SessionLease | undefined>;
   get(sessionId: string): ISessionScopeHandle | undefined;
   residencyReport?(): SessionResidencyReport;
-  evictIfIdle?(sessionId: string): Promise<boolean>;
+  evictIfIdle?(sessionId: string, options?: { readonly ignoreIdleTtl?: boolean }): Promise<boolean>;
   whenResumeSettled(sessionId: string): Promise<void>;
   withLifecycleSerialization<T>(
     sessionId: string,

@@ -20,7 +20,7 @@ import {
 import type { ShortcutAction } from '@kiki/session-core/settings/shortcuts';
 import { useHost } from '../host';
 import { useI18n } from '../i18n';
-import { chordKeys, shortcutDefinition, shortcutState, useShortcutState, type ShortcutState } from '../lib/shortcuts';
+import { browserOwnsChord, chordKeys, shortcutDefinition, shortcutState, useShortcutState, type ShortcutState } from '../lib/shortcuts';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Dialog } from './Dialog';
 
@@ -58,13 +58,14 @@ export function shortcutsGroups(
     return current.bindings[action].map((chord) => ({
       keys: chordKeys(chord, current.platform),
       labelKey: definition.labelKey as I18nKey,
-      ...(definition.desktopOnly ? { desktopOnly: true } : {}),
+      desktopOnly: definition.desktopOnly || browserOwnsChord(chord) ? true : undefined,
     }));
   };
   const globalRows: ShortcutRow[] = [
     ...rows('new-session'),
     ...rows('switcher'),
     ...rows('next-session'),
+    ...rows('previous-session'),
     ...rows('settings'),
     ...rows('shortcuts'),
     ...rows('shortcuts-help'),
@@ -175,7 +176,7 @@ export function ShortcutsOverlay({ onClose }: { onClose: () => void }) {
         <button
           type="button"
           data-shortcuts-customize
-          onClick={() => { onClose(); navigate('/settings/general#st-card-shortcuts'); }}
+          onClick={() => { onClose(); void navigate('/settings/general#st-card-shortcuts'); }}
           className="shrink-0 rounded-md px-1.5 py-1 text-[11.5px] font-medium text-selected-ink transition-colors hover:bg-selected"
         >
           {t('shortcuts.customize')}

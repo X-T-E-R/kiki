@@ -30,11 +30,13 @@ import {
 } from '../lib/promptMedia';
 import { requestLog } from '../lib/requestLog';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { defineRoute } from '../middleware/defineRoute';
 import { parseActionSuffix } from './action-suffix';
 import {
   editAndResendMessage,
   regenerateMessage,
+  replayMessageOperation,
 } from '../services/messages/messageActions';
 import type { TranscriptService } from '../services/transcript/transcriptService';
 import type { SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBroadcaster';
@@ -116,15 +118,17 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
       description: 'List messages for a session',
       tags: ['messages'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       try {
         const { session_id } = req.params;
-        const page = await listMessages(core, session_id, req.query);
+        const page = await listMessages(core, session_id, req.query, signal);
+        if (signal.aborted) return;
         reply.send(okEnvelope(page, req.id));
       } catch (err) {
+        if (signal.aborted) return;
         sendMappedError(reply, req, err);
       }
-    },
+    }, req),
   );
   app.get(
     listRoute.path,
@@ -146,15 +150,17 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
       description: 'Get a message by ID',
       tags: ['messages'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       try {
         const { session_id, message_id } = req.params;
-        const message = await getMessage(core, session_id, message_id);
+        const message = await getMessage(core, session_id, message_id, signal);
+        if (signal.aborted) return;
         reply.send(okEnvelope(message, req.id));
       } catch (err) {
+        if (signal.aborted) return;
         sendMappedError(reply, req, err);
       }
-    },
+    }, req),
   );
   app.get(
     getRoute.path,
@@ -180,6 +186,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         [ErrorCode.SESSION_UNDO_UNAVAILABLE]: {},
         [ErrorCode.MESSAGE_ACTION_UNAVAILABLE]: {},
         [ErrorCode.SESSION_CURSOR_MISMATCH]: {},
+        [ErrorCode.PROMPT_ID_CONFLICT]: {},
       },
       description: 'Edit-resend or regenerate a message',
       tags: ['messages'],
@@ -207,6 +214,11 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         const agent = await ensureMainAgent(session);
         if (parsed.action === 'edit') {
           const body = editMessageRequestSchema.parse(req.body);
+          const replay = await replayMessageOperation(agent, parsed.id, body);
+          if (replay !== undefined) {
+            reply.send(okEnvelope(projectPromptHandle(replay), req.id));
+            return;
+          }
           await assertPromptFileRefs(body.content, core.accessor.get(IFileService));
           preparedMedia = await resolvePromptMediaFiles(
             body.content,
@@ -245,7 +257,7 @@ export function registerMessagesRoutes(app: MessageRouteHost, deps: MessageRoute
         if (!enqueued) await preparedMedia?.discard();
         sendMappedError(reply, req, err);
       } finally {
-        lease?.dispose();
+        await lease?.dispose();
       }
     },
   );
@@ -284,6 +296,7 @@ function sendMappedError(
         case 'session.undo_unavailable': return ErrorCode.SESSION_UNDO_UNAVAILABLE;
         case 'message.action_unavailable': return ErrorCode.MESSAGE_ACTION_UNAVAILABLE;
         case 'session.cursor_mismatch': return ErrorCode.SESSION_CURSOR_MISMATCH;
+        case 'prompt.id_conflict': return ErrorCode.PROMPT_ID_CONFLICT;
         case 'request.invalid':
         case 'validation.failed': return ErrorCode.VALIDATION_FAILED;
         default: return undefined;

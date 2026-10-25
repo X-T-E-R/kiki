@@ -102,6 +102,14 @@ function createToolHarness(options: {
       tasks.set(id, updated);
       return updated;
     },
+    updateTask: async (id, patch) => {
+      const task = tasks.get(id);
+      if (task === undefined) return undefined;
+      const updated = { ...task, ...patch };
+      tasks.set(id, updated);
+      return updated;
+    },
+    syncTaskFromStore: async () => {},
     fireTaskNow: async (id) => tasks.has(id),
     isStale(task) {
       const age = now - task.createdAt;
@@ -246,6 +254,7 @@ describe('CronCreateTool', () => {
       cron: */5 * * * *
       humanSchedule: every 5 minutes
       recurring: true
+      deliveryMode: idle
       nextFireAt: <iso>"
     `);
   });
@@ -523,6 +532,7 @@ describe('CronListTool', () => {
       prompt: "hi"
       nextFireAt: <iso>
       recurring: true
+      deliveryMode: idle
       ageDays: 0.00
       stale: false"
     `);
@@ -560,6 +570,7 @@ describe('CronListTool', () => {
       prompt: "first"
       nextFireAt: <iso>
       recurring: true
+      deliveryMode: idle
       ageDays: 0.00
       stale: false
       ---
@@ -569,6 +580,7 @@ describe('CronListTool', () => {
       prompt: "second"
       nextFireAt: <iso>
       recurring: false
+      deliveryMode: idle
       ageDays: 0.00
       stale: false"
     `);
@@ -589,6 +601,7 @@ describe('CronListTool', () => {
       prompt: "old"
       nextFireAt: <iso>
       recurring: true
+      deliveryMode: idle
       ageDays: 8.00
       stale: true"
     `);
@@ -630,6 +643,7 @@ describe('CronListTool', () => {
       prompt: "x"
       nextFireAt: null
       recurring: true
+      deliveryMode: idle
       ageDays: 0.00
       stale: false"
     `);

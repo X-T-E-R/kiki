@@ -260,6 +260,7 @@ export class SessionDispatchService implements ISessionDispatchService {
         delegator: input.delegator,
         userLabel: input.userLabel,
         runtimeId: input.runtimeId ?? input.runtime.identity.runtimeId,
+        workspaceRoots: input.workspaceRoots,
       });
       reservation.bind(child.id);
       const permissionMode = child.accessor.get(IAgentPermissionModeService);
@@ -855,7 +856,7 @@ export class SessionDispatchService implements ISessionDispatchService {
     const state = execution.status().state;
     if (state === 'idle') return;
     if (state === 'broken') {
-      if (execution.canResumeBrokenOriginal?.() === true) return;
+      if (execution.canResumeBrokenOriginal?.() || execution.canRetryBrokenExecution?.()) return;
       throw brokenOriginalResumeRefusal(child.id);
     }
     throw alreadyRunning(child.id);

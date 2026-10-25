@@ -1,6 +1,9 @@
 import { isAbsolute } from 'node:path';
 
 import { McpServer, type RegisteredTool } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { toJsonSchemaCompat } from '@modelcontextprotocol/sdk/server/zod-json-schema-compat.js';
+import { ListToolsRequestSchema, CallToolRequestSchema, type Tool, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { ExecutableToolOutput } from '@kiki/agent-core-v2/tool/toolContract';
 import {
   createSeatKlient,
   contextReadOnlyTools,
@@ -41,6 +44,7 @@ export interface KikiMcpServerOptions {
   readonly progressPollIntervalMs?: number;
   readonly contextCatalog?: import('@kiki/klient/procedures').ContextCatalog;
   readonly contextCall?: ReturnType<typeof import('@kiki/klient/procedures').createContextKlient>['call'];
+  readonly contextList?: ReturnType<typeof import('@kiki/klient/procedures').createContextKlient>['catalog'];
 }
 
 interface ProgressRequestContext {
@@ -86,6 +90,7 @@ export function createKikiMcpServer(
     return closePromise;
   };
   const tools = new Map<string, RegisteredTool>();
+  const inputSchemas = new Map<string, Tool['inputSchema']>();
 
   (server as unknown as { createToolError(message: string): unknown }).createToolError = (message) => {
     const payload = {
@@ -97,6 +102,26 @@ export function createKikiMcpServer(
     };
     return { ...result(payload), isError: true };
   };
+
+  if (options.contextCatalog?.nativeTools === true) {
+    const catalog = async (signal: AbortSignal) => options.contextList?.(signal) ?? options.contextCatalog!;
+    server.server.registerCapabilities({ tools: { listChanged: true } });
+    server.server.setRequestHandler(ListToolsRequestSchema, async (_request, extra) => ({
+      tools: (await catalog(extra.signal)).tools.map((tool) => ({
+        name: tool.toolName, description: tool.description, inputSchema: { ...tool.parameters, type: 'object' as const },
+      })),
+    }));
+    server.server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
+      try {
+        const tool = (await catalog(extra.signal)).tools.find((entry) => entry.toolName === request.params.name);
+        if (tool === undefined) return { content: [{ type: 'text', text: 'Tool is unavailable under the current agent policy.' }], isError: true };
+        return contextToolResult(await options.contextCall!({ name: tool.name, arguments: request.params.arguments ?? {} }, extra.signal));
+      } catch (error) {
+        return toolResult(async () => { throw error; });
+      }
+    });
+    return server;
+  }
 
   const registrar = server as unknown as {
     registerTool(
@@ -137,23 +162,34 @@ export function createKikiMcpServer(
       }),
     );
     tools.set(procedure.mcp.toolName, tool);
+    inputSchemas.set(procedure.mcp.toolName, { ...toJsonSchemaCompat(codec.schema, {
+      strictUnions: true, pipeStrategy: 'input',
+    }), type: 'object' });
   }
 
   for (const tool of options.contextCatalog?.tools ?? []) {
-    registrar.registerTool(tool.toolName, {
+    const registered = registrar.registerTool(tool.toolName, {
       description: tool.description,
       inputSchema: z.fromJSONSchema(tool.parameters),
       annotations: { readOnlyHint: contextReadOnlyTools.has(tool.toolName), destructiveHint: !contextReadOnlyTools.has(tool.toolName), openWorldHint: false },
     }, async (input, extra) => {
       try {
-        const output = await options.contextCall!({ name: tool.name as never, arguments: input as Record<string, unknown> },
+        const output = await options.contextCall!({ name: tool.name, arguments: input as Record<string, unknown> },
           (extra as ProgressRequestContext).signal);
         return { ...result(output), isError: output.isError === true };
       } catch (error) {
         return toolResult(async () => { throw error; });
       }
     });
+    tools.set(tool.toolName, registered);
+    inputSchemas.set(tool.toolName, { ...tool.parameters, type: 'object' });
   }
+  if (tools.size > 0) server.server.setRequestHandler(ListToolsRequestSchema, () => ({
+    tools: [...tools].filter(([, tool]) => tool.enabled).map(([name, tool]) => ({
+      name, title: tool.title, description: tool.description, inputSchema: inputSchemas.get(name)!,
+      annotations: tool.annotations, execution: tool.execution, _meta: tool._meta,
+    })),
+  }));
   return server;
 }
 
@@ -378,6 +414,22 @@ function utf8PagePrefix(
     consumed += width;
   }
   return { text: value.slice(0, consumed), consumed };
+}
+
+function contextToolResult(data: { output: unknown; isError?: boolean }): CallToolResult {
+  const output = data.output as ExecutableToolOutput;
+  const content: CallToolResult['content'] = typeof output === 'string' ? [{ type: 'text', text: output }]
+    : output.flatMap((part): CallToolResult['content'] => {
+      if (part.type === 'text') return [{ type: 'text', text: part.text }];
+      if (part.type === 'think') return [];
+      const media = part.type === 'image_url' ? part.imageUrl : part.type === 'audio_url' ? part.audioUrl : part.videoUrl;
+      const inline = /^data:([^;,]+);base64,([\s\S]*)$/.exec(media.url);
+      if (inline !== null && part.type !== 'video_url') return [{
+        type: part.type === 'image_url' ? 'image' : 'audio', mimeType: inline[1]!, data: inline[2]!,
+      }];
+      return [{ type: 'resource_link', uri: media.url, name: media.name ?? media.id ?? part.type, mimeType: media.mimeType }];
+    });
+  return { content, isError: data.isError === true };
 }
 
 function result(data: unknown) {

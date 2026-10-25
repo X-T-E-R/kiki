@@ -4,6 +4,8 @@ import {
   APIConnectionError,
   APITimeoutError,
   ChatProviderError,
+  markProviderEventError,
+  markProviderHttpError,
   normalizeAPIStatusError,
 } from '#/kosong/contract/errors';
 import type { Message, StreamedMessagePart, ThinkPart, ToolCall } from '#/kosong/contract/message';
@@ -21,6 +23,10 @@ import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
 
 import { mergeConsecutiveUserMessages } from '../merge-user-messages';
+import {
+  googleGenAINestsFunctionResponseMedia,
+  googleGenAIRejectsTrailingModelTurn,
+} from './googleModelTurn';
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
@@ -49,6 +55,8 @@ function normalizeGoogleGenAIFinishReason(raw: unknown): {
   switch (rawString) {
     case 'STOP':
       return { finishReason: 'completed', rawFinishReason: rawString };
+    case 'CONTINUATION':
+      return { finishReason: 'other', rawFinishReason: rawString };
     case 'MAX_TOKENS':
       return { finishReason: 'truncated', rawFinishReason: rawString };
     case 'SAFETY':
@@ -146,6 +154,107 @@ interface GooglePart {
   };
   thoughtSignature?: string;
   [key: string]: unknown;
+}
+
+const GOOGLE_PART_KIND_ORDER = [
+  'function_call',
+  'function_response',
+  'thought_signature',
+  'media',
+  'thought',
+  'thought_text',
+  'text',
+] as const;
+
+type GooglePartKind = (typeof GOOGLE_PART_KIND_ORDER)[number];
+
+type GoogleContentTail =
+  | 'empty'
+  | 'user'
+  | 'function_response'
+  | 'model_prefill'
+  | 'model_function_call';
+
+const GEMINI_MODEL_TURN_SENTENCE = 'Requests ending with a model turn are not supported.';
+
+function googlePartKinds(part: GooglePart): GooglePartKind[] {
+  const kinds: GooglePartKind[] = [];
+  if (part.functionCall !== undefined) kinds.push('function_call');
+  if (part.functionResponse !== undefined) kinds.push('function_response');
+  if (typeof part.thoughtSignature === 'string' && part.thoughtSignature.length > 0) {
+    kinds.push('thought_signature');
+  }
+  if (part['inlineData'] !== undefined || part['fileData'] !== undefined) kinds.push('media');
+  const text = typeof part.text === 'string' ? part.text.trim() : '';
+  if (part.thought === true) {
+    if (text.length > 0 || kinds.includes('thought_signature')) kinds.push('thought');
+    if (text.length > 0) kinds.push('thought_text');
+  } else if (text.length > 0) {
+    kinds.push('text');
+  }
+  return kinds;
+}
+
+function uniqueGooglePartKinds(kinds: readonly GooglePartKind[]): GooglePartKind[] {
+  return GOOGLE_PART_KIND_ORDER.filter((kind) => kinds.includes(kind));
+}
+
+function lastNonEmptyGoogleContent(contents: readonly GoogleContent[]): {
+  readonly tail: GoogleContentTail;
+  readonly kinds: readonly GooglePartKind[];
+} {
+  for (let index = contents.length - 1; index >= 0; index -= 1) {
+    const content = contents[index];
+    if (content === undefined) continue;
+    const kinds = uniqueGooglePartKinds(content.parts.flatMap(googlePartKinds));
+    if (kinds.length === 0) continue;
+    if (content.role === 'model') {
+      return {
+        tail: kinds.includes('function_call') ? 'model_function_call' : 'model_prefill',
+        kinds,
+      };
+    }
+    return {
+      tail: kinds.includes('function_response') ? 'function_response' : 'user',
+      kinds,
+    };
+  }
+  return { tail: 'empty', kinds: [] };
+}
+
+function omitEmptyTrailingGoogleContents(contents: readonly GoogleContent[]): GoogleContent[] {
+  let end = contents.length;
+  while (end > 0) {
+    const content = contents[end - 1];
+    if (content !== undefined && content.parts.some((part) => googlePartKinds(part).length > 0)) break;
+    end -= 1;
+  }
+  return end === contents.length ? [...contents] : contents.slice(0, end);
+}
+
+function outboundGoogleGenAIContents(
+  modelName: string,
+  contents: readonly GoogleContent[],
+): GoogleContent[] {
+  if (!googleGenAIRejectsTrailingModelTurn(modelName)) return [...contents];
+  const wire = omitEmptyTrailingGoogleContents(contents);
+  const classified = lastNonEmptyGoogleContent(wire);
+  if (classified.tail !== 'model_prefill' && classified.tail !== 'model_function_call') return wire;
+  const reason = classified.tail === 'model_function_call'
+    ? 'the last non-empty contents turn is a model function call without a function response'
+    : 'the last non-empty contents turn has role model';
+  throw new ChatProviderError(
+    `Native Gemini request refused locally because ${reason}. Gemini documents this shape as HTTP 400 INVALID_ARGUMENT: '${GEMINI_MODEL_TURN_SENTENCE}'`,
+    undefined,
+    {
+      details: {
+        google_content_tail: classified.tail,
+        content_count: wire.length,
+        tail_role: 'model',
+        tail_part_kinds: classified.kinds,
+      },
+    },
+  );
 }
 
 function toolCallIdToName(toolCallId: string, toolNameById: Map<string, string>): string {
@@ -284,6 +393,7 @@ function messageToGoogleGenAI(message: Message): GoogleContent {
 function toolMessageToFunctionResponseParts(
   message: Message,
   toolNameById: Map<string, string>,
+  nestMedia: boolean,
 ): GooglePart[] {
   if (message.role !== 'tool') {
     throw new ChatProviderError('Expected a tool message.');
@@ -317,14 +427,15 @@ function toolMessageToFunctionResponseParts(
     functionResponse: {
       name: toolCallIdToName(message.toolCallId, toolNameById),
       response: { output: textOutput },
-      parts: [],
+      parts: nestMedia ? mediaParts : [],
     },
   };
 
-  return [functionResponsePart, ...mediaParts];
+  return nestMedia ? [functionResponsePart] : [functionResponsePart, ...mediaParts];
 }
 
-export function messagesToGoogleGenAIContents(messages: Message[]): GoogleContent[] {
+export function messagesToGoogleGenAIContents(messages: Message[], modelName = ''): GoogleContent[] {
+  const nestFunctionResponseMedia = googleGenAINestsFunctionResponseMedia(modelName);
   const contents: GoogleContent[] = [];
   const toolNameById = new Map<string, string>();
 
@@ -401,7 +512,7 @@ export function messagesToGoogleGenAIContents(messages: Message[]): GoogleConten
 
         const parts: GooglePart[] = [];
         for (const toolMsg of sortedToolMessages) {
-          parts.push(...toolMessageToFunctionResponseParts(toolMsg, toolNameById));
+          parts.push(...toolMessageToFunctionResponseParts(toolMsg, toolNameById, nestFunctionResponseMedia));
         }
         contents.push({ role: 'user', parts });
         i = j;
@@ -413,7 +524,7 @@ export function messagesToGoogleGenAIContents(messages: Message[]): GoogleConten
     }
 
     if (message.role === 'tool') {
-      const parts: GooglePart[] = toolMessageToFunctionResponseParts(message, toolNameById);
+      const parts: GooglePart[] = toolMessageToFunctionResponseParts(message, toolNameById, nestFunctionResponseMedia);
       contents.push({ role: 'user', parts });
       i += 1;
       continue;
@@ -425,21 +536,25 @@ export function messagesToGoogleGenAIContents(messages: Message[]): GoogleConten
 
   return mergeConsecutiveUserMessages(contents, {
     isUser: (content) => content.role === 'user',
-    isToolResultOnly: (content) =>
-      content.parts.length > 0 &&
-      content.parts.every((part) => part.functionResponse !== undefined),
-    merge: (last, next) => {
-      const lastStartsWithFunctionResponse =
-        last.parts[0]?.functionResponse !== undefined;
-      const nextHasFunctionResponse = next.parts.some(
-        (part) => part.functionResponse !== undefined,
-      );
-      if (lastStartsWithFunctionResponse && !nextHasFunctionResponse) {
-        return { ...next, parts: [...next.parts, ...last.parts] };
-      }
-      return { ...last, parts: [...last.parts, ...next.parts] };
-    },
+    isToolResultOnly: isGoogleFunctionResponseCarrier,
+    canMerge: (last, next) =>
+      (isGoogleFunctionResponseCarrier(last) && isGoogleFunctionResponseCarrier(next))
+      || (isGoogleOrdinaryUserContent(last) && isGoogleOrdinaryUserContent(next)),
+    merge: (last, next) => ({ ...last, parts: [...last.parts, ...next.parts] }),
   });
+}
+
+function googlePartHasOrdinaryText(part: GooglePart): boolean {
+  return part.thought !== true && typeof part.text === 'string' && part.text.trim().length > 0;
+}
+
+function isGoogleFunctionResponseCarrier(content: GoogleContent): boolean {
+  return content.parts.some((part) => part.functionResponse !== undefined)
+    && !content.parts.some(googlePartHasOrdinaryText);
+}
+
+function isGoogleOrdinaryUserContent(content: GoogleContent): boolean {
+  return !content.parts.some((part) => part.functionResponse !== undefined);
 }
 
 export class GoogleGenAIStreamedMessage implements StreamedMessage {
@@ -448,6 +563,14 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private _blocked = false;
+  private _grounded = false;
+
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._blocked || this._grounded; }
+
+  get completionAuthority(): 'normal' | undefined {
+    return this._rawFinishReason === 'STOP' && !this.thinkingOnlyRecoveryBlocked ? 'normal' : undefined;
+  }
 
   constructor(
     response: AsyncIterable<Record<string, unknown>> | Record<string, unknown>,
@@ -485,6 +608,8 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
   }
 
   private _captureFinishReason(response: Record<string, unknown>): void {
+    const blockReason = (response['promptFeedback'] as Record<string, unknown> | undefined)?.['blockReason'];
+    if (blockReason !== undefined && blockReason !== null) this._blocked = true;
     const candidates = response['candidates'] as unknown[] | undefined;
     if (!candidates || candidates.length === 0) {
       return;
@@ -493,6 +618,9 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
     if (first === undefined) {
       return;
     }
+    if (first['groundingMetadata'] !== undefined) this._grounded = true;
+    const safetyRatings = first['safetyRatings'];
+    if (Array.isArray(safetyRatings) && safetyRatings.some(rating => rating?.blocked === true)) this._blocked = true;
     const raw = first['finishReason'] ?? first['finish_reason'];
     if (raw === undefined) {
       return;
@@ -614,7 +742,7 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw error;
       }
-      throw convertGoogleGenAIError(error);
+      throw markProviderEventError(convertGoogleGenAIError(error), error instanceof GoogleApiError ? antigravityErrorInfoReason(error.message) : undefined);
     }
   }
 }
@@ -622,13 +750,39 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
 const NETWORK_RE = /network|connection|connect|disconnect|fetch failed/i;
 const TIMEOUT_RE = /timed?\s*out|timeout|deadline/i;
 
+const ANTIGRAVITY_ERROR_DOMAIN = 'sub2api.antigravity';
+
+function antigravityErrorInfoReason(message: string): string | undefined {
+  const jsonStart = message.indexOf('{');
+  if (jsonStart < 0) return undefined;
+  try {
+    const body: unknown = JSON.parse(message.slice(jsonStart));
+    const details = (body as { error?: { details?: unknown } }).error?.details;
+    if (!Array.isArray(details)) return undefined;
+    for (const detail of details) {
+      if (typeof detail !== 'object' || detail === null) continue;
+      const entry = detail as { '@type'?: unknown; domain?: unknown; reason?: unknown };
+      if (typeof entry['@type'] !== 'string' || !entry['@type'].endsWith('google.rpc.ErrorInfo')) continue;
+      if (entry.domain !== ANTIGRAVITY_ERROR_DOMAIN) continue;
+      if (typeof entry.reason !== 'string' || entry.reason.length === 0) continue;
+      return entry.reason;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {
   if (error instanceof GoogleApiError) {
-    return normalizeAPIStatusError(
-      error.status,
-      error.message,
-      undefined,
-      parseRetryInfoDelayMs(error.message),
+    return markProviderHttpError(
+      normalizeAPIStatusError(
+        error.status,
+        error.message,
+        undefined,
+        parseRetryInfoDelayMs(error.message),
+      ),
+      antigravityErrorInfoReason(error.message),
     );
   }
   if (error instanceof Error) {
@@ -705,33 +859,85 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     this._location = options.location;
     this._defaultHeaders = options.defaultHeaders;
     this._clientFactory = options.clientFactory;
-    this._client =
-      this._vertexai || this._apiKey !== undefined ? this._buildClient(this._apiKey) : undefined;
+    this._client = this._shouldEagerBuild() ? this._buildClient(this._apiKey) : undefined;
   }
 
-  private _buildClient(
-    apiKey: string | undefined,
-    auth?: ProviderRequestAuth,
-  ): GenAIClient {
+  private _shouldEagerBuild(): boolean {
+    const coordinates = this._vertexCoordinates();
+    if (coordinates.kind === 'partial') return false;
+    if (coordinates.kind === 'complete') return true;
+    return this._apiKey !== undefined;
+  }
+
+  private _vertexCoordinates(): VertexCoordinates {
+    if (!this._vertexai) return { kind: 'off' };
+    const project = presentString(this._project);
+    const location = presentString(this._location);
+    if (project !== undefined && location !== undefined) return { kind: 'complete', project, location };
+    if (project !== undefined || location !== undefined) return { kind: 'partial' };
+    return { kind: 'absent' };
+  }
+
+  private _httpOptions(
+    auth: ProviderRequestAuth | undefined,
+    baseUrl: string | undefined,
+  ): { headers?: Record<string, string>; baseUrl?: string } | undefined {
     const httpOptions: { headers?: Record<string, string>; baseUrl?: string } = {};
     const headers = mergeRequestHeaders(this._defaultHeaders, undefined, auth?.headers);
-    if (headers !== undefined) {
-      httpOptions.headers = headers;
-    }
-    if (this._baseUrl !== undefined) {
-      httpOptions.baseUrl = this._baseUrl;
-    }
-    return new GenAIClient({
-      apiKey,
-      ...(this._vertexai
-        ? {
+    if (headers !== undefined) httpOptions.headers = headers;
+    if (baseUrl !== undefined) httpOptions.baseUrl = baseUrl;
+    return Object.keys(httpOptions).length > 0 ? httpOptions : undefined;
+  }
+
+  private _vertexHost(location: string | undefined): string {
+    if (this._baseUrl !== undefined) return this._baseUrl;
+    if (location === undefined || location === 'global') return 'https://aiplatform.googleapis.com';
+    if (location === 'us' || location === 'eu') return `https://aiplatform.${location}.rep.googleapis.com`;
+    return `https://${location}-aiplatform.googleapis.com`;
+  }
+
+  private _buildClient(apiKey: string | undefined, auth?: ProviderRequestAuth): GenAIClient {
+    const coordinates = this._vertexCoordinates();
+    const key = configuredKey(apiKey);
+    switch (coordinates.kind) {
+      case 'partial':
+        throw new ChatProviderError(
+          'GoogleGenAIChatProvider: Vertex AI project and location must both be set, or both be omitted.',
+        );
+      case 'complete':
+        if (key !== undefined) {
+          return new GenAIClient({
+            apiKey: key,
             vertexai: true,
-            project: this._project,
-            location: this._location,
-          }
-        : {}),
-      httpOptions: Object.keys(httpOptions).length > 0 ? httpOptions : undefined,
-    });
+            apiVersion: 'v1',
+            httpOptions: this._httpOptions(auth, this._vertexHost(coordinates.location)),
+          });
+        }
+        return new GenAIClient({
+          vertexai: true,
+          project: coordinates.project,
+          location: coordinates.location,
+          httpOptions: this._httpOptions(auth, this._vertexHost(coordinates.location)),
+        });
+      case 'absent':
+        if (key === undefined) {
+          throw new ChatProviderError(
+            'GoogleGenAIChatProvider: apiKey is required for Vertex AI when GOOGLE_CLOUD_PROJECT and GOOGLE_CLOUD_LOCATION are not both set.',
+          );
+        }
+        return new GenAIClient({
+          apiKey: key,
+          vertexai: true,
+          apiVersion: 'v1',
+          httpOptions: this._httpOptions(auth, this._vertexHost(undefined)),
+        });
+      case 'off':
+        return new GenAIClient({
+          apiKey: key,
+          vertexai: false,
+          httpOptions: this._httpOptions(auth, this._baseUrl),
+        });
+    }
   }
 
   get modelName(): string {
@@ -756,7 +962,7 @@ export class GoogleGenAIChatProvider implements ChatProvider {
       throw createAbortError();
     }
 
-    const contents = messagesToGoogleGenAIContents(history);
+    const contents = outboundGoogleGenAIContents(this._model, messagesToGoogleGenAIContents(history, this._model));
 
     let kwargs: GoogleGenAIGenerationKwargs = { ...this._generationKwargs };
 
@@ -788,21 +994,22 @@ export class GoogleGenAIChatProvider implements ChatProvider {
 
     const config: Record<string, unknown> = {
       ...kwargs,
+      automaticContinuation: true,
       systemInstruction: systemPrompt,
       ...(tools.length > 0 ? { tools: tools.map((t) => toolToGoogleGenAI(t)) } : {}),
     };
     applyResponseFormat(config, options?.responseFormat);
 
     try {
-      const client = this._createClient(
-        mergeProviderRequestAuth(options?.auth, options?.headers),
-      );
+      const requestAuth = mergeProviderRequestAuth(options?.auth, options?.headers);
+      const model = this._requestModel(requestAuth);
+      const client = this._createClient(requestAuth);
       const models = client.models as unknown as {
         generateContent(params: Record<string, unknown>): Promise<unknown>;
         generateContentStream(params: Record<string, unknown>): Promise<AsyncGenerator>;
       };
 
-      const params = { model: this._model, contents, config };
+      const params = { model, contents, config };
 
       options?.onRequestSent?.();
       if (this._stream) {
@@ -836,11 +1043,12 @@ export class GoogleGenAIChatProvider implements ChatProvider {
 
   private _encodeThinking(effort: ThinkingEffort): ThinkingConfig {
     const thinkingConfig: ThinkingConfig = { includeThoughts: true };
+    const levelModel = this._model.includes('gemini-3') || this._model.includes('gemini-4');
 
-    if (this._model.includes('gemini-3')) {
+    if (levelModel) {
       switch (effort) {
         case 'off':
-          thinkingConfig.thinkingLevel = 'MINIMAL';
+          thinkingConfig.thinkingLevel = this._model.includes('gemini-4') ? 'LOW' : 'MINIMAL';
           thinkingConfig.includeThoughts = false;
           break;
         case 'low':
@@ -881,19 +1089,50 @@ export class GoogleGenAIChatProvider implements ChatProvider {
     return thinkingConfig;
   }
 
+  private _resolvedKey(auth: ProviderRequestAuth | undefined): string | undefined {
+    return configuredKey(auth?.apiKey) ?? this._apiKey;
+  }
+
+  private _requestModel(auth: ProviderRequestAuth | undefined): string {
+    const coordinates = this._vertexCoordinates();
+    if (coordinates.kind !== 'complete') return this._model;
+    if (this._model.startsWith('publishers/')) {
+      throw new ChatProviderError(
+        'GoogleGenAIChatProvider: a publishers/ model id cannot be combined with Vertex AI project and location.',
+      );
+    }
+    if (this._resolvedKey(auth) === undefined || this._model.startsWith('projects/')) return this._model;
+    return `projects/${coordinates.project}/locations/${coordinates.location}/publishers/google/models/${this._model}`;
+  }
+
   private _createClient(auth: ProviderRequestAuth | undefined): GenAIClient {
     return resolveAuthBackedClient(
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
-      (a) => {
-        if (this._vertexai) return this._buildClient(this._apiKey, a);
+      (requestAuth) => {
+        if (this._vertexai) return this._buildClient(this._resolvedKey(requestAuth), requestAuth);
         return this._buildClient(
-          requireProviderApiKey('GoogleGenAIChatProvider', a, this._apiKey),
-          a,
+          requireProviderApiKey('GoogleGenAIChatProvider', requestAuth, this._apiKey),
+          requestAuth,
         );
       },
     );
   }
+}
+
+type VertexCoordinates =
+  | { readonly kind: 'off' }
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'partial' }
+  | { readonly kind: 'complete'; readonly project: string; readonly location: string };
+
+function configuredKey(value: string | undefined): string | undefined {
+  return value === undefined || value.length === 0 ? undefined : value;
+}
+
+function presentString(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 const GEMINI_CATALOGUED_PREFIXES = [

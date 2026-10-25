@@ -52,8 +52,8 @@ describe('AgentTitlePromptSource', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('returns the first three prompts from the live context and queue in order', async () => {
@@ -85,6 +85,23 @@ describe('AgentTitlePromptSource', () => {
     ]);
   });
 
+  it.each([false, true])('includes the launching prompt before later queued prompts without duplicates; appended=%s', async (appended) => {
+    const launching = {
+      id: 'two', userMessageId: 'two', createdAt: '2026-01-01T00:00:00.000Z',
+      state: 'pending' as const, message: userMessage('two', '第二条'),
+    };
+    liveMessages = [userMessage('one', '第一条'), ...(appended ? [launching.message] : [])];
+    queue = {
+      active: undefined,
+      launching,
+      pending: [{
+        id: 'three', userMessageId: 'three', createdAt: '2026-01-01T00:00:01.000Z',
+        state: 'pending', message: userMessage('three', '第三条'),
+      }],
+    };
+    await expect(ix.get(IAgentTitlePromptSource).firstUserPrompts(3)).resolves.toEqual(['第一条', '第二条', '第三条']);
+  });
+
   it('keeps the head user messages of a compacted window, skipping elision and summary', async () => {
     liveMessages = [
       userMessage('head', '开场提问'),
@@ -97,6 +114,9 @@ describe('AgentTitlePromptSource', () => {
       '开场提问',
       '最近的追问',
     ]);
+    await expect(ix.get(IAgentTitlePromptSource).digestExcerpt()).resolves.toEqual({
+      firstUser: '开场提问', lastUser: '最近的追问', assistant: undefined,
+    });
   });
 
   it('returns no title prompts when history contains only slash activations', async () => {
@@ -133,6 +153,19 @@ describe('AgentTitlePromptSource', () => {
     };
 
     await expect(ix.get(IAgentTitlePromptSource).firstUserPrompts(3)).resolves.toEqual(['同一条']);
+  });
+
+  it('keeps a materialized launching prompt at its committed history position in turn and digest excerpts', async () => {
+    const message = userMessage('one', '最初的问题');
+    liveMessages = [message, assistantMessage('reply', [{ type: 'text', text: '最终回答' }])];
+    queue = {
+      active: undefined,
+      launching: { id: 'one', userMessageId: 'one', createdAt: '2026-01-01T00:00:00.000Z', state: 'pending', message },
+      pending: [],
+    };
+    const source = ix.get(IAgentTitlePromptSource);
+    await expect(source.firstTurnExcerpt()).resolves.toEqual({ user: '最初的问题', assistant: '最终回答' });
+    await expect(source.digestExcerpt()).resolves.toEqual({ firstUser: '最初的问题', lastUser: undefined, assistant: '最终回答' });
   });
 
   it('firstTurnExcerpt pairs the opening prompt with the turn’s final assistant text', async () => {

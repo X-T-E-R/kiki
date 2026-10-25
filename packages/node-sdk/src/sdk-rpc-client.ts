@@ -79,12 +79,14 @@
  *   to the v1 wire shape (config flattened to the top level); the inspection
  *   and auth-status shapes are field-identical between the engines.
  * - `listMcpServers` / `getMcpStartupMetrics` / `reconnectMcpServer` /
- *   `addSessionMcpServer` → the klient agent facade's session-merged MCP
- *   capability. Explicit config connects still reject merged ephemeral views,
- *   and an unpersisted add remains visible to sibling sessions sharing the
- *   workspace manager (the v2 manager has no session-local `caller` scope).
- *   `listWorkspaceMcpServers` remains a workspace-host read through the
- *   engine accessor because no workspace MCP facade exists.
+ *   `addSessionMcpServer` → the live session MCP handle. The merged view has
+ *   no `connect()`, so an explicit config goes through
+ *   `enableConfiguredServer`: `caller` when the add stays session-local, and
+ *   `global` after `mcp.json` is written. A config-bearing reconnect omits
+ *   the source and keeps the one already recorded. A name-only reconnect
+ *   still uses the agent facade. `listWorkspaceMcpServers` remains a
+ *   workspace-host read through the engine accessor because no workspace MCP
+ *   facade exists.
  * - `onEvent` / `receiveEvent` → the base class registries, fed by a
  *   per-live-session wiring (`src/v2/session-wiring.ts`) that subscribes
  *   every live agent's `IEventBus` and translates each `DomainEvent` back
@@ -130,10 +132,13 @@ import { noopTelemetryClient } from '#/protocol/telemetry';
 import { limitAgentReplayByTurns } from '#/wire/replay-turns';
 import { encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { loadMcpServers } from '@kiki/agent-core-v2/app/mcpConfig/configLoader';
+import { describeWorkspaceTrustSources } from '@kiki/agent-core-v2/workspace/workspaceTrust/mcpDisclosure';
+import { IProjectLocalConfigService } from '@kiki/agent-core-v2/app/projectLocalConfig/projectLocalConfig';
 import { IAppendLogStore } from '@kiki/agent-core-v2/persistence/interface/appendLogStore';
 import { SessionIndexErrors } from '@kiki/agent-core-v2/app/sessionIndex/errors';
 import { AgentStatusUpdated } from '@kiki/agent-core-v2/agent/usage/usageEvents';
 import type { McpServerConfig as WorkspaceMcpServerConfig } from '@kiki/agent-core-v2/mcpCore/config-schema';
+import type { McpServerEntry } from '@kiki/agent-core-v2/mcpCore/connection-manager';
 import {
   bootstrap,
   DEFAULT_AGENT_PROFILE_NAME,
@@ -166,6 +171,7 @@ import {
   ISessionIndex,
   ISessionIndexMirror,
   ISessionManager,
+  ISessionMcpHandle,
   ISessionMetadata,
   ISessionWorkspaceContext,
   ITelemetryService,
@@ -494,8 +500,8 @@ export class SDKRpcClient extends SDKRpcClientBase {
       // fire per workspace handler, so follow every handler — present and
       // future — through the App-scope registry.
       followSessionLifecycles(this.app.accessor, (service) =>
-        service.onDidCloseSession((closed) => {
-          this.unwireSession(closed.sessionId);
+        service.onDidCloseSession(async (closed) => {
+          await this.unwireSession(closed.sessionId);
         }),
       ),
     );
@@ -514,11 +520,11 @@ export class SDKRpcClient extends SDKRpcClientBase {
 
   async close(): Promise<void> {
     for (const wiring of this.sessionWirings.values()) {
-      wiring.dispose();
+      await wiring.disposeAsync();
     }
     this.sessionWirings.clear();
     for (const subscription of this.appSubscriptions) {
-      subscription.dispose();
+      await subscription.dispose();
     }
     await this.klient.close();
     await this.configReady.catch(() => undefined);
@@ -536,7 +542,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // Past this point the accessor throws, so the facade must stop resolving
     // this client's log services. Disposal itself flushes them synchronously.
     getRootLogger().unbind(this.logHost);
-    this.app.dispose();
+    await this.app.dispose();
     await appendLogStore.drainRetirements();
     await drainSessionIndexMirror();
     await drainQueryStoreDisposals();
@@ -632,11 +638,8 @@ export class SDKRpcClient extends SDKRpcClientBase {
    * klient has no workspace-trust facade; composed directly from the engine
    * via {@link engineAccessor} — the same `handlerFor({ root })` path
    * `createSession` takes (materializing the workspace handler is a no-op
-   * cost here: session creation does it anyway). The gated-server list is
-   * what the pure config loader sees with project files included vs skipped
-   * (the workspaceTrust gate inside the engine's `workspaceMcpConfig`),
-   * computed best-effort: an unreadable/invalid project file degrades to an
-   * empty list rather than failing the caller.
+   * cost here: session creation does it anyway). Source inspection never
+   * connects MCP servers. Failed inspection remains visible in warnings.
    */
   override async getWorkspaceTrustInfo(workDir: string): Promise<WorkspaceTrustInfo> {
     const handler = await this.retryWhileSessionIndexBuilding(() =>
@@ -644,20 +647,13 @@ export class SDKRpcClient extends SDKRpcClientBase {
     );
     const trusted = await handler.program.trust.get();
     if (trusted) return { trusted: true, gatedMcpServers: [] };
-    try {
-      const fs = this.engineAccessor.get(IHostFileSystem);
-      const [withProject, userOnly] = await Promise.all([
-        loadMcpServers({ fs, cwd: workDir, homeDir: this.homeDir, includeProject: true }),
-        loadMcpServers({ fs, cwd: workDir, homeDir: this.homeDir, includeProject: false }),
-      ]);
-      const gatedMcpServers = Object.entries(withProject)
-        .filter(([name]) => !(name in userOnly))
-        .map(([name, config]) => describeWorkspaceMcpServer(name, config))
-        .toSorted((a, b) => a.name.localeCompare(b.name));
-      return { trusted: false, gatedMcpServers };
-    } catch {
-      return { trusted: false, gatedMcpServers: [] };
-    }
+    const localConfig = this.engineAccessor.get(IProjectLocalConfigService);
+    const disclosure = await describeWorkspaceTrustSources({
+      fs: this.engineAccessor.get(IHostFileSystem), cwd: workDir, homeDir: this.homeDir,
+      osHomeDir: this.engineAccessor.get(IBootstrapService).osHomeDir,
+      readAdditionalDirs: (cwd) => localConfig.readAdditionalDirs(cwd),
+    });
+    return { trusted: false, ...disclosure };
   }
 
   /**
@@ -999,14 +995,14 @@ export class SDKRpcClient extends SDKRpcClientBase {
     this.sessionWirings.set(handle.id, new SessionEventWiring(handle, this));
   }
 
-  private unwireSession(sessionId: string): void {
+  private async unwireSession(sessionId: string): Promise<void> {
     // v1's print-steer counters die with the Session object; drop ours with
     // every close path (ours, the engine's, or a delete).
     this.printSteerStates.delete(sessionId);
     const wiring = this.sessionWirings.get(sessionId);
     if (wiring === undefined) return;
     this.sessionWirings.delete(sessionId);
-    wiring.dispose();
+    await wiring.disposeAsync();
   }
 
   /**
@@ -2326,6 +2322,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
         id: task.id,
         cron: task.cron,
         recurring: task.recurring !== false,
+        deliveryMode: task.deliveryMode ?? 'idle',
         createdAt: task.createdAt,
         lastFiredAt: task.lastFiredAt,
         nextFireAt: nextFireAt[index] ?? null,
@@ -2662,10 +2659,9 @@ export class SDKRpcClient extends SDKRpcClientBase {
   }
 
   /**
-   * The session-merged MCP agent facade preserves the manager's reconnect and
-   * explicit-config behavior. A merged ephemeral view still rejects the
-   * explicit-config path through the core service rather than being flattened
-   * into a generic JSON runtime surface.
+   * Name-only reconnect uses the merged view's `reconnect`. A replacement
+   * config is applied on the session overlay and keeps the recorded source.
+   * A disabled replacement is rejected before anything is applied.
    */
   override async reconnectMcpServer(input: ReconnectMcpServerRpcInput): Promise<void> {
     const agent = await this.agentFacade(input.sessionId);
@@ -2674,24 +2670,21 @@ export class SDKRpcClient extends SDKRpcClientBase {
       return;
     }
     const replacement = parseReconnectMcpServerConfig(input.name, input.config);
-    // Parity with v1's manager reconnect: a disabled replacement is rejected
-    // before anything is applied, not upserted over the live connection.
     if (replacement.enabled === false) {
       throw new KimiError(
         ErrorCodes.MCP_SERVER_DISABLED,
         `MCP server is disabled: ${input.name}`,
       );
     }
-    await this.engineCall(() =>
-      agent.connectMcpServer({ name: input.name, config: replacement }),
-    );
+    await this.connectExplicitSessionMcp(input.sessionId, input.name, replacement);
   }
 
   /**
-   * v1's `addSessionMcpServer`: validate, optionally persist to the user-level
-   * file, then connect through the agent MCP facade. The v2 entry carries no
-   * `source`/`config` tags, and an unpersisted add remains visible to sibling
-   * sessions sharing the workspace manager; both are existing engine gaps.
+   * Validate, optionally persist to the user-level file, then attach the
+   * server on this session's MCP overlay. `persist: true` records source
+   * `global` after the file write; otherwise the server stays a session-local
+   * `caller` and `mcp.json` is left untouched. `enabled: false` is recorded
+   * disabled and is not connected.
    */
   override async addSessionMcpServer(input: {
     readonly sessionId: string;
@@ -2704,14 +2697,28 @@ export class SDKRpcClient extends SDKRpcClientBase {
     // The store trims names; keep the manager entry and the persisted key on
     // the same normalized identity, like v1's addSessionMcpServer does.
     const target = { ...parsed, name: normalizeServerName(parsed.name) };
+    const config = mcpConfigWithoutName(target);
+    const source = input.persist === true ? 'global' : 'caller';
     if (input.persist === true) {
       const cwd = session.accessor.get(ISessionWorkspaceContext).workDir;
       await this.rejectProjectLayerPersistedMcpAdd(cwd, target.name);
       await this.mcpManagement((management) => management.add({ server: target, cwd }));
     }
-    await this.engineCall(() =>
-      agent.connectMcpServer({ name: target.name, config: mcpConfigWithoutName(target) }),
-    );
+    if (config.enabled === false) {
+      const recorded = await this.registerDisabledSessionMcp(input.sessionId, target.name, config, source);
+      const listed = (await this.engineCall(() => agent.getMcpServers())).find(
+        (candidate) => candidate.name === target.name,
+      );
+      if (listed !== undefined) return listed as McpServerInfo;
+      if (recorded !== undefined && recorded.name === target.name && recorded.status === 'disabled') {
+        return recorded as McpServerInfo;
+      }
+      throw new KimiError(
+        ErrorCodes.MCP_SERVER_NOT_FOUND,
+        `MCP server "${target.name}" was not connected`,
+      );
+    }
+    await this.connectExplicitSessionMcp(input.sessionId, target.name, config, source);
     const entry = (await this.engineCall(() => agent.getMcpServers())).find(
       (candidate) => candidate.name === target.name,
     );
@@ -2722,6 +2729,51 @@ export class SDKRpcClient extends SDKRpcClientBase {
       );
     }
     return entry as McpServerInfo;
+  }
+
+  /**
+   * A disabled add must not use `enableConfiguredServer`, which forces the
+   * entry on. A handle without disabled registration fails before any connect.
+   * The recorded entry is the receipt when the session list still hides the name.
+   */
+  private async registerDisabledSessionMcp(
+    sessionId: string,
+    name: string,
+    config: ReturnType<typeof mcpConfigWithoutName>,
+    source: 'global' | 'caller',
+  ): Promise<McpServerEntry | undefined> {
+    const handle = this.requireLiveSession(sessionId).accessor.get(ISessionMcpHandle);
+    if (handle.registerDisabledServer === undefined) {
+      throw new KimiError(
+        ErrorCodes.REQUEST_INVALID,
+        `MCP server "${name}" is disabled and cannot be recorded on this session`,
+      );
+    }
+    return this.engineCall(() =>
+      handle.registerDisabledServer!(name, config as WorkspaceMcpServerConfig, source),
+    );
+  }
+
+  /**
+   * The merged connection view has no `connect()`. Explicit configs use the
+   * session overlay. A handle without that method falls back to the agent
+   * facade, which is the cross-owner rejection when the overlay is absent.
+   */
+  private async connectExplicitSessionMcp(
+    sessionId: string,
+    name: string,
+    config: ReturnType<typeof mcpConfigWithoutName>,
+    source?: 'global' | 'caller',
+  ): Promise<void> {
+    const handle = this.requireLiveSession(sessionId).accessor.get(ISessionMcpHandle);
+    if (handle.enableConfiguredServer !== undefined) {
+      await this.engineCall(() =>
+        handle.enableConfiguredServer!(name, config as WorkspaceMcpServerConfig, source),
+      );
+      return;
+    }
+    const agent = await this.agentFacade(sessionId);
+    await this.engineCall(() => agent.connectMcpServer({ name, config }));
   }
 }
 
@@ -2825,20 +2877,4 @@ function toManagedServerInfo(server: McpManagedServer): McpManagedServerInfo {
     mutable: server.mutable,
     plugin: server.plugin,
   } as McpManagedServerInfo;
-}
-
-function describeWorkspaceMcpServer(
-  name: string,
-  config: WorkspaceMcpServerConfig,
-): WorkspaceTrustInfo['gatedMcpServers'][number] {
-  if (config.transport === 'stdio') {
-    return {
-      name,
-      transport: config.transport,
-      command: config.command,
-      args: config.args,
-      cwd: config.cwd,
-    };
-  }
-  return { name, transport: config.transport, url: config.url };
 }

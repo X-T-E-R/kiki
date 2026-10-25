@@ -48,8 +48,8 @@ export function NewProfile({ workspaceId, workspaceOptions: providedWorkspaceOpt
   const [selectedWsId, setSelectedWsId] = useState<string | undefined>(workspaceId);
   const effectiveWorkspaceId = workspaceId ?? selectedWsId;
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     enabled: workspaceId === undefined && providedWorkspaceOptions === undefined,
     staleTime: 60_000,
   });

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
+import { attachErrorDetails, unwrapErrorCause } from '#/errors';
+
 import {
   APIConnectionError,
   APIContextOverflowError,
@@ -14,8 +16,11 @@ import {
   classifyApiError,
   createAbortError,
   isAbortError,
+  ambiguousRequestDelivery,
   isRetryableGenerateError,
   normalizeAPIStatusError,
+  noteExecutedRequestDelivery,
+  requestDeliveryProvenance,
   PROVIDER_API_ERROR_CODE,
   PROVIDER_FILTERED_ERROR_CODE,
   providerErrorKind,
@@ -344,4 +349,50 @@ describe('providerErrorKind', () => {
     expect(providerErrorKind(PROVIDER_FILTERED_ERROR_CODE)).toBe('filtered');
     expect(new ChatProviderError('boom').details).toEqual({ error_kind: 'unknown' });
   });
+});
+
+describe('requestDeliveryProvenance', () => {
+  it('leaves a pre-stream HTTP failure unmarked so its existing retry decision stands', () => {
+    const unauthorized = new APIStatusError(401, 'unauthorized');
+    const rateLimit = new APIStatusError(429, 'slow down');
+    expect(requestDeliveryProvenance(unauthorized)).toBeUndefined();
+    expect(requestDeliveryProvenance(rateLimit)).toBeUndefined();
+    expect(requestDeliveryProvenance(new APIConnectionError('terminated'))).toBeUndefined();
+    expect(isRetryableGenerateError(rateLimit)).toBe(true);
+    expect(isRetryableGenerateError(new APIConnectionError('terminated'))).toBe(true);
+    expect(isRetryableGenerateError(unauthorized)).toBe(false);
+  });
+
+  it('retains uncertainty while classifying a no-output connection, timeout, or early EOF as retryable', () => {
+    const eof = new ChatProviderError('OpenAI Responses stream ended before a terminal response event.');
+    for (const cause of [new APIConnectionError('terminated'), new APITimeoutError('timed out'), eof]) {
+      const wrapped = ambiguousRequestDelivery(cause);
+      expect(requestDeliveryProvenance(wrapped)).toBe('unknown');
+      expect(requestDeliveryProvenance(unwrapErrorCause(wrapped))).toBe('unknown');
+      expect(isRetryableGenerateError(wrapped)).toBe(true);
+      expect(isRetryableGenerateError(unwrapErrorCause(wrapped))).toBe(true);
+      expect(wrapped.message).toBe('The provider request ended without an observed outcome.');
+      expect((unwrapErrorCause(wrapped) as Error).message).toBe(cause.message);
+    }
+  });
+
+  it('does not equate a parsed failure event with output or tool execution', () => {
+    const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-429', null, 'trace-429'), {
+      errorSource: 'provider_event',
+    });
+    expect(requestDeliveryProvenance(parsed)).toBeUndefined();
+    expect(requestDeliveryProvenance(unwrapErrorCause(parsed))).toBeUndefined();
+    expect(isRetryableGenerateError(parsed)).toBe(true);
+    expect(parsed).toMatchObject({ statusCode: 429, message: 'slow down', requestId: 'req-429', traceId: 'trace-429' });
+  });
+});
+
+
+it('keeps actual observed output non-replayable even when transport delivery is unknown', () => {
+  const error = ambiguousRequestDelivery(new APIConnectionError('websocket closed before terminal event (code 1012)'));
+  expect(isRetryableGenerateError(error)).toBe(true);
+  noteExecutedRequestDelivery(error);
+  expect(requestDeliveryProvenance(error)).toBe('unknown');
+  expect(isRetryableGenerateError(error)).toBe(false);
+  expect(isRetryableGenerateError(unwrapErrorCause(error))).toBe(false);
 });

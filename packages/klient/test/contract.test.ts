@@ -7,7 +7,9 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import type { ConfigResponse } from '@kiki/protocol';
 import type { CapabilityStep, CapabilityStatus, CapabilityStepReason } from '@kiki/agent-core-v2/app/capability/types';
+import type { HttpRestConfigPatch } from '../src/core/facade/http-rest.js';
 import { capabilityStepSchema, capabilityStatusSchema } from '../src/contract/global/capabilities.js';
 
 import { pluginManifestSchema } from '../src/contract/global/plugins.js';
@@ -35,6 +37,36 @@ import {
 import { modelConfigSchema } from '../src/contract/global/models.js';
 
 import { sessionViewSubscribeInputSchema, sessionViewTranscriptPageInputSchema, sessionViewSignalSchema } from '../src/contract/session/view.js';
+
+describe('HTTP config facade contract', () => {
+  it('carries scoped retry selectors through Klient request and response types', () => {
+    const patch: HttpRestConfigPatch = {
+      retry: {
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          max_attempts: 20,
+        }],
+      },
+    };
+    const response: ConfigResponse = {
+      providers: {},
+      retry: {
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          maxAttempts: 20,
+          retry: true,
+        }],
+      },
+    };
+
+    expect(patch.retry?.policies?.[0]?.providers).toEqual(['google-native']);
+    expect(response.retry?.policies?.[0]?.models).toEqual(['gemini-4-argon']);
+  });
+});
 
 describe('goal budget edit contract', () => {
   it('preserves omitted fields and explicit clears without adding a separate procedure', () => {
@@ -133,6 +165,22 @@ const timeoutCases = [
   { surface, field: 'startupTimeoutMs' as const, parse },
   { surface, field: 'toolTimeoutMs' as const, parse },
 ]);
+
+describe('session thinking selection contract', () => {
+  it.each([{ thinking: 'high' }, { thinking: null }, { thinking: undefined }])(
+    'preserves thinking $thinking when creating a session',
+    ({ thinking }) => {
+      const input = { workDir: '/tmp/example', mainAgentBinding: { thinking } };
+      expect(createSessionOptionsSchema.parse(input)).toEqual(input);
+    },
+  );
+
+  it('rejects a malformed thinking selection', () => {
+    expect(createSessionOptionsSchema.safeParse({
+      workDir: '/tmp/example', mainAgentBinding: { thinking: 1 },
+    }).success).toBe(false);
+  });
+});
 
 describe('MCP timeout contract validation', () => {
   it.each(timeoutCases)('accepts the maximum $field for $surface', ({ field, parse }) => {
@@ -368,6 +416,21 @@ describe('request identity contract validation', () => {
     expect(providerConfigSchema.parse({ requestIdentity: camel })).toEqual({
       requestIdentity: camel,
     });
+    const compression = { minBytes: 0, targets: ['https://b.example.test/v1', 'https://a.example.test/v1'] };
+    const socket = { off: true as const };
+    expect(configSetInputSchema.safeParse(['requestCompression', { encoding: 'zstd', targets: ['https://example.test/v1'] }]).success).toBe(true);
+    expect(configReplaceInputSchema.safeParse(['requestCompression', undefined]).success).toBe(true);
+    expect(configReplaceInputSchema.safeParse(['responsesWebSocket', null]).success).toBe(true);
+    expect(configSetInputSchema.safeParse(['requestCompression', { minBytes: 0 }]).success).toBe(true);
+    expect(configSetInputSchema.safeParse(['requestCompression', { encoding: 'gzip', dictionary: true }]).success).toBe(false);
+    expect(configSetInputSchema.safeParse(['responsesWebSocket', {}]).success).toBe(false);
+    expect(configReplaceInputSchema.safeParse(['requestCompression', { minBytes: 0 }]).success).toBe(false);
+    expect(configReplaceSectionsInputSchema.safeParse([{ requestCompression: { minBytes: 0 } }]).success).toBe(false);
+    expect(configReplaceSectionsInputSchema.safeParse([{ responsesWebSocket: { targets: ['https://example.test/v1'] } }]).success).toBe(true);
+    expect(providerConfigSchema.parse({ requestCompression: compression, responsesWebSocket: socket })).toEqual({
+      requestCompression: compression,
+      responsesWebSocket: socket,
+    });
     expect(modelConfigSchema.parse({ requestIdentity: camel })).toEqual({
       requestIdentity: camel,
     });
@@ -399,4 +462,16 @@ describe('managed account sign-in contract', () => {
     expect(oAuthFlowSnapshotSchema.parse(snapshot).status).toBe('failed');
     expect(oAuthFlowSnapshotSchema.safeParse({ ...snapshot, status: 'unrecognized' }).success).toBe(false);
   });
+});
+
+
+it('preserves assistant media part identity and legacy text deltas at the client event boundary', () => {
+  const schema = agentEvents['assistant.delta'].schema;
+  const media = {
+    type: 'assistant.delta', turnId: 1, step: 2, stepId: 'example-step', partId: 'example-image', delta: '',
+    part: { type: 'image_url', imageUrl: { url: 'https://example.test/image.png', id: 'provider-reference', name: 'image.png' } },
+  };
+  expect(schema.parse(media)).toEqual(media);
+  const legacy = { type: 'assistant.delta', turnId: 1, delta: 'hello' };
+  expect(schema.parse(legacy)).toEqual(legacy);
 });

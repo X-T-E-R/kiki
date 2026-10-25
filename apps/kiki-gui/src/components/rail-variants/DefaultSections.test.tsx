@@ -1,32 +1,56 @@
 // @vitest-environment jsdom
 
 /**
- * The rail's 能力 block (DefaultSections CapabilitiesBlock): folded is the
- * head's per-kind counts and nothing else, because the names behind them read
- * as a wall of slugs rather than a summary — they live in the block's own
- * detail, where each carries its scope and state. A failed read (or an answer
- * without the capability fields) keeps the block as a plain title, one grey
- * status line and a text retry — "can't be read right now", never an alert and
- * never a silent gap.
+ * The rail splits observation from control into two independent folded entries.
+ * Tools, skills, and subagent targets stay in the three-tab observation fold;
+ * plugins, system capabilities, and MCP servers live in the control fold.
+ * Plugin and MCP tools remain observable in the complete tools inventory.
+ *
+ * The agent-panel and plugin-usage reads fail independently. A failed read
+ * leaves a quiet retry line in its own group. A partial capability answer keeps
+ * the tabs that answered and gives only the missing kind the retry. Explicit
+ * unsupported errors hide their own group, not the system and MCP controls.
  */
 
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { AgentCapabilitiesResponse } from '@kiki/protocol';
+import type { AgentCapabilitiesResponse, OptionalCapabilitySessionResponse, PluginUsageItem, PluginUsageResponse } from '@kiki/protocol';
 import { I18nProvider } from '../../i18n';
-import { CapabilitiesBlock } from './DefaultSections';
+import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
+import { translate, type I18nKey } from '@kiki/session-core/i18n';
+import { OptionalCapabilityRows } from '../capabilities/optionalCapabilityUi';
+import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
+import { ActivityFeed, CapabilitiesBlock, ProfileHead, profileEffortDisplay } from './DefaultSections';
 
-const { readCapabilities } = vi.hoisted(() => ({ readCapabilities: vi.fn() }));
+const { readCapabilities, getUsage, getConfig, getSessionCaps, setSessionCap } = vi.hoisted(() => ({
+  readCapabilities: vi.fn(),
+  getUsage: vi.fn(),
+  getConfig: vi.fn(),
+  getSessionCaps: vi.fn(),
+  setSessionCap: vi.fn(),
+}));
 vi.mock('../../state/connection', () => ({
   useConnection: () => ({
+    scopeId: 'test-scope',
+    spaceKey: 'local',
+    connectionId: 'test-conn',
     klient: {
       global: {
         agentPanel: {
           read: (query: unknown, options: { signal: AbortSignal }) => readCapabilities(query, options.signal),
         },
       },
+    },
+    client: {
+      getConfig: () => getConfig(),
+      getSessionOptionalCapabilities: (sessionId: string) => getSessionCaps(sessionId),
+      setSessionOptionalCapability: (sessionId: string, body: unknown) => setSessionCap(sessionId, body),
+      getPluginUsage: (target: unknown) => getUsage(target),
+      setPluginUsage: () => Promise.reject(new Error('writes are not under test here')),
+      listPluginMarketplace: () => Promise.resolve({ entries: [] }),
     },
   }),
   useOptionalControllerRegistry: () => null,
@@ -56,11 +80,64 @@ const full: AgentCapabilitiesResponse = {
   ],
 };
 
+/**
+ * The degraded shape: the server's own "capabilities unavailable" answer
+ * (`available: false`, no optional fields), the way a session that is not
+ * live or a fixture without a capability seed responds. It is a partial
+ * answer — not proof the scope is unoffered, which only an explicit
+ * unsupported error says.
+ */
+const withoutCapabilities: AgentCapabilitiesResponse = {
+  context: 'live',
+  owner: { profile: 'agent', agent_id: 'main' },
+  available: false,
+  unavailable_reason: 'This fixture does not seed agent capability policy.',
+  targets: [],
+} as AgentCapabilitiesResponse;
+
+const unsupported = () => Object.assign(new Error('unsupported procedure'), { code: 12 });
+
+function plugin(overrides: Partial<PluginUsageItem> = {}): PluginUsageItem {
+  return {
+    id: 'demo',
+    displayName: 'Demo Plugin',
+    version: '1.0.0',
+    home_enabled: true,
+    global_enabled: true,
+    state: 'ok',
+    override: 'inherit',
+    effective: true,
+    app_service: false,
+    skillCount: 1,
+    mcpServerCount: 0,
+    ...overrides,
+  } as PluginUsageItem;
+}
+
+function pluginAnswer(overrides: Partial<PluginUsageResponse> = {}): PluginUsageResponse {
+  return {
+    home_id: 'home-1',
+    target: { workspace_id: 'ws-a', name: 'Alpha', root: 'C:/work/alpha' },
+    revision: 7,
+    apply_state: 'applied',
+    errors: [],
+    plugins: [plugin()],
+    ...overrides,
+  } as PluginUsageResponse;
+}
+
 let root: Root;
 let container: HTMLDivElement;
 
 beforeEach(() => {
   readCapabilities.mockReset();
+  getUsage.mockReset();
+  getConfig.mockReset();
+  getSessionCaps.mockReset();
+  setSessionCap.mockReset();
+  getConfig.mockResolvedValue({});
+  getSessionCaps.mockResolvedValue(buildSessionCapabilities());
+  clearPendingNewSessionCapabilities();
   localStorage.clear();
   localStorage.setItem('kiki.locale', 'zh');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -75,15 +152,19 @@ afterEach(async () => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = false;
 });
 
+let queryClient: QueryClient;
+
 async function render() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
-      <QueryClientProvider client={client}>
-        <I18nProvider>
-          <CapabilitiesBlock sessionId="sess-1" agentId="main" />
-        </I18nProvider>
-      </QueryClientProvider>,
+      <MemoryRouter>
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <CapabilitiesBlock sessionId="sess-1" agentId="main" />
+          </I18nProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
     );
   });
 }
@@ -92,36 +173,87 @@ async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 
+/** The observation fold, opened. */
+async function openFold(): Promise<HTMLElement> {
+  const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+  await act(async () => { head.click(); });
+  return head;
+}
+
+/** The control fold, opened. */
+async function openControls(): Promise<HTMLElement> {
+  const head = container.querySelector<HTMLElement>('[data-rail-capabilities="control"] [aria-expanded]')!;
+  await act(async () => { head.click(); });
+  return head;
+}
+
+async function tab(id: string) {
+  const button = container.querySelector<HTMLButtonElement>(`[data-capability-tab-button="${id}"]`);
+  if (button === null) throw new Error(`no tab ${id}`);
+  await act(async () => { button.click(); });
+}
+
 describe('CapabilitiesBlock', () => {
-  it('folds to the counts head alone, and expands onto the named detail', async () => {
+  it('keeps observation and control as independent default-closed folds', async () => {
     readCapabilities.mockResolvedValue(full);
+    getUsage.mockResolvedValue(pluginAnswer());
+    getSessionCaps.mockResolvedValue(buildSessionCapabilities());
     await render();
     await settle();
-    const block = container.querySelector('[data-rail-capabilities]')!;
-    // Folded: the head keeps the per-kind counts, the tabs stay unmounted.
-    const head = block.querySelector<HTMLButtonElement>('[aria-expanded]')!;
-    expect(head.getAttribute('aria-expanded')).toBe('false');
-    expect(head.textContent).toContain('工具 3 · 技能 4 · 子智能体 2 · 扩展 2');
-    expect(block.querySelector('[data-agent-capabilities-section]')).toBeNull();
-    // No name pile-up above the fold. Those slugs are a wall of ids, and the
-    // detail below carries each one with its scope and state.
-    expect(block.querySelector('[data-rail-capabilities-preview]')).toBeNull();
-    expect(block.textContent).not.toContain('api-diff');
-    expect(block.textContent).not.toContain('release-notes');
-    expect(block.textContent).not.toContain('+1');
-    // Open: the full tabs mount, where every name is readable on purpose —
-    // each behind its own tab, with its scope and state.
-    await act(async () => { head.click(); });
-    expect(block.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
-    expect(block.querySelector('[data-capability-tab-button="skills"]')).not.toBeNull();
-    const skills = block.querySelector<HTMLButtonElement>('[data-capability-tab-button="skills"]')!;
-    await act(async () => { skills.click(); });
-    expect(block.textContent).toContain('api-diff');
-    expect(block.textContent).toContain('release-notes');
-    // Close: the block is the counts head again, and nothing more.
-    await act(async () => { head.click(); });
-    expect(block.querySelector('[data-agent-capabilities-section]')).toBeNull();
-    expect(block.textContent).not.toContain('api-diff');
+    const observation = container.querySelector('[data-rail-capabilities="observation"]')!;
+    const controls = container.querySelector('[data-rail-capabilities="control"]')!;
+    const observationHead = observation.querySelector<HTMLButtonElement>('[aria-expanded]')!;
+    const controlHead = controls.querySelector<HTMLButtonElement>('[aria-expanded]')!;
+    expect(observationHead.getAttribute('aria-expanded')).toBe('false');
+    expect(controlHead.getAttribute('aria-expanded')).toBe('false');
+    expect(observationHead.textContent).toContain('工具 4 · 技能 4 · 子智能体 2');
+    expect(observationHead.textContent).not.toContain('插件');
+    expect(controlHead.textContent).toBe('能力控制');
+    expect(controlHead.querySelector('[data-fold-summary]')).toBeNull();
+    expect(observation.querySelector('[data-agent-capabilities-section]')).toBeNull();
+    expect(controls.querySelector('[data-rail-plugin="demo"]')).toBeNull();
+
+    await openFold();
+    expect(observationHead.getAttribute('aria-expanded')).toBe('true');
+    expect(controlHead.getAttribute('aria-expanded')).toBe('false');
+    expect(observation.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(observation.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
+    expect(observation.querySelector('[data-capability-group-chip="mcp:github"]')).not.toBeNull();
+    await tab('skills');
+    expect(observation.textContent).toContain('api-diff');
+    expect(observation.textContent).toContain('release-notes');
+
+    await openControls();
+    expect(observationHead.getAttribute('aria-expanded')).toBe('true');
+    expect(controlHead.getAttribute('aria-expanded')).toBe('true');
+    expect(controls.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    expect(controls.querySelector('[data-optional-capability="browser"]')).not.toBeNull();
+    expect(controls.querySelector('[data-capability-tab-button]')).toBeNull();
+
+    await act(async () => { observationHead.click(); });
+    expect(observation.querySelector('[data-agent-capabilities-section]')).toBeNull();
+    expect(controls.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+  });
+
+  it('counts usable plugins only inside the expanded plugin group', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockResolvedValue(pluginAnswer({
+      plugins: [
+        plugin({ id: 'a', effective: true }),
+        plugin({ id: 'b', effective: false }),
+        plugin({ id: 'c', effective: false, home_enabled: false, reason: 'home_disabled' }),
+      ],
+    }));
+    await render();
+    await settle();
+    const head = container.querySelector('[data-rail-capabilities="control"] [aria-expanded]')!;
+    expect(head.textContent).toBe('能力控制');
+    expect(head.querySelector('[data-fold-summary]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugin-count]')).toBeNull();
+    await openControls();
+    expect(container.querySelector('[data-rail-control-group="plugins"] h4')?.textContent).toBe('插件1');
+    expect(container.querySelector('[data-rail-plugin-count]')?.textContent).toBe('1');
+    expect(container.querySelectorAll('[data-rail-plugin]')).toHaveLength(3);
   });
 
   it('keeps every usable name reachable in the detail, disabled ones out of the counts', async () => {
@@ -133,6 +265,7 @@ describe('CapabilitiesBlock', () => {
       skills: [],
       targets: [],
     });
+    getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
     // Built-ins alone: 3 of 4 enabled (Grep is off), and no name line at all.
@@ -143,20 +276,25 @@ describe('CapabilitiesBlock', () => {
     expect(container.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
   });
 
-  it('shows a quiet status line with a text retry when the read fails, and recovers', async () => {
+  it('keeps the failed capability read to one quiet line inside each of its tabs, and recovers', async () => {
     readCapabilities.mockRejectedValueOnce(new Error('fixture offline'));
+    getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
     const block = container.querySelector('[data-rail-capabilities]')!;
-    // The block stays: title, one grey line, a text retry. No alert, no fold.
-    expect(block.textContent).toContain('能力');
+    // The block stays a fold: the plugins half is still true, so the head has
+    // no fake counts and no alert, and the failure is told where it belongs.
+    expect(block.textContent).toContain('能力清单');
+    expect(block.querySelector('[role="alert"]')).toBeNull();
+    await openFold();
     const status = block.querySelector('[data-rail-capabilities-unavailable]')!;
     expect(status.getAttribute('role')).toBe('status');
     expect(status.className).toContain('text-ink-faint');
     expect(status.className).not.toMatch(/danger|amber|attention/);
     expect(status.textContent).toContain('暂时读不到能力信息。');
-    expect(block.querySelector('[role="alert"]')).toBeNull();
-    expect(block.querySelector('[aria-expanded]')).toBeNull();
+    // The control fold is a different read and is not dragged into the failure.
+    await openControls();
+    expect(container.querySelector('[data-rail-capabilities="control"] [data-rail-plugin="demo"]')).not.toBeNull();
     const retry = block.querySelector<HTMLButtonElement>('[data-rail-capabilities-retry]')!;
     expect(retry.textContent).toBe('重试');
     readCapabilities.mockResolvedValue(full);
@@ -164,30 +302,566 @@ describe('CapabilitiesBlock', () => {
     await settle();
     expect(readCapabilities).toHaveBeenCalledTimes(2);
     expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
-    // Back to a working folded block: counts, no alert, nothing left over.
-    expect(container.querySelector('[data-rail-capabilities]')?.textContent).toContain('工具 3');
-    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
   });
 
-  it('shows the same quiet line when the answer lacks the capability fields', async () => {
+  it('tells a failed plugin read inside the control fold only', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockRejectedValue(new Error('network down'));
+    await render();
+    await settle();
+    await openFold();
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    await openControls();
+    const line = container.querySelector('[data-rail-plugins-unavailable]')!;
+    expect(line.textContent).toContain('暂时读不到当前对话的插件使用情况。');
+    expect(line.querySelector('button')!.textContent).toBe('重试');
+    expect(container.querySelector('[data-rail-capabilities="observation"] [data-rail-plugins-unavailable]')).toBeNull();
+  });
+
+  it('has no plugins tab when the server does not offer plugin usage', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockRejectedValue(unsupported());
+    await render();
+    await settle();
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('工具 4');
+    expect(head.textContent).not.toContain('插件');
+    await act(async () => { head.click(); });
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(container.querySelector('[data-capability-tab-button="plugins"]')).toBeNull();
+  });
+
+  it('keeps controls without an observation tab strip when the capability scope is unsupported', async () => {
+    readCapabilities.mockRejectedValue(unsupported());
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    expect(container.querySelector('[data-rail-capabilities="observation"]')).toBeNull();
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="control"] [aria-expanded]')!;
+    expect(head.textContent).toBe('能力控制');
+    expect(head.querySelector('[data-fold-summary]')).toBeNull();
+    await act(async () => { head.click(); });
+    expect(container.querySelector('[role="tablist"]')).toBeNull();
+    expect(container.querySelector('[data-rail-plugin="demo"]')).not.toBeNull();
+    expect(container.querySelector('[data-rail-control-group="system"]')).not.toBeNull();
+  });
+
+  it('keeps the system-control fold when observation and plugin usage are unsupported', async () => {
+    readCapabilities.mockRejectedValue(unsupported());
+    getUsage.mockRejectedValue(unsupported());
+    await render();
+    await settle();
+    expect(container.querySelector('[data-rail-capabilities="observation"]')).toBeNull();
+    expect(container.querySelector('[data-rail-capabilities="control"]')).not.toBeNull();
+    await openControls();
+    expect(container.querySelector('[data-rail-control-group="plugins"]')).toBeNull();
+    expect(container.querySelector('[data-rail-control-group="system"]')).not.toBeNull();
+  });
+
+  it('keeps tools and subagents when the answer omits only the skills field', async () => {
     readCapabilities.mockResolvedValue({
       context: 'live',
       owner: { profile: 'agent', agent_id: 'main' },
-      available: false,
-      unavailable_reason: 'This fixture does not seed agent capability policy.',
-      targets: [],
+      available: true,
+      tools: full.tools,
+      targets: full.targets,
     });
+    getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    const status = container.querySelector('[data-rail-capabilities-unavailable]')!;
-    expect(status.textContent).toContain('暂时读不到能力信息。');
-    expect(container.querySelector('[data-rail-capabilities-retry]')).not.toBeNull();
+    // The folded head reports the kinds that answered, not a zero for skills.
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    const summary = head.querySelector('[data-fold-summary]')!;
+    expect(summary.textContent).toContain('工具 4');
+    expect(summary.textContent).toContain('子智能体 2');
+    expect(summary.textContent).not.toContain('技能');
+    await openFold();
+    // The tools tab kept its content; the skills tab carries the quiet line.
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    await tab('subagents');
+    expect(container.textContent).toContain('explore');
+    await tab('skills');
+    const line = container.querySelector<HTMLElement>('[data-rail-capabilities-unavailable]')!;
+    expect(line.getAttribute('role')).toBe('status');
+    expect(line.className).toContain('text-ink-faint');
+    // The retry re-reads, and a complete answer closes the gap.
+    readCapabilities.mockResolvedValue(full);
+    await act(async () => { line.querySelector<HTMLButtonElement>('[data-rail-capabilities-retry]')!.click(); });
+    await settle();
+    expect(readCapabilities).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+    expect(container.textContent).toContain('api-diff');
   });
 
-  it('stays hidden while the first read is in flight', async () => {
-    readCapabilities.mockReturnValue(new Promise(() => {}));
+  it('keeps skills and subagents when the answer omits only the tools field', async () => {
+    readCapabilities.mockResolvedValue({
+      context: 'live',
+      owner: { profile: 'agent', agent_id: 'main' },
+      available: true,
+      skills: full.skills,
+      targets: full.targets,
+    });
+    getUsage.mockResolvedValue(pluginAnswer());
     await render();
     await settle();
-    expect(container.querySelector('[data-rail-capabilities]')).toBeNull();
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    const summary = head.querySelector('[data-fold-summary]')!;
+    expect(summary.textContent).toContain('技能 4');
+    expect(summary.textContent).toContain('子智能体 2');
+    expect(summary.textContent).not.toContain('工具');
+    await openFold();
+    // The tools tab carries the quiet line; the skills tab kept its content.
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).not.toBeNull();
+    expect(container.querySelector('[data-capability-tab-button="tools"]')!.textContent).not.toContain('6');
+    await tab('skills');
+    expect(container.textContent).toContain('api-diff');
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+  });
+
+  it('reads a degraded answer with neither optional field as partial, not as an absent scope', async () => {
+    readCapabilities.mockResolvedValue(withoutCapabilities);
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    // The observation fold stays with three tabs: tools and skills get the quiet
+    // line and subagents shows the answered empty list. Plugins stay in controls.
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities="observation"] [aria-expanded]')!;
+    const summary = head.querySelector('[data-fold-summary]')!;
+    expect(summary.textContent).toContain('子智能体 0');
+    expect(summary.textContent).not.toContain('插件');
+    expect(summary.textContent).not.toContain('工具');
+    expect(summary.textContent).not.toContain('技能');
+    await openFold();
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).not.toBeNull();
+    await tab('subagents');
+    expect(container.textContent).toContain('这个智能体不能派发子智能体。');
+    await openControls();
+    expect(container.querySelector('[data-rail-capabilities="control"] [data-rail-plugin="demo"]')).not.toBeNull();
+  });
+
+  it('shows the full inventory when available:false ships with the fields, as a live dispatch-off answer does', async () => {
+    readCapabilities.mockResolvedValue({
+      ...full,
+      available: false,
+      unavailable_reason: 'AgentRun is not active for this agent',
+      unavailable_reason_code: 'agent_run_inactive',
+    });
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    // available:false is a dispatch flag, not a scope verdict: every tab keeps
+    // its content and the head keeps every count.
+    const head = container.querySelector<HTMLElement>('[data-rail-capabilities] [aria-expanded]')!;
+    expect(head.textContent).toContain('工具 4 · 技能 4 · 子智能体 2');
+    expect(head.textContent).not.toContain('插件');
+    await openFold();
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+  });
+
+  it('keeps the last good answer through a failed background refetch', async () => {
+    readCapabilities.mockResolvedValue(full);
+    getUsage.mockResolvedValue(pluginAnswer());
+    await render();
+    await settle();
+    await openFold();
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    readCapabilities.mockRejectedValue(new Error('network down'));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['agentCapabilities'] }); });
+    await settle();
+    // Stale data keeps rendering: no quiet line, no lost tabs.
+    expect(container.querySelectorAll('[data-capability-group-chip]').length).toBeGreaterThan(0);
+    expect(container.querySelector('[data-rail-capabilities-unavailable]')).toBeNull();
+    expect(container.querySelectorAll('[data-capability-tab-button]')).toHaveLength(3);
+  });
+
+  it('hides unresolved observation while keeping the default-closed control entry', async () => {
+    readCapabilities.mockReturnValue(new Promise(() => {}));
+    getUsage.mockReturnValue(new Promise(() => {}));
+    await render();
+    await settle();
+    expect(container.querySelector('[data-rail-capabilities="observation"]')).toBeNull();
+    expect(container.querySelector('[data-rail-capabilities="control"] [aria-expanded]')?.getAttribute('aria-expanded')).toBe('false');
+  });
+});
+
+const compactionKeys = [
+  'transcript.marker.compactionFresh', 'transcript.marker.compactionSummarize',
+  'transcript.marker.compactionFallback', 'transcript.marker.compactionRescue',
+  'transcript.marker.compactionFailed', 'transcript.marker.compaction',
+] as const;
+
+describe.each(['zh', 'en'] as const)('ActivityFeed compaction labels (%s)', (locale) => {
+  it.each(compactionKeys)('preserves %s in the collapsed and expanded feed', async (key) => {
+    localStorage.setItem('kiki.locale', locale);
+    const notice: NoticeBlock = {
+      kind: 'notice', id: 'compact-example', text: 'compaction', tone: 'neutral',
+      i18n: { key }, createdAt: '2026-01-01T00:00:00.000Z',
+    };
+    await act(async () => {
+      root.render(<I18nProvider><ActivityFeed blocks={[notice]} forest={buildAgentForest([], [])} onOpenAgent={() => {}} /></I18nProvider>);
+    });
+    const head = container.querySelector<HTMLButtonElement>('[data-inspector-recent] > button')!;
+    const expected = translate(locale, key);
+    expect(head.textContent).toContain(expected);
+    await act(async () => { head.click(); });
+    const row = container.querySelector('[data-inspector-recent] ol li')!;
+    expect(row.textContent).toContain(expected);
+    expect(row.querySelector('[title]')?.getAttribute('title')).toBe(expected);
+  });
+});
+
+function buildSessionCapabilities(
+  overrides: Partial<Record<'browser' | 'computer' | 'memory' | 'thread' | 'web', Partial<OptionalCapabilitySessionResponse['rows'][number]>>> = {},
+  revision = 1,
+): OptionalCapabilitySessionResponse {
+  const defaults = { browser: false, computer: false, memory: true, thread: true, web: true } as const;
+  return {
+    revision,
+    host_id: 'local',
+    rows: (['browser', 'computer', 'memory', 'thread', 'web'] as const).map((id) => {
+      const defaultOn = defaults[id];
+      const base: OptionalCapabilitySessionResponse['rows'][number] = {
+        id,
+        choice: 'inherit',
+        effective: defaultOn,
+        source: 'default',
+        reason: defaultOn ? 'admitted' : 'unbound',
+        allowed: true,
+        host_locked: false,
+        default_on: defaultOn,
+        unresolved: false,
+        applies: id === 'memory' || id === 'thread' ? 'next-step' : 'next-model-request',
+      };
+      return { ...base, ...overrides[id] };
+    }),
+  };
+}
+
+describe('OptionalCapabilityRows', () => {
+  it('applies the factory default matrix on draft (thread/web/memory on, browser/computer off) and isolates draft choices', async () => {
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capabilities]')?.getAttribute('data-optional-capabilities')).toBe('draft');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('false');
+    expect(container.querySelector('[data-optional-capability="computer"]')?.getAttribute('data-optional-effective')).toBe('false');
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-capability="thread"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('true');
+
+    // Toggle browser on in draft -> shows session override + restore default action
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="browser"] [data-optional-set="on"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('on');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-fact="browser"]')?.textContent).toBe('本会话开启');
+    const restore = container.querySelector<HTMLButtonElement>('[data-optional-restore="browser"]');
+    expect(restore).not.toBeNull();
+
+    // Restore inheritance returns browser to inherit (off by default)
+    await act(async () => { restore!.click(); });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('inherit');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('false');
+    expect(container.querySelector('[data-optional-restore="browser"]')).toBeNull();
+  });
+
+  it('disables blocked capabilities and handles rapid switching, error rollback, and session isolation', async () => {
+    getSessionCaps.mockImplementation((sessionId: string) => {
+      if (sessionId === 'sess-a') {
+        return Promise.resolve(buildSessionCapabilities({
+          memory: { allowed: false, effective: false, source: 'off', reason: 'allowed_off' },
+        }));
+      }
+      return Promise.resolve(buildSessionCapabilities());
+    });
+
+    let rejectFirst!: (reason: unknown) => void;
+    let resolveSecond!: (value: OptionalCapabilitySessionResponse) => void;
+    setSessionCap
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((_resolve, reject) => { rejectFirst = reject; }))
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((resolve) => { resolveSecond = resolve; }))
+      .mockImplementationOnce(() => Promise.reject(new Error('write rejected')));
+
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows sessionId="sess-a" />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+
+    // Hard-off capability is disabled and shows 完全关闭
+    const memoryInput = container.querySelector<HTMLInputElement>('#optional-cap-sess-a-memory')!;
+    expect(memoryInput.disabled).toBe(true);
+    expect(container.querySelector('[data-optional-fact="memory"]')?.textContent).toBe('完全关闭');
+
+    // Rapid switching on browser: click ON then immediately OFF before first request finishes
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="browser"] [data-optional-set="on"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('true');
+
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="browser"] [data-optional-set="off"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('off');
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-effective')).toBe('false');
+
+    // Stale first rejection must not clobber the newer second click
+    await act(async () => { rejectFirst(new Error('stale failure')); });
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('off');
+
+    await act(async () => {
+      resolveSecond(buildSessionCapabilities({
+        browser: { choice: 'off', effective: false, source: 'session', reason: 'session_off' },
+      }));
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('off');
+
+    // A failing write rolls back optimistic state and reports alert on sess-a only
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="web"] [data-optional-set="off"]')!.click();
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('write rejected');
+
+    // Switching to sess-b does not bleed sess-a's error or session choice
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows sessionId="sess-b" />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+    expect(container.querySelector('[data-optional-capability="browser"]')?.getAttribute('data-optional-choice')).toBe('inherit');
+  });
+
+  it('keeps whole-session snapshot monotonic when concurrent writes on different capabilities resolve out of order', async () => {
+    getSessionCaps.mockResolvedValue(buildSessionCapabilities({
+      memory: { choice: 'inherit', effective: false, default_on: false, source: 'default', reason: 'unbound' },
+    }, 0));
+
+    let resolveMemoryA!: (value: OptionalCapabilitySessionResponse) => void;
+    let resolveWebB!: (value: OptionalCapabilitySessionResponse) => void;
+    setSessionCap
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((resolve) => { resolveMemoryA = resolve; }))
+      .mockImplementationOnce(() => new Promise<OptionalCapabilitySessionResponse>((resolve) => { resolveWebB = resolve; }));
+
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <OptionalCapabilityRows sessionId="sess-race" />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    await settle();
+
+    // 1. Dispatch request A: memory -> on (rev 1)
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="memory"] [data-optional-set="on"]')!.click();
+    });
+    // 2. Dispatch request B: web -> off (rev 2) before A returns
+    await act(async () => {
+      container.querySelector<HTMLElement>('[data-optional-capability="web"] [data-optional-set="off"]')!.click();
+    });
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-choice')).toBe('on');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
+
+    // 3. Response B (rev 2, where both memory=on and web=off have landed) arrives FIRST
+    await act(async () => {
+      resolveWebB(buildSessionCapabilities({
+        memory: { choice: 'on', effective: true, default_on: false, source: 'session', reason: 'admitted' },
+        web: { choice: 'off', effective: false, source: 'session', reason: 'session_off' },
+      }, 2));
+    });
+    await settle();
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('false');
+
+    // 4. Older response A (rev 1, where web was still inherit/on) arrives SECOND (out of order)
+    await act(async () => {
+      resolveMemoryA(buildSessionCapabilities({
+        memory: { choice: 'on', effective: true, default_on: false, source: 'session', reason: 'admitted' },
+        web: { choice: 'inherit', effective: true, source: 'default', reason: 'admitted' },
+      }, 1));
+    });
+    await settle();
+
+    // Late rev 1 snapshot must not overwrite rev 2's web=off state
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-choice')).toBe('on');
+    expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
+    expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('false');
+  });
+});
+
+describe('ProfileHead inherited external effort', () => {
+  it.each([
+    { label: 'inherited config', effortSource: 'config' },
+    { label: 'saved profile without effort provenance', effortSource: undefined },
+  ] as const)('names the engine default without inventing off for $label', async ({ effortSource }) => {
+    readCapabilities.mockResolvedValue({
+      ...full,
+      profile: {
+        name: 'example-profile', model: 'example-model', executor: 'codex-app-server',
+        thinking_effort: 'off', thinking_effort_explicit: false, effort_source: effortSource,
+      },
+    } satisfies AgentCapabilitiesResponse);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <ProfileHead sessionId="sess-1" agentId="main" label="Example" />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await settle();
+    const line = container.querySelector('[data-rail-profile-model]');
+    expect(line?.textContent).toContain('example-model');
+    expect(line?.textContent).toContain(translate('zh', 'st.engines.defaults.inheritPlaceholder'));
+    expect(line?.textContent).not.toContain('off');
+  });
+});
+
+describe('profileEffortDisplay external vs native thinking effort', () => {
+  const t = (key: I18nKey, params?: Readonly<Record<string, string | number>>) =>
+    key === 'subagent.effort' ? `effort · ${params?.['effort']}` : key;
+
+  it('hides inherited off for external executors (external inheritedoff)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'config',
+    }, t);
+    expect(result).toBeUndefined();
+  });
+
+  it('displays off for native executor even if not explicit (nativeoff)', () => {
+    const result = profileEffortDisplay({
+      executor: 'native',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+    }, t);
+    expect(result).toBe('effort · off');
+  });
+
+  it('displays off when explicitly chosen for external executor (externalexplicitoff)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: true,
+      effort_source: 'profile',
+    }, t);
+    expect(result).toBe('effort · off');
+  });
+
+  it('displays reported actual effort level for external executor', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'high',
+      thinking_effort_explicit: false,
+    }, t);
+    expect(result).toBe('effort · high');
+  });
+
+  it('displays off when reported directly by executor (executor-reported off)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'executor',
+    }, t);
+    expect(result).toBe('effort · off');
+  });
+
+  it('displays non-off when reported directly by executor (executor-reported non-off)', () => {
+    const result = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'low',
+      thinking_effort_explicit: false,
+      effort_source: 'executor',
+    }, t);
+    expect(result).toBe('effort · low');
+  });
+
+  it('displays off when forced or adjusted by engine', () => {
+    const forced = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      thinking_effort_source: 'forced',
+    }, t);
+    expect(forced).toBe('effort · off');
+
+    const adjusted = profileEffortDisplay({
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      thinking_effort_source: 'adjusted',
+    }, t);
+    expect(adjusted).toBe('effort · off');
+  });
+
+  it('maintains synonym consistency across live and cold profiles', () => {
+    const liveProfile = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'config',
+    };
+    const coldProfile = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: false,
+      effort_source: 'config',
+    };
+    expect(profileEffortDisplay(liveProfile, t)).toBe(profileEffortDisplay(coldProfile, t));
+
+    const liveExplicit = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: true,
+      effort_source: 'profile',
+    };
+    const coldExplicit = {
+      executor: 'codex-app-server',
+      thinking_effort: 'off',
+      thinking_effort_explicit: true,
+      effort_source: 'profile',
+    };
+    expect(profileEffortDisplay(liveExplicit, t)).toBe(profileEffortDisplay(coldExplicit, t));
   });
 });

@@ -3,7 +3,9 @@ import { join } from 'node:path';
 import {
   ConfigTarget, IConfigService, ISessionManager, ISessionActivityView,
   ISessionInteractionService, IAgentLifecycleService, IAgentPromptService,
-  MAIN_AGENT_ID, IInstantiationService, type Scope, type ISessionScopeHandle,
+  IInstantiationService, IAgentTaskService, IAgentLoopService, IAgentActivityView, IEventBus, IAgentExecutionService, IAgentGoalService,
+  type Scope, type ISessionScopeHandle, type IAgentScopeHandle, type UserMessageChannel, type UserMessageInput,
+  type PluginImCapabilities, type PluginImRoute, type PluginImSendReceipt, type PluginImSendRequest,
 } from '@kiki/agent-core-v2';
 import {
   DEFAULT_NOTIFICATIONS_CONFIG, NOTIFICATIONS_SECTION, NotificationsConfigSchema,
@@ -14,6 +16,7 @@ import {
   Runtime, PROVIDERS, validateConfig, telegramProvider, wecomWebhookProvider, wecomHttps, createSafeHttpTransport,
   webhookProvider, type Config, type CredentialScope, type DeliveryView,
 } from '@nb-im/core';
+import { ensurePluginDigestReceipts, PluginDigestDelivery } from './pluginDigestDelivery';
 
 type Settings = NotificationsConfig;
 type RuntimeState = { runtime: Runtime };
@@ -27,6 +30,9 @@ type Watched = {
   cycle: string;
   questions: Map<string, { timer: ReturnType<typeof setTimeout>; deliveries: string[] }>;
   completion?: ReturnType<typeof setTimeout>;
+  completed?: { session_id: string; episode_id: string; completed_at: number };
+  agents: Set<string>;
+  reconcileQueued?: boolean;
 };
 
 const fields = (id: string): NotificationProviderDescriptor['instance_fields'] => {
@@ -61,17 +67,34 @@ export const notificationProviders: readonly NotificationProviderDescriptor[] = 
   })),
 ];
 
+const SESSION_KINDS = new Set(['feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix']);
+
+function sessionInstanceIds(settings: Settings): Set<string> {
+  const ids = new Set<string>();
+  for (const [id, value] of Object.entries(settings.provider_instances)) {
+    if (typeof value !== 'object' || value === null) continue;
+    const kind = (value as { options?: { session_kind?: unknown } }).options?.session_kind;
+    if (typeof kind === 'string' && SESSION_KINDS.has(kind)) ids.add(id);
+  }
+  return ids;
+}
+
 function donorConfig(settings: Settings): Config {
-  const channels = Object.fromEntries(Object.entries(settings.channels).map(([id, value]) => {
-    const { scenes: _scenes, label: _label, health: _health, ...channel } = value as NotificationChannel;
-    return [id, channel];
+  const skipped = sessionInstanceIds(settings);
+  const channels = Object.fromEntries(Object.entries(settings.channels).flatMap(([id, value]) => {
+    const channel = value as NotificationChannel;
+    if (skipped.has(channel.provider_instance_id)) return [];
+    const { scenes: _scenes, label: _label, health: _health, ...rest } = channel;
+    return [[id, rest]];
   }));
-  const provider_instances = Object.fromEntries(Object.entries(settings.provider_instances).map(([id, value]) => {
+  const provider_instances = Object.fromEntries(Object.entries(settings.provider_instances).flatMap(([id, value]) => {
+    if (skipped.has(id)) return [];
     const { label: _label, health: _health, ...instance } = value as NotificationInstance;
-    return [id, instance];
+    return [[id, instance]];
   }));
+  const credential_slots = Object.fromEntries(Object.entries(settings.credential_slots).filter(([, slot]) => !skipped.has((slot as NotificationCredentialSlot).provider_instance_id)));
   return { schema_version: '1', provider_instances: provider_instances as Config['provider_instances'],
-    channels, credential_slots: settings.credential_slots as Config['credential_slots'] };
+    channels, credential_slots: credential_slots as Config['credential_slots'] };
 }
 function validateSettings(settings: Settings): void {
   NotificationsConfigSchema.parse(settings);
@@ -119,6 +142,7 @@ export class NotificationService {
   private readonly retired = new WeakSet<ISessionScopeHandle>();
   private readonly subscriptions: { dispose(): void }[] = [];
   private readonly lastSent = new Map<string, number>();
+  private sceneSuppressor?: (input: { providerInstanceId: string; scene: 'work_complete' | 'question_pending'; target: Record<string, unknown> }) => boolean;
   private readonly health = new Map<string, { state: import('@kiki/klient').NotificationHealth; at: number }>();
   private setHealth(id: string, state: import('@kiki/klient').NotificationHealth, at = Date.now()): void {
     if (at >= (this.health.get(id)?.at ?? 0)) this.health.set(id, { state, at });
@@ -127,10 +151,21 @@ export class NotificationService {
   private readonly quietTimers = new Set<ReturnType<typeof setTimeout>>();
   private writes: Promise<unknown> = Promise.resolve();
   private stopped = false;
+  private pausing = false;
+  private readonly activeDigests = new Set<Promise<unknown>>();
+  private readonly digests = new PluginDigestDelivery({
+    settings: () => this.settings,
+    runtime: () => this.stopped || this.pausing ? undefined : this.state?.runtime,
+    stopped: () => this.stopped || this.pausing,
+  });
 
   constructor(private readonly core: Scope, private readonly homeDir: string,
     private readonly isViewing: (sessionId: string) => boolean,
     private readonly onError: () => void) {}
+
+  setSceneSuppressor(suppressor: (input: { providerInstanceId: string; scene: 'work_complete' | 'question_pending'; target: Record<string, unknown> }) => boolean): void {
+    this.sceneSuppressor = suppressor;
+  }
 
   async start(): Promise<void> {
     const config = this.core.accessor.get(IConfigService);
@@ -169,6 +204,7 @@ export class NotificationService {
       }, (id) => this.epochs.get(id) ?? 'unavailable');
     runtime.outbox.db.exec('CREATE INDEX IF NOT EXISTS notifications_created_at_idx ON deliveries (created_at DESC, delivery_id DESC)');
     runtime.outbox.db.exec('CREATE INDEX IF NOT EXISTS notifications_channel_created_idx ON deliveries (channel_id, created_at DESC, delivery_id DESC)');
+    ensurePluginDigestReceipts(runtime.outbox.db);
     runtime.start(() => { this.onError(); });
     this.state = { runtime };
   }
@@ -190,10 +226,23 @@ export class NotificationService {
     return this.settings.credential_values[id]?.token;
   }
 
+  private trackDigest<T>(run: Promise<T>): Promise<T> {
+    this.activeDigests.add(run);
+    void run.finally(() => { this.activeDigests.delete(run); });
+    return run;
+  }
+
+  private async drainDigests(): Promise<void> {
+    while (this.activeDigests.size > 0) await Promise.allSettled(this.activeDigests);
+  }
+
   private mutate(change: (draft: Settings) => void): Promise<NotificationSettings> {
     let interrupted = false;
     const write = this.writes.then(async () => {
       if (this.stopped) throw new Error('notifications_stopped');
+      await this.drainDigests();
+      if (this.stopped) throw new Error('notifications_stopped');
+      this.pausing = true;
       const draft = structuredClone(this.settings);
       change(draft);
       validateSettings(draft);
@@ -221,9 +270,10 @@ export class NotificationService {
       }
       this.openRuntime();
       interrupted = false;
+      this.pausing = false;
       return this.getSettings();
     });
-    this.writes = write.catch(() => { if (interrupted) { this.state?.runtime.stop(); this.onError(); } });
+    this.writes = write.catch(() => { this.pausing = false; if (interrupted) { this.state?.runtime.stop(); this.onError(); } });
     return write;
   }
 
@@ -304,6 +354,45 @@ export class NotificationService {
     }
   }
 
+  pluginImCapabilities(signal: AbortSignal): Promise<PluginImCapabilities> {
+    return Promise.resolve(this.digests.capabilities(signal));
+  }
+  pluginImRoutes(signal: AbortSignal): Promise<readonly PluginImRoute[]> {
+    return Promise.resolve(this.digests.routes(signal));
+  }
+  pluginImSend(request: PluginImSendRequest, signal: AbortSignal, pluginId: string): Promise<PluginImSendReceipt> {
+    return this.trackDigest(this.digests.send(request, signal, pluginId));
+  }
+
+  messageChannels(sessionId: string): readonly UserMessageChannel[] {
+    const runtime = this.state?.runtime;
+    return Object.entries(this.settings.channels).toSorted(([left], [right]) => left.localeCompare(right)).flatMap(([channelId, raw]) => {
+      const channel = raw as NotificationChannel;
+      const instance = this.settings.provider_instances[channel.provider_instance_id] as NotificationInstance | undefined;
+      const providerId = instance?.provider_id;
+      const provider = providerId === undefined ? undefined : PROVIDERS[providerId as keyof typeof PROVIDERS];
+      const available = this.settings.global.enabled && channel.enabled && instance?.enabled === true &&
+        provider?.can_send === true && providerId !== undefined && providerId !== 'script' && providerId !== 'windows_toast' &&
+        runtime !== undefined && runtime.providers.has(providerId);
+      const send = async (input: UserMessageInput, skipped: readonly string[]) => {
+        if (skipped.length > 0 && input.text.length === 0) return { status: 'unsupported' as const, unsupported: skipped };
+        if (input.text.length === 0) return { status: 'unsupported' as const, unsupported: ['text'] };
+        const routeRevision = this.digests.routeRevision(channelId);
+        if (routeRevision === undefined) return { status: 'failed' as const, detail: 'notification_channel_unavailable' };
+        const rawKey = `message:${channelId}:${input.toolCallId}`;
+        const key = /^[A-Za-z0-9_.:-]{1,200}$/u.test(rawKey) ? rawKey : `message:${createHash('sha256').update(rawKey).digest('hex')}`;
+        const accountRef = /^[A-Za-z0-9_.:-]{1,120}$/u.test(sessionId) ? sessionId : createHash('sha256').update(sessionId).digest('hex');
+        const receipt = await this.trackDigest(this.digests.send({
+          channelId, routeRevision, accountRef, idempotencyKey: key, text: input.text,
+        }, new AbortController().signal, 'send-message'));
+        if (receipt.status === 'accepted') return { status: 'delivered' as const };
+        if (receipt.status === 'unknown') return { status: 'unknown' as const, detail: receipt.diagnosticCode ?? 'notification_send_unknown' };
+        return { status: 'failed' as const, detail: receipt.diagnosticCode ?? 'notification_send_failed' };
+      };
+      return [{ id: `notify:${channelId}`, kind: 'notify', bound: false, enabled: available, capabilities: [], send }];
+    });
+  }
+
   sendTest(channelId: string): DeliveryView {
     const channel = this.settings.channels[channelId] as NotificationChannel | undefined;
     if (!channel?.enabled) throw new Error('channel_unavailable');
@@ -342,8 +431,8 @@ export class NotificationService {
     if (this.watched.has(session.id) || this.retired.has(session) || this.stopped) return;
     const activity = session.accessor.get(ISessionActivityView);
     const interactions = session.accessor.get(ISessionInteractionService);
-    const state: Watched = { session, subscriptions: [], startedAt: activity.state().busy ? Date.now() : undefined,
-      cycle: randomUUID(), questions: new Map() };
+    const state: Watched = { session, subscriptions: [], startedAt: activity.state().mainTurnActive ? Date.now() : undefined,
+      cycle: randomUUID(), questions: new Map(), agents: new Set() };
     this.watched.set(session.id, state);
     state.subscriptions.push(session.accessor.get(IInstantiationService).onWillDispose(() => {
       this.retired.add(session);
@@ -352,7 +441,60 @@ export class NotificationService {
     state.subscriptions.push(activity.onDidChange(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidChangePending(() => { this.reconcileSession(state); }));
     state.subscriptions.push(interactions.onDidResolve(({ id }) => { this.cancelQuestion(state, id); }));
+    const agents = session.accessor.get(IAgentLifecycleService);
+    const attach = (agent: IAgentScopeHandle) => {
+      if (state.agents.has(agent.id)) return;
+      state.agents.add(agent.id);
+      state.subscriptions.push(agent.accessor.get(IEventBus).subscribe((event) => {
+        if (!/^(turn\.|task\.|prompt\.|compaction\.|goal\.)/u.test(event.type)) return;
+        this.queueReconcile(state);
+        if (event.type === 'turn.ended') void Promise.all([
+          agent.accessor.get(IAgentLoopService).settled(),
+          agent.accessor.get(IAgentExecutionService).settled(),
+        ]).then(() => { this.queueReconcile(state); }, this.onError);
+      }));
+    };
+    for (const agent of agents.list()) attach(agent);
+    state.subscriptions.push(agents.onDidCreate(attach));
+    state.subscriptions.push(agents.onDidDispose((id) => {
+      state.agents.delete(id);
+      this.queueReconcile(state);
+    }));
     this.reconcileSession(state);
+  }
+  private queueReconcile(state: Watched): void {
+    if (state.reconcileQueued) return;
+    state.reconcileQueued = true;
+    queueMicrotask(() => {
+      state.reconcileQueued = false;
+      if (this.watched.get(state.session.id) === state && !this.stopped) this.reconcileSession(state);
+    });
+  }
+  private workPending(state: Watched): boolean {
+    for (const agent of state.session.accessor.get(IAgentLifecycleService).list()) {
+      const loop = agent.accessor.get(IAgentLoopService).status();
+      const prompt = agent.accessor.get(IAgentPromptService);
+      const queue = prompt.list();
+      const activity = agent.accessor.get(IAgentActivityView).state();
+      const execution = agent.accessor.get(IAgentExecutionService).status();
+      if (execution.state === 'starting' || execution.state === 'running' || execution.state === 'cancelling' ||
+        loop.state === 'running' || loop.finalizing || loop.persistenceFailure || loop.hasPendingRequests ||
+        loop.pendingTurnIds.length > 0 || prompt.hasReadyPending() || queue.active !== undefined ||
+        queue.launching !== undefined || queue.pending.length > 0 ||
+        activity.turn !== undefined || activity.background.some((item) => item.kind === 'compaction') ||
+        agent.accessor.get(IAgentTaskService).hasUnfinishedWork() ||
+        (agent.id === 'main' && agent.accessor.get(IAgentGoalService).getGoal().goal?.status === 'active')) return true;
+    }
+    return false;
+  }
+  private completeReady(state: Watched): boolean {
+    const activity = state.session.accessor.get(ISessionActivityView).state();
+    return !activity.mainTurnActive && activity.pendingInteraction === 'none' &&
+      activity.lastTurnReason === 'completed' && !this.workPending(state);
+  }
+  listCompletions(): readonly { session_id: string; episode_id: string; completed_at: number }[] {
+    return [...this.watched.values()].flatMap((state) => state.completed !== undefined &&
+      Date.now() - state.completed.completed_at < 600_000 && this.completeReady(state) ? [state.completed] : []);
   }
   private unwatch(id: string): void {
     const state = this.watched.get(id);
@@ -379,29 +521,31 @@ export class NotificationService {
       }, this.settings.global.question_delay_ms);
     }
     for (const id of state.questions.keys()) if (!pending.some((question) => question.id === id)) this.cancelQuestion(state, id);
-    if (activity.busy) {
-      if (state.startedAt === undefined) { state.startedAt = Date.now(); state.cycle = randomUUID(); }
+    if (activity.mainTurnActive && state.startedAt === undefined) {
+      state.startedAt = Date.now();
+      state.cycle = randomUUID();
+      state.completed = undefined;
+    }
+    if (!this.completeReady(state)) {
       if (state.completion) { clearTimeout(state.completion); state.completion = undefined; }
-    } else if (state.startedAt !== undefined && state.completion === undefined &&
-      activity.pendingInteraction === 'none' && activity.lastTurnReason === 'completed') {
-      const cycle = state.cycle;
+      if (!activity.mainTurnActive && (activity.pendingInteraction !== 'none' ||
+        activity.lastTurnReason === 'failed' || activity.lastTurnReason === 'cancelled')) {
+        state.startedAt = undefined;
+        state.completed = undefined;
+      }
+      return;
+    }
+    if (state.startedAt === undefined || state.completion !== undefined) return;
+    const cycle = state.cycle;
+    state.completion = setTimeout(() => {
+      state.completion = undefined;
+      if (state.cycle !== cycle || !this.completeReady(state) || state.startedAt === undefined) return;
       const elapsed = Date.now() - state.startedAt;
       state.startedAt = undefined;
-      if (elapsed >= this.settings.global.min_work_ms) {
-        state.completion = setTimeout(() => {
-          state.completion = undefined;
-          this.dispatch(state, 'work_complete', `w:${cycle}`, () => {
-            const current = state.session.accessor.get(ISessionActivityView).state();
-            const main = state.session.accessor.get(IAgentLifecycleService).list().find((agent) => agent.id === MAIN_AGENT_ID);
-            return state.cycle === cycle && state.startedAt === undefined && !current.busy &&
-              current.pendingInteraction === 'none' && current.lastTurnReason === 'completed' &&
-              (main === undefined || !main.accessor.get(IAgentPromptService).hasReadyPending());
-          });
-        }, this.settings.global.work_stable_ms);
-      }
-    } else if (!activity.busy && state.startedAt !== undefined && activity.pendingInteraction === 'none') {
-      state.startedAt = undefined;
-    }
+      state.completed = { session_id: state.session.id, episode_id: cycle, completed_at: Date.now() };
+      if (elapsed >= this.settings.global.min_work_ms) this.dispatch(state, 'work_complete', `w:${cycle}`, () =>
+        state.cycle === cycle && state.startedAt === undefined && this.completeReady(state));
+    }, this.settings.global.work_stable_ms);
   }
   private cancelQuestion(state: Watched, id: string): void {
     const job = state.questions.get(id);
@@ -433,6 +577,7 @@ export class NotificationService {
     for (const [channelId, raw] of Object.entries(this.settings.channels)) {
       const channel = raw as NotificationChannel;
       if (!channel.enabled || !channel.scenes[scene]) continue;
+      if (this.sceneSuppressor?.({ providerInstanceId: channel.provider_instance_id, scene, target: channel.target }) === true) continue;
       const rateKey = `${scene}:${channelId}`;
       if (Date.now() - (this.lastSent.get(rateKey) ?? 0) < 60_000) continue;
       try {
@@ -453,6 +598,7 @@ export class NotificationService {
     this.quietTimers.clear();
     for (const id of this.watched.keys()) this.unwatch(id);
     for (const sub of this.subscriptions) sub.dispose();
+    await this.drainDigests();
     await this.writes;
     const runtime = this.state?.runtime;
     runtime?.stop();

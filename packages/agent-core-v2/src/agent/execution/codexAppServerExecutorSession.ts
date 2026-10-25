@@ -32,7 +32,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import type { PromptOrigin } from '#/agent/contextMemory/types';
 import type { Turn, TurnResult } from '#/agent/loop/loop';
 import { turnKey } from '#/agent/loop/turnOps';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { Error2, ErrorCodes } from '#/errors';
 import { createHooks } from '#/hooks';
@@ -50,6 +50,7 @@ import type {
   AgentRunRequest,
   RunAgentOptions,
 } from '#/session/subagent/subagent';
+import type { RuntimeWorkspaceRoots } from '#/runtime/runtime';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { buildHandoff } from './acpAgentExecutorSession';
@@ -123,7 +124,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   #kikiToolsApproved = false;
   readonly #states: IAgentStateService;
   readonly #dispatcher: IEventDispatcher;
-  readonly #workspace: ISessionWorkspaceContext;
+  readonly #workspace: RuntimeWorkspaceRoots;
   readonly #memory: IAgentContextMemoryService;
   readonly #interaction: ISessionInteractionService;
   #threadId: string | undefined;
@@ -152,7 +153,8 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
         {
           id: context.descriptor.id,
           command: requiredCommand(context),
-          args: executorLaunchArgs(context.descriptor, [...context.descriptor.launchArgs ?? [], ...context.descriptor.args]),
+          commandArgsPrefix: context.descriptor.launchArgs,
+          args: executorLaunchArgs(context.descriptor, context.descriptor.args),
           env: executorProcessEnv(context.descriptor),
           startupTimeoutMs: context.descriptor.startupTimeoutMs,
           shutdownGraceMs: context.descriptor.shutdownGraceMs,
@@ -173,7 +175,10 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     }
     this.#states = context.agent.accessor.get(IAgentStateService);
     this.#dispatcher = context.agent.accessor.get(IEventDispatcher);
-    this.#workspace = context.agent.accessor.get(ISessionWorkspaceContext);
+    this.#workspace = inspectAgentWorkspaceRoots(
+      runtime,
+      context.agent.accessor.get(ISessionWorkspaceContext),
+    );
     this.#memory = context.agent.accessor.get(IAgentContextMemoryService);
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = codexHarnessMcpProcess(wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
@@ -399,7 +404,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.context = { ...this.context, binding };
   }
 
-  async steer(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean> {
+  async steer(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean | 'unknown'> {
     const active = this.#active;
     const remote = this.#client.status();
     if (active === undefined || active.turn.signal.aborted || remote.threadId !== this.#threadId || !remote.turnId) return false;
@@ -414,7 +419,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       }, active.turn.signal);
       return typeof response === 'object' && response !== null && 'turnId' in response && response.turnId === remote.turnId;
     } catch (error) {
-      if (error instanceof CodexRemoteError || error instanceof CodexClientError || active.turn.signal.aborted) return false;
+      if (error instanceof CodexRemoteError || error instanceof CodexClientError || active.turn.signal.aborted) return 'unknown';
       throw error;
     }
   }

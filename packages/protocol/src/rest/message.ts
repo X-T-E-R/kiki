@@ -49,11 +49,13 @@ export const editableMessageContentSchema = z.discriminatedUnion('type', [
 export const editMessageRequestSchema = promptExecutionOverridesSchema.extend({
   content: z.array(editableMessageContentSchema).min(1),
   expected_cursor: expectedSessionCursorSchema,
+  operation_id: z.string().min(1).optional(),
 });
 export type EditMessageRequest = z.infer<typeof editMessageRequestSchema>;
 
 export const regenerateMessageRequestSchema = promptExecutionOverridesSchema.extend({
   expected_cursor: expectedSessionCursorSchema,
+  operation_id: z.string().min(1).optional(),
 });
 export type RegenerateMessageRequest = z.infer<typeof regenerateMessageRequestSchema>;
 

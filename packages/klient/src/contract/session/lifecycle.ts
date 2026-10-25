@@ -6,6 +6,7 @@
  */
 
 import { z } from 'zod';
+import { executionSelectionWireSchema as executionSelectionSchema } from '../execution.js';
 
 import { maybe, noResult } from '../helpers.js';
 import { mcpServerConfigSchema } from '../mcp.js';
@@ -21,8 +22,9 @@ export const createSessionOptionsSchema = z.object({
   additionalDirs: z.array(z.string()).optional(),
   waitForSessionMs: z.number().nonnegative().finite().optional(),
   mainAgentBinding: z.object({
+    execution: executionSelectionSchema.optional(),
     persona: z.string().optional(),
-    profile: z.string().optional(), model: z.string().optional(), thinking: z.string().optional(),
+    profile: z.string().optional(), model: z.string().optional(), thinking: z.string().nullable().optional(),
   }).optional(),
   /**
    * Ephemeral per-session MCP servers (engine `CreateSessionOptions.mcpServers`):

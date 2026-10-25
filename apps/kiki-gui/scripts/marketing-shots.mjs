@@ -271,22 +271,7 @@ async function shotR01() {
 const R04_SID = 'sess_sample_prepare_release';
 
 async function shotR04() {
-  await page.goto(deepLink(`/s/${R04_SID}`), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-  const rail = page.locator('[data-session-rail]');
-  await rail.waitFor({ timeout: 30_000 });
-  // The sidebar's Task board row opens /board scoped to this workspace.
-  const launcher = page.locator('aside [data-nav-board]');
-  await launcher.waitFor({ timeout: 15_000 });
-  await launcher.click();
-  await page.getByRole('dialog').waitFor({ timeout: 15_000 });
-  await page.locator('[data-board-column="in_progress"]').waitFor({ timeout: 20_000 });
-  await page.waitForFunction(
-    () => document.querySelectorAll('[data-board-task-card]').length >= 7,
-    undefined,
-    { timeout: 20_000 },
-  );
-  await page.waitForTimeout(600);
-  await settle();
+  throw new Error('The built-in /board route was removed; this shot is not in the capture list.');
 }
 
 const R05_SID = 'sess_sample_prepare_release';
@@ -336,9 +321,7 @@ async function checkR02() {
 }
 
 async function checkR04() {
-  if (await page.locator('[data-board-column="in_progress"]').count() === 0) throw new Error('board column missing');
-  const cards = await page.locator('[data-board-task-card]').count();
-  if (cards < 7) throw new Error(`expected 7 board cards, saw ${cards}`);
+  throw new Error('The built-in /board route was removed; this shot is not in the capture list.');
 }
 
 async function checkR05() {
@@ -367,8 +350,6 @@ const SHOTS = [
   { name: 'r01-reviewer-profile.zh.light', scenario: 'marketing-r01-zh', locale: 'zh', theme: 'light', viewport: { width: 1200, height: 900 }, run: shotR01, check: checkR01 },
   { name: 'r02-goal-queue.en.light', scenario: 'marketing-r02-en', locale: 'en', theme: 'light', viewport: { width: 1200, height: 750 }, railWidth: 264, run: shotR02, check: checkR02 },
   { name: 'r02-goal-queue.zh.light', scenario: 'marketing-r02-zh', locale: 'zh', theme: 'light', viewport: { width: 1200, height: 750 }, railWidth: 264, run: shotR02, check: checkR02 },
-  { name: 'r04-task-board.en.light', scenario: 'marketing-r04-en', locale: 'en', theme: 'light', viewport: { width: 1440, height: 900 }, run: shotR04, check: checkR04 },
-  { name: 'r04-task-board.zh.light', scenario: 'marketing-r04-zh', locale: 'zh', theme: 'light', viewport: { width: 1440, height: 900 }, run: shotR04, check: checkR04 },
   { name: 'r05-multi-model-fleet.en.light', scenario: 'marketing-r05-en', locale: 'en', theme: 'light', viewport: { width: 1200, height: 900 }, sidebarWidth: 232, railWidth: 440, run: shotR05, check: checkR05 },
   { name: 'r05-multi-model-fleet.zh.light', scenario: 'marketing-r05-zh', locale: 'zh', theme: 'light', viewport: { width: 1200, height: 900 }, sidebarWidth: 232, railWidth: 440, run: shotR05, check: checkR05 },
 ];

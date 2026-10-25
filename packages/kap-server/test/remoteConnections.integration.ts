@@ -11,6 +11,7 @@ import { Event2, IEventService, IEventBus, ISessionManager, ISessionMetadata, IS
 import { writePrivateFile } from '../src/services/auth/privateFiles';
 import { randomUUID } from 'node:crypto';
 import { createKlient, createConnectionKlient } from '@kiki/klient/http';
+import { catalogChangedSchema, searchIndexStateSchema } from '@kiki/klient/contract/global/events';
 import { startServer, type RunningServer } from '../src/start';
 import { rotateServerToken } from '../src/services/auth/persistentToken';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -432,8 +433,10 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     const secret = 'SYNTHETIC_BUS_SECRET';
     const catalog = { changed: [{ provider_id: 'example', provider_name: 'Example', added: 1, removed: 0 }],
       unchanged: [], failed: [{ provider: 'example', reason: 'Provider quota exceeded.' }] };
-    const search = { state: 'ready', indexed_sessions: 1, total_sessions: 1, documents: 2, stale: false };
+    const search = { state: 'ready', indexed_sessions: 41, total_sessions: 43, documents: 47, stale: false };
+    const backgroundSearch = { state: 'building', indexed_sessions: 41, total_sessions: 43, documents: 46 };
     const events = b.core.accessor.get(IEventService);
+    events.publish(new SearchFact({ payload: backgroundSearch }));
     events.publish(new CatalogFact({ payload: { ...catalog, discovered: [{ apiKey: secret }] } }));
     events.publish(new PrivateFact({ payload: { apiKey: secret } }));
     events.publish(new CatalogFact({ payload: { apiKey: secret } }));
@@ -447,19 +450,44 @@ describe('directed remote admission and source broker (real isolated KAP)', () =
     bus.publish(new PrivateAgentFact({ payload: { text: secret } }));
     bus.publish(new StatusFact({ operationId: receipt.operationId, receipt: { ...failed, apiKey: secret } }));
     await vi.waitFor(() => {
-      expect(frames.peer.filter((frame) => frame['type'] === 'event')).toHaveLength(4);
-      expect(frames.local.filter((frame) => frame['type'] === 'event')).toHaveLength(7);
+      for (const list of Object.values(frames)) {
+        expect(list).toContainEqual(expect.objectContaining({
+          type: 'event', id: 'agent',
+          data: expect.objectContaining({ type: 'prompt.model_switch_status', operationId: receipt.operationId }),
+        }));
+      }
     });
     const peerEvents = frames.peer.filter((frame) => frame['type'] === 'event');
-    expect(peerEvents.filter((frame) => frame['id'] === 'core').map((frame) => frame['data'])).toEqual([
-      { type: 'event.model_catalog.changed', payload: catalog }, { type: 'event.search.index_state_changed', payload: search },
+    const coreEvents = peerEvents.filter((frame) => frame['id'] === 'core').map((frame) => frame['data'] as { type: string; payload: Record<string, unknown> });
+    for (const data of coreEvents) {
+      expect(['event.model_catalog.changed', 'event.search.index_state_changed']).toContain(data.type);
+      const schema = data.type === 'event.model_catalog.changed' ? catalogChangedSchema : searchIndexStateSchema;
+      expect(data).toEqual({ type: data.type, payload: schema.parse(data.payload) });
+    }
+    const fixtureEvents = coreEvents.filter((data) => data.type === 'event.model_catalog.changed'
+      ? catalogChangedSchema.parse(data.payload).changed.some((provider) => provider.provider_id === 'example')
+      : data.payload['total_sessions'] === 43);
+    expect(fixtureEvents).toEqual([
+      { type: 'event.search.index_state_changed', payload: backgroundSearch },
+      { type: 'event.model_catalog.changed', payload: catalog },
+      { type: 'event.search.index_state_changed', payload: search },
     ]);
+    expect(peerEvents.every((frame) => frame['id'] === 'core' || frame['id'] === 'agent')).toBe(true);
     expect(peerEvents.filter((frame) => frame['id'] === 'agent').map((frame) => frame['data'])).toEqual([
       expect.objectContaining({ type: 'prompt.model_switch_queued', entry, queueIndex: 0 }),
       expect.objectContaining({ type: 'prompt.model_switch_status', operationId: receipt.operationId, receipt: failed }),
     ]);
     expect(JSON.stringify(peerEvents)).not.toContain(secret);
-    expect(JSON.stringify(frames.local)).toContain(secret);
+    const localEvents = frames.local.filter((frame) => frame['type'] === 'event').map((frame) => frame['data']);
+    expect(localEvents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'event.credential.changed', payload: { apiKey: secret } }),
+      expect.objectContaining({ type: 'event.model_catalog.changed', payload: { apiKey: secret } }),
+      expect.objectContaining({ type: 'event.model_catalog.changed', payload: { ...catalog, discovered: [{ apiKey: secret }] } }),
+      expect.objectContaining({ type: 'event.search.index_state_changed', payload: { ...search, privatePath: secret } }),
+      expect.objectContaining({ type: 'context.append_message', payload: { text: secret } }),
+      expect.objectContaining({ type: 'prompt.model_switch_queued', entry: { ...entry, apiKey: secret }, queueIndex: 0 }),
+      expect.objectContaining({ type: 'prompt.model_switch_status', operationId: receipt.operationId, receipt: { ...failed, apiKey: secret } }),
+    ]));
     expect(peer.readyState).toBe(WebSocket.OPEN);
   }, 30_000);
 });

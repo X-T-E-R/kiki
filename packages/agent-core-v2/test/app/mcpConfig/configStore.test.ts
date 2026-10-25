@@ -40,8 +40,8 @@ describe('McpConfigStore', () => {
     store = ix.get(IMcpConfigStore);
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   async function seedRaw(text: string): Promise<void> {

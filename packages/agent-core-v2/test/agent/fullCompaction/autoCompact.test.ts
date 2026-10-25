@@ -61,6 +61,13 @@ describe('auto_compact resolution', () => {
     expect(resolveAutoCompact(context(64_000), 64_000).tokens).toBe(60_800);
   });
 
+  it('keeps an explicit threshold inside a window smaller than the default reserve', () => {
+    const resolved = resolveAutoCompact(context(32_000, { profileAutoCompact: 20_000, reservedContextSize: 50_000 }));
+    expect(resolved.tokens).toBeGreaterThan(0);
+    expect(resolved.tokens).toBeLessThanOrEqual(32_000);
+    expect(resolveAutoCompact(context(32_000, { globalAutoCompact: '85%', reservedContextSize: 50_000 })).tokens).toBeLessThanOrEqual(32_000);
+  });
+
   it('rejects formats at the wrong layer with a layer-specific error', () => {
     expect(LoopControlSchema.safeParse({ autoCompact: 400_000 }).error?.message).toContain('global loop_control.auto_compact');
     expect(LoopControlSchema.safeParse({ autoCompact: '85%' }).success).toBe(true);

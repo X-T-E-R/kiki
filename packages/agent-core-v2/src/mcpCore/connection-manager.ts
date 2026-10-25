@@ -10,7 +10,8 @@ import { HttpMcpClient } from './client-http';
 import { isRemoteMcpConfig } from './client-remote';
 import { SseMcpClient } from './client-sse';
 import type { UnexpectedCloseReason } from './client-shared';
-import { StdioMcpClient } from './client-stdio';
+import { computerSpawnHeld, StdioMcpClient } from './client-stdio';
+import { COMPUTER_ADMISSION_HELD, computerExecutorKind, onComputerAdmissionChange } from './computer';
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import { assertMcpInputSchema, type MCPClient, type MCPToolDefinition } from './types';
 
@@ -28,6 +29,8 @@ interface InternalEntry {
   readonly name: string;
   readonly config: McpServerConfig;
   attemptId: number;
+  accepting: boolean;
+  readonly calls: Set<Promise<void>>;
   status: McpServerStatus;
   tools?: readonly Tool[];
   rawTools?: readonly MCPToolDefinition[];
@@ -35,7 +38,7 @@ interface InternalEntry {
   error?: string;
   client?: RuntimeMcpClient;
   connectedAt?: number;
-  toolRefresh?: { queued: boolean };
+  toolRefresh?: { queued: boolean; work?: Promise<void> };
 }
 
 export type McpStatusListener = (entry: McpServerEntry) => void;
@@ -59,6 +62,7 @@ export interface McpConnectionView {
         tools: readonly Tool[];
         rawTools: readonly MCPToolDefinition[];
         enabledNames: ReadonlySet<string>;
+        admitCall?: () => Promise<{ release(): void } | undefined>;
       }
     | undefined;
   getRemoteServerUrl(name: string): string | undefined;
@@ -66,6 +70,7 @@ export interface McpConnectionView {
   reconnect(name: string): Promise<void>;
   readonly connect?: (name: string, config: McpServerConfig) => Promise<void>;
   reconnectAndJoin(name: string): Promise<void>;
+  readonly refreshToolList?: (name: string) => Promise<void>;
   waitForInitialLoad(signal?: AbortSignal): Promise<void>;
   initialLoadDurationMs(): number;
   onStatusChange(listener: McpStatusListener): () => void;
@@ -98,6 +103,7 @@ export interface McpConnectionManagerOptions {
   readonly log?: Logger;
   readonly resolveDefaultTimeouts?: () => McpDefaultTimeouts;
   readonly resolveClientName?: () => string | undefined;
+  readonly allowsCall?: (name: string) => Promise<boolean>;
 }
 
 export class McpConnectionManager implements McpConnectionView {
@@ -105,10 +111,15 @@ export class McpConnectionManager implements McpConnectionView {
   private readonly listeners = new Set<McpStatusListener>();
   private readonly inFlightReconnects = new Map<string, Promise<void>>();
   private readonly closingClients = new WeakMap<RuntimeMcpClient, Promise<void>>();
+  private readonly connecting = new Set<Promise<void>>();
+  private stopping = false;
+  private shutdownWork: Promise<void> | undefined;
   private initialLoad: Promise<void> = Promise.resolve();
   private initialLoadAttemptId = 0;
   private initialLoadStartedAt: number | undefined;
   private initialLoadFinishedAt: number | undefined;
+  private reconcileQueue: Promise<void> = Promise.resolve();
+  private admissionWatch: (() => void) | undefined;
 
   readonly oauthService: McpOAuthService | undefined;
   private readonly log: Logger;
@@ -116,6 +127,10 @@ export class McpConnectionManager implements McpConnectionView {
   constructor(private readonly options: McpConnectionManagerOptions = {}) {
     this.oauthService = options.oauthService;
     this.log = options.log ?? defaultLog;
+    this.admissionWatch = onComputerAdmissionChange(() => {
+      if (this.stopping) return;
+      void this.reconcileComputerAdmission();
+    });
   }
 
   getRemoteServerUrl(name: string): string | undefined {
@@ -157,6 +172,7 @@ export class McpConnectionManager implements McpConnectionView {
         tools: readonly Tool[];
         rawTools: readonly MCPToolDefinition[];
         enabledNames: ReadonlySet<string>;
+        admitCall?: () => Promise<{ release(): void } | undefined>;
       }
     | undefined {
     const entry = this.entries.get(name);
@@ -173,6 +189,14 @@ export class McpConnectionManager implements McpConnectionView {
       tools: entry.tools,
       rawTools: entry.rawTools,
       enabledNames: entry.enabledNames ?? new Set(entry.tools.map((t) => t.name)),
+      admitCall: async () => {
+        if (this.options.allowsCall !== undefined && !await this.options.allowsCall(name)) return undefined;
+        if (this.entries.get(name) !== entry || !entry.accepting || entry.status === 'removed' || entry.status === 'disabled') return undefined;
+        let release!: () => void;
+        const finished = new Promise<void>((resolve) => { release = resolve; });
+        entry.calls.add(finished);
+        return { release: () => { entry.calls.delete(finished); release(); } };
+      },
     };
   }
 
@@ -190,6 +214,7 @@ export class McpConnectionManager implements McpConnectionView {
   }
 
   async connect(name: string, config: McpServerConfig): Promise<void> {
+    if (this.stopping) throw new Error2(ErrorCodes.MCP_SERVER_DISABLED, 'MCP connection manager is shutting down');
     const previous = this.entries.get(name);
     if (previous !== undefined) {
       if (
@@ -198,13 +223,15 @@ export class McpConnectionManager implements McpConnectionView {
       ) {
         return;
       }
-      await this.closeClient(previous);
+      await this.retire(previous);
     }
     const disabled = config.enabled === false;
     const entry: InternalEntry = {
       name,
       config,
       attemptId: 0,
+      accepting: !disabled,
+      calls: new Set(),
       status: disabled ? 'disabled' : 'pending',
     };
     this.entries.set(name, entry);
@@ -214,30 +241,31 @@ export class McpConnectionManager implements McpConnectionView {
     }
   }
 
-  async remove(name: string): Promise<boolean> {
-    const entry = this.entries.get(name);
-    if (entry === undefined) return false;
-    await this.closeClient(entry);
-    entry.status = 'disabled';
-    entry.tools = undefined;
-    entry.enabledNames = undefined;
-    entry.rawTools = undefined;
-    entry.error = undefined;
-    this.emit(entry);
-    this.entries.delete(name);
-    return true;
-  }
-
-  async markRemoved(name: string): Promise<boolean> {
-    const entry = this.entries.get(name);
-    if (entry === undefined) return false;
-    await this.closeClient(entry);
+  private async retire(entry: InternalEntry): Promise<void> {
+    entry.accepting = false;
+    entry.attemptId++;
     entry.status = 'removed';
     entry.tools = undefined;
     entry.enabledNames = undefined;
     entry.rawTools = undefined;
     entry.error = undefined;
     this.emit(entry);
+    await Promise.all(entry.calls);
+    await this.closeClient(entry);
+  }
+
+  async remove(name: string): Promise<boolean> {
+    const entry = this.entries.get(name);
+    if (entry === undefined) return false;
+    await this.retire(entry);
+    if (this.entries.get(name) === entry) this.entries.delete(name);
+    return true;
+  }
+
+  async markRemoved(name: string): Promise<boolean> {
+    const entry = this.entries.get(name);
+    if (entry === undefined) return false;
+    await this.retire(entry);
     return true;
   }
 
@@ -254,6 +282,7 @@ export class McpConnectionManager implements McpConnectionView {
   }
 
   private async connectAllNow(configs: Record<string, McpServerConfig>): Promise<void> {
+    if (this.stopping) throw new Error2(ErrorCodes.MCP_SERVER_DISABLED, 'MCP connection manager is shutting down');
     const tasks: Promise<unknown>[] = [];
     for (const [name, config] of Object.entries(configs)) {
       const disabled = config.enabled === false;
@@ -261,6 +290,8 @@ export class McpConnectionManager implements McpConnectionView {
         name,
         config,
         attemptId: 0,
+        accepting: !disabled,
+        calls: new Set(),
         status: disabled ? 'disabled' : 'pending',
       };
       this.entries.set(name, entry);
@@ -357,14 +388,87 @@ export class McpConnectionManager implements McpConnectionView {
     entry.rawTools = undefined;
   }
 
-  async shutdown(): Promise<void> {
-    const entries = Array.from(this.entries.values());
-    this.entries.clear();
-    const tasks = entries.map((entry) => this.closeClient(entry));
-    await Promise.allSettled(tasks);
+  shutdown(): Promise<void> {
+    if (this.shutdownWork !== undefined) return this.shutdownWork;
+    this.stopping = true;
+    this.admissionWatch?.();
+    this.admissionWatch = undefined;
+    for (const entry of this.entries.values()) entry.accepting = false;
+    this.shutdownWork = this.closeAll();
+    void this.shutdownWork.then(() => {
+      this.shutdownWork = undefined;
+      this.stopping = false;
+    }, () => { this.shutdownWork = undefined; });
+    return this.shutdownWork;
   }
 
-  private async connectOne(entry: InternalEntry, attemptId: number): Promise<void> {
+  private async closeAll(): Promise<void> {
+    const results = await Promise.allSettled([
+      ...Array.from(this.entries.values(), (entry) => this.closeClient(entry)),
+      ...this.connecting,
+    ]);
+    const failures = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+    if (failures.length > 0) throw new AggregateError(failures, 'MCP process cleanup failed');
+    this.entries.clear();
+  }
+
+  private connectOne(entry: InternalEntry, attemptId: number): Promise<void> {
+    const work = this.connectOneNow(entry, attemptId).finally(() => { this.connecting.delete(work); });
+    this.connecting.add(work);
+    return work;
+  }
+
+  private reconcileComputerAdmission(): Promise<void> {
+    const run = this.reconcileQueue.catch(() => undefined).then(() => this.reconcileComputerAdmissionNow());
+    this.reconcileQueue = run.then(() => undefined, () => undefined);
+    return run;
+  }
+
+  private async reconcileComputerAdmissionNow(): Promise<void> {
+    if (this.stopping) return;
+    const computerEntries = [...this.entries.values()].filter((entry) => computerExecutorKind(entry.config) !== undefined);
+    for (const entry of computerEntries) {
+      if (this.stopping || !computerSpawnHeld(entry.name, entry.config)) continue;
+      entry.accepting = false;
+      if (entry.calls.size > 0) await Promise.all([...entry.calls]);
+      if (this.stopping || this.entries.get(entry.name) !== entry) continue;
+      if (entry.client !== undefined) {
+        try {
+          await this.closeClient(entry);
+        } catch {
+          entry.error = entry.error ?? 'computer-stop-unconfirmed';
+          this.emit(entry);
+          return;
+        }
+      }
+      if (this.entries.get(entry.name) !== entry || entry.status === 'removed') continue;
+      entry.status = 'disabled';
+      entry.error = 'computer-admission-held';
+      entry.tools = undefined;
+      entry.enabledNames = undefined;
+      entry.rawTools = undefined;
+      this.emit(entry);
+    }
+    for (const entry of computerEntries) {
+      if (this.stopping || entry.config.enabled === false) continue;
+      if (computerSpawnHeld(entry.name, entry.config)) continue;
+      if (entry.status !== 'disabled' || entry.error !== 'computer-admission-held') continue;
+      entry.accepting = true;
+      entry.error = undefined;
+      entry.status = 'pending';
+      this.emit(entry);
+      await this.connectOne(entry, this.beginConnectAttempt(entry));
+    }
+  }
+
+  private async connectOneNow(entry: InternalEntry, attemptId: number): Promise<void> {
+    if (computerSpawnHeld(entry.name, entry.config)) {
+      entry.accepting = false;
+      entry.status = 'disabled';
+      entry.error = 'computer-admission-held';
+      if (this.isCurrent(entry, attemptId)) this.emit(entry);
+      return;
+    }
     const timeoutMs =
       entry.config.startupTimeoutMs ??
       this.options.resolveDefaultTimeouts?.().startupTimeoutMs ??
@@ -376,6 +480,10 @@ export class McpConnectionManager implements McpConnectionView {
       const startupClient = await this.createClient(entry.config, entry.name, timeoutMs);
       client = startupClient;
       entry.client = startupClient;
+      if (!this.isCurrent(entry, attemptId)) {
+        await this.closeClient(entry);
+        return;
+      }
       const discovered = await withTimeout(
         this.connectAndDiscoverTools(startupClient, entry.name),
         timeoutMs,
@@ -400,6 +508,17 @@ export class McpConnectionManager implements McpConnectionView {
         if (client !== undefined) {
           await this.closeRuntimeClient(client);
         }
+        return;
+      }
+      if (error instanceof Error && error.message === COMPUTER_ADMISSION_HELD) {
+        entry.accepting = false;
+        entry.status = 'disabled';
+        entry.error = 'computer-admission-held';
+        entry.tools = undefined;
+        entry.enabledNames = undefined;
+        entry.rawTools = undefined;
+        if (client !== undefined) await this.closeClient(entry).catch(() => undefined);
+        if (this.isCurrent(entry, attemptId)) this.emit(entry);
         return;
       }
       if (this.shouldMarkNeedsAuth(entry, error)) {
@@ -435,8 +554,7 @@ export class McpConnectionManager implements McpConnectionView {
       entry.tools = undefined;
       entry.enabledNames = undefined;
       entry.rawTools = undefined;
-      entry.client = undefined;
-      void this.closeRuntimeClient(client);
+      void this.closeClient(entry).catch(() => undefined);
       this.emit(entry);
     });
   }
@@ -446,34 +564,44 @@ export class McpConnectionManager implements McpConnectionView {
     client: RuntimeMcpClient,
     attemptId: number,
   ): void {
-    client.onToolsListChanged?.(() => this.scheduleToolsRefresh(entry, client, attemptId));
+    client.onToolsListChanged?.(() => {
+      void this.scheduleToolsRefresh(entry, client, attemptId).catch((error: unknown) => {
+        this.log.warn('mcp tool list refresh failed', {
+          server: entry.name,
+          errorType: error instanceof Error ? error.name : typeof error,
+        });
+      });
+    });
+  }
+
+  refreshToolList(name: string): Promise<void> {
+    const entry = this.entries.get(name);
+    if (entry?.client === undefined || entry.status !== 'connected') return Promise.resolve();
+    return this.scheduleToolsRefresh(entry, entry.client, entry.attemptId);
   }
 
   private scheduleToolsRefresh(
     entry: InternalEntry,
     client: RuntimeMcpClient,
     attemptId: number,
-  ): void {
-    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return;
+  ): Promise<void> {
+    if (!this.isCurrent(entry, attemptId) || entry.client !== client || entry.status !== 'connected') return Promise.resolve();
     const pending = entry.toolRefresh;
     if (pending !== undefined) {
       pending.queued = true;
-      return;
+      return pending.work ?? Promise.resolve();
     }
-    const next = { queued: false };
+    const next: NonNullable<InternalEntry['toolRefresh']> = { queued: false };
     entry.toolRefresh = next;
-    void this.refreshTools(entry, client, attemptId)
-      .catch((error: unknown) => {
-        this.log.warn('mcp tool list refresh failed', {
-          server: entry.name,
-          errorType: error instanceof Error ? error.name : typeof error,
-        });
-      })
-      .finally(() => {
-        if (entry.toolRefresh !== next) return;
-        entry.toolRefresh = undefined;
-        if (next.queued) this.scheduleToolsRefresh(entry, client, attemptId);
-      });
+    next.work = (async () => {
+      do {
+        next.queued = false;
+        await this.refreshTools(entry, client, attemptId);
+      } while (next.queued && this.isCurrent(entry, attemptId) && entry.client === client && entry.status === 'connected');
+    })().finally(() => {
+      if (entry.toolRefresh === next) entry.toolRefresh = undefined;
+    });
+    return next.work;
   }
 
   private async refreshTools(
@@ -607,15 +735,14 @@ export class McpConnectionManager implements McpConnectionView {
   private closeRuntimeClient(client: RuntimeMcpClient): Promise<void> {
     const existing = this.closingClients.get(client);
     if (existing !== undefined) return existing;
-    const closing = client.close().catch((error: unknown) => {
-      if (error instanceof Error2 && error.code === ErrorCodes.MCP_COMPUTER_STOP_UNCONFIRMED) throw error;
-    });
+    const closing = client.close();
     this.closingClients.set(client, closing);
+    void closing.catch(() => { this.closingClients.delete(client); });
     return closing;
   }
 
   private isCurrent(entry: InternalEntry, attemptId: number): boolean {
-    return this.entries.get(entry.name) === entry && entry.attemptId === attemptId;
+    return !this.stopping && this.entries.get(entry.name) === entry && entry.attemptId === attemptId;
   }
 
   private emit(entry: InternalEntry): void {

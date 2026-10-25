@@ -30,7 +30,7 @@ describe('ThinkingComponent', () => {
     expect(out).not.toContain('line5');
     expect(out).toContain('line6');
     expect(out).toContain('line7');
-    expect(out).not.toContain('ctrl+o to expand');
+    expect(out).not.toContain('Ctrl+O to expand');
   });
 
   it('animates the live spinner and stops on finalize', () => {
@@ -63,7 +63,7 @@ describe('ThinkingComponent', () => {
     expect(out).toContain('line2');
     expect(out).not.toContain('line3');
     expect(out).not.toContain('line4');
-    expect(out).toContain('... (5 more lines, ctrl+o to expand)');
+    expect(out).toContain('... (5 more lines, Ctrl+O to expand)');
   });
 
   it('expands and collapses after finalization', () => {
@@ -73,12 +73,12 @@ describe('ThinkingComponent', () => {
     component.setExpanded(true);
     const expanded = strip(component.render(80).join('\n'));
     expect(expanded).toContain('line7');
-    expect(expanded).not.toContain('ctrl+o to expand');
+    expect(expanded).not.toContain('Ctrl+O to expand');
 
     component.setExpanded(false);
     const collapsed = strip(component.render(80).join('\n'));
     expect(collapsed).not.toContain('line7');
-    expect(collapsed).toContain('ctrl+o to expand');
+    expect(collapsed).toContain('Ctrl+O to expand');
   });
 
   it('keeps the finalized truncation footer within the requested render width', () => {

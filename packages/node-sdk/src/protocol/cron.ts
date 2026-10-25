@@ -6,6 +6,7 @@ export interface CronTaskSnapshot {
   readonly id: string;
   readonly cron: string;
   readonly recurring: boolean;
+  readonly deliveryMode?: import('@kiki/protocol').CronDeliveryMode;
   readonly createdAt: number;
   readonly lastFiredAt: number | undefined;
   /** Post-jitter next fire (epoch ms), or null when no future fire exists. */

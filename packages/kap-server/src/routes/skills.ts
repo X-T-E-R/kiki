@@ -56,6 +56,9 @@ import {
 import { requestLog } from '../lib/requestLog';
 import { acquireSessionOperation, type SessionOperationLease } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
+import { publishedInlineMediaReader } from '../services/publishedMedia';
+import type { TranscriptService } from '../services/transcript/transcriptService';
 import { ensureMainAgent } from '../transport/mainAgent';
 import { ErrorCode } from '../protocol/error-codes';
 import { readPersistedAgentProfileSnapshot } from './agentProfileSnapshot';
@@ -66,6 +69,7 @@ import {
   listSkillsResponseSchema,
 } from '../protocol/rest-skill';
 import { workspaceIdParamSchema } from '../protocol/rest-workspace';
+import type { PromptSubmission } from '../protocol/rest-prompt';
 import type { SkillDescriptor } from '../protocol/skill';
 import { parseActionSuffix } from './action-suffix';
 import { HostSkillInstallConflict, installHostSkill, previewHostSkill, type HostSkillName } from './hostSkillInstall';
@@ -125,7 +129,7 @@ async function resolveActivatedSession(
 ): Promise<ResolvedSession> {
   const lease = await acquireSessionOperation(core, sessionId, 'operation');
   if (lease.handle !== undefined) return { handle: lease.handle, lease };
-  lease.dispose();
+  await lease.dispose();
 
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   const msg =
@@ -231,7 +235,7 @@ function skillActivationFingerprint(
   return createHash('sha256').update(canonical).digest('hex');
 }
 
-export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
+export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope, transcriptService?: TranscriptService): void {
   const hostSkillRoute = defineRoute(
     {
       method: 'POST',
@@ -383,7 +387,7 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
           reply.send(okEnvelope({ skills }, req.id));
           return;
         } finally {
-          operation.dispose();
+          await operation.dispose();
         }
       }
       const summary = await core.accessor.get(ISessionIndex).get(session_id);
@@ -530,9 +534,13 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
               );
             }
             await assertPromptFileRefs(attachments, core.accessor.get(IFileService));
-            const submittedAttachments = await resolvePromptSessionMediaRefs(
-              attachments,
-              resolved.handle.accessor.get(ISessionMediaStore),
+            const submittedAttachments = await withReplyCloseSignal<PromptSubmission['content']>(
+              reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+              (signal) => resolvePromptSessionMediaRefs(
+                attachments,
+                resolved.handle.accessor.get(ISessionMediaStore),
+                transcriptService === undefined ? undefined : publishedInlineMediaReader(transcriptService, session_id, signal),
+              ),
             );
             const telemetry = core.accessor.get(ITelemetryService).withContext({ sessionId: session_id });
             const sessionDir = resolved.handle.accessor.get(ISessionContext).sessionDir;
@@ -568,12 +576,16 @@ export function registerSkillsRoutes(app: SkillsRouteHost, core: Scope): void {
           ? await runActivation()
           : await promptRetryFor(prompt).run(promptId, fingerprint, runActivation);
         requestLog(req)?.info({ session_id, skill_name: skillName }, 'skill activated');
-        reply.send(okEnvelope({ activated: true, skill_name: skillName }, req.id));
+        reply.send(okEnvelope({
+          activated: true,
+          skill_name: skillName,
+          prompt_id: promptId,
+        }, req.id));
       } catch (err) {
         await preparedMedia?.discard();
         sendMappedError(reply, req.id, err);
       } finally {
-        resolved.lease.dispose();
+        await resolved.lease.dispose();
       }
     },
   );

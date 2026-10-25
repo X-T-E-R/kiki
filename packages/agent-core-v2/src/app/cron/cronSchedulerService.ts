@@ -201,7 +201,7 @@ export class CronSchedulerService extends Disposable implements ICronScheduler {
         await cron.flushPersist();
       });
     } finally {
-      lease?.dispose();
+      await lease?.dispose();
     }
   }
 

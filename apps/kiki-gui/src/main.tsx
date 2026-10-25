@@ -11,6 +11,7 @@ import { createBrowserRouter, RouterProvider } from 'react-router-dom';
 import { HostProvider, hostAdapter } from './host';
 import { initializeSpaceStorage, activeSpace, configureSpaceStorage } from './lib/spaceStorage';
 import { restoreSpaceViewAtBoot } from './lib/spaceViewState';
+import { adoptWindowModeFromHost } from './lib/workModeStartup';
 import { applyColdNavigationIntent, beginNavWindow, consumeScopeReload, pendingScopeReloadScope, stageRemoteSpaceBoot } from './lib/navScope';
 import { setWebAccessBootstrap, takeAccessCode } from './lib/webAccess';
 import './index.css';
@@ -77,6 +78,10 @@ async function start(): Promise<void> {
     configureSpaceStorage({ homeId: pendingScope.scopeId });
   }
   const homeId = activeSpace()?.homeId ?? 'main';
+  // The mode this window was launched in must be known before the first route
+  // is chosen: it decides which window slot the route belongs to, and a
+  // `--preset work` window must not restore the Kiki window's view.
+  await adoptWindowModeFromHost(hostAdapter, homeId);
   const controlled = consumeScopeReload(homeId);
   const reloading = (performance.getEntriesByType('navigation')[0] as PerformanceNavigationTiming | undefined)?.type === 'reload';
   beginNavWindow(controlled, reloading);

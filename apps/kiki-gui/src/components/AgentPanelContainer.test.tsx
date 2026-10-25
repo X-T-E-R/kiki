@@ -44,7 +44,7 @@ const harness = vi.hoisted(() => {
     getState: () => agents['main'],
     getAgentState: (agentId: string) => agents[agentId],
     subscribe: (listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
-    subscribeAgent: (_agentId: string, listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; },
+    subscribeAgent: vi.fn((_agentId: string, listener: () => void) => { listeners.add(listener); return () => { listeners.delete(listener); }; }),
   };
   const registry = {
     add: () => undefined,
@@ -62,6 +62,7 @@ const harness = vi.hoisted(() => {
     loadTranscriptEntities,
     retryOpen,
     resync,
+    subscribeAgent: controller.subscribeAgent,
     /** What the mocked `useOptionalControllerRegistry` hands back per render. */
     holder: { value: registry as unknown },
     emit: () => { for (const listener of listeners) listener(); },
@@ -69,6 +70,7 @@ const harness = vi.hoisted(() => {
     getAgentPlan: vi.fn(),
     spaceKey: 'main',
     scopeId: 'local',
+    serverId: 'server-a',
   };
 });
 const { getAgentCapabilities, getAgentPlan } = harness;
@@ -78,6 +80,7 @@ vi.mock('../state/connection', () => ({
   useConnection: () => ({
     spaceKey: harness.spaceKey,
     scopeId: harness.scopeId,
+    meta: { server_id: harness.serverId },
     klient: {
       global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => harness.getAgentCapabilities(query, options.signal) } },
       session: (_sessionId: string) => ({
@@ -121,11 +124,13 @@ beforeEach(() => {
   harness.loadTranscriptEntities.mockReset();
   harness.retryOpen.mockClear();
   harness.resync.mockClear();
+  harness.subscribeAgent.mockClear();
   for (const agentId of Object.keys(harness.agents)) delete harness.agents[agentId];
   harness.agents['main'] = viewState();
   harness.holder.value = harness.registry;
   harness.spaceKey = 'main';
   harness.scopeId = 'local';
+  harness.serverId = 'server-a';
   localStorage.setItem('kiki.locale', 'zh');
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   element = document.createElement('div');
@@ -138,6 +143,12 @@ afterEach(async () => {
   queryClient.clear();
   element.remove();
 });
+
+async function flushRender() {
+  for (let i = 0; i < 5; i += 1) {
+    await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
+  }
+}
 
 async function render(agentId: string, options: {
   routed?: SessionViewState; forest?: AgentForest; visible?: boolean;
@@ -158,6 +169,15 @@ function todosStatus(): string | undefined {
   return element.querySelector<HTMLElement>('[data-agent-todos-status]')?.dataset['agentTodosStatus'];
 }
 
+it('observes tree metric revisions without subscribing every historical agent transcript', async () => {
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true,
+    targets: [], tools: [], skills: [], metrics: { main: UNKNOWN_AGENT_PANEL_METRICS },
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child-a', 'child-b', 'child-c']) });
+  expect(harness.subscribeAgent).not.toHaveBeenCalled();
+});
+
 it('defers agent panel reads until visible and stops reads while hidden', async () => {
   getAgentCapabilities.mockResolvedValue({
     context: 'live', owner: { agent_id: 'child' }, available: false,
@@ -166,9 +186,12 @@ it('defers agent panel reads until visible and stops reads while hidden', async 
   await render('child', { visible: false });
   expect(getAgentCapabilities).not.toHaveBeenCalled();
   await render('child', { visible: true });
-  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+  expect(getAgentCapabilities.mock.calls.map((call) => call[0])).toEqual([
+    { session_id: 'session', agent_id: 'child' },
+    { session_id: 'session', agent_id: 'child', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child'] },
+  ]);
   await render('child', { visible: false });
-  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(2);
 });
 
 it('queries the selected identity, keeps missing billing unknown and does not reuse another agent todo', async () => {
@@ -362,7 +385,8 @@ it('does not poll a settled tab agent just because the routed agent is busy', as
 });
 
 it('does not keep polling a settled historical agent', async () => {
-  getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'child' }, available: false, targets: [] });
+  getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'child' }, available: false, targets: [],
+    metrics: { child: UNKNOWN_AGENT_PANEL_METRICS } });
   harness.agents['child'] = viewState({ busy: false });
   await render('child');
   expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
@@ -370,6 +394,7 @@ it('does not keep polling a settled historical agent', async () => {
   try {
     await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
     expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+    expect(getAgentCapabilities.mock.calls.some((call) => call[0].metrics_settle === true)).toBe(false);
   } finally {
     vi.useRealTimers();
   }
@@ -590,6 +615,7 @@ it.each([
   expect(tree.classList.contains('shrink-0')).toBe(true);
   expect(element.querySelector('[data-overview-test-body] [role="radiogroup"]')).toBeNull();
   expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  const readsBeforeSwitch = getAgentCapabilities.mock.calls.length;
   await act(async () => { tree.click(); });
   expect(tree.getAttribute('aria-checked')).toBe('true');
   expect(agent.getAttribute('aria-checked')).toBe('false');
@@ -597,6 +623,515 @@ it.each([
   await act(async () => { agent.click(); });
   expect(agent.getAttribute('aria-checked')).toBe('true');
   expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(readsBeforeSwitch);
+});
+
+const coldMetrics = {
+  ...UNKNOWN_AGENT_PANEL_METRICS,
+  usagePartial: true,
+  costPartial: true,
+  usageSource: 'persisted' as const,
+};
+
+it('paints the overview before a cold settle and then shows the completed tokens', async () => {
+  let resolveSettle: ((value: unknown) => void) | undefined;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean; agent_id: string }) => {
+    if (query.metrics_settle === true) return new Promise((resolve) => { resolveSettle = resolve; });
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [{ name: 'read' }], skills: [],
+      profile: { name: 'leader' },
+      metrics: { main: coldMetrics },
+    });
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main']) });
+  expect(element.querySelector('[data-usage-scope="agent"]')).not.toBeNull();
+  expect(element.querySelector('[data-overview-fact="cost"]')).toBeNull();
+  expect(element.querySelector('[data-overview-fact="tokens"]')).toBeNull();
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(2);
+  expect(getAgentCapabilities.mock.calls[0]?.[0]).toEqual({ session_id: 'session', agent_id: 'main', metrics_only: true });
+  expect(getAgentCapabilities.mock.calls[1]?.[0]).toEqual({
+    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'],
+  });
+  await act(async () => {
+    resolveSettle?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05, inputTokens: 1_000, outputTokens: 200, usagePartial: false, usageSource: 'persisted' } },
+    });
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
+  expect(element.querySelector('[data-usage-scope-incomplete]')).toBeNull();
+});
+
+it('settles only the missing tree agents once, then keeps the total on a local scope switch', async () => {
+  let resolveSettle: ((value: unknown) => void) | undefined;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) return new Promise((resolve) => { resolveSettle = resolve; });
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05 } },
+    });
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
+  expect(element.querySelector('[data-usage-scope-incomplete]')).not.toBeNull();
+  expect(getAgentCapabilities.mock.calls[1]?.[0]).toEqual({
+    session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child', 'main'],
+  });
+  const readsBeforeSwitch = getAgentCapabilities.mock.calls.length;
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(readsBeforeSwitch);
+  await act(async () => {
+    resolveSettle?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: {
+        main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05 },
+        child: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 3_400, totalCostUsd: 0.10 },
+      },
+    });
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-tree-incomplete]')).toBeNull();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('4.6k');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.15');
+  await render('main', { part: 'overview', forest: forestOf(['main', 'child']), renderOverview: renderOverviewLayout });
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(readsBeforeSwitch);
+});
+
+it('aborts a cold settle while hidden and resumes the missing projection on reopen', async () => {
+  let settleSignal: AbortSignal | undefined;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }, signal: AbortSignal) => {
+    if (query.metrics_settle === true) {
+      settleSignal = signal;
+      return new Promise(() => {});
+    }
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: coldMetrics },
+    });
+  });
+  await render('main', { part: 'overview' });
+  expect(settleSignal?.aborted).toBe(false);
+  const reads = getAgentCapabilities.mock.calls.length;
+  await render('main', { part: 'overview', visible: false });
+  expect(settleSignal?.aborted).toBe(true);
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(reads);
+  await render('main', { part: 'overview', visible: true });
+  await flushRender();
+  expect(getAgentCapabilities.mock.calls.filter((call) => call[0].metrics_settle === true)).toHaveLength(2);
+  expect(settleSignal?.aborted).toBe(false);
+});
+
+it('reads the completed cache when an idle panel reopens before the header becomes stale', async () => {
+  let cacheReady = false;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) return new Promise(() => {});
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: cacheReady ? countedMetrics(1_200, 0.05) : coldMetrics },
+    });
+  });
+  await render('main', { part: 'overview' });
+  await render('main', { part: 'overview', visible: false });
+  cacheReady = true;
+  await render('main', { part: 'overview', visible: true });
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  expect(settleCalls()).toHaveLength(1);
+  expect(getAgentCapabilities.mock.calls.filter((call) => call[0].metrics_settle !== true)).toHaveLength(2);
+});
+
+it('does not publish a delayed header from a previous connection scope or server', async () => {
+  const pending: Array<(value: unknown) => void> = [];
+  getAgentCapabilities.mockImplementation(() => new Promise((resolve) => { pending.push(resolve); }));
+  await render('main', { part: 'overview' });
+  harness.spaceKey = 'other';
+  harness.scopeId = 'remote';
+  await render('main', { part: 'overview' });
+  await act(async () => {
+    pending[0]?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(1_200, 0.05) },
+    });
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="cost"]')).toBeNull();
+  expect(settleCalls()).toHaveLength(0);
+  await act(async () => {
+    pending.at(-1)?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(4_800, 0.20) },
+    });
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.20');
+  expect(element.textContent).not.toContain('$0.05');
+});
+
+it('does not leak delayed header or settle across server changes in the same scope and does not refetch on same-server rerender', async () => {
+  const pendingHeader: Array<(value: unknown) => void> = [];
+  const pendingSettle: Array<(value: unknown) => void> = [];
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) return new Promise((resolve) => { pendingSettle.push(resolve); });
+    return new Promise((resolve) => { pendingHeader.push(resolve); });
+  });
+
+  // Server A under scope 'local'
+  harness.spaceKey = 'main';
+  harness.scopeId = 'local';
+  harness.serverId = 'server-a';
+  await render('main', { part: 'overview' });
+  expect(pendingHeader).toHaveLength(1);
+
+  // Switch to Server B under the SAME scope ('local')
+  harness.serverId = 'server-b';
+  await render('main', { part: 'overview' });
+  expect(pendingHeader).toHaveLength(2);
+
+  // Server A's delayed header returns with $0.05
+  await act(async () => {
+    pendingHeader[0]?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(1_200, 0.05) },
+    });
+  });
+  await flushRender();
+  // Must NOT display Server A's figure on Server B
+  expect(element.querySelector('[data-overview-fact="cost"]')).toBeNull();
+  expect(element.textContent).not.toContain('$0.05');
+
+  // Server B's header returns with cold placeholder
+  await act(async () => {
+    pendingHeader[1]?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: coldMetrics },
+    });
+  });
+  await flushRender();
+  expect(pendingSettle).toHaveLength(1);
+
+  // Server B's settle completes with $0.20
+  await act(async () => {
+    pendingSettle[0]?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(4_800, 0.20) },
+    });
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.20');
+
+  // Same-server re-render with client wrapper recreation should NOT re-trigger reads
+  const headerCallsBefore = pendingHeader.length;
+  const settleCallsBefore = pendingSettle.length;
+  await render('main', { part: 'overview' });
+  await flushRender();
+  expect(pendingHeader).toHaveLength(headerCallsBefore);
+  expect(pendingSettle).toHaveLength(settleCallsBefore);
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.20');
+});
+
+it('discards the old settle when the source changes during its initial flight', async () => {
+  const pending: Array<(value: unknown) => void> = [];
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) return new Promise((resolve) => { pending.push(resolve); });
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: coldMetrics },
+    });
+  });
+  await render('main', { part: 'overview' });
+  harness.agents['main'] = viewState({ usage: { total: { inputOther: 2_000, output: 400, inputCacheRead: 0, inputCacheCreation: 0 } } });
+  await act(async () => { harness.emit(); });
+  await flushRender();
+  expect(settleCalls()).toHaveLength(2);
+  await act(async () => {
+    pending[0]?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(1_200, 0.05) },
+    });
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="tokens"]')).toBeNull();
+  await act(async () => {
+    pending[1]?.({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(2_400, 0.08) },
+    });
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('2.4k');
+  expect(settleCalls()).toHaveLength(2);
+});
+
+it('recovers a failed settle from the existing retry without polling the wire', async () => {
+  let settleAttempt = 0;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) {
+      settleAttempt += 1;
+      if (settleAttempt === 1) return Promise.reject(new Error('scan failed'));
+      return Promise.resolve({
+        context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+        metrics: { main: { ...UNKNOWN_AGENT_PANEL_METRICS, totalTokens: 1_200, totalCostUsd: 0.05, usagePartial: false, usageSource: 'persisted' } },
+      });
+    }
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      profile: { name: 'leader' },
+      metrics: { main: coldMetrics },
+    });
+  });
+  await render('main', { part: 'overview' });
+  const failed = element.querySelector<HTMLButtonElement>('[data-metrics-settle-error] button');
+  expect(failed?.textContent).toBe('重试');
+  expect(element.querySelector('[data-usage-scope="agent"]')).not.toBeNull();
+  await act(async () => { failed?.click(); });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  expect(element.querySelector('[data-metrics-settle-error]')).toBeNull();
+  vi.useFakeTimers();
+  try {
+    const reads = getAgentCapabilities.mock.calls.filter((call) => call[0].metrics_settle === true).length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(getAgentCapabilities.mock.calls.filter((call) => call[0].metrics_settle === true)).toHaveLength(reads);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+function settleCalls(): unknown[] {
+  return getAgentCapabilities.mock.calls.filter((call) => call[0].metrics_settle === true).map((call) => call[0]);
+}
+
+function countedMetrics(totalTokens: number, totalCostUsd: number) {
+  return {
+    ...UNKNOWN_AGENT_PANEL_METRICS,
+    totalTokens,
+    totalCostUsd,
+    inputTokens: totalTokens,
+    outputTokens: 0,
+    usagePartial: false,
+    usageSource: 'persisted' as const,
+  };
+}
+
+it('updates a settled agent when its usage grows and does not scan an unchanged source', async () => {
+  const pending: Array<(value: unknown) => void> = [];
+  let headerTokens = 0;
+  let headerComplete = false;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) return new Promise((resolve) => { pending.push(resolve); });
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      profile: { name: 'leader' },
+      metrics: headerComplete
+        ? { main: countedMetrics(headerTokens, 0.2) }
+        : { main: coldMetrics },
+    });
+  });
+  await render('main', { part: 'overview', forest: forestOf(['main']) });
+  expect(settleCalls()).toEqual([
+    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'] },
+  ]);
+  pending[0]?.({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: countedMetrics(1_200, 0.05) },
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
+
+  harness.agents['main'] = {
+    ...harness.agents['main'] as object,
+    usage: { total: { inputOther: 2_000, output: 400, inputCacheRead: 0, inputCacheCreation: 0 } },
+  };
+  await act(async () => { harness.emit(); });
+  await flushRender();
+  expect(settleCalls()).toEqual([
+    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'] },
+    { session_id: 'session', agent_id: 'main', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['main'] },
+  ]);
+  pending[1]?.({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: countedMetrics(2_400, 0.08) },
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('2.4k');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.08');
+
+  const afterUsage = settleCalls().length;
+  headerComplete = true;
+  headerTokens = 9_000;
+  harness.agents['main'] = { ...harness.agents['main'] as object, profile: 'leader-2' };
+  await act(async () => { harness.emit(); });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('9k');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.20');
+  vi.useFakeTimers();
+  try {
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+    await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="agent"]')?.click(); });
+    expect(settleCalls()).toHaveLength(afterUsage);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it('refreshes only the agent whose roster usage changed and keeps the scope local', async () => {
+  const pending: Array<(value: unknown) => void> = [];
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) return new Promise((resolve) => { pending.push(resolve); });
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(1_200, 0.05) },
+    });
+  });
+  const forest = forestOf(['main', 'child']);
+  await render('main', { part: 'overview', forest, renderOverview: renderOverviewLayout });
+  expect(settleCalls()[0]).toMatchObject({ metrics_agent_ids: ['child', 'main'] });
+  pending[0]?.({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: countedMetrics(1_200, 0.05), child: countedMetrics(3_400, 0.10) },
+  });
+  await flushRender();
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('4.6k');
+  const reads = settleCalls().length;
+  const child = forest.byId['child'];
+  if (child === undefined) throw new Error('missing child');
+  const next = {
+    ...forest,
+    byId: {
+      ...forest.byId,
+      child: { ...child, usage: { total: { inputOther: 0, output: 10, inputCacheRead: 0, inputCacheCreation: 0 } } },
+    },
+  };
+  await render('main', { part: 'overview', forest: next, renderOverview: renderOverviewLayout });
+  expect(settleCalls()).toHaveLength(reads + 1);
+  expect(settleCalls().at(-1)).toMatchObject({ metrics_agent_ids: ['child'] });
+  pending[1]?.({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { child: countedMetrics(5_000, 0.20) },
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('6.2k');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.25');
+  expect(settleCalls()).toHaveLength(reads + 1);
+  const withGrand = forestOf(['main', 'child', 'grand']);
+  const grown = { ...withGrand, byId: { ...withGrand.byId, child: next.byId['child']! } };
+  await render('main', { part: 'overview', forest: grown, renderOverview: renderOverviewLayout });
+  expect(settleCalls()).toHaveLength(reads + 2);
+  expect(settleCalls().at(-1)).toMatchObject({ metrics_agent_ids: ['grand'] });
+});
+
+it('does not keep the previous agent or space totals, or its retry', async () => {
+  const pending: Array<(value: unknown) => void> = [];
+  let failMain = true;
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean; agent_id: string }) => {
+    if (query.metrics_settle === true) {
+      if (query.agent_id === 'main' && failMain) return Promise.reject(new Error('scan failed'));
+      return new Promise((resolve) => { pending.push(resolve); });
+    }
+    if (query.agent_id === 'child') {
+      return Promise.resolve({
+        context: 'live', owner: { agent_id: 'child' }, available: true, targets: [], tools: [], skills: [],
+        metrics: { child: coldMetrics },
+      });
+    }
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: coldMetrics },
+    });
+  });
+  await render('main', { part: 'overview' });
+  expect(element.querySelector('[data-metrics-settle-error] button')?.textContent).toBe('重试');
+  const mainSettles = settleCalls().length;
+  await render('child', { part: 'overview' });
+  expect(element.querySelector('[data-overview-fact="cost"]')).toBeNull();
+  expect(element.querySelector('[data-metrics-settle-error]')).toBeNull();
+  expect(settleCalls().filter((call) => (call as { agent_id: string }).agent_id === 'main')).toHaveLength(mainSettles);
+  expect(element.textContent).not.toContain('$0.05');
+
+  failMain = false;
+  await render('main', { part: 'overview' });
+  await flushRender();
+  pending.at(-1)?.({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: countedMetrics(1_200, 0.05) },
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  harness.spaceKey = 'other';
+  await render('main', { part: 'overview' });
+  expect(element.querySelector('[data-overview-fact="cost"]')).toBeNull();
+  expect(element.textContent).not.toContain('$0.05');
+});
+
+it('paints this agent, the whole tree, and a roster update from the current overview', async () => {
+  const pending: Array<(value: unknown) => void> = [];
+  getAgentCapabilities.mockImplementation((query: { metrics_settle?: boolean }) => {
+    if (query.metrics_settle === true) return new Promise((resolve) => { pending.push(resolve); });
+    return Promise.resolve({
+      context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+      metrics: { main: countedMetrics(1_200, 0.05) },
+    });
+  });
+  const forest = forestOf(['main', 'child']);
+  await render('main', { part: 'overview', forest, renderOverview: renderOverviewLayout });
+  pending[0]?.({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: countedMetrics(1_200, 0.05), child: countedMetrics(3_400, 0.10) },
+  });
+  await flushRender();
+  expect(element.querySelector('[data-usage-scope="agent"]')?.getAttribute('aria-checked')).toBe('true');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.05');
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('1.2k');
+  const agentHtml = element.innerHTML;
+  await act(async () => { element.querySelector<HTMLButtonElement>('[data-usage-scope="tree"]')?.click(); });
+  expect(element.querySelector('[data-usage-scope="tree"]')?.getAttribute('aria-checked')).toBe('true');
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('4.6k');
+  expect(element.querySelector('[data-overview-fact="cost"]')?.textContent).toContain('$0.15');
+  const treeHtml = element.innerHTML;
+  const child = forest.byId['child'];
+  if (child === undefined) throw new Error('missing child');
+  await render('main', { part: 'overview', renderOverview: renderOverviewLayout, forest: {
+    ...forest,
+    byId: { ...forest.byId, child: { ...child, usage: { total: { inputOther: 0, output: 10, inputCacheRead: 0, inputCacheCreation: 0 } } } },
+  } });
+  pending[1]?.({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { child: countedMetrics(5_000, 0.20) },
+  });
+  await flushRender();
+  expect(element.querySelector('[data-overview-fact="tokens"]')?.textContent).toContain('6.2k');
+  expect(settleCalls().at(-1)).toMatchObject({ metrics_agent_ids: ['child'] });
+  const updatedHtml = element.innerHTML;
+
+  const { chromium } = await import('playwright');
+  const { existsSync } = await import('node:fs');
+  const { mkdir, readdir } = await import('node:fs/promises');
+  const { join } = await import('node:path');
+  const assets = [join(process.cwd(), 'apps', 'kiki-gui', 'dist', 'assets'), join(process.cwd(), 'dist', 'assets')].find((dir) => existsSync(dir));
+  if (assets === undefined) throw new Error('compiled gui stylesheet is missing');
+  const cssName = (await readdir(assets)).find((name) => name.startsWith('index-') && name.endsWith('.css'));
+  if (cssName === undefined) throw new Error(`no compiled stylesheet in ${assets}`);
+  const { tmpdir } = await import('node:os');
+  const out = join(process.env['TEMP'] ?? tmpdir(), 'kiki-overview-settle');
+  await mkdir(out, { recursive: true });
+  const browser = await chromium.launch();
+  try {
+    for (const [name, html] of [['agent', agentHtml], ['tree', treeHtml], ['updated', updatedHtml]] as const) {
+      const page = await browser.newPage({ viewport: { width: 440, height: 320 }, deviceScaleFactor: 2 });
+      await page.setContent(
+        `<!doctype html><html data-theme="light"><head><meta charset="utf-8"></head>`
+        + `<body class="bg-canvas text-ink"><div style="width:380px;padding:18px">${html}</div></body></html>`,
+      );
+      await page.addStyleTag({ path: join(assets, cssName) });
+      await page.screenshot({ path: join(out, `${name}.png`) });
+      await page.close();
+    }
+  } finally {
+    await browser.close();
+  }
 });
 
 it('keeps the supplied overview header without a scope switch for children and cockpit mode', async () => {

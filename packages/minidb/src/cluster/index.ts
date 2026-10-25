@@ -176,7 +176,7 @@ export class ClusterDb<V = unknown> {
 
   async get(key: string): Promise<V | undefined> {
     this.ensureOpen();
-    return this.reader(this.router.shardFor(key), (db) => db.get(key));
+    return this.reader(this.router.shardFor(key), (db) => db.getAsync(key));
   }
 
   async set(key: string, value: V, opts?: SetOptions): Promise<void> {
@@ -218,8 +218,8 @@ export class ClusterDb<V = unknown> {
       else groups.set(id, [{ key, idx }]);
     });
     for (const [id, items] of groups) {
-      await this.reader(id, (db) => {
-        for (const { key, idx } of items) out[idx] = db.get(key);
+      await this.reader(id, async (db) => {
+        for (const { key, idx } of items) out[idx] = await db.getAsync(key);
       });
     }
     return out;
@@ -319,40 +319,49 @@ export class ClusterDb<V = unknown> {
     return this.scan({ prefix: p, limit });
   }
 
-  /** Merged query over all shards. Every shard runs the full query locally
-   *  (index-assisted candidate pruning included) with skip=0 and a limit of
-   *  skip+limit — the global top-(skip+limit) under any total order is
-   *  contained in each shard's local top-(skip+limit). The merged result is
-   *  then re-sorted globally (by the explicit sort, else by key bytes to
-   *  match scan's global order) and skip/limit applies at the end. Text
-   *  scores are computed per shard (per-shard idf), so a text query's
-   *  global ranking is approximate; use search() when the score matters. */
+  /** Merged query over all shards. Each shard contributes its local top
+   *  skip+limit candidates, which together contain the global page. The
+   *  merge uses the explicit sort or UTF-8 key order, then applies the
+   *  global skip/limit. Bounded key-ordered queries without value filters,
+   *  text or user projections select key/DT metadata before reading only
+   *  the page's values asynchronously. A selected value expiring between
+   *  these phases reruns the ordinary query to refill the live-key page.
+   *  Text scores use per-shard idf, so global text ranking is approximate;
+   *  use search() when the score matters. */
   async query(q: QueryOptions = {}): Promise<ScanEntry<V>[]> {
     this.ensureOpen();
     const skip = q.skip ?? 0;
     const limit = q.limit === undefined ? Infinity : q.limit;
     const needed = skip + limit;
-    const all: ScanEntry<V>[] = [];
-    for (const id of this.router.shardIds()) {
-      const rows = await this.reader(id, (db) => db.query({ ...q, skip: 0, limit: needed }));
-      for (const r of rows) all.push(r);
-    }
-    if (q.sort) {
-      // The same comparator MiniDb.query applies, re-run on the merged set.
-      const entries = Object.entries(q.sort);
-      all.sort((a, b) => {
-        for (const [p, dir] of entries) {
-          const av = getPath(a.value, p) as number | string;
-          const bv = getPath(b.value, p) as number | string;
-          const c = av < bv ? -1 : av > bv ? 1 : 0;
-          if (c !== 0) return dir < 0 ? -c : c;
-        }
-        return 0;
-      });
-    } else {
-      all.sort(compareEntries);
-    }
-    return skip > 0 || limit !== Infinity ? all.slice(skip, skip + limit) : all;
+    const read = async (keysOnly: boolean): Promise<ScanEntry<V>[]> => {
+      const all: ScanEntry<V>[] = [];
+      for (const id of this.router.shardIds()) {
+        const rows = await this.reader(id, (db) => db.queryAsync({ ...q, project: keysOnly ? [] : q.project, skip: 0, limit: needed }));
+        for (const r of rows) all.push(r);
+      }
+      if (q.sort) {
+        const entries = Object.entries(q.sort);
+        all.sort((a, b) => {
+          for (const [p, dir] of entries) {
+            const av = getPath(a.value, p) as number | string;
+            const bv = getPath(b.value, p) as number | string;
+            const c = av < bv ? -1 : av > bv ? 1 : 0;
+            if (c !== 0) return dir < 0 ? -c : c;
+          }
+          return 0;
+        });
+      } else {
+        all.sort(compareEntries);
+      }
+      return skip > 0 || limit !== Infinity ? all.slice(skip, skip + limit) : all;
+    };
+    const keysOnly = q.filter === undefined && q.sort === undefined && q.text === undefined && q.project === undefined &&
+      Number.isSafeInteger(skip) && skip >= 0 && Number.isSafeInteger(limit) && limit > 0;
+    const rows = await read(keysOnly);
+    if (!keysOnly) return rows;
+    const values = await this.mget(rows.map((row) => row.key));
+    if (values.some((value) => value === undefined)) return read(false);
+    return rows.map((row, index) => ({ ...row, value: values[index]! }));
   }
 
   // ---- secondary indexes ------------------------------------------------------

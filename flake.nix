@@ -2,9 +2,14 @@
   description = "Kiki CLI";
 
   inputs = {
-    # Pinned to the 25.11 release channel because nixpkgs-unstable currently
-    # ships nodejs_24 = 24.14.1, which trips the >= 24.15.0 floor that the
-    # native SEA build enforces (see apps/kimi-code/scripts/native/build.mjs).
+    # Locked nixos-25.11 packages nodejs_24 at 24.15.0. On 2026-10-22 the
+    # branch tips are 24.18.0 (nixos-25.11) and 24.21.0 (nixos-unstable), both
+    # older than Node.js 24.22.1, so this pin stays. nodejsFor keeps
+    # pkgs.nodejs_24 and, while that package is older, overrides its version
+    # and source tarball. That keeps the nixpkgs source build, including
+    # headers, npm, and platform outputs. The patch list is the one nixpkgs
+    # uses for nodejs 24.21; the 24.15-only configure-emulator and OpenSSL
+    # fetchpatches are not applied.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-25.11";
   };
 
@@ -29,23 +34,84 @@
           })
         );
 
-      minNodeVersion = "24.15.0";
+      minNodeVersion = "24.22.1";
+      # node-v24.22.1.tar.xz from https://nodejs.org/dist/v24.22.1/SHASUMS256.txt
+      nodejsSourceHash = "sha256-T1N5eWKAza6wwvNY/QS2oWzE+336g7WoyRqdljtDUjE=";
 
-      # Hardcode to Node.js 24.x; fail the evaluation if the pinned nixpkgs
-      # does not offer a new enough 24.x.
+      # Stay on the 24.x source derivation. A packaged nodejs_24 at or above
+      # the floor is used as-is. An older one is rebuilt from the official
+      # 24.22.1 source so SEA does not copy the vulnerable 24.15.0 binary.
       nodejsFor =
         pkgs:
         let
-          node = pkgs.nodejs_24;
+          packaged = pkgs.nodejs_24;
+          patchDir = "${pkgs.path}/pkgs/development/web/nodejs";
+          host = pkgs.stdenv.hostPlatform;
+          build = pkgs.stdenv.buildPlatform;
         in
-        if lib.versionAtLeast node.version minNodeVersion then
-          node
+        if lib.versionAtLeast packaged.version minNodeVersion then
+          packaged
         else
-          throw ''
-            Kiki requires Node.js >= ${minNodeVersion},
-            but nixpkgs only offers ${node.version}.
-            Pin a newer nixpkgs revision or update minNodeVersion in flake.nix.
-          '';
+          packaged.overrideAttrs (old: {
+            version = minNodeVersion;
+            src = pkgs.fetchurl {
+              url = "https://nodejs.org/dist/v${minNodeVersion}/node-v${minNodeVersion}.tar.xz";
+              hash = nodejsSourceHash;
+            };
+            # Node.js 24.22.1 uses f_frsize from its bundled libuv. The locked
+            # nixpkgs libuv is 1.51.0, before that field was added, so keep the
+            # official bundled-libuv configure mode instead of patching Node or
+            # changing the whole nixpkgs input.
+            # Node's node:sqlite tests also require percentile, which is enabled
+            # by the bundled SQLite but not by the pinned nixpkgs build. Keep
+            # that official bundled-SQLite mode instead of changing the input.
+            configureFlags = lib.filter (
+              flag:
+              flag != "--shared-libuv"
+              && !(lib.strings.hasPrefix "--shared-libuv-libpath=" flag)
+              && flag != "--shared-sqlite"
+              && !(lib.strings.hasPrefix "--shared-sqlite-libpath=" flag)
+            ) old.configureFlags;
+            # Do not expose shared dependency headers over Node's bundled
+            # headers; node-gyp must see the same ABI headers as the binary.
+            buildInputs = lib.filter (
+              input:
+              input != pkgs.libuv
+              && input != pkgs.sqlite
+            ) old.buildInputs;
+            postInstall = lib.replaceStrings [
+              "${lib.getDev pkgs.libuv}/include/*"
+              "${lib.getDev pkgs.sqlite}/include/*"
+            ] [ "" "" ] old.postInstall;
+            patches =
+              (lib.optional (!(host.emulatorAvailable pkgs.buildPackages)) (pkgs.fetchpatch2 {
+                url = "https://raw.githubusercontent.com/buildroot/buildroot/2f0c31bffdb59fb224387e35134a6d5e09a81d57/package/nodejs/nodejs-src/0003-include-obj-name-in-shared-intermediate.patch";
+                hash = "sha256-3g4aS+NmmUYNOYRNc6UMJKYoaTlpP5Knt9UHegx+o0Y=";
+              }))
+              ++ lib.optionals (host != build && host.isFreeBSD) [
+                (pkgs.fetchpatch2 {
+                  url = "https://raw.githubusercontent.com/rubyjs/libv8-node/62476a398d4c9c1a670240a3b070d69544be3761/patch/v8-no-assert-trivially-copyable.patch";
+                  hash = "sha256-hSTLljmVzYmc3WAVeRq9EPYluXGXFeWVXkykufGQPVw=";
+                })
+              ]
+              ++ [
+                "${patchDir}/configure-armv6-vfpv2.patch"
+                "${patchDir}/node-npm-build-npm-package-logic.patch"
+                "${patchDir}/use-correct-env-in-tests.patch"
+                "${patchDir}/bin-sh-node-run-v22.patch"
+                "${patchDir}/use-nix-codesign.patch"
+              ]
+              ++ lib.optionals build.isDarwin [
+                "${patchDir}/gyp-patches-set-fallback-value-for-CLT-darwin.patch"
+              ]
+              ++ lib.optionals (!build.isDarwin) [
+                (pkgs.fetchpatch2 {
+                  url = "https://github.com/nodejs/node/commit/869d0cbca3b0b5e594b3254869a34d549664e089.patch?full_index=1";
+                  hash = "sha256-BBBShQwU20TSY8GtPehQ9i3AH4ZKUGIr8O0bRsgrpNo=";
+                  revert = true;
+                })
+              ];
+          });
 
       pnpmFor =
         pkgs:
@@ -141,6 +207,7 @@
               fileset = lib.fileset.unions (
                 [
                   ./build
+                  ./scripts/external-harness
                   ./vendor
                   ./.npmrc
                   ./.nvmrc
@@ -161,7 +228,7 @@
               inherit (finalAttrs) pname version src pnpmWorkspaces;
               inherit pnpm;
               fetcherVersion = 3;
-              hash = "sha256-NDcCQ5vxsGaSdJ3U0bvq2RkXKwrYTI7/8zZn/x1fvJ8=";
+              hash = "sha256-Oqn9xEyHKjGx7V/oK4icta4SpRMSedX0SRAsUwEg5Y0=";
             };
 
             cargoRoot = "packages/auth-native";
@@ -175,6 +242,7 @@
               (pkgs.pnpmConfigHook.override { inherit pnpm; })
               pkgs.cargo
               pkgs.rustc
+              pkgs.python3
               pkgs.rustPlatform.cargoSetupHook
               pkgs.makeWrapper
             ]
@@ -210,6 +278,17 @@
                     "await runVerifyStep({ requireGatekeeper: false });" \
                     "// runVerifyStep skipped in nix sandbox (sigtool lacks -dv)"
               ''}
+              # pnpmConfigHook skips lifecycle scripts. Build the host PTY
+              # from source against the sandbox's Node headers, without
+              # downloading headers or enabling unrelated install scripts.
+              export npm_config_nodedir=${nodejs}
+              export npm_config_python=${pkgs.python3}/bin/python3
+              export npm_config_build_from_source=true
+              printf '["node-pty"]\n' > "$TMPDIR/kiki-native-build-allowlist.json"
+              pnpm --config.onlyBuiltDependenciesFile="$TMPDIR/kiki-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+              pnpm --filter @kiki/agent-core-v2 exec node -e 'require("node-pty")'
+              # The SDK's package exports also require its generated dist.
+              pnpm --filter=@kiki/plugin-sdk run build
               pnpm --filter=@kiki/cli run build:native:sea
               runHook postBuild
             '';
@@ -239,6 +318,7 @@
         in
         {
           inherit kiki;
+          ci-nodejs = nodejs;
           default = kiki;
         }
       );

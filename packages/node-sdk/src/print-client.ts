@@ -13,11 +13,9 @@ import {
   type Scope,
 } from '@kiki/agent-core-v2';
 import { IAgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycle';
-import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
 import { createKlient } from '@kiki/klient/memory';
 import type { Klient } from '@kiki/klient';
 
-import { createPrintTaskBoardService } from './print-task-board';
 import { IHistoryDirectory } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 import { createPrintHistoryDirectory } from './print-history-directory';
 
@@ -69,7 +67,6 @@ export async function createPrintClient(
   let app: Scope | undefined;
   const result = bootstrap(input, [
     ...logSeed(resolveLoggingConfig({ homeDir: input.homeDir, env: process.env })),
-    [ITaskBoardService, createPrintTaskBoardService(() => app!)],
     [IHistoryDirectory, createPrintHistoryDirectory(() => app!)],
     [IHistoryArchive, {
       _serviceBrand: undefined,
@@ -94,10 +91,16 @@ export async function createPrintClient(
       klient,
       osHomeDir: app.accessor.get(IBootstrapService).osHomeDir,
       flushWires: () => flushPrintWires(app),
-      dispose: () => disposing ??= klient.close().finally(() => app.dispose()),
+      dispose: () => disposing ??= (async () => {
+        try {
+          await klient.close();
+        } finally {
+          await app.dispose();
+        }
+      })(),
     };
   } catch (error) {
-    app.dispose();
+    await app.dispose();
     throw error;
   }
 }

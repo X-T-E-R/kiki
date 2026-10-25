@@ -596,8 +596,11 @@ export class SearchIndexCore {
    * writes. Unchanged fingerprint → zero IO; WAL pure-append → incremental
    * `catchUpFromWal`; anything else → open the replacement db and swap (which
    * may also promote this process to indexer when the old writer's lock is
-   * gone). Single-flight; a failure is recorded in `lastRefreshError` and
-   * the stale generation keeps serving (surfaced as `indexState.degraded`).
+   * gone). A catch-up freezes the WAL length when its scan starts, so a
+   * commit that lands during that scan is not in the applied view: sample
+   * again and scan the new tail once before publishing the fingerprint.
+   * Single-flight; a failure is recorded in `lastRefreshError` and the stale
+   * generation keeps serving (surfaced as `indexState.degraded`).
    */
   refresh(): Promise<void> {
     this.refreshPromise ??= this.tracked(() => this.doRefreshReadonly())
@@ -621,18 +624,26 @@ export class SearchIndexCore {
   private async doRefreshReadonly(): Promise<void> {
     const db = this.db;
     if (!db || !db.readOnly || this.disposed) return;
-    const fp = await this.computeFingerprint();
-    if (fp === this.fingerprint) return;
-    const [, snapPrev, defsPrev] = this.fingerprint.split('|');
-    const [, snapNow, defsNow] = fp.split('|');
-    if (snapPrev === snapNow && defsPrev === defsNow) {
+    let sampled = await this.computeFingerprint();
+    let caughtUp = false;
+    for (let attempt = 0; attempt < 2 && !caughtUp; attempt++) {
+      if (this.disposed || this.db !== db) return;
+      if (sampled === this.fingerprint) return;
+      const [, snapPrev, defsPrev] = this.fingerprint.split('|');
+      const [, snapNow, defsNow] = sampled.split('|');
+      if (snapPrev !== snapNow || defsPrev !== defsNow) break;
       const res = await db.catchUpFromWal(this.walOffset);
-      if (res !== null) {
-        this.walOffset = res.offset;
-        this.fingerprint = fp;
-        return;
+      if (res === null) break;
+      this.walOffset = res.offset;
+      const after = await this.computeFingerprint();
+      if (after === sampled) {
+        this.fingerprint = sampled;
+        caughtUp = true;
+      } else {
+        sampled = after;
       }
     }
+    if (caughtUp || this.disposed || this.db !== db || sampled === this.fingerprint) return;
     const next = await this.openSearchDb();
     if (this.disposed) {
       await next.close().catch(() => {});

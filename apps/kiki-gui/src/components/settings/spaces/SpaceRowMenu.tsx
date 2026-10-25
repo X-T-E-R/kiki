@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 
 import { clampOverlayPosition } from '../../../lib/overlayPosition';
-import { registerOverlay } from '../../../lib/uiBusy';
+import { floatingSurfaceZIndex, registerOverlay } from '../../../lib/uiBusy';
 
 export interface SpaceMenuItem {
   readonly key: string;
@@ -19,8 +19,15 @@ export interface SpaceMenuItem {
  * disabled with its reason written under it (delete while a space runs),
  * and focus moves into the menu so it is keyboard-operable.
  */
-export function SpaceRowMenu({ anchor, items, ariaLabel, onClose }: {
+export function SpaceRowMenu({ anchor, anchorElement, items, ariaLabel, onClose }: {
   anchor: DOMRect;
+  /**
+   * The row the menu was opened from. The menu renders in `<body>`, so this is
+   * how it finds out whether it is inside a dialog — without it the menu is
+   * painted at the page-level z-index and a dialog opened over Settings buries
+   * it. Null when the caller no longer has the element.
+   */
+  anchorElement?: HTMLElement | null;
   items: readonly SpaceMenuItem[];
   ariaLabel: string;
   onClose: () => void;
@@ -63,8 +70,8 @@ export function SpaceRowMenu({ anchor, items, ariaLabel, onClose }: {
   const position = clampOverlayPosition(anchor.right - size.width, anchor.bottom + 4, size, { width: window.innerWidth, height: window.innerHeight });
   return createPortal(
     <div ref={ref} role="menu" aria-label={ariaLabel} data-space-row-menu
-      className="anim-enter fixed z-50 w-60 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
-      style={{ left: position.left, top: position.top }}>
+      className="anim-enter fixed w-60 rounded-[10px] border border-hairline bg-panel p-1 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]"
+      style={{ left: position.left, top: position.top, zIndex: floatingSurfaceZIndex(anchorElement ?? null) }}>
       {items.map((item) => (
         <div key={item.key}>
           {item.separatorBefore === true ? <div className="mx-1 my-1 border-t border-hairline" /> : null}

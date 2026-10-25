@@ -4,7 +4,7 @@ import { pathToFileURL } from 'node:url';
 
 const DEFAULT_PLUGINS_ROOT = resolve(import.meta.dirname, '../../../plugins');
 const DEFAULT_OUTPUT = resolve(import.meta.dirname, '../src/app/plugin/officialPlugins.metadata.json');
-const ENGINE_VERSION = '0.4.0';
+const ENGINE_VERSION = '0.4.1';
 
 /** Project the checked-in catalog into release metadata, without network or payload reads. */
 export async function generateOfficialPluginMetadata(pluginsRoot) {

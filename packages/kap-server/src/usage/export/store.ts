@@ -11,15 +11,17 @@ interface SourceRow { id: Uint8Array; workspace: string; kind: string; data: str
 interface PrivateDestination { destination: UsageExportDestination; identityKey: string }
 interface ProjectionPlan { buckets: Map<string, ReturnType<typeof publicBucket>>; origins: Map<string, Set<string>>; destinationStamp: string; sourceGeneration: string | null }
 interface ProjectionAccumulator { contribution: Contribution; pricingVersions: Set<string> }
+/** Source staging is connection-local and file-backed; restart rebuilds it. Publication commits durable sources, metadata and outbox revisions in one FULL-synchronous transaction before bounded staging cleanup. */
 export class UsageExportStore {
   private readonly db: DatabaseSync;
   private readonly election: DatabaseSync;
   private fence = '';
   private closed = false;
   private readonly projectedOrigins = new Map<string, Set<string>>();
+  private projectionLane: Promise<void> = Promise.resolve();
   private elected: boolean;
   get writer(): boolean { return this.elected; }
-  constructor(path: string) {
+  constructor(path: string, private readonly legacyDisabled?: boolean) {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.election = new DatabaseSync(`${path}.writer.sqlite`);
     this.election.exec('PRAGMA busy_timeout=0');
@@ -32,7 +34,6 @@ export class UsageExportStore {
       this.db.exec(`
         CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sources(id TEXT PRIMARY KEY, workspace TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, invalid INTEGER NOT NULL);
-        CREATE TABLE IF NOT EXISTS staging(run TEXT NOT NULL, id TEXT NOT NULL, workspace TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, invalid INTEGER NOT NULL, PRIMARY KEY(run,id));
         CREATE TABLE IF NOT EXISTS destinations(id TEXT PRIMARY KEY, data TEXT NOT NULL, identity_key TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS versions(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, hash TEXT NOT NULL, item TEXT NOT NULL, PRIMARY KEY(dest,bucket));
         CREATE TABLE IF NOT EXISTS outbox(dest TEXT NOT NULL, bucket TEXT NOT NULL, revision INTEGER NOT NULL, item TEXT NOT NULL, bytes INTEGER NOT NULL, state TEXT NOT NULL, batch TEXT, created INTEGER NOT NULL, PRIMARY KEY(dest,bucket,revision));
@@ -44,11 +45,13 @@ export class UsageExportStore {
         const columns = this.db.prepare(`PRAGMA table_info(${table})`).all() as Row[];
         if (!columns.some((column) => column['name'] === 'origins')) this.db.exec(`ALTER TABLE ${table} ADD COLUMN origins TEXT NOT NULL DEFAULT '[]'`);
         if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'item')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN item TEXT');
+        if (table === 'acknowledgements' && !columns.some((column) => column['name'] === 'mapping_version')) this.db.exec('ALTER TABLE acknowledgements ADD COLUMN mapping_version TEXT');
       }
       this.fence = randomUUID();
       this.db.prepare("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
       this.db.prepare("INSERT OR IGNORE INTO meta VALUES('capacity','52428800')").run();
-      this.db.exec('DELETE FROM staging;');
+      this.prepareStage();
+      this.retireExperimentalGate();
     }
   }
   tryPromote(): boolean {
@@ -56,7 +59,20 @@ export class UsageExportStore {
     try { this.election.exec('BEGIN IMMEDIATE'); } catch { return false; }
     this.fence = randomUUID(); this.elected = true;
     this.db.prepare("INSERT INTO meta VALUES('fence',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(this.fence);
-    this.db.exec('DELETE FROM staging;'); return true;
+    this.prepareStage(); this.retireExperimentalGate(); return true;
+  }
+  private prepareStage(): void {
+    this.db.exec('DROP TABLE IF EXISTS main.staging; PRAGMA temp_store=FILE; CREATE TEMP TABLE staging(run TEXT NOT NULL, id TEXT NOT NULL, workspace TEXT NOT NULL, kind TEXT NOT NULL, data TEXT NOT NULL, invalid INTEGER NOT NULL, PRIMARY KEY(run,id));');
+  }
+  private retireExperimentalGate(): void {
+    if (this.legacyDisabled === undefined || this.meta('experimental-gate-retired') !== null) return;
+    this.transaction(() => {
+      if (this.legacyDisabled) for (const destination of this.list()) {
+        if (destination.enabled) this.update(destination.id, { enabled: false, state: 'disabled', next_at: null });
+        this.setMeta(`handoff-arm:${destination.id}`, '');
+      }
+      this.setMeta('experimental-gate-retired', 'true');
+    });
   }
   private assertWriter(): void {
     if (this.closed || !this.writer || (this.db.prepare("SELECT value FROM meta WHERE key='fence'").get() as Row | undefined)?.['value'] !== this.fence) throw new Error('export-writer-unavailable');
@@ -94,12 +110,21 @@ export class UsageExportStore {
       return next;
     });
   }
+  private withProjection<T>(work: () => Promise<T>): Promise<T> {
+    const flight = this.projectionLane.then(work);
+    this.projectionLane = flight.then(() => {}, () => {});
+    return flight;
+  }
   async updateWithMetadataAsync(id: string, change: Partial<UsageExportDestination>, metadata: Readonly<Record<string, string>>): Promise<UsageExportDestination> {
-    const plan = await this.projectionPlan(id, undefined, { ...this.get(id), ...change });
-    return this.transaction(() => {
-      this.assertProjection(id, plan); const next = this.update(id, change);
-      for (const [key, value] of Object.entries(metadata)) this.setMeta(key, value);
-      this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); return next;
+    const destinationStamp = this.projectionStamp(this.get(id));
+    return this.withProjection(async () => {
+      if (destinationStamp !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed');
+      const plan = await this.projectionPlan(id, undefined, { ...this.get(id), ...change });
+      return this.transaction(() => {
+        this.assertProjection(id, plan); const next = this.update(id, change);
+        for (const [key, value] of Object.entries(metadata)) this.setMeta(key, value);
+        this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); return next;
+      });
     });
   }
   stage(run: string, source: SourceContribution): void {
@@ -108,11 +133,19 @@ export class UsageExportStore {
   }
   discardStage(run: string): void { this.assertWriter(); this.db.prepare('DELETE FROM staging WHERE run=?').run(run); }
   async publishStageAsync(run: string, complete = true, incompleteReason: string | null = null): Promise<void> {
-    const plans = new Map<string, ProjectionPlan>();
-    for (const destination of this.list()) if (destination.enabled) plans.set(destination.id, await this.projectionPlan(destination.id, run));
-    this.publishStage(run, complete, incompleteReason, plans);
+    return this.withProjection(async () => {
+      const plans = new Map<string, ProjectionPlan>();
+      for (const destination of this.list()) if (destination.enabled) plans.set(destination.id, await this.projectionPlan(destination.id, run));
+      this.publishStage(run, complete, incompleteReason, plans, false);
+      const remove = this.db.prepare('DELETE FROM staging WHERE rowid IN (SELECT rowid FROM staging WHERE run=? LIMIT 16)');
+      for (;;) {
+        this.assertWriter();
+        if (remove.run(run).changes === 0) break;
+        await yieldToEventLoop();
+      }
+    });
   }
-  publishStage(run: string, complete = true, incompleteReason: string | null = null, plans?: Map<string, ProjectionPlan>): void {
+  publishStage(run: string, complete = true, incompleteReason: string | null = null, plans?: Map<string, ProjectionPlan>, cleanup = true): void {
     this.transaction(() => {
       if (plans !== undefined) {
         const enabled = this.list().filter((destination) => destination.enabled);
@@ -120,17 +153,22 @@ export class UsageExportStore {
         for (const [id, plan] of plans) this.assertProjection(id, plan);
       }
       const missing = (this.db.prepare('SELECT COUNT(*) AS n FROM sources WHERE id NOT IN (SELECT id FROM staging WHERE run=?)').get(run) as Row)['n'];
-      this.db.prepare('INSERT INTO sources SELECT id,workspace,kind,data,invalid FROM staging WHERE run=? ON CONFLICT(id) DO UPDATE SET workspace=excluded.workspace,kind=excluded.kind,data=excluded.data,invalid=excluded.invalid').run(run);
+      this.db.prepare('INSERT INTO sources SELECT id,workspace,kind,data,invalid FROM staging WHERE run=? ON CONFLICT(id) DO UPDATE SET workspace=excluded.workspace,kind=excluded.kind,data=excluded.data,invalid=excluded.invalid WHERE sources.workspace IS NOT excluded.workspace OR sources.kind IS NOT excluded.kind OR sources.data IS NOT excluded.data OR sources.invalid IS NOT excluded.invalid').run(run);
       if (complete) this.setMeta('scan-complete', 'true');
       this.setMeta('scan-error', incompleteReason ?? (Number(missing) > 0 ? 'source-missing-retained-gap' : ''));
       for (const destination of this.list()) if (destination.enabled) this.publishDestination(destination.id, plans?.get(destination.id));
       if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full');
       this.setMeta('source-generation', randomUUID());
-      this.db.prepare('DELETE FROM staging WHERE run=?').run(run);
+      if (cleanup) this.db.prepare('DELETE FROM staging WHERE run=?').run(run);
     });
   }
   refreshDestination(id: string): void { this.transaction(() => { this.publishDestination(id); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); }); }
-  async refreshDestinationAsync(id: string): Promise<void> { const plan = await this.projectionPlan(id); this.transaction(() => { this.assertProjection(id, plan); this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); }); }
+  async refreshDestinationAsync(id: string): Promise<void> {
+    return this.withProjection(async () => {
+      const plan = await this.projectionPlan(id);
+      this.transaction(() => { this.assertProjection(id, plan); this.publishDestination(id, plan); if (this.totalBytes() > this.capacity()) throw new Error('export-queue-full'); });
+    });
+  }
   private projectionStamp(destination: UsageExportDestination): string { return digest({ scope: destination.scope, stream: destination.stream_id, target: destination.target, account: destination.account_fingerprint, enabled: destination.enabled, consent: destination.consent_fingerprint }); }
   private accumulateProjection(row: SourceRow, destination: UsageExportDestination, identityKey: string, groups: Map<string, ProjectionAccumulator>, origins: Map<string, Set<string>>): void {
     if (destination.scope.excluded_workspace_ids.includes(String(row['workspace'])) || (row['kind'] === 'ephemeral' && !destination.scope.include_ephemeral)) return;
@@ -171,7 +209,11 @@ export class UsageExportStore {
     return { buckets: this.finishProjection(groups, identityKey), origins, sourceGeneration, destinationStamp: this.projectionStamp(saved.destination) };
   }
   private assertProjection(id: string, plan: ProjectionPlan): void { if (plan.sourceGeneration !== this.meta('source-generation') || plan.destinationStamp !== this.projectionStamp(this.get(id))) throw new Error('export-projection-changed'); }
-  async previewAsync(id: string, limit = 20): Promise<{ items: UsageExportItem[]; total: number }> { const plan = await this.projectionPlan(id); this.assertProjection(id, plan); return this.previewProjected(id, plan.buckets, limit); }
+  async previewAsync(id: string, limit = 20): Promise<{ items: UsageExportItem[]; total: number }> {
+    return this.withProjection(async () => {
+      const plan = await this.projectionPlan(id); this.assertProjection(id, plan); return this.previewProjected(id, plan.buckets, limit);
+    });
+  }
   preview(id: string, limit = 20): { items: UsageExportItem[]; total: number } { return this.previewProjected(id, this.projected(id), limit); }
   private previewProjected(id: string, projected: ProjectionPlan['buckets'], limit: number): { items: UsageExportItem[]; total: number } {
     const destination = this.get(id); const items: UsageExportItem[] = [];
@@ -219,7 +261,7 @@ export class UsageExportStore {
       return payload;
     });
   }
-  acknowledge(id: string, receipt: UsageExportReceipt, now: number): { acknowledged: number; rejected: number; remaining: number } {
+  acknowledge(id: string, receipt: UsageExportReceipt, now: number, mappingVersion: string | null = null): { acknowledged: number; rejected: number; remaining: number } {
     return this.transaction(() => {
       const clean = usageExportReceiptSchema.parse(receipt); let acknowledged = 0; let rejected = 0;
       const seen = new Set<string>();
@@ -233,7 +275,7 @@ export class UsageExportStore {
         if ((ack.status === 'applied' || ack.status === 'duplicate') && ack.revision === item.revision && ack.payload_hash === item.payload_hash) {
           const sourceRow = this.db.prepare('SELECT origins FROM outbox WHERE dest=? AND bucket=? AND revision=?').get(id, item.bucket_id, item.revision) as Row | undefined;
           const origins = String(sourceRow?.['origins'] ?? (this.db.prepare('SELECT origins FROM acknowledgements WHERE dest=? AND bucket=?').get(id, item.bucket_id) as Row | undefined)?.['origins'] ?? '[]');
-          this.db.prepare('INSERT INTO acknowledgements(dest,bucket,revision,hash,confirmed,item,origins) VALUES(?,?,?,?,?,?,?) ON CONFLICT(dest,bucket) DO UPDATE SET revision=excluded.revision,hash=excluded.hash,confirmed=excluded.confirmed,item=excluded.item,origins=excluded.origins WHERE excluded.revision>=acknowledgements.revision').run(id, ack.bucket_id, ack.revision, ack.payload_hash, now, JSON.stringify(item), origins);
+          this.db.prepare('INSERT INTO acknowledgements(dest,bucket,revision,hash,confirmed,item,origins,mapping_version) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(dest,bucket) DO UPDATE SET revision=excluded.revision,hash=excluded.hash,confirmed=excluded.confirmed,item=excluded.item,origins=excluded.origins,mapping_version=excluded.mapping_version WHERE excluded.revision>=acknowledgements.revision').run(id, ack.bucket_id, ack.revision, ack.payload_hash, now, JSON.stringify(item), origins, mappingVersion);
           this.db.prepare('DELETE FROM outbox WHERE dest=? AND bucket=? AND revision=?').run(id, ack.bucket_id, item.revision); acknowledged++;
         } else if (['conflict', 'rejected', 'remote_diverged', 'stale'].includes(ack.status)) {
           this.db.prepare("UPDATE outbox SET state='quarantined' WHERE dest=? AND bucket=? AND revision=?").run(id, ack.bucket_id, item.revision); rejected++;
@@ -263,21 +305,22 @@ export class UsageExportStore {
   remove(id: string): void { this.transaction(() => { this.db.prepare('DELETE FROM outbox WHERE dest=?').run(id); this.db.prepare('DELETE FROM batches WHERE dest=?').run(id); this.db.prepare('DELETE FROM destinations WHERE id=?').run(id); }); }
   exportQueue(id: string): UsageExportItem[] { return (this.db.prepare('SELECT item FROM outbox WHERE dest=? ORDER BY created,bucket,revision').all(id) as Row[]).map((row) => usageExportItemSchema.parse(JSON.parse(String(row['item'])))); }
   ack(id: string, bucket: string): { revision: number; hash: string } | undefined { const row = this.db.prepare('SELECT revision,hash FROM acknowledgements WHERE dest=? AND bucket=?').get(id, bucket) as Row | undefined; return row === undefined ? undefined : { revision: Number(row['revision']), hash: String(row['hash']) }; }
-  acknowledgedRelated(id: string, batch: UsageExportBatch): { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean }[] {
-    const result: { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean }[] = [];
-    const ackRows = this.db.prepare('SELECT bucket,item,origins FROM acknowledgements WHERE dest=? AND item IS NOT NULL').all(id) as Row[];
+  acknowledgedRelated(id: string, batch: UsageExportBatch): { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean; mappingVersion: string | null }[] {
+    const result: { acknowledged: UsageExportItem; current: UsageExportItem | null; sameBucket: boolean; mappingVersion: string | null }[] = [];
+    const ackRows = this.db.prepare('SELECT bucket,item,origins,mapping_version FROM acknowledgements WHERE dest=? AND item IS NOT NULL').all(id) as Row[];
     for (const row of ackRows) {
       const acknowledged = usageExportItemSchema.parse(JSON.parse(String(row['item'])));
       const currentRow = this.db.prepare('SELECT item FROM versions WHERE dest=? AND bucket=?').get(id, String(row['bucket'])) as Row | undefined;
       const current = currentRow === undefined ? null : usageExportItemSchema.parse(JSON.parse(String(currentRow['item'])));
+      const mappingVersion = row['mapping_version'] === null || row['mapping_version'] === undefined ? null : String(row['mapping_version']);
       const oldOrigins = JSON.parse(String(row['origins'])) as string[];
       for (const item of batch.items) {
         const sameBucket = item.bucket_id === acknowledged.bucket_id && item.stream_id === acknowledged.stream_id;
-        if (sameBucket) { result.push({ acknowledged, current, sameBucket }); break; }
+        if (sameBucket) { result.push({ acknowledged, current, sameBucket, mappingVersion }); break; }
         if (acknowledged.operation !== 'replace' || item.operation !== 'replace' || acknowledged.bucket?.start_at !== item.bucket?.start_at || current?.payload_hash === acknowledged.payload_hash) continue;
         const originRow = this.db.prepare('SELECT origins FROM outbox WHERE dest=? AND bucket=? AND revision=?').get(id, item.bucket_id, item.revision) as Row | undefined;
         const newOrigins = JSON.parse(String(originRow?.['origins'] ?? '[]')) as string[];
-        if (oldOrigins.some((source) => newOrigins.includes(source))) { result.push({ acknowledged, current, sameBucket: false }); break; }
+        if (oldOrigins.some((source) => newOrigins.includes(source))) { result.push({ acknowledged, current, sameBucket: false, mappingVersion }); break; }
       }
     }
     return result;

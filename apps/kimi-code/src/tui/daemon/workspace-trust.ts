@@ -2,8 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { join, resolve, win32 } from 'node:path';
 
-import { loadMcpServers } from '@kiki/agent-core-v2/app/mcpConfig/configLoader';
-import { HostFileSystem } from '@kiki/agent-core-v2/os/backends/node-local/hostFsService';
+import { inspectWorkspaceTrustSources } from '@kiki/node-sdk';
 import { ProcessTerminal, TuiMainScreen } from '@kiki/pi-tui';
 import type { WorkspaceTrustMcpServerInfo } from '@kiki/node-sdk';
 
@@ -19,46 +18,12 @@ interface TrustRecord {
   readonly trustedAt: number;
 }
 
-/**
- * The project MCP servers trusting this workDir would enable, in the same
- * safe field shape the SDK's `getWorkspaceTrustInfo` reports. Computed from
- * the same pure config loader the engine's `workspaceMcpConfig` uses, with
- * project files included vs skipped; best-effort — an unreadable or invalid
- * project file degrades to an empty list rather than blocking the gate.
- * User-level entries are not gated, so only project-only additions are
- * listed (the same subtraction the SDK route applies).
- */
+/** Safe project-origin MCP targets, including project overrides of user entries. */
 export async function gatedMcpServers(
   homeDir: string,
   workDir: string,
 ): Promise<readonly WorkspaceTrustMcpServerInfo[]> {
-  try {
-    const fs = new HostFileSystem();
-    const [withProject, userOnly] = await Promise.all([
-      loadMcpServers({ fs, cwd: workDir, homeDir, includeProject: true }),
-      loadMcpServers({ fs, cwd: workDir, homeDir, includeProject: false }),
-    ]);
-    return Object.entries(withProject)
-      .filter(([name, config]) => {
-        if (name in userOnly && userOnly[name] === config) return false;
-        return config.enabled !== false;
-      })
-      .map(([name, config]): WorkspaceTrustMcpServerInfo => {
-        if (config.transport === 'stdio') {
-          return {
-            name,
-            transport: 'stdio',
-            command: config.command,
-            args: config.args,
-            cwd: config.cwd,
-          };
-        }
-        return { name, transport: config.transport, url: config.url };
-      })
-      .toSorted((a, b) => a.name.localeCompare(b.name));
-  } catch {
-    return [];
-  }
+  return (await inspectWorkspaceTrustSources(homeDir, workDir)).gatedMcpServers;
 }
 
 export async function runWorkspaceTrustGate(options: {
@@ -79,8 +44,9 @@ export async function runWorkspaceTrustGate(options: {
     container.addChild(prompt);
     ui.addChild(container);
     ui.setFocus(prompt);
-    void gatedMcpServers(options.homeDir, options.workDir).then((servers) => {
-      prompt.setGatedMcpServers(servers);
+    void inspectWorkspaceTrustSources(options.homeDir, options.workDir).then((disclosure) => {
+      prompt.setGatedMcpServers(disclosure.gatedMcpServers);
+      prompt.setDisclosure(disclosure);
       prompt.invalidateRender();
     });
   });

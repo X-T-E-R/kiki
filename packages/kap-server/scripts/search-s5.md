@@ -26,7 +26,7 @@ GUI stores pushed snapshots in the `search-index-state` query cache and cancels 
 2. Back up the **location** of `<KIKI_HOME>/search-index-v2` and the config. Keep `<KIKI_HOME>/search-index` intact. If a real-desktop cold build is needed, stop every process using the home before moving the derived v2 directory aside; never modify or delete `sessions`. The scripts do not perform this operation.
 3. Install the candidate with your normal local desktop build procedure. Enable desktop search explicitly (`[search] enabled = true` or the desktop search setting), restart, and enable loopback-only debug endpoints for observation. Do not change defaults as part of a measurement.
 4. Get the backend PID from the desktop process tree. Do not confuse the Tauri/WebView frontend PID with the backend or the indexer. Pass the backend URL/token through `KIKI_S5_URL` and `KIKI_S5_TOKEN` in a private shell; never put the token in a recorded command or public report.
-5. Run from the repository root with Node 24.15.0+ and `pnpm install --offline --frozen-lockfile`. Output directories must be **new**; scripts refuse to overwrite reports or databases. Outputs contain session identifiers and queries and should stay private (`.tmp/` is ignored).
+5. Run from the repository root with Node.js 24.22.1+ or 26.12.1+ and `pnpm install --offline --frozen-lockfile`. Output directories must be **new**; scripts refuse to overwrite reports or databases. Outputs contain session identifiers and queries and should stay private (`.tmp/` is ignored).
 
 ## Cold build and standalone diagnostic
 

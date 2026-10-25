@@ -11,6 +11,8 @@ const config = await resolveConfig(root)
 const { base, locales } = config.site
 const html = (route) => readFileSync(path.join(config.outDir, `${route}.html`), 'utf8')
 const moves = {
+  'customization/agents': 'customization/agents-and-subagents',
+  'features/agents': 'features/agent-workflows',
   'configuration/model-vocabulary': 'reference/model-vocabulary',
   'getting-started/model-vocabulary': 'reference/model-vocabulary',
   'desktop/interface': 'guides/interface',
@@ -26,9 +28,9 @@ const moves = {
 }
 const sections = {
   'getting-started': [['installation', 'first-launch', 'desktop-app', 'use-cases']],
-  features: [['index', 'workbench', 'agents', 'freedom', 'long-work', 'people', 'daily', 'spaces', 'extend', 'ecosystem', 'look']],
+  features: [['index', 'workbench', 'agent-workflows', 'long-work', 'people', 'browser-and-computer', 'extend', 'daily', 'freedom', 'look', 'spaces', 'phone', 'ecosystem']],
   guides: [['interface', 'sessions', 'memory', 'settings'], ['interaction', 'goals']],
-  customization: [['agent-profiles', 'personas', 'agents', 'skills', 'plugins', 'hooks', 'prompt-fields', 'themes', 'skins']],
+  customization: [['agent-profiles', 'personas', 'agents-and-subagents', 'skills', 'plugins', 'hooks', 'prompt-fields', 'themes', 'skins']],
   server: [['local-server', 'ide', 'acp'], ['rest-api', 'mcp', 'sdk']],
   configuration: [['config-files', 'providers', 'overrides', 'env-vars', 'data-locations']],
   reference: [['command', 'slash-commands', 'keyboard', 'tools', 'model-vocabulary'], ['changelog']],
@@ -71,7 +73,7 @@ void test('both locales have the approved six-section nav and mirrored sidebars'
 })
 
 void test('all old URLs publish redirect pages and all canonical destinations publish content', () => {
-  assert.equal(Object.keys(config.rewrites.map).length, 24)
+  assert.equal(Object.keys(config.rewrites.map).length, 28)
   for (const locale of ['en', 'zh']) {
     for (const [from, to] of Object.entries(moves)) {
       assert.equal(config.rewrites.map[`redirects/${locale}/${from}.md`], `${locale}/${from}.md`)

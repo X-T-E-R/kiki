@@ -69,6 +69,6 @@ describe('SessionInitFeature', () => {
     await host.app.instantiation.cascade.whenIdle();
     expect(session.accessor.get(ISessionInitService)).toBeDefined();
 
-    host.dispose();
+    await host.dispose();
   });
 });

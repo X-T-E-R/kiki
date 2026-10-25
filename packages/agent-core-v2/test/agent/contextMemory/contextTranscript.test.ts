@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   applyContextCompactionRecord,
@@ -6,6 +6,7 @@ import {
   isFullyUndoable,
 } from '#/agent/contextMemory/contextOps';
 import {
+  createContextTranscriptReducer,
   reduceContextTranscript,
   type ContextTranscript,
 } from '#/agent/contextMemory/contextTranscript';
@@ -86,6 +87,39 @@ describe('reduceContextTranscript', () => {
     expect(result.foldedLength).toBe(2);
   });
 
+  it('appends native history without projecting or scanning accumulated messages', () => {
+    const reducer = createContextTranscriptReducer();
+    reducer.add(appendMessage({ ...userMessage('seed'), id: 'seed', providerMessageId: 'seed' }));
+    let historyReads = 0;
+    Object.defineProperty(reducer.result().logicalEntries[0]!, 'role', {
+      get: () => { historyReads++; return 'user'; },
+    });
+    const native = Array.from({ length: 512 }, (_, index) => [
+      appendMessage({ ...userMessage(`user ${index}`), id: `native-${index}` }),
+      appendMessage(assistantMessage(`answer ${index}`)),
+    ]).flat();
+    const providers = Array.from({ length: 16 }, (_, index) => appendMessage({
+      ...userMessage(`remote ${index}`), id: `remote-${index}`, providerMessageId: `remote-${index}`,
+    }));
+    const map = vi.spyOn(Array.prototype, 'map');
+    let nativeReads = -1;
+    let providerReads = -1;
+    let projections = -1;
+    try {
+      for (const record of native) reducer.add(record);
+      nativeReads = historyReads;
+      for (const record of providers) reducer.add(record);
+      providerReads = historyReads;
+      projections = map.mock.calls.length;
+    } finally {
+      map.mockRestore();
+    }
+    expect(nativeReads).toBe(0);
+    expect(providerReads).toBe(16);
+    expect(projections).toBe(0);
+    expect(reducer.result().foldedLength).toBe(1041);
+  });
+
   it('compaction keeps the transcript and tracks the collapsed logical view', () => {
     const result = reduceContextTranscript([
       appendMessage(userMessage('u1')),
@@ -95,7 +129,7 @@ describe('reduceContextTranscript', () => {
       compaction('SUM', 4),
       appendMessage(userMessage('u3')),
     ]);
-    expect(texts(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'SUM', 'u3']);
+    expect(texts(result)).toEqual(['u1', 'a1', 'u2', 'a2', 'prefixed SUM', 'u3']);
     expect(result.entries[4]!.origin).toEqual({ kind: 'compaction_summary' });
     expect(result.entries[4]!.role).toBe('user');
     expect(result.foldedLength).toBe(2);
@@ -169,7 +203,7 @@ describe('reduceContextTranscript', () => {
       appendMessage(assistantMessage('reply B')),
       undo(1),
     ]);
-    expect(texts(result)).toEqual(['message A', 'reply A', 'summary text']);
+    expect(texts(result)).toEqual(['message A', 'reply A', 'prefixed summary text']);
     expect(result.entries.map((m) => m.role)).toEqual(['user', 'assistant', 'user']);
     expect(result.foldedLength).toBe(2);
   });
@@ -212,7 +246,7 @@ describe('reduceContextTranscript', () => {
       appendMessage(assistantMessage('answer')),
       undo(1),
     ]);
-    expect(texts(result)).toEqual(['old', 'SUM']);
+    expect(texts(result)).toEqual(['old', 'prefixed SUM']);
     expect(result.foldedLength).toBe(2);
   });
 
@@ -403,6 +437,9 @@ describe('live fold parity', () => {
     const transcript = reduceContextTranscript(records);
     expect(live).toHaveLength(5);
     expect(transcript.foldedLength).toBe(live.length);
+    expect(transcript.logicalEntries).toHaveLength(transcript.foldedLength);
+    expect(comparable(transcript.logicalEntries)).toEqual(comparable(live));
+    expect(transcript.logicalEntries[2]!.origin).toEqual(live[2]!.origin);
     expect(live[2]!.origin).toEqual({ kind: 'compaction_summary' });
   });
 
@@ -434,7 +471,7 @@ describe('live fold parity', () => {
       'recent user',
       '',
       'done',
-      'SUM',
+      'prefixed SUM',
     ]);
     expect(transcript.foldedLength).toBe(live.length);
   });
@@ -454,7 +491,7 @@ describe('live fold parity', () => {
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
 
-    expect(texts(transcript)).toEqual(['old user', 'old assistant', 'SUM']);
+    expect(texts(transcript)).toEqual(['old user', 'old assistant', 'prefixed SUM']);
     expect(transcript.foldedLength).toBe(live.length);
     expect(live.map((message) => message.role)).toEqual(['user', 'user']);
     expect(live[1]?.origin?.kind).toBe('compaction_summary');
@@ -471,7 +508,7 @@ describe('live fold parity', () => {
     const live = foldLive(records);
     const transcript = reduceContextTranscript(records);
     expect(live.map((m) => m.role)).toEqual(['user', 'user', 'assistant']);
-    expect(texts(transcript)).toEqual(['u1', 'a1', '', 'SUM', 'a3']);
+    expect(texts(transcript)).toEqual(['u1', 'a1', '', 'prefixed SUM', 'a3']);
     expect(transcript.foldedLength).toBe(live.length);
   });
 
@@ -590,6 +627,31 @@ describe('live fold parity', () => {
     expect(texts(transcript)).toEqual(['injA', 'u1', 'a1']);
     expect(comparable(transcript.entries)).toEqual(comparable(live));
     expect(transcript.foldedLength).toBe(3);
+  });
+
+  it('revises split provider user text in both live and replayed context', () => {
+    const first = { ...userMessage('hello ', { kind: 'unknown' }), id: 'remote-user', providerMessageId: 'remote-user' };
+    const records = [appendMessage(first), ...assistantStep('s1', 'answer'), appendMessage({ ...first, content: [{ type: 'text' as const, text: 'hello world' }] })];
+    const live = foldLive(records);
+    const transcript = reduceContextTranscript(records);
+    expect(texts(transcript)).toEqual(['hello world', 'answer']);
+    expect(comparable(transcript.entries)).toEqual(comparable(live));
+    expect(transcript.foldedLength).toBe(2);
+  });
+
+  it.each(['context.clear', 'context.undo'] as const)('does not revise removed provider history after %s', (type) => {
+    const first = { ...userMessage('old ', { kind: 'unknown' }), id: 'remote-user', providerMessageId: 'remote-user' };
+    const records: WireRecord[] = [appendMessage(first), ...assistantStep('s1', 'old answer'),
+      type === 'context.undo' ? undo(1) : { type },
+      appendMessage({ ...first, content: [{ type: 'text', text: 'fresh ' }] }),
+      appendMessage({ ...first, content: [{ type: 'text', text: 'suffix' }] }),
+    ];
+    const live = foldLive(records);
+    const transcript = reduceContextTranscript(records);
+    expect(comparable(transcript.logicalEntries)).toEqual(comparable(live));
+    expect(transcript.logicalEntries).toHaveLength(1);
+    expect(transcript.logicalEntries[0]?.content).toEqual([{ type: 'text', text: 'fresh ' }, { type: 'text', text: 'suffix' }]);
+    expect(texts(transcript)).toEqual(type === 'context.clear' ? ['old ', 'old answer', 'fresh suffix'] : ['fresh suffix']);
   });
 
   it('keeps injections not owned by any removed prompt across undo', () => {

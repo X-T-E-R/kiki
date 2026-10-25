@@ -97,7 +97,7 @@ describe('RuntimeUnitHost', () => {
     await consumer.remove();
     await producer.remove();
     await host.dispose();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('rolls back failed async updates and only publishes prepared generations', async () => {
@@ -125,7 +125,7 @@ describe('RuntimeUnitHost', () => {
     await handle.remove();
     expect(registry.current('local')).toBeUndefined();
     await host.dispose();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('publishes every replacement before reporting previous generation cleanup failures', async () => {
@@ -168,7 +168,7 @@ describe('RuntimeUnitHost', () => {
     expect(secondLocal.disposed).toBe(true);
     expect(secondRemote.disposed).toBe(true);
     await host.dispose();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('enforces handle ownership on removal', async () => {
@@ -183,8 +183,8 @@ describe('RuntimeUnitHost', () => {
     await first.host.remove(handle);
     expect(first.registry.current('local')).toBeUndefined();
     await Promise.all([first.host.dispose(), second.host.dispose()]);
-    first.disposables.dispose();
-    second.disposables.dispose();
+    await first.disposables.dispose();
+    await second.disposables.dispose();
   });
 
   it('allows an attachment to remove its owned registration during host teardown', async () => {
@@ -197,7 +197,7 @@ describe('RuntimeUnitHost', () => {
     await handle.remove();
     expect(registry.current('local')).toBeUndefined();
     await host.dispose();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('publishes runtimes registered by a committed attachment and owns their teardown', async () => {
@@ -222,7 +222,7 @@ describe('RuntimeUnitHost', () => {
     expect(registry.current('dynamic')).toBeUndefined();
     expect(second.disposed).toBe(true);
     await host.dispose();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('re-registers the same runtime id after its registration was removed', async () => {
@@ -246,7 +246,7 @@ describe('RuntimeUnitHost', () => {
     expect(registry.current('local')).toBeUndefined();
     expect(second.disposed).toBe(true);
     await host.dispose();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('re-registers the same runtime id even when removal teardown fails', async () => {
@@ -272,7 +272,7 @@ describe('RuntimeUnitHost', () => {
     await handle.remove();
     expect(registry.current('local')).toBeUndefined();
     await host.dispose();
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('waits for in-flight prepare, rejects new transactions, and tears down in reverse order', async () => {
@@ -307,7 +307,7 @@ describe('RuntimeUnitHost', () => {
     await providing;
     await closing;
     expect(order).toEqual(['attachment', 'second', 'first']);
-    disposables.dispose();
+    await disposables.dispose();
   });
 
   it('exposes only the restricted provider host compile surface', () => {

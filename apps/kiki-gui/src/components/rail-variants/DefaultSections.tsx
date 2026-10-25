@@ -8,16 +8,21 @@
 import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
-import { MAIN_AGENT_ID, type AgentForest, type Block, type SessionViewState } from '@kiki/session-core/session';
+import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
+import type { I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
 import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
 import { agentTrail } from '../agent-panel/agentRoster';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
-import { isCapabilityUnsupportedError, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
+import { isCapabilityUnsupportedError, capabilityFieldGaps, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
 import { capabilitySourceLabel, SOURCE_TONE_CLASS } from '../agent-panel/sourceLabel';
 import type { AgentIdentity, DetailDrawerTarget } from '../agent-panel/types';
+import { OptionalCapabilityRows, SessionMcpRail } from '../capabilities/optionalCapabilityUi';
+import { availableCount } from '../capabilities/pluginUsage';
+import { SessionPluginsPanel } from '../capabilities/SessionPluginsPanel';
+import { PLUGIN_QUERY_KEYS } from '../capabilities/usePlugins';
 import { Icon } from '../icons';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
@@ -211,6 +216,35 @@ export const NeedsYouList = memo(function NeedsYouList({
  * name opens the profile drawer. Capabilities live in their own block below.
  * Reads the same agent-panel answer as the other slices (same query key).
  */
+/**
+ * Resolves the thinking effort line for the profile head.
+ * For external executors, an inherited default 'off' must not be shown as the
+ * engine's actual level (preserving API configuration semantics and distinguishing
+ * explicit choice vs inherited default/unknown).
+ */
+export function profileEffortDisplay(profile: {
+  executor?: string;
+  thinking_effort?: string;
+  thinking_effort_explicit?: boolean;
+  effort_source?: string;
+  thinking_effort_source?: string;
+} | undefined, t: (key: I18nKey, params?: Readonly<Record<string, string | number>>) => string): string | undefined {
+  if (profile?.thinking_effort === undefined) return undefined;
+  const isExternal = profile.executor !== undefined && profile.executor !== '' && profile.executor !== 'native';
+  if (isExternal) {
+    const isOff = String(profile.thinking_effort).toLowerCase() === 'off';
+    if (isOff) {
+      const isExplicit = profile.thinking_effort_explicit === true;
+      const isReportedByExecutor = profile.effort_source === 'executor';
+      const isForcedOrAdjusted = profile.thinking_effort_source === 'forced' || profile.thinking_effort_source === 'adjusted';
+      if (!isExplicit && !isReportedByExecutor && !isForcedOrAdjusted) {
+        return undefined;
+      }
+    }
+  }
+  return t('subagent.effort', { effort: String(profile.thinking_effort) });
+}
+
 export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspaceId, cwd, externalDriver }: {
   sessionId: string;
   agentId: string;
@@ -241,17 +275,26 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   const profile = read.data?.profile;
   const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
   const model = profile?.model ?? fallbackModel;
+  const effortText = profileEffortDisplay(profile, t);
+  const externalDefault = effortText === undefined && profile?.executor !== undefined
+    && profile.executor !== '' && profile.executor !== 'native';
+  const effortLabel = externalDefault
+    ? t('subagent.effort', { effort: t('st.engines.defaults.inheritPlaceholder') })
+    : effortText;
   // A driven main has no model of its own. A sub agent under it still does, and
   // keeps its real model and effort, because that model did run.
   const modelLine = externalDriver !== undefined
     ? t('rail.external.driver', { client: externalDriver })
-    : [model, profile?.thinking_effort !== undefined ? t('subagent.effort', { effort: String(profile.thinking_effort) }) : undefined]
+    : [model, effortLabel]
       .filter((part): part is string => part !== undefined && part !== '')
       .join(' · ');
   const source = capabilitySourceLabel(t, { source: profile?.source, sourceFile: profile?.source_file });
   const identity: AgentIdentity = {
     id: agentId, sessionId, profile: profileName ?? '', label, model,
-    thinkingEffort: profile?.thinking_effort, status: 'unknown',
+    thinkingEffort: effortText !== undefined ? profile?.thinking_effort : undefined,
+    thinkingEffortExplicit: profile?.thinking_effort_explicit,
+    executorId: profile?.executor,
+    status: 'unknown',
     summary: profile?.description, description: profile?.description,
     source: profile?.source, sourceFile: profile?.source_file,
     context: read.data?.context ?? 'live', isMain: agentId === MAIN_AGENT_ID, rawProfile: profile,
@@ -311,7 +354,7 @@ export function FoldHead({ title, count, summary, open, onToggle, id }: {
     <button type="button" id={id} aria-expanded={open} onClick={onToggle} className={SECTION_BUTTON}>
       <span className={`${INSPECTOR_HEAD} transition-colors group-hover:text-ink`}>{title}</span>
       {count !== undefined ? <span className="text-[12px] text-ink-faint tabular-nums">{count}</span> : null}
-      {!open && summary !== undefined ? <span className="min-w-0 flex-1 truncate text-right text-[12px] text-ink-faint">{summary}</span> : <span className="flex-1" />}
+      {!open && summary !== undefined ? <span data-fold-summary className="min-w-0 flex-1 truncate text-right text-[12px] text-ink-faint">{summary}</span> : <span className="flex-1" />}
       <InspectorChevron open={open} />
     </button>
   );
@@ -322,7 +365,7 @@ type FeedEntry =
   | { kind: 'command'; key: string; at: number; command: string; error: boolean }
   | { kind: 'dispatch'; key: string; at: number; agentId: string; label: string }
   | { kind: 'report'; key: string; at: number; agentId: string; label: string; failed: boolean; summary: string | undefined }
-  | { kind: 'compaction'; key: string; at: number };
+  | { kind: 'compaction'; key: string; at: number; i18n: NonNullable<NoticeBlock['i18n']> };
 
 function feedOf(blocks: readonly Block[], forest: AgentForest): FeedEntry[] {
   const out: FeedEntry[] = [];
@@ -335,8 +378,8 @@ function feedOf(blocks: readonly Block[], forest: AgentForest): FeedEntry[] {
       } else if (d.kind === 'command') {
         out.push({ kind: 'command', key: block.id, at: block.startedAt, command: d.command, error });
       }
-    } else if (block.kind === 'notice' && block.i18n?.key.startsWith('transcript.marker.compaction') === true && block.createdAt !== undefined) {
-      out.push({ kind: 'compaction', key: block.id, at: Date.parse(block.createdAt) });
+    } else if (block.kind === 'notice' && block.i18n !== undefined && block.i18n.key.startsWith('transcript.marker.compaction') && block.createdAt !== undefined) {
+      out.push({ kind: 'compaction', key: block.id, at: Date.parse(block.createdAt), i18n: block.i18n });
     }
   }
   for (const node of Object.values(forest.byId)) {
@@ -393,8 +436,10 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
           title: `${entry.label}\n${entry.summary ?? ''}`,
           onClick: () => { onOpenAgent(entry.agentId); },
         };
-      case 'compaction':
-        return { mark: <span className="h-3 w-0 border-l border-dashed border-section-ink" />, body: <span className="text-section-ink">{t('rail.feed.compacted')}</span>, title: t('rail.feed.compacted') };
+      case 'compaction': {
+        const label = t(entry.i18n.key, entry.i18n.params);
+        return { mark: <span className="h-3 w-0 border-l border-dashed border-section-ink" />, body: <span className="text-section-ink">{label}</span>, title: label };
+      }
     }
   };
   const head = feed[0]!;
@@ -434,24 +479,17 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
 });
 
 /**
- * 能力: the focused agent's tools, skills, subagent targets and extensions,
- * as its own folded block. Reads the same agent-panel answer the profile
- * card reads (same query key), so opening it starts no extra request.
- *
- * Folded, the head carries the per-kind counts and nothing else. The names
- * behind those counts are slugs — `agent-core-dev · agent-core-review ·
- * release-kit` — which read as a wall of ids rather than a summary of what
- * the role can do, so they live in the block's own detail where each one
- * carries its scope and state, and not in a permanent line above it.
- *
- * A read that fails — or answers without the capability fields — keeps the
- * block as a plain title plus one grey status line with a text retry
- * ("can't be read right now", never an alert).
+ * Two independent folds keep observation separate from control. Tools, skills,
+ * and subagent targets describe what the focused agent can use. Plugins,
+ * system capabilities, and MCP servers change what this conversation may use.
+ * Plugin and MCP tools remain in the tools inventory because they are still
+ * part of the observed, complete tool list.
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
-  const { klient } = useConnection();
-  const [open, setOpen] = useState(false);
+  const { klient, client } = useConnection();
+  const [observationOpen, setObservationOpen] = useState(false);
+  const [controlOpen, setControlOpen] = useState(false);
   const query = { session_id: sessionId, agent_id: agentId };
   const read = useQuery({
     queryKey: ['agentCapabilities', query],
@@ -459,45 +497,82 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
     staleTime: 5_000,
     retry: false,
   });
+  const pluginRead = useQuery({
+    queryKey: PLUGIN_QUERY_KEYS.usage(sessionId),
+    queryFn: () => client.getPluginUsage({ session_id: sessionId }),
+    staleTime: 5_000,
+    retry: false,
+  });
   const tools = useMemo(() => mapPanelTools(read.data?.tools), [read.data?.tools]);
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
   const data = read.data;
-  const missing = data !== undefined && (data.tools === undefined || data.skills === undefined);
-  // An unsupported scope stays a silent gap, the same as the profile card;
-  // stale data keeps rendering through a failed background refetch.
-  const failed = data === undefined && read.isError && !isCapabilityUnsupportedError(read.error);
-  if (failed || missing) {
-    return (
-      <section data-rail-capabilities="">
-        <h3 className="flex h-8 items-center gap-1.5">
-          <span className={INSPECTOR_HEAD}>{t('rail.capabilities.title')}</span>
-        </h3>
-        <p role="status" data-rail-capabilities-unavailable className="pb-0.5 text-[12px] leading-relaxed text-ink-faint">
-          {t('rail.capabilities.unavailable')}
-          <button
-            type="button"
-            data-rail-capabilities-retry
-            onClick={() => { void read.refetch(); }}
-            className={`ml-1.5 rounded font-medium text-ink-soft transition-colors hover:text-ink ${FOCUS_RING}`}
-          >
-            {t('common.retry')}
-          </button>
-        </p>
-      </section>
-    );
+  const capUnsupported = isCapabilityUnsupportedError(read.error);
+  const capFailed = data === undefined && read.isError && !capUnsupported;
+  const capPending = data === undefined && !read.isError;
+  const gaps = data === undefined || capUnsupported ? undefined : capabilityFieldGaps(data);
+  const pluginsUnsupported = isCapabilityUnsupportedError(pluginRead.error);
+
+  const observationSegments: string[] = [];
+  if (data !== undefined && !capUnsupported) {
+    const counts = capabilityCounts(tools, skills, targets);
+    if (data.tools !== undefined) observationSegments.push(`${t('inspector.cap.tools')} ${counts.toolsOn}`);
+    if (data.skills !== undefined) observationSegments.push(`${t('inspector.cap.skills')} ${counts.skills}`);
+    if (data.targets !== undefined) observationSegments.push(`${t('inspector.cap.subagents')} ${counts.subagents}`);
   }
-  if (data === undefined) return null;
-  const counts = capabilityCounts(tools, skills, targets);
-  const summary = t('rail.capabilities.summary', { tools: counts.toolsOn, skills: counts.skills, subagents: counts.subagents, extensions: counts.extensions });
+  const observationSummary = observationSegments.length === 0 ? undefined : observationSegments.join(' · ');
+
   return (
-    <section data-rail-capabilities="">
-      <FoldHead title={t('rail.capabilities.title')} summary={summary} open={open} onToggle={() => { setOpen((v) => !v); }} />
-      {open ? (
-        <div className="pt-1">
-          <AgentCapabilitiesSection tools={tools} skills={skills} subagentTargets={targets} draftScope={{ workspace_id: workspaceId, cwd }} callerProfile={data.profile?.name} inlineGroupDetail />
-        </div>
+    <>
+      {!capUnsupported && !capPending ? (
+        <section data-rail-capabilities="observation">
+          <FoldHead
+            title={t('rail.capabilities.observeTitle')}
+            summary={observationSummary}
+            open={observationOpen}
+            onToggle={() => { setObservationOpen((value) => !value); }}
+          />
+          {observationOpen ? (
+            <div className="pt-1">
+              <AgentCapabilitiesSection
+                tools={tools}
+                skills={skills}
+                subagentTargets={targets}
+                draftScope={{ workspace_id: workspaceId, cwd }}
+                callerProfile={data?.profile?.name}
+                capabilitiesStatus={capFailed ? 'failed' : capPending ? 'loading' : 'ready'}
+                onRetryCapabilities={() => { void read.refetch(); }}
+                capabilityGaps={gaps}
+              />
+            </div>
+          ) : null}
+        </section>
       ) : null}
-    </section>
+      <section data-rail-capabilities="control" data-rail-controls="">
+        <FoldHead
+          title={t('rail.capabilities.controlTitle')}
+          open={controlOpen}
+          onToggle={() => { setControlOpen((value) => !value); }}
+        />
+        {controlOpen ? (
+          <div className="pt-1">
+            {!pluginsUnsupported ? (
+              <div className="-mx-2 mb-2" data-rail-control-group="plugins">
+                <h4 className="flex items-baseline gap-1.5 px-2 pb-0.5 text-[11px] font-medium text-ink-faint">
+                  {t('inspector.cap.plugins')}
+                  {pluginRead.data !== undefined ? <span data-rail-plugin-count className="font-normal tabular-nums">{availableCount(pluginRead.data.plugins)}</span> : null}
+                </h4>
+                <SessionPluginsPanel sessionId={sessionId} />
+              </div>
+            ) : null}
+            <div data-rail-control-group="system">
+              <h4 className="pb-0.5 text-[11px] font-medium text-ink-faint">{t('rail.capabilities.systemTitle')}</h4>
+              <OptionalCapabilityRows sessionId={sessionId} />
+            </div>
+            <SessionMcpRail sessionId={sessionId} />
+          </div>
+        ) : null}
+      </section>
+    </>
   );
 }

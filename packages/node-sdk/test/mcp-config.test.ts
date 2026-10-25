@@ -13,9 +13,11 @@ import { join } from 'node:path';
 import {
   createKimiHarness,
   KimiHarness,
+  SDKRpcClient,
   SDKRpcClientBase,
 } from '#/index';
-import { afterEach, describe, expect, it } from 'vitest';
+import { HostProcessService } from '@kiki/agent-core-v2/os/backends/node-local/hostProcessService';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createFileMcpOAuthService } from './mcp-oauth-store';
 
@@ -326,7 +328,9 @@ describe('standalone MCP check (connection result)', () => {
       const result = await harness.testMcpServer('missing');
 
       expect(result.success).toBe(false);
-      expect(result.output).toMatch(/ENOENT|not found|spawn/i);
+      // Linux reports a missing spawn as ENOENT. Windows reports the same
+      // failed CreateProcess without that token.
+      expect(result.output).toMatch(/ENOENT|not found|spawn|CreateProcess/i);
     } finally {
       await harness.close();
     }
@@ -341,29 +345,33 @@ describe('session MCP servers (live session adds)', () => {
 
     try {
       const session = await harness.createSession({ workDir });
-      // persist defaults to false: a session-local `caller` entry, nothing
-      // written to the user-level file.
+      const sibling = await harness.createSession({ workDir });
+      // persist defaults to false: the overlay records source `caller` and
+      // writes nothing. The returned entry is the connection snapshot and
+      // has no source field.
       const added = await session.addMcpServer({
         name: 'session-server',
         transport: 'stdio',
         command: process.execPath,
         args: [stdioFixture],
       });
-      // No `source` on a session entry: the engine's connection manager does
-      // not track where a running server came from, so the SDK has nothing
-      // honest to tag it with (recorded gap on `addSessionMcpServer`).
       expect(added).toMatchObject({
         name: 'session-server',
         transport: 'stdio',
         status: 'connected',
         toolCount: 4,
       });
+      expect(Object.hasOwn(added, 'source')).toBe(false);
+      expect((await sibling.listMcpServers()).map((server) => server.name)).not.toContain(
+        'session-server',
+      );
       await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({
         code: 'ENOENT',
       });
 
-      // The "name + full config" reconnect channel replaces the running
-      // config — the narrowed tool filter shows up in the entry.
+      // A config-bearing reconnect replaces the running config on this
+      // session and keeps the caller scope: the sibling still cannot see it,
+      // and mcp.json is still absent.
       await session.reconnectMcpServer('session-server', {
         name: 'session-server',
         transport: 'stdio',
@@ -375,9 +383,29 @@ describe('session MCP servers (live session adds)', () => {
         (server) => server.name === 'session-server',
       );
       expect(narrowed).toMatchObject({ status: 'connected', toolCount: 1 });
+      expect(Object.hasOwn(narrowed ?? {}, 'source')).toBe(false);
+      expect((await sibling.listMcpServers()).map((server) => server.name)).not.toContain(
+        'session-server',
+      );
+      await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({
+        code: 'ENOENT',
+      });
 
-      // persist: true also writes the user-level file — the file content below
-      // is what proves it, since the entry itself carries no source tag.
+      await expect(
+        session.reconnectMcpServer('session-server', {
+          name: 'session-server',
+          transport: 'stdio',
+          command: process.execPath,
+          args: [stdioFixture],
+          enabled: false,
+        }),
+      ).rejects.toThrow(/MCP server is disabled: session-server/);
+      expect(
+        (await session.listMcpServers()).find((server) => server.name === 'session-server'),
+      ).toMatchObject({ status: 'connected', toolCount: 1 });
+
+      // persist: true writes the user-level file under this name. The list
+      // entry still has no source field; the file is the global record.
       const persisted = await session.addMcpServer(
         {
           name: 'persisted',
@@ -388,12 +416,163 @@ describe('session MCP servers (live session adds)', () => {
         { persist: true },
       );
       expect(persisted).toMatchObject({ name: 'persisted', status: 'connected' });
-      await expect(readMcpConfig(homeDir)).resolves.toEqual({
+      expect(Object.hasOwn(persisted, 'source')).toBe(false);
+      const written = {
         mcpServers: {
           persisted: { transport: 'stdio', command: process.execPath, args: [stdioFixture] },
         },
-      });
+      };
+      await expect(readMcpConfig(homeDir)).resolves.toEqual(written);
+      // The store rejects a second add of the same name and does not replace
+      // the existing file or report a successful connect.
+      await expect(
+        session.addMcpServer(
+          {
+            name: 'persisted',
+            transport: 'stdio',
+            command: process.execPath,
+            args: [stdioFixture],
+            enabledTools: ['echo'],
+          },
+          { persist: true },
+        ),
+      ).rejects.toThrow(/already exists/);
+      await expect(readMcpConfig(homeDir)).resolves.toEqual(written);
+      expect(
+        (await session.listMcpServers()).find((server) => server.name === 'persisted'),
+      ).toMatchObject({ status: 'connected', toolCount: 4 });
     } finally {
+      await harness.close();
+    }
+  }, 20_000);
+
+  it('keeps an unpersisted disabled server on the owning session without spawning', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const command = 'disabled-session-mcp-must-not-spawn';
+    try {
+      const session = await harness.createSession({ workDir });
+      const sibling = await harness.createSession({ workDir });
+      const added = await session.addMcpServer({
+        name: 'disabled-local',
+        transport: 'stdio',
+        command,
+        enabled: false,
+      });
+      expect(added).toMatchObject({
+        name: 'disabled-local',
+        transport: 'stdio',
+        status: 'disabled',
+        toolCount: 0,
+      });
+      expect(Object.hasOwn(added, 'source')).toBe(false);
+      expect((await session.listMcpServers()).find((server) => server.name === 'disabled-local'))
+        .toMatchObject({ status: 'disabled', toolCount: 0 });
+      expect((await sibling.listMcpServers()).map((server) => server.name)).not.toContain('disabled-local');
+      await expect(readFile(join(homeDir, 'mcp.json'), 'utf-8')).rejects.toMatchObject({ code: 'ENOENT' });
+      expect(spawn.mock.calls.some((call) => call[0] === command)).toBe(false);
+    } finally {
+      spawn.mockRestore();
+      await harness.close();
+    }
+  }, 20_000);
+
+  it('persists a disabled server as disabled and does not spawn it', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const command = 'disabled-session-mcp-must-not-spawn';
+    try {
+      const session = await harness.createSession({ workDir });
+      const added = await session.addMcpServer(
+        { name: 'disabled-persisted', transport: 'stdio', command, enabled: false },
+        { persist: true },
+      );
+      expect(added).toMatchObject({
+        name: 'disabled-persisted',
+        status: 'disabled',
+        toolCount: 0,
+      });
+      await expect(readMcpConfig(homeDir)).resolves.toEqual({
+        mcpServers: {
+          'disabled-persisted': { transport: 'stdio', command, enabled: false },
+        },
+      });
+      expect((await session.listMcpServers()).find((server) => server.name === 'disabled-persisted'))
+        .toMatchObject({ status: 'disabled', toolCount: 0 });
+      expect(spawn.mock.calls.some((call) => call[0] === command)).toBe(false);
+    } finally {
+      spawn.mockRestore();
+      await harness.close();
+    }
+  }, 20_000);
+
+  it('accepts a disabled add while the same global server stays off', async () => {
+    const homeDir = await makeTempDir();
+    const workDir = await makeTempDir();
+    await writeMcpConfig(homeDir, {
+      mcpServers: {
+        'example-server': {
+          transport: 'stdio',
+          command: process.execPath,
+          args: [stdioFixture],
+        },
+      },
+    });
+    const harness = createKimiHarness({ homeDir, identity: TEST_IDENTITY });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const fixtureSpawns = (): number => spawn.mock.calls.filter((call) =>
+      call[0] === process.execPath && Array.isArray(call[1]) && call[1][0] === stdioFixture,
+    ).length;
+    try {
+      const session = await harness.createSession({ workDir });
+      const sibling = await harness.createSession({ workDir });
+      await vi.waitFor(async () => {
+        const entry = (await session.listMcpServers()).find((server) => server.name === 'example-server');
+        if (entry?.status !== 'connected') throw new Error(`example-server status ${entry?.status ?? 'missing'}`);
+      });
+      const agent = (harness as unknown as { readonly rpc: SDKRpcClient }).rpc.klient
+        .session(session.id)
+        .agent('main');
+      await agent.setMcpSessionOverride({
+        locator: { source: 'global', name: 'example-server' },
+        override: 'off',
+      });
+      expect((await session.listMcpServers()).map((server) => server.name)).not.toContain('example-server');
+      const siblingBefore = await sibling.listMcpServers();
+      expect(siblingBefore.map((server) => server.name)).toContain('example-server');
+      const fileBefore = await readFile(join(homeDir, 'mcp.json'), 'utf-8');
+      const spawnsBefore = fixtureSpawns();
+      const added = await session.addMcpServer({
+        name: 'example-server',
+        transport: 'stdio',
+        command: process.execPath,
+        args: [stdioFixture],
+        enabled: false,
+      });
+      expect(added).toMatchObject({
+        name: 'example-server',
+        transport: 'stdio',
+        status: 'disabled',
+        toolCount: 0,
+      });
+      expect(Object.hasOwn(added, 'source')).toBe(false);
+      expect((await session.listMcpServers()).map((server) => server.name)).not.toContain('example-server');
+      expect(await sibling.listMcpServers()).toEqual(siblingBefore);
+      expect(await readFile(join(homeDir, 'mcp.json'), 'utf-8')).toBe(fileBefore);
+      expect(fixtureSpawns()).toBe(spawnsBefore);
+      await expect(agent.listMcpSessionCapabilities()).resolves.toContainEqual(
+        expect.objectContaining({
+          locator: { source: 'global', name: 'example-server' },
+          override: 'off',
+          connection: 'disabled',
+        }),
+      );
+    } finally {
+      spawn.mockRestore();
       await harness.close();
     }
   }, 20_000);
@@ -437,8 +616,8 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
           runtimeName: 'plugin-status-plugin:remote',
           origin: 'plugin',
           editable: false,
-          enabled: false,
-          authStatus: 'not-applicable',
+          enabled: true,
+          authStatus: 'oauth-required',
         }),
       ]);
       expect(await readMcpConfig(homeDir)).toEqual({
@@ -448,8 +627,8 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
       const collidingName = 'plugin-status-plugin:remote';
       // The management API rejects a user-level add shadowing the read-only
       // plugin entry, so the colliding runtime name is written directly.
-      // Uniqueness counts only enabled servers, so a disabled plugin inspect
-      // stays not-applicable even when a global shadow exists.
+      // An enabled OAuth plugin is probed; a second enabled server with the
+      // same runtime name makes that inspection unavailable.
       await writeMcpConfig(homeDir, {
         mcpServers: {
           global: { transport: 'http', url: statusServer.plainUrl },
@@ -463,8 +642,8 @@ describe('MCP OAuth facade (host-controlled browser flow)', () => {
       ).resolves.toEqual([
         expect.objectContaining({
           runtimeName: collidingName,
-          enabled: false,
-          authStatus: 'not-applicable',
+          enabled: true,
+          authStatus: 'unavailable',
         }),
       ]);
 

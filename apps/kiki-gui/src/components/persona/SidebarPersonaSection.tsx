@@ -13,7 +13,7 @@
  */
 
 import { useMemo, useState } from 'react';
-import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
+import type { RoomListItem, Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { errorText } from '@kiki/session-core/i18n';
 import type { SessionSeenMap } from '@kiki/session-core/settings';
 
@@ -39,7 +39,7 @@ export interface SidebarPersonaSectionProps {
   readonly sessions: readonly Session[];
   readonly activeSessionId?: string;
   readonly seen: SessionSeenMap;
-  readonly workspaceOptions?: readonly Workspace[];
+  readonly workspaceOptions?: readonly WorkspaceCatalogEntry[];
   /** Room names for the switcher's member rows; the ids are what the row opens. */
   readonly rooms?: readonly RoomListItem[];
 }
@@ -84,7 +84,7 @@ export function SidebarPersonaSection({
     event.stopPropagation();
     // One unread conversation is an address; several are a question.
     if (persona.unreadSessionIds.length === 1) {
-      navigate(`/s/${encodeURIComponent(persona.unreadSessionIds[0]!)}`);
+      void navigate(`/s/${encodeURIComponent(persona.unreadSessionIds[0]!)}`);
       return;
     }
     setSwitcher({ persona, anchor });
@@ -110,7 +110,7 @@ export function SidebarPersonaSection({
             data-persona-create
             aria-label={t('persona.new')}
             title={t('persona.new')}
-            onClick={() => { navigate('/personas?new=1'); }}
+            onClick={() => { void navigate('/personas?new=1'); }}
             className={HEAD_BUTTON}
           >
             <Icon name="plus" size={14} />
@@ -128,7 +128,7 @@ export function SidebarPersonaSection({
                   aria-current={atDaily ? 'page' : undefined}
                   aria-label={t('persona.openDaily', { name: persona.name })}
                   title={t('persona.openDaily', { name: persona.name })}
-                  onClick={() => { navigate(`/p/${encodeURIComponent(persona.id)}/daily`); }}
+                  onClick={() => { void navigate(`/p/${encodeURIComponent(persona.id)}/daily`); }}
                   className={`row-interactive flex h-8 w-full items-center gap-2 py-0 pl-2 text-left ${
                     persona.unreadCount > 0 ? 'pr-[54px]' : 'pr-8'
                   }`}

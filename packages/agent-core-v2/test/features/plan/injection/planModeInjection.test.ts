@@ -109,6 +109,9 @@ describe('PlanModeService dynamic injection content', () => {
     await injectDynamic(injector);
 
     expect(planReminderMessages(context)).toHaveLength(2);
+    expect(lastPlanReminder(context)).toContain('not user approval to implement');
+    expect(lastPlanReminder(context)).toContain("user's current authorization");
+    expect(lastPlanReminder(context)).toContain('keep their lifetime restrictions');
   });
 
   it('does not inject anything when plan mode is inactive from the start', async () => {
@@ -132,7 +135,12 @@ describe('PlanModeService dynamic injection content', () => {
 
     await injectDynamic(injector);
 
-    expect(lastPlanReminder(context)).toContain('Re-entering Plan Mode');
+    const text = lastPlanReminder(context);
+    expect(text).toContain('Re-entering Plan Mode');
+    expect(text).toContain('do not edit it merely to re-enter or leave plan mode');
+    expect(text).toContain('end the turn normally and continue on notification');
+    expect(text).toContain('Answer a direct question about the plan normally');
+    expect(text).not.toMatch(/Always edit|turn must end|supersedes any other/);
   });
 });
 

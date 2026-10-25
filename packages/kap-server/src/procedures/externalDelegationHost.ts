@@ -38,6 +38,7 @@ export interface ExternalDelegationSeatAuthority {
   readonly sessionId: string;
   readonly workspacePath?: string;
   readonly harnessAgentId?: string;
+  readonly nativeTools?: boolean;
 }
 
 export class ExternalDelegationProcedureHost {
@@ -49,6 +50,7 @@ export class ExternalDelegationProcedureHost {
     input: DelegationProcedureInput<Name>,
     signal?: AbortSignal,
   ): Promise<DelegationProcedureOutput<Name>> {
+    if (seat.nativeTools === true) throw new Error('Native harness seats must use their allowed agent tools');
     const procedure = delegationProcedure(name);
     const canonicalInput = procedure.inputSchema.parse(input) as DelegationProcedureInput<Name>;
     return withSessionOperation(this.core, seat.sessionId, async (session) => {
@@ -347,6 +349,10 @@ function publicExecutorContent(content: NormalizedExecutorContent): NormalizedEx
       return { type: content.type, uri: content.uri, name: content.name };
     case 'opaque':
       return { type: content.type, contentType: content.contentType };
+    default: {
+      const unsupported: never = content;
+      return unsupported;
+    }
   }
 }
 
@@ -389,6 +395,23 @@ function publicExecutorEvent(event: NormalizedExecutorEvent): NormalizedExecutor
         content: event.content,
         locations: event.locations,
       };
+    case 'tool.input.delta':
+      return {
+        type: event.type,
+        toolCallId: event.toolCallId,
+        toolIndex: event.toolIndex,
+        name: event.name,
+        delta: event.delta,
+      };
+    case 'tool.interaction':
+      return {
+        type: event.type,
+        toolCallId: event.toolCallId,
+        state: event.state,
+        kind: event.kind,
+      };
+    case 'response.completed':
+      return { type: event.type, meta: event.meta };
     case 'plan.update':
       return { type: event.type, plan: event.plan, unstable: event.unstable };
     case 'plan.remove':
@@ -409,6 +432,10 @@ function publicExecutorEvent(event: NormalizedExecutorEvent): NormalizedExecutor
       return { type: event.type, used: event.used, size: event.size, cost: event.cost };
     case 'unknown':
       return { type: event.type, updateType: event.updateType };
+    default: {
+      const unsupported: never = event;
+      return unsupported;
+    }
   }
 }
 

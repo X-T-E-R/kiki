@@ -11,30 +11,33 @@
  * textarea survives the hero → session transition.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  AuthSummary,
-  NamedAgentProfile,
-  PermissionMode,
-  PersonaSnapshot,
-  SessionCreate,
-  Workspace,
+import { UNSAFE_DataRouterContext } from 'react-router-dom';
+import {
+  ErrorCode,
+  type AuthSummary,
+  type NamedAgentProfile,
+  type PermissionMode,
+  type PersonaSnapshot,
+  type SessionCreate,
+  type WorkspaceCatalogEntry,
 } from '@kiki/protocol';
 
 import {
   buildPromptContent,
-  clearNewSessionDraft,
   flushDrafts,
   readDraft,
   readNewSessionDraft,
+  writeComposerState,
   writeDraft,
   writeNewSessionDraft,
   type ComposerAttachment,
   type PersistedNewSessionDraft,
   type SshHostAttachment,
   executionSelectionOf,
-  parseExecutionChoice,
+  isNativeExecutor,
+  readExecutionChoice,
   isBareExternalChoice,
   sendsLegacyControl,
   NATIVE_EXECUTOR,
@@ -56,8 +59,10 @@ import {
   subscribeSettings,
 } from '@kiki/session-core/settings';
 import { DEFAULT_AGENT_PROFILE } from './Composer';
+import { applyPendingNewSessionCapabilities, bindPendingNewSessionDraft } from './capabilities/newSessionCapabilities';
 import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
 import { useHost } from '../host';
+import { retryRootReadModelDelay, retryRootReadModelQuery } from '../lib/readModelRetry';
 import {
   agentProfileCatalogQueryKey,
   loadAgentProfileCatalog,
@@ -65,7 +70,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { runNewSessionHandoff } from '../lib/newSessionHandoff';
-import { spaceStorage } from '../lib/spaceStorage';
+import { spaceStorage, type SpaceStorage } from '../lib/spaceStorage';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
 import { errorText } from '@kiki/session-core/i18n';
@@ -90,10 +95,10 @@ function readDailyDraftSettings(storageKey: string): PersistedNewSessionDraft {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
     const record = value as Record<string, unknown>;
     return {
+      execution: readExecutionChoice(record['execution']),
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
-      execution: parseExecutionChoice(record['execution']),
       modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
       effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
@@ -121,10 +126,10 @@ function readScopedNewSessionDraft(scopeId: string): PersistedNewSessionDraft {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) return {};
     const record = value as Record<string, unknown>;
     return {
+      execution: readExecutionChoice(record['execution']),
       workspaceId: typeof record['workspaceId'] === 'string' ? record['workspaceId'] : undefined,
       cwd: typeof record['cwd'] === 'string' ? record['cwd'] : undefined,
       profile: typeof record['profile'] === 'string' ? record['profile'] : undefined,
-      execution: parseExecutionChoice(record['execution']),
       modelOverride: typeof record['modelOverride'] === 'string' ? record['modelOverride'] : undefined,
       effortOverride: typeof record['effortOverride'] === 'string' ? record['effortOverride'] : undefined,
       modelFromProfile: typeof record['modelFromProfile'] === 'boolean' ? record['modelFromProfile'] : undefined,
@@ -146,12 +151,116 @@ function writeScopedNewSessionDraft(scopeId: string, draft: PersistedNewSessionD
   }
 }
 
-function clearScopedNewSessionDraft(scopeId: string): void {
-  if (scopeId === 'local') return clearNewSessionDraft();
-  try { spaceStorage.removeItem(remoteDraftStorageKey(scopeId)); } catch { return; }
+export interface PersistedCreationIntent {
+  readonly creationId: string;
+  readonly sessionId: string;
+  readonly bodyKey: string;
+  readonly status: 'pending' | 'accepted' | 'unknown' | 'conflict';
+  readonly evidence?: string;
+  readonly reason?: string;
+  readonly error?: string;
+}
+
+interface CreationWait {
+  cancelled: boolean;
+  stopWaiting?: () => void;
+}
+
+function creationIntentStorageKey(scopeKey: string): string {
+  return `kiki.draft.new.intent.${scopeKey}`;
+}
+
+export function readPersistedCreationIntent(scopeKey: string, storage: SpaceStorage = spaceStorage): PersistedCreationIntent | undefined {
+  if (!readSettings().draftPersistence) return undefined;
+  try {
+    const raw = storage.getItem(creationIntentStorageKey(scopeKey));
+    if (raw === null) return undefined;
+    const parsed = JSON.parse(raw) as unknown;
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+    const record = parsed as Record<string, unknown>;
+    const creationId = typeof record['creationId'] === 'string' ? record['creationId'] : undefined;
+    const sessionId = typeof record['sessionId'] === 'string' ? record['sessionId'] : undefined;
+    const bodyKey = typeof record['bodyKey'] === 'string' ? record['bodyKey'] : undefined;
+    const status = record['status'] === 'pending' ? 'unknown'
+      : record['status'] === 'accepted' || record['status'] === 'unknown' || record['status'] === 'conflict'
+      ? record['status'] : undefined;
+    if (!creationId || !sessionId || !bodyKey || !status) return undefined;
+    return {
+      creationId,
+      sessionId,
+      bodyKey,
+      status,
+      evidence: typeof record['evidence'] === 'string' ? record['evidence'] : undefined,
+      reason: typeof record['reason'] === 'string' ? record['reason'] : undefined,
+      error: typeof record['error'] === 'string' ? record['error'] : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}
+
+export function writePersistedCreationIntent(scopeKey: string, intent: PersistedCreationIntent, storage: SpaceStorage = spaceStorage): void {
+  if (!readSettings().draftPersistence) return;
+  try {
+    storage.setItem(creationIntentStorageKey(scopeKey), JSON.stringify(intent));
+  } catch {
+    return;
+  }
+}
+
+export function clearPersistedCreationIntent(scopeKey: string, storage: SpaceStorage = spaceStorage): void {
+  try {
+    storage.removeItem(creationIntentStorageKey(scopeKey));
+  } catch {
+    return;
+  }
+}
+
+function isUnknownCreationError(cause: unknown): boolean {
+  if (cause instanceof ApiError) {
+    return cause.code < 0 || cause.code === ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN;
+  }
+  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+    const code = (cause as { code: unknown }).code;
+    return typeof code === 'number' && (code < 0 || code === ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN);
+  }
+  return false;
+}
+
+function isConflictCreationError(cause: unknown): boolean {
+  if (cause instanceof ApiError) {
+    return cause.code === ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT;
+  }
+  if (typeof cause === 'object' && cause !== null && 'code' in cause) {
+    return (cause as { code: unknown }).code === ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT;
+  }
+  return false;
+}
+
+function clearScopedNewSessionDraft(scopeId: string, storage: SpaceStorage): void {
+  const key = scopeId === 'local' ? 'kiki.newSessionDraft' : remoteDraftStorageKey(scopeId);
+  try { storage.removeItem(key); } catch { return; }
 }
 
 export const AUTO_WORKSPACE_ID = '__auto__';
+
+/**
+ * The name the server gives a workspace it had to allocate itself, when a
+ * session is created with no target and nothing to reuse. It is an internal
+ * handle, not something to show: the date and the id fragment exist so the
+ * name is unique on disk, not to be read. A workspace that carries this name
+ * says only "kiki made this one", which the product already has words for.
+ *
+ * A name the user typed is never in this form, so it never matches here — and
+ * the date/id suffix only matters while the workspace is still unnamed, since
+ * the first thing anybody does with it is rename it.
+ */
+const AUTO_WORKSPACE_NAME = /^Untitled workspace \d{4}-\d{2}-\d{2} [0-9a-f]{8}$/;
+
+/** Whether this workspace is one the server allocated rather than one the user named. */
+export function isAutoCreatedWorkspace(workspace: WorkspaceCatalogEntry | undefined): boolean {
+  return workspace !== undefined && AUTO_WORKSPACE_NAME.test(workspace.name);
+}
 
 // The temporary choice survives navigating back to /new, but not a window restart.
 let ephemeralForWindow = false;
@@ -169,6 +278,11 @@ export interface DraftSkillHandoff {
   readonly userInput?: string;
 }
 
+/**
+ * What a send reads, captured on every render and reached through a ref so the
+ * send callback keeps one identity across keystrokes. The engine is part of it
+ * because the create body is where an external engine is bound.
+ */
 /** Hosts preselected on /new, split off before anything becomes a message. */
 function sshOf(attachments: readonly ComposerAttachment[]): readonly SshHostAttachment[] {
   return attachments.filter((item): item is SshHostAttachment => item.kind === 'ssh');
@@ -231,6 +345,7 @@ export function buildNewSessionCreate(input: {
   readonly modelTouched?: boolean;
   readonly effortTouched?: boolean;
   readonly permissionTouched?: boolean;
+  readonly creation_id?: string;
 }): SessionCreate {
   const persona = input.persona === undefined ? {} : { persona: input.persona, ...(input.personaHome ? { persona_home: true } : {}) };
   // Native with the picked profile is what the legacy fields already say; the
@@ -257,7 +372,7 @@ export function buildNewSessionCreate(input: {
       ? input.execution?.profile_file === undefined ? {} : { execution: { executor: NATIVE_EXECUTOR, profile_file: input.execution.profile_file } }
       : named ? { execution: executionSelectionOf(input.execution!) } : {}),
     ...(!external && keep('model', input.modelTouched) && input.model !== undefined ? { model: input.model } : {}),
-    ...(!external && keep('thinking', input.effortTouched) && input.thinking !== undefined ? { thinking: input.thinking } : {}),
+    ...(!external && keep('thinking', input.effortTouched) && typeof input.thinking === 'string' && input.thinking !== '' ? { thinking: input.thinking } : {}),
     ...(external || keep('permission_mode', input.permissionTouched) ? { permission_mode: input.permissionMode } : {}),
     plan_mode: input.planMode,
   };
@@ -270,6 +385,7 @@ export function buildNewSessionCreate(input: {
     ? { cwd: input.cwd, externalClient }
     : externalClient === undefined ? undefined : { externalClient };
   return {
+    ...(input.creation_id !== undefined ? { creation_id: input.creation_id } : {}),
     metadata,
     workspace_id: input.cwd === '' ? input.workspaceId : undefined,
     ...persona, agent_config, ...isolation, ephemeral: input.ephemeral,
@@ -330,8 +446,9 @@ export function useNewSessionDraft({
 } = {}) {
   const host = useHost();
   const queryClient = useQueryClient();
-  const { client, scopeId, sshLabel } = useConnection();
-  const draftScopeId = sshLabel === null ? 'local' : scopeId;
+  const router = useContext(UNSAFE_DataRouterContext)?.router;
+  const { client, scopeId, spaceKey, connectionId, sshLabel } = useConnection();
+  const draftScopeId = scopeId;
   /**
    * A daily draft is the persona's, not the shared `/new` scratch pad: its own
    * text and its own target, keyed by connection scope and persona so two
@@ -344,6 +461,7 @@ export function useNewSessionDraft({
   const draftKey = dailyPersonaId !== undefined
     ? personaDailyDraftKey(scopeId, dailyPersonaId)
     : draftScopeId === 'local' ? DRAFT_KEY : `${DRAFT_KEY}:${draftScopeId}`;
+  bindPendingNewSessionDraft({ scopeId, spaceKey, connectionId, draftKey });
   const navigate = useGuardedNavigate();
   const { t, locale } = useI18n();
   const liveSettings = useSyncExternalStore(
@@ -366,7 +484,6 @@ export function useNewSessionDraft({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [creationPending, setCreationPending] = useState(false);
-  const [creationNotice, setCreationNotice] = useState<string | null>(null);
 
   const [workspaceId, setWorkspaceId] = useState(
     (applyPrefill ? initialWorkspaceId : undefined) ?? initialRestoredDraft.workspaceId ?? '',
@@ -411,6 +528,7 @@ export function useNewSessionDraft({
   );
   // The persona bound at creation. Kept for this window only (like the
   // temporary choice); `?persona=` prefills it from the Personas page.
+  const [selectedPersonaId, setSelectedPersonaId] = useState<string | undefined>(initialPersona);
   const [persona, setPersonaState] = useState<PersonaSnapshot | undefined>(undefined);
   const [personaPending, setPersonaPending] = useState(initialPersona !== undefined);
   const [selectionRevision, setSelectionRevision] = useState(0);
@@ -428,25 +546,32 @@ export function useNewSessionDraft({
   const effortTouched = useRef(!effortOverrideFromProfile.current && initialRestoredDraft.effortOverride !== undefined);
   const permissionTouched = useRef(false);
 
+  // Shares App's metadata catalog without waiting for session counts or Git.
+  // A failed read is still distinct from a home with no workspaces yet.
   const workspacesQuery = useQuery({
-    queryKey: ['workspaces'],
-    queryFn: () => client.listWorkspaces(),
+    queryKey: ['workspaces', 'catalog'],
+    queryFn: () => client.listWorkspaceCatalog(),
     staleTime: 30_000,
-    retry: false,
+    retry: retryRootReadModelQuery,
+    retryDelay: retryRootReadModelDelay,
   });
   const workspaces = workspacesQuery.data?.items ?? [];
   const workspacesLoading = workspacesQuery.isPending;
   const workspacesReady = workspacesQuery.isSuccess;
+  const workspacesFailed = workspacesQuery.isError;
   const workspacesError = workspacesQuery.isError ? errorText(locale, workspacesQuery.error) : null;
   const retryWorkspaces = useCallback(() => { void workspacesQuery.refetch(); }, [workspacesQuery.refetch]);
 
-  const effectiveWorkspace: Workspace | undefined = useMemo(
+  const effectiveWorkspace: WorkspaceCatalogEntry | undefined = useMemo(
     () =>
       workspaceId === '' ? (dailyPersonaId === undefined && workspacesReady ? sortWorkspacesByRecency(workspaces)[0] : undefined)
         : workspaceId === AUTO_WORKSPACE_ID ? undefined
         : workspaces.find((w) => w.id === workspaceId),
     [dailyPersonaId, workspaces, workspaceId, workspacesReady],
   );
+  // Only a list that answered can be read as "nothing here": a read still in
+  // flight, or one that failed, decides nothing, and automatic allocation then
+  // needs the user's own choice of it.
   const autoWorkspace = cwd.trim() === '' && effectiveWorkspace === undefined
     && (workspaceId === AUTO_WORKSPACE_ID || (workspaceId === '' && workspacesReady));
   const targetReady = cwd.trim() !== ''
@@ -546,21 +671,49 @@ export function useNewSessionDraft({
   const applyAgentProfile = useCallback((
     items: readonly NamedAgentProfile[],
     name: string,
+    targetExecutor?: string,
   ) => {
-    const defaults = composerDefaultsForProfile(items, name);
+    const selected = items.find((item) => item.name === name);
+    const executor = targetExecutor ?? (selected?.executor || NATIVE_EXECUTOR);
+    const isTargetExecutor = (selected?.executor || NATIVE_EXECUTOR) === executor;
+    const defaults = isTargetExecutor ? composerDefaultsForProfile(items, name) : {};
+    const sameExecutor = executor === execution.executor;
+    setExecutionState({ executor, profile: name, profile_file: undefined, overrides: undefined });
     setAgentProfileState(name);
     modelOverrideFromPersona.current = false;
     effortOverrideFromPersona.current = false;
-    modelOverrideFromProfile.current = true;
-    effortOverrideFromProfile.current = true;
-    setModelOverrideState(defaults.model);
-    setEffortOverrideState(defaults.thinking);
+    // A pin replaces the selection. The same engine with no pin keeps the model
+    // already chosen, including one taken from the previous profile. Crossing
+    // engines drops that raw id instead of carrying it.
+    if (isTargetExecutor && defaults.model !== undefined) {
+      modelOverrideFromProfile.current = true;
+      setModelOverrideState(defaults.model);
+    } else if (!sameExecutor) {
+      modelOverrideFromProfile.current = false;
+      setModelOverrideState(undefined);
+    } else {
+      modelOverrideFromProfile.current = false;
+    }
+    if (isTargetExecutor && defaults.thinking !== undefined) {
+      effortOverrideFromProfile.current = true;
+      setEffortOverrideState(defaults.thinking);
+    } else if (!sameExecutor) {
+      effortOverrideFromProfile.current = false;
+      setEffortOverrideState(undefined);
+    } else {
+      effortOverrideFromProfile.current = false;
+    }
     setSelectionRevision((value) => value + 1);
-  }, []);
+  }, [execution.executor]);
 
   useEffect(() => {
     const fromFile = execution.profile_file !== undefined;
     const query = fromFile ? filePreviewQuery : agentProfilesQuery;
+    // A target change blocks only the send that is still holding the previous
+    // context. Once this render has the new target, a pending or failed catalog
+    // must not keep a saved profile from going out.
+    profileCatalogTransitionRef.current = false;
+    setProfileCatalogTransitionPending(false);
     if (agentProfileCatalogMode.mode !== 'disabled' && query.isPending) return;
     const selected = fromFile ? fileProfile : agentProfilesQuery.data?.items.find((item) =>
       item.name === agentProfile && item.main === true && !item.disabled
@@ -568,25 +721,24 @@ export function useNewSessionDraft({
     // A file preview validates the declaration itself, not its main-menu membership.
     // Failed previews keep the draft's source and overrides intact for retry.
     if (query.isSuccess && selected !== undefined) {
-      const defaults = composerDefaultsForProfile([selected], selected.name);
-      if (modelOverrideFromProfile.current) setModelOverrideState(defaults.model);
-      if (effortOverrideFromProfile.current) setEffortOverrideState(defaults.thinking);
+      const isTargetExecutor = profileExecutor(selected) === execution.executor;
+      const defaults = isTargetExecutor ? composerDefaultsForProfile([selected], selected.name) : {};
+      if (modelOverrideFromProfile.current && defaults.model !== undefined) setModelOverrideState(defaults.model);
+      if (effortOverrideFromProfile.current && defaults.thinking !== undefined) setEffortOverrideState(defaults.thinking);
       if (fromFile && selected.source_file !== undefined) {
-        setExecutionState((current) => current.profile_file === selected.source_file && current.executor === profileExecutor(selected)
+        setExecutionState((current) => current.profile_file === selected.source_file
           ? current : { ...current, executor: profileExecutor(selected), profile: undefined, profile_file: selected.source_file });
       }
     }
-    profileCatalogTransitionRef.current = false;
-    setProfileCatalogTransitionPending(false);
-  }, [agentProfile, execution.profile_file, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isSuccess, agentProfilesQuery.isPending, fileProfile, filePreviewQuery.isSuccess, filePreviewQuery.isPending]);
+  }, [agentProfile, execution.profile_file, execution.executor, agentProfileCatalogMode, agentProfilesQuery.data, agentProfilesQuery.isSuccess, agentProfilesQuery.isPending, fileProfile, filePreviewQuery.isSuccess, filePreviewQuery.isPending]);
 
   useEffect(() => {
     if (dailySettingsKey !== undefined) {
       writeDailyDraftSettings(dailySettingsKey, {
+        execution,
         workspaceId: workspaceId || effectiveWorkspace?.id,
         cwd,
         profile: agentProfile,
-        execution,
         modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
         effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
         modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
@@ -596,10 +748,10 @@ export function useNewSessionDraft({
       return;
     }
     writeScopedNewSessionDraft(draftScopeId, {
+      execution,
       workspaceId: workspaceId || effectiveWorkspace?.id,
       cwd,
       profile: agentProfile,
-      execution,
       modelOverride: modelOverrideFromPersona.current ? undefined : modelOverride,
       effortOverride: effortOverrideFromPersona.current ? undefined : effortOverride,
       modelFromProfile: modelOverrideFromProfile.current || modelOverrideFromPersona.current,
@@ -610,7 +762,8 @@ export function useNewSessionDraft({
 
   // A daily draft starts in the persona's own workspace when the persona names
   // one and the user has not already chosen for this draft. A directory the
-  // user is still choosing from (or one that has failed) decides nothing.
+  // user is still choosing from (or one that has failed) decides nothing, and
+  // neither does a workspace list that has not answered yet.
   const dailyDefaultApplied = useRef<string | undefined>(undefined);
   useEffect(() => {
     if (dailyPersonaId === undefined || persona === undefined) return;
@@ -636,30 +789,35 @@ export function useNewSessionDraft({
   }, [draftKey]);
 
   const fromFile = execution.profile_file !== undefined;
+  const nativeExecution = isNativeExecutor(execution.executor);
+  const bareExternal = !nativeExecution && execution.profile === undefined;
+  const validateProfile = !fromFile && !bareExternal && agentProfileCatalogMode.mode !== 'disabled';
   const agentProfileCatalogPending = profileCatalogTransitionPending
     || (cwd.trim() === '' && workspaceId !== AUTO_WORKSPACE_ID && workspacesQuery.isPending)
     || (agentProfileCatalogMode.mode !== 'disabled' && (fromFile ? filePreviewQuery.isPending : agentProfilesQuery.isPending));
+  const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
+    && !agentProfilesQuery.data.items.some((item) => item.name === (execution.profile ?? agentProfile) && item.main === true && !item.disabled);
   const selectionBlocked = !targetReady || agentProfileCatalogMode.mode === 'disabled'
-    || (fromFile
-      ? !filePreviewQuery.isSuccess || fileProfile?.source_file === undefined
-      : agentProfilesQuery.isError || !agentProfilesQuery.data?.items.some((item) => item.name === agentProfile && item.main === true && !item.disabled))
-    || (!(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
-      !modelsQuery.isSuccess
-      || modelProjectionState === 'blocked' || modelProjectionState === 'unknown'
-      || (effectiveModel !== undefined && catalogItem === undefined)
+    || (fromFile ? !filePreviewQuery.isSuccess || fileProfile?.source_file === undefined : invalidProfile)
+    || (nativeExecution && !(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
+      modelProjectionState === 'blocked'
+      || (modelsQuery.isSuccess && effectiveModel !== undefined && catalogItem === undefined)
       || (effortOverride !== undefined && catalogItem !== undefined && !supportedEfforts?.includes(effortOverride))
     ));
+
+  const unresolvedPersona = selectedPersonaId !== undefined && persona?.definition.id !== selectedPersonaId;
 
   // Refs keep the send path stable across renders: the /new page publishes a
   // memoized composer element into the conversation shell, and a send that
   // changes identity on every keystroke would defeat the memo.
   const sendContextRef = useRef({
-    busy: busy || selectionBlocked || personaPending,
+    busy: busy || selectionBlocked || personaPending || unresolvedPersona,
     agentProfileCatalogPending,
     cwd,
+    workspaceId,
     effectiveWorkspace,
-    modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
-    effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
+    modelOverride: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
+    effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     execution,
     permissionMode,
@@ -670,12 +828,13 @@ export function useNewSessionDraft({
     persona,
   });
   sendContextRef.current = {
-    busy: busy || selectionBlocked || personaPending,
+    busy: busy || selectionBlocked || personaPending || unresolvedPersona,
     agentProfileCatalogPending,
     cwd,
+    workspaceId,
     effectiveWorkspace,
-    modelOverride: persona !== undefined && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
-    effectiveEffort: persona !== undefined && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
+    modelOverride: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (modelOverrideFromProfile.current || modelOverrideFromPersona.current) ? undefined : modelOverride,
+    effectiveEffort: (!agentProfilesQuery.isSuccess || agentProfileCatalogPending || persona !== undefined) && (effortOverrideFromProfile.current || effortOverrideFromPersona.current) ? undefined : effectiveEffort,
     agentProfile,
     execution,
     permissionMode,
@@ -686,12 +845,45 @@ export function useNewSessionDraft({
     persona,
   };
 
-  const selectionReady = !selectionBlocked && !agentProfileCatalogPending && !personaPending;
-  const createdForRetry = useRef<{ body: string; sessionId: string } | undefined>(undefined);
-  const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(undefined);
-  const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
+  const scopeIntentKey = dailySettingsKey ?? draftScopeId;
+  const intentScope = useMemo(() => ({ storage: spaceStorage.capture(), active: true }), [scopeIntentKey, spaceKey, connectionId]);
+  const initialIntent = useMemo(() => readPersistedCreationIntent(scopeIntentKey, intentScope.storage), [scopeIntentKey, intentScope]);
+
+  const selectionReady = !selectionBlocked && !personaPending && !unresolvedPersona;
+  const createdForRetry = useRef<PersistedCreationIntent | undefined>(initialIntent);
+  const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(
+    initialIntent?.status === 'accepted' || initialIntent?.status === 'unknown' ? initialIntent.sessionId : undefined,
+  );
+  const noticeForIntent = useCallback((intent: PersistedCreationIntent | undefined) =>
+    intent?.status === 'accepted' ? t('new.creationAccepted')
+      : intent?.status === 'unknown' ? t('new.creationUnknown') : null, [t]);
+  const [creationNotice, setCreationNotice] = useState<string | null>(() => noticeForIntent(initialIntent));
+  const creationIntent = useRef<CreationWait | undefined>(undefined);
   const draftRef = useRef(draft);
   draftRef.current = draft;
+
+  useEffect(() => {
+    intentScope.active = true;
+    creationIntent.current = undefined;
+    setBusy(false);
+    setCreationPending(false);
+    return () => {
+      intentScope.active = false;
+      if (creationIntent.current !== undefined) {
+        creationIntent.current.cancelled = true;
+        creationIntent.current.stopWaiting?.();
+      }
+    };
+  }, [intentScope]);
+  useEffect(() => {
+    if (creationIntent.current !== undefined) return;
+    const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+    createdForRetry.current = saved;
+    setCreatedSessionId(saved?.status === 'accepted' || saved?.status === 'unknown' ? saved.sessionId : undefined);
+    setCreationNotice(noticeForIntent(saved));
+    setError(saved?.error ?? null);
+  }, [scopeIntentKey, intentScope, noticeForIntent]);
+
   const cancelCreation = useCallback(() => {
     if (creationIntent.current === undefined) return;
     creationIntent.current.cancelled = true;
@@ -700,15 +892,13 @@ export function useNewSessionDraft({
   }, [t]);
   const openCreatedSession = useCallback(() => {
     const accepted = createdForRetry.current;
-    if (accepted === undefined || creationIntent.current !== undefined) return;
-    queryClient.setQueryData(['space-view-target', scopeId, 'session', accepted.sessionId], true);
+    if (accepted === undefined || accepted.status === 'conflict' || creationIntent.current !== undefined) return;
+    if (accepted.status === 'accepted') queryClient.setQueryData(['space-view-target', scopeId, 'session', accepted.sessionId], true);
     void navigate(`/s/${accepted.sessionId}`);
   }, [navigate, queryClient, scopeId]);
-  useEffect(() => () => {
-    if (creationIntent.current !== undefined) creationIntent.current.cancelled = true;
-  }, [scopeId]);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
+    initialPresentation?: import('@kiki/transcript').TextPresentation;
     initialAttachments?: readonly ComposerAttachment[];
     initialSkill?: DraftSkillHandoff;
     /**
@@ -733,10 +923,10 @@ export function useNewSessionDraft({
       setError(sshLabel === null ? t('new.cwdInvalid') : t('connect.sshCwdInvalid'));
       return;
     }
-    if (context.busy || context.agentProfileCatalogPending || profileCatalogTransitionRef.current) return;
-    const body = buildNewSessionCreate({
+    if (context.busy || profileCatalogTransitionRef.current) return;
+    const bodyWithoutCreation = buildNewSessionCreate({
       cwd: trimmedCwd,
-      workspaceId: context.effectiveWorkspace?.id,
+      workspaceId: (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : context.effectiveWorkspace?.id,
       profile: context.agentProfile,
       execution: context.execution,
       model: context.modelOverride,
@@ -755,29 +945,63 @@ export function useNewSessionDraft({
     // Returned so the composer's send latch rides the create round trip: a
     // second trigger while this is in flight is ignored, and a failed create
     // releases the latch for retry.
-    const bodyKey = JSON.stringify([draftScopeId, body]);
+    const bodyKey = JSON.stringify([draftScopeId, bodyWithoutCreation]);
     const retry = createdForRetry.current;
-    if (retry !== undefined && retry.body !== bodyKey) {
-      setCreationNotice(t('new.creationAccepted'));
+    if (retry !== undefined && retry.bodyKey !== bodyKey) {
+      setCreationNotice(noticeForIntent(retry));
       return;
     }
-    const intent = { cancelled: false };
+
+    const creationId = retry?.creationId ?? crypto.randomUUID().toLowerCase();
+    const targetSessionId = retry?.sessionId ?? `session_${creationId}`;
+    const body: SessionCreate = {
+      ...bodyWithoutCreation,
+      creation_id: creationId,
+    };
+
+    const intent: CreationWait = { cancelled: false };
     creationIntent.current = intent;
     const submittedDraft = draftRef.current;
-    if (trimmedCwd === '') setWorkspaceId(context.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID);
+    if (trimmedCwd === '') {
+      const explicitId = (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : undefined;
+      setWorkspaceId(explicitId ?? context.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID);
+    }
     setBusy(true);
     setCreationPending(true);
     setCreationNotice(null);
     setError(null);
-    const creation = retry !== undefined ? Promise.resolve({ id: retry.sessionId }) : client.createSession(body);
+    let outcome: PersistedCreationIntent | undefined = retry?.status === 'accepted' ? retry : {
+      creationId, sessionId: targetSessionId, bodyKey, status: 'unknown',
+    };
+    const saveOutcome = () => {
+      if (!intentScope.active) {
+        const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+        if (saved?.creationId !== creationId || (saved.status === 'accepted' && outcome?.status !== 'accepted')) return;
+      }
+      if (outcome === undefined) clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+      else writePersistedCreationIntent(scopeIntentKey, outcome, intentScope.storage);
+      if (intentScope.active) createdForRetry.current = outcome;
+    };
+    createdForRetry.current = outcome;
+    flushDrafts();
+    writePersistedCreationIntent(scopeIntentKey, {
+      ...outcome,
+      status: outcome.status === 'accepted' ? 'accepted' : 'pending',
+    }, intentScope.storage);
+
+    const creation = (retry !== undefined && retry.status === 'accepted')
+      ? Promise.resolve({ id: retry.sessionId })
+      : client.createSession(body);
     return creation
       .then(async (session) => {
+        outcome = { bodyKey, sessionId: session.id, creationId, status: 'accepted' };
+        saveOutcome();
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-        createdForRetry.current = { body: bodyKey, sessionId: session.id };
+        if (!intentScope.active) return;
         setCreatedSessionId(session.id);
         if (intent.cancelled) {
-          setCreationNotice(t('new.creationAccepted'));
+          setCreationNotice(noticeForIntent(outcome));
           return;
         }
         // Hosts preselected on /new become session resources before anything
@@ -797,66 +1021,152 @@ export function useNewSessionDraft({
           }
         }
         if (intent.cancelled) return;
-        createdForRetry.current = undefined;
-        if (readDraft(draftKey) === submittedDraft) writeDraft(draftKey, '');
-        clearScopedNewSessionDraft(draftScopeId);
+        await applyPendingNewSessionCapabilities(client, session.id, { scopeId, spaceKey, connectionId, draftKey });
+        if (intent.cancelled) return;
+
+        // Persist the first prompt or skill into the new session's own draft before clearing /new,
+        // so that if activation, navigation, or target mounting stalls and the user refreshes,
+        // SessionView can safely recover the initial prompt and attachments from Draft(session.id).
+        const recoveryText = handoff.initialSkill !== undefined
+          ? (handoff.initialSkill.userInput ?? `/${handoff.initialSkill.name}${handoff.initialSkill.args === '' ? '' : ` ${handoff.initialSkill.args}`}`)
+          : handoff.initialPrompt;
+        if (recoveryText !== undefined && recoveryText !== '') {
+          writeDraft(session.id, recoveryText);
+          flushDrafts();
+        }
+        const effectiveAttachments = handoff.initialSkill?.attachments ?? handoff.initialAttachments;
+        writeComposerState(session.id, {
+          attachments: effectiveAttachments ?? [],
+          annotations: [],
+          permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
+          planMode: context.planMode,
+          planGate: undefined,
+          goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+          modelOverride: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
+          effortOverride: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
+            ? context.effectiveEffort : undefined,
+          execution: context.execution,
+        });
+
         // Creation already confirmed this target in this connection scope.
         // Let the route mount immediately while its guard revalidates it.
         queryClient.setQueryData(['space-view-target', scopeId, 'session', session.id], true);
-        // react-router's navigate returns a promise in data routers; the
-        // navigation is fire-and-forget here (the catch below covers createSession).
-        // The hand-off motion rides along with it and never delays the send.
-        runNewSessionHandoff({
-          text: handoff.initialPrompt,
-          navigate: () => navigate(`/s/${session.id}`, {
-            state: {
-              createdSession: { id: session.id, scopeId },
-              initialPrompt: handoff.initialPrompt,
-              initialAttachments: handoff.initialAttachments,
-              initialSkill: handoff.initialSkill,
-              // The first message of a bare external engine must reach the
-              // session with the same emptiness as the create did: these ride
-              // the handoff into SessionView's own send path, so a displayed
-              // default re-sent here would re-introduce the very override the
-              // create body just declined to send.
-              model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
-              thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) ? context.effectiveEffort : undefined,
-              permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
-              planMode: context.planMode,
-              goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
-              // The greeting was the last thing on screen and this is the first
-              // message: the engine materializes it as history from the frozen
-              // persona (the client never sends the greeting text itself).
-              personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
-            },
-            replace: false,
-          }),
+        const targetPath = `/s/${session.id}`;
+        const navigateToSession = (onCancel: () => void) => navigate(targetPath, {
+          state: {
+            createdSession: { id: session.id, scopeId },
+            initialPrompt: handoff.initialPrompt,
+            initialPresentation: handoff.initialPresentation,
+            initialAttachments: handoff.initialAttachments,
+            initialSkill: handoff.initialSkill,
+            // The first message of a bare external engine must reach the
+            // session with the same emptiness as the create did: these ride
+            // the handoff into SessionView's own send path, so a displayed
+            // default re-sent here would re-introduce the very override the
+            // create body just declined to send.
+            model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
+            thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
+              ? context.effectiveEffort : undefined,
+            permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
+            planMode: context.planMode,
+            goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+            ephemeral: context.ephemeral,
+            // The greeting was the last thing on screen and this is the first
+            // message: the engine materializes it as history from the frozen
+            // persona (the client never sends the greeting text itself).
+            personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
+          },
+          replace: false,
+        }, onCancel);
+        const navigated = await new Promise<boolean>((resolve, reject) => {
+          let settled = false;
+          let unsubscribe: (() => void) | undefined;
+          const cleanup = () => { unsubscribe?.(); intent.stopWaiting = undefined; };
+          const finish = (accepted: boolean) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            resolve(accepted);
+          };
+          const fail = (cause: unknown) => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            reject(cause);
+          };
+          const atTarget = () => router?.state.location.pathname === targetPath && router.state.navigation.state === 'idle';
+          if (router !== undefined) {
+            unsubscribe = router.subscribe(() => { if (atTarget()) finish(true); });
+            intent.stopWaiting = () => { finish(atTarget()); };
+          }
+          try {
+            runNewSessionHandoff({
+              text: handoff.initialPrompt,
+              navigate: () => {
+                if (intent.cancelled) { finish(false); return; }
+                void Promise.resolve().then(() => navigateToSession(() => { finish(false); })).then(() => {
+                  // A blocked data-router navigation can resolve without leaving /new.
+                  if (router === undefined || atTarget()) finish(true);
+                }, fail);
+              },
+            });
+          } catch (cause) { fail(cause); }
         });
+        if (!navigated) {
+          if (intentScope.active) {
+            setBusy(false);
+            setCreationNotice(noticeForIntent(outcome));
+          }
+          return;
+        }
+        if (readDraft(draftKey) === submittedDraft) writeDraft(draftKey, '');
+        clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+        clearScopedNewSessionDraft(draftScopeId, intentScope.storage);
+        if (intentScope.active) createdForRetry.current = undefined;
       })
       .catch((cause: unknown) => {
+        const message = errorText(locale, cause);
+        if (outcome?.status === 'accepted') {
+          // A later SSH, capability or navigation failure cannot undo creation.
+          outcome = { ...outcome, error: message };
+        } else if (isConflictCreationError(cause)) {
+          const details = cause instanceof ApiError ? (cause.details as { reason?: string } | undefined) : undefined;
+          outcome = { creationId, sessionId: targetSessionId, bodyKey, status: 'conflict', reason: details?.reason, error: message };
+        } else if (isUnknownCreationError(cause)) {
+          const details = cause instanceof ApiError ? (cause.details as { session_id?: string; evidence?: string } | undefined) : undefined;
+          outcome = {
+            creationId, sessionId: details?.session_id ?? targetSessionId, bodyKey,
+            status: 'unknown', evidence: details?.evidence, error: message,
+          };
+        } else {
+          // A failed replay does not resolve the earlier unconfirmed outcome.
+          outcome = retry === undefined ? undefined : { ...retry, error: message };
+        }
+        saveOutcome();
+        if (!intentScope.active) return;
         setBusy(false);
-        setError(errorText(locale, cause));
-        setCreationNotice(createdForRetry.current !== undefined
-          ? t('new.creationAccepted')
-          : cause instanceof ApiError && cause.code < 0 ? t('new.creationUnknown') : null);
+        setError(message);
+        setCreatedSessionId(outcome?.status === 'accepted' || outcome?.status === 'unknown' ? outcome.sessionId : undefined);
+        setCreationNotice(noticeForIntent(outcome));
       })
       .finally(() => {
-        if (creationIntent.current !== intent) return;
+        if (!intentScope.active || creationIntent.current !== intent) return;
         creationIntent.current = undefined;
         setCreationPending(false);
-        if (intent.cancelled && createdForRetry.current !== undefined) setCreationNotice(t('new.creationAccepted'));
+        if (intent.cancelled) setCreationNotice(noticeForIntent(createdForRetry.current));
       });
-  }, [client, draftKey, draftScopeId, locale, scopeId, sshLabel, navigate, queryClient, t]);
+  }, [client, connectionId, draftKey, draftScopeId, intentScope, locale, router, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
 
   const send = useCallback((
     text: string,
     composerAttachments: readonly ComposerAttachment[],
-    options?: { readonly goalObjective?: string },
+    options?: { readonly goalObjective?: string; readonly presentation?: import('@kiki/transcript').TextPresentation },
   ) => {
-    if (buildPromptContent(text, composerAttachments) === null) return;
+    if (buildPromptContent(text, composerAttachments, options?.presentation) === null) return;
     if (options?.goalObjective !== undefined) setGoalObjective(options.goalObjective);
     return createThenNavigate({
-      initialPrompt: text.trim(),
+      initialPrompt: text,
+      initialPresentation: options?.presentation,
       initialAttachments: withoutSsh(composerAttachments),
       sshHosts: sshOf(composerAttachments),
       goalObjectiveOverride: options?.goalObjective,
@@ -925,22 +1235,40 @@ export function useNewSessionDraft({
    */
   const setExecution = useCallback((next: ExecutionChoice) => {
     setExecutionState(next);
+    const profileChanged = next.profile !== agentProfile;
     if (next.profile === undefined) {
       personaSelectionRef.current += 1;
+      setSelectedPersonaId(undefined);
       setPersonaState(undefined);
       setPersonaPending(false);
-      setModelOverrideState(undefined);
-      setEffortOverrideState(undefined);
+      if (next.executor !== execution.executor) {
+        setModelOverrideState(undefined);
+        setEffortOverrideState(undefined);
+      }
       modelOverrideFromPersona.current = false;
       effortOverrideFromPersona.current = false;
       modelOverrideFromProfile.current = next.profile_file !== undefined;
       effortOverrideFromProfile.current = next.profile_file !== undefined;
+    } else if (profileChanged) {
+      applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile, next.executor);
     } else {
-      applyAgentProfile(agentProfilesQuery.data?.items ?? [], next.profile);
+      const items = agentProfilesQuery.data?.items ?? [];
+      const selected = items.find((item) => item.name === next.profile);
+      const isTargetExecutor = (selected?.executor || NATIVE_EXECUTOR) === next.executor;
+      if (!isTargetExecutor) {
+        if (modelOverrideFromProfile.current) {
+          modelOverrideFromProfile.current = false;
+          setModelOverrideState(undefined);
+        }
+        if (effortOverrideFromProfile.current) {
+          effortOverrideFromProfile.current = false;
+          setEffortOverrideState(undefined);
+        }
+      }
     }
     setAgentProfileState(next.profile ?? DEFAULT_AGENT_PROFILE);
     setSelectionRevision((value) => value + 1);
-  }, [agentProfilesQuery.data, applyAgentProfile]);
+  }, [agentProfilesQuery.data, agentProfile, applyAgentProfile, execution.executor]);
 
   /**
    * Bind (or clear) a persona. Its profile becomes the draft's profile so the
@@ -975,31 +1303,38 @@ export function useNewSessionDraft({
   // for the newer pick: two slower/faster round trips are not a user's order.
   const personaSelectionRef = useRef(0);
   const selectPersona = useCallback((id: string | undefined) => {
+    setSelectedPersonaId(id);
     const token = personaSelectionRef.current + 1;
     personaSelectionRef.current = token;
-    if (id === undefined) { applyPersona(undefined); return; }
+    if (id === undefined) {
+      applyPersona(undefined);
+      setError(null);
+      return;
+    }
     setPersonaPending(true);
+    setError(null);
     void client.getPersona(id)
       .then((snapshot) => { if (personaSelectionRef.current === token) applyPersona(snapshot); })
       .catch((cause: unknown) => {
         if (personaSelectionRef.current !== token) return;
+        setPersonaState(undefined);
         setError(cause instanceof Error ? cause.message : String(cause));
       })
       .finally(() => { if (personaSelectionRef.current === token) setPersonaPending(false); });
   }, [applyPersona, client]);
 
-  // `?persona=` from the Personas page's "Start a chat" — applied once the
-  // profile catalog is there, so the persona's profile validates.
+  // `?persona=` from the Personas page's "Start a chat" — applied immediately by ID
   const initialPersonaRef = useRef(initialPersona);
   useEffect(() => {
     const id = initialPersonaRef.current;
-    if (id === undefined || agentProfilesQuery.data === undefined) return;
+    if (id === undefined) return;
     initialPersonaRef.current = undefined;
     selectPersona(id);
-  }, [agentProfilesQuery.data, selectPersona]);
+  }, [selectPersona]);
 
   return {
     persona,
+    selectedPersonaId,
     personaPending,
     selectPersona,
     /** Set when this draft is one persona's daily conversation. */
@@ -1016,8 +1351,6 @@ export function useNewSessionDraft({
     cancelCreation,
     selectionReady,
     targetReady,
-    workspacesError,
-    retryWorkspaces,
     error,
     workspaceId,
     cwd,
@@ -1030,6 +1363,10 @@ export function useNewSessionDraft({
     setExecution,
     workspaces,
     workspacesLoading,
+    workspacesFailed,
+    /** The server's own message, for the failure row instead of a generic one. */
+    workspacesError,
+    retryWorkspaces,
     effectiveWorkspace,
     autoWorkspace,
     worktreeAvailability,
@@ -1083,7 +1420,10 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
       },
       ...sortWorkspacesByPinnedThenRecency(state.workspaces).map((workspace) => ({
         value: workspace.id,
-        label: workspace.name,
+        // A workspace kiki created for itself keeps the automatic label here
+        // too: the name it was filed under is an internal handle, and the row
+        // is the user's chance to see what they are about to work in.
+        label: isAutoCreatedWorkspace(workspace) ? t('new.autoWorkspace') : workspace.name,
         hint: workspace.root,
         title: workspace.name,
       })),
@@ -1100,59 +1440,79 @@ export function WorkspacePickerFields({ state }: { state: NewSessionDraftState }
         {state.sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${state.sshLabel}`}
       </p>
       {state.sshLabel !== null ? <p className="text-[11px] text-ink-soft">{t('connect.sshRemotePathHint')}</p> : null}
+      {state.workspacesFailed ? (
+        <div role="alert" data-new-workspace-failure className="flex flex-wrap items-center gap-2 text-[11.5px] leading-relaxed text-danger">
+          <span>{state.workspacesError ?? t('new.workspacesFailed')}</span>
+          <button
+            type="button"
+            data-new-workspace-retry
+            onClick={() => { state.retryWorkspaces(); }}
+            className="shrink-0 rounded-md border border-hairline bg-paper px-2 py-0.5 text-[11.5px] text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
+      ) : null}
       {firstRun ? (
         <p className="text-[11.5px] leading-relaxed text-ink-soft">{t('new.firstRunHint')}</p>
       ) : null}
-      <div className="flex flex-wrap items-center gap-3">
-        <label className="text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
-        <SearchableSelect
-          id="new-workspace-select"
-          options={workspaceOptions}
-          value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? (state.autoWorkspace ? AUTO_WORKSPACE_ID : ''))}
-          emptyText={t('hero.chooseWorkspace')}
-          onChange={(nextId) => { state.selectWorkspace(nextId); }}
-          disabled={state.workspacesLoading}
-          ariaLabel={t('new.workspace')}
-          buttonClassName="flex w-64 max-w-full items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
-        />
-        <span className="text-[11px] text-ink-faint">{t('new.or')}</span>
-        {state.canBrowseForWorkspace ? (
-          <button
-            type="button"
-            data-new-browse
-            onClick={() => { void state.browseForWorkspace(); }}
-            className="flex shrink-0 items-center gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink"
-          >
-            <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-ink-soft">
-              <path
-                d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6a1.5 1.5 0 0 1 1.2.6l1 1.33a1.5 1.5 0 0 0 1.2.6h3A1.5 1.5 0 0 1 14 7v4.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
-                stroke="currentColor"
-                strokeWidth="1.2"
-                strokeLinejoin="round"
-              />
-            </svg>
-            {t('new.browse')}
-          </button>
-        ) : null}
-        <div className="min-w-0 flex-1">
-          <input
-            type="text"
-            value={state.cwd}
-            onChange={(event) => { state.setCwd(event.target.value); }}
-            onBlur={() => { setCwdBlurred(true); }}
-            aria-label={t('new.cwdAria')}
-            aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
-            placeholder={state.sshLabel === null ? t('new.cwdPlaceholder') : '/home/dev/project'}
-            className={`min-w-0 flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink ${
-              cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
-            }`}
-          />
-          {cwdBlurred && cwdInvalid ? (
-            <p role="alert" className="mt-1 text-[10.5px] text-danger">
-              {t(state.sshLabel === null ? 'new.cwdInvalid' : 'connect.sshCwdInvalid')}
-            </p>
-          ) : null}
+      <div className="flex flex-col gap-2">
+        <div className="flex items-center gap-2">
+          <label htmlFor="new-workspace-select" className="shrink-0 text-[11px] font-medium text-ink-soft">{t('new.workspace')}</label>
+          <div className="min-w-0 flex-1">
+            <SearchableSelect
+              id="new-workspace-select"
+              options={workspaceOptions}
+              value={state.workspaceId !== '' ? state.workspaceId : (state.effectiveWorkspace?.id ?? (state.autoWorkspace ? AUTO_WORKSPACE_ID : ''))}
+              emptyText={t('hero.chooseWorkspace')}
+              onChange={(nextId) => { state.selectWorkspace(nextId); }}
+              disabled={state.workspacesLoading}
+              ariaLabel={t('new.workspace')}
+              buttonClassName="flex w-full min-w-0 items-center justify-between gap-1.5 rounded-md border border-hairline bg-paper px-2 py-1 text-[12px] text-ink outline-none transition-colors hover:border-hairline-strong focus:border-selected-ink disabled:cursor-not-allowed disabled:bg-hairline/20 disabled:text-ink-faint"
+            />
+          </div>
         </div>
+        <div className="flex items-center gap-2">
+          <span className="shrink-0 text-[11px] text-ink-faint">{t('new.or')}</span>
+          <div className="flex min-w-0 flex-1 items-center gap-1.5">
+            <input
+              type="text"
+              value={state.cwd}
+              onChange={(event) => { state.setCwd(event.target.value); }}
+              onBlur={() => { setCwdBlurred(true); }}
+              aria-label={t('new.cwdAria')}
+              aria-invalid={cwdBlurred && cwdInvalid ? true : undefined}
+              placeholder={state.sshLabel === null ? t('new.cwdPlaceholder') : '/home/dev/project'}
+              className={`min-w-0 w-full flex-1 rounded-md border bg-paper px-2 py-1 font-mono text-[11.5px] text-ink outline-none placeholder:text-ink-faint focus:border-selected-ink ${
+                cwdBlurred && cwdInvalid ? 'border-danger' : 'border-hairline'
+              }`}
+            />
+            {state.canBrowseForWorkspace ? (
+              <button
+                type="button"
+                data-new-browse
+                aria-label={t('new.browse')}
+                title={t('new.browse')}
+                onClick={() => { void state.browseForWorkspace(); }}
+                className="flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-hairline bg-paper text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink focus-visible:border-selected-ink focus-visible:outline-none"
+              >
+                <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden className="shrink-0 text-current">
+                  <path
+                    d="M2 4.5A1.5 1.5 0 0 1 3.5 3h2.6a1.5 1.5 0 0 1 1.2.6l1 1.33a1.5 1.5 0 0 0 1.2.6h3A1.5 1.5 0 0 1 14 7v4.5a1.5 1.5 0 0 1-1.5 1.5h-9A1.5 1.5 0 0 1 2 11.5v-7Z"
+                    stroke="currentColor"
+                    strokeWidth="1.2"
+                    strokeLinejoin="round"
+                  />
+                </svg>
+              </button>
+            ) : null}
+          </div>
+        </div>
+        {cwdBlurred && cwdInvalid ? (
+          <p role="alert" className="text-[10.5px] text-danger">
+            {t(state.sshLabel === null ? 'new.cwdInvalid' : 'connect.sshCwdInvalid')}
+          </p>
+        ) : null}
       </div>
       {state.workspacesError !== null ? (
         <div role="alert" className="text-[12px] text-danger">

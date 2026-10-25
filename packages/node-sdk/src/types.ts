@@ -118,12 +118,21 @@ export interface WorkspaceTrustMcpServerInfo {
   readonly args?: readonly string[];
   readonly cwd?: string;
   readonly url?: string;
+  readonly origin?: string;
 }
 
 export interface WorkspaceTrustInfo {
   readonly trusted: boolean;
   /** Safe descriptions of project-level MCP servers that trusting would enable. */
   readonly gatedMcpServers: readonly WorkspaceTrustMcpServerInfo[];
+  readonly warnings?: readonly string[];
+  readonly additionalDirs?: readonly string[];
+  readonly additionalDirSources?: readonly string[];
+  readonly instructionSources?: {
+    readonly agentsMdPaths: readonly string[];
+    readonly skills: readonly string[];
+    readonly agentProfiles: readonly string[];
+  };
 }
 
 /** Metadata of one upload in the engine's daemon file store. */

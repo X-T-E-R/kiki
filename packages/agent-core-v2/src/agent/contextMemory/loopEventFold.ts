@@ -319,9 +319,29 @@ function createImmutableFoldSink(initial: readonly ContextMessage[]): ImmutableF
       current = [...current, source === undefined ? message : { ...message, source }];
     },
     pushMessage: (message) => {
+      const revision = findProviderMessageRevision(current, message, (entry) => entry);
+      if (revision !== undefined) {
+        const next = current.slice();
+        next[revision.index] = revision.message;
+        current = next;
+        return;
+      }
       current = [...current, message];
     },
   };
+}
+
+export function findProviderMessageRevision<T>(state: readonly T[], message: ContextMessage, readMessage: (entry: T) => ContextMessage): { index: number; message: ContextMessage } | undefined {
+  if (message.role !== 'user' || message.id === undefined || message.providerMessageId === undefined) return undefined;
+  for (let index = state.length - 1; index >= 0; index--) {
+    const previous = readMessage(state[index]!);
+    if (previous.role !== 'user' || previous.id !== message.id || previous.providerMessageId !== message.providerMessageId) continue;
+    const before = previous.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+    const incoming = message.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('');
+    const content = before.length > 0 && !incoming.startsWith(before) ? [...previous.content, ...message.content] : message.content;
+    return { index, message: { ...previous, content, origin: message.origin ?? previous.origin } };
+  }
+  return undefined;
 }
 
 function findOpenAssistantIndex(state: readonly ContextMessage[]): number {

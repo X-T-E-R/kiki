@@ -2,6 +2,7 @@ import { copyFile, mkdir, stat } from 'node:fs/promises';
 import { resolve } from 'node:path';
 
 import { fail, run, tryRun } from './exec.mjs';
+import { applyWindowsVersionInfo } from './windows-version-info.mjs';
 import {
   appRoot,
   nativeBinDir,
@@ -57,6 +58,7 @@ export async function runInjectStep() {
   await ensureBlobExists();
   await copyNodeExecutable(target);
   await removeSignatureIfNeeded(target);
+  await applyWindowsVersionInfo(nativeBinPath(target));
   await injectSeaBlob(target);
 }
 

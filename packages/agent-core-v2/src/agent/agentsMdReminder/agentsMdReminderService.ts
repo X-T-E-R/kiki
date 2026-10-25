@@ -7,7 +7,7 @@ import { IBashParserService } from '#/app/bashParser/bashParser';
 import { IEventBus } from '#/app/event/eventBus';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { AgentsMdReminderShownEvent } from '#/app/telemetry/events';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { translateShellDrivePath } from '#/_base/execEnv/shellPathBridge';
 import { profileKey } from '#/agent/profile/profileOps';
@@ -38,6 +38,7 @@ interface PendingInstruction {
 export class AgentAgentsMdReminderService extends Disposable implements IAgentAgentsMdReminderService {
   declare readonly _serviceBrand: undefined;
   private readonly pending = new Map<string, PendingInstruction>();
+  private pendingGeneration = 0;
   private readonly telemetryFired = new Set<string>();
   private readonly loaded = new Map<string, { item: PendingInstruction; mtimeMs: number; size: number }>();
 
@@ -59,6 +60,7 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     this.states.contributeState(agentsMdReminderCwdKey);
     this.states.contributeState(agentsMdReminderSeededKey);
     this._register(dispatcher.hooks.onDidRestore.register('agentsMdReminder', async (_ctx, next) => {
+      this.pendingGeneration++;
       this.pending.clear();
       await next();
     }));
@@ -84,14 +86,17 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
   }
 
   async flushStepHead(): Promise<void> {
-    const missing: PendingInstruction[] = [];
+    const generation = this.pendingGeneration;
+    const candidates: PendingInstruction[] = [];
     for (const item of this.pending.values()) {
       const lease = this.acquire(item.file.runtimeId.startsWith('ssh:') ? item.file.runtimeId.slice(4) : item.file.runtimeId === 'local' ? 'local' : undefined);
       try {
         const current = await this.load(lease, item.sourcePath);
-        if (current !== undefined && !this.covered(current)) missing.push(current);
+        if (current !== undefined) candidates.push(current);
       } finally { lease.dispose(); }
+      if (generation !== this.pendingGeneration) return;
     }
+    const missing = candidates.filter((item) => !this.covered(item));
     if (missing.length === 0) { this.pending.clear(); return; }
     this.reminders.appendSystemReminder(`Applicable directory instructions (complete current versions; apply within each stated directory scope):\n\n${missing.map((item) => `<!-- From: ${item.sourcePath} -->\nHost: ${item.file.runtimeId}; scope: ${item.file.scope}\n${item.content}`).join('\n\n')}`, {
       kind: 'injection', variant: 'agents_md', disclosure: { mode: 'add', files: missing.map((item) => item.file) },
@@ -105,13 +110,13 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
 
   private covered(item: PendingInstruction): boolean {
     const key = instructionKey(item.file, item.pathClass);
-    if (coveredInstructions(this.context.get(), item.pathClass).has(`${key}:${item.file.version}`)) return true;
     const profile = this.states.get(profileKey);
     const files = this.states.get(dynamicPromptKey)?.context.agentsMdFiles ?? [];
     const trusted = files.some((file) => instructionKey(file, item.pathClass) === key && file.version === item.file.version) ||
       (item.file.runtimeId === this.runtime.inspect().identity.runtimeId &&
         (profile.agentsMdPaths ?? []).some((path) => instructionKey({ path, runtimeId: item.file.runtimeId, scope: item.file.scope }, item.pathClass) === key));
-    return trusted && profile.systemPrompt.includes(`<!-- From: ${item.sourcePath} -->\n${item.content}`);
+    const systemFiles = trusted && profile.systemPrompt.includes(`<!-- From: ${item.sourcePath} -->\n${item.content}`) ? [item.file] : [];
+    return coveredInstructions(this.context.get(), item.pathClass, systemFiles).has(`${key}:${item.file.version}`);
   }
 
   private queue(items: readonly PendingInstruction[]): void {
@@ -144,7 +149,10 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
     let target = normalize(directory);
     try { target = normalize(await lease.runtime.fs!.realpath(target)); } catch {}
     const pathClass = lease.runtime.environment.pathClass;
-    const base = normalize(lease.runtime.workspace.mapRoots({ workDir: this.sessionContext.cwd, additionalDirs: [] }).workDir);
+    const base = normalize(lease.runtime.workspace.mapRoots(inspectAgentWorkspaceRoots(this.runtime, {
+      workDir: this.sessionContext.cwd,
+      additionalDirs: [],
+    })).workDir);
     const normalized = pathClass === 'win32' ? target.toLowerCase() : target;
     const root = pathClass === 'win32' ? base.toLowerCase() : base;
     return this.discovery.discover(lease, target, normalized === root || normalized.startsWith(`${root}/`) ? base : undefined);
@@ -181,8 +189,12 @@ export class AgentAgentsMdReminderService extends Disposable implements IAgentAg
       try {
         const env = lease.runtime.environment;
         const shellPath = (path: string) => env.pathClass === 'win32' ? translateShellDrivePath(path) : path;
-        const rawCwd = shellPath(stringArg(ctx.args, 'cwd') ?? this.sessionContext.cwd);
-        const cwd = isAbsolute(rawCwd) ? rawCwd : join(this.sessionContext.cwd, rawCwd);
+        const agentWorkDir = inspectAgentWorkspaceRoots(this.runtime, {
+          workDir: this.sessionContext.cwd,
+          additionalDirs: [],
+        }).workDir;
+        const rawCwd = shellPath(stringArg(ctx.args, 'cwd') ?? agentWorkDir);
+        const cwd = isAbsolute(rawCwd) ? rawCwd : join(agentWorkDir, rawCwd);
         const command = stringArg(ctx.args, 'command') ?? '';
         let parsed = this.bashParser.parse(command, { timeoutMs: 500, maxNodes: 10_000 });
         if (!parsed.ok && command.length <= 512) parsed = this.bashParser.parse(command, { timeoutMs: Number.POSITIVE_INFINITY, maxNodes: 10_000 });

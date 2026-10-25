@@ -5,7 +5,21 @@ import { defineState } from '#/state/state';
 import type { Tool as KosongTool } from '#/kosong/contract/tool';
 
 import { type IDisposable } from "#/_base/di/lifecycle";
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
+import type {
+  McpServerAuthState,
+  McpServerLocator,
+} from '#/app/mcpManagement/mcpManagement';
+import {
+  IMcpRegistryService,
+  type McpRegistryEntry,
+} from '#/app/mcpRegistry/mcpRegistry';
+import { toMcpServerConfigView } from '#/mcpCore/configView';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { mcpServerConfigsEqual } from '#/mcpCore/connection-manager';
+import type { McpSessionCapability, McpSessionOverride, McpSessionOverrideValue } from './mcp';
 import { Service } from "#/_base/di/service";
 import { ErrorCodes, Error2, makeErrorPayload } from "#/errors";
 import { abortable } from '#/_base/utils/abort';
@@ -16,18 +30,26 @@ import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { createMcpAuthTool } from '#/agent/mcp/tools/auth';
 import { createMcpTool } from '#/agent/mcp/tools/mcp';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import type { McpServerEntry } from '#/mcpCore/connection-manager';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { IAgentMcpService } from './mcp';
 import { qualifyMcpToolName } from '#/mcpCore/tool-naming';
-import { isComputerMcpConfig } from '#/mcpCore/computer';
+import { IMcpConfigStore } from '#/app/mcpConfig/configStore';
+import { computerSelectionAdmits, isComputerMcpConfig, setComputerConnectionSelection } from '#/mcpCore/computer';
 import { IConfigService } from '#/app/config/config';
-import { COMPUTER_CONFIG_SECTION, type ComputerConfig } from '#/app/computer/configSection';
+import { COMPUTER_CONFIG_SECTION, computerToolsEnabled, type ComputerConfig } from '#/app/computer/configSection';
+import { capabilityToolsSource } from '#/app/optionalCapability/admit';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
@@ -42,6 +64,13 @@ interface McpToolRegistration {
   readonly serverName: string;
 }
 
+interface ComputerToolSession {
+  readonly client: MCPClient;
+  readonly tools: readonly KosongTool[];
+  readonly enabledNames: ReadonlySet<string>;
+  readonly admitCall?: () => Promise<{ release(): void } | undefined>;
+}
+
 export const mcpMcpToolsByServerKey = defineState<Map<string, string[]>>(
   'mcp.mcpToolsByServer',
   () => new Map(),
@@ -54,11 +83,23 @@ export const mcpDiscoveryWritesReadyKey = defineState<boolean>(
 export class AgentMcpService extends Service implements IAgentMcpService {
   declare readonly _serviceBrand: undefined;
   private readonly mcpTools = new Map<string, McpToolRegistration>();
+  private readonly computerSessions = new Map<string, ComputerToolSession>();
+  private computerLease: { readonly sessionId: string; readonly agentId: string; readonly policy: IOptionalCapabilityPolicy } | undefined;
+  private computerLeaseArmed = false;
   private readonly pendingDiscoveries: Array<() => void> = [];
+  private readonly refreshErrors = new Map<string, string>();
+  private readonly reconnectableServerTools = new Map<string, readonly string[]>();
+  private readonly sessionOverrides: Map<string, Exclude<McpSessionOverrideValue, 'inherit'>>;
+  private readonly sessionServerKeys = new Map<string, string>();
+  private readonly sessionOverridesLoaded: Promise<void>;
+  private readonly sessionOverridesReady: Promise<void>;
+  private overrideWrites: Promise<void> = Promise.resolve();
 
   constructor(
     @ISessionMcpHandle private readonly mcpHandle: ISessionMcpHandle,
     @ISessionContext private readonly sessionContext: ISessionContext,
+    @ref(ISessionWorkspaceContext) private readonly workspace: LiveRef<ISessionWorkspaceContext>,
+    @ref(IAgentRuntimeService) private readonly runtime: LiveRef<IAgentRuntimeService>,
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
     @IAgentToolExecutorService toolExecutor: IAgentToolExecutorService,
     @IAgentLoopService loop: IAgentLoopService,
@@ -68,12 +109,35 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     @IAgentProfileService private readonly profile: IAgentProfileService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @IConfigService private readonly configService: IConfigService,
+    @IMcpRegistryService private readonly serverRegistry: IMcpRegistryService,
+    @ref(IAgentToolPolicyService) private readonly toolPolicy: LiveRef<IAgentToolPolicyService>,
   ) {
     super();
+    this.sessionOverrides = mcpHandle.selection?.overrides ?? new Map();
+    this.sessionOverridesLoaded = mcpHandle.selection?.loaded ?? this.loadSessionOverrides();
+    if (mcpHandle.selection !== undefined) mcpHandle.selection.loaded = this.sessionOverridesLoaded;
+    this.sessionOverridesReady = this.sessionOverridesLoaded.then(async () => {
+      await this.mcpHandle.ready;
+      await this.restoreSessionOverrides();
+    });
+    void this.sessionOverridesReady.catch(onUnexpectedError);
     this.states.contributeState(mcpDiscoveryKey);
     this.states.contributeState(mcpMcpToolsByServerKey);
     this.states.contributeState(mcpDiscoveryWritesReadyKey);
     this.attachMcpTools();
+    if (this.configService.onDidSectionChange !== undefined) {
+      this._register(this.configService.onDidSectionChange((event) => {
+        if (event.domain !== COMPUTER_CONFIG_SECTION) return;
+        setComputerConnectionSelection(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection);
+        this.reopenComputerSessions();
+      }));
+    }
+    const capabilityPolicy = this.optionalPolicy();
+    if (capabilityPolicy !== undefined) {
+      this._register(capabilityPolicy.onDidChange(() => { this.reopenComputerSessions(); }));
+      this.watchComputerServers(capabilityPolicy);
+    }
+    this._register(this.registry.registerPreparation(() => this.prepareCapabilities()));
     loop.hooks.onWillBeginStep.register('mcp', async (ctx, next) => {
       await this.waitForInitialLoad(ctx.signal);
       await next();
@@ -108,8 +172,26 @@ export class AgentMcpService extends Service implements IAgentMcpService {
   }
 
   waitForInitialLoad(signal?: AbortSignal): Promise<void> {
-    const ready = this.mcpHandle.ready;
+    const policy = this.optionalPolicy();
+    const document = policy === undefined || typeof policy.load !== 'function'
+      ? Promise.resolve()
+      : policy.load(this.sessionContext.sessionId).catch(() => undefined);
+    const ready = Promise.all([this.mcpHandle.ready, this.sessionOverridesReady, document]).then(() => undefined);
     return signal === undefined ? ready : abortable(ready, signal);
+  }
+
+  private async prepareCapabilities(): Promise<void> {
+    await this.waitForInitialLoad();
+    const policy = this.toolPolicy.current;
+    if (policy === undefined) return;
+    const manager = this.mcpHandle.connectionManager;
+    await Promise.all([...this.reconnectableServerTools].map(async ([name, tools]) => {
+      if (manager.get(name)?.status !== 'failed' || this.sessionServerOff(name) ||
+        !this.mcpHandle.isBaselineServer(name) || manager.configOf(name)?.enabled === false ||
+        !tools.some((tool) => policy.isToolActive(tool, 'mcp')) ||
+        (isComputerMcpConfig(manager.configOf(name)) && !this.computerAdmitted())) return;
+      try { await manager.reconnectAndJoin(name); } catch { }
+    }));
   }
 
   initialLoadDurationMs(): number {
@@ -128,6 +210,14 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     return this.mcpHandle.connectionManager.getRemoteServerUrl(name);
   }
 
+  private workspaceCwd(): string {
+    const runtime = this.runtime.current;
+    const workspace = this.workspace.current;
+    return runtime === undefined || workspace === undefined
+      ? this.sessionContext.cwd
+      : inspectAgentWorkspaceRoots(runtime, workspace).workDir;
+  }
+
   async reconnect(name: string, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     await this.mcpHandle.connectionManager.reconnect(name);
@@ -143,6 +233,238 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       );
     }
     await manager.connect(name, config);
+  }
+
+  async listMcpSessionCapabilities(): Promise<readonly McpSessionCapability[]> {
+    await this.sessionOverridesLoaded;
+    const registry = this.serverRegistry;
+    if (registry === undefined) return [];
+    const catalog = await registry.list({ cwd: this.workspaceCwd() });
+    const effective = effectiveEntries(catalog);
+    return catalog.map((entry) => this.toSessionCapability(entry, effective.get(entry.name)));
+  }
+
+  setMcpSessionOverride(input: McpSessionOverride): Promise<McpSessionCapability> {
+    const work = this.overrideWrites.catch(() => undefined).then(() => this.applyMcpSessionOverride(input));
+    this.overrideWrites = work.then(() => undefined, () => undefined);
+    return work;
+  }
+
+  async refreshCapabilities(): Promise<void> {
+    await this.waitForInitialLoad();
+    const registry = this.serverRegistry;
+    if (registry !== undefined) {
+      const catalog = await registry.list({ cwd: this.workspaceCwd() });
+      this.updateSessionServerKeys(catalog);
+      const effective = effectiveEntries(catalog);
+      for (const entry of catalog) {
+        const override = this.sessionOverrides.get(mcpLocatorKey(toMcpLocator(entry)));
+        if (!sameRegistryEntry(entry, effective.get(entry.name))) continue;
+        if (override === 'off') {
+          this.mcpHandle.setServerEnabled?.(entry.name, false);
+          this.unregisterMcpServer(entry.name);
+        } else if (override === 'on') {
+          await this.enableSessionServer(entry);
+        } else if (entry.source === 'global') {
+          if (entry.config.enabled === false) {
+            this.mcpHandle.setServerEnabled?.(entry.name, false);
+            this.unregisterMcpServer(entry.name);
+          } else {
+            const current = this.mcpHandle.connectionManager.configOf(entry.name);
+            if (current === undefined || !mcpServerConfigsEqual(current, entry.config)) {
+              await this.mcpHandle.enableConfiguredServer?.(entry.name, entry.config, entry.source);
+            }
+          }
+        }
+      }
+    }
+    const admitted = this.mcpHandle.admitCurrentServers?.() ?? new Set<string>();
+    for (const entry of this.list()) {
+      if (!admitted.has(entry.name) && !this.mcpHandle.isBaselineServer(entry.name)) continue;
+      if (entry.status === 'connected') {
+        try {
+          await this.mcpHandle.connectionManager.refreshToolList?.(entry.name);
+          this.refreshErrors.delete(entry.name);
+        } catch (error) {
+          this.refreshErrors.set(entry.name, `MCP tool catalog refresh failed (${error instanceof Error ? error.name : 'unknown error'})`);
+        }
+      }
+      const current = this.mcpHandle.connectionManager.get(entry.name);
+      if (current !== undefined) this.handleMcpServerStatusChange(current);
+    }
+  }
+
+  private async applyMcpSessionOverride(input: McpSessionOverride): Promise<McpSessionCapability> {
+    await this.waitForInitialLoad();
+    const registry = this.requireServerRegistry();
+    const catalog = await registry.list({ cwd: this.workspaceCwd() });
+    this.updateSessionServerKeys(catalog);
+    const selected = catalog.find((entry) => sameMcpLocator(toMcpLocator(entry), input.locator));
+    if (selected === undefined) {
+      throw new Error2(
+        ErrorCodes.MCP_SERVER_NOT_FOUND,
+        `MCP server locator ${describeMcpLocator(input.locator)} is unknown or no longer available`,
+      );
+    }
+    const effective = effectiveEntries(catalog);
+    const target = effective.get(selected.name);
+    if (input.override === 'on' && !sameRegistryEntry(selected, target)) {
+      throw new Error2(
+        target === undefined ? ErrorCodes.REQUEST_INVALID : ErrorCodes.MCP_SERVER_NOT_FOUND,
+        target === undefined
+          ? `MCP server locator ${describeMcpLocator(input.locator)} is disabled by its plugin source`
+          : `MCP server locator ${describeMcpLocator(input.locator)} does not own runtime name "${selected.name}"`,
+      );
+    }
+    await this.persistSessionOverride(mcpLocatorKey(input.locator), input.override);
+    if (sameRegistryEntry(selected, target)) {
+      if (input.override === 'off') {
+        this.mcpHandle.setServerEnabled?.(selected.name, false);
+        this.unregisterMcpServer(selected.name);
+      } else if (input.override === 'on') {
+        await this.enableSessionServer(selected);
+      } else {
+        const cleared = await this.mcpHandle.clearServerEnabledOverride?.(selected.name) ?? false;
+        if (selected.source === 'global') {
+          if (selected.config.enabled === false) {
+            this.mcpHandle.setServerEnabled?.(selected.name, false);
+            this.unregisterMcpServer(selected.name);
+          } else if (!cleared || this.mcpHandle.connectionManager.get(selected.name) === undefined) {
+            await this.mcpHandle.enableConfiguredServer?.(selected.name, selected.config, selected.source);
+          }
+        }
+      }
+    }
+    this.mcpHandle.admitCurrentServers?.();
+    for (const entry of this.list()) this.handleMcpServerStatusChange(entry);
+    const capability = (await this.listMcpSessionCapabilities())
+      .find((candidate) => sameMcpLocator(candidate.locator, input.locator));
+    if (capability === undefined) {
+      throw new Error2(
+        ErrorCodes.MCP_SERVER_NOT_FOUND,
+        `MCP server locator ${describeMcpLocator(input.locator)} is no longer available`,
+      );
+    }
+    return capability;
+  }
+
+  private async enableSessionServer(entry: McpRegistryEntry): Promise<void> {
+    if (this.sessionServerOff(entry.name)) return;
+    if (this.mcpHandle.enableConfiguredServer !== undefined) {
+      await this.mcpHandle.enableConfiguredServer(entry.name, { ...entry.config, enabled: true }, entry.source);
+    } else {
+      this.mcpHandle.setServerEnabled?.(entry.name, true);
+    }
+    if (this.sessionServerOff(entry.name)) {
+      this.mcpHandle.setServerEnabled?.(entry.name, false);
+      this.unregisterMcpServer(entry.name);
+    }
+  }
+
+  private updateSessionServerKeys(catalog: readonly McpRegistryEntry[]): void {
+    this.sessionServerKeys.clear();
+    for (const entry of effectiveEntries(catalog).values()) {
+      this.sessionServerKeys.set(entry.name, mcpLocatorKey(toMcpLocator(entry)));
+    }
+  }
+
+  private sessionServerOff(name: string): boolean {
+    const key = this.sessionServerKeys.get(name);
+    return key !== undefined && this.sessionOverrides.get(key) === 'off';
+  }
+
+  private async loadSessionOverrides(): Promise<void> {
+    const store = this.atomicDocumentStore();
+    const sessionId = this.sessionContext.sessionId;
+    if (store === undefined || sessionId === undefined) return;
+    const persisted = await store.get<unknown>(SESSION_MCP_OVERRIDES_SCOPE, sessionId);
+    for (const [key, value] of Object.entries(readSessionOverrides(persisted))) {
+      this.sessionOverrides.set(key, value);
+    }
+  }
+
+  private async restoreSessionOverrides(): Promise<void> {
+    const catalog = await this.serverRegistry.list({ cwd: this.workspaceCwd() });
+    this.updateSessionServerKeys(catalog);
+    const effective = effectiveEntries(catalog);
+    for (const entry of catalog) {
+      const override = this.sessionOverrides.get(mcpLocatorKey(toMcpLocator(entry)));
+      if (override === undefined || !sameRegistryEntry(entry, effective.get(entry.name))) continue;
+      if (override === 'on') await this.enableSessionServer(entry);
+      else {
+        this.mcpHandle.setServerEnabled?.(entry.name, false);
+        this.unregisterMcpServer(entry.name);
+      }
+    }
+  }
+
+  private async persistSessionOverride(
+    key: string,
+    override: McpSessionOverrideValue,
+  ): Promise<void> {
+    const store = this.atomicDocumentStore();
+    const sessionId = this.sessionContext.sessionId;
+    if (store === undefined || sessionId === undefined) {
+      if (override === 'inherit') this.sessionOverrides.delete(key);
+      else this.sessionOverrides.set(key, override);
+      return;
+    }
+    const next = await store.update<unknown>(SESSION_MCP_OVERRIDES_SCOPE, sessionId, (current) => {
+      const values = readSessionOverrides(current);
+      if (override === 'inherit') delete values[key];
+      else values[key] = override;
+      return values;
+    });
+    this.sessionOverrides.clear();
+    for (const [storedKey, storedValue] of Object.entries(readSessionOverrides(next))) {
+      this.sessionOverrides.set(storedKey, storedValue);
+    }
+  }
+
+  private atomicDocumentStore(): IAtomicDocumentStore | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IAtomicDocumentStore));
+    } catch {
+      return undefined;
+    }
+  }
+
+  private requireServerRegistry(): IMcpRegistryService {
+    if (this.serverRegistry === undefined) {
+      throw new Error2(ErrorCodes.NOT_IMPLEMENTED, 'MCP session capability catalog is unavailable');
+    }
+    return this.serverRegistry;
+  }
+
+  private toSessionCapability(
+    entry: McpRegistryEntry,
+    effective?: McpRegistryEntry,
+  ): McpSessionCapability {
+    const locator = toMcpLocator(entry);
+    const override = this.sessionOverrides.get(mcpLocatorKey(locator)) ?? 'inherit';
+    const managerEntry = sameRegistryEntry(entry, effective)
+      ? this.mcpHandle.connectionManager.get(entry.name)
+      : undefined;
+    const connection = toSessionConnection(
+      entry,
+      managerEntry?.status,
+      managerEntry !== undefined,
+      override,
+      effective,
+    );
+    const refreshError = managerEntry !== undefined && override !== 'off' ? this.refreshErrors.get(entry.name) : undefined;
+    const error = refreshError ?? managerEntry?.error ?? toSessionCapabilityError(entry, effective, managerEntry, override);
+    return {
+      locator,
+      runtimeName: entry.name,
+      origin: entry.source,
+      config: toMcpServerConfigView(entry.config),
+      authStatus: toSessionAuthStatus(entry.config, managerEntry?.status),
+      connection,
+      override,
+      error,
+      errorCode: refreshError === undefined ? undefined : 'tool_catalog_refresh_failed',
+    };
   }
 
   private reconnectForToolCall(
@@ -178,6 +500,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     }
     this._register(
       this.onStatusChange((entry) => {
+        this.refreshErrors.delete(entry.name);
         this.handleMcpServerStatusChange(entry);
       }),
     );
@@ -185,6 +508,12 @@ export class AgentMcpService extends Service implements IAgentMcpService {
 
   private handleMcpServerStatusChange(entry: McpServerEntry): void {
     if (!this.mcpHandle.isBaselineServer(entry.name)) return;
+    if (this.sessionServerOff(entry.name)) {
+      this.reconnectableServerTools.delete(entry.name);
+      this.mcpHandle.setServerEnabled?.(entry.name, false);
+      this.unregisterMcpServer(entry.name);
+      return;
+    }
     void this.dispatcher.dispatch(
       new McpServerStatus({
         server: {
@@ -200,24 +529,121 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       this.registerConnectedMcpServer(entry);
       return;
     }
+    if (entry.status !== 'failed' && entry.status !== 'pending') this.reconnectableServerTools.delete(entry.name);
+    this.computerSessions.delete(entry.name);
     if (entry.status === 'needs-auth') {
       this.registerNeedsAuthMcpServer(entry);
       return;
     }
-    if (entry.status === 'failed' || entry.status === 'pending' || entry.status === 'removed') {
-      return;
+    const removed = this.unregisterMcpServer(entry.name);
+    if (removed) {
+      void this.dispatcher.dispatch(
+        new ToolListUpdated({
+          reason: 'mcp.disconnected',
+          serverName: entry.name,
+        }),
+      );
     }
-    if (entry.status === 'disabled') {
-      const removed = this.unregisterMcpServer(entry.name);
-      if (removed) {
-        void this.dispatcher.dispatch(
-          new ToolListUpdated({
-            reason: 'mcp.disconnected',
-            serverName: entry.name,
-          }),
-        );
-      }
+  }
+
+  private reopenComputerSessions(): void {
+    for (const [serverName, session] of this.computerSessions) {
+      const registered = this.registerMcpServer(serverName, session.client, session.tools, session.enabledNames, session.admitCall);
+      void this.dispatcher.dispatch(new ToolListUpdated({
+        reason: registered.registered.length > 0 ? 'mcp.connected' : 'mcp.disconnected',
+        serverName,
+      }));
     }
+  }
+
+  private watchComputerServers(policy: IOptionalCapabilityPolicy): void {
+    if (typeof policy.noteComputerServers !== 'function') return;
+    let store: IMcpConfigStore | undefined;
+    try {
+      store = this.instantiation.invokeFunction((accessor) => accessor.get(IMcpConfigStore));
+    } catch {
+      store = undefined;
+    }
+    if (store === undefined || typeof store.list !== 'function') return;
+    const configStore = store;
+    const publish = () => {
+      void configStore.list().then((servers) => {
+        policy.noteComputerServers(servers);
+      }).catch(() => undefined);
+    };
+    publish();
+    if (typeof configStore.onDidWrite === 'function') this._register(configStore.onDidWrite(() => { publish(); }));
+  }
+
+  private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private cleanDefaultPath(path: string): boolean {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager))?.isCleanActivePath(path) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private computerAdmitted(): boolean {
+    const fallback = computerToolsEnabled(this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION));
+    const policy = this.optionalPolicy();
+    if (policy === undefined) return fallback;
+    let agent: IAgentScopeContext | undefined;
+    try {
+      agent = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentScopeContext));
+    } catch {
+      agent = undefined;
+    }
+    const profile = this.profile.data();
+    const bound = profile.boundProfile;
+    const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
+    const sessionId = this.sessionContext.sessionId;
+    const workspaceId = this.sessionContext.workspaceId;
+    if (agent !== undefined) {
+      policy.retain(sessionId, agent.agentId, {
+        workspaceId,
+        agentKind: agent.parentAgentId === undefined ? 'main' : 'child',
+        toolsSource: source,
+        declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? bound?.tools ?? [])] : undefined,
+        taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
+      });
+      this.armComputerLease(policy, sessionId, agent.agentId);
+    }
+    return policy.admit('computer', { sessionId, workspaceId, agentId: agent?.agentId }).admitted;
+  }
+
+  private armComputerLease(policy: IOptionalCapabilityPolicy, sessionId: string, agentId: string): void {
+    if (this.computerLease?.sessionId === sessionId && this.computerLease.agentId === agentId && this.computerLease.policy === policy) return;
+    const previous = this.computerLease;
+    if (previous !== undefined) previous.policy.release(previous.sessionId, previous.agentId);
+    this.computerLease = { sessionId, agentId, policy };
+    if (this.computerLeaseArmed) return;
+    this.computerLeaseArmed = true;
+    this._register({ dispose: () => {
+      const held = this.computerLease;
+      this.computerLease = undefined;
+      if (held !== undefined) held.policy.release(held.sessionId, held.agentId);
+    } });
+  }
+
+  private gateSessionCall(serverName: string, computer: boolean, admitCall: (() => Promise<{ release(): void } | undefined>) | undefined): () => Promise<{ release(): void } | undefined> {
+    const available = () => !this.sessionServerOff(serverName) &&
+      this.mcpHandle.connectionManager.get(serverName)?.status === 'connected' &&
+      (!computer || this.computerAdmitted());
+    return async () => {
+      if (!available()) return undefined;
+      const lease = admitCall === undefined ? { release() {} } : await admitCall();
+      if (available()) return lease;
+      lease?.release();
+      return undefined;
+    };
   }
 
   private registerConnectedMcpServer(entry: McpServerEntry): void {
@@ -228,7 +654,16 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       resolved.client,
       resolved.tools,
       resolved.enabledNames,
+      resolved.admitCall,
     );
+    const serverConfig = this.mcpHandle.connectionManager.configOf(entry.name);
+    const connection = this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection;
+    if (isComputerMcpConfig(serverConfig) && (!this.computerAdmitted() || !computerSelectionAdmits(entry.name, serverConfig, connection))) {
+      void this.dispatcher.dispatch(new ToolListUpdated({ reason: 'mcp.disconnected', serverName: entry.name }));
+      return;
+    }
+    if (result.registered.length > 0) this.reconnectableServerTools.set(entry.name, result.registered);
+    else this.reconnectableServerTools.delete(entry.name);
     this.emitMcpToolCollisions(entry.name, result.collisions);
     this.recordDiscovery(entry.name, resolved.rawTools, resolved.enabledNames, result.collisions);
     void this.dispatcher.dispatch(
@@ -266,11 +701,20 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     client: MCPClient,
     tools: readonly KosongTool[],
     enabledTools: ReadonlySet<string>,
+    admitCall?: () => Promise<{ release(): void } | undefined>,
   ): {
     readonly registered: readonly string[];
     readonly collisions: readonly McpToolCollision[];
   } {
+    const serverConfig = this.mcpHandle.connectionManager.configOf(serverName);
+    const computer = isComputerMcpConfig(serverConfig);
+    const connection = this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.connection;
+    if (computer) this.computerSessions.set(serverName, { client, tools, enabledNames: enabledTools, admitCall });
     this.unregisterMcpServer(serverName);
+    if (computer && (!this.computerAdmitted() || !computerSelectionAdmits(serverName, serverConfig, connection))) {
+      return { registered: [], collisions: [] };
+    }
+    const callAdmission = this.gateSessionCall(serverName, computer, admitCall);
     const qualifiedNames: string[] = [];
     const collisions: McpToolCollision[] = [];
     const seenInThisCall = new Map<string, string>();
@@ -300,6 +744,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
         this.registry.register(
           createMcpTool(qualified, tool, client, {
             serverName,
+            admitCall: callAdmission,
             onUnauthorized: (error, failedClient) =>
               this.mcpHandle.connectionManager.markNeedsAuth(serverName, error, failedClient),
             originalsDir: sessionMediaOriginalsDir(this.sessionContext.sessionDir),
@@ -307,7 +752,7 @@ export class AgentMcpService extends Service implements IAgentMcpService {
             attachmentStore: () =>
               this.instantiation.invokeFunction((accessor) => accessor.get(ISessionMediaStore)),
             providerType: () => this.profile.getModelProviderType(),
-            computerControl: isComputerMcpConfig(this.mcpHandle.connectionManager.configOf(serverName)),
+            computerControl: computer,
             computerUsagePreference: () => this.configService.get<ComputerConfig>(COMPUTER_CONFIG_SECTION)?.usagePreference ?? 'avoid',
             reconnect: (signal) => this.reconnectForToolCall(serverName, client, signal),
             isRemoved: () =>
@@ -328,7 +773,8 @@ export class AgentMcpService extends Service implements IAgentMcpService {
     if (names === undefined) return false;
     for (const name of names) {
       const entry = this.mcpTools.get(name);
-      entry?.disposable.dispose();
+      const result = entry?.disposable.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       this.mcpTools.delete(name);
     }
     this.mcpToolsByServer.delete(serverName);
@@ -397,6 +843,121 @@ export class AgentMcpService extends Service implements IAgentMcpService {
       ),
     );
   }
+}
+
+const SESSION_MCP_OVERRIDES_SCOPE = 'session-mcp-overrides';
+
+type StoredSessionOverride = Exclude<McpSessionOverrideValue, 'inherit'>;
+
+function mcpLocatorKey(locator: McpServerLocator): string {
+  return locator.source === 'global'
+    ? `global:${encodeURIComponent(locator.name)}`
+    : `plugin:${encodeURIComponent(locator.pluginId)}:${encodeURIComponent(locator.serverName)}`;
+}
+
+function sameMcpLocator(left: McpServerLocator, right: McpServerLocator): boolean {
+  return mcpLocatorKey(left) === mcpLocatorKey(right);
+}
+
+function toMcpLocator(entry: McpRegistryEntry): McpServerLocator {
+  if (entry.source === 'global') return { source: 'global', name: entry.name };
+  if (entry.plugin === undefined) {
+    throw new Error2(
+      ErrorCodes.REQUEST_INVALID,
+      `MCP plugin source "${entry.name}" has no stable plugin locator`,
+    );
+  }
+  return {
+    source: 'plugin',
+    pluginId: entry.plugin.id,
+    serverName: entry.plugin.name,
+  };
+}
+
+function sameRegistryEntry(
+  left: McpRegistryEntry | undefined,
+  right: McpRegistryEntry | undefined,
+): boolean {
+  return left !== undefined && right !== undefined && sameMcpLocator(toMcpLocator(left), toMcpLocator(right));
+}
+
+function effectiveEntries(
+  catalog: readonly McpRegistryEntry[],
+): ReadonlyMap<string, McpRegistryEntry> {
+  const effective = new Map<string, McpRegistryEntry>();
+  for (const entry of catalog) {
+    const current = effective.get(entry.name);
+    if (entry.source === 'global') {
+      effective.set(entry.name, entry);
+      continue;
+    }
+    if (entry.config.enabled === false || current !== undefined) continue;
+    effective.set(entry.name, entry);
+  }
+  return effective;
+}
+
+function toSessionConnection(
+  entry: McpRegistryEntry,
+  status: McpServerEntry['status'] | undefined,
+  available: boolean,
+  override: McpSessionOverrideValue,
+  effective: McpRegistryEntry | undefined,
+): McpSessionCapability['connection'] {
+  if (override === 'off' || (override !== 'on' && entry.config.enabled === false)) return 'disabled';
+  if (!sameRegistryEntry(entry, effective) || !available) return 'unavailable';
+  if (status === 'pending') return 'connecting';
+  if (status === 'connected') return 'connected';
+  if (status === 'failed' || status === 'needs-auth') return 'failed';
+  if (status === 'disabled') return 'disabled';
+  return 'unavailable';
+}
+
+function toSessionCapabilityError(
+  entry: McpRegistryEntry,
+  effective: McpRegistryEntry | undefined,
+  managerEntry: McpServerEntry | undefined,
+  override: McpSessionOverrideValue,
+): string | undefined {
+  if (override === 'off') return undefined;
+  if (override !== 'on' && entry.config.enabled === false) return 'MCP server is disabled by its source configuration';
+  if (effective === undefined) return 'MCP server source is no longer available';
+  if (!sameRegistryEntry(entry, effective)) {
+    return `MCP runtime name "${entry.name}" is owned by another source; selected locator is unavailable`;
+  }
+  if (managerEntry === undefined) return `MCP server "${entry.name}" has no admitted connection in this session`;
+  if (managerEntry.status === 'failed' || managerEntry.status === 'needs-auth') {
+    return `MCP server "${entry.name}" finished with status ${managerEntry.status}`;
+  }
+  if (managerEntry.status === 'removed') return `MCP server "${entry.name}" is no longer available`;
+  return undefined;
+}
+
+function toSessionAuthStatus(
+  config: McpRegistryEntry['config'],
+  status: McpServerEntry['status'] | undefined,
+): McpServerAuthState {
+  if (config.transport === 'stdio') return 'not-applicable';
+  if (config.bearerTokenEnvVar !== undefined) return 'bearer-token';
+  if (config.auth !== 'oauth') return 'not-applicable';
+  if (status === 'needs-auth') return 'oauth-required';
+  if (status === 'connected') return 'oauth-authorized';
+  return 'unavailable';
+}
+
+function describeMcpLocator(locator: McpServerLocator): string {
+  return locator.source === 'global'
+    ? `global:${locator.name}`
+    : `plugin:${locator.pluginId}:${locator.serverName}`;
+}
+
+function readSessionOverrides(value: unknown): Record<string, StoredSessionOverride> {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return {};
+  const result: Record<string, StoredSessionOverride> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry === 'on' || entry === 'off') result[key] = entry;
+  }
+  return result;
 }
 
 registerScopedService(

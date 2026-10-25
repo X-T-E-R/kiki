@@ -8,12 +8,20 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { AgentExecutionService } from '#/agent/execution/executionService';
 import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { ISessionDispatchService } from '#/session/dispatch/dispatch';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { IAgentActivityView } from '#/agent/activityView/activityView';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { IRequestGovernance } from '#/app/requestGovernance/requestGovernance';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
@@ -152,7 +160,7 @@ describe('AgentExecutorPreflightService', () => {
     );
   });
 
-  afterEach(() => { vi.restoreAllMocks(); services.dispose(); });
+  afterEach(async () => { vi.restoreAllMocks(); await services.dispose(); });
 
   it('invalidates cached and pending checks when the executor descriptor revision changes', async () => {
     let command = '/fixture/first';
@@ -190,6 +198,8 @@ describe('AgentExecutorPreflightService', () => {
     expect(preflight.lastCheck('example')?.version).toBe('2.0');
     vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 60_000);
     expect(preflight.lastCheck('example')).toBeUndefined();
+    expect(preflight.rememberedCheck('example')?.result.version).toBe('2.0');
+    expect(preflight.rememberedCheck('example')?.fresh).toBe(false);
     expect(processService.calls).toEqual([]);
   });
 
@@ -227,6 +237,7 @@ describe('AgentExecutorPreflightService', () => {
     const results = await services.get(IAgentExecutorPreflightService).run();
 
     expect([
+      'agy-cli',
       'antigravity-acp',
       'claude-acp',
       'cline-acp',
@@ -243,6 +254,17 @@ describe('AgentExecutorPreflightService', () => {
       'pi-acp',
       'qoder-acp',
     ]).toEqual(results.map((result) => result.id).sort());
+    const agy = results.find((result) => result.id === 'agy-cli');
+    expect(agy).toMatchObject({ status: 'unavailable', command: '' });
+    expect(agy?.selectedSource).toBeUndefined();
+    expect(agy?.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({ severity: 'error', message: 'Configured source "kiki-managed" is unavailable.' }),
+      expect.objectContaining({
+        severity: 'info',
+        message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.',
+      }),
+    ]));
+    expect(results.find((result) => result.id === 'antigravity-acp')?.id).toBe('antigravity-acp');
     expect(results.find((result) => result.id === 'codex-app-server')).toMatchObject({
       selectedSource: 'env',
       command: 'C:/tools/codex.exe',
@@ -329,6 +351,20 @@ describe('AgentExecutorPreflightService', () => {
     expect(connect).toHaveBeenCalledTimes(4);
     expect(request).toHaveBeenCalledWith('account/read', { refreshToken: false }, expect.any(AbortSignal));
     expect(shutdown).toHaveBeenCalledTimes(4);
+  });
+
+  it('keeps the selected script before Codex auth arguments without reporting a failed probe as signed out', async () => {
+    const script = 'C:/tools/codex.mjs';
+    const node = normalize(process.execPath);
+    services.set(IHostFileSystem, fsWith([script]));
+    services.set(IConfigService, { _serviceBrand: undefined, get: (domain: string) => domain === AGENT_EXECUTORS_SECTION ? {
+      scripted: { protocol: 'codex-app-server', sources: [{ id: 'script', kind: 'node-script', path: script }], args: [], auth: { kind: 'codex-account' } },
+    } : undefined } as IConfigService);
+    processService.outputs.set(`${node} ${script} --version`, { output: 'codex 1.0' });
+    const [result] = await services.get(IAgentExecutorPreflightService).run(['scripted']);
+    expect(result).toMatchObject({ selectedSource: 'script', command: node, resolvedArgs: [], loginStatus: 'unknown' });
+    expect(processService.calls).toContain(`${node} ${script} app-server --listen stdio://`);
+    expect(processService.calls).not.toContain(`${node} app-server --listen stdio://`);
   });
 
   it('honors an explicit source id even when an earlier source is available', async () => {
@@ -589,7 +625,16 @@ describe('AgentExecutorPreflightService', () => {
     services.stub(IAgentLoopService, {});
     services.stub(IAgentPromptService, {});
     services.stub(ISessionDispatchService, { reserveExecution: () => () => {} });
+    services.stub(ISessionMetadata, { read: async () => ({ id: 'session-test', createdAt: 0, updatedAt: 0, archived: false }) });
+    services.stub(ISessionContext, { sessionId: 'session-test' });
+    services.stub(IAgentActivityView, { state: () => ({ lifecycle: 'ready', background: [] }) });
+    services.stub(IModelCatalog, {});
+    services.stub(IRequestGovernance, { acquireAgent: async () => ({ release: () => {} }) });
     services.set(IAgentExecutionService, new SyncDescriptor(AgentExecutionService));
+    const reconcileAllAtSafeBoundary = vi.fn(async () => {});
+    services.stub(IAgentContextInjectorService, { reconcileAllAtSafeBoundary });
+    services.stub(IAgentContextMemoryService, { get: () => [] });
+    services.stub(ISessionTodoService, { getTodos: () => [], getNotes: () => ({ notes: {} }) });
     const execution = services.get(IAgentExecutionService);
 
     expect(first.descriptor.command).toBe('kimi');
@@ -600,6 +645,7 @@ describe('AgentExecutorPreflightService', () => {
       { kind: 'prompt', prompt: 'work' },
       { signal: new AbortController().signal },
     )).rejects.toThrow(/descriptor.*changed/i);
+    expect(reconcileAllAtSafeBoundary).toHaveBeenCalledOnce();
     await execution.shutdown();
   });
 

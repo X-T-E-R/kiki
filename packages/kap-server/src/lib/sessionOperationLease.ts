@@ -15,7 +15,31 @@ import {
  */
 export interface SessionOperationLease {
   readonly handle: ISessionScopeHandle | undefined;
-  dispose(): void;
+  dispose(): void | Promise<void>;
+}
+
+export interface DeferredCleanup {
+  release(): void;
+  wait(): Promise<void>;
+}
+
+export function createDeferredCleanup(
+  cleanup: () => void | Promise<void>,
+  onError: (error: unknown) => void,
+): DeferredCleanup {
+  let released = false;
+  let pending: Promise<void> | undefined;
+  return {
+    release: () => {
+      if (released) return;
+      released = true;
+      pending = Promise.resolve().then(cleanup);
+      pending.catch(onError);
+    },
+    wait: async () => {
+      if (pending !== undefined) await pending;
+    },
+  };
 }
 
 /**
@@ -28,10 +52,12 @@ export async function acquireSessionOperation(
   core: Scope,
   sessionId: string,
   reason: string,
+  signal?: AbortSignal,
 ): Promise<SessionOperationLease> {
+  signal?.throwIfAborted();
   const manager = core.accessor.get(ISessionManager);
   if (manager.acquire === undefined) throw new Error('session operation leases are unavailable');
-  const lease: SessionLease | undefined = await manager.acquire(sessionId, reason).catch((error: unknown) => {
+  const lease: SessionLease | undefined = await manager.acquire(sessionId, reason, undefined, signal).catch((error: unknown) => {
     core.accessor
       .get(ITelemetryService)
       .withContext({ sessionId })
@@ -40,15 +66,15 @@ export async function acquireSessionOperation(
       });
     throw error;
   });
-  if (lease === undefined) return { handle: undefined, dispose: () => {} };
+  if (lease === undefined) return { handle: undefined, dispose: async () => {} };
   const session = lease;
   let released = false;
   return {
     handle: session.handle,
-    dispose: () => {
+    dispose: async () => {
       if (released) return;
       released = true;
-      session.dispose();
+      await session.dispose();
     },
   };
 }
@@ -62,6 +88,6 @@ export async function withSessionOperation<T>(
   try {
     return await work(lease.handle);
   } finally {
-    lease.dispose();
+    await lease.dispose();
   }
 }

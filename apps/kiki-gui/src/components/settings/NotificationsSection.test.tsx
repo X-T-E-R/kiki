@@ -15,17 +15,25 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { I18nProvider } from '../../i18n';
 import { NotificationsSection } from './NotificationsSection';
+import { readSettings } from '@kiki/session-core/settings';
+import { CompletionObserver } from '@kiki/session-core/sessions';
+import { AwayNotifier } from '../../lib/awayNotify';
 
 const api = {
   getSettings: vi.fn(), updateSettings: vi.fn(), listProviders: vi.fn(), upsertInstance: vi.fn(), deleteInstance: vi.fn(),
   upsertChannel: vi.fn(), deleteChannel: vi.fn(), setCredential: vi.fn(), checkCredential: vi.fn(), sendTest: vi.fn(), listDeliveries: vi.fn(),
 };
 const revealSecret = vi.fn();
+const imSessions = {
+  snapshot: vi.fn(async () => ({ policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 })),
+  catalog: vi.fn(async () => ({ personas: [], sessions: [] })),
+  setPolicy: vi.fn(), paste: vi.fn(), check: vi.fn(), listen: vi.fn(), confirm: vi.fn(), dismiss: vi.fn(), updateBinding: vi.fn(), removeBinding: vi.fn(),
+};
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret } }),
+  useConnection: () => ({ scopeId: 'fixture', client: { notifications: api, revealSecret, imSessions } }),
 }));
-vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
+vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser', notify: async () => {} }) }));
 
 const PROVIDERS: NotificationProviderDescriptor[] = [
   { id: 'telegram', can_send: true, can_receive: false, status: 'unverified', status_reason: 'real_account_not_tested',
@@ -93,6 +101,31 @@ async function render(settings = SETTINGS, entry = '/settings/notifications'): P
 const click = async (element: Element | null) => { await act(async () => { (element as HTMLElement).click(); }); };
 
 describe('NotificationsSection', () => {
+  it('shows the existing default-on conversation completion switch and persists disabling/re-enabling it', async () => {
+    const container = await render();
+    const row = () => container.querySelector('[data-notify-away-kind="completed"]')!;
+    expect(row().textContent).toContain('Notify when the conversation finishes');
+    expect(row().textContent).toContain('finite background tasks');
+    expect(row().querySelector<HTMLInputElement>('input')!.checked).toBe(true);
+    const observer = new CompletionObserver();
+    const notifier = new AwayNotifier();
+    const notify = vi.fn(async () => {});
+    notifier.configure({ isAway: async () => true, notify, format: () => ({ title: 'Work settled', route: '/s/example' }) });
+    observer.observe([], []);
+    const completion = (episode_id: string) => [{ session_id: 'example', episode_id, completed_at: Date.now() }];
+    await click(row().querySelector('input'));
+    expect(readSettings().awayNotifications.completed).toBe(false);
+    await notifier.report(observer.observe(completion('disabled'), []));
+    expect(notify).not.toHaveBeenCalled();
+    await click(row().querySelector('input'));
+    expect(readSettings().awayNotifications.completed).toBe(true);
+    await notifier.report(observer.observe(completion('disabled'), []));
+    expect(notify).not.toHaveBeenCalled();
+    await notifier.report(observer.observe(completion('enabled'), []));
+    expect(notify).toHaveBeenCalledTimes(1);
+    notifier.reset();
+  });
+
   it('shows each failure as its own state and tags send-only, unverified channels', async () => {
     const container = await render();
     const state = (id: string) => container.querySelector(`[data-notify-channel="${id}"] [data-notify-state]`)?.getAttribute('data-notify-state');
@@ -179,5 +212,22 @@ describe('NotificationsSection', () => {
     expect(channelId).toBe('telegram-1');
     expect(channel).toMatchObject({ provider_instance_id: 'telegram-1', target: { chat_id: '42' }, directions: ['send'] });
     expect(api.upsertInstance.mock.invocationCallOrder[0]).toBeLessThan(api.upsertChannel.mock.invocationCallOrder[0]!);
+  });
+
+  it('defaults to the two-way chat tab and switches tabs on click', async () => {
+    const container = await render();
+    expect(container.querySelector('[data-notify-tab="im"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#notify-panel-im')?.classList.contains('hidden')).toBe(false);
+    expect(container.querySelector('#notify-panel-channels')?.classList.contains('hidden')).toBe(true);
+
+    await click(container.querySelector('[data-notify-tab="channels"]'));
+    expect(container.querySelector('[data-notify-tab="channels"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#notify-panel-channels')?.classList.contains('hidden')).toBe(false);
+  });
+
+  it('activates the system alerts tab when deep-linked to st-card-notify-away', async () => {
+    const container = await render(SETTINGS, '/settings/notifications#st-card-notify-away');
+    expect(container.querySelector('[data-notify-tab="away"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector('#notify-panel-away')?.classList.contains('hidden')).toBe(false);
   });
 });

@@ -44,7 +44,7 @@
 
 显式模型与 effort 绑定、直属子 Agent 工具和实验功能选择是不同的能力。需要某项实验时使用该功能自己的开关；总开关会启用全部已注册实验，范围大于单项选择。
 
-[Agent 与子 Agent](../zh/customization/agents.md)说明绑定优先级和生命周期；[配置文件](../zh/configuration/config-files.md#subagent)说明子 Agent 超时与黑名单设置。
+[Agent 与子 Agent](../zh/customization/agents-and-subagents.md)说明绑定优先级和生命周期；[配置文件](../zh/configuration/config-files.md#subagent)说明子 Agent 超时与黑名单设置。
 
 ## 集成 peer thread 通信
 
@@ -108,6 +108,6 @@ Kiki 维护者负责下游 CLI 身份、客户端集成、home 解析和迁移�
 ## 下一步
 
 - [开始使用](../zh/getting-started/first-launch.md) — 选择发行包或本地源码构建。
-- [Agent 与子 Agent](../zh/customization/agents.md) — 配置绑定与子 Agent 工具。
+- [Agent 与子 Agent](../zh/customization/agents-and-subagents.md) — 配置绑定与子 Agent 工具。
 - [环境变量](../zh/configuration/env-vars.md#运行时开关) — 设置运行时选项和实验功能。
 - [`kiki` 命令参考](../zh/reference/command.md) — daemon、inbound 集成与显式迁移。

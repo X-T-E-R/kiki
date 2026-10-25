@@ -15,7 +15,7 @@ export const sessionWarningsResponseSchema = z.object({
 });
 export type SessionWarningsResponse = z.infer<typeof sessionWarningsResponseSchema>;
 
-export const promptThinkingSchema = z.string().min(1);
+export const promptThinkingSchema = z.string().min(1).nullable();
 export type PromptThinking = z.infer<typeof promptThinkingSchema>;
 
 export const promptPermissionModeSchema = z.enum(['manual', 'auto', 'review', 'yolo']);

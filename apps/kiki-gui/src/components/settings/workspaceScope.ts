@@ -8,3 +8,11 @@ import { createContext } from 'react';
  * reports on selection change and clears on unmount.
  */
 export const SettingsWorkspaceScopeContext = createContext<(name: string | null) => void>(() => {});
+
+/**
+ * One workspace's own page reports the workspace it is showing, so the
+ * settings breadcrumb can name the object the way an open plugin's page names
+ * its plugin. A page that IS an object says which one; a section that merely
+ * edits one says nothing here and the section label stands.
+ */
+export const WorkspaceDetailNameContext = createContext<(name: string | null) => void>(() => {});

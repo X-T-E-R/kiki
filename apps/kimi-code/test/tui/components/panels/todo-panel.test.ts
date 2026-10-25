@@ -106,7 +106,7 @@ describe('TodoPanelComponent', () => {
     panel.setTodos(many(7));
     const out = strip(panel.render(80).join('\n'));
     expect(out).toMatch(/\+2 more/);
-    expect(out).toMatch(/ctrl\+t to expand/);
+    expect(out).toMatch(/Ctrl\+T to expand/);
   });
 
   it('collapsed footer shows hidden status distribution', () => {
@@ -121,7 +121,7 @@ describe('TodoPanelComponent', () => {
     ]);
     const out = strip(panel.render(80).join('\n'));
     expect(out).toMatch(/\+7 more \(3 done · 1 in progress · 3 pending\)/);
-    expect(out).toMatch(/ctrl\+t to expand/);
+    expect(out).toMatch(/Ctrl\+T to expand/);
   });
 
   it('collapsed footer omits zero-count statuses', () => {
@@ -142,7 +142,7 @@ describe('TodoPanelComponent', () => {
     );
     panel.setExpanded(true);
     const out = strip(panel.render(80).join('\n'));
-    expect(out).toMatch(/all 8 items · ctrl\+t to collapse/);
+    expect(out).toMatch(/all 8 items · Ctrl\+T to collapse/);
     expect(out).not.toMatch(/\d+ done ·/);
   });
 
@@ -154,7 +154,7 @@ describe('TodoPanelComponent', () => {
     expect(out).toMatch(/t0/);
     expect(out).toMatch(/t6/);
     expect(out).not.toMatch(/\+\d+ more/);
-    expect(out).toMatch(/ctrl\+t to collapse/);
+    expect(out).toMatch(/Ctrl\+T to collapse/);
   });
 
   it('toggleExpanded() flips between collapsed and expanded', () => {
@@ -162,7 +162,7 @@ describe('TodoPanelComponent', () => {
     panel.setTodos(many(7));
     expect(strip(panel.render(80).join('\n'))).toMatch(/\+2 more/);
     panel.toggleExpanded();
-    expect(strip(panel.render(80).join('\n'))).toMatch(/ctrl\+t to collapse/);
+    expect(strip(panel.render(80).join('\n'))).toMatch(/Ctrl\+T to collapse/);
     panel.toggleExpanded();
     expect(strip(panel.render(80).join('\n'))).toMatch(/\+2 more/);
   });
@@ -182,7 +182,7 @@ describe('TodoPanelComponent', () => {
     ]);
     const out = strip(panel.render(80).join('\n'));
     expect(out).toMatch(/u6/);
-    expect(out).toMatch(/ctrl\+t to collapse/);
+    expect(out).toMatch(/Ctrl\+T to collapse/);
   });
 
   it('clear() resets the expanded state', () => {

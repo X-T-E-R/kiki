@@ -12,7 +12,7 @@
       "schemaVersion": 1,
       "name": "fixture_echo",
       "description": "Echo a value",
-      "parameters": { "type": "object", "properties": { "value": { "type": "string" } } },
+      "parameters": { "type": "object", "properties": { "value": { "type": "string" }, "large": { "type": "boolean" } } },
       "accesses": [{ "kind": "all" }]
     }]
   }

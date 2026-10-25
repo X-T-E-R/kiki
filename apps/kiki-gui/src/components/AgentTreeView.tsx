@@ -36,7 +36,7 @@ function statusDot(status: AgentStatus): string {
     case 'background':
       return 'bg-ink-soft';
     case 'completed':
-      return 'bg-success';
+      return 'bg-ink-faint';
     case 'failed':
     case 'lost':
       return 'bg-danger';
@@ -100,6 +100,8 @@ const AgentTreeRow = memo(function AgentTreeRow({
   }, [node.refreshing, node.refreshingUntil]);
 
   const selected = selectedAgentId === node.agentId;
+  const label = node.label !== node.agentId || node.agentId === 'main' ? node.label
+    : t(node.nameSource === 'unreported' ? 'subagent.name.unreported' : 'subagent.name.loading', { id: node.agentId });
   const indent = Math.min(depth, 6) * 12;
 
   return (
@@ -134,8 +136,10 @@ const AgentTreeRow = memo(function AgentTreeRow({
               type="button"
               data-agent-id={node.agentId}
               data-agent-depth={depth}
+              data-agent-name-source={node.nameSource}
+              data-agent-status-source={node.statusSource}
               aria-current={selected ? 'page' : undefined}
-              aria-label={t('subagent.openAgent', { name: node.label })}
+              aria-label={t('subagent.openAgent', { name: label })}
               title={node.error}
               onClick={() => {
                 onOpen(node.agentId);
@@ -151,12 +155,12 @@ const AgentTreeRow = memo(function AgentTreeRow({
             >
               <span
                 className={`h-2 w-2 shrink-0 rounded-full ${refreshing ? 'bg-amber-rule' : statusDot(node.status)} ${
-                  refreshing || node.busy ? 'status-dot-busy' : ''
+                  refreshing || (isActiveStatus(node.status) && node.busy) ? 'status-dot-busy' : ''
                 }`}
               />
               <span className="min-w-0 flex-1">
                 <span className="flex items-center gap-1.5 truncate text-[12px] font-medium text-ink">
-                  <span className="truncate">{node.label}</span>
+                  <span className="truncate">{label}</span>
                   {node.executorId !== undefined && node.executorId !== '' && node.executorId !== 'native' ? (
                     <span
                       data-tree-engine-badge={node.executorId}

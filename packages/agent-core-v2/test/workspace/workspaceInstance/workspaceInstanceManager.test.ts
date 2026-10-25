@@ -219,6 +219,7 @@ function manager(
     fixture.appendLogStore,
     fixture.docs,
     fixture.storage,
+    undefined,
     fixture.unitHostFactory,
     fixture.idleTtlMs,
   ]) as WorkspaceInstanceManager;
@@ -454,7 +455,7 @@ function sshManagerFixture() {
     value, listeners, connect, listRuntimeHosts, refreshRuntimeHosts,
     enable: () => { enabled = true; }, disable: () => { enabled = false; },
     fail: (next: boolean) => { failInventory = next; }, block: (next?: Promise<void>) => { blocked = next; },
-    dispose: async () => { await value.dispose(); disposables.dispose(); },
+    dispose: async () => { await value.dispose(); await disposables.dispose(); },
   };
 }
 

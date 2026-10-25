@@ -10,7 +10,11 @@ import {
   isActiveExternalClientGrant,
   type ExternalClientTransportHost,
 } from './host';
-import { createExternalClientMcpServer } from './mcpServer';
+import {
+  activateExternalClientCatalogListener,
+  createExternalClientMcpServer,
+  deactivateExternalClientCatalogListener,
+} from './mcpServer';
 import {
   ExternalClientOAuthService,
   type ExternalClientOAuthOptions,
@@ -243,6 +247,7 @@ export function createExternalClientListener(options: ExternalClientListenerOpti
       const mcpServer = await createExternalClientMcpServer(options.host, {
         grantId,
         transportSessionId: () => transport.sessionId,
+        onError: (error) => options.onError?.(error),
       });
       created = { grantId, transport, server: mcpServer };
       session = created;
@@ -251,12 +256,31 @@ export function createExternalClientListener(options: ExternalClientListenerOpti
     }
     const incoming = request as IncomingMessage & { auth?: AuthInfo };
     incoming.auth = auth;
+    const watch = request.method === 'GET' ? watchStandaloneSse(response) : undefined;
+    let unbindListener: (() => void) | undefined;
     try {
-      await session.transport.handleRequest(incoming, response, parseJsonBody(request, body));
+      const handled = session.transport.handleRequest(incoming, response, parseJsonBody(request, body));
+      if (watch !== undefined) {
+        const opened = await Promise.race([
+          handled.then(() => false, () => false),
+          watch.opened,
+        ]);
+        if (opened) {
+          unbindListener = bindStandaloneSseClose(response, () => {
+            deactivateExternalClientCatalogListener(session.server, response);
+          });
+          activateExternalClientCatalogListener(session.server, response);
+        }
+      }
+      await handled;
     } catch (error) {
       options.onError?.(error);
       if (!response.headersSent) sendJson(response, 500, { error: 'mcp_transport_failed' });
       else response.destroy(error instanceof Error ? error : undefined);
+    } finally {
+      unbindListener?.();
+      if (request.method === 'GET') deactivateExternalClientCatalogListener(session.server, response);
+      watch?.dispose();
     }
     if (session.transport.sessionId === undefined && !response.writableEnded) await closeSession(session, true);
   }
@@ -303,6 +327,84 @@ export function createExternalClientListener(options: ExternalClientListenerOpti
   }
 
   return listener;
+}
+
+interface StandaloneSseWatch {
+  readonly opened: Promise<boolean>;
+  dispose(): void;
+}
+
+function watchStandaloneSse(response: ServerResponse): StandaloneSseWatch {
+  let settled = false;
+  let resolveOpened!: (opened: boolean) => void;
+  const opened = new Promise<boolean>((resolve) => {
+    resolveOpened = resolve;
+  });
+  const finish = (value: boolean) => {
+    if (settled) return;
+    settled = true;
+    resolveOpened(value);
+  };
+  const originalWriteHead = response.writeHead.bind(response) as (...args: unknown[]) => ServerResponse;
+  const writeHead = function (this: ServerResponse, ...args: unknown[]): ServerResponse {
+    const result = originalWriteHead(...args);
+    finish(standaloneSseWriteHead(args));
+    return result;
+  } as typeof response.writeHead;
+  response.writeHead = writeHead;
+  const onClosed = () => {
+    finish(false);
+  };
+  response.once('close', onClosed);
+  response.once('error', onClosed);
+  return {
+    opened,
+    dispose() {
+      if (response.writeHead === writeHead) response.writeHead = originalWriteHead;
+      response.off('close', onClosed);
+      response.off('error', onClosed);
+      finish(false);
+    },
+  };
+}
+
+function bindStandaloneSseClose(response: ServerResponse, onClose: () => void): () => void {
+  const handler = () => {
+    onClose();
+  };
+  response.on('close', handler);
+  response.on('finish', handler);
+  response.on('error', handler);
+  return () => {
+    response.off('close', handler);
+    response.off('finish', handler);
+    response.off('error', handler);
+  };
+}
+
+function standaloneSseWriteHead(args: readonly unknown[]): boolean {
+  const status = Number(args[0]);
+  if (status !== 200) return false;
+  const headers = typeof args[1] === 'string' ? args[2] : args[1];
+  return contentTypeText(headers).includes('text/event-stream');
+}
+
+function contentTypeText(headers: unknown): string {
+  if (typeof headers !== 'object' || headers === null) return '';
+  if (Array.isArray(headers)) {
+    const parts: string[] = [];
+    for (let index = 0; index < headers.length; index += 2) {
+      const name = headers[index];
+      const value = headers[index + 1];
+      if (typeof name === 'string' && name.toLowerCase() === 'content-type' && typeof value === 'string') parts.push(value);
+    }
+    return parts.join(',');
+  }
+  const record = headers as Record<string, unknown>;
+  const type = record['content-type'] ?? record['Content-Type'];
+  if (typeof type === 'string') return type;
+  if (!Array.isArray(type)) return '';
+  return type.filter((part): part is string => typeof part === 'string').join(',');
 }
 
 async function authenticate(

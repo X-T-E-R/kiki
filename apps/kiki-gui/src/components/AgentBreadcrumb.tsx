@@ -35,7 +35,10 @@ export function relatedAgentNodes(
   children: readonly AgentTreeNode[];
 } {
   const current = forest.byId[currentAgentId];
-  if (current === undefined) return { parent: undefined, siblings: [], children: [] };
+  if (current === undefined) {
+    const parent = currentAgentId !== MAIN_AGENT_ID ? forest.byId[MAIN_AGENT_ID] : undefined;
+    return { parent, siblings: [], children: [] };
+  }
   const parent =
     current.parentAgentId === undefined ? undefined : forest.byId[current.parentAgentId];
   const siblingCandidates =

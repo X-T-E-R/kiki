@@ -181,6 +181,7 @@ describe('IModelsDevImportService', () => {
       rejected: false,
       reject_code: null,
       env_key: 'OPENAI_API_KEY',
+      base_url: 'https://api.openai.com/v1',
     });
     expect(openai?.models).toEqual([
       expect.objectContaining({

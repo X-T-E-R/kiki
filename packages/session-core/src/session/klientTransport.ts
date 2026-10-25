@@ -12,7 +12,15 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
       return await operation();
     } catch (error) {
       if (error instanceof RPCError) {
-        throw new ApiError({ code: error.code, msg: error.message, data: error.data, request_id: error.requestId });
+        throw new ApiError({
+          code: error.code,
+          msg: error.message,
+          data: error.data,
+          details: error.details,
+          request_id: error.requestId,
+          source: error.source,
+          reason: error.reason,
+        });
       }
       throw error;
     }
@@ -24,7 +32,11 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
   });
   return {
     getSession: (id) => run(() => commands(id).read()),
-    submitPrompt: (id, body) => active(id, () => commands(id).submit(body)),
+    // Prompt submission is the durable enqueue boundary. It must not wait for
+    // the view/history resume gate: a slow snapshot or a reconnecting ordered
+    // view must not turn a typed message into a permanently disabled send.
+    submitPrompt: (id, body) => run(() => commands(id).submit(body)),
+
     editMessage: (id, target, body) => active(id, () => commands(id).edit(target, editMessageRequestSchema.parse(body))),
     regenerateMessage: (id, target, body) => active(id, () => commands(id).regenerate(target, regenerateMessageRequestSchema.parse(body))),
     forkSession: (id, body) => run(() => commands(id).fork(forkSessionRequestSchema.parse(body))),

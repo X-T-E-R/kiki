@@ -107,15 +107,30 @@ async function readWireEvents(homeDir: string, sessionId: string): Promise<reado
 
   try {
     const raw = await readFile(join(sessionDir, 'agents', 'main', 'wire.jsonl'), 'utf-8');
-    return raw
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as unknown);
+    return parseCommittedWireLines(raw);
   } catch (error) {
     const code = (error as NodeJS.ErrnoException).code;
     if (code === 'ENOENT') return [];
     throw error;
   }
+}
+
+/**
+ * A live journal append is readable before its terminating newline. Bytes after
+ * the last newline are that uncommitted tail and are not parsed. A
+ * newline-terminated line that is not JSON still throws, so a corrupt
+ * committed record is not skipped.
+ */
+function parseCommittedWireLines(raw: string): unknown[] {
+  const end = raw.endsWith('\n') ? raw.length : raw.lastIndexOf('\n');
+  if (end <= 0) return [];
+  const events: unknown[] = [];
+  for (const rawLine of raw.slice(0, end).split('\n')) {
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
+    if (line.length === 0) continue;
+    events.push(JSON.parse(line) as unknown);
+  }
+  return events;
 }
 
 function toMainAgentWirePayload(value: unknown): AgentWirePayload | undefined {

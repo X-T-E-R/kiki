@@ -11,12 +11,12 @@
  * manager" — appears beside it, gated on the same host capability as the tab
  * context menu's entries; a reveal icon also rides the binary tab's caption
  * strip. Text files are editable where a write
- * channel exists (desktop); everything degrades to read-only otherwise. Every
- * tab's view stays mounted while hidden so editor buffers survive tab
- * switches. Collapsing the panel hides it in place for the same reason: the
- * mounted editor controller keeps its draft and its pending autosave, so
- * re-opening the panel never costs unsaved edits. Only closing the last tab
- * unmounts.
+ * channel exists (desktop); everything degrades to read-only otherwise. A file
+ * tab mounts the first time it is shown, then stays mounted while hidden so
+ * editor buffers, reading position and playback survive later switches.
+ * Collapsing the panel hides a tab that has already been shown: the mounted
+ * editor controller keeps its draft and its pending autosave, so re-opening
+ * the panel never costs unsaved edits. Only closing the tab unmounts it.
  *
  * Agent (panel) tabs render the same full AgentWorkspace as the agent route
  * page — identity header, timeline, actions and detail rail — chromed by
@@ -29,7 +29,7 @@
  * retargets the shared rail at the active panel tab's agent.
  */
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { useNavVisitId } from '../lib/useNavSnapshot';
 
 import { appendToDraft, mentionToken } from '@kiki/session-core/composer';
@@ -40,6 +40,7 @@ import { useI18n } from '../i18n';
 import { copyTextToClipboard } from '../lib/clipboard';
 import type { KikiClient } from '../lib/client';
 import { runToastAction } from '../lib/toasts';
+import { registerOverlay } from '../lib/uiBusy';
 import { useOptionalConnection } from '../state/connection';
 import {
   HostFileEditorController,
@@ -57,6 +58,7 @@ import type { ConversationShellSlots } from './ConversationShell';
 import { Markdown } from './Markdown';
 import { Icon } from './icons';
 import { ImageViewport } from './ImageViewport';
+import { DocumentTabView } from './preview/DocumentTabView';
 
 export interface PreviewWorkspaceProps {
   readonly tabs: readonly (string | PreviewTabModel)[];
@@ -95,10 +97,10 @@ export interface PreviewWorkspaceProps {
   readonly scrollPositions?: Readonly<Record<string, { readonly top: number; readonly left?: number }>>;
   readonly onScrollPosition?: (key: string, position: { top: number; left?: number }) => void;
   /**
-   * Collapsed (not closed): the panel keeps every tab view — and the editor
-   * buffer behind it — mounted and hides itself instead. Unmounting here would
-   * dispose the host-file editor controller, dropping the draft and canceling
-   * its pending autosave. Defaults to false.
+   * Collapsed (not closed): a file tab that has already been shown stays
+   * mounted and hides itself. Unmounting here would dispose the host-file
+   * editor controller, dropping the draft and canceling its pending autosave.
+   * Defaults to false.
    */
   readonly hidden?: boolean;
   readonly overlay?: boolean;
@@ -195,6 +197,11 @@ export function PreviewWorkspace({
     () => tabs.map(normalizeTabInput),
     [tabs],
   );
+  const openTabKeys = useMemo(() => new Set(normalizedTabs.map((tab) => previewTabKey(tab))), [normalizedTabs]);
+  const [seenTabs, setSeenTabs] = useState<ReadonlySet<string>>(() => new Set());
+  const nextSeen = new Set([...seenTabs].filter((key) => openTabKeys.has(key)));
+  if (!hidden && active !== null && active !== '' && openTabKeys.has(active)) nextSeen.add(active);
+  if (nextSeen.size !== seenTabs.size || [...nextSeen].some((key) => !seenTabs.has(key))) setSeenTabs(nextSeen);
 
   // The shared rail owns the first Escape even if this listener runs before
   // SessionView's rail closer. The next unclaimed Escape exits fullscreen.
@@ -410,6 +417,7 @@ export function PreviewWorkspace({
             position={scrollPositions?.[key]}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }} />;
         }
+        if (!seenTabs.has(key)) return null;
         return (
           <PreviewTabView
             key={key}
@@ -421,6 +429,7 @@ export function PreviewWorkspace({
             reportDirty={reportDirty}
             position={scrollPositions?.[key]}
             onScrollPosition={onScrollPosition === undefined ? undefined : (position) => { onScrollPosition(key, position); }}
+            sessionId={sessionId}
           />
         );
       })}
@@ -568,6 +577,7 @@ function PreviewFileTab({
   return (
     <div
       role="tab"
+      tabIndex={0}
       aria-selected={active}
       title={path}
       draggable
@@ -587,11 +597,19 @@ function PreviewFileTab({
         onDrop();
       }}
       onClick={onActivate}
+      onKeyDown={(event) => {
+        // Inner buttons (mention, close) keep their own activation.
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-40 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none ${
+      className={`group flex h-7 max-w-40 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         active
           ? 'border-hairline bg-paper font-medium text-ink'
           : 'border-transparent text-ink-faint hover:text-ink-soft'
@@ -662,6 +680,7 @@ function PreviewSkillTab({
   return (
     <div
       role="tab"
+      tabIndex={0}
       aria-selected={active}
       title={`${t('cap.source.builtin')} · ${name} / SKILL.md`}
       draggable
@@ -681,11 +700,19 @@ function PreviewSkillTab({
         onDrop();
       }}
       onClick={onActivate}
+      onKeyDown={(event) => {
+        // The inner close button keeps its own activation.
+        if (event.target !== event.currentTarget) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onActivate();
+        }
+      }}
       onContextMenu={(event) => {
         event.preventDefault();
         onContextMenu(event.clientX, event.clientY);
       }}
-      className={`group flex h-7 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none ${
+      className={`group flex h-7 max-w-48 min-w-0 shrink-0 cursor-pointer items-center gap-1 rounded-t-md border border-b-0 px-2 text-[11.5px] select-none focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${
         active ? 'border-hairline bg-paper font-medium text-ink' : 'border-transparent text-ink-faint hover:text-ink-soft'
       }`}
     >
@@ -814,11 +841,32 @@ function TabContextMenu({
   const host = useHost();
   const { t } = useI18n();
   const remoteScope = useOptionalConnection()?.scopeId.startsWith('ssh:') ?? false;
+  const menuRef = useRef<HTMLDivElement>(null);
+  // Whatever held focus when the menu opened; Escape and item activation hand
+  // it back (an outside pointerdown never does — the pointer's own target
+  // takes focus). Registered as an overlay so the global Escape-to-abort
+  // yields to this menu like every other transient layer.
+  const returnFocusRef = useRef<HTMLElement | null>(null);
+  useLayoutEffect(() => {
+    returnFocusRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    menuRef.current?.querySelector<HTMLButtonElement>('button:not([disabled])')?.focus();
+  }, []);
+
+  const restoreTriggerFocus = () => {
+    const trigger = returnFocusRef.current;
+    if (trigger === null || trigger === document.body || !trigger.isConnected) return;
+    trigger.focus();
+  };
   const closeRef = useRef(onCloseMenu);
   closeRef.current = onCloseMenu;
   useEffect(() => {
+    const unregister = registerOverlay('preview-tab-menu');
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeRef.current();
+      if (event.key !== 'Escape') return;
+      event.preventDefault();
+      const owned = menuRef.current?.contains(document.activeElement) === true;
+      closeRef.current();
+      if (owned) restoreTriggerFocus();
     };
     const onPointerDown = (event: PointerEvent) => {
       if (
@@ -831,13 +879,14 @@ function TabContextMenu({
     window.addEventListener('keydown', onKeyDown);
     window.addEventListener('pointerdown', onPointerDown, true);
     return () => {
+      unregister();
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('pointerdown', onPointerDown, true);
     };
   }, []);
 
   const itemClass =
-    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper';
+    'w-full rounded-md px-3 py-1.5 text-left text-[12px] text-ink transition-colors hover:bg-paper focus-visible:bg-paper';
   const pick = (run: () => void) => {
     onCloseMenu();
     run();
@@ -851,8 +900,35 @@ function TabContextMenu({
 
   return (
     <div
+      ref={menuRef}
       data-preview-tab-menu
       role="menu"
+      aria-label={t('preview.tabMenuAria')}
+      onKeyDown={(event) => {
+        if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp' && event.key !== 'Home' && event.key !== 'End') return;
+        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('button:not([disabled])') ?? [])];
+        if (items.length === 0) return;
+        event.preventDefault();
+        const index = items.indexOf(document.activeElement as HTMLButtonElement);
+        const next = event.key === 'Home' ? 0
+          : event.key === 'End' ? items.length - 1
+          : event.key === 'ArrowDown' ? (index + 1) % items.length
+          : (index - 1 + items.length) % items.length;
+        items[next]?.focus();
+      }}
+      onClick={(event) => {
+        // Focus returns to the opener only after the click's commit lands: a
+        // tab close can unmount the opener (nothing to restore), and checking
+        // post-commit never steals from a surface the action raised.
+        if (!(event.target instanceof HTMLElement) || event.target.closest('[role="menuitem"]') === null) return;
+        const menuNode = menuRef.current;
+        queueMicrotask(() => {
+          if (menuNode === null || menuNode.isConnected) return;
+          const active = document.activeElement;
+          if (active !== null && active !== document.body && active instanceof HTMLElement && active.isConnected) return;
+          restoreTriggerFocus();
+        });
+      }}
       className="anim-enter fixed z-50 w-52 rounded-lg border border-hairline bg-panel p-1 shadow-[0_8px_24px_-10px_rgb(var(--kiki-shadow-ink)/0.3)]"
       style={{ left: menu.x, top: menu.y }}
     >
@@ -1153,7 +1229,7 @@ const PREVIEW_SCROLL_SELECTOR = '.cm-scroller, [data-preview-scroll], [data-imag
 type PreviewScrollPosition = { readonly top: number; readonly left?: number };
 
 function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPosition | undefined,
-  onScrollPosition: ((position: { top: number; left?: number }) => void) | undefined) {
+  onScrollPosition: ((position: { top: number; left?: number }) => void) | undefined, navigation?: FileReference) {
   const panelRef = useRef<HTMLDivElement | null>(null);
   const visitId = useNavVisitId();
   const positionRef = useRef(position);
@@ -1186,7 +1262,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
   }, [onReadingReady]);
   useEffect(() => {
     if (!visible) { appliedRef.current = null; return; }
-    if (ready === 0) return;
+    if (ready === 0 || navigation?.line !== undefined || navigation?.heading !== undefined) return;
     const identity = `${visitId ?? 'embedded'}\0${ready}`;
     if (appliedRef.current === identity) {
       const equal = (value: PreviewScrollPosition | undefined) => value?.top === position?.top && value?.left === position?.left;
@@ -1198,7 +1274,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
     // Ready comes from the renderer, not a DOM polling deadline. One layout
     // frame also lets a resident provider commit this visit's saved positions.
     const frame = requestAnimationFrame(() => {
-      const scroller = panelRef.current?.querySelector<HTMLElement>(PREVIEW_SCROLL_SELECTOR);
+      const scroller = Array.from(panelRef.current?.querySelectorAll<HTMLElement>(PREVIEW_SCROLL_SELECTOR) ?? []).find((element) => element.closest('[hidden]') === null);
       const saved = positionRef.current;
       if (scroller !== undefined && scroller !== null && saved !== undefined) {
         scroller.scrollTop = saved.top;
@@ -1209,7 +1285,7 @@ function usePreviewReadingScroll(visible: boolean, position: PreviewScrollPositi
       pendingRef.current = false;
     });
     return () => { cancelAnimationFrame(frame); pendingRef.current = false; };
-  }, [visible, visitId, ready, position?.top, position?.left]);
+  }, [visible, visitId, ready, position?.top, position?.left, navigation]);
   return { panelRef, onReadingReady };
 }
 
@@ -1222,6 +1298,7 @@ function PreviewTabView({
   reportDirty,
   position,
   onScrollPosition,
+  sessionId,
 }: {
   readonly path: string;
   /** Session workspace cwd — the resource root an HTML preview is opened against. */
@@ -1233,9 +1310,14 @@ function PreviewTabView({
   /** This tab's reading position for the current visit, when it has one. */
   readonly position?: { readonly top: number; readonly left?: number };
   readonly onScrollPosition?: (position: { top: number; left?: number }) => void;
+  /** Which session's document renderer and asset route serve this file. */
+  readonly sessionId?: string;
 }) {
   const kind = previewKindOf(path);
-  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition);
+  const host = useHost();
+  const connection = useOptionalConnection();
+  const openers = useFileOpeners();
+  const { panelRef, onReadingReady } = usePreviewReadingScroll(visible, position, onScrollPosition, navigation);
   return (
     <div
       ref={panelRef}
@@ -1248,10 +1330,24 @@ function PreviewTabView({
         <ImageTabView path={path} onOpenImage={onOpenImage} />
       ) : kind === 'video' ? (
         <VideoTabView path={path} />
+      ) : kind === 'audio' ? (
+        <AudioTabView path={path} scopeId={connection?.scopeId} />
+      ) : kind === 'pdf' || kind === 'office' ? (
+        <DocumentTabView
+          source={{ kind: 'workspace', path }}
+          sessionId={sessionId}
+          client={connection?.client}
+          active={visible}
+          onOpenLocally={openers === null ? undefined : () => { openers.open(path); }}
+          onDownload={() => {
+            const target = connection?.client;
+            if (target !== undefined) void downloadHostFile(host, target, path, basenameOf(path));
+          }}
+        />
       ) : kind === 'binary' ? (
         <BinaryTabView path={path} />
       ) : (
-        <TextTabView path={path} root={root} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
+        <TextTabView path={path} root={root} visible={visible} markdown={kind === 'markdown'} navigation={navigation} reportDirty={reportDirty} onReadingReady={onReadingReady} />
       )}
     </div>
   );
@@ -1413,21 +1509,75 @@ function BinaryTabView({ path }: { readonly path: string }) {
   );
 }
 
+interface PlayableMedia {
+  readonly url: string;
+  readonly size: number;
+  readonly via: 'capability' | 'blob';
+  readonly release: () => void;
+}
+
+function loadPlayableBlob(client: KikiClient, path: string, signal: AbortSignal): Promise<PlayableMedia> {
+  return client.readHostFileBytes(path, { signal }).then(({ bytes, mime }) => {
+    if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('cancelled');
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
+    return { url, size: bytes.byteLength, via: 'blob', release: () => { URL.revokeObjectURL(url); } };
+  });
+}
+
+/** Capability URL when this connection can mint one; otherwise the file bytes. */
+function loadPlayableMedia(client: KikiClient, path: string, signal: AbortSignal, forceBlob: boolean): Promise<PlayableMedia> {
+  if (!forceBlob && typeof client.openHostMediaPreview === 'function') {
+    return client.openHostMediaPreview({ path }, { signal }).then((opened) => {
+      if (signal.aborted) {
+        void client.closeHostMediaPreview(opened.preview_id);
+        throw signal.reason instanceof Error ? signal.reason : new Error('cancelled');
+      }
+      return {
+        url: opened.url,
+        size: opened.size,
+        via: 'capability' as const,
+        release: () => { void client.closeHostMediaPreview(opened.preview_id); },
+      };
+    }, (error: unknown) => {
+      if (signal.aborted) throw error;
+      return loadPlayableBlob(client, path, signal);
+    });
+  }
+  return loadPlayableBlob(client, path, signal);
+}
+
 /**
  * Video tab: the file's own bytes in a plain HTML5 player — native controls,
  * no frame around the picture, intrinsic size capped by the panel rather than
  * stretched to fill it. A container the runtime cannot decode (codec missing)
  * degrades to the binary fallback, whose opener buttons are the recovery.
  */
-function VideoTabView({ path }: { readonly path: string }) {
+/**
+ * Audio tab: play the host file through a short-lived media URL when the
+ * connection can mint one, otherwise from the original bytes. A failed read
+ * stays actionable so the same tab can retry; a browser decode failure uses
+ * the ordinary file fallback.
+ */
+function AudioTabView({ path, scopeId }: { readonly path: string; readonly scopeId?: string }) {
   const { t } = useI18n();
   const client = useOptionalConnection()?.client;
   const name = basenameOf(path);
+  const mediaKey = `${scopeId ?? ''}\0${path}`;
+  const [attempt, setAttempt] = useState(0);
   const [unplayable, setUnplayable] = useState(false);
+  const [blobFallbackKey, setBlobFallbackKey] = useState<string | undefined>(undefined);
   const [state, setState] = useState<
     | { readonly status: 'loading' }
     | { readonly status: 'error' }
-    | { readonly status: 'ready'; readonly url: string; readonly size: number }
+    | {
+      readonly status: 'ready';
+      readonly client: KikiClient;
+      readonly path: string;
+      readonly scopeId: string | undefined;
+      readonly url: string;
+      readonly size: number;
+      readonly via: 'capability' | 'blob';
+    }
   >({ status: 'loading' });
 
   useEffect(() => {
@@ -1436,24 +1586,124 @@ function VideoTabView({ path }: { readonly path: string }) {
       setState({ status: 'error' });
       return;
     }
+    const abort = new AbortController();
+    let release: (() => void) | undefined;
     let cancelled = false;
-    let objectUrl: string | undefined;
     setState({ status: 'loading' });
-    client.readHostFileBytes(path).then(
-      ({ bytes, mime }) => {
-        if (cancelled) return;
-        objectUrl = URL.createObjectURL(new Blob([bytes as BlobPart], { type: mime }));
-        setState({ status: 'ready', url: objectUrl, size: bytes.byteLength });
-      },
-      () => {
-        if (!cancelled) setState({ status: 'error' });
-      },
-    );
+    loadPlayableMedia(client, path, abort.signal, blobFallbackKey === mediaKey).then((ready) => {
+      if (cancelled) {
+        ready.release();
+        return;
+      }
+      release = ready.release;
+      setState({ status: 'ready', client, path, scopeId, url: ready.url, size: ready.size, via: ready.via });
+    }, () => {
+      if (!cancelled && !abort.signal.aborted) setState({ status: 'error' });
+    });
     return () => {
       cancelled = true;
-      if (objectUrl !== undefined) URL.revokeObjectURL(objectUrl);
+      abort.abort();
+      release?.();
     };
+  }, [attempt, blobFallbackKey, client, mediaKey, path, scopeId]);
+
+  const readyState = state.status === 'ready' && state.client === client && state.path === path && state.scopeId === scopeId
+    ? state
+    : undefined;
+  if (unplayable) return <BinaryTabView path={path} />;
+
+  return (
+    <>
+      <div className="flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-1.5">
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-ink-faint" title={path}>
+          {path}
+        </span>
+        {readyState !== undefined ? (
+          <span className="shrink-0 font-mono text-[11px] text-ink-faint" data-audio-meta>
+            {formatBytes(readyState.size)}
+          </span>
+        ) : null}
+        <HeaderFileActions path={path} name={name} />
+      </div>
+      <div className="flex min-h-0 flex-1 items-center justify-center overflow-auto p-3">
+        {readyState === undefined && state.status === 'loading' ? (
+          <p className="flex items-center gap-2 text-[12px] text-ink-faint">
+            <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
+            {t('preview.loading')}
+          </p>
+        ) : readyState === undefined && state.status === 'error' ? (
+          <div className="flex items-center gap-2 text-[12.5px] text-danger">
+            <span>{t('preview.failed')}</span>
+            <button
+              type="button"
+              data-preview-audio-retry
+              onClick={() => { setAttempt((value) => value + 1); }}
+              className="rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink"
+            >
+              {t('common.retry')}
+            </button>
+          </div>
+        ) : readyState !== undefined ? (
+          <audio
+            src={readyState.url}
+            controls
+            preload="metadata"
+            aria-label={name}
+            data-preview-audio
+            onError={() => {
+              if (readyState.via === 'capability') setBlobFallbackKey(mediaKey);
+              else setUnplayable(true);
+            }}
+            className="w-full max-w-2xl"
+          />
+        ) : null}
+      </div>
+    </>
+  );
+}
+
+function VideoTabView({ path }: { readonly path: string }) {
+  const { t } = useI18n();
+  const client = useOptionalConnection()?.client;
+  const name = basenameOf(path);
+  const [unplayable, setUnplayable] = useState(false);
+  const [blobFallback, setBlobFallback] = useState(false);
+  const [state, setState] = useState<
+    | { readonly status: 'loading' }
+    | { readonly status: 'error' }
+    | { readonly status: 'ready'; readonly url: string; readonly size: number; readonly via: 'capability' | 'blob' }
+  >({ status: 'loading' });
+
+  useEffect(() => {
+    setBlobFallback(false);
   }, [client, path]);
+
+  useEffect(() => {
+    setUnplayable(false);
+    if (client === undefined) {
+      setState({ status: 'error' });
+      return;
+    }
+    const abort = new AbortController();
+    let release: (() => void) | undefined;
+    let cancelled = false;
+    setState({ status: 'loading' });
+    loadPlayableMedia(client, path, abort.signal, blobFallback).then((ready) => {
+      if (cancelled) {
+        ready.release();
+        return;
+      }
+      release = ready.release;
+      setState({ status: 'ready', url: ready.url, size: ready.size, via: ready.via });
+    }, () => {
+      if (!cancelled && !abort.signal.aborted) setState({ status: 'error' });
+    });
+    return () => {
+      cancelled = true;
+      abort.abort();
+      release?.();
+    };
+  }, [blobFallback, client, path]);
 
   if (unplayable) return <BinaryTabView path={path} />;
 
@@ -1485,7 +1735,10 @@ function VideoTabView({ path }: { readonly path: string }) {
             playsInline
             aria-label={name}
             data-preview-video
-            onError={() => { setUnplayable(true); }}
+            onError={() => {
+              if (state.status === 'ready' && state.via === 'capability') setBlobFallback(true);
+              else setUnplayable(true);
+            }}
             className="max-h-full max-w-full"
           />
         )}
@@ -1574,6 +1827,7 @@ const IDLE_SNAPSHOT: HostFileEditorSnapshot = {
 function TextTabView({
   path,
   root,
+  visible,
   markdown,
   navigation,
   reportDirty,
@@ -1582,6 +1836,7 @@ function TextTabView({
   readonly path: string;
   /** Session workspace cwd — the resource root an HTML preview is opened against. */
   readonly root?: string;
+  readonly visible: boolean;
   readonly markdown: boolean;
   readonly navigation?: FileReference;
   readonly reportDirty: (path: string, dirty: boolean) => void;
@@ -1611,8 +1866,11 @@ function TextTabView({
   const [loadingFull, setLoadingFull] = useState(false);
   const [fullError, setFullError] = useState(false);
   const fullLoadId = useRef(0);
+  const fullLoadAbort = useRef<AbortController | null>(null);
+  const [headingFound, setHeadingFound] = useState(true);
   useEffect(() => {
     if (navigation?.line !== undefined) setMode('source');
+    else if (navigation?.heading !== undefined) setMode('rendered');
   }, [navigation]);
 
   useEffect(() => {
@@ -1711,8 +1969,12 @@ function TextTabView({
   useEffect(() => {
     setLoadingFull(false);
     setFullError(false);
-    return () => { fullLoadId.current += 1; };
-  }, [client, path, snap.generation]);
+    return () => {
+      fullLoadId.current += 1;
+      fullLoadAbort.current?.abort();
+      fullLoadAbort.current = null;
+    };
+  }, [client, controller, path, snap.generation, visible]);
 
   const dirty = snap.dirty;
   useEffect(() => {
@@ -1723,9 +1985,17 @@ function TextTabView({
   const name = basenameOf(path);
   const editable = controller?.editable ?? false;
   const showEditor = !hasRenderedMode || mode === 'source';
+  const [sourceMounted, setSourceMounted] = useState(!hasRenderedMode);
+  useEffect(() => { if (showEditor) setSourceMounted(true); }, [showEditor]);
   const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
     fullMarkdown.path === path && fullMarkdown.generation === snap.generation
     ? fullMarkdown.text : undefined;
+  const referenceOutside = useMemo(() => {
+    if (navigation?.line === undefined) return false;
+    const lines = (fullText ?? snap.draft).split(/\r\n|\r|\n/);
+    return navigation.line > lines.length || (navigation.endLine ?? navigation.line) > lines.length ||
+      (navigation.column ?? 1) > (lines[navigation.line - 1]?.length ?? 0) + 1;
+  }, [navigation, fullText, snap.draft]);
   // The renderer, not a frame deadline, says when this tab's text is on screen;
   // an HTML tab is readable once its document origin is live.
   useEffect(() => {
@@ -1737,20 +2007,30 @@ function TextTabView({
   }, [snap.status, snap.generation, showEditor, fullText !== undefined, onReadingReady, html, htmlPreviewState.status]);
   const normalizedPath = path.replaceAll('\\', '/');
   const documentDirectory = normalizedPath.slice(0, normalizedPath.lastIndexOf('/')) || '/';
-  const loadFullMarkdown = async () => {
-    if (client === undefined || controller === null || loadingFull) return;
+  const loadFullMarkdown = useCallback(async () => {
+    if (client === undefined || controller === null || !visible || fullLoadAbort.current !== null) return;
     const loadId = ++fullLoadId.current;
+    const abort = new AbortController();
+    fullLoadAbort.current = abort;
     setLoadingFull(true);
     setFullError(false);
     try {
-      const text = await client.readHostFile(path);
-      if (loadId === fullLoadId.current) setFullMarkdown({ controller, client, path, generation: snap.generation, text });
+      const text = await client.readHostFile(path, { signal: abort.signal });
+      if (!abort.signal.aborted && loadId === fullLoadId.current) setFullMarkdown({ controller, client, path, generation: snap.generation, text });
     } catch {
-      if (loadId === fullLoadId.current) setFullError(true);
+      if (!abort.signal.aborted && loadId === fullLoadId.current) setFullError(true);
     } finally {
-      if (loadId === fullLoadId.current) setLoadingFull(false);
+      if (!abort.signal.aborted && loadId === fullLoadId.current) {
+        fullLoadAbort.current = null;
+        setLoadingFull(false);
+      }
     }
-  };
+  }, [client, controller, path, snap.generation, visible]);
+  useEffect(() => {
+    if (visible && markdown && snap.status === 'ready' && snap.oversized && fullText === undefined && !fullError) {
+      void loadFullMarkdown();
+    }
+  }, [visible, markdown, snap.status, snap.oversized, fullText, fullError, loadFullMarkdown]);
 
   const htmlLoadingNotice = (
     <p className="flex items-center gap-2 p-3 text-[12px] text-ink-faint">
@@ -1959,26 +2239,31 @@ function TextTabView({
           <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
         ) : (
           <>
-            {showEditor ? (
-              html && snap.status === 'loading' ? htmlLoadingNotice
-                : html && snap.status === 'error' ? <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
-                : (
-                  <CodeEditor
-                    key={fullText !== undefined ? `${path}:full` : path}
-                    path={path}
-                    value={fullText ?? snap.draft}
-                    generation={snap.generation}
-                    navigation={navigation}
-                    readOnly={!editable}
-                    onChange={(text) => { controller?.setDraft(text); }}
-                    onSaveShortcut={() => { void controller?.saveNow(); }}
-                    ariaLabel={t('preview.openFile', { name })}
-                  />
-                )
+            {navigation?.invalidTarget || (navigation?.heading !== undefined && !headingFound) || referenceOutside ? (
+              <p role="status" className="px-3 py-2 text-[12px] text-ink-soft">{t(referenceOutside ? 'preview.referenceClamped' : 'preview.referenceMissing')}</p>
+            ) : null}
+            {sourceMounted || showEditor ? (
+              <div hidden={!showEditor} className={`min-h-0 flex-1 flex-col ${showEditor ? 'flex' : 'hidden'}`}>
+                {html && snap.status === 'loading' ? htmlLoadingNotice
+                  : html && snap.status === 'error' ? <p className="p-3 text-[12.5px] text-danger">{t('preview.failed')}</p>
+                  : (
+                    <CodeEditor
+                      key={fullText !== undefined ? `${path}:full` : path}
+                      path={path}
+                      value={fullText ?? snap.draft}
+                      generation={snap.generation}
+                      navigation={showEditor ? navigation : undefined}
+                      readOnly={!editable}
+                      onChange={(text) => { controller?.setDraft(text); }}
+                      onSaveShortcut={() => { void controller?.saveNow(); }}
+                      ariaLabel={t('preview.openFile', { name })}
+                    />
+                  )}
+              </div>
             ) : null}
             {markdown && !showEditor ? (
               <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
-                <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} />
+                <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} documentPath={path} headingNavigation={navigation} onHeadingResult={setHeadingFound} />
               </div>
             ) : null}
             {html ? (

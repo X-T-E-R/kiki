@@ -1,7 +1,7 @@
 /** Session-list cache helpers: page-1 poll merge + overlap dedupe, plus
  * client-local pin state keyed off the wire `Session.metadata`. */
 
-import type { PageResponse, Session, Workspace } from '@kiki/protocol';
+import type { PageResponse, Session, SessionWorkChangedEvent, Workspace } from '@kiki/protocol';
 
 export type SessionListPage = PageResponse<Session> & { readonly next_cursor?: string };
 
@@ -18,7 +18,17 @@ export interface SessionListData {
  * to a local-only session-scoped highlight. */
 export const SESSION_PIN_META_KEY = 'kiki.pinned';
 
-export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'pending_interaction'>;
+export type SessionListEntry = Pick<Session, 'id' | 'title' | 'metadata' | 'updated_at' | 'created_at' | 'workspace_id' | 'archived' | 'busy' | 'executing' | 'main_turn_active' | 'pending_interaction'>;
+
+export type SessionWorkChangedPatch = Pick<SessionWorkChangedEvent, 'busy' | 'executing' | 'main_turn_active'> & {
+  readonly sessionId: string;
+};
+
+export function sessionIsExecuting(
+  session: Pick<Session, 'executing' | 'main_turn_active'>,
+): boolean | undefined {
+  return session.executing ?? session.main_turn_active;
+}
 
 export function isPinnedSession(session: Pick<Session, 'metadata'>): boolean {
   return session.metadata[SESSION_PIN_META_KEY] === true;
@@ -60,8 +70,11 @@ export function shortCwd(cwd: string): string {
 export async function readSessionFirstPage(
   read: (beforeId?: string) => Promise<SessionListPage>,
   loaded: SessionListData | undefined,
+  signal?: AbortSignal,
 ): Promise<SessionListPage> {
+  signal?.throwIfAborted();
   let head = await read();
+  signal?.throwIfAborted();
   const ids = new Set(loaded?.pages[0]?.items.map((item) => item.id));
   const cursors = new Set<string>();
   while (ids.size > 0 && head.has_more && !head.items.some((item) => ids.has(item.id))) {
@@ -69,6 +82,7 @@ export async function readSessionFirstPage(
     if (cursor === undefined || cursors.has(cursor)) throw new Error('Session list cursor did not advance');
     cursors.add(cursor);
     const page = await read(cursor);
+    signal?.throwIfAborted();
     head = { ...page, items: [...head.items, ...page.items] };
   }
   return head;
@@ -109,6 +123,22 @@ export function mergeSessionActivity(old: SessionListData | undefined, fresh: Se
   })) };
 }
 
+export function mergeSessionWorkChanged(
+  old: SessionListData | undefined,
+  change: SessionWorkChangedPatch,
+): SessionListData | undefined {
+  if (old === undefined || !Array.isArray(old.pages)) return old;
+  return {
+    ...old,
+    pages: old.pages.map((page) => ({
+      ...page,
+      items: page.items.map((session) => session.id === change.sessionId
+        ? { ...session, busy: change.busy, executing: change.executing, main_turn_active: change.main_turn_active }
+        : session),
+    })),
+  };
+}
+
 /** A fresher page 1 can overlap an older loaded page as sessions shift. */
 export function dedupeSessions(data: SessionListData | undefined): Session[] {
   const seen = new Set<string>();
@@ -136,12 +166,17 @@ export function isSessionSortOrder(value: unknown): value is SessionSortOrder {
   return value === 'updated-desc' || value === 'updated-asc' || value === 'created-desc' || value === 'title';
 }
 
+function timestamp(at: string): number {
+  const value = Date.parse(at);
+  return Number.isFinite(value) ? value : 0;
+}
+
 function byUpdatedDesc(a: SessionListEntry, b: SessionListEntry): number {
-  return b.updated_at.localeCompare(a.updated_at);
+  return timestamp(b.updated_at) - timestamp(a.updated_at);
 }
 
 function byUpdatedAsc(a: SessionListEntry, b: SessionListEntry): number {
-  return a.updated_at.localeCompare(b.updated_at);
+  return timestamp(a.updated_at) - timestamp(b.updated_at);
 }
 
 function byCreatedDesc(a: SessionListEntry, b: SessionListEntry): number {
@@ -155,7 +190,21 @@ function byTitle(a: SessionListEntry, b: SessionListEntry): number {
     return an.localeCompare(bn, undefined, { sensitivity: 'base', numeric: true });
   }
   // Deterministic tie-break that does not drift with the runtime locale.
-  return b.updated_at.localeCompare(a.updated_at);
+  return byUpdatedDesc(a, b);
+}
+
+/** Cycle loaded running sessions in a stable creation order, independent of pin and activity updates. */
+export function adjacentRunningSession(
+  sessions: readonly Pick<Session, 'id' | 'busy' | 'executing' | 'main_turn_active' | 'created_at'>[],
+  currentId: string | undefined,
+  direction: 1 | -1,
+): string | undefined {
+  const running = sessions.filter((session) => sessionIsExecuting(session) === true).sort((a, b) =>
+    b.created_at.localeCompare(a.created_at) || a.id.localeCompare(b.id));
+  if (running.length === 0) return undefined;
+  const index = running.findIndex((session) => session.id === currentId);
+  if (index === -1) return (direction === 1 ? running[0] : running.at(-1))?.id;
+  return running[(index + direction + running.length) % running.length]?.id;
 }
 
 /** Pinned sessions float to the top (newest-pinned first by `updated_at`). */
@@ -276,11 +325,13 @@ export const WORKSPACE_UNGROUPED_KEY = '__none';
  * bucket. `pinnedLabel`, when given, pulls pinned sessions out of their
  * workspace bucket into one leading global `pinned` group — pinning means
  * "keep this at the top of my list", which a per-workspace bucket would bury.
+ * The workspace list only needs identity and a display name, so the
+ * metadata-only catalog entry groups exactly like the full wire `Workspace`.
  */
-export function groupSessionsByWorkspace<T extends SessionListEntry>(
+export function groupSessionsByWorkspace<T extends SessionListEntry, W extends Pick<Workspace, 'id' | 'name'>>(
   sessions: readonly T[],
-  workspaces: readonly Workspace[],
-  resolveName: (workspace: Workspace) => string = (workspace) => workspace.name,
+  workspaces: readonly W[],
+  resolveName: (workspace: W) => string = (workspace) => workspace.name,
   ungroupedLabel = 'ungrouped',
   pinnedLabel?: string,
 ): SessionGroup<T>[] {
@@ -325,10 +376,12 @@ export function groupSessionsByWorkspace<T extends SessionListEntry>(
 }
 
 /** Status buckets the filter chips read (mirrors the sidebar row dot). */
-export function sessionStatusOf(session: Pick<Session, 'busy' | 'pending_interaction'>): 'running' | 'needs-me' | 'idle' {
+export function sessionStatusOf(
+  session: Pick<Session, 'busy' | 'executing' | 'main_turn_active' | 'pending_interaction'>,
+): 'running' | 'needs-me' | 'idle' {
   const pending = session.pending_interaction;
   if (pending === 'approval' || pending === 'question') return 'needs-me';
-  return session.busy ? 'running' : 'idle';
+  return sessionIsExecuting(session) === true ? 'running' : 'idle';
 }
 
 export interface SessionFilterInput {

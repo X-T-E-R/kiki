@@ -4,19 +4,28 @@ import type { MessageDeliveryOrigin } from '#/agent/contextMemory/messageDeliver
 import { StepRequest, type StepRequestOptions, type TurnSeed } from '#/agent/loop/stepRequest';
 import type { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 
+export interface PromptBatchMessage {
+  readonly message: ContextMessage;
+  readonly captions: readonly string[];
+  readonly alreadyMaterialized?: boolean;
+}
+
 abstract class UserMessageStepRequest extends StepRequest {
   protected readonly message: ContextMessage;
-  private readonly ownerPromptId: string;
+  protected readonly batch: readonly PromptBatchMessage[];
 
   constructor(
     message: ContextMessage,
-    private readonly captions: readonly string[],
+    captions: readonly string[],
     private readonly reminders: IAgentSystemReminderService,
     options?: StepRequestOptions,
+    batch?: readonly PromptBatchMessage[],
   ) {
     super(options);
-    this.ownerPromptId = message.id ?? newMessageId();
-    this.message = { ...message, id: this.ownerPromptId };
+    this.message = { ...message, id: message.id ?? newMessageId() };
+    this.batch = (batch ?? [{ message: this.message, captions }]).map(item => ({
+      ...item, message: { ...item.message, id: item.message.id ?? newMessageId() },
+    }));
   }
 
   override get turnSeed(): TurnSeed {
@@ -24,17 +33,20 @@ abstract class UserMessageStepRequest extends StepRequest {
   }
 
   override onWillMaterialize(): void {
-    for (const caption of this.captions) {
-      this.reminders.appendSystemReminder(caption, {
-        kind: 'injection',
-        variant: 'image_compression',
-        ownerPromptId: this.ownerPromptId,
-      });
+    for (const item of this.batch) {
+      if (item.alreadyMaterialized) continue;
+      for (const caption of item.captions) {
+        this.reminders.appendSystemReminder(caption, {
+          kind: 'injection',
+          variant: 'image_compression',
+          ownerPromptId: item.message.id,
+        });
+      }
     }
   }
 
   resolveContextMessages(): readonly ContextMessage[] {
-    return this.message.content.length > 0 ? [this.message] : [];
+    return this.batch.filter(item => !item.alreadyMaterialized && item.message.content.length > 0).map(item => item.message);
   }
 }
 
@@ -48,24 +60,29 @@ export class PromptStepRequest extends UserMessageStepRequest {
     _providerType: string | undefined,
     private readonly alreadyMaterialized = false,
     deliveryOrigin?: MessageDeliveryOrigin,
+    private readonly promptId?: string,
+    batch?: readonly PromptBatchMessage[],
+    private readonly recordBatch?: () => void,
+    private readonly hookMessages: readonly ContextMessage[] = [],
   ) {
-    super(message, captions, reminders, { admission: 'newTurn', deliveryOrigin });
+    super(message, captions, reminders, { admission: 'newTurn', deliveryOrigin }, batch);
   }
 
   override get turnSeed(): TurnSeed {
     return {
       input: this.message.content,
       origin: this.message.origin ?? { kind: 'unknown' },
-      promptId: this.message.id,
+      promptId: this.promptId ?? this.message.id,
     };
   }
 
   override onWillMaterialize(): void {
+    this.recordBatch?.();
     if (!this.alreadyMaterialized) super.onWillMaterialize();
   }
 
   override resolveContextMessages(): readonly ContextMessage[] {
-    return this.alreadyMaterialized ? [] : super.resolveContextMessages();
+    return [...(this.alreadyMaterialized ? [] : super.resolveContextMessages()), ...this.hookMessages];
   }
 }
 
@@ -82,13 +99,14 @@ export class SteerStepRequest extends UserMessageStepRequest {
     admission: 'activeTurnOnly' | 'activeOrNewTurn' = 'activeTurnOnly',
     deliveryOrigin?: MessageDeliveryOrigin,
     private readonly hookMessages: readonly ContextMessage[] = [],
+    batch?: readonly PromptBatchMessage[],
   ) {
     super(message, captions, reminders, {
       mergeable: true,
       turnScoped: false,
       admission,
       deliveryOrigin,
-    });
+    }, batch);
   }
 
   override onWillMaterialize(): void {

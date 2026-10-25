@@ -46,7 +46,7 @@ export const promptExecutionBindingSchema = z.object({
   personaGreetingReply: z.boolean().optional(),
   profile: z.string().optional(),
   model: z.string().optional(),
-  thinking: z.string().optional(),
+  thinking: z.string().min(1).nullable().optional(),
   planMode: z.boolean().optional(),
   goalObjective: z.string().optional(),
   goalFollowUpTiming: z.enum(['subagents_done', 'tasks_done']).optional(),
@@ -163,7 +163,7 @@ export const setEffortResultSchema = z.object({
 });
 
 export const contextRebuildResultSchema = z.object({
-  rebuilt: z.array(z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'injections'])),
+  rebuilt: z.array(z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'])),
   changed: z.boolean(),
   changes: z.object({
     profile: z.boolean(),
@@ -171,7 +171,19 @@ export const contextRebuildResultSchema = z.object({
     skills: z.boolean(),
     instructions: z.boolean(),
     plugins: z.boolean(),
+    mcp: z.boolean(),
     injections: z.boolean(),
+  }),
+  readiness: z.object({
+    mcp: z.array(z.object({
+      runtimeName: z.string(),
+      connection: z.enum(['enabled', 'disabled', 'connecting', 'connected', 'failed', 'unavailable']),
+      error: z.string().optional(),
+    })),
+    plugins: z.object({
+      state: z.enum(['ready', 'pending', 'failed', 'unavailable']),
+      errors: z.array(z.string()),
+    }),
   }),
 });
 

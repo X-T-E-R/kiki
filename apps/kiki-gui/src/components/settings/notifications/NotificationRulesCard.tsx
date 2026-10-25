@@ -29,7 +29,7 @@ function timeZones(current: string): string[] {
  * leaves the machine, and whether anything arrives with the window closed).
  * Instant apply; each write sends the whole global object back.
  */
-export function NotificationRulesCard({ global }: { global: NotificationGlobalSettings }) {
+export function NotificationRulesCard({ global, part = 'all' }: { global: NotificationGlobalSettings; part?: 'master' | 'rules' | 'all' }) {
   const { t } = useI18n();
   const host = useHost();
   const { api, apply } = useNotificationWrites();
@@ -52,14 +52,32 @@ export function NotificationRulesCard({ global }: { global: NotificationGlobalSe
   const zone = quiet?.time_zone ?? localTimeZone();
   const runtimeKey = !isDesktop ? 'st.notify.runtime.browser' : closeToTray ? 'st.notify.runtime.tray' : 'st.notify.runtime.quit';
 
-  return (
-    <SectionCard id="st-card-notify-rules" title={t('st.notify.rulesTitle')}>
-      <div className="min-w-0 space-y-2" data-notify-rules>
+  if (part === 'master') {
+    return (
+      <div className="min-w-0 space-y-1.5 border-b border-hairline pb-4" data-notify-master>
         <SettingField label={t('st.notify.enabled')} htmlFor="notify-enabled" help={t('st.notify.enabledHint')}>
           {status('enabled')}
           <Toggle id="notify-enabled" layout="bare" label={t('st.notify.enabled')} checked={global.enabled}
             disabled={save.saving} onChange={(enabled) => { write('enabled', { ...global, enabled }); }} />
         </SettingField>
+        {!global.enabled ? (
+          <p className="text-[12px] text-ink-soft" data-notify-paused-banner>{t('st.notify.paused')}</p>
+        ) : null}
+        <FeedbackLine feedback={save.error} />
+      </div>
+    );
+  }
+
+  return (
+    <SectionCard id="st-card-notify-rules" title={t('st.notify.rulesTitle')}>
+      <div className="min-w-0 space-y-2" data-notify-rules>
+        {part === 'all' ? (
+          <SettingField label={t('st.notify.enabled')} htmlFor="notify-enabled" help={t('st.notify.enabledHint')}>
+            {status('enabled')}
+            <Toggle id="notify-enabled" layout="bare" label={t('st.notify.enabled')} checked={global.enabled}
+              disabled={save.saving} onChange={(enabled) => { write('enabled', { ...global, enabled }); }} />
+          </SettingField>
+        ) : null}
         <DependentField when={global.enabled}>
           <div className="space-y-2">
             <SettingField label={t('st.notify.quiet')} htmlFor="notify-quiet" help={t('st.notify.quietHint')}>
@@ -112,7 +130,7 @@ export function NotificationRulesCard({ global }: { global: NotificationGlobalSe
             </SettingField>
           </div>
         </DependentField>
-        <FeedbackLine feedback={save.error} />
+        {part === 'all' ? <FeedbackLine feedback={save.error} /> : null}
         <dl className="grid gap-x-6 gap-y-2 border-t border-hairline pt-3 sm:grid-cols-[8rem_minmax(0,1fr)]" data-notify-facts>
           <dt className="text-[12px] text-ink-soft">{t('st.notify.privacyLabel')}</dt>
           <dd><Hint>{t('st.notify.privacy')}</Hint></dd>

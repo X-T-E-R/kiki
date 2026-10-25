@@ -19,9 +19,11 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 
 import { SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 import { I18nProvider } from '../i18n';
+import * as clipboard from '../lib/clipboard';
 import { SettingsPage } from './SettingsPage';
 import { DirtyGuardContext, useDirtyGuardState, type GuardedNavigate } from './dirtyGuard';
 import { SectionCard, SettingsCardMountContext } from './settings/SectionCard';
+import { SettingsPaneBoundary } from './settings/SettingsPaneBoundary';
 import { clearNavHistory, getUiSnapshot, recordNavigation, saveUiSnapshot } from '../lib/navHistory';
 import { commitText, pickOption } from './settings/testControls';
 
@@ -66,13 +68,21 @@ const client = {
       subagent_release_idle: true,
       'agent-profile-routes': true,
       external_delegation_mcp: true,
-      task_board: true,
+
       image_format_conversion: false,
       native_ssh: false,
       session_idle_eviction: false,
     },
   })),
   listWorkspaces: vi.fn(async () => WORKSPACES),
+  listWorkspaceCatalog: vi.fn(async () => WORKSPACES),
+  klient: { rest: undefined as { connections: { list: () => Promise<unknown>; handshake: () => Promise<unknown> } } | undefined },
+  getWorkspaceDetails: vi.fn(() => new Promise(() => {})),
+  getWorkspaceTrust: vi.fn(async () => ({ trusted: false })),
+  getPluginUsage: vi.fn(async ({ workspace_id }: { workspace_id: string }) => ({
+    home_id: 'test-home', target: { workspace_id, ...WORKSPACES.items.find((workspace) => workspace.id === workspace_id) },
+    revision: 1, apply_state: 'applied', errors: [], plugins: [],
+  })),
   listDiscoveredModels: vi.fn(async () => ({ items: [] })),
   refreshAllProviders: vi.fn(async () => ({ changed: [], unchanged: [], failed: [], discovered: [] })),
   createModel: vi.fn(),
@@ -107,10 +117,18 @@ const client = {
   getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null, effective_enabled: true })),
   patchWorkspaceMemorySettings: vi.fn(async (id: string, enabled: boolean | null) => ({ workspace_id: id, enabled, effective_enabled: enabled !== false })),
   patchConfig: vi.fn(async () => ({})),
+  requestIdentity: {
+    get: vi.fn(async () => ({ profiles: [], usage: [], observations: [], tracks: [], manifest_url: null })),
+  },
 };
 
 const connectionMock = vi.hoisted(() => ({ token: '', url: 'http://127.0.0.1:8080', applyConnection: vi.fn() }));
 vi.mock('../state/connection', () => ({
+  useOptionalConnection: () => ({
+    client,
+    config: { url: connectionMock.url, token: connectionMock.token },
+    scopeId: 'direct:http://127.0.0.1:8080',
+  }),
   useConnection: () => ({
     client,
     klient,
@@ -127,7 +145,7 @@ vi.mock('../state/connection', () => ({
 }));
 
 vi.mock('../host', () => ({
-  useHost: () => ({ kind: 'browser' }),
+  useHost: () => ({ kind: 'browser', connection: {} }),
 }));
 
 const containers: HTMLDivElement[] = [];
@@ -266,6 +284,27 @@ function scopeHeader(container: HTMLDivElement): HTMLElement {
 }
 
 describe('SettingsPage panel scopes', () => {
+  it('keeps the workspace breadcrumb for a cached catalog row and clears it on return', async () => {
+    const container = await renderSettings('/settings/workspaces');
+    const title = () => container.querySelector('[data-settings-page-title]')?.textContent;
+    await click(container.querySelector('[data-workspace-open="ws-alpha"]')!);
+    await flush();
+    expect(title()).toBe('Alpha');
+    await click(container.querySelector('[data-workspace-detail-back]')!);
+    await flush();
+    expect(title()).toBe('Workspaces');
+    await click(container.querySelector('[data-workspace-open="ws-beta"]')!);
+    await flush();
+    expect(title()).toBe('Beta');
+    expect(container.querySelector('[data-workspace-detail-name]')?.getAttribute('value')).toBe('Beta');
+  });
+
+  it('names a cold workspace detail breadcrumb from the catalog without waiting for stats', async () => {
+    const container = await renderSettings('/settings/workspaces?workspace=ws-beta');
+    await flush();
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).toBe('Beta');
+    expect(container.querySelector('[data-workspace-detail-stats]')?.textContent).toContain('Loading');
+  });
   it('keeps MCP management on the Capabilities page and only timeouts in settings', async () => {
     const container = await renderSettings('/settings/mcp');
     expect(container.querySelector('#st-card-mcp [data-capability-link-open="mcp"]')?.getAttribute('href')).toBe('/capabilities?tab=mcp');
@@ -302,9 +341,30 @@ describe('SettingsPage panel scopes', () => {
     expect(general.querySelector('[data-settings-remote-line]')).toBeNull();
   });
 
-  it('drops a page intro that would only restate a card title', async () => {
+  it('keeps the remote-server and unsaved lines on a single plugin page', async () => {
+    // The plugin page drops the section's orientation sentence because the card
+    // heading already says it. It must not drop the two facts that are not
+    // restated anywhere else: where a change is written, and whether one is
+    // waiting to be saved.
+    connectionMock.url = 'https://kiki.example.net';
+    const container = await renderSettings('/settings/plugins?plugin=kiki-notes', { guarded: true });
+    await flush();
+    expect(container.querySelector('[data-settings-intro]')).toBeNull();
+    expect(container.querySelector('[data-settings-remote-line]')).not.toBeNull();
+    expect(container.querySelector('[data-settings-page-status]')).not.toBeNull();
+
+    (container.querySelector('[data-test-dirty]') as HTMLButtonElement).click();
+    await flush();
+    const unsaved = container.querySelector('[data-settings-unsaved]');
+    expect(unsaved).not.toBeNull();
+    expect(unsaved?.textContent).toContain('Unsaved changes');
+    // Both facts still stand together: the line is not replaced by the other.
+    expect(container.querySelector('[data-settings-remote-line]')).not.toBeNull();
+  });
+
+  it('shows the Extensions & tools page intro on /settings/mcp and keeps the timeouts card title concise', async () => {
     const mcp = await renderSettings('/settings/mcp');
-    expect(mcp.querySelector('[data-settings-intro]')).toBeNull();
+    expect(mcp.querySelector('[data-settings-intro]')?.textContent).toBe('Manage skills, MCP tool servers, and installed plugins.');
     expect(mcp.textContent).not.toContain('Server-wide MCP timeouts.');
     expect(mcp.querySelector('#st-card-mcp-timeouts')).not.toBeNull();
   });
@@ -336,8 +396,8 @@ describe('SettingsPage panel scopes', () => {
     expect(client.getWorkspaceMemorySettings).toHaveBeenCalledWith('ws-beta');
     // One visible label per row: the switch keeps its name for assistive tech only.
     const toggleRow = container.querySelector('#memory-enabled')!.closest('[data-settings-field]')!;
-    expect(toggleRow.querySelector('span.sr-only')?.textContent).toBe('Use memory');
-    expect([...toggleRow.querySelectorAll('label, span')].filter((node) => node.textContent === 'Use memory' && !node.classList.contains('sr-only') && node.children.length === 0)).toHaveLength(1);
+    expect(toggleRow.querySelector('span.sr-only')?.textContent).toBe('Allow memory');
+    expect([...toggleRow.querySelectorAll('label, span')].filter((node) => node.textContent === 'Allow memory' && !node.classList.contains('sr-only') && node.children.length === 0)).toHaveLength(1);
 
     await pickOption(container.querySelector('[data-memory-approval]')!, 'Review in Inbox');
     expect(client.patchMemorySettings).toHaveBeenCalledWith({ approval: 'review' });
@@ -387,6 +447,56 @@ describe('SettingsPage panel scopes', () => {
     expect(container.querySelector('[data-memory-workspace-effective]')?.textContent).toContain('Off');
   });
 
+  it('updates the capability config the allow switch reads, then retries a failed save', async () => {
+    const state = { allowed: true, host_locked: false, default_on: true, origin: 'home' as const, unresolved: false };
+    client.getConfig.mockResolvedValue({
+      optional_capabilities: {
+        browser: { ...state, default_on: false },
+        computer: { ...state, default_on: false },
+        memory: { ...state },
+        thread: state,
+        web: state,
+      },
+    });
+    let enabled = true;
+    let fail = true;
+    client.getMemorySettings.mockImplementation(async () => ({ enabled, approval: 'auto' as const, budget: 2000, workspaces: {} }));
+    client.patchMemorySettings.mockImplementation(async (patch: { enabled?: boolean }) => {
+      if (fail && patch.enabled === false) {
+        fail = false;
+        throw new Error('memory save failed');
+      }
+      enabled = patch.enabled ?? enabled;
+      return { enabled, approval: 'auto' as const, budget: 2000, workspaces: {} };
+    });
+    const container = await renderSettings('/settings/memory');
+    await flush();
+    const allow = () => container.querySelector<HTMLInputElement>('#memory-enabled')!;
+    const fallback = () => container.querySelector<HTMLInputElement>('#memory-default-on')!;
+    expect(allow().checked).toBe(true);
+    expect(fallback().disabled).toBe(false);
+
+    await click(allow());
+    await flush();
+    expect(client.patchMemorySettings).toHaveBeenLastCalledWith({ enabled: false });
+    expect(allow().checked).toBe(true);
+    expect(fallback().disabled).toBe(false);
+
+    await click(allow());
+    await flush();
+    await flush();
+    expect(client.patchMemorySettings).toHaveBeenLastCalledWith({ enabled: false });
+    expect(allow().checked).toBe(false);
+    expect(fallback().disabled).toBe(true);
+
+    await click(allow());
+    await flush();
+    await flush();
+    expect(client.patchMemorySettings).toHaveBeenLastCalledWith({ enabled: true });
+    expect(allow().checked).toBe(true);
+    expect(fallback().disabled).toBe(false);
+  });
+
   it('shows other workspace overrides and refuses an out-of-range budget', async () => {
     client.getMemorySettings.mockResolvedValueOnce({ enabled: true, approval: 'review', budget: 2000, workspaces: { 'ws-alpha': false } });
     const container = await renderSettings('/settings/memory?workspace=ws-beta');
@@ -420,7 +530,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.textContent).toContain('Request timeout (seconds)');
 
     // The field saves itself on Enter; there is no separate Save button.
-    expect(card.querySelector('button')).toBeNull();
+    expect(card.querySelector('button:not([data-setting-help])')).toBeNull();
     await commitText(input, '120');
     await flush();
 
@@ -435,10 +545,42 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ requestTimeoutSeconds: 120 });
   });
 
+  it('saves an unlimited reading timeout independently of ordinary request timeouts', async () => {
+    localStorage.removeItem('kiki.settings');
+    const container = await renderSettings('/settings/connection');
+    const input = container.querySelector<HTMLInputElement>('#st-conn-reading-timeout')!;
+    expect(input.value).toBe('0');
+    expect(container.querySelector<HTMLInputElement>('#st-conn-request-timeout')!.value).toBe('30');
+    await commitText(input, '3600');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 3600 });
+    expect(container.querySelector<HTMLInputElement>('#st-conn-request-timeout')!.value).toBe('30');
+    await commitText(input, '-1');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 3600 });
+    await commitText(input, '0');
+    expect(JSON.parse(localStorage.getItem('kiki.settings') ?? '{}')).toMatchObject({ readingTimeoutSeconds: 0 });
+  });
+
   it('reveals, edits, and overwrites the saved connection token', async () => {
     connectionMock.token = 'saved-token';
     const container = await renderSettings('/settings/connection');
     const card = container.querySelector('#st-card-conn-server')!;
+    expect(card.querySelector('[data-conn-url]')?.textContent).toBe('http://127.0.0.1:8080');
+    expect(card.querySelector('[data-conn-no-token]')).toBeNull();
+    // In browser host, #st-card-conn-owned shows only the aside and no restart button
+    const ownedCard = container.querySelector('#st-card-conn-owned')!;
+    expect(ownedCard.textContent).toContain('This action is only available in the desktop app.');
+    expect(ownedCard.querySelector('button')).toBeNull();
+
+    await click(card.querySelector('[data-conn-edit]')!);
+    const urlInput = card.querySelector<HTMLInputElement>('#st-conn-url')!;
+    await setInput(urlInput, 'http://127.0.0.1:9090');
+    expect(card.querySelector('[data-settings-draft="connection-endpoint"]')?.getAttribute('data-dirty')).toBe('true');
+    await click(card.querySelector('[data-settings-discard="connection-endpoint"]')!);
+    expect(card.querySelector('form')).toBeNull();
+    expect(card.querySelector('[data-conn-url]')?.textContent).toBe('http://127.0.0.1:8080');
+
+    await click(card.querySelector('[data-conn-edit]')!);
     const token = card.querySelector<HTMLInputElement>('#st-conn-token')!;
     // Stored and masked: the field never carries the value until asked.
     expect(token.value).not.toContain('saved-token');
@@ -545,27 +687,65 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(container.querySelector('#st-card-hooks')).toBeNull();
     const hooks = await renderSettings('/settings/hooks');
     expect(hooks.querySelector('#st-card-hooks')).not.toBeNull();
-    expect(hooks.querySelector('[data-settings-intro]')?.textContent).toContain('Declarative text injection');
+    expect(hooks.querySelector('[data-settings-intro]')?.textContent).toContain('Rules that run when an event happens.');
   });
 
   it('redirects the retired runtime leaf to the tasks page', async () => {
     const container = await renderSettings('/settings/runtime');
     expect(container.querySelector('#st-card-runtime')).toBeNull();
     expect(container.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(container.querySelector('#st-card-cron')).toBeNull();
+    expect(container.querySelector('#st-card-cron')).not.toBeNull();
     expect(container.querySelector('#st-card-tools')).toBeNull();
+  });
+
+  it.each([
+    ['/settings/extensions', '#st-card-plugins'],
+    ['/settings/environment-tools', '[data-settings-page-title]'],
+    ['/settings/remote', '#st-card-conn-server'],
+    ['/settings/system', '#st-card-resource-limits'],
+  ] as const)('keeps the retired combined page %s resolving', async (path, cardSelector) => {
+    localStorage.setItem('kiki.locale', 'en');
+    const container = await renderSettings(path);
+    expect(container.querySelector('[data-settings-page-title]')?.textContent).not.toContain('does not exist');
+    expect(container.querySelector(cardSelector)).not.toBeNull();
+  });
+
+  it('follows the retired connection external tab to the moved Cloudflare card', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    // Inbound connections read through the HTTP facade; without it the pane
+    // boundary catches the throw and the page shows no cards at all.
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) } };
+    try {
+      const container = await renderSettings('/settings/connection?tab=external', { guarded: true });
+      await vi.waitFor(() => {
+        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/connection-services#st-card-conn-external');
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelector('#st-card-conn-external')).not.toBeNull();
+        expect(container.querySelector('#st-card-external-clients')).not.toBeNull();
+        expect(container.querySelector('#st-card-web-access')).not.toBeNull();
+        expect(container.querySelector('#st-card-inbound-connections')).not.toBeNull();
+        expect(container.querySelector('#st-card-host-skill')).not.toBeNull();
+      });
+    } finally {
+      client.klient.rest = undefined;
+    }
   });
 
   it('mounts the split runtime content on its new leaves', async () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
     expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Everyday background-task limits.');
-    expect(tasks.querySelector('#st-card-cron')).toBeNull();
+    expect(tasks.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
+    const diagnosticsScope = tasks.querySelector('#st-card-cron [data-settings-panel-scope]');
+    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
+    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
+    expect(tasks.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
 
     const sessions = await renderSettings('/settings/communication');
     const messaging = sessions.querySelector('#st-card-agent-messaging')!;
     expect(messaging).not.toBeNull();
-    expect(messaging.textContent).toContain('Messages between threads');
+    expect(messaging.textContent).toContain('Allow threads');
     expect(messaging.textContent).toContain('Subagents can notify their parent');
     expect(sessions.querySelector('#st-card-token-counting')).toBeNull();
 
@@ -573,11 +753,7 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(developer.querySelector('#st-card-token-counting')).not.toBeNull();
     expect(developer.querySelector('#st-card-resource-limits')).not.toBeNull();
     expect(developer.querySelector('#st-card-resource-limits')!.textContent).toContain('Workspace idle reclamation (s)');
-    expect(developer.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
-    const diagnosticsScope = developer.querySelector('#st-card-cron [data-settings-panel-scope]');
-    expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
-    expect(diagnosticsScope?.textContent).toBe('diagnostic view');
-    expect(developer.querySelector('#st-card-cron input, #st-card-cron [role="switch"]')).toBeNull();
+    expect(developer.querySelector('#st-card-cron')).toBeNull();
 
     const agents = await renderSettings('/settings/agents');
     await flush();
@@ -610,8 +786,10 @@ describe('SettingsPage batch-3 leaves', () => {
 
   it('keeps plan defaults on sessions and puts each flag on its feature page', async () => {
     const tasks = await renderSettings('/settings/tasks');
-    expect(tasks.querySelector('#st-card-agent-board')).not.toBeNull();
-    expect(tasks.querySelector('#st-card-defaults')).toBeNull();
+    expect(tasks.querySelector('#st-card-agent-board')).toBeNull();
+    // /settings/tasks redirects to /settings/sessions, which unites plan defaults and task policy.
+    expect(tasks.querySelector('#st-card-defaults')).not.toBeNull();
+    expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
     const sessions = await renderSettings('/settings/sessions');
     expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
     expect(sessions.querySelector('#st-card-questions')).not.toBeNull();
@@ -619,10 +797,10 @@ describe('SettingsPage batch-3 leaves', () => {
     // Session titles are switched by their own card, so they get no second row.
     expect(sessions.querySelector('[data-experimental-row="auto_session_title"]')).toBeNull();
     const homes: [string, string[]][] = [
-      ['/settings/agents', ['agent-profile-routes']],
-      ['/settings/subagents', ['subagent_release_idle']],
+      ['/settings/agents', ['agent-profile-routes', 'subagent_release_idle']],
+      ['/settings/subagents', ['agent-profile-routes', 'subagent_release_idle']],
       ['/settings/mcp', ['tool-select', 'external_delegation_mcp']],
-      ['/settings/tasks', ['task_wait', 'task_board']],
+      ['/settings/tasks', ['session_idle_eviction', 'task_wait']],
       ['/settings/search?tab=advanced', ['search_worker']],
       ['/settings/developer', ['persistence_minidb_readmodel']],
     ];
@@ -647,12 +825,12 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.querySelector('[role="group"]')).toBeNull();
     const link = (flag: string) => card.querySelector(`[data-labs-entry="${flag}"] a`)?.getAttribute('href');
     expect(link('agent-profile-routes')).toBe('/settings/agents#st-card-exp-agents');
-    expect(link('external_delegation_mcp')).toBe('/settings/mcp#st-card-exp-mcp');
-    expect(link('subagent_release_idle')).toBe('/settings/subagents#st-card-exp-subagents');
+    expect(link('external_delegation_mcp')).toBe('/settings/extensions#st-card-exp-extensions');
+    expect(link('subagent_release_idle')).toBe('/settings/agents#st-card-exp-agents');
     expect(link('search_worker')).toBe('/settings/search#st-card-exp-search');
     expect(link('auto_session_title')).toBe('/settings/sessions#st-card-session-title');
     // Every flag the server reports is listed, including ones switched by a feature card.
-    expect(card.querySelectorAll('[data-labs-entry]').length).toBe(12);
+    expect(card.querySelectorAll('[data-labs-entry]').length).toBe(11);
   });
 
   it('saves an experimental row on change with a narrow experimental patch', async () => {
@@ -670,12 +848,12 @@ describe('SettingsPage batch-3 leaves', () => {
     client.getConfig.mockResolvedValue({});
   });
 
-  it('redirects the retired experimental URL to the labs index', async () => {
+  it('redirects the retired experimental URL to the labs index on developer', async () => {
     const container = await renderSettings('/settings/experimental', { guarded: true });
-    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/labs');
+    expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer#st-card-labs');
     expect(container.querySelector('#st-card-labs')).not.toBeNull();
-    expect(container.querySelector('#st-card-advanced')).toBeNull();
-    expect(scopeHeader(container).textContent).toBe('Experimental features and feature flags.');
+    expect(container.querySelector('#st-card-advanced')).not.toBeNull();
+    expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, system diagnostics, and experimental feature index.');
     expect(container.querySelector('#st-card-labs [data-labs-index]')).not.toBeNull();
     expect(container.querySelector('#st-card-labs [role="switch"]')).toBeNull();
   });
@@ -683,18 +861,18 @@ describe('SettingsPage batch-3 leaves', () => {
   it('sends an old single-flag card link to the flag’s new row', async () => {
     const container = await renderSettings('/settings/agents#st-card-mcp-delegation');
     await flush();
-    expect(container.querySelector('#st-card-exp-mcp [data-experimental-row="external_delegation_mcp"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-exp-extensions [data-experimental-row="external_delegation_mcp"]')).not.toBeNull();
   });
 
   it('mounts the developer page with limits first and raw JSON after', async () => {
     const container = await renderSettings('/settings/developer');
     const card = container.querySelector('#st-card-advanced')!;
     expect(card).not.toBeNull();
-    expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, and system diagnostics.');
+    expect(scopeHeader(container).textContent).toBe('Engine parameters, low-level configuration, system diagnostics, and experimental feature index.');
     expect(card.textContent).toContain('Advanced configuration for permissions, loop controls, and background tasks. Validated on save.');
     expect(card.textContent).not.toContain('kap-server');
     const order = [...container.querySelectorAll('[data-settings-card]')].map((node) => node.id);
-    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-cron', 'st-card-exp-developer']);
+    expect(order).toEqual(['st-card-resource-limits', 'st-card-retry', 'st-card-session-residency', 'st-card-token-counting', 'st-card-advanced', 'st-card-labs', 'st-card-exp-developer']);
 
     const writes = client.patchConfig.mock.calls.length;
     await setTextarea(card.querySelector('textarea')!, '{');
@@ -788,8 +966,13 @@ describe('SettingsPage batch-3 leaves', () => {
     const container = await renderSettings('/settings/plugins');
     await flush();
     expect(container.querySelector('#st-card-plugins')).not.toBeNull();
-    expect(container.querySelector('#st-card-plugins [data-capability-link-open="plugins"]')?.getAttribute('href')).toBe('/capabilities');
-    expect(container.querySelector('#st-card-plugins [data-plugins-view]')).toBeNull();
+    // The list is the leaf's subject; the market is reached by one link, and no
+    // configuration form opens in place.
+    expect(container.querySelector('#st-card-plugins [data-plugins-installed-empty], #st-card-plugins [data-plugins-installed-list]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins [data-plugins-market-link]')?.getAttribute('href')).toBe('/capabilities');
+    expect(container.querySelector('#st-card-plugins [data-plugin-settings]')).toBeNull();
+    // The browser runtime card is a browser fact, not a plugin one.
+    expect(container.querySelector('#st-card-webbridge')).toBeNull();
     expect(client.listPlugins).toHaveBeenCalled();
   });
 
@@ -826,10 +1009,69 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(invalidated).toContainEqual(['tools']);
     expect(invalidated).not.toContainEqual(['mcp-servers']);
   });
+
+  it('switches tabs on Extensions & tools and Browser & computer while preserving ?plugin= and legacy redirects', async () => {
+    const extensions = await renderSettings('/settings/extensions', { guarded: true });
+    await flush();
+    expect(extensions.querySelector('[data-extensions-tab="plugins"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(extensions.querySelector('#st-card-plugins')).not.toBeNull();
+
+    await click(extensions.querySelector('[data-extensions-tab="skills"]')!);
+    await flush();
+    expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=skills');
+    expect(extensions.querySelector('#st-card-caps')).not.toBeNull();
+    expect(extensions.querySelector('#st-card-skill-catalog')).not.toBeNull();
+
+    await click(extensions.querySelector('[data-extensions-tab="mcp"]')!);
+    await flush();
+    expect(extensions.querySelector('[data-test-location]')?.textContent).toBe('/settings/extensions?tab=mcp');
+    expect(extensions.querySelector('#st-card-mcp')).not.toBeNull();
+
+    const browser = await renderSettings('/settings/browser-control', { guarded: true });
+    await flush();
+    expect(browser.querySelector('[data-browser-control-tab="browser"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(browser.querySelector('#st-card-browser-enabled')).not.toBeNull();
+
+    await click(browser.querySelector('[data-browser-control-tab="computer"]')!);
+    await flush();
+    expect(browser.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
+    expect(browser.querySelector('#st-card-computer-enabled')).not.toBeNull();
+
+    const legacyComputer = await renderSettings('/settings/computer-control', { guarded: true });
+    await flush();
+    expect(legacyComputer.querySelector('[data-test-location]')?.textContent).toBe('/settings/browser-control?tab=computer');
+    expect(legacyComputer.querySelector('[data-browser-control-tab="computer"]')?.getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('switches between Agents & profiles and Dispatch & subagents tabs on Agents', async () => {
+    const agents = await renderSettings('/settings/agents', { guarded: true });
+    await flush();
+    expect(agents.querySelector('[data-agents-tab="profiles"]')?.getAttribute('aria-selected')).toBe('true');
+    expect(agents.querySelector('#st-card-main-agents')).not.toBeNull();
+
+    await click(agents.querySelector('[data-agents-tab="dispatch"]')!);
+    await flush();
+    expect(agents.querySelector('[data-test-location]')?.textContent).toBe('/settings/agents?tab=dispatch');
+    expect(agents.querySelector('#st-card-subagents')).not.toBeNull();
+    expect(agents.querySelector('#st-card-subagent-tool-defaults')).not.toBeNull();
+  });
 });
 
 describe('SettingsPage search ownership', () => {
   it('indexes every card the settings page renders', async () => {
+    const reported = await client.meta();
+    const originalMeta = client.meta.getMockImplementation();
+    client.meta.mockResolvedValue({
+      experimental_flags: {
+        ...reported.experimental_flags,
+        plugin_workspace_usage: true,
+        plugin_app_lifecycle: true,
+        work_presets: true,
+        external_clients: true,
+      },
+    });
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) } };
+    try {
     const general = await renderSettings('/settings/general');
     const agents = await renderSettings('/settings/agents');
     const subagents = await renderSettings('/settings/subagents');
@@ -842,6 +1084,9 @@ describe('SettingsPage search ownership', () => {
     const defaults = await renderSettings('/settings/ai?tab=defaults');
     const searchAdvanced = await renderSettings('/settings/search?tab=advanced');
     const ssh = await renderSettings('/settings/ssh');
+    const plugins = await renderSettings('/settings/plugins');
+    const spaces = await renderSettings('/settings/spaces');
+    const connectionServices = await renderSettings('/settings/connection-services');
     expect(general.querySelector('#st-card-session-title')).toBeNull();
     expect(defaults.querySelector('#st-card-permission-defaults')).toBeNull();
     expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
@@ -858,24 +1103,30 @@ describe('SettingsPage search ownership', () => {
         ])
         .map((match) => match[1]!),
     );
-    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh]) {
+    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, connectionServices]) {
       for (const card of page.querySelectorAll('[id^="st-card-"]')) rendered.add(card.id);
     }
     expect(rendered.size).toBeGreaterThan(10);
     const indexed = new Set(SETTINGS_SEARCH_SPEC.map((entry) => entry.cardId));
     // The bucket card stays available for legacy editor tests, not Settings navigation.
     rendered.delete('st-card-subagent-profiles');
+    // The board card stays on disk for the direct AgentTaskSettings test. Settings does not mount it.
+    rendered.delete('st-card-agent-board');
     expect([...rendered].filter((id) => !indexed.has(id))).toEqual([]);
     expect([...indexed].filter((id) => !rendered.has(id))).toEqual([]);
+    } finally {
+      client.klient.rest = undefined;
+      if (originalMeta !== undefined) client.meta.mockImplementation(originalMeta);
+    }
   });
 });
 
 describe('SettingsPage search locating', () => {
   it.each([
-    // The default-target card sits with the other subagent rules, so the hit
-    // opens that leaf; the card itself and its selector are unchanged.
-    ['en', 'default profile', 'Subagent rules', 'Default subagent'],
-    ['zh', '默认 profile', '子智能体规则', '默认子智能体'],
+    // The default-target card sits on the Agents page's Dispatch & subagents tab,
+    // so the hit opens that leaf and switches to the dispatch tab.
+    ['en', 'default profile', 'Agents', 'Default subagent'],
+    ['zh', '默认 profile', '智能体', '默认子智能体'],
   ] as const)('clicks the %s default-target search hit into the mounted subagent card', async (locale, query, pageTitle, cardTitle) => {
     localStorage.setItem('kiki.locale', locale);
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
@@ -902,10 +1153,10 @@ describe('SettingsPage search locating', () => {
 
   it('locates the already-mounted card on every same-page search click', async () => {
     localStorage.setItem('kiki.locale', 'en');
-    // The default-target card lives on the subagent leaf, so that is the page
+    // The default-target card lives on the Agents dispatch tab, so that is the page
     // a same-page hit must be started from: the hit locates the mounted card
     // instead of navigating.
-    const container = await renderSettings('/settings/subagents', { guarded: true });
+    const container = await renderSettings('/settings/agents?tab=dispatch', { guarded: true });
     const visitKey = container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key');
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     try {
@@ -1048,15 +1299,16 @@ describe('SettingsPage search locating', () => {
     client.meta.mockReturnValueOnce(gate.promise);
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     try {
-      const container = await renderSettings('/settings/developer#st-card-exp-developer', { guarded: true });
-      expect(container.querySelector('#st-card-exp-developer')).toBeNull();
+      const container = await renderSettings('/settings/agents#st-card-exp-agents', { guarded: true });
+      expect(container.querySelector('#st-card-exp-agents')).toBeNull();
       const visitKey = container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key');
-      await click(container.querySelector('[data-settings-nav-leaf="developer"]')!);
-      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/developer');
+      await click(container.querySelector('[data-settings-nav-leaf="agents"]')!);
+      expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/agents');
       expect(container.querySelector('[data-test-location]')?.getAttribute('data-test-location-key')).not.toBe(visitKey);
-      gate.resolve({ experimental_flags: { native_browser: false } });
+      gate.resolve({ experimental_flags: { 'agent-profile-routes': false } });
       await flush();
-      expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+      await flush();
+      expect(container.querySelector('#st-card-exp-agents')).not.toBeNull();
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       scrollIntoView.mockRestore();
@@ -1068,14 +1320,14 @@ describe('SettingsPage search locating', () => {
     client.meta.mockReturnValueOnce(gate.promise);
     const scrollIntoView = vi.spyOn(Element.prototype, 'scrollIntoView');
     try {
-      const container = await renderSettings('/settings/developer#st-card-exp-developer');
-      expect(container.querySelector('#st-card-exp-developer')).toBeNull();
+      const container = await renderSettings('/settings/agents#st-card-exp-agents');
+      expect(container.querySelector('#st-card-exp-agents')).toBeNull();
       await click(container.querySelector('[data-settings-nav-leaf="general"]')!);
-      gate.resolve({ experimental_flags: { native_browser: false } });
+      gate.resolve({ experimental_flags: { 'agent-profile-routes': false } });
       await flush();
-      await click(container.querySelector('[data-settings-nav-leaf="developer"]')!);
+      await click(container.querySelector('[data-settings-nav-leaf="agents"]')!);
       await flush();
-      expect(container.querySelector('#st-card-exp-developer')).not.toBeNull();
+      expect(container.querySelector('#st-card-exp-agents')).not.toBeNull();
       expect(scrollIntoView).not.toHaveBeenCalled();
     } finally {
       scrollIntoView.mockRestore();
@@ -1157,5 +1409,144 @@ describe('SettingsPage search locating', () => {
     // screen is asked again instead of being missed.
     await act(async () => { root.render(tree((id) => { seen.push(`${id}:again`); })); });
     expect(seen).toEqual(['st-card-fixture', 'st-card-fixture:again']);
+  });
+
+  it('contains a pane render error inside SettingsPaneBoundary and recovers on retry or resetKey navigation', async () => {
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      let shouldThrow = true;
+      function FragilePane() {
+        if (shouldThrow) throw new Error('boom in settings pane');
+        return <div data-healthy-pane>Recovered section</div>;
+      }
+      const container = document.createElement('div');
+      document.body.append(container);
+      containers.push(container);
+      const root = createRoot(container);
+      roots.push(root);
+      const renderBoundary = (resetKey: string) => (
+        <I18nProvider>
+          <div data-nav-shell>Nav stays mounted</div>
+          <SettingsPaneBoundary resetKey={resetKey}>
+            <FragilePane />
+          </SettingsPaneBoundary>
+        </I18nProvider>
+      );
+
+      await act(async () => { root.render(renderBoundary('ai')); });
+      expect(container.querySelector('[data-nav-shell]')).not.toBeNull();
+      const alert = container.querySelector('[data-settings-pane-error]');
+      expect(alert).not.toBeNull();
+      expect(alert?.textContent).toContain('boom in settings pane');
+      const copy = container.querySelector<HTMLButtonElement>('[data-settings-pane-copy]')!;
+      expect(copy).not.toBeNull();
+      const copySpy = vi.spyOn(clipboard, 'copyTextToClipboard')
+        .mockRejectedValueOnce(new Error('clipboard denied'))
+        .mockResolvedValue(undefined);
+      try {
+        await click(copy);
+        expect(copySpy).toHaveBeenCalledWith('boom in settings pane');
+        expect(copy.getAttribute('data-copied')).toBeNull();
+        expect(container.querySelector('[data-settings-pane-copy-error]')?.textContent).toContain('clipboard denied');
+        await click(copy);
+        expect(copy.getAttribute('data-copied')).toBe('true');
+        expect(container.querySelector('[data-settings-pane-copy-error]')).toBeNull();
+      } finally { copySpy.mockRestore(); }
+
+      shouldThrow = false;
+      await click(container.querySelector('[data-settings-pane-retry]')!);
+      expect(container.querySelector('[data-settings-pane-error]')).toBeNull();
+      expect(container.querySelector('[data-healthy-pane]')?.textContent).toBe('Recovered section');
+
+      shouldThrow = true;
+      await act(async () => { root.render(renderBoundary('ai')); });
+      expect(container.querySelector('[data-settings-pane-error]')).not.toBeNull();
+
+      shouldThrow = false;
+      await act(async () => { root.render(renderBoundary('general')); });
+      expect(container.querySelector('[data-settings-pane-error]')).toBeNull();
+      expect(container.querySelector('[data-healthy-pane]')?.textContent).toBe('Recovered section');
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+});
+
+describe('SettingsPage mobile drawer', () => {
+  it('owns Escape while open: the drawer closes, the event is consumed before the app-level settings Escape, and focus returns to the trigger', async () => {
+    const container = await renderSettings('/settings/general');
+    const trigger = container.querySelector<HTMLElement>('[data-settings-nav-trigger]')!;
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(trigger.getAttribute('aria-haspopup')).toBe('dialog');
+    trigger.focus();
+
+    await click(trigger);
+    const drawer = document.querySelector<HTMLElement>('[data-settings-nav-drawer]');
+    expect(drawer).not.toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(trigger.getAttribute('aria-controls')).toBe('settings-nav-drawer');
+    // Focus moved into the drawer, onto the leaf that names the open page.
+    expect(drawer!.contains(document.activeElement)).toBe(true);
+    expect((document.activeElement as HTMLElement | null)?.getAttribute('data-settings-nav-leaf')).toBe('general');
+    expect(drawer!.querySelector('[data-settings-nav-leaf="permissions"]')).not.toBeNull();
+
+    const escape = new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true });
+    await act(async () => { window.dispatchEvent(escape); });
+    // The app-level "Escape leaves settings" handler (App.tsx) skips exactly
+    // when defaultPrevented is set — assert the contract, not App's absence.
+    expect(escape.defaultPrevented).toBe(true);
+    expect(document.querySelector('[data-settings-nav-drawer]')).toBeNull();
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(document.activeElement).toBe(trigger);
+    // Still on the same settings page: nothing navigated away.
+    expect(container.querySelector('[data-settings-page-title]')).not.toBeNull();
+  });
+
+  it('returns focus to the trigger when the drawer closes through its close control', async () => {
+    const container = await renderSettings('/settings/general');
+    const trigger = container.querySelector<HTMLElement>('[data-settings-nav-trigger]')!;
+    trigger.focus();
+    await click(trigger);
+    const close = document.querySelector<HTMLElement>('[data-settings-nav-drawer] button[aria-label]')!;
+    await click(close);
+    expect(document.querySelector('[data-settings-nav-drawer]')).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+});
+
+describe('SettingsPage object links survive an address hash', () => {
+  it('opens the plugin a link names even when the address still carries a stale hash', async () => {
+    const container = await renderSettings('/settings/plugins?plugin=kiki-notes#x');
+    await flush();
+    expect(container.querySelector('[data-plugin-settings-missing="kiki-notes"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins')).toBeNull();
+  });
+
+  it('opens the plugin a link names when the hash is one of that page\'s own cards', async () => {
+    const container = await renderSettings('/settings/extensions?tab=plugins&plugin=kiki-notes#st-card-plugin-notes');
+    await flush();
+    expect(container.querySelector('[data-plugin-settings-missing="kiki-notes"]')).not.toBeNull();
+    expect(container.querySelector('#st-card-plugins')).toBeNull();
+  });
+
+  it('keeps the installed list for its own card hash, even when the query names a plugin', async () => {
+    const container = await renderSettings('/settings/plugins?plugin=kiki-notes#st-card-plugins');
+    await flush();
+    expect(container.querySelector('#st-card-plugins')).not.toBeNull();
+    expect(container.querySelector('[data-plugin-settings-missing="kiki-notes"]')).toBeNull();
+  });
+
+  it('opens the workspace a link names when the hash is one of its own cards', async () => {
+    const container = await renderSettings('/settings/workspaces?workspace=ws-alpha#st-card-workspace-trust');
+    await flush();
+    expect(container.querySelector<HTMLInputElement>('[data-workspace-detail-name]')?.value).toBe('Alpha');
+    expect(container.querySelector('#st-card-workspaces')).toBeNull();
+  });
+
+  it('keeps the catalog for the catalog card hash, even when the query names a workspace', async () => {
+    const container = await renderSettings('/settings/workspaces?workspace=ws-alpha#st-card-workspaces');
+    await flush();
+    expect(container.querySelector('#st-card-workspaces')).not.toBeNull();
+    expect(container.querySelector('[data-workspace-detail-name]')).toBeNull();
   });
 });

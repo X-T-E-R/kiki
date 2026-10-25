@@ -13,6 +13,7 @@ export interface PluginInstallPlan {
   readonly consentRequired: boolean;
   readonly permissions?: PluginPermissions;
   readonly contributions: readonly string[];
+  readonly appService?: boolean;
   readonly contextTokens: number;
   readonly unsupported: readonly string[];
 }
@@ -47,6 +48,8 @@ export function contributionNames(manifest: PluginManifest): readonly string[] {
     ...(manifest.kiki?.providerPresets ?? []).map((preset) => `provider:${preset.id}`),
     ...(manifest.kiki?.tools ?? []).map((tool) => `tool:${tool.name}`),
     ...(manifest.kiki?.sessionSources ?? []).map((source) => `session-source:${source.id}`),
+    ...(manifest.kiki?.imAdapters ?? []).map((adapter) => `im-adapter:${adapter.id}`),
+    ...Object.entries(manifest.kiki?.dependencies ?? {}).map(([id, range]) => `dependency:${id}@${range}`),
     ...(manifest.kiki?.panels ?? []).map((panel) => `panel:${panel.id}`),
     ...(manifest.kiki?.commands ?? []).map((command) => `command:${command.name}`),
     ...(manifest.kiki?.settings === undefined ? [] : ['settings']),
@@ -70,6 +73,7 @@ export function buildInstallPlan(
   if (previous !== undefined && JSON.stringify(manifest.kiki?.tools ?? []) !== JSON.stringify(previous.kiki?.tools ?? [])) {
     changes.push('tool definitions changed');
   }
+  if (previous !== undefined && JSON.stringify(manifest.kiki?.imAdapters ?? []) !== JSON.stringify(previous.kiki?.imAdapters ?? [])) changes.push('IM adapter definitions changed');
   if (previous !== undefined && JSON.stringify(manifest.kiki?.providerPresets ?? []) !== JSON.stringify(previous.kiki?.providerPresets ?? [])) {
     changes.push('provider presets changed');
   }
@@ -88,10 +92,11 @@ export function buildInstallPlan(
     fingerprint,
     changes,
     consentRequired: previous === undefined
-      ? contributions.some((item) => !item.startsWith('theme:')) || Object.keys(manifest.kiki?.permissions ?? {}).length > 0
+      ? manifest.kiki?.entry !== undefined || contributions.some((item) => !item.startsWith('theme:')) || Object.keys(manifest.kiki?.permissions ?? {}).length > 0
       : previous.kiki?.entry === undefined && manifest.kiki?.entry !== undefined,
     permissions: manifest.kiki?.permissions,
     contributions,
+    appService: manifest.kiki?.activation === 'app',
     contextTokens: Math.ceil((
       (manifest.systemPrompt?.length ?? 0) +
       (manifest.skillInstructions?.length ?? 0) +

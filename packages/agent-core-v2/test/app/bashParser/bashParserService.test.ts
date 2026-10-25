@@ -21,8 +21,8 @@ describe('BashParserService', () => {
     service = ix.get(IBashParserService);
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('splits a compound command into per-command nodes', () => {

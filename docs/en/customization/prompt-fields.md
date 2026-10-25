@@ -8,6 +8,10 @@ Prompt field overrides replace named pieces of the built-in prompt — system se
 
 Useful built-in field ids include `system.language`, `system.reply_style`, `system.coding`, `system.shared`, `tool.web-search.description`, `tool.web-search.guidance`, `delegation.sub.notice` and `delegation.independent.notice`. System fields replace sections of the built-in prompt, except `system.shared`, which is the one shared outer addition and is appended once when non-empty. A tool `description` replaces its static description; a tool `guidance` is appended under the existing `User-configured guidance:` label.
 
+Kiki's built-in collaboration guidance works without a Recipe. It asks agents to give one owner a complete outcome, inspect and incorporate returned work before accepting it, and send the inputs a recipient still needs for its next action. It does not impose a message quota on user-requested discussion. Reply language follows the user or task brief, including an explicit reply-language requirement; internal steering, reminders and quoted documents do not by themselves switch it. Customize this guidance through `system.delegation_brief_hygiene`, `delegation.sub.notice`, or the `description` and `guidance` fields for `tool.agent-run`, `tool.agent-send` and `tool.thread-send`.
+
+These defaults keep existing profile and Recipe overrides, delegation-notice off choices, and role and tool limits intact. A custom replacement profile still controls its own body. External executors receive the text through their selected profile or configured `executor_prompt` composition; [direct external execution](./agents-and-subagents.md#direct-external-execution) without those additions stays bare.
+
 ## Where overrides live
 
 Every override surface uses the same format — optional `files` (strict TOML files relative to the Kiki home) and inline `fields`:
@@ -22,6 +26,10 @@ Every override surface uses the same format — optional `files` (strict TOML fi
 | Model profile entry | `model_profiles[].prompt_overrides` in an agent file |
 
 Precedence from low to high follows the table order; a missing key inherits the lower value. The complete format, `${name}` variable substitution rules, and validation failures are documented in [`prompt`](../configuration/config-files.md#prompt).
+
+An existing agent keeps its bound prompt fields, custom variables and cognition text when it resumes, even if their source files have changed or been deleted. Edits apply to new bindings; choose [Rebuild context](./agents-and-subagents.md#rebuilding-a-session-context) to adopt them in an existing session. An explicit model change selects the target model's prompt inputs; `new_window` alone does not reload prompt sources. Current tool permissions and hard model constraints still apply.
+
+Older records reuse their saved system prompt and recover inline fields from the saved profile where possible. If a record never saved a required shared field, tool override, steering cue or anchor and its original inputs cannot be reconstructed, recovery names the missing inputs. Rebuild the context to use current sources rather than rolling back your installed prompts.
 
 ## Discover and validate with `kiki prompt-fields`
 
@@ -79,7 +87,11 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-A profile can reference the same installed package without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. Save through the existing profile Markdown editor or edit the profile file. A URL or local path is a package source to preview and install first, not an implicit download during binding.
+A model's `recipe` can also reference a local file or package directory, such as `./focus/recipe.toml`. Relative paths resolve from the configuration that declares the reference: an inherited reference stays relative to the base home's configuration, while a local override resolves from the current configuration directory. Absolute paths keep their original meaning.
+
+A profile can reference the same installed package, or a local Recipe file, without changing the global model. Add `recipe: installation:<installed-id>` (or just the installation id) to its Markdown frontmatter; the id is returned by `install`. A local file or package directory also works: `recipe: ./focus/recipe.toml`, or an absolute path. A profile's relative path resolves from the profile file and is read at bind time.
+
+The file is not installed, and binding does not download a URL. Save through the existing profile Markdown editor or edit the profile file. Script hooks in a directly referenced file still require the existing installation consent; `hooks = "off"` contributes no scripts.
 
 ```markdown
 ---
@@ -93,9 +105,11 @@ request_params:
 Review the changes and report actionable findings.
 ```
 
+A child space reads installed Recipes from its base home by default; a local entry takes precedence when the installation IDs match. Inherited packages are read-only: use **Copy** or **Extend** before editing them in the child space. Disabling configuration inheritance with `inherit.config = false` does not remove access to those packages, so an inherited profile can still resolve its installed Recipe. Package updates and removals in the child space write only to that space.
+
 Recipes contribute only their declared values. Model settings resolve from the saved model, then the model Recipe, local model `overrides`, the profile Recipe, explicit profile parameters, and matching `model_profiles` parameters. Context and output caps still take the smallest applicable limit. Prompt fields resolve from global, saved model fields, model Recipe fields, profile Recipe fields, profile fields, then matching profile-model or caller-lease fields. Uncovered cognition slots and ordinary model-profile prompt text continue to apply; the role, persona, workspace instructions, host context and permissions keep their existing authority.
 
-Set the model's `recipe: null` with the current `base_revision`, or set `recipe: off` in a profile, to remove only that layer's contribution. Saved manual values and the other layer's Recipe remain intact. New bindings freeze each referenced package revision, expanded text and effective model settings, including inherited parameters. Existing sessions and cold restores keep that snapshot until a context rebuild or explicit model change; subscription updates and profile edits do not silently rebind them.
+Set `recipe: off` on a model or profile to disable that layer's Recipe, including an inherited model selection. For model API updates, pass the current `base_revision`; `recipe: null` clears the local selection instead. Saved manual values and the other layer's Recipe remain intact. New bindings freeze each referenced package revision, expanded text and effective model settings, including inherited parameters. Existing sessions and cold restores keep that snapshot until a context rebuild or explicit model change; subscription updates and profile edits do not silently rebind them.
 
 ### Inherit or customize
 
@@ -103,7 +117,7 @@ A package can declare one parent with `extends = { source = "https://example.com
 
 `prompts` is the common branch used by subagents. A `[prompts.main]` or `[prompts.independent]` table selects a whole position-specific branch; it does not implicitly fill missing slots from common. Set `main = "same"` or `independent = "same"` inside `[prompts]` to explicitly use common, or use `"off"` to disable the whole branch. Text slots accept `{ text = "..." }`, `{ file = "prompt.md" }`, or an array of those sources. An anchor uses `{ content = { text = "..." }, steps = 1, scope = "session" }`; `scope` also accepts `"turn"`.
 
-Steering cadence belongs to the selected branch; an omitted key retains the lower layer's value. The ordinary steering body and cadence apply to direct user input. With no declaration, `steering_on_turn` and `steering_on_input` default to `true`, while `steering_interval_steps` defaults to `0` (no periodic injection). A positive interval counts this agent's model steps driven by that source, not seconds or tool calls; off sources stay off after compaction too.
+Steering cadence belongs to the selected branch; an omitted key retains the lower layer's value. The ordinary steering body and cadence apply to direct user input and, by default, verified completed subagent-task receipts. Explicit `steering_sources.task.mode = "off"` disables that inheritance; ordinary process results, failed children and other non-user sources still require their own source setting. With no declaration, `steering_on_turn` and `steering_on_input` default to `true`, while `steering_interval_steps` defaults to `0` (no periodic injection). A positive interval counts this agent's model steps driven by that source, not seconds or tool calls; off sources stay off after compaction too.
 
 Use `steering_sources` in that same branch to enable another source: `mode = "inherit"` follows the final user body and cadence at binding, while `mode = "custom"` uses its own `custom` body and cadence. Sources and custom fields merge by declared leaf across parent, model and profile Recipe layers, then freeze with the binding; changing user settings does not rewrite existing sessions. Source keys and defaults are listed under [Model cognition](../configuration/config-files.md#model-cognition). For example:
 
@@ -124,10 +138,10 @@ To share a local customization, save any draft first, then call `global.recipes.
 
 ## Desktop settings entry point
 
-In the desktop app, **Settings → Agents → Prompt** edits this section — see [Settings pages](../guides/settings.md#agents). The card starts collapsed.
+In the desktop app, **Settings → Agents → Prompt fields** edits this section — see [Settings pages](../guides/settings.md#agents). The card starts collapsed.
 
 ## Next steps
 
 - [Configuration files: `prompt`](../configuration/config-files.md#prompt) — full field registry, override format, and validation rules
 - [`kiki` command reference](../reference/command.md) — command-line flags for the CLI entry
-- [Agents and subagents](../customization/agents.md) — agent files and `prompt_overrides` frontmatter
+- [Agents and subagents](../customization/agents-and-subagents.md) — agent files and `prompt_overrides` frontmatter

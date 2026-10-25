@@ -1,5 +1,9 @@
 // @vitest-environment jsdom
 
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
@@ -8,7 +12,8 @@ import type { GoalSnapshot } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
 import { ApiError } from '../lib/client';
-import { GoalCard, GoalHeaderSummary, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { GoalCard, GoalHeaderSummary, GoalPauseButton, goalShowsInHeader, RecoveryHoldBar } from './GoalCard';
+import { ComposerHeader } from './ComposerHeader';
 
 const containers: HTMLDivElement[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
@@ -118,9 +123,41 @@ describe('GoalCard', () => {
     expect(card.textContent).toContain('follow-up · Subagents done');
   });
 
+  it('renders completion criterion and provides readable expand toggle for long criteria', async () => {
+    const shortCriterion = 'Verify build succeeds';
+    const { container: shortCard } = await renderCard({
+      goal: goalFixture({ completionCriterion: shortCriterion }),
+    });
+    expect(shortCard.querySelector('[data-goal-criterion]')).not.toBeNull();
+    expect(shortCard.querySelector('[data-goal-criterion-text]')?.textContent).toBe(shortCriterion);
+    expect(shortCard.querySelector('[data-goal-criterion-toggle]')).toBeNull();
+
+    const longCriterion = 'Ensure all integration endpoints return 200 OK and all artifacts are saved with sha256 checksums across all environments';
+    const { container: longCard } = await renderCard({
+      goal: goalFixture({ completionCriterion: longCriterion }),
+    });
+    const criterionBox = longCard.querySelector('[data-goal-criterion]')!;
+    expect(criterionBox).not.toBeNull();
+    const toggle = longCard.querySelector<HTMLButtonElement>('[data-goal-criterion-toggle]')!;
+    expect(toggle).not.toBeNull();
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toBe('Show more');
+    expect(longCard.querySelector('[data-goal-criterion-text]')?.className).toContain('line-clamp-2');
+
+    await click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(toggle.textContent).toBe('Show less');
+    expect(longCard.querySelector('[data-goal-criterion-text]')?.className).not.toContain('line-clamp-2');
+
+    await click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.textContent).toBe('Show more');
+  });
+
   it('shows no default limits and displays each configured budget with reached feedback', async () => {
     const unlimited = await renderCard();
     expect(unlimited.container.querySelector('[data-goal-budgets]')?.textContent).toContain('No limit');
+    expect(unlimited.container.querySelector('[data-goal-budgets]')?.textContent).not.toContain('goal.');
     const base = goalFixture();
     const { container } = await renderCard({ goal: goalFixture({ status: 'blocked', budget: {
       ...base.budget, turnBudget: 1, tokenBudget: 200, wallClockBudgetMs: 2_000,
@@ -130,16 +167,16 @@ describe('GoalCard', () => {
     expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toContain('Limit reached');
     expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toContain('100/200');
     expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toContain('1/2');
-    expect(container.textContent).toContain('then Resume');
+    expect(container.textContent).toContain('Raise or clear the reached limit, then Resume to continue.');
   });
 
   it('keeps cumulative usage visible when every budget is unlimited', async () => {
     const { container } = await renderCard({ goal: goalFixture({
       turnsUsed: 4, tokensUsed: 24_000, wallClockMs: 125_000,
     }) });
-    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toBe('Goal turns · 4 · No limit');
-    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toBe('Output tokens · 24,000 · No limit');
-    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toBe('Active time (seconds) · 125 · No limit');
+    expect(container.querySelector('[data-goal-budget="turns"]')?.textContent).toBe('Goal turns4 · No limit');
+    expect(container.querySelector('[data-goal-budget="tokens"]')?.textContent).toBe('Output tokens24,000 · No limit');
+    expect(container.querySelector('[data-goal-budget="seconds"]')?.textContent).toBe('Active time (seconds)125 · No limit');
   });
 
   it('edits and clears all budgets in one save without resuming', async () => {
@@ -160,7 +197,9 @@ describe('GoalCard', () => {
     expect(onResume).not.toHaveBeenCalled();
     await click(container.querySelector('button[title^="Edit the objective"]')!);
     await settle();
-    await click([...container.querySelectorAll('button')].find((button) => button.textContent === 'Clear limits')!);
+    const clear = [...container.querySelectorAll('button')].find((button) => button.textContent === 'Clear limits');
+    expect(clear).toBeDefined();
+    await click(clear!);
     await click(container.querySelector('[data-goal-save]')!);
     expect(onUpdate.mock.calls[1]?.[0]).toMatchObject({ budgetLimits: { turnBudget: null, tokenBudget: null, wallClockBudgetMs: null } });
   });
@@ -183,10 +222,26 @@ describe('GoalCard', () => {
     await click(container.querySelector('[data-goal-save]')!);
     if (expectedMs === null) {
       expect(onUpdate).not.toHaveBeenCalled();
-      expect(container.querySelector('[data-goal-error]')).not.toBeNull();
+      expect(container.querySelector('[data-goal-error]')?.textContent).toBe(
+        'Goal action failed: Use positive whole turns and tokens, and at least one second of active time.',
+      );
     } else {
       expect(onUpdate.mock.calls[0]?.[0].budgetLimits?.wallClockBudgetMs).toBe(expectedMs);
     }
+  });
+
+  it('keeps pause usable while the editor waits for its authoritative read', async () => {
+    let finishRead!: (value: GoalSnapshot) => void;
+    const onRefresh = vi.fn(() => new Promise<GoalSnapshot>((resolve) => { finishRead = resolve; }));
+    const onPause = vi.fn(() => Promise.resolve());
+    const { container } = await renderCard({ onRefresh, onPause });
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    const pause = container.querySelector<HTMLButtonElement>('[data-goal-pause]')!;
+    expect(pause).not.toBeNull();
+    expect(pause.disabled).toBe(false);
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    await act(async () => { finishRead(goalFixture({ status: 'paused' })); });
   });
 
   it('offers resume instead of pause for a paused goal', async () => {
@@ -300,6 +355,87 @@ describe('GoalCard', () => {
     expect(container.querySelector('[data-goal-error]')?.textContent).toContain('engine busy');
     expect(container.querySelector('[data-goal-card]')).not.toBeNull();
   });
+
+  it('toggles advanced settings and changes custom budget mode and stepper values', async () => {
+    const { container } = await renderCard();
+    await click(container.querySelector('button[title^="Edit the objective"]')!);
+    await settle();
+    const advancedToggle = container.querySelector<HTMLButtonElement>('[data-goal-advanced-toggle]')!;
+    expect(advancedToggle).not.toBeNull();
+    // Toggle advanced section
+    await click(advancedToggle);
+    expect(container.querySelector('[data-goal-advanced]')?.className).not.toContain('hidden');
+
+    // Switch turns to custom mode
+    const turnsCustom = container.querySelector<HTMLButtonElement>('[data-goal-budget-mode="turns-custom"]')!;
+    await click(turnsCustom);
+    const turnsInput = container.querySelector<HTMLInputElement>('[data-goal-budget-input="turns"]')!;
+    expect(turnsInput.value).toBe('5');
+
+    // Use stepper plus button
+    const plusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Increase Goal turns"]')!;
+    await click(plusBtn);
+    expect(turnsInput.value).toBe('6');
+
+    // Use stepper minus button
+    const minusBtn = container.querySelector<HTMLButtonElement>('[data-goal-budget-row="turns"] button[aria-label="Decrease Goal turns"]')!;
+    await click(minusBtn);
+    expect(turnsInput.value).toBe('5');
+
+    // Switch back to unlimited
+    const turnsUnlimited = container.querySelector<HTMLButtonElement>('[data-goal-budget-mode="turns-unlimited"]')!;
+    await click(turnsUnlimited);
+    expect(turnsInput.value).toBe('');
+  });
+
+  it('renders localized aria labels for stepper buttons in Chinese', async () => {
+    vi.stubGlobal('navigator', { language: 'zh-CN' });
+    try {
+      const { container } = await renderCard();
+      await click(container.querySelector('button[title^="编辑"]')!);
+      await settle();
+      const advancedToggle = container.querySelector<HTMLButtonElement>('[data-goal-advanced-toggle]')!;
+      await click(advancedToggle);
+      const turnsCustom = container.querySelector<HTMLButtonElement>('[data-goal-budget-mode="turns-custom"]')!;
+      await click(turnsCustom);
+      expect(container.querySelector('button[aria-label="增加目标轮次"]')).not.toBeNull();
+      expect(container.querySelector('button[aria-label="减少目标轮次"]')).not.toBeNull();
+    } finally {
+      vi.stubGlobal('navigator', { language: 'en-US' });
+    }
+  });
+});
+
+describe('GoalPauseButton', () => {
+  it('pauses from the collapsed header and reports a pending or failed request', async () => {
+    let rejectPause!: (error: Error) => void;
+    const onPause = vi.fn(() => new Promise<void>((_resolve, reject) => { rejectPause = reject; }));
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(<I18nProvider><ComposerHeader settled={false} goal={{
+        summary: <GoalHeaderSummary goal={goalFixture()} />,
+        ariaLabel: 'Goal',
+        panel: <div>Details</div>,
+        actions: <GoalPauseButton onPause={onPause} />,
+      }} /></I18nProvider>);
+    });
+    expect(container.querySelector('[data-header-toggle]')?.getAttribute('aria-expanded')).toBe('false');
+    const pause = container.querySelector<HTMLButtonElement>('[data-goal-pause]')!;
+    expect(pause.closest('[inert]')).toBeNull();
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    expect(pause.disabled).toBe(true);
+    expect(pause.getAttribute('aria-busy')).toBe('true');
+    await click(pause);
+    expect(onPause).toHaveBeenCalledOnce();
+    await act(async () => { rejectPause(new Error('Connection closed')); });
+    expect(pause.disabled).toBe(false);
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Connection closed');
+    await act(async () => { root.unmount(); });
+  });
 });
 
 describe('GoalHeaderSummary', () => {
@@ -339,6 +475,19 @@ describe('GoalHeaderSummary', () => {
     expect(goalShowsInHeader(null)).toBe(false);
     expect(goalShowsInHeader(goalFixture())).toBe(true);
   });
+
+  it('keeps an ordinary goal off the alert wash, and only the exception states on it', () => {
+    // The complaint was that a merely-running goal read like the "everything is
+    // permitted" warning. Its sheet is painted once, in CSS, so the rule itself
+    // is what has to stay off `accent-soft` — the wash that warning and a blocked
+    // goal share. The exception states are named in the status word instead.
+    const css = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../index.css'), 'utf8');
+    const rule = /\.composer-header-goal\s*\{([^}]*)\}/.exec(css);
+    expect(rule).not.toBeNull();
+    expect(rule![1]).toContain('var(--color-panel)');
+    expect(rule![1]).not.toContain('--color-accent-soft');
+    expect(rule![1]).not.toContain('--color-danger');
+  });
 });
 
 describe('RecoveryHoldBar', () => {
@@ -364,9 +513,14 @@ describe('RecoveryHoldBar', () => {
     const { container } = await renderBar({ count: 2, onConfirm });
     const bar = container.querySelector('[data-recovery-hold]')!;
     expect(bar.getAttribute('role')).toBe('status');
-    expect(bar.textContent).toContain('2 queued messages were restored');
+    expect(bar.textContent).toContain('2 queued items (messages or model switches) were restored');
     await click(bar.querySelector('button:not([disabled])')!);
     expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ask to resume an empty authoritative queue', async () => {
+    const { container } = await renderBar({ count: 0 });
+    expect(container.querySelector('[data-recovery-hold-wrapper]')).toBeNull();
   });
 
   it('locks both buttons while confirmation is pending', async () => {

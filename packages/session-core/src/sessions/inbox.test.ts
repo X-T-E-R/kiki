@@ -63,7 +63,8 @@ describe('inbox model', () => {
 
   it('ranks row state: blocked over running over unread over read', () => {
     expect(sessionRowState(session({ id: 'a', pending_interaction: 'approval', busy: true }), {})).toBe('needs-me');
-    expect(sessionRowState(session({ id: 'b', busy: true }), {})).toBe('running');
+    expect(sessionRowState(session({ id: 'b', busy: true, executing: true }), {})).toBe('running');
+    expect(sessionRowState(session({ id: 'stale', busy: true, executing: false }), {})).toBe('unread');
     expect(sessionRowState(session({ id: 'c' }), {})).toBe('unread');
     expect(sessionRowState(session({ id: 'd' }), { d: 10 })).toBe('read');
     // An empty session is not "unread" — there is nothing to catch up on.

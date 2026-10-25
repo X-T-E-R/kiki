@@ -144,6 +144,7 @@ export function toModelsDevProviderItem(
     id,
     name: entry.name || id,
     env_key: entry.env?.[0] ?? null,
+    base_url: resolution.kind === 'ok' ? resolution.baseUrl ?? null : null,
     models,
   };
   switch (resolution.kind) {

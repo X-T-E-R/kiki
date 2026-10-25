@@ -5,6 +5,8 @@ import { Error2, ErrorCodes } from '@kiki/agent-core-v2/errors';
  * `code`. Mirrors the server envelope (`{ code, msg, data, request_id }`) — the
  * numeric `code` is the stable branch key across the wire, not `instanceof`.
  */
+export type RPCErrorSource = 'transport';
+
 export class RPCError extends Error {
   constructor(
     readonly code: number,
@@ -13,6 +15,7 @@ export class RPCError extends Error {
     readonly reason?: string,
     readonly requestId?: string,
     readonly data?: unknown,
+    readonly source?: RPCErrorSource,
   ) {
     super(message);
     this.name = 'RPCError';

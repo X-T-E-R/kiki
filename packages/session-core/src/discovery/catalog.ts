@@ -8,21 +8,21 @@ export const DISCOVERY_ROUTES = [
   { id: 'overview', titleKey: 'discovery.route.overview.title', summaryKey: 'discovery.route.overview.summary', stations: ['workspace', 'agents', 'memory', 'capabilities', 'cron'] },
   { id: 'do-first', titleKey: 'discovery.route.doFirst.title', summaryKey: 'discovery.route.doFirst.summary', stations: ['workspace', 'approach', 'result'] },
   { id: 'understand', titleKey: 'discovery.route.understand.title', summaryKey: 'discovery.route.understand.summary', stations: ['agents', 'direction', 'usage'] },
-  { id: 'sustain', titleKey: 'discovery.route.sustain.title', summaryKey: 'discovery.route.sustain.summary', stations: ['memory', 'board', 'cron'] },
+  { id: 'sustain', titleKey: 'discovery.route.sustain.title', summaryKey: 'discovery.route.sustain.summary', stations: ['memory', 'cron'] },
   { id: 'extend', titleKey: 'discovery.route.extend.title', summaryKey: 'discovery.route.extend.summary', stations: ['capabilities', 'extensions'] },
 ] as const satisfies readonly { id: string; titleKey: I18nKey; summaryKey: I18nKey; stations: readonly string[] }[];
 
 export type DiscoveryRouteId = typeof DISCOVERY_ROUTES[number]['id'];
 export type DiscoveryStationId = typeof DISCOVERY_ROUTES[number]['stations'][number];
 export type DiscoveryRoute = typeof DISCOVERY_ROUTES[number];
-export type DiscoveryAnchor = 'workspace-picker' | 'materials' | 'work-mode' | 'agent-panel' | 'send-controls' | 'memory-scope' | 'capability-detail' | 'board-detail' | 'cron-detail' | 'result-detail' | 'usage-filter';
+export type DiscoveryAnchor = 'workspace-picker' | 'materials' | 'work-mode' | 'agent-panel' | 'send-controls' | 'memory-scope' | 'capability-detail' | 'cron-detail' | 'result-detail' | 'usage-filter';
 export type DiscoveryExampleId = 'agents' | 'direction' | 'result' | 'cron';
 
 export interface DiscoveryStation {
   readonly id: DiscoveryStationId;
   readonly titleKey: I18nKey;
   readonly bodyKey: I18nKey;
-  readonly page: 'new' | 'session' | 'memory' | 'capabilities' | 'cron' | 'usage' | 'board' | 'personas';
+  readonly page: 'new' | 'session' | 'memory' | 'capabilities' | 'cron' | 'usage' | 'personas';
   readonly anchor?: DiscoveryAnchor;
   readonly example?: DiscoveryExampleId;
 }
@@ -37,7 +37,6 @@ export const DISCOVERY_STATIONS: readonly DiscoveryStation[] = [
   { id: 'result', titleKey: 'discovery.station.result.title', bodyKey: 'discovery.station.result.body', page: 'session', anchor: 'result-detail', example: 'result' },
   { id: 'direction', titleKey: 'discovery.station.direction.title', bodyKey: 'discovery.station.direction.body', page: 'session', anchor: 'send-controls', example: 'direction' },
   { id: 'usage', titleKey: 'discovery.station.usage.title', bodyKey: 'discovery.station.usage.body', page: 'usage', anchor: 'usage-filter' },
-  { id: 'board', titleKey: 'discovery.station.board.title', bodyKey: 'discovery.station.board.body', page: 'board', anchor: 'board-detail' },
   { id: 'extensions', titleKey: 'discovery.station.extensions.title', bodyKey: 'discovery.station.extensions.body', page: 'personas' },
 ];
 

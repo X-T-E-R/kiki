@@ -2,6 +2,8 @@ import type { ExecutorBinding } from '@kiki/agent-profiles/ports';
 import { ulid } from 'ulid';
 
 import { Disposable, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Emitter, Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
@@ -27,7 +29,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { listAvailableSubagentTargets } from '#/app/agentProfileCatalog/subagentDispatch';
 import { projectSubagentModelCatalog } from '#/session/subagent/modelCatalogProjection';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
 import { ILogService } from '#/_base/log/log';
 import { IModelService } from '#/kosong/model/model';
@@ -241,13 +243,13 @@ export class SessionExternalDelegationService
       );
     }
     this._register({
-      dispose: () => {
+      dispose: async () => {
         for (const controller of this.controllers.values()) controller.abort(new Error('Session closed'));
         this.controllers.clear();
-        for (const entry of this.projectionCache.values()) entry.subscriptions.dispose();
+        for (const entry of this.projectionCache.values()) await entry.subscriptions.dispose();
         this.projectionCache.clear();
         this.releaseInteractionConsumer();
-        void this.interruptActive('Session closed');
+        await this.interruptActive('Session closed');
       },
     });
   }
@@ -744,8 +746,9 @@ export class SessionExternalDelegationService
       );
     }
     const main = this.requireMain();
-    const runtimeLease = main.accessor.get(IAgentRuntimeService).acquire(['process']);
-    const view = new RuntimeWorkspaceView(runtimeLease.runtime, this.workspace);
+    const mainRuntime = main.accessor.get(IAgentRuntimeService);
+    const runtimeLease = mainRuntime.acquire(['process']);
+    const view = new RuntimeWorkspaceView(runtimeLease.runtime, inspectAgentWorkspaceRoots(mainRuntime, this.workspace));
     const controller = new AbortController();
     const dispatchId = `dispatch_${ulid()}`;
     try {
@@ -767,6 +770,7 @@ export class SessionExternalDelegationService
         strictThinkingFromProfile: true,
         runtime: runtimeLease.runtime,
         workDir: view.workDir,
+        workspaceRoots: { workDir: view.workDir, additionalDirs: view.additionalDirs },
         signal: controller.signal,
         onCreated: async (child, retain) => {
           await this.queueDispatch(
@@ -911,7 +915,8 @@ export class SessionExternalDelegationService
   private projectionEntry(handle: IAgentScopeHandle): ProjectionCacheEntry {
     const existing = this.projectionCache.get(handle.id);
     if (existing?.handle === handle) return existing;
-    existing?.subscriptions.dispose();
+    const previous = existing?.subscriptions.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const subscriptions = new DisposableStore();
     const entry: ProjectionCacheEntry = {
       handle,
@@ -927,7 +932,8 @@ export class SessionExternalDelegationService
     subscriptions.add(eventBus.subscribe(AgentActivityUpdated, (activity) => {
       if (activity.lifecycle !== 'disposed' || this.projectionCache.get(handle.id) !== entry) return;
       this.projectionCache.delete(handle.id);
-      subscriptions.dispose();
+      const result = subscriptions.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }));
     return entry;
   }

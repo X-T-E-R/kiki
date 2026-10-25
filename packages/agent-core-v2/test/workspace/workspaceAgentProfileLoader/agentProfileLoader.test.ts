@@ -34,6 +34,8 @@ import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { AgentExecutorRegistryService } from '#/app/agentExecutor/agentExecutorRegistryService';
 import { IConfigService } from '#/app/config/config';
 import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
 import { PluginAgentProfileLoaderService } from '#/workspace/workspaceAgentProfileLoader/pluginAgentProfileLoaderService';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { HostFsWatchService } from '#/os/backends/node-local/hostFsWatchService';
@@ -72,7 +74,8 @@ import { resolveSubagentDispatch, resolveSubagentTarget } from '#/app/agentProfi
 import { IModelService } from '#/kosong/model/model';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
-import { createTestAgent } from '../../harness';
+import { createTestAgent, sessionService } from '../../harness';
+import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { parseAgentRouteFileText } from '#/workspace/workspaceAgentProfileLoader/internal/agentRouteFile';
 import { resolveAgentSourceGraph } from '#/workspace/workspaceAgentProfileLoader/internal/agentSourceGraph';
 import type { AgentFileDefinition } from '#/workspace/workspaceAgentProfileLoader/internal/types';
@@ -277,12 +280,11 @@ function pluginStub(
     setPluginMcpServerEnabled: async () => {},
     removePlugin: async () => {},
     reloadPlugins: async () => ({ added: [], removed: [], errors: [] }),
-    getPluginInfo: async () => {
-      throw new Error('getPluginInfo is not used by these tests');
-    },
+    getPluginInfo: async ({ id }) => ({ id, enabled: true, globalEnabled: true, state: 'ok' as const, manifest: undefined }) as never,
     listPluginCommands: async () => [],
     checkUpdates: async () => [],
     pluginSkillRoots: async () => [],
+    pluginSkillOwner: async () => undefined,
     pluginAgentRoots: async () => agentRoots,
     enabledSessionStarts: async () => [],
     enabledSystemPrompts: async () => [],
@@ -400,6 +402,7 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       [IWorkspaceContext, workspaceContext],
       [IWorkspaceTrust, opts?.workspaceTrust ?? workspaceTrustStub(opts?.workspaceTrusted ?? true)],
       [IPluginService, pluginStub(opts?.pluginAgentRoots ?? [], opts?.pluginReloadEmitter)],
+      [IPluginUsageService, new SyncDescriptor(PluginUsageService)],
       [IFlagService, flags],
       [IBuiltinSkillSource, new SyncDescriptor(BuiltinSkillSource)],
       [IAgentExecutorRegistry, opts?.executors ?? new SyncDescriptor(AgentExecutorRegistryService)],
@@ -480,9 +483,9 @@ function makeStack(fixture: Fixture, opts?: StackOptions) {
       ]);
       await catalog.ready;
     },
-    dispose(): void {
-      catalog.dispose();
-      container.dispose();
+    async dispose(): Promise<void> {
+      await catalog.dispose();
+      await container.dispose();
     },
   };
 }
@@ -498,7 +501,7 @@ async function withStack(
   try {
     await run(stack);
   } finally {
-    stack.dispose();
+    await stack.dispose();
   }
 }
 
@@ -596,7 +599,7 @@ describe('agent profile loaders + session catalog', () => {
           expect(deletes).not.toHaveBeenCalled();
           if (legacyKey !== canonicalKey) expect(await documents.get('workspace-trust', canonicalKey)).toBeUndefined();
         } finally {
-          draft.dispose();
+          await draft.dispose();
         }
       });
     });
@@ -1955,6 +1958,68 @@ describe('agent profile loaders + session catalog', () => {
     });
   });
 
+  it.each(['tools: []', 'tools: [Read]', 'tools: [broken'])(
+    'rejects a tool-only refresh after an unpublished SYSTEM.md edit: %s', async (declaration) => {
+      await withFixture(async (fixture) => {
+        const systemPath = join(fixture.homeDir, 'SYSTEM.md');
+        await writeFile(systemPath, '---\nsystem_prompt_mode: append\n---\nSOURCE');
+        await withStack(fixture, { fsWatch: fsWatchStub() }, async (stack) => {
+          await stack.ready();
+          const current = stack.catalog.getDefault();
+          const ctx = createTestAgent({ cwd: fixture.workDir }, sessionService(ISessionAgentProfileCatalog, stack.catalog));
+          try {
+            const profile = ctx.get(IAgentProfileService);
+            await profile.applyProfile(current);
+            const saved = profile.data();
+            profile.applyBindingSnapshot({ ...saved, toolPolicyBase: undefined, activeToolNames: ['Read'],
+              boundProfile: { ...saved.boundProfile!, tools: ['Read'], toolsSource: undefined }, systemPrompt: 'SAVED CONTEXT' });
+            const preview = await profile.inspectToolPolicy();
+            const before = profile.data();
+            expect(preview.canRefresh).toBe(true);
+            expect(preview.currentTools).toContain('BrowserConnections');
+            await writeFile(systemPath, `---\n${declaration}\n---\nSOURCE`);
+            expect(stack.catalog.getDefault()).toBe(current);
+            await expect(profile.refreshToolPolicy(preview.revision!)).rejects.toThrow(/changed or is unavailable|could not be verified/);
+            expect(profile.data()).toEqual(before);
+            if (declaration === 'tools: [broken') {
+              expect(stack.catalog.getDefault().tools).toContain('BrowserConnections');
+              expect(stack.registry.entries().find((entry) => entry.sourceId === 'user')?.contribution.skipped)
+                .toEqual(expect.arrayContaining([expect.objectContaining({ path: systemPath, code: 'agent_profile.system_invalid' })]));
+            } else {
+              expect(stack.catalog.getDefault().tools).toEqual(declaration === 'tools: []' ? [] : ['Read']);
+            }
+          } finally { await ctx.dispose(); }
+        });
+      });
+    },
+  );
+
+  it('applies a tool-only refresh from the unchanged authoritative SYSTEM.md without touching other binding fields', async () => {
+    await withFixture(async (fixture) => {
+      await writeFile(join(fixture.homeDir, 'SYSTEM.md'), '---\nsystem_prompt_mode: append\n---\nSOURCE');
+      await withStack(fixture, { fsWatch: fsWatchStub() }, async (stack) => {
+        await stack.ready();
+        const ctx = createTestAgent({ cwd: fixture.workDir }, sessionService(ISessionAgentProfileCatalog, stack.catalog));
+        try {
+          const profile = ctx.get(IAgentProfileService);
+          await profile.applyProfile(stack.catalog.getDefault());
+          const saved = profile.data();
+          profile.applyBindingSnapshot({ ...saved, toolPolicyBase: undefined, activeToolNames: ['Read'],
+            boundProfile: { ...saved.boundProfile!, tools: ['Read'], toolsSource: undefined }, systemPrompt: 'SAVED CONTEXT', disallowedTools: ['Write'] });
+          const preview = await profile.inspectToolPolicy();
+          const before = profile.data();
+          await profile.refreshToolPolicy(preview.revision!);
+          const after = profile.data();
+          expect(after.activeToolNames).toContain('BrowserConnections');
+          expect(after.disallowedTools).toContain('Write');
+          for (const key of ['systemPrompt', 'modelAlias', 'thinkingLevel', 'permissionMode', 'renderGeneration', 'spawnPolicy', 'dispatchDecision'] as const) {
+            expect(after[key]).toEqual(before[key]);
+          }
+        } finally { await ctx.dispose(); }
+      });
+    });
+  });
+
   it('keeps the last good SYSTEM.md on YAML errors while refreshing sibling files', async () => {
     await withFixture(async (fixture) => {
       const systemPath = join(fixture.homeDir, 'SYSTEM.md');
@@ -2265,7 +2330,7 @@ describe('agent profile loaders + session catalog', () => {
         expect(watch.handles.length).toBeGreaterThanOrEqual(4);
         expect(watch.handles.some((handle) => handle.disposed)).toBe(false);
       } finally {
-        stack.dispose();
+        await stack.dispose();
       }
 
       expect(watch.handles.every((handle) => handle.disposed)).toBe(true);

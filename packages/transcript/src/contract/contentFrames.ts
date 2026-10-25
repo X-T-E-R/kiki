@@ -1,5 +1,5 @@
 import type { TranscriptTurn } from '../model/turn';
-import type { ContentRef } from './content';
+import { contentPathValue, type ContentRef } from './content';
 
 export function rebindTurnContentRefs<T extends TranscriptTurn>(turn: T): T {
   const refs = turn.contentRefs;
@@ -12,10 +12,10 @@ export function rebindTurnContentRefs<T extends TranscriptTurn>(turn: T): T {
       remaining.push(ref);
       continue;
     }
-    const step = turn.steps[stepIndex];
-    const frame = step?.frames[frameIndex];
+    const step = contentPathValue(turn, ['steps', stepIndex]) as TranscriptTurn['steps'][number] | undefined;
+    const frame = contentPathValue(turn, ref.path.slice(0, 4)) as TranscriptTurn['steps'][number]['frames'][number] | undefined;
     if (step === undefined || frame === undefined) { remaining.push(ref); continue; }
-    const key = `${stepIndex}/${frameIndex}`;
+    const key = `${step.stepId}/${frame.frameId}`;
     const bound: ContentRef = {
       ...ref,
       source: { kind: 'frame', id: frame.frameId, turnId: turn.turnId, stepId: step.stepId },
@@ -29,10 +29,10 @@ export function rebindTurnContentRefs<T extends TranscriptTurn>(turn: T): T {
   return {
     ...turn,
     contentRefs: remaining,
-    steps: turn.steps.map((step, stepIndex) => ({
+    steps: turn.steps.map((step) => ({
       ...step,
-      frames: step.frames.map((frame, frameIndex) => {
-        const entries = frames.get(`${stepIndex}/${frameIndex}`);
+      frames: step.frames.map((frame) => {
+        const entries = frames.get(`${step.stepId}/${frame.frameId}`);
         return entries === undefined ? frame : { ...frame, contentRefs: [...(frame.contentRefs ?? []), ...entries] };
       }),
     })),

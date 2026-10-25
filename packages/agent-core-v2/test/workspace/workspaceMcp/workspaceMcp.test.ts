@@ -15,11 +15,15 @@ import { createServices } from '#/_base/di/test';
 import { AsyncEmitter, Emitter } from '#/_base/event';
 import { ILogService } from '#/_base/log/log';
 import { IMcpOAuthService } from '#/app/mcpConfig/oauthService';
+import { IPluginService } from '#/app/plugin/plugin';
+import type { PluginReloadEvent } from '#/app/plugin/types';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { ITelemetryService, noopTelemetryService } from '#/app/telemetry/telemetry';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 import {
   McpConnectionManager,
+  type McpConnectionView,
   type McpServerEntry,
   type McpServerStatus,
 } from '#/mcpCore/connection-manager';
@@ -27,6 +31,7 @@ import { McpOAuthService, type McpOAuthEvent } from '#/mcpCore/oauth/service';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionEphemeralMcpServers } from '#/session/mcp/ephemeralMcpServers';
+import { FilteredMcpConnectionView } from '#/session/mcp/filteredConnectionView';
 import { MergedMcpConnectionView } from '#/session/mcp/mergedConnectionView';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
@@ -48,6 +53,7 @@ import { stubLog } from '../../_base/log/stubs';
 import { registerAgentIdentityStub } from '../../app/agentIdentity/stubs';
 import {
   createMemoryMcpOAuthStore,
+  fakeMcpClient,
   hostProcessPathClass,
   ManualMcpOAuthScheduler,
   startInProcessHttpMcpServer,
@@ -69,6 +75,7 @@ describe('WorkspaceMcpService', () => {
   let current: Record<string, McpServerConfig>;
   let tunablesValue: McpTunables;
   let tunablesFn: Mock<() => McpTunables>;
+  let allowsCallFn: (name: string) => Promise<boolean>;
   let configChanges: AsyncEmitter<McpServersChangeEvent>;
   let assemblyEvents: Emitter<SessionWillCreateEvent>;
   let oauthService: McpOAuthService;
@@ -81,6 +88,7 @@ describe('WorkspaceMcpService', () => {
     current = {};
     tunablesValue = {};
     tunablesFn = vi.fn(() => tunablesValue);
+    allowsCallFn = async () => true;
     configChanges = disposables.add(new AsyncEmitter<McpServersChangeEvent>());
     assemblyEvents = disposables.add(new Emitter<SessionWillCreateEvent>());
     oauthScheduler = new ManualMcpOAuthScheduler();
@@ -95,7 +103,7 @@ describe('WorkspaceMcpService', () => {
     vi.restoreAllMocks();
     await manager?.shutdown();
     await oauthService.dispose();
-    disposables.dispose();
+    await disposables.dispose();
     await rm(cwd, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -105,14 +113,29 @@ describe('WorkspaceMcpService', () => {
       ready: Promise.resolve(),
       servers: () => current,
       tunables: () => tunablesFn() as McpTunables,
+      allowsCall: (name) => allowsCallFn(name),
       onDidChange: configChanges.event,
     };
   }
 
-  function createService(): IWorkspaceMcpService {
+  function createService(options: {
+    plugins?: Partial<IPluginService>;
+    usage?: Partial<IPluginUsageService>;
+  } = {}): IWorkspaceMcpService {
     const ix = createServices(disposables, {
       strict: true,
       additionalServices: (reg) => {
+        reg.definePartialInstance(IPluginService, {
+          enabledMcpServers: async () => ({}),
+          mcpServerEntries: async () => [],
+          onDidReload: () => ({ dispose: () => {} }),
+          ...options.plugins,
+        });
+        reg.definePartialInstance(IPluginUsageService, {
+          enabled: () => false,
+          onDidChange: () => ({ dispose: () => {} }),
+          ...options.usage,
+        });
         reg.definePartialInstance(IWorkspaceContext, { cwd, workspaceId: 'test-workspace' });
         reg.defineInstance(IWorkspaceMcpConfigService, mcpConfigStub());
         reg.definePartialInstance(IMcpOAuthService, oauthService);
@@ -139,6 +162,24 @@ describe('WorkspaceMcpService', () => {
     });
     return ix.get(IWorkspaceMcpService);
   }
+
+  it('keeps workspace disposal pending until its MCP manager confirms cleanup', async () => {
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const shutdown = vi.spyOn(manager, 'shutdown').mockReturnValue(gate);
+    let disposed = false;
+    const closing = Promise.resolve(disposables.dispose()).then(() => { disposed = true; });
+    try {
+      await vi.waitFor(() => expect(shutdown).toHaveBeenCalledOnce());
+      expect(disposed).toBe(false);
+      release();
+      await closing;
+      expect(disposed).toBe(true);
+    } finally { release(); await closing; }
+  });
 
   it('connects the config snapshot in the initial load', async () => {
     current = { alpha: stdioServer(), beta: stdioServer() };
@@ -181,6 +222,17 @@ describe('WorkspaceMcpService', () => {
     expect(manager.get('alpha')?.status).toBe('removed');
     expect(manager.get('beta')?.status).toBe('connected');
   }, 20000);
+
+  it('reports failed MCP application to the workspace usage owner', async () => {
+    const failure = new Error('Example apply failure');
+    vi.spyOn(McpConnectionManager.prototype, 'markRemoved').mockRejectedValue(failure);
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const reportFailure = vi.fn();
+    await configChanges.fireAsync({ upsert: {}, remove: ['alpha'], reportFailure }, new AbortController().signal);
+    expect(reportFailure).toHaveBeenCalledWith(failure);
+  });
 
   it('queues change events until the initial connect settles', async () => {
     current = { alpha: stdioServer() };
@@ -363,6 +415,279 @@ describe('WorkspaceMcpService', () => {
     expect(view.get('base')?.status).toBe('connected');
   }, 20000);
 
+  it('re-enables an overlay server after off when the session manager connect is idempotent', async () => {
+    vi.spyOn(McpConnectionManager.prototype, 'connect').mockResolvedValue(undefined);
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const config: McpServerConfig = {
+      transport: 'stdio',
+      command: 'overlay-cmd',
+      runtime_id: 'local',
+      enabled: false,
+    };
+    const overlay = service.sessionOverlay({ overlay: config });
+    await overlay.handle.ready;
+    const seen: string[] = [];
+    const unsubscribe = overlay.handle.connectionManager.onStatusChange((entry) => seen.push(entry.name));
+
+    expect(overlay.handle.setServerEnabled?.('overlay', false)).toBe(true);
+    expect(overlay.handle.connectionManager.get('overlay')).toBeUndefined();
+    await overlay.handle.enableConfiguredServer?.('overlay', config);
+    expect(overlay.handle.connectionManager.get('overlay')).toBeDefined();
+    expect(seen).toEqual(['overlay', 'overlay']);
+    unsubscribe();
+    await overlay.shutdown();
+  });
+
+  it('admits explicitly enabled global overlays while preserving plugin denial', async () => {
+    const connectManagers = new Set<McpConnectionManager>();
+    vi.spyOn(McpConnectionManager.prototype, 'connectAll').mockImplementation(function (this: McpConnectionManager) {
+      connectManagers.add(this);
+      return Promise.resolve();
+    });
+    vi.spyOn(McpConnectionManager.prototype, 'connect').mockResolvedValue(undefined);
+    allowsCallFn = async () => false;
+    current = { 'global-server': { transport: 'http', url: 'https://example.test/mcp', enabled: false } };
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const overlay = service.sessionOverlay({});
+    await overlay.handle.ready;
+    const config: McpServerConfig = { transport: 'http', url: 'https://example.test/mcp' };
+    await overlay.handle.enableConfiguredServer?.('global-server', config, 'global');
+    await overlay.handle.enableConfiguredServer?.('plugin-server', config, 'plugin');
+    const overlayManager = [...connectManagers].at(-1)!;
+    const entries = (overlayManager as unknown as { entries: Map<string, unknown> }).entries;
+    for (const name of ['global-server', 'plugin-server']) {
+      entries.set(name, {
+        name,
+        config: { ...config, enabled: true },
+        attemptId: 0,
+        accepting: true,
+        calls: new Set<Promise<void>>(),
+        status: 'connected',
+        tools: [],
+        rawTools: [],
+        enabledNames: new Set<string>(),
+        client: { ...fakeMcpClient(), close: async () => {} },
+      });
+    }
+
+    const globalAdmission = await overlay.handle.connectionManager.resolved('global-server')?.admitCall?.();
+    const pluginAdmission = await overlay.handle.connectionManager.resolved('plugin-server')?.admitCall?.();
+    expect(globalAdmission).toBeDefined();
+    expect(pluginAdmission).toBeUndefined();
+    current = {};
+    await expect(overlay.handle.connectionManager.resolved('global-server')?.admitCall?.()).resolves.toBeUndefined();
+    globalAdmission?.release();
+    await overlay.shutdown();
+  });
+
+  it('admits a session-on workspace-off plugin and rechecks the current session choice on every call', async () => {
+    const managers = new Set<McpConnectionManager>();
+    vi.spyOn(McpConnectionManager.prototype, 'connectAll').mockImplementation(function (this: McpConnectionManager) {
+      managers.add(this);
+      return Promise.resolve();
+    });
+    vi.spyOn(McpConnectionManager.prototype, 'connect').mockResolvedValue(undefined);
+    const config: McpServerConfig = { transport: 'http', url: 'https://example.test/mcp' };
+    const name = 'plugin-example:server';
+    let sessionEnabled = true;
+    const allows = vi.fn(async (_workspaceId: string | undefined, _pluginId: string, sessionId?: string) => sessionId === 'selected-session' && sessionEnabled);
+    allowsCallFn = async () => false;
+    const service = createService({
+      plugins: { mcpServerEntries: async () => [{ name, config, pluginId: 'example', serverName: 'server' }] },
+      usage: { enabled: () => true, allows },
+    });
+    manager = service.connectionManager();
+    await service.ready;
+    const overlay = service.sessionOverlay({}, { sessionId: 'selected-session' });
+    await overlay.handle.ready;
+    await overlay.handle.enableConfiguredServer?.(name, config, 'plugin');
+    const overlayManager = [...managers].at(-1)!;
+    const entries = (overlayManager as unknown as { entries: Map<string, unknown> }).entries;
+    entries.set(name, {
+      name, config, attemptId: 0, accepting: true, calls: new Set<Promise<void>>(), status: 'connected',
+      tools: [], rawTools: [], enabledNames: new Set<string>(), client: { ...fakeMcpClient(), close: async () => {} },
+    });
+    const admission = await overlay.handle.connectionManager.resolved(name)?.admitCall?.();
+    expect(admission).toBeDefined();
+    expect(allows).toHaveBeenCalledWith('test-workspace', 'example', 'selected-session');
+    admission?.release();
+    sessionEnabled = false;
+    await expect(overlay.handle.connectionManager.resolved(name)?.admitCall?.()).resolves.toBeUndefined();
+    expect(allows).toHaveBeenCalledTimes(2);
+    await overlay.shutdown();
+  });
+
+  it('keeps a late overlay admitted through its disabled event so tool withdrawal is not skipped', async () => {
+    const config: McpServerConfig = { transport: 'http', url: 'https://example.test/mcp' };
+    const connect = vi.spyOn(McpConnectionManager.prototype, 'connect').mockResolvedValue(undefined);
+    vi.spyOn(McpConnectionManager.prototype, 'configOf').mockImplementation((name) => name === 'late-plugin' ? config : undefined);
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const overlay = service.sessionOverlay({});
+    await overlay.update?.({ 'late-plugin': config });
+    expect(overlay.handle.isBaselineServer('late-plugin')).toBe(true);
+    await overlay.update?.({});
+    expect(connect).toHaveBeenLastCalledWith('late-plugin', { ...config, enabled: false });
+    expect(overlay.handle.isBaselineServer('late-plugin')).toBe(true);
+    await overlay.shutdown();
+  });
+
+  it('withdraws a source during slow activation and keeps source restoration separate from explicit session off', async () => {
+    const connect = McpConnectionManager.prototype.connect;
+    let release!: () => void;
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    let block = true;
+    vi.spyOn(McpConnectionManager.prototype, 'connect').mockImplementation(async function (this: McpConnectionManager, name, config) {
+      if (name === 'late-plugin' && config.enabled !== false && block) {
+        block = false;
+        entered();
+        await waiting;
+      }
+      await connect.call(this, name, config);
+    });
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const overlay = service.sessionOverlay({});
+    const statuses: string[] = [];
+    const unsubscribe = overlay.handle.connectionManager.onStatusChange((entry) => statuses.push(entry.status));
+    try {
+      const on = overlay.update?.({ 'late-plugin': stdioServer() });
+      await started;
+      const off = overlay.update?.({});
+      release();
+      await Promise.all([on, off]);
+      expect(statuses).not.toContain('connected');
+      expect(overlay.handle.connectionManager.get('late-plugin')).toBeUndefined();
+      await overlay.update?.({ 'late-plugin': stdioServer() });
+      expect(overlay.handle.connectionManager.get('late-plugin')?.status).toBe('connected');
+      await overlay.update?.({});
+      current = { 'late-plugin': stdioServer() };
+      await manager.connect('late-plugin', current['late-plugin']!);
+      expect(overlay.handle.connectionManager.get('late-plugin')?.status).toBe('connected');
+      overlay.handle.setServerEnabled?.('late-plugin', false);
+      await overlay.update?.({});
+      await overlay.update?.({ 'late-plugin': stdioServer() });
+      expect(overlay.handle.connectionManager.get('late-plugin')).toBeUndefined();
+    } finally {
+      release();
+      unsubscribe();
+      await overlay.shutdown();
+    }
+  }, 20_000);
+
+  it('enables a new session server on the overlay and clears its explicit override', async () => {
+    const connect = vi.spyOn(McpConnectionManager.prototype, 'connect').mockResolvedValue(undefined);
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+
+    const overlay = service.sessionOverlay({});
+    const config: McpServerConfig = { transport: 'stdio', command: 'new-server-cmd' };
+    const enabledConfig = { ...config, enabled: true, runtime_id: 'local' };
+    await overlay.handle.enableConfiguredServer?.('new-server', config);
+
+    expect(connect).toHaveBeenCalledWith('new-server', enabledConfig);
+    expect(overlay.configuredServers?.()).toEqual({
+      'new-server': enabledConfig,
+    });
+    await overlay.update?.({});
+    expect(overlay.configuredServers?.()).toEqual({
+      'new-server': enabledConfig,
+    });
+
+    await overlay.handle.clearServerEnabledOverride?.('new-server');
+    expect(overlay.configuredServers?.()).toEqual({});
+    await overlay.shutdown();
+  });
+
+  it('registers a disabled overlay server on the session manager without spawning', async () => {
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const connect = vi.spyOn(McpConnectionManager.prototype, 'connect');
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const overlay = service.sessionOverlay({});
+    await overlay.handle.ready;
+    const config: McpServerConfig = {
+      transport: 'stdio',
+      command: 'disabled-overlay-must-not-spawn',
+      enabled: false,
+    };
+    const register = overlay.handle.registerDisabledServer;
+    expect(register).toEqual(expect.any(Function));
+    await expect(register!('off-server', { ...config, enabled: true }, 'caller')).rejects.toThrow(/must stay disabled/);
+    expect(overlay.handle.connectionManager.get('off-server')).toBeUndefined();
+    expect(manager?.get('off-server')).toBeUndefined();
+
+    await register!('off-server', config, 'caller');
+    expect(overlay.configuredServers?.()).toEqual({ 'off-server': config });
+    expect(overlay.handle.connectionManager.get('off-server')).toMatchObject({
+      status: 'disabled',
+      toolCount: 0,
+    });
+    expect(manager?.get('off-server')).toBeUndefined();
+    expect(connect).toHaveBeenCalledWith('off-server', config);
+    expect(connect.mock.instances.some((instance) => instance === manager)).toBe(false);
+    expect(spawn.mock.calls.some((call) => call[0] === config.command)).toBe(false);
+    await overlay.shutdown();
+  });
+
+  it('does not bypass a filtered plugin denial with an explicit overlay connection', async () => {
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const base = new McpConnectionManager();
+    await base.connect('denied', {
+      transport: 'stdio',
+      command: 'denied-cmd',
+      enabled: false,
+    });
+    const filtered = new FilteredMcpConnectionView(base, new Set(['denied']));
+    const connect = vi.spyOn(McpConnectionManager.prototype, 'connect').mockResolvedValue(undefined);
+    const overlay = service.sessionOverlay({}, undefined, filtered);
+
+    await overlay.handle.enableConfiguredServer?.('denied', stdioServer());
+
+    expect(connect).not.toHaveBeenCalled();
+    await overlay.shutdown();
+    await base.shutdown();
+  });
+
+  it.each(['connected', 'failed', 'needs-auth', 'pending'] as const)('reuses an existing %s base server instead of creating a second session connection', async (status) => {
+    const service = createService();
+    manager = service.connectionManager();
+    await service.ready;
+    const base = new McpConnectionManager();
+    const config: McpServerConfig = { transport: 'stdio', command: 'base-server' };
+    const enabledConfig = { ...config, enabled: true, runtime_id: 'local' };
+    vi.spyOn(base, 'get').mockReturnValue({
+      name: 'base-server',
+      transport: 'stdio',
+      status,
+      toolCount: 0,
+    });
+    vi.spyOn(base, 'configOf').mockReturnValue(config);
+    const connect = vi.spyOn(McpConnectionManager.prototype, 'connect').mockResolvedValue(undefined);
+    const overlay = service.sessionOverlay({}, undefined, base);
+
+    await overlay.handle.enableConfiguredServer?.('base-server', config);
+
+    expect(connect).not.toHaveBeenCalled();
+    expect(overlay.configuredServers?.()).toEqual({
+      'base-server': enabledConfig,
+    });
+    await overlay.shutdown();
+    await base.shutdown();
+  });
+
   describe('session overlay activation (onWillCreateSession)', () => {
     function willCreateEvent(
       servers: Record<string, McpServerConfig>,
@@ -383,7 +708,7 @@ describe('WorkspaceMcpService', () => {
         ],
       ]);
       const contributed = new Map<unknown, unknown>();
-      const disposers: Array<() => void> = [];
+      const disposers: Array<() => void | Promise<void>> = [];
       const event: SessionWillCreateEvent = {
         sessionId: 's1',
         readSeed: <T>(id: ServiceIdentifier<T>): T => seeds.get(id) as T,
@@ -408,7 +733,7 @@ describe('WorkspaceMcpService', () => {
       const { event, contributed, disposers } = willCreateEvent(servers, sessionCwd);
       assemblyEvents.fire(event);
 
-      expect(sessionOverlay).toHaveBeenCalledWith(servers, { stdioCwd: sessionCwd });
+      expect(sessionOverlay).toHaveBeenCalledWith(servers, { stdioCwd: sessionCwd, sessionId: 's1' }, expect.any(FilteredMcpConnectionView));
       const overlay = sessionOverlay.mock.results[0]?.value as ISessionMcpOverlay;
       expect(contributed.get(ISessionMcpHandle)).toBe(overlay.handle);
       await overlay.handle.ready;
@@ -416,13 +741,14 @@ describe('WorkspaceMcpService', () => {
 
       const shutdown = vi.spyOn(overlay, 'shutdown');
       expect(disposers).toHaveLength(1);
-      disposers[0]!();
+      const closing = disposers[0]!();
       expect(shutdown).toHaveBeenCalledTimes(1);
-      await shutdown.mock.results[0]?.value;
+      expect(closing).toBe(shutdown.mock.results[0]?.value);
+      await closing;
       await rm(sessionCwd, { recursive: true, force: true });
     }, 20000);
 
-    it('ignores a session created without ephemeral servers', async () => {
+    it('creates and disposes an empty session overlay without ephemeral servers', async () => {
       const service = createService();
       manager = service.connectionManager();
       await service.ready;
@@ -431,10 +757,86 @@ describe('WorkspaceMcpService', () => {
       const { event, contributed, disposers } = willCreateEvent({}, cwd);
       assemblyEvents.fire(event);
 
-      expect(sessionOverlay).not.toHaveBeenCalled();
-      expect(contributed.size).toBe(0);
-      expect(disposers).toHaveLength(0);
+      expect(sessionOverlay).toHaveBeenCalledWith({}, { stdioCwd: cwd, sessionId: 's1' }, expect.any(FilteredMcpConnectionView));
+      const overlay = sessionOverlay.mock.results[0]?.value as ISessionMcpOverlay;
+      expect(contributed.get(ISessionMcpHandle)).toBe(overlay.handle);
+      expect(disposers).toHaveLength(1);
+      await overlay.handle.ready;
+      const shutdown = vi.spyOn(overlay, 'shutdown');
+      await disposers[0]!();
+      expect(shutdown).toHaveBeenCalledTimes(1);
+      await shutdown.mock.results[0]?.value;
     });
+
+    it('ignores a late enabled plugin snapshot after a newer source-off refresh', async () => {
+      const reloads = disposables.add(new AsyncEmitter<PluginReloadEvent>());
+      const config = stdioServer();
+      let enabled: Record<string, McpServerConfig> = { 'plugin-example:server': config };
+      let release!: () => void;
+      let entered!: () => void;
+      const waiting = new Promise<void>((resolve) => { release = resolve; });
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      let pause = true;
+      const service = createService({ plugins: {
+        enabledMcpServers: async (workspaceId) => {
+          if (workspaceId === '*') return { 'plugin-example:server': config };
+          const snapshot = enabled;
+          if (pause) { pause = false; entered(); await waiting; }
+          return snapshot;
+        },
+        onDidReload: reloads.event,
+      } });
+      manager = service.connectionManager();
+      await service.ready;
+      const { event, contributed, disposers } = willCreateEvent({}, cwd);
+      assemblyEvents.fire(event);
+      const handle = contributed.get(ISessionMcpHandle) as ISessionMcpHandle;
+      await handle.ready;
+      try {
+        const old = reloads.fireAsync({ added: [], removed: [], errors: [] }, new AbortController().signal);
+        await started;
+        enabled = {};
+        await reloads.fireAsync({ added: [], removed: [], errors: [] }, new AbortController().signal);
+        release();
+        await old;
+        expect(handle.connectionManager.get('plugin-example:server')).toBeUndefined();
+      } finally {
+        release();
+        await Promise.all(disposers.map((dispose) => dispose()));
+      }
+    });
+
+    it('withdraws a selected plugin overlay when its source disappears without removing caller servers', async () => {
+      const reloads = disposables.add(new AsyncEmitter<PluginReloadEvent>());
+      const config = stdioServer();
+      let all: Record<string, McpServerConfig> = { 'plugin-example:server': config };
+      const service = createService({ plugins: {
+        enabledMcpServers: async (workspaceId) => workspaceId === '*' ? all : {},
+        onDidReload: reloads.event,
+      } });
+      manager = service.connectionManager();
+      await service.ready;
+      const { event, disposers } = willCreateEvent({ caller: config }, cwd);
+      const sessionOverlay = vi.spyOn(service, 'sessionOverlay');
+      assemblyEvents.fire(event);
+      const overlay = sessionOverlay.mock.results[0]?.value as ISessionMcpOverlay;
+      try {
+        await overlay.handle.ready;
+        await overlay.enableConfiguredServer?.('plugin-example:server', config, 'plugin');
+        expect(overlay.handle.connectionManager.get('plugin-example:server')?.status).toBe('connected');
+        const statuses: string[] = [];
+        const unsubscribe = overlay.handle.connectionManager.onStatusChange((entry) => statuses.push(`${entry.name}:${entry.status}`));
+        all = {};
+        await reloads.fireAsync({ added: [], removed: ['example'], errors: [] }, new AbortController().signal);
+        unsubscribe();
+        expect(statuses).toContain('plugin-example:server:disabled');
+        expect(overlay.configuredServers?.()).toEqual({});
+        expect(overlay.handle.connectionManager.resolved('plugin-example:server')).toBeUndefined();
+        expect(overlay.handle.connectionManager.get('caller')?.status).toBe('connected');
+      } finally {
+        await Promise.all(disposers.map((dispose) => dispose()));
+      }
+    }, 20_000);
 
     it('ignores a will-create event of a session belonging to another workspace', async () => {
       const service = createService();
@@ -803,7 +1205,92 @@ describe('MergedMcpConnectionView', () => {
     });
     unsubscribe();
 
-    expect(seen).toEqual(['base-only', 'shared']);
+    expect(seen).toEqual(['base-only', 'base-only', 'shared', 'shared']);
+  });
+
+  it('forwards removal tombstones from the current owner without leaking hidden or shadowed entries', async () => {
+    for (const name of ['base-only', 'shared', 'hidden']) await base.connect(name, disabledStdio('base-cmd'));
+    await overlay.connect('shared', disabledStdio('overlay-cmd'));
+    const view = new MergedMcpConnectionView(base, overlay, new Set(['shared']));
+    view.setServerEnabled('hidden', false);
+    const seen: string[] = [];
+    const unsubscribe = view.onStatusChange((entry) => seen.push(`${entry.name}:${entry.status}`));
+    await base.markRemoved('base-only');
+    await base.markRemoved('shared');
+    await base.markRemoved('hidden');
+    await overlay.markRemoved('shared');
+    expect(seen).toEqual(['base-only:removed', 'shared:removed']);
+    expect(view.get('base-only')?.status).toBe('removed');
+    expect(view.get('shared')?.status).toBe('removed');
+    unsubscribe();
+  });
+
+  it('preserves a session-off override when the plugin baseline refreshes', async () => {
+    await base.connect('server', disabledStdio('server-cmd'));
+    const view = new FilteredMcpConnectionView(base, new Set());
+
+    expect(view.setServerEnabled('server', false)).toBe(true);
+    expect(view.get('server')).toBeUndefined();
+    view.replaceHidden(new Set());
+    expect(view.get('server')).toBeUndefined();
+    expect(view.clearServerOverride('server')).toBe(true);
+    expect(view.get('server')).toBeDefined();
+  });
+
+  it('keeps an off tombstone before a later base entry arrives', async () => {
+    const view = new MergedMcpConnectionView(base, overlay, new Set());
+    const seen: string[] = [];
+    const unsubscribe = view.onStatusChange((entry) => seen.push(entry.name));
+
+    expect(view.setServerEnabled('late', false)).toBe(false);
+    await base.connect('late', disabledStdio('late-cmd'));
+
+    expect(view.get('late')).toBeUndefined();
+    expect(seen).toEqual([]);
+    unsubscribe();
+  });
+
+  it('forwards tool refresh only for visible base and overlay owners', async () => {
+    const baseRefresh = vi.fn(async () => undefined);
+    const overlayRefresh = vi.fn(async () => undefined);
+    Object.assign(base, { refreshToolList: baseRefresh });
+    Object.assign(overlay, { refreshToolList: overlayRefresh });
+    await overlay.connect('overlay-only', disabledStdio('overlay-cmd'));
+    const view = new MergedMcpConnectionView(base, overlay, new Set(['overlay-only']));
+    const filtered = new FilteredMcpConnectionView(base, new Set(['hidden']));
+
+    await view.refreshToolList('overlay-only');
+    await view.refreshToolList('base-only');
+    await filtered.refreshToolList('hidden');
+
+    expect(overlayRefresh).toHaveBeenCalledWith('overlay-only');
+    expect(baseRefresh).toHaveBeenCalledWith('base-only');
+    expect(baseRefresh).not.toHaveBeenCalledWith('hidden');
+    expect(baseRefresh).toHaveBeenCalledTimes(1);
+  });
+
+  it('hides and restores an overlay contribution for one session', async () => {
+    await overlay.connect('overlay-only', disabledStdio('overlay-cmd'));
+    const view = new MergedMcpConnectionView(base, overlay, new Set(['overlay-only']));
+
+    expect(view.get('overlay-only')).toBeDefined();
+    expect(view.setServerEnabled('overlay-only', false)).toBe(true);
+    expect(view.get('overlay-only')).toBeUndefined();
+    expect(view.clearServerOverride('overlay-only')).toBe(true);
+    expect(view.get('overlay-only')).toBeDefined();
+  });
+
+  it('isolates session-off plugin MCP while preserving the file winner', async () => {
+    await base.connect('plugin-only', disabledStdio('plugin-cmd'));
+    await base.connect('file-winner', disabledStdio('file-cmd'));
+    await overlay.connect('plugin-only', disabledStdio('plugin-cmd'));
+    const sessionOn = new MergedMcpConnectionView(base, overlay, new Set(['plugin-only']));
+    const sessionOff = new FilteredMcpConnectionView(base, new Set(['plugin-only']));
+
+    expect(sessionOn.get('plugin-only')).toBeDefined();
+    expect(sessionOff.get('plugin-only')).toBeUndefined();
+    expect(sessionOff.get('file-winner')).toBeDefined();
+    expect(sessionOff.list().map((entry) => entry.name).toSorted()).toEqual(['file-winner']);
   });
 
   it('routes reconnect to the name owner and aggregates initial-load readiness', async () => {

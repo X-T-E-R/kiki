@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -20,7 +20,7 @@ import { stubLog } from '../../_base/log/stubs';
 
 const disposables = new DisposableStore();
 const directories: string[] = [];
-afterEach(async () => { disposables.clear(); await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
+afterEach(async () => { await disposables.clear(); await Promise.all(directories.splice(0).map((path) => rm(path, { recursive: true, force: true }))); });
 
 function open(home: string): IBrowserConnectionStore {
   const ix = disposables.add(new TestInstantiationService());
@@ -61,6 +61,35 @@ describe('browser connection configuration', () => {
     expect(await open(home).list()).toMatchObject({ connections: [{ id: 'a' }], defaultBrowser: undefined });
   });
 
+  it('stores an allow set separately from the default and preserves it across reload', async () => {
+    const { home, store } = await fixture();
+    await store.upsert('a', { type: 'agent-browser-profile', name: 'A', enabled: true, profilePath: join(home, 'a') });
+    await store.upsert('b', { type: 'agent-browser-profile', name: 'B', enabled: true, profilePath: join(home, 'b') });
+    await store.setAllowed(['b', 'a', 'a']);
+    expect(await store.list()).toMatchObject({ allowedBrowsers: ['b', 'a'], defaultBrowser: undefined });
+    expect((await open(home).list()).allowedBrowsers).toEqual(['b', 'a']);
+    await store.remove('b');
+    expect((await open(home).list()).allowedBrowsers).toEqual(['a']);
+    await store.setAllowed([]);
+    expect((await open(home).list()).allowedBrowsers).toEqual([]);
+    await store.setAllowed(undefined);
+    expect(await open(home).list()).not.toHaveProperty('allowedBrowsers');
+    await expect(store.setAllowed(['missing'])).rejects.toMatchObject({ code: 'browser.not_found' });
+  });
+
+  it('reopens an existing CDP choice without interpreting its id as a different provider', async () => {
+    const { home, store } = await fixture();
+    await store.upsert('kimi-webbridge', { type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true,
+      endpoint: { action: 'set', value: 'http://127.0.0.1:9222' } });
+    await store.setDefault('kimi-webbridge');
+    await store.setAllowed(['kimi-webbridge']);
+    const reopened = open(home);
+    expect(await reopened.resolve('kimi-webbridge')).toMatchObject({ id: 'kimi-webbridge', name: 'edge-kimi', type: 'agent-browser-cdp', endpointSecret: 'http://127.0.0.1:9222' });
+    await reopened.upsert('kimi-webbridge', { type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpoint: { action: 'keep' } });
+    expect(await open(home).list()).toMatchObject({ defaultBrowser: 'kimi-webbridge', allowedBrowsers: ['kimi-webbridge'],
+      connections: [{ id: 'kimi-webbridge', type: 'agent-browser-cdp', name: 'edge-kimi', endpointConfigured: true }] });
+  });
+
   it('stores CDP URL only in existing credentials and supports explicit keep/reveal/delete', async () => {
     const { home, store } = await fixture();
     const value = 'wss://user:YOUR_API_KEY@browser.example.test/devtools/private-path?token=YOUR_API_KEY';
@@ -75,6 +104,20 @@ describe('browser connection configuration', () => {
     expect(JSON.stringify(await store.list())).not.toContain('YOUR_API_KEY');
     await store.remove('cdp');
     await expect(open(home).resolve('cdp')).rejects.toMatchObject({ code: 'browser.not_found' });
+  });
+
+  it('keeps an explicit WebBridge route switch when a connection is removed', async () => {
+    const { home, store } = await fixture();
+    await store.upsert('a', { type: 'agent-browser-profile', name: 'A', enabled: true, profilePath: join(home, 'a') });
+    await store.upsert('b', { type: 'agent-browser-profile', name: 'B', enabled: true, profilePath: join(home, 'b') });
+    const path = join(home, 'config.toml');
+    const before = await readFile(path, 'utf8');
+    await writeFile(path, `[browser_control]\nwebbridge_preset_route = false\n\n${before}`);
+    const reopened = open(home);
+    expect((await reopened.list()).webbridgePresetRoute).toBe(false);
+    await reopened.remove('b');
+    expect((await open(home).list()).webbridgePresetRoute).toBe(false);
+    expect((await open(home).list()).connections.map((connection) => connection.id)).toEqual(['a']);
   });
 
   it('rejects invalid ids, endpoint and relative host paths without writing a connection', async () => {

@@ -1,13 +1,26 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import * as fsPromises from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ZipFile } from 'yazl';
 
+import * as fsUtils from '#/_base/utils/fs';
 import { extractBinaryZip, installBinaryArchive, type BinaryArchiveProgress } from '#/os/backends/node-local/binaryArchive';
 import { antigravityAuthSettings, antigravityCredentialEnvToRemove } from '#/os/backends/node-local/antigravitySettings';
 
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
+vi.mock('#/_base/utils/fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('#/_base/utils/fs')>();
+  return { ...actual, atomicWrite: vi.fn(actual.atomicWrite) };
+});
+
+const readFileMock = vi.mocked(fsPromises.readFile);
+const atomicWriteMock = vi.mocked(fsUtils.atomicWrite);
 const homes: string[] = [];
 afterEach(async () => { vi.restoreAllMocks(); await Promise.all(homes.splice(0).map((home) => rm(home, { recursive: true, force: true }))); });
 
@@ -66,8 +79,38 @@ describe('Antigravity archive and settings boundary', () => {
     expect(antigravityCredentialEnvToRemove('oauth-personal')).toContain('GEMINI_API_KEY');
     expect(antigravityCredentialEnvToRemove('gemini-api-key')).not.toContain('GEMINI_API_KEY');
     expect(antigravityCredentialEnvToRemove('agent-platform')).toEqual(['GEMINI_API_KEY']);
-    await writeFile(join(directory, 'settings.json'), '[]');
-    await expect(antigravityAuthSettings(home, 'oauth-personal')).rejects.toThrow('must be an object');
+
+    const arrayBytes = '[1,2,3]';
+    await writeFile(join(directory, 'settings.json'), arrayBytes);
+    expect(await antigravityAuthSettings(home, 'oauth-personal')).toBe('oauth-personal');
+    expect(await readFile(join(directory, 'settings.json'), 'utf8')).toBe(arrayBytes);
+
+    const invalidJsonBytes = '{broken';
+    await writeFile(join(directory, 'settings.json'), invalidJsonBytes);
+    expect(await antigravityAuthSettings(home, 'oauth-business')).toBe('oauth-business');
+    expect(await readFile(join(directory, 'settings.json'), 'utf8')).toBe(invalidJsonBytes);
+  });
+
+  it('keeps settings bytes and selected method when auxiliary reads or writes fail', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'agy-settings-failure-'));
+    homes.push(home);
+    const directory = join(home, 'antigravity-acp');
+    await mkdir(directory);
+    const path = join(directory, 'settings.json');
+    const original = JSON.stringify({ auth: { type: 'oauth-personal' }, keep: 'bytes' });
+    await writeFile(path, original);
+
+    readFileMock.mockClear();
+    atomicWriteMock.mockClear();
+    readFileMock.mockRejectedValueOnce(Object.assign(new Error('fixture read failure'), { code: 'EACCES' }));
+    expect(await antigravityAuthSettings(home, 'oauth-business')).toBe('oauth-business');
+    expect(await readFile(path, 'utf8')).toBe(original);
+
+    atomicWriteMock.mockClear();
+    atomicWriteMock.mockRejectedValueOnce(new Error('fixture write failure'));
+    expect(await antigravityAuthSettings(home, 'oauth-business')).toBe('oauth-business');
+    expect(atomicWriteMock).toHaveBeenCalledOnce();
+    expect(await readFile(path, 'utf8')).toBe(original);
   });
 });
 

@@ -12,7 +12,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useInfiniteQuery } from '@tanstack/react-query';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session } from '@kiki/protocol';
 
 import {
   buildContentSearchBody,
@@ -22,6 +22,7 @@ import {
   resolveWorkspaceTerm,
   scopeContentHits,
   searchLocal,
+  type LocalSearchWorkspace,
   type LocalSessionMatch,
   type LocalWorkspaceMatch,
   type ParsedSearchQuery,
@@ -59,7 +60,7 @@ export interface SessionSearchState {
   /** Raw input is non-empty (the results surface replaces the list). */
   readonly active: boolean;
   readonly local: {
-    readonly workspaces: readonly LocalWorkspaceMatch<Workspace & { root: string }>[];
+    readonly workspaces: readonly LocalWorkspaceMatch[];
     readonly sessions: readonly LocalSessionMatch<LocalSession>[];
   };
   /** The content layer is armed (≥2 chars after the debounce). */
@@ -85,7 +86,7 @@ export interface SessionSearchState {
 export function useSessionSearch(input: {
   readonly text: string;
   readonly sessions: readonly Session[];
-  readonly workspaces: readonly Workspace[];
+  readonly workspaces: readonly LocalSearchWorkspace[];
   readonly untitled: string;
   /** Workspace ids the active filters scope to (empty = all). */
   readonly workspaceScope?: readonly string[];

@@ -1,6 +1,10 @@
+import { randomUUID } from 'node:crypto';
+
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
 import { Emitter } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
 import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Error2, ErrorCodes, isError2 } from '#/errors';
 import { join } from 'pathe';
@@ -21,6 +25,7 @@ import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentUsageService } from '#/agent/usage/usage';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentExecutionService } from '#/agent/execution/execution';
@@ -35,6 +40,7 @@ import { abortError } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentRuntimeBindingSeed, IAgentRuntimeBindingService } from '#/agent/runtimeBinding/runtimeBinding';
+import { IAgentRuntimeService, IAgentWorkspaceRootsSeed } from '#/agent/runtimeBinding/agentRuntime';
 import '#/agent/runtimeBinding/runtimeBindingService';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentToolActivationService } from '#/agent/toolActivation/toolActivation';
@@ -49,13 +55,24 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import {
+  type AgentCallerOutcome,
+  type AgentCleanupOutcome,
+  type AgentCleanupReceipt,
+  type AgentFailureDomain,
   type AgentListFilter,
+  type AgentRemovalMode,
   type AgentRestoreBinding,
   type CreateAgentOptions,
   type ForkAgentOptions,
   IAgentLifecycleService,
 } from './agentLifecycle';
-import { delegatorRef, labelsFromAgentMeta, withSubagentProfile } from './subagentMetadata';
+import {
+  delegatorRef,
+  labelsFromAgentMeta,
+  subagentWorkspaceRoots,
+  withSubagentProfile,
+  workspaceRootsLabels,
+} from './subagentMetadata';
 import { resolveDelegationPosition } from '#/agent/profile/delegationContext';
 
 interface AgentCreation {
@@ -78,6 +95,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   private readonly onWillCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidCreateEmitter = this._register(new Emitter<IAgentScopeHandle>());
   private readonly onDidDisposeEmitter = this._register(new Emitter<string>());
+  private readonly onDidCleanupEmitter = this._register(new Emitter<AgentCleanupReceipt>());
   private readonly interactionBusDisposables = new Map<string, IDisposable>();
   private readonly usageDisposables = new Map<string, IDisposable>();
 
@@ -90,16 +108,21 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
   get onDidDispose() {
     return this.onDidDisposeEmitter.event;
   }
+  get onDidCleanup() {
+    return this.onDidCleanupEmitter.event;
+  }
 
   constructor(
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @ISessionContext private readonly ctx: ISessionContext,
+    @ISessionWorkspaceContext private readonly sessionWorkspace: ISessionWorkspaceContext,
     @ISessionMetadata private readonly sessionMetadata: ISessionMetadata,
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IConfigService private readonly config: IConfigService,
     @ISessionInteractionService private readonly interaction: ISessionInteractionService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this._register(
@@ -108,7 +131,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           this.interaction.respond(interaction.id, { cancelled: true, reason: 'agent_closed' });
         }
         for (const disposables of [this.interactionBusDisposables, this.usageDisposables]) {
-          disposables.get(agentId)?.dispose();
+          const result = disposables.get(agentId)?.dispose();
+          if (isPromiseLike(result)) result.catch(onUnexpectedError);
           disposables.delete(agentId);
         }
       }),
@@ -116,7 +140,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     this._register({
       dispose: () => {
         for (const disposables of [this.interactionBusDisposables, this.usageDisposables]) {
-          for (const d of disposables.values()) d.dispose();
+          for (const d of disposables.values()) {
+            const result = d.dispose();
+            if (isPromiseLike(result)) result.catch(onUnexpectedError);
+          }
           disposables.clear();
         }
       },
@@ -205,21 +232,24 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
 
   private async createInternal(input: CreateAgentOptions): Promise<IAgentScopeHandle> {
     let opts = input;
-    if (opts.agentId !== undefined && opts.restoreBinding !== undefined) {
+    if (opts.agentId !== undefined) {
       const meta = (await this.sessionMetadata.read()).agents?.[opts.agentId];
-      if (meta === undefined) {
+      if (meta === undefined && opts.restoreBinding !== undefined) {
         throw new Error2(ErrorCodes.AGENT_NOT_FOUND, `Agent instance "${opts.agentId}" does not exist`, {
           details: { agentId: opts.agentId },
         });
       }
-      this.validateRestoreBindingInput(opts.agentId, opts.restoreBinding);
-      opts = {
-        ...opts,
-        forkedFrom: opts.forkedFrom ?? meta.forkedFrom,
-        labels: opts.labels ?? labelsFromAgentMeta(meta),
-        delegator: opts.delegator ?? delegatorRef(meta),
-        userLabel: opts.userLabel ?? meta.userLabel,
-      };
+      if (meta !== undefined) {
+        if (opts.restoreBinding !== undefined) this.validateRestoreBindingInput(opts.agentId, opts.restoreBinding);
+        opts = {
+          ...opts,
+          forkedFrom: opts.forkedFrom ?? meta.forkedFrom,
+          labels: opts.labels ?? labelsFromAgentMeta(meta),
+          delegator: opts.delegator ?? delegatorRef(meta),
+          userLabel: opts.userLabel ?? meta.userLabel,
+          workspaceRoots: subagentWorkspaceRoots(meta, opts.agentId) ?? opts.workspaceRoots,
+        };
+      }
     }
     const agentId = opts.agentId ?? (await this.nextAvailableAgentId());
     for (;;) {
@@ -258,7 +288,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         ? undefined
         : profile.validateBinding({
             modelAlias: opts.binding.model,
-            thinkingEffort: opts.binding.thinking,
+            thinkingEffort: typeof opts.binding.thinking === 'string' ? opts.binding.thinking : undefined,
           });
     if (validation !== undefined && !validation.ok) {
       throw new Error2(ErrorCodes.CONFIG_INVALID, validation.diagnostic);
@@ -315,6 +345,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     slot: AgentSlot,
     generation: number,
   ): Promise<IAgentScopeHandle> {
+    const creationTime = Date.now();
+    let createdAt: number | undefined;
     let priorAgentMeta: AgentMeta | undefined;
     let appliedAgentMeta: AgentMeta | undefined;
     let bootstrapBinding: AgentMeta | undefined;
@@ -329,6 +361,10 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           : opts.delegator?.kind === 'agent'
             ? opts.delegator.agentId
             : 'main';
+    const workspaceRoots = opts.workspaceRoots ?? {
+      workDir: this.sessionWorkspace.workDir,
+      additionalDirs: this.sessionWorkspace.additionalDirs,
+    };
     const handle = createScopedChildHandle(
       this.instantiation,
       LifecycleScope.Agent,
@@ -341,12 +377,20 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
             _serviceBrand: undefined,
             binding: { workspaceId: this.ctx.workspaceId, runtimeId: opts.runtimeId ?? 'local' },
           }],
+          ...(opts.workspaceRoots === undefined ? [] : [
+            [IAgentWorkspaceRootsSeed, { _serviceBrand: undefined, roots: workspaceRoots }] as const,
+          ]),
         ],
       },
     ) as IAgentScopeHandle;
+    let wire: IWireService | undefined;
     try {
       priorAgentMeta = (await this.sessionMetadata.read()).agents?.[agentId];
-      const wire = handle.accessor.get(IWireService);
+      if (priorAgentMeta === undefined && opts.restoreBinding === undefined &&
+        (opts.copiedIdentity === true || await this.storage.size(agentScope, AGENT_WIRE_RECORD_KEY) === undefined)) {
+        createdAt = creationTime;
+      }
+      wire = handle.accessor.get(IWireService);
       await wire.seal();
       await wire.beginTranscriptEpoch?.();
       handle.accessor.get(IAgentStateService).contributeState(interactionKey);
@@ -356,12 +400,11 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       await handle.accessor.get(IEventDispatcher).restore();
       const beforeBinding = handle.accessor.get(IAgentProfileService).data();
       const writesBinding = opts.binding !== undefined || (opts.restoreBinding !== undefined &&
-        beforeBinding.profileName === undefined && beforeBinding.routeId === undefined);
+        beforeBinding.execution === undefined && beforeBinding.profileName === undefined && beforeBinding.routeId === undefined);
       const restoreFellBack = await this.bindBootstrap(handle, opts);
       const binding = handle.accessor.get(IAgentProfileService).data();
-      if (writesBinding) bootstrapBinding = { model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
-        thinkingEffortExplicit: binding.thinkingEffortExplicit,
-        executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
+      if (writesBinding) bootstrapBinding = { execution: binding.execution, personaId: binding.personaId, model: binding.modelAlias, thinkingEffort: binding.thinkingLevel,
+        thinkingEffortExplicit: binding.thinkingEffortExplicit, executor: binding.executorId ?? 'native', executorProtocol: binding.executorProtocol,
         negotiated: priorAgentMeta?.executor === binding.executorId ? priorAgentMeta?.negotiated : undefined,
         allowKikiSubagents: binding.allowKikiSubagents };
       if (opts.restoreBinding !== undefined) {
@@ -373,9 +416,15 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         await handle.accessor.get(IAgentToolActivationService).activate();
         await handle.accessor.get(IAgentPluginToolService).ready();
       }
+      if (priorAgentMeta !== undefined || opts.restoreBinding !== undefined) {
+        await handle.accessor.get(IAgentProfileService).warnRestoredUnavailableTools();
+      }
       const delegationPosition = resolveDelegationPosition(agentId, opts.delegator);
       this.assertCreateStillCurrent(agentId, slot, generation);
-      const requestedLabels = withSubagentProfile(opts.labels, delegationPosition === 'main' ? undefined : profile.profileName);
+      const requestedLabels = withSubagentProfile(
+        opts.workspaceRoots === undefined ? opts.labels : { ...opts.labels, ...workspaceRootsLabels(workspaceRoots) },
+        delegationPosition === 'main' ? undefined : profile.profileName,
+      );
       const applyIdentity = (current: AgentMeta): AgentMeta => {
         const labels = { ...current.labels };
         for (const [key, value] of Object.entries(requestedLabels ?? {})) {
@@ -389,7 +438,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
           forkedFrom: opts.forkedFrom, labels: current.labels === undefined && requestedLabels === undefined ? undefined : labels,
           displayName: current.displayName ?? profile.routeId ?? profile.profileName,
           userLabel: opts.userLabel ?? current.userLabel,
-          model: profile.modelAlias, thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
+          execution: profile.execution, personaId: profile.personaId, model: profile.modelAlias, thinkingEffort: profile.effectiveThinkingLevel ?? profile.thinkingLevel,
           thinkingEffortExplicit: profile.thinkingEffortExplicit,
           executor: profile.executorId ?? 'native', executorProtocol: profile.executorProtocol,
           negotiated: current.executor === profile.executorId ? current.negotiated : undefined,
@@ -398,7 +447,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         return appliedAgentMeta;
       };
       if (priorAgentMeta === undefined) {
-        await this.sessionMetadata.registerAgent(agentId, applyIdentity({}));
+        await this.sessionMetadata.registerAgent(agentId, applyIdentity({ createdAt }));
       } else {
         await this.sessionMetadata.updateAgent(agentId, applyIdentity);
         if (appliedAgentMeta === undefined) throw new Error2(ErrorCodes.AGENT_REMOVED,
@@ -419,7 +468,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         const written = appliedAgentMeta ?? bootstrapBinding!;
         await this.sessionMetadata.updateAgent(agentId, (current) => {
           const next = { ...current };
-          const bindingKeys = ['model', 'thinkingEffort', 'thinkingEffortExplicit', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
+          const bindingKeys = ['execution', 'personaId', 'model', 'thinkingEffort', 'thinkingEffortExplicit', 'executor', 'executorProtocol', 'negotiated', 'allowKikiSubagents'] as const;
           const keys = appliedAgentMeta === undefined ? bindingKeys
             : [...bindingKeys, 'homedir', 'type', 'parentAgentId', 'delegator', 'forkedFrom', 'displayName', 'userLabel'] as const;
           for (const key of keys) {
@@ -438,9 +487,16 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         }).catch(() => {});
       }
       try {
-        handle.dispose();
+        await handle.dispose();
       } catch { }
       this.onDidDisposeEmitter.fire(agentId);
+      try {
+        await wire?.flush();
+      } catch (flushError) {
+        if (flushError !== error) {
+          throw new AggregateError([error, flushError], 'Failed to drain rejected agent creation writes', { cause: error });
+        }
+      }
       throw error;
     }
   }
@@ -473,16 +529,21 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       });
     } else if (
       opts.restoreBinding !== undefined &&
+      profile.data().execution === undefined &&
       profile.data().profileName === undefined &&
       profile.data().routeId === undefined
     ) {
+      const restoreThinking = opts.restoreBinding.executorId !== undefined && opts.restoreBinding.executorId !== 'native' &&
+        opts.restoreBinding.thinkingEffortExplicit !== true
+        ? undefined : opts.restoreBinding.thinkingEffort;
       try {
         await profile.bind({
           profile: opts.restoreBinding.profileName,
           route: opts.restoreBinding.routeId,
           model: opts.restoreBinding.modelAlias,
-          thinking: opts.restoreBinding.thinkingEffort,
+          thinking: restoreThinking,
           delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
+          unavailableTools: 'restore',
         });
       } catch (error) {
         if (
@@ -497,7 +558,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
         await profile.bind({
           profile: DEFAULT_AGENT_PROFILE_NAME,
           model: opts.restoreBinding.modelAlias,
-          thinking: opts.restoreBinding.thinkingEffort,
+          thinking: restoreThinking,
           delegationPosition: resolveDelegationPosition(handle.id, opts.delegator),
         });
         await handle.accessor.get(IEventDispatcher).dispatch(new WarningIssued({
@@ -564,6 +625,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
       routeId: data.routeId,
       modelAlias: data.modelAlias,
       thinkingEffort: data.thinkingLevel,
+      thinkingEffortExplicit: data.thinkingEffortExplicit,
       executorId: data.executorId,
       executorProtocol: data.executorProtocol,
     };
@@ -623,6 +685,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const child = await this.create({
       agentId: opts?.agentId,
       runtimeId: source.accessor.get(IAgentRuntimeBindingService).current.runtimeId,
+      workspaceRoots: source.accessor.get(IAgentRuntimeService).workspaceRoots?.(),
       forkedFrom: source.id,
       binding: overrideBinding,
       labels:
@@ -634,7 +697,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (overrideBinding === undefined) {
       childProfile.applyBindingSnapshot(sourceData);
       if (override?.model !== undefined) await childProfile.setModel(override.model);
-      if (override?.thinking !== undefined) childProfile.setThinking(override.thinking);
+      if (typeof override?.thinking === 'string') childProfile.setThinking(override.thinking);
+      else if (override?.thinking === null) childProfile.restoreDefaultThinking();
     }
 
     const sourceMessages = source.accessor.get(IAgentContextMemoryService)?.get();
@@ -695,7 +759,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     }
   }
 
-  async remove(agentId: string): Promise<void> {
+  async remove(agentId: string, mode: AgentRemovalMode = 'cancel'): Promise<void> {
     const slot = this.slots.get(agentId);
     if (slot === undefined) return;
     if (slot.removing !== undefined) return slot.removing;
@@ -704,7 +768,7 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     const handle = slot.handle;
     const creating = slot.creating?.pending;
     slot.handle = undefined;
-    const removal = this.finishRemoval(agentId, handle, creating).finally(() => {
+    const removal = this.finishRemoval(agentId, handle, creating, mode).finally(() => {
       if (slot.removing === removal) slot.removing = undefined;
       this.releaseSlot(agentId, slot);
     });
@@ -716,36 +780,139 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     agentId: string,
     handle: IAgentScopeHandle | undefined,
     creating: Promise<IAgentScopeHandle> | undefined,
+    mode: AgentRemovalMode,
   ): Promise<void> {
     if (creating !== undefined) await creating.then(() => undefined, () => undefined);
     if (handle === undefined) return;
-    await this.doRemove(agentId, handle);
+    await this.doRemove(agentId, handle, mode);
   }
 
-  private async doRemove(agentId: string, handle: IAgentScopeHandle): Promise<void> {
-    await handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed');
-    const execution = handle.accessor.get(IAgentExecutionService);
-    const compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
-    const compactionSettled = compaction?.promise.catch(() => undefined) ?? Promise.resolve();
-    const reason = abortError('Agent removed');
-    execution.cancel(reason);
-    const loop = handle.accessor.get(IAgentLoopService);
-    for (const turnId of loop.status().pendingTurnIds) loop.cancel(turnId, reason);
-    loop.cancel(undefined, reason);
-    const promptDrain = handle.accessor.get(IAgentPromptService).drain(reason);
-    if (compaction !== null && !compaction.abortController.signal.aborted) {
-      compaction.abortController.abort(reason);
-    }
-    await Promise.all([execution.shutdown(reason), compactionSettled, promptDrain]);
-    await loop.settled();
+  private async doRemove(agentId: string, handle: IAgentScopeHandle, mode: AgentRemovalMode): Promise<void> {
+    const operationId = randomUUID();
+    let callerOutcome: AgentCallerOutcome = 'rejected';
+    let cleanupOutcome: AgentCleanupOutcome = 'cleanup_failed';
+    let failureDomain: AgentFailureDomain | undefined;
+    let disposed = false;
+    const failures: Array<{ readonly error: unknown; readonly domain: AgentFailureDomain }> = [];
+    const collect = async (
+      operation: () => unknown,
+      domain: AgentFailureDomain,
+    ): Promise<void> => {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push({ error, domain });
+      }
+    };
     try {
-      await handle.accessor.get(IEventDispatcher).flush();
-      await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+      await collect(() => handle.accessor.get(IAgentTaskService).stopAllOnExit('Session closed'), 'cleanup');
+      const reason = abortError('Agent removed');
+      let execution: IAgentExecutionService | undefined;
+      let loop: IAgentLoopService | undefined;
+      let compaction: IAgentFullCompactionService['compacting'] | null | undefined;
+      let promptDrain: Promise<void> | undefined;
+      try {
+        execution = handle.accessor.get(IAgentExecutionService);
+      } catch (error) {
+        failures.push({ error, domain: 'cleanup' });
+      }
+      try {
+        compaction = handle.accessor.get(IAgentFullCompactionService).compacting;
+      } catch (error) {
+        failures.push({ error, domain: 'cleanup' });
+      }
+      try {
+        loop = handle.accessor.get(IAgentLoopService);
+      } catch (error) {
+        failures.push({ error, domain: 'cleanup' });
+      }
+      if (execution !== undefined) await collect(() => execution!.cancel(reason), 'cleanup');
+      if (loop !== undefined) {
+        let pendingTurnIds: readonly number[] = [];
+        try {
+          pendingTurnIds = loop.status().pendingTurnIds;
+        } catch (error) {
+          failures.push({ error, domain: 'cleanup' });
+        }
+        for (const turnId of pendingTurnIds) await collect(() => loop!.cancel(turnId, reason), 'cleanup');
+        await collect(() => loop!.cancel(undefined, reason), 'cleanup');
+      }
+      try {
+        promptDrain = handle.accessor.get(IAgentPromptService).drain(reason, mode);
+      } catch (error) {
+        failures.push({ error, domain: 'cleanup' });
+      }
+      if (compaction !== null && compaction !== undefined && !compaction.abortController.signal.aborted) {
+        await collect(() => compaction!.abortController.abort(reason), 'cleanup');
+      }
+      if (execution !== undefined) await collect(() => execution!.shutdown(reason), 'cleanup');
+      if (compaction?.promise !== undefined) await collect(() => compaction!.promise.catch(() => undefined), 'cleanup');
+      if (promptDrain !== undefined) await collect(() => promptDrain!, 'cleanup');
+      if (loop !== undefined) await collect(() => loop!.settled(), 'cleanup');
+      await collect(async () => {
+        try {
+          await handle.accessor.get(IEventDispatcher).flush();
+        } catch (error) {
+          onUnexpectedError(error);
+          throw error;
+        }
+      }, 'persistence');
+      await collect(async () => {
+        try {
+          await handle.accessor.get(IWireService).sealTranscriptEpoch?.();
+        } catch (error) {
+          onUnexpectedError(error);
+          throw error;
+        }
+      }, 'persistence');
+      await collect(async () => {
+        try {
+          const dispatcher = handle.accessor.get(IEventDispatcher);
+          if (dispatcher.saveReplayCheckpoint === undefined) return;
+          if (await dispatcher.saveReplayCheckpoint() !== true) {
+            this.log.warn('agent replay checkpoint was not saved before removal', { agentId });
+          }
+        } catch (error) {
+          this.log.warn('agent replay checkpoint failed before removal', {
+            agentId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }, 'cleanup');
+      await collect(async () => {
+        await handle.dispose();
+        disposed = true;
+      }, 'cleanup');
+      if (disposed) this.onDidDisposeEmitter.fire(agentId);
+      if (failures.length > 0) {
+        const primary = failures.find((failure) => failure.domain === 'persistence') ?? failures[0]!;
+        failureDomain = primary.domain;
+        throw primary.error;
+      }
+      cleanupOutcome = 'closed';
+      callerOutcome = 'resolved';
     } catch (error) {
-      onUnexpectedError(error);
+      failureDomain ??= 'cleanup';
+      throw error;
+    } finally {
+      const primary = failures.find((failure) => failure.domain === 'persistence') ?? failures[0];
+      const error = primary?.error instanceof Error ? primary.error : undefined;
+      const errorCode = error === undefined ? undefined : (error as { readonly code?: unknown }).code;
+      this.onDidCleanupEmitter.fire({
+        operationId,
+        agentId,
+        mode,
+        callerOutcome,
+        terminalOwner: 'agent',
+        cleanupOutcome,
+        resourcesBefore: 1,
+        resourcesAfter: disposed ? 0 : 1,
+        ...(failureDomain === undefined ? {} : { failureDomain }),
+        ...(typeof errorCode === 'string' ? { errorCode } : {}),
+        ...(error === undefined ? {} : { errorName: error.name, errorMessage: error.message }),
+        settledAt: Date.now(),
+      });
     }
-    handle.dispose();
-    this.onDidDisposeEmitter.fire(agentId);
   }
 }
 

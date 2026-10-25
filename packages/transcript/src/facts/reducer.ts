@@ -31,6 +31,10 @@ export class TranscriptFactReducer {
     for (const factId of factIds) this.#acceptedDurableFacts.add(factId);
   }
 
+  hasAcceptedDurableFact(factId: string): boolean {
+    return this.#acceptedDurableFacts.has(factId);
+  }
+
   apply(facts: readonly TranscriptFact[]): TranscriptFactResult {
     const acceptedFacts: TranscriptFact[] = [];
     const acceptedOperations: TranscriptOperation[] = [];

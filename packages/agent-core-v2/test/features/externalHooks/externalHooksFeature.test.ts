@@ -12,6 +12,9 @@ import { IConfigService } from '#/app/config/config';
 import { IFeatureManager } from '#/app/feature/featureManager';
 import { FeatureManagerService } from '#/app/feature/featureManagerService';
 import { IPluginService } from '#/app/plugin/plugin';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { stubPluginUsageService } from '../../app/pluginUsage/stubs';
 import { LifecycleScope } from '#/app/scopes';
 import { IFeatureAssemblyService } from '#/features/featureAssembly';
 import { FeatureAssemblyService } from '#/features/featureAssemblyService';
@@ -65,6 +68,8 @@ describe('ExternalHooksFeature — assembly (src/features/externalHooks)', () =>
         IPluginService,
         { _serviceBrand: undefined, enabledHooks: async () => [], enabledHookRules: async () => [], onDidReload: Event.None },
       ],
+      [ISessionIndex, { _serviceBrand: undefined }],
+      [IPluginUsageService, stubPluginUsageService()],
       [IHostProcessService, { _serviceBrand: undefined }],
       [IModelService, { _serviceBrand: undefined, ready: Promise.resolve(), onDidChangeModels: Event.None, resolveId: () => undefined }],
       [IHostEnvironment, { _serviceBrand: undefined, pathClass: 'posix' }],
@@ -100,6 +105,6 @@ describe('ExternalHooksFeature — assembly (src/features/externalHooks)', () =>
     expect(sessionUnits.items).toHaveLength(0);
     expect(agentUnits.items).toHaveLength(0);
 
-    host.dispose();
+    await host.dispose();
   });
 });

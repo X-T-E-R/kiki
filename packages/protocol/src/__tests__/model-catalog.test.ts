@@ -86,6 +86,33 @@ describe('model catalog schemas', () => {
     expect(patchProviderRequestSchema.parse({ request_identity: identity })).toEqual({ request_identity: identity });
   });
 
+  it('keeps provider compression and websocket layers without filling omitted fields', () => {
+    const request_compression = { min_bytes: 0, targets: ['https://b.example.test/v1', 'https://a.example.test/v1'] };
+    const responses_web_socket = { off: true as const };
+    expect(providerCatalogItemSchema.parse({ ...provider, request_compression, responses_web_socket })).toMatchObject({
+      request_compression,
+      responses_web_socket,
+    });
+    expect(patchProviderRequestSchema.parse({ request_compression, responses_web_socket })).toEqual({
+      request_compression,
+      responses_web_socket,
+    });
+    expect(patchProviderRequestSchema.parse({ request_compression: null, responses_web_socket: null })).toEqual({
+      request_compression: null,
+      responses_web_socket: null,
+    });
+    expect(patchProviderRequestSchema.parse({ request_compression: { encoding: 'off' } })).toEqual({
+      request_compression: { encoding: 'off' },
+    });
+    expect(createProviderRequestSchema.parse({
+      id: 'example',
+      type: 'openai',
+      request_compression,
+      responses_web_socket: { targets: ['https://example.test/v1'] },
+    })).toMatchObject({ request_compression, responses_web_socket: { targets: ['https://example.test/v1'] } });
+    expect(providerCatalogItemSchema.parse(provider)).not.toHaveProperty('request_compression');
+  });
+
   it('round-trips a model catalog item', () => {
     expect(modelCatalogItemSchema.parse(model)).toEqual(model);
   });

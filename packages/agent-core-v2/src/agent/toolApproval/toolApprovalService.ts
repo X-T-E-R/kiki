@@ -1,13 +1,14 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { randomUUID } from 'node:crypto';
 
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { ILogService } from '#/_base/log/log';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { abortable, isUserCancellation } from '#/_base/utils/abort';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IConfigService } from '#/app/config/config';
 import { IModelCatalog } from '#/kosong/model/catalog';
@@ -78,6 +79,8 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     @IAgentPermissionModeService private readonly modeService: IAgentPermissionModeService,
     @IAgentPermissionRulesService private readonly rulesService: IAgentPermissionRulesService,
     @ISessionContext private readonly session: ISessionContext,
+    @ref(ISessionWorkspaceContext) private readonly workspace: LiveRef<ISessionWorkspaceContext>,
+    @ref(IAgentRuntimeService) private readonly runtime: LiveRef<IAgentRuntimeService>,
     @IInstantiationService private readonly instantiation: IInstantiationService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -118,9 +121,6 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     approvalId?: string,
   ): Promise<BeforeExecuteDecision | undefined> {
     const yolo = this.modeService.mode === 'yolo';
-    if (!yolo && this.modeService.interactive === false) {
-      return this.resolvePermissionResolution(this.nonInteractiveDenial(context, result), context, origin);
-    }
     const name = context.toolCall.name;
     const action = context.execution.description ?? `Approve ${name}`;
     const display =
@@ -161,21 +161,21 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     context.signal.throwIfAborted();
     let userApprovalRequest = approvalRequest;
     let automatedResponse: ApprovalResponse | undefined = yolo ? { decision: 'approved' } : undefined;
-    if (reviewer !== undefined && reviewer.outcome !== 'ask' && approvalService !== undefined) {
+    if (reviewer !== undefined && reviewer.outcome !== 'ask') {
       const proposed: ApprovalResponse = {
         decision: reviewer.outcome === 'allow' ? 'approved' : 'rejected',
         feedback: `${reviewer.outcome === 'allow' ? 'Approved' : 'Denied'} by reviewer: ${reviewer.reason}`,
         reviewer: { backend: reviewer.backend, reason: reviewer.reason, confidence: reviewer.confidence },
       };
       try {
-        approvalService.enqueue(approvalRequest);
-        approvalService.decide(approvalRequest.id, proposed);
+        approvalService?.enqueue(approvalRequest);
+        approvalService?.decide(approvalRequest.id, proposed);
         automatedResponse = proposed;
         void this.dispatcher.dispatch(new PermissionApprovalRequested(approvalContext));
       } catch {
         userApprovalRequest = { ...approvalRequest, id: `approval_${randomUUID()}` };
         try {
-          approvalService.decide(approvalRequest.id, { decision: 'cancelled' });
+          approvalService?.decide(approvalRequest.id, { decision: 'cancelled' });
         } catch {
           this.log.debug('permission reviewer cleanup could not resolve the failed approval');
         }
@@ -183,6 +183,8 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
     }
     if (automatedResponse !== undefined) {
       response = automatedResponse;
+    } else if (this.modeService.interactive === false) {
+      return this.resolvePermissionResolution(this.nonInteractiveDenial(context, result), context, origin);
     } else if (approvalService === undefined) {
       response = { decision: 'cancelled', cancellationReason: 'no_consumer' };
     } else {
@@ -224,15 +226,15 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       }
     }
 
-    if (display.kind === 'external_permission' && response.selectedOptionId !== undefined) {
+    if (display.kind === 'external_permission' && response.decision === 'approved' && response.selectedOptionId !== undefined) {
       const option = display.options?.find((candidate) => candidate.id === response.selectedOptionId);
-      if (option === undefined || (response.decision === 'approved' && !option.kind.startsWith('allow_'))) {
+      if (option === undefined || !option.kind.startsWith('allow_')) {
         response = { decision: 'cancelled' };
       }
     }
     const sessionApprovalRule =
       response.decision === 'approved' && response.scope === 'session'
-        ? context.execution.approvalRule
+        ? name === 'Bash' ? context.execution.sessionApprovalRule : context.execution.approvalRule
         : undefined;
     if (approvalService !== undefined) {
       void this.dispatcher.dispatch(
@@ -342,12 +344,15 @@ export class AgentToolApprovalService extends Service implements IAgentToolAppro
       }
       if (this.consecutiveDenials >= 3 || context.signal.aborted) return undefined;
       let verdict: ReviewerVerdict | undefined;
+      const workspace = this.workspace.current;
+      if (workspace === undefined) return undefined;
+      const runtime = this.runtime.current;
       try {
         verdict = await this.instantiation.invokeFunction((accessor) => reviewPermission({
           config: accessor.get(IConfigService),
           catalog: accessor.get(IModelCatalog),
           memory: accessor.get(IAgentContextMemoryService),
-          workspace: accessor.get(ISessionWorkspaceContext),
+          workspace: runtime === undefined ? workspace : inspectAgentWorkspaceRoots(runtime, workspace),
           owner: { sessionId: this.session.sessionId, agentId: this.scopeContext.agentId, parentAgentId: this.scopeContext.parentAgentId },
           log: this.log,
         }, context, policyName, policyReason));

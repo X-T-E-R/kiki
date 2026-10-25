@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   itemId,
   jsonBytes,
@@ -7,7 +8,7 @@ import {
   type TranscriptOperation,
   type TranscriptResponse,
 } from '@kiki/transcript';
-import { boundedEntity } from './boundedContent';
+import { boundedEntity, ENTITY_BYTES } from './boundedContent';
 import { inlineMediaId } from '../../services/inlineMedia';
 import type { TranscriptAttachment } from '@kiki/transcript';
 
@@ -17,17 +18,28 @@ export function boundedAttachment(attachment: TranscriptAttachment, agentId: str
   return boundedEntity(entity, { kind: 'attachment', id: attachment.attachmentId }, maxBytes);
 }
 
-export const TRANSCRIPT_WINDOW_BYTES = 64 * 1024;
+export const TRANSCRIPT_WINDOW_BYTES = 1024 * 1024;
 const GLOBAL_COLLECTION_BYTES = 4 * 1024;
 
-export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail'): AgentTranscriptSnapshot {
+export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): AgentTranscriptSnapshot {
   const tasks = boundedCollection(snapshot.tasks, 'task', (task) => task.taskId);
-  const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId);
   const interactions = boundedCollection(snapshot.interactions, 'interaction', (interaction) => interaction.interactionId);
   const todos = boundedCollection(snapshot.todos, 'todo', (todo) => todo.todoId);
-  const meta = boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096);
-  const budget = TRANSCRIPT_WINDOW_BYTES - 4096 - GLOBAL_COLLECTION_BYTES - jsonBytes({ tasks, prompts, interactions, todos, meta });
-  const items = boundedItems(snapshot.items, budget, direction);
+  const meta = snapshot.meta.contentRefs === undefined ? boundedEntity(snapshot.meta, { kind: 'meta', id: '' }, 4096) : snapshot.meta;
+  const budget = windowBytes - 4096 - GLOBAL_COLLECTION_BYTES * 2 - jsonBytes({ tasks, interactions, todos, meta });
+  const items = boundedItems(snapshot.items, budget, direction, agentId);
+  const referencedPromptOrder = new Map<string, number>();
+  for (const item of items.toReversed()) {
+    if (item.kind !== 'turn' || item.promptId === undefined || referencedPromptOrder.has(item.promptId)) continue;
+    referencedPromptOrder.set(item.promptId, referencedPromptOrder.size);
+  }
+  const referencedPromptIds = new Set(referencedPromptOrder.keys());
+  const prompts = boundedCollection(snapshot.prompts, 'prompt', (prompt) => prompt.promptId,
+    (prompt) => boundedEntity(prompt, { kind: 'prompt', id: prompt.promptId }, 2048, agentId),
+    referencedPromptIds,
+    (prompt) => prompt.status === 'running' || prompt.status === 'queued' || prompt.status === 'blocked',
+    8,
+    referencedPromptOrder);
   const required = new Set<string>();
   for (const item of items) {
     if (item.kind !== 'turn') continue;
@@ -45,7 +57,7 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
     toolCallCount: snapshot.toolCallCount,
     toolCallCountKnown: snapshot.toolCallCountKnown,
     hasMoreOlder: snapshot.hasMoreOlder === true || items.length < snapshot.items.length,
-    olderCursor: (snapshot.hasMoreOlder === true || items.length < snapshot.items.length) && items.length > 0 ? itemKey(items[0]!) : undefined,
+    olderCursor: (snapshot.hasMoreOlder === true || items.length < snapshot.items.length) && items.length > 0 ? wireHistoryAnchor(itemKey(items[0]!)) : undefined,
     globalCoverage: {
       version: 1,
       tasks: collectionCoverage(tasks.length, snapshot.tasks.length),
@@ -57,7 +69,7 @@ export function boundedTranscriptSnapshot(snapshot: AgentTranscriptSnapshot, age
   };
 }
 
-export function boundedTranscriptResponse(response: TranscriptResponse, direction: 'head' | 'tail' = 'tail'): TranscriptResponse {
+export function boundedTranscriptResponse(response: TranscriptResponse, direction: 'head' | 'tail' = 'tail', windowBytes = TRANSCRIPT_WINDOW_BYTES): TranscriptResponse {
   const snapshot = boundedTranscriptSnapshot({
     items: response.items,
     tasks: response.tasks,
@@ -68,51 +80,117 @@ export function boundedTranscriptResponse(response: TranscriptResponse, directio
     meta: response.meta,
     hasMoreOlder: direction === 'tail' ? response.has_more : true,
     toolCallCount: response.tool_call_count,
-  }, response.agent_id, direction);
+  }, response.agent_id, direction, windowBytes);
   const agents = response.agents.slice(0, 20).map((agent) => boundedEntity(agent, { kind: 'roster', id: agent.agentId }, 1024));
   const result = {
     ...response,
     ...snapshot,
     has_more: response.has_more || snapshot.items.length < response.items.length,
     next_cursor: (response.has_more || snapshot.items.length < response.items.length) && snapshot.items.length > 0
-      ? itemKey(direction === 'head' ? snapshot.items.at(-1)! : snapshot.items[0]!) : undefined,
+      ? wireHistoryAnchor(itemKey(direction === 'head' ? snapshot.items.at(-1)! : snapshot.items[0]!))
+      : response.has_more && snapshot.items.length === 0 ? response.next_cursor : undefined,
     agents,
     pending_interactions: snapshot.interactions.filter((entry) => entry.state === 'pending').map((entry) => entry.interactionId),
     coverage: (direction === 'head' || snapshot.items.length < response.items.length) && response.coverage.kind !== 'unknown'
       ? { kind: 'tail' as const, fromTurnId: snapshot.items.find((item) => item.kind === 'turn')?.turnId, throughTurnId: snapshot.items.findLast((item) => item.kind === 'turn')?.turnId, hasMoreOlder: true }
       : response.coverage,
   };
-  if (jsonBytes(result) > TRANSCRIPT_WINDOW_BYTES + 24 * 1024) throw new Error('Transcript response exceeds its window budget');
+
   return result as TranscriptResponse;
 }
 
 export function itemKey(item: AgentTranscriptSnapshot['items'][number]): string { return `${item.kind}:${itemId(item)}`; }
 
-function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, direction: 'head' | 'tail'): AgentTranscriptSnapshot['items'] {
+const HISTORY_CURSOR_LIMIT = 512;
+
+export function historyDigestAnchor(value: string): string {
+  return `~${createHash('sha256').update(value).digest('hex')}.${value.length}`;
+}
+
+export function wireHistoryAnchor(value: string): string {
+  return value.length <= HISTORY_CURSOR_LIMIT ? value : historyDigestAnchor(value);
+}
+
+export function historyAnchorMatches(itemKeyValue: string, anchor: string): boolean {
+  if (itemKeyValue === anchor) return true;
+  if (!anchor.startsWith('~')) return false;
+  const split = anchor.lastIndexOf('.');
+  if (split <= 1) return false;
+  const hash = anchor.slice(1, split);
+  const length = Number(anchor.slice(split + 1));
+  if (hash.length !== 64 || !Number.isSafeInteger(length) || length !== itemKeyValue.length) return false;
+  return createHash('sha256').update(itemKeyValue).digest('hex') === hash;
+}
+
+function nestedContentWindow(item: AgentTranscriptSnapshot['items'][number]): boolean {
+  if (item.kind !== 'turn') return false;
+  return item.steps.some((step) => step.frames.some((frame) => (frame.contentRefs?.length ?? 0) > 0));
+}
+
+function boundedItem(item: AgentTranscriptSnapshot['items'][number], agentId: string, direction: 'head' | 'tail' = 'head'): AgentTranscriptSnapshot['items'][number] {
+  if (item.kind === 'taskref' || (item.contentRefs?.length ?? 0) > 0 || nestedContentWindow(item)) return item;
+  const preview = boundedEntity(item, { kind: item.kind, id: itemId(item) }, undefined, agentId, direction);
+  return preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
+}
+
+export function boundedTranscriptPageSource(snapshot: AgentTranscriptSnapshot, agentId: string, direction: 'head' | 'tail' = 'head'): AgentTranscriptSnapshot {
+  return {
+    ...snapshot,
+    items: snapshot.items.map((item) => boundedItem(item, agentId, direction)),
+    tasks: snapshot.tasks.map((value) => boundedEntity(value, { kind: 'task', id: value.taskId })),
+    attachments: snapshot.attachments.map((value) => boundedAttachment(value, agentId)),
+    prompts: snapshot.prompts.map((value) => boundedEntity(value, { kind: 'prompt', id: value.promptId }, undefined, agentId)),
+    interactions: snapshot.interactions.map((value) => boundedEntity(value, { kind: 'interaction', id: value.interactionId })),
+    todos: snapshot.todos.map((value) => boundedEntity(value, { kind: 'todo', id: value.todoId })),
+    meta: boundedEntity(snapshot.meta, { kind: 'meta', id: '' }),
+  };
+}
+
+function boundedItems(items: AgentTranscriptSnapshot['items'], budget: number, direction: 'head' | 'tail', agentId: string): AgentTranscriptSnapshot['items'] {
   const selected: AgentTranscriptSnapshot['items'][number][] = [];
   let bytes = 2;
   for (let offset = 0; offset < items.length; offset += 1) {
     const item = items[direction === 'head' ? offset : items.length - 1 - offset]!;
-    const preview = item.kind === 'taskref' ? item : boundedEntity(item, { kind: item.kind, id: itemId(item) });
-    const projected = preview.kind === 'turn' ? rebindTurnContentRefs(preview) : preview;
+    const projected = boundedItem(item, agentId, direction);
     const size = jsonBytes(projected) + 1;
-    if (bytes + size > budget) break;
+    if (selected.length > 0 && bytes + size > budget) break;
     selected.push(projected);
     bytes += size;
   }
-  if (items.length > 0 && selected.length === 0) throw new Error('Transcript window cannot fit a canonical item header');
   return direction === 'head' ? selected : selected.reverse();
 }
 
-function boundedCollection<T extends object>(values: readonly T[], kind: 'task' | 'attachment' | 'prompt' | 'interaction' | 'todo', id: (value: T) => string, project?: (value: T) => T, required: ReadonlySet<string> = new Set()): T[] {
+function boundedCollection<T extends object>(
+  values: readonly T[],
+  kind: 'task' | 'attachment' | 'prompt' | 'interaction' | 'todo',
+  id: (value: T) => string,
+  project?: (value: T) => T,
+  required: ReadonlySet<string> = new Set(),
+  priority?: (value: T) => boolean,
+  maxItems?: number,
+  requiredOrder?: ReadonlyMap<string, number>,
+): T[] {
   const selected = new Map<string, T>();
+  const entityBytes = kind === 'todo' ? ENTITY_BYTES : 2048;
+  const collectionBytes = kind === 'todo' ? ENTITY_BYTES + 3 : GLOBAL_COLLECTION_BYTES;
+  const requiredValues = values.filter((value) => required.has(id(value)));
+  const orderedRequired = requiredOrder === undefined ? requiredValues : requiredValues.toSorted((left, right) =>
+    (requiredOrder.get(id(left)) ?? Number.MAX_SAFE_INTEGER) - (requiredOrder.get(id(right)) ?? Number.MAX_SAFE_INTEGER));
   let bytes = 2;
-  const candidates = [...values.filter((value) => required.has(id(value))), ...values.filter((value) => !required.has(id(value))).toReversed()];
+  const candidates = priority === undefined
+    ? [...orderedRequired, ...values.filter((value) => !required.has(id(value))).toReversed()]
+    : [
+        ...values.filter((value) => priority(value) === true),
+        ...orderedRequired.filter((value) => priority(value) !== true),
+        ...values.filter((value) => !required.has(id(value)) && priority(value) !== true).toReversed(),
+      ];
   for (const value of candidates) {
-    if (!required.has(id(value)) && selected.size >= 8) break;
-    const projected = project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, 2048);
+    if (maxItems !== undefined && selected.size >= maxItems) break;
+    if (!required.has(id(value)) && priority === undefined && selected.size >= 8) break;
+    const projected = (value as import('@kiki/transcript').ContentWindow).contentRefs !== undefined ? value
+      : project?.(value) ?? boundedEntity(value, { kind, id: id(value) }, entityBytes);
     const size = jsonBytes(projected) + 1;
-    if (bytes + size > GLOBAL_COLLECTION_BYTES) continue;
+    if (bytes + size > collectionBytes) continue;
     selected.set(id(value), projected);
     bytes += size;
   }
@@ -121,15 +199,41 @@ function boundedCollection<T extends object>(values: readonly T[], kind: 'task' 
 
 function collectionCoverage(returned: number, total: number) { return { returned, total, hasMore: returned < total }; }
 
-export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transcript: AgentTranscript): TranscriptOperation[] {
+function canonicalFrame(transcript: AgentTranscript, turnId: string, stepId: string, frameId: string): { frame: import('@kiki/transcript').TranscriptFrame; stepIndex: number; frameIndex: number; omitted: boolean } | undefined {
+  const turn = transcript.getTurn(turnId);
+  const stepIndex = turn?.steps.findIndex((candidate) => candidate.stepId === stepId) ?? -1;
+  const step = stepIndex < 0 ? undefined : turn?.steps[stepIndex];
+  const frameIndex = step?.frames.findIndex((candidate) => candidate.frameId === frameId) ?? -1;
+  if (step === undefined || frameIndex < 0) return undefined;
+  return {
+    frame: step.frames[frameIndex]!,
+    stepIndex,
+    frameIndex,
+    omitted: stepIndex < Math.max(0, (turn?.steps.length ?? 0) - 8) || frameIndex < Math.max(0, step.frames.length - 8),
+  };
+}
+
+function withFrameIndices(op: Extract<TranscriptOperation, { op: 'append' }>, context: ReturnType<typeof canonicalFrame>): TranscriptOperation {
+  return context === undefined ? op : { ...op, stepIndex: context.stepIndex, frameIndex: context.frameIndex };
+}
+
+export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transcript: AgentTranscript, entityBytes?: number): TranscriptOperation[] {
   return ops.map((op): TranscriptOperation => {
     switch (op.op) {
       case 'reset': return { ...op, snapshot: boundedTranscriptSnapshot(op.snapshot, transcript.agentId) };
-      case 'turn.upsert': return { ...op, turn: boundedEntity(op.turn, { kind: 'turn', id: op.turn.turnId }) };
-      case 'frame.upsert': return { ...op, frame: boundedEntity(op.frame, { kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }) };
-      case 'task.upsert': return { ...op, task: boundedEntity(op.task, { kind: 'task', id: op.task.taskId }) };
+      case 'turn.upsert': return { ...op, turn: boundedEntity(op.turn, { kind: 'turn', id: op.turn.turnId }, undefined, transcript.agentId, 'tail') };
+      case 'frame.upsert': {
+        const context = canonicalFrame(transcript, op.turnId, op.stepId, op.frame.frameId);
+        return {
+          ...op,
+          stepIndex: context?.stepIndex ?? op.stepIndex,
+          frameIndex: context?.frameIndex ?? op.frameIndex,
+          frame: boundedEntity(op.frame, { kind: 'frame', id: op.frame.frameId, turnId: op.turnId, stepId: op.stepId }, undefined, transcript.agentId),
+        };
+      }
+      case 'task.upsert': return { ...op, task: boundedEntity(op.task, { kind: 'task', id: op.task.taskId }, entityBytes) };
       case 'attachment.upsert': return { ...op, attachment: boundedAttachment(op.attachment, transcript.agentId) };
-      case 'prompt.upsert': return { ...op, prompt: boundedEntity(op.prompt, { kind: 'prompt', id: op.prompt.promptId }) };
+      case 'prompt.upsert': return { ...op, prompt: boundedEntity(op.prompt, { kind: 'prompt', id: op.prompt.promptId }, undefined, transcript.agentId) };
       case 'interaction.upsert': return { ...op, interaction: boundedEntity(op.interaction, { kind: 'interaction', id: op.interaction.interactionId }) };
       case 'todo.upsert': return { ...op, todo: boundedEntity(op.todo, { kind: 'todo', id: op.todo.todoId }) };
       case 'marker.upsert': return { ...op, item: boundedEntity(op.item, { kind: 'marker', id: op.item.markerId }) };
@@ -140,8 +244,17 @@ export function boundedTranscriptOps(ops: readonly TranscriptOperation[], transc
           if (task !== undefined && (op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192)) return { op: 'task.upsert', task: boundedEntity(task, { kind: 'task', id: task.taskId }) };
         } else {
           const target = op.target;
-          const frame = transcript.getTurn(target.turnId)?.steps.find((step) => step.stepId === target.stepId)?.frames.find((entry) => entry.frameId === target.frameId);
-          if (frame !== undefined && (op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192)) return { op: 'frame.upsert', turnId: target.turnId, stepId: target.stepId, frame: boundedEntity(frame, { kind: 'frame', id: frame.frameId, turnId: target.turnId, stepId: target.stepId }) };
+          const context = canonicalFrame(transcript, target.turnId, target.stepId, target.frameId);
+          const oversized = op.offset > 1024 || op.text.length > 8192 || jsonBytes(op.text) > 8192;
+          if (context !== undefined && (context.omitted || oversized)) return {
+            op: 'frame.upsert',
+            turnId: target.turnId,
+            stepId: target.stepId,
+            stepIndex: context.stepIndex,
+            frameIndex: context.frameIndex,
+            frame: boundedEntity(context.frame, { kind: 'frame', id: context.frame.frameId, turnId: target.turnId, stepId: target.stepId }, undefined, transcript.agentId),
+          };
+          return withFrameIndices(op, context);
         }
         return op;
       }

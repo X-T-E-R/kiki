@@ -6,7 +6,7 @@ type MutableWire<T> = T extends readonly (infer U)[] ? MutableWire<U>[] : T exte
 function mutableSelection(value: ExecutionSelection): MutableWire<ExecutionSelection> {
   const overrides = value.overrides;
   return { ...value, overrides: overrides === undefined ? undefined : { ...overrides,
-    kiki_context: overrides.kiki_context == null ? overrides.kiki_context : [...overrides.kiki_context] } };
+    kiki_context: overrides.kiki_context === null || overrides.kiki_context === undefined ? overrides.kiki_context : [...overrides.kiki_context] } };
 }
 
 export const executionSelectionWireSchema: z.ZodType<MutableWire<ExecutionSelection>, z.input<typeof executionSelectionSchema>> = executionSelectionSchema.transform(mutableSelection);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { antigravityVersionValid, loginOutcomeKey, reduceInstallProgress, secondsLeft, type InstallProgressEvent } from './AntigravitySetup';
+import { antigravityVersionValid, loginOutcomeKey, loginStatusDisplay, reduceInstallProgress, secondsLeft, type InstallProgressEvent } from './AntigravitySetup';
 
 describe('antigravityVersionValid', () => {
   it('accepts 1.x releases only', () => {
@@ -54,3 +54,32 @@ describe('loginOutcomeKey', () => {
     expect(loginOutcomeKey({ retryable: false })).toBe('st.antigravity.flowEnded');
   });
 });
+
+describe('loginStatusDisplay', () => {
+  it('preserves tri-state login including unknown without collapsing to logged_out', () => {
+    expect(loginStatusDisplay('unknown', true)).toEqual({
+      key: 'st.engines.login.unknown',
+      className: 'text-ink-soft',
+    });
+    expect(loginStatusDisplay('logged_out', true)).toEqual({
+      key: 'st.engines.login.logged_out',
+      className: 'text-amber-ink',
+    });
+    expect(loginStatusDisplay('logged_in', true)).toEqual({
+      key: 'st.engines.login.logged_in',
+      className: '',
+    });
+  });
+
+  it('shows waiting state when engine binary is not ready regardless of login', () => {
+    expect(loginStatusDisplay('unknown', false)).toEqual({
+      key: 'st.engines.stepWaiting',
+      className: 'text-ink-faint',
+    });
+    expect(loginStatusDisplay('logged_out', false)).toEqual({
+      key: 'st.engines.stepWaiting',
+      className: 'text-ink-faint',
+    });
+  });
+});
+

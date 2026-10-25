@@ -124,9 +124,13 @@ export class SessionAgentProfileCatalogService
   getDefault(): AgentProfile {
     const profile = this.get(DEFAULT_AGENT_PROFILE_NAME) ?? this.defaultBindingProfile;
     if (profile === undefined) {
+      const failure = this.snapshotValue?.diagnostics.find((diagnostic) =>
+        diagnostic.code === 'agent_executor.invalid_profile' && diagnostic.alias === DEFAULT_AGENT_PROFILE_NAME);
       throw new Error2(
         ErrorCodes.PROFILE_UNKNOWN,
-        `Default agent profile "${DEFAULT_AGENT_PROFILE_NAME}" is not available. Restore the shipped profile at <profile home>/agents/builtin/agent.md, keep a SYSTEM.md, or add your own agents/agent.md.`,
+        failure === undefined
+          ? `Default agent profile "${DEFAULT_AGENT_PROFILE_NAME}" is not available. Restore the shipped profile at <profile home>/agents/builtin/agent.md, keep a SYSTEM.md, or add your own agents/agent.md.`
+          : `Default agent profile "${DEFAULT_AGENT_PROFILE_NAME}" is unavailable: ${failure.message}`,
         { details: { profileName: DEFAULT_AGENT_PROFILE_NAME } },
       );
     }
@@ -201,7 +205,7 @@ export class SessionAgentProfileCatalogService
           (entry.contribution.skipped ?? []).filter((file) => {
             const stem = file.path.split(/[\\/]/).pop()?.replace(/\.md$/i, '').replaceAll('_', '-').toLowerCase();
             const invalidName = /Invalid agent name "([^"]+)"/.exec(file.reason)?.[1]?.replaceAll('_', '-').toLowerCase();
-            return stem === requested || invalidName === requested;
+            return file.profileName?.replaceAll('_', '-').toLowerCase() === requested || stem === requested || invalidName === requested;
           }),
         );
         const explanation = skipped.length > 0
@@ -277,6 +281,21 @@ export class SessionAgentProfileCatalogService
   async reload(): Promise<void> {
     await this.ready;
     if (this.reproject()) this.onDidChangeEmitter.fire('catalog');
+  }
+
+  async refreshSource(profile: AgentProfile): Promise<void> {
+    await this.ready;
+    const owner = this.inspect(profile.name);
+    if (owner?.profile.definitionId !== profile.definitionId || owner === undefined) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile source is unavailable for tool refresh');
+    }
+    try {
+      await this.registry.refreshSource(owner.sourceId, this.seed.workspaceKey, profile.sourcePath);
+      if (!this.reproject()) throw new Error('The current profile catalog could not be projected');
+    } catch (cause) {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'The current profile source could not be verified. No tool policy was applied.', { cause });
+    }
+    this.onDidChangeEmitter.fire(owner.sourceId);
   }
 
   private relevantEntries(): AgentProfileRegistration[] {

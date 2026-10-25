@@ -8,6 +8,7 @@
  */
 
 import { z } from 'zod';
+import { assistantStreamPartSchema } from '@kiki/protocol';
 
 import type { EventRegistration } from '../types.js';
 import { modelSwitchQueuedEventSchema, modelSwitchStatusEventSchema } from './modelSwitch.js';
@@ -105,7 +106,11 @@ export const assistantDeltaEventSchema = z.object({
   type: z.literal('assistant.delta'),
   time: z.number().optional(),
   turnId: z.number(),
+  step: z.number().optional(),
+  stepId: z.string().optional(),
+  partId: z.string().optional(),
   delta: z.string(),
+  part: assistantStreamPartSchema.optional(),
 });
 
 export const thinkingDeltaEventSchema = z.object({
@@ -253,6 +258,7 @@ export const compactionStartedEventSchema = z.object({
   time: z.number().optional(),
   trigger: z.enum(['manual', 'auto']),
   instruction: z.string().optional(),
+  phase: z.enum(['queued', 'running']).optional(),
 });
 
 export const compactionBlockedEventSchema = z.object({
@@ -264,6 +270,8 @@ export const compactionBlockedEventSchema = z.object({
 export const compactionCancelledEventSchema = z.object({
   type: z.literal('compaction.cancelled'),
   time: z.number().optional(),
+  trigger: z.enum(['manual', 'auto']).optional(),
+  reason: z.string().optional(),
 });
 
 /**
@@ -275,6 +283,7 @@ export const compactionCancelledEventSchema = z.object({
 export const compactionCompletedEventSchema = z.object({
   type: z.literal('compaction.completed'),
   time: z.number().optional(),
+  trigger: z.enum(['manual', 'auto']).optional(),
   result: z.object({
     summary: z.string(),
     compactedCount: z.number(),

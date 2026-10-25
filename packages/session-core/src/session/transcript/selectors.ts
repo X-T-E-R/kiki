@@ -4,6 +4,8 @@ import type { AgentTranscriptSnapshot, TranscriptItem } from '@kiki/transcript';
 import type { AgentTranscriptResponse } from '../../transport';
 import { MAIN_AGENT_ID, countToolBlocks, type AgentForest, type AgentTreeNode } from '../agentTree';
 import { isModelSwitchQueueId } from '../modelSwitchQueue';
+import { classifyTranscriptText, projectMessageContent } from './classify';
+import { normalizeTurnId } from './project';
 import { bump, type ApprovalBlock, type ApprovalResolution, type Block, type FloorEntry, type QueuedPromptPreview, type QuestionBlock, type QuestionOutcome, type SessionViewState, type SubagentBlock, type UserBlock } from './types';
 
 export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPromptPreview[] {
@@ -16,16 +18,39 @@ export function queuedPromptPreviews(state: SessionViewState): readonly QueuedPr
       (candidate): candidate is UserBlock => candidate.kind === 'user' && candidate.promptId === promptId,
     );
     const meta = state.queuedPromptMeta[promptId];
+    const scheduled = meta?.originKind === 'cron_job' ? projectMessageContent(meta.content ?? []) : undefined;
     return {
       promptId,
-      text: block?.text ?? '',
-      media: block?.media,
-      content: block?.queuedContent,
+      userMessageId: block?.userMessageId,
+      originKind: meta?.originKind,
+      cronDeliveryMode: meta?.cronDeliveryMode,
+      text: scheduled === undefined ? block?.text ?? '' : classifyTranscriptText({ text: scheduled.text, origin: { kind: 'cron_job' } }).text,
+      presentation: scheduled?.presentation ?? block?.presentation,
+      media: scheduled?.media ?? block?.media,
+      content: meta?.content ?? block?.queuedContent,
+      runtimeControls: meta?.runtimeControls ?? block?.runtimeControls,
       appendTiming: meta?.appendTiming ?? 'agent_idle',
       revision: meta?.revision,
       queuePosition: meta?.queuePosition,
     };
   });
+}
+
+/**
+ * Whether a queued prompt is one of the ordinary messages the queue strip
+ * speaks for: something the person typed, or a scheduled prompt set to queue
+ * (`queue`), which joins their send order. A cron record with no mode is a
+ * legacy admission that already sits in that order, so it counts too.
+ *
+ * `idle` and `steer` records are not: the engine holds them ahead of ordinary
+ * pending messages and the user never queued them here, so showing them among
+ * the user's own messages — in the pending count, in a drag handle, or behind
+ * Send now — would describe a send order they are not part of.
+ */
+export function isOrdinaryQueueItem(item: QueuedPromptPreview): boolean {
+  return item.originKind !== 'cron_job'
+    || item.cronDeliveryMode === undefined
+    || item.cronDeliveryMode === 'queue';
 }
 
 export function pendingApprovalCount(state: SessionViewState): number {
@@ -40,6 +65,64 @@ export function derivePendingInteraction(state: SessionViewState): SessionPendin
   if (pendingApprovalCount(state) > 0) return 'approval';
   if (pendingQuestionCount(state) > 0) return 'question';
   return 'none';
+}
+
+/**
+ * Work a session still reports after its last turn ended. `executing` is the
+ * session's own activity fact: real execution, not queued prompts and not a
+ * terminal task receipt. A host that does not report it is unknown, never idle.
+ */
+export type TurnReplyGapWork = 'running' | 'idle' | 'unknown';
+
+/**
+ * A turn that finished with nothing on the page to read — no prose, no media,
+ * no message. It completed, so it must not be presented as failed or stopped;
+ * it also must not leave the reader with silence.
+ */
+export interface TurnReplyGap {
+  readonly turnId: string;
+  readonly endedAt?: string;
+  readonly work: TurnReplyGapWork;
+}
+
+function turnLeftVisibleReply(blocks: readonly Block[], turn: string): boolean {
+  return blocks.some((block) => {
+    if (block.kind !== 'assistant' && block.kind !== 'message' && block.kind !== 'tool') return false;
+    if (normalizeTurnId(block.turnId) !== turn) return false;
+    if (block.kind === 'message') return true;
+    return (block.media?.length ?? 0) > 0 || (block.kind === 'assistant' && block.text.trim() !== '');
+  });
+}
+
+function turnReplyIsUnloaded(state: Pick<SessionViewState, 'blocks' | 'contentRefs'>, turn: string): boolean {
+  return state.contentRefs?.some((ref) => {
+    if (ref.source.kind === 'turn') return normalizeTurnId(ref.source.id) === turn && ref.path[0] === 'steps';
+    if (ref.source.kind !== 'frame' || ref.path[0] !== 'text') return false;
+    const source = ref.source;
+    return normalizeTurnId(source.turnId) === turn || state.blocks.some((block) =>
+      block.kind === 'assistant' && normalizeTurnId(block.turnId) === turn && block.frameId === source.id);
+  }) === true;
+}
+
+/**
+ * A completed turn without a reply, only after its transcript is loaded.
+ * `connected: false` keeps stale execution facts unknown rather than idle.
+ */
+export function turnReplyGap(
+  state: Pick<SessionViewState, 'blocks' | 'busy' | 'turnTail' | 'session' | 'loaded' | 'transcriptReady' | 'resyncing' | 'resyncFailed' | 'loadError' | 'contentRefs'>,
+  options: { readonly connected?: boolean } = {},
+): TurnReplyGap | undefined {
+  const tail = state.turnTail;
+  if (!state.loaded || !state.transcriptReady || state.resyncing || state.resyncFailed || state.loadError !== undefined) return undefined;
+  if (state.busy || tail === undefined || tail.state !== 'completed') return undefined;
+  const turn = normalizeTurnId(tail.turnId);
+  if (turn === undefined || turnLeftVisibleReply(state.blocks, turn) || turnReplyIsUnloaded(state, turn)) return undefined;
+  const executing = state.session?.executing;
+  return {
+    turnId: tail.turnId,
+    endedAt: tail.endedAt,
+    work: options.connected === false || executing === undefined ? 'unknown' : executing ? 'running' : 'idle',
+  };
 }
 
 export function subagentBlocksFromState(state: SessionViewState): readonly SubagentBlock[] {

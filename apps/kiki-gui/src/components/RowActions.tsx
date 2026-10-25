@@ -425,43 +425,106 @@ export function MessageRowActions({
   );
 }
 
+function sameAttachment(left: ComposerAttachment, right: ComposerAttachment): boolean {
+  if (left === right) return true;
+  if (left.kind === 'retained' && right.kind === 'retained') {
+    const a = left.content;
+    const b = right.content;
+    if (a === b) return true;
+    if (a.type !== b.type || left.name !== right.name) return false;
+    if (a.type === 'file') return b.type === 'file' && a.file_id === b.file_id;
+    if (b.type === 'file') return false;
+    const source = a.source;
+    const other = b.source;
+    switch (source.kind) {
+      case 'session_media': return other.kind === 'session_media' && source.file_id === other.file_id;
+      case 'file': return other.kind === 'file' && source.file_id === other.file_id;
+      case 'url': return other.kind === 'url' && source.url === other.url;
+      case 'base64': return other.kind === 'base64' && source.media_type === other.media_type && source.data === other.data;
+    }
+  }
+  if (left.kind === 'image' && right.kind === 'image') return left.name === right.name && left.mediaType === right.mediaType && left.size === right.size && left.data !== '' && left.data === right.data;
+  if (left.kind === 'file' && right.kind === 'file') return left.path === right.path && left.isDir === right.isDir;
+  if (left.kind === 'upload' && right.kind === 'upload') return left.fileId !== undefined && left.fileId === right.fileId;
+  if (left.kind === 'ssh' && right.kind === 'ssh') return left.id === right.id;
+  return false;
+}
+
+export function mergeLoadedAttachments(
+  current: readonly ComposerAttachment[],
+  loaded: readonly ComposerAttachment[],
+  initial: readonly ComposerAttachment[],
+): readonly ComposerAttachment[] {
+  const remaining = [...loaded];
+  const updated = current.map((item) => {
+    const index = remaining.findIndex((candidate) => sameAttachment(item, candidate));
+    if (index < 0) return item;
+    const match = remaining.splice(index, 1)[0]!;
+    if (item.kind === 'retained' && match.kind === 'retained') return { ...item, previewUrl: match.previewUrl ?? item.previewUrl };
+    if (item.kind === 'image' && match.kind === 'image') return { ...item, previewUrl: match.previewUrl ?? item.previewUrl };
+    return match;
+  });
+  const discovered = remaining.filter((item) => !initial.some((candidate) => sameAttachment(item, candidate)));
+  return [...discovered, ...updated];
+}
+
 /** Inline edit-resend with the same attachment pipeline as the main composer. */
 export function UserMessageEditor({
   initialText,
+  initialAttachments = [],
   loadAttachments,
   onSubmit,
   onCancel,
 }: {
   initialText: string;
-  loadAttachments?: () => Promise<readonly ComposerAttachment[]>;
+  initialAttachments?: readonly ComposerAttachment[];
+  loadAttachments?: (signal: AbortSignal) => Promise<readonly ComposerAttachment[]>;
   onSubmit: (text: string, attachments: readonly ComposerAttachment[], presentation?: import('@kiki/transcript').TextPresentation) => void | Promise<void>;
   onCancel: () => void;
 }) {
   const { t } = useI18n();
   const target = useTranscriptTarget();
   const [text, setText] = useState(initialText);
-  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>([]);
+  const [attachments, setAttachments] = useState<readonly ComposerAttachment[]>(initialAttachments);
   const [loading, setLoading] = useState(loadAttachments !== undefined);
   const [loadError, setLoadError] = useState(false);
   const [attempt, setAttempt] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const loaderRef = useRef(loadAttachments);
+  loaderRef.current = loadAttachments;
+  const initialRef = useRef(initialAttachments);
+
   useEffect(() => {
     const load = loaderRef.current;
-    if (load === undefined) return;
+    if (load === undefined) {
+      setLoading(false);
+      return;
+    }
     let active = true;
+    const abort = new AbortController();
     setLoading(true);
     setLoadError(false);
-    void load().then((media) => { if (active) setAttachments(media); })
+    void load(abort.signal).then((media) => {
+      if (active) {
+        setAttachments((current) => mergeLoadedAttachments(current, media, initialRef.current));
+      }
+    })
       .catch(() => { if (active) setLoadError(true); })
       .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
+    return () => { active = false; abort.abort(); };
   }, [attempt]);
+
   const cancel = () => { if (!submitting) onCancel(); };
   return (
-    <div data-edit-editor className="w-full max-w-[85%] rounded-2xl rounded-br-md border border-accent/40 bg-panel p-2">
+    // No card shell around the editor: the composer brings its own surface and
+    // the X beside its send button is where this edit ends, so an outer border,
+    // background and padding only drew a second frame around both.
+    <div data-edit-editor className="w-full max-w-[85%]">
       <Composer
-        busy={false} disabled={loading} sendDisabled={loadError}
+        busy={false}
+        disabled={submitting}
+        sendDisabled={loading || loadError || submitting}
+        sendDisabledTitle={loading ? t('preview.loading') : loadError ? t('preview.failed') : undefined}
         variant="subagent" messageEditing autoFocus
         sessionId={target?.sessionId} agentId={target?.agentId}
         value={text} onChange={setText}
@@ -477,11 +540,21 @@ export function UserMessageEditor({
           try { await onSubmit(body, media, options?.presentation); } finally { setSubmitting(false); }
         }}
       />
-      <div className="mt-2 flex items-center justify-between gap-3 px-1">
-        {loadError ? <button type="button" onClick={() => { setAttempt((value) => value + 1); }} className="text-[11px] text-danger">{t('preview.failed')} · {t('transcript.detail.retry')}</button> :
-          <span className="text-[11px] leading-snug text-ink-faint">{t('transcript.editAttachmentsNote')}</span>}
-        <button type="button" data-edit-cancel disabled={submitting} onClick={cancel} className="shrink-0 rounded-full border border-hairline px-2 py-0.5 text-[11px] text-ink-soft hover:border-hairline-strong disabled:opacity-40">{t('common.cancel')}</button>
-      </div>
+      {/* Only a failed attachment load leaves a line under the editor: the
+          retry that brings the original files back. The edit itself is
+          abandoned from the X in the composer's own row. */}
+      {loadError ? (
+        <div className="mt-2 flex items-center px-1">
+          <button
+            type="button"
+            data-edit-retry
+            onClick={() => { setAttempt((value) => value + 1); }}
+            className="cursor-pointer text-[11px] text-danger hover:underline"
+          >
+            {t('preview.failed')} · {t('transcript.detail.retry')}
+          </button>
+        </div>
+      ) : null}
     </div>
   );
 }

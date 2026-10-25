@@ -5,13 +5,20 @@ import { join } from 'node:path';
 import {
   AGENT_WIRE_RECORD_KEY,
   AgentProfileSourceDiagnosticCodes,
+  ensureMainAgent,
   IAgentExecutorRegistry,
   IAgentLifecycleService,
+  IAgentLoopService,
   IAgentProfileRegistry,
   IAgentProfileService,
+  IAgentPromptService,
   IAgentUsageService,
+  IUsageFactStore,
   IAppendLogStore,
+  IFileSystemStorageService,
   IConfigService,
+  IManagedAdapterService,
+  SOURCE_OWNED_ADAPTER_ROOT_ENV,
   ILogService,
   IModelService,
   ISessionAgentProfileCatalog,
@@ -25,6 +32,8 @@ import {
   normalizeAgentProfile,
   type AgentProfileCatalogSnapshot,
   type AgentProfileRegistration,
+  type AgentExecutorSession,
+  type ResolvedAgentExecutor,
 } from '@kiki/agent-core-v2';
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
@@ -32,6 +41,7 @@ import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/
 import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles';
 import { ErrorCode, listNamedAgentProfilesResponseSchema, agentCapabilitiesResponseSchema, listShippedAgentProfilesResponseSchema } from '@kiki/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createHooks } from '@kiki/agent-core-v2/hooks';
 import { createKlient } from '@kiki/klient/http';
 import { type RunningServer, startServer } from '../src/start';
 import { registerAgentProfilesRoute } from '../src/routes/agentProfiles';
@@ -54,6 +64,54 @@ interface Envelope<T> {
   msg: string;
   data: T;
   request_id: string;
+}
+
+function holdExternalSession(): { readonly session: {
+  run: () => Promise<{ agentId: string; completion: Promise<{ summary: string }>; turn: { id: number; signal: AbortSignal; ready: Promise<void>; result: Promise<unknown>; cancel: () => boolean } }>;
+  status: () => { state: 'idle' | 'running' };
+  cancel: () => boolean;
+  settled: () => Promise<void>;
+  shutdown: () => Promise<void>;
+  updateBinding: () => void;
+  hooks: ReturnType<typeof createHooks>;
+}; readonly finish: () => void } {
+  const pending: Array<() => void> = [];
+  let state: 'idle' | 'running' = 'idle';
+  const finish = (): void => {
+    state = 'idle';
+    for (const release of pending.splice(0)) release();
+  };
+  return {
+    finish,
+    session: {
+      run: async () => {
+        state = 'running';
+        const controller = new AbortController();
+        let release = (): void => {};
+        const result = new Promise((resolve) => {
+          release = () => resolve({ type: 'cancelled', steps: 0 });
+        });
+        pending.push(() => { state = 'idle'; release(); });
+        return {
+          agentId: 'main',
+          completion: result.then(() => ({ summary: '' })),
+          turn: {
+            id: 1,
+            signal: controller.signal,
+            ready: Promise.resolve(),
+            result,
+            cancel: () => { controller.abort(); state = 'idle'; release(); return true; },
+          },
+        };
+      },
+      status: () => ({ state }),
+      cancel: () => { finish(); return true; },
+      settled: async () => {},
+      shutdown: async () => { finish(); },
+      updateBinding: () => {},
+      hooks: createHooks(['onWillRun']),
+    },
+  };
 }
 
 describe('GET /api/agents', () => {
@@ -134,6 +192,81 @@ describe('GET /api/agents', () => {
       await klient.close();
     }
   });
+
+  it('selects a file profile across executors without registering or editing it', async () => {
+    const externalText = '---\nname: external-file\ndescription: External file\nexecutor: grok-acp\nmodel_alias: grok-raw\n---\nEXTERNAL_FILE\n';
+    const nativeText = '---\nname: native-file\ndescription: Native file\nmodel_alias: stub\n---\nNATIVE_FILE\n';
+    const externalPath = join(home!, 'external.md');
+    const nativePath = join(home!, 'native.md');
+    await writeFile(externalPath, externalText);
+    await writeFile(nativePath, nativeText);
+    await writeFile(join(home!, 'config.toml'), 'default_model = "stub"\n[providers.stub]\ntype = "openai"\nbase_url = "http://127.0.0.1:9999"\napi_key = "YOUR_API_KEY"\n[models.stub]\nprovider = "stub"\nmodel = "stub"\nmax_context_size = 1000\ncapabilities = ["thinking"]\nsupport_efforts = ["low", "high"]\ndefault_effort = "high"\n');
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code, created.msg).toBe(0);
+    const main = await ensureMainAgent(server.core.accessor.get(ISessionManager).get(created.data.id)!);
+    main.accessor.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-file-selection', async (ctx) => {
+      await new Promise<void>((resolve) => {
+        if (ctx.signal.aborted) resolve();
+        else ctx.signal.addEventListener('abort', () => resolve(), { once: true });
+      });
+      ctx.signal.throwIfAborted();
+    }, { before: 'context-injector' });
+    const executors = server.core.accessor.get(IAgentExecutorRegistry);
+    const resolve = executors.resolveExecutable.bind(executors);
+    const held = holdExternalSession();
+    const mocked = vi.spyOn(executors, 'resolveExecutable').mockImplementation(async (executorId, options): Promise<ResolvedAgentExecutor> => executorId === 'grok-acp'
+      ? {
+        descriptor: { ...executors.get(executorId)!, command: process.execPath, revision: 'fixture' },
+        options: executors.resolve(executorId, options ?? {}).options,
+        provider: {
+          id: 'fixture-acp', protocol: 'acp-v1',
+          validateOptions: (value) => value as Record<string, string | number | boolean>,
+          validateBinding: (binding) => ({ ok: true, binding }),
+          create: () => held.session as unknown as AgentExecutorSession,
+        },
+      }
+      : resolve(executorId, options));
+    const post = async (execution: { executor: string; profile_file: string }) => {
+      const response = await authedFetch(server!, base, `/api/sessions/${created.data.id}/prompts`, {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ content: [{ type: 'text', text: 'Select the file.' }], execution }),
+      });
+      return response.json() as Promise<Envelope<{ prompt_id: string }>>;
+    };
+    const registered = (name: string) => server!.core.accessor.get(IAgentProfileRegistry).entries()
+      .flatMap((entry) => entry.contribution.profiles).some((candidate) => candidate.name === name);
+    try {
+      const native = await post({ executor: 'native', profile_file: externalPath });
+      expect(native.code, native.msg).toBe(0);
+      expect(native.msg).not.toContain('Profile file does not use executor');
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({
+        executorId: 'native', modelAlias: 'stub', profileName: 'external-file',
+        execution: { selection: { executor: 'native' }, effective: { model: 'stub' }, sources: { model: 'harness-default' } },
+      });
+      main.accessor.get(IAgentPromptService).abort(native.data.prompt_id);
+      await vi.waitFor(() => expect(main.accessor.get(IAgentPromptService).list().active).toBeUndefined());
+      const external = await post({ executor: 'grok-acp', profile_file: nativePath });
+      expect(external.code, external.msg).toBe(0);
+      expect(main.accessor.get(IAgentProfileService).data()).toMatchObject({
+        executorId: 'grok-acp', profileName: 'native-file',
+        execution: { selection: { executor: 'grok-acp' }, sources: { model: 'harness-default' } },
+      });
+      expect(main.accessor.get(IAgentProfileService).data().modelAlias).toBeUndefined();
+      expect(await readFile(externalPath, 'utf8')).toBe(externalText);
+      expect(await readFile(nativePath, 'utf8')).toBe(nativeText);
+      expect(registered('external-file')).toBe(false);
+      expect(registered('native-file')).toBe(false);
+      main.accessor.get(IAgentPromptService).abort(external.data.prompt_id);
+    } finally {
+      held.finish();
+      mocked.mockRestore();
+    }
+  }, 60_000);
 
   it('saves and re-reads subagent tool settings without overriding global or parent restrictions', async () => {
     const configText = '[tools]\ndisabled = ["Bash"]\n';
@@ -406,6 +539,95 @@ describe('GET /api/agents', () => {
     expect((await unknown.json() as Envelope<unknown>).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
   });
 
+  it('installs and rolls back the selected source-owned adapter without changing executor config', async () => {
+    const adapterDir = join(home!, 'tools', 'agy-cli-adapter-909');
+    const script = join(adapterDir, 'agy-cli-acp.mjs');
+    await mkdir(adapterDir, { recursive: true });
+    await mkdir(join(adapterDir, 'audit'), { recursive: true });
+    await writeFile(script, 'export const legacy = "pre-mcp";\n');
+    await writeFile(join(adapterDir, 'agy-file-admission.mjs'), 'export const admission = true;\n');
+    await writeFile(join(adapterDir, 'agy-cli-audit-acp.mjs'), 'audit-copy\n');
+    await writeFile(join(adapterDir, 'audit', 'session.ndjson'), '{"keep":true}\n');
+    const scriptPath = script.replaceAll('\\', '/');
+    await writeFile(join(home!, 'config.toml'), [
+      '[agent_executors."agy-cli-909"]',
+      'protocol = "acp-v1"',
+      'args = []',
+      'source = "local-adapter"',
+      'supports_mcp = false',
+      '[agent_executors."agy-cli-909".env]',
+      'KEEP_ME = "retain-adapter-env"',
+      '[[agent_executors."agy-cli-909".sources]]',
+      'id = "local-adapter"',
+      'kind = "node-script"',
+      `path = "${scriptPath}"`,
+      '[agent_executors."not-owned"]',
+      'protocol = "acp-v1"',
+      'args = []',
+      'source = "path"',
+      '[[agent_executors."not-owned".sources]]',
+      'id = "path"',
+      'kind = "path-lookup"',
+      'command = "agy"',
+      '',
+    ].join('\n'));
+    const env = { ...process.env };
+    delete env[SOURCE_OWNED_ADAPTER_ROOT_ENV];
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', env });
+    base = `http://127.0.0.1:${server.port}`;
+    const missed = await authedFetch(server, base, '/api/executors/not-owned/install', { method: 'POST' });
+    expect((await missed.json() as Envelope<unknown>).code).toBe(ErrorCode.AGENT_PROFILE_NOT_FOUND);
+    expect(await readFile(script, 'utf8')).toBe('export const legacy = "pre-mcp";\n');
+
+    const installed = await authedFetch(server, base, '/api/executors/agy-cli-909/install', { method: 'POST' });
+    const body = await installed.json() as Envelope<{ release: { source: string; entry: string }; active?: { version: string } }>;
+    expect(body.code).toBe(0);
+    expect(body.data.release).toMatchObject({ source: 'bundled:external-harness', entry: 'agy-cli-acp.mjs' });
+    expect(body.data.active?.version).toBe('0.4.1');
+    expect(JSON.stringify(body.data)).not.toContain('supports_mcp');
+    const updated = await readFile(script, 'utf8');
+    const sourceEntry = await readFile(new URL('../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url), 'utf8');
+    expect(updated).toContain('registerMcpPlugin');
+    expect(updated).not.toContain('registerMcpAgent');
+    expect(updated).toContain('function readUrlTarget');
+    expect(updated).toContain('function safeDiagnosticLine');
+    expect(updated).toContain('permissionReceipt');
+    expect(updated).toContain('AGY exited before terminal result (code:');
+    expect(updated).toBe(sourceEntry);
+    expect(await readFile(join(adapterDir, 'agy-hook-registration.mjs'), 'utf8')).toBe(
+      await readFile(new URL('../../../scripts/external-harness/agy-hook-registration.mjs', import.meta.url), 'utf8'));
+    expect(await readFile(join(adapterDir, 'agy-permission-hook.mjs'), 'utf8')).toBe(
+      await readFile(new URL('../../../scripts/external-harness/agy-permission-hook.mjs', import.meta.url), 'utf8'));
+    const installedPlugin = await readFile(join(adapterDir, 'agy-mcp-plugin.mjs'), 'utf8');
+    expect(installedPlugin).toContain('registerProjectMcpPlugin');
+    expect(installedPlugin).toBe(await readFile(new URL('../../../scripts/external-harness/agy-mcp-plugin.mjs', import.meta.url), 'utf8'));
+    await expect(readFile(join(adapterDir, 'fixture-cli.mjs'))).rejects.toThrow();
+    expect(await readFile(join(adapterDir, 'agy-file-admission.mjs'), 'utf8')).toBe('export const admission = true;\n');
+    expect(await readFile(join(adapterDir, 'agy-cli-audit-acp.mjs'), 'utf8')).toBe('audit-copy\n');
+    expect(await readFile(join(adapterDir, 'audit', 'session.ndjson'), 'utf8')).toBe('{"keep":true}\n');
+    const executors = server.core.accessor.get(IConfigService).get<{
+      'agy-cli-909'?: { supportsMcp?: boolean; env?: Record<string, string> };
+    }>('agentExecutors');
+    expect(executors?.['agy-cli-909']?.supportsMcp).toBe(false);
+    expect(executors?.['agy-cli-909']?.env?.['KEEP_ME']).toBe('retain-adapter-env');
+    expect((await server.core.accessor.get(IManagedAdapterService).status('agy-cli-909')).supportsMcp).toBe(true);
+    const configText = await readFile(join(home!, 'config.toml'), 'utf8');
+    expect(configText).toContain('supports_mcp = false');
+    expect(configText).toContain('KEEP_ME = "retain-adapter-env"');
+
+    const rolled = await authedFetch(server, base, '/api/executors/agy-cli-909/rollback', { method: 'POST' });
+    expect((await rolled.json() as Envelope<unknown>).code).toBe(0);
+    expect(await readFile(script, 'utf8')).toBe('export const legacy = "pre-mcp";\n');
+    await expect(readFile(join(adapterDir, 'agy-hook-registration.mjs'))).rejects.toThrow();
+    await expect(readFile(join(adapterDir, 'agy-permission-hook.mjs'))).rejects.toThrow();
+    await expect(readFile(join(adapterDir, 'agy-mcp-plugin.mjs'))).rejects.toThrow();
+    expect(await readFile(join(adapterDir, 'agy-file-admission.mjs'), 'utf8')).toBe('export const admission = true;\n');
+    expect(await readFile(join(adapterDir, 'audit', 'session.ndjson'), 'utf8')).toBe('{"keep":true}\n');
+    expect(server.core.accessor.get(IConfigService).get<{
+      'agy-cli-909'?: { supportsMcp?: boolean };
+    }>('agentExecutors')?.['agy-cli-909']?.supportsMcp).toBe(false);
+  });
+
   it('previews user profiles before any workspace exists and binds them in an automatic workspace', async () => {
     await writeFile(join(home!, 'config.toml'), [
       'default_model = "stub"', '[providers.stub]', 'type = "openai"',
@@ -589,7 +811,7 @@ describe('GET /api/agents', () => {
       const catalog = await client.rest!.executors.list();
       expect(catalog.items.map((item) => item.id)).toEqual(registry.list().map((item) => item.id));
       expect(catalog.items.find((item) => item.id === 'native')?.status).toBe('ready');
-      expect(catalog.items.filter((item) => item.id !== 'native').every((item) => item.status === 'unknown' && item.connection?.login_status === 'unknown')).toBe(true);
+      expect(catalog.items.filter((item) => item.id !== 'native').every((item) => item.status === 'unknown' && item.connection?.login_status === 'unknown' && item.check_status === undefined && item.checked_at === undefined)).toBe(true);
       const detail = await (await authedFetch(server, base, '/api/executors/example', { signal: AbortSignal.timeout(1000) })).json() as Envelope<unknown>;
       expect(detail.data).toMatchObject({ id: 'example', status: 'unknown', connection: { login_status: 'unknown' } });
       expect(discovery).not.toHaveBeenCalled();
@@ -600,8 +822,9 @@ describe('GET /api/agents', () => {
       const checked = await (await authedFetch(server, base, '/api/executors/example/check', { method: 'POST', signal: AbortSignal.timeout(1000) })).json() as Envelope<unknown>;
       expect(checked.data).toMatchObject({ id: 'example', status: 'warning', selected_source: 'pinned', version: '2.0', login_status: 'unknown' });
       const updated = await client.rest!.executors.list();
-      expect(updated.items.find((item) => item.id === 'example')).toMatchObject({ status: 'ready', version: '2.0', connection: { command: '/fixture/pinned', source: 'pinned', login_status: 'unknown' } });
-      expect(updated.items.filter((item) => !['native', 'example'].includes(item.id)).every((item) => item.status === 'unknown')).toBe(true);
+      expect(updated.items.find((item) => item.id === 'example')).toMatchObject({ status: 'ready', check_status: 'warning', check_stale: false, version: '2.0', connection: { command: '/fixture/pinned', source: 'pinned', login_status: 'unknown' } });
+      expect(updated.items.find((item) => item.id === 'example')?.checked_at).toEqual(expect.any(String));
+      expect(updated.items.filter((item) => !['native', 'example'].includes(item.id)).every((item) => item.status === 'unknown' && item.check_status === undefined)).toBe(true);
       expect(discovery.mock.calls).toEqual([['example']]);
       discovery.mockResolvedValueOnce([]);
       await authedFetch(server, base, '/api/executors/example/check', { method: 'POST', signal: AbortSignal.timeout(1000) });
@@ -744,15 +967,15 @@ describe('GET /api/agents', () => {
     expect(first?.catalog).toBe(cached?.catalog);
     expect(info).toHaveBeenCalledWith('workspace profile catalog acquisition completed',
       expect.objectContaining({ cache_state: 'hit', outcome: 'ready', duration_ms: expect.any(Number) }));
-    first?.dispose();
-    second?.dispose();
-    cached?.dispose();
+    await first?.dispose();
+    await second?.dispose();
+    await cached?.dispose();
     const manager = server.core.accessor.get(IWorkspaceInstanceManager);
     expect(manager.referenceCount(first!.workspaceId)).toBe(0);
     await manager.close(first!.workspaceId);
     const reopened = await acquireWorkspaceProfileCatalog(server.core, { cwd: home! });
     expect(reopened?.catalog).not.toBe(first?.catalog);
-    reopened?.dispose();
+    await reopened?.dispose();
   });
 
   it.each(['---\ndescription: Custom default\npreferred_subagents: [explore]\n---\nCustom upgraded prompt.'])('keeps SYSTEM main profiles available when subagent discovery is disabled: %s', async (text) => {
@@ -840,7 +1063,7 @@ describe('GET /api/agents', () => {
       'default_model = "stub"',
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
-      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
@@ -871,9 +1094,9 @@ describe('GET /api/agents', () => {
       'default_model = "stub"', '[subagent]', 'subagent_dispatch_policy = "advisory"',
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"',
-      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'max_context_size = 1000', 'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
       '[models.stub-alt]', 'provider = "stub"', 'model = "stub-alt"', 'max_context_size = 1000',
-      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]',
+      'capabilities = ["thinking"]', 'support_efforts = ["low", "high"]', 'default_effort = "high"',
     ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
@@ -962,29 +1185,28 @@ describe('GET /api/agents', () => {
     };
 
     const liveDefault = await readTools();
-    expect(liveDefault.find((tool) => tool.name === 'BoardRead')?.state).toBe('disabled');
-    expect(liveDefault.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(liveDefault.find((tool) => tool.name === 'BoardRead')).toBeUndefined();
+    expect(liveDefault.find((tool) => tool.name === 'BoardWrite')).toBeUndefined();
     expect(liveDefault.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
     expect(liveDefault.find((tool) => tool.name === 'Read')?.state).toBe('enabled');
 
     await lifecycle.remove('child-optin');
     const snapshot = await readTools();
-    expect(snapshot.find((tool) => tool.name === 'BoardRead')?.state).toBe('disabled');
-    expect(snapshot.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(snapshot.find((tool) => tool.name === 'BoardRead')).toBeUndefined();
+    expect(snapshot.find((tool) => tool.name === 'BoardWrite')).toBeUndefined();
     expect(snapshot.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
     expect(snapshot.find((tool) => tool.name === 'Read')?.state).toBe('unknown');
   });
 
-  it.each(['server', 'profile'] as const)('allows child BoardRead through %s opt-in on the live and snapshot paths', async (optIn) => {
+  it('does not materialize BoardRead when server still names it', async () => {
     await mkdir(join(home!, 'agents'), { recursive: true });
     await writeFile(join(home!, 'agents', 'board-reader.md'), [
       '---', 'name: board-reader', 'description: Board reader',
-      ...(optIn === 'profile' ? ['tools: [Read, BoardRead]'] : []),
       '---', 'Read authorized board cards.',
     ].join('\n'));
     await writeFile(join(home!, 'config.toml'), [
       'default_model = "stub"',
-      '[subagent]', `allowed_tools = ${optIn === 'server' ? '["BoardRead"]' : '[]'}`,
+      '[subagent]', 'allowed_tools = ["BoardRead"]',
       '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
       'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
     ].join('\n'));
@@ -1010,15 +1232,50 @@ describe('GET /api/agents', () => {
       return agentCapabilitiesResponseSchema.parse(body.data).tools ?? [];
     };
     const live = await readTools();
-    expect(live.find((tool) => tool.name === 'BoardRead')?.state).toBe('enabled');
-    expect(live.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(live.find((tool) => tool.name === 'BoardRead')).toBeUndefined();
+    expect(live.find((tool) => tool.name === 'BoardWrite')).toBeUndefined();
     expect(live.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
 
     await lifecycle.remove('child-allowed');
     const snapshot = await readTools();
-    expect(snapshot.find((tool) => tool.name === 'BoardRead')?.state).toBe('unknown');
-    expect(snapshot.find((tool) => tool.name === 'BoardWrite')?.state).toBe('disabled');
+    expect(snapshot.find((tool) => tool.name === 'BoardRead')).toBeUndefined();
+    expect(snapshot.find((tool) => tool.name === 'BoardWrite')).toBeUndefined();
     expect(snapshot.find((tool) => tool.name === 'AskUserQuestion')?.state).toBe('disabled');
+  });
+
+  it('rejects an explicit new profile that names an unregistered tool', async () => {
+    await mkdir(join(home!, 'agents'), { recursive: true });
+    await writeFile(join(home!, 'agents', 'board-reader.md'), [
+      '---', 'name: board-reader', 'description: Board reader',
+      'tools: [Read, BoardRead]',
+      '---', 'Read authorized board cards.',
+    ].join('\n'));
+    await writeFile(join(home!, 'config.toml'), [
+      'default_model = "stub"',
+      '[providers.stub]', 'type = "openai"', 'base_url = "http://127.0.0.1:9999"',
+      'api_key = "YOUR_API_KEY"', '[models.stub]', 'provider = "stub"', 'model = "stub"', 'max_context_size = 1000',
+    ].join('\n'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    await server.core.accessor.get(IWorkspaceService).createOrTouch(home!);
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { profile: 'agent', model: 'stub' } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code).toBe(0);
+    const session = server.core.accessor.get(ISessionManager).get(created.data.id)!;
+    const lifecycle = session.accessor.get(IAgentLifecycleService);
+    await expect(lifecycle.create({
+      agentId: 'child-named',
+      delegator: { kind: 'agent', agentId: 'main' },
+      binding: { profile: 'board-reader', model: 'stub' },
+    })).rejects.toThrow(/Tool pattern "BoardRead".*never activate/);
+    const main = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
+    const body = await main.json() as Envelope<unknown>;
+    expect(body.code).toBe(0);
+    const tools = agentCapabilitiesResponseSchema.parse(body.data).tools ?? [];
+    expect(tools.find((tool) => tool.name === 'BoardRead')).toBeUndefined();
+    expect(tools.find((tool) => tool.name === 'Read')).toBeDefined();
   });
 
   it('writes the winning SYSTEM source rather than a same-name user file and refreshes draft capabilities', async () => {
@@ -1215,14 +1472,14 @@ describe('GET /api/agents', () => {
       for (const name of ['hidden-helper', 'explore', 'general']) expect(description).not.toContain(`- ${name}:`);
       expect(JSON.stringify(body.data)).not.toMatch(/PRIVATE_PROMPT|_private|sourceDefinitionId|YOUR_API_KEY/);
       expect(lifecycle.list()).toHaveLength(1);
-      registration.dispose();
+      await registration.dispose();
       const after = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
       const afterBody = await after.json() as Envelope<typeof body.data>;
       expect(afterBody.code).toBe(0);
       expect(afterBody.data.targets.map((target) => target.route ?? target.profile).toSorted()).toEqual(['explore', 'general']);
       expect(tool.description).toBe(description);
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -1273,6 +1530,15 @@ describe('GET /api/agents', () => {
       usage.record('unpriced-fixture-model', { inputOther: 10, inputCacheRead: 3, inputCacheCreation: 2, output: 5 }, undefined, { usageKnown: true });
       expect((await read()).metrics?.['main']).toMatchObject({ inputTokens: 15, totalTokens: 20, totalCostUsd: null });
       usage.record('unpriced-fixture-model', { inputOther: 0, inputCacheRead: 0, inputCacheCreation: 0, output: 0 }, undefined, { usageKnown: false });
+      const sourceRead = vi.spyOn(server.core.accessor.get(IFileSystemStorageService), 'readStream');
+      const narrow = await read(`session_id=${created.data.id}&agent_id=main&metrics_only=true&metrics_settle=true&metrics_agent_ids=main`);
+      expect(narrow.metrics?.['main']).toMatchObject({ totalTokens: 20, usageComplete: true, usagePartial: true, costPartial: true });
+      expect(narrow.profile).toBeUndefined();
+      expect(narrow.prompt).toBeUndefined();
+      expect(narrow.tools).toBeUndefined();
+      expect(narrow.targets).toEqual([]);
+      expect(sourceRead).not.toHaveBeenCalled();
+      sourceRead.mockRestore();
       const plan = agent.accessor.get(IAgentPlanService);
       await plan.enter();
       const launch = vi.spyOn(dispatch, 'launch');
@@ -1321,7 +1587,7 @@ describe('GET /api/agents', () => {
       expect(lifecycle.list()).toHaveLength(1);
     } finally {
       vi.restoreAllMocks();
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -2063,7 +2329,7 @@ describe('GET /api/agents', () => {
     expect(server.core.accessor.get(ISessionManager).list()).toHaveLength(0);
 
     const response = await authedFetch(server, base, '/api/agents');
-    registration.dispose();
+    await registration.dispose();
     expect(response.status).toBe(200);
     const body = (await response.json()) as Envelope<unknown>;
     const data = listNamedAgentProfilesResponseSchema.parse(body.data);
@@ -2163,7 +2429,7 @@ describe('GET /api/agents', () => {
       expect(caps.code).toBe(0);
       expect(caps.data.targets.map((target) => target.profile)).toContain('helper');
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -2433,7 +2699,7 @@ describe('GET /api/agents', () => {
     expect(text.trimEnd().endsWith('Lead the team.')).toBe(true);
   });
 
-  it('reads only the selected agent wire when restoring persisted usage after restart', async () => {
+  it('settles only the selected agent persisted usage after restart without rereading wire', async () => {
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -2473,18 +2739,27 @@ describe('GET /api/agents', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
     const wireRead = vi.spyOn(server.core.accessor.get(IAppendLogStore), 'read');
-    const restored = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`);
+    const summaryRead = vi.spyOn(server.core.accessor.get(IUsageFactStore), 'summary');
+    const initial = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main&metrics_only=true`);
+    const initialData = agentCapabilitiesResponseSchema.parse((await initial.json() as Envelope<unknown>).data);
+    expect(initialData.metrics?.['main']).toMatchObject({ inputTokens: null, outputTokens: null, totalTokens: null, usageComplete: false });
+    expect(summaryRead).not.toHaveBeenCalled();
+    expect(wireRead).not.toHaveBeenCalled();
+    const restored = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main&metrics_settle=true`);
     const data = agentCapabilitiesResponseSchema.parse((await restored.json() as Envelope<unknown>).data);
     expect(data.metrics?.['main']).toMatchObject({ totalTokens: 15, inputTokens: 10, outputTokens: 5, usagePartial: true, costPartial: true, usageSource: 'persisted' });
     expect(data.metrics?.['agent-7']).toBeUndefined();
-    const scannedScopes = wireRead.mock.calls.filter(([_scope, key]) => key === AGENT_WIRE_RECORD_KEY)
-      .map(([scope]) => scope);
-    expect(scannedScopes.length).toBeGreaterThan(0);
-    expect(scannedScopes.every((scope) => scope.includes('main'))).toBe(true);
-    wireRead.mockClear();
-    const childResponse = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=agent-7`);
+    expect(summaryRead).toHaveBeenCalled();
+    expect(summaryRead.mock.calls.every(([scope]) => scope.endsWith('/agents/main'))).toBe(true);
+    expect(wireRead.mock.calls.filter(([, key]) => key === AGENT_WIRE_RECORD_KEY)).toEqual([]);
+    summaryRead.mockClear();
+    const childResponse = await authedFetch(server, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=agent-7&metrics_settle=true`);
     const childData = agentCapabilitiesResponseSchema.parse((await childResponse.json() as Envelope<unknown>).data);
     expect(childData.metrics?.['agent-7']).toMatchObject({ totalTokens: 35, inputTokens: 25, outputTokens: 10, usagePartial: false, usageSource: 'persisted' });
+    expect(childData.metrics?.['main']).toBeUndefined();
+    expect(summaryRead).toHaveBeenCalled();
+    expect(summaryRead.mock.calls.every(([scope]) => scope.endsWith('/agents/agent-7'))).toBe(true);
+    expect(wireRead.mock.calls.filter(([, key]) => key === AGENT_WIRE_RECORD_KEY)).toEqual([]);
   });
 });
 

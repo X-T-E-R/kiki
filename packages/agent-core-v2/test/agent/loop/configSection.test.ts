@@ -14,6 +14,33 @@ function load(text: string) {
 }
 
 describe('loop control TOML adapter', () => {
+  it('defaults thinking-only continuation on and preserves an explicit TOML off choice', () => {
+    expect(registry.defaultValue(LOOP_CONTROL_SECTION)).toMatchObject({ thinkingOnlyContinuation: true });
+    const value = load('[loop_control]\nthinking_only_continuation = false\n');
+    expect(value.thinkingOnlyContinuation).toBe(false);
+    const raw: Record<string, unknown> = {};
+    applySectionToToml(raw, LOOP_CONTROL_SECTION, value, registry);
+    expect(raw['loop_control']).toMatchObject({ thinking_only_continuation: false });
+    expect(load(stringify(raw))).toEqual(value);
+  });
+
+  it('defaults zero-output continuation off and round-trips an explicit choice', () => {
+    expect(registry.defaultValue(LOOP_CONTROL_SECTION)).toMatchObject({
+      zeroOutputContinuation: false,
+      thinkingOnlyContinuation: true,
+    });
+    const omitted = load('[loop_control]\n');
+    expect(omitted.zeroOutputContinuation).toBeUndefined();
+    for (const enabled of [false, true]) {
+      const value = load(`[loop_control]\nzero_output_continuation = ${enabled}\n`);
+      expect(value.zeroOutputContinuation).toBe(enabled);
+      const raw: Record<string, unknown> = {};
+      applySectionToToml(raw, LOOP_CONTROL_SECTION, value, registry);
+      expect(raw['loop_control']).toMatchObject({ zero_output_continuation: enabled });
+      expect(load(stringify(raw))).toEqual(value);
+    }
+  });
+
   it('round-trips every cadence field and adjacent loop settings in their real TOML shape', () => {
     const value = load('[loop_control]\nmax_steps_per_turn = 0\nmax_attempts_per_step = 3\nmax_ralph_iterations = -1\nreserved_context_size = 2048\ncontext_strategy = "fresh"\nsubagent_context_strategy = "auto"\nrelay_shadow = false\nauto_compact = "85%"\ncompaction_trigger_ratio = 0.8\ncompaction_max_attempts = 2\ncompaction_soft_context_size = 4096\n[loop_control.continuity_cadence]\nage_human_turns = 7\ncooldown_human_turns = 9\nlong_task_steps = 25\nmemory_maintenance = false\n[loop_control.directive_cues]\ninstructions = ["retain_rules"]\nhistory = ["review_history"]\n');
     expect(value.continuityCadence).toEqual({ ageHumanTurns: 7, cooldownHumanTurns: 9, longTaskSteps: 25, memoryMaintenance: false });

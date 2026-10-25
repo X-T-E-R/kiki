@@ -1,0 +1,723 @@
+{
+  "sessionId": "session_vertical",
+  "agentId": "main",
+  "ops": [
+    {
+      "op": "meta.merge",
+      "meta": {
+        "agent": {
+          "model": "mock-model",
+          "thinkingEffort": "off"
+        }
+      }
+    },
+    {
+      "op": "turn.upsert",
+      "turn": {
+        "kind": "turn",
+        "turnId": "t4",
+        "ordinal": 4,
+        "state": "running",
+        "origin": {
+          "kind": "user",
+          "payload": {
+            "kind": "user"
+          }
+        },
+        "promptId": "prompt-1",
+        "message": {
+          "messageId": "prompt-1",
+          "role": "user",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "prompt": "work",
+        "startedAt": "2026-10-14T02:02:38.154Z"
+      }
+    },
+    {
+      "op": "meta.merge",
+      "meta": {
+        "activity": "turn",
+        "agent": {
+          "phase": {
+            "kind": "running",
+            "turnId": 4,
+            "step": 0,
+            "stepId": "",
+            "since": 1791943358154
+          }
+        }
+      }
+    },
+    {
+      "op": "turn.upsert",
+      "turn": {
+        "kind": "turn",
+        "turnId": "t4",
+        "ordinal": 4,
+        "state": "running",
+        "origin": {
+          "kind": "user",
+          "payload": {
+            "kind": "user"
+          }
+        },
+        "promptId": "prompt-1",
+        "message": {
+          "messageId": "prompt-1",
+          "role": "user",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "prompt": "work",
+        "startedAt": "2026-10-14T02:02:38.154Z"
+      }
+    },
+    {
+      "op": "step.upsert",
+      "turnId": "t4",
+      "step": {
+        "kind": "step",
+        "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+        "turnId": "t4",
+        "ordinal": 1,
+        "state": "running",
+        "startedAt": "2026-10-14T02:02:38.158Z"
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "text",
+        "frameId": "preamble",
+        "part": {
+          "partId": "preamble",
+          "messageId": "preamble",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "role": "user",
+        "text": "[Kiki mem",
+        "origin": {
+          "kind": "unknown"
+        },
+        "delivery": {
+          "deliveryId": "dlv_01M4W2BDPHMP78KNP12N29NMYH",
+          "messageId": "preamble",
+          "turnId": "t4",
+          "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "step": 1,
+          "deliveredAt": "2026-10-14T02:02:38.162Z",
+          "origin": "queue"
+        }
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "text",
+        "frameId": "preamble",
+        "part": {
+          "partId": "preamble",
+          "messageId": "preamble",
+          "revision": 1,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "role": "user",
+        "text": "[Kiki memory]\nremember this",
+        "origin": {
+          "kind": "injection",
+          "variant": "memory",
+          "ownerPromptId": "prompt-1"
+        },
+        "delivery": {
+          "deliveryId": "dlv_01M4W2BDPHMP78KNP12N29NMYH",
+          "messageId": "preamble",
+          "turnId": "t4",
+          "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "step": 1,
+          "deliveredAt": "2026-10-14T02:02:38.162Z",
+          "origin": "queue"
+        }
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "thinking",
+        "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:0",
+        "part": {
+          "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:0",
+          "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "recordedStepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+        "text": "planning"
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "tool",
+        "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc.external:session_vertical:read-1",
+        "part": {
+          "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:tool:read-1",
+          "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "toolCallId": "external:session_vertical:read-1",
+        "name": "Read",
+        "state": "running",
+        "display": {
+          "kind": "generic",
+          "summary": "Read",
+          "detail": {}
+        },
+        "startedAt": "2026-10-14T02:02:38.167Z"
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "tool",
+        "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc.external:session_vertical:read-1",
+        "part": {
+          "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:tool:read-1",
+          "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "toolCallId": "external:session_vertical:read-1",
+        "name": "Read",
+        "state": "running",
+        "display": {
+          "kind": "generic",
+          "summary": "Read"
+        },
+        "startedAt": "2026-10-14T02:02:38.167Z",
+        "output": {
+          "kind": "external_tool_output",
+          "protocol": "acp-v1",
+          "remoteSessionId": "session_vertical",
+          "remoteToolCallId": "read-1",
+          "title": "Read",
+          "syntheticLabel": false,
+          "status": "pending",
+          "text": "",
+          "media": []
+        },
+        "progress": {
+          "kind": "status",
+          "text": "pending"
+        }
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "place": "safety_boundary",
+      "frameIndex": 1,
+      "frame": {
+        "kind": "text",
+        "frameId": "echo",
+        "part": {
+          "partId": "echo",
+          "messageId": "echo",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "role": "user",
+        "text": "[Kiki memory]\nremember this",
+        "origin": {
+          "kind": "injection",
+          "variant": "memory",
+          "ownerPromptId": "prompt-1"
+        },
+        "delivery": {
+          "deliveryId": "dlv_01M4W2BDPRE1FJA75JNSPCHHHX",
+          "messageId": "echo",
+          "turnId": "t4",
+          "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "step": 1,
+          "deliveredAt": "2026-10-14T02:02:38.168Z",
+          "origin": "injection"
+        }
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "thinking",
+        "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:1",
+        "part": {
+          "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:1",
+          "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "recordedStepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+        "text": "later"
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "place": "safety_boundary",
+      "frameIndex": 1,
+      "frame": {
+        "kind": "text",
+        "frameId": "echo",
+        "part": {
+          "partId": "echo",
+          "messageId": "echo",
+          "revision": 1,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "role": "user",
+        "text": "[Kiki memory]\nremember this TAILMARK",
+        "origin": {
+          "kind": "injection",
+          "variant": "memory",
+          "ownerPromptId": "prompt-1"
+        },
+        "delivery": {
+          "deliveryId": "dlv_01M4W2BDPRE1FJA75JNSPCHHHX",
+          "messageId": "echo",
+          "turnId": "t4",
+          "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "step": 1,
+          "deliveredAt": "2026-10-14T02:02:38.168Z",
+          "origin": "injection"
+        }
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "text",
+        "frameId": "after",
+        "part": {
+          "partId": "after",
+          "messageId": "after",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "role": "user",
+        "text": "brand new after tool",
+        "origin": {
+          "kind": "unknown"
+        },
+        "delivery": {
+          "deliveryId": "dlv_01M4W2BDPSY46DHM3KWP1471ZB",
+          "messageId": "after",
+          "turnId": "t4",
+          "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "step": 1,
+          "deliveredAt": "2026-10-14T02:02:38.169Z",
+          "origin": "queue"
+        }
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "tool",
+        "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc.external:session_vertical:read-1",
+        "part": {
+          "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:tool:read-1",
+          "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "toolCallId": "external:session_vertical:read-1",
+        "name": "Read",
+        "state": "done",
+        "display": {
+          "kind": "generic",
+          "summary": "Read"
+        },
+        "startedAt": "2026-10-14T02:02:38.167Z",
+        "output": "",
+        "endedAt": "2026-10-14T02:02:38.170Z",
+        "progress": {
+          "kind": "status",
+          "text": "pending"
+        }
+      }
+    },
+    {
+      "op": "frame.upsert",
+      "turnId": "t4",
+      "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+      "frame": {
+        "kind": "tool",
+        "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc.external:session_vertical:read-1",
+        "part": {
+          "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:tool:read-1",
+          "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "toolCallId": "external:session_vertical:read-1",
+        "name": "Read",
+        "state": "interrupted",
+        "display": {
+          "kind": "generic",
+          "summary": "Read"
+        },
+        "startedAt": "2026-10-14T02:02:38.167Z",
+        "output": {
+          "kind": "external_tool_output",
+          "protocol": "acp-v1",
+          "remoteSessionId": "session_vertical",
+          "remoteToolCallId": "read-1",
+          "title": "Read",
+          "syntheticLabel": false,
+          "status": "pending",
+          "text": "",
+          "media": [],
+          "synthetic": false
+        },
+        "endedAt": "2026-10-14T02:02:38.170Z",
+        "progress": {
+          "kind": "status",
+          "text": "pending"
+        }
+      }
+    },
+    {
+      "op": "step.upsert",
+      "turnId": "t4",
+      "step": {
+        "kind": "step",
+        "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+        "turnId": "t4",
+        "ordinal": 1,
+        "state": "completed",
+        "startedAt": "2026-10-14T02:02:38.158Z",
+        "endedAt": "2026-10-14T02:02:38.179Z",
+        "finishReason": "end_turn",
+        "timing": {}
+      }
+    },
+    {
+      "op": "turn.upsert",
+      "turn": {
+        "kind": "turn",
+        "turnId": "t4",
+        "ordinal": 4,
+        "state": "completed",
+        "origin": {
+          "kind": "user",
+          "payload": {
+            "kind": "user"
+          }
+        },
+        "promptId": "prompt-1",
+        "message": {
+          "messageId": "prompt-1",
+          "role": "user",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "prompt": "work",
+        "startedAt": "2026-10-14T02:02:38.154Z",
+        "endedAt": "2026-10-14T02:02:38.180Z",
+        "execution": {
+          "executorId": "example-acp",
+          "protocol": "acp-v1",
+          "resumeMode": "new",
+          "profileDelivery": "native",
+          "fidelity": "degraded",
+          "losses": [
+            "tool_input_partial"
+          ]
+        }
+      }
+    },
+    {
+      "op": "meta.merge",
+      "meta": {
+        "activity": "idle",
+        "agent": {
+          "phase": {
+            "kind": "ended",
+            "turnId": 4,
+            "reason": "completed",
+            "at": 1791943358180
+          }
+        }
+      }
+    }
+  ],
+  "snapshot": {
+    "items": [
+      {
+        "kind": "turn",
+        "turnId": "t4",
+        "ordinal": 4,
+        "state": "completed",
+        "origin": {
+          "kind": "user",
+          "payload": {
+            "kind": "user"
+          }
+        },
+        "promptId": "prompt-1",
+        "message": {
+          "messageId": "prompt-1",
+          "role": "user",
+          "revision": 0,
+          "provenance": {
+            "source": "engine"
+          }
+        },
+        "prompt": "work",
+        "startedAt": "2026-10-14T02:02:38.154Z",
+        "endedAt": "2026-10-14T02:02:38.180Z",
+        "execution": {
+          "executorId": "example-acp",
+          "protocol": "acp-v1",
+          "resumeMode": "new",
+          "profileDelivery": "native",
+          "fidelity": "degraded",
+          "losses": [
+            "tool_input_partial"
+          ]
+        },
+        "steps": [
+          {
+            "kind": "step",
+            "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+            "turnId": "t4",
+            "ordinal": 1,
+            "state": "completed",
+            "startedAt": "2026-10-14T02:02:38.158Z",
+            "endedAt": "2026-10-14T02:02:38.179Z",
+            "finishReason": "end_turn",
+            "timing": {},
+            "frames": [
+              {
+                "kind": "text",
+                "frameId": "preamble",
+                "part": {
+                  "partId": "preamble",
+                  "messageId": "preamble",
+                  "revision": 1,
+                  "provenance": {
+                    "source": "engine"
+                  }
+                },
+                "role": "user",
+                "text": "[Kiki memory]\nremember this",
+                "origin": {
+                  "kind": "injection",
+                  "variant": "memory",
+                  "ownerPromptId": "prompt-1"
+                },
+                "delivery": {
+                  "deliveryId": "dlv_01M4W2BDPHMP78KNP12N29NMYH",
+                  "messageId": "preamble",
+                  "turnId": "t4",
+                  "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                  "step": 1,
+                  "deliveredAt": "2026-10-14T02:02:38.162Z",
+                  "origin": "queue"
+                }
+              },
+              {
+                "kind": "text",
+                "frameId": "echo",
+                "part": {
+                  "partId": "echo",
+                  "messageId": "echo",
+                  "revision": 1,
+                  "provenance": {
+                    "source": "engine"
+                  }
+                },
+                "role": "user",
+                "text": "[Kiki memory]\nremember this TAILMARK",
+                "origin": {
+                  "kind": "injection",
+                  "variant": "memory",
+                  "ownerPromptId": "prompt-1"
+                },
+                "delivery": {
+                  "deliveryId": "dlv_01M4W2BDPRE1FJA75JNSPCHHHX",
+                  "messageId": "echo",
+                  "turnId": "t4",
+                  "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                  "step": 1,
+                  "deliveredAt": "2026-10-14T02:02:38.168Z",
+                  "origin": "injection"
+                }
+              },
+              {
+                "kind": "thinking",
+                "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:0",
+                "part": {
+                  "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:0",
+                  "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                  "revision": 0,
+                  "provenance": {
+                    "source": "engine"
+                  }
+                },
+                "recordedStepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                "text": "planning"
+              },
+              {
+                "kind": "tool",
+                "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc.external:session_vertical:read-1",
+                "part": {
+                  "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:tool:read-1",
+                  "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                  "revision": 0,
+                  "provenance": {
+                    "source": "engine"
+                  }
+                },
+                "toolCallId": "external:session_vertical:read-1",
+                "name": "Read",
+                "state": "interrupted",
+                "display": {
+                  "kind": "generic",
+                  "summary": "Read"
+                },
+                "startedAt": "2026-10-14T02:02:38.167Z",
+                "output": {
+                  "kind": "external_tool_output",
+                  "protocol": "acp-v1",
+                  "remoteSessionId": "session_vertical",
+                  "remoteToolCallId": "read-1",
+                  "title": "Read",
+                  "syntheticLabel": false,
+                  "status": "pending",
+                  "text": "",
+                  "media": [],
+                  "synthetic": false
+                },
+                "endedAt": "2026-10-14T02:02:38.170Z",
+                "progress": {
+                  "kind": "status",
+                  "text": "pending"
+                }
+              },
+              {
+                "kind": "thinking",
+                "frameId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:1",
+                "part": {
+                  "partId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc:part:1",
+                  "messageId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                  "revision": 0,
+                  "provenance": {
+                    "source": "engine"
+                  }
+                },
+                "recordedStepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                "text": "later"
+              },
+              {
+                "kind": "text",
+                "frameId": "after",
+                "part": {
+                  "partId": "after",
+                  "messageId": "after",
+                  "revision": 0,
+                  "provenance": {
+                    "source": "engine"
+                  }
+                },
+                "role": "user",
+                "text": "brand new after tool",
+                "origin": {
+                  "kind": "unknown"
+                },
+                "delivery": {
+                  "deliveryId": "dlv_01M4W2BDPSY46DHM3KWP1471ZB",
+                  "messageId": "after",
+                  "turnId": "t4",
+                  "stepId": "external-step-4-71a1c14b-afad-4a94-aff4-9945cf70c8cc",
+                  "step": 1,
+                  "deliveredAt": "2026-10-14T02:02:38.169Z",
+                  "origin": "queue"
+                }
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "tasks": [],
+    "interactions": [],
+    "attachments": [],
+    "todos": [],
+    "prompts": [],
+    "toolCallCount": 1,
+    "toolCallCountKnown": true,
+    "meta": {
+      "activity": "idle",
+      "agent": {
+        "model": "mock-model",
+        "thinkingEffort": "off",
+        "phase": {
+          "kind": "ended",
+          "turnId": 4,
+          "reason": "completed",
+          "at": 1791943358180
+        }
+      }
+    },
+    "hasMoreOlder": false
+  }
+}

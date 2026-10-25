@@ -18,6 +18,26 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     diagnostics: [{ kind: 'message', severity: 'info', message: 'Antigravity ACP uses its own settings.json and Google sign-in; use the executor login flow before starting a session.' }],
     revision: '2026-09-30.1',
   },
+  'agy-cli': {
+    label: 'AGY CLI', protocol: 'acp-v1', args: [],
+    sources: [
+      { id: 'kiki-managed', kind: 'node-script', path: '${KIKI_HOME}/tools/agy-cli/agy-cli-acp.mjs' },
+    ],
+    source: 'kiki-managed',
+    programLabel: 'agy-cli-acp',
+    modelProbe: {
+      command: 'agy', args: ['models'], format: 'columns',
+      versionProbe: { args: ['--version'] }, timeoutMs: 20_000, maxOutputBytes: 65_536,
+    },
+    modelBinding: 'argv', modelArgs: ['--model', '{model}'],
+    modelConfigCategory: 'model', thoughtConfigCategory: 'thought_level',
+    controlCapabilities: { modelSwitch: 'fresh_binding', thinkingSwitch: 'fresh_binding', manualCompact: 'unsupported' },
+    supportsMcp: true, mcpTransports: ['stdio'],
+    startupTimeoutMs: 150_000, shutdownGraceMs: 3_000,
+    installHint: 'Install the Antigravity CLI (agy). Kiki bridges it with the bundled source-owned adapter; the CLI does not advertise an ACP server.',
+    diagnostics: [{ kind: 'message', severity: 'info', message: 'AGY CLI model ids come from `agy models`. The official ACP server remains the separate antigravity-acp executor.' }],
+    revision: '2026-10-16.1',
+  },
   'grok-acp': {
     label: 'Grok Build',
     protocol: 'acp-v1',
@@ -29,6 +49,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     modelBinding: 'session_config',
     modelConfigCategory: 'model',
     profileDelivery: 'system_prompt_override',
+    supportsMcp: true, mcpTransports: ['stdio', 'http', 'sse'],
     promptDeliveries: ['replace', 'preamble'],
     defaultProfile: true,
     installHint: 'Install the Grok Build CLI',
@@ -39,7 +60,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
       { kind: 'message', severity: 'info', message: 'Grok runs with --permission-mode default in manual/review, acceptEdits in auto, and bypassPermissions in yolo.' },
     ],
     permission: { via: 'argv', flag: '--permission-mode', manual: 'default', auto: 'acceptEdits', yolo: 'bypassPermissions' },
-    revision: '2026-08-30.1',
+    revision: '2026-10-16.1',
   },
   'codex-app-server': {
     homeEnv: 'CODEX_HOME',
@@ -89,6 +110,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     protocol: 'acp-v1',
     command: 'codex-acp',
     args: [],
+    supportsMcp: true,
     env: { DISABLE_MCP_CONFIG_FILTERING: 'true' },
     diagnostics: [
       { kind: 'dependency', command: 'codex', args: ['--version'], unavailable: 'Vendor codex CLI is not installed or not executable.', failed: 'codex --version exited with code {code}.' },
@@ -127,6 +149,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     shutdownGraceMs: 3_000,
     modelBinding: 'argv',
     modelArgs: ['--model', '{model}'],
+    supportsMcp: true,
     diagnostics: [{ kind: 'message', severity: 'info', message: 'Only cursor-agent is admitted; the unrelated agent shim is never probed.' }],
     revision: '2026-08-31.1',
   },
@@ -148,6 +171,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     shutdownGraceMs: 3_000,
     modelBinding: 'session_config',
     modelConfigCategory: 'model',
+    supportsMcp: true, mcpTransports: ['stdio', 'http', 'sse'],
     promptDeliveries: ['preamble'],
     defaultProfile: true,
     installHint: 'npm install --prefix "${KIKI_HOME}/tools/claude-agent-acp" --save-exact @agentclientprotocol/claude-agent-acp@0.84.0',
@@ -161,9 +185,10 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
         failed: 'claude --version exited with code {code}.' },
     ],
     permission: { via: 'session_mode', manual: 'default', auto: 'acceptEdits', yolo: 'bypassPermissions' },
-    revision: '2026-09-30.1',
+    revision: '2026-10-16.1',
   },
   'gemini-acp': {
+    supportsMcp: true,
     label: 'Gemini CLI',
     protocol: 'acp-v1',
     command: 'gemini',
@@ -204,6 +229,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-08-30.1',
   },
   'opencode-acp': {
+    supportsMcp: true,
     label: 'OpenCode',
     protocol: 'acp-v1',
     command: 'opencode',
@@ -225,12 +251,14 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-09-30.1',
   },
   'cline-acp': {
+    supportsMcp: true,
     label: 'Cline', protocol: 'acp-v1', command: 'cline', args: ['--acp'],
     shutdownGraceMs: 3_000,
     installHint: 'npm install -g cline',
     revision: '2026-09-30.1',
   },
   'codebuddy-acp': {
+    supportsMcp: true,
     label: 'CodeBuddy', protocol: 'acp-v1', command: 'codebuddy', args: ['--acp'],
     shutdownGraceMs: 3_000,
     installHint: 'npm install -g @tencent-ai/codebuddy-code',
@@ -246,6 +274,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-09-30.1',
   },
   'deepseek-acp': {
+    supportsMcp: true,
     label: 'DeepSeek Harness', protocol: 'acp-v1', command: 'deepseek-acp', args: [],
     homeEnv: 'DSH_HOME', shutdownGraceMs: 3_000, mcpTransports: ['stdio', 'http'],
     installHint: 'Install a compatible deepseek-acp adapter and configure DeepSeek authentication',
@@ -254,6 +283,7 @@ export const BUILTIN_AGENT_EXECUTORS: AgentExecutorsConfig = {
     revision: '2026-09-30.1',
   },
   'qoder-acp': {
+    supportsMcp: true,
     label: 'Qoder', protocol: 'acp-v1', command: 'qodercli', args: ['--acp'],
     homeEnv: 'QODER_CONFIG_DIR', shutdownGraceMs: 3_000,
     installHint: 'Install Qoder CLI and complete its vendor sign-in flow',

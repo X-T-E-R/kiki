@@ -7,12 +7,14 @@ import { MemoryRouter } from 'react-router-dom';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import type { Task } from '@kiki/protocol';
-import { buildAgentForest, createViewState, type ApprovalBlock, type SessionViewState } from '@kiki/session-core/session';
+import { buildAgentForest, createViewState, SessionController, type ApprovalBlock, type SessionViewState } from '@kiki/session-core/session';
+import type { SessionTransport } from '@kiki/session-core/transport';
+import type { SessionViewFacade } from '@kiki/klient/session-view';
 import { I18nProvider } from '../i18n';
 import { RightRail, type SubagentRailContext } from './RightRail';
-import { clearRetainedTodosCache } from './rail-variants/DefaultRail';
 import { PreviewFocusBridge } from './SessionView';
 import { useInspectorFocusTracking } from './inspectorFocus';
+import { LiveControllerRegistry } from '../state/connection';
 
 // The profile head and capability block read the agent panel over the
 // connection; these fixtures have none, so they render as plain stand-ins.
@@ -95,7 +97,6 @@ beforeAll(() => {
 });
 afterEach(async () => {
   registryHolder.current = null;
-  clearRetainedTodosCache();
   for (const { container, root } of mounts.splice(0)) {
     await act(async () => { root.unmount(); });
     container.remove();
@@ -172,6 +173,79 @@ function sharedChapters(container: Element) {
     }));
 }
 
+it('shows runtime activity instead of an idle child transcript and returns to idle after settlement', async () => {
+  const agentForest = (status: 'running' | 'idle') => buildAgentForest([], [
+    { agentId: 'main', name: 'Main', status: 'idle', busy: false },
+    { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'unknown', busy: false },
+    { agentId: 'agent-1', parentAgentId: 'main', status, statusSource: 'runtime' },
+  ]);
+  const subagent: SubagentRailContext = {
+    agentId: 'agent-1', pendingInteractionCount: 0, onJumpToSpawn: undefined,
+    block: {
+      id: 'child-card', kind: 'subagent', subagentId: 'agent-1', name: 'Researcher', status: 'idle',
+      parentAgentId: 'main', parentToolCallId: undefined, description: undefined, model: undefined,
+      thinkingEffort: undefined, summary: undefined, error: undefined, endedAt: undefined,
+      toolCallCount: 0, transcript: [],
+    },
+  };
+  const running = await renderRail({ subagent, empty: true, agentForest: agentForest('running') });
+  expect(running.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('working');
+  expect(running.querySelector('[data-inspector-now]')?.textContent).toContain('Working');
+  const settled = await renderRail({ subagent, empty: true, agentForest: agentForest('idle') });
+  expect(settled.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
+  expect(settled.querySelector('[data-inspector-now]')?.textContent).toContain('Idle');
+});
+
+it('does not let stale parent activity resurrect a focused runtime-idle child', async () => {
+  const agentForest = buildAgentForest([], [
+    { agentId: 'main', name: 'Main', status: 'running' },
+    { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'idle', statusSource: 'runtime' },
+  ]);
+  const subagent: SubagentRailContext = {
+    agentId: 'agent-1', pendingInteractionCount: 0, onJumpToSpawn: undefined,
+    block: {
+      id: 'child-card', kind: 'subagent', subagentId: 'agent-1', name: 'Researcher', status: 'running',
+      parentAgentId: 'main', parentToolCallId: undefined, description: undefined, model: undefined,
+      thinkingEffort: undefined, summary: undefined, error: undefined, endedAt: undefined,
+      toolCallCount: 0, transcript: [],
+    },
+  };
+  const rail = await renderRail({
+    subagent,
+    empty: true,
+    agentForest,
+    stateOverrides: { busy: true },
+  });
+  expect(rail.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
+  expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Working');
+});
+
+it('treats a historical running card as unknown when the session says nothing is executing', async () => {
+  const agentForest = buildAgentForest([], [
+    { agentId: 'main', name: 'Main', status: 'unknown' },
+    { agentId: 'agent-1', parentAgentId: 'main', name: 'Researcher', status: 'unknown', statusSource: 'metadata' },
+  ]);
+  const rail = await renderRail({
+    subagent: {
+      agentId: 'agent-1', pendingInteractionCount: 0, onJumpToSpawn: undefined,
+      block: {
+        id: 'child-card', kind: 'subagent', subagentId: 'agent-1', name: 'Researcher', status: 'running',
+        parentAgentId: 'main', parentToolCallId: undefined, description: undefined, model: undefined,
+        thinkingEffort: undefined, summary: undefined, error: undefined, endedAt: undefined,
+        toolCallCount: 0, transcript: [],
+      },
+    },
+    empty: true,
+    agentForest,
+    stateOverrides: {
+      busy: true,
+      session: { executing: false, metadata: { cwd: 'C:/tmp' } } as NonNullable<SessionViewState['session']>,
+    },
+  });
+  expect(rail.querySelector('[data-inspector-now]')?.getAttribute('data-inspector-now')).toBe('idle');
+  expect(rail.querySelector('[data-inspector-now]')?.textContent).not.toContain('Working');
+});
+
 describe('RightRail fixed and switchable parts', () => {
   /** Every rail part outside the overview block, as data hooks, in page order. */
   function fixedParts(rail: Element) {
@@ -188,6 +262,22 @@ describe('RightRail fixed and switchable parts', () => {
 
   it('keeps every fixed part, the agents section included, in both modes', async () => {
     const rail = await renderRail({ sessionPending: [pendingApproval] });
+    const standardReadingOrder = [
+      '[data-inspector-needs-you]',
+      '[data-rail-agent-panel-slot]',
+      '#rail-todos',
+      '[data-inspector-agents]',
+      '[data-tasks-scroll]',
+      '[data-rail-session-cron]',
+      '[data-rail-persona-settings]',
+      '[data-inspector-tail]',
+    ].map((selector) => rail.querySelector(selector));
+    expect(standardReadingOrder.every((node) => node !== null)).toBe(true);
+    for (let index = 1; index < standardReadingOrder.length; index += 1) {
+      const before = standardReadingOrder[index - 1]!;
+      const after = standardReadingOrder[index]!;
+      expect(before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    }
     const standard = fixedParts(rail);
     const standardHtml = [...rail.querySelectorAll('[data-inspector-agents], [data-rail-profile-head]')].map((node) => node.outerHTML);
     await choose(rail, 'cockpit');
@@ -234,9 +324,14 @@ describe('RightRail fixed and switchable parts', () => {
     expect(switcher.closest('[data-rail-owner]')).not.toBeNull();
     expect(rail.querySelector('[data-rail-switchable-head] [data-rail-mode-switch]')).toBeNull();
     const zone = () => rail.querySelector('[data-rail-switchable]')!;
+    // The cockpit deliberately reorders the rail's own sections, so what has
+    // to hold across the switch is the SET of sections outside the switchable
+    // zone, not their sequence. Inside the zone is the only thing the mode is
+    // allowed to change.
     const outside = () => [...rail.querySelectorAll('[data-agent-panel-scroll] > .rail-page > *')]
       .filter((node) => !node.hasAttribute('data-rail-switchable'))
-      .map((node) => node.outerHTML);
+      .map((node) => node.outerHTML)
+      .sort();
     expect(zone().getAttribute('data-rail-switchable')).toBe('default');
     expect(zone().querySelector('[data-panel-props="overview"]')?.getAttribute('data-panel-mode')).toBe('default');
     const before = outside();
@@ -447,16 +542,16 @@ describe('RightRail shared chapters', () => {
     expect(now?.textContent).toContain('Needs you');
     expect(child.querySelector('[data-subagent-context] [data-rail-locate]')).not.toBeNull();
     expect(child.querySelector('[data-agent-tree]')).toBeNull();
-    // Reading order: the pinned profile head and Now, then the agent's own
-    // checklist, its tasks, context and cost, and the folded tail.
+    // Reading order: the pinned profile head and Now, then context and cost
+    // (overview), the agent's own checklist, its tasks, and the folded tail.
     const scroll = child.querySelector('[data-agent-panel-scroll]')!;
     expect(scroll.querySelector('[data-inspector-setup]')).toBeNull();
     const order = [
       scroll.querySelector('[data-rail-profile-head]'),
       now,
+      scroll.querySelector('[data-rail-agent-panel-slot]'),
       scroll.querySelector('[data-panel-props="work"]'),
       scroll.querySelector('[data-tasks-scroll]'),
-      scroll.querySelector('[data-rail-agent-panel-slot]'),
       scroll.querySelector('[data-inspector-tail]'),
     ];
     expect(order.every((node) => node !== null)).toBe(true);
@@ -465,6 +560,7 @@ describe('RightRail shared chapters', () => {
       const after = order[index]!;
       expect(before === after || (before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0).toBe(true);
     }
+    expect(scroll.querySelector('[data-inspector-tail] [data-rail-cron-tail-manage]')).not.toBeNull();
     // Every slice describes the focused agent.
     for (const slice of child.querySelectorAll('[data-panel-props]')) {
       expect(slice.getAttribute('data-panel-agent')).toBe('agent-1');
@@ -546,6 +642,40 @@ describe('RightRail shared chapters', () => {
     const running = [...rail.querySelectorAll<HTMLElement>('[data-agent-tree] [data-agent-id]')];
     expect(running.length).toBeGreaterThan(0);
     expect(running.every((row) => row.dataset['rosterBucket'] === 'running')).toBe(true);
+  });
+
+  it('folds historical unknown agents without hiding an unknown parent that still has a running child', async () => {
+    const historical = buildAgentForest([], [
+      { agentId: 'main', name: 'Main' },
+      { agentId: 'parent', parentAgentId: 'main', name: 'Parent', status: 'unknown' },
+      { agentId: 'child', parentAgentId: 'parent', name: 'Child', status: 'running' },
+      ...Array.from({ length: 4 }, (_, index) => ({
+        agentId: `old-${index}`, parentAgentId: 'main', name: `Old ${index}`, status: 'unknown' as const,
+      })),
+      ...Array.from({ length: 4 }, (_, index) => ({
+        agentId: `done-${index}`, parentAgentId: 'main', name: `Done ${index}`, status: 'completed' as const,
+      })),
+    ]);
+    const rail = await renderRail({ agentForest: historical });
+    expect(rail.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+    expect(rail.querySelector('[data-agent-id="old-0"]')).toBeNull();
+    const unknown = rail.querySelector<HTMLButtonElement>('[data-roster-unknown-group]');
+    expect(unknown?.textContent).toContain('4 status unknown');
+    expect(unknown?.textContent).not.toContain('Idle');
+    expect(unknown?.textContent).not.toContain('finished');
+    expect(unknown?.getAttribute('aria-expanded')).toBe('false');
+    expect(rail.querySelector('[data-roster-done-group]')?.getAttribute('aria-expanded')).toBe('false');
+    await act(async () => { unknown?.click(); });
+    expect(rail.querySelector('[data-agent-id="old-0"]')?.querySelector('[data-agent-status]')?.textContent).toBe('Status unknown');
+    expect(rail.querySelector('[data-roster-done-group]')?.getAttribute('aria-expanded')).toBe('false');
+    expect(rail.querySelector('[data-agent-id="done-0"]')).toBeNull();
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-roster-toggle="parent"]')?.click(); });
+    expect(rail.querySelector('[data-agent-id="child"]')?.getAttribute('data-roster-bucket')).toBe('running');
+    await act(async () => { rail.querySelector<HTMLButtonElement>('[data-roster-filter="unknown"]')?.click(); });
+    expect(rail.querySelector('[data-roster-unknown-group]')).toBeNull();
+    expect(rail.querySelector('[data-agent-id="old-0"]')).not.toBeNull();
+    expect(rail.querySelector('[data-agent-id="parent"]')?.getAttribute('data-roster-bucket')).toBe('unknown');
+    expect(rail.querySelector('[data-agent-id="child"]')).toBeNull();
   });
 
   it('bubbles nested approvals to the top with their trail and decides them in place', async () => {
@@ -835,7 +965,7 @@ function createMockRegistry(controller: any) {
     add: () => {},
     delete: () => {},
     acquire: () => ({ controller, release: () => {} }),
-    [Symbol.iterator]: () => [controller][Symbol.iterator](),
+    [Symbol.iterator]: () => [controller][Symbol.iterator]() as Iterator<SessionController>,
     subscribe: (l: () => void) => {
       listeners.add(l);
       return () => { listeners.delete(l); };
@@ -890,7 +1020,6 @@ describe('RightRail Todos resilient baseline and fallback', () => {
   });
 
   it('does not resurrect old stale todos once empty baseline is confirmed', async () => {
-    clearRetainedTodosCache();
     const mount = document.createElement('div');
     document.body.append(mount);
     const root = createRoot(mount);
@@ -949,25 +1078,47 @@ describe('RightRail Todos resilient baseline and fallback', () => {
   });
 
   it('clears retained todos and does not resurrect them when real controller confirms empty baseline', async () => {
-    const ctrl = createMockController('sess-1', {
-      ...createViewState('sess-1'),
-      loaded: true,
-      transcriptReady: true,
-      todos: [{ title: 'Active task', status: 'pending' }],
+    const view = {
+      snapshot: async () => ({
+        as_of_seq: 1,
+        epoch: 'e',
+        session: {
+          id: 'sess-1',
+          workspace_id: 'workspace_example',
+          metadata: { cwd: 'C:/example' },
+          agent_config: {},
+          usage: { turn_count: 0 },
+        },
+        in_flight_turn: null,
+      }),
+      transcript: { page: vi.fn(), content: vi.fn() },
+      subscribe: () => ({
+        close() {},
+        updateTranscriptCursor() {},
+        updateSessionCursor() {},
+        setTranscriptGrades() {},
+      }),
+    } as unknown as SessionViewFacade;
+
+    const controller = new SessionController({} as SessionTransport, view, 'sess-1', {
+      scheduler: { schedule: (fn) => { fn(); return 0; }, cancel() {} },
     });
-    registryHolder.current = createMockRegistry(ctrl);
+    const registry = new LiveControllerRegistry();
+    registry.add(controller);
+    registryHolder.current = registry;
 
     const mount = document.createElement('div');
     document.body.append(mount);
     const root = createRoot(mount);
     mounts.push({ container: mount, root });
 
+    // Step 1: Initial mount before open or transcript - shell loading / unconfirmed
     await act(async () => {
       root.render(
         <MemoryRouter>
           <I18nProvider>
             <RightRail
-              state={{ ...createViewState('sess-1'), loaded: true, transcriptReady: true, tasks: [] }}
+              state={{ ...createViewState('sess-1'), loaded: false, transcriptReady: false, tasks: [] }}
               forest={forest}
               onCancelTask={() => {}}
               onStopAgentTask={async () => {}}
@@ -977,20 +1128,63 @@ describe('RightRail Todos resilient baseline and fallback', () => {
         </MemoryRouter>,
       );
     });
-    expect(mount.textContent).toContain('Active task');
 
-    // Controller receives transcript update: confirmed empty
+    // Step 2: Controller open - shell loaded, but transcript not yet ready (todo baseline unconfirmed)
     await act(async () => {
-      ctrl.setMainState({
-        ...createViewState('sess-1'),
-        loaded: true,
-        transcriptReady: true,
-        todos: [],
+      await controller.open();
+    });
+    expect(mount.querySelector('[data-rail-todos-loading]')).not.toBeNull();
+
+    // Step 3: Todo baseline arrives with active todos
+    await act(async () => {
+      controller.handleTranscript({
+        type: 'transcript.reset',
+        session_id: 'sess-1',
+        agent_id: 'main',
+        snapshot: {
+          items: [],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          prompts: [],
+          meta: {},
+          todos: [{ todoId: 'todo', items: [{ title: 'Active real task', status: 'pending' }] }],
+        },
+        grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        cursor: { seq: 1, epoch: 'e' },
       });
     });
 
-    expect(mount.textContent).not.toContain('Active task');
+    expect(mount.textContent).toContain('Active real task');
+    expect(mount.querySelector('[data-rail-todos]')).not.toBeNull();
+
+    // Step 4: Real controller receives transcript update confirming empty todos
+    await act(async () => {
+      controller.handleTranscript({
+        type: 'transcript.reset',
+        session_id: 'sess-1',
+        agent_id: 'main',
+        snapshot: {
+          items: [],
+          tasks: [],
+          interactions: [],
+          attachments: [],
+          prompts: [],
+          meta: {},
+          todos: [{ todoId: 'todo', items: [] }],
+        },
+        grade: 'delta',
+        coverage: { kind: 'full', hasMoreOlder: false },
+        cursor: { seq: 2, epoch: 'e' },
+      });
+    });
+
+    // Step 5: Confirmed empty! Retained cache is cleared, and does not resurrect
+    expect(mount.textContent).not.toContain('Active real task');
     expect(mount.querySelector('[data-rail-todos]')).toBeNull();
+
+    controller.close();
   });
 
   it('strictly isolates scope on agent and session switch so subagent does not borrow main todos', async () => {
@@ -1068,5 +1262,3 @@ describe('RightRail Todos resilient baseline and fallback', () => {
     expect(ctrl.refreshSession).toHaveBeenCalledTimes(1);
   });
 });
-
-

@@ -1,8 +1,8 @@
 ---
-title: Roles you can talk to
+title: Personas & Discussion Rooms
 ---
 
-# Roles you can talk to
+# Personas & Discussion Rooms
 
 A persona is a long-term identity: a name, an avatar, a job description, the standing rules for how it should work, and its own memory. It is a Markdown file you can read and edit, it has a fixed daily conversation you can return to, and it can take part in a **room** where several of them discuss a topic. This page covers the persona card, the daily entry, the memory it keeps, and rooms.
 
@@ -40,7 +40,7 @@ See [Personas, Bots, and rooms](/en/customization/personas) for the full card re
 
 ![One persona's settings: the profile it rides on, its model and effort, the working directory, how it is delivered, whether it is pinned or hidden from the sidebar, and which memory it can read.](/shots/people/ps-people-execution-detail.en.png)
 
-## A fixed daily conversation
+## Daily conversation
 
 Every persona has a stable address for its daily conversation — the same entry the sidebar row, the switcher, the header, and the persona page all point at. Clicking a persona's name lands you in that one conversation, so "ask Xiaolan" means the same thing every time. If it does not exist yet, the entry opens a fresh daily draft and adopts it once it exists.
 
@@ -50,27 +50,27 @@ This same conversation is where a persona is reachable without you typing to it.
 
 ![One persona and the several conversations it holds, listed under its name.](/shots/people/people-daily-conversation.en.png)
 
-## Its own memory
+## Persona memory
 
 Persona memory follows the persona, across profiles and models — switching the model does not lose what it knows. Persona-specific entries stay isolated from other personas. By default the persona can also read the shared global and workspace memory; set `memory.shared: []` to exclude those. Deleting a persona also removes its persona memory namespaces, and if that cleanup fails the deletion reports the error and keeps the card so you can retry.
 
 The **/memory** page exposes the persona scope alongside global and workspace, including the namespaces its persistent conversation uses. See [Memory](/en/guides/memory#personas) and [Personas, Bots, and rooms](/en/customization/personas#memory-and-character-cards).
 
-## Rooms: several of them, one topic
+## Discussion rooms
 
 A room gives two to six members a shared conversation with a host, a budget, and pause and continue. Persona members get their own message-mode sessions inside the room; existing threads can join as themselves, keeping their own sessions, workspaces, and permissions. In the GUI, Ctrl/⌘-click threads in the sidebar and choose **Pull into a new room**, use **Add to room…** on a thread, add them from the **Threads** tab under **Add member**, or pick **Open a room with these threads** on a thread link.
 
-Members run in order, so a later speaker sees earlier speakers' results rather than talking past them. Scheduling follows three rules and nothing else:
+Persona turns run in order; existing threads each have their own queue. A member catches up on room messages when it wakes. Older queued notifications already covered by a successfully completed catch-up do not start another turn. Scheduling follows three rules:
 
 1. A user mention wakes the named members; `@everyone` selects all of them.
 2. A user message with no mention goes to the host, whether the host is a persona or a thread.
-3. A persona or Bot message wakes only the members it mentions. A message with no mentions does not continue the discussion.
+3. A persona or thread room message wakes only the members it mentions. A message with no mentions is logged but wakes no one.
 
 The budget limits member messages after each user message — 12 by default. When it runs out the discussion pauses, and **Continue** resets the budget and resumes the retained work. **Pause** cancels queued wakes but lets the active turn finish.
 
 ![A room whose member budget is spent: the discussion paused at 12 of 12 messages, with Continue and Adjust limit offered, and the member list beside it.](/shots/people/ps-20261005-people-room-paused.en.png)
 
-Renaming, changing the host, muting, and reassigning the classification workspace never rewrite a member's system prompt or permissions. A member that cannot wake shows the failure and a recovery action rather than a promise of an automatic retry: for a model login failure, sign in under **Settings → Models & providers → Connections**, or open the member's conversation and pick an available model, then send another room message and mention it if it is not the host.
+Renaming, changing the host, muting, and reassigning the classification workspace never rewrite a member's system prompt or permissions. A member that cannot wake shows the failure and a recovery action rather than a promise of an automatic retry: for a model login failure, sign in under **Settings → Models & providers → Providers & accounts**, or open the member's conversation and pick an available model, then send another room message and mention it if it is not the host.
 
 See [Discuss in a room](/en/customization/personas#discuss-in-a-room) and [Collaboration tools](/en/reference/tools#collaboration-tools).
 
@@ -82,4 +82,4 @@ See [Discuss in a room](/en/customization/personas#discuss-in-a-room) and [Colla
 
 - [Personas, Bots, and rooms](/en/customization/personas) — the full reference for personas, home conversations, and rooms
 - [Agent profiles: concepts and design](/en/customization/agent-profiles) — the execution side: tools, permissions, model, prompt
-- [Work that runs long](/en/features/long-work) — what personas remember across sessions
+- [Goals, Queues, Cron & Memory](/en/features/long-work) — what personas remember across sessions

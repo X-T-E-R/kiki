@@ -33,9 +33,13 @@ interface TestAgentWireDependencies {
 const noopLog: IAppendLogStore = {
   _serviceBrand: undefined,
   onDidWrite: Event.None as IAppendLogStore['onDidWrite'],
+  registerProjection: () => toDisposable(() => {}),
+  generation: async () => 'legacy',
   append: () => {},
   read: async function* () {},
   rewrite: async () => {},
+  sealCold: async () => { throw new Error('cold seal is not available'); },
+  discardCold: async () => {},
   flush: async () => {},
   close: async () => {},
   acquire: () => toDisposable(() => {}),
@@ -168,6 +172,8 @@ export function recordingWireLog(
   return {
     _serviceBrand: undefined,
     onDidWrite: Event.None as IAppendLogStore['onDidWrite'],
+    registerProjection: () => toDisposable(() => {}),
+    generation: async () => 'legacy',
     append: (_scope, _key, record) => {
       records.push(record as WireRecord);
       onAppend?.(record as WireRecord);
@@ -178,6 +184,8 @@ export function recordingWireLog(
     rewrite: async (_scope, _key, next) => {
       records.splice(0, records.length, ...(next as readonly WireRecord[]));
     },
+    sealCold: async () => { throw new Error('cold seal is not available'); },
+    discardCold: async () => {},
     flush: async () => {},
     close: async () => {},
     acquire: () => toDisposable(() => {}),

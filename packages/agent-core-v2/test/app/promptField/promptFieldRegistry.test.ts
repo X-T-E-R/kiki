@@ -123,8 +123,8 @@ describe('PromptFieldRegistryService', () => {
     }));
   });
 
-  afterEach(() => {
-    services?.dispose();
+  afterEach(async () => {
+    await services?.dispose();
     services = undefined;
     _clearPromptFieldContributionsForTests();
   });

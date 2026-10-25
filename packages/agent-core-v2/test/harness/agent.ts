@@ -137,6 +137,9 @@ import {
   IFileSystemStorageService,
   ISessionApprovalService,
   ISessionMetadata,
+  drainSessionMetadataWrites,
+  ISessionDeliveryService,
+  IHomeRuntimeService,
   IAgentTaskService,
   IBlobStore,
   BlobStoreService,
@@ -948,6 +951,8 @@ function reassertServiceOverrides(
 
 class PersistenceAppendLogStore implements IAppendLogStore {
   declare readonly _serviceBrand: undefined;
+  registerProjection(): { dispose(): void } { return { dispose() {} }; }
+  async generation(): Promise<string> { return 'legacy'; }
   readonly onDidWrite: IAppendLogStore['onDidWrite'] = Event.None as IAppendLogStore['onDidWrite'];
   private readonly history: WireRecord[] = [];
   private readSeeded = false;
@@ -975,8 +980,18 @@ class PersistenceAppendLogStore implements IAppendLogStore {
     this.readSeeded = true;
   }
 
+  sealCold(): Promise<never> {
+    return Promise.reject(new Error('cold seal is not available'));
+  }
+
+  discardCold(): Promise<void> {
+    return Promise.resolve();
+  }
+
   rewrite<R>(_scope: string, _key: string, records: readonly R[]): Promise<void> {
     this.persistence.rewrite(records as readonly WireRecord[]);
+    this.history.splice(0, this.history.length, ...(records as readonly WireRecord[]).map(cloneRecord));
+    this.readSeeded = true;
     return Promise.resolve();
   }
 
@@ -1954,11 +1969,23 @@ export class AgentTestContext {
   async close(_reason = 'Agent runtime test closed'): Promise<void> {
     if (this.closed) return;
     this.closed = true;
-    for (const disposable of this.disposables.splice(0)) {
-      disposable.dispose();
+    try {
+      await this.settleOpenHomeIo();
+    } finally {
+      for (const disposable of this.disposables.splice(0)) {
+        await disposable.dispose();
+      }
+      await this.closeWire();
+      await this.root.dispose();
     }
-    await this.closeWire();
-    this.root.dispose();
+  }
+
+  private async settleOpenHomeIo(): Promise<void> {
+    const metadataReady = this.session.accessor.get(ISessionMetadata).ready;
+    const deliveryReady = this.session.accessor.get(ISessionDeliveryService).ready;
+    await Promise.all([metadataReady, deliveryReady]);
+    await drainSessionMetadataWrites();
+    await this.root.accessor.get(IHomeRuntimeService).close();
   }
 
   async dispose(): Promise<void> {
@@ -2332,6 +2359,7 @@ function createPermissionModeService(initialMode: PermissionMode): IAgentPermiss
     get mode() {
       return mode;
     },
+    externalOverride: undefined,
     setMode: (nextMode) => {
       mode = nextMode;
     },
@@ -2579,7 +2607,31 @@ function configService(readConfig: () => KimiConfig): IConfigService {
     replace,
     reload: () => Promise.resolve(),
     diagnostics: () => [],
+    origins: (domain: string) => {
+      const stored = memory.has(domain) ? memory.get(domain) : undefined;
+      const base = (readConfig() as Record<string, unknown>)[domain];
+      const value = stored ?? base;
+      if (value === undefined) return {};
+      return sectionOrigins(value, stored !== undefined ? 'memory' : 'home');
+    },
   } as unknown as IConfigService;
+}
+
+function sectionOrigins(value: unknown, origin: 'memory' | 'home'): Record<string, 'memory' | 'home'> {
+  const result: Record<string, 'memory' | 'home'> = {};
+  const visit = (entry: unknown, path: string[]): void => {
+    if (entry !== null && typeof entry === 'object' && !Array.isArray(entry)) {
+      const record = entry as Record<string, unknown>;
+      const keys = Object.keys(record);
+      if (keys.length > 0) {
+        for (const key of keys) visit(record[key], [...path, key]);
+        return;
+      }
+    }
+    if (path.length > 0) result[path.join('.')] = origin;
+  };
+  visit(value, []);
+  return result;
 }
 
 function configWithEnvOverrides(config: KimiConfig): KimiConfig {

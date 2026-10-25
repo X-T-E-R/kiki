@@ -23,7 +23,7 @@ export interface FoldContext {
   readonly silent: boolean;
   checkpoint(): void;
   clearCheckpoints(): void;
-  undoToCheckpoint(count: number): void;
+  undoToCheckpoint(count: number, afterUndo?: (state: any) => any): void;
   emit(event: Event2): void;
 }
 
@@ -223,10 +223,16 @@ export function expandedStateFolds(
   }
   folds.set(protocol.events.undo, (state, event, ctx) => {
     if (!protocol.isValidUndoCount(event.count)) return;
+    const replacement = event.replacementPrompt?.message;
+    const append = replacement === undefined ? undefined : (restored: any) =>
+      domainAppend?.(restored, new protocol.events.appendMessage({ message: replacement }), ctx);
     if (meta.undoable?.onUndo !== undefined) {
-      return meta.undoable.onUndo(state, event.count);
+      const restored = meta.undoable.onUndo(state, event.count);
+      if (append === undefined) return restored;
+      return append(restored ?? state) ?? restored;
     }
-    ctx.undoToCheckpoint(event.count);
+    if (replacement !== undefined && protocol.isUndoAnchor(replacement)) ctx.checkpoint();
+    ctx.undoToCheckpoint(event.count, append);
   });
   return folds;
 }

@@ -4,12 +4,32 @@ import type { KlientFrame } from '../codec.js';
 import { confirmsTranscriptCoverage, gradeFor, GRADE_RANK, TRANSCRIPT_COVERAGE_VERSION } from '@kiki/transcript';
 import { degradeUnconfirmedTranscriptSignal } from './transcript-coverage.js';
 
+const TURN_GRADE_ATTACH_DEBOUNCE_MS = 250;
+
 interface ActiveView {
   readonly id: string;
   readonly sessionId: string;
   input: SessionViewSubscribeInput;
   readonly handler: (signal: SessionViewSignal) => void;
   attachCount: number;
+  attachTimer?: ReturnType<typeof setTimeout>;
+}
+
+function isTurnGradeExpansion(
+  previous: SessionViewSubscribeInput['transcriptGrades'],
+  next: SessionViewSubscribeInput['transcriptGrades'],
+): boolean {
+  let addedTurn = false;
+  for (const [agentId, grade] of Object.entries(next)) {
+    const oldGrade = previous[agentId];
+    if (oldGrade === undefined) {
+      if (grade !== 'turn') return false;
+      addedTurn = true;
+    } else if (oldGrade !== grade) {
+      return false;
+    }
+  }
+  return addedTurn && Object.keys(previous).every((agentId) => Object.hasOwn(next, agentId));
 }
 
 export class HttpSessionViews {
@@ -43,12 +63,18 @@ export class HttpSessionViews {
       updateSessionCursor: (cursor) => { view.input = { ...view.input, sessionCursor: cursor }; },
       setTranscriptGrades: (grades) => {
         if (!this.views.has(id)) return;
+        const previousGrades = view.input.transcriptGrades;
         const transcriptSince = view.input.transcriptSince === undefined ? undefined : Object.fromEntries(
           Object.entries(view.input.transcriptSince).filter(([agentId]) =>
-            GRADE_RANK[gradeFor(grades, agentId)] <= GRADE_RANK[gradeFor(view.input.transcriptGrades, agentId)]),
+            GRADE_RANK[gradeFor(grades, agentId)] <= GRADE_RANK[gradeFor(previousGrades, agentId)]),
         );
         view.input = { ...view.input, transcriptGrades: grades, transcriptSince };
-        if (this.host.isOpen()) this.attach(view);
+        if (!this.host.isOpen()) return;
+        if (isTurnGradeExpansion(previousGrades, grades)) this.scheduleAttach(view);
+        else {
+          this.clearAttachTimer(view);
+          this.attach(view);
+        }
       },
       updateTranscriptCursor: (agentId, cursor) => {
         view.input = { ...view.input, transcriptSince: { ...view.input.transcriptSince, [agentId]: cursor } };
@@ -57,6 +83,7 @@ export class HttpSessionViews {
       nudge: () => { if (this.views.has(id)) this.host.nudge(); },
       close: () => {
         if (!this.views.delete(id)) return;
+        this.clearAttachTimer(view);
         if (this.host.isOpen()) this.host.send({ type: 'view_detach', id });
         handler({ type: 'status', status: 'closed', generation: this.generation });
       },
@@ -66,6 +93,7 @@ export class HttpSessionViews {
   opened(): void {
     this.generation += 1;
     for (const view of this.views.values()) {
+      this.clearAttachTimer(view);
       view.handler({ type: 'status', status: 'open', generation: this.generation });
       this.attach(view);
     }
@@ -83,7 +111,10 @@ export class HttpSessionViews {
     }
   }
 
-  close(): void { this.views.clear(); }
+  close(): void {
+    for (const view of this.views.values()) this.clearAttachTimer(view);
+    this.views.clear();
+  }
 
   receive(frame: KlientFrame): boolean {
     if (frame.type !== 'view_signal' && frame.type !== 'view_error') return false;
@@ -91,6 +122,7 @@ export class HttpSessionViews {
     if (view === undefined) return true;
     if (frame.type === 'view_error') {
       this.views.delete(view.id);
+      this.clearAttachTimer(view);
       view.handler({ type: 'protocolError', generation: this.generation, recoverable: false, detail: (frame.msg ?? 'Session view subscription failed').slice(0, 512) });
     } else {
       const data = frame.data;
@@ -104,7 +136,22 @@ export class HttpSessionViews {
     return true;
   }
 
+  private scheduleAttach(view: ActiveView): void {
+    this.clearAttachTimer(view);
+    view.attachTimer = setTimeout(() => {
+      view.attachTimer = undefined;
+      if (this.views.has(view.id) && this.host.isOpen()) this.attach(view);
+    }, TURN_GRADE_ATTACH_DEBOUNCE_MS);
+  }
+
+  private clearAttachTimer(view: ActiveView): void {
+    if (view.attachTimer === undefined) return;
+    clearTimeout(view.attachTimer);
+    view.attachTimer = undefined;
+  }
+
   private attach(view: ActiveView): void {
+    this.clearAttachTimer(view);
     this.host.send({
       type: 'view_attach', id: view.id, sessionId: view.sessionId,
       data: { input: view.input, generation: this.generation, reconnected: view.attachCount > 0,

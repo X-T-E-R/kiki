@@ -112,7 +112,7 @@ describe('AskUserQuestionTool', () => {
       expect(result.isError).toBe(false);
       expect(result.output).toContain('automatic_notification: true');
       expect(registerTask).toHaveBeenCalledOnce();
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
   it('exposes current metadata and schema', () => {
     const { tool } = makeTool();

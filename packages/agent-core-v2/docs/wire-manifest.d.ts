@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (88 record types)
+// Index (89 record types)
 //   agent_message.delivered            agentCollaboration.messageReceipts                                                                                                                                                   src/session/agentCollaboration/messageEvents.ts
 //   agent.model_switch                 contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                           src/agent/modelSwitch/modelSwitchEvent.ts
 //   auto_compact.override_changed      autoCompactOverride                                                                                                                                                                  src/agent/fullCompaction/autoCompactOps.ts
@@ -34,7 +34,7 @@
 //   context.append_message             agentCollaboration.materializedMessages, contextMemory, contextMemory.revision, goalForkNotice, modelSwitch.continuity, plan, task.notificationDelivery, todo, todo.continuityClock  src/agent/contextMemory/contextEvents.ts
 //   context.apply_compaction           contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                       src/agent/contextMemory/contextEvents.ts
 //   context.clear                      contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                           src/agent/contextMemory/contextEvents.ts
-//   context.undo                       contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                           src/agent/contextMemory/contextEvents.ts
+//   context.undo                       contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn                     src/agent/contextMemory/contextEvents.ts
 //   executor.plan.remove               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.plan.update               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.prompt.delivery           externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
@@ -72,16 +72,16 @@
 //   prompt.aborted                     promptResolution                                                                                                                                                                     src/agent/prompt/promptService.ts
 //   prompt.accepted                    promptAdmission                                                                                                                                                                      src/agent/prompt/promptOps.ts
 //   prompt.completed                   promptResolution                                                                                                                                                                     src/agent/prompt/promptService.ts
-//   prompt.enqueued                    prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
+//   prompt.enqueued                    prompt.identity, promptAdmission, promptRetryReceipt                                                                                                                                 src/agent/prompt/promptService.ts
 //   prompt.launch_committed            prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   prompt.model_switch_queued         prompt.modelSwitches                                                                                                                                                                 src/agent/prompt/modelSwitchQueueOps.ts
 //   prompt.model_switch_status         prompt.modelSwitches                                                                                                                                                                 src/agent/prompt/modelSwitchQueueOps.ts
 //   prompt.moved                       (none)                                                                                                                                                                               src/agent/prompt/promptService.ts
 //   prompt.outcome_committed           prompt.identity                                                                                                                                                                      src/agent/prompt/promptReplay.ts
-//   prompt.replaced                    (none)                                                                                                                                                                               src/agent/prompt/promptService.ts
+//   prompt.replaced                    prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   prompt.retry_committed             promptRetryReceipt                                                                                                                                                                   src/agent/prompt/promptOps.ts
-//   prompt.steered                     promptResolution                                                                                                                                                                     src/agent/prompt/promptService.ts
-//   prompt.timing_changed              (none)                                                                                                                                                                               src/agent/prompt/promptService.ts
+//   prompt.steered                     prompt.identity, promptResolution                                                                                                                                                    src/agent/prompt/promptService.ts
+//   prompt.timing_changed              prompt.identity                                                                                                                                                                      src/agent/prompt/promptService.ts
 //   runtime.set_binding                runtimeBinding                                                                                                                                                                       src/agent/runtimeBinding/runtimeBindingOps.ts
 //   session.delivery                   (none)                                                                                                                                                                               src/agent/delivery/deliveryReminder.ts
 //   staleGuard.cleared                 staleGuard                                                                                                                                                                           src/features/staleGuard/staleGuardOps.ts
@@ -99,9 +99,10 @@
 //   token_counting.measured            tokenCounting                                                                                                                                                                        src/agent/tokenCounting/tokenCountingOps.ts
 //   token_counting.rebased             tokenCounting                                                                                                                                                                        src/agent/tokenCounting/tokenCountingOps.ts
 //   token_counting.truncated           tokenCounting                                                                                                                                                                        src/agent/tokenCounting/tokenCountingOps.ts
+//   tools.policy_refreshed             profile, profile.activeTools                                                                                                                                                         src/agent/profile/profileOps.ts
 //   tools.register_user_tool           userTool                                                                                                                                                                             src/agent/userTool/userToolOps.ts
-//   tools.reset_active_tools           profile.activeTools                                                                                                                                                                  src/agent/profile/profileOps.ts
-//   tools.set_active_tools             profile.activeTools                                                                                                                                                                  src/agent/profile/profileOps.ts
+//   tools.reset_active_tools           profile, profile.activeTools                                                                                                                                                         src/agent/profile/profileOps.ts
+//   tools.set_active_tools             profile, profile.activeTools                                                                                                                                                         src/agent/profile/profileOps.ts
 //   tools.unregister_user_tool         userTool                                                                                                                                                                             src/agent/userTool/userToolOps.ts
 //   tools.update_store                 todo, todo.continuityClock                                                                                                                                                           src/session/todo/todoOps.ts
 //   tower_mode.enter                   (none)                                                                                                                                                                               src/wire/retiredTowerEvents.ts
@@ -265,6 +266,7 @@ interface ContextAppendMessagePayload {
     step?: number;
     deliveredAt: string;
     origin: 'user' | 'queue' | 'mailbox' | 'recovery' | 'injection';
+    placement?: 'safety_boundary';
   };
 }
 
@@ -284,12 +286,13 @@ interface ContextClearPayload {
 }
 
 /**
- * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn · blobs: contextMemory
+ * states: contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn · blobs: contextMemory, promptRetryReceipt
  * owner: src/agent/contextMemory/contextEvents.ts
  */
 interface ContextUndoPayload {
   _name: 'context.undo';
   count: number;
+  replacementPrompt?: import('#/agent/prompt/promptService').PromptEnqueuedPayload;
 }
 
 /**
@@ -334,9 +337,10 @@ interface ExecutorPromptDeliveryPayload {
  */
 interface ExecutorRuntimeUpdatePayload {
   _name: 'executor.runtime.update';
+  id?: string;
   turnId: number;
   executorId?: string;
-  kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'unknown';
+  kind: 'commands' | 'mode' | 'config' | 'session' | 'usage' | 'diff' | 'compaction' | 'tool_input' | 'tool_progress' | 'unknown';
   value: any;
 }
 
@@ -625,6 +629,8 @@ interface LlmRequestPayload {
   _name: 'llm.request';
   kind: 'loop' | 'compaction';
   provider: string;
+  protocol?: 'anthropic' | 'openai' | 'openai_responses' | 'google-genai';
+  protocol_source?: 'model' | 'provider' | 'vendor';
   model: string;
   modelAlias?: string;
   /** ThinkingEffort */
@@ -800,6 +806,7 @@ interface ProfileBindPayload {
   executorOptions?: Record<string, string | number | boolean>;
   executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   allowKikiSubagents?: boolean;
+  injectKikiMcp?: boolean;
   kikiContext?: 'memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks'[];
   executorDescriptorRevision?: string;
   /** ThinkingEffort */
@@ -839,7 +846,7 @@ interface ProfileDynamicSnapshotPayload {
   enabled: boolean;
   revision: number;
   /** SystemPromptContext */
-  context: import('@kiki/agent-profiles/agentProfile').AgentProfileContext & { agentsMdWarning?: string, agentsMdPaths?: string[], agentsMdFiles?: import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[] };
+  context: import('@kiki/agent-profiles/agentProfile').AgentProfileContext & { pluginBlocks?: Readonly<Record<string, string>>, agentsMdWarning?: string, agentsMdPaths?: string[], agentsMdFiles?: import('#/agent/agentsMdReminder/instructionCoverage').InstructionFile[] };
   content: string;
   hash: string;
 }
@@ -920,7 +927,7 @@ interface PromptCompletedPayload {
 }
 
 /**
- * states: prompt.identity
+ * states: prompt.identity, promptAdmission, promptRetryReceipt · blobs: promptRetryReceipt
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptEnqueuedPayload {
@@ -968,7 +975,7 @@ interface PromptEnqueuedPayload {
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
-    thinking?: string;
+    thinking?: string | null;
     permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
     planGate?: z.infer<typeof PlanGateSchema>;
     goalObjective?: string;
@@ -981,6 +988,13 @@ interface PromptEnqueuedPayload {
   appendTiming: 'agent_idle' | 'subagents_done' | 'tasks_done';
   revision: number;
   queueIndex: number;
+  retryFingerprint?: string;
+  retryStatus?: 'running' | 'queued';
+  retryContentRanges?: {
+    index: number;
+    start: number;
+    end: number;
+  }[];
 }
 
 /**
@@ -1093,7 +1107,7 @@ interface PromptOutcomeCommittedPayload {
 }
 
 /**
- * states: (none)
+ * states: prompt.identity
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptReplacedPayload {
@@ -1139,7 +1153,7 @@ interface PromptReplacedPayload {
     personaGreetingReply?: boolean;
     profile?: string;
     model?: string;
-    thinking?: string;
+    thinking?: string | null;
     permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
     planGate?: z.infer<typeof PlanGateSchema>;
     goalObjective?: string;
@@ -1151,7 +1165,7 @@ interface PromptReplacedPayload {
 }
 
 /**
- * states: promptRetryReceipt
+ * states: promptRetryReceipt · blobs: promptRetryReceipt
  * owner: src/agent/prompt/promptOps.ts
  */
 interface PromptRetryCommittedPayload {
@@ -1163,11 +1177,16 @@ interface PromptRetryCommittedPayload {
     createdAt: string;
     appendTiming: 'agent_idle' | 'subagents_done' | 'tasks_done';
     revision: number;
+    userMessageId?: string;
+    message?: ContextMessage;
+    execution?: import('./prompt').PromptExecutionBinding;
+    deferredDisabledTools?: string[];
+    contentRanges?: object[];
   };
 }
 
 /**
- * states: promptResolution
+ * states: prompt.identity, promptResolution
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptSteeredPayload {
@@ -1179,7 +1198,7 @@ interface PromptSteeredPayload {
 }
 
 /**
- * states: (none)
+ * states: prompt.identity
  * owner: src/agent/prompt/promptService.ts
  */
 interface PromptTimingChangedPayload {
@@ -1393,6 +1412,21 @@ interface TokenCountingTruncatedPayload {
 }
 
 /**
+ * states: profile, profile.activeTools
+ * owner: src/agent/profile/profileOps.ts
+ */
+interface ToolsPolicyRefreshedPayload {
+  _name: 'tools.policy_refreshed';
+  definitionId: string;
+  revision: string;
+  names?: string[];
+  source: 'declared' | 'inherited-default' | 'builtin-default';
+  disallowedTools: string[];
+  toolAllowPolicies: string[][];
+  disabledToolGroups: 'agent' | 'board' | 'cron' | 'fsRead' | 'fsWrite' | 'goal' | 'history' | 'memory' | 'message' | 'plan' | 'question' | 'shell' | 'skill' | 'task' | 'thread' | 'toolSelect' | 'web'[];
+}
+
+/**
  * states: userTool
  * owner: src/agent/userTool/userToolOps.ts
  * payload type: UserToolRegistration
@@ -1406,7 +1440,7 @@ interface ToolsRegisterUserToolPayload {
 }
 
 /**
- * states: profile.activeTools
+ * states: profile, profile.activeTools
  * owner: src/agent/profile/profileOps.ts
  */
 interface ToolsResetActiveToolsPayload {
@@ -1414,7 +1448,7 @@ interface ToolsResetActiveToolsPayload {
 }
 
 /**
- * states: profile.activeTools
+ * states: profile, profile.activeTools
  * owner: src/agent/profile/profileOps.ts
  */
 interface ToolsSetActiveToolsPayload {
@@ -1696,6 +1730,7 @@ interface WirePayloadMap {
   "token_counting.measured": TokenCountingMeasuredPayload;
   "token_counting.rebased": TokenCountingRebasedPayload;
   "token_counting.truncated": TokenCountingTruncatedPayload;
+  "tools.policy_refreshed": ToolsPolicyRefreshedPayload;
   "tools.register_user_tool": ToolsRegisterUserToolPayload;
   "tools.reset_active_tools": ToolsResetActiveToolsPayload;
   "tools.set_active_tools": ToolsSetActiveToolsPayload;

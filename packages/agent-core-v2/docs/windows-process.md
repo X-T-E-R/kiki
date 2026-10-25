@@ -1,0 +1,32 @@
+# Windows Bash process ownership
+
+Local Windows Bash opts into `HostProcessOptions.ownedProcessTree` with `ownedProcessLifetime: 'owner'`. Its resident descendants may outlive the command, but belong to the backend until that backend stops. Other host process spawns retain their existing path. `windowsProcessTree.ts` and `windowsProcessHelper.cs` own each opted-in tree through one Windows Job Object, not a PID/parent-PID scan.
+
+## Launch and cleanup
+
+The precompiled helper starts the root suspended, assigns it to the Job, then resumes it. Launch arguments travel over a private named pipe rather than the helper command line. Separate pipes preserve stdin EOF and binary stdout/stderr. Pipe access is limited to the current Windows identity.
+
+Cancellation and timeout terminate the Job even if its root already exited. Cleanup requires an `active:0` acknowledgement or the exited-helper kill-on-close evidence described below. Normal completion depends on the selected lifetime:
+
+- `process` (the default): dispose removes kill-on-close and releases the Job without stopping resident descendants.
+- `owner`: dispose closes the command's streams and returns promptly. If descendants remain, the App-scoped `HostProcessService` retains their helper and Job. The helper reuses its root-wait thread to query that Job every 250 ms after retention; when the Job empties, an `empty` notification triggers the existing cleanup handshake, exits the helper, and removes the App's ownership entry. App disposal closes launch admission, waits for pending launches, terminates retained Jobs, and awaits helper release. Repeated disposal shares the same result; a failed cleanup remains available for retry.
+
+Owner lifetime requires Windows and `ownedProcessTree:true`; unsupported combinations fail explicitly. The launch request adds `owner-v1`, and the helper must confirm that capability in its ready response. Older helpers reject the extended launch rather than starting an unowned command. Ordinary four-field launches remain compatible.
+
+`ProcessTask` waits for cancellation cleanup and disposal before settlement. `os.process.kill_failed` carries `cleanupComplete:false`, `pid`, a `phase` (`terminate`, `verify`, `control`, `deadline`, `retain`, `watch`, or `release`), and optional `remainingProcessCount` or `win32Error`. A closed control channel also reports `controlClosed:true`; retries do not write to that channel or an exited helper. If the helper exits before any `release` write was attempted, its still-armed kill-on-close Job supplies cleanup evidence for `kill`, `retain`, and disposal, including after the root exited. Once a `release` write was attempted, a failed or delayed write callback does not prove non-delivery: the helper may already have cleared kill-on-close. A helper that advertises `release-exit-v2` returns exit code 0 only after that clear, including when sending `released` or disposing the control writer throws `IOException`. The parent accepts that zero exit as release confirmation only when the ready line carried `release-exit-v2` and this process had already attempted `release`. An older helper's ordinary exit 0, exit code 5 from `release-exit-v1`, an unknown code, a signal, or a zero exit without that attempt does not confirm release. `release-exit-v1` is not accepted: it never shipped as a working helper. A managed exit without a completed release returns 6 and stays unconfirmed. A crash after the flag change but before the zero return stays unconfirmed. Release confirmation is not an empty tree: cancellation still needs `active:0` or kill-on-close evidence. Without either the `released` line or exit code 0 from a `release-exit-v2` helper after a release attempt, cleanup stays unconfirmed and the task stays nonterminal. Root PID absence alone never supplies tree-cleanup evidence.
+
+A missing or incompatible helper, or a launch failure, produces `os.process.spawn_failed`. Rebuild or reinstall the matching artifact; do not fall back to taskkill for owned-tree cleanup or compile on the user's runtime machine. Remote SSH processes and externally managed services do not opt into local owner lifetime.
+
+## Build and packaging
+
+`packages/agent-core-v2/scripts/build-windows-process-helper.mjs` is the only builder for the canonical C# source. Windows builds require the .NET Framework 4 compiler at `Microsoft.NET/Framework/v4.0.30319/csc.exe`. The runtime executable is AnyCPU MSIL using CLR 4, not self-contained; Windows Bash also needs Git for Windows. Public installation requirements live in the mirrored installation guide.
+
+The core build places the helper in `core/dist`; source CLI development scripts prepare that asset before launching. SDK bundling copies it beside the SDK output. Non-SEA CLI builds place it in `dist/native`, and CLI bootstrap supplies that path. The node-local locator also handles source and SDK-relative layouts. SEA collection embeds the same helper under `runtime/process/windows-process-helper.exe`, with manifest hash verification and extraction through the existing native asset cache.
+
+For npm publishing on Linux, the Windows x64 native lane stages its compiled helper at `windows-process-helper/win32-x64/windows-process-helper.exe`. The desktop release publisher sets `KIKI_WINDOWS_PROCESS_HELPER_ARTIFACT` to the downloaded artifact; the same builder copies its bytes into CLI `dist/native`. A specified missing or invalid artifact fails the build. Linux does not invoke a Windows compiler. POSIX native executables do not collect the Windows helper.
+
+## Verification boundary
+
+`test/os/backends/node-local/hostProcessService.test.ts` covers binary streams, long arguments, timeout, stop, root-first exit, default resident release, owner-lifetime task completion, natural empty-Job helper reclamation, App shutdown, concurrent launch/shutdown, backend crash, helper compatibility, unrelated processes, and injected termination/release failures followed by retry. `kap-server/test/desktopLifecycle.test.ts` exercises confirmed quit with real MCP and resident Bash trees while another backend's tree stays alive. CLI native asset tests cover extraction/repair, concurrent build consumers, missing compiler, precompiled cross-host staging, and both npm distributions.
+
+The current candidate has Windows 11 x64 fixture evidence and ordinary CLI/SDK layout evidence. Windows 10, ARM64, missing-CLR machines and a complete installer remain separate release/runtime checks; successful local fixtures do not establish those outcomes.

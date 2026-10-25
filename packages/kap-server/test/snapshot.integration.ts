@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -6,6 +6,7 @@ import {
   AGENT_WIRE_RECORD_KEY,
   type Event2,
   IAgentBlobService,
+  IAgentActivityView,
   IAgentContextMemoryService,
   IAgentScopeContext,
   IAppendLogStore,
@@ -15,6 +16,9 @@ import {
   IAgentPlanService,
   IAgentProfileService,
   IAgentUsageService,
+  ILogService,
+  ISessionActivityView,
+  ISessionDeliveryService,
   ISessionApprovalService,
   ISessionInteractionService,
   ISessionQuestionService,
@@ -25,7 +29,9 @@ import {
   IWireService,
   ISessionManager,
   ITelemetryService,
+  IWorkspaceInstanceManager,
   IWorkspaceService,
+  closeSessionById,
   getLiveSessionById,
   resumeSessionById,
   type ContextMessage,
@@ -33,7 +39,9 @@ import {
 import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { assembleBrowseSnapshotSource, assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { readColdMainWireProjection } from '../src/services/snapshot/coldSnapshotSource';
 import { applyContentSegment, jsonBytes, type ContentSegment } from '@kiki/transcript';
 import { readContentSegment } from '../src/transport/klient/boundedContent';
 import { type RunningServer, startServer } from '../src/start';
@@ -43,6 +51,7 @@ import {
 } from '../src/transport/ws/v1/sessionEventJournal';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
+import * as messageHistory from '../src/services/messages/messageHistory';
 
 function fakeAccessor(entries: ReadonlyArray<readonly [unknown, unknown]>) {
   const services = new Map<unknown, unknown>(entries);
@@ -72,8 +81,10 @@ describe('server-v2 snapshot route enrichment', () => {
     const now = Date.parse('2026-01-01T00:00:00.000Z');
     const loadParts = vi.fn(async (parts: unknown) => parts);
     const main = {
+      id: 'main',
       accessor: fakeAccessor([
-        [IAgentProfileService, { getModel: () => 'provider/session-model' }],
+        [IAgentActivityView, { state: () => ({ busy: false }) }],
+        [IAgentProfileService, { getModel: () => 'provider/session-model', data: () => undefined }],
         [IAgentPermissionModeService, { mode: 'yolo' }],
         [IAgentPlanService, { status: async () => ({ id: 'plan', content: '', path: '' }) }],
         [IAgentBlobService, { loadParts }],
@@ -100,6 +111,9 @@ describe('server-v2 snapshot route enrichment', () => {
       displayName: 'explore',
       model: 'provider/metadata-model',
       thinkingEffort: 'high',
+      thinkingEffortExplicit: false,
+      executor: 'codex',
+      executorProtocol: 'app-server',
       status: undefined as 'completed' | 'failed' | 'cancelled' | undefined,
       completedAt: undefined as number | undefined,
       toolCallCount: undefined as number | undefined,
@@ -119,9 +133,12 @@ describe('server-v2 snapshot route enrichment', () => {
               archived: false,
               agents: { 'agent-1': persistedAgent },
             }),
+            usage: () => undefined,
           },
         ],
-        [IAgentLifecycleService, { get: () => main, create: async () => main }],
+        [IAgentLifecycleService, { get: () => main, list: () => [main], create: async () => main }],
+        [ISessionActivityView, { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) }],
+        [ISessionDeliveryService, { mode: () => 'reply' }],
         [
           ISessionInteractionService,
           { listPending: (kind: string) => (kind === 'approval' ? [approval] : []) },
@@ -155,33 +172,28 @@ describe('server-v2 snapshot route enrichment', () => {
           ISessionManager,
           {
             acquire: async () => ({ handle: session, dispose: () => {} }),
-            get: () => undefined,
+            get: () => session,
             list: () => [],
           },
         ],
         [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
         [ITelemetryService, { withContext: () => ({ track2: () => {} }) }],
+        [ILogService, { warn() {} }],
+        [IModelPricingService, {}],
       ]),
     };
-    let releaseCounts!: () => void;
-    let signalCountsStarted!: () => void;
-    let blockCounts = true;
-    const countsGate = new Promise<void>((resolve) => { releaseCounts = resolve; });
-    const countsStarted = new Promise<void>((resolve) => { signalCountsStarted = resolve; });
-    const getTranscriptToolCallCounts = vi.fn(async () => {
-      signalCountsStarted();
-      if (blockCounts) await countsGate;
-      return new Map([['agent-1', 3]]);
-    });
+    const getTranscriptToolCallCounts = vi.fn(async () => new Map<string, number>());
     const getMaterializedTranscriptToolCallCounts = vi
       .fn<() => ReadonlyMap<string, number>>()
       .mockReturnValueOnce(new Map([['agent-1', 2]]))
       .mockReturnValue(new Map());
-    const getSnapshotState = vi.fn(async (_sessionId: string, options: { captureMessages?: boolean; capture?: () => Promise<unknown> }) => ({
+    const getSnapshotState = vi.fn(async (_sessionId: string, options: { captureMessages?: boolean; capture?: () => Promise<unknown> }) => {
+      const captured = await options.capture?.();
+      return {
       seq: 1,
       epoch: 'ep_snapshot',
       contextMessageCount: 1,
-      captured: await options.capture?.(),
+      captured,
       pendingApprovals: [{
         approval_id: 'approval-snapshot', session_id: sessionId, turn_id: 7,
         tool_call_id: 'tc-approval', tool_name: 'Bash', action: 'run',
@@ -212,15 +224,22 @@ describe('server-v2 snapshot route enrichment', () => {
           session_id: sessionId,
           kind: 'subagent',
           description: 'task agent-1',
+          model: 'provider/spawn-model',
+          thinking_effort: 'low',
+          thinking_effort_explicit: true,
+          executor_id: 'native',
+          executor_protocol: 'native',
           status: 'running',
           subagent_phase: 'working',
           parent_tool_call_id: 'tc_child_1',
           tool_call_count: 5,
           run_in_background: false,
+          started_at: new Date(now).toISOString(),
           created_at: new Date(now).toISOString(),
         },
       ],
-    }));
+      };
+    });
     const broadcaster = {
       getSnapshotState,
       getTranscriptToolCallCounts,
@@ -234,7 +253,15 @@ describe('server-v2 snapshot route enrichment', () => {
             params: { session_id: string };
             query: { mode?: 'transcript' };
           },
-          reply: { send(payload: unknown): unknown },
+          reply: {
+            raw: {
+              writableFinished: boolean;
+              destroyed?: boolean;
+              once(event: 'close', listener: () => void): void;
+              off(event: 'close', listener: () => void): void;
+            };
+            send(payload: unknown): unknown;
+          },
         ) => Promise<void> | void)
       | undefined;
     registerSnapshotRoutes(
@@ -254,6 +281,12 @@ describe('server-v2 snapshot route enrichment', () => {
       await routeHandler?.(
         { id: 'req_snapshot', params: { session_id: sessionId }, query: { mode } },
         {
+          raw: {
+            writableFinished: false,
+            destroyed: false,
+            once() {},
+            off() {},
+          },
           send: (value) => {
             payload = value;
           },
@@ -264,22 +297,7 @@ describe('server-v2 snapshot route enrichment', () => {
       return sessionSnapshotResponseSchema.parse(body.data);
     };
 
-    let compactSettled = false;
-    const compactPromise = invoke('transcript').then((value) => {
-      compactSettled = true;
-      return value;
-    });
-    await countsStarted;
-    const settledBeforeCounts = await Promise.race([
-      compactPromise.then(() => true),
-      new Promise<boolean>((resolve) => {
-        setTimeout(() => { resolve(false); }, 100);
-      }),
-    ]);
-    blockCounts = false;
-    releaseCounts();
-    expect(settledBeforeCounts && compactSettled).toBe(true);
-    const compact = await compactPromise;
+    const compact = await invoke('transcript');
     expect(compact.messages).toEqual({ items: [], has_more: false });
     expect(compact.session.message_count).toBe(1);
     expect(compact.in_flight_turn).toMatchObject({
@@ -310,13 +328,12 @@ describe('server-v2 snapshot route enrichment', () => {
     ]);
     expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: false, capture: expect.any(Function) }));
     expect(getMaterializedTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
-    expect(getTranscriptToolCallCounts).toHaveBeenCalledWith(sessionId, ['agent-1']);
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).not.toHaveBeenCalled();
 
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
     const unmaterialized = await invoke('transcript');
     expect(unmaterialized.subagents?.[0]?.tool_call_count).toBeUndefined();
-    expect(getTranscriptToolCallCounts).toHaveBeenCalledTimes(2);
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).not.toHaveBeenCalled();
 
     const legacy = await invoke();
@@ -330,7 +347,7 @@ describe('server-v2 snapshot route enrichment', () => {
       pending_questions: compact.pending_questions,
     });
     expect(getSnapshotState).toHaveBeenLastCalledWith(sessionId, expect.objectContaining({ captureMessages: true, capture: expect.any(Function) }));
-    expect(getTranscriptToolCallCounts).toHaveBeenCalledTimes(3);
+    expect(getTranscriptToolCallCounts).not.toHaveBeenCalled();
     expect(loadParts).toHaveBeenCalledOnce();
     expect(legacy.subagents).toEqual([
       expect.objectContaining({
@@ -347,13 +364,15 @@ describe('server-v2 snapshot route enrichment', () => {
     expect(legacy.subagents?.[0]).toMatchObject({
       model: 'provider/metadata-model',
       thinking_effort: 'high',
+      thinking_effort_explicit: false,
+      executor_id: 'codex',
+      executor_protocol: 'app-server',
     });
 
     persistedAgent.status = 'completed';
     persistedAgent.completedAt = now + 2_000;
     persistedAgent.resultSummary = 'Stored summary';
     persistedAgent.toolCallCount = 0;
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
     const settled = await invoke();
     expect(settled.subagents?.[0]).toMatchObject({
       status: 'completed',
@@ -363,12 +382,10 @@ describe('server-v2 snapshot route enrichment', () => {
       tool_call_count: 0,
     });
     getMaterializedTranscriptToolCallCounts.mockReturnValueOnce(new Map([['agent-1', 3]]));
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map([['agent-1', 3]]));
     const measured = await invoke('transcript');
     expect(measured.subagents?.[0]?.tool_call_count).toBe(3);
 
     persistedAgent.completedAt = now - 1_000;
-    getTranscriptToolCallCounts.mockResolvedValueOnce(new Map());
     const stale = await invoke();
     expect(stale.subagents?.[0]?.status).toBe('running');
     expect(stale.subagents?.[0]?.tool_call_count).toBeUndefined();
@@ -505,6 +522,8 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     const childId = `child-snapshot-r3-${label}`;
     await session.accessor.get(IAgentLifecycleService).create({ agentId: childId });
     const wirePath = childWirePath(sid, childId);
+    const originalWire = await readFile(wirePath);
+    try {
     if (content === undefined) await rm(wirePath, { force: true });
     else await writeFile(wirePath, content, 'utf8');
     emit(sid, {
@@ -522,6 +541,9 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     const child = (snap.subagents ?? []).find((subagent) => subagent.id === childId);
     expect(child).toBeDefined();
     expect(child?.tool_call_count).toBe(count);
+    } finally {
+      await writeFile(wirePath, originalWire);
+    }
   });
 
   it('keeps the legacy snapshot readable and skips history work in transcript mode', async () => {
@@ -623,12 +645,26 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     const futureAppended = deferred();
     const originalRead = appendLog.read.bind(appendLog) as typeof appendLog.read;
     const originalAppend = appendLog.append.bind(appendLog) as typeof appendLog.append;
-    let shouldPause = true;
+    let shouldPause = false;
+    let latestSeq = boundary.as_of_seq;
+    let capturedSeq = boundary.as_of_seq;
+    const readSeq = Object.getOwnPropertyDescriptor(SessionEventJournal.prototype, 'seq')!.get!;
+    const seqSpy = vi.spyOn(SessionEventJournal.prototype, 'seq', 'get').mockImplementation(function (this: SessionEventJournal) {
+      const seq = readSeq.call(this) as number;
+      if (this.epoch === boundary.epoch) latestSeq = seq;
+      return seq;
+    });
+    const captureHistory = messageHistory.captureContextMessageHistory;
+    const historySpy = vi.spyOn(messageHistory, 'captureContextMessageHistory').mockImplementation((...args) => {
+      shouldPause = true;
+      return captureHistory(...args);
+    });
     const readSpy = vi.spyOn(appendLog, 'read').mockImplementation(<R>(scope: string, key: string) => {
       const source = originalRead<R>(scope, key);
       return (async function* (): AsyncIterableIterator<R> {
         if (shouldPause && scope === mainScope && key === AGENT_WIRE_RECORD_KEY) {
           shouldPause = false;
+          capturedSeq = latestSeq;
           readEntered.resolve();
           await releaseRead.promise;
         }
@@ -693,9 +729,12 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     journalSpy.mockRestore();
     appendSpy.mockRestore();
     readSpy.mockRestore();
+    historySpy.mockRestore();
+    seqSpy.mockRestore();
 
-    expect(seqBeforeReadRelease).toBeGreaterThan(boundary.as_of_seq);
-    expect(current.as_of_seq).toBe(boundary.as_of_seq);
+    expect(capturedSeq).toBeGreaterThanOrEqual(boundary.as_of_seq);
+    expect(seqBeforeReadRelease).toBeGreaterThan(capturedSeq);
+    expect(current.as_of_seq).toBe(capturedSeq);
     expect(current.messages).toEqual(boundary.messages);
     expect(current.in_flight_turn).toEqual(boundary.in_flight_turn);
 
@@ -1055,7 +1094,7 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(readSpy).not.toHaveBeenCalled();
     expect(compactWarm.messages.items).toEqual([]);
     const snap = await snapshot(sid);
-    readSpy.mockRestore();
+    expect(readSpy).not.toHaveBeenCalled();
     expect(snap.session.id).toBe(sid);
     expect(snap.session.message_count).toBe(2);
     expect(snap.messages.items).toHaveLength(2);
@@ -1064,9 +1103,39 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect((snap.messages.items[0]!.content[0] as { text: string }).text).toBe('hello-from-disk');
     expect((snap.messages.items[1]!.content[0] as { text: string }).text).toBe('hi-from-disk');
     expect(snap.epoch).toMatch(/^ep_/);
+    await writeFile(join(wireDir, 'wire.jsonl'), `${records.map((record) => JSON.stringify(record)).join('\n')}\n${JSON.stringify({
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'changed-on-disk' }], toolCalls: [] },
+    })}\n`, 'utf-8');
+    readSpy.mockClear();
+    const changed = await snapshot(sid, 'transcript');
+    expect(readSpy).toHaveBeenCalled();
+    expect(changed.session.message_count).toBe(3);
+    expect(changed.messages.items).toEqual([]);
+    const summary = await server!.core.accessor.get(ISessionIndex).get(sid);
+    if (summary === undefined) throw new Error(`session ${sid} missing from the index`);
+    const aborted = new AbortController();
+    aborted.abort();
+    readSpy.mockClear();
+    await expect(readColdMainWireProjection(server!.core, summary.workspaceId, sid, aborted.signal)).rejects.toThrow(/abort/i);
+    expect(readSpy).not.toHaveBeenCalled();
+    await writeFile(join(wireDir, 'wire.jsonl'), `${JSON.stringify({
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'x'.repeat(2_200_000) }], toolCalls: [] },
+    })}\n`, 'utf-8');
+    readSpy.mockClear();
+    const heavy = await snapshot(sid, 'transcript');
+    expect(heavy.session.message_count).toBe(1);
+    expect(heavy.messages.items).toEqual([]);
+    readSpy.mockClear();
+    const heavyAgain = await snapshot(sid, 'transcript');
+    expect(readSpy).toHaveBeenCalled();
+    expect(heavyAgain.session.message_count).toBe(1);
+    expect(heavyAgain.messages.items).toEqual([]);
+    readSpy.mockRestore();
   });
 
-  it('omits persisted subagent relations without running or terminal evidence', async () => {
+  it('retains cold identity-only subagent relations without presenting them as active', async () => {
     const sid = await createSession();
     await ensureMainAgent(sid);
     const session = getLiveSessionById(server!.core.accessor, sid);
@@ -1121,7 +1190,10 @@ describe('server-v2 GET /api/sessions/:id/snapshot', () => {
     expect(getLiveSessionById(server!.core.accessor, sid)).toBeUndefined();
 
     const snap = await snapshot(sid);
-    expect(snap.subagents).toEqual([]);
+    expect(snap.subagents).toEqual([expect.objectContaining({
+      id: 'agent-1', label: 'Research API limits', profile: 'explore',
+      activity_status: 'unknown', status_source: 'metadata', live: false,
+    })]);
   });
 
   it('serves a v1-layout session (ISO timestamps, no id field) without crashing', async () => {
@@ -1199,8 +1271,10 @@ describe('legacy snapshot message tail projection', () => {
   }> {
     const loadParts = vi.fn(async (parts: unknown) => parts);
     const main = {
+      id: 'main',
       accessor: fakeAccessor([
-        [IAgentProfileService, { getModel: () => 'provider/tail-model' }],
+        [IAgentActivityView, { state: () => ({ busy: false }) }],
+        [IAgentProfileService, { getModel: () => 'provider/tail-model', data: () => undefined }],
         [IAgentPermissionModeService, { mode: 'yolo' }],
         [IAgentPlanService, { status: async () => null }],
         [IAgentBlobService, { loadParts }],
@@ -1220,19 +1294,24 @@ describe('legacy snapshot message tail projection', () => {
               archived: false,
               agents: {},
             }),
+            usage: () => undefined,
           },
         ],
-        [IAgentLifecycleService, { get: () => main, create: async () => main }],
+        [IAgentLifecycleService, { get: () => main, list: () => [main], create: async () => main }],
         [ISessionInteractionService, { listPending: () => [] }],
+        [ISessionActivityView, { state: () => ({ busy: false, mainTurnActive: false, pendingInteraction: 'none' }) }],
+        [ISessionDeliveryService, { mode: () => 'reply' }],
       ]),
     };
     const core = {
       accessor: fakeAccessor([
         [
           ISessionManager,
-          { acquire: async () => ({ handle: session, dispose: () => {} }), get: () => undefined, list: () => [] },
+          { acquire: async () => ({ handle: session, dispose: () => {} }), get: () => session, list: () => [] },
         ],
         [IWorkspaceService, { get: async () => ({ root: '/workspace' }) }],
+        [ILogService, { warn() {} }],
+        [IModelPricingService, {}],
       ]),
     };
     const contextMessages = Array.from({ length: size }, (_, index) => ({
@@ -1405,9 +1484,9 @@ describe('server-v2 session operation lease', () => {
       if (lease === undefined) return undefined;
       return {
         handle: lease.handle,
-        dispose: () => {
+        dispose: async () => {
           disposals.push(sessionId);
-          lease.dispose();
+          await lease.dispose();
         },
       };
     });
@@ -1544,8 +1623,10 @@ describe('server-v2 session operation lease', () => {
     const gate = deferred();
     const reached = deferred();
     vi.spyOn(wire, 'flush').mockImplementation(async () => {
-      reached.resolve();
-      await gate.promise;
+      if (manager.residencyReport!().pinnedSessions > 0) {
+        reached.resolve();
+        await gate.promise;
+      }
       return flush();
     });
     const response = fetch(`${base}/api/sessions/${sessionId}/messages`, {
@@ -1776,3 +1857,343 @@ describe('server-v2 session operation lease', () => {
     },
   );
 });
+
+describe('cold session snapshot', () => {
+  let server: RunningServer | undefined;
+  let home: string | undefined;
+  let base: string;
+
+  beforeEach(async () => {
+    home = await mkdtemp(join(tmpdir(), 'kimi-cold-snapshot-'));
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home,
+      logLevel: 'silent',
+    });
+    base = `http://127.0.0.1:${server.port}`;
+  });
+
+  afterEach(async () => {
+    if (server !== undefined) {
+      await server.close();
+      server = undefined;
+    }
+    if (home !== undefined) {
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      home = undefined;
+    }
+  });
+
+  async function createSession(): Promise<string> {
+    const res = await fetch(`${base}/api/sessions`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify({ metadata: { cwd: home } }),
+    } as never);
+    const body = (await res.json()) as { code: number; data: { id: string } };
+    expect(body.code).toBe(0);
+    return body.data.id;
+  }
+
+  async function mainOf(sessionId: string) {
+    const session = getLiveSessionById(server!.core.accessor, sessionId);
+    if (session === undefined) throw new Error(`session ${sessionId} not found`);
+    const agents = session.accessor.get(IAgentLifecycleService);
+    if (agents.get('main') === undefined) await agents.create({ agentId: 'main' });
+    const main = agents.get('main');
+    if (main === undefined) throw new Error('main agent missing');
+    return { session, main };
+  }
+
+  async function snapshot(sessionId: string) {
+    const res = await fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    const body = (await res.json()) as { code: number; data: unknown };
+    expect(body.code).toBe(0);
+    return sessionSnapshotResponseSchema.parse(body.data);
+  }
+
+  async function expand(sessionId: string, data: Awaited<ReturnType<typeof snapshot>>) {
+    let current = data;
+    while (current.contentRefs?.length) {
+      const response = await fetch(`${base}/api/klient/session-view/${sessionId}/transcript/content`, {
+        method: 'POST',
+        headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+        body: JSON.stringify({ agentId: 'main', ref: current.contentRefs[0] }),
+      });
+      const body = await response.json() as { code: number; data: ContentSegment };
+      expect(body.code).toBe(0);
+      current = applyContentSegment(current, body.data);
+    }
+    return current;
+  }
+
+  function messageShape(data: Awaited<ReturnType<typeof snapshot>>) {
+    return data.messages.items.map((item) => ({ id: item.id, role: item.role, content: item.content }));
+  }
+
+  function restorationSpies() {
+    const manager = server!.core.accessor.get(ISessionManager);
+    return {
+      manager,
+      acquire: vi.spyOn(manager, 'acquire'),
+      resume: vi.spyOn(manager, 'resume'),
+      workspaceAcquire: vi.spyOn(server!.core.accessor.get(IWorkspaceInstanceManager), 'acquire'),
+    };
+  }
+
+  it('matches a warm snapshot after close without resuming the session', async () => {
+    const sessionId = await createSession();
+    const { main } = await mainOf(sessionId);
+    const memory = main.accessor.get(IAgentContextMemoryService);
+    memory.append(...Array.from({ length: 101 }, (_, index) => ({
+      id: `hist-${index}`,
+      role: 'user' as const,
+      content: [{ type: 'text' as const, text: `history-${index}` }],
+      toolCalls: [],
+    })));
+    await main.accessor.get(IWireService).flush();
+    const warm = await expand(sessionId, await snapshot(sessionId));
+    await closeSessionById(server!.core.accessor, sessionId);
+    const spies = restorationSpies();
+    const coldPreview = await snapshot(sessionId);
+    const cold = await expand(sessionId, coldPreview);
+    expect(spies.acquire).not.toHaveBeenCalled();
+    expect(spies.resume).not.toHaveBeenCalled();
+    expect(spies.workspaceAcquire).not.toHaveBeenCalled();
+    expect(coldPreview.session.message_count).toBe(101);
+    expect(coldPreview.messages.has_more).toBe(true);
+    expect(cold.messages.items).toHaveLength(100);
+    expect(messageShape(cold)).toEqual(messageShape(warm));
+    expect(cold.messages.items[0]?.content).toEqual([{ type: 'text', text: 'history-1' }]);
+    expect(cold.messages.items.at(-1)?.content).toEqual([{ type: 'text', text: 'history-100' }]);
+    expect(coldPreview.context_tokens).toBeUndefined();
+    expect(coldPreview.max_context_tokens).toBeUndefined();
+    expect(coldPreview.context_breakdown).toBeUndefined();
+    expect(coldPreview.in_flight_turn).toBeNull();
+    expect(coldPreview.pending_approvals).toEqual([]);
+    expect(coldPreview.pending_questions).toEqual([]);
+    spies.acquire.mockRestore();
+    spies.resume.mockRestore();
+    spies.workspaceAcquire.mockRestore();
+    await spies.manager.resume(sessionId);
+    const reopened = await expand(sessionId, await snapshot(sessionId));
+    expect(messageShape(reopened)).toEqual(messageShape(cold));
+    expect(reopened.as_of_seq).toBe(cold.as_of_seq);
+    expect(reopened.epoch).toBe(cold.epoch);
+  });
+
+  it('keeps compacted and edited logical context and drops the replaced history', async () => {
+    const sessionId = await createSession();
+    const { main } = await mainOf(sessionId);
+    const memory = main.accessor.get(IAgentContextMemoryService);
+    memory.append(
+      { role: 'user', content: [{ type: 'text', text: 'original-hidden' }], toolCalls: [] },
+      { role: 'assistant', content: [{ type: 'text', text: 'original-answer' }], toolCalls: [] },
+    );
+    memory.applyCompaction({
+      summary: 'folded-summary',
+      compactedCount: memory.get().length,
+      tokensBefore: 40,
+    });
+    memory.append({
+      id: 'edited-user',
+      role: 'user',
+      content: [{ type: 'text', text: 'edited-input' }],
+      toolCalls: [],
+    });
+    await main.accessor.get(IWireService).flush();
+    const warm = await snapshot(sessionId);
+    const warmText = JSON.stringify(warm.messages.items);
+    expect(warmText).toContain('folded-summary');
+    expect(warmText).toContain('edited-input');
+    expect(warmText).toContain('original-hidden');
+    expect(warmText).not.toContain('original-answer');
+    await closeSessionById(server!.core.accessor, sessionId);
+    const spies = restorationSpies();
+    const cold = await snapshot(sessionId);
+    expect(spies.acquire).not.toHaveBeenCalled();
+    expect(spies.resume).not.toHaveBeenCalled();
+    expect(spies.workspaceAcquire).not.toHaveBeenCalled();
+    expect(messageShape(cold)).toEqual(messageShape(warm));
+    expect(cold.session.message_count).toBe(warm.session.message_count);
+    expect(cold.messages.has_more).toBe(warm.messages.has_more);
+  });
+
+  it('reads saved permission, plan, and completed subagent roster without a live handle', async () => {
+    const sessionId = await createSession();
+    const { session, main } = await mainOf(sessionId);
+    main.accessor.get(IAgentPermissionModeService).setMode('yolo', 'runtime');
+    await main.accessor.get(IAgentPlanService).enter('plan-cold');
+    const childId = 'child-cold';
+    await session.accessor.get(IAgentLifecycleService).create({ agentId: childId });
+    await session.accessor.get(ISessionMetadata).updateAgent(childId, (current) => ({
+      ...current,
+      type: 'sub',
+      parentAgentId: 'main',
+      status: 'completed',
+      completedAt: Date.parse('2026-02-02T00:00:00.000Z'),
+      thinkingEffort: 'high',
+      thinkingEffortExplicit: true,
+    }));
+    await main.accessor.get(IWireService).flush();
+    const warm = await snapshot(sessionId);
+    await closeSessionById(server!.core.accessor, sessionId);
+    const spies = restorationSpies();
+    const cold = await snapshot(sessionId);
+    expect(spies.acquire).not.toHaveBeenCalled();
+    expect(spies.resume).not.toHaveBeenCalled();
+    expect(spies.workspaceAcquire).not.toHaveBeenCalled();
+    expect(cold.session.agent_config.permission_mode).toBe('yolo');
+    expect(cold.session.agent_config.plan_mode).toBe(true);
+    expect(cold.session.agent_config.permission_mode).toBe(warm.session.agent_config.permission_mode);
+    expect(cold.session.agent_config.plan_mode).toBe(warm.session.agent_config.plan_mode);
+    expect(cold.session.agent_config.model).toBe(warm.session.agent_config.model);
+    expect((cold.subagents ?? []).map((subagent) => subagent.id)).toEqual(
+      (warm.subagents ?? []).map((subagent) => subagent.id),
+    );
+    expect(cold.agent_counts).toEqual(warm.agent_counts);
+    const child = (cold.subagents ?? []).find((subagent) => subagent.id === childId);
+    expect(child?.thinking_effort).toBe('high');
+    expect(child?.live).not.toBe(true);
+  });
+
+  it('cancels an in-flight cold snapshot read and serves the saved context after reopen', async () => {
+    const sessionId = await createSession();
+    const { main } = await mainOf(sessionId);
+    main.accessor.get(IAgentContextMemoryService).append({
+      id: 'kept-user',
+      role: 'user',
+      content: [{ type: 'text', text: 'kept' }],
+      toolCalls: [],
+    });
+    await main.accessor.get(IWireService).flush();
+    await closeSessionById(server!.core.accessor, sessionId);
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const raw = concreteMethod(appendLog, 'read');
+    let releaseRead = (): void => {};
+    let observed: AbortSignal | undefined;
+    const read = vi.spyOn(appendLog, 'read').mockImplementation((scope, key, options) => {
+      if (String(scope).endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY) {
+        observed = options?.signal;
+        const signal = options?.signal;
+        const held = new Promise<void>((resolve) => {
+          releaseRead = resolve;
+          if (signal?.aborted === true) resolve();
+          else signal?.addEventListener('abort', () => resolve(), { once: true });
+        });
+        return (async function* () {
+          await held;
+          if (signal?.aborted === true) throw new DOMException('The operation was aborted', 'AbortError');
+          yield* raw.call(appendLog, scope, key, options);
+        })();
+      }
+      return raw.call(appendLog, scope, key, options);
+    });
+    const controller = new AbortController();
+    const spies = restorationSpies();
+    const pending = fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
+      headers: authHeaders(server as RunningServer),
+      signal: controller.signal,
+    });
+    void pending.catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(observed).toBeDefined());
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+      expect(spies.acquire).not.toHaveBeenCalled();
+      expect(spies.resume).not.toHaveBeenCalled();
+      expect(spies.workspaceAcquire).not.toHaveBeenCalled();
+    } finally {
+      releaseRead();
+      read.mockRestore();
+      spies.acquire.mockRestore();
+      spies.resume.mockRestore();
+      spies.workspaceAcquire.mockRestore();
+    }
+    const cold = await snapshot(sessionId);
+    expect(cold.messages.items.some((item) => JSON.stringify(item.content).includes('kept'))).toBe(true);
+    expect(spies.manager.residencyReport?.().liveSessions ?? 0).toBe(0);
+  });
+
+  it('reports an unknown session without resuming it', async () => {
+    const spies = restorationSpies();
+    const res = await fetch(`${base}/api/sessions/missing-session/snapshot`, {
+      headers: authHeaders(server as RunningServer),
+    } as never);
+    const body = (await res.json()) as { code: number };
+    expect(body.code).toBe(40401);
+    expect(spies.acquire).not.toHaveBeenCalled();
+    expect(spies.resume).not.toHaveBeenCalled();
+    expect(spies.workspaceAcquire).not.toHaveBeenCalled();
+  });
+
+  it('keeps a cold read cold when the session is restored concurrently', async () => {
+    const sessionId = await createSession();
+    const { main } = await mainOf(sessionId);
+    main.accessor.get(IAgentContextMemoryService).append({
+      role: 'user',
+      content: [{ type: 'text', text: 'race-text' }],
+      toolCalls: [],
+    });
+    await main.accessor.get(IWireService).flush();
+    await closeSessionById(server!.core.accessor, sessionId);
+    const appendLog = server!.core.accessor.get(IAppendLogStore);
+    const raw = concreteMethod(appendLog, 'read');
+    let releaseRead = (): void => {};
+    let held = false;
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+    const read = vi.spyOn(appendLog, 'read').mockImplementation((scope, key, options) => {
+      if (!held && String(scope).endsWith('/agents/main') && key === AGENT_WIRE_RECORD_KEY) {
+        held = true;
+        return (async function* () {
+          entered();
+          await new Promise<void>((resolve) => { releaseRead = resolve; });
+          yield* raw.call(appendLog, scope, key, options);
+        })();
+      }
+      return raw.call(appendLog, scope, key, options);
+    });
+    const spies = restorationSpies();
+    const pending = fetch(`${base}/api/sessions/${sessionId}/snapshot`, {
+      headers: authHeaders(server as RunningServer),
+    }).then(async (res) => (await res.json()) as { code: number; data: unknown });
+    void pending.catch(() => undefined);
+    try {
+      await enteredPromise;
+      expect(spies.acquire).not.toHaveBeenCalled();
+      expect(spies.resume).not.toHaveBeenCalled();
+      expect(spies.workspaceAcquire).not.toHaveBeenCalled();
+      await spies.manager.resume(sessionId);
+      releaseRead();
+      const body = await pending;
+      expect(body.code).toBe(0);
+      const cold = sessionSnapshotResponseSchema.parse(body.data);
+      expect(spies.acquire).not.toHaveBeenCalled();
+      expect(JSON.stringify(cold.messages.items)).toContain('race-text');
+      expect(cold.in_flight_turn).toBeNull();
+      expect(cold.pending_approvals).toEqual([]);
+      expect(cold.pending_questions).toEqual([]);
+    } finally {
+      releaseRead();
+      read.mockRestore();
+      spies.acquire.mockRestore();
+      spies.resume.mockRestore();
+      spies.workspaceAcquire.mockRestore();
+    }
+  });
+});
+
+function concreteMethod<T extends object, K extends keyof T>(target: T, key: K): T[K] {
+  let host: object | null = target;
+  while (host !== null) {
+    const value: unknown = Object.getOwnPropertyDescriptor(host, key)?.value;
+    if (typeof value === 'function') return value as T[K];
+    host = Object.getPrototypeOf(host) as object | null;
+  }
+  throw new Error(`${String(key)} is not a concrete method`);
+}

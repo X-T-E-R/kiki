@@ -201,7 +201,7 @@ function RouterGuardHarness({ action, actionTarget = '/usage' }: { action?: (sig
       <NavHistoryBridge>
         <NavBackButton />
         <RestoredVisit />
-        <button data-push onClick={() => { guard.navigate('/settings/developer'); }}>Developer</button>
+        <button data-push onClick={() => { void guard.navigate('/settings/developer'); }}>Developer</button>
         <button data-dirty onClick={() => { guard.value.reportDirty('editor', true); }}>Edit</button>
         <button data-action onClick={() => { if (action) void guard.value.runAction?.(action, actionTarget); }}>Switch</button>
         <output data-action-error>{error}</output><output data-dirty-state>{String(guard.value.dirty)}</output>

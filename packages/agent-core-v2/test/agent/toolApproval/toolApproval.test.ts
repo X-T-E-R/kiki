@@ -83,6 +83,8 @@ function makeContext(
       description: options.description ?? `Approve ${toolName}`,
       display: options.display,
       approvalRule: options.approvalRule ?? toolName,
+      sessionApprovalRule: toolName === 'Bash' ? JSON.stringify(['Bash', 'local', '/workspace', args['command']]) : undefined,
+      shellContext: toolName === 'Bash' ? { runtimeId: 'local', cwd: '/workspace', pathClass: 'posix' } : undefined,
       execute: () => Promise.resolve({ output: '' }),
     },
   };
@@ -154,8 +156,8 @@ describe('AgentToolApprovalService', () => {
       strict: true,
     });
   });
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   function make(): IAgentToolApprovalService {
@@ -348,6 +350,49 @@ describe('AgentToolApprovalService', () => {
         expect(records).toContainEqual({ event: 'permission_approval_result', properties: expect.objectContaining({ result: 'cancelled' }) });
       },
     );
+    it.each([
+      { response: { decision: 'rejected' }, expected: 'rejected' },
+      { response: { decision: 'rejected', selectedOptionId: 'unknown' }, expected: 'rejected' },
+      { response: { decision: 'cancelled' }, expected: 'cancelled' },
+      { response: { decision: 'approved' }, expected: 'cancelled' },
+      { response: { decision: 'approved', selectedOptionId: 'unknown' }, expected: 'cancelled' },
+      { response: { decision: 'approved', selectedOptionId: 'reject' }, expected: 'cancelled' },
+      { response: { decision: 'approved', selectedOptionId: 'allow' }, expected: 'approved' },
+    ] satisfies { response: ApprovalResponse; expected: ApprovalResponse['decision'] }[])(
+      'preserves external $response.decision as $expected through the real broker', async ({ response, expected }) => {
+        ix.set(ISessionStateService, new SessionStateService());
+        ix.set(ISessionInteractionService, new SyncDescriptor(SessionInteractionService));
+        ix.set(ISessionApprovalService, new SyncDescriptor(SessionApprovalService));
+        ix.get(ISessionInteractionService).acquireConsumer('test');
+        const events = subscribeApprovalEvents();
+        const pending = make().requestToolApproval(makeContext('ExternalTool', {}, { display: {
+          kind: 'external_permission', summary: 'Provider permission', options: [
+            { id: 'allow', label: 'Allow', kind: 'allow_once' },
+            { id: 'reject', label: 'Reject', kind: 'reject_once' },
+          ],
+        } }), ask(), 'fallback-ask');
+        const broker = ix.get(ISessionApprovalService);
+        broker.decide(broker.listPending()[0]!.id!, response);
+        const decision = await pending;
+        if (expected === 'approved') expect(decision).toBeUndefined();
+        else expect(decision).toMatchObject({ permissionDecision: expected, veto: { isError: true } });
+        expect(recorded[0]?.result.decision).toBe(expected);
+        expect(events.resolved).toHaveBeenCalledWith(expect.objectContaining({ decision: expected }));
+      },
+    );
+
+    it.each(['allow', 'deny'] as const)('preserves automatic reviewer %s in non-interactive runs', async (outcome) => {
+      const review = useReviewer(() => outcome);
+      interactive = false;
+      const broker = useBroker(async () => ({ decision: 'approved' }));
+      const result = await make().requestToolApproval(makeContext('Bash', { command: 'printf hello' }), ask(), 'fallback-ask');
+      if (outcome === 'allow') expect(result).toBeUndefined();
+      else expect(result).toMatchObject({ veto: { output: expect.stringContaining('Denied by reviewer') } });
+      expect(review).toHaveBeenCalledOnce();
+      expect(broker).not.toHaveBeenCalled();
+      expect(recorded[0]?.result.decision).toBe(outcome === 'allow' ? 'approved' : 'rejected');
+    });
+
     it('records a reviewer approval with provenance without asking the user or writing a session rule', async () => {
       const review = useReviewer(() => 'allow');
       const broker = useBroker(async () => ({ decision: 'rejected' }));
@@ -644,6 +689,12 @@ describe('AgentToolApprovalService', () => {
           session_cache_written: true,
         }),
       });
+    });
+
+    it('records the exact resolved Bash identity rather than its persistent command pattern', async () => {
+      useBroker(async () => ({ decision: 'approved', scope: 'session' }));
+      await make().requestToolApproval(makeContext('Bash', { command: 'printf first; printf second' }, { approvalRule: 'Bash(printf first; printf second)' }), ask(), 'fallback-ask');
+      expect(recorded[0]?.sessionApprovalRule).toBe(JSON.stringify(['Bash', 'local', '/workspace', 'printf first; printf second']));
     });
 
     it('keeps approved-once responses out of the session cache', async () => {

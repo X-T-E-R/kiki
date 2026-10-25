@@ -38,7 +38,7 @@ function handle(initial: ContextStrategyStatus | undefined, overrides: Partial<C
     status: initial,
     writable: true,
     refresh: vi.fn(),
-    write: vi.fn(async (strategy) => st(strategy ?? 'summarize', strategy === null ? 'default' : 'session')),
+    write: vi.fn(async (strategy) => st(strategy ?? 'auto', strategy === null ? 'default' : 'session')),
     saveGlobal: vi.fn(async (strategy) => st(strategy, 'global')),
     compact: vi.fn(async () => undefined),
     ...overrides,
@@ -71,15 +71,25 @@ const click = async (element: Element | null) => {
 };
 
 describe('ContextStrategySection', () => {
-  it('shows the inherited default with summarize checked and labelled as the default', async () => {
-    const container = await render(handle(st('summarize', 'default')));
+  it('shows the inherited main-agent default with auto checked and explains the summary fallback', async () => {
+    const strategy = handle(st('auto', 'default'));
+    const container = await render(strategy);
     const block = container.querySelector('[data-context-strategy]')!;
     expect(block.getAttribute('data-strategy-source')).toBe('default');
-    expect(container.querySelector('[data-strategy-option="summarize"]')?.getAttribute('aria-checked')).toBe('true');
-    expect(container.querySelector('[data-strategy-hint]')?.textContent).toMatch(/^Default\./);
+    expect(container.querySelector('[data-strategy-option="auto"]')?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-strategy-option="summarize"]')?.getAttribute('aria-checked')).toBe('false');
+    expect(container.querySelector('[data-strategy-hint]')?.textContent).toBe('Built-in main-agent default. Starts fresh when the work notes cover the work, otherwise summarizes.');
     expect(container.querySelector('[data-strategy-source-trigger]')?.textContent).toContain('Built-in default');
-    // Auto is offered plainly: no badge, no recommendation.
     expect(container.querySelector('[data-strategy-option="auto"]')?.textContent).toBe('Auto');
+    expect(strategy.write).not.toHaveBeenCalled();
+    expect(strategy.compact).not.toHaveBeenCalled();
+  });
+
+  it.each(['summarize', 'fresh'] as const)('keeps an explicit global %s selected', async (strategy) => {
+    const container = await render(handle(st(strategy, 'global')));
+    expect(container.querySelector(`[data-strategy-option="${strategy}"]`)?.getAttribute('aria-checked')).toBe('true');
+    expect(container.querySelector('[data-strategy-source-trigger]')?.textContent).toContain('Global default');
+    expect(container.querySelector('[data-strategy-hint]')?.textContent).not.toContain('default.');
   });
 
   it('names the profile a strategy comes from', async () => {
@@ -89,7 +99,7 @@ describe('ContextStrategySection', () => {
   });
 
   it('writes a session override on pick and resets to the inherited layer', async () => {
-    const strategy = handle(st('summarize', 'default'));
+    const strategy = handle(st('auto', 'default'));
     const container = await render(strategy);
     await click(container.querySelector('[data-strategy-option="fresh"]'));
     expect(strategy.write).toHaveBeenCalledWith('fresh');
@@ -103,11 +113,11 @@ describe('ContextStrategySection', () => {
   });
 
   it('moves the selection with arrow keys', async () => {
-    const strategy = handle(st('summarize', 'default'));
+    const strategy = handle(st('auto', 'default'));
     const container = await render(strategy);
     const group = container.querySelector('[role="radiogroup"]')!;
     await act(async () => { group.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })); });
-    expect(strategy.write).toHaveBeenCalledWith('fresh');
+    expect(strategy.write).toHaveBeenCalledWith('summarize');
   });
 
   it('saves the choice globally and confirms it', async () => {
@@ -120,7 +130,7 @@ describe('ContextStrategySection', () => {
   });
 
   it('reports a failed write inline', async () => {
-    const strategy = handle(st('summarize', 'default'), { write: vi.fn(async () => { throw new Error('boom'); }) });
+    const strategy = handle(st('auto', 'default'), { write: vi.fn(async () => { throw new Error('boom'); }) });
     const container = await render(strategy);
     await click(container.querySelector('[data-strategy-option="auto"]'));
     const note = container.querySelector('[data-strategy-note]')!;
@@ -148,12 +158,12 @@ describe('ContextStrategySection', () => {
 
   it('compacts now with a chosen strategy', async () => {
     const onCompact = vi.fn();
-    const strategy = handle(st('summarize', 'default'));
+    const strategy = handle(st('auto', 'default'));
     const container = await render(strategy, onCompact);
     await click(container.querySelector('[data-context-compact-with]'));
     await click(container.querySelector('[data-context-compact-option="fresh"]'));
     expect(strategy.compact).toHaveBeenCalledWith('fresh');
     expect(onCompact).not.toHaveBeenCalled();
-    expect(getToasts().at(-1)?.text).toBe('Compaction requested. The context will restart from the work notes.');
+    expect(getToasts().at(-1)?.text).toBe('Manual compaction requested.');
   });
 });

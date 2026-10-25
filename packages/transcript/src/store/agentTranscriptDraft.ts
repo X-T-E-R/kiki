@@ -9,6 +9,7 @@ import type { TranscriptTask } from '../model/task';
 import type { TranscriptTodo } from '../model/todo';
 import type { TranscriptStep, TranscriptTurn } from '../model/turn';
 import { appendAtOffset, applyOperation, type AgentState } from '../ops/apply';
+import { safetyBoundaryIndex } from '../ops/framePlace';
 import { transcriptValueEquals } from '../ops/equality';
 import type {
   AgentTranscriptSnapshot,
@@ -253,7 +254,7 @@ export class AgentTranscriptDraft {
       case 'step.upsert':
         return this.applyStepUpsert(op.turnId, op.step);
       case 'frame.upsert':
-        return this.applyFrameUpsert(op.turnId, op.stepId, op.frame);
+        return this.applyFrameUpsert(op.turnId, op.stepId, op.frame, op.place);
       case 'frame.remove':
         return this.applyFrameRemove(op.turnId, op.stepId, op.frameId);
       case 'tool.count.set':
@@ -328,6 +329,7 @@ export class AgentTranscriptDraft {
     turnId: string,
     stepId: string,
     frame: TranscriptFrame,
+    place?: 'safety_boundary',
   ): DraftOperationResult {
     const turn = this.#turns.get(turnId) ?? skeletonTurn(turnId);
     const stepMapKey = stepKey(turnId, stepId);
@@ -351,6 +353,7 @@ export class AgentTranscriptDraft {
     const frameIndex = step.frames.findIndex((entry) => entry.frameId === frame.frameId);
     const frames = [...step.frames];
     if (frameIndex >= 0) frames[frameIndex] = frame;
+    else if (place === 'safety_boundary') frames.splice(safetyBoundaryIndex(frames), 0, frame);
     else frames.push(frame);
     const nextStep: TranscriptStep = { ...step, frames };
     const stepIndex = turn.steps.findIndex((entry) => entry.stepId === stepId);

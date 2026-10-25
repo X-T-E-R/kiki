@@ -20,7 +20,7 @@ export const ANTIGRAVITY_ID = 'antigravity-acp';
 const BINARIES_KEY = ['executors', ANTIGRAVITY_ID, 'binaries'] as const;
 type Method = 'oauth-personal' | 'oauth-business';
 type Pending = Extract<AntigravityLoginStartResponse, { already_signed_in: false }> & { readonly startedAt: number };
-type LoginStatus = 'logged_in' | 'logged_out' | 'unknown';
+export type LoginStatus = 'logged_in' | 'logged_out' | 'unknown';
 
 /** A 1.x release number, the only line Kiki drives (the IDE's 1.107 is not one). */
 export function antigravityVersionValid(value: string): boolean {
@@ -61,6 +61,15 @@ export function loginOutcomeKey(outcome: { readonly retryable: boolean; readonly
   if (outcome.message_code === 'callback_mismatch') return 'st.antigravity.pasteRetry' as const;
   if (outcome.message_code === 'signin_failed') return 'st.antigravity.signInRejected' as const;
   return outcome.retryable ? 'st.antigravity.pasteRetry' as const : 'st.antigravity.flowEnded' as const;
+}
+
+/** Formats the sign-in step label and color preserving all three login states. */
+export function loginStatusDisplay(loginStatus: LoginStatus, ready: boolean) {
+  if (!ready) return { key: 'st.engines.stepWaiting' as const, className: 'text-ink-faint' };
+  return {
+    key: `st.engines.login.${loginStatus}` as const,
+    className: loginStatus === 'logged_out' ? 'text-amber-ink' : loginStatus === 'unknown' ? 'text-ink-soft' : '',
+  };
 }
 
 /** Seconds left on a sign-in, never negative. */
@@ -106,8 +115,8 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
   const [customVersion, setCustomVersion] = useState('');
   const [feedback, setFeedback] = useState<Feedback>(null);
   // Sign-in state: the last check's answer until this card changes it.
-  const [signedIn, setSignedIn] = useState(login === 'logged_in');
-  useEffect(() => { setSignedIn(login === 'logged_in'); }, [login]);
+  const [loginStatus, setLoginStatus] = useState<LoginStatus>(login);
+  useEffect(() => { setLoginStatus(login); }, [login]);
   const status = binaries.data;
   const installed = status?.versions ?? [];
   const active = status?.active_version;
@@ -220,10 +229,10 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
             <FeedbackLine feedback={feedback} />
           </div>
         </li>
-        <li data-antigravity-step="signin" data-step-state={!programDone ? 'pending' : signedIn ? 'done' : 'current'} className="flex min-w-0 gap-2">
-          <StepDot done={programDone && signedIn} index={2} muted={!programDone} />
+        <li data-antigravity-step="signin" data-step-state={!programDone ? 'pending' : loginStatus === 'logged_in' ? 'done' : 'current'} className="flex min-w-0 gap-2">
+          <StepDot done={programDone && loginStatus === 'logged_in'} index={2} muted={!programDone} />
           <div className="min-w-0 flex-1">
-            <AntigravitySignIn ready={programDone} signedIn={signedIn} onSignedIn={setSignedIn} onChanged={onChanged} />
+            <AntigravitySignIn ready={programDone} loginStatus={loginStatus} onLoginStatus={setLoginStatus} onChanged={onChanged} />
           </div>
         </li>
       </ol>
@@ -237,8 +246,8 @@ export function AntigravitySetup({ login, ideDetected, onChanged }: {
  * back here. A wrong paste keeps the flow open (retryable); an expired one
  * starts over. Signed in: one line and a sign-out.
  */
-function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged }: {
-  ready: boolean; signedIn: boolean; onSignedIn: (value: boolean) => void; onChanged: () => void;
+function AntigravitySignIn({ ready, loginStatus, onLoginStatus: setLoginStatus, onChanged }: {
+  ready: boolean; loginStatus: LoginStatus; onLoginStatus: (value: LoginStatus) => void; onChanged: () => void;
 }) {
   const { client } = useConnection();
   const { t, locale } = useI18n();
@@ -269,7 +278,7 @@ function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged
     setWorking('start'); setError(null);
     try {
       const result = await client.startAntigravityLogin(method);
-      if (result.already_signed_in) { setSignedIn(true); onChanged(); return; }
+      if (result.already_signed_in) { setLoginStatus('logged_in'); onChanged(); return; }
       setPending({ ...result, startedAt: Date.now() });
       setNow(Date.now());
       setRedirect('');
@@ -284,7 +293,7 @@ function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged
     try {
       const outcome = await client.completeAntigravityLogin(pending.handle, redirect.trim());
       if (outcome.signed_in) {
-        setPending(null); setSignedIn(true); onChanged();
+        setPending(null); setLoginStatus('logged_in'); onChanged();
         return;
       }
       if (!outcome.retryable) setPending(null);
@@ -302,20 +311,22 @@ function AntigravitySignIn({ ready, signedIn, onSignedIn: setSignedIn, onChanged
   };
   const logout = async () => {
     setWorking('logout'); setError(null);
-    try { await client.logoutAntigravity(); setSignedIn(false); onChanged(); } catch (failure) {
+    try { await client.logoutAntigravity(); setLoginStatus('logged_out'); onChanged(); } catch (failure) {
       setError(errorText(locale, failure));
     } finally { setWorking(null); }
   };
 
   const pasteValid = /^https?:\/\/\S+$/.test(redirect.trim());
+  const statusDisplay = loginStatusDisplay(loginStatus, ready);
   const title = (
     <p className="text-[12.5px] leading-5 text-ink">
       <span className="font-medium">{t('st.antigravity.signIn')}</span>
-      <span className="text-ink-faint"> · {!ready ? t('st.engines.stepWaiting') : signedIn ? t('st.engines.login.logged_in') : t('st.engines.login.logged_out')}</span>
+      <span className="text-ink-faint"> · </span>
+      <span className={statusDisplay.className || undefined}>{t(statusDisplay.key)}</span>
     </p>
   );
   if (!ready) return title;
-  if (signedIn) {
+  if (loginStatus === 'logged_in') {
     return (
       <div data-antigravity-signed-in className="space-y-1.5">
         {title}

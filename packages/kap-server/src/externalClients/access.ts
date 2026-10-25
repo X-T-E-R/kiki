@@ -53,6 +53,7 @@ export class ExternalClientAccess {
       search: async query => { await this.history(query.workspaceId,query.sessionId); if(query.peer) throw new ExternalClientError('history_unavailable','Peer communication is not shared.'); return archive.search(query); },
       readTurn: async (session,agent,turn,step)=>{await this.history(undefined,session);return archive.readTurn(session,agent,turn,step);},
       readRef: archive.readRef === undefined ? undefined : async ref=>{await this.ref(ref);return archive.readRef!(ref);},
+      lookupDirectory: archive.lookupDirectory === undefined ? undefined : async (workspace,session,agent,turn,step,preparation,signal)=>{await this.history(workspace,session);return archive.lookupDirectory!(workspace,session,agent,turn,step,preparation,signal);},
       directoryRef: archive.directoryRef === undefined ? undefined : async (workspace,session,agent,turn,step)=>{await this.history(workspace,session);return archive.directoryRef!(workspace,session,agent,turn,step);},
       readDirectory: archive.readDirectory === undefined ? undefined : async (ref,max,cursor)=>{await this.ref(ref);return archive.readDirectory!(ref,max,cursor);},
     };

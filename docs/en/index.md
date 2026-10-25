@@ -2,8 +2,8 @@
 layout: home
 hero:
   name: Kiki
-  text: Your agents, your call.
-  tagline: Hand it a task in a folder. It plans, does the work, and keeps it going — open source, on your machine, with desktop, terminal, and browser sharing one local daemon.
+  text: Hand over a folder and a task.
+  tagline: An open-source AI agent workbench on your machine. Map a codebase, cross-check PDFs and spreadsheets, or finish a draft — the lead session dispatches subagents on the models you choose, while sessions stay in one local store shared by desktop, terminal, and browser.
   actions:
     - theme: brand
       text: Get Started
@@ -15,31 +15,31 @@ hero:
       text: Release Notes
       link: ./release-notes/changelog
 features:
-  - title: "Do one thing first"
-    details: Pick the folder it works in and what it should read, then hand it the task. The welcome and Discover Kiki show the way without calling a model.
+  - title: "Start with a folder and an outcome"
+    details: "Point Kiki at a codebase, a folder of PDFs and spreadsheets, or a draft. It reads what is there, plans, and works in place — and a session you start in the desktop app, `kiki` in the terminal, or `kiki web` in the browser is the same session everywhere."
     link: ./getting-started/first-launch
-  - title: "One workbench, many lines"
-    details: The lead session dispatches subagents that each run a model you chose for that agent, sends long commands to the background, and hears back when they finish.
+  - title: "One lead session, several models"
+    details: "When a job divides, the main agent dispatches isolated subagents — a fast model to explore, another to write or implement, a third vendor to review. Open any subagent's own transcript, while background tasks notify the lead when they finish."
     link: ./features/workbench
-  - title: "Know what it costs"
-    details: "The usage page answers three questions: what a date range cost, which concurrency rule is holding a request back, and where the content-free numbers can be sent."
-    link: ./features/daily
-  - title: "Work that runs long"
-    details: Goals that carry across turns, a queue for what you type while it is busy, scheduled prompts, a per-workspace task board, and memory that outlives the session.
+  - title: "Reusable roles in plain Markdown"
+    details: "Each agent profile is one Markdown file you own: frontmatter sets its model, thinking effort, allowed tools, and which child agents it may dispatch; the body is its system prompt. Start from built-in roles like `explore`, `implementer`, and `reviewer`, or write your own."
+    link: ./features/agent-workflows
+  - title: "Work that outlives a single turn"
+    details: "Keep a target in view across turns with `/goal`, queue messages while the agent is busy with per-message send timing, run cron prompts while a Kiki process holds the session, and keep undoable memory across global, workspace, and persona scopes."
     link: ./features/long-work
-  - title: "Agent Profiles"
-    details: "One Markdown file describes a kind of agent: the model it runs on, how it is instructed, which tools it may call, and what it can dispatch."
-    link: ./features/agents
-  - title: "Roles you can talk to"
-    details: A persona is a long-term identity with its own memory, a fixed daily conversation, and a seat in a room where several of them discuss one topic.
+  - title: "Personas and moderated rooms"
+    details: "Give a recurring collaborator a name, standing rules, isolated memory, and a fixed daily conversation — or pull two to six personas and existing threads into a room to work through one topic under a host and a message budget."
     link: ./features/people
-  - title: "Every layer is yours"
-    details: Prompts are overridable down to one tool description, connections and OAuth are one list, permission modes are yours to pick, and hooks run your scripts.
+  - title: "Documents, Office files, data, browser, and media"
+    details: "When work goes beyond plain text, connect a browser (Ego Lite, an extension, or an isolated profile) or install plugins for what you need: extract local PDFs and Office files (`Kiki Extract`), edit Word, Excel, and PowerPoint (`Kiki Office Suite`), audit CSVs (`Kiki Work`), query data (`Kimi Datasource`), or generate media (`Kiki Media`)."
+    link: ./features/extend
+  - title: "Prompts, tools, and approvals you can change"
+    details: "Replace any named part of the built-in prompt globally, per model, or per agent — down to rewriting one tool description a model misuses — inspect the effective prompt with `kiki prompt-fields`, and choose between Manual, Auto, Approve for me, and YOLO."
     link: ./features/freedom
-  - title: "Your data, your machines"
-    details: Spaces with their own credentials, directed remote connections, one-way thread bridges, Web access, and in-session SSH.
+  - title: "See the cost and what is holding a request"
+    details: "The Usage page names the concurrency rule holding each waiting request back, marks calls where a provider returned no usage as unknown instead of a fake zero, and syncs content-free stats only after you preview and approve the payload."
+    link: ./features/daily
+  - title: "Your machine, your phone, your other tools"
+    details: "Work files stay in your folder while sessions, history, and credentials stay in your local Kiki home. Isolate work and personal spaces, pair a WeChat or QQ chat to reply and approve from your phone, import earlier history as a session or archive, or connect editors over `kiki acp` and `kiki seat`."
     link: ./features/spaces
-  - title: "Bring your history, meet other tools"
-    details: Import another tool's conversations and keep working in them, use Kiki inside your editor over ACP, or let Kiki run other agent harnesses as its engines.
-    link: ./features/ecosystem
 ---

@@ -5,8 +5,8 @@
  * choice that decides it.
  *
  * Two rules are load-bearing and easy to break independently:
- * - a checked unavailable engine stays out; pending discovery remains visible
- *   without claiming the engine is ready;
+ * - a new choice requires an explicit on; a missing flag leaves the engine out,
+ *   and an explicit off stays off across refresh and import;
  * - the choice is *display only* — it never removes an engine from the catalog
  *   the server launches, and never stops a session already bound to one.
  */
@@ -18,13 +18,16 @@ import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
 
 import {
   DEFAULT_ENGINE_VISIBILITY,
+  applyExecutorCheck,
   configuredEngineDescriptors,
+  engineChoices,
   engineDisplayOf,
   engineOverridesOf,
   engineVisibilityOf,
   engineVisibilityPatch,
   executorCatalogQueryKey,
   isConfiguredEngine,
+  shouldAutoEnableEngine,
   visibleEngines,
 } from './engines';
 
@@ -115,37 +118,49 @@ describe('isConfiguredEngine', () => {
 });
 
 describe('engineVisibilityOf', () => {
-  it('shows everything when nothing has been chosen', () => {
+  it('offers no external engine when nothing has been chosen', () => {
     expect(engineVisibilityOf(undefined)).toEqual(DEFAULT_ENGINE_VISIBILITY);
     expect(engineVisibilityOf({})).toEqual(DEFAULT_ENGINE_VISIBILITY);
+    expect(DEFAULT_ENGINE_VISIBILITY.enabled.size).toBe(0);
+    expect(DEFAULT_ENGINE_VISIBILITY.disabled.size).toBe(0);
+    expect(DEFAULT_ENGINE_VISIBILITY.externalsVisible).toBe(true);
   });
 
-  it('reads a per-engine opt-out', () => {
-    const prefs = engineVisibilityOf({ 'claude-acp': { show_in_profile_list: false } });
-    expect(prefs.hidden.has('claude-acp')).toBe(true);
+  it('reads an explicit on and an explicit off, and ignores an absent flag', () => {
+    const prefs = engineVisibilityOf({
+      'claude-acp': { show_in_profile_list: false },
+      'codex-app-server': { show_in_profile_list: true },
+      'grok-acp': { bin_path: '/opt/grok' },
+    });
+    expect(prefs.disabled.has('claude-acp')).toBe(true);
+    expect(prefs.enabled.has('codex-app-server')).toBe(true);
+    expect(prefs.enabled.has('grok-acp')).toBe(false);
+    expect(prefs.disabled.has('grok-acp')).toBe(false);
     expect(prefs.externalsVisible).toBe(true);
   });
 
-  it('reads the global switch from its own section', () => {
+  it('reads the global switch from its own section without turning engines on', () => {
     expect(engineVisibilityOf({}, { externals_visible: false }).externalsVisible).toBe(false);
     expect(engineVisibilityOf({}, { externals_visible: true }).externalsVisible).toBe(true);
-    // The server echoes an unset section as `{}`, which is also "show".
     expect(engineVisibilityOf({}, {}).externalsVisible).toBe(true);
+    expect(engineVisibilityOf({}, { externals_visible: true }).enabled.size).toBe(0);
   });
 
-  it('reads a shape it does not know as "show", never as hidden', () => {
-    // The failure mode of a preference is hiding an engine someone still uses.
-    expect(engineVisibilityOf({ 'claude-acp': 'nonsense' }).hidden.size).toBe(0);
-    expect(engineVisibilityOf({ 'claude-acp': { show_in_profile_list: 'no' } }).hidden.size).toBe(0);
+  it('reads a shape it does not know as neither on nor off', () => {
+    expect(engineVisibilityOf({ 'claude-acp': 'nonsense' }).enabled.size).toBe(0);
+    expect(engineVisibilityOf({ 'claude-acp': 'nonsense' }).disabled.size).toBe(0);
+    expect(engineVisibilityOf({ 'claude-acp': { show_in_profile_list: 'no' } }).disabled.size).toBe(0);
     expect(engineVisibilityOf({}, { externals_visible: 'no' }).externalsVisible).toBe(true);
   });
 });
 
 describe('engineVisibilityPatch', () => {
-  it('writes an explicit hide and an explicit show', () => {
+  it('writes an explicit off and an explicit on, including the first on', () => {
     const prefs = engineVisibilityOf({});
     expect(engineVisibilityPatch(prefs, { engine: { id: 'claude-acp', visible: false } }))
       .toEqual({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: false } } });
+    expect(engineVisibilityPatch(prefs, { engine: { id: 'claude-acp', visible: true } }))
+      .toEqual({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: true } } });
     expect(engineVisibilityPatch(engineVisibilityOf({ 'claude-acp': { show_in_profile_list: false } }), { engine: { id: 'claude-acp', visible: true } }))
       .toEqual({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: true } } });
   });
@@ -172,59 +187,112 @@ describe('engineVisibilityPatch', () => {
   it('round-trips through the reader', () => {
     const patch = engineVisibilityPatch(engineVisibilityOf({}), { engine: { id: 'grok-acp', visible: false } });
     const stored = { 'grok-acp': (patch!['agent_executor_overrides'] as Record<string, unknown>)['grok-acp'] };
-    expect(engineVisibilityOf(stored).hidden.has('grok-acp')).toBe(true);
+    expect(engineVisibilityOf(stored).disabled.has('grok-acp')).toBe(true);
+    const enabled = engineVisibilityPatch(engineVisibilityOf({}), { engine: { id: 'grok-acp', visible: true } });
+    const enabledStored = { 'grok-acp': (enabled!['agent_executor_overrides'] as Record<string, unknown>)['grok-acp'] };
+    expect(engineVisibilityOf(enabledStored).enabled.has('grok-acp')).toBe(true);
+    expect(engineVisibilityPatch(engineVisibilityOf(enabledStored), { engine: { id: 'grok-acp', visible: true } })).toBeUndefined();
   });
 });
 
 describe('visibleEngines', () => {
   const ready = (id: string): ExecutorCatalogItem => ({ ...engine(id), status: 'ready', connection: { login_status: 'logged_in', default_args: [] } });
-  it('offers a ready authenticated bare harness without a Kiki profile or model', () => {
+  const on = (id: string) => ({ [id]: { show_in_profile_list: true } });
+  it('does not offer a ready authenticated engine until it is explicitly on', () => {
     const catalog = [engine('native'), ready('claude-acp')];
-    expect(visibleEngines(catalog, [], undefined).map(item => item.id)).toEqual(['native', 'claude-acp']);
+    expect(visibleEngines(catalog, [], undefined).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [], on('claude-acp')).map(item => item.id)).toEqual(['native', 'claude-acp']);
     expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map(item => item.id)).toEqual(['native']);
   });
-  it('offers discovered bare Codex and Claude when login has not been checked', () => {
-    const codex = { ...engine('codex-app-server'), status: 'ready' as const };
-    const claude = { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'unknown' as const, default_args: [] } };
-    expect(visibleEngines([engine('native'), codex, claude], [], undefined).map(item => item.id))
-      .toEqual(['native', 'codex-app-server', 'claude-acp']);
+  it('keeps an enabled engine whose login is still unknown, without calling that unknown ready', () => {
+    const claude = { ...engine('claude-acp'), status: 'unknown' as const, connection: { login_status: 'unknown' as const, default_args: [] } };
+    expect(visibleEngines([engine('native'), claude], [], undefined).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines([engine('native'), claude], [], on('claude-acp')).map(item => item.id)).toEqual(['native', 'claude-acp']);
+    expect(claude.status).toBe('unknown');
     expect(claude.connection.login_status).toBe('unknown');
   });
-  it('lists pending registered engines without treating unknown as ready or overriding explicit off', () => {
+  it('drops logged-out, unavailable and globally blocked engines even when the flag is on', () => {
     const pending: ExecutorCatalogItem = { ...engine('claude-acp'), status: 'unknown', connection: { login_status: 'unknown', default_args: [] } };
-    const catalog = [engine('native'), pending];
-    expect(visibleEngines(catalog, [], undefined).map(item => item.id)).toEqual(['native', 'claude-acp']);
-    expect(pending.status).toBe('unknown');
-    expect(pending.connection?.login_status).toBe('unknown');
-    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map(item => item.id)).toEqual(['native']);
-    expect(visibleEngines(catalog, [], undefined, { externals_visible: false }).map(item => item.id)).toEqual(['native']);
-    const loggedOut = { ...pending, connection: { login_status: 'logged_out' as const, default_args: [] } };
-    expect(visibleEngines([loggedOut], [], undefined)).toEqual([]);
-    expect(visibleEngines([{ ...pending, status: 'unavailable' }], [], undefined)).toEqual([]);
+    const loggedOut = { ...pending, status: 'ready' as const, connection: { login_status: 'logged_out' as const, default_args: [] } };
+    expect(visibleEngines([loggedOut], [], on('claude-acp'))).toEqual([]);
+    expect(visibleEngines([{ ...pending, status: 'unavailable' }], [], on('claude-acp'))).toEqual([]);
+    expect(visibleEngines([engine('native'), ready('claude-acp')], [], on('claude-acp'), { externals_visible: false }).map(item => item.id)).toEqual(['native']);
   });
-  it('does not mistake a profile or launch override for a checked vendor login', () => {
+  it('does not mistake a profile or launch override for an on switch or a vendor login', () => {
     const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'logged_out' as const, default_args: [] } }];
-    expect(visibleEngines(catalog, [profile('lead', 'claude-acp')], { 'claude-acp': { bin_path: '/opt/claude', defaults: { model_alias: 'native-default' } } }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [profile('lead', 'claude-acp')], { 'claude-acp': { bin_path: '/opt/claude', defaults: { model_alias: 'native-default' }, show_in_profile_list: true } }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines([engine('native'), ready('claude-acp')], [profile('lead', 'claude-acp')], { 'claude-acp': { bin_path: '/opt/claude' } }).map(item => item.id)).toEqual(['native']);
   });
   it('never revives a missing binary through a configured descriptor or profile', () => {
-    expect(visibleEngines(CATALOG, [profile('lead', 'claude-acp')], undefined, undefined, { 'claude-acp': { protocol: 'acp-v1', command: 'claude' } }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(CATALOG, [profile('lead', 'claude-acp')], on('claude-acp'), undefined, { 'claude-acp': { protocol: 'acp-v1', command: 'claude' } }).map(item => item.id)).toEqual(['native']);
   });
-  it('uses server discovery rather than revalidating a local descriptor in the picker', () => {
+  it('still requires the on switch when server discovery says the binary is ready', () => {
     const catalog = [engine('native'), { ...engine('local-acp'), status: 'ready' as const }];
     for (const descriptor of [undefined, {}, { protocol: 'acp-v1', command: 'local-server' }]) {
-      expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': descriptor }).map(item => item.id))
-        .toEqual(['native', 'local-acp']);
+      expect(visibleEngines(catalog, [], undefined, undefined, { 'local-acp': descriptor }).map(item => item.id)).toEqual(['native']);
+      expect(visibleEngines(catalog, [], on('local-acp'), undefined, { 'local-acp': descriptor }).map(item => item.id)).toEqual(['native', 'local-acp']);
     }
   });
   it('accepts only the declared vendor API-key environment when the login is checked logged out', () => {
     const catalog = [engine('native'), { ...engine('claude-acp'), status: 'ready' as const, connection: { login_status: 'logged_out' as const, default_args: [], api_key_env: 'VENDOR_API_KEY' } }];
-    expect(visibleEngines(catalog, [], { 'claude-acp': { env: { OTHER_SETTING: 'fixture' } } }).map(item => item.id)).toEqual(['native']);
-    expect(visibleEngines(catalog, [], { 'claude-acp': { env: { VENDOR_API_KEY: 'fixture' } } }).map(item => item.id)).toEqual(['native', 'claude-acp']);
+    const enabled = { 'claude-acp': { show_in_profile_list: true, env: { OTHER_SETTING: 'fixture' } } };
+    expect(visibleEngines(catalog, [], enabled).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: true, env: { VENDOR_API_KEY: 'fixture' } } }).map(item => item.id)).toEqual(['native', 'claude-acp']);
   });
-  it('keeps visibility preferences separate from readiness', () => {
+  it('keeps an explicit off when another enabled engine remains', () => {
     const catalog = [engine('native'), ready('claude-acp'), ready('codex-app-server')];
-    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false } }).map(item => item.id)).toEqual(['native', 'codex-app-server']);
-    expect(visibleEngines(catalog, [], undefined, { externals_visible: false }).map(item => item.id)).toEqual(['native']);
+    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: false }, 'codex-app-server': { show_in_profile_list: true } }).map(item => item.id)).toEqual(['native', 'codex-app-server']);
+    expect(visibleEngines(catalog, [], { 'claude-acp': { show_in_profile_list: true }, 'codex-app-server': { show_in_profile_list: true } }, { externals_visible: false }).map(item => item.id)).toEqual(['native']);
+  });
+});
+
+describe('engineChoices', () => {
+  it('offers native and explicitly enabled engines, and keeps only the retained identity', () => {
+    const overrides = { 'claude-acp': { show_in_profile_list: true }, 'codex-app-server': { show_in_profile_list: false } };
+    expect(engineChoices([profile('lead', 'grok-acp'), profile('other', 'codex-app-server')], CATALOG, { overrides }))
+      .toEqual(['', 'claude-acp']);
+    expect(engineChoices([], CATALOG, { overrides, retain: ['codex-app-server', 'missing-acp', 'native', ''] }))
+      .toEqual(['', 'claude-acp', 'codex-app-server', 'missing-acp']);
+  });
+
+  it('does not put disabled engines back when the global switch is closed, except the retained one', () => {
+    const overrides = { 'claude-acp': { show_in_profile_list: true } };
+    expect(engineChoices([], CATALOG, { overrides, display: { externals_visible: false }, retain: ['grok-acp'] }))
+      .toEqual(['', 'grok-acp']);
+  });
+});
+
+describe('shouldAutoEnableEngine', () => {
+  it('turns a successful first setup on and leaves a failure or an explicit off alone', () => {
+    expect(shouldAutoEnableEngine(undefined, 'claude-acp', 'ready')).toBe(true);
+    expect(shouldAutoEnableEngine(undefined, 'claude-acp', 'warning')).toBe(true);
+    expect(shouldAutoEnableEngine(undefined, 'claude-acp', 'unavailable')).toBe(false);
+    expect(shouldAutoEnableEngine({ 'claude-acp': { show_in_profile_list: false } }, 'claude-acp', 'ready')).toBe(false);
+    expect(shouldAutoEnableEngine({ 'claude-acp': { show_in_profile_list: true } }, 'claude-acp', 'ready')).toBe(false);
+  });
+});
+
+describe('applyExecutorCheck', () => {
+  it('updates only the checked engine in that scope and server cache', () => {
+    const cache = new QueryClient();
+    const key = executorCatalogQueryKey('scope-a', 'server-1');
+    const other = executorCatalogQueryKey('scope-b', 'server-1');
+    const claude = engine('claude-acp');
+    const codex = engine('codex-app-server');
+    cache.setQueryData(key, { items: [claude, codex] });
+    cache.setQueryData(other, { items: [claude, codex] });
+    applyExecutorCheck(cache, key, 'claude-acp', {
+      id: 'claude-acp', status: 'warning', version: '2.1.0', command: 'claude', resolved_args: [],
+      login_status: 'logged_out', diagnostics: [],
+    }, '2026-10-12T00:00:00.000Z');
+    const updated = cache.getQueryData<{ items: ExecutorCatalogItem[] }>(key)!;
+    expect(updated.items.find((item) => item.id === 'claude-acp')).toMatchObject({
+      status: 'ready', check_status: 'warning', checked_at: '2026-10-12T00:00:00.000Z', check_stale: false,
+      connection: { login_status: 'logged_out', command: 'claude' },
+    });
+    expect(updated.items.find((item) => item.id === 'codex-app-server')?.check_status).toBeUndefined();
+    expect(cache.getQueryData(other)).toEqual({ items: [claude, codex] });
+    cache.clear();
   });
 });
 

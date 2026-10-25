@@ -1,8 +1,12 @@
 import { Disposable, DisposableMap, DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { abortable } from '#/_base/utils/abort';
+import { harnessCapabilities } from '#/app/agentExecutor/harnessMcp';
 import { LifecycleScope } from '#/app/scopes';
 import { ILogService } from '#/_base/log/log';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { ScopeActivation, registerScopedService, type IAgentScopeHandle } from '#/_base/di/scope';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import type { AgentMessageOrigin, ContextMessage } from '#/agent/contextMemory/types';
@@ -68,7 +72,7 @@ function continuationFailureReason(error: unknown): string {
 
 function originalSessionCannotResume(execution: IAgentExecutionService | undefined): boolean {
   if (execution?.status().state !== 'broken') return false;
-  return execution.canResumeBrokenOriginal() !== true;
+  return !execution.canResumeBrokenOriginal() && !execution.canRetryBrokenExecution?.();
 }
 
 function continuationFailureNotice(input: {
@@ -111,6 +115,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private readonly externalPrepared = new Map<string, string>();
   private readonly externalEpoch = new Map<string, number>();
   private readonly externalWaiters = new Map<string, Array<() => void>>();
+  private readonly withheld = new Set<string>();
 
   constructor(
     @IAgentCollaborationMessageStore private readonly store: IAgentCollaborationMessageStore,
@@ -127,9 +132,10 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       this.attach(handle);
     }));
     this._register(lifecycle.onDidDispose((agentId) => {
-      this.subscriptions.deleteAndDispose(agentId);
+      const result = this.subscriptions.deleteAndDispose(agentId);
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
     }));
-    void this.discardUnregisteredTargetMessages().catch(() => {});
+    this.discardUnregisteredTargetMessages().catch(onUnexpectedError);
   }
 
   async sendUserMessage(input: {
@@ -177,8 +183,6 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   }): Promise<AgentMessageAcceptance> {
     const { waitForRunningDelivery, idleWake, ...messageInput } = input;
     const storedInput = { sessionId: this.session.sessionId, ...messageInput };
-    const acceptance = await this.store.accept(storedInput);
-    if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
     let child: DispatchChild | undefined;
     let handle = this.lifecycle.get(input.targetAgentId);
     if (handle === undefined && idleWake === 'owned-child') {
@@ -188,37 +192,18 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       );
       handle = child.agent;
     }
+    if (handle !== undefined && !this.kikiMailEnabled(handle)) {
+      throw new Error2(
+        ErrorCodes.REQUEST_INVALID,
+        `Agent "${input.targetAgentId}" does not accept Kiki mail while allow_kiki_subagents is false.`,
+      );
+    }
+    const acceptance = await this.store.accept(storedInput);
+    if (acceptance.delivery === 'delivered' || acceptance.payloadConflict) return acceptance;
     if (handle === undefined) return acceptance;
     if (waitForRunningDelivery !== true) {
-      const lease = await this.sessions.acquire?.(this.session.sessionId, 'agent-message-delivery');
-      if (lease === undefined) return acceptance;
-      try {
-        const pinnedHandle = lease.handle.accessor.get(IAgentLifecycleService).get(input.targetAgentId);
-        if (pinnedHandle === undefined) {
-          lease.dispose();
-          return acceptance;
-        }
-        const delivery = this.deliverOrWake(
-          pinnedHandle,
-          acceptance.message,
-          idleWake,
-          input.sourceAgentId,
-          child?.agent === pinnedHandle ? child : undefined,
-          true,
-        );
-        void delivery.finally(() => { lease.dispose(); }).catch((error: unknown) => {
-          void this.reportContinuationFailure(
-            input.sourceAgentId,
-            acceptance.message.messageId,
-            input.targetAgentId,
-            error,
-          );
-        });
-        return acceptance;
-      } catch (error) {
-        lease.dispose();
-        throw error;
-      }
+      await this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child);
+      return acceptance;
     }
     const resumed = await this.deliverOrWake(
       handle,
@@ -229,7 +214,56 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       false,
     );
     const refreshed = await this.store.accept(storedInput);
+    if (
+      refreshed.delivery !== 'delivered' &&
+      idleWake !== undefined &&
+      !this.withheld.has(acceptance.message.messageId)
+    ) {
+      void this.armBackgroundDelivery(acceptance.message, idleWake, input.sourceAgentId, child).catch((error: unknown) => {
+        this.reportContinuationFailure(input.sourceAgentId, acceptance.message.messageId, input.targetAgentId, error).catch(onUnexpectedError);
+      });
+    }
     return { ...acceptance, delivery: refreshed.delivery, resumed: resumed || undefined };
+  }
+
+  private async armBackgroundDelivery(
+    message: AgentMessageAcceptance['message'],
+    idleWake: 'owned-child' | 'parent' | undefined,
+    sourceAgentId: string,
+    child: DispatchChild | undefined,
+  ): Promise<void> {
+    const lease = await this.sessions.acquire?.(this.session.sessionId, 'agent-message-delivery');
+    if (lease === undefined) return;
+    try {
+      const pinnedHandle = lease.handle.accessor.get(IAgentLifecycleService).get(message.targetAgentId);
+      if (pinnedHandle === undefined) {
+        await lease.dispose();
+        return;
+      }
+      const delivery = this.deliverOrWake(
+        pinnedHandle,
+        message,
+        idleWake,
+        sourceAgentId,
+        child?.agent === pinnedHandle ? child : undefined,
+        true,
+      );
+      void (async () => {
+        try {
+          await delivery;
+        } finally {
+          await lease.dispose();
+        }
+      })().catch((error: unknown) => this.reportContinuationFailure(
+        sourceAgentId,
+        message.messageId,
+        message.targetAgentId,
+        error,
+      )).catch(onUnexpectedError);
+    } catch (error) {
+      await lease.dispose();
+      throw error;
+    }
   }
 
   private async reportContinuationFailure(
@@ -308,6 +342,7 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     subscriptions.add(execution.hooks.onWillRun.register(
       DELIVERY_HOOK_ID,
       async (context, next) => {
+        if (!this.kikiMailEnabled(handle)) { await next(); return; }
         if (this.isExternalExecutor(handle)) {
           const request = context.request;
           const replaceRequest = context.replaceRequest;
@@ -315,13 +350,13 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
           if (request !== undefined && replaceRequest !== undefined && afterStart !== undefined) {
             const prepared = await this.serializeDelivery(
               handle.id,
-              () => this.prepareExternalDelivery(handle, request),
+              () => this.recoverMailboxDelivery(handle.id, () => this.prepareExternalDelivery(handle, request), context.signal),
             );
             if (prepared !== undefined) {
               replaceRequest(prepared.request);
               afterStart(() => this.serializeDelivery(
                 handle.id,
-                () => this.completeExternalDelivery(handle, prepared.messageId),
+                () => this.recoverMailboxDelivery(handle.id, () => this.completeExternalDelivery(handle, prepared.messageId), context.signal),
               ));
             } else {
               afterStart(() => {
@@ -352,7 +387,8 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
         await next();
       },
     ));
-    this.subscriptions.set(handle.id, subscriptions);
+    const result = this.subscriptions.set(handle.id, subscriptions);
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
   }
 
   private async deliverOrWake(
@@ -363,10 +399,12 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     child: DispatchChild | undefined,
     followBusyCompletion: boolean,
   ): Promise<boolean> {
+    if (!this.kikiMailEnabled(handle)) return false;
     let observedStart = false;
     let stall: string | undefined;
     for (;;) {
-      await this.serializeDelivery(handle.id, () => this.deliverRunning(handle));
+      const steered = await this.serializeDelivery(handle.id, () => this.deliverRunning(handle));
+      if (steered === 'unknown') return observedStart;
       if (this.messageLanded(handle, message.messageId) || idleWake === undefined) return observedStart;
       if (this.isStarting(handle)) {
         if (!this.isExternalExecutor(handle) || this.externalPrepared.get(handle.id) === message.messageId) return observedStart;
@@ -377,8 +415,16 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       if (this.admittedWorkWillRead(handle)) return observedStart;
       if (this.executionBusy(handle)) {
         if (!followBusyCompletion) return observedStart;
-        await handle.accessor.get(IAgentLoopService).settled();
-        await handle.accessor.get(IAgentExecutionService).settled();
+        const execution = handle.accessor.get(IAgentExecutionService);
+        const loop = handle.accessor.get(IAgentLoopService);
+        const executionSettled = execution.settled();
+        const loopSettled = loop.settled();
+        let finished = false;
+        void Promise.all([executionSettled, loopSettled]).then(() => { finished = true; }, () => { finished = true; });
+        for (let attempt = 0; attempt < 4 && !finished; attempt += 1) await Promise.resolve();
+        if (finished && this.executionBusy(handle)) return observedStart;
+        await executionSettled;
+        await loopSettled;
         continue;
       }
       const outcome = await this.serializeWake(handle.id, async () => {
@@ -406,11 +452,16 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     }
   }
 
-  private async deliverRunning(handle: IAgentScopeHandle): Promise<void> {
+  private async deliverRunning(handle: IAgentScopeHandle): Promise<'done' | 'stopped' | 'unknown'> {
+    if (!this.kikiMailEnabled(handle)) return 'done';
     const execution = handle.accessor.get(IAgentExecutionService);
     const steer = execution.steer?.bind(execution);
-    if (execution.status().state !== 'running' || steer === undefined) return;
-    await this.deliver(handle, steer);
+    if (execution.status().state !== 'running' || steer === undefined) return 'done';
+    return this.deliver(handle, async (message) => {
+      const outcome = await steer(message);
+      if (outcome === 'unknown') return 'unknown';
+      return outcome === true;
+    });
   }
 
   private async wakeWhenIdle(
@@ -424,7 +475,12 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
     const loop = handle.accessor.get(IAgentLoopService);
     let executionState = execution.status().state;
     if (executionState === 'broken') {
-      if (execution.canResumeBrokenOriginal?.() === true) {
+      if (execution.canRetryBrokenExecution?.()) {
+        throw new Error2(ErrorCodes.INTERNAL,
+          `Agent instance "${handle.id}" failed before a usable executor session remained. Resume the same child with AgentRun; the saved message stays queued.`,
+          { details: { agentId: handle.id, messageId: message.messageId } });
+      }
+      if (execution.canResumeBrokenOriginal?.()) {
         throw new Error2(
           ErrorCodes.INTERNAL,
           `Agent instance "${handle.id}" is broken. Resume the original remote session with AgentRun; the saved message stays queued.`,
@@ -505,6 +561,12 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
       dispatchDecision: data.dispatchDecision,
       meta,
     };
+  }
+
+  private kikiMailEnabled(handle: IAgentScopeHandle): boolean {
+    const binding = handle.accessor.get(IAgentProfileService).data();
+    if ((binding.executorId ?? 'native') === 'native') return true;
+    return harnessCapabilities(binding).delegation !== false;
   }
 
   private isExternalExecutor(handle: IAgentScopeHandle): boolean {
@@ -592,9 +654,9 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
   private async awaitCapacityRelease(agentId: string): Promise<boolean> {
     const holders = this.capacityHolders(agentId);
     if (holders.length === 0) return false;
-    const before = holders.map((holder) => holder.id).sort();
+    const before = holders.map((holder) => holder.id).toSorted();
     await Promise.race(holders.map((holder) => holder.settled()));
-    const after = this.capacityHolders(agentId).map((holder) => holder.id).sort();
+    const after = this.capacityHolders(agentId).map((holder) => holder.id).toSorted();
     return before.length !== after.length || before.some((id, index) => id !== after[index]);
   }
 
@@ -720,27 +782,66 @@ export class AgentCollaborationMessagingService extends Disposable implements IA
 
   private deliverBeforeRun(handle: IAgentScopeHandle, signal?: AbortSignal): Promise<void> {
     const memory = handle.accessor.get(IAgentContextMemoryService);
-    return this.deliver(handle, async (message) => {
-      memory.appendObservable(message);
-      return true;
+    return this.recoverMailboxDelivery(handle.id, async () => {
+      await this.deliver(handle, async (message) => {
+        memory.appendObservable(message);
+        return true;
+      }, signal);
     }, signal);
+  }
+
+  private async recoverMailboxDelivery<T>(agentId: string, run: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    for (let attempt = 0; ; attempt++) {
+      signal?.throwIfAborted();
+      try {
+        return await run();
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (!(error instanceof HomeRuntimeError) || ![
+          'runtime.timeout', 'runtime.owner_gone', 'runtime.connection_failed', 'runtime.detached',
+          'runtime.epoch_stale', 'runtime.epoch_future', 'runtime.duplicate_request',
+        ].includes(error.code)) throw error;
+        this.log.warn('Agent mailbox delivery interrupted; durable message retained for recovery', {
+          agentId, attempt: attempt + 1, error,
+        });
+        if (attempt >= 2) {
+          throw new HomeRuntimeError(error.code,
+            `Agent mailbox delivery is temporarily unavailable after 3 recovery attempts. Messages and delivery receipts are retained. Inspect preserved work, then resume the same agent; do not repeat unconfirmed external actions. Last failure: ${error.message}`,
+            { cause: error });
+        }
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          const wait = new Promise<void>((resolve) => { timer = setTimeout(resolve, attempt === 0 ? 250 : 1_000); });
+          await (signal === undefined ? wait : abortable(wait, signal));
+        } finally {
+          if (timer !== undefined) clearTimeout(timer);
+        }
+      }
+    }
   }
 
   private async deliver(
     handle: IAgentScopeHandle,
-    apply: (message: ContextMessage) => Promise<boolean>,
+    apply: (message: ContextMessage) => Promise<boolean | 'unknown'>,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<'done' | 'stopped' | 'unknown'> {
     for (;;) {
       signal?.throwIfAborted();
       const pending = await this.claimNext(handle);
       signal?.throwIfAborted();
-      if (pending === undefined) return;
+      if (pending === undefined) return 'done';
       const message = pending.queued.message;
-      if (!this.hasAppliedMessage(handle, pending) && !await apply(toContextMessage(message))) {
-        return;
+      if (!this.hasAppliedMessage(handle, pending)) {
+        if (this.externalPrepared.get(handle.id) === message.messageId) return 'stopped';
+        const applied = await apply(toContextMessage(message));
+        if (applied === 'unknown') {
+          this.withheld.add(message.messageId);
+          return 'unknown';
+        }
+        if (!applied) return 'stopped';
       }
-      if (!await this.completeClaim(handle, pending)) return;
+      if (!await this.completeClaim(handle, pending)) return 'stopped';
+      this.withheld.delete(message.messageId);
     }
   }
 

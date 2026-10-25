@@ -18,6 +18,17 @@ async function temporaryHome(): Promise<string> {
 }
 
 describe('SSH credentials', () => {
+  it('normalizes a missing native keyring credential to undefined', async () => {
+    const factory: SecretEntryFactory = async () => ({
+      async setPassword() {},
+      async getPassword() { return null; },
+      async deleteCredential() { return false; },
+    });
+    const store = new SshCredentialStore(await temporaryHome(), factory);
+    for (const kind of ['password', 'passphrase', 'identityFile'] as const) {
+      expect(await store.read('example-host', kind)).toBeUndefined();
+    }
+  });
   it('remembers in keyring, supports opt-out, and never stores a pasted key in hosts.toml', async () => {
     const values = new Map<string, string>();
     const factory: SecretEntryFactory = async (id) => ({

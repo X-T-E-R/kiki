@@ -3,6 +3,8 @@ macro_rules! app_commands {
         $callback!(
             desktop_connection,
             desktop_active_space,
+            desktop_window_mode,
+            open_mode_window,
             desktop_space_statuses,
             set_unread_count,
             switch_space,

@@ -89,11 +89,11 @@ export class SessionApprovalService implements ISessionApprovalService {
       this.interaction.respond(id, { decision: 'cancelled' } satisfies ApprovalResponse);
       return;
     }
-    if (pending?.display.kind === 'external_permission') {
+    if (pending?.display.kind === 'external_permission' && response.decision === 'approved') {
       const selected = response.selectedOptionId;
       if (
         selected === undefined ||
-        !pending.display.options.some((option) => option.id === selected)
+        !pending.display.options.some((option) => option.id === selected && option.kind.startsWith('allow_'))
       ) {
         this.interaction.respond(id, { decision: 'cancelled' } satisfies ApprovalResponse);
         return;

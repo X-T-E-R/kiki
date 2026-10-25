@@ -2,7 +2,7 @@
 
 Experimental feature-flag gating for agent-core-v2 — an App-scope `IFlagService` resolver plus a writable `IFlagRegistry` catalog that domains contribute their flags to, backed by the `[experimental]` config section.
 
-Gate not-yet-public features behind `IFlagService.enabled(id)`, per the repository hard rule that unreleased behavior must be flag-gated. v1 was a process-global `FlagResolver` singleton over a central `FLAG_DEFINITIONS` array; v2 is a scoped DI service whose flag definitions are registered **decentrally** by each owning domain — there is no central catalog to edit.
+Product features, including new features, are available by default. Keep a registered flag only for a real rollout or rollback boundary; ordinary configured features do not need another experimental master gate. A default-off definition requires an explicit human requirement with its source. Availability preserves user off choices and does not authorize external connections, plugin installation, or script execution. Definitions are registered **decentrally** by each owning domain; Settings copy is a separate bilingual directory, not the runtime registry.
 
 ## Layout
 
@@ -34,7 +34,7 @@ Highest wins; env is read live on every call (nothing cached):
 ## Config integration
 
 - The flag domain owns the `[experimental]` section: `src/app/flag/flag.ts` registers it at module load via `registerConfigSection(EXPERIMENTAL_SECTION, ExperimentalConfigSchema, { fromToml, toToml })` (import = register, drained by `ConfigRegistry` at construction); `FlagService` reads overrides from `IConfigService`.
-- It subscribes `IConfigService.onDidChange` and refreshes overrides whenever the `experimental` domain changes, so config edits apply live.
+- It subscribes `IConfigService.onDidChangeConfiguration` and refreshes overrides whenever the `experimental` domain changes, so config edits apply live; consumers that capture a flag during construction may still require a restart.
 - `ConfigRegistry.registerSection` throws if a domain is registered twice — `experimental` is owned exclusively by the flag domain.
 - `setConfigOverrides(overrides)` is an imperative escape hatch for tests and hosts without an `IConfigService`; hosts on `IConfigService` should set the `[experimental]` section instead.
 
@@ -49,7 +49,7 @@ Keys are intentionally loose (`z.record(z.string(), z.boolean())`), so obsolete 
 
 ## Add a flag
 
-Declare the definition in the owning domain's `flag.ts` and call `registerFlagDefinition` at the module top level. There is no central catalog to edit.
+Declare the definition in the owning domain's `flag.ts` and call `registerFlagDefinition` at the module top level. Use `default: true` unless an explicit human requirement says otherwise. Add the id to `EXPERIMENTAL_FLAG_HOMES` in `packages/session-core/src/settings/settings.ts`, with its real Settings page and application timing, then add its name and description to both `src/i18n/en.ts` and `zh.ts`. The distributed-registration regression in `src/settings/settings.test.ts` checks all built-in definitions against this directory; extensions keep the unknown-server fallback.
 
 `src/<domain>/flag.ts`:
 
@@ -61,7 +61,7 @@ export const myFeatureFlag: FlagDefinitionInput = {
   title: 'My feature',
   description: '...',
   env: 'KIKI_EXPERIMENTAL_MY_FEATURE',
-  default: false,
+  default: true,
   surface: 'both',
 };
 
@@ -101,7 +101,7 @@ if (!this.flags.enabled('my_feature')) return;
 
 ## Red lines (this topic)
 
-- Gate unreleased behavior behind a registered flag; no ad-hoc env toggles.
+- Use registered flags only for real rollout or rollback boundaries; default on unless explicitly required otherwise. Do not replace consent or permissions with a feature flag, and do not add ad-hoc env toggles.
 - Contribute each flag from the **owning domain's** `flag.ts` (`src/<domain>/flag.ts`) via a top-level `registerFlagDefinition` call; there is no central catalog to edit. The directory names the domain, so the file is just `flag.ts`.
 - `env` must start with `KIKI_EXPERIMENTAL_`, be unique, and not equal `KIKI_EXPERIMENTAL_FLAG`; `id` must not be `flag`.
 - `FlagId` is `string` (decentralized registration) — do not reintroduce a central `FLAG_DEFINITIONS` array or a derived literal union.

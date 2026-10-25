@@ -31,34 +31,137 @@ const reply = {
   },
 };
 
-class RespParser {
+type ParsedItem = Buffer[] | { error: string };
+
+export class RespParser {
   private buf: Buffer = Buffer.alloc(0);
   private readonly maxBuf: number;
+  /** Body bytes of a rejected bulk still to drop, including its trailing CRLF. */
+  private skipBytes = 0;
+  /** Further bulk strings belonging to the rejected multibulk. */
+  private skipBulks = 0;
 
+  // maxBuf is bytes of unparsed request data held for one connection, not a
+  // stored-value limit (frame values use a uint32; DB keys are 128 bytes).
+  // 64 MiB is the ceiling that keeps one client from pinning an unbounded buffer.
   constructor({ maxBuf = 64 * 1024 * 1024 }: { maxBuf?: number } = {}) {
     this.maxBuf = maxBuf;
   }
 
-  *feed(chunk: Buffer): Generator<Buffer[]> {
-    this.buf = this.buf.length ? Buffer.concat([this.buf, chunk]) : chunk;
-    if (this.buf.length > this.maxBuf) {
-      // Drop the buffered oversized request before reporting: without the
-      // reset every later chunk would fail with the same error and the giant
-      // buffer would be retained for the life of the connection.
-      this.buf = Buffer.alloc(0);
-      throw new Error(`RESP request too large (>${this.maxBuf} bytes)`);
+  private tooLarge(): string {
+    return `RESP request too large (>${this.maxBuf} bytes)`;
+  }
+
+  *feed(chunk: Buffer): Generator<ParsedItem> {
+    let rest = chunk;
+    // A rejected bulk's body must be discarded by count. Concatenating it
+    // would copy up to the cap before any reply existed.
+    if (this.skipBytes > 0) {
+      if (rest.length <= this.skipBytes) {
+        this.skipBytes -= rest.length;
+        return;
+      }
+      rest = rest.subarray(this.skipBytes);
+      this.skipBytes = 0;
     }
-    while (this.buf.length) {
+    if (rest.length > 0) this.buf = this.buf.length > 0 ? Buffer.concat([this.buf, rest]) : rest;
+
+    while (this.buf.length > 0) {
+      if (this.skipBulks > 0) {
+        const skipped = this.consumeSkippedBulk();
+        if (skipped === 'need') {
+          this.dropIfOverCap();
+          return;
+        }
+        this.skipBulks--;
+        if (this.skipBytes > 0) return;
+        continue;
+      }
+
       const parsed = this.tryParse();
-      if (!parsed) break;
+      if (parsed === 'need') {
+        this.dropIfOverCap();
+        return;
+      }
+      if (parsed === 'too-large') {
+        yield { error: this.tooLarge() };
+        if (this.skipBytes > 0) return;
+        continue;
+      }
       yield parsed;
     }
   }
 
-  private tryParse(): Buffer[] | null {
+  /** Length-less input (an inline line with no CRLF) still cannot grow without a bound. */
+  private dropIfOverCap(): void {
+    if (this.buf.length <= this.maxBuf) return;
+    this.buf = Buffer.alloc(0);
+    this.skipBytes = 0;
+    this.skipBulks = 0;
+    throw new Error(this.tooLarge());
+  }
+
+  /** Drop a rejected bulk body by count. Later bulks of the same multibulk stay in `skipBulks`. */
+  private armOversized(bodyAt: number, len: number): void {
+    const need = len + 2;
+    const have = this.buf.length - bodyAt;
+    if (have >= need) this.buf = Buffer.from(this.buf.subarray(bodyAt + need));
+    else {
+      this.skipBytes = need - Math.max(0, have);
+      this.buf = Buffer.alloc(0);
+    }
+  }
+
+  private bulkTooBig(bodyAt: number, len: number): boolean {
+    return Number.isSafeInteger(len) && len >= 0 && len + 2 > this.maxBuf - bodyAt;
+  }
+
+  /** Drop one `$len\r\n<body>\r\n`. A body over the cap is counted, not buffered. */
+  private consumeSkippedBulk(): 'need' | 'done' {
+    if (this.buf[0] !== 0x24 /* '$' */) {
+      this.buf = Buffer.alloc(0);
+      this.skipBytes = 0;
+      this.skipBulks = 0;
+      throw new Error(this.tooLarge());
+    }
+    const end = this.buf.indexOf(CRLF, 1);
+    if (end === -1) return 'need';
+    const len = Number(this.buf.subarray(1, end).toString());
+    const bodyAt = end + 2;
+    if (!(Number.isSafeInteger(len) && len >= 0)) {
+      this.buf = Buffer.alloc(0);
+      this.skipBytes = 0;
+      this.skipBulks = 0;
+      throw new Error(this.tooLarge());
+    }
+    if (this.bulkTooBig(bodyAt, len)) {
+      // Same as tryParse: a length above 2^53 is not skipped precisely.
+      if (!Number.isSafeInteger(len + 2)) {
+        this.buf = Buffer.alloc(0);
+        this.skipBytes = 0;
+        this.skipBulks = 0;
+        throw new Error(this.tooLarge());
+      }
+      this.armOversized(bodyAt, len);
+      return 'done';
+    }
+    if (this.buf.length - bodyAt < len + 2) return 'need';
+    this.buf = this.buf.subarray(bodyAt + len + 2);
+    return 'done';
+  }
+
+  private tryParse(): Buffer[] | 'need' | 'too-large' {
     if (this.buf[0] !== 0x2a /* '*' */) {
       const idx = this.buf.indexOf(CRLF);
-      if (idx === -1) return null;
+      if (idx === -1) return 'need';
+      // One inline request, CRLF included. A finished line can exceed the cap
+      // without ever taking the incomplete-buffer path.
+      if (idx + 2 > this.maxBuf) {
+        this.buf = Buffer.alloc(0);
+        this.skipBytes = 0;
+        this.skipBulks = 0;
+        throw new Error(this.tooLarge());
+      }
       const line = this.buf.subarray(0, idx).toString();
       this.buf = this.buf.subarray(idx + 2);
       return line.split(' ').filter(Boolean).map((s) => Buffer.from(s));
@@ -66,21 +169,42 @@ class RespParser {
 
     let pos = 1;
     let end = this.buf.indexOf(CRLF, pos);
-    if (end === -1) return null;
+    if (end === -1) return 'need';
     const argc = Number(this.buf.subarray(pos, end).toString());
     pos = end + 2;
 
     const args: Buffer[] = [];
     for (let i = 0; i < argc; i++) {
-      if (pos >= this.buf.length || this.buf[pos] !== 0x24 /* '$' */) return null;
+      if (pos >= this.buf.length || this.buf[pos] !== 0x24 /* '$' */) return 'need';
       pos++;
       end = this.buf.indexOf(CRLF, pos);
-      if (end === -1) return null;
+      if (end === -1) return 'need';
       const len = Number(this.buf.subarray(pos, end).toString());
       pos = end + 2;
-      if (this.buf.length - pos < len + 2) return null;
+      if (this.bulkTooBig(pos, len)) {
+        // Above 2^53, len+2 is not an exact byte count. Drop the buffer and
+        // report the cap; this path does not claim a precise skip.
+        if (!Number.isSafeInteger(len + 2)) {
+          this.buf = Buffer.alloc(0);
+          this.skipBytes = 0;
+          this.skipBulks = 0;
+          throw new Error(this.tooLarge());
+        }
+        this.armOversized(pos, len);
+        this.skipBulks = argc - i - 1;
+        return 'too-large';
+      }
+      if (this.buf.length - pos < len + 2) return 'need';
       args.push(this.buf.subarray(pos, pos + len));
       pos += len + 2;
+    }
+    // A finished array is one request. Declared bulks already fail above; this
+    // still refuses a frame whose own bytes exceed the cap.
+    if (pos > this.maxBuf) {
+      this.buf = Buffer.alloc(0);
+      this.skipBytes = 0;
+      this.skipBulks = 0;
+      throw new Error(this.tooLarge());
     }
     this.buf = this.buf.subarray(pos);
     return args;
@@ -188,11 +312,18 @@ export async function startServer({ dir, port = 6379, host = '127.0.0.1', fsyncP
     socket.on('data', (chunk: Buffer) => {
       queue = queue.then(async () => {
         try {
-          for (const args of parser.feed(chunk)) {
+          for (const item of parser.feed(chunk)) {
             if (socket.destroyed) return;
+            if (!Array.isArray(item)) {
+              // Declared bulk over the cap. feed() has already counted out that
+              // bulk and the rest of its multibulk, so a pipelined command on
+              // this same socket is still framed.
+              send(reply.err(item.error));
+              continue;
+            }
             let res: string | Buffer | null;
             try {
-              res = await handle(db, args);
+              res = await handle(db, item);
             } catch (e) {
               // One failing command must not starve the replies of the
               // commands already parsed from the same chunk.
@@ -205,8 +336,8 @@ export async function startServer({ dir, port = 6379, host = '127.0.0.1', fsyncP
             send(res);
           }
         } catch (e) {
-          // Parser-level failure (e.g. oversized request): feed() has already
-          // reset its buffer, so the connection can keep serving new commands.
+          // Unframed overflow (an inline line with no CRLF). feed() has dropped
+          // its buffer; later chunks are parsed as new commands.
           send(reply.err((e as Error).message));
         }
       });

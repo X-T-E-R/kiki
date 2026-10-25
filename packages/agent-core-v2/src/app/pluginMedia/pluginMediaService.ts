@@ -5,7 +5,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { mediaGenerateInputSchema, mediaOutcomeSchema, mediaCapabilitiesSchema, mediaVoicePageSchema, mediaCancelOutcomeSchema, mediaSourcesInputSchema, mediaCatalogSchema, type MediaJob, type MediaGenerateInput, type MediaOutcome, type MediaCapabilityQuery, type MediaVoiceQuery, type MediaSource } from '@kiki/protocol';
 import { Service } from '#/_base/di/service';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
-import { IInstantiationService } from '#/_base/di/instantiation';
+import { IInstantiationService, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
@@ -15,7 +15,13 @@ import { IConfigService, ConfigTarget } from '#/app/config/config';
 import { PLUGINS_SECTION, type PluginsSection } from '#/app/plugin/configSection';
 import { parsePluginMarketplace, readPluginMarketplace } from '#/app/plugin/marketplace';
 import { ScopedMediaStore } from '#/agent/media/sessionMediaStoreService';
-import { IPluginMediaService, type MediaJobOwner, type StoredMediaJob } from './pluginMedia';
+import { IPluginMediaService, type MediaJobOwner, type MediaScopeContext, type StoredMediaJob } from './pluginMedia';
+import { IPluginService } from '#/app/plugin/plugin';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
+import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { sourceSchema, sourceValues, sourceDefaults, scriptSources, scriptDefinition, scriptEnvironmentKey, scriptSettingsSchema } from '#/app/plugin/mediaSourceSettings';
+import { mediaSourceUpdateSchema, mediaScriptSourceInputSchema, mediaSourceSettingsInputSchema, type MediaManagedSource, type MediaSourceUpdate, type MediaScriptSourceInput } from '@kiki/protocol';
 
 const prefix = '';
 const hash = (value: unknown) => createHash('sha256').update(JSON.stringify(value)).digest('hex');
@@ -29,6 +35,8 @@ export class PluginMediaService extends Service implements IPluginMediaService {
   private readonly scope: string;
   private readonly cache: string;
   private shuttingDown = false;
+  private readonly usage?: IPluginUsageService;
+  private readonly sessions?: ISessionIndex;
 
   async stageInput(key: string, name: string, source: AsyncIterable<Uint8Array>, signal: AbortSignal): Promise<string> {
     const scope = `${this.cache}/inputs/${hash(key)}`;
@@ -46,8 +54,12 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IConfigService private readonly configService: IConfigService,
     @IInstantiationService instantiation: IInstantiationService,
+    @IPluginService private readonly plugins: IPluginService,
+    @IPluginSettingsService private readonly settings: IPluginSettingsService,
   ) {
     super();
+    this.usage = optionalService(instantiation, IPluginUsageService);
+    this.sessions = optionalService(instantiation, ISessionIndex);
     this.scope = `${bootstrap.scope('store')}/plugin-media-v1`;
     this.cache = `${bootstrap.scope('cache')}/plugin-media-v1`;
     this._register(instantiation.onWillDispose(() => {
@@ -59,6 +71,104 @@ export class PluginMediaService extends Service implements IPluginMediaService {
 
   async providers() {
     return (await this.hosts.listMediaProviders()).map(({ provider, definition }) => ({ provider, definition }));
+  }
+
+  async managedSources(): Promise<MediaManagedSource[]> {
+    const installed = await this.plugins.listPlugins();
+    const infos = await Promise.all(installed.map((plugin) => this.plugins.getPluginInfo({ id: plugin.id })));
+    const replaced = new Set(infos.filter((info) => info.enabled).flatMap((info) => (info.manifest?.kiki?.mediaSources ?? []).flatMap((group) => group.legacyPluginId === undefined ? [] : [group.legacyPluginId])));
+    const result: MediaManagedSource[] = [];
+    for (const info of infos.filter((item) => !replaced.has(item.id))) {
+      const extension = info.manifest?.kiki;
+      if (!extension?.mediaProviders?.length) continue;
+      const stored = await this.settings.forExecution(info.id);
+      const groups = extension.mediaSources ?? [];
+      for (const group of groups) {
+        const legacyInfo = infos.find((item) => item.id === group.legacyPluginId);
+        const legacy = legacyInfo?.manifest === undefined ? {} : await this.settings.forExecution(legacyInfo.id);
+        const schema = sourceSchema(extension, group);
+        const values = sourceValues(stored, group, legacy);
+        const effective = sourceDefaults(schema, values);
+        const secretsConfigured = Object.keys(values).filter((key) => schema.schema.properties[key]?.secret && values[key] !== '');
+        result.push({ provider: `${info.id}/${group.providerIds[0]!}`, sourceId: group.id, pluginId: info.id, label: group.label, custom: false,
+          enabled: info.enabled && (stored[group.settingsPrefix + 'enabled'] as boolean | undefined ?? legacyInfo?.enabled ?? true), removed: stored[group.settingsPrefix + 'removed'] === true,
+          definitions: extension.mediaProviders.filter((definition) => group.providerIds.includes(definition.id)).map((definition) => ({ ...definition, connectionSetting: definition.connectionSetting?.slice(group.settingsPrefix.length) })),
+          schema, values: Object.fromEntries(Object.entries(values).filter(([key]) => !schema.schema.properties[key]?.secret)), secretsConfigured,
+          missing: group.required.filter((key) => !effective[key] && !(effective['connectionId'] && ['apiKey', 'baseUrl'].includes(key))),
+        });
+      }
+      const scriptProvider = extension.mediaProviders.find((definition) => definition.id === extension.mediaScriptProvider);
+      if (scriptProvider !== undefined) for (const source of scriptSources(stored)) {
+        result.push({ provider: `${info.id}/script-${source.id}`, sourceId: source.id, pluginId: info.id, label: source.label, custom: true, enabled: info.enabled && source.enabled, removed: source.removed,
+          definitions: [scriptDefinition(source, scriptProvider.resumeVersion)], schema: scriptSettingsSchema,
+          values: { command: source.command, args: JSON.stringify(source.args ?? []), cwd: source.cwd ?? '', protocol: source.protocol, format: source.format ?? '', mime: source.mime ?? '' },
+          secretsConfigured: stored[scriptEnvironmentKey(source.id)] === undefined ? [] : ['environment'], missing: [],
+        });
+      }
+      for (const definition of extension.mediaProviders.filter((item) => !groups.some((group) => group.providerIds.includes(item.id)) && item.id !== extension.mediaScriptProvider)) {
+        const view = await this.settings.inspect(info.id);
+        result.push({ provider: `${info.id}/${definition.id}`, sourceId: definition.id, pluginId: info.id, label: definition.label, custom: false, enabled: info.enabled, removed: false,
+          definitions: [definition], schema: view.schema ?? { schemaVersion: 1, schema: { type: 'object', properties: {} } }, values: { ...view.values }, secretsConfigured: [...view.secretsConfigured], missing: [] });
+      }
+    }
+    return result;
+  }
+
+  async sourceSettings(raw: { provider: string }): Promise<MediaManagedSource> {
+    const input = mediaSourceSettingsInputSchema.parse(raw);
+    const sources = await this.managedSources();
+    const source = sources.find((item) => item.provider === input.provider || item.definitions.some((definition) => `${item.pluginId}/${definition.id}` === input.provider));
+    if (source === undefined) throw new Error('Media source not found');
+    return source;
+  }
+
+  async updateSource(raw: MediaSourceUpdate): Promise<MediaManagedSource> {
+    const input = mediaSourceUpdateSchema.parse(raw);
+    const source = await this.sourceSettings({ provider: input.provider });
+    const info = await this.plugins.getPluginInfo({ id: source.pluginId });
+    const extension = info.manifest!.kiki!;
+    const stored = await this.settings.forExecution(info.id);
+    const group = extension.mediaSources?.find((item) => item.id === source.sourceId);
+    const values: Record<string, string | number | boolean | null> = {};
+    if (group !== undefined) {
+      const cleared = new Set<string>(JSON.parse(String(stored[group.settingsPrefix + 'cleared'] ?? '[]')));
+      for (const [key, value] of Object.entries(input.values ?? {})) {
+        if (source.schema.schema.properties[key] === undefined) throw new Error(`Unknown media source setting ${key}`);
+        values[group.settingsPrefix + key] = value;
+        if (value === null) cleared.add(key); else cleared.delete(key);
+      }
+      values[group.settingsPrefix + 'cleared'] = JSON.stringify([...cleared]);
+      if (input.enabled !== undefined) values[group.settingsPrefix + 'enabled'] = input.enabled;
+      if (input.removed !== undefined) values[group.settingsPrefix + 'removed'] = input.removed;
+    } else if (source.custom) {
+      const scripts = scriptSources(stored);
+      for (const key of Object.keys(input.values ?? {})) if (key !== 'environment') throw new Error(`Unknown script setting ${key}`);
+      const environment = input.values?.['environment'];
+      if (environment !== undefined) {
+        if (environment !== null && typeof environment !== 'string') throw new Error('Script environment must be a JSON object');
+        if (environment !== null) mediaScriptSourceInputSchema.shape.environment.parse(JSON.parse(environment));
+        values[scriptEnvironmentKey(source.sourceId)] = environment;
+      }
+      values['scriptSources'] = JSON.stringify(scripts.map((item) => item.id !== source.sourceId ? item : { ...item, enabled: input.enabled ?? item.enabled, removed: input.removed ?? item.removed }));
+    } else {
+      if (input.removed !== undefined) throw new Error('Remove third-party packages from their plugin detail');
+      if (input.enabled !== undefined) await this.plugins.setPluginEnabled({ id: info.id, enabled: input.enabled });
+      Object.assign(values, input.values);
+    }
+    if (Object.keys(values).length) await this.settings.update({ pluginId: info.id, values });
+    return this.sourceSettings({ provider: source.provider });
+  }
+
+  async addScriptSource(raw: MediaScriptSourceInput): Promise<MediaManagedSource> {
+    const { environment, ...source } = mediaScriptSourceInputSchema.parse(raw);
+    const info = await this.plugins.getPluginInfo({ id: 'kiki-media' });
+    if (info.manifest?.kiki?.mediaScriptProvider === undefined) throw new Error('Install the unified media plugin to add a script source');
+    const settings = await this.settings.forExecution(info.id);
+    const scripts = scriptSources(settings);
+    if (scripts.some((item) => item.id === source.id)) throw new Error('Script source id already exists; restore a removed source rather than replacing its saved handles');
+    await this.settings.update({ pluginId: info.id, values: { scriptSources: JSON.stringify([...scripts, { ...source, enabled: true, removed: false }]) } });
+    if (environment !== undefined) await this.settings.update({ pluginId: info.id, values: { [scriptEnvironmentKey(source.id)]: JSON.stringify(environment) } });
+    return this.sourceSettings({ provider: `${info.id}/script-${source.id}` });
   }
 
   async sources(): Promise<MediaSource[]> {
@@ -79,21 +189,55 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     return mediaCatalogSchema.parse(parsePluginMarketplace(raw, location));
   }
 
-  async capabilities(query: MediaCapabilityQuery) {
+  async capabilities(query: MediaCapabilityQuery, scope?: MediaScopeContext) {
     if (query.provider === undefined) {
-      const providers = (await this.providers()).filter((item) => query.kind === undefined || item.definition.kinds.includes(query.kind));
-      return { providers };
+      const candidates = (await this.providers()).filter((item) => query.kind === undefined || item.definition.kinds.includes(query.kind));
+      const providers = await this.filterScopedProviders(candidates, scope);
+      return { providers: [...providers] };
     }
-    return mediaCapabilitiesSchema.parse(await this.discover(query.provider, 'describe', query));
+    return mediaCapabilitiesSchema.parse(await this.discover(query.provider, 'describe', query, scope));
   }
 
-  async voices(query: MediaVoiceQuery) {
-    return mediaVoicePageSchema.parse(await this.discover(query.provider, 'voices', query));
+  async voices(query: MediaVoiceQuery, scope?: MediaScopeContext) {
+    return mediaVoicePageSchema.parse(await this.discover(query.provider, 'voices', query, scope));
   }
 
-  private async discover(provider: string, action: 'describe' | 'voices', query: unknown) {
+  private async discover(provider: string, action: 'describe' | 'voices', query: unknown, scope?: MediaScopeContext) {
+    await this.assertProviderAllowed(provider, scope);
     const stagingDir = await this.staging('discovery');
     return this.hosts.requestMediaProvider(provider, action, query, AbortSignal.timeout(60_000), { jobId: 'discovery', stagingDir });
+  }
+
+  private async filterScopedProviders<T extends { readonly provider: string }>(
+    providers: readonly T[],
+    scope?: MediaScopeContext,
+  ): Promise<readonly T[]> {
+    if (scope === undefined || this.usage?.enabled() !== true) return providers;
+    const allowed: T[] = [];
+    for (const provider of providers) {
+      if (await this.providerAllowed(provider.provider, scope)) allowed.push(provider);
+    }
+    return allowed;
+  }
+
+  private async assertProviderAllowed(provider: string, scope?: MediaScopeContext): Promise<void> {
+    if (scope !== undefined && !(await this.providerAllowed(provider, scope))) {
+      throw new Error(`Media provider ${provider} is disabled in this session.`);
+    }
+  }
+
+  private async providerAllowed(provider: string, scope: MediaScopeContext): Promise<boolean> {
+    if (this.usage?.enabled() !== true) return true;
+    const pluginId = provider.split('/', 1)[0];
+    if (pluginId === undefined || pluginId.length === 0) return false;
+    return this.usage.allows(scope.workspaceId, pluginId, scope.sessionId);
+  }
+
+  private async scopeForOwner(owner: MediaJobOwner): Promise<MediaScopeContext | undefined> {
+    if (this.usage?.enabled() !== true) return undefined;
+    const session = await this.sessions?.get(owner.sessionId);
+    if (session === undefined) throw new Error(`Session ${owner.sessionId} is not available for media admission.`);
+    return { workspaceId: session.workspaceId, sessionId: owner.sessionId };
   }
 
   async jobs(input: { session_id?: string; limit?: number; offset?: number } = {}): Promise<MediaJob[]> {
@@ -126,7 +270,10 @@ export class PluginMediaService extends Service implements IPluginMediaService {
       return existing.view;
     }
     const providers = await this.hosts.listMediaProviders();
-    const matching = providers.filter((item) => item.definition.kinds.includes(input.request.kind) && (input.provider === undefined || input.provider === item.provider));
+    const scope = await this.scopeForOwner(owner);
+    const candidates = providers.filter((item) => item.definition.kinds.includes(input.request.kind) &&
+      (input.provider === undefined || input.provider === item.provider || item.aliases?.includes(input.provider)));
+    const matching = await this.filterScopedProviders(candidates, scope);
     if (matching.length !== 1) throw new Error(`Choose one configured media provider for ${input.request.kind}: ${matching.map((item) => item.provider).join(', ') || 'install/enable a media provider in Plugins'}`);
     const provider = matching[0]!;
     const now = Date.now();
@@ -326,10 +473,18 @@ export class PluginMediaService extends Service implements IPluginMediaService {
     }
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.shuttingDown = true;
     for (const execution of this.active.values()) execution.controller.abort(new Error('Host shutdown'));
-    super.dispose();
+    return super.dispose();
+  }
+}
+
+function optionalService<T>(instantiation: IInstantiationService, id: ServiceIdentifier<T>): T | undefined {
+  try {
+    return instantiation.invokeFunction((accessor) => accessor.get(id));
+  } catch {
+    return undefined;
   }
 }
 

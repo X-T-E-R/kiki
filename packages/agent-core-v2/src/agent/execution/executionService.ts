@@ -1,5 +1,6 @@
 import { IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { markAsDisposed, trackDisposable } from '#/_base/di/lifecycle';
+import { Emitter } from '#/_base/event';
 import {
   registerScopedService,
   ScopeActivation,
@@ -64,6 +65,8 @@ export class AgentExecutionService implements IAgentExecutionService {
     'onWillRun',
   ]);
 
+  private readonly statusChanged = new Emitter<AgentExecutionStatus>();
+  readonly onDidChangeStatus = this.statusChanged.event;
   private readonly agent: AgentExecutorAgentContext;
   private readonly runs = new Set<ActiveRun>();
   private readonly deliveredHints = new Set<string>();
@@ -72,6 +75,8 @@ export class AgentExecutionService implements IAgentExecutionService {
   private broken: unknown;
   private cancelling = false;
   private shuttingDown = false;
+  private shutdownCompleted = false;
+  private shutdownFailed = false;
   private shutdownPromise: Promise<void> | undefined;
 
   constructor(
@@ -99,11 +104,6 @@ export class AgentExecutionService implements IAgentExecutionService {
     if (this.shuttingDown) {
       throw new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is shutting down`);
     }
-    if (this.broken !== undefined) {
-      throw this.broken instanceof Error
-        ? this.broken
-        : new Error2(ErrorCodes.INTERNAL, `Agent executor "${this.agent.id}" is broken`, { cause: this.broken });
-    }
     options.signal.throwIfAborted();
     const release = this.dispatch.reserveExecution(this.agent.id, this.scope.parentAgentId, options.capacityReservation);
     let activityPermit: RequestPermit | undefined;
@@ -120,6 +120,7 @@ export class AgentExecutionService implements IAgentExecutionService {
     };
     this.runs.add(active);
     this.cancelling = false;
+    this.statusChanged.fire(this.status());
     const afterStartCallbacks: Array<() => Promise<void>> = [];
     const runContext: AgentExecutionRunContext = {
       signal: controller.signal,
@@ -132,6 +133,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       },
     };
     let hints: ExternalPromptHint[] = [];
+    let session: AgentExecutorSession | undefined;
     try {
       await this.hooks.onWillRun.run(runContext);
       controller.signal.throwIfAborted();
@@ -143,8 +145,6 @@ export class AgentExecutionService implements IAgentExecutionService {
         if (this.loop.status().finalizing) return 'finalizing';
         return active.turnId === undefined ? 'starting' : 'running';
       });
-      controller.signal.throwIfAborted();
-      const session = await this.resolveSession();
       controller.signal.throwIfAborted();
       let outbound = runContext.request ?? request;
       const binding = this.profile.data();
@@ -166,9 +166,23 @@ export class AgentExecutionService implements IAgentExecutionService {
           ...deliverable.map((hint) => `[Kiki ${hint.origin}]\n${hint.text}`), outbound.prompt,
         ].join('\n\n') };
       }
+      controller.signal.throwIfAborted();
+      session = await this.resolveSession();
+      controller.signal.throwIfAborted();
+      this.broken = undefined;
       const handle = await session.run(outbound, { ...options, signal: controller.signal });
       active.turnId = handle.turn.id;
-      void handle.completion.then(() => this.finishRun(active), () => this.finishRun(active));
+      this.statusChanged.fire(this.status());
+      void handle.completion.then(
+        () => { this.finishRunWhenSettled(active, session); },
+        (error: unknown) => {
+          if (this.isFailedExternalRun(session, active)) {
+            void this.finishFailedExternalRun(active, session, error);
+          } else {
+            this.finishRunWhenSettled(active, session);
+          }
+        },
+      );
       for (const hint of hints) {
         const delivered = hint.text.length > 0;
         if (delivered && hint.id !== undefined) this.deliveredHints.add(hint.id);
@@ -185,6 +199,7 @@ export class AgentExecutionService implements IAgentExecutionService {
         executorId: this.profile.data().executorId, origin: hint.origin,
         method: 'undelivered', status: 'undelivered',
       })).catch(() => undefined);
+      if (this.isFailedExternalRun(session, active)) await this.cleanupFailedExternalSession(session, error);
       this.finishRun(active);
       throw error;
     }
@@ -214,12 +229,12 @@ export class AgentExecutionService implements IAgentExecutionService {
     };
     this.runs.add(active);
     this.cancelling = false;
+    this.statusChanged.fire(this.status());
     void completion.then(() => this.finishRun(active), () => this.finishRun(active));
     return controller.signal;
   }
 
   status(): AgentExecutionStatus {
-    if (this.broken !== undefined) return { state: 'broken' };
     if (this.runs.size > 0) {
       const runs = [...this.runs];
       const turnId = runs.find((run) => run.turnId !== undefined)?.turnId;
@@ -228,6 +243,12 @@ export class AgentExecutionService implements IAgentExecutionService {
       }
       return turnId === undefined ? { state: 'starting' } : { state: 'running', turnId };
     }
+    if (this.shuttingDown) {
+      if (this.shutdownCompleted) return { state: 'closed' };
+      if (this.shutdownFailed) return { state: 'broken' };
+      return { state: 'cancelling' };
+    }
+    if (this.broken !== undefined) return { state: 'broken' };
     return this.session?.status() ?? { state: 'idle' };
   }
 
@@ -236,7 +257,12 @@ export class AgentExecutionService implements IAgentExecutionService {
     return this.session?.canResumeBrokenOriginal?.() === true;
   }
 
-  steer(message: ContextMessage): Promise<boolean> {
+  canRetryBrokenExecution(): boolean {
+    return !this.shuttingDown && this.runs.size === 0 && this.broken !== undefined &&
+      this.session === undefined && (this.profile.data().executorId ?? 'native') !== 'native';
+  }
+
+  steer(message: ContextMessage): Promise<boolean | 'unknown'> {
     if (this.status().state !== 'running') return Promise.resolve(false);
     return this.session?.steer?.(message) ?? Promise.resolve(false);
   }
@@ -250,7 +276,9 @@ export class AgentExecutionService implements IAgentExecutionService {
         cancelled = true;
       }
     }
-    return this.session?.cancel(reason) === true || cancelled;
+    const sessionCancelled = this.session?.cancel(reason) === true;
+    if (cancelled || sessionCancelled) this.statusChanged.fire(this.status());
+    return sessionCancelled || cancelled;
   }
 
   async settled(): Promise<void> {
@@ -273,17 +301,27 @@ export class AgentExecutionService implements IAgentExecutionService {
     try {
       await this.shutdown(new Error('Agent execution service disposed'));
     } finally {
+      this.statusChanged.dispose();
       markAsDisposed(this);
     }
   }
 
   private async shutdownSession(reason?: unknown): Promise<void> {
-    this.cancel(reason);
     const session = this.session;
-    await Promise.all([this.settled(), session?.shutdown(reason)]);
-    if (this.session !== session) await this.session?.shutdown(reason);
-    this.session = undefined;
-    this.sessionBindingKey = undefined;
+    try {
+      this.cancel(reason);
+      await Promise.all([this.settled(), session?.shutdown(reason)]);
+      if (this.session !== session) await this.session?.shutdown(reason);
+      this.session = undefined;
+      this.sessionBindingKey = undefined;
+      this.shutdownCompleted = true;
+    } catch (error) {
+      this.shutdownFailed = true;
+      if (this.broken === undefined) this.broken = error;
+      throw error;
+    } finally {
+      this.statusChanged.fire(this.status());
+    }
   }
 
   async attachLocalSession(source: LocalExecutorSessionSource): Promise<void> {
@@ -339,6 +377,7 @@ export class AgentExecutionService implements IAgentExecutionService {
       ? `:permission:${externalPermissionConstraints(externalContext) ? 'manual' : externalPermissionMode(externalContext) ?? 'vendor'}` : '';
     const bindingKey = executorId === 'native' ? 'native'
       : `${agentExecutorBindingFingerprint(binding)}${modeKey}`;
+    await this.disposeBrokenExternalSession();
     if (this.session !== undefined && this.sessionBindingKey !== bindingKey) {
       const status = this.session.status();
       if (status.state === 'broken') throw brokenOriginalResumeRefusal(this.agent.id);
@@ -377,6 +416,43 @@ export class AgentExecutionService implements IAgentExecutionService {
     } catch (error) {
       this.broken = error;
       throw error;
+    }
+  }
+
+  private isFailedExternalRun(session: AgentExecutorSession | undefined, active: ActiveRun): session is AgentExecutorSession {
+    return session !== undefined && !active.controller.signal.aborted &&
+      this.session === session && this.sessionBindingKey !== undefined && this.sessionBindingKey !== 'native';
+  }
+
+  private async finishFailedExternalRun(active: ActiveRun, session: AgentExecutorSession, error: unknown): Promise<void> {
+    await this.cleanupFailedExternalSession(session, error);
+    this.finishRunWhenSettled(active, session);
+  }
+
+  private async cleanupFailedExternalSession(session: AgentExecutorSession, error: unknown): Promise<boolean> {
+    if (session.canResumeBrokenOriginal !== undefined) return true;
+    if (this.broken === undefined) this.broken = error;
+    if (this.session !== session || this.sessionBindingKey === 'native') return true;
+    try {
+      await session.shutdown(error);
+    } catch {
+      return false;
+    }
+    if (this.session === session) {
+      this.session = undefined;
+      this.sessionBindingKey = undefined;
+    }
+    return true;
+  }
+
+  private async disposeBrokenExternalSession(): Promise<void> {
+    const session = this.session;
+    if (session === undefined || this.sessionBindingKey === 'native' || session.canResumeBrokenOriginal !== undefined ||
+        (session.status().state !== 'broken' && this.broken === undefined)) return;
+    await session.settled();
+    const reason = this.broken ?? new Error('External executor session failed before explicit resume');
+    if (!(await this.cleanupFailedExternalSession(session, reason))) {
+      throw reason instanceof Error ? reason : new Error('External executor session cleanup failed', { cause: reason });
     }
   }
 
@@ -419,11 +495,23 @@ export class AgentExecutionService implements IAgentExecutionService {
     });
   }
 
+  private finishRunWhenSettled(active: ActiveRun, session: AgentExecutorSession | undefined): void {
+    if (session === undefined || session instanceof NativeAgentExecutorSession) {
+      this.finishRun(active);
+      return;
+    }
+    void session.settled().then(() => this.finishRun(active), (error: unknown) => {
+      this.broken ??= error;
+      this.finishRun(active);
+    });
+  }
+
   private finishRun(active: ActiveRun): void {
     if (!this.runs.delete(active)) return;
     active.unlink();
     active.resolveSettled();
     if (this.runs.size === 0) this.cancelling = false;
+    this.statusChanged.fire(this.status());
   }
 }
 

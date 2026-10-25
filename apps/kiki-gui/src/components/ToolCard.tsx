@@ -12,7 +12,7 @@ import { memo, useMemo, useState, type ReactNode } from 'react';
 import type { ToolInputDisplay } from '@kiki/protocol';
 import type { I18nKey } from '@kiki/session-core/i18n';
 
-import { extractToolOutputMedia } from '@kiki/session-core/composer/media';
+import { extractToolOutputMedia, toolResultMedia, type MediaRef } from '@kiki/session-core/composer/media';
 import type { ToolBlock } from '@kiki/session-core/session';
 import { describeError, extractEditSource, diffStat } from '@kiki/session-core/util';
 import { useI18n } from '../i18n';
@@ -75,6 +75,70 @@ function bridgedArgs(block: ToolBlock): unknown {
   return (block.args as Record<string, unknown>)['arguments'] ?? block.args;
 }
 
+function projectionDetail(detail: unknown): { diffs?: { path: string; before: string; after: string }[]; paths?: string[]; operation?: 'read' | 'edit' } | undefined {
+  if (typeof detail !== 'object' || detail === null || Array.isArray(detail)) return undefined;
+  const record = detail as Record<string, unknown>;
+  if (Array.isArray(record['diffs'])) {
+    const diffs = record['diffs'].flatMap((item) => {
+      if (typeof item !== 'object' || item === null) return [];
+      const entry = item as Record<string, unknown>;
+      if (typeof entry['path'] !== 'string' || typeof entry['before'] !== 'string' || typeof entry['after'] !== 'string') return [];
+      return [{ path: entry['path'], before: entry['before'], after: entry['after'] }];
+    });
+    if (diffs.length > 0) return { diffs };
+  }
+  if (Array.isArray(record['paths']) && record['paths'].length > 0 && record['paths'].every((item) => typeof item === 'string')) {
+    const operation = record['operation'] === 'read' || record['operation'] === 'edit' ? record['operation'] : undefined;
+    return { paths: record['paths'], operation };
+  }
+  return undefined;
+}
+
+function projectionVerb(detail: unknown): 'read' | 'edit' | undefined {
+  const recovered = projectionDetail(detail);
+  if (recovered?.diffs !== undefined) return 'edit';
+  if (recovered?.operation === 'read' || recovered?.operation === 'edit') return recovered.operation;
+  return undefined;
+}
+
+function externalActionLabel(block: ToolBlock, t: Translate): string {
+  const display = block.display;
+  if (display === undefined) return block.name;
+  switch (display.kind) {
+    case 'command':
+      return t('tc.ext.run');
+    case 'file_io':
+      if (display.operation === 'read') return t('tc.ext.read');
+      if (display.operation === 'write') return t('tc.ext.write');
+      if (display.operation === 'edit') return t('tc.ext.edit');
+      return t('tc.ext.search');
+    case 'diff':
+      return t('tc.ext.edit');
+    case 'search':
+      return t('tc.ext.search');
+    case 'url_fetch':
+      return t('tc.ext.fetch');
+    case 'agent_call':
+      return t('tc.ext.agent');
+    case 'task':
+    case 'task_stop':
+      return t('tc.ext.task');
+    case 'plan_review':
+    case 'plan_enter':
+      return t('tc.ext.plan');
+    case 'external_permission':
+      return t('tc.ext.permission');
+    case 'generic': {
+      const verb = projectionVerb(display.detail);
+      if (verb === 'edit') return t('tc.ext.edit');
+      if (verb === 'read') return t('tc.ext.read');
+      return block.name;
+    }
+    default:
+      return block.name;
+  }
+}
+
 /**
  * Which drawn icon names a tool's KIND of action. Several tools share one
  * picture on purpose (Read and Glob both "look"; every write is the pencil):
@@ -114,8 +178,12 @@ export function toolIcon(block: ToolBlock): IconName {
         return 'goal';
       case 'external_permission':
         return 'gate';
-      case 'generic':
+      case 'generic': {
+        const verb = projectionVerb(display.detail);
+        if (verb === 'edit') return 'edit';
+        if (verb === 'read') return 'read';
         break;
+      }
     }
   }
   if (block.toolCallId.startsWith('external:')) return 'tool';
@@ -133,7 +201,11 @@ export function toolIcon(block: ToolBlock): IconName {
 /** The one-line "key argument" summary shown on the collapsed card. */
 export function toolSummary(block: ToolBlock, t: Translate, tp: TranslatePlural): string {
   const display = block.display;
-  if (display !== undefined) return displaySummary(display, t, tp);
+  if (display !== undefined) {
+    const summary = displaySummary(display, t, tp);
+    if (display.kind === 'generic' && summary.trim().toLowerCase() === block.name.trim().toLowerCase()) return '';
+    return summary;
+  }
   const fromArgs = argsSummary(block.args);
   if (fromArgs !== undefined) return fromArgs;
   if (block.argsText !== '') {
@@ -274,9 +346,12 @@ export function activityOutcomeLabels(t: Translate) {
  */
 export const DURATION_WORTH_SHOWING_MS = 2_000;
 
-function CommandIsland({ command, output }: { command: string; output?: ReactNode }) {
+function CommandIsland({ command, cwd, output }: { command: string; cwd?: string; output?: ReactNode }) {
   return (
     <div className="overflow-hidden rounded-[10px] bg-shell">
+      {cwd !== undefined && cwd !== '' ? (
+        <div className="px-3 pt-2 font-mono text-[11px] leading-relaxed text-shell-ink-soft">{cwd}</div>
+      ) : null}
       <div className="px-3 py-2 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words text-shell-ink-strong">
         <span className="mr-1 text-shell-ink-soft select-none">$ </span>
         {command}
@@ -308,30 +383,51 @@ function externalOutput(output: unknown): { text?: string; rawInput?: unknown; r
   return { text: typeof value['text'] === 'string' ? value['text'] : undefined, rawInput: value['rawInput'], rawOutput: value['rawOutput'], media: Array.isArray(value['media']) ? value['media'] : undefined };
 }
 
-function OutputView(props: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
-  return <div data-tool-record-field="output"><OutputContent {...props} /></div>;
+/**
+ * A foreign engine's result, as the engine handed it over: the preserved body
+ * when the window carried one, the artifacts it names, and an honest note when
+ * the payload was truncated on the way in.
+ */
+function ExternalOutput({ output, agentId, island = false }: { output: unknown; agentId: string; island?: boolean }) {
+  const { locale } = useI18n();
+  if (output === undefined || output === null) return null;
+  const preserved = externalOutput(output);
+  if (preserved === undefined) {
+    return typeof output === 'string'
+      ? <pre className={wellClass(island)}>{output}</pre>
+      : <LoadedToolText text={recordText(output)} className={wellClass(island)} />;
+  }
+  const media = extractToolOutputMedia(preserved.media);
+  return <div className="space-y-2">
+    {toolPayloadIncomplete(preserved.rawInput) || toolPayloadIncomplete(preserved.rawOutput) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', locale)}</p> : null}
+    {preserved.text ? <LoadedToolText text={preserved.text} className={wellClass(island)} copy={island} /> : null}
+    {media === undefined ? null : <MediaPartList media={media.media} agentId={agentId} />}
+    <details>
+      <summary className="text-[12px] text-ink-faint">{toolRecordCopy('artifact', locale)}</summary>
+      <LoadedToolText text={recordText(output)} className={wellClass(island)} />
+    </details>
+  </div>;
 }
 
-function OutputContent({ output, agentId, island = false, external = false }: { output: unknown; agentId: string; island?: boolean; external?: boolean }) {
-  const { t, locale } = useI18n();
-  if (output === undefined || output === null) return null;
-  if (external) {
-    const preserved = externalOutput(output);
-    const media = extractToolOutputMedia(preserved?.media);
-    if (preserved === undefined) return typeof output === 'string' ? <pre className={wellClass(island)}>{output}</pre> : <LoadedToolText text={recordText(output)} className={wellClass(island)} />;
-    return <div className="space-y-2">
-      {toolPayloadIncomplete(preserved.rawInput) || toolPayloadIncomplete(preserved.rawOutput) ? <p data-tool-payload-status className="text-[12px] text-ink-faint">{toolRecordCopy('payloadTruncated', locale)}</p> : null}
-      {preserved.text ? <LoadedToolText text={preserved.text} className={wellClass(island)} copy={island} /> : null}
-      {media === undefined ? null : <MediaPartList media={media.media} agentId={agentId} />}
-      <details>
-        <summary className="text-[12px] text-ink-faint">{toolRecordCopy('artifact', locale)}</summary>
-        <LoadedToolText text={recordText(output)} className={wellClass(island)} />
-      </details>
-    </div>;
-  }
+/** The result well: engine content parts, canonical result media, or both. */
+function OutputView({ output, media, agentId, island = false, external = false }: {
+  output: unknown;
+  /** Canonical result media from the frame's own attachment references. */
+  media?: readonly MediaRef[];
+  agentId: string;
+  island?: boolean;
+  /** A foreign engine's payload: it carries its own body and artifacts. */
+  external?: boolean;
+}) {
+  const { t } = useI18n();
+  if (external) return <div data-tool-record-field="output"><ExternalOutput output={output} agentId={agentId} island={island} /></div>;
   // Engine media results (ReadMediaFile & friends) arrive as raw content-part
   // arrays; render their images as thumbnails instead of serialized JSON.
-  const mediaOutput = extractToolOutputMedia(output);
+  const mediaOutput = output === undefined || output === null ? undefined : extractToolOutputMedia(output);
+  // A result that carries both the reference and the part reports one file
+  // twice; `toolResultMedia` folds them so the well draws each image once.
+  const resultMedia = toolResultMedia(media, mediaOutput?.media);
+  const resultList = resultMedia.length > 0 ? <MediaPartList media={resultMedia} agentId={agentId} /> : null;
   if (mediaOutput !== undefined) {
     return (
       <div className="space-y-2">
@@ -340,10 +436,26 @@ function OutputContent({ output, agentId, island = false, external = false }: { 
             {mediaOutput.text}
           </pre>
         ) : null}
-        <MediaPartList media={mediaOutput.media} agentId={agentId} />
+        {resultList}
       </div>
     );
   }
+  // A body the window omitted still leaves its media known: the references
+  // name the file, so show it beside whatever text survived.
+  const body = outputBody(output, agentId, island, t);
+  if (body === null) return resultList;
+  if (resultList === null) return <>{body}</>;
+  return (
+    <div className="space-y-2">
+      {body}
+      {resultList}
+    </div>
+  );
+}
+
+/** The text/JSON reading of a result, with its media handled above. */
+function outputBody(output: unknown, agentId: string, island: boolean, t: Translate): ReactNode {
+  if (output === undefined || output === null) return null;
   // The media plugin's `generate` result: .
   // A short generation shows its files right here; a long one shows where it
   // got to, with the same honesty rules the management view uses. Drawn
@@ -435,6 +547,7 @@ export const ToolCard = memo(function ToolCard({
 ${engineError}`;
   const summary = toolSummary(block, t, tp);
   const isCommand = block.display?.kind === 'command';
+  const commandCwd = block.display?.kind === 'command' ? block.display.cwd : undefined;
   const keepCommandSummary = hasCommandSummary(block, summary);
   // File-carrying displays get a clickable path in the collapsed summary.
   const displayPath =
@@ -448,7 +561,17 @@ ${engineError}`;
     () => extractEditSource(block.display, external ? undefined : block.args),
     [block.display, block.args, external],
   );
-  const stat = editSource !== undefined ? diffStat(editSource.hunks) : undefined;
+  const recoveredDiffs = useMemo(() => {
+    const diffs = block.display?.kind === 'generic' ? projectionDetail(block.display.detail)?.diffs ?? [] : [];
+    return diffs.flatMap((entry) => {
+      const source = extractEditSource({ kind: 'diff', path: entry.path, before: entry.before, after: entry.after }, undefined);
+      return source === undefined ? [] : [source];
+    });
+  }, [block.display]);
+  const statSources = recoveredDiffs.length > 1 ? recoveredDiffs : editSource === undefined ? [] : [editSource];
+  const stat = statSources.length === 0 ? undefined : statSources
+    .map((source) => diffStat(source.hunks))
+    .reduce((acc, next) => ({ insertions: acc.insertions + next.insertions, deletions: acc.deletions + next.deletions }), { insertions: 0, deletions: 0 });
   // Built-in tools say what they did in their own terms (a thread, a task, a
   // history hit); the raw payload stays one disclosure away.
   const semanticContext = useSemanticContext();
@@ -460,7 +583,10 @@ ${engineError}`;
   if (memoryRow) return <MemoryToolRow block={block} agentId={agentId} />;
 
   const target = keepCommandSummary ? (
-    <span className="font-mono">{summary}</span>
+    <span className="font-mono">
+      {summary}
+      {commandCwd !== undefined && commandCwd !== '' ? <span className="text-ink-faint">{` · ${commandCwd}`}</span> : null}
+    </span>
   ) : errorSummary !== undefined ? (
     <span title={errorTitle} className={codedError === undefined ? 'font-mono' : undefined}>{errorSummary}</span>
   ) : block.status === 'stopped' ? (
@@ -501,7 +627,7 @@ ${engineError}`;
         ? undefined
         : time.formatDuration(frameDuration);
   const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
-  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputContent output={block.output} agentId={agentId} external={external} /></ToolRecordField>;
+  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} media={block.media} agentId={agentId} external={external} /></ToolRecordField>;
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the
@@ -572,12 +698,12 @@ ${engineError}`;
   return (
     <ActivityRow
       nested={nested}
-      attrs={{ 'data-tool': true, 'data-tool-id': block.toolCallId }}
+      attrs={{ 'data-tool': true, 'data-tool-id': block.toolCallId, 'data-tool-name': block.name }}
       glyph={<Icon name={toolIcon(block)} />}
       tone={tone}
       // Plugin and MCP tools read by their own name; the runtime id
       // (`plugin__<id>__<tool>`) stays available on hover.
-      label={bridged && realName === undefined ? t('tc.callingTool') : <span title={block.name}>{external ? block.name : toolDisplayName(block.name)}</span>}
+      label={bridged && realName === undefined ? t('tc.callingTool') : <span title={block.name}>{external ? externalActionLabel(block, t) : toolDisplayName(block.name)}</span>}
       detail={target}
       expanded={expanded}
       onToggle={() => { setExpanded((value) => !value); }}
@@ -597,8 +723,9 @@ ${engineError}`;
             <>
               <CommandIsland
                 command={block.display.command}
+                cwd={block.display.cwd}
                 output={
-                  block.output !== undefined ? <OutputView output={block.output} agentId={agentId} island external={external} /> : undefined
+                  block.output !== undefined ? <OutputView output={block.output} media={block.media} agentId={agentId} island external={external} /> : undefined
                 }
               />
               {/* Controls stay on paper under the island: the command line and
@@ -613,7 +740,20 @@ ${engineError}`;
               {block.description !== undefined ? (
                 <p className="text-[13px] text-ink-soft">{block.description}</p>
               ) : null}
-              {editSource !== undefined ? (
+              {recoveredDiffs.length > 1 ? (
+                <div className="space-y-2">
+                  {recoveredDiffs.map((source, index) => (
+                    <div key={`${source.path ?? 'diff'}:${index}`}>
+                      {source.path !== undefined ? (
+                        <p className={label}>
+                          <FilePathLink path={source.path} />
+                        </p>
+                      ) : null}
+                      <DiffCard hunks={source.hunks} />
+                    </div>
+                  ))}
+                </div>
+              ) : editSource !== undefined ? (
                 <div>
                   {editSource.path !== undefined && editSource.path !== displayPath ? (
                     <p className={label}>

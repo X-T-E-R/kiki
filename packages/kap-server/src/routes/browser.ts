@@ -1,7 +1,11 @@
-import { IBrowserConnectionStore, IBrowserControlService, isError2, isBrowserOperation, browserToolGroup, type Scope } from '@kiki/agent-core-v2';
+import { IBrowserConnectionStore, IBrowserControlService, IBrowserSetupService, IConfigService, IFlagService, BrowserError, isError2, isBrowserOperation, browserToolGroup, type Scope } from '@kiki/agent-core-v2';
+import { BROWSER_CONFIG_SECTION, readBrowserControlSettings, webbridgePresetRouted } from '@kiki/agent-core-v2/app/browser/browserConfig';
+import { EXPERIMENTAL_SECTION } from '@kiki/agent-core-v2/app/flag/flag';
 import { ErrorCode, browserIdSchema, browserConnectionInputSchema, browserConnectionResponseSchema,
   browserDefaultInputSchema, browserControlListSchema, browserStatusSchema, browserFailureSchema,
-  browserTabsResponseSchema, browserCatalogResponseSchema, browserCatalogQuerySchema } from '@kiki/protocol';
+  browserTabsResponseSchema, browserCatalogResponseSchema, browserCatalogQuerySchema,
+  browserPresetIdSchema, browserSetupListSchema, browserSetupStatusSchema, browserSetupPrepareInputSchema, browserSetupConnectInputSchema,
+  browserSetupOpenInputSchema, browserSetupUpdateInputSchema, browserSetupShortcutInputSchema } from '@kiki/protocol';
 import { z } from 'zod';
 
 import { okEnvelope, errEnvelope } from '../envelope';
@@ -31,9 +35,55 @@ function protect(handler: Handler): Handler {
 export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void {
   const control = () => core.accessor.get(IBrowserControlService);
   const store = () => core.accessor.get(IBrowserConnectionStore);
+  const setup = () => core.accessor.get(IBrowserSetupService);
+  const setupList = defineRoute({ method: 'GET', path: '/browser/setup', success: { data: browserSetupListSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
+    reply.send(okEnvelope(await setup().list(), req.id));
+  });
+  app.get(setupList.path, setupList.options, protect(setupList.handler as Handler));
+  const setupStatus = defineRoute({ method: 'GET', path: '/browser/setup/{preset}', params: z.object({ preset: browserPresetIdSchema }), success: { data: browserSetupStatusSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
+    reply.send(okEnvelope(await setup().status(req.params.preset), req.id));
+  });
+  app.get(setupStatus.path, setupStatus.options, protect(setupStatus.handler as Handler));
+  const setupAction = defineRoute({ method: 'POST', path: '/browser/setup/{tail}', params: z.object({ tail: z.string().min(1) }),
+    body: z.union([browserSetupPrepareInputSchema, browserSetupConnectInputSchema, browserSetupOpenInputSchema, browserSetupUpdateInputSchema, browserSetupShortcutInputSchema]),
+    success: { data: browserSetupStatusSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
+    const action = parseActionSuffix({ tail: req.params.tail, allowedActions: ['prepare', 'connect', 'cancel', 'open', 'update', 'shortcut'], resourceLabel: 'browser setup' });
+    const preset = action.kind === 'action' ? browserPresetIdSchema.safeParse(action.id) : undefined;
+    if (action.kind !== 'action' || preset?.success !== true) throw new BrowserError('browser.invalid', 'Unknown browser setup action');
+    let result;
+    if (action.action === 'prepare') {
+      const input = browserSetupPrepareInputSchema.safeParse(req.body);
+      if (!input.success) throw new BrowserError('browser.invalid', 'Confirm installation and plugin enablement before preparing browser access');
+      result = await setup().prepare(preset.data, input.data);
+    } else if (action.action === 'connect') {
+      const input = browserSetupConnectInputSchema.safeParse(req.body);
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid guided browser connection input');
+      result = await setup().connect(preset.data, input.data);
+    } else if (action.action === 'open') {
+      const input = browserSetupOpenInputSchema.safeParse(req.body ?? {});
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid guided browser open input');
+      result = await setup().open(preset.data, input.data);
+    } else if (action.action === 'update') {
+      const input = browserSetupUpdateInputSchema.safeParse(req.body ?? {});
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid browser update input');
+      result = await setup().update(preset.data);
+    } else if (action.action === 'shortcut') {
+      const input = browserSetupShortcutInputSchema.safeParse(req.body ?? {});
+      if (!input.success) throw new BrowserError('browser.invalid', 'Invalid browser shortcut input');
+      result = await setup().createShortcut(preset.data, input.data);
+    } else result = await setup().cancel(preset.data);
+    reply.send(okEnvelope(result, req.id));
+  });
+  app.post(setupAction.path, setupAction.options, protect(setupAction.handler as Handler));
   const params = z.object({ id: browserIdSchema });
   const list = defineRoute({ method: 'GET', path: '/browser/connections', success: { data: browserControlListSchema }, errors: browserRouteErrors, tags: ['browser'] }, async (req, reply) => {
-    reply.send(okEnvelope(await control().list(), req.id));
+    const listed = await control().list();
+    const config = core.accessor.get(IConfigService);
+    const settings = readBrowserControlSettings(core.accessor.get(IFlagService), {
+      experimental: config.origins(EXPERIMENTAL_SECTION)['native_browser'],
+      allowed: config.origins(BROWSER_CONFIG_SECTION)['allowedBrowsers'],
+    }, listed.allowedBrowsers, listed.disabledSources);
+    reply.send(okEnvelope({ ...listed, ...settings }, req.id));
   });
   app.get(list.path, list.options, protect(list.handler as Handler));
   const defaults = defineRoute({ method: 'PUT', path: '/browser/default', body: browserDefaultInputSchema,
@@ -63,12 +113,27 @@ export function registerBrowserRoutes(app: BrowserRouteHost, core: Scope): void 
       return;
     }
     if (parsed.action === 'tabs') {
-      const tabs = await control().tabs(parsed.id);
+      let tabs;
+      try {
+        tabs = await control().tabs(parsed.id);
+      } catch (error) {
+        if (isError2(error) && error.code === 'browser.disabled' && error.details?.['reason'] === 'feature_disabled') {
+          const listed = await control().list();
+          const connection = listed.connections.find((item) => item.id === parsed.id);
+          if (connection?.enabled === false) throw new BrowserError('browser.disabled', 'This browser connection is disabled', { details: { reason: 'connection_disabled' } });
+          const status = await control().status(parsed.id);
+          if (status.state !== 'ready') throw new BrowserError('browser.disconnected', `Browser connection is ${status.state}; explicitly connect it before operating`);
+        }
+        throw error;
+      }
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), tabs }, req.id));
     } else if (parsed.action === 'catalog') {
       const tools = await control().catalog(parsed.id);
+      const connection = await store().resolve(parsed.id);
+      const routeEnabled = (await store().list()).webbridgePresetRoute !== false;
+      const contextIsolation = connection.type === 'codex-extension' ? 'official-extension-tab-ids' : connection.type === 'webbridge-command' ? 'extension-command-session' : webbridgePresetRouted(connection, routeEnabled) ? 'main-frame-only' : 'opaque-context-through-window';
       reply.send(okEnvelope({ browser: parsed.id, status: await control().status(parsed.id), backendToolCount: tools.length,
-        contextIsolation: (await store().resolve(parsed.id)).type === 'codex-extension' ? 'official-extension-tab-ids' : 'opaque-context-through-window', capabilities: tools.map((tool) => ({ name: tool.name, description: tool.description,
+        contextIsolation, capabilities: tools.map((tool) => ({ name: tool.name, description: tool.description,
           group: browserToolGroup(tool.name), surface: isBrowserOperation(tool.name) ? 'operation' : /^agent_browser_(?:connect|close|tab_|frame_|window_)/.test(tool.name) ? 'lifecycle' : 'administrative',
           inputSchema: req.query.includeSchema === 'true' ? tool.inputSchema : undefined })) }, req.id));
     } else reply.send(okEnvelope(await control().status(parsed.id), req.id));

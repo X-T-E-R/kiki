@@ -173,12 +173,15 @@ export const fsSearchRequestSchema = z.object({
   include_globs: z.array(z.string()).optional(),
   exclude_globs: z.array(z.string()).optional(),
   follow_gitignore: z.boolean().default(true),
+  cursor: z.string().max(1_048_576).optional(),
 });
 export type FsSearchRequest = z.infer<typeof fsSearchRequestSchema>;
 
 export const fsSearchResponseSchema = z.object({
   items: z.array(fsSearchHitSchema),
   truncated: z.boolean(),
+  next_cursor: z.string().optional(),
+  sort_scope: z.literal('page'),
 });
 export type FsSearchResponse = z.infer<typeof fsSearchResponseSchema>;
 
@@ -253,7 +256,7 @@ export interface IWorkspaceFsService {
   stat(req: FsStatRequest): Promise<FsStatResponse>;
   statMany(req: FsStatManyRequest): Promise<FsStatManyResponse>;
   mkdir(req: FsMkdirRequest): Promise<FsMkdirResponse>;
-  search(req: FsSearchRequest): Promise<FsSearchResponse>;
+  search(req: FsSearchRequest, signal?: AbortSignal): Promise<FsSearchResponse>;
   suggest(req: FsSuggestRequest): Promise<FsSuggestResponse>;
   grep(req: FsGrepRequest): Promise<FsGrepResponse>;
   gitStatus(req: FsGitStatusRequest): Promise<FsGitStatusResponse>;

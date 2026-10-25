@@ -41,6 +41,13 @@ describe('loop-event fold parity', () => {
     }));
   }
 
+  it('revises split provider user text without adding another user message', () => {
+    const first: ContextMessage = { role: 'user', id: 'external-user', providerMessageId: 'vendor-user', content: [{ type: 'text', text: 'hello ' }], toolCalls: [], origin: { kind: 'unknown' } };
+    const reply: ContextMessage = { role: 'assistant', content: [{ type: 'think', think: 'planning' }], toolCalls: [] };
+    const result = appendAll([], [first, reply, { ...first, content: [{ type: 'text', text: 'hello world' }] }]);
+    expect(result).toEqual([{ ...first, content: [{ type: 'text', text: 'hello world' }] }, reply]);
+  });
+
   it('folds a text + tool-call + tool-result step into the append_message shape', () => {
     const baseline = comparable(
       appendAll([], [

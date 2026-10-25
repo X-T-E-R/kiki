@@ -50,6 +50,37 @@ function createClient(
 }
 
 describe('StdioMcpClient', () => {
+  it.skipIf(process.platform !== 'win32').each(['close', 'exit', 'injected stdout-end'])('reaps the owned MCP root and detached leaf after %s without touching another owner', async (action) => {
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const script = fileURLToPath(new URL('./fixtures/tree-stdio-server.mjs', import.meta.url));
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [script] });
+    const sentinel = await new HostProcessService().spawn(process.execPath, ['-e', 'setTimeout(()=>{},15000)'], { ownedProcessTree: true });
+    const closes = vi.fn();
+    client.onUnexpectedClose(closes);
+    const alive = (pid: number): boolean => { try { process.kill(pid, 0); return true; } catch { return false; } };
+    try {
+      await client.connect();
+      const result = await client.callTool('lifecycle', { action });
+      const pids = result.structuredContent as { root: number; leaf: number };
+      expect(alive(pids.leaf)).toBe(true);
+      if (action === 'injected stdout-end') {
+        const child = await spawn.mock.results[1]!.value;
+        expect(child.exitCode).toBeNull();
+        child.stdout.emit('end');
+      }
+      if (action !== 'close') await vi.waitFor(() => expect(closes).toHaveBeenCalledOnce());
+      await Promise.all([client.close(), client.close()]);
+      expect(alive(pids.root)).toBe(false);
+      expect(alive(pids.leaf)).toBe(false);
+      expect(alive(sentinel.pid)).toBe(true);
+    } finally {
+      await client.close();
+      await sentinel.kill();
+      await sentinel.dispose();
+      spawn.mockRestore();
+    }
+  });
+
   it('round-trips per-call metadata and all elicitation outcomes without retaining the previous caller', async () => {
     const script = fileURLToPath(new URL('./fixtures/elicitation-stdio-server.mjs', import.meta.url));
     const client = createClient({ transport: 'stdio', command: process.execPath, args: [script] }, { elicitation: true });
@@ -179,6 +210,60 @@ describe('StdioMcpClient', () => {
     } finally { release(); await client.close(); spawn.mockRestore(); allowComputerMcp(name, config); }
   });
 
+  it('joins a non-computer spawn during close and disposes the late child before settling', async () => {
+    const spawnOriginal = HostProcessService.prototype.spawn;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn').mockImplementation(async function (this: HostProcessService, ...args) {
+      await gate;
+      return spawnOriginal.apply(this, args);
+    });
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [stdioFixture] });
+    const connecting = client.connect().catch((error: unknown) => error);
+    let stopping: Promise<void> | undefined;
+    try {
+      await vi.waitFor(() => expect(spawn).toHaveBeenCalledOnce());
+      let stopped = false;
+      stopping = client.close().then(() => { stopped = true; });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(stopped).toBe(false);
+      release();
+      await stopping;
+      await connecting;
+      const child = await spawn.mock.results[0]!.value;
+      expect(child.exitCode).not.toBeNull();
+    } finally {
+      release();
+      await stopping;
+      const child = await spawn.mock.results[0]?.value;
+      if (child?.exitCode === null) { await child.kill(); await child.wait(); await child.dispose(); }
+      await connecting;
+      await client.close();
+      spawn.mockRestore();
+    }
+  });
+
+  it('retains a non-computer cleanup failure for retry instead of reporting a successful close', async () => {
+    const spawn = vi.spyOn(HostProcessService.prototype, 'spawn');
+    const client = createClient({ transport: 'stdio', command: process.execPath, args: [stdioFixture] });
+    let kill: ReturnType<typeof vi.spyOn> | undefined;
+    try {
+      await client.connect();
+      const child = await spawn.mock.results[0]!.value;
+      kill = vi.spyOn(child, 'kill').mockRejectedValueOnce(new Error('fixture cleanup failure'));
+      await expect(client.close()).rejects.toThrow('fixture cleanup failure');
+      expect(child.exitCode).toBeNull();
+      await client.close();
+      expect(child.exitCode).not.toBeNull();
+    } finally {
+      kill?.mockRestore();
+      const child = await spawn.mock.results[0]?.value;
+      if (child?.exitCode === null) { await child.kill(); await child.wait(); await child.dispose(); }
+      await client.close().catch(() => undefined);
+      spawn.mockRestore();
+    }
+  });
+
   it('releases a failed spawn without claiming a child remains active', async () => {
     const spawn = vi.spyOn(HostProcessService.prototype, 'spawn').mockRejectedValueOnce(new Error('fixture spawn failure'));
     const first = computerClient();
@@ -218,6 +303,7 @@ describe('StdioMcpClient', () => {
       expect((await captureComputerMcpStop(name, config)()).state).toBe('unconfirmed');
       kill.mockRestore();
       await process.kill(); await process.wait();
+      await first.close();
       expect((await second.callTool('type_text', { delay: 1 })).isError).toBe(false);
     } finally {
       kill?.mockRestore(); await first.close().catch(() => undefined); await second.close();
@@ -258,7 +344,7 @@ describe('StdioMcpClient', () => {
       expect(client.stderrSnapshot()).toContain('eof');
       expect(client.stderrSnapshot()).toContain('drained');
       expect(process.exitCode).toBe(0);
-      expect(kill).not.toHaveBeenCalled();
+      expect(kill).toHaveBeenCalledTimes(globalThis.process.platform === 'win32' ? 1 : 0);
     } finally { await client.close(); spawn.mockRestore(); }
   });
 

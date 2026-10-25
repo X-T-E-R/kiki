@@ -7,7 +7,7 @@
 
 **正文：**
 
-先说结论：Kiki 是我在做的一个开源（MIT）本地智能体工作台。这帖不讲大词，讲我自己怎么给不同的活分配模型，以及怎么调教便宜模型。
+先说结论：Kiki 是一个开源（MIT）的本地智能体工作台。这帖不讲大词，讲怎么给不同的活分配模型，以及怎么调教便宜模型。
 
 ## 1. 按角色绑模型
 
@@ -23,14 +23,14 @@ tools: [Read, Grep, Glob, Edit, Write, Bash]
 你负责实现……
 ```
 
-我的分工大致是：
+分工大致是：
 
 - 主会话（规划、拆活、验收）：强模型
 - 实现、机械活：DeepSeek
 - 只读探查：GLM
 - 审查：换一家厂商，避免自己审自己
 
-`model_alias` 对应 `config.toml` 里 `[models]` 的别名；DeepSeek 走 `openai` 兼容类型，`reasoning_content` 会自动处理。子智能体**没有绑模型就直接报错**（`model.not_configured`），不会偷偷继承主会话的模型，账单不会莫名变贵。派发时也可以临时换模型，偏离了角色推荐会记一条提示，不拦你。
+`model_alias` 对应 `config.toml` 里 `[models]` 的别名；DeepSeek 走 `openai` 兼容类型。子智能体**没有绑模型、也没有配默认模型时会直接报错**（`model.not_configured`），不会偷偷继承主会话的模型。派发时也可以临时换模型，偏离了角色推荐会记一条提示，不拦你。
 
 ## 2. 便宜模型用错工具？改它那一份工具描述
 
@@ -61,17 +61,20 @@ kiki prompt-fields explain tool.web-search.description --model deepseek
 
 ## 3. 让它们并行跑，而不是我来回切窗口
 
-主智能体自己调用 `AgentRun` 派子智能体，可以放到后台；后台跑完会自动通知它，不用它轮询。它忙的时候我发的消息进队列，每条可以选「空闲后 / 子代理完成后 / 任务完成后」再发。工作区还有一块需求看板，智能体自己读写，换会话也不丢。
+主智能体自己调用 `AgentRun` 派子智能体，可以放到后台；后台跑完会自动通知它，不用它轮询。它忙的时候我发的消息进队列，每条可以选「空闲后 / 子代理完成后 / 任务完成后」再发。需求看板是可选的官方插件 `kiki-task-board`，装上之后每个工作区一块，智能体自己读写，换会话也不丢。
+
+活也不限于代码。本地 PDF、Office 文档拆读装 `Kiki Extract`（处理 PDF 与 Office 要本机备好 Python + MarkItDown），表格键值核对用 `Kiki Work`（不改原文件、不上传），Word/Excel/PPT 的创建和编辑用 `Kiki Office Suite`，写长文可以开 `Kiki Writing` 的手稿面板。
 
 ## 4. 其他
 
 - 桌面、终端（`kiki`）、浏览器（`kiki web`）共用一个本地守护进程；Zed / JetBrains 可以通过 ACP 接。
-- Claude Code、OpenCode 的 agent 文件直接能加载。
-- 安装：`npm i -g kiki-agent`（Node 24.15+），或 GitHub Releases 下桌面版。
+- 别的工具写的 agent 文件不能直接照搬：frontmatter 字段集合是封闭的，未识别字段会在加载时报错并点名，`model` 要改成 `model_alias`，`mode` 这类没有对应物，得自己看落到权限模式还是工具设置上；写法见[文档](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents#agent-文件格式)。反过来，Claude Code、Codex、OpenCode 这些工具的对话历史可以免插件导入，导成能接着聊的 Kiki 会话，或者只要一份只读归档。
+- 浏览器控制是系统能力，来源自己选：驱动你已登录的浏览器（Kimi 浏览器扩展）、Kiki 自己起的浏览器，或者用 CDP 接一个现成的。
+- 安装：`npm i -g kiki-agent`（Node 24.22.1+ 或 26.12.1+），或 GitHub Releases 下桌面版。
 
 ## 实话
 
-0.x，毛刺不少；macOS 包未签名；Windows 需要 Git for Windows。我没做过跑分，也不打算说哪个模型组合「更好」，只是分享我的配法。截图是真实界面渲染的示例场景。
+0.x，毛刺不少；macOS 包未签名未公证；Windows 需要 Git for Windows。我没做过跑分，也不打算说哪个模型组合「更好」，只是分享一种配法。截图是真实界面渲染的示例场景。
 
 仓库：https://github.com/X-T-E-R/kiki
 

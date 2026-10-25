@@ -6,6 +6,7 @@ import {
   APIStatusError,
   CONFIG_INVALID_ERROR_CODE,
   isAbortError,
+  requestDeliveryProvenance,
   VideoUploadUnsupportedError,
 } from '#/kosong/contract/errors';
 import type { VideoURLPart } from '#/kosong/contract/message';
@@ -58,6 +59,8 @@ export class ModelRequesterImpl implements ModelRequester {
       modelName: model.name,
       apiKey: '',
       defaultHeaders: model.headers,
+      requestCompression: model.requestCompression,
+      responsesWebSocket: model.responsesWebSocket,
       providerOptions: model.providerOptions,
     });
     return this.cachedChatProvider;
@@ -86,7 +89,19 @@ export class ModelRequesterImpl implements ModelRequester {
       [Symbol.asyncIterator](): AsyncIterator<ModelRequestEvent> {
         let returned = false;
         return {
-          next: () => returned ? Promise.resolve({ done: true, value: undefined }) : queue.next(),
+          next: async () => {
+            if (returned) return { done: true, value: undefined };
+            if (requestSignal.aborted) {
+              await completion;
+              requestSignal.throwIfAborted();
+            }
+            const next = await queue.next();
+            if (requestSignal.aborted) {
+              await completion;
+              requestSignal.throwIfAborted();
+            }
+            return next;
+          },
           return: async () => {
             returned = true;
             controller.abort();
@@ -176,7 +191,9 @@ export class ModelRequesterImpl implements ModelRequester {
         decodeStats = stats;
       },
       onTraceId: params?.onTraceId,
+      rawResponseObserver: params?.rawResponseObserver,
       requestIdentity: params?.requestIdentity,
+      responsesTransport: params?.responsesTransport,
       responseFormat: input.responseFormat,
     };
 
@@ -215,6 +232,7 @@ export class ModelRequesterImpl implements ModelRequester {
         () => {
           if (attemptId !== undefined) queue.push({ type: 'attempt.discarded', responseInstanceId: attemptId });
         },
+        params.retry,
       );
     } catch (error) {
       if (isAbortError(error) || signal?.aborted === true) throw error;
@@ -228,6 +246,7 @@ export class ModelRequesterImpl implements ModelRequester {
       type: 'finish',
       message: result.message,
       providerFinishReason: result.finishReason ?? undefined,
+      completionAuthority: result.completionAuthority,
       rawFinishReason: result.rawFinishReason ?? undefined,
       id: result.id ?? undefined,
       traceId: result.traceId ?? undefined,
@@ -250,16 +269,20 @@ export class ModelRequesterImpl implements ModelRequester {
     run: (auth: ProviderRequestAuth | undefined, signal: AbortSignal | undefined) => Promise<T>,
     signal?: AbortSignal,
     onAttemptDiscarded?: () => void,
+    retry?: 'never',
   ): Promise<T> {
     const auth = await this.authProvider.getAuth();
+    signal?.throwIfAborted();
     try {
       return await run(auth, signal);
     } catch (error) {
-      if (!this.shouldForceRefresh(error)) throw error;
+      signal?.throwIfAborted();
+      if (retry === 'never' || !this.shouldForceRefresh(error)) throw error;
     }
 
     onAttemptDiscarded?.();
     const refreshedAuth = await this.authProvider.getAuth({ force: true });
+    signal?.throwIfAborted();
     try {
       return await run(refreshedAuth, signal);
     } catch (error) {
@@ -273,7 +296,7 @@ export class ModelRequesterImpl implements ModelRequester {
   }
 
   private shouldForceRefresh(error: unknown): boolean {
-    return this.authProvider.canRefresh === true && isUnauthorizedStatusError(error);
+    return requestDeliveryProvenance(error) === undefined && this.authProvider.canRefresh === true && isUnauthorizedStatusError(error);
   }
 }
 

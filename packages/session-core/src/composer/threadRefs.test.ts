@@ -216,6 +216,9 @@ describe('thread context block', () => {
     } as unknown as Session;
     expect(threadRefInfoOf(ID, record, undefined)).toMatchObject({ status: 'awaiting_answer', title: undefined, cwd: 'C:/x' });
     expect(threadRefInfoOf(ID, undefined, undefined)).toEqual({ sessionId: ID, status: 'unknown' });
+    // The catalog's metadata-only row carries no counts or Git flag, and still
+    // names the thread it belongs to.
+    expect(threadRefInfoOf(ID, record, { name: 'catalog-only' })).toMatchObject({ workspaceName: 'catalog-only', workspaceId: 'wd_1' });
   });
 });
 

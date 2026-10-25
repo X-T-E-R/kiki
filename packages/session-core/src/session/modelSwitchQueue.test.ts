@@ -5,6 +5,7 @@ import {
   isModelSwitchQueueId,
   mergeSessionQueueRows,
   modelSwitchOperationIdFromQueueId,
+  pendingModelSwitchChange,
 } from './modelSwitchQueue';
 
 describe('model switch queue ids', () => {
@@ -75,5 +76,17 @@ describe('mergeSessionQueueRows', () => {
       { kind: 'message', promptId: 'a' },
       { kind: 'message', promptId: 'b' },
     ]);
+  });
+});
+
+describe('pendingModelSwitchChange', () => {
+  it('names only a real same-model effort difference as reasoning', () => {
+    expect(pendingModelSwitchChange({ from: 'example/model', to: 'example/model', mode: 'direct', originalThinking: 'high', targetThinking: 'max' })).toBe('effort');
+    expect(pendingModelSwitchChange({ from: 'example/old', to: 'example/new', mode: 'direct', originalThinking: 'high', targetThinking: 'max' })).toBe('model');
+    expect(pendingModelSwitchChange({ from: 'example/model', to: 'example/model', mode: 'direct', targetThinking: 'max' })).toBe('binding');
+    expect(pendingModelSwitchChange({ from: 'example/model', to: 'example/model', mode: 'direct', originalThinking: 'max', targetThinking: 'max' })).toBe('binding');
+  });
+  it.each(['fresh', 'compact'] as const)('keeps unchanged-effort %s as a context change', mode => {
+    expect(pendingModelSwitchChange({ from: 'example/model', to: 'example/model', mode, originalThinking: 'high', targetThinking: 'high' })).toBe(mode);
   });
 });

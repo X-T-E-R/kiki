@@ -27,6 +27,7 @@ const usageExport = {
 };
 const meta = vi.fn();
 const listWorkspaces = vi.fn();
+const listWorkspaceCatalog = vi.fn();
 const openUrl = vi.fn(async () => {});
 let browserHost = false;
 vi.mock('../../../host', () => ({ useHost: () => ({ openUrl: browserHost ? undefined : openUrl }) }));
@@ -36,7 +37,7 @@ let currentMeta: Record<string, unknown> = { server_home_id: 'home-a' };
 
 vi.mock('../../../state/connection', () => ({
   useConnection: () => ({
-    client: { meta, listWorkspaces },
+    client: { meta, listWorkspaces, listWorkspaceCatalog },
     klient: { rest: { usageExport } },
     scopeId,
     meta: currentMeta,
@@ -186,10 +187,12 @@ beforeEach(() => {
   for (const mock of Object.values(usageExport)) mock.mockReset();
   meta.mockReset();
   listWorkspaces.mockReset();
+  listWorkspaceCatalog.mockReset();
   scopeId = 'home-a';
   currentMeta = { server_home_id: 'home-a' };
   meta.mockResolvedValue({ server_home_id: 'home-a', experimental_flags: { usage_export: true } });
   listWorkspaces.mockResolvedValue({ items: [] });
+  listWorkspaceCatalog.mockResolvedValue({ items: [] });
   usageExport.status.mockResolvedValue(status(destination()));
   usageExport.saveDraft.mockResolvedValue(destination({ enabled: false, state: 'draft', consent_fingerprint: null }));
   usageExport.preview.mockResolvedValue(preview());
@@ -208,13 +211,23 @@ beforeEach(() => {
   usageExport.backfill.mockResolvedValue(preview());
 });
 
-describe('UsageExportPanel gating', () => {
-  it('reports the feature as unavailable when the server never registered the routes', async () => {
-    meta.mockResolvedValue({ server_home_id: 'home-a', experimental_flags: { usage_export: false } });
+describe('UsageExportPanel availability', () => {
+  it.each([{}, { usage_export: false }])('opens the ordinary entry without an experimental gate (%j)', async (flags) => {
+    meta.mockResolvedValue({ server_home_id: 'home-a', experimental_flags: flags });
+    usageExport.status.mockResolvedValue({ ...status(destination()), destinations: [] });
     await render();
-    expect(q('[data-usage-export-unavailable]')).not.toBeNull();
-    expect(usageExport.status).not.toHaveBeenCalled();
-    // An empty destination list would be a lie: the routes do not exist.
+    expect(usageExport.status).toHaveBeenCalledOnce();
+    expect(q('[data-usage-export-unavailable]')).toBeNull();
+    expect(q('[data-usage-export-empty]')).not.toBeNull();
+    expect(q<HTMLButtonElement>('[data-usage-export-add]')!.disabled).toBe(false);
+    expect(usageExport.enable).not.toHaveBeenCalled();
+    expect(usageExport.syncNow).not.toHaveBeenCalled();
+  });
+
+  it('shows an unavailable older server as a load failure, never an empty destination list', async () => {
+    usageExport.status.mockRejectedValue(new Error('HTTP 404'));
+    await render();
+    expect(q('[data-usage-export-load-error]')).not.toBeNull();
     expect(q('[data-usage-export-empty]')).toBeNull();
   });
 
@@ -235,10 +248,112 @@ describe('opening and abandoning the form', () => {
     const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
     await type(name, 'my receiver');
     await click(q('[data-usage-export-form-cancel]'));
+    // Dirty form prompts with discard confirmation
+    expect(q('[role="alertdialog"]')).not.toBeNull();
+    const confirmBtn = q<HTMLButtonElement>('[role="alertdialog"] [data-confirm-action="confirm"]')!;
+    await click(confirmBtn);
+    expect(q('[data-usage-export-form]')).toBeNull();
     expect(usageExport.status).toHaveBeenCalledTimes(1);
     for (const call of ['saveDraft', 'preview', 'testProtocol', 'enable', 'syncNow', 'backfill']) {
       expect(usageExport[call as keyof typeof usageExport]).not.toHaveBeenCalled();
     }
+  });
+
+  it('prompts before discarding dirty form on cancel and stays on cancel confirmation', async () => {
+    await render();
+    await click(q('[data-usage-export-add]'));
+    const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
+    await type(name, 'edited destination');
+    await click(q('[data-usage-export-form-cancel]'));
+    expect(q('[role="alertdialog"]')).not.toBeNull();
+    // Dismiss the confirm dialog
+    const cancelConfirmBtn = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
+      (b) => b.getAttribute('data-confirm-action') !== 'confirm'
+    )!;
+    await click(cancelConfirmBtn);
+    expect(q('[role="alertdialog"]')).toBeNull();
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+    expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('edited destination');
+  });
+
+  it('delegates discard confirmation to DirtyGuardContext provider when present and keeps content on cancel', async () => {
+    const confirmDiscardMock = vi.fn((_id: string, _action: () => void) => {});
+    const dirtyGuardValue = {
+      dirty: false,
+      reportDirty: vi.fn(),
+      navigate: vi.fn(),
+      confirmDiscard: confirmDiscardMock,
+    };
+    const { DirtyGuardContext } = await import('../../dirtyGuard');
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const root = createRoot(container);
+    roots.push(root);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={client}>
+          <DirtyGuardContext.Provider value={dirtyGuardValue}>
+            <I18nProvider><Harness bump={(fn) => { forceRef = fn; }} /></I18nProvider>
+          </DirtyGuardContext.Provider>
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+
+    await click(q('[data-usage-export-add]'));
+    const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
+    await type(name, 'guarded destination');
+    await click(q('[data-usage-export-form-cancel]'));
+
+    expect(confirmDiscardMock).toHaveBeenCalledOnce();
+    expect(confirmDiscardMock.mock.calls[0]![0]).toBe('usage-export-form:new');
+    // confirmDiscard didn't run the discard action, so the form is still open and input kept
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+    expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('guarded destination');
+  });
+
+  it('closes without discard prompt after saving draft successfully, and keeps draft if save fails', async () => {
+    usageExport.saveDraft.mockRejectedValueOnce(new Error('Save failed')).mockResolvedValueOnce({ id: ID_A });
+    await render();
+    await click(q('[data-usage-export-add]'));
+    const form = q<HTMLFormElement>('form [data-usage-export-form-preview]')!.closest('form')!;
+    const name = q<HTMLInputElement>('[data-usage-export-form-name]')!;
+    await type(name, 'destination for save');
+    await click(document.querySelector('[data-axis="export-kind"] [data-axis-value="webhook"]'));
+    await type(q<HTMLInputElement>('[data-usage-export-form-endpoint]')!, 'https://usage.example.test/ingest');
+
+    // Attempt preview which saves draft first and fails
+    await act(async () => { form.requestSubmit(); });
+    await flush();
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+    expect(q<HTMLInputElement>('[data-usage-export-form-name]')!.value).toBe('destination for save');
+    // Error is rendered in the sticky footer near save/close action
+    const footerError = document.querySelector('footer [role="alert"]');
+    expect(footerError).not.toBeNull();
+    expect(footerError?.textContent).toContain('Save failed');
+
+    // Closing after failed save still prompts because changes were not saved
+    await click(q('[data-usage-export-form-cancel]'));
+    expect(q('[role="alertdialog"]')).not.toBeNull();
+    const cancelConfirmBtn = [...document.querySelectorAll<HTMLButtonElement>('[role="alertdialog"] button')].find(
+      (b) => b.getAttribute('data-confirm-action') !== 'confirm'
+    )!;
+    await click(cancelConfirmBtn);
+    expect(q('[data-usage-export-form]')).not.toBeNull();
+
+    // Now successful preview (which saves draft first)
+    await act(async () => { form.requestSubmit(); });
+    await flush();
+    expect(usageExport.saveDraft).toHaveBeenCalledTimes(2);
+
+    // Closing immediately after successful save should not prompt for discard
+    await click(q('[data-usage-export-form-cancel]'));
+    expect(q('[role="alertdialog"]')).toBeNull();
+    expect(q('[data-usage-export-form]')).toBeNull();
   });
 });
 

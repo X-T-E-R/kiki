@@ -1,4 +1,5 @@
 import { toDisposable, type IDisposable } from "#/_base/di/lifecycle";
+import { abortable } from '#/_base/utils/abort';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import type {
@@ -24,6 +25,18 @@ interface ToolEntry {
 export class AgentToolRegistryService implements IAgentToolRegistryService {
   declare readonly _serviceBrand: undefined;
   private readonly tools = new Map<string, ToolEntry>();
+  private readonly preparations = new Set<() => Promise<void>>();
+
+  registerPreparation(prepare: () => Promise<void>): IDisposable {
+    this.preparations.add(prepare);
+    return toDisposable(() => { this.preparations.delete(prepare); });
+  }
+
+  async prepare(signal?: AbortSignal): Promise<void> {
+    signal?.throwIfAborted();
+    const prepared = Promise.all([...this.preparations].map((prepare) => prepare())).then(() => undefined);
+    await (signal === undefined ? prepared : abortable(prepared, signal));
+  }
 
   register(tool: ExecutableTool, options: ToolRegistrationOptions = {}): IDisposable {
     const source = options.source ?? 'builtin';

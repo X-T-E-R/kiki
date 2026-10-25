@@ -36,6 +36,10 @@ export class ReasoningKeyDialect {
     return found.value;
   }
 
+  get explicitKey(): string | undefined {
+    return this._explicitKey;
+  }
+
   outboundKey(): string {
     return this._explicitKey ?? this._detected ?? DEFAULT_REASONING_KEY;
   }

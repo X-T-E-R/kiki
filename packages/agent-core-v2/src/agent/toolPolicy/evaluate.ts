@@ -1,4 +1,4 @@
-import { isToolActive as isProfileToolActive } from '@kiki/agent-profiles/toolPolicy';
+import { egoHostScriptDenied, egoHostScriptExplicitlyGranted, isEgoHostScriptToolName, isToolActive as isProfileToolActive } from '@kiki/agent-profiles/toolPolicy';
 import { isSubagentToolAllowed, type SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy';
 
 import { isMcpToolName, type ToolSource } from '#/tool/toolContract';
@@ -24,6 +24,9 @@ export function isToolActive(
     return false;
   }
   if (!isProfileToolActive(policy, name, source)) return false;
+  if (source === 'builtin' && isEgoHostScriptToolName(name) && !egoHostScriptExplicitlyGranted(policy)) {
+    return isToolActive(policy, 'Bash', 'builtin');
+  }
   if (policy.disabledToolGroups !== undefined && policy.disabledToolGroups.length > 0) {
     const group = toolGroupForName(name);
     if (
@@ -52,17 +55,36 @@ export interface ToolPolicyLayers {
   readonly subagentDefault?: 'opt-in';
 }
 
+function subagentLayer(layers: ToolPolicyLayers): SubagentToolPolicy {
+  return {
+    ...layers.subagent,
+    allowedTools: layers.subagentDefault === undefined ? layers.subagent?.allowedTools
+      : [...(layers.subagent?.allowedTools ?? []), ...(layers.global?.enabled ?? [])],
+  };
+}
+
 export function isToolActiveComposed(
   layers: ToolPolicyLayers,
   name: string,
   source: ToolSource = 'builtin',
 ): boolean {
+  if (source === 'builtin' && isEgoHostScriptToolName(name)) {
+    if (layers.subagent !== undefined && !isSubagentToolAllowed(subagentLayer(layers), name, source, layers.subagentDefault)) return false;
+    if (layers.profile.executionRestriction === 'research-readonly' && !allowsResearchTool(name, source)) return false;
+    if (egoHostScriptDenied(layers.workspaceDisabledTools) || egoHostScriptDenied(layers.profile.disallowedTools)
+      || egoHostScriptDenied(layers.global?.disabled) || egoHostScriptDenied(layers.sessionDisabledTools)) return false;
+    const globalAllow = layers.global?.enabled?.length ? layers.global.enabled : undefined;
+    if (egoHostScriptExplicitlyGranted({
+      tools: layers.profile.tools,
+      toolAllowPolicies: [
+        ...(layers.profile.toolAllowPolicies ?? []),
+        ...(globalAllow !== undefined ? [globalAllow] : []),
+      ],
+    })) return true;
+    return isToolActiveComposed({ ...layers, subagent: undefined, subagentDefault: undefined }, 'Bash', 'builtin');
+  }
   return (
-    (layers.subagent === undefined || isSubagentToolAllowed({
-      ...layers.subagent,
-      allowedTools: layers.subagentDefault === undefined ? layers.subagent.allowedTools
-        : [...(layers.subagent.allowedTools ?? []), ...(layers.global?.enabled ?? [])],
-    }, name, source, layers.subagentDefault)) &&
+    (layers.subagent === undefined || isSubagentToolAllowed(subagentLayer(layers), name, source, layers.subagentDefault)) &&
     isToolActive({ disallowedTools: layers.workspaceDisabledTools }, name, source) &&
     isToolActive(layers.profile, name, source) &&
     isToolActive(
@@ -112,6 +134,7 @@ export function findInactiveToolPatterns(
       }
       continue;
     }
+    if (pattern === 'browser__*') continue;
     if (GLOB_MAGIC.test(pattern)) {
       issues.push({ pattern, kind: 'wildcard-not-mcp' });
       continue;

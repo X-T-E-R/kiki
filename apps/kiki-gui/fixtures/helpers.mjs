@@ -60,6 +60,7 @@ export function assistantMsg(sessionId, parts, minutesAgo = 0) {
       tool_call_id: part.toolUse.id,
       tool_name: part.toolUse.name,
       input: part.toolUse.input,
+      ...(part.toolUse.display === undefined ? {} : { display: part.toolUse.display }),
     };
   });
   return { id: fid('msg'), session_id: sessionId, role: 'assistant', content, created_at: ts(minutesAgo) };

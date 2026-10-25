@@ -16,6 +16,7 @@ export interface RelayInput {
   readonly memoryEntries?: readonly string[];
   readonly memoryReferences?: readonly string[];
   readonly linkedBoardCards?: readonly { readonly id: string; readonly title: string; readonly status: string }[];
+  readonly instruction?: string;
   readonly estimateText: (text: string) => number;
 }
 
@@ -53,10 +54,18 @@ function sourceCoordinates(source: ContextMessageSource | undefined): string {
   return fields.length === 0 ? 'source coordinate unavailable' : `source {${fields.join(', ')}}`;
 }
 
+export function hasRelayCoordinate(source: ContextMessageSource | undefined): boolean {
+  if (source === undefined) return false;
+  if (source.ref !== undefined && source.ref.trim().length > 0) return true;
+  if (canonicalStepId(source) !== undefined) return true;
+  return source.turnId !== undefined && Number.isSafeInteger(source.turnId) && source.turnId >= 0;
+}
+
 export function historyPointer(
   input: RelayInput,
   source: ContextMessageSource | undefined,
   query?: string,
+  role?: 'user' | 'assistant' | 'tool',
 ): string {
   const session = JSON.stringify(input.sessionId);
   const agent = JSON.stringify(input.agentId);
@@ -70,8 +79,11 @@ export function historyPointer(
   if (source?.turnId !== undefined && Number.isSafeInteger(source.turnId) && source.turnId >= 0) {
     return `HistoryRead {session_id:${session}, agent_id:${agent}, turn:${source.turnId}}`;
   }
-  const search = query === undefined ? '<distinctive terms>' : JSON.stringify(query);
-  return `HistorySearch {scope:'this_session', agent_id:${agent}, query:${search}} (source coordinate unavailable)`;
+  const searchable = query?.trim();
+  if (searchable === undefined || searchable.length === 0) return 'source coordinate unavailable';
+  const roleArg = role === undefined ? '' : `, role:'${role}'`;
+  const toolArg = role === 'tool' ? ', include_tool_output:true' : '';
+  return `HistorySearch {scope:'this_session', agent_id:${agent}, query:${JSON.stringify(searchable)}${roleArg}${toolArg}} (source coordinate unavailable)`;
 }
 
 function boundaryLabel(section: readonly ContextMessage[]): string {
@@ -104,7 +116,6 @@ export function renderUserInputSinceNotes(input: RelayInput): { text: string; co
     const turn = message.source?.turnId === undefined ? 'unknown' : `t${message.source.turnId}`;
     const line = `- ${turn} (${message.origin?.kind ?? 'user'}): ${excerpt}${full.length > 600 ? '…' : ''} · ${pointer}`;
     const cost = input.estimateText(line);
-    if (full.length > 600) fits = false;
     if (cost <= remaining && full.length > 0) {
       lines.push(line);
       remaining -= cost;
@@ -196,9 +207,13 @@ export function renderRelay(input: RelayInput): string {
       const result = after.find((candidate) => candidate.role === 'tool' && candidate.toolCallId === call.id);
       const source = sourceOf(result ?? message, call.id);
       const resultBody = result === undefined ? '' : textOf(result).trim();
-      const resultText = resultBody.slice(0, 240);
-      const excerpt = resultText.length === 0 ? '' : `: ${resultText}${resultBody.length > resultText.length ? '…' : ''}`;
-      return `- ${call.name} (${call.id})${excerpt} · ${historyPointer(input, source, call.name)} · ${sourceCoordinates(source)}`;
+      const searchable = resultBody.replaceAll(/\s+/g, ' ').trim().slice(0, 180);
+      const carried = hasRelayCoordinate(source) ? resultBody.slice(0, 240) : resultBody.slice(0, 4_000);
+      const excerpt = carried.length === 0 ? '' : `: ${carried}${resultBody.length > carried.length ? '…' : ''}`;
+      const pointer = hasRelayCoordinate(source)
+        ? historyPointer(input, source)
+        : searchable.length > 0 ? historyPointer(input, source, searchable, 'tool') : 'source coordinate unavailable';
+      return `- ${call.name} (${call.id})${excerpt} · ${pointer} · ${sourceCoordinates(source)}`;
     })).slice(-40);
   const conclusionPointer = lastAssistant === undefined
     ? ''
@@ -213,6 +228,7 @@ export function renderRelay(input: RelayInput): string {
     : `first: ${historyPointer(input, firstBoundarySource)} · ${sourceCoordinates(firstBoundarySource)}\nlast: ${historyPointer(input, lastBoundarySource)} · ${sourceCoordinates(lastBoundarySource)}`;
   const blocks = [
     'The following handoff was assembled without a summarizing model. It may not cover removed history. Verify completed claims and use HistorySearch/HistoryRead for details.',
+    input.instruction?.trim() ? `## Compaction instruction\n${input.instruction.trim()}` : '',
     `## Window\n${input.agentId}/${input.epoch + 1}\nRemoved history boundary: ${boundary}\n${boundaryPointers}`,
     `## Working notes\n${renderTodoNotes(input.notes) || '(empty)'}`,
     renderStandingDirectives(input),

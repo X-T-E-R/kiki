@@ -1,5 +1,6 @@
 import type {
-  ActivitySummary, Block, MessageAttachment, MessageBlock, NoticeBlock, ToolBlock,
+  ActivitySummary, AssistantBlock, Block, MessageAttachment, MessageBlock, MessageChannelDelivery, MessageReach,
+  NoticeBlock, ToolBlock,
 } from './transcript/types';
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -26,19 +27,102 @@ function attachments(value: unknown): MessageAttachment[] {
     const path = string(entry?.['path']);
     if (blobId === undefined || path === undefined) return [];
     return [{ blobId, path, title: string(entry?.['title']), mimeType: string(entry?.['mime_type']),
-      size: typeof entry?.['size'] === 'number' ? entry['size'] : undefined }];
+      size: typeof entry?.['size'] === 'number' ? entry['size'] : undefined, kind: string(entry?.['kind']) }];
   });
 }
 
-/** Project only validated, successfully delivered speech as a sent message. */
+const CHANNEL_STATUS: Readonly<Record<string, MessageChannelDelivery['status']>> = {
+  delivered: 'delivered', partial: 'partial', unsupported: 'unsupported', failed: 'failed', unknown: 'unknown',
+};
+
+/**
+ * Receipts carry a status string; a value this build does not know is
+ * `unknown`, never a quiet promotion to delivered.
+ */
+function channelDeliveries(value: unknown): MessageChannelDelivery[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const entry = record(item);
+    const channelId = string(entry?.['channel_id']);
+    if (channelId === undefined) return [];
+    const raw = string(entry?.['status']);
+    const messageIds = strings(entry?.['message_ids']);
+    const unsupported = strings(entry?.['unsupported']);
+    return [{
+      channelId,
+      status: raw === undefined ? 'unknown' : CHANNEL_STATUS[raw] ?? 'unknown',
+      messageIds: messageIds.length === 0 ? undefined : messageIds,
+      unsupported: unsupported.length === 0 ? undefined : unsupported,
+      detail: string(entry?.['detail']),
+    }];
+  });
+}
+
+/**
+ * Which destinations actually took the message. Only `delivered` counts: a
+ * channel that reported `unsupported` took none of the attachments and
+ * received the notice alone, and an unknown or failed channel proves nothing —
+ * neither is read as reaching this conversation.
+ */
+function reachOf(channels: readonly MessageChannelDelivery[]): MessageReach | 'nowhere' {
+  if (channels.some((channel) => channel.channelId === 'internal' && channel.status === 'delivered')) return 'here';
+  if (channels.some((channel) => channel.status === 'delivered' || channel.status === 'partial')) return 'elsewhere';
+  if (channels.some((channel) => channel.status === 'unknown')) return 'unconfirmed';
+  return 'nowhere';
+}
+
+/**
+ * Project a `SendMessage` call into speech — and only into speech when the
+ * receipt says this conversation received it. Channel receipts decide that
+ * per destination; a receipt that predates them keeps its old reading.
+ */
 export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
+  return projectSendMessages(tool)[0];
+}
+
+export function projectSendMessages(tool: ToolBlock): MessageBlock[] {
+  if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return [];
+  const args = record(tool.args) ?? record(tool.argsText);
+  const items = args?.['messages'];
+  if (!Array.isArray(items)) {
+    const message = projectSingleSendMessage(tool);
+    return message === undefined ? [] : [message];
+  }
+  const output = record(tool.output);
+  const receipts = Array.isArray(output?.['messages']) ? output['messages'] : [];
+  return items.flatMap((item, index) => {
+    const content = record(item);
+    if (content === undefined) return [];
+    const matches = receipts.filter((value) => record(value)?.['index'] === index);
+    const receipt = matches.length === 1 ? record(matches[0]) : undefined;
+    const child: ToolBlock = { ...tool, id: `${tool.id}:message:${index}`, args: { to: args?.['to'], channel: args?.['channel'], channels: args?.['channels'], ...content }, argsText: '', output: receipt === undefined ? undefined : JSON.stringify(receipt) };
+    const message = projectSingleSendMessage(child);
+    return message === undefined ? [] : [{ ...message, sourceTool: tool }];
+  });
+}
+
+function projectSingleSendMessage(tool: ToolBlock): MessageBlock | undefined {
   if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return undefined;
   const args = record(tool.args) ?? record(tool.argsText);
   const result = record(tool.output);
   const messageId = string(result?.['message_id']);
   const succeeded = tool.status === 'done' && tool.isError !== true && messageId !== undefined;
-  const status = tool.status === 'running' ? 'sending' : succeeded ? 'sent'
-    : tool.status === 'stopped' ? 'cancelled' : 'failed';
+  const channels = channelDeliveries(result?.['channels']);
+  const reach = channels.length === 0 ? undefined : reachOf(channels);
+  const delivery = string(result?.['delivery']);
+  const status: MessageBlock['status'] = tool.status === 'running' ? 'sending'
+    : tool.status === 'stopped' || delivery === 'cancelled' ? 'cancelled'
+      : !succeeded || reach === 'nowhere' || delivery === 'undeliverable' || delivery === 'not_sent' ? 'failed'
+        : reach === 'unconfirmed' || delivery === 'pending' ? 'pending'
+          : 'sent';
+  const spoken = status === 'sent' || status === 'sending' || status === 'pending';
+  // A refused send never produced a receipt: the call's own error text is the
+  // only reason there is, and it must stay readable instead of the row alone
+  // saying "not sent".
+  const plainOutput = typeof tool.output === 'string' && record(tool.output) === undefined ? tool.output.trim() : undefined;
+  const failureDetail = status === 'failed'
+    ? string(result?.['error']) ?? string(result?.['detail']) ?? (plainOutput === undefined || plainOutput === '' ? undefined : plainOutput)
+    : undefined;
   const sender = record(result?.['sender']);
   const handoff = record(result?.['handoff']);
   const targetPersonaId = string(handoff?.['target_persona_id']);
@@ -47,15 +131,17 @@ export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
   return {
     kind: 'message', id: tool.id, toolCallId: tool.toolCallId, messageId,
     origin: 'send_message', status,
-    text: status === 'sent' || status === 'sending' ? string(args?.['text']) ?? '' : '',
+    text: spoken ? string(args?.['text']) ?? '' : '',
     to: string(args?.['to']), replyTo: string(args?.['reply_to']),
-    attachments: succeeded ? attachments(result?.['attachments']) : [],
-    deliveredTo: succeeded ? strings(result?.['delivered_to']) : [],
+    attachments: status === 'sent' ? attachments(result?.['attachments']) : [],
+    deliveredTo: status === 'sent' ? strings(result?.['delivered_to']) : [],
+    channels: channels.length === 0 ? undefined : channels,
+    reached: reach === undefined || reach === 'nowhere' ? undefined : reach,
     personaId: string(sender?.['persona_id']), senderName: string(sender?.['name']),
     sourceSessionId: string(sender?.['session_id']),
-    handoff: succeeded && targetPersonaId !== undefined && targetSessionId !== undefined && targetName !== undefined
+    handoff: status === 'sent' && targetPersonaId !== undefined && targetSessionId !== undefined && targetName !== undefined
       ? { targetPersonaId, targetSessionId, targetName, messageId: string(handoff?.['message_id']) } : undefined,
-    startedAt: tool.startedAt, turnId: tool.turnId, sourceTool: tool,
+    startedAt: tool.startedAt, turnId: tool.turnId, failureDetail, sourceTool: tool,
   };
 }
 
@@ -64,7 +150,30 @@ export type MessageViewNode = Block | ActivitySummary;
 export interface MessageViewOptions {
   /** Complete turn ids from the transcript, not inferred from a settled text frame. */
   readonly completedTurnIds?: readonly string[];
+  /**
+   * Turns the transcript reports as failed, for the cases its own blocks do
+   * not carry: a failed turn never speaks its partial text as the reply.
+   */
+  readonly failedTurnIds?: readonly string[];
   readonly personaName?: string;
+}
+
+/** A turn that did not complete: its partial text stays in the process. */
+function failedTurn(block: Block): string | undefined {
+  if (block.kind === 'user') return block.promptOutcome?.status === 'failed' ? block.turnId : undefined;
+  if (block.kind === 'notice' && block.i18n?.key === 'notice.turnFailedDetail') return block.turnId;
+  return undefined;
+}
+
+/** The promoted reply as speech: the turn's own text, its frame, and no call identity. */
+function replySpeech(block: AssistantBlock, turn: string): MessageBlock {
+  const at = block.createdAt === undefined ? Number.NaN : Date.parse(block.createdAt);
+  return {
+    kind: 'message', id: `ordinary-final-${block.id}`, origin: 'ordinary_final', status: 'sent',
+    text: block.text, attachments: [], deliveredTo: [],
+    startedAt: Number.isNaN(at) ? undefined : at,
+    turnId: turn, sourceBlock: block,
+  };
 }
 
 function turnId(block: Block): string | undefined {
@@ -114,23 +223,82 @@ function activity(members: readonly Block[], turn: string | undefined): Activity
     members, counts, running, failed, durationMs };
 }
 
-/** Hide ordinary assistant output without turning it into speech; preserve inspectable activity. */
+/**
+ * Message mode as speech: what the Bot said to you. A finished turn's final
+ * ordinary reply is speech even when the model never called `SendMessage`;
+ * everything else stays inspectable activity behind its summary.
+ */
 export function projectMessageView(blocks: readonly Block[], options: MessageViewOptions = {}): MessageViewNode[] {
   const nodes: MessageViewNode[] = [];
   let pending: Block[] = [];
   let pendingTurn: string | undefined;
   const completed = new Set(options.completedTurnIds ?? []);
+  const turns: string[] = [];
+  const seen = new Set<string>();
   const sent = new Set<string>();
-  const speech = new Set<string>();
+  const failed = new Set<string>(options.failedTurnIds ?? []);
+  const failureShown = new Set<string>();
+  const replies = new Map<string, AssistantBlock>();
   for (const block of blocks) {
-    const message = block.kind === 'message' ? block : block.kind === 'tool' ? projectSendMessage(block) : undefined;
-    if (message?.status === 'sent' && message.turnId !== undefined) sent.add(message.turnId);
-    if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) speech.add(block.turnId);
+    const turn = turnId(block);
+    const failedHere = failedTurn(block);
+    if (failedHere !== undefined) failed.add(failedHere);
+    if (block.kind === 'user' && block.promptOutcome?.status === 'failed' && block.turnId !== undefined) {
+      failureShown.add(block.turnId);
+    }
+    // A turn that already wrote its own failure line keeps that one line.
+    if (block.kind === 'notice' && block.i18n?.key === 'notice.turnFailedDetail' && block.turnId !== undefined) {
+      failureShown.add(block.turnId);
+    }
+    if (turn !== undefined && !seen.has(turn)) {
+      seen.add(turn);
+      turns.push(turn);
+    }
+    const messages = block.kind === 'message' ? [block] : block.kind === 'tool' ? projectSendMessages(block) : [];
+    // The turn spoke through its own call even when the words did not land
+    // here, and even when no channel has confirmed them yet: the promotion
+    // below must not speak a second copy as this conversation's reply.
+    for (const message of messages) if (message.origin === 'send_message' && message.turnId !== undefined
+      && (message.status === 'sent' || message.status === 'pending')) {
+      sent.add(message.turnId);
+    }
+    if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) replies.set(block.turnId, block);
   }
-  const announced = new Set<string>();
-  const noReply = (turn: string | undefined) => {
-    if (turn === undefined || !completed.has(turn) || sent.has(turn) || !speech.has(turn) || announced.has(turn)) return;
-    announced.add(turn);
+  // A reply that keeps streaming, one the reader stopped, and one from a turn
+  // that failed are not speech yet. Only this turn's own delivery decides: two
+  // turns may legitimately say the same words, so nothing is inferred across
+  // turns.
+  const promoted = new Map<string, MessageBlock>();
+  const speechIds = new Set<string>();
+  for (const turn of turns) {
+    const reply = replies.get(turn);
+    if (reply === undefined || !completed.has(turn) || sent.has(turn) || failed.has(turn)) continue;
+    if (reply.streaming || reply.stopped === true) continue;
+    promoted.set(turn, replySpeech(reply, turn));
+    speechIds.add(reply.id);
+  }
+  /** What a finished turn leaves on the page: its speech, or the reason there is none. */
+  const endTurn = (turn: string | undefined) => {
+    if (turn === undefined || !completed.has(turn)) return;
+    const reply = promoted.get(turn);
+    if (reply !== undefined) {
+      nodes.push(reply);
+      return;
+    }
+    // A failed turn says so once. Its own bubble carries the reason and the
+    // retry when the prompt is on the page; otherwise this line is the only
+    // place the reader learns the turn failed — never as speech, a cancel or
+    // "did not reply".
+    if (failed.has(turn)) {
+      if (!failureShown.has(turn)) {
+        nodes.push({ kind: 'notice', id: `message-turn-failed-${turn}`, turnId: turn,
+          text: '轮次失败', tone: 'danger',
+          i18n: { key: 'notice.turnFailedDetail', params: { detail: '' } },
+          reasonCodes: ['message.turn_failed'] } satisfies NoticeBlock);
+      }
+      return;
+    }
+    if (sent.has(turn) || replies.get(turn) === undefined) return;
     nodes.push({ kind: 'notice', id: `message-no-reply-${turn}`, turnId: turn,
       text: `${options.personaName ?? ''} 没有回复 · 查看过程`.trim(), tone: 'neutral',
       i18n: { key: 'message.noReply', params: { name: options.personaName ?? '' } },
@@ -142,14 +310,20 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     pendingTurn = undefined;
   };
   let lastTurn: string | undefined;
-  for (const original of blocks) {
-    const block = original.kind === 'tool' ? projectSendMessage(original) ?? original : original;
+  const projected = blocks.flatMap<Block>((block) => {
+    if (block.kind !== 'tool') return [block];
+    const messages = projectSendMessages(block);
+    return messages.length === 0 ? [block] : messages;
+  });
+  for (const block of projected) {
     const turn = turnId(block);
     if (turn !== undefined && lastTurn !== undefined && turn !== lastTurn) {
       flush();
-      noReply(lastTurn);
+      endTurn(lastTurn);
     }
     if (turn !== undefined) lastTurn = turn;
+    // The reply is speech now, not a step of the work that produced it.
+    if (speechIds.has(block.id)) continue;
     const visible = block.kind === 'user' || block.kind === 'message' || block.kind === 'question'
       || block.kind === 'approval' || (block.kind === 'notice' && (block.tone === 'danger'
         || block.reasonCodes?.some((reason) => /cancel|stop|fail|delivery/.test(reason)) === true));
@@ -163,7 +337,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
     }
   }
   flush();
-  noReply(lastTurn);
+  endTurn(lastTurn);
   return nodes;
 }
 

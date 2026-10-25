@@ -4,6 +4,7 @@ import Anthropic, {
   AnthropicError,
   APIConnectionTimeoutError as AnthropicTimeoutError,
 } from '@anthropic-ai/sdk';
+import type { ErrorType } from '@anthropic-ai/sdk/resources/shared.js';
 import type {
   Tool as AnthropicTool,
   ContentBlockParam,
@@ -22,9 +23,14 @@ import type {
 
 import {
   APIConnectionError,
+  ambiguousRequestDelivery,
+  isAmbiguousRequestDelivery,
   APITimeoutError,
   ChatProviderError,
   classifyBaseApiError,
+  markProviderEventError,
+  markProviderHttpError,
+  readProviderEventErrorCode,
   normalizeAPIStatusError,
   parseRetryAfterMs,
   parseTraceId,
@@ -45,6 +51,7 @@ import type {
   FinishReason,
   GenerateOptions,
   ProviderRequestAuth,
+  RawResponseObserver,
   ResponseFormat,
   StreamedMessage,
   ThinkingEffort,
@@ -52,6 +59,10 @@ import type {
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import type { RequestCompression } from '#/kosong/contract/requestCompression';
+import { createRequestCompressionFetch, withRequestCompressionDelivery } from '../request-compression';
+import { guardRequestDelivery } from '../request-delivery';
+import { matchesProviderTarget } from '../../providerTarget';
 
 import { providerImagePolicy } from '../../providerImagePolicy';
 import {
@@ -70,6 +81,7 @@ import {
   resolveAuthBackedClient,
 } from '../request-auth';
 import { normalizeToolCallIdsForProvider, sanitizeToolCallId } from '../tool-call-id';
+import { observeResponseFetch } from '../observe-response';
 
 function normalizeAnthropicStopReason(raw: string | null | undefined): {
   finishReason: FinishReason | null;
@@ -126,6 +138,7 @@ export interface AnthropicOptions {
   defaultMaxTokens?: number | undefined;
   betaFeatures?: string[] | undefined;
   defaultHeaders?: Record<string, string>;
+  requestCompression?: RequestCompression;
   metadata?: Record<string, string> | undefined;
   stream?: boolean | undefined;
   adaptiveThinking?: boolean | undefined;
@@ -458,13 +471,16 @@ function convertMessage(
         imageUrlPartToAnthropic(part.imageUrl.url, acceptedImageMimes) as unknown as ContentBlockParam,
       );
     } else if (part.type === 'think') {
+      if ((part.redacted?.length ?? 0) > 0) {
+        blocks.push({ type: 'redacted_thinking', data: part.redacted } as ContentBlockParam);
+      }
       if (part.encrypted !== undefined) {
         blocks.push({
           type: 'thinking',
           thinking: part.think,
           signature: part.encrypted,
         } satisfies ThinkingBlockParam);
-      } else if (shouldPreserveUnsignedThinking(model)) {
+      } else if ((part.redacted?.length ?? 0) === 0 && shouldPreserveUnsignedThinking(model)) {
         blocks.push({ type: 'thinking', thinking: part.think } as unknown as ThinkingBlockParam);
       }
     } else if (part.type === 'video_url') {
@@ -515,6 +531,7 @@ export function convertAnthropicError(
   convertErrorHook?: (error: unknown) => ChatProviderError | undefined,
 ): ChatProviderError {
   throwIfAbortError(error);
+  if (isAmbiguousRequestDelivery(error)) return ambiguousRequestDelivery(error);
   if (error instanceof ChatProviderError) {
     return error;
   }
@@ -530,14 +547,27 @@ export function convertAnthropicError(
   }
   if (error instanceof AnthropicAPIError && typeof error.status === 'number') {
     const reqId = error.requestID ?? null;
-    return normalizeAPIStatusError(
+    return markProviderHttpError(normalizeAPIStatusError(
       error.status,
       error.message,
       reqId,
       parseRetryAfterMs(error.headers),
       undefined,
       error.error,
-    );
+    ), anthropicStreamErrorCode(error.error));
+  }
+  if (error instanceof AnthropicAPIError) {
+    const permanentStatus = permanentAnthropicStreamStatus(anthropicStreamErrorType(error));
+    if (permanentStatus !== undefined) {
+      return normalizeAPIStatusError(
+        permanentStatus,
+        error.message,
+        error.requestID,
+        parseRetryAfterMs(error.headers),
+        parseTraceId(error.headers),
+        error.error,
+      );
+    }
   }
   if (error instanceof AnthropicAPIError && error.error !== undefined) {
     return new ChatProviderError(`Anthropic error: ${error.message}`, undefined, {
@@ -559,6 +589,14 @@ class AnthropicStreamedMessage implements StreamedMessage {
   private _finishReason: FinishReason | null = null;
   private _rawFinishReason: string | null = null;
   private readonly _iter: AsyncGenerator<StreamedMessagePart>;
+  private readonly _controller?: AbortController;
+  private _completedNormally = false;
+  private _continuationBlocked = false;
+
+  get completionAuthority(): 'normal' | undefined { return this._completedNormally && !this._continuationBlocked ? 'normal' : undefined; }
+  get thinkingOnlyRecoveryBlocked(): boolean { return this._continuationBlocked; }
+
+  cancel(): void { this._controller?.abort(); }
 
   constructor(
     response: unknown,
@@ -568,6 +606,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
       | undefined,
   ) {
     if (isStream) {
+      this._controller = (response as { controller?: AbortController }).controller;
       this._iter = this._convertStreamResponse(response as AsyncIterable<MessageStreamEvent>);
     } else {
       this._iter = this._convertNonStreamResponse(
@@ -676,8 +715,10 @@ class AnthropicStreamedMessage implements StreamedMessage {
     this._id = response.id;
     this._extractUsage(response.usage);
     this._captureStopReason(response.stop_reason);
+    this._completedNormally = this._finishReason === 'completed';
 
     for (const block of response.content) {
+      if (!['text', 'thinking', 'redacted_thinking', 'tool_use'].includes(block.type)) this._continuationBlocked = true;
       switch (block.type) {
         case 'text':
           if (block.text !== undefined) {
@@ -690,8 +731,8 @@ class AnthropicStreamedMessage implements StreamedMessage {
             : { type: 'think' as const, think: block.thinking ?? '' };
           break;
         case 'redacted_thinking':
-          yield block.data !== undefined
-            ? { type: 'think' as const, think: '', encrypted: block.data }
+          yield typeof block.data === 'string' && block.data.length > 0
+            ? { type: 'think' as const, think: '', redacted: block.data }
             : { type: 'think' as const, think: '' };
           break;
         case 'tool_use':
@@ -710,6 +751,21 @@ class AnthropicStreamedMessage implements StreamedMessage {
     response: AsyncIterable<MessageStreamEvent>,
   ): AsyncGenerator<StreamedMessagePart> {
     const toolUseBlockIndexes = new Set<number>();
+    const streamed: { signed: boolean; text: boolean; tool: boolean } = {
+      signed: false,
+      text: false,
+      tool: false,
+    };
+    const preserveSignedThink = (error: unknown): boolean => {
+      if (!streamed.signed || streamed.text || streamed.tool) return false;
+      if (anthropicStreamErrorType(error) !== 'api_error') return false;
+      if (this._finishReason !== null && this._finishReason !== 'completed') return false;
+      if (this._finishReason === null) {
+        this._finishReason = 'completed';
+        this._rawFinishReason = 'api_error';
+      }
+      return true;
+    };
 
     try {
       for await (const event of response) {
@@ -731,21 +787,27 @@ class AnthropicStreamedMessage implements StreamedMessage {
           const blockEvt = evt as unknown as RawContentBlockStartEvent;
           const block = blockEvt.content_block;
           const blockIndex = blockEvt.index;
+          if (!['text', 'thinking', 'redacted_thinking', 'tool_use'].includes(block.type)) this._continuationBlocked = true;
           switch (block.type) {
-            case 'text':
-              yield { type: 'text', text: block.text };
+            case 'text': {
+              const text = typeof block.text === 'string' ? block.text : '';
+              if (text.trim().length > 0) streamed.text = true;
+              yield { type: 'text', text };
               break;
+            }
             case 'thinking':
               yield { type: 'think', think: block.thinking ?? '' };
               break;
-            case 'redacted_thinking':
-              yield {
-                type: 'think',
-                think: '',
-                encrypted: (block as unknown as { data: string }).data,
-              };
+            case 'redacted_thinking': {
+              const data = (block as unknown as { data?: string }).data;
+              if (typeof data === 'string' && data.length > 0) streamed.signed = true;
+              yield typeof data === 'string' && data.length > 0
+                ? { type: 'think' as const, think: '', redacted: data }
+                : { type: 'think' as const, think: '' };
               break;
+            }
             case 'tool_use':
+              streamed.tool = true;
               toolUseBlockIndexes.add(blockIndex);
               yield {
                 type: 'function',
@@ -761,9 +823,12 @@ class AnthropicStreamedMessage implements StreamedMessage {
           const delta = deltaEvt.delta;
           const blockIndex = deltaEvt.index;
           switch (delta.type) {
-            case 'text_delta':
-              yield { type: 'text', text: delta.text };
+            case 'text_delta': {
+              const text = typeof delta.text === 'string' ? delta.text : '';
+              if (text.trim().length > 0) streamed.text = true;
+              yield { type: 'text', text };
               break;
+            }
             case 'thinking_delta':
               yield { type: 'think', think: delta.thinking ?? '' };
               break;
@@ -775,6 +840,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
               };
               break;
             case 'signature_delta':
+              if (delta.signature.length > 0) streamed.signed = true;
               yield {
                 type: 'think',
                 think: '',
@@ -782,6 +848,14 @@ class AnthropicStreamedMessage implements StreamedMessage {
               };
               break;
           }
+        } else if (eventType === 'error') {
+          const streamedError = anthropicApiErrorFromStreamEvent(evt);
+          const streamErrorCode = anthropicStreamErrorCode(evt);
+          if (streamErrorCode === undefined && preserveSignedThink(streamedError)) return;
+          throw markProviderEventError(
+            convertAnthropicError(streamedError, this._convertErrorHook),
+            streamErrorCode,
+          );
         } else if (eventType === 'content_block_stop') {
         } else if (eventType === 'message_delta') {
           const deltaUsage = (evt as { usage?: Record<string, unknown> }).usage;
@@ -811,12 +885,61 @@ class AnthropicStreamedMessage implements StreamedMessage {
               messageDeltaPayload['stop_reason'] as string | null | undefined,
             );
           }
+        } else if (eventType === 'message_stop') {
+          this._completedNormally = this._finishReason === 'completed';
         }
       }
     } catch (error: unknown) {
-      throw convertAnthropicError(error, this._convertErrorHook);
+      this._completedNormally = false;
+      const code = error instanceof AnthropicAPIError
+        ? anthropicStreamErrorCode(error.error)
+        : readProviderEventErrorCode(error);
+      if (code === undefined && preserveSignedThink(error)) return;
+      throw markProviderEventError(convertAnthropicError(error, this._convertErrorHook), code);
     }
   }
+}
+
+const PERMANENT_ANTHROPIC_STREAM_STATUS: Readonly<Record<string, number>> = {
+  invalid_request_error: 400,
+  authentication_error: 401,
+  permission_error: 403,
+  not_found_error: 404,
+  billing_error: 402,
+};
+
+function permanentAnthropicStreamStatus(type: string | undefined): number | undefined {
+  if (type === undefined) return undefined;
+  return PERMANENT_ANTHROPIC_STREAM_STATUS[type];
+}
+
+function anthropicStreamErrorCode(event: unknown): string | undefined {
+  if (typeof event !== 'object' || event === null) return undefined;
+  const error = (event as { error?: unknown }).error;
+  if (typeof error !== 'object' || error === null) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function anthropicStreamErrorType(error: unknown): string | undefined {
+  if (error instanceof AnthropicAPIError && typeof error.type === 'string' && error.type.length > 0) {
+    return error.type;
+  }
+  const body = error instanceof AnthropicAPIError ? error.error : error;
+  if (typeof body !== 'object' || body === null) return undefined;
+  const nested = (body as { error?: { type?: unknown } }).error?.type;
+  return typeof nested === 'string' && nested.length > 0 ? nested : undefined;
+}
+
+function anthropicApiErrorFromStreamEvent(event: unknown): AnthropicAPIError {
+  const type = anthropicStreamErrorType(event);
+  return new AnthropicAPIError(
+    undefined,
+    event as object,
+    undefined,
+    undefined,
+    (type ?? null) as ErrorType | null,
+  );
 }
 
 export class AnthropicChatProvider implements ChatProvider {
@@ -830,6 +953,8 @@ export class AnthropicChatProvider implements ChatProvider {
   private readonly _apiKey: string | undefined;
   private readonly _baseUrl: string | undefined;
   private readonly _defaultHeaders: Record<string, string | null> | undefined;
+  private readonly _requestCompression: ReturnType<typeof createRequestCompressionFetch>;
+  private readonly _guardDelivery: boolean;
   private readonly _clientFactory: ((auth: ProviderRequestAuth) => Anthropic) | undefined;
   private readonly _adaptiveThinking: boolean | undefined;
   private readonly _supportEfforts: readonly string[] | undefined;
@@ -853,6 +978,9 @@ export class AnthropicChatProvider implements ChatProvider {
       options.apiKey === undefined || options.apiKey.length === 0 ? undefined : options.apiKey;
     this._baseUrl = options.baseUrl;
     this._defaultHeaders = options.defaultHeaders;
+    this._requestCompression = createRequestCompressionFetch(options.requestCompression);
+    this._guardDelivery = options.requestCompression !== undefined && options.requestCompression.encoding !== 'off' &&
+      matchesProviderTarget(`${(this._baseUrl ?? 'https://api.anthropic.com').replace(/\/$/, '')}/v1/messages`, options.requestCompression.targets);
     this._clientFactory = options.clientFactory;
     this._client = this._apiKey === undefined ? undefined : this._buildClient(this._apiKey);
     this._generationKwargs = {
@@ -1070,37 +1198,37 @@ export class AnthropicChatProvider implements ChatProvider {
       requestOptions['signal'] = options.signal;
     }
     const finalRequestOptions = Object.keys(requestOptions).length > 0 ? requestOptions : undefined;
-    const client = this._createClient(auth);
+    const client = this._createClient(auth, options?.rawResponseObserver);
     options?.onRequestSent?.();
 
     if (this._stream) {
       try {
-        const stream = useBetaApi
-          ? await client.beta.messages.create(
+        const stream = await withRequestCompressionDelivery(options?.signal, async () => useBetaApi
+          ? client.beta.messages.create(
               { ...createParams, stream: true } as unknown as MessageCreateParamsStreaming,
               finalRequestOptions,
             )
-          : await client.messages.create(
+          : client.messages.create(
               { ...createParams, stream: true } as unknown as MessageCreateParamsStreaming,
               finalRequestOptions,
-            );
-        return new AnthropicStreamedMessage(stream, true, this._hooks?.convertError);
+            ));
+        return guardRequestDelivery(new AnthropicStreamedMessage(stream, true, this._hooks?.convertError), this._guardDelivery);
       } catch (error: unknown) {
         throw convertAnthropicError(error, this._hooks?.convertError);
       }
     }
 
     try {
-      const response = useBetaApi
-        ? await client.beta.messages.create(
+      const response = await withRequestCompressionDelivery(options?.signal, async () => useBetaApi
+        ? client.beta.messages.create(
             { ...createParams, stream: false } as unknown as MessageCreateParams,
             finalRequestOptions,
           )
-        : await client.messages.create(
+        : client.messages.create(
             { ...createParams, stream: false } as unknown as MessageCreateParams,
             finalRequestOptions,
-          );
-      return new AnthropicStreamedMessage(response, false, this._hooks?.convertError);
+          ));
+      return guardRequestDelivery(new AnthropicStreamedMessage(response, false, this._hooks?.convertError), this._guardDelivery);
     } catch (error: unknown) {
       throw convertAnthropicError(error, this._hooks?.convertError);
     }
@@ -1154,7 +1282,11 @@ export class AnthropicChatProvider implements ChatProvider {
     return patch;
   }
 
-  private _createClient(auth: ProviderRequestAuth | undefined): Anthropic {
+  private _createClient(auth: ProviderRequestAuth | undefined, observer?: RawResponseObserver): Anthropic {
+    if (observer !== undefined && this._clientFactory === undefined) {
+      return this._buildClient(this._requireApiKey(auth), auth, observer);
+    }
+    if (observer !== undefined) { try { observer.end('unsupported-client-factory'); } catch {} }
     return resolveAuthBackedClient(
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
@@ -1201,13 +1333,14 @@ export class AnthropicChatProvider implements ChatProvider {
     return defaultHeaders;
   }
 
-  private _buildClient(apiKey: string, auth?: ProviderRequestAuth): Anthropic {
+  private _buildClient(apiKey: string, auth?: ProviderRequestAuth, observer?: RawResponseObserver): Anthropic {
+    const fetchImpl = this._requestCompression(requestIdentityFetchForAuth(auth));
     return new Anthropic({
       apiKey,
       authToken: null,
       baseURL: this._baseUrl ?? null,
       defaultHeaders: this._buildDefaultHeaders(apiKey),
-      fetch: requestIdentityFetchForAuth(auth),
+      fetch: observer === undefined ? fetchImpl : observeResponseFetch(fetchImpl, observer),
       maxRetries: 0,
     });
   }

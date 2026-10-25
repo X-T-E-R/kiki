@@ -815,7 +815,7 @@ describe('registerMediaTools', () => {
   const fs = createTestFs({});
   const env = createTestEnv();
 
-  it('registers ReadMediaFile when the model supports image input', () => {
+  it('registers ReadMediaFile when the model supports image input', async () => {
     const registry = new AgentToolRegistryService();
     const disposable = registerMediaTools(registry, {
       runtime: runtimeFor(fs, env),
@@ -823,7 +823,7 @@ describe('registerMediaTools', () => {
       capabilities: capabilities({ image_in: true, video_in: false }),
     });
     expect(registry.resolve('ReadMediaFile')).toBeInstanceOf(ReadMediaFileTool);
-    disposable.dispose();
+    await disposable.dispose();
     expect(registry.resolve('ReadMediaFile')).toBeUndefined();
   });
 
@@ -1012,12 +1012,12 @@ describe('AgentMediaToolsRegistrar', () => {
     }
   });
 
-  it('unregisters on dispose', () => {
+  it('unregisters on dispose', async () => {
     const { registry, registrar, bindModel } = createRegistrarHarness();
     bindModel('vision-model', capabilities({ image_in: true, video_in: true }));
     expect(registry.resolve('ReadMediaFile')).toBeInstanceOf(ReadMediaFileTool);
 
-    registrar.dispose();
+    await registrar.dispose();
     expect(registry.resolve('ReadMediaFile')).toBeUndefined();
     bindModel('vision-model-2', capabilities({ image_in: true, video_in: true }));
     expect(registry.resolve('ReadMediaFile')).toBeUndefined();

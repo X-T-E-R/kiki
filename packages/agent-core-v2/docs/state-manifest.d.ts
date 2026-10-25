@@ -21,7 +21,7 @@
 // expand structurally; classes render as their public instance shape. The
 // defining source file heads each group.
 //
-// External ambient types referenced but not expanded (from node_modules): Headers, Readable, Writable
+// External ambient types referenced but not expanded (from node_modules): AbortSignal, Headers, Readable, Uint8Array, Writable
 //
 // snapshot() returns JSON-safe deep copies of these values: Maps become plain
 // objects (or [key, value] entry arrays when a key is not string/number), Sets
@@ -505,6 +505,7 @@ export interface SessionStateSnapshot {
     readonly prompt: string;
     readonly createdAt: number;
     readonly recurring?: boolean;
+    readonly deliveryMode?: 'queue' | 'steer' | 'idle';
     readonly paused?: boolean;
     readonly lastFiredAt?: number;
     readonly tags?: Readonly<Record<string, string>>;
@@ -529,6 +530,7 @@ export interface SessionStateSnapshot {
   // src/session/sessionActivity/sessionActivityService.ts
   'sessionActivity.current': /* SessionActivityState — packages/agent-core-v2/src/session/sessionActivity/sessionActivity.ts */ {
     readonly busy: boolean;
+    readonly executing?: boolean;
     readonly mainTurnActive: boolean;
     readonly pendingInteraction: /* SessionPendingInteraction — packages/agent-core-v2/src/session/sessionActivity/sessionActivity.ts */ 'approval' | 'question' | 'none';
     readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -564,6 +566,35 @@ export interface SessionStateSnapshot {
     };
     readonly forkedFrom?: string;
     readonly agents?: Readonly<Record<string, /* AgentMeta — packages/agent-core-v2/src/session/sessionMetadata/sessionMetadata.ts */ {
+      readonly createdAt?: number;
+      readonly execution?: {
+        version: 1;
+        selection: {
+          executor: string;
+          profile?: string;
+          profile_file?: string;
+          overrides?: {
+            model?: string | null;
+            thinking?: string | null;
+            native_agent?: string | null;
+            permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
+            kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
+            allow_kiki_subagents?: boolean | null;
+            inject_kiki_mcp?: boolean | null;
+          };
+        };
+        effective: {
+          kiki_context: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+          allow_kiki_subagents: boolean;
+          model?: string;
+          thinking?: string;
+          native_agent?: string;
+          permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+          inject_kiki_mcp?: boolean;
+        };
+        sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
+        generation: number;
+      };
       readonly personaId?: string;
       readonly homedir?: string;
       readonly type?: 'main' | 'sub' | 'independent';
@@ -594,6 +625,16 @@ export interface SessionStateSnapshot {
         readonly planApproval?: boolean;
         readonly models?: readonly string[];
         readonly thinkingLevels?: readonly string[];
+        readonly nativeAgents?: readonly string[];
+        readonly contextWindow?: number;
+        readonly maxInputTokens?: number;
+        readonly maxOutputTokens?: number;
+        readonly compactionThreshold?: number;
+        readonly controls?: {
+          readonly modelSwitch?: boolean;
+          readonly thinkingSwitch?: boolean;
+          readonly manualCompact?: boolean;
+        };
         readonly authMethods?: readonly string[];
         readonly resume?: boolean;
         readonly load?: boolean;
@@ -604,6 +645,7 @@ export interface SessionStateSnapshot {
       readonly completedAt?: number;
       readonly resultSummary?: string;
       readonly error?: string;
+      readonly taskId?: string;
       readonly usage?: /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
         inputOther: number;
         output: number;
@@ -968,6 +1010,10 @@ export interface AgentStateSnapshot {
           type: 'think';
           think: string;
           encrypted?: string;
+          redacted?: string;
+          reasoningKey?: string;
+          reasoningDetails?: readonly Record<string, unknown>[];
+          hidden?: boolean;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -1038,7 +1084,7 @@ export interface AgentStateSnapshot {
         readonly disclosure?: unknown;
       } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'shell_command';
-        readonly phase: 'input' | 'output';
+        readonly phase: 'output' | 'input';
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
@@ -1067,6 +1113,7 @@ export interface AgentStateSnapshot {
         readonly notificationId: string;
       } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'cron_job';
+        readonly deliveryMode?: 'queue' | 'steer' | 'idle';
         readonly jobId: string;
         readonly cron: string;
         readonly recurring: boolean;
@@ -1134,7 +1181,7 @@ export interface AgentStateSnapshot {
         readonly generation?: number;
       };
       readonly phase: /* TurnPhase — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'running' | 'streaming' | 'tool_call' | 'retrying';
-      readonly stream?: 'tool_call' | 'assistant' | 'thinking';
+      readonly stream?: 'thinking' | 'tool_call' | 'assistant';
       readonly step: number;
       readonly ending: boolean;
       readonly endingReason?: 'error' | 'aborted' | 'max_steps';
@@ -1179,7 +1226,7 @@ export interface AgentStateSnapshot {
   'activityView.lifecycle': /* ActivityViewLifecycle — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'ready' | 'disposed';
   'activityView.turn': /* MutableTurn — packages/agent-core-v2/src/agent/activityView/activityViewService.ts */ {
     phase: /* TurnPhase — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'running' | 'streaming' | 'tool_call' | 'retrying';
-    stream: 'tool_call' | 'assistant' | 'thinking' | undefined;
+    stream: 'thinking' | 'tool_call' | 'assistant' | undefined;
     step: number;
     ending: boolean;
     endingReason: 'error' | 'aborted' | 'max_steps' | undefined;
@@ -1244,6 +1291,10 @@ export interface AgentStateSnapshot {
         type: 'think';
         think: string;
         encrypted?: string;
+        redacted?: string;
+        reasoningKey?: string;
+        reasoningDetails?: readonly Record<string, unknown>[];
+        hidden?: boolean;
       } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'image_url';
         imageUrl: {
@@ -1314,7 +1365,7 @@ export interface AgentStateSnapshot {
       readonly disclosure?: unknown;
     } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'shell_command';
-      readonly phase: 'input' | 'output';
+      readonly phase: 'output' | 'input';
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
@@ -1343,6 +1394,7 @@ export interface AgentStateSnapshot {
       readonly notificationId: string;
     } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'cron_job';
+      readonly deliveryMode?: 'queue' | 'steer' | 'idle';
       readonly jobId: string;
       readonly cron: string;
       readonly recurring: boolean;
@@ -1452,6 +1504,10 @@ export interface AgentStateSnapshot {
           type: 'think';
           think: string;
           encrypted?: string;
+          redacted?: string;
+          reasoningKey?: string;
+          reasoningDetails?: readonly Record<string, unknown>[];
+          hidden?: boolean;
         } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
           type: 'image_url';
           imageUrl: {
@@ -1522,7 +1578,7 @@ export interface AgentStateSnapshot {
         readonly disclosure?: unknown;
       } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'shell_command';
-        readonly phase: 'input' | 'output';
+        readonly phase: 'output' | 'input';
         readonly isError?: boolean;
       } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'compaction_summary';
@@ -1551,6 +1607,7 @@ export interface AgentStateSnapshot {
         readonly notificationId: string;
       } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'cron_job';
+        readonly deliveryMode?: 'queue' | 'steer' | 'idle';
         readonly jobId: string;
         readonly cron: string;
         readonly recurring: boolean;
@@ -1618,7 +1675,7 @@ export interface AgentStateSnapshot {
         readonly generation?: number;
       };
       readonly phase: /* TurnPhase — packages/agent-core-v2/src/agent/activityView/activityView.ts */ 'running' | 'streaming' | 'tool_call' | 'retrying';
-      readonly stream?: 'tool_call' | 'assistant' | 'thinking';
+      readonly stream?: 'thinking' | 'tool_call' | 'assistant';
       readonly step: number;
       readonly ending: boolean;
       readonly endingReason?: 'error' | 'aborted' | 'max_steps';
@@ -1674,6 +1731,10 @@ export interface AgentStateSnapshot {
       type: 'think';
       think: string;
       encrypted?: string;
+      redacted?: string;
+      reasoningKey?: string;
+      reasoningDetails?: readonly Record<string, unknown>[];
+      hidden?: boolean;
     } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
       type: 'image_url';
       imageUrl: {
@@ -1741,209 +1802,7 @@ export interface AgentStateSnapshot {
     readonly providerMessageId?: string;
     readonly origin?: /* MergedPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'merged';
-      readonly origins: readonly (/* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'unknown';
-      } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'external_thread';
-        readonly messageId: string;
-        readonly acceptedAt: number;
-      } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'user';
-        readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-          readonly activationId: string;
-          readonly skillName: string;
-          readonly skillArgs?: string;
-          readonly skillType?: string;
-          readonly skillPath?: string;
-          readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
-        }[];
-        readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-          type: 'text';
-          text: string;
-          presentation?: unknown;
-          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-            readonly fileId: string;
-            readonly mimeType: string;
-            readonly size: number;
-            readonly name?: string;
-          };
-          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-            readonly uri: string;
-            readonly name?: string;
-            readonly mimeType?: string;
-            readonly size?: number;
-            readonly title?: string;
-            readonly description?: string;
-          };
-        } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-          type: 'think';
-          think: string;
-          encrypted?: string;
-        } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-          type: 'image_url';
-          imageUrl: {
-            url: string;
-            id?: string;
-            name?: string;
-            mimeType?: string;
-            size?: number;
-            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-              readonly fileId: string;
-              readonly mimeType: string;
-              readonly size: number;
-              readonly name?: string;
-            };
-          };
-        } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-          type: 'audio_url';
-          audioUrl: {
-            url: string;
-            id?: string;
-            name?: string;
-            mimeType?: string;
-            size?: number;
-            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-              readonly fileId: string;
-              readonly mimeType: string;
-              readonly size: number;
-              readonly name?: string;
-            };
-          };
-        } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-          type: 'video_url';
-          videoUrl: {
-            url: string;
-            id?: string;
-            name?: string;
-            mimeType?: string;
-            size?: number;
-            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
-              readonly fileId: string;
-              readonly mimeType: string;
-              readonly size: number;
-              readonly name?: string;
-            };
-          };
-        })[];
-      } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'skill_activation';
-        readonly activationId: string;
-        readonly skillName: string;
-        readonly skillArgs?: string;
-        readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
-        readonly userInput?: string;
-        readonly skillType?: string;
-        readonly skillPath?: string;
-        readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
-      } | /* PluginCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'plugin_command';
-        readonly activationId: string;
-        readonly pluginId: string;
-        readonly commandName: string;
-        readonly commandArgs?: string;
-        readonly trigger: 'user-slash';
-      } | /* InjectionOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'injection';
-        readonly variant: string;
-        readonly ownerPromptId?: string;
-        readonly disclosure?: unknown;
-      } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'shell_command';
-        readonly phase: 'input' | 'output';
-        readonly isError?: boolean;
-      } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'compaction_summary';
-      } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'system_trigger';
-        readonly name: string;
-      } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'external_client';
-        readonly connectionId: string;
-        readonly clientName: string;
-        readonly sessionRef: string;
-        readonly driver: 'external';
-      } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'external_record';
-        readonly recordId: string;
-        readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
-        readonly title?: string;
-        readonly connectionId: string;
-        readonly clientName: string;
-        readonly sessionRef: string;
-        readonly driver: 'external';
-      } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'task';
-        readonly taskId: string;
-        readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
-        readonly notificationId: string;
-      } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'cron_job';
-        readonly jobId: string;
-        readonly cron: string;
-        readonly recurring: boolean;
-        readonly coalescedCount: number;
-        readonly stale: boolean;
-      } | /* CronMissedOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'cron_missed';
-        readonly count: number;
-      } | /* HookResultOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'hook_result';
-        readonly event: string;
-        readonly blocked?: boolean;
-      } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'retry';
-        readonly trigger?: string;
-      } | /* PeerThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'peer_thread';
-        readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
-          readonly hostId: string;
-          readonly workspaceId: string;
-          readonly sessionId: string;
-          readonly personaId?: string;
-          readonly name?: string;
-          readonly bridgeId?: string;
-          readonly connectionId?: string;
-        };
-        readonly messageId: string;
-        readonly acceptedAt: number;
-      } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'bridged_peer';
-        readonly messageId: string;
-        readonly acceptedAt: number;
-        readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
-          readonly hostId: string;
-          readonly workspaceId: string;
-          readonly sessionId: string;
-          readonly personaId?: string;
-          readonly name?: string;
-          readonly bridgeId?: string;
-          readonly connectionId?: string;
-        };
-        readonly sourceHomeId: string;
-        readonly targetHomeId: string;
-        readonly bridgeId: string;
-        readonly revision: number;
-        readonly location: 'local' | 'network';
-        readonly createdAt: number;
-        readonly expiresAt: number;
-        readonly sourceSeq: number;
-        readonly causeId: string;
-        readonly hop: number;
-      } | /* AgentMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'agent_message';
-        readonly messageId: string;
-        readonly senderAgentId: string;
-        readonly senderTaskName: string;
-      } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'persona_greeting';
-        readonly personaId: string;
-      } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
-        readonly kind: 'room_message';
-        readonly roomId: string;
-        readonly messageId: string;
-        readonly targeted: boolean;
-        readonly generation?: number;
-      })[];
+      readonly origins: readonly (/* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown)[];
     } | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'unknown';
     } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
@@ -1982,6 +1841,10 @@ export interface AgentStateSnapshot {
         type: 'think';
         think: string;
         encrypted?: string;
+        redacted?: string;
+        reasoningKey?: string;
+        reasoningDetails?: readonly Record<string, unknown>[];
+        hidden?: boolean;
       } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
         type: 'image_url';
         imageUrl: {
@@ -2052,7 +1915,7 @@ export interface AgentStateSnapshot {
       readonly disclosure?: unknown;
     } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'shell_command';
-      readonly phase: 'input' | 'output';
+      readonly phase: 'output' | 'input';
       readonly isError?: boolean;
     } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'compaction_summary';
@@ -2081,6 +1944,7 @@ export interface AgentStateSnapshot {
       readonly notificationId: string;
     } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'cron_job';
+      readonly deliveryMode?: 'queue' | 'steer' | 'idle';
       readonly jobId: string;
       readonly cron: string;
       readonly recurring: boolean;
@@ -2243,12 +2107,12 @@ export interface AgentStateSnapshot {
   // src/agent/fullCompaction/compactionOps.ts
   // replayable · durable — folds: FullCompactionBegin, FullCompactionCancel, FullCompactionComplete
   'fullCompaction': /* CompactionState — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ {
-    readonly phase: /* CompactionPhase — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ 'completed' | 'cancelled' | 'running' | 'queued' | 'idle';
+    readonly phase: /* CompactionPhase — packages/agent-core-v2/src/agent/fullCompaction/compactionOps.ts */ 'idle' | 'completed' | 'cancelled' | 'running' | 'queued';
     readonly pendingManual?: boolean;
   };
   // src/agent/fullCompaction/contextStrategyOps.ts
   // replayable · durable — folds: ContextStrategyOverrideChanged
-  'contextStrategyOverride': 'summarize' | 'fresh' | 'auto' | null;
+  'contextStrategyOverride': 'auto' | 'summarize' | 'fresh' | null;
   // src/agent/fullCompaction/fullCompactionService.ts
   'fullCompaction.activeTurnId': number | undefined;
   'fullCompaction.compactionCountInTurn': number;
@@ -2360,7 +2224,7 @@ export interface AgentStateSnapshot {
     };
     readonly params: /* ModelRequestParams — packages/agent-core-v2/src/kosong/model/modelRequester.ts */ {
       readonly cacheKey?: string;
-      readonly serviceTier?: 'default' | 'auto' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+      readonly serviceTier?: 'auto' | 'default' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
         kind: 'api_default';
       } | 'flex' | 'priority';
       readonly headers?: Readonly<Record<string, string>>;
@@ -2376,12 +2240,38 @@ export interface AgentStateSnapshot {
       readonly usedContextTokensTrusted?: boolean;
       readonly maxContextTokens?: number;
       readonly onTraceId?: (traceId: string | null) => void;
+      readonly rawResponseObserver?: /* RawResponseObserver — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
+        start: (response: {
+          status: number;
+          contentType: string | null;
+          requestId: string | null;
+          alternateRequestId: string | null;
+          traceId: string | null;
+        }) => void;
+        chunk: (bytes: Uint8Array<ArrayBuffer | SharedArrayBuffer>) => void;
+        end: (outcome: string) => void;
+      };
       readonly requestIdentity?: /* RequestIdentityWireOptions — packages/agent-core-v2/src/kosong/contract/provider.ts */ {
         readonly suppressUserAgent?: boolean;
         readonly suppressIdentity?: boolean;
         readonly suppressMessagesMetadataUserId?: boolean;
         readonly responsesClientMetadata?: Readonly<Record<string, string>>;
         readonly onResponseHeaders?: (headers: Headers) => void;
+      };
+      readonly responsesTransport?: /* ResponsesRequestTransport — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+        request: (params: Record<string, unknown>, options: {
+          baseUrl: string;
+          apiKey: string;
+          headers: Readonly<Record<string, string>>;
+          signal?: AbortSignal;
+          canonicalOutput?: (nativeOutput: readonly unknown[]) => /* ResponsesOutputProjection — packages/agent-core-v2/src/kosong/contract/responsesTransport.ts */ {
+            readonly input: readonly unknown[];
+            readonly incremental: boolean;
+          } | undefined;
+          onFullInput?: (input: readonly unknown[]) => void;
+        }) => Promise<AsyncIterable<unknown, any, any>>;
+        commitResponse: (responseId: string, canonicalOutput: readonly unknown[]) => void;
+        close: () => void;
       };
       readonly attribution?: (/* RequestIdentity — packages/agent-core-v2/src/kosong/model/requestAdmission.ts */ {
         readonly logicalRequestId: string;
@@ -2404,6 +2294,7 @@ export interface AgentStateSnapshot {
         readonly parentAgentId?: undefined;
         readonly purpose: 'connectivity_probe';
       });
+      readonly retry?: 'never';
     };
     readonly systemPrompt: string;
     readonly promptFields: /* ResolvedPromptFieldOverrides — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
@@ -2411,9 +2302,9 @@ export interface AgentStateSnapshot {
       readonly fields: readonly /* ResolvedPromptFieldOverride — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
         readonly id: string;
         readonly value: string;
-        readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'deferred' | 'effective' | 'shadowed' | 'inactive' | 'unsupported';
+        readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'shadowed' | 'inactive' | 'unsupported';
         readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'system' | 'global' | 'model' | 'profile' | 'profile-model' | 'caller-lease-model' | 'recipe';
+          readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
           readonly kind: 'file' | 'inline';
           readonly path?: string;
           readonly fileIndex?: number;
@@ -2451,7 +2342,7 @@ export interface AgentStateSnapshot {
         steeringOnTurn?: boolean;
         steeringOnInput?: boolean;
         steeringIntervalSteps?: number;
-        steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+        steeringSources?: Partial<Record<'agent' | 'cron' | 'external' | 'task' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
           mode: 'off' | 'custom' | 'inherit';
           custom?: {
             steering?: string | readonly string[] | {
@@ -2483,6 +2374,15 @@ export interface AgentStateSnapshot {
                     steering?: string;
                   };
                 };
+                cron?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
                 external?: {
                   mode: 'off' | 'custom' | 'inherit';
                   custom?: {
@@ -2493,15 +2393,6 @@ export interface AgentStateSnapshot {
                   };
                 };
                 task?: {
-                  mode: 'off' | 'custom' | 'inherit';
-                  custom?: {
-                    steering_on_turn?: boolean;
-                    steering_on_input?: boolean;
-                    steering_interval_steps?: number;
-                    steering?: string;
-                  };
-                };
-                cron?: {
                   mode: 'off' | 'custom' | 'inherit';
                   custom?: {
                     steering_on_turn?: boolean;
@@ -2581,6 +2472,15 @@ export interface AgentStateSnapshot {
                     steering?: string;
                   };
                 };
+                cron?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
                 external?: {
                   mode: 'off' | 'custom' | 'inherit';
                   custom?: {
@@ -2591,15 +2491,6 @@ export interface AgentStateSnapshot {
                   };
                 };
                 task?: {
-                  mode: 'off' | 'custom' | 'inherit';
-                  custom?: {
-                    steering_on_turn?: boolean;
-                    steering_on_input?: boolean;
-                    steering_interval_steps?: number;
-                    steering?: string;
-                  };
-                };
-                cron?: {
                   mode: 'off' | 'custom' | 'inherit';
                   custom?: {
                     steering_on_turn?: boolean;
@@ -2679,6 +2570,15 @@ export interface AgentStateSnapshot {
                     steering?: string;
                   };
                 };
+                cron?: {
+                  mode: 'off' | 'custom' | 'inherit';
+                  custom?: {
+                    steering_on_turn?: boolean;
+                    steering_on_input?: boolean;
+                    steering_interval_steps?: number;
+                    steering?: string;
+                  };
+                };
                 external?: {
                   mode: 'off' | 'custom' | 'inherit';
                   custom?: {
@@ -2689,15 +2589,6 @@ export interface AgentStateSnapshot {
                   };
                 };
                 task?: {
-                  mode: 'off' | 'custom' | 'inherit';
-                  custom?: {
-                    steering_on_turn?: boolean;
-                    steering_on_input?: boolean;
-                    steering_interval_steps?: number;
-                    steering?: string;
-                  };
-                };
-                cron?: {
                   mode: 'off' | 'custom' | 'inherit';
                   custom?: {
                     steering_on_turn?: boolean;
@@ -2786,8 +2677,8 @@ export interface AgentStateSnapshot {
           };
           model_origins: {
             [key: string]: {
-            source: string;
             version: string;
+            source: string;
             manifest_id: string;
             file?: string;
           };
@@ -2805,7 +2696,7 @@ export interface AgentStateSnapshot {
           }[];
           hooks_fingerprint?: string;
           layers?: readonly {
-            surface: 'model' | 'profile';
+            surface: 'profile' | 'model';
             installation_id: string;
             resolved: {
               revision: string;
@@ -2824,6 +2715,15 @@ export interface AgentStateSnapshot {
                         steering?: string;
                       };
                     };
+                    cron?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
                     external?: {
                       mode: 'off' | 'custom' | 'inherit';
                       custom?: {
@@ -2834,15 +2734,6 @@ export interface AgentStateSnapshot {
                       };
                     };
                     task?: {
-                      mode: 'off' | 'custom' | 'inherit';
-                      custom?: {
-                        steering_on_turn?: boolean;
-                        steering_on_input?: boolean;
-                        steering_interval_steps?: number;
-                        steering?: string;
-                      };
-                    };
-                    cron?: {
                       mode: 'off' | 'custom' | 'inherit';
                       custom?: {
                         steering_on_turn?: boolean;
@@ -2922,6 +2813,15 @@ export interface AgentStateSnapshot {
                         steering?: string;
                       };
                     };
+                    cron?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
                     external?: {
                       mode: 'off' | 'custom' | 'inherit';
                       custom?: {
@@ -2932,15 +2832,6 @@ export interface AgentStateSnapshot {
                       };
                     };
                     task?: {
-                      mode: 'off' | 'custom' | 'inherit';
-                      custom?: {
-                        steering_on_turn?: boolean;
-                        steering_on_input?: boolean;
-                        steering_interval_steps?: number;
-                        steering?: string;
-                      };
-                    };
-                    cron?: {
                       mode: 'off' | 'custom' | 'inherit';
                       custom?: {
                         steering_on_turn?: boolean;
@@ -3020,6 +2911,15 @@ export interface AgentStateSnapshot {
                         steering?: string;
                       };
                     };
+                    cron?: {
+                      mode: 'off' | 'custom' | 'inherit';
+                      custom?: {
+                        steering_on_turn?: boolean;
+                        steering_on_input?: boolean;
+                        steering_interval_steps?: number;
+                        steering?: string;
+                      };
+                    };
                     external?: {
                       mode: 'off' | 'custom' | 'inherit';
                       custom?: {
@@ -3030,15 +2930,6 @@ export interface AgentStateSnapshot {
                       };
                     };
                     task?: {
-                      mode: 'off' | 'custom' | 'inherit';
-                      custom?: {
-                        steering_on_turn?: boolean;
-                        steering_on_input?: boolean;
-                        steering_interval_steps?: number;
-                        steering?: string;
-                      };
-                    };
-                    cron?: {
                       mode: 'off' | 'custom' | 'inherit';
                       custom?: {
                         steering_on_turn?: boolean;
@@ -3127,8 +3018,8 @@ export interface AgentStateSnapshot {
               };
               model_origins: {
                 [key: string]: {
-                source: string;
                 version: string;
+                source: string;
                 manifest_id: string;
                 file?: string;
               };
@@ -3151,7 +3042,7 @@ export interface AgentStateSnapshot {
         readonly anchorSystem?: string;
       };
       readonly anchor?: string;
-      readonly steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+      readonly steeringSources?: Partial<Record<'agent' | 'cron' | 'external' | 'task' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
         mode: 'off' | 'custom' | 'inherit';
         custom?: {
           steering?: string;
@@ -3180,7 +3071,7 @@ export interface AgentStateSnapshot {
         };
         maxCompletionTokens?: number;
         thinkingEffort?: string;
-        serviceTier?: 'default' | 'auto' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
+        serviceTier?: 'auto' | 'default' | /* ApiDefaultParameter — packages/agent-core-v2/src/kosong/contract/generationParameters.ts */ {
           kind: 'api_default';
         } | 'flex' | 'priority';
       };
@@ -3220,23 +3111,34 @@ export interface AgentStateSnapshot {
           responsesMetadata?: 'none' | 'codex';
         };
       };
+      requestCompression?: {
+        encoding?: 'off' | 'gzip' | 'zstd';
+        targets?: string[];
+        minBytes?: number;
+        dictionary?: boolean;
+      };
+      responsesWebSocket?: {
+        off?: true;
+        targets?: string[];
+      };
       images?: /* ImagePolicyConfig — packages/agent-core-v2/src/kosong/provider/providerImagePolicy.ts */ {
         acceptedTypes?: ('image/png' | 'image/jpeg' | 'image/gif' | 'image/webp' | 'image/bmp' | 'image/heic' | 'image/heif' | 'image/avif' | 'image/tiff' | 'image/x-icon')[];
         convertUnsupported?: 'off' | 'auto' | 'png' | 'jpeg';
       };
       type?: string;
       apiKey?: string;
+      apiKeyEnv?: string;
       oauth?: /* OAuthRef — packages/agent-core-v2/src/kosong/provider/provider.ts */ {
         storage: 'file' | 'keyring';
         key: string;
         oauthHost?: string;
         source?: {
           kind: 'local_original';
-          provider: 'openai-codex' | 'grok-build';
+          provider: 'openai-codex' | 'grok-build' | 'kimi-code';
           homeDir: string;
           storageBackend: 'file' | 'encrypted' | 'keyring';
-          accountId: string;
           authFile?: string;
+          accountId?: string;
           userId?: string;
           scope?: string;
         };
@@ -3326,6 +3228,10 @@ export interface AgentStateSnapshot {
     type: 'think';
     think: string;
     encrypted?: string;
+    redacted?: string;
+    reasoningKey?: string;
+    reasoningDetails?: readonly Record<string, unknown>[];
+    hidden?: boolean;
   } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
     type: 'image_url';
     imageUrl: {
@@ -3466,6 +3372,7 @@ export interface AgentStateSnapshot {
     enabled: boolean;
     revision: number;
     context: /* SystemPromptContext — packages/agent-core-v2/src/agent/profile/profile.ts */ {
+      readonly pluginBlocks?: Readonly<Record<string, string>>;
       readonly agentsMdWarning?: string;
       readonly agentsMdPaths?: readonly string[];
       readonly agentsMdFiles?: readonly /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {
@@ -3498,7 +3405,7 @@ export interface AgentStateSnapshot {
     hash: string;
   } | undefined;
   // src/agent/profile/profileOps.ts
-  // replayable · durable — folds: ProfileBind, ConfigUpdate, AgentModelSwitch
+  // replayable · durable — folds: ProfileBind, ConfigUpdate, ToolsSetActiveTools, ToolsResetActiveTools, ToolsPolicyRefreshed, AgentModelSwitch
   'profile': /* ProfileModelState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ {
     readonly driver?: 'external';
     readonly toolOverride?: /* ToolBindingOverride — packages/agent-core-v2/src/agent/profile/profile.ts */ {
@@ -3560,17 +3467,21 @@ export interface AgentStateSnapshot {
         overrides?: {
           model?: string | null;
           thinking?: string | null;
+          native_agent?: string | null;
           permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
-          kiki_context?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[] | null;
+          kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
           allow_kiki_subagents?: boolean | null;
+          inject_kiki_mcp?: boolean | null;
         };
       };
       effective: {
-        kiki_context: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+        kiki_context: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
         allow_kiki_subagents: boolean;
         model?: string;
         thinking?: string;
+        native_agent?: string;
         permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+        inject_kiki_mcp?: boolean;
       };
       sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
       generation: number;
@@ -3591,7 +3502,8 @@ export interface AgentStateSnapshot {
       }>;
     };
     readonly allowKikiSubagents?: boolean;
-    readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+    readonly injectKikiMcp?: boolean;
+    readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
     readonly executorDescriptorRevision?: string;
     readonly thinkingLevel: string;
     readonly thinkingEffortAdjusted?: boolean;
@@ -3608,7 +3520,7 @@ export interface AgentStateSnapshot {
       readonly model?: string;
       readonly message: string;
     }[];
-    readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+    readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
     readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
     readonly systemPrompt: string;
     readonly environmentDisclosure?: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
@@ -3626,7 +3538,7 @@ export interface AgentStateSnapshot {
     readonly renderGeneration: number;
     readonly agentsMdPaths?: readonly string[];
     readonly disallowedTools?: readonly string[];
-    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+    readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
     readonly subagentPolicy?: 'strict' | 'advisory';
     readonly subagentDeclaration?: {
       readonly kind: 'inherit';
@@ -3664,11 +3576,11 @@ export interface AgentStateSnapshot {
       readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
-      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+        readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
@@ -3697,7 +3609,7 @@ export interface AgentStateSnapshot {
         readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
@@ -3729,11 +3641,11 @@ export interface AgentStateSnapshot {
       readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
-      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+        readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
@@ -3762,7 +3674,7 @@ export interface AgentStateSnapshot {
         readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
@@ -3775,7 +3687,7 @@ export interface AgentStateSnapshot {
     readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
       readonly version: 2 | 1;
       readonly policyMode: 'fixed' | 'strict' | 'advisory' | 'legacy';
-      readonly policySource: 'default' | 'profile' | 'legacy';
+      readonly policySource: 'profile' | 'default' | 'legacy';
       readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
         readonly kind: 'inherit';
       } | {
@@ -3828,11 +3740,11 @@ export interface AgentStateSnapshot {
       readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
-      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+        readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
@@ -3861,7 +3773,7 @@ export interface AgentStateSnapshot {
         readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
@@ -3893,11 +3805,11 @@ export interface AgentStateSnapshot {
       readonly promptMode?: 'append' | 'prepend' | 'wrap';
       readonly prompt?: string;
       readonly delegationNotice?: 'off' | 'auto';
-      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+      readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+        readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
@@ -3926,7 +3838,7 @@ export interface AgentStateSnapshot {
         readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
@@ -3950,6 +3862,8 @@ export interface AgentStateSnapshot {
             readonly windowsHide?: boolean;
             readonly mergeStderr?: boolean;
             readonly timeout?: number;
+            readonly ownedProcessTree?: boolean;
+            readonly ownedProcessLifetime?: 'process' | 'owner';
           }) => Promise</* IHostProcess — packages/agent-core-v2/src/os/interface/hostProcess.ts */ {
             readonly _serviceBrand: undefined;
             readonly pid: number;
@@ -3985,7 +3899,7 @@ export interface AgentStateSnapshot {
       readonly modelMenuDiagnostics?: readonly string[];
       readonly modelConstraintProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+        readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
@@ -4014,7 +3928,7 @@ export interface AgentStateSnapshot {
         readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
@@ -4022,11 +3936,11 @@ export interface AgentStateSnapshot {
         readonly discouragedModels?: readonly string[];
         readonly preferredEfforts?: readonly string[];
       }[];
-      readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+      readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
       readonly fileDefinition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
         readonly recipe?: string;
         readonly autoCompact?: number;
-        readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+        readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
         readonly name: string;
@@ -4041,7 +3955,7 @@ export interface AgentStateSnapshot {
         readonly main?: boolean;
         readonly tools?: readonly string[];
         readonly disallowedTools?: readonly string[];
-        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+        readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
         readonly subagentPolicy?: 'strict' | 'advisory';
         readonly subagentDeclaration?: {
           readonly kind: 'inherit';
@@ -4079,11 +3993,11 @@ export interface AgentStateSnapshot {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
           readonly delegationNotice?: 'off' | 'auto';
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
-            readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+            readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
@@ -4112,7 +4026,7 @@ export interface AgentStateSnapshot {
             readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
@@ -4144,11 +4058,11 @@ export interface AgentStateSnapshot {
           readonly promptMode?: 'append' | 'prepend' | 'wrap';
           readonly prompt?: string;
           readonly delegationNotice?: 'off' | 'auto';
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
-            readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+            readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
@@ -4177,7 +4091,7 @@ export interface AgentStateSnapshot {
             readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
@@ -4211,7 +4125,8 @@ export interface AgentStateSnapshot {
           }>;
         };
         readonly allowKikiSubagents?: boolean;
-        readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+        readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+        readonly injectKikiMcp?: boolean;
         readonly modelAlias?: string;
         readonly restrictModelsToMenu?: boolean;
         readonly thinkingEffort?: string;
@@ -4223,7 +4138,7 @@ export interface AgentStateSnapshot {
         readonly allowedEfforts?: readonly string[];
         readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
-          readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+          readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
@@ -4252,7 +4167,7 @@ export interface AgentStateSnapshot {
           readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
@@ -4260,7 +4175,7 @@ export interface AgentStateSnapshot {
           readonly discouragedModels?: readonly string[];
           readonly preferredEfforts?: readonly string[];
         }[];
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
           readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
@@ -4296,7 +4211,7 @@ export interface AgentStateSnapshot {
         readonly subagents?: readonly string[];
         readonly modelAlias?: string;
         readonly thinkingEffort?: string;
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
         readonly overriddenFields: readonly string[];
         readonly path: string;
@@ -4314,9 +4229,10 @@ export interface AgentStateSnapshot {
       readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
       readonly main?: boolean;
       readonly tools?: readonly string[];
+      readonly toolsSource?: 'declared' | 'inherited-default' | 'builtin-default';
       readonly toolAllowPolicies?: readonly (readonly string[])[];
       readonly disallowedTools?: readonly string[];
-      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+      readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
       readonly subagentPolicy?: 'strict' | 'advisory';
       readonly subagentDeclaration?: {
         readonly kind: 'inherit';
@@ -4354,11 +4270,11 @@ export interface AgentStateSnapshot {
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly delegationNotice?: 'off' | 'auto';
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
         readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
-          readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+          readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
@@ -4387,7 +4303,7 @@ export interface AgentStateSnapshot {
           readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
@@ -4419,11 +4335,11 @@ export interface AgentStateSnapshot {
         readonly promptMode?: 'append' | 'prepend' | 'wrap';
         readonly prompt?: string;
         readonly delegationNotice?: 'off' | 'auto';
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
         readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
-          readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+          readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
@@ -4452,7 +4368,7 @@ export interface AgentStateSnapshot {
           readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
@@ -4486,7 +4402,8 @@ export interface AgentStateSnapshot {
         }>;
       };
       readonly allowKikiSubagents?: boolean;
-      readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+      readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+      readonly injectKikiMcp?: boolean;
       readonly modelAlias?: string;
       readonly thinkingEffort?: string;
       readonly allowedModels?: readonly string[];
@@ -4494,7 +4411,7 @@ export interface AgentStateSnapshot {
       readonly allowedEfforts?: readonly string[];
       readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
         readonly alias: string;
-        readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+        readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
         readonly when?: string;
         readonly thinkingEffort?: string;
         readonly allowedEfforts?: readonly string[];
@@ -4523,7 +4440,7 @@ export interface AgentStateSnapshot {
         readonly autoCompact?: number;
         readonly contextBudget?: number;
         readonly maxCompletionTokens?: number;
-        readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+        readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
         readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
         readonly allowedModels?: readonly string[];
         readonly denyModels?: readonly string[];
@@ -4536,7 +4453,7 @@ export interface AgentStateSnapshot {
         readonly sourcePath?: string;
         readonly entries: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
-          readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+          readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
@@ -4565,7 +4482,7 @@ export interface AgentStateSnapshot {
           readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
@@ -4579,7 +4496,7 @@ export interface AgentStateSnapshot {
         readonly sourcePath?: string;
         readonly entries: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
           readonly alias: string;
-          readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+          readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly when?: string;
           readonly thinkingEffort?: string;
           readonly allowedEfforts?: readonly string[];
@@ -4608,7 +4525,7 @@ export interface AgentStateSnapshot {
           readonly autoCompact?: number;
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly allowedModels?: readonly string[];
           readonly denyModels?: readonly string[];
@@ -4617,7 +4534,7 @@ export interface AgentStateSnapshot {
           readonly preferredEfforts?: readonly string[];
         }[];
       }[];
-      readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+      readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
       readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
       readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
         readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
@@ -4717,7 +4634,7 @@ export interface AgentStateSnapshot {
         readonly root: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
           readonly autoCompact?: number;
-          readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+          readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly name: string;
@@ -4732,7 +4649,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -4770,11 +4687,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -4803,7 +4720,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -4835,11 +4752,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -4868,7 +4785,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -4902,7 +4819,8 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
-          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+          readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+          readonly injectKikiMcp?: boolean;
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
@@ -4914,7 +4832,7 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
-            readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+            readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
@@ -4943,7 +4861,7 @@ export interface AgentStateSnapshot {
             readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
@@ -4951,7 +4869,7 @@ export interface AgentStateSnapshot {
             readonly discouragedModels?: readonly string[];
             readonly preferredEfforts?: readonly string[];
           }[];
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
             readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
@@ -5048,17 +4966,21 @@ export interface AgentStateSnapshot {
               overrides?: {
                 model?: string | null;
                 thinking?: string | null;
+                native_agent?: string | null;
                 permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
-                kiki_context?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[] | null;
+                kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
                 allow_kiki_subagents?: boolean | null;
+                inject_kiki_mcp?: boolean | null;
               };
             };
             effective: {
-              kiki_context: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+              kiki_context: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
               allow_kiki_subagents: boolean;
               model?: string;
               thinking?: string;
+              native_agent?: string;
               permission_mode?: 'manual' | 'auto' | 'review' | 'yolo';
+              inject_kiki_mcp?: boolean;
             };
             sources: Record<string, 'profile' | 'session' | 'harness-settings' | 'harness-default'>;
             generation: number;
@@ -5079,13 +5001,14 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
-          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+          readonly injectKikiMcp?: boolean;
+          readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
           readonly executorDescriptorRevision?: string;
           readonly agentsMdPaths?: readonly string[];
           readonly activeToolNames?: readonly string[];
           readonly toolAllowPolicies?: readonly (readonly string[])[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -5123,11 +5046,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5156,7 +5079,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5188,11 +5111,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5221,7 +5144,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5234,7 +5157,7 @@ export interface AgentStateSnapshot {
           readonly dispatchDecision?: /* SubagentDispatchDecision — packages/agent-profiles/src/subagentDispatch.ts */ {
             readonly version: 2 | 1;
             readonly policyMode: 'fixed' | 'strict' | 'advisory' | 'legacy';
-            readonly policySource: 'default' | 'profile' | 'legacy';
+            readonly policySource: 'profile' | 'default' | 'legacy';
             readonly declaration: /* SubagentDeclaration — packages/agent-profiles/src/agentProfile.ts */ {
               readonly kind: 'inherit';
             } | {
@@ -5287,11 +5210,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5320,7 +5243,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5352,11 +5275,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5385,7 +5308,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5396,7 +5319,7 @@ export interface AgentStateSnapshot {
             readonly modelPrompts?: 'replace' | 'preserve';
           };
           readonly boundProfile?: /* BoundProfile — recursive (packages/agent-core-v2/src/agent/profile/boundProfile.ts) */ unknown;
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-core-v2/src/kosong/contract/provider.ts */ boolean | string | number>>;
           readonly environmentDisclosure?: /* EnvironmentDisclosureSnapshot — packages/agent-profiles/src/agentProfile.ts */ {
             readonly cwd: string;
@@ -5460,11 +5383,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5493,7 +5416,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5508,7 +5431,7 @@ export interface AgentStateSnapshot {
           readonly definition?: /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
             readonly recipe?: string;
             readonly autoCompact?: number;
-            readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+            readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
             readonly name: string;
@@ -5523,7 +5446,7 @@ export interface AgentStateSnapshot {
             readonly main?: boolean;
             readonly tools?: readonly string[];
             readonly disallowedTools?: readonly string[];
-            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+            readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
             readonly subagentPolicy?: 'strict' | 'advisory';
             readonly subagentDeclaration?: {
               readonly kind: 'inherit';
@@ -5561,11 +5484,11 @@ export interface AgentStateSnapshot {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly delegationNotice?: 'off' | 'auto';
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
               readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly alias: string;
-                readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+                readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
                 readonly when?: string;
                 readonly thinkingEffort?: string;
                 readonly allowedEfforts?: readonly string[];
@@ -5594,7 +5517,7 @@ export interface AgentStateSnapshot {
                 readonly autoCompact?: number;
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
-                readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+                readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
                 readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
                 readonly allowedModels?: readonly string[];
                 readonly denyModels?: readonly string[];
@@ -5626,11 +5549,11 @@ export interface AgentStateSnapshot {
               readonly promptMode?: 'append' | 'prepend' | 'wrap';
               readonly prompt?: string;
               readonly delegationNotice?: 'off' | 'auto';
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
               readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
                 readonly alias: string;
-                readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+                readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
                 readonly when?: string;
                 readonly thinkingEffort?: string;
                 readonly allowedEfforts?: readonly string[];
@@ -5659,7 +5582,7 @@ export interface AgentStateSnapshot {
                 readonly autoCompact?: number;
                 readonly contextBudget?: number;
                 readonly maxCompletionTokens?: number;
-                readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+                readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
                 readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
                 readonly allowedModels?: readonly string[];
                 readonly denyModels?: readonly string[];
@@ -5693,7 +5616,8 @@ export interface AgentStateSnapshot {
               }>;
             };
             readonly allowKikiSubagents?: boolean;
-            readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+            readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+            readonly injectKikiMcp?: boolean;
             readonly modelAlias?: string;
             readonly restrictModelsToMenu?: boolean;
             readonly thinkingEffort?: string;
@@ -5705,7 +5629,7 @@ export interface AgentStateSnapshot {
             readonly allowedEfforts?: readonly string[];
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5734,7 +5658,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5742,7 +5666,7 @@ export interface AgentStateSnapshot {
               readonly discouragedModels?: readonly string[];
               readonly preferredEfforts?: readonly string[];
             }[];
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
               readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
@@ -5775,7 +5699,7 @@ export interface AgentStateSnapshot {
         readonly sourceDefinitions: Readonly<Record<string, /* AgentFileDefinition — packages/agent-profiles/src/agentFileTypes.ts */ {
           readonly recipe?: string;
           readonly autoCompact?: number;
-          readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+          readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
           readonly contextBudget?: number;
           readonly maxCompletionTokens?: number;
           readonly name: string;
@@ -5790,7 +5714,7 @@ export interface AgentStateSnapshot {
           readonly main?: boolean;
           readonly tools?: readonly string[];
           readonly disallowedTools?: readonly string[];
-          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'task' | 'cron' | 'memory' | 'board' | 'history' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
+          readonly disabledToolGroups?: readonly ('agent' | 'question' | 'message' | 'memory' | 'board' | 'cron' | 'history' | 'task' | 'fsRead' | 'fsWrite' | 'goal' | 'plan' | 'shell' | 'skill' | 'thread' | 'toolSelect' | 'web')[];
           readonly subagentPolicy?: 'strict' | 'advisory';
           readonly subagentDeclaration?: {
             readonly kind: 'inherit';
@@ -5828,11 +5752,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5861,7 +5785,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5893,11 +5817,11 @@ export interface AgentStateSnapshot {
             readonly promptMode?: 'append' | 'prepend' | 'wrap';
             readonly prompt?: string;
             readonly delegationNotice?: 'off' | 'auto';
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority' | null;
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority' | null;
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>> | null;
             readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
               readonly alias: string;
-              readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+              readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
               readonly when?: string;
               readonly thinkingEffort?: string;
               readonly allowedEfforts?: readonly string[];
@@ -5926,7 +5850,7 @@ export interface AgentStateSnapshot {
               readonly autoCompact?: number;
               readonly contextBudget?: number;
               readonly maxCompletionTokens?: number;
-              readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+              readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
               readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
               readonly allowedModels?: readonly string[];
               readonly denyModels?: readonly string[];
@@ -5960,7 +5884,8 @@ export interface AgentStateSnapshot {
             }>;
           };
           readonly allowKikiSubagents?: boolean;
-          readonly kikiContext?: readonly ('cron' | 'memory' | 'board' | 'threads' | 'history' | 'hooks')[];
+          readonly kikiContext?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[];
+          readonly injectKikiMcp?: boolean;
           readonly modelAlias?: string;
           readonly restrictModelsToMenu?: boolean;
           readonly thinkingEffort?: string;
@@ -5972,7 +5897,7 @@ export interface AgentStateSnapshot {
           readonly allowedEfforts?: readonly string[];
           readonly modelProfiles?: readonly /* AgentModelProfile — packages/agent-profiles/src/agentProfile.ts */ {
             readonly alias: string;
-            readonly contextStrategy?: 'summarize' | 'fresh' | 'auto';
+            readonly contextStrategy?: 'auto' | 'summarize' | 'fresh';
             readonly when?: string;
             readonly thinkingEffort?: string;
             readonly allowedEfforts?: readonly string[];
@@ -6001,7 +5926,7 @@ export interface AgentStateSnapshot {
             readonly autoCompact?: number;
             readonly contextBudget?: number;
             readonly maxCompletionTokens?: number;
-            readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+            readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
             readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
             readonly allowedModels?: readonly string[];
             readonly denyModels?: readonly string[];
@@ -6009,7 +5934,7 @@ export interface AgentStateSnapshot {
             readonly discouragedModels?: readonly string[];
             readonly preferredEfforts?: readonly string[];
           }[];
-          readonly serviceTier?: 'default' | 'auto' | 'flex' | 'priority';
+          readonly serviceTier?: 'auto' | 'default' | 'flex' | 'priority';
           readonly requestParams?: Readonly<Record<string, /* RequestParamValue — packages/agent-profiles/src/agentProfile.ts */ boolean | string | number>>;
           readonly promptOverrides?: /* PromptOverrides — packages/agent-profiles/src/promptOverrides.ts */ {
             readonly main?: 'off' | /* PromptOverrideContent — packages/agent-profiles/src/promptOverrides.ts */ {
@@ -6098,17 +6023,17 @@ export interface AgentStateSnapshot {
           disk_error?: string;
           lease_model_prompts?: 'replace' | 'preserve';
           recipe_model_binding?: {
-            revision: string;
             model: Record<string, unknown>;
+            revision: string;
             model_origins: Record<string, {
-              source: string;
               version: string;
+              source: string;
               manifest_id: string;
               file?: string;
             }>;
             installation_id: string;
             references?: readonly {
-              surface: 'model' | 'profile';
+              surface: 'profile' | 'model';
               installation_id: string;
               revision: string;
             }[];
@@ -6143,9 +6068,9 @@ export interface AgentStateSnapshot {
             readonly fields: readonly /* ResolvedPromptFieldOverride — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
               readonly id: string;
               readonly value: string;
-              readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'deferred' | 'effective' | 'shadowed' | 'inactive' | 'unsupported';
+              readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'shadowed' | 'inactive' | 'unsupported';
               readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
-                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'system' | 'global' | 'model' | 'profile' | 'profile-model' | 'caller-lease-model' | 'recipe';
+                readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
                 readonly kind: 'file' | 'inline';
                 readonly path?: string;
                 readonly fileIndex?: number;
@@ -6182,7 +6107,7 @@ export interface AgentStateSnapshot {
               steeringOnTurn?: boolean;
               steeringOnInput?: boolean;
               steeringIntervalSteps?: number;
-              steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+              steeringSources?: Partial<Record<'agent' | 'cron' | 'external' | 'task' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
                 mode: 'off' | 'custom' | 'inherit';
                 custom?: {
                   steering?: string | readonly string[] | {
@@ -6214,6 +6139,15 @@ export interface AgentStateSnapshot {
                           steering?: string;
                         };
                       };
+                      cron?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
                       external?: {
                         mode: 'off' | 'custom' | 'inherit';
                         custom?: {
@@ -6224,15 +6158,6 @@ export interface AgentStateSnapshot {
                         };
                       };
                       task?: {
-                        mode: 'off' | 'custom' | 'inherit';
-                        custom?: {
-                          steering_on_turn?: boolean;
-                          steering_on_input?: boolean;
-                          steering_interval_steps?: number;
-                          steering?: string;
-                        };
-                      };
-                      cron?: {
                         mode: 'off' | 'custom' | 'inherit';
                         custom?: {
                           steering_on_turn?: boolean;
@@ -6312,6 +6237,15 @@ export interface AgentStateSnapshot {
                           steering?: string;
                         };
                       };
+                      cron?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
                       external?: {
                         mode: 'off' | 'custom' | 'inherit';
                         custom?: {
@@ -6322,15 +6256,6 @@ export interface AgentStateSnapshot {
                         };
                       };
                       task?: {
-                        mode: 'off' | 'custom' | 'inherit';
-                        custom?: {
-                          steering_on_turn?: boolean;
-                          steering_on_input?: boolean;
-                          steering_interval_steps?: number;
-                          steering?: string;
-                        };
-                      };
-                      cron?: {
                         mode: 'off' | 'custom' | 'inherit';
                         custom?: {
                           steering_on_turn?: boolean;
@@ -6410,6 +6335,15 @@ export interface AgentStateSnapshot {
                           steering?: string;
                         };
                       };
+                      cron?: {
+                        mode: 'off' | 'custom' | 'inherit';
+                        custom?: {
+                          steering_on_turn?: boolean;
+                          steering_on_input?: boolean;
+                          steering_interval_steps?: number;
+                          steering?: string;
+                        };
+                      };
                       external?: {
                         mode: 'off' | 'custom' | 'inherit';
                         custom?: {
@@ -6420,15 +6354,6 @@ export interface AgentStateSnapshot {
                         };
                       };
                       task?: {
-                        mode: 'off' | 'custom' | 'inherit';
-                        custom?: {
-                          steering_on_turn?: boolean;
-                          steering_on_input?: boolean;
-                          steering_interval_steps?: number;
-                          steering?: string;
-                        };
-                      };
-                      cron?: {
                         mode: 'off' | 'custom' | 'inherit';
                         custom?: {
                           steering_on_turn?: boolean;
@@ -6517,8 +6442,8 @@ export interface AgentStateSnapshot {
                 };
                 model_origins: {
                   [key: string]: {
-                  source: string;
                   version: string;
+                  source: string;
                   manifest_id: string;
                   file?: string;
                 };
@@ -6536,7 +6461,7 @@ export interface AgentStateSnapshot {
                 }[];
                 hooks_fingerprint?: string;
                 layers?: readonly {
-                  surface: 'model' | 'profile';
+                  surface: 'profile' | 'model';
                   installation_id: string;
                   resolved: {
                     revision: string;
@@ -6555,6 +6480,15 @@ export interface AgentStateSnapshot {
                               steering?: string;
                             };
                           };
+                          cron?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
                           external?: {
                             mode: 'off' | 'custom' | 'inherit';
                             custom?: {
@@ -6565,15 +6499,6 @@ export interface AgentStateSnapshot {
                             };
                           };
                           task?: {
-                            mode: 'off' | 'custom' | 'inherit';
-                            custom?: {
-                              steering_on_turn?: boolean;
-                              steering_on_input?: boolean;
-                              steering_interval_steps?: number;
-                              steering?: string;
-                            };
-                          };
-                          cron?: {
                             mode: 'off' | 'custom' | 'inherit';
                             custom?: {
                               steering_on_turn?: boolean;
@@ -6653,6 +6578,15 @@ export interface AgentStateSnapshot {
                               steering?: string;
                             };
                           };
+                          cron?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
                           external?: {
                             mode: 'off' | 'custom' | 'inherit';
                             custom?: {
@@ -6663,15 +6597,6 @@ export interface AgentStateSnapshot {
                             };
                           };
                           task?: {
-                            mode: 'off' | 'custom' | 'inherit';
-                            custom?: {
-                              steering_on_turn?: boolean;
-                              steering_on_input?: boolean;
-                              steering_interval_steps?: number;
-                              steering?: string;
-                            };
-                          };
-                          cron?: {
                             mode: 'off' | 'custom' | 'inherit';
                             custom?: {
                               steering_on_turn?: boolean;
@@ -6751,6 +6676,15 @@ export interface AgentStateSnapshot {
                               steering?: string;
                             };
                           };
+                          cron?: {
+                            mode: 'off' | 'custom' | 'inherit';
+                            custom?: {
+                              steering_on_turn?: boolean;
+                              steering_on_input?: boolean;
+                              steering_interval_steps?: number;
+                              steering?: string;
+                            };
+                          };
                           external?: {
                             mode: 'off' | 'custom' | 'inherit';
                             custom?: {
@@ -6761,15 +6695,6 @@ export interface AgentStateSnapshot {
                             };
                           };
                           task?: {
-                            mode: 'off' | 'custom' | 'inherit';
-                            custom?: {
-                              steering_on_turn?: boolean;
-                              steering_on_input?: boolean;
-                              steering_interval_steps?: number;
-                              steering?: string;
-                            };
-                          };
-                          cron?: {
                             mode: 'off' | 'custom' | 'inherit';
                             custom?: {
                               steering_on_turn?: boolean;
@@ -6858,8 +6783,8 @@ export interface AgentStateSnapshot {
                     };
                     model_origins: {
                       [key: string]: {
-                      source: string;
                       version: string;
+                      source: string;
                       manifest_id: string;
                       file?: string;
                     };
@@ -6882,7 +6807,7 @@ export interface AgentStateSnapshot {
               readonly anchorSystem?: string;
             };
             readonly anchor?: string;
-            readonly steeringSources?: Partial<Record<'agent' | 'external' | 'task' | 'cron' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
+            readonly steeringSources?: Partial<Record<'agent' | 'cron' | 'external' | 'task' | 'skill' | 'thread' | 'room' | 'hook' | 'automation', {
               mode: 'off' | 'custom' | 'inherit';
               custom?: {
                 steering?: string;
@@ -6904,7 +6829,7 @@ export interface AgentStateSnapshot {
     };
     readonly toolAllowPolicies?: readonly (readonly string[])[];
   };
-  // replayable · durable — folds: ToolsSetActiveTools, ToolsResetActiveTools, ProfileBind
+  // replayable · durable — folds: ToolsSetActiveTools, ToolsResetActiveTools, ToolsPolicyRefreshed, ProfileBind
   'profile.activeTools': /* ActiveToolsState — packages/agent-core-v2/src/agent/profile/profileOps.ts */ readonly string[] | undefined;
   // src/agent/profile/profileService.ts
   'profile.activeToolNamesOverlay': readonly string[] | undefined;
@@ -6947,9 +6872,9 @@ export interface AgentStateSnapshot {
     };
   }>;
   // src/agent/prompt/promptOps.ts
-  // replayable · durable — folds: PromptAccepted
+  // replayable · durable — folds: PromptAccepted, ContextUndo
   'promptAdmission': Map<string, true>;
-  // replayable · durable — folds: PromptRetryCommitted
+  // replayable · durable — folds: PromptRetryCommitted, ContextUndo
   'promptRetryReceipt': Map<string, {
     readonly fingerprint: string;
     readonly receipt: {
@@ -6957,11 +6882,423 @@ export interface AgentStateSnapshot {
       createdAt: string;
       appendTiming: 'subagents_done' | 'tasks_done' | 'agent_idle';
       revision: number;
+      userMessageId?: string;
+      message?: /* ContextMessage — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* Message — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+        readonly role: /* Role — packages/agent-core-v2/src/kosong/contract/message.ts */ 'user' | 'assistant' | 'system' | 'tool';
+        readonly name?: string;
+        readonly content: (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'text';
+          text: string;
+          presentation?: unknown;
+          attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly fileId: string;
+            readonly mimeType: string;
+            readonly size: number;
+            readonly name?: string;
+          };
+          resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            readonly uri: string;
+            readonly name?: string;
+            readonly mimeType?: string;
+            readonly size?: number;
+            readonly title?: string;
+            readonly description?: string;
+          };
+        } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'think';
+          think: string;
+          encrypted?: string;
+          redacted?: string;
+          reasoningKey?: string;
+          reasoningDetails?: readonly Record<string, unknown>[];
+          hidden?: boolean;
+        } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'image_url';
+          imageUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+          };
+        } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'audio_url';
+          audioUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+          };
+        } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'video_url';
+          videoUrl: {
+            url: string;
+            id?: string;
+            name?: string;
+            mimeType?: string;
+            size?: number;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+          };
+        })[];
+        readonly toolCalls: /* ToolCall — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+          type: 'function';
+          id: string;
+          name: string;
+          arguments: string | null;
+          extras?: Record<string, unknown>;
+          _streamIndex?: string | number;
+        }[];
+        readonly toolCallId?: string;
+        readonly partial?: boolean;
+        readonly tools?: readonly /* Tool — packages/agent-core-v2/src/kosong/contract/tool.ts */ {
+          name: string;
+          description: string;
+          parameters: Record<string, unknown>;
+          deferred?: true;
+        }[];
+      } & {
+        readonly id?: string;
+        readonly providerMessageId?: string;
+        readonly origin?: /* MergedPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'merged';
+          readonly origins: readonly (/* PromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ /* MergedPromptOrigin — recursive (packages/agent-core-v2/src/agent/contextMemory/types.ts) */ unknown)[];
+        } | /* UnknownPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'unknown';
+        } | /* ExternalThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'external_thread';
+          readonly messageId: string;
+          readonly acceptedAt: number;
+        } | /* UserPromptOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'user';
+          readonly skillActivations?: readonly /* BundledSkillActivation — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+            readonly activationId: string;
+            readonly skillName: string;
+            readonly skillArgs?: string;
+            readonly skillType?: string;
+            readonly skillPath?: string;
+            readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+          }[];
+          readonly originalInput?: readonly (/* ContentPart — packages/agent-core-v2/src/kosong/contract/message.ts */ /* TextPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'text';
+            text: string;
+            presentation?: unknown;
+            attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly fileId: string;
+              readonly mimeType: string;
+              readonly size: number;
+              readonly name?: string;
+            };
+            resourceLink?: /* ResourceLinkMetadata — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+              readonly uri: string;
+              readonly name?: string;
+              readonly mimeType?: string;
+              readonly size?: number;
+              readonly title?: string;
+              readonly description?: string;
+            };
+          } | /* ThinkPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'think';
+            think: string;
+            encrypted?: string;
+            redacted?: string;
+            reasoningKey?: string;
+            reasoningDetails?: readonly Record<string, unknown>[];
+            hidden?: boolean;
+          } | /* ImageURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'image_url';
+            imageUrl: {
+              url: string;
+              id?: string;
+              name?: string;
+              mimeType?: string;
+              size?: number;
+              attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly fileId: string;
+                readonly mimeType: string;
+                readonly size: number;
+                readonly name?: string;
+              };
+            };
+          } | /* AudioURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'audio_url';
+            audioUrl: {
+              url: string;
+              id?: string;
+              name?: string;
+              mimeType?: string;
+              size?: number;
+              attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly fileId: string;
+                readonly mimeType: string;
+                readonly size: number;
+                readonly name?: string;
+              };
+            };
+          } | /* VideoURLPart — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+            type: 'video_url';
+            videoUrl: {
+              url: string;
+              id?: string;
+              name?: string;
+              mimeType?: string;
+              size?: number;
+              attachment?: /* ContentPartAttachment — packages/agent-core-v2/src/kosong/contract/message.ts */ {
+                readonly fileId: string;
+                readonly mimeType: string;
+                readonly size: number;
+                readonly name?: string;
+              };
+            };
+          })[];
+        } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'skill_activation';
+          readonly activationId: string;
+          readonly skillName: string;
+          readonly skillArgs?: string;
+          readonly trigger: 'user-slash' | 'model-tool' | 'nested-skill';
+          readonly userInput?: string;
+          readonly skillType?: string;
+          readonly skillPath?: string;
+          readonly skillSource?: 'project' | 'user' | 'extra' | 'builtin';
+        } | /* PluginCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'plugin_command';
+          readonly activationId: string;
+          readonly pluginId: string;
+          readonly commandName: string;
+          readonly commandArgs?: string;
+          readonly trigger: 'user-slash';
+        } | /* InjectionOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'injection';
+          readonly variant: string;
+          readonly ownerPromptId?: string;
+          readonly disclosure?: unknown;
+        } | /* ShellCommandOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'shell_command';
+          readonly phase: 'output' | 'input';
+          readonly isError?: boolean;
+        } | /* CompactionSummaryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'compaction_summary';
+        } | /* SystemTriggerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'system_trigger';
+          readonly name: string;
+        } | /* ExternalClientOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'external_client';
+          readonly connectionId: string;
+          readonly clientName: string;
+          readonly sessionRef: string;
+          readonly driver: 'external';
+        } | /* ExternalRecordOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'external_record';
+          readonly recordId: string;
+          readonly recordKind: 'note' | 'user_excerpt' | 'assistant_excerpt' | 'handoff';
+          readonly title?: string;
+          readonly connectionId: string;
+          readonly clientName: string;
+          readonly sessionRef: string;
+          readonly driver: 'external';
+        } | /* TaskOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'task';
+          readonly taskId: string;
+          readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
+          readonly notificationId: string;
+        } | /* CronJobOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'cron_job';
+          readonly deliveryMode?: 'queue' | 'steer' | 'idle';
+          readonly jobId: string;
+          readonly cron: string;
+          readonly recurring: boolean;
+          readonly coalescedCount: number;
+          readonly stale: boolean;
+        } | /* CronMissedOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'cron_missed';
+          readonly count: number;
+        } | /* HookResultOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'hook_result';
+          readonly event: string;
+          readonly blocked?: boolean;
+        } | /* RetryOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'retry';
+          readonly trigger?: string;
+        } | /* PeerThreadOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'peer_thread';
+          readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+            readonly hostId: string;
+            readonly workspaceId: string;
+            readonly sessionId: string;
+            readonly personaId?: string;
+            readonly name?: string;
+            readonly bridgeId?: string;
+            readonly connectionId?: string;
+          };
+          readonly messageId: string;
+          readonly acceptedAt: number;
+        } | /* BridgedPeerOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'bridged_peer';
+          readonly messageId: string;
+          readonly acceptedAt: number;
+          readonly source: /* ThreadRef — packages/agent-core-v2/src/app/threadCommunication/threadCommunication.ts */ {
+            readonly hostId: string;
+            readonly workspaceId: string;
+            readonly sessionId: string;
+            readonly personaId?: string;
+            readonly name?: string;
+            readonly bridgeId?: string;
+            readonly connectionId?: string;
+          };
+          readonly sourceHomeId: string;
+          readonly targetHomeId: string;
+          readonly bridgeId: string;
+          readonly revision: number;
+          readonly location: 'local' | 'network';
+          readonly createdAt: number;
+          readonly expiresAt: number;
+          readonly sourceSeq: number;
+          readonly causeId: string;
+          readonly hop: number;
+        } | /* AgentMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'agent_message';
+          readonly messageId: string;
+          readonly senderAgentId: string;
+          readonly senderTaskName: string;
+        } | /* PersonaGreetingOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'persona_greeting';
+          readonly personaId: string;
+        } | /* RoomMessageOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly kind: 'room_message';
+          readonly roomId: string;
+          readonly messageId: string;
+          readonly targeted: boolean;
+          readonly generation?: number;
+        };
+        readonly isError?: boolean;
+        readonly note?: string;
+        readonly fileRead?: /* FileReadDisclosure — packages/agent-core-v2/src/tool/toolContract.ts */ {
+          readonly file: /* InstructionFile — packages/agent-core-v2/src/tool/toolContract.ts */ {
+            readonly path: string;
+            readonly version: string;
+            readonly scope: string;
+            readonly runtimeId: string;
+          };
+          readonly startLine: number;
+          readonly endLine: number;
+          readonly totalLines?: number;
+          readonly truncated: boolean;
+        };
+        readonly memoryReceipt?: /* MemoryWriteReceipt — packages/agent-core-v2/src/tool/toolContract.ts */ {
+          readonly action: 'create' | 'update' | 'supersede' | 'archive';
+          readonly id: string;
+          readonly revision: string;
+          readonly status: string;
+          readonly operationId?: string;
+          readonly outcome?: 'applied' | 'pending' | 'unchanged';
+          readonly ownerScope?: {
+            readonly kind: 'global';
+          } | {
+            readonly kind: 'workspace';
+            readonly workspaceId: string;
+          } | {
+            readonly kind: 'persona';
+            readonly personaId: string;
+          } | {
+            readonly kind: 'persona_workspace';
+            readonly workspaceId: string;
+            readonly personaId: string;
+          };
+          readonly target?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+            readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+            readonly id: string;
+            readonly expected_revision: string;
+          };
+          readonly proposedTarget?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+            readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+            readonly id: string;
+            readonly expected_revision: string;
+          };
+        };
+        readonly source?: /* ContextMessageSource — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly ref?: string;
+          readonly turnId?: number;
+          readonly stepId?: string;
+          readonly step?: number;
+          readonly frameId?: string;
+          readonly toolCallId?: string;
+        };
+        readonly toolCallSources?: Readonly<Record<string, /* ContextMessageSource — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
+          readonly ref?: string;
+          readonly turnId?: number;
+          readonly stepId?: string;
+          readonly step?: number;
+          readonly frameId?: string;
+          readonly toolCallId?: string;
+        }>>;
+      };
+      execution?: /* PromptExecutionBinding — packages/agent-core-v2/src/agent/prompt/prompt.ts */ {
+        readonly execution?: {
+          executor: string;
+          profile?: string;
+          profile_file?: string;
+          overrides?: {
+            model?: string | null;
+            thinking?: string | null;
+            native_agent?: string | null;
+            permission_mode?: 'manual' | 'auto' | 'review' | 'yolo' | null;
+            kiki_context?: readonly ('memory' | 'board' | 'cron' | 'threads' | 'history' | 'hooks')[] | null;
+            allow_kiki_subagents?: boolean | null;
+            inject_kiki_mcp?: boolean | null;
+          };
+        };
+        readonly afterModelSwitch?: string;
+        readonly modelSwitchMode?: 'direct' | 'compact' | 'fresh';
+        readonly personaGreetingReply?: boolean;
+        readonly profile?: string;
+        readonly model?: string;
+        readonly thinking?: string | null;
+        readonly permissionMode?: 'manual' | 'auto' | 'review' | 'yolo';
+        readonly planGate?: 'free' | 'gated';
+        readonly planMode?: boolean;
+        readonly goalObjective?: string;
+        readonly goalFollowUpTiming?: 'subagents_done' | 'tasks_done';
+        readonly goalInitialStatus?: 'active' | 'paused';
+        readonly goalControl?: 'resume' | 'pause' | 'cancel';
+      };
+      deferredDisabledTools?: string[];
+      contentRanges?: {
+        index: number;
+        start: number;
+        end: number;
+      }[];
     };
   }>;
   // src/agent/prompt/promptService.ts
-  // replayable · durable — folds: PromptEnqueued, PromptLaunchCommitted, TurnPrompt, TurnSteer, PromptOutcomeCommitted
-  'prompt.identity': Map<string, /* PromptLookup — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
+  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, PromptLaunchCommitted, TurnPrompt, TurnSteer, PromptSteered, PromptOutcomeCommitted
+  'prompt.identity': Map<string, /* PromptIdentity — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
+    readonly fingerprint: string;
+    readonly currentRequest?: /* PromptRequestFingerprint — packages/agent-core-v2/src/agent/prompt/promptReplay.ts */ {
+      readonly message: string;
+      readonly execution: string;
+      readonly appendTiming: string;
+      readonly alreadyMaterialized: string;
+      readonly deferredDisabledTools: string;
+      readonly userMessageId?: string;
+    };
     readonly promptId: string;
     readonly phase: 'pending' | 'terminal' | 'launched';
     readonly turnId?: number;
@@ -6977,7 +7314,7 @@ export interface AgentStateSnapshot {
         readonly type: 'failed';
         readonly steps: number;
         readonly error: /* ErrorPayload — packages/agent-core-v2/src/_base/errors/serialize.ts */ {
-          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
+          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
           readonly message: string;
           readonly name?: string;
           readonly details?: Readonly<Record<string, unknown>>;
@@ -6988,7 +7325,7 @@ export interface AgentStateSnapshot {
         readonly type: 'cancelled';
         readonly steps: number;
         readonly reason: /* ErrorPayload — packages/agent-core-v2/src/_base/errors/serialize.ts */ {
-          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
+          readonly code: /* ErrorCode — packages/agent-core-v2/src/errors.ts */ 'request.limit_rejected' | 'request.queue_timeout' | 'request.queue_full' | 'request.agent_ancestor_limit' | 'internal' | 'not_implemented' | 'validation.failed' | 'dispatch.limit_exceeded' | 'agent.not_found' | 'agent.removed' | 'agent.already_exists' | 'agent.already_running' | 'agent.not_a_subagent' | 'agent.not_owned' | 'agent.type_not_allowed' | 'agent.max_tokens_exceeded' | 'auth.login_required' | 'auth.provisioning_required' | 'auth.token_missing' | 'auth.token_unauthorized' | 'auth.model_not_resolved' | 'task.task_id_empty' | 'task.empty_agent_receipt' | 'task.limit_exceeded' | 'thread.not_found' | 'thread.archived' | 'thread.disabled' | 'thread.cross_host' | 'thread.self_send' | 'thread.cursor_invalid' | 'thread.idempotency_conflict' | 'thread.limit_exceeded' | 'thread.delivery_failed' | 'mailbox.legacy_writer_active' | 'provider.api_error' | 'provider.filtered' | 'provider.rate_limit' | 'provider.auth_error' | 'provider.connection_error' | 'provider.overloaded' | 'context.overflow' | 'config.invalid' | 'config.persist_blocked' | 'browser.invalid' | 'browser.not_found' | 'browser.disabled' | 'browser.disconnected' | 'browser.execution_failed' | 'browser.busy' | 'browser.version' | 'browser.target' | 'browser.requires_action' | 'browser.unsupported' | 'capability.not_found' | 'capability.unsupported' | 'capability.install_in_progress' | 'cron.expression_invalid' | 'debug.scope_not_found' | 'debug.token_not_found' | 'executor.busy' | 'executor.cancelled' | 'executor.closed' | 'executor.disconnected' | 'executor.invalid_session_ref' | 'executor.protocol_error' | 'executor.session_open_failed' | 'executor.session_failed' | 'executor.authentication_required' | 'executor.spawn_failed' | 'executor.startup_timeout' | 'file.not_found' | 'fs.path_not_found' | 'fs.permission_denied' | 'fs.path_escapes' | 'fs.is_directory' | 'fs.is_binary' | 'fs.too_large' | 'fs.already_exists' | 'fs.too_many_results' | 'fs.grep_timeout' | 'fs.git_unavailable' | 'compaction.failed' | 'compaction.unable' | 'goal.already_exists' | 'goal.not_found' | 'goal.objective_empty' | 'goal.objective_too_long' | 'goal.status_invalid' | 'goal.metadata_reserved' | 'goal.not_resumable' | 'goal.unsupported_agent' | 'loop.max_steps_exceeded' | 'loop.empty_completion' | 'turn.agent_busy' | 'mcp.server_not_found' | 'mcp.server_disabled' | 'mcp.startup_failed' | 'mcp.tool_name_collision' | 'mcp.oauth_failed' | 'mcp.computer_busy' | 'mcp.computer_outcome_unknown' | 'mcp.computer_stop_unconfirmed' | 'provider.not_found' | 'provider.already_exists' | 'model.not_found' | 'model.already_exists' | 'model_catalog.revision_conflict' | 'request_identity.unsupported' | 'request_identity.conflict' | 'request_identity.invalid' | 'request_identity.not_found' | 'request_identity.update_failed' | 'os.fs.not_found' | 'os.fs.is_directory' | 'os.fs.not_directory' | 'os.fs.already_exists' | 'os.fs.permission_denied' | 'os.fs.not_empty' | 'os.fs.unavailable' | 'os.fs.unknown' | 'os.process.spawn_failed' | 'os.process.kill_failed' | 'shell.git_bash_not_found' | 'plugin.not_found' | 'plugin.load_failed' | 'plugin.read_only' | 'model.not_configured' | 'model.config_invalid' | 'profile.constraint_violation' | 'profile.thinking_alias_conflict' | 'profile.unknown' | 'persona.unknown' | 'profile.already_bound' | 'profile.not_bound' | 'profile.cognition_file_missing' | 'profile.cognition_path_invalid' | 'profile.tool_pattern_inactive' | 'request.invalid' | 'request.work_dir_required' | 'request.prompt_input_empty' | 'prompt.id_conflict' | 'prompt.not_found' | 'prompt.already_completed' | 'session.busy' | 'modelsDev.catalog_unavailable' | 'modelsDev.catalog_entry_not_found' | 'modelsDev.import_invalid' | 'modelsDev.registry_import_invalid' | 'provider.oauth_managed' | 'session.export_not_found' | 'session.export_missing_version' | 'session.export_output_conflict' | 'session.export_too_large' | 'session.index_building' | 'session.not_found' | 'session.already_exists' | 'session.id_invalid' | 'session.closed' | 'session.fork_active_turn' | 'session.fork_external_delegation' | 'session.undo_unavailable' | 'session.cursor_mismatch' | 'message.action_unavailable' | 'session.init_failed' | 'session.plan_mode_invalid' | 'session.title_generation_failed' | 'skill.not_found' | 'skill.type_unsupported' | 'skill.name_empty' | 'skill.parse_failed' | 'skill.nested_too_deep' | 'storage.not_found' | 'storage.decode_failed' | 'storage.corrupted' | 'storage.io_failed' | 'storage.locked' | 'storage.permission_denied' | 'storage.disk_full' | 'terminal.not_found' | 'usage.turn_id_conflict' | 'wire.unknown_record' | 'wire.migration_missing' | 'records.write_failed' | 'workspace.not_found' | 'agent_profile_route.feature_disabled' | 'agent_profile_route.invalid_id' | 'agent_profile_route.unknown' | 'agent_profile_route.base_mismatch' | 'agent_profile_route.base_missing' | 'agent_profile_route.binding_conflict' | 'agent_profile_route.model_alias_missing' | 'agent_profile_route.switch_forbidden' | 'agent_profile_route.invalid_sidecar' | 'agent_profile_route.duplicate' | 'agent_profile_source.unavailable' | 'agent_profile_write.not_found' | 'agent_profile_write.read_only' | 'agent_profile_write.already_exists' | 'event.duplicate_event' | 'event.schema_missing' | 'state.duplicate_fold' | 'state.durability_mismatch' | 'state.cycle';
           readonly message: string;
           readonly name?: string;
           readonly details?: Readonly<Record<string, unknown>>;
@@ -6997,11 +7334,9 @@ export interface AgentStateSnapshot {
         };
       };
     };
-  } & {
-    readonly fingerprint: string;
   }>;
   'prompt.launching': boolean;
-  // replayable · durable — folds: PromptEnqueued, PromptReplaced, PromptTimingChanged, ModelSwitchQueued, ModelSwitchQueueStatus, PromptMoved, PromptOutcomeCommitted, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
+  // replayable · durable — folds: PromptEnqueued, ContextUndo, PromptReplaced, PromptTimingChanged, ModelSwitchQueued, ModelSwitchQueueStatus, PromptMoved, PromptOutcomeCommitted, PromptLaunchCommitted, PromptAborted, PromptCompleted, PromptSteered
   'prompt.queue': /* PersistedPromptQueueState — packages/agent-core-v2/src/agent/prompt/promptService.ts */ {
     readonly entries: Map<string, unknown>;
     readonly order: string[];
@@ -7410,6 +7745,7 @@ export interface AgentStateSnapshot {
     readonly prompt: string;
     readonly createdAt: number;
     readonly recurring?: boolean;
+    readonly deliveryMode?: 'queue' | 'steer' | 'idle';
     readonly paused?: boolean;
     readonly lastFiredAt?: number;
     readonly tags?: Readonly<Record<string, string>>;
@@ -7451,16 +7787,60 @@ export interface AgentStateSnapshot {
       readonly periodicEpoch?: number;
       readonly inputIds: readonly string[];
       readonly renewalEpoch?: number;
-      readonly receipts: readonly {
-        readonly source: string;
+      readonly receipts: readonly (/* MemoryWriteReceipt — packages/agent-core-v2/src/tool/toolContract.ts */ {
+        readonly action: 'create' | 'update' | 'supersede' | 'archive';
         readonly id: string;
         readonly revision: string;
         readonly status: string;
         readonly operationId?: string;
-        readonly action: string;
+        readonly outcome?: 'applied' | 'pending' | 'unchanged';
+        readonly ownerScope?: {
+          readonly kind: 'global';
+        } | {
+          readonly kind: 'workspace';
+          readonly workspaceId: string;
+        } | {
+          readonly kind: 'persona';
+          readonly personaId: string;
+        } | {
+          readonly kind: 'persona_workspace';
+          readonly workspaceId: string;
+          readonly personaId: string;
+        };
+        readonly target?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+          readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+          readonly id: string;
+          readonly expected_revision: string;
+        };
+        readonly proposedTarget?: /* MemoryTarget — packages/agent-core-v2/src/app/memory/memoryStore.ts */ {
+          readonly scope: 'global' | 'workspace' | 'persona' | 'persona_workspace';
+          readonly id: string;
+          readonly expected_revision: string;
+        };
+      } & {
+        readonly source: string;
+      })[];
+      readonly calls: Readonly<Record<string, string | /* MemoryWriteAttempt — packages/agent-core-v2/src/session/todo/memoryCadence.ts */ {
+        readonly source: string;
+        readonly target: string;
+        readonly handedOff?: boolean;
+      }>>;
+      readonly failures?: readonly /* MemoryWriteFailure — packages/agent-core-v2/src/session/todo/memoryCadence.ts */ {
+        readonly callId: string;
+        readonly code: string;
+        readonly source: string;
+        readonly target: string;
+        readonly handedOff?: boolean;
       }[];
-      readonly calls: Readonly<Record<string, string>>;
     };
+    readonly materialWorkStepOrdinal?: number;
+    readonly materialWorkTokens?: number;
+    readonly materialStepTokens?: number;
+    readonly materialSubstantial?: boolean;
+    readonly materialSuccessfulWork?: boolean;
+    readonly memoryToolCalls?: readonly string[];
+    readonly materialToolCalled?: boolean;
+    readonly materialStepIds?: readonly string[];
     readonly successfulWork?: boolean;
     readonly notesRenewalEpoch?: number;
     readonly notesRebuildEpoch?: number;

@@ -2,6 +2,7 @@ import {
   DEFAULT_AGENT_PROFILE_NAME,
   ErrorCodes,
   Error2,
+  IAgentExecutionService,
   IAgentGoalService,
   IAgentLifecycleService,
   IAgentPermissionModeService,
@@ -26,23 +27,39 @@ export async function applySessionAgentConfig(
   const agent = await ensureMainAgent(session);
 
   const profile = agent.accessor.get(IAgentProfileService);
-  let thinkingConsumed = false;
+  const execution = agentConfig.execution ?? ((agentConfig.model !== undefined || agentConfig.thinking !== undefined || agentConfig.permission_mode !== undefined) && agentConfig.profile === undefined
+    ? profile.data().execution?.selection : undefined);
+  let selectionConsumed = false;
+  if (execution !== undefined) {
+    if (agent.accessor.get(IAgentExecutionService).status().state !== 'idle') {
+      throw new Error2(ErrorCodes.REQUEST_INVALID, 'Executor selection requires an idle agent; submit it with the next user message instead');
+    }
+    await profile.bind({ execution: { ...execution, overrides: { ...execution.overrides,
+      permission_mode: agentConfig.permission_mode ?? execution.overrides?.permission_mode,
+    } }, model: agentConfig.model || undefined, thinking: agentConfig.thinking });
+    const permission = profile.data().execution?.effective.permission_mode;
+    if (permission !== undefined) agent.accessor.get(IAgentPermissionModeService).setMode(permission);
+    selectionConsumed = true;
+  }
+  let thinkingConsumed = selectionConsumed;
   const currentProfile = profile.data().profileName ?? DEFAULT_AGENT_PROFILE_NAME;
-  if (agentConfig.profile !== undefined && currentProfile !== agentConfig.profile) {
+  if (!selectionConsumed && agentConfig.profile !== undefined && currentProfile !== agentConfig.profile) {
     try {
       const current = profile.data();
       const requestedModel = agentConfig.model === '' ? undefined : agentConfig.model;
+      const { thinking: previousPersonaThinking, ...personaRest } = current.personaOverrides ?? {};
       await profile.bind({
         personaSnapshot: current.persona,
         personaOverrides: current.personaId === undefined ? undefined : {
-          ...current.personaOverrides, profile: agentConfig.profile,
+          ...personaRest, profile: agentConfig.profile,
           model: agentConfig.model === undefined || agentConfig.model === '' ? current.personaOverrides?.model : agentConfig.model,
-          thinking: agentConfig.thinking ?? current.personaOverrides?.thinking,
+          ...(agentConfig.thinking === null ? {}
+            : { thinking: agentConfig.thinking ?? previousPersonaThinking }),
         },
         profile: agentConfig.profile,
         model: requestedModel ?? (current.modelAlias === '' ? undefined : current.modelAlias),
-        thinking: agentConfig.thinking ?? current.thinkingLevel,
-        strictThinking: agentConfig.thinking !== undefined,
+        thinking: agentConfig.thinking === undefined ? current.thinkingLevel : agentConfig.thinking,
+        strictThinking: typeof agentConfig.thinking === 'string',
       });
       thinkingConsumed = agentConfig.thinking !== undefined;
     } catch (error) {
@@ -55,10 +72,30 @@ export async function applySessionAgentConfig(
   if (agentConfig.profile !== undefined && currentProfile === agentConfig.profile && profile.data().personaId !== undefined) {
     profile.update({ personaOverrides: { ...profile.data().personaOverrides, profile: agentConfig.profile } });
   }
-  if (agentConfig.model !== undefined && agentConfig.model !== '') {
+  if (!selectionConsumed && agentConfig.model !== undefined && agentConfig.model !== '') {
     await profile.setModel(agentConfig.model);
   }
-  if (agentConfig.thinking !== undefined && !thinkingConsumed) {
+  if (agentConfig.thinking === null && !thinkingConsumed) {
+    const bound = profile.data();
+    const sameProfile = agentConfig.profile === undefined || agentConfig.profile === (bound.profileName ?? DEFAULT_AGENT_PROFILE_NAME);
+    if (bound.execution !== undefined && sameProfile) {
+      if (agent.accessor.get(IAgentExecutionService).status().state !== 'idle') {
+        throw new Error2(ErrorCodes.REQUEST_INVALID, 'Executor selection requires an idle agent; submit it with the next user message instead');
+      }
+      await profile.bind({
+        execution: {
+          ...bound.execution.selection,
+          overrides: { ...bound.execution.selection.overrides, thinking: null },
+        },
+        model: agentConfig.model || undefined,
+        thinking: null,
+      });
+      const permission = profile.data().execution?.effective.permission_mode;
+      if (permission !== undefined) agent.accessor.get(IAgentPermissionModeService).setMode(permission);
+    } else {
+      profile.restoreDefaultThinking();
+    }
+  } else if (typeof agentConfig.thinking === 'string' && !thinkingConsumed) {
     profile.setThinking(agentConfig.thinking);
   }
   await applyAgentRuntimeControls(agent, agentConfig);

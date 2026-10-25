@@ -69,52 +69,52 @@ describe('version comparison', () => {
 });
 
 describe('skipping a version', () => {
-  it('silences only the version it names, on the channel it was offered on', () => {
-    skipUpdateVersion('0.3.2', 'stable');
+  it('silences only the version it names, on the channel it was offered on', async () => {
+    await skipUpdateVersion('0.3.2', 'stable');
     expect(mayOfferUpdate('0.3.2', 'stable', 0)).toBe(false);
     // A higher version is news again, and the other channel was never skipped.
     expect(mayOfferUpdate('0.3.3', 'stable', 0)).toBe(true);
     expect(mayOfferUpdate('0.3.2', 'beta', 0)).toBe(true);
   });
 
-  it('keeps only skipped versions below the new one', () => {
-    skipUpdateVersion('0.3.2', 'stable');
-    skipUpdateVersion('0.4.0', 'stable');
+  it('keeps only skipped versions below the new one', async () => {
+    await skipUpdateVersion('0.3.2', 'stable');
+    await skipUpdateVersion('0.4.0', 'stable');
     expect(mayOfferUpdate('0.3.2', 'stable', 0)).toBe(false);
     expect(mayOfferUpdate('0.4.0', 'stable', 0)).toBe(false);
     expect(mayOfferUpdate('0.3.9', 'stable', 0)).toBe(true);
   });
 
-  it('survives a reload of the stored record', () => {
-    skipUpdateVersion('0.3.2', 'stable');
+  it('survives a reload of the stored record', async () => {
+    await skipUpdateVersion('0.3.2', 'stable');
     expect(readDesktopPrefs().updateState?.skipped).toEqual({ stable: ['0.3.2'] });
   });
 });
 
 describe('snoozing a version', () => {
-  it('holds a known update quiet for a day and then lets it speak again', () => {
-    snoozeUpdateUntil(1_000);
+  it('holds a known update quiet for a day and then lets it speak again', async () => {
+    await snoozeUpdateUntil(1_000);
     expect(mayOfferUpdate('0.3.2', 'stable', 1_000 + UPDATE_SNOOZE_MS - 1)).toBe(false);
     expect(mayOfferUpdate('0.3.2', 'stable', 1_000 + UPDATE_SNOOZE_MS)).toBe(true);
   });
 
-  it('does not undo a skip when it snoozes', () => {
-    skipUpdateVersion('0.3.2', 'stable');
-    snoozeUpdateUntil(0);
+  it('does not undo a skip when it snoozes', async () => {
+    await skipUpdateVersion('0.3.2', 'stable');
+    await snoozeUpdateUntil(0);
     expect(mayOfferUpdate('0.3.2', 'stable', UPDATE_SNOOZE_MS + 1)).toBe(false);
   });
 });
 
 describe('check cadence', () => {
-  it('is due on a fresh install and not again inside the interval', () => {
+  it('is due on a fresh install and not again inside the interval', async () => {
     expect(updateCheckDue(10_000)).toBe(true);
-    markUpdateChecked(10_000);
+    await markUpdateChecked(10_000);
     expect(updateCheckDue(10_000 + UPDATE_CHECK_INTERVAL_MS - 1)).toBe(false);
     expect(updateCheckDue(10_000 + UPDATE_CHECK_INTERVAL_MS)).toBe(true);
   });
 
-  it('records a check even when nothing was found', () => {
-    markUpdateChecked(5_000);
+  it('records a check even when nothing was found', async () => {
+    await markUpdateChecked(5_000);
     expect(readDesktopPrefs().updateState?.lastCheckedAt).toBe(5_000);
   });
 });
@@ -175,8 +175,8 @@ describe('single-flight check', () => {
 
 describe('manual check', () => {
   it('ignores a skip and a snooze, and still advances the cadence', async () => {
-    skipUpdateVersion('0.3.2', 'stable');
-    snoozeUpdateUntil(0);
+    await skipUpdateVersion('0.3.2', 'stable');
+    await snoozeUpdateUntil(0);
     const host = {
       supportsDesktopUpdates: vi.fn(async () => true),
       checkDesktopUpdate: vi.fn(async () => createUpdate('0.3.2')),

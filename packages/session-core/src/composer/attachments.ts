@@ -48,7 +48,9 @@ export interface ImageAttachment {
 export interface RetainedAttachment {
   kind: 'retained';
   name: string;
-  content: Extract<MessageContent, { type: 'image' | 'video' | 'file' }>;
+  content: Extract<MessageContent, { type: 'image' | 'video' | 'audio' | 'file' }>;
+  /** In-memory preview of the original; submissions retain the canonical content. */
+  previewUrl?: string;
 }
 
 export interface SshHostAttachment {
@@ -62,7 +64,7 @@ export type ComposerAttachment = FileMention | ImageAttachment | UploadAttachmen
 /** Preserve existing media parts verbatim when opening a message for editing. */
 export function retainedAttachmentsFromContent(content: readonly MessageContent[]): RetainedAttachment[] {
   return content.flatMap((part): RetainedAttachment[] => {
-    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'file') return [];
+    if (part.type !== 'image' && part.type !== 'video' && part.type !== 'audio' && part.type !== 'file') return [];
     return [{ kind: 'retained', name: part.name ?? (part.type === 'file' ? part.file_id : part.type), content: part }];
   });
 }

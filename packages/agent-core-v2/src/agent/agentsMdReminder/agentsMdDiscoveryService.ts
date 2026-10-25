@@ -1,6 +1,8 @@
 import { dirname, join, normalize } from 'pathe';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
@@ -216,7 +218,8 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
         () => true,
         () => {
           if (cache.watchers.get(watchKey) === entry) cache.watchers.delete(watchKey);
-          resources.dispose();
+          const cleanup = resources.dispose();
+          if (isPromiseLike(cleanup)) cleanup.catch(onUnexpectedError);
           return false;
         },
       );
@@ -225,7 +228,7 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       this.trimWatchers(cache);
       await ready;
     } catch {
-      resources.dispose();
+      await resources.dispose();
     }
   }
 
@@ -234,7 +237,8 @@ export class AgentsMdDiscoveryService implements IAgentsMdDiscoveryService {
       const oldest = cache.watchers.entries().next();
       if (oldest.done === true) return;
       cache.watchers.delete(oldest.value[0]);
-      oldest.value[1].resources.dispose();
+      const cleanup = oldest.value[1].resources.dispose();
+      if (isPromiseLike(cleanup)) cleanup.catch(onUnexpectedError);
     }
   }
 

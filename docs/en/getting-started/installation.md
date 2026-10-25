@@ -23,6 +23,8 @@ The desktop app bundles the Kiki server and CLI/TUI. On Windows and with the Lin
 
 macOS needs **13.5 or later**; that floor comes from the bundled runtime, so it applies however you install. Intel and Apple Silicon are separate downloads — pick the one matching your Mac. Linux desktop bundles are x64 only (deb or AppImage); the Linux CLI/TUI additionally builds for arm64.
 
+On Windows, Kiki's Bash tools need [Git for Windows](https://gitforwindows.org/) and .NET Framework 4.x, which is included with Windows 10 and 11. Enable or repair .NET Framework if it is missing or disabled. The process helper ships with Kiki; the computer running Kiki needs no compiler.
+
 1. Open the [Kiki Releases page](https://github.com/X-T-E-R/kiki/releases) and select the required stable or beta `kiki-v<version>` tag.
 2. Download the desktop bundle for your system and its adjacent `.sha256` file. Compare the published hash with your downloaded file (`shasum -a 256 <file>` on macOS, `sha256sum <file>` on Linux, or `Get-FileHash <file> -Algorithm SHA256` in Windows PowerShell).
 3. Install it: run the Windows installer or `sudo apt install ./Kiki_*.deb`; on Linux AppImage, run `chmod +x Kiki_*.AppImage` then `./Kiki_*.AppImage`; on macOS, mount the dmg and drag Kiki to Applications.
@@ -49,7 +51,7 @@ For a terminal-only install, pick the standalone executable for your platform fr
 
 Download the file together with its `<filename>.sha256` companion, compare the two hashes, rename the executable to `kiki`, run `chmod +x kiki`, and put it somewhere on your `PATH`. A standalone executable needs no Node.js. Once the desktop app is installed, `kiki desktop` opens it; without an installation it prints a download link.
 
-With Node.js 24.15.0 or later you can install from npm instead:
+With Node.js 24.22.1 or later, or Node.js 26.12.1 or later, you can install from npm instead:
 
 ```sh
 npm install -g kiki-agent       # CLI/TUI and the matching desktop build
@@ -59,11 +61,11 @@ kiki --version
 
 Install one of the two, not both — each one provides the same `kiki` command. `kiki-agent` also downloads the desktop build for your platform and verifies its SHA-256, so it needs network access during install and covers Windows and Linux x64 plus macOS Intel and Apple Silicon. `kiki-agent-lite` ships the CLI only.
 
-On Windows, both packages need [Git for Windows](https://gitforwindows.org/) for their shell dependency — install it before your first run. If you installed Git Bash somewhere other than the default location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
+Both npm packages use the [Windows Bash requirements above](#install-the-desktop-app). If you installed Git Bash somewhere other than the default location, set `KIKI_SHELL_PATH` to the absolute path of `bash.exe`.
 
 ### Development from source
 
-Working on the CLI itself needs Node.js `24.15.0` or later and pnpm `10.33.0`. The repository is a pnpm (Node.js package manager) workspace; from its root:
+Working on the CLI itself needs Node.js `24.22.1` or later on the 24 line, or Node.js `26.12.1` or later, and pnpm `10.33.0`. Node.js 25 and Node.js 26 releases before `26.12.1` are not supported. The repository is a pnpm (Node.js package manager) workspace; from its root:
 
 ```sh
 node --version

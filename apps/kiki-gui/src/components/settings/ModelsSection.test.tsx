@@ -16,11 +16,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, assert, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { patchModelRequestSchema, type GetModelResponse, type ModelCatalogItem, type ProviderCatalogItem } from '@kiki/protocol';
-import type { ServerConnection } from '@kiki/session-core/settings';
+import { readSettings, writeSettings, type ServerConnection } from '@kiki/session-core/settings';
 
 import { translate } from '@kiki/session-core/i18n';
 import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext } from '../dirtyGuard';
+import { DefaultModelBar } from './DefaultModelBar';
 import { CatalogRefreshCard, GlobalDefaultsCard, ModelCatalogCard, ThinkingCard } from './ModelsSection';
 import { ModelSwitchCard } from './ModelSwitchCard';
 import { optionLabels, pickValue } from './testControls';
@@ -145,6 +146,7 @@ async function renderCard(reportDirty = (_id: string, _dirty: boolean) => {}): P
         <QueryClientProvider client={client}>
           <I18nProvider>
             <DirtyGuardContext.Provider value={{ dirty: false, reportDirty, navigate: () => {} }}>
+              <DefaultModelBar tab="models" />
               <ModelCatalogCard />
               <CatalogRefreshCard />
             </DirtyGuardContext.Provider>
@@ -312,7 +314,7 @@ describe('ModelCatalogCard row editor', () => {
   });
 
   it('names the resolved provider format on the inherit option without writing it', async () => {
-    getModel.mockResolvedValue({ ...ENTITY, effective_protocol: 'openai' });
+    getModel.mockResolvedValue({ ...ENTITY, effective_protocol: 'openai', protocol_source: 'provider' });
     const container = await renderCard();
     await act(async () => {
       container.querySelector<HTMLButtonElement>(
@@ -325,6 +327,7 @@ describe('ModelCatalogCard row editor', () => {
     const field = container.querySelector<HTMLElement>('[data-model-protocol-field]')!;
     expect(field.dataset['modelProtocolField']).toBe('inherit');
     expect((await optionLabels(field))[0]).toBe('Provider default · Chat Completions');
+    expect(field.querySelector('[data-effective-protocol]')?.textContent).toBe('Effective format: Chat Completions · provider type');
 
     const nameInput = container.querySelector<HTMLInputElement>(
       'input[aria-label="Display name for kimi-code/kimi-k2"]',
@@ -339,6 +342,38 @@ describe('ModelCatalogCard row editor', () => {
     expect(updateModel).toHaveBeenCalledWith('kimi-code/kimi-k2', {
       display_name: 'K2 Thinking', base_revision: 'rev-7',
     });
+  });
+
+  it('shows format, endpoint, and credential sources and the ignored override fields', async () => {
+    getModel.mockResolvedValue({
+      ...ENTITY,
+      protocol: 'google-genai',
+      effective_protocol: 'google-genai',
+      protocol_source: 'model',
+      endpoint_source: 'model',
+      auth_source: 'env',
+      auth_env: 'OPENAI_API_KEY',
+      base_url: 'https://model.example.test/gemini?key=secret-token',
+      issues: [{ code: 'model.override_routing_rejected', severity: 'warning', path: 'overrides', message: 'base_url, protocol' }],
+    });
+    const container = await renderCard();
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>(
+        'button[aria-label="Edit parameters for kimi-code/kimi-k2"]',
+      )!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const line = container.querySelector('[data-effective-protocol]')?.textContent;
+    expect(line).toBe('Effective format: Google GenAI · this model · endpoint model · credential env (OPENAI_API_KEY)');
+    expect(line).not.toContain('secret-token');
+    expect(line).not.toContain('model.example.test');
+    expect(line).not.toContain('https://');
+    const banner = container.querySelector('[role="status"]')?.textContent;
+    expect(banner).toContain('These override fields were ignored: base_url, protocol.');
+    expect(banner).not.toContain('secret-token');
+    expect(banner).not.toContain('https://');
   });
 
   it('saves a chosen request format as a sparse protocol patch', async () => {
@@ -765,7 +800,7 @@ describe('GlobalDefaultsCard', () => {
     setFastModel.mockResolvedValue(undefined);
     const container = await renderDefaults();
     expect([...container.querySelectorAll<HTMLElement>('[data-default-row]')].map((row) => row.dataset['defaultRow']))
-      .toEqual(['new-session', 'session-title', 'fast', 'subagent']);
+      .toEqual(['session-title', 'fast', 'subagent']);
     const subagentRow = container.querySelector('[data-default-row="subagent"]')!;
     expect(subagentRow.textContent).toContain('only when a subagent has no other pin');
     expect(container.querySelector('[data-default-row="fast"]')!.textContent).toContain('small background jobs');
@@ -811,6 +846,170 @@ describe('GlobalDefaultsCard', () => {
     expect(empty.textContent).not.toContain('Included with your subscription');
     expect(empty.textContent).not.toContain('fast model');
   });
+
+  it('picks the new-session default model in DefaultModelBar', async () => {
+    const secondModel: ModelCatalogItem = {
+      id: 'kimi-code/kimi-k1',
+      provider_id: 'managed:kimi-code',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+      max_context_size: 131072,
+      capabilities: ['chat'],
+      support_efforts: ['high'],
+    };
+    listModels.mockResolvedValue({ items: [MODELS[0]!, secondModel] });
+    getConfig.mockResolvedValue({ default_model: 'kimi-code/kimi-k2', fast_model: 'kimi-code/kimi-k1', subagent: {} });
+    setDefaultModel.mockResolvedValue(undefined);
+    patchConfig.mockResolvedValue({});
+
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={client}>
+            <I18nProvider>
+              <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
+                <DefaultModelBar />
+                <GlobalDefaultsCard />
+              </DirtyGuardContext.Provider>
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(container.querySelector('[data-default-model-others]')).toBeNull();
+    await act(async () => { container.querySelector<HTMLButtonElement>('#st-default-model')!.click(); });
+    const option = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].find((item) => item.textContent?.includes('Kimi K1'))!;
+    await act(async () => { option.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(setDefaultModel).toHaveBeenCalledWith('kimi-code/kimi-k1');
+  });
+});
+
+describe('default model cross-tab selection ownership', () => {
+  const modelA: ModelCatalogItem = { ...MODELS[0]!, id: 'gateway/model-a', provider_id: 'gateway', display_name: 'Model A' };
+  const modelB = MODELS[0]!;
+
+  function deferred<T = void>() {
+    let resolve!: (value: T | PromiseLike<T>) => void;
+    let reject!: (reason?: unknown) => void;
+    const promise = new Promise<T>((res, rej) => {
+      resolve = res;
+      reject = rej;
+    });
+    return { promise, resolve, reject };
+  }
+
+  async function renderTabs() {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const show = async (tab: 'models' | 'defaults') => {
+      await act(async () => {
+        root.render(
+          <MemoryRouter>
+            <QueryClientProvider client={queryClient}>
+              <I18nProvider>
+                <DirtyGuardContext.Provider value={{ dirty: false, reportDirty: () => {}, navigate: () => {} }}>
+                  {tab === 'models' ? (
+                    <ModelCatalogCard />
+                  ) : (
+                    <>
+                      <DefaultModelBar />
+                      <GlobalDefaultsCard />
+                    </>
+                  )}
+                </DirtyGuardContext.Provider>
+              </I18nProvider>
+            </QueryClientProvider>
+          </MemoryRouter>,
+        );
+      });
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    };
+    listModels.mockResolvedValue({ items: [modelA, modelB] });
+    writeSettings({ defaultModel: modelB.id, defaultEffort: 'high' });
+    return { container, queryClient, show };
+  }
+
+  it('finishes the old server write chain before applying the last cross-tab pick, including the original default in DefaultModelBar', async () => {
+    const initial = { default_model: modelB.id, default_provider: modelB.provider_id, session_title: { model: 'title-model' }, thinking: { effort: 'high' } };
+    let server = { ...initial };
+    const modelGate = deferred<void>();
+    const providerGate = deferred<void>();
+    const writes: string[] = [];
+    getConfig.mockImplementation(async () => ({ ...server }));
+    setDefaultModel.mockImplementation(async (id: string) => {
+      if (id === modelA.id) await modelGate.promise;
+      server = { ...server, default_model: id };
+      writes.push(`model:${id}`);
+      return { default_model: id };
+    });
+    patchConfig.mockImplementation(async ({ default_model, default_provider }: { default_model?: string; default_provider?: string }) => {
+      if (default_provider === modelA.provider_id) await providerGate.promise;
+      server = { ...server, ...(default_model !== undefined ? { default_model } : {}), ...(default_provider !== undefined ? { default_provider } : {}) };
+      if (default_provider !== undefined) writes.push(`provider:${default_provider}`);
+      return { ...server };
+    });
+    const { container, queryClient, show } = await renderTabs();
+    await show('models');
+    await act(async () => { container.querySelector<HTMLButtonElement>(`[data-model-row="${modelA.id}"] button[aria-pressed]`)!.click(); });
+    await show('defaults');
+    await pickValue(container.querySelector('#st-default-model')!, '', modelB.id);
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id]);
+    await act(async () => { modelGate.resolve(); });
+    expect(patchConfig).toHaveBeenCalledWith({ default_model: modelA.id, default_provider: modelA.provider_id });
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id]);
+    expect(queryClient.getQueryData(['config'])).toEqual(initial);
+    expect(readSettings().defaultModel).toBe(modelB.id);
+    await act(async () => { providerGate.resolve(); });
+    expect(writes).toEqual([`model:${modelA.id}`, `provider:${modelA.provider_id}`, `model:${modelB.id}`, `provider:${modelB.provider_id}`]);
+    expect(server).toEqual(initial);
+    expect(queryClient.getQueryData(['config'])).toEqual(server);
+    expect(readSettings()).toMatchObject({ defaultModel: modelB.id, defaultEffort: 'high' });
+    expect(container.querySelector('#st-default-model')!.textContent).toContain('Kimi K2');
+  });
+
+  it('lets the latest catalog pick run after an older DefaultModelBar request rejects, without stale error recovery', async () => {
+    let server = { default_model: 'initial-model', default_provider: 'initial-provider', fast_model: 'fast-model' };
+    const modelGate = deferred<void>();
+    getConfig.mockImplementation(async () => ({ ...server }));
+    setDefaultModel.mockImplementation(async (id: string) => {
+      if (id === modelA.id) await modelGate.promise;
+      server = { ...server, default_model: id };
+      return { default_model: id };
+    });
+    patchConfig.mockImplementation(async ({ default_model, default_provider }: { default_model?: string; default_provider?: string }) => {
+      server = { ...server, ...(default_model !== undefined ? { default_model } : {}), ...(default_provider !== undefined ? { default_provider } : {}) };
+      return { ...server };
+    });
+    const { container, queryClient, show } = await renderTabs();
+    await show('defaults');
+    await pickValue(container.querySelector('#st-default-model')!, '', modelA.id);
+    await show('models');
+    await act(async () => { container.querySelector<HTMLButtonElement>(`[data-model-row="${modelB.id}"] button[aria-pressed]`)!.click(); });
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id]);
+    const reads = getConfig.mock.calls.length;
+    await act(async () => { modelGate.reject(new Error('old selection failed')); });
+    expect(setDefaultModel.mock.calls.map(([id]) => id)).toEqual([modelA.id, modelB.id]);
+    expect(patchConfig.mock.calls).toEqual([[{ default_model: modelB.id, default_provider: modelB.provider_id }]]);
+    expect(getConfig).toHaveBeenCalledTimes(reads + 1);
+    expect(server).toEqual({ default_model: modelB.id, default_provider: modelB.provider_id, fast_model: 'fast-model' });
+    expect(queryClient.getQueryData(['config'])).toEqual(server);
+    expect(readSettings().defaultModel).toBe(modelB.id);
+    expect(container.textContent).not.toContain('old selection failed');
+    expect(container.querySelector(`[data-model-row="${modelB.id}"]`)!.getAttribute('data-default')).toBe('true');
+  });
 });
 
 describe('ModelCatalogCard list and detail hierarchy', () => {
@@ -837,10 +1036,11 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     const advanced = editor.querySelector<HTMLElement>('[data-advanced="model-kimi-code/kimi-k2"]')!;
     const body = advanced.querySelector<HTMLElement>('[id^="advanced-"]')!;
     expect(body.hidden).toBe(true);
-    expect(body.querySelector('input[aria-label="Remote ID for kimi-code/kimi-k2"]')).not.toBeNull();
+    expect(body.querySelector('[data-model-engine-fields="kimi-code/kimi-k2"]')).not.toBeNull();
     // Common fields sit outside the disclosure — capabilities included. What a
     // model can do is one of the things a person opens this panel to decide, so
     // it is on the ordinary surface where the value being saved can be read.
+    expect(advanced.contains(editor.querySelector('input[aria-label="Remote ID for kimi-code/kimi-k2"]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('input[aria-label="Display name for kimi-code/kimi-k2"]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[data-model-context-fields]'))).toBe(false);
     expect(advanced.contains(editor.querySelector('[role="group"][aria-label="Effort levels for kimi-code/kimi-k2"]'))).toBe(false);
@@ -848,6 +1048,101 @@ describe('ModelCatalogCard list and detail hierarchy', () => {
     expect(capabilities).not.toBeNull();
     expect(advanced.contains(capabilities!)).toBe(false);
     expect(capabilities!.querySelector('[role="group"][aria-label="Capabilities for kimi-code/kimi-k2"]')).not.toBeNull();
+  });
+
+  it('displays default badge on default model and updates both defaultModel and patchConfig when setting new default', async () => {
+    const k1: ModelCatalogItem = {
+      id: 'managed:kimi-code/kimi-k1',
+      provider_id: 'managed:kimi-code',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+      max_context_size: 131072,
+      capabilities: ['chat'],
+      support_efforts: [],
+    };
+    listModels.mockResolvedValue({ items: [MODELS[0], k1] });
+    setDefaultModel.mockResolvedValue(undefined);
+    patchConfig.mockResolvedValue({});
+    const container = await renderCard();
+
+    const defaultRow = container.querySelector<HTMLElement>('[data-model-row="kimi-code/kimi-k2"]')!;
+    expect(defaultRow.getAttribute('data-default')).toBe('true');
+    expect(defaultRow.querySelector('[data-default-badge]')).not.toBeNull();
+    expect(defaultRow.querySelector('[data-default-badge]')?.textContent).toBe('Default');
+
+    const nonDefaultRow = container.querySelector<HTMLElement>('[data-model-row="managed:kimi-code/kimi-k1"]')!;
+    expect(nonDefaultRow.getAttribute('data-default')).toBeNull();
+    expect(nonDefaultRow.querySelector('[data-default-badge]')).toBeNull();
+
+    const starBtn = nonDefaultRow.querySelector<HTMLButtonElement>('button[aria-pressed="false"]')!;
+    expect(starBtn).not.toBeNull();
+    await act(async () => starBtn.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(setDefaultModel).toHaveBeenCalledWith('managed:kimi-code/kimi-k1');
+    expect(patchConfig).toHaveBeenCalledWith({
+      default_model: 'managed:kimi-code/kimi-k1',
+      default_provider: 'managed:kimi-code',
+    });
+  });
+
+  it('renders default control banner in model detail panel and triggers set default from panel', async () => {
+    const k1: ModelCatalogItem = {
+      id: 'managed:kimi-code/kimi-k1',
+      provider_id: 'managed:kimi-code',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+      max_context_size: 131072,
+      capabilities: ['chat'],
+      support_efforts: [],
+    };
+    const k1Entity: GetModelResponse = {
+      ...ENTITY,
+      id: 'managed:kimi-code/kimi-k1',
+      remote_id: 'kimi-k1',
+      display_name: 'Kimi K1',
+    };
+    listModels.mockResolvedValue({ items: [MODELS[0], k1] });
+    getModel.mockImplementation(async (id: string) => (id === 'managed:kimi-code/kimi-k1' ? k1Entity : ENTITY));
+    setDefaultModel.mockResolvedValue(undefined);
+    patchConfig.mockResolvedValue({});
+    const container = await renderCard();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for kimi-code/kimi-k2"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const defaultBanner = container.querySelector<HTMLElement>('[data-model-default-control="kimi-code/kimi-k2"]')!;
+    expect(defaultBanner).not.toBeNull();
+    expect(defaultBanner.getAttribute('data-is-default')).toBe('true');
+    expect(defaultBanner.querySelector('[data-default-badge]')).not.toBeNull();
+    expect(defaultBanner.querySelector('[data-set-default-button]')).toBeNull();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Close"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('button[aria-label="Edit parameters for managed:kimi-code/kimi-k1"]')!.click();
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const nonDefaultBanner = container.querySelector<HTMLElement>('[data-model-default-control="managed:kimi-code/kimi-k1"]')!;
+    expect(nonDefaultBanner).not.toBeNull();
+    expect(nonDefaultBanner.getAttribute('data-is-default')).toBe('false');
+    const setDefaultBtn = nonDefaultBanner.querySelector<HTMLButtonElement>('[data-set-default-button]')!;
+    expect(setDefaultBtn).not.toBeNull();
+
+    await act(async () => setDefaultBtn.click());
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    expect(setDefaultModel).toHaveBeenCalledWith('managed:kimi-code/kimi-k1');
+    expect(patchConfig).toHaveBeenCalledWith({
+      default_model: 'managed:kimi-code/kimi-k1',
+      default_provider: 'managed:kimi-code',
+    });
   });
 });
 

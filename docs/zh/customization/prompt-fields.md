@@ -8,6 +8,10 @@
 
 常用的内置字段 id 包括 `system.language`、`system.reply_style`、`system.coding`、`system.shared`、`tool.web-search.description`、`tool.web-search.guidance`、`delegation.sub.notice` 和 `delegation.independent.notice`。系统字段替换内置提示词的对应段，只有 `system.shared` 是共享的外加段，非空时追加一次。工具 `description` 替换其静态描述；工具 `guidance` 追加在已有的 `User-configured guidance:` 标签之下。
 
+Kiki 的内置协作指引无需 Recipe 即可使用：把完整成果交给一个 owner，收到结果后检查实际产物、纳入目标再记为接受，通信只发送收件人下一步仍缺的输入。用户要求的讨论不受消息条数配额限制。回复语言沿用用户或任务 brief 的语言及明确的回复语言要求，不因内部 steering、提醒或引用文档而自行切换。可通过 `system.delegation_brief_hygiene`、`delegation.sub.notice`，以及 `tool.agent-run`、`tool.agent-send`、`tool.thread-send` 的 `description` 和 `guidance` 字段定制这些指引。
+
+这些默认值保留既有 profile 与 Recipe 覆写、委托通知的关闭选择，以及角色和工具限制。自定义替换型 profile 仍决定自己的正文。外部执行器通过所选 profile 或已配置的 `executor_prompt` 组合接收相应文本；未启用这些补充的[外部直连执行](./agents-and-subagents.md#外部直连执行)仍保持原样运行。
+
 ## 覆写写在哪里
 
 每个覆写面使用相同的格式——可选 `files`（相对 Kiki home 的严格 TOML 文件）和内联 `fields`：
@@ -22,6 +26,10 @@
 | 模型 profile 条目 | agent 文件中的 `model_profiles[].prompt_overrides` |
 
 优先级从低到高按表顺序；缺失的键继承较低层的值。完整格式、`${name}` 变量替换规则和校验失败行为见 [`prompt`](../configuration/config-files.md#prompt)。
+
+已有 Agent 恢复时保留绑定时的提示词字段、自定义变量和 cognition 文本，即使来源文件后来被修改或删除。修改对新绑定生效；要在已有会话里采用新内容，选择[重建上下文](./agents-and-subagents.md#重建会话上下文)。显式换模会选择目标模型的提示词输入；单独设置 `new_window` 不会重新加载提示词来源。当前工具权限与模型硬约束仍然生效。
+
+旧记录优先复用已保存的系统提示词，并尽可能从保存的 profile 还原内联字段。若记录从未保存必需的共享字段、工具覆写、steering 提示或 anchor，且原始输入已无法重建，恢复错误会点名缺失的输入。此时重建上下文以采用当前来源，无需回滚已安装的新提示词。
 
 ## 用 `kiki prompt-fields` 发现与校验
 
@@ -79,7 +87,11 @@ await klient.global.kosong.updateModel("example-model", {
 });
 ```
 
-Profile 可引用同一已安装包，不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。沿现有 profile Markdown 编辑入口保存，或编辑 profile 文件。URL 和本地路径是先预览、安装的包来源，不会在绑定时隐式下载。
+模型的 `recipe` 也可引用本地文件或包目录，例如 `./focus/recipe.toml`。相对路径以声明该引用的配置为基准：继承来的引用仍按主空间配置目录解析，本地覆盖则按当前配置目录解析。绝对路径保持原含义。
+
+Profile 可引用同一已安装包，或一份本地 Recipe 文件，且不改变全局模型。在 Markdown Frontmatter 中写 `recipe: installation:<已安装 id>`（也可直接写安装 id）；id 来自 `install` 返回值。本地文件或包目录同样可用：`recipe: ./focus/recipe.toml`，或绝对路径。Profile 的相对路径按自身文件所在目录解析，并在绑定时直接读取。
+
+这不会安装该文件，绑定也不会下载 URL。沿现有 profile Markdown 编辑入口保存，或编辑 profile 文件。直接引用的文件若带脚本 hooks，仍须走现有安装确认；`hooks = "off"` 不贡献脚本。
 
 ```markdown
 ---
@@ -93,9 +105,11 @@ request_params:
 审查变更并报告可执行的发现。
 ```
 
+子空间默认读取主空间已安装的 Recipe；安装 ID 相同时，本地条目优先。继承包只读，要在子空间编辑，先选择**复制**或**扩展**。`inherit.config = false` 只关闭配置继承，不切断这些包的读取，因此仍在继承的 Profile 可以继续解析其已安装 Recipe 引用。子空间中的包更新和移除只写入子空间。
+
 Recipe 只贡献自己声明的值。模型设置依次采用保存模型、模型 Recipe、模型 `overrides` 本地差异、profile Recipe、profile 显式参数、匹配的 `model_profiles` 参数；上下文和输出上限仍取各适用限制的最小值。提示字段依次采用全局、保存模型字段、模型 Recipe 字段、profile Recipe 字段、profile 字段、匹配的 profile-model 或 caller-lease 字段。未覆盖的 cognition 槽和普通模型 profile 正文继续生效；角色、persona、工作区指令、宿主上下文与权限保留原有权威。
 
-用当前 `base_revision` 写模型 `recipe: null`，或在 profile 中写 `recipe: off`，只撤回对应层的配方贡献。手动值和另一层 Recipe 都保留。新绑定冻结每个引用包的 revision、展开正文与有效模型设置，包括继承来的参数。已有会话和冷恢复保留该快照，直到重建上下文或显式换模；订阅更新与 profile 编辑不会暗中换绑。
+在模型或 profile 中写 `recipe: off`，可停用对应层的 Recipe，包括继承来的模型选择。通过 API 更新模型时携带当前 `base_revision`；`recipe: null` 则清除本地选择。手动值和另一层 Recipe 都保留。新绑定冻结每个引用包的 revision、展开正文与有效模型设置，包括继承来的参数。已有会话和冷恢复保留该快照，直到重建上下文或显式换模；订阅更新与 profile 编辑不会暗中换绑。
 
 ### 继承或自定义
 
@@ -103,7 +117,7 @@ Recipe 只贡献自己声明的值。模型设置依次采用保存模型、模�
 
 `prompts` 是 subagent 使用的 common 分支。`[prompts.main]` 或 `[prompts.independent]` 选择一个完整的位置分支，不会自动用 common 填补缺失 slot。在 `[prompts]` 内写 `main = "same"` 或 `independent = "same"` 可显式采用 common，写 `"off"` 则禁用整个分支。正文 slot 接受 `{ text = "..." }`、`{ file = "prompt.md" }` 或这些来源的数组。anchor 使用 `{ content = { text = "..." }, steps = 1, scope = "session" }`；`scope` 也接受 `"turn"`。
 
-Steering 节奏属于所选分支；未声明项沿用下层值。普通 steering 正文与节奏适用于直接用户输入。所有层均未声明时，`steering_on_turn` 与 `steering_on_input` 默认 `true`，`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 由该来源驱动的模型步骤，不是秒数或工具调用次数；关闭的来源在压缩后也保持关闭。
+Steering 节奏属于所选分支；未声明项沿用下层值。普通 steering 正文与节奏适用于直接用户输入，已核验且完成的 subagent 任务回执也默认继承。明确设置 `steering_sources.task.mode = "off"` 可关闭该继承；普通进程结果、失败子任务及其它非用户来源仍需各自配置。所有层均未声明时，`steering_on_turn` 与 `steering_on_input` 默认 `true`，`steering_interval_steps` 默认 `0`，不额外周期注入。正整数间隔统计本 Agent 由该来源驱动的模型步骤，不是秒数或工具调用次数；关闭的来源在压缩后也保持关闭。
 
 在同一分支中使用 `steering_sources` 开启其他来源：`mode = "inherit"` 在绑定时沿用最终用户正文与节奏，`mode = "custom"` 使用自己的 `custom` 正文与节奏。来源及 custom 字段在父配方、模型 Recipe、profile Recipe 各层按声明的叶项合并，再随绑定冻结；改用户设置不会重写已有会话。来源键与默认值见 [模型认知](../configuration/config-files.md#模型认知)。例如：
 
@@ -130,4 +144,4 @@ custom = { steering = { file = "task-cue.md" }, steering_interval_steps = 2 }
 
 - [配置文件：`prompt`](../configuration/config-files.md#prompt) —— 完整字段注册表、覆写格式与校验规则
 - [`kiki` 命令参考](../reference/command.md) —— CLI 入口的命令行旗标
-- [Agent 与 subagent](../customization/agents.md) —— agent 文件与 `prompt_overrides` frontmatter
+- [Agent 与 subagent](../customization/agents-and-subagents.md) —— agent 文件与 `prompt_overrides` frontmatter

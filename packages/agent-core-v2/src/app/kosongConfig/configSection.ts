@@ -32,6 +32,12 @@ import { ENV_MODEL_PROVIDER_KEY, type OAuthRef, type ProviderConfig, type Provid
 import type { ImagePolicyConfig } from '#/kosong/provider/providerImagePolicy';
 import { ProtocolSchema } from '#/kosong/protocol/protocol';
 import { RequestIdentityPolicySchema } from '#/kosong/requestIdentity/requestIdentityPolicy';
+import {
+  RequestCompressionLayerSchema,
+  RequestCompressionSystemSchema,
+  ResponsesWebSocketLayerSchema,
+  ResponsesWebSocketSystemSchema,
+} from '#/kosong/provider/requestCompression';
 
 export { ENV_MODEL_PROVIDER_KEY } from '#/kosong/provider/provider';
 
@@ -101,10 +107,13 @@ const ProviderConfigObjectSchema = z.object({
   defaultModel: z.string().optional(),
   defaults: GenerationParametersSchema.optional(),
   requestIdentity: RequestIdentityPolicySchema.optional(),
+  requestCompression: RequestCompressionLayerSchema.optional(),
+  responsesWebSocket: ResponsesWebSocketLayerSchema.optional(),
   images: ImagePolicyConfigSchema.optional(),
 
   type: ProviderTypeSchema.optional(),
   apiKey: z.string().optional(),
+  apiKeyEnv: z.string().trim().min(1).optional(),
   oauth: OAuthRefSchema.optional(),
   env: StringRecordSchema.optional(),
   source: z.record(z.string(), z.unknown()).optional(),
@@ -169,7 +178,7 @@ function providerEntryFromToml(data: Record<string, unknown>): Record<string, un
     const targetKey = snakeToCamel(key);
     if (targetKey === 'oauth') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
-    } else if (targetKey === 'requestIdentity' || targetKey === 'images' || targetKey === 'defaults') {
+    } else if (targetKey === 'requestIdentity' || targetKey === 'requestCompression' || targetKey === 'images' || targetKey === 'defaults') {
       out[targetKey] = isPlainObject(value) ? deepSnakeToCamel(value) : value;
     } else if (targetKey === 'env' || targetKey === 'customHeaders') {
       out[targetKey] = isPlainObject(value) ? cloneRecord(value) : value;
@@ -200,7 +209,7 @@ function providerEntryToToml(
   for (const [key, value] of Object.entries(provider)) {
     if (key === 'oauth' && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
-    } else if ((key === 'requestIdentity' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
+    } else if ((key === 'requestIdentity' || key === 'requestCompression' || key === 'images' || key === 'defaults') && isPlainObject(value)) {
       out[camelToSnake(key)] = deepCamelToSnake(value);
     } else if ((key === 'env' || key === 'customHeaders') && value !== undefined) {
       out[camelToSnake(key)] = cloneRecord(value);
@@ -247,6 +256,20 @@ export const requestIdentityToToml = (value: unknown): unknown =>
   isPlainObject(value) ? deepCamelToSnake(value) : value;
 
 registerConfigSection(REQUEST_IDENTITY_SECTION, RequestIdentityPolicySchema, {
+  fromToml: requestIdentityFromToml,
+  toToml: requestIdentityToToml,
+});
+
+export const REQUEST_COMPRESSION_SECTION = 'requestCompression';
+
+export const RESPONSES_WEB_SOCKET_SECTION = 'responsesWebSocket';
+
+registerConfigSection(REQUEST_COMPRESSION_SECTION, RequestCompressionSystemSchema, {
+  fromToml: requestIdentityFromToml,
+  toToml: requestIdentityToToml,
+});
+
+registerConfigSection(RESPONSES_WEB_SOCKET_SECTION, ResponsesWebSocketSystemSchema, {
   fromToml: requestIdentityFromToml,
   toToml: requestIdentityToToml,
 });
@@ -394,6 +417,23 @@ function unwrapWrapperSchema(schema: z.ZodTypeAny): z.ZodTypeAny {
   return current;
 }
 
+const OVERRIDE_ROUTING_KEYS = new Set([
+  'provider',
+  'provider_id',
+  'providerId',
+  'model',
+  'name',
+  'aliases',
+  'protocol',
+  'base_url',
+  'baseUrl',
+  'api_key',
+  'apiKey',
+  'oauth',
+  'beta_api',
+  'betaApi',
+]);
+
 function collectMalformedModelEntries(rawModels: unknown): ConfigDiagnostic[] {
   if (!isPlainObject(rawModels)) return [];
   const diagnostics: ConfigDiagnostic[] = [];
@@ -404,6 +444,22 @@ function collectMalformedModelEntries(rawModels: unknown): ConfigDiagnostic[] {
       domain: MODELS_SECTION,
       severity: 'warning',
       message: malformedModelMessage(alias, entry),
+    });
+  }
+  return diagnostics;
+}
+
+function collectOverrideRoutingDiagnostics(rawModels: unknown): ConfigDiagnostic[] {
+  if (!isPlainObject(rawModels)) return [];
+  const diagnostics: ConfigDiagnostic[] = [];
+  for (const [alias, entry] of Object.entries(rawModels)) {
+    if (!isPlainObject(entry) || !isPlainObject(entry['overrides'])) continue;
+    const rejected = Object.keys(entry['overrides']).filter((key) => OVERRIDE_ROUTING_KEYS.has(key)).sort();
+    if (rejected.length === 0) continue;
+    diagnostics.push({
+      domain: MODELS_SECTION,
+      severity: 'warning',
+      message: `[models] entry '${alias}' overrides rejected ${rejected.join(', ')}; set those fields on the model itself. They were not applied.`,
     });
   }
   return diagnostics;
@@ -533,7 +589,7 @@ registerConfigSection(MODELS_SECTION, ModelsSectionSchema, {
   defaultValue: {},
   fromToml: modelsFromToml,
   toToml: modelsToToml,
-  collectDiagnostics: collectMalformedModelEntries,
+  collectDiagnostics: (raw) => [...collectMalformedModelEntries(raw), ...collectOverrideRoutingDiagnostics(raw)],
   entryKeyed: ModelRecordSchema,
 });
 

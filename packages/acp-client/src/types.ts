@@ -125,6 +125,10 @@ export interface AcpOpenSessionResult {
   readonly currentModeId?: string;
   readonly availableModes?: readonly string[];
   readonly sessionRef: ExecutorSessionRefEnvelope;
+  /** Metadata sent on the native session open; live reuse retains that request, not unsent updates. */
+  readonly sessionRequestMeta?: Readonly<Record<string, unknown>>;
+  /** Metadata returned by that same open, never copied from a prior loaded session. */
+  readonly sessionResponseMeta?: Readonly<Record<string, unknown>>;
   readonly loadReplayObserved: boolean;
   readonly quarantinedUpdateCount: number;
 }

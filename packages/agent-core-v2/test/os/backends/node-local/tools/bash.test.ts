@@ -3,15 +3,19 @@ import { PassThrough, Readable, type Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { OrderedHookSlot } from '#/hooks';
+import type { AgentTaskNotificationDeliveryContext } from '#/agent/task/task';
 import { createServices, createScopedTestHost, stubPair } from '#/_base/di/test';
 import { _clearScopedRegistryForTests, registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import { LifecycleScope } from '#/app/scopes';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
+import { IFlagService } from '#/app/flag/flag';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import { LocalRuntime } from '#/runtime/localRuntime';
 import type { Runtime } from '#/runtime/runtime';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { stubPermissionModeService } from '../../../../agent/permissionMode/stubs';
+import { stubFlag } from '../../../../app/flag/stubs';
 
 import {
   IAgentTaskService,
@@ -38,7 +42,7 @@ import { BashTool } from '#/agent/tools/os/bash/bashTool';
 import type { ExecutableToolContext, ExecutableToolResult, ToolExecution } from '#/tool/toolContract';
 
 const disposables = new DisposableStore();
-afterEach(() => { disposables.clear(); });
+afterEach(async () => { await disposables.clear(); });
 
 const posixEnv: IHostEnvironment = {
   _serviceBrand: undefined,
@@ -482,6 +486,8 @@ function createFakeTaskService(
 
   const service: IAgentTaskService = {
     _serviceBrand: undefined,
+    hooks: { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() },
+    hasUnfinishedWork: () => service.list().some((info) => info.lifetime !== 'service'),
     track(): never {
       throw new Error('fake IAgentTaskService.track is not implemented');
     },
@@ -754,6 +760,7 @@ function bashTool(
     onDidChange: () => ({ dispose: () => {} }),
     isAvailable: () => true,
     inspect: () => backend,
+    prepareFor: async () => backend,
     acquire: () => ({
       runtime: backend,
       track: (resource) => resource,
@@ -769,6 +776,7 @@ function bashTool(
       reg.defineInstance(IAgentTaskService, background);
       reg.defineInstance(IAgentToolPolicyService, toolPolicy);
       reg.defineInstance(IConfigService, config);
+      reg.defineInstance(IFlagService, stubFlag());
       reg.defineInstance(IAgentPermissionModeService, options.permissionMode ?? stubPermissionModeService(() => 'manual'));
     },
   });
@@ -776,6 +784,19 @@ function bashTool(
 }
 
 describe('BashTool', () => {
+  it('resolves effective cwd and caches the complete shell action independently of persistent rules', async () => {
+    const { runner } = createTestRunner(processWithOutput());
+    const tool = bashTool(runner, posixEnv, createTestCtx('/workspace'));
+    const first = await tool.resolveExecution({ command: 'printf first; printf second', cwd: './src/../src' });
+    const equivalent = await tool.resolveExecution({ command: 'printf first; printf second', cwd: '/workspace/src' });
+    const other = await tool.resolveExecution({ command: 'printf first; printf second', cwd: '/workspace/other' });
+    if (first.isError || equivalent.isError || other.isError) throw new Error('Expected runnable Bash');
+    expect(first.shellContext).toEqual({ runtimeId: 'local', cwd: '/workspace/src', pathClass: 'posix' });
+    expect(first.sessionApprovalRule).toBe(equivalent.sessionApprovalRule);
+    expect(first.sessionApprovalRule).not.toBe(other.sessionApprovalRule);
+    expect(first.approvalRule).toBe(other.approvalRule);
+    expect(first.sessionApprovalRule).toBe(JSON.stringify(['Bash', 'local', '/workspace/src', 'printf first; printf second']));
+  });
   it.each([
     [posixEnv, '/workspace', '/other/repository', '/other/repository'],
     [windowsBashEnv, 'C:\\workspace', 'D:\\other\\repository', '/d/other/repository'],
@@ -850,6 +871,7 @@ describe('BashTool', () => {
     };
     const host = disposables.add(createScopedTestHost([
       stubPair(IConfigService, stubConfig()),
+      stubPair(IFlagService, stubFlag()),
       stubPair(IAgentRuntimeService, runtime),
       stubPair(IAgentToolPolicyService, stubToolPolicy()),
     ]));
@@ -877,16 +899,22 @@ describe('BashTool', () => {
     expect(exec).not.toHaveBeenCalled();
   });
 
-  it.each(['mapping', 'spawn'] as const)('releases the runtime lease after %s failure', async (failure) => {
+  it('reports workspace mapping failure before a runtime lease is acquired', async () => {
     const { runner } = createTestRunner(vi.fn(async () => { throw new Error('spawn failed'); }));
     const disposeLease = vi.fn();
-    const runtime = failure === 'mapping'
-      ? new FakeRuntime({ workspaceId: 'test', runtimeId: 'remote', generation: 'test' }, {
-          mapWorkspaceRoots: () => { throw new Error('mapping failed'); },
-        })
-      : undefined;
+    const runtime = new FakeRuntime({ workspaceId: 'test', runtimeId: 'remote', generation: 'test' }, {
+      mapWorkspaceRoots: () => { throw new Error('mapping failed'); },
+    });
     const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, { runtime, disposeLease });
-    expect(await executeTool(tool, context({ command: 'pwd' }))).toMatchObject({ isError: true, output: `${failure} failed` });
+    expect(await executeTool(tool, context({ command: 'pwd' }))).toMatchObject({ isError: true, output: 'mapping failed' });
+    expect(disposeLease).not.toHaveBeenCalled();
+  });
+
+  it('releases the runtime lease after spawn failure', async () => {
+    const { runner } = createTestRunner(vi.fn(async () => { throw new Error('spawn failed'); }));
+    const disposeLease = vi.fn();
+    const tool = bashTool(runner, undefined, undefined, undefined, undefined, undefined, { disposeLease });
+    expect(await executeTool(tool, context({ command: 'pwd' }))).toMatchObject({ isError: true, output: 'spawn failed' });
     expect(disposeLease).toHaveBeenCalledOnce();
   });
 
@@ -1049,10 +1077,22 @@ describe('BashTool', () => {
     expect(command).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
     expect(args).toEqual(['-c', "cd '/c/Users/me/project' && echo ok 2>/dev/null"]);
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
+    expect(execOptions?.ownedProcessTree).toBe(true);
+    expect(execOptions?.ownedProcessLifetime).toBe('owner');
     expect(result).toMatchObject({
       output: 'ok\n',
       isError: false,
     });
+  });
+
+  it('does not attach remote Windows commands to the local backend owner lifetime', async () => {
+    const { runner, exec } = createTestRunner(processWithOutput({ stdout: 'remote\n' }));
+    const runtime = Object.assign(new FakeRuntime({ workspaceId: 'test', runtimeId: 'ssh:example', generation: 'test' }, {
+      capabilities: ['process'], pathClass: 'win32', environment: windowsBashEnv,
+    }), { process: runner });
+    const tool = bashTool(runner, windowsBashEnv, createTestCtx('C:\\workspace'), undefined, undefined, undefined, { runtime });
+    expect(await executeTool(tool, context({ command: 'echo remote' }))).toMatchObject({ isError: false });
+    expect(exec.mock.calls[0]?.[2]?.ownedProcessLifetime).toBeUndefined();
   });
 
   it('returns stderr and marks non-zero exit codes as tool errors', async () => {
@@ -1891,6 +1931,8 @@ describe('BashTool background mode', () => {
     expect(command).toBe('C:\\Program Files\\Git\\bin\\bash.exe');
     expect(args).toEqual(['-c', "cd '/c/Users/me/project' && echo ok 2>/dev/null"]);
     expect(execOptions?.env).toMatchObject({ SHELL: 'C:\\Program Files\\Git\\bin\\bash.exe' });
+    expect(execOptions?.ownedProcessTree).toBe(true);
+    expect(execOptions?.ownedProcessLifetime).toBe('owner');
     expect(secondProc.kill).toHaveBeenCalledWith('SIGTERM');
     expect(results).toContainEqual(expect.objectContaining({ isError: false }));
     expect(results).toContainEqual(

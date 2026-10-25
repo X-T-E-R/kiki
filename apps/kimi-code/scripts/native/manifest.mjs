@@ -5,6 +5,12 @@ export const BROWSER_DRIVER_ASSET = Object.freeze({
 export const NATIVE_ASSET_MANIFEST_VERSION = 2;
 export const WEB_ASSET_MANIFEST_VERSION = 1;
 
+export const WINDOWS_PROCESS_HELPER_ASSET = Object.freeze({
+  key: 'windows-process-helper',
+  relativePath: 'runtime/process/windows-process-helper.exe',
+  mode: 0o755,
+});
+
 export const MINIDB_TEXT_BUILD_WORKER_ASSET = Object.freeze({
   key: 'minidb-text-build-worker',
   relativePath: 'runtime/minidb/text-build-worker.mjs',
@@ -14,6 +20,12 @@ export const MINIDB_TEXT_BUILD_WORKER_ASSET = Object.freeze({
 export const KAP_SEARCH_WORKER_ASSET = Object.freeze({
   key: 'kap-search-worker',
   relativePath: 'runtime/kap-server/search-worker.mjs',
+  mode: 0o644,
+});
+
+export const KAP_USAGE_PARSER_WORKER_ASSET = Object.freeze({
+  key: 'kap-usage-parser-worker',
+  relativePath: 'runtime/kap-server/usage-parser-worker.mjs',
   mode: 0o644,
 });
 

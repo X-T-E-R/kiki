@@ -17,7 +17,7 @@ import {
   type SubagentGroup,
   type ToolGroup,
 } from './grouping';
-import type { AssistantBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
+import type { AssistantBlock, QuestionBlock, ShellBlock, SubagentBlock, SystemBlock, ThinkingBlock, ToolBlock, UserBlock } from './transcript';
 
 let counter = 0;
 function tool(
@@ -113,6 +113,29 @@ describe('groupBlocks', () => {
     expect(groupBlocks([a, b])).toEqual([a, b]);
   });
 
+  it('keeps read groups inside their owning turn without moving old work into the live group', () => {
+    const old = [tool('MemoryRead', 'done', { turnId: 't1' }), tool('MemorySearch', 'done', { turnId: '1' })];
+    const current = [read(), read(), read('/w/live', 'running')].map((block) => ({ ...block, turnId: 't2' }));
+    const nodes = groupBlocks([...old, ...current]);
+    expect(nodes.map((node) => node.kind)).toEqual(['tool', 'tool', 'tool-group']);
+    expect(nodes.slice(0, 2)).toEqual(old);
+    expect(nodes[2]).toMatchObject({ members: current, count: 3 });
+    const folded = foldHistory(nodes, 't2');
+    expect(folded.map((node) => node.kind)).toEqual(['history-fold', 'tool-group']);
+    expect(folded[0]).toMatchObject({ turnId: 't1', members: old });
+    expect(folded[1]).toBe(nodes[2]);
+    expect(groupHasRunning(folded[1] as ToolGroup)).toBe(true);
+  });
+
+  it('normalizes a known turn for grouping and keeps unowned reads separate', () => {
+    const known = [read(), read(), read()].map((block, index) => ({ ...block, turnId: index === 1 ? '3' : 't3' }));
+    const unowned = read();
+    const nodes = groupBlocks([...known, unowned]);
+    expect(nodes.map((node) => node.kind)).toEqual(['tool-group', 'tool']);
+    expect(nodes[0]).toMatchObject({ members: known, count: 3 });
+    expect(nodes[1]).toBe(unowned);
+  });
+
   it('never folds edits, writes, commands, shells or thinking — they break the run', () => {
     const r1 = read();
     const r2 = read('/w/b.ts');
@@ -155,11 +178,23 @@ describe('groupBlocks', () => {
     expect(mixed.startedAt).toBe(0);
   });
 
-  it('never folds the memory tools — their rows carry view/undo actions', () => {
+  it('folds ordinary memory reads with the read run and keeps the row', () => {
     const memory = tool('MemoryRead');
-    const blocks = [read(), read(), memory, read()];
-    expect(groupBlocks(blocks)).toEqual(blocks);
+    const reads = [read(), read(), memory];
+    const nodes = groupBlocks(reads);
+    expect(nodes).toHaveLength(1);
+    const group = nodes[0] as ToolGroup;
+    expect(group.members[2]).toBe(memory);
+    expect(isReadStep(memory)).toBe(true);
+    expect(isReadStep(tool('MemorySearch', 'done', { args: { query: 'notes' } }))).toBe(true);
+  });
+
+  it('keeps a memory write out of a pure read run', () => {
+    const before = [read(), read()];
+    const memory = tool('MemoryWrite');
+    const after = read();
     expect(isReadStep(memory)).toBe(false);
+    expect(groupBlocks([...before, memory, after])).toEqual([...before, memory, after]);
   });
 
   it('claims exactly the three memory tools', () => {
@@ -254,6 +289,63 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect(nodes[2]).toBe(blocks[4]);
   });
 
+  it('folds memory reads, searches and writes with ordinary process, counts failures, and keeps live and user rows out', () => {
+    const memoryRead = inTurn(tool('MemoryRead'), 't1');
+    const memorySearch = inTurn(tool('MemorySearch', 'error', { args: { query: 'notes' } }), 't1');
+    const openQuestion: QuestionBlock = {
+      kind: 'question',
+      id: 'q-live',
+      request: {
+        question_id: 'q-live',
+        session_id: 'session_test',
+        turn_id: 1,
+        questions: [{
+          id: 'q1',
+          question: 'Continue?',
+          options: [{ id: 'a', label: 'Yes' }, { id: 'b', label: 'No' }],
+        }],
+        created_at: '2026-01-01T00:00:00.000Z',
+      },
+      outcome: undefined,
+    };
+    const memoryWrite = inTurn(tool('MemoryWrite'), 't1');
+    const ordinary = inTurn(read('/w/a'), 't1');
+    const user = inTurn(text('user'), 't1');
+    const running = inTurn(tool('MemoryRead', 'running'), 't1');
+    const nodes = foldHistory([memoryRead, memorySearch, openQuestion, memoryWrite, ordinary, user, running], 't9');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'question', 'history-fold', 'user', 'tool']);
+    expect(nodes[0]).toMatchObject({ steps: 2, failed: 1, members: [memoryRead, memorySearch] });
+    expect(nodes[1]).toBe(openQuestion);
+    expect(nodes[2]).toMatchObject({ steps: 2, failed: 0, members: [memoryWrite, ordinary] });
+    expect(nodes[3]).toBe(user);
+    expect(nodes[4]).toBe(running);
+  });
+
+  it('folds ordinary memory into the same process run and leaves a running memory row out', () => {
+    const memory = inTurn(tool('MemoryWrite'), 't1');
+    const thought = inTurn(thinking(), 't1');
+    const command = inTurn(shell(), 't1');
+    const running = inTurn(tool('MemoryRead', 'running'), 't1');
+    const nodes = foldHistory([memory, thought, command, running], 't9');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'tool']);
+    const fold = nodes[0] as HistoryFold;
+    expect(fold.members).toEqual([memory, thought, command]);
+    expect(fold.members[0]).toBe(memory);
+    expect(nodes[1]).toBe(running);
+  });
+
+  it('keeps a completed shell foldable on its own and with the process beside it', () => {
+    const alone = inTurn(shell(), 't1');
+    expect(foldHistory([alone], 't9')).toMatchObject([{ kind: 'history-fold', steps: 1, members: [alone] }]);
+    const broken = [inTurn(shell(), 't1'), inTurn(text('assistant'), 't1'), inTurn(shell(), 't1')];
+    expect(foldHistory(broken, 't9').map((node) => node.kind)).toEqual(['history-fold', 'assistant', 'history-fold']);
+    const together = [inTurn(thinking(), 't2'), inTurn(shell(), 't2'), inTurn(read('/w/a'), 't2')];
+    const nodes = foldHistory(together, 't9');
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold']);
+    expect((nodes[0] as HistoryFold).members).toEqual(together);
+    expect(nodes[0]).toMatchObject({ steps: 2, thoughts: 1 });
+  });
+
   it('folds completed empty shells without moving prose or hiding running shells', () => {
     const before = inTurn(text('assistant'), 't2');
     const thought = inTurn(thinking(), 't2');
@@ -292,6 +384,19 @@ describe('folding the live turn, subagents, images and ends (FOLDING.md)', () =>
     expect((nodes[1] as MediaRun).members).toHaveLength(2);
     expect(nodes[5]).toMatchObject({ latest: true });
     expect(isReadStep(image('t1'))).toBe(false);
+  });
+
+  it('gives an image that arrives as the result’s own attachment the same row', () => {
+    const attached = (turnId: string): ToolBlock => inTurn(tool('external_paint', 'done', {
+      media: [{ kind: 'image', fileId: 'f_acp_2f1a', name: 'answer.png', mime: 'image/png' }],
+    }), turnId);
+    const blocks = [inTurn(read('/w/a'), 't1'), inTurn(shell(), 't1'), attached('t1'), inTurn(text('user'), 't2'), attached('t2')];
+    const nodes = foldHistory(blocks, latestTurnId(blocks));
+    expect(nodes.map((node) => node.kind)).toEqual(['history-fold', 'media-run', 'user', 'media-run']);
+    const historical = nodes[1] as MediaRun;
+    expect(historical).toMatchObject({ latest: false });
+    expect(historical.members).toHaveLength(1);
+    expect(nodes[3]).toMatchObject({ latest: true });
   });
 
   it.each([false, true])('merges completion echoes by execution, retaining separate resumes and same-name agents (summaryFirst=%s)', (summaryFirst) => {

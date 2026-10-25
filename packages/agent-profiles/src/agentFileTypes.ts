@@ -59,6 +59,7 @@ export interface AgentFileDefinition {
   readonly executorPrompt?: ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
   readonly kikiContext?: AgentProfile['kikiContext'];
+  readonly injectKikiMcp?: boolean;
   readonly modelAlias?: string;
   readonly restrictModelsToMenu?: boolean;
   readonly thinkingEffort?: string;

@@ -239,7 +239,8 @@ export async function mirrorAgentRun(
     }
     const result = await run.completion;
     const contextTokens = childContextTokens(agentLifecycle, run.agentId);
-    await recordAgentOutcome(requester, run.agentId, {
+    const taskId = await options.resolveTaskId?.();
+    await recordAgentOutcome(requester, run.agentId, taskId, {
       status: 'completed',
       completedAt: Date.now(),
       resultSummary: result.summary,
@@ -253,7 +254,7 @@ export async function mirrorAgentRun(
         resultSummary: result.summary,
         usage: result.usage,
         contextTokens,
-        taskId: await options.resolveTaskId?.(),
+        taskId,
       }),
     );
     subagents?.notifyAgentTaskStopped({
@@ -266,7 +267,7 @@ export async function mirrorAgentRun(
     const taskId = await options.resolveTaskId?.();
     if ((options.deferStarted !== true || taskId !== undefined) && (cancelled || !shouldSuppressFailure(options, error))) {
       const reason = cancelled ? 'terminated' : errorMessage(error);
-      await recordAgentOutcome(requester, run.agentId, {
+      await recordAgentOutcome(requester, run.agentId, taskId, {
         status: cancelled ? 'cancelled' : 'failed',
         completedAt: Date.now(),
         resultSummary: undefined,
@@ -289,11 +290,12 @@ export async function mirrorAgentRun(
 async function recordAgentOutcome(
   requester: IAgentScopeHandle,
   agentId: string,
+  taskId: string | undefined,
   outcome: Pick<AgentMeta, 'status' | 'completedAt' | 'resultSummary' | 'usage' | 'contextTokens' | 'error'>,
 ): Promise<void> {
   try {
     const metadata = requester.accessor.get(ISessionMetadata);
-    await metadata.updateAgent(agentId, (current) => ({ ...current, ...outcome }));
+    await metadata.updateAgent(agentId, (current) => ({ ...current, ...outcome, taskId }));
   } catch (error) {
     requester.accessor.get(ILogService)?.warn('subagent outcome metadata write failed', {
       agentId,

@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   listThreadsQuerySchema,
   listThreadMessagesResponseSchema,
+  readThreadResponseSchema,
   sendThreadMessageRequestSchema,
   threadRefSchema,
   waitThreadsRequestSchema,
@@ -22,6 +23,20 @@ describe('peer-thread REST schemas', () => {
     expect(threadRefSchema.safeParse(ref).success).toBe(true);
     expect(threadRefSchema.safeParse({ workspace_id: 'w', session_id: 's' }).success).toBe(false);
     expect(threadRefSchema.safeParse({ ...ref, host_id: ' ' }).success).toBe(false);
+  });
+
+  it('preserves a preparing read page without treating it as empty history', () => {
+    const page = { thread: ref, turns: [], incomplete: 'history_preparing', next_cursor: 'opaque-preparation-cursor' };
+    expect(readThreadResponseSchema.parse(page)).toEqual(page);
+    expect(readThreadResponseSchema.safeParse({ ...page, incomplete: 'scan_budget' }).success).toBe(false);
+  });
+
+  it('preserves long-turn content references in the REST response', () => {
+    const contentRef = { source: { kind: 'turn', id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text', offset: 0, total: 5000 };
+    const page = { thread: ref, turns: [{ turn_id: 7, ended_at: 2, reason: 'completed', origin: 'user', input: 'preview', output: 'preview', content_refs: [contentRef] }], view: { segment: {
+      ref: contentRef, value: 'segment', next: { ...contentRef, offset: 7 }, contentRefs: [],
+    } } };
+    expect(readThreadResponseSchema.parse(page)).toEqual(page);
   });
 
   it('bounds list and wait inputs', () => {

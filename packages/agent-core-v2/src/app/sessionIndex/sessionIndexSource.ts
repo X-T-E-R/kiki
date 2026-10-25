@@ -1,3 +1,5 @@
+import { basename, sep } from 'node:path';
+
 import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
@@ -254,6 +256,32 @@ export type SessionSummaryReadResult =
   | { readonly kind: 'missing' }
   | { readonly kind: 'error'; readonly error: unknown };
 
+function isSessionDirectoryEntry(sessionId: string): boolean {
+  return sessionId !== '' && sessionId !== '.' && sessionId !== '..' && !sessionId.includes('\0') &&
+    basename(sessionId) === sessionId && (sep !== '\\' || !/:|[. ]$/.test(sessionId));
+}
+
+export async function probeSessionSummaryResult(
+  storage: IFileSystemStorageService,
+  docs: IAtomicDocumentStore,
+  sessionsScope: string,
+  workspaceId: string,
+  sessionId: string,
+  log?: ILogService,
+): Promise<SessionSummaryReadResult> {
+  if (!isSessionDirectoryEntry(sessionId)) return { kind: 'missing' };
+  try {
+    if (await storage.mtime(`${sessionsScope}/${workspaceId}`, sessionId) === undefined) return { kind: 'missing' };
+  } catch (error) {
+    if (isNonDirectoryEntry(error)) {
+      warnSkippedEntry(error, log);
+      return { kind: 'missing' };
+    }
+    return { kind: 'error', error };
+  }
+  return readSessionSummaryResult(docs, sessionsScope, workspaceId, sessionId, log);
+}
+
 export async function readSessionSummaryResult(
   docs: IAtomicDocumentStore,
   sessionsScope: string,
@@ -261,6 +289,7 @@ export async function readSessionSummaryResult(
   sessionId: string,
   log?: ILogService,
 ): Promise<SessionSummaryReadResult> {
+  if (!isSessionDirectoryEntry(sessionId)) return { kind: 'missing' };
   const metadata = await readSessionMetadataResult(docs, sessionsScope, workspaceId, sessionId, log);
   if (metadata.kind !== 'found') return metadata;
   try {

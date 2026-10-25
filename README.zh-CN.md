@@ -5,9 +5,9 @@
 [![License](https://img.shields.io/badge/license-MIT-blue)](LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/zh/) <br>
 [文档](https://x-t-e-r.github.io/kiki/zh/) · [功能一览](https://x-t-e-r.github.io/kiki/zh/features/) · [截图巡览](marketing/gallery.zh-CN.md) · [问题反馈](https://github.com/X-T-E-R/kiki/issues) · [致谢](ACKNOWLEDGEMENTS.zh-CN.md) · [English](README.md)
 
-把一个文件夹和一件事交给 Kiki：它会读材料、做计划，在那里把活干完——事情大了就叫上帮手智能体分头做——再用记忆、任务看板和定时任务让工作持续下去。它是开源的，跑在你自己的机器上。
+把一个文件夹和一件事交给 Kiki：摸清陌生代码库、核对一摞 PDF 与表格、写完一份初稿，或者推进一处改动。它会先读里面有什么、做计划，就在原地动手。活能拆开时，它会把子任务分给可绑定不同模型的子智能体，再用目标、消息队列和记忆让工作跨轮次持续推进。
 
-桌面应用、终端界面和浏览器界面连的是同一个本地守护进程，在一个地方开的会话，在另一个地方打开还是它。
+工作文件留在你选定的文件夹里，会话、历史和配置留在你本机的 Kiki home 下，模型请求只发往你自己连接的供应商或本地服务。项目基于 MIT 协议开源。桌面应用、终端界面和浏览器界面连的是同一个本地守护进程，在一个地方开的会话，换个界面打开还是它。
 
 ![Kiki 工作台：主会话派出的子智能体、进行中的目标和一条排队消息。](marketing/shots/wl-hero-workbench.zh.light.png)
 
@@ -22,7 +22,7 @@
 ### 用终端
 
 ```sh
-npm install -g kiki-agent   # 需要 Node.js 24.15.0+；也可以直接下载下方的桌面版
+npm install -g kiki-agent   # 需要 Node.js 24.22.1+ 或 26.12.1+；也可以直接下载下方的桌面版
 cd your-project
 kiki                        # 终端界面；`kiki web` 打开浏览器界面，`kiki desktop` 打开桌面应用
 ```
@@ -31,6 +31,12 @@ kiki                        # 终端界面；`kiki web` 打开浏览器界面，
 
 ```
 帮我看一下这个项目的目录结构，简单介绍一下每个目录是做什么的
+```
+
+文件夹里装的不是代码也一样。PDF、Office 和 HTML 提取属于插件，不在基础安装里：先从目录安装 [Kiki Extract](https://x-t-e-r.github.io/kiki/zh/customization/plugins#本地文档提取)（处理 PDF 与 Office 格式需本机备好 Python 与 MarkItDown），再交任务：
+
+```
+把 ./sources 里的 PDF 读一遍，拿里面的数字和 budget.xlsx 核对，把结果和每个数字来自哪个文件写进 summary.md
 ```
 
 新会话默认是「自动」模式：日常操作直接执行，碰到敏感文件或危险命令仍会先问你。`/permission` 在「每步询问」（`manual`）、「自动」（`auto`）、「替我审批」（`review`）和「完全放行」（`yolo`）之间切换。
@@ -74,9 +80,9 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 ![同一个会话里用了好几种模型：派发树中每个智能体绑定不同的模型。](marketing/shots/r05-multi-model-fleet.zh.light.png)
 
-智能体本身是你自己的 Markdown 文件：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。Kiki 会监视这些目录，改完约 200ms 自动重载。新建时可以从现有 profile 复制、从内置模板起，或者从空白开始——不必先手写。
+智能体本身是你自己的 Markdown 文件：frontmatter 写工具、模型、思考强度和能派发谁，正文就是系统提示词。保存文件后，下一次派发就会用上新内容；已经在跑的会话保留启动时的快照，直到你重建它的上下文。新建时可以从现有 profile 复制、从内置模板起，或者从空白开始。
 
-点开任何一个被派出去的子智能体就能读它自己的记录，也能在它自己的输入框里给它发消息。智能体干活时，你打的字进队列而不是打断它，每条排队消息可以选空闲后、子智能体完成后，或任务完成后发出。耗时的命令转到后台，跑完自动通知智能体，它不用反复去查。见[一个工作台，好几条线](https://x-t-e-r.github.io/kiki/zh/features/workbench)和 [Agent 与 subagent](https://x-t-e-r.github.io/kiki/zh/customization/agents)。
+点开任何一个被派出去的子智能体就能读它自己的记录，也能在它自己的输入框里给它发消息。智能体干活时，你打的字进队列而不是打断它，每条排队消息可以选空闲后、子智能体完成后，或任务完成后发出。耗时的命令转到后台，跑完自动通知智能体，它不用反复去查。见[一个工作台，好几条线](https://x-t-e-r.github.io/kiki/zh/features/workbench)和 [Agent 与 subagent](https://x-t-e-r.github.io/kiki/zh/customization/agents-and-subagents)。
 
 ### 在手头的窗口里干活
 
@@ -98,7 +104,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 比会话活得更久的是记忆：偏好、反馈、已核实的项目事实和参考资料，按全局、工作区或角色分别保存。每一条你都能看，任何一次改动都能逐条撤销——删除也能撤销。把审批设成 `review`，提议的写入会先进收件箱，而不是自己生效。见[记忆指南](https://x-t-e-r.github.io/kiki/zh/guides/memory)。
 
-每个工作区还有一块看板，需求是卡片，关联到正在处理它的会话，智能体自己能读能改。定时提示词覆盖周期性工作：按 cron 触发，只要还有 Kiki 进程持有那个已打开的会话就会跑。见[长时间的活](https://x-t-e-r.github.io/kiki/zh/features/long-work)。
+安装可选的 `kiki-task-board` 插件后，每个工作区还会有一块看板，需求作为卡片关联到正在处理它的会话，智能体自己能读能改。定时提示词覆盖周期性工作：按 cron 触发，只要还有 Kiki 进程持有那个已打开的会话就会跑。见[长时间的活](https://x-t-e-r.github.io/kiki/zh/features/long-work)。
 
 ## 按需扩展 Kiki
 
@@ -114,13 +120,13 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 ### 技能、插件与工具连接
 
-插件可以加入技能、智能体、MCP 服务器、hooks、命令和工具，在「能力」页浏览安装，官方市场里有 Kiki Office Suite 和 Kiki Writing。会话留在你自己的机器上，不经过云端中转。
+插件可以加入技能、智能体、MCP 服务器、hooks、命令和工具，在「能力」页浏览安装。目录里提供用于本地 PDF 与 Office 提取的 Kiki Extract、Kiki Office Suite、用于本地 CSV 核对的 Kiki Work、Kiki Writing、Kiki Notion、Kiki Media 和 Kimi Datasource 等——每一项各自独立安装、配置与启用；浏览器控制则可按需连接 Ego Lite、浏览器扩展（Codex / ChatGPT 或 Kimi Browser Extension）、独立受管浏览器或 CDP。会话留在你自己的机器上，不经过云端中转。见[扩展](https://x-t-e-r.github.io/kiki/zh/features/extend)和[插件](https://x-t-e-r.github.io/kiki/zh/customization/plugins)。
 
 ## 数据与机器都在你手上
 
 **空间**就是你要打开的某一个 Kiki，有自己的快捷方式、窗口行为和凭据范围——与主空间共享，或者本空间独立——所以工作的 Kiki 和个人的 Kiki 可以并排放着，不必共享能登录的东西。
 
-**远端连接**把一个 Kiki home 指向另一个，两边各自审批，每条连接是带自己状态的一行。**Thread bridge** 更窄：两个 home 之间传消息的单向通道，永远不给浏览权限。**Web 访问**用一条一次性链接把这个 Kiki 开给另一台设备上的浏览器，关掉时撤销所有链接，但不会停掉已经在跑的活。加入会话的 **SSH 主机**属于这个会话，所以时间线保持干净。见[数据与机器都在你手上](https://x-t-e-r.github.io/kiki/zh/features/spaces)。
+**远端连接**把一个 Kiki home 指向另一个，两边各自审批，每条连接是带自己状态的一行。**Thread bridge** 更窄：两个 home 之间传消息的单向通道，永远不给浏览权限。**Web 访问**用一条一次性链接把这个 Kiki 开给另一台设备上的浏览器，关掉时撤销所有链接，但不会停掉已经在跑的活。加入会话的 **SSH 主机**属于这个会话，所以时间线保持干净。把微信或 QQ 聊天绑到角色或会话上，人不在电脑前也能在手机上回消息、批权限。见[数据与机器都在你手上](https://x-t-e-r.github.io/kiki/zh/features/spaces)和[手机会话](https://x-t-e-r.github.io/kiki/zh/features/phone)。
 
 ## 带进历史，接上别的工具
 
@@ -132,7 +138,7 @@ npm 安装时，`kiki-agent` 包含 CLI/TUI，并下载对应的桌面构建校�
 
 ## 开发
 
-环境要求：Node.js ≥ 24.15.0，pnpm 10.33.0。
+环境要求：Node.js 24.22.1+ 或 26.12.1+，pnpm 10.33.0。
 
 ```sh
 git clone https://github.com/X-T-E-R/kiki.git && cd kiki && pnpm install

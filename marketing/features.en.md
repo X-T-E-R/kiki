@@ -4,15 +4,15 @@ What each capability does for you, and where to read the details. The online **F
 
 ## Start here
 
-- **Install and first run.** Node.js 24.15.0+ for npm, or a desktop build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). New sessions start in Auto; `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`). [Installation →](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
+- **Install and first run.** Node.js 24.22.1+ or 26.12.1+ for npm, or a desktop build from [GitHub Releases](https://github.com/X-T-E-R/kiki/releases). New sessions start in Auto; `/permission` switches among Ask every time (`manual`), Auto (`auto`), Approve for me (`review`), and Full access (`yolo`). [Installation →](https://x-t-e-r.github.io/kiki/en/getting-started/installation)
 - **A first run that starts with what it is for.** The desktop welcome shows what Kiki can help you do, then offers a few guided routes; **Discover Kiki** in the sidebar keeps them, and starters fill a draft without calling a model. [First launch →](https://x-t-e-r.github.io/kiki/en/getting-started/first-launch)
 - **Three surfaces, one daemon.** The desktop app, `kiki` in the terminal, and `kiki web` read and write the same sessions. [Desktop app →](https://x-t-e-r.github.io/kiki/en/getting-started/desktop-app) · [Local server →](https://x-t-e-r.github.io/kiki/en/server/local-server)
 - **Sign in.** Kimi Code OAuth or a Kimi Platform API key out of the box; Anthropic, OpenAI-compatible services, the OpenAI Responses API, Gemini, and Vertex AI can be added. [Providers and models →](https://x-t-e-r.github.io/kiki/en/configuration/providers)
 
 ## Give every agent its own model
 
-- **Subagents, each on its own model.** The main agent dispatches subagents itself, and each agent can run a different provider's model, so a strong model can plan while cheaper models do the routine work. Each subagent has its own context, and you can open its transcript. [Named child agents →](https://x-t-e-r.github.io/kiki/en/customization/agents#named-child-agents)
-- **Agents are files you own.** One Markdown file per agent: the frontmatter sets tools, model, effort, and which subagents it may dispatch, and the body is the system prompt. Create one by copying a profile, from a shipped template, or blank. [Agent file format →](https://x-t-e-r.github.io/kiki/en/customization/agents#agent-file-format)
+- **Subagents, each on its own model.** The main agent dispatches subagents itself, and each agent can run a different provider's model, so a strong model can plan while cheaper models do the routine work. A role with no model of its own and no default does not borrow the lead's expensive one: the dispatch fails with `model.not_configured`. Each subagent has its own context, and you can open its transcript. [Named child agents →](https://x-t-e-r.github.io/kiki/en/customization/agents-and-subagents#named-child-agents)
+- **Agents are files you own.** One Markdown file per agent: the frontmatter sets tools, model, effort, and which subagents it may dispatch, and the body is the system prompt. Save the file and the next dispatch uses it; a session already running keeps the snapshot it started with until you rebuild its context. Frontmatter keys are closed, so a key carried over from another tool fails the load and is named — which is where migrating that file starts. Create one by copying a profile, from a shipped template, or blank. [Agent file format →](https://x-t-e-r.github.io/kiki/en/customization/agents-and-subagents#agent-file-format)
 - **Other agents as engines.** A profile can run on Claude Code, Codex, Cursor, Gemini CLI, Kimi CLI, OpenCode, or Grok Build through ACP or the Codex app-server. [Dispatch capabilities →](https://x-t-e-r.github.io/kiki/en/guides/settings#dispatch-capabilities)
 - **Background tasks.** Long commands and subagents run in the background; when one finishes its result goes back to the agent automatically. [Background tasks →](https://x-t-e-r.github.io/kiki/en/reference/tools#background-tasks)
 
@@ -21,7 +21,7 @@ What each capability does for you, and where to read the details. The online **F
 - **Goals.** `/goal` gives the agent a target it keeps working toward across turns, with edit, pause, and cancel controls. [Goals →](https://x-t-e-r.github.io/kiki/en/guides/goals)
 - **The message queue.** Messages you send while the agent is busy wait instead of cutting in, and each can go out when the agent is idle, after its subagents finish, or after its tasks finish. [Queue →](https://x-t-e-r.github.io/kiki/en/guides/interface#input-box)
 - **Scheduled prompts.** The agent can schedule a prompt once or on a cron expression. A schedule fires while a Kiki process holds that session open. [Scheduled tasks →](https://x-t-e-r.github.io/kiki/en/reference/tools#scheduled-tasks)
-- **Task board.** Each workspace has a board where requirements are cards linked to the sessions working on them; the main agent reads and updates it. [Task board →](https://x-t-e-r.github.io/kiki/en/guides/sessions#task-board) · [Spotlight →](task-board.en.md)
+- **Task board.** With the optional `kiki-task-board` plugin, each workspace gets a board where requirements are cards linked to the sessions working on them; the main agent reads and updates it. [Task board →](https://x-t-e-r.github.io/kiki/en/guides/sessions#task-board) · [Spotlight →](task-board.en.md)
 - **Context that lasts.** You set the compaction point, and at it the agent compresses into a summary, restarts from its working notes, or picks per run. [Context compression →](https://x-t-e-r.github.io/kiki/en/guides/sessions#context-compression)
 - **Memory.** Facts kept across sessions as global, per workspace, or per persona, with a change history you can undo operation by operation. [Memory →](https://x-t-e-r.github.io/kiki/en/guides/memory)
 
@@ -46,6 +46,7 @@ What each capability does for you, and where to read the details. The online **F
 - **Thread bridges.** A one-way channel for messages between two homes that never grants GUI browsing access. [`kiki bridges` →](https://x-t-e-r.github.io/kiki/en/reference/command#kiki-bridges)
 - **Web access.** Opens this Kiki in a browser on another device through a single-use link; turning it off revokes every link without stopping running work. [Web access →](https://x-t-e-r.github.io/kiki/en/server/local-server#use-kiki-in-a-browser)
 - **SSH in a session.** Hosts joined to a session belong to that session, so the timeline stays clean. [Input box →](https://x-t-e-r.github.io/kiki/en/guides/interface#input-box)
+- **Phone session.** Pair a WeChat or QQ chat to a persona or session, and answer pending questions and approvals from your phone while you are away from the desk. [Phone session →](https://x-t-e-r.github.io/kiki/en/features/phone)
 
 ## Every layer is yours
 
@@ -63,7 +64,8 @@ What each capability does for you, and where to read the details. The online **F
 ## Look and extend
 
 - **Skins and appearance.** Six built-in skin families, a picture or video background, and appearance packs that bundle colors with media. [GUI skins →](https://x-t-e-r.github.io/kiki/en/customization/skins)
-- **Plugins.** A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install on the Capabilities page. [Plugins →](https://x-t-e-r.github.io/kiki/en/customization/plugins)
+- **Plugins.** A plugin can add skills, agents, MCP servers, hooks, commands, and tools; browse and install on the Capabilities page. The catalog covers local PDF and Office extraction (`Kiki Extract`, which needs Python with MarkItDown for those formats), creating and editing local Word, Excel, and PowerPoint files (`Kiki Office Suite`), local CSV checks (`Kiki Work`), manuscript drafting (`Kiki Writing`), Notion search and write-back (`Kiki Notion`), media generation (`Kiki Media`), and Kimi Datasource, which needs Kimi Code OAuth and plan quota. Each one is installed, configured, and enabled on its own. [Plugins →](https://x-t-e-r.github.io/kiki/en/customization/plugins)
 - **Skills.** Reusable workflows that register as slash commands you can trigger with `/name`. [Agent Skills →](https://x-t-e-r.github.io/kiki/en/customization/skills)
 - **MCP servers.** Connect external tools over stdio, HTTP, or SSE. [MCP →](https://x-t-e-r.github.io/kiki/en/server/mcp)
 - **Web search and fetch.** Search and page fetches run on named lanes you can inspect; GitHub and Context7 need no key, and multiple keys per provider rotate with cooldowns. [Search and retrieval →](https://x-t-e-r.github.io/kiki/en/guides/settings#search-retrieval) · [Spotlight →](nb-search.en.md)
+- **Browser control.** Drive the browser you already use, run a browser Kiki manages, attach one that is already running over CDP, or select an Ego Lite installation you set up yourself. Browser tools reach a conversation once a source is set up and allowed. [Browser control →](https://x-t-e-r.github.io/kiki/en/guides/settings#browser-control)

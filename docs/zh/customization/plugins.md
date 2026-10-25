@@ -1,6 +1,6 @@
 # Plugins
 
-Plugin 把可复用的 Kiki 能力打包成一个可安装单元：可以添加 [Agent Skills](./skills.md)、自定义 [Agent](./agents.md)、在会话启动时自动加载的 Skill、系统提示词指令、带来真实工具能力的 MCP servers，也可以把另一个工具的对话历史作为[可以接着聊的 Kiki 会话](#会话历史导入)或只读归档导入。适合把工作流共享给团队、连接外部服务，或从[官方列表](#官方插件)安装扩展。
+Plugin 把可复用的 Kiki 能力打包成一个可安装单元：可以添加 [Agent Skills](./skills.md)、自定义 [Agent](./agents-and-subagents.md)、在会话启动时自动加载的 Skill、系统提示词指令、带来真实工具能力的 MCP servers，也可以把另一个工具的对话历史作为[可以接着聊的 Kiki 会话](#会话历史导入)或只读归档导入。适合把工作流共享给团队、连接外部服务，或从[官方列表](#官方插件)安装扩展。
 
 ## 安装与管理
 
@@ -30,7 +30,7 @@ Plugin 把可复用的 Kiki 能力打包成一个可安装单元：可以添加 
 | --- | --- |
 | `/plugins` | 打开交互式 plugin 管理器 |
 | `/plugins list` | 列出已安装 plugins |
-| `/plugins install [--trust] <path-or-url>` | 从本地目录、zip URL 或 GitHub 仓库 URL 安装；对已安装的本地来源，重复执行同一路径即可更新。`--trust` 给出[一次知情同意](#安装会运行代码的插件)，会运行自身代码的 plugin 需要它，且只在该来源首次安装时询问 |
+| `/plugins install [--trust] [--sha256 <64-hex>] <path-or-url>` | 从本地目录、zip URL 或 GitHub 仓库 URL 安装；对已安装的本地来源，重复执行同一路径即可更新。`--trust` 给出[一次知情同意](#安装会运行代码的插件)，会运行自身代码的 plugin 需要它，且只在该来源首次安装时询问。`--sha256` 是你自行选择的 ZIP 的发布者校验和。市场已经发布这个校验和，从 Official 或 Curated 安装时不必手填 |
 | `/plugins marketplace [source]` | 浏览官方 marketplace，或传入自定义 marketplace JSON 的路径或 URL |
 | `/plugins info <id>` | 查看 plugin 详情和 diagnostics |
 | `/plugins enable <id>` | 启用 plugin |
@@ -69,18 +69,30 @@ Plugin 的大部分内容是声明式的：Skills、Agent、提示词文本、�
 
 ### 注意事项
 
-- **本地改动在当前这段对话里生效。** 首次用 `/plugins install --trust <path>` 安装，再用 `/plugins enable <id>` 启用（新装的 plugin 默认未启用）；改完源目录后用同一路径再执行一次 `/plugins install <path>`，托管副本被替换、plugin 保持启用，命令返回后新工具就能在这段对话里用。不需要 `/plugins reload`、`/reload` 或 `/new`，已同意过的来源也不会再问 `--trust`。
+- **本地改动在当前这段对话里生效。** 首次用 `/plugins install --trust <path>` 安装，再用 `/plugins enable <id>` 开启全局使用（终端首次安装默认不开启全局使用）；改完源目录后用同一路径再执行一次 `/plugins install <path>`，托管副本被替换、plugin 保持启用，命令返回后新工具就能在这段对话里用。不需要 `/plugins reload`、`/reload` 或 `/new`，已同意过的来源也不会再问 `--trust`。
 - **更新会等该 plugin 正在执行的工作结束。** 运行中的调用在旧版本上跑完，切换期间到达的调用排队后在新版本上执行；其他 plugin 不受影响，已按旧工具定义解析但未执行的调用会要求重试而不是按新规则继续。
 - **`/plugins reload` 是全局重读**，重读 `installed.json` 和每个托管副本，从不复制源目录，所以它不是应用源目录改动的方式；系统提示词指令和 plugin Skill 仍按各自文档的时机重建（见[系统提示词指令](#系统提示词指令)和[插件 Agent](#插件-agent)）。
 - **本地安装会被拷贝**到 `$KIKI_HOME/plugins/managed/<id>/`，CLI 始终从这份副本运行。改源目录后重新安装；手改托管副本没有更新路径，之后重新安装还会覆盖它。
 - **移除 plugin 只删除安装记录**，托管副本和源文件仍留在磁盘上。
-- **Plugin 按用户安装**，对所有项目生效。
+- **每个 Kiki home 只安装一份插件**，工作区与会话共用这个包，各自选择是否使用。
+
+### 选择插件在哪里使用
+
+插件只需安装一份，再选择在哪里使用。GUI 安装预览提供全局使用、在一个工作区使用，或先安装留待以后使用。留待以后使用的插件默认关闭，也不会启动它的 App 后台服务；三种选择都沿用同一套预览和一次知情同意。
+
+在**设置 → 工作区**中打开一个工作区，设置它的插件默认值。对话右栏的**能力控制 → 插件**只控制当前会话；**能力清单 → 工具**展示插件提供的工具，不放插件使用开关。从输入区的 **+** 菜单或插件选择器选择已安装插件，也只在当前会话启用，不会发送消息。第一条消息发出前，这些选择先留在新会话草稿中，再在消息开始前应用；应用失败会保留草稿供你重试。其他会话和工作区默认值保持不变。这项能力默认可用；显式设置 `[experimental] plugin_workspace_usage = false` 或 `KIKI_EXPERIMENTAL_PLUGIN_WORKSPACE_USAGE=0` 仍可关闭选择界面。
+
+选择按具体程度生效：会话优先于工作区，工作区优先于全局默认值。**恢复默认**删除本地覆盖。明确被全局禁用或无效的插件不能在局部开启，请先在插件设置中恢复主开关。Profile 的工具限制仍然生效。
+
+关闭插件会从该范围撤下工具、Skills、命令、插件 Agent、hooks 和面板入口，已经获准开始的调用可以完成。插件指令在下一安全步骤刷新；选择保存完成不会改写已经发出的请求或过去的消息。**正在应用**表示目录或运行时仍在应用变化。应用失败时会恢复原来的选择并显示错误。
+
+App 类型插件使用当前连接的 Kiki home 所拥有的共享后台服务，不是每个工作区一个进程。局部关闭不会停止这个服务或另一会话正在执行的工作；服务存在也不会让未开启的范围取得工具。全局停用与卸载仍在插件设置中管理。使用范围既不撤销安装同意，也不是受信插件代码的沙箱。
 
 ### 自定义 marketplace JSON
 
 浏览 marketplace 时，把 JSON 路径或 URL 传给 `/plugins marketplace <source>`，设置 [`KIKI_PLUGIN_MARKETPLACE_URL`](../configuration/env-vars.md)，或在 `config.toml` 中配置 `[plugins] marketplace_url`。优先级依次为命令 source、环境变量和配置；未指定自定义 source 时，Kiki 使用官方 [Kiki Plugins 目录](https://x-t-e-r.github.io/kiki-plugins/marketplace.json)。目录暂时无法访问时，仍可浏览随版本附带的元数据；安装插件包仍需能访问其下载地址。
 
-Kiki 自己的那些 plugin——写作、文档提取、媒体来源、Notion 等等——在独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 里开发，不在 Kiki 源码树中。它们的源码在那里，改动提给那里，开发时指向的本地目录也是那里。从官方目录安装是常规路径：Kiki 下载已发布的包，并按目录中记录的 SHA256 校验和核对，所以跑起来的是真正发布出去的那个产物，而不是某个目录里碰巧有什么。检出那个仓库只在你本人要改这些 plugin 时才需要。
+Kiki 自己的那些 plugin——写作、文档提取、媒体来源、Notion 等等——在独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 里开发，不在 Kiki 源码树中。它们的源码在那里，改动提给那里，开发时指向的本地目录也是那里。从官方目录安装是常规路径：Kiki 下载已发布的包，并按目录中记录的 SHA256 校验和核对，所以跑起来的是真正发布出去的那个产物，而不是某个目录里碰巧有什么。远程 ZIP 目录条目带有 `sha256`。市场、详情和会话里的安装会把这个校验和连同下载地址一起提交。GitHub 仓库 URL 和本地目录不使用 ZIP 校验和。检出那个仓库只在你本人要改这些 plugin 时才需要。
 
 `plugins` 数组中每个条目需要 `id` 和 `source`（本地路径、zip URL 或 GitHub URL）：
 
@@ -113,93 +125,129 @@ Windows 下安装所需格式：
 .venv-documents/Scripts/python.exe -m pip install "markitdown[pdf,docx,xlsx,xls,pptx]"
 ```
 
-macOS/Linux 改用 `.venv-documents/bin/python`。只处理 PDF 时用 `markitdown[pdf]`。在 **能力 → Plugins → Kiki Extract → 设置 → Python with MarkItDown** 里把 `pythonPath` 指向该解释器，它不会替你装 Python 或 pip 依赖。
+macOS/Linux 改用 `.venv-documents/bin/python`。只处理 PDF 时用 `markitdown[pdf]`。在 **能力 → 扩展与工具 → 插件 → Kiki Extract → 设置 → Python with MarkItDown** 里把 `pythonPath` 指向该解释器，它不会替你装 Python 或 pip 依赖。
 
 每次提取写一个新目录，包含 `document.md`、记录来源/引擎/warnings 的 `extraction.json`，以及引擎实际返回的素材。原文件不动，已有输出不会被覆盖。响应里的预览可能缩短并标记 `previewTruncated`，完整正文用 `Read`/`Grep` 读保存后的 Markdown。MarkItDown 不导出图片，Defuddle 也不下载正文中的链接图片。
 
 Auto 默认本地处理，不上传也不做 OCR。空内容或只有图像的扫描件会直接报错而不是被当作已读，混合扫描文档仍可能缺掉没有文本层的页面。需要云端 OCR 时，授权把文件上传给 MinerU，在插件设置里配好 token，再选 `engine=mineru` 和 `allowUpload=true`；服务条款和费用由该服务决定，停止本地等待不会取消远端任务。缺依赖、不支持的格式和超限文件都会返回错误而不是残缺结果。输入上限 50 MiB，期限 600 秒。
 
+## 输出翻译与改写
+
+**Kiki Output Layer**（`kiki-output-layer`）在阅读时流式翻译或改写 Assistant 正文，原始对话和主模型上下文保持原样。它使用你已有的 Kiki 模型与连接，不需要再填一份 API 密钥。
+
+本地试用时，在 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 根目录的 Kiki 会话中安装并启用：
+
+```sh
+/plugins install --trust ./plugins/official/kiki-output-layer
+/plugins enable kiki-output-layer
+```
+
+已安装插件被当前对话选用时，输出预设即可使用；对话选择优先于工作区选择，工作区选择优先于全局使用设置。插件提供「译为中文」「译为英文」「说人话」「猫娘」「傲娇」和「自定义」六个预设。在 GUI 输入区的输出预设菜单中编辑提示词、选好模型，再选择该预设；模型留空时不处理，不会使用 Kiki 默认模型。使用已有连接上的自定义模型时，同时选择连接、填写模型 ID 和上下文窗口。每组输出上限留空时不额外限制，也可填写正整数 token 上限；模型自身容量仍然适用。
+
+从同一菜单可按内置模板新增预设，已保存的预设和编辑过的提示词保持原样。更新安装包时，在插件仓库中再次运行 `/plugins install ./plugins/official/kiki-output-layer`。安装、启用及更新会在当前对话生效；修改预设后，新请求使用新配置，在途请求保留启动时的配置。
+
+正文按默认约 600 个 Unicode 字符分组，优先处理当前可见组，并向前、向后各预加载一组；这些数值都可修改。未访问的历史不会自动全量处理。可随时切回原文，复制当前阅读版本或单独复制原文。输出层取消或失败不停止主模型，原文仍可阅读。
+
+阅读成果与输出层模型历史分别保存。默认历史预算为 16,384 tokens；设为 `0` 关闭历史，达到预算或模型窗口限制时从当前组重建整个历史周期。清空模型历史保留已生成阅读成果，清空阅读成果则允许重新生成。撤销或重试源正文后，旧成果失效。
+
 ## 媒体来源
 
-媒体插件会贡献一个或多个*来源*——图像、视频或语音的提供方。装好之后，它们的来源会一起出现在**能力 → Plugins → 媒体来源**的可搜索列表里。
+只需安装并启用一个 **Kiki Media**（`kiki-media`），再打开**能力 → 扩展与工具 → 插件 → 媒体来源**。0.2.0 内置 OpenAI、Google、Ark、xAI、MiniMax、StepFun、Novita、Agnes、NewAPI 和 ComfyUI 的图像、视频与语音来源，不必按厂商另装插件。你自己的本地命令也可以作为脚本来源加入同一列表。
 
-### 开启生成
+统一包需要支持媒体来源分组及脚本来源管理的 Kiki 宿主。如果当前版本没有**添加脚本来源**操作，或报告未知 manifest 字段，请先更新宿主。包声明的插件引擎要求 `>=0.4.0` 是协议版本，不是 CLI 发行版本号；具体宿主接口见[插件 README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#configure-a-source)。
 
-发起新的生成是实验性功能，**默认关闭**。本页其它部分——安装来源、填写设置、选择默认项、查看历史生成——都照常可用。
+### 发起生成
 
-按 Kiki 读取的顺序，有三种开启方式：
-
-- 在环境变量里设置 `KIKI_EXPERIMENTAL_MEDIA_GENERATION=1`。
-- 在 `config.toml` 的 `[experimental]` 下写 `media_generation = true`。
-- 在**设置 → 实验**里打开**媒体生成插件**。
+媒体生成没有实验总开关。安装并启用插件，配置一个已启用的来源，再按需发起生成。打开列表或保存设置不会开始任务；来源的访问要求、费用和脚本授权仍然适用。
 
 ### 列表
 
-每行说明它是哪个提供方、来自哪个包、现在能不能用。行右侧的状态是：
+每行标明来源、所属插件，以及配置和启用状态。打开标为**需要配置**的来源即可补齐必填项。禁用或移除的来源仍保留在列表中，方便恢复；插件未加载成功时，需要先修复插件才能生成。受阻的任务会被保留，不会丢弃。
 
-- **可用**——已安装、已启用，配置检查通过。
-- **需要配置**——有必填项缺失，打开这一行补上即可。
-- **未检查**——已安装、已启用，但设置还没被读取。Kiki 不会为了画列表逐个读取每个来源，所以这既不是放行也不是警告；打开这一行看它的设置。
-- **不可用**——包没有加载成功，或被你关掉了。修好之前这一行配的东西都不会生成。
-- **受阻**——该提供方的某个任务因为包没加载而无法继续。任务被保留，不会被丢弃。
-
-可以按模态（图像、视频、语音）或状态筛选，也可以直接搜索。筛选带旁边的计数是整个列表的数量，所以筛选不会藏起后面还有多少。
+可以按模态（图像、视频、语音）或状态筛选，也可以直接搜索。筛选带旁边的计数是整个列表的数量，所以筛选不会藏起后面还有多少。模型和音色发现只在来源详情中按需执行，不会因为打开列表就发请求。
 
 ### 配置一个来源
 
-打开某一行进入设置表单，那就是该包自己的设置页：字段、密钥处理和保存路径都一致，提供方的密钥就是插件的密钥。
+打开某一行，编辑该来源的设置并保存。内置来源共用一个插件，但各有自己的地址、密钥和启用状态；保存一个不会覆盖其它来源。保存被拒绝时，表单保留草稿并显示错误。
 
-密钥只写不读。Kiki 只显示是否已保存，绝不再次显示它的值；替换或清空都是一次普通编辑。
+API 密钥和脚本环境变量在表单中只写不读。Kiki 只显示是否已保存，不返回原值；替换或清空都是普通编辑。它们沿用现有插件配置存储，不是单独的加密保险库。
 
-来源有三种配置方式，表单会直接写明属于哪一种：
+来源有三种配置方式：
 
-- **它自己的设置。** 你提供 API key，提供方需要的话还有 base URL。只有在未选择连接时这些字段才必填。
-- **已有的 Kiki 连接。** 如果该包声明了连接设置，表单会列出你已有的连接，选一个就够了——包自己的密钥和地址此后既不必填也不会被用。所选连接必须能解析，解析不了时 Kiki 不会退回你之前存的密钥。
-- **自行管理。** 脚本用它自己的设置、环境变量或外部文件管理凭据。这是受支持的用法，没有密钥不等于提供方坏了。Kiki 保存的任何内容都不会在日志、预览或报告里回显。
+- **它自己的设置。** 提供 API 密钥，以及需要时的 base URL。只有在未选择连接时这些字段才必填。
+- **已有的 Kiki 连接。** 在来源表单中选择连接，复用其地址和认证，包括 Kiki 现有的 OAuth 刷新。来源自己的密钥和地址此后既不必填也不会被用。所选连接必须能解析，解析不了时 Kiki 不会退回之前存的密钥。
+- **自行管理。** 脚本可以用自己的环境变量或外部凭据文件。没有 Kiki 管理的密钥，不等于该来源损坏。
 
-已有连接不代表它背后的账号一定能做媒体。Kiki 呈现提供方实际返回的结果，不维护「哪些连接支持哪些模态」的清单。
+文本订阅或 OAuth 登录本身不授予媒体 API 权限。生成前请确认服务的媒体权限和费用。ComfyUI 需要你已运行的地址、工作流和已安装模型；Kiki 不会替它安装 GPU 引擎或模型文件。
+
+### 添加脚本来源
+
+选择**添加脚本来源**，填写唯一的小写 id 和名称，选择模态，再填写你已能在本机运行的命令。参数每行一项，也可以指定工作目录，并以 JSON 对象填写环境变量。请先安装命令自己的运行时和依赖。它可以读取外部文件，也能脱离 Kiki 独立运行，不需要导入 Kiki API。
+
+选择**文件输出**时，命令把结果写到 `{output}` 提供的文件名；`{prompt}` 是图像或视频提示词，`{text}` 是语音文本。输出不是 PNG、MP4 或 MP3 时，填写对应扩展名和 MIME 类型。例如，原来可用的命令 `node speech.mjs "Hello" out.mp3`，可把命令设为 `node`，参数填写为：
+
+```text
+/path/to/speech.mjs
+{text}
+{output}
+```
+
+需要异步句柄、轮询、取消或多个文件时，选择 **JSON 桥接**。它把输入和结果文件路径传给命令；占位符和结果格式见[插件 README](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-media#add-your-own-script)。轮询必须继续已接受的句柄，不能再提交一次付费生成。
+
+命令在插件安装信任确认后，以你的账号权限运行，不在沙箱中，也不新增逐次审批。脚本输出可能进入 Task 输出，请不要打印凭据。已保存的来源 id 不能重新占用；需要继续旧句柄时，恢复已移除来源，不要替换它。
+
+### 来源启停与升级
+
+在来源详情中禁用或移除，无需卸载 Kiki Media。其它来源、已保存设置、任务和已完成文件均保留。移除可逆：恢复原行即可重新使用。恢复原来的兼容地址和凭据后，统一来源的旧句柄可以继续轮询或下载，不会重新提交生成。
+
+升级后，已安装的旧 `kiki-media-<vendor>` 包仍保留。其设置和密钥作为对应内置来源的默认值，直到你覆盖或清空该字段。原来被禁用的旧来源仍保持禁用，除非你明确启用内置替代来源。新请求使用统一适配器，列表不重复显示厂商来源。
+
+已有任务保留原提供方包、配置和已接受句柄。这些任务仍需原包时，请保持原包启用且配置兼容；禁用或移除统一来源不会改变旧包状态。升级不会复制或删除 OAuth 刷新令牌，已完成的原文件仍可访问。
 
 ### 分模态默认项
 
-媒体入口包上的三个设置分别指定图像、视频和语音的默认来源，都是普通插件设置，存在该包的其他配置旁边。某个来源是默认项时，列表会在它那一行标出来。
+Kiki Media 的三个设置分别指定图像、视频和语音默认来源，都是普通插件设置，存在该包的其它配置旁边。某个来源是默认项时，列表会在它那一行标出来。
 
-某个模态没有默认项且只有一个来源能胜任时，Kiki 就用它；有多个时，Kiki 会让你选，而不是替你选一个然后让你付费。
+某个模态没有默认项且只有一个已启用来源能胜任时，Kiki 就用它；有多个时，Kiki 会让你选，而不是替你选一个然后让你付费。
 
 ### 最近的生成
 
-同一页面列出当前会话最近的媒体任务，生成关闭时也照常列出。每个任务显示状态，已经落地的文件都有预览、下载或页内播放。两个状态值得留意：
+同一页面列出当前会话最近的媒体任务，生成关闭时也照常列出。任务沿用现有会话所属的 Task 和完成通知路径。每个已交付原文件都有预览、下载或页内播放；语音返回有限音频文件，不是双向实时语音会话。两个状态值得留意：
 
 - **结果不明**——Kiki 无法确认厂商是否接受了这次提交，它可能仍在生成并计费。这里不会自动重新生成，也不提供重试，因为重试就是第二次计费。
 - **已停止**——Kiki 只是停止了本地等待。厂商是否也停了、是否仍在计费由厂商回答，这一行会写明。
 
-部分完成的任务保留已经落地的文件。**继续取回**通过拥有该任务的会话和 agent 继续同一个任务，**停止等待**同理，两者都只作用于产出该任务的那个会话。
+部分完成的任务保留已经落地的文件。**继续取回**通过拥有该任务的会话和 Agent 继续同一个任务，**停止等待**同理，两者都只作用于产出该任务的那个会话。
 
 ### 发现来源
 
-「从哪里发现新提供方」和「已经安装了哪些」是两个问题，所以它在页面底部单独一块可折叠区域。添加、暂停或移除发现来源都不影响已安装的包、密钥或过往任务。
+「从哪里发现新插件」和「已经配置了哪些媒体来源」是两个问题，所以目录订阅在页面底部有单独的可折叠区域。添加、暂停或移除发现来源都不影响已安装的包、密钥或过往任务。
 
 ## 官方插件
 
-**Official** 页签里共 17 条。其中 15 条是 Kiki 自带的，在 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 开发，本页有它们的说明：
+**Official** 页签列出在 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins) 维护的 Kiki 官方插件，以及由 Kimi 维护的上游插件：
 
-- **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)**、**[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)** 和 **[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)**：文档与写作工具，见[本地文档提取](#本地文档提取)及下文
-- **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)**：连接 Notion 官方托管 MCP 服务（见[Notion 资料与写回](#notion-资料与写回)）
-- **[Kiki Media](#媒体来源)** 及其 10 个提供方 plugin：按图像、视频、语音分别一个
+- **[Kiki Extract](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-extract)**、**[Kiki Office Suite](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-office)**、**[Kiki Work](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-work)** 和 **[Kiki Writing](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-writing)**：把本地 PDF、Office、HTML 与文本文件转成可读的 Markdown（见[本地文档提取](#本地文档提取)），在本机创建、读取和编辑 Word、Excel 与 PowerPoint 文件，在本机核对 CSV/TSV 键并对照两张表（不改原文件、不上传），以及使用专注的手稿面板与续写草稿命令
+- **[Kiki Notion](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)**：连接 Notion 官方托管 MCP 服务，检索资料、产出带出处的简报，并按要求写回指定页面（见[Notion 资料与写回](#notion-资料与写回)）
+- **[Kiki Media](#媒体来源)**：一个包，内置 10 家图像、视频与语音服务来源，也支持添加你自己的本地脚本
+- **[Task board](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-task-board)**（`kiki-task-board`）：工作区里长期保存的需求卡片，关联到处理该需求的会话（见[任务看板](../guides/sessions.md#任务看板)）
+- **[Cloudflare Tunnel](https://developers.cloudflare.com/tunnel/)**（`kiki-cloudflare`）和 **[Kiki Sites](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-sites)**（`kiki-sites`）：连接已有的 Cloudflare 隧道并管理随 Kiki 常驻的连接器，或连接代码托管并用官方服务 CLI 与 API 部署站点或应用
+- **[Desktop Pet](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-pet)**（`kiki-pet`）：随 Kiki 任务反应的隔离桌面伴侣，可导入 Codex 宠物，并附带制作 Skill
 
-最后两条由 Kimi 官方维护，发布在 Kimi 自己的 CDN 上，不在插件仓库里：
+以下两条由 Moonshot AI 维护，发布在 Kimi 自己的 CDN 上，不在 Kiki 插件仓库里：
 
-- **[Kimi Datasource](#kimi-datasource)**：用自然语言查询金融行情、宏观经济、企业工商、学术文献和法律法规
-- **[Kimi Browser Extension](#kimi-browser-extension)**：让 AI 直接操控你自己的浏览器，完成各类网页操作
+- **[Kimi Datasource](#kimi-datasource)**：用自然语言查询金融行情、宏观经济、企业工商、学术文献和法律法规（需 Kimi Code OAuth 登录并消耗套餐额度）
+- **[Kimi Browser Extension](#kimi-browser-extension)**：让 AI 直接操控你已登录的浏览器完成网页操作（需配合安装浏览器扩展）
 
 **[Kimi Computer Use](#kimi-computer-use)** 不在这个页签里，它从直链安装，见下文单独一节。
 
-**Curated** 是另一回事：3 个 Kimi 合作伙伴的第三方 plugin，每一条都锁定在某个确定的 commit 上。
+**Curated** 是另一类：第三方精选插件（如 `superpowers`、`vercel-plugin`、`modern-web-guidance`），每一条都锁定在具体 commit 上，启用前可先预览导入的贡献项。
 
 ### 安装与升级
 
 1. 运行 `/plugins`，按 `Tab` 选择 **Official**
 2. 找到要安装的 plugin，按 `Enter` 安装
-3. 运行 `/reload` 或 `/new` 激活
+3. 用 `/plugins enable <id>` 启用，或在 GUI 选择[工作区／会话使用范围](#选择插件在哪里使用)；无需新建会话
 
 安装会下载已发布的包，并按目录中记录的 SHA256 校验和核对；字节对不上已发布产物的包会被拒绝，而不是照装。
 
@@ -387,7 +435,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 | `interface` | 在 `/plugins` 中展示的字段：`displayName`、`shortDescription`、`longDescription`、`developerName`、`websiteURL` |
 | `icon` | 插件包内 `.svg` 或 `.png` 文件的 `./` 路径（上限 64 KB）。`GET /api/plugins` 以惰性的 `data:` URI 返回，供 GUI 画在插件旁边 |
 | `skills` | 一个或多个 `./` 路径，必须位于 plugin 根目录内。省略时根目录的 `SKILL.md` 被当作单个 Skill root |
-| `agents` | 一个或多个 `./` 路径，必须位于 plugin 根目录内，指向含有 [Agent 文件](./agents.md#自定义-agent)的目录。省略时根下的 `agents/` 目录（若存在）被自动采用 |
+| `agents` | 一个或多个 `./` 路径，必须位于 plugin 根目录内，指向含有 [Agent 文件](./agents-and-subagents.md#自定义-agent)的目录。省略时根下的 `agents/` 目录（若存在）被自动采用 |
 | `sessionStart.skill` | 在新会话或恢复会话开始时，把指定 plugin Skill 加载到 main agent |
 | `skillInstructions` | 每次加载此 plugin 的 Skill 时一并附带的额外说明 |
 | `systemPrompt` | plugin 启用期间提供给 Agent 系统提示词的内联指令 |
@@ -397,6 +445,42 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 | `commands` | 一个或多个 `./` 路径，指向目录或 `.md` 文件，把其中的 Markdown 文件注册为斜杠命令；见[插件斜杠命令](#插件斜杠命令) |
 
 `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段会显示为 diagnostics 并被忽略。
+
+### 聊天信道与消息发送
+
+插件可以把平台账号接入 Kiki 已有的会话绑定，并在已准入的工具调用中发送消息。在 `x-kiki` 中声明可执行贡献，再由 `entry.mjs` 注册相同定义。SDK 合同从 `@kiki/plugin-sdk/im` 和 `@kiki/plugin-sdk/messages` 导出。
+
+需要其他已安装插件时，在 `x-kiki` 中声明版本范围，例如 `"dependencies": { "kiki-media": "^1.0.0" }`。激活或执行前，Kiki 检查依赖是否已安装、已启用且版本兼容。缺少依赖时，由用户安装或启用；Kiki 不自动执行这些操作。未声明 `dependencies` 的旧插件保持原有行为。
+
+聊天连接在 `x-kiki.imAdapters` 中声明，并通过 `api.registerImAdapter(definition, adapter)` 注册。每项代表一个已配置账号，包含 `schemaVersion: 1`、局部 `id`、`label`、独立的 `inbound` 和 `outbound` 布尔值、`maxInboundBytes` 与 `mediaCapabilities` 数组。Kiki 将 `plugin:<pluginId>/<adapterId>` 用作 provider 和 instance ID。入站定义还必须声明真实协议或消息源的 `listenerRealm`：OneBot 使用 `qq-onebot`，并以真实 QQ self ID 作为 `start()` 返回的 `listenerAccountId`；QQ 官方 API 使用 `qq-official` 和 app ID。`accountId` 仍是插件稳定的绑定身份，可保留已有前缀；省略 `listenerAccountId` 时，Kiki 用 `accountId` 判断监听占用。已运行的监听保留同源账号占用，后来冲突的监听停止并显示 `account_in_use`。仅出站连接不占入站监听。
+
+`start({ signal, settings, instanceId, offset, emit })` 返回 `{ accountId, listenerAccountId?, targets? }`，启动完成后才能调用 `emit`。仅出站 adapter 可以返回 `targets` 供用户确认目标，不需要伪造入站事件。关闭、重载或删除插件只关闭它自己的连接，并保留用户的监听偏好和绑定，供重新启用时恢复。用户逐个确认目标；群绑定默认限于原发送人，也可显式设置 `binding_scope: "topic"` 或 `"chat"`。共享群会话保留每条消息的真实发送人，其他成员不能因此处理原发送人的待审批或待回答交互。
+
+`eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds` 和 `replyToMessageId` 会进入会话消息元数据。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
+
+插件工具中的 `context.messages.send()` 与 `SendMessage` 共用 main agent、能力、工具禁用和审批检查，再通过当前线程已启用的绑定信道发送。例如：
+
+```js
+const receipt = await context.messages.send({
+  request_id: "report-1",
+  messages: [
+    { text: "第一条消息\n内含换行" },
+    { text: "第二条消息", attachments: [{ file_id: artifact.file_id, kind: "voice" }] }
+  ]
+});
+```
+
+发送已保存到本会话的生成结果时，使用已完成的 `context.media.generate()` 产物的 `file_id`。声明 `mediaInputs: true` 的工具必须保留 `args.request` 中已准入的请求。普通附件 `path` 仍须位于工作区、附加目录或 Bot 目录；产物在 home 下其他位置，不代表插件可以任意读取整个 home。
+
+单条入口 `text`/`attachments`/`reply_to`/`mention_ids` 与显式 `messages` 数组互斥。换行仍属于同一条消息。外层 `to`、`channel` 和 `channels` 为所有条目选择目标。批次返回有序 `messages` receipt，每项保留稳定的 `index`、`message_id`、信道结果和附件引用；取消会停止尚未发出的条目。显式 `request_id` 在插件、会话和 Agent 范围内跨工具调用及重启有效：相同内容复用 receipt，改动内容会冲突。已经准入但中断的请求保留未知状态，不重新外发；检查投递结果后再决定是否使用新 ID。未提供 ID 时，去重只针对本次工具调用内的发送序号。
+
+`minSendIntervalMs` 设置 Host 对同一目标的发送间隔。只有平台明确拒绝且未受理发送时，adapter 才能返回 `{ status: "failed", errorKind: "rate_limited", retryAfterMs }`；Kiki 对此最多重试两次。已投递但无消息 ID、部分投递和未知结果均不重试。内置信道同样使用 Host 的目标间隔；平台限流若未提供准确重试时长，则保留失败 receipt。
+
+### 原生工具结果
+
+在 `x-kiki.tools` 下声明的原生工具可以返回文本和 PNG、JPEG 或 WebP 图像的 base64 data URL。大结果自动保存为会话附件：文本保留预览，并附上完整原件的路径和 `kimi-file://` 引用；图像通过会话附件引用继续显示。让 Agent 用 `Read` 分页读取完整文本，或用 `ReadMediaFile` 检查原图。插件作者仍按通常的格式返回结果，不需要自己拆分。
+
+会话附件存储不可用或写入失败时，只有这次工具调用报错，同一插件的其他调用继续运行。如果错误提示没有可读原件，先检查会话存储或恢复源文件，再决定是否重跑可能有副作用的工具。
 
 ### 系统提示词指令
 
@@ -413,9 +497,9 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 每个来源上限 32 KB（UTF-8 字节），超限内容被忽略并显示在 plugin 的 diagnostics 中。一次提示词构建从所有已启用 plugin 合计最多取 64 KB，超出预算的部分被跳过并给出警告——单个 plugin 的内联文本与文件合计超预算时同样整体跳过。
 
-新会话和新 Agent 读取当时已启用 plugin 的指令，而已经在跑的请求继续用它启动时的系统提示词。`/plugins reload` 刷新 Skill 列表并请求活跃 Agent 重建提示词；安装、启用、禁用或移除 plugin 会立即更新 catalog，之后的重建（例如压缩上下文或改工具策略后）就会读到新指令。恢复的会话先使用持久化的提示词，后续重建使用当前 catalog。切换 plugin 的 MCP server 不影响提示词指令。
+新会话和新 Agent 读取其使用范围内已启用 plugin 的指令，已经在跑的请求继续用它启动时的系统提示词。改变插件使用选择会立即更新目录，并在下一安全步骤协调提示词贡献。关闭插件会隐藏其指令，重新开启会恢复该会话冻结的内容；`/plugins reload` 刷新受影响插件的内容，不替换无关的提示词快照。恢复的会话保留持久化的提示词内容，并应用其有效插件选择。切换 plugin 的 MCP server 不影响提示词指令。
 
-内置 Agent 提示词会自动包含已启用 plugin 的指令；自定义 `SYSTEM.md` 或 Agent 文件完全拥有自己的模板，因此要在合适的位置放 `${plugin_sections}`——如果它已经包含 `${base_prompt}`（而该默认提示词里已有 plugin 块），就不要再加一次。完整变量表见 [自定义 Agent 与 SYSTEM.md](./agents.md#用-system-md-覆盖-main-agent-的系统提示词)。
+内置 Agent 提示词会自动包含已启用 plugin 的指令；自定义 `SYSTEM.md` 或 Agent 文件完全拥有自己的模板，因此要在合适的位置放 `${plugin_sections}`——如果它已经包含 `${base_prompt}`（而该默认提示词里已有 plugin 块），就不要再加一次。完整变量表见 [自定义 Agent 与 SYSTEM.md](./agents-and-subagents.md#用-system-md-覆盖-main-agent-的系统提示词)。
 
 ## 插件斜杠命令
 
@@ -497,7 +581,7 @@ my-plugin/
 
 ## 插件 Agent
 
-Plugin 可以携带 Agent：在 manifest 的 `agents` 字段里声明一个或多个 `./` 目录，或直接在 plugin 根下放一个 `agents/` 目录。里面的文件与[自定义 Agent](./agents.md#自定义-agent)格式相同，plugin 启用期间会被自动发现，并可作为 subagent 被委派。
+Plugin 可以携带 Agent：在 manifest 的 `agents` 字段里声明一个或多个 `./` 目录，或直接在 plugin 根下放一个 `agents/` 目录。里面的文件与[自定义 Agent](./agents-and-subagents.md#自定义-agent)格式相同，plugin 启用期间会被自动发现，并可作为 subagent 被委派。
 
 ```text
 my-plugin/
@@ -506,7 +590,7 @@ my-plugin/
     reviewer.md
 ```
 
-Plugin Agent 优先级低于其他文件来源：同名时用户级、额外目录、项目级和 `--agent-file` 的定义都会覆盖它，替换内置 Agent 同样需要 frontmatter 里显式写 `override: true`。安装、启用、禁用或移除 plugin 后，Agent 列表在新会话（或 `/reload`）时刷新；`/plugins reload` 也会刷新当前会话。
+Plugin Agent 优先级低于其他文件来源：同名时用户级、额外目录、项目级和 `--agent-file` 的定义都会覆盖它，替换内置 Agent 同样需要 frontmatter 里显式写 `override: true`。派遣目录跟随会话的有效插件选择刷新，无需新建会话。已经运行的 Agent 保留绑定时的 profile；关闭插件会阻止新的派遣，不改写该 Agent 的快照。
 
 ## Plugin 中的 MCP servers
 
@@ -539,19 +623,18 @@ HTTP server（远程服务）：
 
 对于 stdio servers，`command` 可以是 `PATH` 上的命令，也可以是 plugin 根目录内以 `./` 开头的路径。`cwd` 同理，必须以 `./` 开头并位于 plugin 根目录内，否则该 server 会被忽略。
 
-Plugin MCP servers 会在 `/reload` 后或新会话中启动。启用或禁用某个 server：
+插件 MCP servers 跟随工作区与会话的[有效插件选择](#选择插件在哪里使用)。各 server 自己的开关独立于使用范围，作用于已安装的插件：
 
 ```sh
 /plugins mcp disable kimi-finance finance
-/reload
-
 /plugins mcp enable kimi-finance finance
-/reload
 ```
+
+范围变化会刷新运行时目录。关闭 server 后拒绝新调用，已经获准开始的调用可以完成。
 
 ### Notion 资料与写回
 
-`kiki-notion` 是 Kiki 维护的连接配置与工作流，使用 [Notion 官方托管 MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)，并非 Notion 背书的集成。从 **Official** 页签安装 **Kiki Notion**，审阅预览后启用。源码位于独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)，不在 Kiki 源码树中；本地开发时怎么装那个检出目录，见[改一个官方 plugin](#改一个官方-plugin)。解压包则使用包含 `kimi.plugin.json` 的目录。在**能力 → MCP** 中对 `plugin-kiki-notion:notion` 完成常规浏览器 OAuth 授权，没有 token 字段要填。若已打开的对话还没发现新 MCP 连接，用 `/reload` 或新对话加载。
+`kiki-notion` 是 Kiki 维护的连接配置与工作流，使用 [Notion 官方托管 MCP](https://developers.notion.com/guides/mcp/get-started-with-mcp)，并非 Notion 背书的集成。从 **Official** 页签安装 **Kiki Notion**，审阅预览后启用。源码位于独立的 [Kiki Plugins 仓库](https://github.com/X-T-E-R/kiki-plugins/tree/main/plugins/official/kiki-notion)，不在 Kiki 源码树中；本地开发时怎么装那个检出目录，见[改一个官方 plugin](#改一个官方-plugin)。解压包则使用包含 `kimi.plugin.json` 的目录。在**能力 → 扩展与工具 → MCP** 中对 `plugin-kiki-notion:notion` 完成常规浏览器 OAuth 授权，没有 token 字段要填。若已打开的对话还没发现新 MCP 连接，用 `/reload` 或新对话加载。
 
 让 `/skill:notion-workspace` 搜索指定页面、teamspace 或工作区，读取关键原文，把带来源链接的简报保存到本地路径。需要写回时，给出目标页面 URL/ID 以及追加还是更新——只做总结不会改动 Notion。写回请求不增加 plugin 专属确认，Kiki 原有的工具审批照常生效。套餐与工具限制、过滤条件被忽略、缺失 subtree、异步写入未完成都会如实报告，不会被当成完整覆盖或写回成功。访问还取决于工作区权限与管理员政策；安装不授权升级套餐或付费。
 
@@ -586,11 +669,11 @@ plugin hooks 与全局 hooks 机制相同——事件列表、stdin JSON 载荷�
 
 Kiki 可以把另一个工具的文字对话导入为**可以接着聊的 Kiki 会话**，或只读归档。Claude Code、Codex、Pi、Grok Build、OpenCode 导出文件以及你自己的 JSON／脚本都不需要安装、信任或启用 plugin。导入在 Kiki 服务端运行，不需要模型，也不会改动来源文件。
 
-导入默认开启，但启动时不会扫描任何目录。需要关闭时用 `KIKI_EXPERIMENTAL_PLUGIN_IMPORT=false` 启动 Kiki，或在 `config.toml` 的 [`[experimental]`](../configuration/config-files.md#experimental) 下设置 `plugin_import = false`。
+历史导入无需实验开关即可使用。启动时不会扫描任何目录；选择来源、预览和确认导入都由你显式发起。
 
 ### 导入一段对话
 
-打开**新会话**在起步项旁选择**导入历史**，或走 **能力** → **插件** → **导入历史**：
+打开**新会话**在起步项旁选择**导入历史**，或走**设置 → 会话 → 导入历史**：
 
 1. **这段对话会变成什么。** 默认是 **Kiki 会话**：它会成为这个 Kiki 里的一个会话，前面的对话作为上下文，打开就能从原来断掉的地方接着聊。**只读归档**则保存成一份可读但不能继续的记录。
 2. **工作目录**（会话导入时）。已有工作区一键可选，没保存过的也能手填或浏览——在没打开过的文件夹里开会话本来就是这么用的。浏览不会注册任何东西，只有导入真的落到那里才会用到这个目录。
@@ -775,10 +858,11 @@ export function register(api: PluginRegistrationApi): void {
 
 ## 安装 plugin 会做什么、不会做什么
 
-安装 plugin 只是复制文件并读取 manifest。下面这些都不会在安装或会话启动时发生：
+安装会复制插件文件并读取 manifest，随后按你选择的使用范围激活对应贡献：
 
 - `tools`、`apps`、`inject`、`configFile` 等不支持的运行时字段被忽略，不会执行
-- 所有路径解析符号链接后仍留在 plugin 根目录内
-- MCP servers 只在 `/reload` 之后或新会话中启动，并且可以随时从 `/plugins` 禁用
-- entry 文件不会在安装时运行；plugin 代码在你使用对应能力时才启动，运行在拥有你账号权限的 Node.js 进程中（[不是沙箱](#安装会运行代码的插件)）
+- 声明的包内路径解析符号链接后仍留在 plugin 根目录内
+- 插件 MCP servers 跟随工作区／会话的有效使用选择及各自开关；关闭后拒绝新调用，已经获准开始的调用可以完成
+- 普通插件的 entry 代码在使用对应能力时启动；App 类型插件在全局启用或首次在明确范围启用时，可以启动共享的 home 服务，留待以后使用的安装不会启动它
+- Plugin 代码运行在拥有你账号权限的 Node.js 进程中（[不是沙箱](#安装会运行代码的插件)）
 - 损坏的 manifest 或不安全的路径显示在 `/plugins info <id>` 的 diagnostics 中，不影响其他会话

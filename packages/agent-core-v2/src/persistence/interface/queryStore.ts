@@ -126,6 +126,8 @@ export interface IQueryStore {
   getCheckpoint(source: string): Promise<Checkpoint | undefined>;
   setCheckpoint(source: string, checkpoint: Checkpoint): Promise<void>;
   withExclusive?<T>(operation: () => Promise<T>): Promise<T>;
+  /** Drain and retire cached readers/writers without deleting persisted data; new operations wait for recovery. */
+  recover?(): Promise<void>;
   close(): Promise<void>;
 }
 

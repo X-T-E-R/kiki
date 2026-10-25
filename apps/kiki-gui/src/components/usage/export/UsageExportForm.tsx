@@ -26,7 +26,9 @@ import { UsageExportVibeConnect } from './UsageExportVibeConnect';
 
 import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
+import { ConfirmDialog } from '../../ConfirmDialog';
 import { FeedbackLine, InlineError, Toggle, type Feedback } from '../../controls';
+import { useDirtyGuard, useDirtyReporter } from '../../dirtyGuard';
 import { Icon } from '../../icons';
 import { SidePanel } from '../../SidePanel';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
@@ -136,6 +138,30 @@ function initialForm(nowMs: number, entry: UsageExportEntry | undefined): FormSt
   };
 }
 
+function formDirty(current: FormState, initial: FormState): boolean {
+  return current.label !== initial.label
+    || current.kind !== initial.kind
+    || current.endpoint !== initial.endpoint
+    || current.authentication !== initial.authentication
+    || current.gzip !== initial.gzip
+    || current.secret !== initial.secret
+    || current.storage !== initial.storage
+    || current.fileAck !== initial.fileAck
+    || current.command !== initial.command
+    || current.timeoutSeconds !== initial.timeoutSeconds
+    || current.outputLimitKb !== initial.outputLimitKb
+    || current.privateOpen !== initial.privateOpen
+    || current.privateHost !== initial.privateHost
+    || current.privateIp !== initial.privateIp
+    || current.privatePort !== initial.privatePort
+    || current.privateProtocol !== initial.privateProtocol
+    || current.scheduleMinutes !== initial.scheduleMinutes
+    || current.historyInput !== initial.historyInput
+    || current.includeEphemeral !== initial.includeEphemeral
+    || current.excluded.length !== initial.excluded.length
+    || current.excluded.some((id, index) => id !== initial.excluded[index]);
+}
+
 type Built = { readonly draft: UsageExportDraft; readonly secret?: NonNullable<UsageExportSave['secret']> };
 
 /**
@@ -215,8 +241,10 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const { client, klient } = useConnection();
   const api = usageExportApi(klient);
   const nowMs = useMemo(() => Date.now(), []);
+  const initialFormState = useMemo(() => initialForm(nowMs, entry), [nowMs, entry]);
   const destinationIdRef = useRef<string | undefined>(entry?.destination.id);
-  const [state, setState] = useState<FormState>(() => initialForm(nowMs, entry));
+  const [state, setState] = useState<FormState>(() => initialFormState);
+  const [savedBaseline, setSavedBaseline] = useState<FormState>(() => initialFormState);
   const [busy, setBusy] = useState<'save' | 'test' | 'preview' | 'enable' | 'auth' | null>(null);
   const [credentialStored, setCredentialStored] = useState(entry !== undefined && entry.destination.credential_storage !== 'none');
   const [accountFingerprint, setAccountFingerprint] = useState<string | undefined>(entry?.destination.account_fingerprint ?? undefined);
@@ -226,8 +254,27 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const [category, setCategory] = useState<string | null>(null);
   const [preview, setPreview] = useState<{ readonly signature: string; readonly value: UsageExportPreview } | null>(null);
   const [showSecret, setShowSecret] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
 
-  const workspacesQuery = useQuery({ queryKey: ['workspaces'], queryFn: () => client.listWorkspaces(), staleTime: 30_000 });
+  const dirty = formDirty(state, savedBaseline);
+  const draftId = `usage-export-form:${destinationIdRef.current ?? 'new'}`;
+  useDirtyReporter(draftId, dirty);
+  const guard = useDirtyGuard();
+
+  const handleClose = () => {
+    if (busyNow && busy !== 'auth') return;
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    if (guard?.confirmDiscard !== undefined) {
+      guard.confirmDiscard(draftId, onClose);
+      return;
+    }
+    setConfirmDiscard(true);
+  };
+
+  const workspacesQuery = useQuery({ queryKey: ['workspaces', 'catalog'], queryFn: () => client.listWorkspaceCatalog(), staleTime: 30_000 });
   const workspaces = workspacesQuery.data?.items ?? [];
 
   const historyHalfHour = floorToHalfHour(state.historyFrom);
@@ -260,6 +307,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
     destinationIdRef.current = saved.id;
     onUpdated();
     setState((current) => (current.id === saved.id ? current : { ...current, id: saved.id }));
+    setSavedBaseline(() => ({ ...state, id: saved.id }));
     return saved.id;
   };
 
@@ -274,6 +322,7 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const onVibeConnected = async () => {
     setPreview(null);
     setState((current) => ({ ...current, secret: '' }));
+    setSavedBaseline((current) => ({ ...current, secret: '' }));
     const currentId = destinationIdRef.current ?? state.id;
     if (api !== undefined && currentId) {
       try {
@@ -358,41 +407,50 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
   const title = entry === undefined ? t(ADD) : t('usage.export.form.editTitle', { name: entry.destination.label });
 
   return (
-    <SidePanel
-      title={title}
-      description={t('usage.export.form.description')}
-      overlayId="usage-export-form"
-      onClose={onClose}
-      width="lg"
-      data={{ 'data-usage-export-form': entry === undefined ? 'create' : 'edit' }}
-      footer={(
-        <>
-          <button type="button" data-usage-export-form-save disabled={busyNow || seamMissing} onClick={() => void onSave()} className={SECONDARY_BUTTON}>
-            {t(busy === 'save' ? 'usage.export.form.saving' : 'usage.export.form.save')}
-          </button>
-          <button type="button" data-usage-export-form-cancel disabled={busyNow && busy !== 'auth'} onClick={onClose} className="ml-auto h-8 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50">
-            {t('common.close')}
-          </button>
-        </>
-      )}
-    >
-      <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void onPreview(); }}>
-        {seamMissing ? <p role="alert" className="text-[12.5px] text-danger">{t('usage.export.noTransport')}</p> : null}
+    <>
+      <SidePanel
+        title={title}
+        description={t('usage.export.form.description')}
+        overlayId="usage-export-form"
+        onClose={handleClose}
+        width="lg"
+        data={{ 'data-usage-export-form': entry === undefined ? 'create' : 'edit' }}
+        footer={(
+          <div className="flex w-full min-w-0 flex-col gap-2">
+            {invalid !== null ? <p role="alert" data-usage-export-form-invalid className="text-[12px] text-danger">{t(invalid)}</p> : null}
+            <FeedbackLine feedback={feedback} />
+            {error !== null ? <InlineError error={error} /> : null}
+            {category !== null && category !== 'generic' ? (
+              <p data-usage-export-form-category className="font-mono text-[11.5px] text-ink-faint">{category}</p>
+            ) : null}
+            <div className="flex items-center gap-2">
+              <button type="button" data-usage-export-form-save disabled={busyNow || seamMissing} onClick={() => void onSave()} className={SECONDARY_BUTTON}>
+                {t(busy === 'save' ? 'usage.export.form.saving' : 'usage.export.form.save')}
+              </button>
+              <button type="button" data-usage-export-form-cancel disabled={busyNow && busy !== 'auth'} onClick={handleClose} className="ml-auto h-8 rounded-md px-2 text-[12px] text-ink-soft transition-colors hover:bg-ink/[0.05] hover:text-ink disabled:opacity-50">
+                {t('common.close')}
+              </button>
+            </div>
+          </div>
+        )}
+      >
+        <form className="space-y-5" onSubmit={(event) => { event.preventDefault(); void onPreview(); }}>
+          {seamMissing ? <p role="alert" className="text-[12.5px] text-danger">{t('usage.export.noTransport')}</p> : null}
 
-        <fieldset disabled={busyNow} className="space-y-5">
-        <section className="space-y-2">
-          <AxisGroup
-            label={t('usage.export.form.kind')}
-            dataAxis="export-kind"
-            options={EXPORT_KINDS}
-            value={state.kind}
-            onChange={(kind) => { patch({ kind }); }}
-            labelFor={(kind) => t(kindShortKey(kind))}
-          />
-          <p data-usage-export-form-kind-hint className={`${HINT} max-w-[76ch]`}>
-            {t(state.kind === 'vibe' ? 'usage.export.form.kind.vibeHint' : state.kind === 'webhook' ? 'usage.export.form.kind.webhookHint' : 'usage.export.form.kind.scriptHint')}
-          </p>
-        </section>
+          <fieldset disabled={busyNow} className="space-y-5">
+          <section className="space-y-2">
+            <AxisGroup
+              label={t('usage.export.form.kind')}
+              dataAxis="export-kind"
+              options={EXPORT_KINDS}
+              value={state.kind}
+              onChange={(kind) => { patch({ kind }); }}
+              labelFor={(kind) => t(kindShortKey(kind))}
+            />
+            <p data-usage-export-form-kind-hint className={`${HINT} max-w-[76ch]`}>
+              {t(state.kind === 'vibe' ? 'usage.export.form.kind.vibeHint' : state.kind === 'webhook' ? 'usage.export.form.kind.webhookHint' : 'usage.export.form.kind.scriptHint')}
+            </p>
+          </section>
 
         <label className="block space-y-1">
           <span className={FIELD_LABEL}>{t('usage.export.form.name')}</span>
@@ -642,12 +700,6 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
               {t(busy === 'preview' ? 'usage.export.form.previewing' : 'usage.export.form.preview')}
             </button>
           </div>
-          {invalid !== null ? <p role="alert" data-usage-export-form-invalid className="text-[12px] text-danger">{t(invalid)}</p> : null}
-          <FeedbackLine feedback={feedback} />
-          {error !== null ? <InlineError error={error} /> : null}
-          {category !== null && category !== 'generic' ? (
-            <p data-usage-export-form-category className="font-mono text-[11.5px] text-ink-faint">{category}</p>
-          ) : null}
         </section>
 
         {preview !== null ? (
@@ -675,5 +727,18 @@ export function UsageExportForm({ entry, onClose, onSaved, onUpdated }: {
         </fieldset>
       </form>
     </SidePanel>
+    <ConfirmDialog
+      open={confirmDiscard}
+      title={t('st.dirty.leaveTitle')}
+      body={t('st.dirty.leaveBody')}
+      confirmLabel={t('st.dirty.leaveConfirm')}
+      cancelLabel={t('st.dirty.stay')}
+      tone="danger"
+      stacked
+      overlayId="usage-export-form-discard"
+      onCancel={() => { setConfirmDiscard(false); }}
+      onConfirm={() => { setConfirmDiscard(false); onClose(); }}
+    />
+  </>
   );
 }

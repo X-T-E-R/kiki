@@ -79,6 +79,40 @@ export function artifactFacts(artifact: MediaArtifact): string {
     .join(' · ');
 }
 
+/**
+ * A preview is the same media as an original only when both name the same
+ * session-media `file_id` or the artifact metadata explicitly links their
+ * identities, and that original is complete. A shared stem,
+ * `preview`/`thumb` filename, or any other label is not an association the
+ * provider recorded. An incomplete original does not hide its preview.
+ */
+export function isProvenPreviewOf(preview: MediaArtifact, original: MediaArtifact): boolean {
+  if (preview.role !== 'preview') return false;
+  if (original.role !== 'original' || original.complete !== true) return false;
+  if (preview.file_id !== '' && preview.file_id === original.file_id) return true;
+  return metadataMatches(preview.metadata, ['original_id', 'originalId', 'parent_id', 'parentId'], original.id)
+    || metadataMatches(preview.metadata, ['original_file_id', 'originalFileId'], original.file_id)
+    || metadataMatches(original.metadata, ['preview_id', 'previewId'], preview.id)
+    || metadataMatches(original.metadata, ['preview_file_id', 'previewFileId'], preview.file_id);
+}
+
+function metadataMatches(metadata: MediaArtifact['metadata'], keys: readonly string[], expected: string): boolean {
+  if (metadata === undefined) return false;
+  return keys.some((key) => metadata[key] === expected);
+}
+
+export function visibleArtifacts(artifacts: readonly MediaArtifact[]): readonly MediaArtifact[] {
+  const completeOriginals = artifacts.filter(
+    (artifact) => artifact.role === 'original' && artifact.complete === true,
+  );
+  if (completeOriginals.length === 0) return artifacts;
+  return artifacts.filter((artifact) => {
+    if (artifact.role !== 'preview') return true;
+    const hasProvenOriginal = completeOriginals.some((orig) => isProvenPreviewOf(artifact, orig));
+    return !hasProvenOriginal;
+  });
+}
+
 export function MediaArtifactList({
   artifacts,
   sessionId,
@@ -91,9 +125,11 @@ export function MediaArtifactList({
   readonly agentId?: string;
 }) {
   if (artifacts.length === 0) return null;
+  const visible = visibleArtifacts(artifacts);
+  if (visible.length === 0) return null;
   return (
-    <div className="mt-1.5 flex flex-col gap-1.5" data-media-artifacts={artifacts.length}>
-      {artifacts.map((artifact) => (
+    <div className="mt-1.5 flex flex-col gap-1.5" data-media-artifacts={visible.length}>
+      {visible.map((artifact) => (
         <MediaArtifactRow key={artifact.id} artifact={artifact} sessionId={sessionId} agentId={agentId} />
       ))}
     </div>

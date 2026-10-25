@@ -108,7 +108,8 @@ describe('relay-v1 zero-model contract', () => {
     expect(third).toContain('HistoryRead {ref:"second-handoff-ref"}');
     const result = evaluateFreshEligibility({ history: [summary, assistant], compactCount: 2, notes: { next: 'run tests' }, meta: { ...legacyMeta, windowEpoch: 1 },
       windowEpoch: 1, strategy: 'fresh', threshold: 100000, projectedTokens: 1, historyAvailable: true, estimateMessage: () => 1 });
-    expect(result.safe).toBe(false);
+    expect(result.safe).toBe(true);
+    expect(result.eligible).toBe(true);
     expect(result.reasons).toContain('handoff_unreviewed');
     expect(result.reasons).toContain('notes_previous_window');
   });
@@ -143,14 +144,18 @@ describe('relay-v1 zero-model contract', () => {
       threshold: 100_000, projectedTokens: 10_000, historyAvailable: true,
       estimateMessage: (_message: ContextMessage) => 10 };
     expect(evaluateFreshEligibility({ ...base, strategy: 'fresh' }).eligible).toBe(true);
-    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', historyAvailable: false }).reasons).toContain('history_unavailable');
-    expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', projectedTokens: 70_000 }).reasons).toContain('projected_too_large');
+    expect(evaluateFreshEligibility({ ...base, strategy: 'auto', historyAvailable: false }).reasons).not.toContain('history_unavailable');
+    expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', projectedTokens: 70_000 }).reasons).not.toContain('projected_too_large');
+    expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', projectedTokens: 70_000, windowTokens: 100_000, outputReserve: 40_000 }).reasons).toContain('projected_too_large');
     expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', instruction: 'custom' }).reasons).toContain('manual_instruction');
     expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', notes: undefined }).reasons).toContain('notes_missing');
+    expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', notes: undefined }).eligible).toBe(true);
     expect(evaluateFreshEligibility({ ...base, strategy: 'fresh', windowEpoch: 1 }).reasons).toContain('notes_previous_window');
     const riskHistory = [...input.history.slice(0, 3), { role: 'tool', content: [{ type: 'text', text: 'failed' }], toolCalls: [], isError: true } as ContextMessage];
     expect(evaluateFreshEligibility({ ...base, history: riskHistory, compactCount: 4, strategy: 'fresh' }).eligible).toBe(true);
-    expect(evaluateFreshEligibility({ ...base, history: riskHistory, compactCount: 4, strategy: 'auto' }).eligible).toBe(false);
+    const risky = evaluateFreshEligibility({ ...base, history: riskHistory, compactCount: 4, strategy: 'auto' });
+    expect(risky.reasons).toContain('tool_error');
+    expect(risky.eligible).toBe(true);
   });
 
   it('keeps a short post-watermark user request when older user input is elided', () => {
@@ -181,8 +186,12 @@ describe('relay-v1 zero-model contract', () => {
     const safe = evaluateFreshEligibility({ ...base, history: [image, assistant, thinking], compactCount: 3 });
     expect(safe.reasons).not.toContain('non_text_result');
     expect(safe.eligible).toBe(true);
-    const risky = evaluateFreshEligibility({ ...base, history: [assistant, image], compactCount: 2 });
-    expect(risky.reasons).toContain('non_text_result');
-    expect(risky.eligible).toBe(false);
+    const kept = evaluateFreshEligibility({ ...base, history: [assistant, image], compactCount: 2 });
+    expect(kept.reasons).not.toContain('non_text_result');
+    expect(kept.eligible).toBe(true);
+    const broken: ContextMessage = { role: 'tool', content: [{ type: 'image_url', imageUrl: { url: '' } }], toolCalls: [] };
+    const blocked = evaluateFreshEligibility({ ...base, history: [assistant, broken], compactCount: 2 });
+    expect(blocked.reasons).toContain('non_text_result');
+    expect(blocked.eligible).toBe(false);
   });
 });

@@ -4,8 +4,10 @@ import type { Message } from '@kiki/protocol';
 
 import {
   FILE_LINK_SENTINEL,
+  documentPreviewFormatOf,
   extOf,
   extractToolOutputMedia,
+  findFileReferences,
   formatBytes,
   isAppRouteHref,
   joinPath,
@@ -25,6 +27,16 @@ describe('mediaFromContentParts', () => {
     ];
     expect(mediaFromContentParts(content)).toEqual([
       { kind: 'image', url: 'data:image/png;base64,aGVsbG8=', mime: 'image/png' },
+    ]);
+  });
+
+  it('preserves real image filenames across inline and managed protocol sources', () => {
+    expect(mediaFromContentParts([
+      { type: 'image', name: 'answer.png', source: { kind: 'base64', media_type: 'image/png', data: 'aGVsbG8=' } },
+      { type: 'image', name: 'saved.jpg', source: { kind: 'session_media', file_id: 'file-example' } },
+    ])).toEqual([
+      { kind: 'image', name: 'answer.png', url: 'data:image/png;base64,aGVsbG8=', mime: 'image/png' },
+      { kind: 'image', name: 'saved.jpg', fileId: 'file-example' },
     ]);
   });
 
@@ -84,7 +96,7 @@ describe('extractToolOutputMedia', () => {
       { type: 'text', text: 'embedded body', attachment: { fileId: 'resource', mimeType: 'application/octet-stream', size: 3, name: 'resource.bin' } },
     ])).toEqual({ text: 'embedded body', media: [
       { kind: 'image', fileId: 'image', mime: 'image/png', size: 3, name: 'answer.png' },
-      { kind: 'file', fileId: 'audio', mime: 'audio/wav', size: 2, name: 'answer.wav' },
+      { kind: 'audio', fileId: 'audio', mime: 'audio/wav', size: 2, name: 'answer.wav' },
       { kind: 'file', fileId: 'resource', mime: 'application/octet-stream', size: 3, name: 'resource.bin' },
     ] });
   });
@@ -179,6 +191,16 @@ describe('extractToolOutputMedia', () => {
     });
   });
 
+  it('resolves a daemon file url to the session media id instead of a dead image src', () => {
+    expect(extractToolOutputMedia([
+      { type: 'text', text: 'Here is the render.' },
+      { type: 'image_url', imageUrl: { url: 'kimi-file://f_acp_2f1a?path=%2Fabs%2Fmedia%2Ff_acp_2f1a.png', id: 'f_acp_2f1a', mimeType: 'image/png' } },
+    ])).toEqual({
+      text: 'Here is the render.',
+      media: [{ kind: 'image', url: undefined, path: undefined, fileId: 'f_acp_2f1a' }],
+    });
+  });
+
   it('returns undefined for plain strings, objects, and text-only arrays', () => {
     expect(extractToolOutputMedia('plain')).toBeUndefined();
     expect(extractToolOutputMedia({ kind: 'text', text: 'x' })).toBeUndefined();
@@ -207,15 +229,65 @@ describe('file reference positions', () => {
     for (const path of ['/C:/work/中 dir', '/C:\\work\\dir']) {
       expect(resolveFileHref(path, undefined)).toBe(path.slice(1));
     }
-    for (const path of ['/var/a:b.ts', '/work/a.ts:notes', '/C:relative', '/work/a.ts:0']) {
+    for (const path of ['/var/a:b.ts', '/work/a.ts:notes', '/C:relative']) {
       expect(resolveFileReference(path, undefined)).toEqual({ path });
     }
+    expect(resolveFileReference('/work/a.ts:0', undefined)).toEqual({ path: '/work/a.ts', invalidTarget: true });
     expect(resolveFileReference('file:///work/a.ts%3A12', undefined)).toEqual({ path: '/work/a.ts:12' });
     expect(resolveFileReference('/work/a.ts%2312', undefined)).toEqual({ path: '/work/a.ts#12' });
   });
 
   it.each(['https://example.test/a.ts:12', '//example.test/a.ts:12', 'mailto:a@example.test', 'ms://file/a.ts:12', '/s/session/file.ts:12', '/settings/general', '/settings?tab=general', '/usage#today', '#L12'])('does not capture %s', (href) => {
     expect(resolveFileReference(href, '/work')).toBeUndefined();
+  });
+});
+
+describe('extended file reference targets', () => {
+  it('keeps line ranges and Markdown headings separate from the path', () => {
+    expect(resolveFileReference('src/app.ts#L309-L320', '/work')).toEqual({
+      path: '/work/src/app.ts', line: 309, column: undefined, endLine: 320,
+    });
+    expect(resolveFileReference('docs/说明.md#%E8%AF%BB%E5%8F%96', '/work')).toEqual({
+      path: '/work/docs/说明.md', heading: '读取',
+    });
+    expect(resolveFileReference('file:///C:/work/docs/readme.md#%E4%B8%AD%E6%96%87', undefined)).toEqual({
+      path: 'C:/work/docs/readme.md', heading: '中文',
+    });
+  });
+
+  it('decodes literal path escapes only after splitting a citation suffix', () => {
+    expect(resolveFileReference('docs/foo%23bar%3Abaz.ts:12', '/work')).toEqual({
+      path: '/work/docs/foo#bar:baz.ts', line: 12, column: undefined,
+    });
+    expect(resolveFileReference('foo#bar.txt', '/work')).toEqual({ path: '/work/foo#bar.txt' });
+    expect(resolveFileReference('foo:bar.txt', '/work')).toEqual({ path: '/work/foo:bar.txt' });
+  });
+
+  it('degrades malformed positions to a path-only target with an invalid marker', () => {
+    expect(resolveFileReference('src/app.ts:0', '/work')).toEqual({ path: '/work/src/app.ts', invalidTarget: true });
+    expect(resolveFileReference('src/app.ts#L0', '/work')).toEqual({ path: '/work/src/app.ts', invalidTarget: true });
+    expect(resolveFileReference('src/app.ts#L320-L309', '/work')).toEqual({ path: '/work/src/app.ts', invalidTarget: true });
+    expect(resolveFileReference('src/app.ts#section', '/work')).toEqual({ path: '/work/src/app.ts#section' });
+  });
+});
+
+describe('findFileReferences', () => {
+  it('finds Windows and workspace-relative files while preserving source offsets', () => {
+    const text = 'See src/app.ts:12:3, C:\\work\\lib\\file.ts#L4, docs/说明.md。 `inline.ts:9` /settings/app.ts https://example.test/app.ts --file=ignored.ts';
+    const references = findFileReferences(text);
+    expect(references.map(({ target }) => target)).toEqual([
+      'src/app.ts:12:3',
+      'C:\\work\\lib\\file.ts#L4',
+      'docs/说明.md',
+    ]);
+    for (const reference of references) expect(text.slice(reference.start, reference.end)).toBe(reference.target);
+  });
+
+  it('does not split hash filenames or linkify command and app tokens', () => {
+    expect(findFileReferences('foo#bar.txt foo:bar.txt --path=ignored.ts /new/session app://route.ts')).toEqual([
+      { start: 0, end: 11, target: 'foo#bar.txt' },
+      { start: 12, end: 23, target: 'foo:bar.txt' },
+    ]);
   });
 });
 
@@ -285,6 +357,23 @@ describe('previewKindOf / extOf', () => {
     expect(previewKindOf('/x/clip.mp4')).toBe('video');
     expect(previewKindOf('/x/clip.WEBM')).toBe('video');
     expect(previewKindOf('C:/x/take.mov')).toBe('video');
+    for (const extension of ['mp3', 'wav', 'ogg', 'm4a', 'flac', 'aac', 'opus']) {
+      expect(previewKindOf(`/x/sound.${extension}`)).toBe('audio');
+    }
+    expect(previewKindOf('/x/sound.OPUS')).toBe('audio');
+    expect(previewKindOf('/x/guide.PDF')).toBe('pdf');
+    expect(previewKindOf('/x/report.docx')).toBe('office');
+    expect(previewKindOf('/x/table.xlsx')).toBe('office');
+    expect(previewKindOf('/x/slides.pptx')).toBe('office');
+  });
+
+  it('classifies only the rendered document formats as document previews', () => {
+    expect(documentPreviewFormatOf('/x/guide.PDF')).toBe('pdf');
+    expect(documentPreviewFormatOf('/x/report.docx')).toBe('docx');
+    expect(documentPreviewFormatOf('/x/table.xlsx')).toBe('xlsx');
+    expect(documentPreviewFormatOf('/x/slides.pptx')).toBe('pptx');
+    expect(documentPreviewFormatOf('/x/legacy.doc')).toBeUndefined();
+    expect(documentPreviewFormatOf('/x/notes.csv')).toBeUndefined();
   });
 
   it('extracts the basename extension case-insensitively', () => {
@@ -328,4 +417,22 @@ describe('file link sentinel (markdown sanitize bypass)', () => {
     const wrapped = wrapFileLinkTarget('./config/app.toml')!;
     expect(resolveFileHref(unwrapFileLinkTarget(wrapped)!, '/work/app')).toBe('/work/app/config/app.toml');
   });
+});
+
+
+it('keeps literal citation paths distinct from URL-encoded Markdown hrefs', () => {
+  const path = 'C:/example/a%3A%23%20.md';
+  const wrapped = wrapFileLinkTarget(`${path}:309`, true)!;
+  expect(unwrapFileLinkTarget(wrapped)).toBe(`${path}:309`);
+  expect(resolveFileReference(unwrapFileLinkTarget(wrapped)!, undefined, true)).toEqual({ path, line: 309, column: undefined });
+  expect(resolveFileReference('file:///C:/example/a%253A%2523%2520.md:309', undefined)).toEqual({ path, line: 309, column: undefined });
+});
+
+
+it('keeps registered app routes and prose version numbers out of file navigation', () => {
+  for (const route of ['/r/example', '/rooms/example', '/board/example.md', '/cron', '/memory', '/activity', '/personas/example']) {
+    expect(isAppRouteHref(route)).toBe(true);
+    expect(resolveFileReference(route, '/work')).toBeUndefined();
+  }
+  expect(findFileReferences('Version 0.3.3 and 1.2 are available.')).toEqual([]);
 });

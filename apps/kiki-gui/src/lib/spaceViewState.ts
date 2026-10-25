@@ -1,4 +1,6 @@
 import { activeSpace, readHomeStorageItem, spaceStorage } from './spaceStorage';
+import { BASE_MODE_ID, windowRouteSlot, readWindowModeId } from './workModes';
+import { landingRouteFor } from './workModeStartup';
 
 const VIEW_ROUTE_KEY = 'kiki.viewRoute';
 const ROUTE_OWNER_KEY = 'kiki.viewRouteOwner';
@@ -14,6 +16,7 @@ export function isSpaceViewRoute(route: unknown): route is string {
     const url = new URL(route, 'http://example.test');
     if (url.origin !== 'http://example.test' || url.searchParams.has('token') || url.searchParams.has('server') || url.searchParams.has('url') || url.hash.startsWith('#token=')) return false;
     return /^\/(?:new|usage|activity|board|cron|memory|personas|capabilities)$/.test(url.pathname) ||
+      /^\/work$/.test(url.pathname) ||
       /^\/settings(?:\/[^/]+)?$/.test(url.pathname) ||
       /^\/s\/[^/]+(?:\/.*)?$/.test(url.pathname) ||
       /^\/(?:rooms|r)\/[^/]+$/.test(url.pathname);
@@ -32,24 +35,31 @@ function readRoutes(): Record<string, unknown> {
   return {};
 }
 
+/**
+ * A window's own route slot, falling back to the bare scope slot. Two windows
+ * on one home each own a slot, so neither overwrites the other's view; a
+ * window whose route was saved before slots existed keeps reading its old one.
+ */
+function routeForSlot(routes: Record<string, unknown>, scopeId: string): string | undefined {
+  const slot = Object.hasOwn(routes, windowRouteSlot(scopeId)) ? windowRouteSlot(scopeId) : scopeId;
+  const route = Object.hasOwn(routes, slot) ? routes[slot] : undefined;
+  return isSpaceViewRoute(route) ? route : undefined;
+}
+
 export function readHomeViewRoute(home: string, scopeId = 'local'): string | undefined {
   try {
-    const routes = JSON.parse(readHomeStorageItem(home, VIEW_ROUTE_KEY) ?? '{}') as Record<string, unknown>;
-    const route = Object.hasOwn(routes, scopeId) ? routes[scopeId] : undefined;
-    return isSpaceViewRoute(route) ? route : undefined;
+    return routeForSlot(JSON.parse(readHomeStorageItem(home, VIEW_ROUTE_KEY) ?? '{}') as Record<string, unknown>, scopeId);
   } catch { return undefined; }
 }
 
 export function readSpaceViewRoute(scopeId = 'local'): string | undefined {
-  const routes = readRoutes();
-  const route = Object.hasOwn(routes, scopeId) ? routes[scopeId] : undefined;
-  return isSpaceViewRoute(route) ? route : undefined;
+  return routeForSlot(readRoutes(), scopeId);
 }
 
 export function writeSpaceViewRoute(route: string, scopeId = 'local'): void {
   if (!isSpaceViewRoute(route)) return;
   try {
-    spaceStorage.setItem(VIEW_ROUTE_KEY, JSON.stringify({ ...readRoutes(), [scopeId]: route }));
+    spaceStorage.setItem(VIEW_ROUTE_KEY, JSON.stringify({ ...readRoutes(), [windowRouteSlot(scopeId)]: route }));
   } catch {
     // Navigation must still work when preferences cannot be written.
   }
@@ -79,9 +89,21 @@ export function markSpaceViewRoute(route: string): void {
   }
 }
 
+/**
+ * Where a window starts when it has no view of its own to return to.
+ *
+ * The order is what protects the user. A route this window already saved, and
+ * a deep link this window was opened with, both come first, so neither is
+ * overridden by the mode. Only a window that has never had a view falls
+ * through to the mode it was launched in — a window native opened with
+ * `--preset work` is in Work from its first frame instead of a conversation
+ * belonging to some other window. A same-home session is the last resort, and
+ * only for a window that has neither.
+ */
 function initialSpaceViewRoute(): string {
   const saved = readSpaceViewRoute();
   if (saved !== undefined) return saved;
+  if (readWindowModeId() !== BASE_MODE_ID) return landingRouteFor(readWindowModeId());
   try {
     const lastSessionId = spaceStorage.getItem('kiki.lastSessionId');
     if (lastSessionId) return `/s/${encodeURIComponent(lastSessionId)}`;

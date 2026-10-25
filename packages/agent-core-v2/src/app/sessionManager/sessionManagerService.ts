@@ -1,5 +1,7 @@
 
 import { DisposableStore, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { IInstantiationService } from '#/_base/di/instantiation';
 import { setColdSessionArchived } from '#/workspace/sessionLifecycle/coldSessionArchive';
 import { Emitter, type Event, type IWaitUntil } from '#/_base/event';
@@ -135,6 +137,7 @@ export class SessionManager implements ISessionManager {
     const promise = this.serializeLifecycle(sessionId, async () => {
       const releaseRestore = await this.reserveRestoreSlot(sessionId);
       try {
+        if (!this.sessions.has(sessionId)) await this.reclaimIdleResidency(sessionId);
         const target = await this.controllerForSession(sessionId);
         if (target === undefined) return undefined;
         return await this.runWorkspaceOperation(
@@ -166,18 +169,49 @@ export class SessionManager implements ISessionManager {
     sessionId: string,
     _reason: string,
     options?: ResumeSessionOptions,
+    signal?: AbortSignal,
   ): Promise<SessionLease | undefined> {
+    signal?.throwIfAborted();
     const entry = this.ensureResidency(sessionId);
     entry.pins += 1;
     entry.generation += 1;
     entry.idleSince = undefined;
     let released = false;
+    const release = (): void => {
+      if (released) return;
+      released = true;
+      this.releasePin(sessionId, entry);
+    };
+    let detach: (() => void) | undefined;
     try {
-      const handle = await this.resume(sessionId, options);
-      if (handle === undefined) {
-        this.releasePin(sessionId, entry);
-        return undefined;
-      }
+      const restore = this.resume(sessionId, options);
+      const handle = signal === undefined ? await restore : await new Promise<ISessionScopeHandle | undefined>((resolve, reject) => {
+        const aborted = (): void => { release(); reject(signal.reason); };
+        detach = () => signal.removeEventListener('abort', aborted);
+        signal.addEventListener('abort', aborted, { once: true });
+        restore.then(resolve, reject);
+        if (signal.aborted) aborted();
+      });
+      signal?.throwIfAborted();
+      if (handle === undefined) { release(); return undefined; }
+      return { handle, dispose: release };
+    } catch (error) {
+      release();
+      throw error;
+    } finally {
+      detach?.();
+    }
+  }
+
+  acquireLive(sessionId: string, _reason: string): Promise<SessionLease | undefined> {
+    return this.serializeLifecycle(sessionId, async () => {
+      const handle = this.sessions.get(sessionId);
+      if (handle === undefined) return undefined;
+      const entry = this.ensureResidency(sessionId);
+      entry.pins += 1;
+      entry.generation += 1;
+      entry.idleSince = undefined;
+      let released = false;
       return {
         handle,
         dispose: () => {
@@ -186,10 +220,7 @@ export class SessionManager implements ISessionManager {
           this.releasePin(sessionId, entry);
         },
       };
-    } catch (error) {
-      this.releasePin(sessionId, entry);
-      throw error;
-    }
+    });
   }
 
   get(sessionId: string): ISessionScopeHandle | undefined {
@@ -217,7 +248,7 @@ export class SessionManager implements ISessionManager {
     };
   }
 
-  async evictIfIdle(sessionId: string): Promise<boolean> {
+  async evictIfIdle(sessionId: string, options?: { readonly ignoreIdleTtl?: boolean }): Promise<boolean> {
     if (!this.evictionEnabled() || this.isEphemeral(sessionId)) return false;
     return this.serializeLifecycle(sessionId, async () => {
       const entry = this.residency.get(sessionId);
@@ -228,7 +259,7 @@ export class SessionManager implements ISessionManager {
       const config = this.residencyConfig();
       const capacityPressure = this.sessions.size > config.maxLiveSessions;
       const minimum = capacityPressure ? config.minIdleMs : config.idleTtlMs;
-      if (Date.now() - idleSince < minimum) return false;
+      if (options?.ignoreIdleTtl !== true && Date.now() - idleSince < minimum) return false;
       const generation = entry.generation;
       this.evictionAttempts += 1;
       try {
@@ -292,6 +323,7 @@ export class SessionManager implements ISessionManager {
       work({
         archive: () => this.archiveInner(sessionId),
         restore: () => this.restoreInner(sessionId),
+        delete: () => this.deleteInner(sessionId),
       }),
     );
   }
@@ -404,21 +436,23 @@ export class SessionManager implements ISessionManager {
   }
 
   async delete(sessionId: string): Promise<void> {
-    await this.serializeLifecycle(sessionId, async () => {
-      const temporary = this.ephemeral.get(sessionId);
-      const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
-      if (target === undefined) {
-        throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
-      }
-      await this.runWorkspaceOperation(
-        target.workspaceId,
-        () => target.controller.delete(sessionId, () => {
-          this.ephemeral.delete(sessionId);
-          this.didDeleteEmitter.fire({ sessionId });
-        }),
-        target.release,
-      );
-    });
+    await this.serializeLifecycle(sessionId, () => this.deleteInner(sessionId));
+  }
+
+  private async deleteInner(sessionId: string): Promise<void> {
+    const temporary = this.ephemeral.get(sessionId);
+    const target = temporary === undefined ? await this.controllerForSession(sessionId) : { ...temporary, release: undefined };
+    if (target === undefined) {
+      throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${sessionId} does not exist`);
+    }
+    await this.runWorkspaceOperation(
+      target.workspaceId,
+      () => target.controller.delete(sessionId, () => {
+        this.ephemeral.delete(sessionId);
+        this.didDeleteEmitter.fire({ sessionId });
+      }),
+      target.release,
+    );
   }
 
   async fork(options: ForkSessionOptions): Promise<ISessionScopeHandle> {
@@ -461,14 +495,14 @@ export class SessionManager implements ISessionManager {
     );
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     this.disposed = true;
     if (this.evictionTimer !== undefined) clearInterval(this.evictionTimer);
-    for (const state of this.residency.values()) state.activitySubscription?.dispose();
+    for (const state of this.residency.values()) await state.activitySubscription?.dispose();
     this.residency.clear();
     for (const { controller, subscriptions } of [...this.controllerEntries].reverse()) {
-      subscriptions.dispose();
-      controller.dispose();
+      await subscriptions.dispose();
+      await controller.dispose();
     }
     this.controllerEntries.clear();
     this.controllers.clear();
@@ -532,7 +566,8 @@ export class SessionManager implements ISessionManager {
 
   private registerResidency(sessionId: string, handle: ISessionScopeHandle): void {
     const entry = this.ensureResidency(sessionId);
-    entry.activitySubscription?.dispose();
+    const previous = entry.activitySubscription?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const update = (): void => {
       try {
         const state = handle.accessor.get(ISessionActivityView).state();
@@ -569,7 +604,8 @@ export class SessionManager implements ISessionManager {
 
   private dropResidency(sessionId: string): void {
     const entry = this.residency.get(sessionId);
-    entry?.activitySubscription?.dispose();
+    const previous = entry?.activitySubscription?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     this.residency.delete(sessionId);
   }
 
@@ -580,6 +616,26 @@ export class SessionManager implements ISessionManager {
 
   private evictionEnabled(): boolean {
     return this.flags?.enabled(SESSION_IDLE_EVICTION_FLAG_ID) === true;
+  }
+
+  private async reclaimIdleResidency(openingSessionId: string): Promise<void> {
+    if (!this.evictionEnabled()) return;
+    const config = this.residencyConfig();
+    const skipped = new Set<string>();
+    for (;;) {
+      const overHeap = config.maxResidentHeapBytes > 0 && process.memoryUsage().heapUsed >= config.maxResidentHeapBytes;
+      const overCapacity = this.sessions.size >= config.maxLiveSessions;
+      if (!overHeap && !overCapacity) return;
+      const now = Date.now();
+      const candidate = [...this.residency.entries()]
+        .filter(([id, entry]) => id !== openingSessionId && !skipped.has(id) && entry.pins === 0 &&
+          entry.idleSince !== undefined && this.sessions.has(id) && !this.isEphemeral(id) &&
+          (overHeap || now - entry.idleSince >= config.minIdleMs))
+        .sort((left, right) => left[1].lastAccess - right[1].lastAccess)[0];
+      if (candidate === undefined) return;
+      const unloaded = await this.evictIfIdle(candidate[0], { ignoreIdleTtl: true });
+      if (!unloaded) skipped.add(candidate[0]);
+    }
   }
 
   private async startEvictionScheduler(): Promise<void> {
@@ -656,8 +712,10 @@ export class SessionManager implements ISessionManager {
     this.controllerEntries.delete(entry);
     this.controllerWorkspaces.delete(entry.controller);
     if (this.controllers.get(workspaceId) === entry) this.controllers.delete(workspaceId);
-    entry.subscriptions.dispose();
-    entry.controller.dispose();
+    const subscriptions = entry.subscriptions.dispose();
+    if (isPromiseLike(subscriptions)) subscriptions.catch(onUnexpectedError);
+    const controller = entry.controller.dispose();
+    if (isPromiseLike(controller)) controller.catch(onUnexpectedError);
   }
 
   private async controllerForSession(sessionId: string): Promise<{

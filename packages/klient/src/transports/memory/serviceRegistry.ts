@@ -5,8 +5,8 @@
  * beyond what the host already bootstrapped.
  */
 
+import { ISettingsTransferService } from '@kiki/agent-core-v2/app/settingsTransfer/settingsTransfer';
 import type { ServiceIdentifier } from '@kiki/agent-core-v2/_base/di/instantiation';
-import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
 import { IAgentPanelService } from '../agentPanelService.js';
 import { ISessionIndex } from '@kiki/agent-core-v2/app/sessionIndex/sessionIndex';
 import { IWorkspaceService } from '@kiki/agent-core-v2/app/workspace/workspace';
@@ -33,6 +33,7 @@ import { IHostFolderBrowser } from '@kiki/agent-core-v2/app/hostFolderBrowser/ho
 import { IWorkspaceInstanceManager } from '@kiki/agent-core-v2/workspace/workspaceInstance/workspaceInstanceManager';
 import { ISessionManager } from '@kiki/agent-core-v2/app/sessionManager/sessionManager';
 import { ISessionMetadata } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import { ISessionOptionalCapabilityService } from '@kiki/agent-core-v2/session/optionalCapability/sessionOptionalCapabilityService';
 import { IAgentCollaborationMessagingService } from '@kiki/agent-core-v2/session/agentCollaboration/messageMailbox';
 import { ISessionActivityView } from '@kiki/agent-core-v2/session/sessionActivity/sessionActivity';
 import { ISessionInteractionService } from '@kiki/agent-core-v2/session/interaction/interaction';
@@ -43,6 +44,7 @@ import { ISessionTitleService } from '@kiki/agent-core-v2/session/sessionTitle/s
 import { IAgentPromptService } from '@kiki/agent-core-v2/agent/prompt/prompt';
 import { IAgentSkillService } from '@kiki/agent-core-v2/agent/skill/skill';
 import { IAgentLoopService } from '@kiki/agent-core-v2/agent/loop/loop';
+import { IAgentExecutionService } from '@kiki/agent-core-v2/agent/execution/execution';
 import { IAgentContextInjectorService } from '@kiki/agent-core-v2/agent/contextInjector/contextInjector';
 import { IAgentContextRebuildService } from '@kiki/agent-core-v2/agent/contextRebuild/contextRebuild';
 import { IAgentConversationUndoService } from '@kiki/agent-core-v2/agent/undo/undo';
@@ -59,6 +61,7 @@ import { IAgentTokenCountingService } from '@kiki/agent-core-v2/agent/tokenCount
 import { IAgentActivityView } from '@kiki/agent-core-v2/agent/activityView/activityView';
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
 import { IAgentProfileService } from '@kiki/agent-core-v2/agent/profile/profile';
+import { IAgentToolPolicyService } from '@kiki/agent-core-v2/agent/toolPolicy/toolPolicy';
 import { IAgentShellCommandService } from '@kiki/agent-core-v2/agent/shellCommand/shellCommand';
 import { IAgentTaskService } from '@kiki/agent-core-v2/agent/task/task';
 import { IAgentUsageService } from '@kiki/agent-core-v2/agent/usage/usage';
@@ -76,13 +79,23 @@ import { ISessionBtwService } from '@kiki/agent-core-v2/features/btw/btw';
 import { ISessionInitService } from '@kiki/agent-core-v2/features/sessionInit/sessionInit';
 import { ISessionCronService } from '@kiki/agent-core-v2/session/cron/sessionCronService';
 import { ISessionTodoService } from '@kiki/agent-core-v2/session/todo/sessionTodo';
+import { ITaskBoardService } from '@kiki/agent-core-v2/app/taskBoard/taskBoard';
+
+/**
+ * Official plugins that are not part of the core service map. The dispatcher
+ * resolves one of these only when the host scope has registered the instance;
+ * an uninstalled plugin stays `unknown service`.
+ */
+export const pluginServiceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
+  taskBoardService: ITaskBoardService,
+};
 
 /** Wire service name (decorator id string) → token. */
 export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>> = {
+  settingsTransferService: ISettingsTransferService,
   agentGoalService: IAgentGoalService,
   agentLifecycleService: IAgentLifecycleService,
   sessionCronService: ISessionCronService,
-  taskBoardService: ITaskBoardService,
   agentPanelService: IAgentPanelService,
   sessionIndex: ISessionIndex,
   workspaceService: IWorkspaceService,
@@ -111,6 +124,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   workspaceInstanceManager: IWorkspaceInstanceManager,
   sessionManager: ISessionManager,
   sessionMetadata: ISessionMetadata,
+  sessionOptionalCapabilityService: ISessionOptionalCapabilityService,
   agentCollaborationMessagingService: IAgentCollaborationMessagingService,
   sessionActivityView: ISessionActivityView,
   sessionBtwService: ISessionBtwService,
@@ -124,6 +138,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentPromptService: IAgentPromptService,
   agentSkillService: IAgentSkillService,
   agentLoopService: IAgentLoopService,
+  agentExecutionService: IAgentExecutionService,
   agentContextInjectorService: IAgentContextInjectorService,
   agentContextMutationService: IAgentContextMutationService,
   agentContextRebuildService: IAgentContextRebuildService,
@@ -138,6 +153,7 @@ export const serviceTokens: Readonly<Record<string, ServiceIdentifier<unknown>>>
   agentActivityView: IAgentActivityView,
   agentShellCommandService: IAgentShellCommandService,
   agentProfileService: IAgentProfileService,
+  agentToolPolicyService: IAgentToolPolicyService,
   agentUsageService: IAgentUsageService,
   agentPlanService: IAgentPlanService,
   agentTaskService: IAgentTaskService,

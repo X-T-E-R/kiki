@@ -137,7 +137,12 @@ export class PluginManager {
     }
   }
 
-  async install(source: string, options: { readonly sha256?: string; readonly fingerprint?: string; readonly consent?: boolean } = {}, beforeReplace?: (id: string) => Promise<void>): Promise<PluginRecord> {
+  async install(source: string, options: {
+    readonly sha256?: string;
+    readonly fingerprint?: string;
+    readonly consent?: boolean;
+    readonly defaultEnabled?: boolean;
+  } = {}, beforeReplace?: (id: string) => Promise<void>): Promise<PluginRecord> {
     const candidate = await preparePluginSource(source, options.sha256);
     let managedCopy: ManagedPluginCopy | undefined;
     let previousRollback: string | undefined;
@@ -176,11 +181,13 @@ export class PluginManager {
       const managedParsed = await parseManifest(normalizedRoot);
       assertInstallable(managedParsed);
       const existing = this.records.get(id);
+      const defaultEnabled = existing === undefined ? options.defaultEnabled ?? false : existing.defaultEnabled;
       const now = new Date().toISOString();
       const record = await recordFrom({
         id,
         root: normalizedRoot,
-        enabled: existing?.enabled ?? false,
+        enabled: existing?.enabled ?? true,
+        defaultEnabled,
         installedAt: existing?.installedAt ?? now,
         updatedAt: now,
         originalSource: candidate.originalSource,
@@ -248,9 +255,9 @@ export class PluginManager {
     const current = this.records.get(key);
     if (current === undefined) throw pluginNotFound(id);
     assertMutable(current);
-    if (current.enabled === enabled) return;
+    if (current.enabled === enabled && current.defaultEnabled === enabled) return;
     const next = new Map(this.records);
-    next.set(key, { ...current, enabled, updatedAt: new Date().toISOString() });
+    next.set(key, { ...current, enabled, defaultEnabled: enabled, updatedAt: new Date().toISOString() });
     await this.persist(next);
     this.records = next;
   }
@@ -316,7 +323,7 @@ export class PluginManager {
     await swapPluginCopies(current.root, rollbackRoot);
     try {
       const previous = await recordFrom({
-        id: key, root: current.root, enabled: current.enabled, installedAt: current.installedAt,
+        id: key, root: current.root, enabled: current.enabled, defaultEnabled: current.defaultEnabled, installedAt: current.installedAt,
         updatedAt: new Date().toISOString(), originalSource: current.rollback.originalSource,
         source: current.rollback.source, capabilities: current.capabilities, github: current.rollback.github,
         zipSha256: current.rollback.zipSha256, parsed: await parseManifest(current.root),
@@ -391,6 +398,7 @@ export class PluginManager {
       for (const hook of record.manifest.hooks ?? []) {
         out.push({
           ...hook,
+          pluginId: record.id,
           cwd: record.root,
           env: {
             KIKI_HOME: this.kimiHomeDir,
@@ -451,7 +459,7 @@ export class PluginManager {
     for (const record of this.records.values()) {
       if (!record.enabled || record.state !== 'ok' || record.manifest === undefined) continue;
       for (const dir of record.manifest.agents ?? []) {
-        roots.push({ path: dir, source: 'plugin' });
+        roots.push({ path: dir, source: 'plugin', pluginId: record.id });
       }
     }
     return roots;
@@ -534,6 +542,7 @@ export class PluginManager {
         root: record.root,
         source: record.source,
         enabled: record.enabled,
+        defaultEnabled: record.defaultEnabled,
         installedAt: record.installedAt,
         updatedAt: record.updatedAt,
         originalSource: record.originalSource,
@@ -551,6 +560,7 @@ export class PluginManager {
       id: entry.id,
       root: entry.root,
       enabled: entry.enabled,
+      defaultEnabled: entry.defaultEnabled,
       installedAt: entry.installedAt,
       updatedAt: entry.updatedAt,
       originalSource: entry.originalSource,
@@ -631,7 +641,7 @@ async function preparePluginSource(source: string, sha256?: string): Promise<Pre
     github = { owner: resolved.owner, repo: resolved.repo, ref: resolution.ref, installedSha };
     zipUrl = `https://codeload.github.com/${resolved.owner}/${resolved.repo}/zip/${installedSha}`;
   } else if (sha256 === undefined || !/^[0-9a-fA-F]{64}$/.test(sha256)) {
-    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'ZIP plugins require a sha256 checksum');
+    throw new Error2(ErrorCodes.VALIDATION_FAILED, 'ZIP plugins require a sha256 checksum. Install it from the plugin market, which publishes the checksum, or pass the publisher checksum for a ZIP you chose yourself.');
   }
   const buffer = await downloadZip(zipUrl);
   if (resolved.kind === 'zip-url' && createHash('sha256').update(buffer).digest('hex') !== sha256!.toLowerCase()) {
@@ -819,6 +829,7 @@ async function recordFrom(input: {
   id: string;
   root: string;
   enabled: boolean;
+  defaultEnabled?: boolean;
   installedAt: string;
   updatedAt?: string;
   originalSource?: string;
@@ -837,6 +848,7 @@ async function recordFrom(input: {
     root: input.root,
     source: input.source ?? 'local-path',
     enabled: input.enabled,
+    defaultEnabled: input.defaultEnabled,
     state: hasError || parsed.manifest === undefined ? 'error' : 'ok',
     installedAt: input.installedAt,
     updatedAt: input.updatedAt,
@@ -862,6 +874,7 @@ function recordToSummary(record: PluginRecord): PluginSummary {
     version: record.manifest?.version,
     icon: record.manifest?.icon,
     enabled: record.enabled,
+    globalEnabled: record.enabled && (record.defaultEnabled ?? record.enabled),
     state: record.state,
     skillCount: record.skillCount,
     mcpServerCount: Object.keys(record.manifest?.mcpServers ?? {}).length,

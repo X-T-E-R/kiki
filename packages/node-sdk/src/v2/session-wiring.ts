@@ -107,6 +107,7 @@ export class SessionEventWiring {
   private readonly interactionConsumerId = `node-sdk:${randomUUID()}`;
   /** Pending interactions already handed to the sink (the kernel re-fires the full pending set on every change). */
   private readonly bridgedInteractionIds = new Set<string>();
+  private readonly pendingDisposals: Promise<void>[] = [];
   private disposed = false;
   private readonly interactions: ISessionInteractionService;
 
@@ -126,8 +127,8 @@ export class SessionEventWiring {
       lifecycle.onDidCreate((agent) => {
         this.attachAgent(agent);
       }),
-      lifecycle.onDidDispose((agentId) => {
-        this.detachAgent(agentId);
+      lifecycle.onDidDispose(async (agentId) => {
+        await this.detachAgent(agentId);
       }),
     );
     for (const agent of lifecycle.list()) {
@@ -136,19 +137,33 @@ export class SessionEventWiring {
   }
 
   dispose(): void {
-    if (this.disposed) return;
+    this.pendingDisposals.push(...this.disposeResources());
+  }
+
+  async disposeAsync(): Promise<void> {
+    this.pendingDisposals.push(...this.disposeResources());
+    await Promise.all(this.pendingDisposals.splice(0));
+  }
+
+  private disposeResources(): Promise<void>[] {
+    if (this.disposed) return [];
     this.disposed = true;
+    const pending: Promise<void>[] = [];
+    const collect = (result: void | Promise<void>): void => {
+      if (result instanceof Promise) pending.push(result);
+    };
     // Detach before releasing the consumer, which can resolve pending approvals.
     for (const disposable of this.disposables.splice(0)) {
-      disposable.dispose();
+      collect(disposable.dispose());
     }
     for (const subscription of this.agentSubscriptions.values()) {
-      subscription.dispose();
+      collect(subscription.dispose());
     }
     this.agentSubscriptions.clear();
     this.bridgedInteractionIds.clear();
     // The session scope may already be disposed by the close notification.
     this.interactions.releaseConsumer(this.interactionConsumerId);
+    return pending;
   }
 
   private attachAgent(agent: IAgentScopeHandle): void {
@@ -166,11 +181,11 @@ export class SessionEventWiring {
     );
   }
 
-  private detachAgent(agentId: string): void {
+  private async detachAgent(agentId: string): Promise<void> {
     const subscription = this.agentSubscriptions.get(agentId);
     if (subscription === undefined) return;
     this.agentSubscriptions.delete(agentId);
-    subscription.dispose();
+    await subscription.dispose();
   }
 
   private bridgeNewPendingInteractions(): void {

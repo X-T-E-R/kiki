@@ -349,6 +349,27 @@ describe('session event waiting', () => {
     vi.useFakeTimers();
     const failure = new Error('subscription failed');
     const controller = new AbortController();
+    const sdkTimers = new Set<number>();
+    let sawHelperTimer = false;
+    const fakeSetTimeout = globalThis.setTimeout;
+    const fakeClearTimeout = globalThis.clearTimeout;
+    // The wait timer is the only one this helper owns. Async advance yields to
+    // the native event loop, and a callback scheduled before the fake clock can
+    // then call the hijacked setTimeout. That adopted timer is not the wait.
+    globalThis.setTimeout = ((...timerArgs: Parameters<typeof fakeSetTimeout>) => {
+      const [handler, timeout, ...args] = timerArgs;
+      const handle = fakeSetTimeout(handler, timeout, ...args);
+      const owner = new Error('wait timer owner').stack ?? '';
+      if (owner.includes('waitForSDKEvent')) {
+        sawHelperTimer = true;
+        sdkTimers.add(Number(handle));
+      }
+      return handle;
+    }) as typeof setTimeout;
+    globalThis.clearTimeout = ((handle) => {
+      sdkTimers.delete(Number(handle));
+      fakeClearTimeout(handle);
+    }) as typeof clearTimeout;
     try {
       await expect(waitForSDKEvent(
         { onEvent: () => { throw failure; } },
@@ -356,10 +377,29 @@ describe('session event waiting', () => {
         undefined,
         controller.signal,
       )).rejects.toBe(failure);
+      expect(sawHelperTimer).toBe(true);
+      expect(sdkTimers.size).toBe(0);
       expect(vi.getTimerCount()).toBe(0);
       controller.abort();
       await vi.advanceTimersByTimeAsync(20_000);
+      expect(sdkTimers.size).toBe(0);
+    } finally {
+      globalThis.setTimeout = fakeSetTimeout;
+      globalThis.clearTimeout = fakeClearTimeout;
+      vi.useRealTimers();
+    }
+  });
+
+  it('consumes a wait-window timer and keeps a longer one', () => {
+    vi.useFakeTimers();
+    try {
+      setTimeout(() => {}, 20_000);
+      expect(vi.getTimerCount()).toBe(1);
+      vi.advanceTimersByTime(20_000);
       expect(vi.getTimerCount()).toBe(0);
+      setTimeout(() => {}, 60_000);
+      vi.advanceTimersByTime(20_000);
+      expect(vi.getTimerCount()).toBe(1);
     } finally {
       vi.useRealTimers();
     }
@@ -401,22 +441,80 @@ describe('session event waiting', () => {
     expect(unsubscribe).toHaveBeenCalledTimes(1);
   });
 
+  it('adopts its own timeout only after an async yield', async () => {
+    const realSetImmediate = globalThis.setImmediate;
+    const realClearImmediate = globalThis.clearImmediate;
+    vi.useFakeTimers();
+    const due = 1_000;
+    let nativeFired = false;
+    let fired = false;
+    let cancelledFired = false;
+    let fireHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
+    let cancelHandle: ReturnType<typeof globalThis.setTimeout> | undefined;
+    // Async advance yields through the real setImmediate. This callback is
+    // queued ahead of that yield and arms two timeouts on the hijacked clock.
+    // Sync advance does not yield, so neither timeout is armed yet. Other
+    // native callbacks can arm timers in the same yield, so this test watches
+    // only the handles it holds.
+    const native = realSetImmediate(() => {
+      nativeFired = true;
+      fireHandle = globalThis.setTimeout(() => {
+        fired = true;
+      }, due);
+      cancelHandle = globalThis.setTimeout(() => {
+        cancelledFired = true;
+      }, due);
+    });
+    try {
+      expect(nativeFired).toBe(false);
+      vi.advanceTimersByTime(0);
+      expect(nativeFired).toBe(false);
+      expect(fired).toBe(false);
+      expect(cancelledFired).toBe(false);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(nativeFired).toBe(true);
+      if (fireHandle === undefined || cancelHandle === undefined) {
+        throw new Error('native callback did not schedule its timeouts');
+      }
+      expect(fired).toBe(false);
+      expect(cancelledFired).toBe(false);
+      vi.advanceTimersByTime(due - 1);
+      expect(fired).toBe(false);
+      expect(cancelledFired).toBe(false);
+      globalThis.clearTimeout(cancelHandle);
+      vi.advanceTimersByTime(1);
+      expect(fired).toBe(true);
+      expect(cancelledFired).toBe(false);
+    } finally {
+      realClearImmediate(native);
+      if (fireHandle !== undefined) globalThis.clearTimeout(fireHandle);
+      if (cancelHandle !== undefined) globalThis.clearTimeout(cancelHandle);
+      vi.useRealTimers();
+    }
+  });
+
   it('handles an event timeout before the operation rejects', async () => {
     vi.useFakeTimers();
     const unsubscribe = vi.fn();
     let rejectOperation!: (reason: Error) => void;
     const operation = new Promise<never>((_resolve, reject) => { rejectOperation = reject; });
+    const late = operation.catch((error: unknown) => error);
     try {
       const result = expect(waitForSessionEvent(
         { onEvent: () => unsubscribe },
         () => true,
         () => operation,
       )).rejects.toThrow('Timed out waiting for session event');
-      await vi.advanceTimersByTimeAsync(20_000);
+      // Sync advance does not yield to the native event loop, so a callback
+      // queued before the fake clock cannot adopt an unrelated timer here.
+      vi.advanceTimersByTime(20_000);
       await result;
       expect(unsubscribe).toHaveBeenCalledTimes(1);
+      expect(vi.getTimerCount()).toBe(0);
       rejectOperation(new Error('late operation failure'));
-      await vi.advanceTimersByTimeAsync(0);
+      await late;
+      await Promise.resolve();
+      vi.advanceTimersByTime(0);
       expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();

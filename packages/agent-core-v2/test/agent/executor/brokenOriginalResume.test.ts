@@ -1,8 +1,6 @@
 import { PassThrough, Readable, Writable } from 'node:stream';
 
-import { ndJsonStream } from '../../../../acp-client/node_modules/@agentclientprotocol/sdk/dist/acp.js';
-import { AcpProcessClient, type AcpOpenSessionOptions } from '@kiki/acp-client';
-import type { HostProcessLike } from '@kiki/acp-client';
+import { AcpProcessClient, type AcpOpenSessionOptions, type HostProcessLike } from '@kiki/acp-client';
 import { describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
@@ -62,7 +60,7 @@ import { ISessionSubagentService } from '#/session/subagent/subagent';
 import { externalExecutorKey } from '#/agent/execution/externalExecutorOps';
 import { createTestAgent } from '../../harness';
 import { executeTool } from '../../tools/fixtures/execute-tool';
-import { createInProcessScriptedAgent, type InProcessAgentScript } from '../../../../acp-client/test/fixtures/in-process-scripted-agent';
+import { connectInProcessScriptedAgent, createInProcessScriptedAgent, type InProcessAgentScript } from '../../../../acp-client/test/fixtures/in-process-scripted-agent';
 
 import { createExecutionHarness } from './externalExecutor.test';
 
@@ -106,7 +104,7 @@ function recordingClient(script: () => InProcessAgentScript, failSpawn: () => bo
       const { child, toAgent, fromAgent } = scriptedChild();
       const fixture = createInProcessScriptedAgent(script());
       histories.push(fixture.history);
-      fixture.app.connect(ndJsonStream(Writable.toWeb(fromAgent), Readable.toWeb(toAgent)));
+      connectInProcessScriptedAgent(fixture.app, Writable.toWeb(fromAgent), Readable.toWeb(toAgent));
       return child;
     },
   }, { id: 'example-acp', command: 'example-acp', startupTimeoutMs: 5_000 }, { platform: 'linux' });
@@ -252,6 +250,7 @@ describe('recoverable ACP broken resume', () => {
       agentId: CHILD,
       client: remote.client,
       modelBinding: 'argv',
+      thinkingEffort: 'medium',
       permission: argvPermission,
       prior: {
         executorId: 'example-acp',
@@ -320,6 +319,7 @@ describe('recoverable ACP broken resume', () => {
     messagingIx.set(ISessionContext, session);
     messagingIx.set(ISessionMetadata, metadata);
     messagingIx.stub(ISessionDispatchService, { runOnExisting: async () => { throw new Error('AgentSend must not dispatch while broken'); } });
+    messagingIx.stub(ISessionManager, {});
     messagingIx.stub(ILogService, { warn: () => {}, info: () => {}, error: () => {}, debug: () => {} });
     messagingIx.set(IAgentCollaborationMessagingService, new SyncDescriptor(AgentCollaborationMessagingService));
     const messaging = messagingIx.get(IAgentCollaborationMessagingService) as AgentCollaborationMessagingService;
@@ -348,9 +348,7 @@ describe('recoverable ACP broken resume', () => {
       setSessionDisabledTools: async () => {},
     });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
-    toolIx.stub(IAgentRuntimeService, {
-      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
-    });
+    toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     const fingerprint = () => (harness.ix.get(IAgentStateService).get(externalExecutorKey) as { bindingFingerprint?: string; sessionRef?: { ref: { sessionId?: string } } }).bindingFingerprint;
@@ -392,7 +390,7 @@ describe('recoverable ACP broken resume', () => {
       });
       await harness.execution.settled();
 
-      expect(result.isError, String(result.output)).toBeFalsy();
+      expect(result.isError, JSON.stringify(result.output)).toBeFalsy();
       expect(sawBrokenAtSwitch).toBe(true);
       expect(harness.execution.canResumeBrokenOriginal()).toBe(false);
       expect(remote.spawns()).toBe(3);
@@ -411,15 +409,15 @@ describe('recoverable ACP broken resume', () => {
       expect(await mailbox.store.nextQueued('session-1', CHILD)).toBeUndefined();
       expect(fingerprint()).toBe(savedFingerprint);
       expect((harness.ix.get(IAgentStateService).get(externalExecutorKey) as { sessionRef?: { ref: { sessionId?: string } } }).sessionRef?.ref.sessionId).toBe('remote-original');
-      expect(String(result.output)).not.toContain(BODY);
+      expect(JSON.stringify(result.output)).not.toContain(BODY);
     } finally {
-      messaging.dispose();
-      messagingIx.dispose();
-      toolIx.dispose();
-      switched.dispose();
-      await harness.execution.shutdown().catch(() => undefined);
-      await remote.client.shutdown().catch(() => undefined);
-      harness.ix.dispose();
+      await messaging.dispose();
+      await messagingIx.dispose();
+      await toolIx.dispose();
+      await switched.dispose();
+      await harness.execution.shutdown();
+      await remote.client.shutdown();
+      await harness.ix.dispose();
       await senderCtx.dispose();
     }
   });
@@ -474,9 +472,7 @@ describe('recoverable ACP broken resume', () => {
     toolIx.stub(IAgentProfileService, senderCtx.get(IAgentProfileService));
     toolIx.stub(IAgentToolPolicyService, { isToolActive: () => true, isToolActiveForDisclosure: () => true, isToolActiveForProfile: () => true, setSessionDisabledTools: async () => {} });
     toolIx.stub(ISessionWorkspaceContext, { workDir: 'cwd' });
-    toolIx.stub(IAgentRuntimeService, {
-      acquire: (() => ({ runtime: {}, track: <T>(resource: T) => resource, dispose() {} })) as IAgentRuntimeService['acquire'],
-    });
+    toolIx.stub(IAgentRuntimeService, senderCtx.get(IAgentRuntimeService));
     toolIx.set(ISessionDispatchService, new SyncDescriptor(SessionDispatchService));
     toolIx.set(ISubagentTool, new SyncDescriptor(SubagentTool));
     try {
@@ -493,15 +489,15 @@ describe('recoverable ACP broken resume', () => {
         signal,
       });
       expect(result.isError).toBe(true);
-      expect(String(result.output)).toContain('original remote session cannot be resumed');
-      expect(String(result.output)).not.toContain('already running');
+      expect(JSON.stringify(result.output)).toContain('original remote session cannot be resumed');
+      expect(JSON.stringify(result.output)).not.toContain('already running');
       expect(remote.spawns()).toBe(spawned);
       expect(remote.histories.every((history) => history.sessionNewParams.length === 0)).toBe(true);
     } finally {
-      toolIx.dispose();
-      await harness.execution.shutdown().catch(() => undefined);
-      await remote.client.shutdown().catch(() => undefined);
-      harness.ix.dispose();
+      await toolIx.dispose();
+      await harness.execution.shutdown();
+      await remote.client.shutdown();
+      await harness.ix.dispose();
       await senderCtx.dispose();
     }
   });
@@ -595,7 +591,7 @@ describe('recoverable ACP broken resume', () => {
     messagingIx.set(ISessionContext, session);
     messagingIx.set(ISessionMetadata, metadata);
     messagingIx.set(ISessionDispatchService, {
-      runOnExisting: async (child, request, options) => {
+      runOnExisting: async (...[child, request, options]: Parameters<ISessionDispatchService['runOnExisting']>) => {
         const runRequest = typeof request === 'string' ? { kind: 'prompt' as const, prompt: request } : request;
         return {
           child,
@@ -666,11 +662,11 @@ describe('recoverable ACP broken resume', () => {
       expect(mailbox.delivered()).toBe(false);
       expect((await mailbox.store.nextQueued('session-1', CHILD))?.message.content).toBe(saved);
     } finally {
-      messaging.dispose();
-      messagingIx.dispose();
-      await harness.execution.shutdown().catch(() => undefined);
-      await remote.client.shutdown().catch(() => undefined);
-      harness.ix.dispose();
+      await messaging.dispose();
+      await messagingIx.dispose();
+      await harness.execution.shutdown();
+      await remote.client.shutdown();
+      await harness.ix.dispose();
     }
   });
 });

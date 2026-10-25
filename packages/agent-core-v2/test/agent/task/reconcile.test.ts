@@ -6,6 +6,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IPluginMediaService } from '#/app/pluginMedia/pluginMedia';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { EMPTY_AGENT_RECEIPT_REASON } from '#/agent/tools/agent/subagent-task';
+import { readCommittedAgentRunOutcomes } from '#/agent/task/agentOutcome';
+import { SubagentCompleted } from '#/session/subagent/mirrorAgentRun';
+import { ISessionMetadata, type AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 
 import {
   IAgentTaskService,
@@ -27,6 +33,47 @@ const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
 let sessionDir: string;
 let persistence: ReturnType<typeof createAgentTaskPersistence>;
+
+function persistedAgent(
+  overrides: Partial<Extract<AgentTaskInfo, { kind: 'agent' }>> = {},
+): Extract<AgentTaskInfo, { kind: 'agent' }> {
+  return {
+    taskId: 'agent-track001',
+    kind: 'agent',
+    agentId: 'agent-child',
+    description: 'tracked child',
+    executorId: 'native',
+    executorProtocol: 'native',
+    startedAt: 1_700_000_000,
+    endedAt: null,
+    status: 'running',
+    detached: true,
+    ...overrides,
+  };
+}
+
+async function appendJournal(ctx: TestAgentContext, event: SubagentCompleted): Promise<void> {
+  ctx.wire.appendRecord(event.serialize());
+  await ctx.wire.flush();
+}
+
+async function rememberOutcome(ctx: TestAgentContext, agentId: string, meta: AgentMeta): Promise<void> {
+  await ctx.get(ISessionMetadata).registerAgent(agentId, meta);
+}
+
+async function reconcileWithoutReadingJournal(
+  ctx: TestAgentContext,
+  background: TaskServiceTestManager,
+): Promise<void> {
+  await background.loadFromDisk();
+  const readJournal = vi.spyOn(ctx.wire, 'readJournal');
+  try {
+    await background.reconcile();
+    expect(readJournal).not.toHaveBeenCalled();
+  } finally {
+    readJournal.mockRestore();
+  }
+}
 
 function persistedProcess(
   overrides: Partial<Extract<AgentTaskInfo, { kind: 'process' }>> = {},
@@ -156,10 +203,11 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
           command: 'sleep 9999',
           description: 'restore hook check',
           pid: 4242,
+          terminalNotificationSuppressed: true,
         }),
       );
 
-      await ctx.restore([]);
+      await ctx.restore(await ctx.persistedWireRecords());
 
       expect(background.getTask('bash-restore0')).toMatchObject({
         taskId: 'bash-restore0',
@@ -312,5 +360,249 @@ describe('AgentTaskService — loadFromDisk + reconcile', () => {
         ),
       ).toEqual([]);
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('adopts a matching bounded outcome as completed without starting execution', async () => {
+      await persistence.writeTask(persistedAgent());
+      await rememberOutcome(ctx, 'agent-child', {
+        type: 'sub',
+        status: 'completed',
+        resultSummary: 'inspected the tree',
+        taskId: 'agent-track001',
+        completedAt: 1_700_000_100,
+      });
+      const run = vi.spyOn(ctx.get(IAgentExecutionService), 'run');
+      const agentsBefore = ctx.get(IAgentLifecycleService).list().length;
+      try {
+        await reconcileWithoutReadingJournal(ctx, background);
+        expect(background.getTask('agent-track001')).toMatchObject({
+          kind: 'agent',
+          agentId: 'agent-child',
+          status: 'completed',
+          receiptVerification: 'verified',
+        });
+        expect((await background.getOutputSnapshot('agent-track001', 4096)).preview).toBe('inspected the tree');
+        expect(await persistence.readTask('agent-track001')).toMatchObject({
+          status: 'completed',
+          agentId: 'agent-child',
+          receiptVerification: 'verified',
+        });
+        expect(run).not.toHaveBeenCalled();
+        expect(ctx.get(IAgentLifecycleService).list()).toHaveLength(agentsBefore);
+      } finally {
+        run.mockRestore();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('records an empty bounded outcome as failed without treating it as success', async () => {
+      await persistence.writeTask(persistedAgent());
+      await rememberOutcome(ctx, 'agent-child', {
+        type: 'sub',
+        status: 'completed',
+        resultSummary: '   ',
+        taskId: 'agent-track001',
+        completedAt: 1_700_000_100,
+      });
+      const run = vi.spyOn(ctx.get(IAgentExecutionService), 'run');
+      try {
+        await reconcileWithoutReadingJournal(ctx, background);
+        expect(background.getTask('agent-track001')).toMatchObject({
+          status: 'failed',
+          stopReason: EMPTY_AGENT_RECEIPT_REASON,
+        });
+        expect((await background.getOutputSnapshot('agent-track001', 4096)).preview).toBe('');
+        expect(run).not.toHaveBeenCalled();
+      } finally {
+        run.mockRestore();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('adopts the stored bounded outcome and maps terminated to killed', async () => {
+      await persistence.writeTask(persistedAgent());
+      await persistence.writeTask(persistedAgent({
+        taskId: 'agent-killed01',
+        agentId: 'agent-killed',
+        description: 'killed child',
+      }));
+      await rememberOutcome(ctx, 'agent-child', {
+        type: 'sub',
+        status: 'failed',
+        error: 'tool rejected',
+        taskId: 'agent-track001',
+        completedAt: 1_700_000_200,
+      });
+      await rememberOutcome(ctx, 'agent-killed', {
+        type: 'sub',
+        status: 'cancelled',
+        error: 'terminated',
+        taskId: 'agent-killed01',
+        completedAt: 1_700_000_300,
+      });
+      await reconcileWithoutReadingJournal(ctx, background);
+      expect(background.getTask('agent-track001')).toMatchObject({
+        status: 'failed',
+        stopReason: 'tool rejected',
+      });
+      expect(background.getTask('agent-killed01')).toMatchObject({ status: 'killed' });
+      expect(background.getTask('agent-killed01')?.stopReason).toBeUndefined();
+      expect((await background.getOutputSnapshot('agent-track001', 4096)).preview).not.toContain('first receipt');
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('leaves a process and an unmatched agent lost when the bounded outcome does not identify them', async () => {
+      await persistence.writeTask(persistedProcess());
+      await persistence.writeTask(persistedAgent({ taskId: 'agent-mismatch', description: 'wrong child' }));
+      await persistence.writeTask(persistedAgent({
+        taskId: 'agent-noid0001',
+        agentId: undefined,
+        description: 'missing child id',
+      }));
+      await rememberOutcome(ctx, 'someone-else', {
+        type: 'sub',
+        status: 'completed',
+        resultSummary: 'not this agent',
+        taskId: 'agent-mismatch',
+        completedAt: 1_700_000_100,
+      });
+      await rememberOutcome(ctx, 'agent-child', {
+        type: 'sub',
+        status: 'completed',
+        resultSummary: 'no stored identity',
+        taskId: 'agent-noid0001',
+        completedAt: 1_700_000_200,
+      });
+      const run = vi.spyOn(ctx.get(IAgentExecutionService), 'run');
+      const agentsBefore = ctx.get(IAgentLifecycleService).list().length;
+      try {
+        await reconcileWithoutReadingJournal(ctx, background);
+        for (const taskId of ['bash-orphan00', 'agent-mismatch', 'agent-noid0001']) {
+          expect(background.getTask(taskId)).toMatchObject({ status: 'lost' });
+          expect(background.getTask(taskId)?.stopReason).toContain('external execution outcome is unconfirmed');
+        }
+        expect((await background.getOutputSnapshot('agent-mismatch', 4096)).preview).not.toContain('not this agent');
+        expect(run).not.toHaveBeenCalled();
+        expect(ctx.get(IAgentLifecycleService).list()).toHaveLength(agentsBefore);
+      } finally {
+        run.mockRestore();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('leaves an agent lost when the bounded outcome cannot be read', async () => {
+      await persistence.writeTask(persistedAgent());
+      await rememberOutcome(ctx, 'agent-child', {
+        type: 'sub',
+        status: 'completed',
+        resultSummary: 'unread receipt',
+        taskId: 'agent-track001',
+        completedAt: 1_700_000_100,
+      });
+      const metadata = ctx.get(ISessionMetadata);
+      const original = metadata.read.bind(metadata);
+      let outcomeReadFailed = false;
+      metadata.read = () => {
+        if (!outcomeReadFailed) {
+          outcomeReadFailed = true;
+          return Promise.reject(new Error('metadata unavailable'));
+        }
+        return original();
+      };
+      const readJournal = vi.spyOn(ctx.wire, 'readJournal');
+      try {
+        await background.loadFromDisk();
+        await background.reconcile();
+        expect(outcomeReadFailed).toBe(true);
+        expect(readJournal).not.toHaveBeenCalled();
+        expect(background.getTask('agent-track001')).toMatchObject({ status: 'lost' });
+        expect(background.getTask('agent-track001')?.stopReason).toContain('external execution outcome is unconfirmed');
+        expect((await background.getOutputSnapshot('agent-track001', 4096)).preview).not.toContain('unread receipt');
+      } finally {
+        metadata.read = original;
+        readJournal.mockRestore();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('does not rewrite an already-terminal lost agent from a later bounded outcome', async () => {
+      await persistence.writeTask(persistedAgent({
+        status: 'lost',
+        endedAt: 1_700_000_050,
+        stopReason: 'already terminal',
+      }));
+      await rememberOutcome(ctx, 'agent-child', {
+        type: 'sub',
+        status: 'completed',
+        resultSummary: 'should-not-apply',
+        taskId: 'agent-track001',
+        completedAt: 1_700_000_100,
+      });
+      await reconcileWithoutReadingJournal(ctx, background);
+      expect(background.getTask('agent-track001')).toMatchObject({
+        status: 'lost',
+        stopReason: 'already terminal',
+      });
+      expect((await background.getOutputSnapshot('agent-track001', 4096)).preview).not.toContain('should-not-apply');
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('does not read the parent journal when reconciling a bounded outcome ghost', async () => {
+      await persistence.writeTask(persistedAgent());
+      await appendJournal(ctx, new SubagentCompleted({
+        subagentId: 'agent-child',
+        taskId: 'agent-track001',
+        resultSummary: 'still only in the journal',
+      }, 1_700_000_100));
+      const readJournal = vi.spyOn(ctx.wire, 'readJournal');
+      try {
+        await background.loadFromDisk();
+        await background.reconcile();
+        expect(readJournal).not.toHaveBeenCalled();
+        expect(background.getTask('agent-track001')).toMatchObject({ status: 'lost' });
+        expect((await background.getOutputSnapshot('agent-track001', 4096)).preview).not.toContain('still only in the journal');
+      } finally {
+        readJournal.mockRestore();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+  });
+});
+
+describe('readCommittedAgentRunOutcomes', () => {
+  it('bounded outcome reader reports a metadata read failure', async () => {
+    const read = await readCommittedAgentRunOutcomes({
+      read: async () => {
+        throw new Error('metadata unavailable');
+      },
+    });
+    expect(read.ok).toBe(false);
+    if (read.ok) return;
+    expect(read.error).toMatchObject({ message: 'metadata unavailable' });
+  });
+
+  it('bounded outcome reader ignores an agent record without a task id', async () => {
+    const read = await readCommittedAgentRunOutcomes({
+      read: async () => ({
+        id: 'session',
+        createdAt: 1,
+        updatedAt: 1,
+        archived: false,
+        agents: {
+          'agent-child': {
+            type: 'sub',
+            status: 'completed',
+            resultSummary: 'no task',
+          },
+          'agent-killed': {
+            type: 'sub',
+            status: 'cancelled',
+            error: 'terminated',
+            taskId: 'agent-track001',
+            completedAt: 12,
+          },
+        },
+      }),
+    });
+    expect(read.ok).toBe(true);
+    if (!read.ok) return;
+    expect(read.outcomes.size).toBe(1);
+    expect(read.outcomes.get('agent-track001')).toMatchObject({
+      status: 'killed',
+      subagentId: 'agent-killed',
+    });
+    expect(read.outcomes.get('agent-track001')?.stopReason).toBeUndefined();
   });
 });

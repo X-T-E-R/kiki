@@ -1,7 +1,27 @@
 /** App-scoped peer-thread communication contract mirrored from agent-core-v2. */
 
 import { z } from 'zod';
-import { contentRefSchema, contentSegmentSchema, transcriptResponseSchema } from '@kiki/transcript';
+import {
+  agentRefSchema,
+  attachmentSchema,
+  contentRefSchema,
+  contentSegmentSchema,
+  interactionSchema,
+  noticeFrameSchema,
+  thinkingFrameSchema,
+  textFrameSchema,
+  todoSchema,
+  toolCallFrameSchema,
+  transcriptMarkerSchema,
+  transcriptMetaSchema,
+  transcriptPromptSchema,
+  transcriptResponseSchema,
+  transcriptStepSchema,
+  transcriptTaskSchema,
+  transcriptTaskRefSchema,
+  transcriptTurnExecutionSchema,
+  transcriptTurnSchema,
+} from '@kiki/transcript';
 
 import { maybe, noResult } from '../helpers.js';
 import type { ServiceContract } from '../types.js';
@@ -10,6 +30,8 @@ export const threadRefSchema = z.object({
   hostId: z.string().trim().min(1),
   workspaceId: z.string().trim().min(1),
   sessionId: z.string().trim().min(1),
+  personaId: z.string().optional(),
+  name: z.string().optional(),
   bridgeId: z.string().uuid().optional(),
   connectionId: z.string().uuid().optional(),
 });
@@ -38,7 +60,7 @@ export const threadTurnSchema = z.object({
   startedAt: z.number().int().nonnegative().optional(),
   endedAt: z.number().int().nonnegative(),
   reason: z.enum(['completed', 'cancelled', 'failed', 'blocked']),
-  origin: z.enum(['user', 'peer', 'bridged_peer']),
+  origin: z.enum(['user', 'peer', 'bridged_peer', 'external', 'mixed', 'unknown', 'thread_created']),
   bridgedPeer: z.object({ source: threadRefSchema, sourceHomeId: z.string().uuid(), targetHomeId: z.string().uuid(), bridgeId: z.string().uuid(),
     revision: z.number().int().positive(), location: z.enum(['local', 'network']), createdAt: z.number(), expiresAt: z.number(), sourceSeq: z.number(),
     causeId: z.string(), hop: z.number(), messageId: z.string() }).optional(),
@@ -47,6 +69,7 @@ export const threadTurnSchema = z.object({
     .optional(),
   input: z.string(),
   output: z.string(),
+  contentRefs: z.array(contentRefSchema).optional(),
 });
 
 export const readThreadInputSchema = z.object({
@@ -56,19 +79,50 @@ export const readThreadInputSchema = z.object({
   limit: z.number().int().min(1).max(100).optional(),
 });
 
-type PageTurn = Extract<z.infer<typeof transcriptResponseSchema>['items'][number], { kind: 'turn' }>;
-type WirePageTurn = Omit<PageTurn, 'execution'> & { execution?: Omit<NonNullable<PageTurn['execution']>, 'losses'> & { losses: string[] } };
-const wirePageTurn = (item: PageTurn): WirePageTurn => ({
-  ...item, execution: item.execution === undefined ? undefined : { ...item.execution, losses: [...item.execution.losses] },
+const wireContentRefsSchema = z.array(contentRefSchema).optional();
+const wireTextFrameSchema = textFrameSchema.extend({
+  contentRefs: wireContentRefsSchema,
+  attachmentIds: z.array(z.string()).optional(),
 });
-const threadTranscriptPageSchema = transcriptResponseSchema.transform((page) => ({
-  ...page, items: page.items.map((item) => item.kind === 'turn' ? wirePageTurn(item) : item),
-}));
+const wireThinkingFrameSchema = thinkingFrameSchema.extend({ contentRefs: wireContentRefsSchema });
+const wireToolCallFrameSchema = toolCallFrameSchema.extend({
+  contentRefs: wireContentRefsSchema,
+  agentRefs: z.array(agentRefSchema).optional(),
+});
+const wireNoticeFrameSchema = noticeFrameSchema.extend({ contentRefs: wireContentRefsSchema });
+const wireTranscriptFrameSchema = z.discriminatedUnion('kind', [
+  wireTextFrameSchema,
+  wireThinkingFrameSchema,
+  wireToolCallFrameSchema,
+  wireNoticeFrameSchema,
+]);
+const wireTranscriptStepSchema = transcriptStepSchema.extend({ frames: z.array(wireTranscriptFrameSchema) });
+const wireTranscriptTurnSchema = transcriptTurnSchema.extend({
+  contentRefs: wireContentRefsSchema,
+  attachmentIds: z.array(z.string()).optional(),
+  steps: z.array(wireTranscriptStepSchema),
+  execution: transcriptTurnExecutionSchema.extend({ losses: z.array(z.string()) }).optional(),
+});
+const wireTranscriptItemSchema = z.discriminatedUnion('kind', [
+  wireTranscriptTurnSchema,
+  transcriptMarkerSchema.extend({ contentRefs: wireContentRefsSchema }),
+  transcriptTaskRefSchema,
+]);
+const wireTranscriptPageSchema = transcriptResponseSchema.extend({
+  items: z.array(wireTranscriptItemSchema),
+  tasks: z.array(transcriptTaskSchema.extend({ contentRefs: wireContentRefsSchema })),
+  interactions: z.array(interactionSchema.extend({ contentRefs: wireContentRefsSchema })).default([]),
+  attachments: z.array(attachmentSchema.extend({ contentRefs: wireContentRefsSchema })).default([]),
+  todos: z.array(todoSchema.extend({ contentRefs: wireContentRefsSchema })).default([]),
+  prompts: z.array(transcriptPromptSchema.extend({ contentRefs: wireContentRefsSchema })).default([]),
+  meta: transcriptMetaSchema.extend({ contentRefs: wireContentRefsSchema }),
+});
 export const readThreadResultSchema = z.object({
   thread: threadRefSchema,
   turns: z.array(threadTurnSchema),
   nextCursor: z.string().optional(),
-  view: z.object({ transcript: threadTranscriptPageSchema.optional(), segment: contentSegmentSchema.optional() }).optional(),
+  incomplete: z.literal('history_preparing').optional(),
+  view: z.object({ transcript: wireTranscriptPageSchema.optional(), segment: contentSegmentSchema.optional() }).optional(),
 });
 
 export const sendThreadMessageInputSchema = z

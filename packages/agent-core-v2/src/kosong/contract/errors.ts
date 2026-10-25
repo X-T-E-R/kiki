@@ -1,4 +1,4 @@
-import { Error2, type Error2Options } from '#/_base/errors/errors';
+import { Error2, attachErrorDetails, readAttachedErrorDetails, type Error2Options } from '#/_base/errors/errors';
 import type { FinishReason } from './provider';
 
 export const CONFIG_INVALID_ERROR_CODE = 'config.invalid';
@@ -283,7 +283,93 @@ export function isImageFormatError(error: unknown): boolean {
   return false;
 }
 
+function explicitDeliveryMark(error: object): 'unknown' | 'executed' | undefined {
+  const attached = readAttachedErrorDetails(error)?.['request_delivery'];
+  const details = error instanceof Error2 ? error.details?.['request_delivery'] : undefined;
+  const mark = attached ?? details;
+  if (mark === 'ambiguous') return 'unknown';
+  if (mark === 'executed') return 'executed';
+  return undefined;
+}
+
+function noteRequestDelivery(error: unknown, mark: 'ambiguous' | 'executed'): void {
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    if (!(mark === 'executed' && explicitDeliveryMark(current) === 'unknown')) {
+      attachErrorDetails(current, { request_delivery: mark });
+    }
+    if (mark === 'executed') attachErrorDetails(current, { request_output: 'observed' });
+    current = current instanceof Error ? current.cause : undefined;
+  }
+}
+
+/** Delivery observations retained for generation recovery decisions.
+ *
+ * `unknown` means the outcome was not observed. `executed` means actual output or
+ * tool execution was observed. A failure event or response id alone is neither.
+ * `undefined` means neither fact is present, so a pre-stream HTTP retry and the one explicit
+ * HTTP 401 refresh stay available. The walk includes causes, and the marks are
+ * stored on that chain, so `unwrapErrorCause` does not remove them. Call this on
+ * the original error before unwrapping.
+ */
+export function requestDeliveryProvenance(error: unknown): 'unknown' | 'executed' | undefined {
+  const visited = new Set<unknown>();
+  let current: unknown = error;
+  let executed = false;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const mark = explicitDeliveryMark(current);
+    if (mark === 'unknown') return 'unknown';
+    if (mark === 'executed') executed = true;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  return executed ? 'executed' : undefined;
+}
+
+export function isAmbiguousRequestDelivery(error: unknown): boolean {
+  return requestDeliveryProvenance(error) === 'unknown';
+}
+
+export function ambiguousRequestDelivery(error: unknown): ChatProviderError {
+  noteRequestDelivery(error, 'ambiguous');
+  const wrapped = new ChatProviderError('The provider request ended without an observed outcome.', undefined, {
+    cause: error,
+    details: { request_delivery: 'ambiguous' },
+  });
+  noteRequestDelivery(wrapped, 'ambiguous');
+  return wrapped;
+}
+
+/** Records that this failure happened after a response, partial output, or tool was observed. */
+export function noteExecutedRequestDelivery(error: unknown): void {
+  noteRequestDelivery(error, 'executed');
+}
+
+const NON_RETRYABLE_PROVIDER_CODES: ReadonlySet<string> = new Set([
+  'antigravity_thinking_only',
+  'antigravity_safety',
+  'antigravity_malformed_function_call',
+  'antigravity_malformed_response',
+  'antigravity_upstream_terminal_error',
+]);
+
 export function isRetryableGenerateError(error: unknown): boolean {
+  if (isAbortError(error) || requestDeliveryProvenance(error) === 'executed') return false;
+  const visited = new Set<object>();
+  let current = error;
+  let providerError = error;
+  while (typeof current === 'object' && current !== null && !visited.has(current)) {
+    visited.add(current);
+    const details = providerErrorMetadata(current);
+    if (details['retry'] === false || details['request_output'] === 'observed') return false;
+    const code = details['upstreamErrorCode'];
+    if (typeof code === 'string' && NON_RETRYABLE_PROVIDER_CODES.has(code)) return false;
+    if (current instanceof ChatProviderError) providerError = current;
+    current = current instanceof Error ? current.cause : undefined;
+  }
+  error = providerError;
   if (error instanceof APIConnectionError || error instanceof APITimeoutError) {
     return true;
   }
@@ -304,7 +390,14 @@ export function isRetryableGenerateError(error: unknown): boolean {
       (error.statusCode >= 500 && error.statusCode <= 599)
     );
   }
-  return error instanceof ChatProviderError && !isImageFormatError(error);
+  if (error instanceof ChatProviderError) {
+    const tail = error.details?.['google_content_tail'];
+    if (tail === 'model_prefill' || tail === 'model_function_call') return false;
+    const stop = error.details?.['google_stop'];
+    if (stop === 'continuation_unsupported' || stop === 'think_snapshot_exhausted') return false;
+    return !isImageFormatError(error);
+  }
+  return false;
 }
 
 const NETWORK_RE = /network|connection|connect|disconnect|terminated/i;
@@ -439,7 +532,41 @@ function readNestedErrorObject(value: object): object | undefined {
   return typeof raw === 'object' && raw !== null ? raw : undefined;
 }
 
-function readProviderErrorIdentifier(value: unknown): string | null {
+/** Marks a parsed provider event's own failure, keeping its exact upstream code.
+ *  Only an event the provider itself named qualifies; an HTTP status alone does not. */
+export function markProviderEventError<T>(error: T, upstreamErrorCode?: string | null): T {
+  const code = readProviderErrorIdentifier(upstreamErrorCode) ??
+    providerErrorMetadata(error)['upstreamErrorCode'];
+  if (typeof code !== 'string') return error;
+  if (NON_RETRYABLE_PROVIDER_CODES.has(code)) attachErrorDetails(error, { retry: false });
+  return attachErrorDetails(error, { errorSource: 'provider_event', upstreamErrorCode: code });
+}
+
+/** Keeps an HTTP failure's upstream code without treating it as a stream event. */
+export function markProviderHttpError<T>(error: T, upstreamErrorCode?: string | null): T {
+  const code = readProviderErrorIdentifier(upstreamErrorCode);
+  if (code === null) return error;
+  if (NON_RETRYABLE_PROVIDER_CODES.has(code)) attachErrorDetails(error, { retry: false });
+  return attachErrorDetails(error, { errorSource: 'provider_http', upstreamErrorCode: code });
+}
+
+/** The exact upstream code of a provider event failure, when the provider named one. */
+export function readProviderEventErrorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null) return undefined;
+  const details = providerErrorMetadata(error);
+  if (details['errorSource'] !== 'provider_event') return undefined;
+  return readProviderErrorIdentifier(details['upstreamErrorCode']) ?? undefined;
+}
+
+function providerErrorMetadata(error: unknown): Readonly<Record<string, unknown>> {
+  if (typeof error !== 'object' || error === null) return {};
+  const attached = readAttachedErrorDetails(error) ?? {};
+  const declared = error instanceof Error2 ? error.details ?? {} : {};
+  return { ...declared, ...attached };
+}
+
+/** Filters a provider identifier without retaining content or credentials. */
+export function readProviderErrorIdentifier(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0 || value.length > 200) return null;
   const redacted = redactSensitiveText(value);
   return /^[A-Za-z0-9_.:-]+$/.test(redacted) ? redacted : null;

@@ -44,7 +44,7 @@ describe('readLayoutPreferences', () => {
       filters: { status: [], workspaces: [], archived: 'hide' },
       sidebarWidth: SIDEBAR_DEFAULT_WIDTH,
       railWidth: RAIL_DEFAULT_WIDTH,
-      pinnedNavItems: ['memory', 'personas', 'usage', 'discover'],
+      pinnedNavItems: ['memory', 'personas', 'usage'],
       sidebarNavSectionCollapsed: true,
     });
   });
@@ -86,17 +86,22 @@ describe('readLayoutPreferences', () => {
     expect(readLayoutPreferences().sidebarCollapsed).toBe(false);
   });
 
+  it('keeps explicitly pinned capabilities and discovery', () => {
+    ls().setItem('kiki.layout', JSON.stringify({ pinnedNavItems: ['capabilities', 'discover'] }));
+    expect(readLayoutPreferences().pinnedNavItems).toEqual(['capabilities', 'discover']);
+  });
+
   it('reads and sanitizes pinnedNavItems and preserves sidebarNavSectionCollapsed', () => {
     ls().setItem('kiki.layout', JSON.stringify({
       pinnedNavItems: ['board', 'cron', 'unknown-key', 'board'],
       sidebarNavSectionCollapsed: false,
     }));
     const prefs = readLayoutPreferences();
-    expect(prefs.pinnedNavItems).toEqual(['board', 'cron']);
+    expect(prefs.pinnedNavItems).toEqual(['cron']);
     expect(prefs.sidebarNavSectionCollapsed).toBe(false);
 
     ls().setItem('kiki.layout', JSON.stringify({ pinnedNavItems: 'not-an-array' }));
-    expect(readLayoutPreferences().pinnedNavItems).toEqual(['memory', 'personas', 'usage', 'discover']);
+    expect(readLayoutPreferences().pinnedNavItems).toEqual(['memory', 'personas', 'usage']);
   });
 });
 

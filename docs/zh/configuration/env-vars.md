@@ -4,12 +4,10 @@ Kiki 通过环境变量控制少数运行时行为——迁移数据目录，以
 
 Kiki 自有运行时开关统一使用 `KIKI_*` 前缀。`KIMI_API_KEY` 和 `KIMI_BASE_URL` 等供应商凭证键属于上游生态，单独在下文说明。以本页列出的确切变量名为准。
 
-::: warning 重要：API 密钥不在这里配置
-`KIMI_API_KEY`、`ANTHROPIC_API_KEY`、`OPENAI_API_KEY` 等密钥变量**不会**从 shell 环境变量自动读取。在终端里 `export KIMI_API_KEY=xxx` 不会让任何供应商获得密钥——必须写在配置文件的 `[providers.<name>]` 段或其 `[providers.<name>.env]` 子表里。API 密钥放在配套的 `credentials.toml` 里，`config.toml` 不会存明文凭证。
+::: warning 注意
+供应商的 API 密钥变量**不会**自动读取。要使用环境变量，在 `config.toml` 的供应商表里设置 `api_key_env = "YOUR_PROVIDER_KEY"`，并把该变量传给 Kiki 进程。见[凭证优先级与示例](./overrides.md#供应商凭证)。保存的密钥值仍放在 `credentials.toml`；环境引用只保存变量名。
 
-唯一的例外是 `KIKI_MODEL_*` 系列，它是一个显式通道，*确实*会从 shell 读取凭证——详见[用环境变量定义模型](#用环境变量定义模型-kiki-model)。
-
-背景说明见[配置覆盖：供应商凭证](./overrides.md#供应商凭证)。
+独立的 `KIKI_MODEL_*` 系列也能提供临时模型与密钥——详见[用环境变量定义模型](#用环境变量定义模型-kiki-model)。
 :::
 
 ## 核心路径
@@ -36,7 +34,7 @@ export KIKI_HOME="/path/to/custom/kiki"
 
 ## 供应商凭证键
 
-下面这些键名不从 shell 读取。它们写在 `[providers.<name>.env]` 子表里，作为 `api_key` / `base_url` 的备用来源。密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。
+下面是 `[providers.<name>.env]` 子表惯用的键名，作为 `api_key` / `base_url` 的备用来源。密钥键放进配套的 `credentials.toml`，非密钥的 `*_BASE_URL` 键留在 `config.toml`。要改从进程环境读取 API 密钥，请用 [`api_key_env`](./overrides.md#供应商凭证) 显式引用变量名。
 
 ```toml
 # ~/.kiki/credentials/credentials.toml
@@ -60,15 +58,15 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `ANTHROPIC_BASE_URL` | Anthropic | Anthropic SDK 默认值 |
 | `OPENAI_API_KEY` | OpenAI（`openai` 和 `openai_responses`） | 无 |
 | `OPENAI_BASE_URL` | OpenAI（`openai` 和 `openai_responses`） | `https://api.openai.com/v1` |
-| `GOOGLE_API_KEY` | Google GenAI、Vertex AI | 无 |
+| `GOOGLE_API_KEY` | Google GenAI（`google-genai`） | 无 |
 | `GOOGLE_GEMINI_BASE_URL` | Google GenAI（`google-genai`） | `https://generativelanguage.googleapis.com` |
-| `GOOGLE_VERTEX_BASE_URL` | Vertex AI（`vertexai`） | SDK 默认的区域化 `*-aiplatform.googleapis.com` 地址 |
-| `VERTEXAI_API_KEY` | Vertex AI | 无 |
-| `GOOGLE_CLOUD_PROJECT` | Vertex AI | 无 |
-| `GOOGLE_CLOUD_LOCATION` | Vertex AI | 无 |
+| `GOOGLE_VERTEX_BASE_URL` | Vertex AI（`vertexai`） | 未设 location 或 location 为 `global`：`https://aiplatform.googleapis.com`。`us`：`https://aiplatform.us.rep.googleapis.com`。`eu`：`https://aiplatform.eu.rep.googleapis.com`。其他 location：`https://<location>-aiplatform.googleapis.com`。API 密钥和项目 ADC 使用同一主机。 |
+| `VERTEXAI_API_KEY` | Vertex AI（`vertexai`） | 无 |
+| `GOOGLE_CLOUD_PROJECT` | Vertex AI，与 `GOOGLE_CLOUD_LOCATION` 一起设置 | 无 |
+| `GOOGLE_CLOUD_LOCATION` | Vertex AI，与 `GOOGLE_CLOUD_PROJECT` 一起设置 | 无 |
 
 ::: warning
-`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）是唯一走系统环境变量的例外——它由 Google SDK 自身通过 ADC 流程读取，CLI 不参与。其他所有键名都必须写在 `[providers.<name>.env]` 子表里——密钥键在 `credentials.toml`，`*_BASE_URL` 键在 `config.toml`。
+`GOOGLE_APPLICATION_CREDENTIALS`（服务账号 JSON 路径）由 Google SDK 自身通过标准 ADC 流程读取。项目、位置和基础 URL 仍来自供应商的配置子表；`api_key_env` 只允许读取指定的 API 密钥，不会同时启用其他 shell 变量。
 :::
 
 供应商类型与字段的完整说明见[平台与模型](./providers.md)。
@@ -138,7 +136,7 @@ kiki
 | `KIKI_BUILTIN_PRODUCT_SKILLS` | 是否向模型提供介绍 Kiki 自身的内置 Skills，优先级高于 `config.toml` 的 `builtin_product_skills`（默认开启） | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIKI_TUI_FULL_SCREEN` | 启用实验性的 fullscreen alternate-screen 界面：可滚动的 transcript 视口、鼠标选择文本、可点击链接、Ctrl-Shift-F 搜索 | `1` 开启；其他值保持常规内联界面 |
 | `KIKI_EXPERIMENTAL_TASK_WAIT` | 是否向模型提供 `TaskWait` 工具——它可以在当前轮次内等待后台任务，而不必结束这一轮（默认启用） | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
-| `KIKI_EXPERIMENTAL_PLUGIN_IMPORT` | 启用历史导入，可迁入能续聊的 Kiki 会话或只读归档，支持内置格式和可选第三方来源；默认开启，但不在启动时扫描或自动导入，也可在 [`[experimental]`](./config-files.md#experimental) 下用 `plugin_import` 设置——见[会话历史导入](../customization/plugins.md#会话历史导入) | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
+| `KIKI_EXPERIMENTAL_WORK_PRESETS` | 控制各空间的 Work 模式与显式安装流程（默认开启）；优先于 `[experimental] work_presets`，见[空间与工作模式](../features/spaces.md#空间-你打开的那些个-kiki) | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIKI_MCP_CONFIG_PATH` | 供外部编排器注入的 MCP 配置文件路径，由 `kiki web` 启动的服务端只读加载。必须与 `KIKI_MCP_AGENT_PROFILE_HOME`、`KIKI_MCP_CONFIG_READ_ONLY` 同时设置，否则启动直接报错 | 绝对路径 |
 | `KIKI_MCP_AGENT_PROFILE_HOME` | 供外部编排器注入的 agent profile 根目录，与 `KIKI_MCP_CONFIG_PATH` 一起使用；三个 `KIKI_MCP_*` 目录变量必须同时设置 | 绝对路径 |
 | `KIKI_MCP_CONFIG_READ_ONLY` | 注入目录的只读标记；必须为 `1`，服务端不会写回注入的配置或 profile | `1` |
@@ -146,7 +144,7 @@ kiki
 | `KIKI_MCP_TOOL_TIMEOUT_MS` | 所有 MCP server 的全局默认单次工具调用超时（毫秒）；优先级高于 `config.toml` 的 `[mcp] tool_timeout_ms`，但低于 `mcp.json` 中单个 server 的 `toolTimeoutMs`（默认 `60000`） | `1` 到 `2147483647` 的整数；非法值被忽略 |
 | `KIKI_LOOP_MAX_STEPS_PER_TURN` | Agent 单轮最大步数；优先级高于 `config.toml` 的 `[loop_control] max_steps_per_turn`（不设或 `0` 表示无上限） | 非负整数；非法值被忽略 |
 | `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` | 单步失败后的最大总尝试次数（含首次尝试）；优先级高于 `config.toml` 的 `[loop_control] max_attempts_per_step`（默认 `5`） | 非负整数；非法值被忽略 |
-| `KIKI_INFINITE_RETRY` | 让所有失败的 LLM 请求无限重试（包括轮次内步骤和 compaction 等后台操作）而不是终止任务；重试等待按指数退避（32 秒封顶）并尊重服务端 `Retry-After` 头，等待期间中断仍立即生效。适用于端点可能短暂故障的长时间无人值守评测 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
+| `KIKI_INFINITE_RETRY` | 无限重试失败的 LLM 请求，涵盖轮次内步骤、compaction、HTTP 400/404 和额度错误。等待按指数退避（32 秒封顶）并尊重 `Retry-After`。取消、本地准入拒绝、已观察到的输出或工具执行、`retry = false`、单次请求的 `retry: 'never'` 仍阻止重试；一次性 [`Continue.` 请求](./config-files.md#loop-control)也不会重试。上下文溢出仍走上下文恢复。适用于端点可能短暂故障的长时间无人值守评测 | 真值：`1`/`true`/`yes`/`on`；假值：`0`/`false`/`no`/`off` |
 | `KIKI_TOKEN_COUNTING_STRATEGY` | 对外上报的上下文 token 计数（上下文大小显示）；优先级高于 `config.toml` 的 `[token_counting] strategy`（默认 `measured+estimated`） | `measured+estimated`、`measured`、`estimated`（不区分大小写）；非法值被忽略 |
 | `NB_SEARCH_CONFIG` | 内置搜索与抓取模块的 canonical JSON 配置路径；Kiki 的 `[nb_search]` patch 在它之后应用 | 文件路径 |
 | `NB_SEARCH_HOME` | 内置搜索与抓取模块的数据目录 | 目录路径 |

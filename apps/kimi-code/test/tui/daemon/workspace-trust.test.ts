@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
+import { inspectWorkspaceTrustSources } from '@kiki/node-sdk';
 
 import {
   canonicalWorkspaceRoot,
@@ -64,13 +65,14 @@ describe('daemon workspace trust', () => {
     const servers = await gatedMcpServers(homeDir, workDir);
 
     expect(servers).toEqual([
-      { name: 'nested-server', transport: 'stdio', command: 'nested-cmd' },
+      { name: 'nested-server', transport: 'stdio', command: 'nested-cmd', origin: join(workDir, '.kiki', 'mcp.json').replaceAll('\\', '/') },
       {
         name: 'root-server',
         transport: 'stdio',
         command: 'root-cmd',
         args: ['--safe'],
-        cwd: resolve('/tmp/root').replaceAll('\\', '/'),
+        cwd: resolve(workDir, '/tmp/root').replaceAll('\\', '/'),
+        origin: join(workDir, '.mcp.json').replaceAll('\\', '/'),
       },
     ]);
   });
@@ -105,12 +107,14 @@ describe('daemon workspace trust', () => {
         name: 'http-server',
         transport: 'http',
         url: 'https://example.test/mcp',
+        origin: join(workDir, '.mcp.json').replaceAll('\\', '/'),
       },
       {
         name: 'shared-server',
         transport: 'stdio',
         command: 'shared-cmd',
         cwd: resolve(workDir).replaceAll('\\', '/'),
+        origin: join(workDir, '.mcp.json').replaceAll('\\', '/'),
       },
     ]);
   });
@@ -122,6 +126,26 @@ describe('daemon workspace trust', () => {
     await mkdir(join(workDir, '.git'), { recursive: true });
     await writeFile(join(workDir, '.mcp.json'), '{not json', 'utf8');
 
-    await expect(gatedMcpServers(homeDir, workDir)).resolves.toEqual([]);
+    const info = await inspectWorkspaceTrustSources(homeDir, workDir);
+    expect(info.gatedMcpServers).toEqual([]);
+    expect(info.warnings).toEqual([expect.stringContaining('Could not inspect MCP configuration')]);
+  });
+
+  it('discloses additional-directory and instruction sources using the runtime resolvers', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'tui-trust-home-'));
+    const workDir = await mkdtemp(join(tmpdir(), 'tui-trust-work-'));
+    tempDirs.push(homeDir, workDir);
+    for (const directory of ['.git', '.kiki', '.agents/skills', '.kiki/agents', 'extra']) await mkdir(join(workDir, directory), { recursive: true });
+    await writeFile(join(workDir, '.kiki/local.toml'), '[workspace]\nadditional_dir = ["extra"]\n');
+    await writeFile(join(workDir, 'AGENTS.md'), 'Workspace instructions');
+    const info = await inspectWorkspaceTrustSources(homeDir, workDir);
+    expect(info.additionalDirs).toEqual([join(workDir, 'extra').replaceAll('\\', '/')]);
+    expect(info.additionalDirSources).toEqual([join(workDir, '.kiki/local.toml').replaceAll('\\', '/')]);
+    expect(info.instructionSources).toEqual({
+      agentsMdPaths: [join(workDir, 'AGENTS.md').replaceAll('\\', '/')],
+      skills: [join(workDir, '.agents/skills').replaceAll('\\', '/')],
+      agentProfiles: [join(workDir, '.kiki/agents').replaceAll('\\', '/')],
+    });
+    expect(info.warnings).toEqual([]);
   });
 });

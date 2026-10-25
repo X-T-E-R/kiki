@@ -85,25 +85,25 @@ describe('sessionExport', () => {
     disposables = new DisposableStore();
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('exports a v2 session directory with per-agent wire activity and optional global log', async () => {
     const tmp = await mkdtemp(join(tmpdir(), 'session-export-test-'));
     const sessionDir = join(tmp, 'sessions', 'ws_demo', 'ses_demo');
     await mkdir(join(sessionDir, 'agents', 'main'), { recursive: true });
+    await mkdir(join(sessionDir, 'agents', 'child-1'), { recursive: true });
     await mkdir(join(sessionDir, 'logs'), { recursive: true });
     await writeFile(join(sessionDir, 'state.json'), '{}\n', 'utf-8');
     await writeFile(join(sessionDir, 'logs', 'kimi-code.log'), '{"msg":"session"}\n', 'utf-8');
-    await writeFile(
-      join(sessionDir, 'agents', 'main', 'wire.jsonl'),
-      [
-        JSON.stringify({ type: 'metadata', time: 1_700_000_000_000 }),
-        JSON.stringify({ type: 'turn_begin', time: 1_700_000_005_000, userInput: 'hello' }),
-      ].join('\n'),
-      'utf-8',
-    );
+    const mainWire = [
+      JSON.stringify({ type: 'metadata', time: 1_700_000_000_000 }),
+      JSON.stringify({ type: 'turn_begin', time: 1_700_000_005_000, userInput: 'hello' }),
+    ].join('\n');
+    const childWire = `${JSON.stringify({ type: 'metadata', time: 1_700_000_003_000, agent: 'child-1' })}\n`;
+    await writeFile(join(sessionDir, 'agents', 'main', 'wire.jsonl'), mainWire, 'utf-8');
+    await writeFile(join(sessionDir, 'agents', 'child-1', 'wire.jsonl'), childWire, 'utf-8');
     const globalLogPath = join(tmp, 'logs', 'kimi-code.log');
     await mkdir(join(tmp, 'logs'), { recursive: true });
     await writeFile(globalLogPath, '{"msg":"global"}\n', 'utf-8');
@@ -128,11 +128,14 @@ describe('sessionExport', () => {
     await expect(stat(outputPath)).resolves.toMatchObject({ size: expect.any(Number) });
     expect(result.entries).toEqual([
       'manifest.json',
+      'agents/child-1/wire.jsonl',
       'agents/main/wire.jsonl',
       'logs/kimi-code.log',
       'state.json',
       'logs/global/kimi-code.log',
     ]);
+    await expect(readZipEntry(outputPath, 'agents/main/wire.jsonl')).resolves.toEqual(Buffer.from(mainWire));
+    await expect(readZipEntry(outputPath, 'agents/child-1/wire.jsonl')).resolves.toEqual(Buffer.from(childWire));
     expect(result.manifest).toMatchObject({
       sessionId: 'ses_demo',
       kimiCodeVersion: '1.0.0-test',
@@ -884,6 +887,7 @@ function registerSessionExportServices(
     status: () => ({ source: 'authoritative' as const, state: 'uninitialized' as const, degradedCount: 0 }),
     listRecent: async () => ({ items: options.summary === undefined ? [] : [options.summary] }),
     get: async () => options.summary,
+    archiveFamily: async () => [],
     count: async () => (options.summary === undefined || options.summary.archived ? 0 : 1),
     remove: async () => {},
   });
@@ -898,7 +902,7 @@ function registerSessionExportServices(
     withLifecycleSerialization: async <T>(
       _sessionId: string,
       work: (unguarded: UnguardedSessionLifecycle) => Promise<T>,
-    ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined }),
+    ): Promise<T> => work({ archive: async () => {}, restore: async () => undefined, delete: async () => {} }),
     list: () => (options.lifecycleHandle === undefined ? [] : [options.lifecycleHandle]),
     listEphemeral: () => [],
     isEphemeral: () => false,
@@ -935,6 +939,7 @@ function registerSessionExportServices(
     }),
     update: async () => undefined,
     delete: async () => {},
+    findRegisteredByRoot: async () => undefined,
   });
   reg.define(ISessionExportService, SessionExportService);
 }

@@ -4,6 +4,8 @@ import {
   createWorkspaceRequestSchema,
   deleteWorkspaceResponseSchema,
   listWorkspacesResponseSchema,
+  workspaceViewQuerySchema,
+  listWorkspaceCatalogResponseSchema,
   updateWorkspaceRequestSchema,
   workspaceIdParamSchema,
 } from '../rest/workspace';
@@ -145,6 +147,20 @@ describe('listWorkspacesResponseSchema', () => {
     expect(
       listWorkspacesResponseSchema.parse({ items: [sampleWorkspace] }).items[0]?.id,
     ).toBe(sampleWorkspace.id);
+  });
+});
+
+describe('workspace catalog view', () => {
+  it('accepts persisted metadata without pretending details were measured', () => {
+    const catalog = {
+      id: sampleWorkspace.id, root: sampleWorkspace.root, name: sampleWorkspace.name,
+      created_at: sampleWorkspace.created_at, last_opened_at: sampleWorkspace.last_opened_at, pinned: false,
+    };
+    expect(listWorkspaceCatalogResponseSchema.parse({ items: [catalog] })).toEqual({ items: [catalog] });
+    expect(listWorkspacesResponseSchema.safeParse({ items: [catalog] }).success).toBe(false);
+    expect(workspaceViewQuerySchema.parse({ view: 'catalog' })).toEqual({ view: 'catalog' });
+    expect(workspaceViewQuerySchema.parse({})).toEqual({});
+    expect(workspaceViewQuerySchema.safeParse({ view: 'unsupported' }).success).toBe(false);
   });
 });
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Task, Workspace } from '@kiki/protocol';
+import type { Task, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import {
   compareWorkspacesByRecency,
@@ -20,6 +20,29 @@ function makeWorkspace(overrides: Partial<Workspace> & { id: string }): Workspac
     session_count: 0,
     pinned: false,
     isGit: false,
+    ...overrides,
+  };
+}
+
+/** Exactly the fields the catalog route sends: no `session_count` / `isGit`. */
+function catalogEntryOf(workspace: Workspace): WorkspaceCatalogEntry {
+  return {
+    id: workspace.id,
+    root: workspace.root,
+    name: workspace.name,
+    created_at: workspace.created_at,
+    last_opened_at: workspace.last_opened_at,
+    pinned: workspace.pinned,
+  };
+}
+
+function makeCatalogEntry(overrides: Partial<WorkspaceCatalogEntry> & { id: string }): WorkspaceCatalogEntry {
+  return {
+    name: overrides.id,
+    root: `C:/work/${overrides.id}`,
+    created_at: '2026-01-01T00:00:00.000Z',
+    last_opened_at: '2026-01-01T00:00:00.000Z',
+    pinned: false,
     ...overrides,
   };
 }
@@ -125,6 +148,47 @@ describe('filterWorkspaces', () => {
     expect(all.map((w) => w.id)).toEqual(['one', 'two']);
     expect(all).not.toBe(workspaces);
     expect(filterWorkspaces(workspaces, 'zzz')).toEqual([]);
+  });
+});
+
+describe('metadata-only catalog entries', () => {
+  const full = [
+    makeWorkspace({ id: 'old', last_opened_at: '2026-01-01T00:00:00.000Z' }),
+    makeWorkspace({ id: 'pinned-new', last_opened_at: '2026-03-01T00:00:00.000Z', pinned: true }),
+    makeWorkspace({ id: 'mid', last_opened_at: '2026-02-01T00:00:00.000Z' }),
+    makeWorkspace({ id: 'undated', last_opened_at: '' }),
+  ];
+
+  it('orders and narrows a catalog listing exactly like the full workspaces it was projected from', () => {
+    const catalog = full.map((workspace) => catalogEntryOf(workspace));
+    expect(sortWorkspacesByRecency(catalog).map((entry) => entry.id))
+      .toEqual(sortWorkspacesByRecency(full).map((workspace) => workspace.id));
+    expect(sortWorkspacesByPinnedThenRecency(catalog).map((entry) => entry.id))
+      .toEqual(sortWorkspacesByPinnedThenRecency(full).map((workspace) => workspace.id));
+    expect(sortWorkspacesByPinnedThenRecency(catalog).map((entry) => entry.id))
+      .toEqual(['pinned-new', 'mid', 'old', 'undated']);
+    expect(filterWorkspaces(catalog, 'MID').map((entry) => entry.id))
+      .toEqual(filterWorkspaces(full, 'mid').map((workspace) => workspace.id));
+  });
+
+  it('carries a catalog row through unchanged, without inventing a count or a Git flag', () => {
+    const sorted = sortWorkspacesByPinnedThenRecency([makeCatalogEntry({ id: 'alpha' })]);
+    expect(sorted[0]).toEqual({
+      id: 'alpha',
+      name: 'alpha',
+      root: 'C:/work/alpha',
+      created_at: '2026-01-01T00:00:00.000Z',
+      last_opened_at: '2026-01-01T00:00:00.000Z',
+      pinned: false,
+    });
+  });
+
+  it('hands a full workspace back whole, so callers that still read the wire shape keep it', () => {
+    const workspace = makeWorkspace({ id: 'full', pinned: true, session_count: 7, isGit: true });
+    // The compile-time half of the contract: a full input still returns full rows.
+    const sorted: Workspace[] = sortWorkspacesByPinnedThenRecency([workspace]);
+    expect(sorted[0]).toBe(workspace);
+    expect(filterWorkspaces([workspace], 'work/full')[0]).toBe(workspace);
   });
 });
 

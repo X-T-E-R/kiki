@@ -16,9 +16,11 @@ import {
 import { createServices } from '#/_base/di/test';
 import { IEventBus } from '#/app/event/eventBus';
 import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { Emitter, Event } from '#/_base/event';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
@@ -186,6 +188,7 @@ describe('AgentToolActivationService', () => {
   };
   let scopeContext = mainScopeContext;
   let notifyParent = true;
+  let sendMessageChoice: 'on' | 'off' | 'inherit' = 'inherit';
   let publishStatusUpdated = (): void => {};
 
   function createActivationHost() {
@@ -204,9 +207,11 @@ describe('AgentToolActivationService', () => {
           }) as IEventBus['subscribe'],
         });
         reg.defineInstance(IAgentScopeContext, scopeContext);
+        reg.definePartialInstance(ISessionContext, { sessionId: 'session', workspaceId: 'workspace' });
         reg.definePartialInstance(IAgentToolPolicyService, {
           isToolActive: () => true,
-          isToolActiveForDisclosure: (name, source) => isToolActive({
+          isToolActiveForProfile: (profile, name, source) => isToolActive(profile, name, source),
+          isToolActiveForDisclosure: (name, source) => name === 'SendMessage' && sendMessageChoice === 'on' || isToolActive({
             tools: name === SELECT_TOOLS_TOOL_NAME || name === 'CallTool' ? undefined : profileData.activeToolNames,
             disallowedTools: profileData.disallowedTools,
             disabledToolGroups: (profileData as ProfileData).disabledToolGroups,
@@ -215,6 +220,15 @@ describe('AgentToolActivationService', () => {
         reg.definePartialInstance(IConfigService, {
           get: (() => ({ notify_parent: notifyParent })) as IConfigService['get'],
           onDidSectionChange: configChangeEmitter.event,
+        });
+        reg.definePartialInstance(IOptionalCapabilityPolicy, {
+          onDidChange: Event.None as Event<{ readonly sessionId?: string }>,
+          admit: (id) => id === 'send_message'
+            ? { admitted: sendMessageChoice !== 'off', reason: sendMessageChoice === 'off' ? 'session_off' : 'admitted' }
+            : { admitted: true, reason: 'admitted' },
+          choice: () => sendMessageChoice,
+          globalState: () => ({ allowed: true, hostLocked: false, defaultOn: false, origin: 'default', unresolved: false }),
+          load: async () => {},
         });
         reg.definePartialInstance(IAgentRuntimeService, {
           onDidChange: runtimeChangeEmitter.event,
@@ -270,14 +284,15 @@ describe('AgentToolActivationService', () => {
     delete profileData.profileName;
     delete profileData.profileDefinitionId;
     deliveryMode = 'reply';
+    sendMessageChoice = 'inherit';
     gateData.disabledTools = [];
     scopeContext = mainScopeContext;
     notifyParent = true;
     publishStatusUpdated = () => {};
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
     _clearScopedRegistryForTests();
     _clearAgentToolContributionsForTests();
     for (const contribution of savedContributions) {
@@ -285,7 +300,7 @@ describe('AgentToolActivationService', () => {
     }
   });
 
-  it('keeps an AgentTool unconstructed during scope creation and resolves a real instance', () => {
+  it('keeps an AgentTool unconstructed during scope creation and resolves a real instance', async () => {
     _clearScopedRegistryForTests();
     registerAgentToolService(IAlphaTool, AlphaTool, { name: 'Alpha' });
 
@@ -297,7 +312,7 @@ describe('AgentToolActivationService', () => {
     const tool = agent.accessor.get(IAlphaTool);
     expect(tool).toBeInstanceOf(AlphaTool);
     expect(alphaConstructions).toBe(1);
-    app.dispose();
+    await app.dispose();
   });
 
   it('activates every contribution when the profile has no allowlist', async () => {
@@ -432,6 +447,25 @@ describe('AgentToolActivationService', () => {
     await ix.get(IAgentToolActivationService).activate();
 
     expect(ix.get(IAgentToolRegistryService).resolve('SendMessage')).toBeInstanceOf(SendMessageStubTool);
+  });
+
+  it('hot-opens and withdraws SendMessage from a default-off session choice', async () => {
+    profileData.activeToolNames = ['Read'];
+    sendMessageChoice = 'on';
+    registerAgentToolService(ISendMessageStubTool, SendMessageStubTool, {
+      name: 'SendMessage',
+      when: () => true,
+    });
+    const ix = createActivationHost();
+    const activation = ix.get(IAgentToolActivationService);
+    const registry = ix.get(IAgentToolRegistryService);
+
+    await activation.activate();
+    expect(registry.resolve('SendMessage')).toBeInstanceOf(SendMessageStubTool);
+
+    sendMessageChoice = 'off';
+    await activation.activate();
+    expect(registry.resolve('SendMessage')).toBeUndefined();
   });
 
   it('does not add SendMessage for a custom profile with the same delivery mode', async () => {
@@ -825,7 +859,7 @@ describe('AgentToolActivationService', () => {
       expect(agent2.accessor.get(IAgentToolRegistryService).resolve('Alpha')).toBeInstanceOf(
         AlphaTool,
       );
-      app.dispose();
+      await app.dispose();
     });
 
     it('folds a unit-provided record incrementally and withdraws it when the provider dies', async () => {
@@ -841,11 +875,11 @@ describe('AgentToolActivationService', () => {
       expect(registry.resolve('Gamma')).toBeInstanceOf(GammaTool);
       expect(gammaConstructions).toBe(1);
 
-      provider.dispose();
+      await provider.dispose();
       expect(registry.resolve('Gamma')).toBeUndefined();
       await activation.activate();
       expect(registry.resolve('Gamma')).toBeUndefined();
-      app.dispose();
+      await app.dispose();
     });
 
     it('withholds the AskUserQuestion contribution from subagent scopes', async () => {
@@ -868,7 +902,7 @@ describe('AgentToolActivationService', () => {
       await agent.accessor.get(IAgentToolActivationService).activate();
 
       expect(agent.accessor.get(IAgentToolRegistryService).resolve('AskUserQuestion')).toBeUndefined();
-      app.dispose();
+      await app.dispose();
     });
 
     it('feeds every built-in contribution through the App-scope assembly unchanged', async () => {
@@ -893,7 +927,7 @@ describe('AgentToolActivationService', () => {
       expect(agent.accessor.get(IAgentToolRegistryService).list().map((tool) => tool.name)).toEqual([
         SELECT_TOOLS_TOOL_NAME,
       ]);
-      app.dispose();
+      await app.dispose();
     });
   });
 });

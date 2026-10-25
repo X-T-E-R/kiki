@@ -77,6 +77,7 @@ export const sessionSchema = z.object({
   updated_at: isoDateTimeSchema,
   own_updated_at: isoDateTimeSchema.optional(),
   busy: z.boolean(),
+  executing: z.boolean().optional(),
   main_turn_active: z.boolean().optional(),
   pending_interaction: sessionPendingInteractionSchema.optional(),
   last_turn_reason: z.enum(['completed', 'cancelled', 'failed']).optional(),
@@ -99,6 +100,7 @@ export const sessionSchema = z.object({
 export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionCreateSchema = z.object({
+  creation_id: z.string().uuid().transform((value) => value.toLowerCase()).optional(),
   title: z.string().min(1).optional(),
   persona: z.string().min(1).optional(),
   persona_home: z.boolean().optional(),

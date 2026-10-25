@@ -2,12 +2,14 @@ import { IAgentTaskService } from '#/agent/task/task';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { resolveAgentTaskConfig } from '#/agent/task/configSection';
 import { IConfigService } from '#/app/config/config';
+import { IFlagService } from '#/app/flag/flag';
+import { TASK_WAIT_FLAG_ID } from '#/agent/tools/task/task-wait/flag';
 import type { HostEnvironmentInfo } from '#/os/interface/hostEnvironment';
 import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { IAgentRuntimeService, inspectAgentRuntime } from '#/agent/runtimeBinding/agentRuntime';
-import { RuntimeWorkspaceView } from '#/runtime/runtimeWorkspaceView';
+import { IAgentRuntimeService, inspectAgentRuntime, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
+import { RuntimeWorkspaceView, runtimeShellPathBridge } from '#/runtime/runtimeWorkspaceView';
 import { acquireToolRuntime, prepareToolRuntime, resolveSshToolTarget, tagSshResult, toolApprovalRule, toolParametersWithHost } from '#/agent/tools/os/sshToolTarget';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { getShellPathBridge } from '#/_base/execEnv/shellPathBridge';
@@ -92,6 +94,7 @@ export class BashTool implements IBashTool {
     @IAgentTaskService private readonly tasks: IAgentTaskService,
     @IAgentToolPolicyService private readonly toolPolicy: IAgentToolPolicyService,
     @IConfigService private readonly config: IConfigService,
+    @IFlagService private readonly flags: IFlagService,
     @IAgentPermissionModeService private readonly permissionMode: IAgentPermissionModeService,
   ) {}
 
@@ -116,15 +119,26 @@ export class BashTool implements IBashTool {
   get description(): string {
     const renderedDescription = renderBashDescription(inspectAgentRuntime(this.runtime).environment.shellName);
     if (!this.allowBackground()) return withoutBackgroundDescription(renderedDescription);
-    if (!this.autoBackgroundOnTimeout()) {
-      return withoutAutoBackgroundOnTimeout(renderedDescription);
-    }
-    return renderedDescription;
+    const description = this.autoBackgroundOnTimeout()
+      ? renderedDescription
+      : withoutAutoBackgroundOnTimeout(renderedDescription);
+    return this.flags.enabled(TASK_WAIT_FLAG_ID) && this.toolPolicy.isToolActive('TaskWait')
+      ? description
+      : `${description}\nNo blocking task-wait tool is available to this agent. Keep finite delivery dependencies in bounded foreground calls when possible. TaskOutput does not wait; do not poll it to keep a turn open or claim a detached dependency completed. Use automatic completion notifications when available, and report a remaining dependency honestly if no supported completion path exists.`;
   }
 
-  resolveExecution(args: BashInput): ToolExecution {
+  async resolveExecution(args: BashInput): Promise<ToolExecution> {
     const target = resolveSshToolTarget(args.host, args.cwd);
     const input = { ...args, host: target.host, cwd: target.path };
+    const runtime = await prepareToolRuntime(this.runtime, target.host);
+    let cwd: string;
+    try {
+      const view = new RuntimeWorkspaceView(runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
+      cwd = runtime.path.resolve(view.workDir, runtimeShellPathBridge(runtime).fromShellPath(target.path ?? view.workDir));
+    } catch (error) {
+      return { isError: true, output: error instanceof Error ? error.message : String(error) };
+    }
+    const shellContext = { runtimeId: runtime.identity.runtimeId, cwd, pathClass: runtime.environment.pathClass };
     const preview = args.command.length > 50 ? `${args.command.slice(0, 50)}…` : args.command;
     return {
       description: args.run_in_background
@@ -133,11 +147,13 @@ export class BashTool implements IBashTool {
       display: {
         kind: 'command',
         command: args.command,
-        cwd: args.cwd ?? (target.host === undefined ? this.ctx.cwd : `ssh://${target.host}/`),
+        cwd: runtime.identity.runtimeId.startsWith('ssh:') ? `ssh://${runtime.identity.runtimeId.slice(4)}${cwd}` : cwd,
         description: args.description,
         language: 'bash',
       },
-      approvalRule: toolApprovalRule(this.name, args.command, inspectAgentRuntime(this.runtime), target.host),
+      approvalRule: toolApprovalRule(this.name, args.command, runtime, target.host),
+      sessionApprovalRule: JSON.stringify(['Bash', shellContext.runtimeId, cwd, args.command]),
+      shellContext,
       matchesRule: (ruleArgs, mode = 'all') => matchesBashRuleSubject(ruleArgs, args.command, mode),
       execute: async ({ signal, onUpdate, onForegroundTaskStart }) => {
         const result = await this.execution(input, signal, onUpdate, onForegroundTaskStart);
@@ -157,6 +173,7 @@ export class BashTool implements IBashTool {
     env: HostEnvironmentInfo,
     effectiveCwd: string,
     command: string,
+    local: boolean,
   ): Promise<IHostProcess> {
     const shellCwd = getShellPathBridge(env).toShellPath(effectiveCwd);
     const shellCommand = `cd ${shellQuote(shellCwd)} && ${command}`;
@@ -167,7 +184,11 @@ export class BashTool implements IBashTool {
       SHELL: env.shellPath,
     };
 
-    return processService.spawn(env.shellPath, ['-c', shellCommand], { env: noninteractiveEnv });
+    return processService.spawn(env.shellPath, ['-c', shellCommand], {
+      env: noninteractiveEnv,
+      ownedProcessTree: env.osKind === 'Windows',
+      ownedProcessLifetime: local && env.osKind === 'Windows' ? 'owner' : undefined,
+    });
   }
 
   private async execution(
@@ -195,11 +216,11 @@ export class BashTool implements IBashTool {
     let proc: IHostProcess;
     let command: string;
     try {
-      const view = new RuntimeWorkspaceView(lease.runtime, this.workspaceCtx);
+      const view = new RuntimeWorkspaceView(lease.runtime, inspectAgentWorkspaceRoots(this.runtime, this.workspaceCtx));
       const env = lease.runtime.environment;
       command = env.osKind === 'Windows' ? rewriteWindowsNullRedirect(args.command) : args.command;
       const effectiveCwd = view.resolve(args.cwd ?? view.workDir, view.workDir, this.permissionMode.mode === 'yolo');
-      proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command));
+      proc = lease.track(await this.spawn(lease.runtime.process!, env, effectiveCwd, command, lease.runtime.identity.runtimeId === 'local'));
     } catch (error) {
       lease.dispose();
       return {

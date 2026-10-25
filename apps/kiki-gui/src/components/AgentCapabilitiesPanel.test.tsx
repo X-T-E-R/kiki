@@ -131,7 +131,26 @@ describe('AgentCapabilitiesPanel', () => {
     await render({ workspace_id: 'wd_fixture', profile: 'agent' });
     await settle();
     expect(container.querySelector('[role="alert"]')?.textContent).toContain('无法加载 Agent 能力：找不到工作区。');
-    expect(container.querySelector('[role="alert"]')?.textContent).not.toContain('workspace missing from server');
+  });
+
+  it('remains folded by default and does not fetch capability API when closed', async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => root.render(
+      <QueryClientProvider client={client}>
+        <I18nProvider>
+          <AgentCapabilitiesPanel query={{ cwd: 'C:/fixture/workspace', profile: 'agent' }} />
+        </I18nProvider>
+      </QueryClientProvider>
+    ));
+    await settle();
+    expect(getAgentCapabilities).not.toHaveBeenCalled();
+    expect(container.querySelector('[data-capability-context]')).toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('button')!;
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+
+    await act(async () => toggle.click());
+    await settle();
+    expect(getAgentCapabilities).toHaveBeenCalledWith({ cwd: 'C:/fixture/workspace', profile: 'agent' }, expect.any(AbortSignal));
   });
 });
 

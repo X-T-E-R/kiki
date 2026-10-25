@@ -1,5 +1,6 @@
 import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiation';
 import type { Hooks } from '#/hooks';
+import type { Event } from '#/_base/event';
 import { Error2, ErrorCodes } from '#/errors';
 import type {
   AgentRunHandle,
@@ -28,10 +29,13 @@ export interface IAgentExecutionService {
   trackPromptRun(completion: Promise<unknown>, signal: AbortSignal): AbortSignal;
   /** Reports cancelling once all tracked runs receive cancellation, until they settle; a stop request alone does not release capacity. */
   status(): AgentExecutionStatus;
+  readonly onDidChangeStatus?: Event<AgentExecutionStatus>;
   /** True only when a broken ACP client can open its saved remote session again without creating a new one. */
   canResumeBrokenOriginal(): boolean;
+  /** True when external construction can be retried after no session was opened or its failed wrapper was fully released. */
+  canRetryBrokenExecution(): boolean;
   attachLocalSession(source: import('#/app/agentExecutor/localSessionRef').LocalExecutorSessionSource): Promise<void>;
-  steer?(message: ContextMessage): Promise<boolean>;
+  steer?(message: ContextMessage): Promise<boolean | 'unknown'>;
   cancel(reason?: unknown): boolean;
   settled(): Promise<void>;
   shutdown(reason?: unknown): Promise<void>;

@@ -186,6 +186,74 @@ describe('WireService seal', () => {
     expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
   });
 
+  it('coalesces concurrent live epoch proofs but rechecks subsequent reads and external changes', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const original = storage.readStream.bind(storage);
+    let reads = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      if (args[1] === AGENT_WIRE_RECORD_KEY) reads++;
+      yield* original(...args);
+    };
+    expect(await Promise.all(Array.from({ length: 8 }, () => wire.verifyTranscriptLiveEpoch!())))
+      .toEqual(Array.from({ length: 8 }, () => true));
+    expect(reads).toBe(1);
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    expect(reads).toBe(2);
+    log.append(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, { type: 'wire.test.external' });
+    await log.flush();
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+    expect(reads).toBe(3);
+  });
+
+  it('does not share live epoch proofs across an append or discard a newer accepted fence', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const original = storage.readStream.bind(storage);
+    let releaseFirst!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let reachedFirst!: () => void;
+    const reached = new Promise<void>((resolve) => { reachedFirst = resolve; });
+    let reads = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      if (args[1] === AGENT_WIRE_RECORD_KEY && ++reads === 1) {
+        reachedFirst();
+        await gate;
+      }
+      yield* original(...args);
+    };
+    const older = wire.verifyTranscriptLiveEpoch!();
+    await reached;
+    try {
+      wire.appendRecord({ type: 'turn.prompt', turnId: 0 });
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    } finally {
+      releaseFirst();
+    }
+    expect(await older).toBe(false);
+    expect(reads).toBe(2);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(true);
+  });
+
+  it('releases a failed shared live epoch proof so the next read can retry', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const original = storage.readStream.bind(storage);
+    const failure = new Error('proof stream failed');
+    let reads = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      if (args[1] === AGENT_WIRE_RECORD_KEY && ++reads === 1) throw failure;
+      yield* original(...args);
+    };
+    const results = await Promise.allSettled([wire.verifyTranscriptLiveEpoch!(), wire.verifyTranscriptLiveEpoch!()]);
+    expect(results).toEqual([{ status: 'rejected', reason: failure }, { status: 'rejected', reason: failure }]);
+    expect(reads).toBe(1);
+    expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+    expect(await wire.verifyTranscriptLiveEpoch!()).toBe(true);
+    expect(reads).toBe(2);
+  });
+
   it('never upgrades a legacy wire or an interrupted epoch to complete', async () => {
     log.append(testWireScope(SCOPE, KEY), AGENT_WIRE_RECORD_KEY, { type: 'turn.prompt', turnId: 0 });
     await log.flush();
@@ -196,6 +264,117 @@ describe('WireService seal', () => {
       (await storage.read(testWireScope(SCOPE, KEY), WIRE_TRANSCRIPT_RECEIPT_KEY))!,
     ).toString('utf8')));
     expect(receipt).toMatchObject({ state: 'sealed', trusted: false });
+  });
+
+  it('seals the observed journal without certifying it when accepted bytes diverge', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'a' }] });
+    await wire.flush();
+    const scope = testWireScope(SCOPE, KEY);
+    const original = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    const changed = original.replace('"text":"a"', '"text":"b"');
+    expect(changed).not.toBe(original);
+    expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(original));
+    await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(changed));
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      await wire.sealTranscriptEpoch!();
+      const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+        (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+      ).toString('utf8')));
+      const observed = await digestWireBytes(storage.readStream(scope, AGENT_WIRE_RECORD_KEY));
+      expect(sealed).toMatchObject({ state: 'sealed', trusted: false, wire: { size: observed.size, sha256: observed.sha256 } });
+      expect(Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8')).toBe(changed);
+      expect(await wire.verifyTranscriptLiveEpoch!()).toBe(false);
+      expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+      expect(unexpected).toEqual([expect.objectContaining({ message: 'Transcript wire contents do not match accepted events' })]);
+      const reopened = registerTestAgentWire(disposables.add(new TestInstantiationService()), scope, {
+        log, storage, logger: noopLogger, telemetry: noopTelemetryService,
+      });
+      await reopened.seal();
+      await reopened.beginTranscriptEpoch!();
+      const next = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+        (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+      ).toString('utf8')));
+      expect(next).toMatchObject({ state: 'open', trusted: false });
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
+  });
+
+  it('seals a trusted receipt when an accepted record lands during the first digest', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const original = storage.readStream.bind(storage);
+    let wireReads = 0;
+    storage.readStream = async function* (...args: Parameters<typeof original>) {
+      if (args[1] === AGENT_WIRE_RECORD_KEY && wireReads++ === 0) {
+        wire.appendRecord({ type: 'turn.prompt', turnId: 0 });
+      }
+      yield* original(...args);
+    };
+    await wire.sealTranscriptEpoch!();
+    const persisted = await storage.read(scope, AGENT_WIRE_RECORD_KEY);
+    const sealed = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+      (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+    ).toString('utf8')));
+    expect(Buffer.from(persisted!).toString('utf8')).toContain('"type":"turn.prompt"');
+    expect(sealed).toMatchObject({
+      state: 'sealed', trusted: true, wire: { size: persisted!.byteLength, sha256: expect.any(String) },
+    });
+    expect(wireReads).toBeGreaterThan(1);
+  });
+
+  it('leaves the open acceptance epoch in place when the receipt write fails', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    const scope = testWireScope(SCOPE, KEY);
+    const failure = new Error('receipt write failed');
+    const original = storage.write.bind(storage);
+    storage.write = async (scopeKey, key, data, options) => {
+      if (key === WIRE_TRANSCRIPT_RECEIPT_KEY) throw failure;
+      return original(scopeKey, key, data, options);
+    };
+    await expect(wire.sealTranscriptEpoch!()).rejects.toBe(failure);
+    const receipt = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+      (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+    ).toString('utf8')));
+    expect(receipt).toMatchObject({ state: 'open', trusted: true });
+  });
+
+  it('reports a receipt write failure after a divergent journal without sealing it as trusted', async () => {
+    await wire.seal();
+    await wire.beginTranscriptEpoch!();
+    wire.appendRecord({ type: 'turn.prompt', turnId: 0, input: [{ type: 'text', text: 'a' }] });
+    await wire.flush();
+    const scope = testWireScope(SCOPE, KEY);
+    const originalBytes = Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8');
+    const changed = originalBytes.replace('"text":"a"', '"text":"b"');
+    await storage.write(scope, AGENT_WIRE_RECORD_KEY, Buffer.from(changed));
+    const failure = new Error('receipt write failed');
+    const original = storage.write.bind(storage);
+    storage.write = async (scopeKey, key, data, options) => {
+      if (key === WIRE_TRANSCRIPT_RECEIPT_KEY) throw failure;
+      return original(scopeKey, key, data, options);
+    };
+    const unexpected: unknown[] = [];
+    setUnexpectedErrorHandler((error) => unexpected.push(error));
+    try {
+      await expect(wire.sealTranscriptEpoch!()).rejects.toBe(failure);
+      const receipt = parseWireTranscriptReceipt(JSON.parse(Buffer.from(
+        (await storage.read(scope, WIRE_TRANSCRIPT_RECEIPT_KEY))!,
+      ).toString('utf8')));
+      expect(receipt).toMatchObject({ state: 'open', trusted: true });
+      expect(receipt?.wire).toBeUndefined();
+      expect(Buffer.from((await storage.read(scope, AGENT_WIRE_RECORD_KEY))!).toString('utf8')).toBe(changed);
+      expect(wire.isTranscriptLiveEpochVerified!()).toBe(false);
+      expect(unexpected).toEqual([expect.objectContaining({ message: 'Transcript wire contents do not match accepted events' })]);
+    } finally {
+      resetUnexpectedErrorHandler();
+    }
   });
 
   it('keeps the durable acceptance epoch open when dehydration fails before a later append', async () => {

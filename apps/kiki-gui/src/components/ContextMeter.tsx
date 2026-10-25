@@ -24,7 +24,7 @@ import { createContext, useContext, useEffect, useId, useRef, useState, type Rea
 
 import { Link } from 'react-router-dom';
 
-import type { SessionUsage, SessionUsageError } from '@kiki/protocol';
+import type { SessionUsageError } from '@kiki/protocol';
 
 import { sessionActionErrorText } from '@kiki/session-core/commands';
 import { formatCostUsd } from '@kiki/session-core/util';
@@ -33,6 +33,7 @@ import { useI18n } from '../i18n';
 import { compactUsageLevel } from '../lib/autoCompact';
 import { pushToast } from '../lib/toasts';
 import { usageSessionDeepLink } from '../lib/usageV2';
+import { useCanonicalAgentUsage } from './agent-panel/useCanonicalAgentUsage';
 import { ContextCompactSection, type ContextCompactSectionProps } from './ContextCompactSection';
 import { COMPOSER_PANEL_END, useComposerPanelAnchor, usePopoverDismiss } from './ComposerControls';
 import { ContextStrategySection, STRATEGY_LABEL_KEY } from './ContextStrategySection';
@@ -50,6 +51,17 @@ export type ContextMeterAutoCompact = Omit<ContextCompactSectionProps, 'used' | 
   readonly strategy?: ContextStrategyHandle;
 };
 
+/**
+ * What the serving engine has declared about manual compaction, when it has
+ * answered at all. `available: false` replaces the card's compact action with
+ * the reason (and adds it to the trigger's title); `undefined` — no answer,
+ * as with the native engine — leaves the meter exactly as it always was.
+ */
+export interface ContextMeterCompactAvailability {
+  readonly available: boolean;
+  readonly reason?: string;
+}
+
 /** Usage fraction at which the meter warns (yellow) and compaction becomes available. */
 export const CONTEXT_WARN_RATIO = 0.5;
 
@@ -60,14 +72,16 @@ export type ContextUsageLevel = 'ok' | 'warn' | 'danger';
 
 /**
  * The detail card's cumulative rows. Structurally a subset of the session
- * record's `SessionUsage`, but the cost is nullable: per-agent projections
- * (UsageStatus totals) carry token kinds without pricing, and an invented
- * `$0.00` would read as free. A null cost hides the row instead.
+ * record's `SessionUsage`, but fields may be nullable for canonical agent
+ * projections: per-agent metrics can omit token kinds or pricing, and an
+ * invented `$0.00` would read as free. Standalone unpriced usage keeps its
+ * existing hidden cost row; canonical usage renders the unknown explicitly.
  */
-export type ContextMeterUsage = Pick<
-  SessionUsage,
-  'input_tokens' | 'output_tokens' | 'cache_read_tokens' | 'cache_creation_tokens'
-> & {
+export type ContextMeterUsage = {
+  readonly input_tokens: number | null;
+  readonly output_tokens: number | null;
+  readonly cache_read_tokens: number | null;
+  readonly cache_creation_tokens: number | null;
   readonly total_cost_usd: number | null;
 };
 
@@ -113,13 +127,13 @@ export function ContextBreakdownProvider({
 }
 
 /** One labeled token row inside the detail card. */
-function TokenRow({ label, value, title }: { label: string; value: number; title: string }) {
-  const { time } = useI18n();
+function TokenRow({ label, value, title }: { label: string; value: number | null; title: string }) {
+  const { t, time } = useI18n();
   return (
     <div className="flex items-center justify-between gap-3">
       <dt className="text-ink-faint">{label}</dt>
-      <dd className="font-mono text-ink tabular-nums" title={title}>
-        {time.formatTokens(value)}
+      <dd className="font-mono text-ink tabular-nums" title={value === null ? t('diagnostics.unknown') : title}>
+        {value === null ? t('diagnostics.unknown') : time.formatTokens(value)}
       </dd>
     </div>
   );
@@ -132,9 +146,11 @@ export function ContextMeter({
   usageError,
   usageScope = 'session',
   sessionId,
+  agentId,
   onCompact,
   placement = 'above',
   autoCompact,
+  compactAvailability,
 }: {
   used: number;
   limit: number;
@@ -154,6 +170,8 @@ export function ContextMeter({
   usageScope?: 'session' | 'agent';
   /** Enables the prefetched deep link to this session on the /usage page (§9.5). */
   sessionId?: string;
+  /** Identifies the current agent for the open detail's canonical usage read. */
+  agentId?: string;
   /** Requests a compaction (the session view's /compact action). */
   onCompact?: () => void;
   placement?: 'above' | 'below';
@@ -164,6 +182,13 @@ export function ContextMeter({
    * used / limit / available rows (older engines, external executors).
    */
   autoCompact?: ContextMeterAutoCompact;
+  /**
+   * The engine's declared manual-compaction capability. Absent means nobody
+   * answered, which gates nothing; `available: false` means the engine
+   * answered and compaction is not (or not known to be) on offer, so the card
+   * states the reason instead of rendering an action that cannot work.
+   */
+  compactAvailability?: ContextMeterCompactAvailability;
 }) {
   const { t, time, locale } = useI18n();
   const breakdown = useContext(ContextBreakdownContext);
@@ -171,6 +196,18 @@ export function ContextMeter({
   const manualPending = compaction?.source === 'manual' && (compaction.phase === 'queued' || compaction.phase === 'running');
   const detailsId = useId();
   const [open, setOpen] = useState(false);
+  const canonicalUsage = useCanonicalAgentUsage({ open, sessionId, agentId });
+  const hasCanonicalIdentity = canonicalUsage.hasIdentity;
+  const detailUsage = hasCanonicalIdentity ? canonicalUsage.usage : usage;
+  const detailUsageError: SessionUsageError | undefined = hasCanonicalIdentity
+    ? canonicalUsage.state === 'error'
+      ? 'read-failed'
+      : canonicalUsage.partial
+        ? 'agent-read-failed'
+        : undefined
+    : usageError;
+  const canonicalUsageLoading = hasCanonicalIdentity && canonicalUsage.state === 'loading' && detailUsage === undefined;
+  const canonicalUsageUnknown = hasCanonicalIdentity && canonicalUsage.state === 'unavailable';
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   // Same dismissal and placement as the other status-line panels: outside
@@ -191,7 +228,10 @@ export function ContextMeter({
   const warn = level !== 'ok';
   const remaining = Math.max(0, limit - used);
   const label = t('context.meter', { percent });
-  const title = autoCompact !== undefined ? t(
+  const compactReason = compactAvailability !== undefined && !compactAvailability.available
+    ? compactAvailability.reason
+    : undefined;
+  const baseTitle = autoCompact !== undefined ? t(
     level === 'danger' ? 'context.meterCompactDueTitle' : 'context.meterCompactTitle',
     {
       used: time.formatTokens(used),
@@ -206,14 +246,18 @@ export function ContextMeter({
         : 'context.meterTitle',
     { used: time.formatTokens(used), limit: time.formatTokens(limit) },
   );
+  const title = compactReason === undefined ? baseTitle : `${baseTitle}\n${compactReason}`;
 
   const usageTotal =
-    usage === undefined
+    detailUsage === undefined
       ? undefined
-      : usage.input_tokens +
-        usage.output_tokens +
-        usage.cache_read_tokens +
-        usage.cache_creation_tokens;
+      : detailUsage.input_tokens === null || detailUsage.output_tokens === null ||
+          detailUsage.cache_read_tokens === null || detailUsage.cache_creation_tokens === null
+        ? null
+        : detailUsage.input_tokens +
+          detailUsage.output_tokens +
+          detailUsage.cache_read_tokens +
+          detailUsage.cache_creation_tokens;
 
   return (
     // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- Escape for the open card
@@ -353,48 +397,58 @@ export function ContextMeter({
             <ContextStrategySection handle={autoCompact.strategy} profileName={autoCompact.profile?.name} />
           ) : null}
 
-          {usage !== undefined ? (
+          {detailUsage !== undefined || hasCanonicalIdentity ? (
             <dl
               data-context-usage
               className="mt-3 space-y-1.5 border-t border-hairline pt-3 text-[12px]"
             >
               <div className="flex items-baseline justify-between gap-3">
                 <p className="text-[12px] font-medium text-ink-soft">
-                  {t(usageScope === 'agent' ? 'context.agentUsage' : 'context.sessionUsage')}
+                  {t(hasCanonicalIdentity ? 'context.agentUsage' : usageScope === 'agent' ? 'context.agentUsage' : 'context.sessionUsage')}
                 </p>
                 <span className="text-[12px] text-ink-faint">{t('context.sessionUsageHint')}</span>
               </div>
-              {usageError !== undefined ? (
-                <p data-context-usage-error title={usageError} className="text-[12px] text-amber-ink">
-                  {t(usageError === 'read-failed' ? 'context.usageReadFailed' : 'context.agentUsageIncomplete')}
+              {canonicalUsageLoading ? (
+                <p role="status" data-context-usage-loading className="text-[12px] text-ink-faint">{t('diagnostics.loading')}</p>
+              ) : null}
+              {canonicalUsageUnknown ? (
+                <p role="status" data-context-usage-unknown className="text-[12px] text-ink-faint">{t('diagnostics.unknown')}</p>
+              ) : null}
+              {detailUsageError !== undefined ? (
+                <p data-context-usage-error title={detailUsageError} className="text-[12px] text-amber-ink">
+                  {t(detailUsageError === 'read-failed' ? 'context.usageReadFailed' : 'context.agentUsageIncomplete')}
                 </p>
               ) : null}
-              {usageError === 'read-failed' ? null : (
+              {detailUsageError === 'read-failed' || canonicalUsageLoading ? null : detailUsage !== undefined ? (
                 <>
-                  <TokenRow label={t('usage.tokens.input')} value={usage.input_tokens} title={String(usage.input_tokens)} />
-                  <TokenRow label={t('usage.tokens.output')} value={usage.output_tokens} title={String(usage.output_tokens)} />
-                  <TokenRow label={t('usage.tokens.cacheRead')} value={usage.cache_read_tokens} title={String(usage.cache_read_tokens)} />
-                  <TokenRow label={t('usage.tokens.cacheWrite')} value={usage.cache_creation_tokens} title={String(usage.cache_creation_tokens)} />
-                  {usage.total_cost_usd !== null ? (
+                  <TokenRow label={t('usage.tokens.input')} value={detailUsage.input_tokens} title={String(detailUsage.input_tokens)} />
+                  <TokenRow label={t('usage.tokens.output')} value={detailUsage.output_tokens} title={String(detailUsage.output_tokens)} />
+                  <TokenRow label={t('usage.tokens.cacheRead')} value={detailUsage.cache_read_tokens} title={String(detailUsage.cache_read_tokens)} />
+                  <TokenRow label={t('usage.tokens.cacheWrite')} value={detailUsage.cache_creation_tokens} title={String(detailUsage.cache_creation_tokens)} />
+                  {detailUsage.total_cost_usd !== null || hasCanonicalIdentity ? (
                     <div className="flex items-center justify-between gap-3 border-t border-hairline pt-1.5">
                       <dt className="text-ink-faint">{t('usage.card.cost')}</dt>
-                      <dd className="font-mono text-ink tabular-nums">{formatCostUsd(usage.total_cost_usd)}</dd>
+                      <dd className="font-mono text-ink tabular-nums">
+                        {detailUsage.total_cost_usd === null ? t('diagnostics.unknown') : formatCostUsd(detailUsage.total_cost_usd)}
+                      </dd>
                     </div>
                   ) : null}
                   {usageTotal !== undefined ? (
                     <div
                       className={`flex items-center justify-between gap-3 ${
-                        // With a priced session the cost row carries the separator;
-                        // cost-less projections (per-agent totals) move it here.
-                        usage.total_cost_usd === null ? 'border-t border-hairline pt-1.5' : ''
+                        // Priced sessions and canonical unknown-cost rows put the
+                        // separator on the cost row; standalone cost-less projections move it here.
+                        detailUsage.total_cost_usd === null && !hasCanonicalIdentity ? 'border-t border-hairline pt-1.5' : ''
                       }`}
                     >
                       <dt className="text-ink-faint">{t('usage.card.tokens')}</dt>
-                      <dd className="font-mono text-ink tabular-nums">{time.formatTokens(usageTotal)}</dd>
+                      <dd className="font-mono text-ink tabular-nums">
+                        {usageTotal === null ? t('diagnostics.unknown') : time.formatTokens(usageTotal)}
+                      </dd>
                     </div>
                   ) : null}
                 </>
-              )}
+              ) : null}
               {sessionId !== undefined ? (
                 <Link
                   data-context-usage-link
@@ -423,6 +477,13 @@ export function ContextMeter({
           ) : null}
 
           {onCompact !== undefined ? (
+            compactReason !== undefined ? (
+              // The engine answered that this action is not on offer; the card
+              // says why instead of rendering a button that cannot work.
+              <p data-context-compact-unavailable className="mt-3 text-[12px] leading-4 text-ink-faint">
+                {compactReason}
+              </p>
+            ) : (
             <CompactActions
               strategy={autoCompact?.strategy}
               pending={manualPending}
@@ -439,6 +500,7 @@ export function ContextMeter({
                   });
               }}
             />
+            )
           ) : null}
         </div>
       ) : null}
@@ -479,7 +541,7 @@ function CompactActions({
   const tone = 'bg-amber-card text-[12px] font-medium text-amber-ink transition-colors hover:bg-amber-rule/25 focus-visible:ring-2 focus-visible:ring-amber-rule/60 focus-visible:outline-none';
   if (strategy === undefined || !strategy.writable || strategy.status?.source === 'executor') {
     return (
-      <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
+      <button type="button" data-context-compact data-executor-action="manual_compact" disabled={pending} onClick={onCompact} className={`mt-3 w-full rounded-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>
     );
@@ -490,7 +552,7 @@ function CompactActions({
     rows[(index + delta + rows.length) % rows.length]?.focus();
   };
   return (
-    <div ref={rootRef} className="relative mt-3 flex gap-px">
+    <div ref={rootRef} data-executor-action="manual_compact" className="relative mt-3 flex gap-px">
       <button type="button" data-context-compact disabled={pending} onClick={onCompact} className={`min-w-0 flex-1 rounded-l-md px-3 py-1.5 ${tone}`}>
         {t('context.compactAction')}
       </button>

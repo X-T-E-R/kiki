@@ -8,7 +8,7 @@ MCP 工具结果可以携带内嵌媒体。当当前模型无法接收某张内�
 
 Kiki 也可以向明确授权的 MCP 客户端提供原生工具。此功能默认可用，但只有你配置访问后，才会启动监听器或授权客户端。
 
-1. 在设置 → 模型提供商 → 连接服务中添加外部客户端，选择共享工具和权限上限。这里配置的是访问权限，不是工作目录或会话。
+1. 在设置 → 连接与远程 → 外部接入中添加外部客户端，选择共享工具和权限上限。这里配置的是访问权限，不是工作目录或会话。
 2. 在 Kiki 中新建会话，选择该外部客户端，再选择工作区、worktree、Profile 和权限模式。Kiki 会将解析后的工作区绑定到会话，客户端不能传入任意工作目录。
 3. 在另一个应用的 MCP 配置中使用下面的本地命令，将 `CONNECTION_ID` 替换为连接 ID。远程访问则在连接服务中启用 MCP 监听器，使用界面显示的 HTTPS URL，并在 Kiki 中批准客户端的授权请求。
 
@@ -43,7 +43,7 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 从配置中删除某个 server 不会打断进行中的会话：该 server 在 `/mcp` 中仍显示为 `removed`，其工具在这些会话中保持可见，但调用会失败并返回移除提示；新会话则完全不会注册这些工具。反过来，会话进行中新增的 server——无论是编辑 `mcp.json` 还是安装 plugin——都不会注册到已打开的会话中，只会加入之后创建的会话。
 
-当 Kiki 在不受信任的文件夹中发现项目级 MCP server 时，工作区信任提示会显示每个 server 的传输方式和启动目标。提示默认选中 `Trust this folder`；请在确认前核对列出的命令与参数或远程 URL。信任文件夹后，该工作区的项目级 MCP server 才会启用。
+信任文件夹前，TUI 会显示项目级 MCP 启动目标及其配置文件、已配置的额外目录及其来源，以及可用的 AGENTS.md、Skill 和 Agent Profile 来源。检查这些来源时不会连接 MCP server。读取失败时，提示会显示警告，而不会让空列表看起来像没有配置。提示默认选中 `Trust this folder`；请在确认前核对命令、参数、远程 URL 和路径。信任后，该文件夹的项目级 MCP server 和已配置的额外目录才会启用。
 
 `mcp.json` 的结构：
 
@@ -83,7 +83,7 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 
 连接超时和单次工具调用超时的默认值都不必逐个 server 设置：`config.toml` 的 `[mcp] startup_timeout_ms` / `[mcp] tool_timeout_ms` 或环境变量 `KIKI_MCP_STARTUP_TIMEOUT_MS` / `KIKI_MCP_TOOL_TIMEOUT_MS` 可以调整全局默认值，优先级为 server 字段 > 环境变量 > `config.toml` > 内置默认。详见 [配置文件](../configuration/config-files.md#mcp)。
 
-HTTP 与 SSE server 支持通过 `headers` 或 `bearerTokenEnvVar` 提供静态凭证。需要 OAuth 时，运行 `/kiki-ops 帮我登录 MCP <server-name>` 完成浏览器授权。
+HTTP 与 SSE server 支持通过 `headers` 或 `bearerTokenEnvVar` 提供静态凭证。需要 OAuth 时，运行 `/kiki-ops 帮我登录 MCP <server-name>` 完成浏览器授权。如果该 server 的授权元数据声明支持 `offline_access`，Kiki 会在登录时一并请求这个 scope，以便之后能续期而不必重新登录；否则按你原本的 scope 授权。声明支持该 scope 的 server 仍可能多显示一次同意页，也不保证一定签发 refresh token。已经登录过的 server 保留现有授权并继续用它续期——新增 scope 不会把你登出。
 
 Plugins 也可以在 manifest 中声明 MCP servers。Plugin 声明的 servers 默认启用，可以在 `/plugins` 中禁用或重新启用：禁用或移除后，已打开会话中的工具调用会失败并返回移除提示；重新启用则会让该 server 立即重连到已打开的会话并恢复工具——前提是会话创建时这个 server 已存在（包括重新启用 `mcp.json` 中 `enabled: false` 的条目）。全新出现的 server 仍遵循上一段的规则：只加入之后创建的会话。详见 [Plugins](../customization/plugins.md#plugin-中的-mcp-servers)。
 
@@ -122,6 +122,43 @@ pattern = "mcp__filesystem__write_file"
 ::: warning 注意
 在 YOLO 模式下，MCP 工具调用会被自动批准。仅在完全信任所接入的 MCP server 时使用此模式。
 :::
+
+## 让外部客户端使用 Kiki 工具
+
+外部客户端与上文的接入方向相反：支持 MCP 的模型调用 Kiki 原生文件、媒体、Agent、Task、History 和获准的 Memory 工具。Kiki 在普通会话中保存工具活动，main agent 不绑定本地模型。这不会自动导入外部聊天、思考过程或用量。
+
+打开 **设置 → 连接与远程 → 外部接入**，创建一个有名称的连接，选择共享工作区、工具和权限模式。这项能力默认可用；在 `[experimental]` 下显式设置 `external_clients = false`，或设置 `KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS=0`，会保持关闭，修改该覆写后需重启 host。只有客户端确实需要执行本机命令时，才开启该权限。连接代表权限授权，不代表聊天；初始化和工具发现不会创建业务会话。
+
+### 连接本机客户端
+
+将连接页提供的 stdio 配置复制到 MCP 客户端，保留自动生成的 `--home` 路径，确保连接到同一个 Kiki 实例。手写这条命令时也必须带上同一个 `--home`。省略它，或指向另一个目录，会连到另一个 Kiki home，而不是这条连接。其结构如下：
+
+```json
+{
+  "command": "kiki",
+  "args": ["mcp", "--client", "client_YOUR_CONNECTION_ID", "--tools", "--home", "C:/Users/Example/.kiki"]
+}
+```
+
+桥接进程通过本机 owner 通道取得独立的短期凭证。凭证过期时会续期，但不会因业务错误重新提交操作。若 MCP 地址改变，或 host 重启后换了端口，请重启客户端的 MCP 连接，再恢复已保存的业务会话，不要重做它的工作。不要在这份配置中填写 Kiki owner token。原有 `kiki mcp --workspace <dir>` 委派模式与外部客户端模式独立。
+
+### 通过 HTTPS 连接
+
+在同一设置页启用外部 MCP listener，并设置稳定的公网 HTTPS origin。将页面显示的 `/mcp` URL 添加到支持 Streamable HTTP 与 OAuth authorization-code + PKCE 的客户端。在 Kiki 中确认其待授权请求，并选择允许它使用的连接；外部模型不能批准自己的请求。公网 HTTPS 服务或隧道是独立服务，端口已监听不代表客户端能够访问 discovery。
+
+这个 listener 只提供 MCP、OAuth 和健康检查，不提供 GUI、owner API 或 debug API。客户端支持情况和帐号资格由外部产品决定，不能假设每个 ChatGPT 帐号都可添加自定义 connector。Kiki 使用已安装 MCP SDK 的协议协商，不要求尚未发布的协议版本。
+
+### 会话、重试与恢复
+
+客户端通过 `_meta["openai/session"]` 提供 ChatGPT 会话元数据时，每段聊天会映射到该连接下独立的 Kiki 会话。其他客户端先调用一次 `kiki_session`，使用 `action: "new"`，保存返回的 `session_ref`，在后续调用的 `_kiki.session_ref` 中携带它。恢复旧会话需要明确 `resume`，复制引用不会让新聊天悄悄接到旧会话上。
+
+产生副作用的操作必须使用稳定的 `_kiki.idempotency_key`。重试时复用同一调用和 key；同一 key 携带不同参数会被拒绝。长操作和审批会返回 `operation_id`，用 `kiki_operation` 查询，不要重新提交。若 host 停止前未提交操作结果，`outcome_unknown` 表示应先检查目标再明确恢复，不表示可以安全重复执行。
+
+手动审批需要真实的本机审批消费者，没有消费者时工具会被拒绝。外部操作进入审批后，消费者断线不会使它重提或执行；它会继续等待批准或取消。撤销连接会停止未完工作及子 Agent，同时保留记录。修改访问策略会取消未完工作，避免旧审批授权新的策略。
+
+通过 `kiki_save_text` 或会话的便笺编辑器保存明确提供的文本和来源类型。这些是外部记录，不是已核实的用户消息，也不是自动同步的聊天。**本地继续**会预览已保存文本和原生工具记录，再创建独立的本地分支；选择本地模型并明确发送目标后才会开始推理。预览只读取有界子集，不调用模型；材料只加载部分或暂不可读，不等于没有报告材料。大结果可用 `kiki_operation` 的 `action: "read"` 分页读取，并跟随返回的 `next` 请求。文本偏移单位为 UTF-16，媒体偏移单位为字节；媒体块以 base64 resource 返回，来自保存的结果，而不是当前 host 文件。
+
+只向可信客户端授予权限。原生权限和工作区文件检查仍然有效，但本机命令可以使用 host 用户的权限运行进程，不是操作系统沙箱。若共享目录包含 Kiki 的私有 home，请给 `Glob`/`Grep` 指定不包含该 home 的更小搜索目录。Memory 默认只共享工作区，global Memory 需要明确授权，persona 管理不对外暴露。
 
 ## 下一步
 

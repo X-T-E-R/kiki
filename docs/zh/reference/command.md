@@ -113,7 +113,7 @@ kiki --agent reviewer
 kiki -p --agent reviewer "审查这个分支上的改动"
 ```
 
-`--agent-file` 以最高优先级注册单个 Agent 文件（仅本次启动）并选中它；该 flag 不可重复传入，`--agent` 与 `--agent-file` 互斥。两个 flag 都仅在新建会话时有效——都不能与 `--session`/`--continue` 组合，因为 Agent 在会话创建时绑定，恢复会话时会自动还原已绑定的 Agent。选择在会话首次绑定后即固定，之后不可切换；在 TUI 中，这些 flag 只绑定启动时的会话，之后在同一进程内新建的会话（例如通过 `/new`）使用默认 Agent。Agent 文件格式与发现目录详见 [Agent 与 subagent](../customization/agents.md#自定义-agent)。
+`--agent-file` 以最高优先级注册单个 Agent 文件（仅本次启动）并选中它；该 flag 不可重复传入，`--agent` 与 `--agent-file` 互斥。两个 flag 都仅在新建会话时有效——都不能与 `--session`/`--continue` 组合，因为 Agent 在会话创建时绑定，恢复会话时会自动还原已绑定的 Agent。选择在会话首次绑定后即固定，之后不可切换；在 TUI 中，这些 flag 只绑定启动时的会话，之后在同一进程内新建的会话（例如通过 `/new`）使用默认 Agent。Agent 文件格式与发现目录详见 [Agent 与 subagent](../customization/agents-and-subagents.md#自定义-agent)。
 
 ## 非交互执行
 
@@ -145,11 +145,47 @@ kiki -p "List changed files" --output-format stream-json
 
 多个 `kiki -p` 进程可以共享一个 `KIKI_HOME`，前提是每个进程使用不同的会话。Kiki 会串行化共享的 runtime owner 记录和会话索引写入，但每个会话仍然只允许一个活动写入者。不要同时对同一个会话运行两个 prompt；如果上一个进程应当很快释放会话，可以使用 `--wait-for-session <seconds>`。
 
-Thread communication 默认关闭。不使用 thread 工具的 print 运行不会初始化 mailbox。启用 thread communication 时，可以设置 `KIKI_THREAD_MAILBOX_TIMEOUT_MS` 调整有界 mailbox 调用超时。print 模式会为本次运行中已经打开的会话自动触发定时任务，但不会扫描 home 中的其它会话，也不会唤醒未打开的会话；不属于本次运行的任务仍需通过交互式 daemon 或 server 运行。若需要最大程度的隔离，或每个 worker 都需要独立缓存和配置，请为每个 worker 使用独立的 `KIKI_HOME`。
+Thread communication 允许使用，并且默认关闭。用户把 `[thread_communication] enabled` 写成 `false` 是完全关闭；写成 `true` 会保持原先的默认开启，直到写入 `[optional_capabilities.defaults] thread`。当前会话关闭后，即使 Profile 点了线程工具，该会话仍然关闭。只有这次子任务点名这些工具，才会打开该子任务。不使用 thread 工具的 print 运行不会初始化 mailbox。这次运行已经打开线程通信时，可以设置 `KIKI_THREAD_MAILBOX_TIMEOUT_MS` 调整有界 mailbox 调用超时。print 模式会为本次运行中已经打开的会话自动触发定时任务，但不会扫描 home 中的其它会话，也不会唤醒未打开的会话；不属于本次运行的任务仍需通过交互式 daemon 或 server 运行。若需要最大程度的隔离，或每个 worker 都需要独立缓存和配置，请为每个 worker 使用独立的 `KIKI_HOME`。
 
 ## 子命令
 
-`kiki` 提供以下子命令：`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+
+### `kiki session`
+
+只读查看已保存的会话时间线，不恢复会话、不占用写锁，也不发送模型请求：
+
+```sh
+kiki session list
+kiki session show <session_id> --agent main
+kiki session show <session_id> --agent main --json
+kiki session show <session_id> --agent main --before <cursor>
+```
+
+`show` 接受 `session_<uuid>` ID、裸 UUID 或 `/s/session_<uuid>` 链接。同一会话存在于多个工作区时，用 `--workspace <workspace-id>` 选择副本。要读取其他 home，在运行命令前设置 `KIKI_HOME` 环境变量。
+
+较大的时间线按有界窗口打开，不再因整个文件超过大小上限而拒绝。默认以最新 8 MiB 的 wire 记录为目标；`--max-bytes <bytes>` 可将目标设为 1 到 8,388,608 字节。读取器会额外向前查找最多 64 MiB，寻找轮次起点，因此实际读取量可能超过目标。单页最多覆盖 72 MiB，边界查找与正文读取的总 I/O 最多为 136 MiB 加一个 64 KiB 对齐块。超长轮次的起点不在这段范围内时，页面改为从一条完整记录开始，仍可继续翻页。单条记录超过 64 MiB 上限时，会报告资源限制，JSON 错误码为 `inspection_limit`；不修改会话，也不将其判为损坏。
+
+JSON 用 `wire.startBoundary`（`turn` 或 `record`）和 `wire.endBoundary`（`turn`、`record` 或 `watermark`）标明页边界。任一边界为 `record` 时，该页是轮次续段：`timeline` 返回带绝对 `byteOffset`、稳定 `id`（`<agent>:wire:<byteOffset>`）和原始 `record` 的 `type: "wire-record"` 项，而不重建成完整轮次消息。读取 JSON 的程序应按原始记录处理这些项；文本输出会标注 `turn continuation`。这样，即使工具调用位于另一页，本页的工具结果也仍可见；继续使用 `Older` 可读取更早的上下文。
+
+文本输出包含一条 `Older` 命令；JSON 返回 `wire.nextCursor`、字节边界和首次分页时固定的 `watermark`（文件大小）。对同一会话、工作区和 Agent 传入该游标，即可读取紧邻的更旧窗口。游标绑定 wire 文件身份与首次大小。正常追加不会改变分页边界；文件被替换、缩短，或大小不变但修改时间发生变化时，旧游标会被拒绝。保留修改时间的同大小改写，以及同一文件的前缀改写后又增长，不在此检查的检测范围内。游标不匹配和非法窗口参数在 JSON 中返回 `invalid_option`。
+
+`selectedAgent.wireComplete=false` 表示所选时间线不完整；每个 Agent 摘要也有自己的 `wireComplete`。完整轮次页返回时间线投影，续段页返回原始记录；两者都不是完整会话状态快照，窗口之外的消息和状态变化尚未重放。会话头与其他 Agent 的摘要反映当前已保存的文件，不是所选页面 watermark 时刻的状态。继续翻页可查看更早的记录，原始 journal 保持完整。
+
+`--follow` 只观察已保存内容的变化，不连接正在运行的 Agent。与 `--json` 合用时，每行输出一个 NDJSON 快照。`--before` 与 `--follow` 互斥。
+
+`seal` 为已保存会话中每个 Agent 的 journal 保存一份压缩封存副本，之后的 journal 读取使用这份副本。原来的 `wire.jsonl` 仍留在磁盘上，大小不变；封存不会减少原文件占用，额外的封存数据可能让 home 占用变大。`unseal` 去掉封存，不修改原文件，之后的读取重新使用该文件。
+
+```sh
+kiki session seal <session_id>
+kiki session unseal <session_id> --json
+```
+
+这两条命令与 `show` 接受相同的会话引用形式，也支持用 `--workspace <workspace-id>` 选择副本。它们不恢复会话、不发送模型请求。另一个 Kiki 进程正持有该会话的写锁时，命令拒绝执行，journal 保持原样；JSON 错误码为 `session_active`。
+
+如果封存后的 journal 已经在被读取，`seal` 和 `unseal` 会等到这次读取结束，或读取它的进程退出，再移除对应的封存分段。封存损坏时，读取失败并报告 `Cold journal cannot be read`（`storage.corrupted`），不会悄悄改读原文件。运行 `unseal` 可去掉该封存，重新读取保留的原文件。
+
+成功时，文本输出报告封存或解除了几个 journal。`--json` 返回 `schemaVersion`、`action`（`seal` 或 `unseal`）、`sessionId`、`workspaceId`、`wires`，以及 `originalRetained: true`。
 
 ### `kiki serve`
 
@@ -223,7 +259,7 @@ Network 目标先用 `target --input <file>` 登记 `{label,endpoint,target}`，
 
 ### `kiki usage-export`
 
-将一个本地 Kiki home 的无正文用量导出到 vibe-usage/vibecafe、标准 Webhook 或已批准脚本。实验功能默认关闭：启动后端时设置 `KIKI_EXPERIMENTAL_USAGE_EXPORT=true`。只在后来运行的 CLI 进程中设置变量，不会启用已经运行的后端。管理操作要求该 home 的本地所有者凭证；远程连接 token 和危险鉴权绕过模式都不授予此权限。
+将一个本地 Kiki home 的无正文用量导出到 vibe-usage/vibecafe、标准 Webhook 或已批准脚本。命令无需实验开关即可使用；未配置或已禁用的目的端不发送任何数据。管理操作要求该 home 的本地所有者凭证；远程连接 token 和危险鉴权绕过模式都不授予此权限。
 
 先保存草稿、查看准确范围和字段，再一次性批准这个目的端：
 
@@ -272,6 +308,12 @@ Vibe 目的端使用 `{ "kind": "vibe", "endpoint": "https://example.com/api/usa
 旧端负责 `<T`，原生负责 `>=T`，离线回补仍保留 T，不按 ACK 时间移动。`handoff refresh <id>` 读取旧端安全的最后回执；同时有旧回执和真实原生 ACK 才算完成。`handoff rollback <id> --cutoff <new_future_R> --agree` 保留原生负责 `[T,R)`，旧端从 `>=R` 恢复，而不是无界重扫旧历史。
 
 接收端开发者可在仓库中运行 `pnpm exec tsx packages/kap-server/examples/usage-export-receiver.ts`（Node 24）。示例只监听 `127.0.0.1:9080`，在 `usage-receiver.sqlite` 持久保存替换版本和删除墓碑，提供 `POST /usage`。测试时须批准准确的 loopback HTTP grant。生产接收端应提供 TLS、持久存储和鉴权；示例不是托管看板。
+
+### `kiki agents` 与委派命令
+
+`kiki agents --json` 读取工作区的有效智能体档目录，返回 `items` 和 `complete`，不创建对话，也不注册工作区。使用 `--workspace <目录>` 查看其他目录。
+
+`kiki dispatch <message>` 在启动工作时创建或复用 CLI 委派席位。其他委派命令，包括 `list`、`interactions`、`status`、`wait`、`result`、`events` 和 `transcript`，要求已有席位；没有席位时返回退出码 `3`，不会新建。先通过 `dispatch` 启动工作，或使用 `--principal kiki-cli` 显式创建席位，再使用这些命令。
 
 ### `kiki seat`
 
@@ -534,4 +576,4 @@ kiki provider catalog add anthropic --api-key sk-ant-... --default-model claude-
 - [配置文件](../configuration/config-files.md) — `default_model`、权限模式等启动参数的持久化配置
 - [在 IDE 中使用](../server/ide.md) — 编辑器与 IDE 集成
 - [Agent Skills](../customization/skills.md) — `--skills-dir` 加载的 Skill 文件格式
-- [Agent 与 subagent](../customization/agents.md) — 内置 subagent、自定义 Agent 文件与通过 `--agent` 选择 main agent
+- [Agent 与 subagent](../customization/agents-and-subagents.md) — 内置 subagent、自定义 Agent 文件与通过 `--agent` 选择 main agent

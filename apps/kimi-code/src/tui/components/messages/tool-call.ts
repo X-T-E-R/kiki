@@ -5,7 +5,7 @@
 
 import { isAbsolute, relative, sep } from 'node:path';
 
-import { Container, Spacer, Text, truncateToWidth, visibleWidth } from '@kiki/pi-tui';
+import { Container, sliceByColumn, Spacer, Text, truncateToWidth, visibleWidth } from '@kiki/pi-tui';
 import type { Component, TUI } from '@kiki/pi-tui';
 import { highlightLines, langFromPath } from '#/tui/components/media/code-highlight';
 import { renderDiffLinesClustered } from '#/tui/components/media/diff-preview';
@@ -37,11 +37,14 @@ import { isGenericToolResult, pickResultRenderer } from './tool-renderers/regist
 import { isAgentRunTool, isTaskWaitTool } from '#/tui/tool-names';
 import { buildTaskWaitHeader } from './tool-renderers/task-wait';
 
-const MAX_ARG_LENGTH = 60;
+// Header argument summaries are capped in terminal cells, not UTF-16 code
+// units: 60 CJK characters occupy 120 cells and would wrap the header onto a
+// second row, breaking the card's stable height.
+const MAX_ARG_WIDTH = 60;
 const MAX_SUB_TOOL_CALLS_SHOWN = 4;
 // Cap the Agent `description` in the single-subagent header so a long prompt
 // cannot wrap the header onto a second row and break the card's stable height.
-const MAX_SUBAGENT_DESCRIPTION_LENGTH = 60;
+const MAX_SUBAGENT_DESCRIPTION_WIDTH = 60;
 const APPROVED_PLAN_MARKER = '## Approved Plan:';
 const AUTO_APPROVED_PLAN_MARKER = '## Plan (auto-approved, not user-reviewed):';
 const STREAMING_PROGRESS_INTERVAL_MS = 1000;
@@ -368,14 +371,25 @@ function parseArgsPreview(value: string): Record<string, unknown> {
 
 const PATH_KEYS = new Set(['path', 'file_path']);
 
+// Truncate an unstyled header summary to a terminal-cell budget. Unlike
+// pi-tui's truncateToWidth this injects no reset codes around the ellipsis —
+// callers style the result afterwards, and an embedded \x1b[0m would end that
+// style early. sliceByColumn segments by grapheme, so a CJK character or
+// emoji at the cut is dropped whole, never split into half a surrogate pair.
+function truncateSummaryWidth(value: string, maxWidth: number): string {
+  if (visibleWidth(value) <= maxWidth) return value;
+  return sliceByColumn(value, 0, maxWidth - 1, true) + '…';
+}
+
 function truncateArgValue(key: string, value: string): string {
-  if (value.length <= MAX_ARG_LENGTH) return value;
+  const width = visibleWidth(value);
+  if (width <= MAX_ARG_WIDTH) return value;
   if (PATH_KEYS.has(key)) {
     // Preserve the tail (filename) — drop the prefix so the user can
     // still tell which file is being touched.
-    return '…' + value.slice(value.length - (MAX_ARG_LENGTH - 1));
+    return '…' + sliceByColumn(value, width - (MAX_ARG_WIDTH - 1), MAX_ARG_WIDTH - 1, true);
   }
-  return value.slice(0, MAX_ARG_LENGTH - 3) + '...';
+  return truncateSummaryWidth(value, MAX_ARG_WIDTH);
 }
 
 function makeWorkspaceRelativePath(filePath: string, workspaceDir: string | undefined): string {
@@ -1733,10 +1747,7 @@ export class ToolCallComponent extends Container {
     const label = currentTheme.boldFg('primary', labelText);
     const status = this.formatSingleSubagentStatus(phase);
     const rawDescription = str(this.toolCall.args['description']);
-    const description =
-      rawDescription.length > MAX_SUBAGENT_DESCRIPTION_LENGTH
-        ? `${rawDescription.slice(0, MAX_SUBAGENT_DESCRIPTION_LENGTH - 1)}…`
-        : rawDescription;
+    const description = truncateSummaryWidth(rawDescription, MAX_SUBAGENT_DESCRIPTION_WIDTH);
     const descriptionPlain = description.length > 0 ? ` (${description})` : '';
     const descriptionText = descriptionPlain.length > 0 ? currentTheme.dim(descriptionPlain) : '';
     const statsText = this.formatSingleSubagentStatsText();
@@ -1966,7 +1977,7 @@ export class ToolCallComponent extends Container {
         this.addChild(
           new Text(
             currentTheme.dim(
-              `... (${String(remaining)} more lines, ${String(allLines.length)} total, ctrl+o to expand)`,
+              `... (${String(remaining)} more lines, ${String(allLines.length)} total, Ctrl+O to expand)`,
             ),
             2,
             0,

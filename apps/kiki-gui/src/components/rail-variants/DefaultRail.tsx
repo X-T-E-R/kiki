@@ -22,10 +22,6 @@ export type TodoBaselineStatus = 'ready' | 'loading' | 'partial' | 'error' | 'un
 
 const controllerTodosCache = new WeakMap<SessionController, Map<string, readonly TodoItem[]>>();
 
-export function clearRetainedTodosCache(): void {
-  // Retained for test tear-downs
-}
-
 function useAgentState(sessionId: string, agentId: string): { controller: SessionController | undefined; agentState: SessionViewState | undefined } {
   const registry = useOptionalControllerRegistry();
   const subscribeRegistry = useCallback(
@@ -83,12 +79,13 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
 
     baselineConfirmed = agentState.loaded === true && agentState.transcriptReady === true;
     const rawTodos = agentState.todos ?? [];
+    const hasMoreOrRefs = todoCoverage?.hasMore === true || todoRefs.length > 0;
 
     if (isError) {
       status = 'error';
     } else if (!agentState.loaded) {
       status = 'unknown';
-    } else if (!baselineConfirmed || todoRefs.length > 0 || (todoCoverage?.hasMore === true)) {
+    } else if (!baselineConfirmed || hasMoreOrRefs) {
       status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (rawTodos.length === 0) {
       status = 'confirmed_empty';
@@ -97,6 +94,9 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
       status = 'ready';
     }
   } else if (canFallback && state !== undefined) {
+    const fallbackCoverage = state.globalCoverage?.todos;
+    const fallbackRefs = state.contentRefs?.filter((ref) => ref.source.kind === 'todo' && ref.source.id === 'todo' && ref.path[0] === 'items') ?? [];
+    const hasMoreOrRefs = fallbackCoverage?.hasMore === true || fallbackRefs.length > 0;
     const hasLoadError = !state.loaded && state.loadError !== undefined;
     const rawTodos = state.todos ?? [];
     baselineConfirmed = state.loaded === true && state.transcriptReady === true;
@@ -105,7 +105,7 @@ export function RailTodos({ sessionId, agentId, state }: RailTodosProps) {
       status = 'error';
     } else if (!state.loaded) {
       status = 'unknown';
-    } else if (!baselineConfirmed) {
+    } else if (!baselineConfirmed || hasMoreOrRefs) {
       status = rawTodos.length > 0 ? 'partial' : 'loading';
     } else if (rawTodos.length === 0) {
       status = 'confirmed_empty';

@@ -19,8 +19,8 @@ import {
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { cleanupExpiredSessionLocks } from '#/persistence/backends/node-fs/fileLock';
 import { cleanupOrphanedEphemeralSessions } from '#/persistence/backends/node-fs/ephemeralCleanup';
-import { IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
+import { IAtomicTomlDocumentStore, type IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { createJsonDocumentReader, TomlAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { FileSkillDiscovery } from '#/app/skillCatalog/fileSkillDiscovery';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { readSpaceHome, type SpaceHome } from './spaceHome';
@@ -111,6 +111,7 @@ export interface IBootstrapService {
   readonly space?: SpaceHome;
   readonly homeDiagnostic?: string;
   readonly baseConfigDocumentStore?: IAtomicTomlDocumentStore;
+  readonly baseDocumentStore?: Pick<IAtomicDocumentStore, 'get'>;
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly interactive?: boolean;
@@ -219,6 +220,10 @@ function storageSeed(options: IBootstrapOptions): ScopeSeed {
         : configDocuments,
     ],
   ];
+}
+
+export function createBaseDocumentStore(baseHomeDir: string): Pick<IAtomicDocumentStore, 'get'> {
+  return createJsonDocumentReader(new FileStorageService(baseHomeDir, 0o700, 0o600, false));
 }
 
 export function createBaseConfigDocumentStore(baseHomeDir: string): IAtomicTomlDocumentStore {

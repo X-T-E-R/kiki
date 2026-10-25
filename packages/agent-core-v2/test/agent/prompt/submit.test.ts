@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { PromptCompleted } from '#/agent/prompt/promptService';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentGoalService } from '#/agent/goal/goal';
 import { IAgentLoopService } from '#/agent/loop/loop';
@@ -13,9 +14,18 @@ import { IAgentPlanService } from '#/features/plan/plan';
 
 import { IEventService } from '#/app/event/event';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE } from '#/agent/delivery/deliveryReminder';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+
+function historyText(history: readonly { readonly content: readonly { readonly type: string; readonly text?: string }[] }[]): string {
+  return history.map((message) => message.content.map((part) => part.type === 'text' ? part.text ?? '' : '').join('')).join('\n');
+}
+
+function deliveryReminders(ctx: TestAgentContext) {
+  return ctx.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'message_delivery');
+}
 
 import { createTestAgent, type TestAgentContext } from '../../harness';
 
@@ -30,7 +40,7 @@ describe('prompt submit', () => {
     }
   });
 
-  it('runs one delivery reminder continuation and never loops on ordinary text', async () => {
+  it('puts the complete ordinary reply and message guidance into the next request without another model call', async () => {
     ctx = createTestAgent();
     const delivery = ctx.get(ISessionDeliveryService);
     await delivery.ready;
@@ -39,13 +49,170 @@ describe('prompt submit', () => {
     expect(await documents.get(scope, 'delivery.json')).toBeUndefined();
     await delivery.set('message');
     expect(await documents.get(scope, 'delivery.json')).toEqual({ mode: 'message' });
-    ctx.mockNextResponse({ type: 'text', text: 'Private reasoning result.' });
-    ctx.mockNextResponse({ type: 'text', text: 'Still no visible message.' });
+    const ordinary = 'Private reasoning result. It stays one complete reply.';
+    ctx.mockNextResponse({ type: 'text', text: ordinary });
+    const prompts = ctx.get(IAgentPromptService);
+    const result = await prompts.submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] });
+    expect(result.state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.llmCalls[0]!.tools.map((tool) => tool.name)).toContain('SendMessage');
+    expect(historyText(ctx.llmCalls[0]!.history)).not.toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
+    expect(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE).not.toContain('not visible');
+    expect(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE).not.toContain('You have not sent');
+    expect(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE).toContain('do not call SendMessage to send it again or rewrite it');
+    expect(deliveryReminders(ctx)).toHaveLength(1);
+    ctx.mockNextResponse({ type: 'text', text: 'Second turn.' });
+    const next = await prompts.submitAndWait({ input: [{ type: 'text', text: 'Continue.' }] });
+    expect(next.state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(2);
+    const second = historyText(ctx.llmCalls[1]!.history);
+    expect(second).toContain(ordinary);
+    expect(second).toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
+    expect(second.split(ordinary)).toHaveLength(2);
+  });
+
+  it('keeps reply mode free of SendMessage and delivery guidance', async () => {
+    ctx = createTestAgent();
+    await ctx.get(ISessionDeliveryService).ready;
+    ctx.mockNextResponse({ type: 'text', text: 'Direct reply.' });
     const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] });
     expect(result.state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.llmCalls[0]!.tools.map((tool) => tool.name)).not.toContain('SendMessage');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+  });
+
+  it('freezes message delivery for the turn and still guides from that mode after a mid-turn reply switch', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    const loop = ctx.get(IAgentLoopService);
+    const hook = loop.hooks.onWillBeginStep.register('freeze-delivery', async (_event, next) => {
+      await hook.dispose();
+      await delivery.set('reply');
+      expect(delivery.mode()).toBe('reply');
+      expect(delivery.effectiveMode()).toBe('message');
+      await next();
+    }, { before: 'context-injector' });
+    ctx.mockNextResponse({ type: 'text', text: 'Frozen message turn.' });
+    const prompts = ctx.get(IAgentPromptService);
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.llmCalls[0]!.tools.map((tool) => tool.name)).toContain('SendMessage');
+    expect(delivery.effectiveMode()).toBe('reply');
+    expect(deliveryReminders(ctx)).toHaveLength(1);
+    ctx.mockNextResponse({ type: 'text', text: 'Now reply.' });
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'Next.' }] })).state).toBe('completed');
     expect(ctx.llmCalls).toHaveLength(2);
-    const reminders = ctx.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'injection' && message.origin.variant === 'message_delivery');
-    expect(reminders).toHaveLength(1);
+    expect(ctx.llmCalls[1]!.tools.map((tool) => tool.name)).not.toContain('SendMessage');
+    expect(historyText(ctx.llmCalls[1]!.history)).toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
+  });
+
+  it('does not expose SendMessage or guide when a reply turn is switched to message mid-turn', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    const loop = ctx.get(IAgentLoopService);
+    const hook = loop.hooks.onWillBeginStep.register('freeze-reply', async (_event, next) => {
+      await hook.dispose();
+      await delivery.set('message');
+      expect(delivery.mode()).toBe('message');
+      expect(delivery.effectiveMode()).toBe('reply');
+      await next();
+    }, { before: 'context-injector' });
+    ctx.mockNextResponse({ type: 'text', text: 'Still a reply.' });
+    const prompts = ctx.get(IAgentPromptService);
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(ctx.llmCalls[0]!.tools.map((tool) => tool.name)).not.toContain('SendMessage');
+    expect(delivery.effectiveMode()).toBe('message');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    ctx.mockNextResponse({ type: 'text', text: 'Message turn.' });
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'Next.' }] })).state).toBe('completed');
+    expect(ctx.llmCalls[1]!.tools.map((tool) => tool.name)).toContain('SendMessage');
+    expect(historyText(ctx.llmCalls[1]!.history)).not.toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
+  });
+
+  it('does not guide the next request after a successful SendMessage', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    ctx.mockNextResponse({ type: 'function', id: 'send-1', name: 'SendMessage', arguments: '{"text":"Visible hello"}' });
+    ctx.mockNextResponse({ type: 'text', text: 'Sent.' });
+    const prompts = ctx.get(IAgentPromptService);
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] })).state).toBe('completed');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    ctx.mockNextResponse({ type: 'text', text: 'Next.' });
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'Continue.' }] })).state).toBe('completed');
+    expect(historyText(ctx.llmCalls.at(-1)!.history)).not.toContain(MESSAGE_DELIVERY_NEXT_TURN_GUIDANCE);
+  });
+
+  it('does not guide when a message-mode turn fails after ordinary text', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    ctx.mockNextProviderResponse({
+      parts: [{ type: 'text', text: 'Filtered ordinary text.' }],
+      finishReason: 'filtered',
+    });
+    const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] });
+    expect(result.state).toBe('failed');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    const last = ctx.get(IAgentContextMemoryService).get().at(-1);
+    expect(last).toMatchObject({
+      role: 'assistant',
+      source: { turnId: 0 },
+      content: [{ type: 'text', text: 'Filtered ordinary text.' }],
+    });
+    expect(last?.partial).not.toBe(true);
+  });
+
+  it('does not tell an external executor to call SendMessage when the native tool stays registered', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    await delivery.set('message');
+    const profile = ctx.get(IAgentProfileService);
+    const loop = ctx.get(IAgentLoopService);
+    const hook = loop.hooks.onDidFinishStep.register('external-executor', async (_event, next) => {
+      await next();
+      await hook.dispose();
+      profile.applyBindingSnapshot({ ...profile.data(), executorId: 'external-example' });
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Ordinary external reply.' });
+    const result = await ctx.get(IAgentPromptService).submitAndWait({ input: [{ type: 'text', text: 'Please reply.' }] });
+    expect(result.state).toBe('completed');
+    expect(ctx.get(IAgentToolRegistryService).resolve('SendMessage')).toBeDefined();
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+  });
+
+  it('does not guide a cancelled message turn from the previous turn assistant text', async () => {
+    ctx = createTestAgent();
+    const delivery = ctx.get(ISessionDeliveryService);
+    await delivery.ready;
+    const ordinary = 'Older direct reply.';
+    ctx.mockNextResponse({ type: 'text', text: ordinary });
+    const prompts = ctx.get(IAgentPromptService);
+    expect((await prompts.submitAndWait({ input: [{ type: 'text', text: 'First.' }] })).state).toBe('completed');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    await delivery.set('message');
+    const loop = ctx.get(IAgentLoopService);
+    const stop = ctx.get(IEventBus).subscribe(TurnStarted, () => {
+      loop.cancel(undefined, new Error('abort'));
+    });
+    const result = await prompts.submitAndWait({ input: [{ type: 'text', text: 'Second.' }] });
+    stop.dispose();
+    expect(result.state).toBe('cancelled');
+    expect(deliveryReminders(ctx)).toHaveLength(0);
+    const last = ctx.get(IAgentContextMemoryService).get().at(-1);
+    expect(last).toMatchObject({
+      role: 'assistant',
+      content: [{ type: 'text', text: ordinary }],
+      source: { turnId: 0 },
+    });
   });
 
   it('materializes a frozen persona greeting only on explicit reply and only once', async () => {
@@ -90,7 +257,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-first-prompt', async (_event, next) => {
-      hook.dispose();
+      await hook.dispose();
       await held;
       await next();
     }, { before: 'context-injector' });
@@ -147,7 +314,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-yield', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     const first = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [], origin: { kind: 'user' } } });
     const blocker = prompts.hooks.onBeforeSubmitPrompt.register('block-follow-up', async (event, next) => {
@@ -165,7 +332,7 @@ describe('prompt submit', () => {
     expect(ctx.llmCalls).toHaveLength(1);
     expect((await goal.resumeGoal({})).status).toBe('active');
     await goal.pauseGoal({});
-    blocker.dispose();
+    await blocker.dispose();
   });
 
   it('does not settle a replacement goal for a blocked prompt after yielding the old goal', async () => {
@@ -178,7 +345,7 @@ describe('prompt submit', () => {
     let finishFirst!: () => void;
     const firstHeld = new Promise<void>((resolve) => { finishFirst = resolve; });
     const stepHook = loop.hooks.onWillBeginStep.register('hold-original', async (_event, next) => {
-      stepHook.dispose(); await firstHeld; await next();
+      await stepHook.dispose(); await firstHeld; await next();
     }, { before: 'context-injector' });
     const first = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'first' }], toolCalls: [], origin: { kind: 'user' } } });
     let releasePrompt!: () => void;
@@ -197,7 +364,7 @@ describe('prompt submit', () => {
     expect((await queued.completion).state).toBe('blocked');
     expect(goal.getGoal().goal).toMatchObject({ goalId: replacement.goalId, status: 'active' });
     expect(ctx.llmCalls).toHaveLength(1);
-    blocker.dispose();
+    await blocker.dispose();
   });
 
   it('accepts a GUI goal follow-up during a real continuation and schedules it before the next continuation', async () => {
@@ -212,7 +379,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-continuation', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     await goal.resumeGoal({ continueIfPaused: true });
     const queued = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'GUI follow-up' }], toolCalls: [], origin: { kind: 'user' } },
@@ -236,7 +403,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-autonomous', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     await goal.resumeGoal({ continueIfPaused: true });
     const queued = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'GUI send now' }], toolCalls: [], origin: { kind: 'user' } },
@@ -332,7 +499,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-terminal', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     await prompts.submit({ input: [{ type: 'text', text: 'first' }] });
     const waiting = prompts.submitAndWait({ input: [{ type: 'text', text: 'second' }], promptId: 'queued-terminal' });
@@ -350,7 +517,7 @@ describe('prompt submit', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = ctx.get(IAgentLoopService).hooks.onWillBeginStep.register('hold-waiter', async (_event, next) => {
-      hook.dispose(); await held; await next();
+      await hook.dispose(); await held; await next();
     }, { before: 'context-injector' });
     const waiting = prompts.submitAndWait({ input: [{ type: 'text', text: 'hello' }] }, controller.signal);
     const rejected = expect(waiting).rejects.toThrow('stop waiting');
@@ -389,7 +556,7 @@ describe('prompt submit', () => {
 
     const launched = await ctx.rpc.prompt({ input: [{ type: 'text', text: 'hello title' }] });
     expect(launched?.turn_id).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const metadata = await ctx.get(ISessionMetadata).read();
     expect(metadata.title).toBe('hello title');

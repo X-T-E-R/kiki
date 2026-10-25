@@ -17,6 +17,7 @@ import {
 } from '#/kosong/contract/errors';
 import { type Message, type StreamedMessagePart, type ToolCall } from '#/kosong/contract/message';
 import { generate as runKosongGenerate } from '#/kosong/contract/generate';
+import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import type { ChatProvider, StreamedMessage } from '#/kosong/contract/provider';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -60,7 +61,14 @@ const TWO_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'recent user two
 const THREE_EXCHANGE_TEXT = ['old user one', 'old assistant one', 'old user two', 'old assistant two', 'recent user three', 'recent assistant three'];
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
-function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): number {
+function beginSummarize(ctx: TestAgentContext, input: { instruction?: string } = {}): Promise<boolean> {
+  return ctx.ready.then(() => ctx.get(IAgentFullCompactionService).begin({
+    source: 'manual', strategy: 'summarize', instruction: input.instruction,
+  }));
+}
+
+async function fixtureRequestTokens(ctx: TestAgentContext, text: readonly string[]): Promise<number> {
+  await ctx.ready;
   const tools = ctx.get(IAgentToolSelectService).shapeTools(ctx.get(IAgentToolRegistryService).list());
   return ctx.tokenCounting.requestSize({
     systemPrompt: ctx.get(IAgentProfileService).getSystemPrompt(),
@@ -169,7 +177,10 @@ describe('FullCompaction', () => {
       expect(wire.filter(record => record.type === 'full_compaction.complete')).toHaveLength(1);
       expect(wire.some(record => record.type === 'full_compaction.cancel')).toBe(false);
       const events = ctx.newEvents();
-      expect(events.some(event => event.event === 'full_compaction.cancel' || event.event === 'compaction.cancelled')).toBe(false);
+      expect(events.some((event) => {
+        const name = (event as { readonly event?: unknown }).event;
+        return name === 'full_compaction.cancel' || name === 'compaction.cancelled';
+      })).toBe(false);
       expect(events).toContainEqual(expect.objectContaining({ event: 'compaction.completed', args: expect.objectContaining({ result: expect.objectContaining({ strategy, tokensAfter: result.tokensAfter }) }) }));
       expect(postCompact.mock.calls.filter(([event]) => event === 'PostCompact')).toHaveLength(1);
       expect(postCompact).toHaveBeenCalledWith('PostCompact', expect.objectContaining({ inputData: expect.objectContaining({ estimatedTokenCount: result.tokensAfter }) }));
@@ -380,6 +391,43 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   });
 
+  it.each([undefined, 'summarize', 'fresh', 'auto'] as const)('resolves the main context default without overriding an explicit global choice (%s)', async (contextStrategy) => {
+    const ctx = testAgent({ initialConfig: { providers: {}, loopControl: { contextStrategy } } });
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.getContextStrategy()).toEqual({ strategy: contextStrategy ?? 'auto', source: contextStrategy === undefined ? 'default' : 'global', shadow: false });
+    const profile = ctx.get(IAgentProfileService);
+    await profile.applyProfile(normalizeAgentProfile({ name: 'context-choice', systemPrompt: () => 'test', contextStrategy: 'fresh' }));
+    expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'profile' });
+    compactor.setContextStrategyOverride('summarize');
+    expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'summarize', source: 'session' });
+    compactor.setContextStrategyOverride('fresh');
+    expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'session' });
+    compactor.setContextStrategyOverride(null);
+    expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'fresh', source: 'profile' });
+    await profile.applyProfile(normalizeAgentProfile({ name: 'context-inherited', systemPrompt: () => 'test' }));
+    expect(compactor.getContextStrategy()).toEqual({ strategy: contextStrategy ?? 'auto', source: contextStrategy === undefined ? 'default' : 'global', shadow: false });
+  });
+
+  it('relays when work notes are missing and the original user text stays in the shape', async () => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'auto', source: 'default' });
+    ctx.mockNextResponse({ type: 'text', text: 'Fallback summary.' });
+    expect(compactor.begin({ source: 'manual' })).toBe(true);
+    const result = await compactor.compacting!.promise;
+    expect(result).toMatchObject({ strategy: 'relay' });
+    expect(result.fallbackFrom).toBeUndefined();
+    expect(result.reasonCodes).toContain('notes_missing');
+    expect(result.reasonCodes).toContain('strategy_source:default');
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(ctx.compactHistory().some((message) => message.text === 'old user one')).toBe(true);
+    expect(ctx.compactHistory().some((message) => message.text === 'recent user two')).toBe(true);
+    expect(ctx.compactHistory().some((message) => message.text?.includes('reviewed not confirmed'))).toBe(true);
+  });
+
   it('runs manual compaction and applies the compacted context', async () => {
     const records: TelemetryRecord[] = [];
     const ctx = testAgent({ telemetry: recordingTelemetry(records) });
@@ -399,7 +447,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({ instruction: 'Keep the important test facts.' });
+    await beginSummarize(ctx, { instruction: 'Keep the important test facts.' });
     await compacted;
     await completed;
 
@@ -450,12 +498,13 @@ describe('FullCompaction', () => {
       type: 'text',
       text: expect.stringContaining('The conversation so far has been compacted'),
     });
+    const tokensBefore = await fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT);
     expect(records).toContainEqual({
       event: 'compaction_finished',
       properties: expect.objectContaining({
         agent_id: 'main',
         source: 'manual',
-        tokens_before: fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
+        tokens_before: tokensBefore,
         tokens_after: expect.any(Number),
         duration_ms: expect.any(Number),
         compacted_count: 6,
@@ -504,9 +553,43 @@ describe('FullCompaction', () => {
     await ctx.get(IAgentFullCompactionService).compacting?.promise;
     const lease = ctx.get(IAgentLoopService).tryAcquireQuiescence();
     expect(lease).toBeDefined();
-    lease?.dispose();
-    hook.dispose();
+    await lease?.dispose();
+    await hook.dispose();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each([false, true])('preserves the compaction outcome when quiescence cleanup fails; committed=%s', async (committed) => {
+    const ctx = testAgent();
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    await ctx.ready;
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    const loop = ctx.get(IAgentLoopService);
+    const acquire = loop.tryAcquireQuiescence.bind(loop);
+    const dispose = vi.fn(async () => { throw new Error('cleanup fixture failure'); });
+    vi.spyOn(loop, 'tryAcquireQuiescence').mockImplementationOnce(() => {
+      const lease = acquire()!;
+      return { dispose: async () => { await lease.dispose(); await dispose(); } };
+    });
+    const service = ctx.get(IAgentFullCompactionService);
+    const hook = service.hooks.onWillCompact.register('test-cleanup-failure', async (_task, next) => {
+      if (!committed) throw new Error('compaction fixture failure');
+      await next();
+    });
+    ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
+    try {
+      expect(service.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+      const task = service.compacting!;
+      if (committed) await expect(task.promise).resolves.toMatchObject({ strategy: 'summarize' });
+      else await expect(task.promise).rejects.toThrow('compaction fixture failure');
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(service.isCompacting()).toBe(false);
+      const lease = acquire();
+      expect(lease).toBeDefined();
+      await lease?.dispose();
+    } finally {
+      await hook.dispose();
+    }
+  });
 
   it('refreshes the active profile system prompt after compaction without resetting active tools', async () => {
     const homeDir = mkdtempSync(join(tmpdir(), 'kimi-compact-refresh-home-'));
@@ -538,7 +621,7 @@ describe('FullCompaction', () => {
       const completed = ctx.once('compaction.completed');
 
       ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-      await ctx.rpc.beginCompaction({});
+      await beginSummarize(ctx, {});
       await completed;
 
       expect(refreshSpy).toHaveBeenCalledTimes(1);
@@ -553,7 +636,7 @@ describe('FullCompaction', () => {
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('rejects a manual compaction while a turn is active', async () => {
+  it('queues manual compaction during tools and applies it before the next model request', async () => {
     const ctx = testAgent(
       execEnvServices({ processRunner: createCommandRunner('should-not-run') }),
       permissionModeServices('manual'),
@@ -570,20 +653,63 @@ describe('FullCompaction', () => {
     const approval = await ctx.takeApprovalRequest();
     expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeDefined();
 
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
-      code: 'compaction.unable',
-      message: 'Cannot compact while a turn is active. Wait for it to finish, then retry.',
+    expect(await beginSummarize(ctx, {})).toBe(true);
+    expect(await beginSummarize(ctx, {})).toBe(false);
+    expect(ctx.newEvents()).toContainEqual(expect.objectContaining({
+      event: 'compaction.started', args: expect.objectContaining({ trigger: 'manual', phase: 'queued' }),
+    }));
+    expect(ctx.llmCalls).toHaveLength(1);
+
+    ctx.mockNextResponse({ type: 'text', text: 'Manual summary.' });
+    ctx.mockNextResponse({ type: 'text', text: 'Turn done.' });
+    approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
+    await ctx.untilTurnEnd();
+    await ctx.get(IAgentLoopService).settled();
+    const events = ctx.allEvents;
+    expect(eventIndex(events, 'tool.result')).toBeLessThan(eventIndex(events, 'context.apply_compaction'));
+    expect(eventIndex(events, 'compaction.completed')).toBeLessThan(eventIndex(events, 'turn.ended'));
+    expect(ctx.llmCalls).toHaveLength(3);
+    expect(ctx.llmCalls[2]?.history.some((message) => message.content.some((part) => part.type === 'text' && part.text.includes('Manual summary.')))).toBe(true);
+    expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('queues explicit manual relay during tools and applies fresh context before the next model request', async () => {
+    const ctx = testAgent(
+      execEnvServices({ processRunner: createCommandRunner('should-not-run') }),
+      permissionModeServices('manual'),
+    );
+    ctx.configure({
+      provider: CATALOGUED_PROVIDER,
+      modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
+      tools: ['Bash'],
     });
-    const events = ctx.newEvents();
-    expect(eventIndex(events, 'full_compaction.begin')).toBe(-1);
-    expect(eventIndex(events, 'compaction.started')).toBe(-1);
-    expect(ctx.get(IAgentFullCompactionService).compacting).toBeNull();
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.mockNextResponse({ type: 'text', text: 'I will wait for approval.' }, bashCall());
+
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Start the active turn' }] });
+    const approval = await ctx.takeApprovalRequest();
+    expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeDefined();
+
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    expect(compactor.begin({ source: 'manual', strategy: 'relay' })).toBe(false);
+    expect(ctx.newEvents()).toContainEqual(expect.objectContaining({
+      event: 'compaction.started', args: expect.objectContaining({ trigger: 'manual', phase: 'queued' }),
+    }));
     expect(ctx.llmCalls).toHaveLength(1);
 
     ctx.mockNextResponse({ type: 'text', text: 'Turn done.' });
     approval.respond({ decision: 'rejected', selectedLabel: 'reject' });
     await ctx.untilTurnEnd();
     await ctx.get(IAgentLoopService).settled();
+    const events = ctx.allEvents;
+    const firstStep = eventIndex(events, 'turn.step.started');
+    const secondStep = events.findIndex((event, index) => index > firstStep && typeof event === 'object' && event !== null && (event as { readonly event?: unknown }).event === 'turn.step.started');
+    expect(eventIndex(events, 'tool.result')).toBeLessThan(eventIndex(events, 'context.apply_compaction'));
+    expect(eventIndex(events, 'context.apply_compaction')).toBeLessThan(secondStep);
+    expect(eventIndex(events, 'compaction.completed')).toBeLessThan(eventIndex(events, 'turn.ended'));
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls[1]?.history.some((message) => message.content.some((part) => part.type === 'text' && part.text.includes('I will wait for approval.')))).toBe(false);
     expect(ctx.get(IAgentLoopService).status().activeTurnId).toBeUndefined();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -607,7 +733,7 @@ describe('FullCompaction', () => {
     });
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({ instruction: 'Keep the important test facts.' });
+    await beginSummarize(ctx, { instruction: 'Keep the important test facts.' });
     await compacted;
 
     const [compactionCall] = ctx.llmCalls;
@@ -660,7 +786,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const outcome = ctx.onceAny(['full_compaction.complete', 'error']);
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
 
     expect(await outcome).toBe('error');
     expect(ctx.newEvents()).toContainEqual(
@@ -687,7 +813,7 @@ describe('FullCompaction', () => {
     const retryOutcome = ctx.onceAny(['full_compaction.complete', 'error']);
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
 
     expect(await retryOutcome).toBe('full_compaction.complete');
     await completed;
@@ -743,7 +869,7 @@ describe('FullCompaction', () => {
       session_id: 'test-session',
       cwd: dir,
       trigger: 'auto',
-      token_count: fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
+      token_count: await fixtureRequestTokens(ctx, THREE_EXCHANGE_TEXT),
     });
     expect(post).toMatchObject({
       hook_event_name: 'PostCompact',
@@ -822,11 +948,11 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
+    const tokensBefore = await fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -862,7 +988,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -888,7 +1014,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -923,7 +1049,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -965,7 +1091,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -997,7 +1123,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstEmptySummary.promise;
     await vi.advanceTimersByTimeAsync(10_000);
     await compacted;
@@ -1048,7 +1174,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstThinkOnly.promise;
     await vi.advanceTimersByTimeAsync(10_000);
     await compacted;
@@ -1092,7 +1218,7 @@ describe('FullCompaction', () => {
     const compacted = ctx.once('full_compaction.complete');
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(10_000);
     await compacted;
@@ -1130,7 +1256,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstResponse.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1173,7 +1299,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(inputs).toHaveLength(1);
@@ -1199,7 +1325,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(attempts).toBe(1);
@@ -1240,7 +1366,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const compacted = ctx.once('full_compaction.complete');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(299);
 
@@ -1275,7 +1401,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const cancelled = ctx.once('compaction.cancelled');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     const fullCompaction = ctx.get(IAgentFullCompactionService);
     for (let i = 0; i < 10 && fullCompaction.compacting?.traceId === undefined; i += 1) {
@@ -1300,6 +1426,34 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
+  it('does not apply a late summary from a generator that ignores cancellation', async () => {
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const generate: GenerateFn = async () => {
+      started.resolve();
+      await release.promise;
+      return textResult('Late summary.');
+    };
+    const ctx = testAgent({ generate });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
+    ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
+    await beginSummarize(ctx, {});
+    await started.promise;
+    const service = ctx.get(IAgentFullCompactionService);
+    const task = service.compacting;
+    expect(task).not.toBeNull();
+    service.cancel();
+    release.resolve();
+    await task!.promise.catch(() => undefined);
+    expect(countEvents(ctx.newEvents(), 'context.apply_compaction')).toBe(0);
+    expect(ctx.compactHistory()).toEqual([
+      { role: 'user', text: 'old user one' }, { role: 'assistant', text: 'old assistant one' },
+      { role: 'user', text: 'recent user two' }, { role: 'assistant', text: 'recent assistant two' },
+    ]);
+    await ctx.expectResumeMatches();
+  });
+
   it('cancels the compaction lifecycle when manual compaction generation fails', async () => {
     const records: TelemetryRecord[] = [];
     const generate: GenerateFn = async () => {
@@ -1312,10 +1466,10 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
+    const tokensBefore = await fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     const events = ctx.newEvents();
@@ -1326,6 +1480,13 @@ describe('FullCompaction', () => {
         expect.objectContaining({ type: '[rpc]', event: 'error' }),
       ]),
     );
+    const cancelled = events.find((event): event is { event: 'compaction.cancelled'; args: { reason: string } } => {
+      if (event === null || typeof event !== 'object') return false;
+      const candidate = event as { event?: unknown; args?: { reason?: unknown } };
+      return candidate.event === 'compaction.cancelled' && typeof candidate.args?.reason === 'string';
+    });
+    expect(events).toContainEqual(expect.objectContaining({ type: '[wire]', event: 'full_compaction.cancel', args: expect.objectContaining({ reason: cancelled?.args?.reason }) }));
+    expect(cancelled?.args?.reason).toContain('compaction exploded');
     expect(eventIndex(events, 'compaction.cancelled')).toBeLessThan(eventIndex(events, 'error'));
     expect(ctx.compactHistory()).toEqual([
       { role: 'user', text: 'old user one' },
@@ -1365,7 +1526,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(records).toContainEqual({
@@ -1401,7 +1562,7 @@ describe('FullCompaction', () => {
     ctx.get(IAgentTelemetryContextService).set({ trace_id: 'trace-turn-1' });
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     const apiError = records.find((record) => record.event === 'api_error');
@@ -1481,7 +1642,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
 
-    const pending = ctx.rpc.beginCompaction({}).catch(() => {});
+    const pending = beginSummarize(ctx, {}).catch(() => {});
     await started.promise;
     await ctx.dispose();
 
@@ -1513,7 +1674,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFinished.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1552,10 +1713,10 @@ describe('FullCompaction', () => {
     });
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
-    const tokensBefore = fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
+    const tokensBefore = await fixtureRequestTokens(ctx, TWO_EXCHANGE_TEXT);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1603,7 +1764,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1646,7 +1807,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await failed;
 
     expect(attempts).toBe(1);
@@ -1693,7 +1854,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const failed = ctx.once('error');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await firstAttemptFailed.promise;
     await vi.advanceTimersByTimeAsync(60_000);
     await failed;
@@ -1719,7 +1880,7 @@ describe('FullCompaction', () => {
 
     ctx.mockNextResponse({ type: 'text', text: 'Rich summary.' });
     const completed = ctx.once('compaction.completed');
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -1739,7 +1900,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted before open tools.' });
-    await ctx.rpc.beginCompaction({ instruction: 'Keep stable facts.' });
+    await beginSummarize(ctx, { instruction: 'Keep stable facts.' });
     await compacted;
     await completed;
 
@@ -1790,7 +1951,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted prefix.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     ctx.appendUserMessage([{ type: 'text', text: 'new user while compacting' }]);
     await compacted;
     await completed;
@@ -1842,7 +2003,7 @@ describe('FullCompaction', () => {
     const firstSummary = `large manual summary ${'x'.repeat(14_000)}`;
     ctx.mockNextResponse({ type: 'text', text: firstSummary });
     const cancelled = ctx.once('compaction.cancelled');
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     ctx.appendExchange(2, 'new user while compacting', 'new assistant while compacting', 6_000);
     await cancelled;
 
@@ -1925,7 +2086,7 @@ describe('FullCompaction', () => {
     const canceled = ctx.once('full_compaction.cancel');
 
     ctx.mockNextResponse({ type: 'text', text: 'Stale summary.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await ctx.rpc.clearContext({});
     await canceled;
     await ctx.wire.flush();
@@ -1985,7 +2146,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     const cancelled = ctx.once('compaction.cancelled');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await cancelled;
 
     expect(ctx.compactHistory().map((entry) => entry.text).join('\n')).toContain(
@@ -2046,7 +2207,7 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Next step' }] });
     const events = await ctx.untilTurnEnd();
     expect(countEvents(events, 'compaction.started')).toBe(1);
-    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls).toHaveLength(1);
     expect(eventIndex(events, 'full_compaction.complete')).toBeLessThan(eventIndex(events, 'turn.step.started'));
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -2099,16 +2260,8 @@ describe('FullCompaction', () => {
         system: <system-prompt>
         tools: AgentRun, Cron, EnterPlanMode, ExitPlanMode
         messages:
-          user: text "old user one"
-          assistant: text "old assistant one"
-          user: text "old user two"
-          assistant: text "old assistant two"
-          user: text <compaction-instruction>
-
-      call 2:
-        messages:
           user: text "old user one\\n\\nold user two"
-          user: text "The conversation so far has been compacted to free up context. What follows is your own working summary of this task — use it to continue your train of thought rather than starting over. Treat the summary as carried notes, not fresh proof or authorization. Reuse recorded checks when their candidate, inputs, and scope still apply. Re-check missing evidence and transient or changed state before relying on it; a bare “done” claim is not a verification result. Any user messages earlier in this context are preserved verbatim from the compacted conversation; where a system-reminder note among them marks an omitted middle section, the user messages it replaced are covered by this summary.\\nAuto compacted summary.\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions."
+          user: text "The following handoff was assembled without a summarizing model. It may not cover removed history. Verify completed claims and use HistorySearch/HistoryRead for details.\\n\\n## Window\\nmain/1\\nRemoved history boundary: source coordinate unavailable → source coordinate unavailable; the compaction cut may be inside a turn\\nfirst: source coordinate unavailable · source coordinate unavailable\\nlast: source coordinate unavailable · source coordinate unavailable\\n\\n## Working notes\\n(empty)\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.\\n\\n## Notes metadata\\nrevision 0 · written none · reviewed not confirmed\\n\\n## Last conclusion\\nold assistant two\\nsource coordinate unavailable · source coordinate unavailable\\n\\n## History\\nsource coordinate unavailable · source coordinate unavailable\\nHistorySearch {scope:'this_session', agent_id:'main', query:'<terms>'}"
           user: text "recent user three"
           assistant: text "recent assistant three"
           user: text "Answer after compacting"
@@ -2117,7 +2270,7 @@ describe('FullCompaction', () => {
       event: 'compaction_finished',
       properties: expect.objectContaining({
         source: 'auto',
-        tokens_before: fixtureRequestTokens(ctx, [...THREE_EXCHANGE_TEXT, 'Answer after compacting']),
+        tokens_before: await fixtureRequestTokens(ctx, [...THREE_EXCHANGE_TEXT, 'Answer after compacting']),
         tokens_after: expect.any(Number),
         compacted_count: 4,
         retry_count: 0,
@@ -2156,7 +2309,7 @@ describe('FullCompaction', () => {
     ctx.get(IAgentLoopService).hooks.onDidFinishStep.register(
       'test-auto-compaction',
       async (_step, next) => {
-        if (!ctx.get(IAgentFullCompactionService).begin({ source: 'auto' })) {
+        if (!ctx.get(IAgentFullCompactionService).begin({ source: 'auto', strategy: 'summarize' })) {
           throw new Error('Expected auto compaction to start');
         }
         await next();
@@ -2213,7 +2366,7 @@ describe('FullCompaction', () => {
 
     const compacted = ctx.once('full_compaction.complete');
     ctx.mockNextResponse({ type: 'text', text: 'Compacted with open tools.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
 
     expect(ctx.context.get().map((m) => m.role)).toEqual([
@@ -2283,7 +2436,7 @@ describe('FullCompaction', () => {
 
     const compacted = ctx.once('full_compaction.complete');
     ctx.mockNextResponse({ type: 'text', text: 'Compacted with partial tools.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
 
     expect(ctx.context.get().map((m) => m.role)).toEqual([
@@ -2321,7 +2474,7 @@ describe('FullCompaction', () => {
     });
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
 
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
 
@@ -2339,7 +2492,7 @@ describe('FullCompaction', () => {
     ctx.appendUnresolvedToolExchange(1);
     const before = ctx.compactHistory();
 
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
 
@@ -2356,7 +2509,7 @@ describe('FullCompaction', () => {
     });
 
     ctx.appendUserMessage([{ type: 'text', text: 'only pending user' }]);
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
 
@@ -2367,7 +2520,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted after rejected history.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -2390,7 +2543,7 @@ describe('FullCompaction', () => {
       modelCapabilities: CATALOGUED_MODEL_CAPABILITIES,
     });
 
-    await expect(ctx.rpc.beginCompaction({})).rejects.toMatchObject({
+    await expect(beginSummarize(ctx, {})).rejects.toMatchObject({
       code: 'compaction.unable',
     });
     expect(ctx.llmCalls).toHaveLength(0);
@@ -2427,7 +2580,7 @@ describe('FullCompaction', () => {
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it('uses fresh relay with resident history tools and a fully kept post-watermark user request', async () => {
+  it.each([undefined, 'relay'] as const)('uses fresh relay with resident history tools and a fully kept post-watermark user request (requested: %s)', async (strategy) => {
     vi.stubEnv('KIKI_EXPERIMENTAL_TOOL_SELECT', 'true');
     const ctx = testAgent(sessionServices((reg) => {
       reg.defineInstance(ISessionTodoService, {
@@ -2461,9 +2614,10 @@ describe('FullCompaction', () => {
       ctx.appendExchange(2, 'short new request', 'answer', 35_100);
       ctx.appendExchange(3, 'recent user', 'recent answer', 35_200);
       ctx.mockNextResponse({ type: 'text', text: 'Fallback summary.' });
-      const completed = ctx.once('compaction.completed');
-      expect(ctx.get(IAgentFullCompactionService).begin({ source: 'manual', strategy: 'relay' })).toBe(true);
-      await completed;
+      const compactor = ctx.get(IAgentFullCompactionService);
+      expect(compactor.getContextStrategy()).toMatchObject({ strategy: 'auto', source: 'default' });
+      expect(compactor.begin({ source: 'manual', strategy })).toBe(true);
+      expect(await compactor.compacting!.promise).toMatchObject({ strategy: 'relay' });
       expect(ctx.llmCalls).toHaveLength(0);
       const relay = ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary');
       expect(messageText(relay)).toContain('## Working notes');
@@ -2471,8 +2625,8 @@ describe('FullCompaction', () => {
       expect(ctx.compactHistory().some((message) => message.text === 'short new request')).toBe(true);
       await ctx.expectResumeMatches();
     } finally {
-      read.dispose();
-      search.dispose();
+      await read.dispose();
+      await search.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -2534,7 +2688,7 @@ describe('FullCompaction', () => {
       expect(ctx.llmCalls).toHaveLength(1);
       expect(messageText(ctx.llmCalls[0]?.history.at(-1))).toBe('small prompt');
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -2559,12 +2713,12 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'x'.repeat(8_000) }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls).toHaveLength(2);
-    const [compactionCall, answerCall] = ctx.llmCalls;
-    expect(messageText(compactionCall?.history.at(-1))).toContain('first-person handoff note');
-    expect(
-      answerCall?.history.map(messageText).some((text) => text.includes('Soft-cap compacted summary.')),
-    ).toBe(true);
+    expect(ctx.llmCalls).toHaveLength(1);
+    const [answerCall] = ctx.llmCalls;
+    const answerTexts = answerCall?.history.map(messageText) ?? [];
+    expect(answerTexts.some((text) => text.includes('assembled without a summarizing model'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('old user one'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('x'.repeat(8_000)))).toBe(true);
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -2598,7 +2752,7 @@ describe('FullCompaction', () => {
       ctx.mockNextResponse({ type: 'text', text: `Summary for ${String(softContextSize)}.` });
 
       const compaction = ctx.get(IAgentFullCompactionService);
-      expect(compaction.begin({ source: 'auto' })).toBe(true);
+      expect(compaction.begin({ source: 'auto', strategy: 'summarize' })).toBe(true);
       const result = await compaction.compacting!.promise;
 
       expect(result.compactedCount).toBe(compactedCount);
@@ -2647,7 +2801,7 @@ describe('FullCompaction', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Manual summary.' });
 
     const compaction = ctx.get(IAgentFullCompactionService);
-    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    expect(compaction.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
     const result = await compaction.compacting!.promise;
 
     expect(result.compactedCount).toBe(6);
@@ -2694,7 +2848,7 @@ describe('FullCompaction', () => {
     vi.spyOn(ctx.tokenCounting, 'estimateMessage').mockReturnValue(10);
 
     const compaction = ctx.get(IAgentFullCompactionService);
-    expect(compaction.begin({ source: 'manual' })).toBe(true);
+    expect(compaction.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
     const result = await compaction.compacting!.promise;
 
     expect(inputs).toEqual([
@@ -2793,8 +2947,12 @@ describe('FullCompaction', () => {
     ctx.mockNextResponse({ type: 'text', text: 'Answer after compaction.' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
     const events = await ctx.untilTurnEnd();
-    expect(ctx.llmCalls).toHaveLength(2);
+    expect(ctx.llmCalls).toHaveLength(1);
     expect(events).toContainEqual(expect.objectContaining({ event: 'compaction.started' }));
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'compaction.completed',
+      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'relay' }) }),
+    }));
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('triggers auto compaction when pending tokens cross the ratio threshold', async () => {
@@ -2814,21 +2972,12 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: pendingPrompt }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls).toHaveLength(2);
-    const [compactionCall, answerCall] = ctx.llmCalls;
-    const compactionTexts = compactionCall?.history.map(messageText) ?? [];
-    expect(compactionTexts.some((text) => text.includes('ratio-pending-verbatim'))).toBe(false);
-    expect(compactionCall?.history.map((message) => message.role)).toEqual([
-      'user',
-      'assistant',
-      'user',
-    ]);
-    expect(
-      answerCall?.history.map(messageText).some((text) => text.includes('Ratio compacted summary.')),
-    ).toBe(true);
-    expect(
-      answerCall?.history.map(messageText).some((text) => text.includes('ratio-pending-verbatim')),
-    ).toBe(true);
+    expect(ctx.llmCalls).toHaveLength(1);
+    const [answerCall] = ctx.llmCalls;
+    const answerTexts = answerCall?.history.map(messageText) ?? [];
+    expect(answerTexts.some((text) => text.includes('assembled without a summarizing model'))).toBe(true);
+    expect(answerTexts.some((text) => text.includes('old user one'))).toBe(true);
+    expect(answerTexts.filter((text) => text.includes('ratio-pending-verbatim'))).toEqual([pendingPrompt]);
 
     await ctx.expectResumeMatches();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -3093,9 +3242,6 @@ describe('FullCompaction', () => {
     let callCount = 0;
     const generate: GenerateFn = async (_provider, _system, _tools, _history, callbacks) => {
       callCount += 1;
-      if (callCount === 1) {
-        return textResult('Preemptive summary under the input cap.');
-      }
       await callbacks?.onMessagePart?.({ type: 'text', text: 'Answered after input-cap compaction.' });
       return textResult('Answered after input-cap compaction.');
     };
@@ -3115,10 +3261,14 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'continue' }] });
     const events = await ctx.untilTurnEnd();
 
-    expect(callCount).toBe(2);
+    expect(callCount).toBe(1);
     expect(events).toContainEqual(
       expect.objectContaining({ event: 'compaction.started' }),
     );
+    expect(events).toContainEqual(expect.objectContaining({
+      event: 'compaction.completed',
+      args: expect.objectContaining({ result: expect.objectContaining({ strategy: 'relay' }) }),
+    }));
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('honors the observed provider window over a declared input cap', async () => {
@@ -3180,14 +3330,10 @@ describe('FullCompaction', () => {
 
   it('recovers from plain 413 when estimated request is over effective max', async () => {
     let callCount = 0;
-    const generate: GenerateFn = async (_provider, _system, _tools, _history, callbacks) => {
+    const generate: GenerateFn = async (_provider, _system, _tools, history, callbacks) => {
       callCount += 1;
-      if (callCount === 1) {
-        throw new APIStatusError(413, 'Request Entity Too Large', 'req-plain-413');
-      }
-      if (callCount === 2) {
-        return textResult('Plain 413 compacted summary.');
-      }
+      const oversized = history.some((message) => message.content.some((part) => part.type === 'text' && part.text.length > 100_000));
+      if (oversized) throw new APIStatusError(413, 'Request Entity Too Large', 'req-plain-413');
       await callbacks?.onMessagePart?.({
         type: 'text',
         text: 'Recovered after plain 413 compaction.',
@@ -3208,7 +3354,8 @@ describe('FullCompaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Retry after plain 413' }] });
     const events = await ctx.untilTurnEnd();
 
-    expect(callCount).toBe(3);
+    expect(callCount).toBeGreaterThanOrEqual(1);
+    expect(callCount).toBeLessThanOrEqual(2);
     expect(events).toContainEqual(
       expect.objectContaining({
         event: 'compaction.started',
@@ -3219,9 +3366,7 @@ describe('FullCompaction', () => {
       expect.objectContaining({
         event: 'compaction.completed',
         args: expect.objectContaining({
-          result: expect.objectContaining({
-            summary: expect.stringMatching(/^Plain 413 compacted summary\.\n\n## Standing directives\n[^]*## User input since notes\n/),
-          }),
+          result: expect.objectContaining({ strategy: 'relay' }),
         }),
       }),
     );
@@ -3349,14 +3494,14 @@ describe('FullCompaction', () => {
     await ctx.untilTurnEnd();
 
     expect(callCount).toBe(3);
-    expect(thinkingEfforts).toEqual(['on', 'on', 'on']);
+    expect(thinkingEfforts).toEqual(['high', 'high', 'high']);
     expect(records).toContainEqual({
       event: 'compaction_finished',
       properties: expect.objectContaining({
         agent_id: 'main',
         turn_id: expect.any(Number),
         source: 'auto',
-        thinking_effort: 'on',
+        thinking_effort: 'high',
       }),
     });
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
@@ -3719,8 +3864,8 @@ describe('FullCompaction', () => {
       if (strategy === 'relay') expect(ctx.llmCalls).toHaveLength(0);
       await ctx.expectResumeMatches();
     } finally {
-      read.dispose();
-      search.dispose();
+      await read.dispose();
+      await search.dispose();
     }
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
@@ -3738,12 +3883,10 @@ describe('FullCompaction', () => {
     ], issues: [] } });
     const notes = fixture.ctx.get(ISessionTodoService).getNotes('main');
     const text = await fixture.compact();
-    expect(fixture.read).toHaveBeenCalledExactlyOnceWith({ action: 'list', workspaceId: session.workspaceId, sessionId: session.sessionId, limit: 5 });
-    expect(text).toContain('## Linked board cards\n- card-0: Requirement 0 continued (paused)');
-    expect(text).toContain('- card-4: Requirement 4 continued (active)');
-    expect(text).not.toContain('card-5');
-    expect(text).not.toContain('unrelated-');
-    expect(text).toContain('Card status is independent of TodoList and agent runs.');
+    expect(fixture.read).not.toHaveBeenCalled();
+    expect(text).not.toContain('## Linked board cards');
+    expect(text).not.toContain('card-0');
+    expect(text).not.toContain('Card status is independent of TodoList and agent runs.');
     expect(fixture.write).not.toHaveBeenCalled();
     expect(fixture.ctx.get(ISessionTodoService).getNotes('main')).toEqual(notes);
     await fixture.ctx.expectResumeMatches();
@@ -3780,7 +3923,7 @@ describe('FullCompaction', () => {
     ctx.appendExchange(2, 'retain the permission condition', 'acknowledged', 80);
     const candidate = `${'N'.repeat(1500)}\n KEEP_OLD_RULE `;
     ctx.mockNextResponse({ type: 'text', text: `Continue task.\n\n## Standing directives\n${candidate}` });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     const result = await ctx.get(IAgentFullCompactionService).compacting!.promise;
     const text = ctx.compactHistory().at(-1)?.text;
     expect(text).toContain('## Pending directive review');
@@ -3820,7 +3963,7 @@ describe('FullCompaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compacted;
     await completed;
 
@@ -3901,6 +4044,7 @@ function oauthTestAgentOptions(
           provider: 'managed:kimi-code',
           model: 'kimi-for-coding',
           maxContextSize: 1_000_000,
+          defaultEffort: 'off',
         },
       },
     },
@@ -4106,7 +4250,7 @@ describe('prompt deferral during full compaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compactionRequested.promise;
     const launch = await ctx.rpc.prompt({
       input: [{ type: 'text', text: 'deferred prompt' }],
@@ -4156,7 +4300,7 @@ describe('prompt deferral during full compaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const cancelled = ctx.once('compaction.cancelled');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compactionRequested.promise;
     const launch = await ctx.rpc.prompt({
       input: [{ type: 'text', text: 'deferred prompt' }],
@@ -4209,9 +4353,8 @@ describe('goal reminder re-injection after full compaction', () => {
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Answer after compacting' }] });
     await ctx.untilTurnEnd();
 
-    expect(ctx.llmCalls.length).toBeGreaterThanOrEqual(2);
-    expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(0);
-    expect(goalReminderCount(ctx.llmCalls[1]!.history)).toBe(1);
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(goalReminderCount(ctx.llmCalls[0]!.history)).toBe(1);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
   it('re-injects the goal reminder at the first step after compaction', async () => {
@@ -4227,7 +4370,7 @@ describe('goal reminder re-injection after full compaction', () => {
     const completed = ctx.once('compaction.completed');
 
     ctx.mockNextResponse({ type: 'text', text: 'Compacted summary.' });
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await completed;
 
     const reminderMessages = ctx.context
@@ -4280,7 +4423,7 @@ describe('goal reminder re-injection after full compaction', () => {
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const completed = ctx.once('compaction.completed');
 
-    await ctx.rpc.beginCompaction({});
+    await beginSummarize(ctx, {});
     await compactionRequested.promise;
     const launch = await ctx.rpc.prompt({
       input: [{ type: 'text', text: 'deferred prompt' }],
@@ -4328,8 +4471,252 @@ function boardCompactionFixture(strategy: 'summarize' | 'relay', options: { enab
       expect(ctx.llmCalls).toHaveLength(strategy === 'relay' ? 0 : 1);
       return messageText(ctx.context.get().find((message) => message.origin?.kind === 'compaction_summary'));
     } finally {
-      historyRead.dispose();
-      historySearch.dispose();
+      await historyRead.dispose();
+      await historySearch.dispose();
     }
   } };
 }
+
+
+describe('manual compaction request boundary', () => {
+  it.each(['completed', 'failed', 'cancelled'] as const)('services one queued intent after a held final request is %s', async (outcome) => {
+    const requested = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const generate: GenerateFn = async (_provider, _system, _tools, _history, _callbacks, options) => {
+      calls += 1;
+      if (calls === 1) {
+        requested.resolve();
+        await release.promise;
+        options?.signal?.throwIfAborted();
+        if (outcome === 'failed') throw new Error('fixture final request failed');
+        return textResult('Final response.');
+      }
+      return textResult('Queued manual summary.');
+    };
+    const ctx = testAgent({ generate });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old request', 'old answer', 20);
+    ctx.appendExchange(2, 'recent request', 'recent answer', 80);
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Held final request' }] });
+    await requested.promise;
+    const compactor = ctx.get(IAgentFullCompactionService);
+    const completed = ctx.once('compaction.completed');
+    expect(compactor.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+    expect(compactor.begin({ source: 'manual', strategy: 'summarize' })).toBe(false);
+    expect(compactor.queuedManualCompaction).toBe(true);
+    expect(calls).toBe(1);
+    if (outcome === 'cancelled') ctx.get(IAgentLoopService).cancelFromUser();
+    release.resolve();
+    await completed;
+    await ctx.get(IAgentLoopService).settled();
+    expect(calls).toBe(2);
+    expect(compactor.queuedManualCompaction).toBe(false);
+    expect(ctx.allEvents).toContainEqual(expect.objectContaining({ event: 'compaction.completed', args: expect.objectContaining({ trigger: 'manual' }) }));
+    if (outcome === 'completed') {
+      expect(eventIndex(ctx.allEvents, 'compaction.completed')).toBeLessThan(eventIndex(ctx.allEvents, 'turn.ended'));
+    }
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('checks eligible history only after the held response creates an exchange', async () => {
+    const requested = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const ctx = testAgent({ generate: async () => {
+      calls += 1;
+      if (calls === 1) { requested.resolve(); await release.promise; return textResult('First answer.'); }
+      return textResult('First exchange summary.');
+    } });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'First request' }] });
+    await requested.promise;
+    const completed = ctx.once('compaction.completed');
+    expect(ctx.get(IAgentFullCompactionService).begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+    expect(calls).toBe(1);
+    release.resolve();
+    await completed;
+    await ctx.get(IAgentLoopService).settled();
+    expect(calls).toBe(2);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('cancels a queued intent without interrupting the held request', async () => {
+    const requested = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const ctx = testAgent({ generate: async () => {
+      calls += 1; requested.resolve(); await release.promise; return textResult('Uninterrupted response.');
+    } });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old request', 'old answer', 20);
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Held request' }] });
+    await requested.promise;
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.begin({ source: 'manual' })).toBe(true);
+    compactor.cancel();
+    expect(compactor.queuedManualCompaction).toBe(false);
+    release.resolve();
+    await ctx.get(IAgentLoopService).settled();
+    expect(calls).toBe(1);
+    expect(countEvents(ctx.allEvents, 'context.apply_compaction')).toBe(0);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('preserves a manual instruction queued behind an already running automatic compaction', async () => {
+    const autoRequested = deferred<void>();
+    const releaseAuto = deferred<void>();
+    const inputs: Message[][] = [];
+    const ctx = testAgent({ generate: async (_provider, _system, _tools, history) => {
+      inputs.push([...history]);
+      if (inputs.length === 1) { autoRequested.resolve(); await releaseAuto.promise; return textResult('Auto summary.'); }
+      return textResult('Manual instructed summary.');
+    } });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    for (let i = 1; i <= 8; i++) ctx.appendExchange(i, `request ${i}`, `answer ${i}`, 20);
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.begin({ source: 'auto', strategy: 'summarize' })).toBe(true);
+    await autoRequested.promise;
+    expect(compactor.begin({ source: 'manual', instruction: 'Keep the named decision.' })).toBe(true);
+    expect(compactor.begin({ source: 'manual' })).toBe(false);
+    const completed = ctx.once('compaction.completed');
+    releaseAuto.resolve();
+    await completed;
+    await expect.poll(() => countEvents(ctx.allEvents, 'compaction.completed')).toBe(2);
+    expect(inputs).toHaveLength(2);
+    expect(inputs[1]?.map(messageText).join('\n')).toContain('Keep the named decision.');
+    const finished = ctx.allEvents.filter((event) => event.event === 'compaction.completed');
+    expect(finished).toMatchObject([{ args: { trigger: 'auto' } }, { args: { trigger: 'manual' } }]);
+    await ctx.get(IAgentLoopService).settled();
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+});
+
+
+describe('queued manual compaction failures', () => {
+  it('reports history cleared by a context change at execution, not busy at admission', async () => {
+    let calls = 0;
+    const ctx = testAgent({ generate: async () => { calls += 1; throw new Error('summary should not be requested'); } });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old request', 'old response', 20);
+    const lease = ctx.get(IAgentLoopService).tryAcquireQuiescence();
+    expect(lease).toBeDefined();
+    const failed = ctx.once('compaction.cancelled');
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.begin({ source: 'manual' })).toBe(true);
+    expect(calls).toBe(0);
+    ctx.context.clear();
+    await lease?.dispose();
+    await failed;
+    await ctx.get(IAgentLoopService).settled();
+    expect(calls).toBe(0);
+    expect(compactor.queuedManualCompaction).toBe(false);
+    expect(ctx.allEvents).toContainEqual(expect.objectContaining({ event: 'compaction.cancelled', args: expect.objectContaining({ trigger: 'manual', reason: 'No messages to compact in current history.' }) }));
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it('reports a queued summary failure without losing the successful final response', async () => {
+    const requested = deferred<void>();
+    const release = deferred<void>();
+    let calls = 0;
+    const ctx = testAgent({ generate: async () => {
+      calls += 1;
+      if (calls === 1) { requested.resolve(); await release.promise; return textResult('Successful final response.'); }
+      throw new Error('fixture summary failure');
+    } });
+    ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+    ctx.appendExchange(1, 'old request', 'old response', 20);
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Held request' }] });
+    await requested.promise;
+    const compactor = ctx.get(IAgentFullCompactionService);
+    expect(compactor.begin({ source: 'manual', strategy: 'summarize' })).toBe(true);
+    release.resolve();
+    await ctx.get(IAgentLoopService).settled();
+    expect(calls).toBe(2);
+    expect(ctx.get(IAgentLoopService).status().lastTurnResult).toBe('completed');
+    expect(ctx.context.get().map(messageText)).toContain('Successful final response.');
+    expect(ctx.allEvents).toContainEqual(expect.objectContaining({ event: 'compaction.cancelled', args: expect.objectContaining({ trigger: 'manual', reason: expect.stringMatching(/^Manual compaction failed .*fixture summary failure$/) }) }));
+    expect(countEvents(ctx.allEvents, 'context.apply_compaction')).toBe(0);
+  }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+});
+
+
+it.each(['auto', 'summarize'] as const)('automatically compacts 189 mixed images through %s into the next provider request, cold resume, undo and clear', async (contextStrategy) => {
+  const requests: (readonly Message[])[] = [];
+  const generate = realKosongGenerate((attempt, history) => {
+    requests.push(structuredClone(history));
+    return mockStreamedMessage([{ type: 'text', text: contextStrategy === 'summarize' && attempt === 1 ? 'Keep the requested comparison and the user reference image.' : 'Comparison continued.' }]);
+  });
+  const options: TestAgentOptions = { generate, initialConfig: { providers: {}, loopControl: { contextStrategy } } };
+  const configure = (ctx: TestAgentContext) => ctx.configure({ provider: CATALOGUED_PROVIDER, modelCapabilities: CATALOGUED_MODEL_CAPABILITIES });
+  const ctx = testAgent(options);
+  configure(ctx);
+  const images = Array.from({ length: 189 }, (_, index) => ({ type: 'image_url' as const, imageUrl: { url: `https://example.test/sample-${index}.png`, id: `sample-${index}` } }));
+  ctx.context.append({ role: 'user', origin: { kind: 'user' }, content: [
+    { type: 'text', text: 'Compare the supplied samples; preserve the reference image.' }, ...images.slice(0, 5),
+  ], toolCalls: [] });
+  ctx.context.append(textMessage('assistant', 'The original user samples are recorded.'));
+  ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'old-samples', name: 'Read', arguments: '{}' }] });
+  ctx.context.append({ role: 'tool', toolCallId: 'old-samples', content: [{ type: 'text', text: 'Recorded samples' }, ...images.slice(5, 164)], toolCalls: [] });
+  ctx.context.append(textMessage('assistant', 'The initial comparison is complete.'));
+  ctx.context.append({ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Compare these five new inputs next.' }, ...images.slice(164, 169)], toolCalls: [] });
+  ctx.context.append({ role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'recent-samples', name: 'Read', arguments: '{}' }] });
+  ctx.context.append({ role: 'tool', toolCallId: 'recent-samples', content: [{ type: 'text', text: 'Recent samples' }, ...images.slice(169)], toolCalls: [] });
+  expect(estimateTokensForMessages(ctx.context.get())).toBeGreaterThan(ctx.get(IAgentFullCompactionService).getAutoCompact().tokens);
+  const imageIds = (history: readonly Message[]) => history.flatMap(message => message.content.flatMap(part => part.type === 'image_url' ? [part.imageUrl.id] : []));
+  await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Continue the comparison now; keep this reference.' }, { type: 'image_url', imageUrl: { url: 'https://example.test/reference.png', id: 'reference' } }] });
+  await ctx.untilTurnEnd();
+  await ctx.get(IAgentLoopService).settled();
+  expect(ctx.get(IAgentLoopService).status().lastTurnResult).toBe('completed');
+  const keptUsers = contextStrategy === 'summarize' ? [...images.slice(0, 5), ...images.slice(164, 169)] : [...images.slice(164, 169), ...images.slice(0, 5)];
+  const expected = [...keptUsers, ...images.slice(184)].map(part => part.imageUrl.id).concat('reference');
+  expect(requests).toHaveLength(contextStrategy === 'summarize' ? 2 : 1);
+  expect(imageIds(requests.at(-1)!)).toEqual(expected);
+  expect(estimateTokensForMessages(requests.at(-1)!)).toBeLessThan(40_000);
+  expect(requests.at(-1)!.map(messageText).join('\n')).toContain('Compare the supplied samples; preserve the reference image.');
+  const serializedImages = async (history: readonly Message[]) => {
+    const bodies: string[] = [];
+    const fetch = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input, init) => {
+      const request = new Request(input, init);
+      expect(request.url).toBe('https://api.example.test/v1/responses');
+      bodies.push(await request.text());
+      return new Response(JSON.stringify({ error: { message: 'local capture complete' } }), { status: 400, headers: { 'content-type': 'application/json' } });
+    });
+    try {
+      const provider = new ProtocolAdapterRegistry().createChatProvider({ modelName: 'example-vision', protocol: 'openai_responses', apiKey: 'test-key', baseUrl: 'https://api.example.test/v1' });
+      await expect(provider.generate('Compare the samples', [], [...history])).rejects.toThrow();
+      expect(bodies).toHaveLength(1);
+      return [...bodies[0]!.matchAll(/https:\/\/example\.test\/(sample-\d+|reference)\.png/g)].map(match => match[1]);
+    } finally { fetch.mockRestore(); }
+  };
+  expect(await serializedImages(requests.at(-1)!)).toEqual(expected);
+  const records = await ctx.persistedWireRecords();
+  expect(records.filter(record => record.type === 'full_compaction.begin')).toMatchObject([{ source: 'auto' }]);
+  expect(records.filter(record => record.type === 'context.apply_compaction')).toMatchObject([{ strategy: contextStrategy === 'auto' ? 'relay' : 'summarize', compactedCount: contextStrategy === 'summarize' ? 2 : 8 }]);
+  expect(JSON.stringify(records)).toContain('sample-0.png');
+  expect(JSON.stringify(records)).toContain('sample-188.png');
+  await ctx.expectResumeMatches();
+  const cold = testAgent(options);
+  configure(cold);
+  await cold.restore(structuredClone(records));
+  const callsBefore = requests.length;
+  await cold.rpc.prompt({ input: [{ type: 'text', text: 'Continue after cold resume.' }] });
+  await cold.untilTurnEnd();
+  await cold.get(IAgentLoopService).settled();
+  expect(requests).toHaveLength(callsBefore + 1);
+  expect(imageIds(requests.at(-1)!)).toEqual(expected);
+  await cold.rpc.undoHistory({ count: 1 });
+  expect(cold.context.get().map(messageText)).not.toContain('Continue after cold resume.');
+  expect(imageIds(cold.context.get())).toEqual(expected);
+  await cold.expectResumeMatches();
+  const compaction = cold.get(IAgentFullCompactionService);
+  expect(compaction.begin({ source: 'manual', strategy: contextStrategy === 'auto' ? 'relay' : 'summarize' })).toBe(true);
+  await compaction.compacting!.promise;
+  const twice = imageIds(cold.context.get());
+  const secondHistorical = contextStrategy === 'summarize' ? images.slice(1, 5) : images.slice(185);
+  expect([...twice].sort()).toEqual([...images.slice(164, 169), ...secondHistorical].map(part => part.imageUrl.id).concat('reference').sort());
+  await cold.expectResumeMatches();
+  await cold.rpc.prompt({ input: [{ type: 'text', text: 'Continue after the second compaction.' }] });
+  await cold.untilTurnEnd();
+  await cold.get(IAgentLoopService).settled();
+  expect(imageIds(requests.at(-1)!)).toEqual(twice);
+  expect(await serializedImages(requests.at(-1)!)).toEqual(twice);
+  await cold.rpc.clearContext({});
+  expect(cold.context.get()).toEqual([]);
+  await cold.expectResumeMatches();
+}, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);

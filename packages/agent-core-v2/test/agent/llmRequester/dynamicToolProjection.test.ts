@@ -26,4 +26,17 @@ describe('projectDynamicToolSchemas', () => {
   it('keeps the native message tools field for Kimi', () => {
     expect(projectDynamicToolSchemas([schema], 'openai', true)).toEqual([schema]);
   });
+
+  it('projects a deferred browser schema for the selecting protocols and leaves google-genai unchanged', () => {
+    const browser: Message = {
+      role: 'system', content: [], toolCalls: [],
+      tools: [{ name: 'browser__agent_browser_snapshot', description: 'Snapshot.', parameters: { type: 'object' } }],
+    };
+    expect(projectDynamicToolSchemas([browser], 'openai', false)[0]?.content).toEqual([
+      { type: 'text', text: '<dynamic_tool_schemas>[{"name":"browser__agent_browser_snapshot","description":"Snapshot.","parameters":{"type":"object"}}]</dynamic_tool_schemas>' },
+    ]);
+    expect(projectDynamicToolSchemas([browser], 'openai_responses', false)[0]?.content?.[0]).toMatchObject({ type: 'text' });
+    expect(projectDynamicToolSchemas([browser], 'anthropic', false)[0]?.role).toBe('system');
+    expect(projectDynamicToolSchemas([browser], 'google-genai', false)).toEqual([browser]);
+  });
 });

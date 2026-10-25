@@ -20,7 +20,7 @@ describe('TruncatedOutputComponent', () => {
     const lines = strip(component.render(80).join('\n')).split('\n');
     expect(lines[0]?.startsWith('      a')).toBe(true);
     expect(lines[1]?.startsWith('      b')).toBe(true);
-    expect(lines[2]).toBe('      ... (3 more lines, ctrl+o to expand)');
+    expect(lines[2]).toBe('      ... (3 more lines, Ctrl+O to expand)');
   });
 
   it('defaults to a two-space indent for both content and hint', () => {
@@ -32,7 +32,7 @@ describe('TruncatedOutputComponent', () => {
 
     const lines = strip(component.render(80).join('\n')).split('\n');
     expect(lines[0]?.startsWith('  x')).toBe(true);
-    expect(lines[1]).toBe('  ... (2 more lines, ctrl+o to expand)');
+    expect(lines[1]).toBe('  ... (2 more lines, Ctrl+O to expand)');
   });
 
   it('omits the ctrl+o promise when expandHint is false', () => {
@@ -58,7 +58,7 @@ describe('TruncatedOutputComponent', () => {
 
     const out = strip(component.render(80).join('\n'));
     expect(out).toContain('d');
-    expect(out).not.toContain('more lines, ctrl+o');
+    expect(out).not.toContain('more lines, Ctrl+O');
   });
 
   it('keeps the truncation footer within the requested render width', () => {

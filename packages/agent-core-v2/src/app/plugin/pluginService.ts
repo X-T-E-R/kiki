@@ -1,3 +1,6 @@
+import { realpath } from 'node:fs/promises';
+import { isAbsolute, relative } from 'node:path';
+
 import { KIMI_CODE_PROVIDER_NAME } from '@kiki/oauth';
 
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -7,6 +10,7 @@ import type { HookDef } from '#/features/externalHooks/internal/types';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { resolveSpaceInheritance } from '#/app/bootstrap/spaceInheritance';
 import { IConfigService } from '#/app/config/config';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { PLUGIN_SETTINGS_SECTION, PluginSettingsSectionSchema } from './settingsConfigSection';
 import { LifecycleScope } from '#/app/scopes';
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
@@ -15,7 +19,10 @@ import { BugIndicatingError, Error2, PluginErrors } from '#/errors';
 import { IProviderService } from '#/kosong/provider/provider';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
 
+import { readBundledPluginCatalog } from './defaultCatalog';
+import { catalogSha256ForSource } from './marketplace';
 import { PluginManager } from './manager';
+import { resolveInstallSource } from './source';
 import {
   type PluginChangeEvent,
   type GetPluginInfoInput,
@@ -80,6 +87,7 @@ export class PluginService extends Service implements IPluginService {
     @ISkillDiscovery discovery: ISkillDiscovery,
     @IProviderService private readonly providers: IProviderService,
     @IConfigService private readonly configService: IConfigService,
+    @IPluginUsageService private readonly usage?: IPluginUsageService,
   ) {
     super();
     this.homeDir = bootstrap.homeDir;
@@ -92,6 +100,10 @@ export class PluginService extends Service implements IPluginService {
       inheritedHomeDir: inheritance.plugins ? inheritance.baseHomeDir : undefined,
       discoverSkills: (roots) => discovery.discover(roots),
     });
+    if (usage !== undefined) this._register(usage.registerPluginStateReader((id) => {
+      const plugin = this.manager.info(id);
+      return plugin === undefined ? { allowed: false, globalEnabled: false } : { allowed: plugin.enabled && plugin.state === 'ok', globalEnabled: plugin.globalEnabled };
+    }));
   }
 
   listPlugins(): Promise<readonly PluginSummary[]> {
@@ -99,7 +111,20 @@ export class PluginService extends Service implements IPluginService {
   }
 
   previewPlugin(input: Pick<InstallPluginInput, 'source' | 'sha256'>) {
-    return this.runSerializedOperation(() => this.manager.preview(input.source, input.sha256));
+    return this.runSerializedOperation(() => this.manager.preview(input.source, this.installSha256(input.source, input.sha256)));
+  }
+
+  private installSha256(source: string, sha256: string | undefined): string | undefined {
+    const supplied = sha256?.trim();
+    if (supplied !== undefined && supplied.length > 0) return supplied;
+    let resolved: ReturnType<typeof resolveInstallSource>;
+    try {
+      resolved = resolveInstallSource(source);
+    } catch {
+      return undefined;
+    }
+    if (resolved.kind !== 'zip-url') return undefined;
+    return catalogSha256ForSource(readBundledPluginCatalog().marketplace.plugins, resolved.path);
   }
 
   installPlugin(input: InstallPluginInput): Promise<PluginSummary> {
@@ -109,7 +134,7 @@ export class PluginService extends Service implements IPluginService {
       }
       let finish: (() => void) | undefined;
       try {
-        const record = await this.manager.install(input.source, input, async (id) => {
+        const record = await this.manager.install(input.source, { ...input, sha256: this.installSha256(input.source, input.sha256) }, async (id) => {
           finish = await this.beginPluginChange([id]);
         });
         const info = this.manager.info(record.id);
@@ -118,6 +143,9 @@ export class PluginService extends Service implements IPluginService {
         const notification = await this.reloadAndNotify({
           mutation: { kind: 'install', id: record.id },
         });
+        const release = finish;
+        finish = undefined;
+        void notification.delivery.then(() => release?.(), () => release?.());
         return { result: info, notification };
       } finally { finish?.(); }
     }));
@@ -225,10 +253,20 @@ export class PluginService extends Service implements IPluginService {
     };
   }
 
-  private async withPluginChange<T>(affected: readonly string[] | undefined, operation: () => Promise<T>): Promise<T> {
+  private async withPluginChange<T>(
+    affected: readonly string[] | undefined,
+    operation: () => Promise<PluginMutationOutcome<T>>,
+  ): Promise<PluginMutationOutcome<T>> {
     const finish = await this.beginPluginChange(affected);
-    try { return await operation(); }
-    finally { finish(); }
+    let releaseAfterDelivery = false;
+    try {
+      const outcome = await operation();
+      releaseAfterDelivery = true;
+      void outcome.notification.delivery.then(finish, finish);
+      return outcome;
+    } finally {
+      if (!releaseAfterDelivery) finish();
+    }
   }
 
   private async awaitReloadDelivery<T>(operation: Promise<PluginMutationOutcome<T>>): Promise<T> {
@@ -257,38 +295,57 @@ export class PluginService extends Service implements IPluginService {
     return this.runManagementRead(read);
   }
 
-  listPluginCommands(): Promise<readonly PluginCommandDef[]> {
-    return this.runSerializedOperation(async () => this.manager.enabledCommands());
+  listPluginCommands(workspaceId?: string, sessionId?: string): Promise<readonly PluginCommandDef[]> {
+    return this.runSerializedOperation(async () => this.filterUsage(await this.manager.enabledCommands(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
   checkUpdates(): Promise<readonly PluginUpdateStatus[]> {
     return this.runManagementRead(async () => this.manager.checkUpdates());
   }
 
-  pluginSkillRoots(): Promise<readonly SkillRoot[]> {
-    return this.runConsumptionRead([], async () => this.manager.pluginSkillRoots());
+  pluginSkillRoots(workspaceId?: string, sessionId?: string): Promise<readonly SkillRoot[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.pluginSkillRoots(), workspaceId, (entry) => entry.plugin?.id, sessionId));
   }
 
-  pluginAgentRoots(): Promise<readonly PluginAgentRoot[]> {
-    return this.runConsumptionRead([], async () => this.manager.pluginAgentRoots());
+  pluginSkillOwner(candidatePath: string): Promise<string | undefined> {
+    return this.runConsumptionRead(undefined, async () => {
+      const normalize = (value: string) => {
+        const normalized = value.replaceAll('\\', '/').replace(/\/$/, '');
+        return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+      };
+      const target = normalize(await realpath(candidatePath).catch(() => candidatePath));
+      for (const record of this.manager.list()) {
+        for (const root of record.manifest?.skills ?? []) {
+          const directory = normalize(await realpath(root).catch(() => root));
+          const remainder = relative(directory, target);
+          if (remainder === '' || (!remainder.startsWith('..') && !isAbsolute(remainder))) return record.id;
+        }
+      }
+      return undefined;
+    });
   }
 
-  enabledSessionStarts(): Promise<readonly EnabledPluginSessionStart[]> {
-    return this.runConsumptionRead([], async () => this.manager.enabledSessionStarts());
+  pluginAgentRoots(workspaceId?: string, sessionId?: string): Promise<readonly PluginAgentRoot[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.pluginAgentRoots(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
-  enabledSystemPrompts(): Promise<readonly EnabledPluginSystemPrompt[]> {
-    return this.runConsumptionRead([], async () => this.manager.enabledSystemPrompts());
+  enabledSessionStarts(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginSessionStart[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.enabledSessionStarts(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
-  enabledMcpServers(): Promise<Record<string, McpServerConfig>> {
+  enabledSystemPrompts(workspaceId?: string, sessionId?: string): Promise<readonly EnabledPluginSystemPrompt[]> {
+    return this.runConsumptionRead([], async () => this.filterUsage(this.manager.enabledSystemPrompts(), workspaceId, (entry) => entry.pluginId, sessionId));
+  }
+
+  enabledMcpServers(workspaceId?: string, sessionId?: string): Promise<Record<string, McpServerConfig>> {
     return this.runConsumptionRead({}, async () => {
       const pluginServers = this.manager.enabledMcpServers();
-      if (!Object.values(pluginServers).some((server) => server.transport === 'stdio')) {
-        return pluginServers;
-      }
+      const owners = new Map(this.manager.mcpServerEntries().map((entry) => [entry.name, entry.pluginId]));
+      const entries = await this.filterUsage(Object.entries(pluginServers), workspaceId, ([name]) => owners.get(name), sessionId);
+      const selected = Object.fromEntries(entries);
+      if (!Object.values(selected).some((server) => server.transport === 'stdio')) return selected;
       const managedEnv = await this.managedKimiCodeEnvForPlugins();
-      return withManagedKimiPluginEnv(pluginServers, managedEnv);
+      return withManagedKimiPluginEnv(selected, managedEnv);
     });
   }
 
@@ -303,12 +360,22 @@ export class PluginService extends Service implements IPluginService {
     });
   }
 
-  enabledHooks(): Promise<readonly HookDef[]> {
-    return this.runSecurityConsumptionRead(async () => this.manager.enabledHooks());
+  enabledHooks(workspaceId?: string, sessionId?: string): Promise<readonly HookDef[]> {
+    return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHooks(), workspaceId, (entry) => entry.pluginId, sessionId));
   }
 
-  enabledHookRules(): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]> {
-    return this.runSecurityConsumptionRead(async () => this.manager.enabledHookRules());
+  enabledHookRules(workspaceId?: string, sessionId?: string): Promise<readonly import('#/features/externalHooks/internal/loadRules').HookRuleSource[]> {
+    return this.runSecurityConsumptionRead(async () => this.filterUsage(this.manager.enabledHookRules(), workspaceId, (entry) => entry.namespace.startsWith('plugin/') ? entry.namespace.slice(7) : undefined, sessionId));
+  }
+
+  private async filterUsage<T>(entries: readonly T[], workspaceId: string | undefined, owner: (entry: T) => string | undefined, sessionId?: string): Promise<readonly T[]> {
+    if (workspaceId === '*') return entries;
+    const allowed = await Promise.all(entries.map(async (entry) => {
+      const id = owner(entry);
+      if (id === undefined) return true;
+      return this.usage === undefined ? this.manager.info(id)?.globalEnabled === true : this.usage.allows(workspaceId, id, sessionId);
+    }));
+    return entries.filter((_, index) => allowed[index]);
   }
 
   hasLoadedSnapshot(): boolean {

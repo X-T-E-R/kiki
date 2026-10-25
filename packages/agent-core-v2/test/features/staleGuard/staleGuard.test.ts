@@ -194,8 +194,8 @@ describe('StaleGuardService', () => {
     freshness = stack.freshness;
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   it('records the mtime of a successfully read file into state and the wire journal', async () => {

@@ -11,14 +11,35 @@
  * the option says which one, so following the provider is never a guess.
  */
 
-import type { ModelProtocol } from '@kiki/protocol';
+import type { BindingOrigin, ModelProtocol, ModelProtocolSource } from '@kiki/protocol';
 
 import { useI18n } from '../../i18n';
 import { Hint } from '../controls';
 import { FORM_LABEL, SettingsSelect } from './SettingsPrimitives';
 import { MODEL_PROTOCOLS, MODEL_PROTOCOL_LABEL, type ModelProtocolChoice } from './modelProtocolDraft';
 
-export function ModelProtocolField({ model, value, resolved, onChange, disabled = false, showHint = true }: {
+const PROTOCOL_SOURCE_LABEL = {
+  model: 'st.modelProtocol.source.model',
+  provider: 'st.modelProtocol.source.provider',
+  vendor: 'st.modelProtocol.source.vendor',
+} as const;
+
+const ORIGIN_LABEL = {
+  model: 'st.modelProtocol.origin.model',
+  provider: 'st.modelProtocol.origin.provider',
+  env: 'st.modelProtocol.origin.env',
+  vendor: 'st.modelProtocol.origin.vendor',
+  none: 'st.modelProtocol.origin.none',
+} as const;
+
+const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
+
+function originText(label: string, source: BindingOrigin, envName: string | undefined): string {
+  if (source !== 'env' || envName === undefined || !ENV_NAME.test(envName)) return label;
+  return `${label} (${envName})`;
+}
+
+export function ModelProtocolField({ model, value, resolved, source, endpointSource, authSource, endpointEnv, authEnv, onChange, disabled = false, showHint = true }: {
   /** Alias or remote id, only for the accessible name. */
   model: string;
   value: ModelProtocolChoice;
@@ -28,6 +49,13 @@ export function ModelProtocolField({ model, value, resolved, onChange, disabled 
    * resolved value describes the override, not the provider.
    */
   resolved?: ModelProtocol;
+  /** Where `resolved` came from. Pass it only while the stored value inherits. */
+  source?: ModelProtocolSource;
+  /** Where the effective endpoint and credential come from. Names only; never a URL or a key. */
+  endpointSource?: BindingOrigin;
+  authSource?: BindingOrigin;
+  endpointEnv?: string;
+  authEnv?: string;
   onChange: (next: ModelProtocolChoice) => void;
   disabled?: boolean;
   showHint?: boolean;
@@ -40,6 +68,8 @@ export function ModelProtocolField({ model, value, resolved, onChange, disabled 
     { value: 'inherit', label: inheritLabel },
     ...MODEL_PROTOCOLS.map((protocol) => ({ value: protocol, label: t(MODEL_PROTOCOL_LABEL[protocol]), hint: protocol })),
   ];
+  const effectiveFormat = value === 'inherit' ? resolved : value;
+  const effectiveSource = value === 'inherit' ? source : 'model';
   return (
     <div className="min-w-0 space-y-1" data-model-protocol-field={value}>
       <p className={FORM_LABEL}>{t('st.modelProtocol.label')}</p>
@@ -52,6 +82,20 @@ export function ModelProtocolField({ model, value, resolved, onChange, disabled 
         disabled={disabled}
         dataAttr="data-model-protocol"
       />
+      {effectiveFormat !== undefined && effectiveSource !== undefined ? (
+        <p data-effective-protocol className="text-[11.5px] text-ink-faint">
+          {t('st.modelProtocol.effective', {
+            format: t(MODEL_PROTOCOL_LABEL[effectiveFormat]),
+            source: t(PROTOCOL_SOURCE_LABEL[effectiveSource]),
+          })}
+          {endpointSource !== undefined || authSource !== undefined
+            ? ` · ${t('st.modelProtocol.bindingOrigins', {
+              endpoint: originText(t(ORIGIN_LABEL[endpointSource ?? 'none']), endpointSource ?? 'none', endpointEnv),
+              credential: originText(t(ORIGIN_LABEL[authSource ?? 'none']), authSource ?? 'none', authEnv),
+            })}`
+            : ''}
+        </p>
+      ) : null}
       {showHint ? <Hint>{t('st.modelProtocol.hint')}</Hint> : null}
     </div>
   );

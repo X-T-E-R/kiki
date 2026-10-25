@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+import { executorCapabilityDimensionSchema, executorCapabilityStateSchema } from './agentProfile';
+
 export const executorCapabilitiesSchema = z.object({
   prompt_deliveries: z.array(z.enum(['append', 'replace', 'preamble'])),
   steer: z.enum(['native', 'next_turn_preamble']),
@@ -19,6 +21,7 @@ export const executorCapabilitiesSchema = z.object({
     plan_approval: z.boolean().optional(),
     models: z.array(z.string()).optional(),
     thinking_levels: z.array(z.string()).optional(),
+    native_agents: z.array(z.string()).optional(),
     auth_methods: z.array(z.string()).optional(),
     resume: z.boolean().optional(),
     load: z.boolean().optional(),
@@ -46,6 +49,10 @@ export const executorCatalogItemSchema = z.object({
   label: z.string().min(1),
   protocol: z.string().min(1),
   status: z.enum(['ready', 'unavailable', 'unknown']),
+  /** Last explicit check, kept after the 60s freshness window. Absent until that engine has been checked. */
+  check_status: z.enum(['ready', 'warning', 'unavailable']).optional(),
+  checked_at: z.string().optional(),
+  check_stale: z.boolean().optional(),
   version: z.string().optional(),
   model_binding: z.enum(['mapped', 'unavailable']),
   thinking_binding: z.enum(['mapped', 'unavailable']),
@@ -67,6 +74,22 @@ export const executorCatalogItemSchema = z.object({
     default_args: z.array(z.string()),
   }).optional(),
   default_profile: z.boolean().optional(),
+  /** Defaults-layer Kiki MCP injection. Profile and session choices stay on the execution binding. */
+  kiki_mcp: z.object({
+    effective: z.boolean().nullable(),
+    source: z.enum(['harness-settings', 'harness-default']),
+    applies: z.literal('next_binding'),
+    precedence: z.tuple([
+      z.literal('session'),
+      z.literal('profile'),
+      z.literal('harness-settings'),
+      z.literal('harness-default'),
+    ]),
+    support: z.object({
+      state: z.enum(['supported', 'unsupported', 'undeclared']),
+      fact: z.string().min(1),
+    }),
+  }).optional(),
 });
 
 export const executorRequirementSchema = z.object({
@@ -97,6 +120,57 @@ export const executorCheckResponseSchema = z.object({
 });
 export type ExecutorCatalogItem = z.infer<typeof executorCatalogItemSchema>;
 export type ExecutorCheckResponse = z.infer<typeof executorCheckResponseSchema>;
+
+export const executorCatalogContextSchema = z.object({
+  state: executorCapabilityStateSchema,
+  context_window: z.number().int().positive().optional(),
+  max_input_tokens: z.number().int().positive().optional(),
+  max_output_tokens: z.number().int().positive().optional(),
+  compaction_threshold: z.number().positive().optional(),
+  diagnostic: z.string().optional(),
+});
+export const executorCatalogControlSchema = z.object({
+  advertised: z.boolean().optional(),
+  applicability: z.enum(['live', 'next_binding', 'fresh_binding', 'unsupported', 'unknown']),
+  apply_state: z.enum(['applied', 'pending', 'unsupported', 'unknown']),
+  diagnostic: z.string().optional(),
+});
+export const executorCatalogEffectiveSchema = z.object({
+  models: executorCapabilityDimensionSchema,
+  thinking_levels: executorCapabilityDimensionSchema,
+  context: executorCatalogContextSchema,
+  controls: z.object({
+    model_switch: executorCatalogControlSchema,
+    thinking_switch: executorCatalogControlSchema,
+    manual_compact: executorCatalogControlSchema,
+  }),
+});
+export const executorModelCatalogResponseSchema = z.object({
+  executor_id: z.string().min(1),
+  source: z.enum(['negotiated', 'cli_probe']),
+  provenance: z.enum(['acp_negotiation', 'read_only_cli_probe']),
+  revision: z.string().min(1),
+  apply_state: executorCapabilityStateSchema,
+  observed_at: z.number().int().nonnegative(),
+  executor_version: z.string().optional(),
+  catalog_program_version: z.string().optional(),
+  catalog_command: z.string().optional(),
+  effective: executorCatalogEffectiveSchema,
+});
+export type ExecutorModelCatalogResponse = z.infer<typeof executorModelCatalogResponseSchema>;
+export const getExecutorModelsResponseSchema = executorModelCatalogResponseSchema;
+export type GetExecutorModelsResponse = ExecutorModelCatalogResponse;
+export const refreshExecutorModelsResponseSchema = executorModelCatalogResponseSchema;
+export type RefreshExecutorModelsResponse = ExecutorModelCatalogResponse;
+
+export const removeExecutorRegistrationResponseSchema = z.object({
+  id: z.string().min(1),
+  registration_removed: z.boolean(),
+  builtin_retained: z.boolean(),
+  resources: z.enum(['removed', 'retained', 'not_owned']),
+  reason: z.string().min(1).optional(),
+});
+export type RemoveExecutorRegistrationResponse = z.infer<typeof removeExecutorRegistrationResponseSchema>;
 
 export const listExecutorsResponseSchema = z.object({
   items: z.array(executorCatalogItemSchema),

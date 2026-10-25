@@ -1,5 +1,5 @@
 import { Disposable } from '#/_base/di/lifecycle';
-import { ref, type LiveRef } from '#/_base/di/instantiation';
+import { IInstantiationService, ref, type LiveRef } from '#/_base/di/instantiation';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IAgentProfileService, ProfileError, ProfileErrors } from '#/agent/profile/profile';
@@ -8,7 +8,12 @@ import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
+import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
+import { admitSendMessageCapability, capabilityToolsSource, optionalCapabilityForTool } from '#/app/optionalCapability/admit';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionDeliveryService } from '#/session/delivery/delivery';
 import { ISessionToolPolicy } from '#/session/sessionToolPolicy/sessionToolPolicy';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { CALL_TOOL_NAME, SELECT_TOOLS_TOOL_NAME } from '#/agent/toolSelect/toolSelect';
@@ -19,9 +24,11 @@ import type { SubagentToolPolicy } from '@kiki/agent-profiles/subagentToolPolicy
 
 import { isToolActiveComposed, type ToolActivationPolicy } from './evaluate';
 import { IAgentToolPolicyService } from './toolPolicy';
+import { isLegacyShippedMessageBinding } from './sendMessageAdmission';
 
 export class AgentToolPolicyService extends Disposable implements IAgentToolPolicyService {
   declare readonly _serviceBrand: undefined;
+  private noted = false;
 
   constructor(
     @IAgentProfileService private readonly profile: IAgentProfileService,
@@ -32,7 +39,9 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
     @IAgentScopeContext private readonly scope: IAgentScopeContext,
     @IAgentToolRegistryService private readonly registry: IAgentToolRegistryService,
     @ref(ISessionContext) private readonly session: LiveRef<ISessionContext>,
+    @ref(ISessionDeliveryService) private readonly delivery: LiveRef<ISessionDeliveryService>,
     @ref(ICapabilitySnapshotService) private readonly capabilities: LiveRef<ICapabilitySnapshotService>,
+    @IInstantiationService private readonly instantiation: IInstantiationService,
   ) {
     super();
     this._register(
@@ -110,12 +119,42 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
   ): boolean {
     const capabilities = this.capabilities.current;
     const session = this.session.current;
-    if (capabilities !== undefined && session !== undefined &&
+    const optional = this.optionalPolicy();
+    const computerServers = typeof optional?.computerServerNames === 'function' ? optional.computerServerNames() : [];
+    const capability = optionalCapabilityForTool(name, computerServers);
+    const policy = session === undefined || capability === undefined ? undefined : this.optionalPolicy();
+    let sendMessageAllowListOverride = false;
+    if (policy !== undefined && session !== undefined && capability !== undefined) {
+      this.note(policy, session.sessionId, session.workspaceId);
+      const request = { sessionId: session.sessionId, workspaceId: session.workspaceId, agentId: this.scope.agentId };
+      const admission = capability === 'send_message'
+        ? admitSendMessageCapability(policy, request, this.delivery.current?.effectiveMode() ?? 'reply')
+        : policy.admit(capability, request);
+      if (!admission.admitted) {
+        if (name === 'SendMessage') this.note(policy, session.sessionId, session.workspaceId, false);
+        return false;
+      }
+      if (name === 'SendMessage') {
+        const choice = policy.choice(session.sessionId, 'send_message');
+        sendMessageAllowListOverride = choice === 'on' ||
+          (choice === 'inherit' && (policy.globalState('send_message').defaultOn || isLegacyShippedMessageBinding(
+            this.profile.data(),
+            this.delivery.current?.effectiveMode() ?? 'reply',
+            (path) => this.cleanDefaultPath(path),
+          )));
+      }
+      if (name === 'MemoryWrite' && this.config.get<MemoryConfig>(MEMORY_SECTION)?.approval === 'off') return false;
+    } else if (capabilities !== undefined && session !== undefined &&
       !capabilities.toolAvailable(name, session.workspaceId, session.sessionId)) return false;
-    return isToolActiveComposed(
+    const effectiveProfile = name === 'SendMessage' && (sendMessageAllowListOverride || isLegacyShippedMessageBinding(
+      this.profile.data(),
+      this.delivery.current?.effectiveMode() ?? 'reply',
+      (path) => this.cleanDefaultPath(path),
+    )) ? { ...profile, tools: undefined, toolAllowPolicies: undefined } : profile;
+    const active = isToolActiveComposed(
       {
         workspaceDisabledTools: this.toolPolicyGate.disabledTools,
-        profile,
+        profile: effectiveProfile,
         global: this.config.get<ToolsConfig>(TOOLS_SECTION),
         sessionDisabledTools: this.sessionToolPolicy.disabledTools(),
         subagent,
@@ -124,6 +163,45 @@ export class AgentToolPolicyService extends Disposable implements IAgentToolPoli
       name,
       source,
     );
+    if (policy !== undefined && session !== undefined && name === 'SendMessage') {
+      this.note(policy, session.sessionId, session.workspaceId, active);
+    }
+    return active;
+  }
+
+  private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IOptionalCapabilityPolicy)) ?? undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private cleanDefaultPath(path: string): boolean {
+    try {
+      return this.instantiation.invokeFunction((accessor) => accessor.get(IShippedAgentProfileManager))?.isCleanActivePath(path) === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private note(policy: IOptionalCapabilityPolicy, sessionId: string, workspaceId: string, sendMessageActive?: boolean): void {
+    const profile = this.profile.data();
+    const bound = profile.boundProfile;
+    const source = capabilityToolsSource(bound?.toolsSource, bound, (path) => this.cleanDefaultPath(path));
+    policy.retain(sessionId, this.scope.agentId, {
+      workspaceId,
+      agentKind: this.scope.parentAgentId === undefined ? 'main' : 'child',
+      toolsSource: source,
+      declaredTools: source === 'declared' ? [...(profile.toolPolicyBase?.tools ?? bound?.tools ?? [])] : undefined,
+      taskTools: profile.toolOverride?.tools === undefined ? undefined : [...profile.toolOverride.tools],
+      deliveryMode: this.delivery.current?.effectiveMode() ?? 'reply',
+      sendMessageActive,
+    });
+    if (this.noted) return;
+    this.noted = true;
+    const agentId = this.scope.agentId;
+    this._register({ dispose: () => { policy.release(sessionId, agentId); } });
   }
 
   async setSessionDisabledTools(names: readonly string[]): Promise<void> {

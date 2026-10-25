@@ -20,6 +20,114 @@ describe('browser REST persisted configuration and explicit secret access', () =
       body: body === undefined ? undefined : JSON.stringify(body) });
     return await res.json() as { code: number; msg: string; data: unknown };
   }
+  it('rejects missing preparation consent and unknown guided actions without installing plugins', async () => {
+    const { IPluginService } = await import('@kiki/agent-core-v2');
+    const { browserSetupStatusSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-browser-guided-rest-'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    const codex = browserSetupStatusSchema.parse((await request('GET', '/browser/setup/codex-browser')).data);
+    expect(codex).toMatchObject({ state: 'not_prepared', supported: true, controlSurface: 'browser-connection', reason: 'artifact_missing' });
+    expect(Array.isArray(codex.candidates)).toBe(true);
+    expect(codex.connectionId).toBeUndefined();
+    for (const path of ['/browser/setup/kimi-webbridge:prepare', '/browser/setup/unknown:prepare', '/browser/setup/kimi-webbridge:unknown']) {
+      expect(await request('POST', path, {})).toMatchObject({ code: ErrorCode.VALIDATION_FAILED, data: null, details: { code: 'browser.invalid' } });
+    }
+    expect((await request('POST', '/browser/setup/independent-browser:connect', { setDefault: 'true' })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(await server.core.accessor.get(IPluginService).listPlugins()).toEqual([]);
+    expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections).toEqual([]);
+  }, 30_000);
+  it('serves Codex status, an explicit pipe choice, and prepare without connecting', async () => {
+    const { cp, mkdir } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { vi } = await import('vitest');
+    const { CODEX_BRIDGE_FILE_NAMES, codexBridgeResourcePaths } = await import('@kiki/agent-core-v2/app/capability/entries/browserResourceStore');
+    const { browserSetupStatusSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-codex-rest-'));
+    const vendor = join(fileURLToPath(new URL('../../../', import.meta.url)), 'apps/kimi-code/vendor/codex-browser-bridge/win32-x64');
+    const paths = codexBridgeResourcePaths(home);
+    await mkdir(paths.directory, { recursive: true });
+    for (const name of CODEX_BRIDGE_FILE_NAMES) await cp(join(vendor, name), join(paths.directory, name));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    const read = async (method: string, path: string, body?: unknown) => {
+      const envelope = await request(method, path, body);
+      expect(envelope.code, envelope.msg).toBe(0);
+      return browserSetupStatusSchema.parse(envelope.data);
+    };
+    const status = await read('GET', '/browser/setup/codex-browser');
+    expect(status.steps.find((step) => step.id === 'driver')?.state).toBe('ready');
+    expect(Array.isArray(status.candidates)).toBe(true);
+    expect(status.state).not.toBe('connected');
+    expect(await read('POST', '/browser/setup/codex-browser:connect', {})).toMatchObject({ reason: 'choose_connection' });
+    expect((await request('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex\\pipe' })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const absent = 'codex-browser-use\\11111111-2222-4333-8444-555555555555';
+    expect(await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser', browserId: absent })).toMatchObject({ reason: 'choose_connection' });
+    expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections).toEqual([]);
+    const listed = status.candidates ?? [];
+    if (listed.length > 0) {
+      const chosen = listed[0]!.browserId;
+      const saved = await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser', browserId: chosen });
+      expect(saved.reason).toBe('approval_unproven');
+      expect(saved).toMatchObject({ state: 'needs_user_action', connectionId: 'codex-browser', browserId: chosen });
+      const control = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
+      expect(control.enabled).toBe(true);
+      expect(control.allowedBrowsersConfigured).toBe(false);
+      expect(control.connections).toEqual([
+        expect.objectContaining({ id: 'codex-browser', type: 'codex-extension', browserId: chosen, status: expect.objectContaining({ state: 'idle' }) }),
+      ]);
+      const again = await read('POST', '/browser/setup/codex-browser:connect', { connectionId: 'codex-browser' });
+      expect(again.reason).toBe('approval_unproven');
+      expect(again).toMatchObject({ state: 'needs_user_action', browserId: chosen });
+    }
+    const prepared = await read('POST', '/browser/setup/codex-browser:prepare', { consent: true });
+    if (prepared.state === 'preparing') {
+      await vi.waitFor(async () => { expect((await read('GET', '/browser/setup/codex-browser')).state).not.toBe('preparing'); });
+    }
+    const after = await read('GET', '/browser/setup/codex-browser');
+    expect(after.state === 'ready' || after.state === 'needs_user_action').toBe(true);
+    expect(after.connection?.state).toBe(listed.length > 0 ? 'idle' : undefined);
+    expect((await request('POST', '/config', { browser_control: { disabled_sources: ['codex-browser'] } })).code).toBe(0);
+    expect((await read('GET', '/browser/setup/codex-browser')).candidates).toEqual([]);
+    expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).disabledSources).toEqual(['codex-browser']);
+  }, 90_000);
+  it.each([undefined, 'false'])('prepares independent control through persisted config while respecting forced env=%s', async (forced) => {
+    const { vi } = await import('vitest');
+    const { ICapabilityService, IConfigService, IFlagService } = await import('@kiki/agent-core-v2');
+    const { browserSetupStatusSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-browser-enable-rest-'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: forced, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    const config = server.core.accessor.get(IConfigService);
+    await config.set('experimental', { native_browser: false, fixture_other: false });
+    const capability = server.core.accessor.get(ICapabilityService);
+    let missing = true;
+    const get = vi.spyOn(capability, 'getCapability').mockImplementation(async () => ({ id: 'kiki-browser', displayName: 'Fixture', description: 'fixture', supported: true, state: missing ? 'not_installed' : 'ready', steps: [{ id: 'driver', state: missing ? 'missing' : 'ok' }, { id: 'chrome', state: missing ? 'missing' : 'ok' }], install: { running: false } }));
+    const install = vi.spyOn(capability, 'installCapability').mockImplementation(async () => { missing = false; return get('kiki-browser'); });
+    try {
+      expect(server.core.accessor.get(IFlagService).enabled('native_browser')).toBe(false);
+      expect((await request('POST', '/browser/setup/independent-browser:prepare', {})).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(install).not.toHaveBeenCalled();
+      expect((await request('POST', '/browser/setup/independent-browser:prepare', { consent: true })).code).toBe(0);
+      await vi.waitFor(async () => {
+        const status = browserSetupStatusSchema.parse((await request('GET', '/browser/setup/independent-browser')).data);
+        expect(status.state).toBe(forced === undefined ? 'ready' : 'needs_user_action');
+        if (forced !== undefined) {
+          expect(status.reason).toBe('feature_forced_off');
+          expect(status.steps.find((step) => step.id === 'feature')?.detail).toContain('KIKI_EXPERIMENTAL_NATIVE_BROWSER');
+          expect(status.actions).toEqual([]);
+        }
+      });
+      expect(server.core.accessor.get(IFlagService).enabled('native_browser')).toBe(forced === undefined);
+      expect(config.get('experimental')).toEqual({ native_browser: forced === undefined, fixture_other: false });
+      expect(await readFile(join(home, 'config.toml'), 'utf8')).toContain(`native_browser = ${forced === undefined}`);
+      expect(install).toHaveBeenCalledTimes(forced === undefined ? 1 : 0);
+      expect(browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections).toEqual([]);
+      if (forced === undefined) {
+        await config.set('experimental', { native_browser: false });
+        await request('POST', '/browser/setup/independent-browser:prepare', { consent: true });
+        await vi.waitFor(() => expect(server!.core.accessor.get(IFlagService).enabled('native_browser')).toBe(true));
+        expect(install).toHaveBeenCalledOnce();
+      }
+    } finally { get.mockRestore(); install.mockRestore(); }
+  }, 30_000);
   it('creates A/B, edits/reveals a secret only explicitly, persists default, deletes and retains honest idle state', async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-browser-rest-'));
     const start = (nativeBrowser = false) => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: String(nativeBrowser) }, logLevel: 'silent' });
@@ -57,6 +165,93 @@ describe('browser REST persisted configuration and explicit secret access', () =
     expect(remaining.connections.map((connection) => connection.id)).toEqual(['a']);
     expect((await request('POST', '/secrets:reveal', { ref: { kind: 'browser_endpoint', browser_id: 'b' } })).code).toBe(ErrorCode.VALIDATION_FAILED);
   }, 30_000);
+  it('persists a Kimi HTTP connection and exposes its main-frame catalog without connecting', async () => {
+    const { browserCatalogResponseSchema, browserConnectionResponseSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-webbridge-public-rest-'));
+    const start = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!,
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await start();
+    const saved = await request('PUT', '/browser/connections/http-bridge', { type: 'kimi-webbridge', name: 'Local bridge', enabled: true });
+    expect(saved.code).toBe(0);
+    expect(browserConnectionResponseSchema.parse(saved.data).connection).toMatchObject({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge' });
+    expect((await request('PUT', '/browser/connections/http-bridge', {
+      type: 'kimi-webbridge', name: 'Invalid endpoint', endpoint: { action: 'set', value: 'http://127.0.0.1:10086' },
+    })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const listed = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
+    expect(listed.connections).toEqual([expect.objectContaining({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge', status: expect.objectContaining({ state: 'idle' }) })]);
+    expect(listed.connections[0]?.endpointConfigured).toBeUndefined();
+    const catalogResponse = await request('GET', '/browser/connections/http-bridge:catalog?includeSchema=true');
+    expect(catalogResponse.code).toBe(0);
+    const catalog = browserCatalogResponseSchema.parse(catalogResponse.data);
+    expect(catalog).toMatchObject({ contextIsolation: 'main-frame-only', backendToolCount: 3, status: { state: 'idle' } });
+    expect(catalog.capabilities.map((tool) => tool.name)).toEqual(['agent_browser_snapshot', 'agent_browser_click', 'agent_browser_fill']);
+    expect(catalog.capabilities.every((tool) => tool.inputSchema !== undefined)).toBe(true);
+    expect(await request('POST', '/browser/connections/http-bridge:connect', {})).toMatchObject({
+      code: ErrorCode.VALIDATION_FAILED, details: { code: 'browser.disabled', reason: 'feature_disabled' },
+    });
+    await server.close();
+    server = await start();
+    const reopened = browserControlListSchema.parse((await request('GET', '/browser/connections')).data);
+    expect(reopened.connections).toEqual([expect.objectContaining({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge' })]);
+  }, 30_000);
+  it('persists command connections and exposes their catalog without opening a bridge or changing existing Kimi rows', async () => {
+    const { browserCatalogResponseSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-command-rest-'));
+    const start = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!,
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await start();
+    expect((await request('PUT', '/browser/connections/legacy', { type: 'kimi-webbridge', name: 'Existing Kimi', enabled: true })).code).toBe(0);
+    expect((await request('PUT', '/browser/connections/webbridge-command', { type: 'webbridge-command', name: 'Command bridge', enabled: true })).code).toBe(0);
+    expect((await request('PUT', '/browser/connections/invalid-command', { type: 'webbridge-command', name: 'Invalid', endpoint: { action: 'set', value: 'http://127.0.0.1:10086/command' } })).code).toBe(ErrorCode.VALIDATION_FAILED);
+    const response = await request('GET', '/browser/connections/webbridge-command:catalog?includeSchema=true');
+    expect(response.code).toBe(0);
+    const catalog = browserCatalogResponseSchema.parse(response.data);
+    expect(catalog).toMatchObject({ contextIsolation: 'extension-command-session', backendToolCount: 15, status: { state: 'idle' } });
+    expect(catalog.capabilities.filter((tool) => tool.surface === 'lifecycle').map((tool) => tool.name)).toEqual(['agent_browser_tab_new', 'agent_browser_tab_list', 'agent_browser_tab_switch', 'agent_browser_tab_close']);
+    expect(catalog.capabilities.every((tool) => tool.inputSchema !== undefined)).toBe(true);
+    expect(await request('POST', '/browser/connections/webbridge-command:connect', {})).toMatchObject({ code: ErrorCode.VALIDATION_FAILED, details: { code: 'browser.disabled', reason: 'feature_disabled' } });
+    await server.close();
+    server = await start();
+    const saved = browserControlListSchema.parse((await request('GET', '/browser/connections')).data).connections;
+    expect(saved.map((row) => [row.id, row.type, row.status.state])).toEqual([['legacy', 'kimi-webbridge', 'idle'], ['webbridge-command', 'webbridge-command', 'idle']]);
+  }, 30_000);
+  it('dispatches open, update, and shortcut setup actions to browser setup service', async () => {
+    const { vi } = await import('vitest');
+    const { IBrowserSetupService } = await import('@kiki/agent-core-v2');
+    const { browserSetupStatusSchema } = await import('@kiki/protocol');
+    home = await mkdtemp(join(tmpdir(), 'kiki-browser-actions-rest-'));
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    const setupService = server.core.accessor.get(IBrowserSetupService);
+    const mockStatus = {
+      preset: 'independent-browser' as const,
+      displayName: 'Independent',
+      controlSurface: 'browser-connection' as const,
+      state: 'ready' as const,
+      supported: true,
+      executionHost: 'local',
+      steps: [],
+      actions: [],
+      sourceUrl: 'https://example.test',
+    };
+    const openSpy = vi.spyOn(setupService, 'open').mockResolvedValue(mockStatus);
+    const updateSpy = vi.spyOn(setupService, 'update').mockResolvedValue(mockStatus);
+    const shortcutSpy = vi.spyOn(setupService, 'createShortcut').mockResolvedValue(mockStatus);
+
+    const openRes = await request('POST', '/browser/setup/independent-browser:open', {});
+    expect(openRes.code).toBe(0);
+    expect(browserSetupStatusSchema.parse(openRes.data)).toMatchObject({ preset: 'independent-browser' });
+    expect(openSpy).toHaveBeenCalledWith('independent-browser', {});
+
+    const updateRes = await request('POST', '/browser/setup/independent-browser:update', {});
+    expect(updateRes.code).toBe(0);
+    expect(browserSetupStatusSchema.parse(updateRes.data)).toMatchObject({ preset: 'independent-browser' });
+    expect(updateSpy).toHaveBeenCalledWith('independent-browser');
+
+    const shortcutRes = await request('POST', '/browser/setup/independent-browser:shortcut', { name: 'My Browser' });
+    expect(shortcutRes.code).toBe(0);
+    expect(browserSetupStatusSchema.parse(shortcutRes.data)).toMatchObject({ preset: 'independent-browser' });
+    expect(shortcutSpy).toHaveBeenCalledWith('independent-browser', { name: 'My Browser' });
+  }, 30_000);
 });
 
 
@@ -89,9 +284,9 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
     const caller = { sessionId: 'isolated-proof', agentId: 'main' };
     let borrowed: ReturnType<typeof spawn> | undefined;
     let borrowedEndpoint: string | undefined;
-    async function api(path: string) {
+    async function api(path: string, body?: unknown) {
       console.log('Chromium proof API', path);
-      const result = await fetch(`http://127.0.0.1:${server.port}/api${path}`, { headers: authHeaders(server), signal: AbortSignal.timeout(15_000) });
+      const result = await fetch(`http://127.0.0.1:${server.port}/api${path}`, { method: body === undefined ? 'GET' : 'POST', headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(15_000) });
       const data = await result.json() as { code: number; data: unknown; details?: unknown };
       console.log('Chromium proof API result', path, data.code);
       return data;
@@ -117,7 +312,8 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
       expect((await control.check('managed')).failure?.code).toBe('browser.version');
       const { installBrowserDriver, BROWSER_DRIVER_FILES } = await import('@kiki/agent-core-v2/app/capability/entries/browserResourceStore');
       const source: typeof fetch = async (input) => {
-        const name = Object.entries(BROWSER_DRIVER_FILES).find(([, artifact]) => artifact.url === String(input))?.[0];
+        const inputUrl = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+        const name = Object.entries(BROWSER_DRIVER_FILES).find(([, artifact]) => artifact.url === inputUrl)?.[0];
         if (name === undefined) throw new Error('Unexpected fixture resource');
         const bytes = await readFile(name === 'agent-browser.exe' ? process.env['KIKI_BROWSER_TEST_DRIVER']! : fileURLToPath(new URL(`../../agent-core-v2/src/app/browser/donor/${name}`, import.meta.url)));
         return new Response(new Uint8Array(bytes), { headers: { 'content-length': String(bytes.length) } });
@@ -131,7 +327,10 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
       expect(browserCatalogResponseSchema.parse((await api('/browser/connections/managed:catalog?includeSchema=true')).data).capabilities.find((tool) => tool.name === 'agent_browser_fill')?.inputSchema).toMatchObject({ required: expect.arrayContaining(['selector', 'text']) });
       expect(await api('/browser/connections/managed:tabs')).toMatchObject({ code: ErrorCode.VALIDATION_FAILED, details: { code: 'browser.disconnected' } });
       console.log('Chromium proof managed connect');
-      const connected = await control.connect('managed');
+      const { browserSetupStatusSchema } = await import('@kiki/protocol');
+      const guided = browserSetupStatusSchema.parse((await api('/browser/setup/independent-browser:connect', { connectionId: 'managed' })).data);
+      expect(guided.state).toBe('connected');
+      const connected = guided.connection!;
       console.log('Chromium proof managed connected', JSON.stringify(connected));
       expect(connected.state).toBe('ready');
       const tabs = browserTabsResponseSchema.parse((await api('/browser/connections/managed:tabs')).data);
@@ -184,6 +383,71 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
       await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       await rm(borrowedProfile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
       await rm(join(root, 'managed-profile'), { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+    }
+  }, 120_000);
+});
+
+
+describe.skipIf(process.env['KIKI_WEBBRIDGE_SETUP_PROOF'] !== 'true')('guided Kimi setup with the existing browser extension', () => {
+  it('installs the official skill in an isolated home, detects and connects, then controls only its own localhost tab group', async () => {
+    const { createServer } = await import('node:http');
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const { fileURLToPath } = await import('node:url');
+    const { vi } = await import('vitest');
+    const { browserSetupStatusSchema } = await import('@kiki/protocol');
+    const { IPluginService } = await import('@kiki/agent-core-v2');
+    const root = await mkdtemp(join(fileURLToPath(new URL('../../../.tmp/', import.meta.url)), 'browser-guided-live-'));
+    const home = join(root, 'home');
+    await mkdir(home);
+    const page = createServer((_req, res) => {
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.end('<!doctype html><title>Kiki guided setup proof</title><h1>Browser connection proof</h1><label>Name <input id="name" aria-label="Name"></label><button onclick="document.querySelector(\'#result\').textContent=\'Hello \'+document.querySelector(\'#name\').value">Save</button><p id="result" role="status">Not saved</p>');
+    });
+    await new Promise<void>((done) => page.listen(0, '127.0.0.1', done));
+    const address = page.address();
+    if (address === null || typeof address === 'string') throw new Error('Missing proof page port');
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' } });
+    const receipts: unknown[] = [];
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`http://127.0.0.1:${server.port}/api${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
+      const envelope = await response.json() as { code: number; msg: string; data: unknown };
+      receipts.push({ method, path, envelope });
+      expect(envelope.code, envelope.msg).toBe(0);
+      return browserSetupStatusSchema.parse(envelope.data);
+    };
+    const command = async (action: string, args: unknown) => {
+      const response = await fetch('http://127.0.0.1:10086/command', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, args, session: 'kiki-guided-setup-20261006-proof' }), signal: AbortSignal.timeout(20_000) });
+      const envelope = await response.json() as { ok: boolean; data: Record<string, unknown> };
+      expect(envelope.ok).toBe(true);
+      receipts.push({ action, data: envelope.data });
+      return envelope.data;
+    };
+    try {
+      const before = await request('GET', '/browser/setup/kimi-webbridge');
+      expect(before.state).not.toBe('connected');
+      await request('POST', '/browser/setup/kimi-webbridge:prepare', { consent: true });
+      await vi.waitFor(async () => {
+        const status = await request('GET', '/browser/setup/kimi-webbridge');
+        if (status.state === 'failed') throw new Error(status.error);
+        expect(status.state).toBe('ready');
+      }, { timeout: 90_000, interval: 500 });
+      const connected = await request('POST', '/browser/setup/kimi-webbridge:connect', {});
+      expect(connected.state).toBe('connected');
+      const plugin = (await server.core.accessor.get(IPluginService).listPlugins()).find((item) => item.id === 'kimi-webbridge');
+      expect(plugin).toMatchObject({ enabled: true, state: 'ok' });
+      expect((await server.core.accessor.get(IPluginService).pluginSkillRoots()).some((skill) => skill.path.includes('kimi-webbridge'))).toBe(true);
+      expect(await command('navigate', { url: `http://127.0.0.1:${address.port}`, newTab: true, group_title: '浏览器引导验证' })).toMatchObject({ success: true });
+      expect(await command('snapshot', {})).toMatchObject({ title: 'Kiki guided setup proof' });
+      expect(await command('fill', { selector: '#name', value: 'Fixture' })).toMatchObject({ success: true });
+      expect(await command('click', { selector: 'button' })).toMatchObject({ success: true });
+      expect(await command('evaluate', { code: "document.querySelector('#result').textContent" })).toMatchObject({ value: 'Hello Fixture' });
+      expect(await command('screenshot', { path: join(root, 'webbridge-form.png') })).toMatchObject({ path: join(root, 'webbridge-form.png') });
+      await writeFile(join(root, 'evidence.json'), JSON.stringify({ home, plugin: { id: plugin!.id, version: plugin!.version, enabled: plugin!.enabled }, receipts }, null, 2));
+      console.log('Guided browser live evidence', root);
+    } finally {
+      await server.close();
+      await new Promise<void>((done) => page.close(() => done()));
+      await rm(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
     }
   }, 120_000);
 });

@@ -9,6 +9,7 @@ import {
   IBootstrapOptions,
   IBootstrapService,
   createBaseConfigDocumentStore,
+  createBaseDocumentStore,
   type HostArgs,
   type PersistenceScopeName,
 } from './bootstrap';
@@ -31,6 +32,7 @@ export class BootstrapService implements IBootstrapService {
   readonly space: IBootstrapOptions['space'];
   readonly homeDiagnostic?: string;
   readonly baseConfigDocumentStore?: IAtomicTomlDocumentStore;
+  readonly baseDocumentStore: IBootstrapService['baseDocumentStore'];
   readonly clientIdentity: KimiHostIdentity;
   readonly args: HostArgs;
   readonly interactive: boolean;
@@ -61,6 +63,7 @@ export class BootstrapService implements IBootstrapService {
     this.space = options.space;
     this.homeDiagnostic = options.homeDiagnostic;
     this.baseConfigDocumentStore = options.baseHomeDir === undefined ? undefined : createBaseConfigDocumentStore(options.baseHomeDir);
+    this.baseDocumentStore = options.baseHomeDir === undefined ? undefined : createBaseDocumentStore(options.baseHomeDir);
     this.clientIdentity = options.clientIdentity;
     this.args = options.args;
     this.interactive = options.interactive ?? true;

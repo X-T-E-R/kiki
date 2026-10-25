@@ -2,16 +2,16 @@ import type { ContentPart } from '#/kosong/contract/message';
 import type { Tool as KosongTool } from '#/kosong/contract/tool';
 import { Jimp } from 'jimp';
 import { CallToolResultSchema, ErrorCode, McpError } from '@modelcontextprotocol/sdk/types.js';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore, toDisposable } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
-import { Event } from '#/_base/event';
+import { Emitter, Event } from '#/_base/event';
 import { abortError } from '#/_base/utils/abort';
 import type { Event2 } from '#/app/event/event2';
 import { IEventBus } from '#/app/event/eventBus';
-import { IConfigService } from '#/app/config/config';
+import { IConfigService, type ConfigSectionChangedEvent } from '#/app/config/config';
 import { COMPUTER_CONFIG_SECTION, type ComputerUsagePreference } from '#/app/computer/configSection';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
@@ -22,9 +22,14 @@ import type { ProfileData } from '#/agent/profile/profile';
 import { UNKNOWN_CAPABILITY } from '#/kosong/contract/capability';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import type { McpConnectionManager, McpServerEntry } from '#/mcpCore/connection-manager';
+import { IMcpRegistryService, type McpRegistryEntry } from '#/app/mcpRegistry/mcpRegistry';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { AgentMcpService } from '#/agent/mcp/mcpService';
 import { ISessionMcpHandle } from '#/session/mcp/sessionMcpHandle';
+import { FilteredMcpConnectionView } from '#/session/mcp/filteredConnectionView';
+import type { McpServerConfig } from '#/mcpCore/config-schema';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { McpOAuthService } from '#/mcpCore/oauth/service';
 import type { MCPClient, MCPToolDefinition } from '#/mcpCore/types';
@@ -97,6 +102,11 @@ class FakeMcpManager {
   }
 
   reconnectHandler: (name: string) => Promise<void> = async () => {};
+  refreshToolListHandler: (name: string) => Promise<void> = async () => {};
+
+  refreshToolList(name: string): Promise<void> {
+    return this.refreshToolListHandler(name);
+  }
 
   markNeedsAuthHandler: (name: string, error: unknown, client?: MCPClient) => Promise<boolean> = async () => false;
 
@@ -229,6 +239,7 @@ describe('AgentMcpService', () => {
   let wireRecordListeners: Set<(record: WireRecord) => void>;
   let profileProviderType: string | undefined;
   let computerPreference: ComputerUsagePreference | undefined;
+  let computerEnabled: boolean | undefined;
   let attachmentStore: { materialize: (input: SessionMediaMaterializeInput) => Promise<string | undefined> };
 
   beforeEach(() => {
@@ -239,7 +250,11 @@ describe('AgentMcpService', () => {
     wireRecordListeners = new Set();
     profileProviderType = undefined;
     computerPreference = undefined;
-    ix.stub(IConfigService, { get: <T>(domain: string) => (domain === COMPUTER_CONFIG_SECTION ? { usagePreference: computerPreference } : undefined) as T });
+    computerEnabled = undefined;
+    ix.stub(IConfigService, {
+      get: <T>(domain: string) => (domain === COMPUTER_CONFIG_SECTION ? { usagePreference: computerPreference, ...(computerEnabled === undefined ? {} : { enabled: computerEnabled }) } : undefined) as T,
+      onDidSectionChange: Event.None as Event<ConfigSectionChangedEvent>,
+    });
     attachmentStore = { materialize: async () => undefined };
     ix.stub(IEventBus, {
       publish: (event) => {
@@ -248,6 +263,7 @@ describe('AgentMcpService', () => {
       subscribe: () => toDisposable(() => {}),
     });
     ix.stub(ITelemetryService, recordingTelemetry(telemetryEvents));
+    ix.stub(IAgentToolPolicyService, { isToolActive: () => true } satisfies Partial<IAgentToolPolicyService>);
     ix.set(IAgentToolRegistryService, new SyncDescriptor(AgentToolRegistryService));
     ix.set(IAgentToolExecutorService, new SyncDescriptor(AgentToolExecutorService));
     ix.stub(IAgentToolResultTruncationService, stubToolResultTruncationService());
@@ -261,24 +277,47 @@ describe('AgentMcpService', () => {
     });
     dispatcher = registerTestEventDispatcher(ix);
   });
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   function createService(
     manager: FakeMcpManager,
     ready: Promise<void> = Promise.resolve(),
     isBaselineServer: (name: string) => boolean = () => true,
+    options: {
+      readonly registryEntries?: readonly McpRegistryEntry[];
+      readonly store?: IAtomicDocumentStore;
+      readonly admitCurrentServers?: () => ReadonlySet<string>;
+      readonly sessionId?: string;
+      readonly cwd?: string;
+      readonly enableConfiguredServer?: (name: string, config: McpServerConfig) => Promise<void>;
+    } = {},
   ): IAgentMcpService {
+    const view = new FilteredMcpConnectionView(manager as unknown as McpConnectionManager, new Set());
     ix.stub(ISessionMcpHandle, {
       _serviceBrand: undefined,
       ready,
-      connectionManager: manager as unknown as McpConnectionManager,
+      connectionManager: view,
       isBaselineServer,
+      admitCurrentServers: options.admitCurrentServers ?? (() => new Set(manager.list().map((entry) => entry.name))),
+      setServerEnabled: (name, enabled) => view.setServerEnabled(name, enabled),
+      clearServerEnabledOverride: (name) => view.clearServerOverride(name),
+      enableConfiguredServer: options.enableConfiguredServer,
     } satisfies ISessionMcpHandle);
-    ix.stub(ISessionContext, { sessionDir: '/tmp/kimi-code-mcp-test' });
+    ix.stub(ISessionContext, {
+      sessionDir: '/tmp/kimi-code-mcp-test',
+      sessionId: options.sessionId ?? 'mcp-test-session',
+      workspaceId: 'mcp-test-workspace',
+      cwd: options.cwd ?? '/tmp/kimi-code-mcp-test',
+    });
+    ix.stub(IMcpRegistryService, {
+      list: async () => options.registryEntries ?? [],
+    } satisfies Partial<IMcpRegistryService>);
+    if (options.store !== undefined) ix.stub(IAtomicDocumentStore, options.store);
     ix.stub(IAgentProfileService, {
       getModelProviderType: () => profileProviderType,
+      data: () => ({ modelCapabilities: UNKNOWN_CAPABILITY, thinkingLevel: '', systemPrompt: '' }),
     } satisfies Partial<IAgentProfileService>);
     ix.stub(ISessionMediaStore, {
       materialize: (input: SessionMediaMaterializeInput) => attachmentStore.materialize(input),
@@ -286,6 +325,224 @@ describe('AgentMcpService', () => {
     ix.set(IAgentMcpService, new SyncDescriptor(AgentMcpService));
     return ix.get(IAgentMcpService);
   }
+
+  function registryEntry(
+    name: string,
+    options: {
+      readonly source?: 'global' | 'plugin';
+      readonly pluginId?: string;
+      readonly serverName?: string;
+      readonly enabled?: boolean;
+    } = {},
+  ): McpRegistryEntry {
+    const source = options.source ?? 'global';
+    return {
+      name,
+      config: { transport: 'stdio', command: `${name}-mcp`, enabled: options.enabled },
+      source,
+      origin: source === 'global' ? 'user-mcp.json' : options.pluginId ?? 'plugin',
+      mutable: source === 'global',
+      plugin: source === 'plugin'
+        ? { id: options.pluginId ?? 'demo', name: options.serverName ?? name }
+        : undefined,
+    };
+  }
+
+  it('lists locator-addressed capabilities and restores off through inherit without a global write', async () => {
+    const manager = new FakeMcpManager();
+    manager.setResolved('alpha', fakeMcpClient(), await discoverTools(fakeMcpClient()));
+    manager.connect('alpha');
+    const catalog = [registryEntry('alpha')];
+    const get = vi.fn().mockResolvedValue(undefined);
+    const update = vi.fn().mockImplementation(async (
+      _scope: string,
+      _key: string,
+      updater: (current: unknown) => unknown,
+    ) => updater(undefined));
+    const store = { get, update } as unknown as IAtomicDocumentStore;
+    const service = createService(manager, Promise.resolve(), () => true, {
+      registryEntries: catalog,
+      store,
+    });
+
+    await expect(service.listMcpSessionCapabilities()).resolves.toMatchObject([
+      { locator: { source: 'global', name: 'alpha' }, connection: 'connected', override: 'inherit' },
+    ]);
+    await expect(service.setMcpSessionOverride({ locator: { source: 'global', name: 'alpha' }, override: 'on' }))
+      .resolves.toMatchObject({ connection: 'connected', override: 'on' });
+    await expect(service.setMcpSessionOverride({ locator: { source: 'global', name: 'alpha' }, override: 'off' }))
+      .resolves.toMatchObject({ connection: 'disabled', override: 'off' });
+    await expect(service.setMcpSessionOverride({ locator: { source: 'global', name: 'alpha' }, override: 'inherit' }))
+      .resolves.toMatchObject({ connection: 'connected', override: 'inherit' });
+    expect(update).toHaveBeenCalledWith(
+      'session-mcp-overrides',
+      'mcp-test-session',
+      expect.any(Function),
+    );
+  });
+
+  it('keeps colliding global and plugin locators isolated instead of guessing by runtime name', async () => {
+    const manager = new FakeMcpManager();
+    manager.setResolved('shared', fakeMcpClient(), await discoverTools(fakeMcpClient()));
+    manager.connect('shared');
+    const service = createService(manager, Promise.resolve(), () => true, {
+      registryEntries: [
+        registryEntry('shared'),
+        registryEntry('shared', { source: 'plugin', pluginId: 'demo', serverName: 'api' }),
+      ],
+    });
+
+    const capabilities = await service.listMcpSessionCapabilities();
+    expect(capabilities).toEqual(expect.arrayContaining([
+      expect.objectContaining({ locator: { source: 'global', name: 'shared' }, connection: 'connected' }),
+      expect.objectContaining({
+        locator: { source: 'plugin', pluginId: 'demo', serverName: 'api' },
+        connection: 'unavailable',
+        error: expect.stringContaining('owned by another source'),
+      }),
+    ]));
+    await expect(service.setMcpSessionOverride({
+      locator: { source: 'plugin', pluginId: 'demo', serverName: 'api' },
+      override: 'off',
+    })).resolves.toMatchObject({ connection: 'disabled', override: 'off' });
+    await expect(service.setMcpSessionOverride({
+      locator: { source: 'plugin', pluginId: 'demo', serverName: 'api' },
+      override: 'on',
+    })).rejects.toMatchObject({ code: 'mcp.server_not_found', message: expect.stringContaining('does not own runtime name') });
+    await expect(service.listMcpSessionCapabilities()).resolves.toEqual(expect.arrayContaining([
+      expect.objectContaining({ locator: { source: 'global', name: 'shared' }, connection: 'connected' }),
+    ]));
+    await expect(service.setMcpSessionOverride({
+      locator: { source: 'global', name: 'missing' },
+      override: 'on',
+    })).rejects.toMatchObject({ code: 'mcp.server_not_found' });
+  });
+
+  it('admits a newly connected registry server when capabilities are refreshed', async () => {
+    const manager = new FakeMcpManager();
+    const baseClient = fakeMcpClient();
+    manager.setResolved('base', baseClient, await discoverTools(baseClient));
+    manager.connect('base');
+    const catalog: McpRegistryEntry[] = [registryEntry('base')];
+    const admitted = new Set(['base']);
+    const service = createService(manager, Promise.resolve(), (name) => admitted.has(name), {
+      registryEntries: catalog,
+      admitCurrentServers: () => {
+        admitted.add('late');
+        return new Set(manager.list().map((entry) => entry.name));
+      },
+    });
+    expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp').map((tool) => tool.name))
+      .toEqual(['mcp__base__echo', 'mcp__base__noop']);
+
+    const lateClient = fakeMcpClient();
+    manager.setResolved('late', lateClient, await discoverTools(lateClient));
+    manager.connect('late');
+    catalog.push(registryEntry('late'));
+    await service.refreshCapabilities();
+
+    expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp').map((tool) => tool.name))
+      .toEqual(['mcp__base__echo', 'mcp__base__noop', 'mcp__late__echo', 'mcp__late__noop']);
+  });
+
+  it('lists redacted local state without waiting for server startup or probing auth', async () => {
+    const manager = new FakeMcpManager();
+    const reconnect = vi.spyOn(manager, 'reconnect');
+    const entry: McpRegistryEntry = {
+      name: 'remote', source: 'global', origin: 'user-mcp.json', mutable: true,
+      config: { transport: 'http', url: 'https://example.test/mcp', auth: 'oauth', headers: { Authorization: 'secret-value' } },
+    };
+    const service = createService(manager, new Promise(() => {}), () => true, { registryEntries: [entry] });
+    const capabilities = await service.listMcpSessionCapabilities();
+    expect(capabilities).toMatchObject([{ connection: 'unavailable', authStatus: 'unavailable', config: { headerKeys: ['Authorization'] } }]);
+    expect(JSON.stringify(capabilities)).not.toContain('secret-value');
+    expect(capabilities[0]?.config).not.toHaveProperty('headers');
+    expect(reconnect).not.toHaveBeenCalled();
+  });
+
+  it('enables only the selected disabled server through the session port and removes its tools on off', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('selected', client, await discoverTools(client));
+    const enable = vi.fn(async (name: string, config: McpServerConfig) => {
+      expect(config.enabled).toBe(true);
+      manager.connect(name);
+    });
+    const service = createService(manager, Promise.resolve(), () => true, {
+      registryEntries: [registryEntry('selected', { enabled: false }), registryEntry('other')],
+      enableConfiguredServer: enable,
+    });
+    await expect(service.setMcpSessionOverride({ locator: { source: 'global', name: 'selected' }, override: 'on' }))
+      .resolves.toMatchObject({ connection: 'connected', override: 'on' });
+    expect(enable).toHaveBeenCalledTimes(1);
+    expect(enable.mock.calls[0]?.[0]).toBe('selected');
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__selected__echo')).toBeDefined();
+    await service.setMcpSessionOverride({ locator: { source: 'global', name: 'selected' }, override: 'off' });
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__selected__echo')).toBeUndefined();
+    expect(manager.get('selected')?.status).toBe('connected');
+    expect(enable).toHaveBeenCalledTimes(1);
+  });
+
+  it('restores a persisted off intent before admitting capabilities', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('saved', client, await discoverTools(client));
+    manager.connect('saved');
+    const store = { get: async () => ({ 'global:saved': 'off' }) } as unknown as IAtomicDocumentStore;
+    const service = createService(manager, Promise.resolve(), () => true, { registryEntries: [registryEntry('saved')], store });
+    await service.waitForInitialLoad();
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__saved__echo')).toBeUndefined();
+    await expect(service.listMcpSessionCapabilities()).resolves.toMatchObject([{ override: 'off', connection: 'disabled' }]);
+  });
+
+  it('refreshes existing catalogs without reconnect and keeps off servers untouched', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('active', client, await discoverTools(client));
+    manager.setResolved('off', client, await discoverTools(client));
+    manager.connect('active');
+    manager.connect('off');
+    const service = createService(manager, Promise.resolve(), () => true, {
+      registryEntries: [registryEntry('active'), registryEntry('off')],
+    });
+    await service.setMcpSessionOverride({ locator: { source: 'global', name: 'off' }, override: 'off' });
+    const refresh = vi.fn(async (name: string) => {
+      expect(name).toBe('active');
+      const next = fakeMcpClient([{ name: 'late-tool', description: '', inputSchema: { type: 'object', properties: {} } }]);
+      manager.setResolved(name, client, await discoverTools(next));
+    });
+    manager.refreshToolListHandler = refresh;
+    const reconnect = vi.spyOn(manager, 'reconnect');
+    await service.refreshCapabilities();
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__active__late-tool')).toBeDefined();
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__off__echo')).toBeUndefined();
+  });
+
+  it('reports a catalog refresh warning while keeping a connected server callable', async () => {
+    const manager = new FakeMcpManager();
+    const counter = { calls: 0 };
+    const client = countingClient(fakeMcpClient(), counter);
+    manager.setResolved('active', client, await discoverTools(client));
+    manager.connect('active');
+    const service = createService(manager, Promise.resolve(), () => true, { registryEntries: [registryEntry('active')] });
+    await service.setMcpSessionOverride({ locator: { source: 'global', name: 'active' }, override: 'on' });
+    const cached = ix.get(IAgentToolRegistryService).resolve('mcp__active__echo')!;
+    manager.refreshToolListHandler = async () => { throw new Error('sensitive remote response'); };
+    await service.refreshCapabilities();
+    await expect(service.listMcpSessionCapabilities()).resolves.toMatchObject([
+      { override: 'on', connection: 'connected', error: 'MCP tool catalog refresh failed (Error)', errorCode: 'tool_catalog_refresh_failed' },
+    ]);
+    expect(ix.get(IAgentToolRegistryService).resolve(cached.name)).toBeDefined();
+    await expect(executeTool(cached, { turnId: 1, toolCallId: 'refresh-warning', args: { text: 'still usable' }, signal: new AbortController().signal }))
+      .resolves.toMatchObject({ output: 'still usable' });
+    expect(counter.calls).toBe(1);
+    manager.refreshToolListHandler = async () => {};
+    await service.refreshCapabilities();
+    await expect(service.listMcpSessionCapabilities()).resolves.toMatchObject([{ override: 'on', connection: 'connected' }]);
+    expect(ix.get(IAgentToolRegistryService).resolve(cached.name)).toBeDefined();
+  });
 
   it('delegates list / status events to the connection manager', async () => {
     const manager = new FakeMcpManager();
@@ -436,7 +693,7 @@ describe('AgentMcpService', () => {
     );
   });
 
-  it('keeps tools registered when the server is tombstoned as removed, and calls fail with a removal notice', async () => {
+  it('withdraws tools when the server is tombstoned as removed, and cached calls fail with a removal notice', async () => {
     const manager = new FakeMcpManager();
     const counter = { calls: 0 };
     const client = countingClient(fakeMcpClient(), counter);
@@ -445,16 +702,16 @@ describe('AgentMcpService', () => {
     manager.connect('s');
     expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp')).toHaveLength(2);
 
+    const echo = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo');
+    expect(echo).toBeDefined();
     manager.markRemoved('s');
 
     const registered = ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp');
-    expect(registered).toHaveLength(2);
-    expect(events).not.toContainEqual(
+    expect(registered).toHaveLength(0);
+    expect(events).toContainEqual(
       expect.objectContaining({ type: 'tool.list.updated', reason: 'mcp.disconnected' }),
     );
-
-    const echo = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo');
-    expect(echo).toBeDefined();
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__s__echo')).toBeUndefined();
     const result = await executeTool(echo!, {
       turnId: 1,
       toolCallId: 'tc-removed',
@@ -644,6 +901,121 @@ describe('AgentMcpService', () => {
     expect(computer.description).toContain('generally avoid');
   });
 
+  it('withholds computer tools while enabled is false and restores them on the same session without resurrecting a disconnected server', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('kiki-computer', client, await discoverTools(client));
+    const sections = new Emitter<ConfigSectionChangedEvent>();
+    computerEnabled = false;
+    ix.stub(IConfigService, {
+      get: <T>(domain: string) => (domain === COMPUTER_CONFIG_SECTION ? { usagePreference: computerPreference, enabled: computerEnabled } : undefined) as T,
+      onDidSectionChange: sections.event,
+    });
+    createService(manager);
+    manager.connect('kiki-computer');
+    const registry = ix.get(IAgentToolRegistryService);
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    computerEnabled = true;
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: true }, previousValue: { enabled: false } });
+    const restored = registry.resolve('mcp__kiki-computer__echo');
+    expect(restored?.parameters).toBeDefined();
+    expect(restored?.subagentDefault).toBe('opt-in');
+    computerEnabled = false;
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: false }, previousValue: { enabled: true } });
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    computerEnabled = true;
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: true }, previousValue: { enabled: false } });
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeDefined();
+    manager.disconnect('kiki-computer');
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    sections.fire({ domain: COMPUTER_CONFIG_SECTION, source: 'set', value: { enabled: true }, previousValue: { enabled: true } });
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+  });
+
+  it('unloads computer tools when optional policy closes, refuses a stale call, and releases the agent lease on dispose', async () => {
+    const manager = new FakeMcpManager();
+    const counter = { calls: 0 };
+    const client = countingClient(fakeMcpClient(), counter);
+    manager.setResolved('kiki-computer', client, await discoverTools(client));
+    const changes = new Emitter<{ readonly sessionId?: string }>();
+    let admitted = true;
+    const retain = vi.fn();
+    const release = vi.fn();
+    ix.stub(IOptionalCapabilityPolicy, {
+      onDidChange: changes.event,
+      admit: () => ({ admitted, reason: admitted ? 'admitted' : 'session_off' }),
+      retain,
+      release,
+    });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    const service = createService(manager);
+    manager.connect('kiki-computer');
+    const registry = ix.get(IAgentToolRegistryService);
+    const tool = registry.resolve('mcp__kiki-computer__echo');
+    expect(tool).toBeDefined();
+    expect(retain).toHaveBeenCalled();
+    await executeTool(tool!, {
+      turnId: 1, toolCallId: 'tc-open', args: { text: 'once' }, signal: new AbortController().signal,
+    });
+    expect(counter.calls).toBe(1);
+    admitted = false;
+    changes.fire({});
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    const stale = await executeTool(tool!, {
+      turnId: 2, toolCallId: 'tc-stale', args: { text: 'again' }, signal: new AbortController().signal,
+    });
+    expect(stale.isError).toBe(true);
+    expect(counter.calls).toBe(1);
+    manager.disconnect('kiki-computer');
+    admitted = true;
+    changes.fire({});
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    await (service as AgentMcpService).dispose();
+    expect(release).toHaveBeenCalledWith('mcp-test-session', 'main');
+    expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  it('finishes an in-flight computer call after the capability turns off', async () => {
+    const manager = new FakeMcpManager();
+    const base = fakeMcpClient();
+    let releaseCall!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseCall = resolve; });
+    const client = {
+      listTools: () => base.listTools(),
+      callTool: async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
+        await gate;
+        return base.callTool(name, args, signal);
+      },
+      ping: (signal: AbortSignal) => base.ping(signal),
+    };
+    manager.setResolved('kiki-computer', client, await discoverTools(base));
+    const changes = new Emitter<{ readonly sessionId?: string }>();
+    let admitted = true;
+    ix.stub(IOptionalCapabilityPolicy, {
+      onDidChange: changes.event,
+      admit: () => ({ admitted, reason: admitted ? 'admitted' : 'session_off' }),
+      retain() {},
+      release() {},
+    });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    const service = createService(manager);
+    manager.connect('kiki-computer');
+    const registry = ix.get(IAgentToolRegistryService);
+    const tool = registry.resolve('mcp__kiki-computer__echo');
+    expect(tool).toBeDefined();
+    const running = executeTool(tool!, {
+      turnId: 1, toolCallId: 'tc-flight', args: { text: 'still here' }, signal: new AbortController().signal,
+    });
+    admitted = false;
+    changes.fire({});
+    expect(registry.resolve('mcp__kiki-computer__echo')).toBeUndefined();
+    releaseCall();
+    const finished = await running;
+    expect(finished.isError).toBeUndefined();
+    expect(finished.output).toBe('still here');
+    await (service as AgentMcpService).dispose();
+  });
+
   it.each([
     { identity: 'main', parent: undefined, tools: undefined, allowed: true },
     { identity: 'independent', parent: undefined, tools: undefined, allowed: true },
@@ -725,9 +1097,10 @@ describe('AgentMcpService', () => {
     expect(reconnects).toBe(1);
   });
 
-  it('heals a server that died between turns when its tool is called again', async () => {
+  it.each(['failed', 'pending'] as const)('withdraws a %s server and refuses fresh calls until a legal reconnect', async (status) => {
     const manager = new FakeMcpManager();
-    const deadClient = throwingClient(fakeMcpClient());
+    const oldCounter = { calls: 0 };
+    const oldClient = countingClient(fakeMcpClient(), oldCounter);
     const freshCounter = { calls: 0 };
     const freshClient = countingClient(fakeMcpClient(), freshCounter);
     let reconnects = 0;
@@ -736,25 +1109,57 @@ describe('AgentMcpService', () => {
       manager.setResolved(name, freshClient, await discoverTools(freshClient));
       manager.connect(name);
     };
-    manager.setResolved('s', deadClient, await discoverTools(deadClient));
-    createService(manager);
+    manager.setResolved('s', oldClient, await discoverTools(oldClient));
+    const service = createService(manager);
     manager.connect('s');
+    const cached = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo')!;
+    if (status === 'failed') manager.fail('s');
+    else manager.pending('s');
+    expect(ix.get(IAgentToolRegistryService).resolve(cached.name)).toBeUndefined();
+    const blocked = await executeTool(cached, { turnId: 1, toolCallId: 'not-connected', args: { text: 'not sent' }, signal: new AbortController().signal });
+    expect(blocked.isError).toBe(true);
+    expect(oldCounter.calls).toBe(0);
+    expect(reconnects).toBe(0);
 
-    manager.fail('s');
-
-    const echo = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo');
-    expect(echo).toBeDefined();
-    const result = await executeTool(echo!, {
+    if (status === 'failed') await ix.get(IAgentToolRegistryService).prepare();
+    else await service.reconnect('s');
+    const echo = ix.get(IAgentToolRegistryService).resolve(cached.name)!;
+    const result = await executeTool(echo, {
       turnId: 1,
       toolCallId: 'tc-between-turns',
       args: { text: 'back from the dead' },
       signal: new AbortController().signal,
     });
-
     expect(result.isError).toBeUndefined();
     expect(result.output).toBe('back from the dead');
     expect(freshCounter.calls).toBe(1);
     expect(reconnects).toBe(1);
+  });
+
+  it.each(['failed', 'removed'] as const)('finishes an admitted call after %s while withdrawing new admission', async (status) => {
+    const manager = new FakeMcpManager();
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const calls = vi.fn(async () => {
+      started.resolve();
+      await finish.promise;
+      return { content: [{ type: 'text' as const, text: 'finished' }], isError: false };
+    });
+    const client: MCPClient = { ...fakeMcpClient(), callTool: calls };
+    manager.setResolved('s', client, await discoverTools(client));
+    createService(manager);
+    manager.connect('s');
+    const cached = ix.get(IAgentToolRegistryService).resolve('mcp__s__echo')!;
+    const running = executeTool(cached, { turnId: 1, toolCallId: 'in-flight', args: { text: 'start' }, signal: new AbortController().signal });
+    await started.promise;
+    if (status === 'failed') manager.fail('s');
+    else manager.markRemoved('s');
+    expect(ix.get(IAgentToolRegistryService).resolve(cached.name)).toBeUndefined();
+    const blocked = await executeTool(cached, { turnId: 1, toolCallId: 'new-call', args: { text: 'not sent' }, signal: new AbortController().signal });
+    expect(blocked.isError).toBe(true);
+    expect(calls).toHaveBeenCalledTimes(1);
+    finish.resolve();
+    await expect(running).resolves.toMatchObject({ output: 'finished' });
   });
 
   it('returns a non-transport MCP error without reconnecting the server', async () => {
@@ -806,7 +1211,7 @@ describe('AgentMcpService', () => {
         signal: new AbortController().signal,
       }),
     ).rejects.toThrow('Connection closed');
-    expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp')).toHaveLength(2);
+    expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp')).toHaveLength(0);
   });
 
   it('reports both errors when the reconnect attempt itself fails', async () => {
@@ -1422,40 +1827,80 @@ describe('AgentMcpService', () => {
     );
   });
 
-  it('keeps tools registered when a connected server fails so later calls can heal', async () => {
+  it('withdraws a failed connection and attempts recovery once per preparation without blocking the step on failure', async () => {
     const manager = new FakeMcpManager();
     const client = fakeMcpClient();
     manager.setResolved('s', client, await discoverTools(client));
     createService(manager);
-
     manager.connect('s');
     manager.fail('s');
-
-    expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp')).toHaveLength(2);
-    expect(events).not.toContainEqual(
-      expect.objectContaining({ type: 'tool.list.updated', reason: 'mcp.failed' }),
-    );
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        type: 'mcp.server.status',
-        server: expect.objectContaining({ name: 's', status: 'failed' }),
-      }),
-    );
+    expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp')).toHaveLength(0);
+    const reconnect = vi.fn(async () => { throw new Error('fixture recovery failed'); });
+    manager.reconnectHandler = reconnect;
+    await expect(ix.get(IAgentToolRegistryService).prepare()).resolves.toBeUndefined();
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__s__echo')).toBeUndefined();
+    await expect(ix.get(IAgentToolRegistryService).prepare()).resolves.toBeUndefined();
+    expect(reconnect).toHaveBeenCalledTimes(2);
+    expect(events).toContainEqual(expect.objectContaining({ type: 'mcp.server.status', server: expect.objectContaining({ name: 's', status: 'failed' }) }));
   });
 
-  it('keeps tools registered while the server is reconnecting', async () => {
+  it('withdraws tools while reconnecting and restores them on the connected event', async () => {
     const manager = new FakeMcpManager();
     const client = fakeMcpClient();
     manager.setResolved('s', client, await discoverTools(client));
     createService(manager);
-
     manager.connect('s');
     manager.pending('s');
-
+    expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp')).toHaveLength(0);
+    expect(events).toContainEqual(expect.objectContaining({ type: 'tool.list.updated', reason: 'mcp.disconnected' }));
+    manager.connect('s');
     expect(ix.get(IAgentToolRegistryService).list().filter((tool) => tool.source === 'mcp')).toHaveLength(2);
-    expect(events).not.toContainEqual(
-      expect.objectContaining({ type: 'tool.list.updated', reason: 'mcp.disconnected' }),
-    );
+  });
+
+  it('single-flights safe recovery and does not let its late connected result override session off', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('s', client, await discoverTools(client));
+    const service = createService(manager, Promise.resolve(), () => true, { registryEntries: [registryEntry('s')] });
+    manager.connect('s');
+    manager.fail('s');
+    const started = deferred<void>();
+    const finish = deferred<void>();
+    const reconnect = vi.fn(async (name: string) => { started.resolve(); await finish.promise; manager.connect(name); });
+    manager.reconnectHandler = reconnect;
+    const first = ix.get(IAgentToolRegistryService).prepare();
+    const second = ix.get(IAgentToolRegistryService).prepare();
+    try {
+      await started.promise;
+      await service.setMcpSessionOverride({ locator: { source: 'global', name: 's' }, override: 'off' });
+      expect(ix.get(IAgentToolRegistryService).resolve('mcp__s__echo')).toBeUndefined();
+    } finally { finish.resolve(); }
+    await Promise.all([first, second]);
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__s__echo')).toBeUndefined();
+    await expect(service.listMcpSessionCapabilities()).resolves.toMatchObject([{ override: 'off', connection: 'disabled' }]);
+    await ix.get(IAgentToolRegistryService).prepare();
+    expect(reconnect).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not recover a failed server denied by the current policy or one removed by its source', async () => {
+    const manager = new FakeMcpManager();
+    const client = fakeMcpClient();
+    manager.setResolved('s', client, await discoverTools(client));
+    createService(manager);
+    manager.connect('s');
+    manager.fail('s');
+    const reconnect = vi.fn(async () => {});
+    manager.reconnectHandler = reconnect;
+    ix.stub(IAgentToolPolicyService, { isToolActive: () => false });
+    await ix.get(IAgentToolRegistryService).prepare();
+    expect(reconnect).not.toHaveBeenCalled();
+    ix.stub(IAgentToolPolicyService, { isToolActive: () => true });
+    manager.markRemoved('s');
+    await ix.get(IAgentToolRegistryService).prepare();
+    expect(reconnect).not.toHaveBeenCalled();
+    expect(ix.get(IAgentToolRegistryService).resolve('mcp__s__echo')).toBeUndefined();
   });
 
   const RAW_QUERY: MCPToolDefinition = {
@@ -1479,7 +1924,7 @@ describe('AgentMcpService', () => {
       }
     };
     wireRecordListeners.add(listener);
-    return { records, off: toDisposable(() => wireRecordListeners.delete(listener)) };
+    return { records, off: toDisposable(() => { wireRecordListeners.delete(listener); }) };
   }
 
   it('records tools/list once after restore and dedups unchanged reconnects', async () => {

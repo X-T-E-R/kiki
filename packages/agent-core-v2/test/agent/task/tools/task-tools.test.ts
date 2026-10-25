@@ -3,6 +3,8 @@ import { PassThrough, Readable, type Writable } from 'node:stream';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { OrderedHookSlot } from '#/hooks';
+import type { AgentTaskNotificationDeliveryContext } from '#/agent/task/task';
 import { createServices } from '#/_base/di/test';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentGoalService } from '#/agent/goal/goal';
@@ -53,8 +55,8 @@ const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 const signal = new AbortController().signal;
 const waitToolDisposables = new DisposableStore();
 
-afterEach(() => {
-  waitToolDisposables.clear();
+afterEach(async () => {
+  await waitToolDisposables.clear();
 });
 
 function createWaitTool(
@@ -148,6 +150,7 @@ interface FakeTaskEntry {
 
 class FakeTaskService implements IAgentTaskService {
   declare readonly _serviceBrand: undefined;
+  readonly hooks = { onWillConsumeNotification: new OrderedHookSlot<AgentTaskNotificationDeliveryContext>() };
 
   readonly stopCalls: Array<{ taskId: string; reason: string | undefined }> = [];
   readonly suppressCalls: string[] = [];
@@ -195,6 +198,10 @@ class FakeTaskService implements IAgentTaskService {
 
   async getTaskSnapshot(taskId: string): Promise<AgentTaskInfo | undefined> {
     return this.getTask(taskId);
+  }
+
+  hasUnfinishedWork(): boolean {
+    return this.list().some((info) => info.lifetime !== 'service');
   }
 
   list(activeOnly = true, limit?: number, offset = 0): readonly AgentTaskInfo[] {

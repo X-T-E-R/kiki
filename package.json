@@ -25,6 +25,8 @@
     "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
     "test:integration": "vitest run .integration.",
     "test:kap-server:integration": "pnpm -C packages/kap-server run test:integration",
+    "test:focused": "node scripts/test-affected.mjs focused",
+    "test:full": "node scripts/test-affected.mjs full",
     "test:promote": "node scripts/run-promote-tests.mjs",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
@@ -63,7 +65,7 @@
     ]
   },
   "engines": {
-    "node": ">=24.15.0"
+    "node": ">=24.22.1 <25 || >=26.12.1"
   },
   "packageManager": "pnpm@10.33.0"
 }

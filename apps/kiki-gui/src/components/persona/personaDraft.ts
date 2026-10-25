@@ -27,6 +27,14 @@ export const PERSONA_ID_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
 export type PersonaMemoryScope = 'global' | 'workspace';
 export type PersonaDeliveryMode = 'reply' | 'message';
 
+/**
+ * What a persona session does when the persona names no delivery: a persona
+ * conversation is a message conversation. An explicit choice on the session —
+ * at creation or from the delivery switch — still wins, and a stored definition
+ * always keeps the value the editor showed.
+ */
+export const DEFAULT_PERSONA_DELIVERY: PersonaDeliveryMode = 'message';
+
 /** The default pair a persona reads when its own policy is absent. */
 export const DEFAULT_MEMORY_SHARED: readonly PersonaMemoryScope[] = ['global', 'workspace'];
 
@@ -84,7 +92,7 @@ export const EMPTY_PERSONA_DRAFT: PersonaDraft = {
   modelAlias: '',
   thinkingEffort: '',
   homeWorkspace: HOME_WORKSPACE_AUTO,
-  delivery: 'reply',
+  delivery: DEFAULT_PERSONA_DELIVERY,
   greeting: '',
   greetings: '',
   roomGreeting: '',
@@ -147,7 +155,7 @@ export function draftFromDefinition(
     thinkingEffort: definition.thinkingEffort ?? '',
     homeWorkspace: homeWorkspaceChoiceOf(definition.homeWorkspace, workspaces),
     initialHomeWorkspace: homeWorkspaceChoiceOf(definition.homeWorkspace, workspaces),
-    delivery: definition.delivery === 'message' ? 'message' : 'reply',
+    delivery: definition.delivery === 'reply' ? 'reply' : DEFAULT_PERSONA_DELIVERY,
     greeting: definition.greeting ?? '',
     greetings: (definition.greetings ?? []).join('\n'),
     roomGreeting: definition.roomGreeting ?? '',
@@ -237,7 +245,10 @@ export function definitionFromDraft(
     ...(modelAlias !== undefined ? { modelAlias } : {}),
     ...(thinkingEffort !== undefined ? { thinkingEffort } : {}),
     ...(homeWorkspace !== undefined ? { homeWorkspace } : {}),
-    ...(draft.delivery !== 'reply' ? { delivery: draft.delivery } : {}),
+    // Written even when it matches the default: the session route decides from
+    // this field, and an editor that showed "reply" but saved nothing would
+    // start a message session.
+    delivery: draft.delivery,
     ...(greeting !== undefined ? { greeting } : {}),
     ...(greetings.length > 0 ? { greetings } : {}),
     ...(roomGreeting !== undefined ? { roomGreeting } : {}),

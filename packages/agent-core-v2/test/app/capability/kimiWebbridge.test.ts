@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { access, chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -84,7 +84,8 @@ describe('WebBridge pinned supply chain and readiness', () => {
     const status = await service.getCapability('kimi-webbridge');
     expect(status.state).toBe('ready');
     expect(status.steps.filter((step) => !step.optional).map((step) => [step.id, step.state]))
-      .toEqual([['daemon', 'ok'], ['skill', 'ok'], ['extension', 'ok']]);
+      .toEqual([['daemon', 'ok'], ['extension', 'ok']]);
+    expect(status.steps.find((step) => step.id === 'skill')).toMatchObject({ state: 'ok', optional: true });
     expect(status.steps.find((step) => step.id === 'daemon-binary'))
       .toMatchObject({ state: 'missing', optional: true });
     expect(status.steps.find((step) => step.id === 'daemon-identity'))
@@ -156,14 +157,14 @@ describe('WebBridge pinned supply chain and readiness', () => {
     { enabled: true, state: 'error', enabledMcpServerCount: 1, mcpServerCount: 1 },
     { enabled: true, state: 'ok', enabledMcpServerCount: 0, mcpServerCount: 1 },
     { enabled: true, state: 'ok', hasErrors: true, enabledMcpServerCount: 1, mcpServerCount: 1 },
-  ])('does not treat an unavailable plugin as functional: %o', async (pluginState) => {
+  ])('keeps a running connected daemon ready when the plugin skill is unavailable: %o', async (pluginState) => {
     const { entry, plugins } = fixture(root, { status: { running: true, version: 'v2.0.22', extension_connected: true } });
     plugins.listPlugins = vi.fn(async () => [{ id: 'kimi-webbridge', ...pluginState }]) as never;
     const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
       stubLog(), undefined as never, undefined as never, [entry]);
     const status = await service.getCapability('kimi-webbridge');
-    expect(status.state).toBe('partial');
-    expect(status.steps.find((step) => step.id === 'skill')?.state).toBe('missing');
+    expect(status.state).toBe('ready');
+    expect(status.steps.find((step) => step.id === 'skill')).toMatchObject({ state: 'missing', optional: true });
   });
 
   it('reports an already present binary as unverified when its bytes differ from the pinned release', async () => {
@@ -173,7 +174,7 @@ describe('WebBridge pinned supply chain and readiness', () => {
     await chmod(destination, 0o755);
     const { entry } = fixture(root, { status: { running: true, version: 'fixture', extension_connected: true }, plugin: true });
     expect((await entry.detect()).steps.find((step) => step.id === 'daemon-binary'))
-      .toMatchObject({ state: 'missing', detail: expect.stringContaining('does not match') });
+      .toMatchObject({ state: 'ok', detail: expect.stringContaining('does not match'), reason: 'binary_unverified' });
   });
 
   it('blocks a forged status redirect, credentials and nonloopback target', async () => {
@@ -202,22 +203,39 @@ describe('WebBridge pinned supply chain and readiness', () => {
     expect(calls).toEqual([]);
   });
 
-  it('installs an exact fixture only once and does not overwrite existing files on retry', async () => {
-    const status = { running: true, version: 'fixture', extension_connected: false };
-    const { entry, calls, plugins } = fixture(root, { status });
-    const result = await entry.install(() => {});
-    expect(result).toBe('existing-loopback-daemon-observed-identity-unverified');
-    expect(calls).toEqual([]);
-    const { entry: down, calls: launches, plugins: pending } = fixture(root);
-    await expect(down.install(() => {})).rejects.toThrow(/valid status/);
+  it('launches existing unpinned executable binary without overwriting it', async () => {
     const destination = path.join(root, 'user', '.kimi-webbridge', 'bin', 'kimi-webbridge');
-    expect(await readFile(destination)).toEqual(Buffer.from(bytes));
-    expect(launches).toHaveLength(1);
-    expect(plugins.installPlugin).not.toHaveBeenCalled();
-    expect(pending.installPlugin).not.toHaveBeenCalled();
+    await mkdir(path.dirname(destination), { recursive: true });
     await writeFile(destination, 'existing external binary');
     await chmod(destination, 0o755);
-    await expect(down.install(() => {})).rejects.toThrow(/not the pinned/);
+    const { entry, calls } = fixture(root, { status: { running: true, version: 'custom', extension_connected: true } });
+    const result = await entry.install(() => {});
+    expect(result).toBe('existing-loopback-daemon-observed-identity-unverified');
     expect(await readFile(destination, 'utf8')).toBe('existing external binary');
-  }, 20_000);
+  });
+
+  it('updates WebBridge bytes on disk without stopping a running daemon and restores nothing when the download is rejected', async () => {
+    const destination = path.join(root, 'user', '.kimi-webbridge', 'bin', 'kimi-webbridge');
+    await mkdir(path.dirname(destination), { recursive: true });
+    await writeFile(destination, 'original binary');
+    await chmod(destination, 0o755);
+
+    const failing = fixture(root, { binary: new TextEncoder().encode('corrupted') });
+    await expect(failing.entry.update!(() => {})).rejects.toThrow(/SHA-256/);
+    expect(await readFile(destination, 'utf8')).toBe('original binary');
+    expect(failing.calls).toEqual([]);
+    expect((await readdir(path.dirname(destination))).filter((name) => name.includes('previous') || name.includes('.bak'))).toEqual([]);
+
+    const running = fixture(root, { status: { running: true, version: 'old', extension_connected: true } });
+    const service = new CapabilityService(undefined as never, undefined as never, undefined as never,
+      stubLog(), undefined as never, undefined as never, [running.entry]);
+    await service.updateCapability('kimi-webbridge');
+    const status = await service.getCapability('kimi-webbridge');
+    expect(status.install.running).toBe(false);
+    expect(status.install.error).toBeUndefined();
+    expect(status.install.note).toBe('webbridge-disk-updated-running-daemon-unchanged');
+    expect(await readFile(destination)).toEqual(Buffer.from(bytes));
+    expect(running.calls).toEqual([]);
+    expect(await readdir(path.dirname(destination))).toEqual(['kimi-webbridge']);
+  });
 });

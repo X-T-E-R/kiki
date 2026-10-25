@@ -42,7 +42,7 @@ describe('toProtocolMessage', () => {
       { type: 'text', text: 'hello' },
       { type: 'thinking', thinking: 'hmm', signature: 'sig-1' },
       { type: 'image', source: { kind: 'url', url: 'https://example.com/a.png' } },
-      { type: 'text', text: '[audio:https://example.com/a.mp3]' },
+      { type: 'audio', source: { kind: 'url', url: 'https://example.com/a.mp3' } },
       { type: 'video', source: { kind: 'url', url: 'https://example.com/a.mp4' } },
     ]);
   });

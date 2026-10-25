@@ -17,6 +17,7 @@ import {
 import {
   TranscriptFactReducer,
   TranscriptWireAdapter,
+  transcriptWireFactId,
   type TranscriptWireAdapterCheckpoint,
   type AgentDescriptor,
   type TranscriptChangeEvent,
@@ -142,6 +143,7 @@ export function bindSessionTranscript(
         tool: (toolCallId) => toolFrameFor(agentId, toolCallId),
         task: (taskId) => store.getAgent(agentId)?.getTask(taskId),
         todo: (todoId) => store.getAgent(agentId)?.getTodo(todoId),
+        prompt: (promptId) => store.getAgent(agentId)?.getPrompt(promptId),
       });
       wireAdapters.set(agentId, adapter);
     }
@@ -165,6 +167,7 @@ export function bindSessionTranscript(
         turn: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
         turnDetails: (turnId) => store.getAgent(agentId)?.getTurn(turnId),
         task: (taskId) => store.getAgent(agentId)?.getTask(taskId),
+        goal: () => store.getAgent(agentId)?.getMeta().goal,
       });
       for (const agent of agents.list()) {
         if (agent.id !== agentId) continue;
@@ -209,11 +212,11 @@ export function bindSessionTranscript(
       const ops: ReturnType<AgentTranscriptLiveAdapter['seedPrompt']> = [
         { op: 'meta.merge', meta: { promptQueueHold: snapshot.hold ?? null } },
       ];
-      if (snapshot.active !== undefined && isUserOriginPrompt(snapshot.active)) {
+      if (snapshot.active !== undefined && isQueueVisiblePrompt(snapshot.active)) {
         ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(snapshot.active, 'running')));
       }
       for (const pending of snapshot.pending) {
-        if (!isUserOriginPrompt(pending)) continue;
+        if (!isQueueVisiblePrompt(pending)) continue;
         ops.push(...liveAdapter.seedPrompt(promptFromSnapshot(pending, 'queued')));
       }
       applyOps(agent.id, ops);
@@ -233,6 +236,7 @@ export function bindSessionTranscript(
             agentId: info.agentId,
             name: info.collaborationTaskName,
             subagentName: info.profile,
+            model: info.model,
             thinkingEffort: info.thinkingEffort,
             thinkingEffortExplicit: info.thinkingEffortExplicit,
             executorId: info.executorId,
@@ -249,15 +253,46 @@ export function bindSessionTranscript(
 
   const processEvent = (agentId: string, event: TranscriptWireRecord): void => {
     if (event.type === 'context.spliced') return;
+    const message = event['message'] as { origin?: { kind?: string } } | undefined;
+    if (event.type === 'prompt.enqueued' && (message?.origin?.kind === 'cron_job' || message?.origin?.kind === 'user' || message?.origin?.kind === undefined)) {
+      const facts = wireAdapterFor(agentId).add(event);
+      applyFacts(agentId, facts);
+      for (const fact of facts) for (const op of fact.operations) {
+        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).seedPrompt(op.prompt);
+      }
+      return;
+    }
+    const promptId = event['promptId'];
+    const prompt = typeof promptId === 'string' ? store.getAgent(agentId)?.getPrompt(promptId) : undefined;
+    if (event.type === 'prompt.launch_committed' && prompt?.originKind === 'cron_job') {
+      applyOps(agentId, liveAdapterFor(agentId).seedPrompt({ ...prompt, status: 'running', queuePosition: undefined }));
+      return;
+    }
     const liveOwned =
-      (event.type.startsWith('prompt.') && !event.type.startsWith('prompt.model_switch_')) ||
+      (event.type.startsWith('prompt.') && !event.type.startsWith('prompt.model_switch_') && event.type !== 'prompt.outcome_committed') ||
       event.type === 'subagent.spawned' ||
       event.type === 'subagent.started' ||
       event.type === 'subagent.completed' ||
       event.type === 'subagent.failed' ||
       event.type === 'subagent.suspended';
+    const identity = liveOwned ? undefined : transcriptWireFactId(event);
+    if (identity !== undefined && reducerFor(agentId).hasAcceptedDurableFact(identity)) return;
     const wireFacts = liveOwned ? [] : wireAdapterFor(agentId).add(event);
+    if (event.type === 'context.clear') {
+      const ids = (store.getAgent(agentId)?.getItems() ?? []).flatMap((item) =>
+        item.kind === 'turn' ? [item.turnId]
+          : item.kind === 'marker' && item.marker === 'message.delivery' ? [item.markerId] : [],
+      );
+      if (ids.length > 0) applyOps(agentId, [{ op: 'items.remove', ids }]);
+    }
     applyFacts(agentId, wireFacts);
+    if (event.type === 'prompt.outcome_committed') {
+      for (const fact of wireFacts) for (const op of fact.operations) {
+        if (op.op === 'prompt.upsert') liveAdapterFor(agentId).seedPrompt(op.prompt);
+      }
+      return;
+    }
+    if (event.type === 'prompt.moved') seedPrompts(agentId);
     if (
       event.type.startsWith('compaction.') ||
       event.type === 'task.started' ||
@@ -273,7 +308,8 @@ export function bindSessionTranscript(
       event.type === 'plan.revision' ||
       event.type === 'interaction.request' ||
       event.type === 'interaction.resolved' ||
-      event.type === 'turn.cancel'
+      event.type === 'turn.cancel' ||
+      (event.type === 'executor.runtime.update' && event['kind'] === 'usage')
     ) {
       return;
     }
@@ -364,8 +400,8 @@ export function bindSessionTranscript(
       seededAgents.add(handle.id);
       refreshDescriptors();
     }),
-    agents.onDidDispose((agentId) => {
-      for (const d of agentDisposables.get(agentId) ?? []) d.dispose();
+    agents.onDidDispose(async (agentId) => {
+      for (const d of agentDisposables.get(agentId) ?? []) await d.dispose();
       agentDisposables.delete(agentId);
       subscribedAgents.delete(agentId);
       liveAdapters.delete(agentId);
@@ -453,10 +489,10 @@ export function bindSessionTranscript(
       wireAdapters.get(agentId)?.releaseDurableTurns(turnIds);
       liveAdapters.get(agentId)?.releaseDurableTurns(turnIds, promptIds);
     },
-    dispose: () => {
-      for (const d of disposables) d.dispose();
+    dispose: async () => {
+      for (const d of disposables) await d.dispose();
       for (const list of agentDisposables.values()) {
-        for (const d of list) d.dispose();
+        for (const d of list) await d.dispose();
       }
       agentDisposables.clear();
       liveAdapters.clear();
@@ -472,8 +508,9 @@ export function bindSessionTranscript(
   };
 }
 
-function isUserOriginPrompt(snapshot: PromptSnapshot): boolean {
-  return (snapshot.message.origin?.kind ?? 'user') === 'user';
+function isQueueVisiblePrompt(snapshot: PromptSnapshot): boolean {
+  const kind = snapshot.message.origin?.kind ?? 'user';
+  return kind === 'user' || kind === 'cron_job';
 }
 
 function promptFromSnapshot(
@@ -497,6 +534,10 @@ function promptFromSnapshot(
       planGate: snapshot.execution.planGate,
       planMode: snapshot.execution.planMode,
     },
+    originKind: snapshot.message.origin?.kind === 'cron_job' ? 'cron_job' : undefined,
+    originDeliveryMode: snapshot.message.origin?.kind === 'cron_job'
+      ? snapshot.message.origin.deliveryMode
+      : undefined,
     userMessageId: snapshot.userMessageId,
     content: projectPromptContentParts(snapshot.message.content),
     createdAt: snapshot.createdAt,
@@ -515,6 +556,7 @@ export function descriptorFromMeta(agentId: string, meta: AgentMeta | undefined)
   const type = meta?.type ?? (agentId === MAIN_AGENT_ID ? 'main' : 'sub');
   return {
     agentId,
+    createdAt: meta?.createdAt === undefined ? undefined : new Date(meta.createdAt).toISOString(),
     type,
     parentAgentId,
     delegator,

@@ -72,6 +72,15 @@ export function stubContextMemory(eventBus?: IEventBus): StubContextMemory {
       }
       return cut;
     },
+    undoAndReplace: async (count, replacementPrompt) => {
+      const cut = computeUndoCut(messages, count);
+      if (cut.cutIndex >= 0 && cut.removedCount >= count) {
+        const deleteCount = messages.length - cut.cutIndex;
+        messages.splice(cut.cutIndex, deleteCount, replacementPrompt.message);
+        publishSplice(eventBus, { start: cut.cutIndex, deleteCount, messages: [replacementPrompt.message] });
+      }
+      return cut;
+    },
     applyCompaction: (input: ContextCompactionInput): ContextCompactionResult => {
       const shape = buildContextCompactionShape(messages, input);
       const previousLength = messages.length;
@@ -121,6 +130,12 @@ class StubContextMemoryService implements IAgentContextMemoryService {
   }
   undo(count: number): UndoCut {
     return this.impl.undo(count);
+  }
+  undoAndReplace(
+    count: number,
+    replacementPrompt: import('#/agent/prompt/promptService').PromptEnqueuedPayload,
+  ): Promise<UndoCut> {
+    return this.impl.undoAndReplace(count, replacementPrompt);
   }
   applyCompaction(input: ContextCompactionInput): ContextCompactionResult {
     return this.impl.applyCompaction(input);

@@ -26,7 +26,7 @@ describe('ModelOAuthTokenAdapter', () => {
     try {
       await expect(tokens.getAccessToken('example-provider', oauthRef, { force: true })).resolves.toBe('example-access-token');
       expect(getAccessToken).toHaveBeenCalledWith({ force: true });
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it.each([
@@ -38,14 +38,14 @@ describe('ModelOAuthTokenAdapter', () => {
     try {
       const error = await tokens.getAccessToken('example-provider', oauthRef).catch((error: unknown) => error);
       expect(toErrorPayload(error)).toMatchObject({ code, retryable, details: { provider: 'example-provider' }, cause: { message: cause.message } });
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it.each([new Error('Storage is locked'), new Error2(ErrorCodes.AUTH_LOGIN_REQUIRED, 'Already classified')])('preserves unknown and already coded errors (%s)', async (error) => {
     const { ix, tokens } = setup(async () => { throw error; });
     try {
       await expect(tokens.getAccessToken('example-provider', oauthRef)).rejects.toBe(error);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('rejects a missing token provider as login required', async () => {
@@ -54,13 +54,13 @@ describe('ModelOAuthTokenAdapter', () => {
     ix.set(IModelOAuthTokens, new SyncDescriptor(ModelOAuthTokenAdapter));
     try {
       await expect(ix.get(IModelOAuthTokens).getAccessToken('example-provider', oauthRef)).rejects.toMatchObject({ code: ErrorCodes.AUTH_LOGIN_REQUIRED, details: { provider: 'example-provider' } });
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 
   it('rejects an empty token as login required', async () => {
     const { ix, tokens } = setup(async () => ' ');
     try {
       await expect(tokens.getAccessToken('example-provider', oauthRef)).rejects.toMatchObject({ code: ErrorCodes.AUTH_LOGIN_REQUIRED, details: { provider: 'example-provider' } });
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
   });
 });

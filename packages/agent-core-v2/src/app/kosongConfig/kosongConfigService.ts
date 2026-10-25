@@ -16,7 +16,10 @@ import {
   DEFAULT_PROVIDER_SECTION,
   MODELS_SECTION,
   PROVIDERS_SECTION,
+  REQUEST_COMPRESSION_SECTION,
+  RESPONSES_WEB_SOCKET_SECTION,
 } from './configSection';
+import type { RequestCompressionLayer, ResponsesWebSocketLayer } from '#/kosong/provider/requestCompression';
 
 const PERSIST_MAX_ATTEMPTS = 3;
 
@@ -52,6 +55,7 @@ export class KosongConfigService extends Disposable implements IKosongConfigServ
       this.config.get<ModelsSection>(MODELS_SECTION) ?? {},
       this.config.get<string>(DEFAULT_MODEL_SECTION),
     );
+    this.publishTransportDefaults();
     this._register(this.config.onDidSectionChange((e) => this.onConfigSectionChanged(e)));
     this._register(
       this.providers.onDidChangeProviders((e) => {
@@ -109,7 +113,18 @@ export class KosongConfigService extends Disposable implements IKosongConfigServ
           .setDefaultModel(e.value as string | undefined)
           .catch((error) => this.logPersistFailure(error));
         break;
+      case REQUEST_COMPRESSION_SECTION:
+      case RESPONSES_WEB_SOCKET_SECTION:
+        this.publishTransportDefaults();
+        break;
     }
+  }
+
+  private publishTransportDefaults(): void {
+    this.providers.setTransportDefaults({
+      requestCompression: this.config.get<RequestCompressionLayer | undefined>(REQUEST_COMPRESSION_SECTION),
+      responsesWebSocket: this.config.get<ResponsesWebSocketLayer | undefined>(RESPONSES_WEB_SOCKET_SECTION),
+    });
   }
 
   private enqueuePersistProviders(): Promise<void> {

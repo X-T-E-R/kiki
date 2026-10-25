@@ -13,7 +13,10 @@ import {
   type IHostProcess,
 } from '#/os/interface/hostProcess';
 
+import { spawnWindowsProcessTree } from './windowsProcessTree';
+
 const isWindows: boolean = process.platform === 'win32';
+const TASKKILL_TIMEOUT_MS = 5_000;
 
 function buildSpawnOptions(options: HostProcessOptions): SpawnOptions {
   const detached = options.detached ?? !isWindows;
@@ -89,15 +92,22 @@ class HostProcess implements IHostProcess {
       : new BufferedReadable(child.stderr as Readable);
     this.pid = child.pid ?? -1;
 
-    this._exitPromise = new Promise<number>((resolve, reject) => {
-      child.on('exit', (code: number | null) => {
-        this._exitCode = code ?? -1;
-        resolve(this._exitCode);
+    const signalCode: string | null | undefined = child.signalCode;
+    const alreadyExited = typeof child.exitCode === 'number' || (signalCode !== undefined && signalCode !== null);
+    if (alreadyExited) {
+      this._exitCode = child.exitCode ?? -1;
+      this._exitPromise = Promise.resolve(this._exitCode);
+    } else {
+      this._exitPromise = new Promise<number>((resolve, reject) => {
+        child.on('exit', (code: number | null) => {
+          this._exitCode = code ?? -1;
+          resolve(this._exitCode);
+        });
+        child.on('error', (error: Error) => {
+          reject(error);
+        });
       });
-      child.on('error', (error: Error) => {
-        reject(error);
-      });
-    });
+    }
   }
 
   get exitCode(): number | null {
@@ -114,18 +124,29 @@ class HostProcess implements IHostProcess {
     }
 
     if (isWindows) {
-      const taskkillArgs = ['/T', '/F', '/PID', String(this.pid)];
-      return new Promise<void>((resolve) => {
-        const killer = spawn('taskkill', taskkillArgs, {
-          stdio: 'ignore',
-          windowsHide: true,
-        });
-        const done = (): void => {
-          resolve();
-        };
-        killer.once('error', done);
-        killer.once('close', done);
+      if (this._exitCode !== null) return;
+      const killer = spawn('taskkill', ['/T', '/F', '/PID', String(this.pid)], {
+        stdio: 'ignore',
+        windowsHide: true,
       });
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          const failure = (phase: string, cause?: unknown, exitCode?: number | null): void => {
+            reject(new HostProcessError(HostProcessErrorCode.KillFailed, `Failed to terminate process ${this.pid} with taskkill.`, {
+              details: { cleanupComplete: false, phase, pid: this.pid, exitCode }, cause,
+            }));
+          };
+          killer.once('error', (error) => { failure('control', error); });
+          killer.once('close', (code) => { if (code === 0) resolve(); else failure('terminate', undefined, code); });
+          timeout = setTimeout(() => {
+            killer.kill();
+            killer.unref();
+            failure('deadline');
+          }, TASKKILL_TIMEOUT_MS);
+        });
+      } finally { clearTimeout(timeout); }
+      return;
     }
 
     try {
@@ -164,17 +185,59 @@ class HostProcess implements IHostProcess {
 
 export class HostProcessService implements IHostProcessService {
   declare readonly _serviceBrand: undefined;
+  private readonly ownedTrees = new Set<Awaited<ReturnType<typeof spawnWindowsProcessTree>>>();
+  private readonly pendingTrees = new Set<ReturnType<typeof spawnWindowsProcessTree>>();
+  private closing = false;
+  private disposePromise: Promise<void> | undefined;
+
+  dispose(): Promise<void> {
+    this.closing = true;
+    if (this.disposePromise === undefined) {
+      this.disposePromise = this.shutdownOwnedTrees();
+      void this.disposePromise.catch(() => { this.disposePromise = undefined; });
+    }
+    return this.disposePromise;
+  }
+
+  private async shutdownOwnedTrees(): Promise<void> {
+    await Promise.allSettled(this.pendingTrees);
+    const outcomes = await Promise.allSettled([...this.ownedTrees].map((tree) => tree.shutdownOwner()));
+    const failures = outcomes.filter((outcome) => outcome.status === 'rejected').map((outcome) => outcome.reason as unknown);
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Failed to stop owned Windows process trees.');
+  }
 
   async spawn(
     command: string,
     args: readonly string[] = [],
     options: HostProcessOptions = {},
   ): Promise<IHostProcess> {
+    if (this.closing) throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Host process service is shutting down.', { details: { command, phase: 'owner' } });
+    const ownerLifetime = options.ownedProcessLifetime === 'owner';
+    if (ownerLifetime && (!isWindows || options.ownedProcessTree !== true)) {
+      throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Owner lifetime requires an owned Windows process tree.', { details: { command, phase: 'owner' } });
+    }
     const spawnOptions = buildSpawnOptions(options);
+    if (isWindows && options.ownedProcessTree === true) {
+      const pending = spawnWindowsProcessTree(command, args, spawnOptions, options.mergeStderr ?? false, ownerLifetime);
+      if (!ownerLifetime) return pending;
+      this.pendingTrees.add(pending);
+      try {
+        const tree = await pending;
+        this.ownedTrees.add(tree);
+        tree.onRelease(() => { this.ownedTrees.delete(tree); });
+        if (this.closing) throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Host process service shut down during launch.', { details: { command, phase: 'owner' } });
+        return tree;
+      } finally { this.pendingTrees.delete(pending); }
+    }
     const child = spawn(command, args as string[], spawnOptions);
+    const processHandle = new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
+    const observedExit = processHandle.wait().catch(() => undefined);
     try {
       await waitForSpawn(child);
     } catch (error) {
+      await observedExit;
+      processHandle.dispose();
       const err = error as NodeJS.ErrnoException;
       throw new HostProcessError(
         HostProcessErrorCode.SpawnFailed,
@@ -185,7 +248,7 @@ export class HostProcessService implements IHostProcessService {
         },
       );
     }
-    return new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
+    return processHandle;
   }
 }
 

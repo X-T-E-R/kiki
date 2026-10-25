@@ -34,26 +34,44 @@ import {
 import {
   PARENT_INDEX_NAME,
   SESSION_INDEX_MANIFEST,
+  SESSION_INDEX_REVISION,
+  advanceSessionIndexRevision,
   recencyColumn,
   sessionCollection,
   sessionCountersCollection,
   stripRecencyField,
   type SessionWorkspaceCounts,
 } from './sessionIndexModel';
-import { SessionIndexBuildingError } from './errors';
+import { SessionIndexBuildingError, SessionIndexReconcilePendingError } from './errors';
+import { readSessionArchiveFamily } from './sessionArchiveFamily';
 import { SessionIndexProjector } from './sessionIndexProjector';
 import {
+  listSessionIds,
+  listWorkspaceIds,
+  probeSessionSummaryResult,
   readSessionSummaryResult,
-  scanSessionsMaxMtime,
   summaryMatchesChildOf,
 } from './sessionIndexSource';
 
 const READ_MODEL_FLAG = 'persistence_minidb_readmodel';
 const RECONCILE_INTERVAL_MS = 10 * 60_000;
+const WATCH_BATCH_MS = 1_000;
+const WATCH_BATCH_SIZE = 16;
+const POINT_PROBE_CONCURRENCY = 16;
+const WATCH_PENDING_LIMIT = 1024;
+const RECONCILE_MAX_ATTEMPTS = 2;
+const RECONCILE_RETRY_BASE_MS = 5_000;
+const RECONCILE_RETRY_MAX_MS = 60_000;
 const DEGRADED_RETRY_MS = 5_000;
+const RECOVERY_MAX_ATTEMPTS = 3;
+const RECOVERY_COOLDOWN_MS = 60_000;
 const UNBOUNDED = Number.MAX_SAFE_INTEGER;
 
-function canonicalOrder(a: SessionSummary, b: SessionSummary): number {
+class AuthoritativeReadFailure extends Error {
+  constructor(cause: unknown) { super('authoritative metadata read failed', { cause }); }
+}
+
+function canonicalOrder(a: Pick<SessionSummary, 'updatedAt' | 'id'>, b: Pick<SessionSummary, 'updatedAt' | 'id'>): number {
   if (a.updatedAt !== b.updatedAt) return b.updatedAt - a.updatedAt;
   return a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
 }
@@ -88,9 +106,21 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private statusReason: string | undefined;
   private degradedCount = 0;
   private nextPrepareRetryAt = 0;
+  private recoveryRequired = false;
+  private recoveryAttempts = 0;
+  private readonly recoveryTimer = this._register(new TimeoutTimer());
   private prepareFlight: Promise<SessionIndexStatus> | undefined;
   private projectFlight: Promise<boolean> | undefined;
   private catchUpFlight: Promise<boolean> | undefined;
+  private reconcileFlight: Promise<void> | undefined;
+  private disposeFlight: Promise<void> | undefined;
+  private reconcileRequest = 0;
+  private reuseReconcileFingerprints = true;
+  private nextReconcileRetryAt = 0;
+  private reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
+  private readonly reconcileRetryTimer = this._register(new TimeoutTimer());
+  private readonly authoritativeFlights = new Map<string, Promise<readonly SessionSummary[]>>();
+  private readonly authoritativePointFlights = new Map<string, Promise<SessionSummary | undefined>>();
   private readonly statusEmitter = this._register(new Emitter<SessionIndexStatus>());
   readonly onDidChangeStatus = this.statusEmitter.event;
   private publishedStatus: SessionIndexStatus = {
@@ -100,6 +130,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   };
   private readonly reconcileTimer = this._register(new IntervalTimer({ unref: true }));
   private readonly watchDebounce = this._register(new TimeoutTimer());
+  private readonly watchedSessions = new Map<string, { workspaceId: string; id: string }>();
+  private watchInventory = false;
+  private watchScheduled = false;
+  private watchFlight: Promise<void> | undefined;
+  private watchRetryDelayMs = WATCH_BATCH_MS;
   private watchStarted = false;
   private readonly projector: SessionIndexProjector;
 
@@ -123,9 +158,29 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     });
   }
 
+  override dispose(): Promise<void> {
+    this.disposeFlight ??= this.disposeIndex();
+    return this.disposeFlight;
+  }
+
+  private async disposeIndex(): Promise<void> {
+    try {
+      await super.dispose();
+    } finally {
+      await Promise.allSettled([
+        this.prepareFlight,
+        this.projectFlight,
+        this.catchUpFlight,
+        this.reconcileFlight,
+        this.watchFlight,
+      ]);
+    }
+  }
+
   /** The reconcile loop runs only while the read model is in play — starting
    *  it unconditionally would spin an interval for every flag-off host. */
   private ensureReconcileTimer(): void {
+    if (this._store.isDisposed) return;
     if (!this.reconcileTimer.isSet()) {
       this.reconcileTimer.cancelAndSet(() => void this.tick(), RECONCILE_INTERVAL_MS);
     }
@@ -147,20 +202,20 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         const path = relative(root, change.path);
         if (path.startsWith('..')) return;
         const parts = path === '' ? [] : path.split(sep);
-        if (parts.length >= 2 && (
-          change.kind === 'directory' || parts.at(-1) === 'state.json'
-        )) {
+        if (parts.length >= 2 && (change.kind === 'directory' || parts.at(-1) === 'state.json')) {
           this.projector.invalidateFingerprint(parts[0], parts[1]);
-        } else if (change.kind === 'directory' && parts.length < 2) {
+          this.watchedSessions.set(`${parts[0]}/${parts[1]}`, { workspaceId: parts[0]!, id: parts[1]! });
+        } else if (change.kind === 'directory') {
           this.projector.invalidateFingerprint();
         } else {
           return;
         }
-        this.watchDebounce.cancelAndSet(() => {
-          void this.reconcileNow({ reuseFingerprints: true }).catch((error: unknown) => {
-            this.log.warn('session index watched reconciliation failed', { error: String(error) });
-          });
-        }, 200);
+        if (change.kind === 'directory') this.watchInventory = true;
+        if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
+          this.watchInventory = true;
+          this.watchedSessions.clear();
+        }
+        this.scheduleWatchedReconcile();
       }));
       void watch.ready.catch((error: unknown) => {
         this.log.warn('session index watch failed; relying on periodic reconciliation', { error: String(error) });
@@ -170,9 +225,71 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     }
   }
 
+  private scheduleWatchedReconcile(): void {
+    if (this._store.isDisposed || this.watchScheduled || this.watchFlight !== undefined || !this.readModelEnabled()) return;
+    if (!this.watchInventory && this.watchedSessions.size === 0) return;
+    this.watchScheduled = true;
+    this.watchDebounce.cancelAndSet(() => {
+      this.watchScheduled = false;
+      this.watchFlight = this.reconcileWatched().catch((error: unknown) => {
+        if (this.watchRetryDelayMs === WATCH_BATCH_MS && !(error instanceof SessionIndexReconcilePendingError)) {
+          this.log.warn('session index watched reconciliation failed', { error: String(error) });
+        }
+        this.watchRetryDelayMs = error instanceof SessionIndexReconcilePendingError && error.details?.['reason'] === 'concurrent_changes'
+          ? WATCH_BATCH_MS
+          : Math.min(Math.max(RECONCILE_RETRY_BASE_MS, this.watchRetryDelayMs * 2), RECONCILE_RETRY_MAX_MS);
+      }).finally(() => {
+        this.watchFlight = undefined;
+        this.scheduleWatchedReconcile();
+      });
+    }, this.watchedSessions.size > 0 ? this.watchRetryDelayMs : Math.max(this.watchRetryDelayMs, this.nextReconcileRetryAt - Date.now()));
+  }
+
+  private async reconcileWatched(): Promise<void> {
+    if (this._store.isDisposed || !this.readModelEnabled()) return;
+    if (this.reconcileFlight !== undefined) {
+      await this.reconcileFlight;
+      return;
+    }
+    if (this.watchInventory && this.watchedSessions.size === 0) {
+      this.watchInventory = false;
+      try {
+        await this.reconcileNow({ reuseFingerprints: true });
+      } catch (error) {
+        this.watchInventory = true;
+        throw error;
+      }
+    } else {
+      const entries = [...this.watchedSessions.entries()].slice(0, WATCH_BATCH_SIZE);
+      for (const [key] of entries) this.watchedSessions.delete(key);
+      try {
+        await this.mirror.runExclusive(async () => {
+          this.checkReconcileActive(0);
+          const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+          if (manifest === undefined || this.recoveryRequired || this.mirror.dirtyEpoch() !== undefined) {
+            throw new SessionIndexReconcilePendingError('uninitialized', 0);
+          }
+          const commit = await this.projector.planReconcile(manifest.seq, { reuseFingerprints: true, changedSessions: entries.map(([, value]) => value) });
+          this.checkReconcileActive(0);
+          const result = await commit();
+          if (result.inventoryRequired === true) this.watchInventory = true;
+        });
+      } catch (error) {
+        for (const [key, value] of entries) this.watchedSessions.set(key, value);
+        if (this.watchedSessions.size > WATCH_PENDING_LIMIT) {
+          this.watchInventory = true;
+          this.watchedSessions.clear();
+        }
+        throw error;
+      }
+    }
+    this.watchRetryDelayMs = WATCH_BATCH_MS;
+  }
+
   async prepare(options?: { deadlineMs?: number }): Promise<SessionIndexStatus> {
-    if (!this.readModelEnabled()) return this.status();
-    if (this.mirror.dirtyEpoch() !== undefined) {
+    if (this._store.isDisposed || !this.readModelEnabled()) return this.status();
+    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) return this.status();
+    if (!this.recoveryRequired && this.mirror.dirtyEpoch() !== undefined) {
       await this.ensureDirtyCatchUp();
       return this.status();
     }
@@ -209,8 +326,24 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.state = 'preparing';
     this.emitStatusIfChanged();
     try {
+      if (this.recoveryRequired) {
+        this.recoveryAttempts++;
+        this.recoveryTimer.cancel();
+        this.log.info('session index recovery started', { attempt: this.recoveryAttempts });
+        await this.projectFlight?.catch(() => false);
+        await this.mirror.runExclusive(async () => { await this.queryStore.recover?.(); });
+        const rebuilt = await this.ensureProjection(true);
+        if (!rebuilt) throw new Error('session index recovery projection failed');
+        await this.mirror.drain();
+        this.recoveryRequired = false;
+        this.recoveryAttempts = 0;
+        this.nextPrepareRetryAt = 0;
+        this.markReady();
+        this.log.info('session index recovery completed', { generation: this.generation });
+        return this.status();
+      }
       const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined || !(await this.manifestFresh(manifest))) {
+      if (manifest === undefined) {
         const projection = this.ensureProjection();
         if (deadlineMs === undefined) {
           await projection;
@@ -225,6 +358,13 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       } else {
         this.generation = manifest.seq;
         await this.ensureSchema(manifest.seq);
+        if (!this._store.isDisposed) {
+          this.reconcileRetryTimer.cancelAndSet(() => {
+            void this.reconcileNow().catch((error: unknown) => {
+              this.log.warn('session index startup reconciliation failed', { error: String(error) });
+            });
+          }, 0);
+        }
       }
       const published = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
       if (published !== undefined) {
@@ -238,23 +378,6 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.status();
   }
 
-  private async manifestFresh(manifest: Checkpoint): Promise<boolean> {
-    const published = manifest.sourceMaxMtimeMs;
-    if (published === undefined) return false;
-
-    try {
-      return (
-        (await scanSessionsMaxMtime(this.storage, this.bootstrap.scope('sessions'), this.log)) <=
-        published
-      );
-    } catch (error) {
-      this.log.warn('session index freshness check failed; re-projecting', {
-        error: String(error),
-      });
-      return false;
-    }
-  }
-
   private ensureProjection(fresh = false): Promise<boolean> {
     this.projectFlight ??= this.runProjection(fresh).finally(() => {
       this.projectFlight = undefined;
@@ -266,16 +389,25 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     let projected = false;
     try {
       let scanFresh = fresh;
+      let conflicts = 0;
       while (!projected) {
-        const epoch = this.mirror.epoch();
+        const baseline = await this.mirror.runExclusive(async () => ({
+          epoch: this.mirror.epoch(),
+          generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
+          revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
+        }));
         const scan = await this.projector.scan({ fresh: scanFresh });
         const result = await this.mirror.runExclusive(async () => {
-          if (this.mirror.epoch() !== epoch) return undefined;
           const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+          const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
+          if (this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return undefined;
           const next = (manifest?.seq ?? 0) + 1;
           return this.projector.project(next, scan);
         });
         if (result === undefined) {
+          if (this.recoveryRequired && ++conflicts >= RECONCILE_MAX_ATTEMPTS) {
+            throw new SessionIndexReconcilePendingError('concurrent_changes', conflicts, DEGRADED_RETRY_MS);
+          }
           scanFresh = true;
           continue;
         }
@@ -284,6 +416,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         projected = true;
       }
     } catch (error) {
+      if (this.recoveryRequired) throw error;
       const published = await this.queryStore
         .getCheckpoint(SESSION_INDEX_MANIFEST)
         .catch(() => undefined);
@@ -323,20 +456,81 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return this.mirror.dirtyEpoch() === undefined;
   }
 
-  /** Test/ops hook: reconcile the published generation against disk now. */
-  async reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
-    if (!this.readModelEnabled()) return;
-    await this.mirror.runExclusive(async () => {
-      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined) return;
-      this.generation = manifest.seq;
-      await this.projector.reconcile(manifest.seq, options);
+  /** Reconciles a stable authoritative snapshot. Rejects with a retryable
+   *  session.index_building error while concurrent changes require a deferred pass. */
+  reconcileNow(options?: { reuseFingerprints?: boolean }): Promise<void> {
+    if (this._store.isDisposed) return Promise.reject(new SessionIndexReconcilePendingError('disposed', 0));
+    if (!this.readModelEnabled()) return Promise.resolve();
+    const retryAfterMs = this.nextReconcileRetryAt - Date.now();
+    if (this.reconcileFlight === undefined && retryAfterMs > 0) return Promise.reject(new SessionIndexReconcilePendingError('concurrent_changes', 0, retryAfterMs));
+    this.reconcileRequest += 1;
+    this.reuseReconcileFingerprints &&= options?.reuseFingerprints === true;
+    if (this.reconcileFlight !== undefined) return this.reconcileFlight;
+    this.reconcileRetryTimer.cancel();
+    this.reconcileFlight = this.runReconcile().finally(() => {
+      this.reconcileFlight = undefined;
     });
+    return this.reconcileFlight;
   }
 
-  /** Test/ops hook: project a fresh generation now (single-flight). */
+  private checkReconcileActive(attempts: number): void {
+    if (this._store.isDisposed) throw new SessionIndexReconcilePendingError('disposed', attempts);
+    if (!this.readModelEnabled()) throw new SessionIndexReconcilePendingError('disabled', attempts);
+  }
+
+  private async runReconcile(): Promise<void> {
+    for (let attempt = 0; attempt < RECONCILE_MAX_ATTEMPTS; attempt++) {
+      this.checkReconcileActive(attempt);
+      const request = this.reconcileRequest;
+      const reuseFingerprints = this.reuseReconcileFingerprints;
+      this.reuseReconcileFingerprints = true;
+      const baseline = await this.mirror.runExclusive(async () => ({
+        epoch: this.mirror.epoch(),
+        generation: (await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST))?.seq,
+        revision: (await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION))?.seq,
+      }));
+      this.checkReconcileActive(attempt);
+      if (baseline.generation === undefined) throw new SessionIndexReconcilePendingError('uninitialized', attempt);
+      const commit = await this.projector.planReconcile(baseline.generation, { reuseFingerprints });
+      this.checkReconcileActive(attempt + 1);
+      const committed = await this.mirror.runExclusive(async () => {
+        this.checkReconcileActive(attempt + 1);
+        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+        const revision = await this.queryStore.getCheckpoint(SESSION_INDEX_REVISION);
+        if (request !== this.reconcileRequest || this.mirror.epoch() !== baseline.epoch || manifest?.seq !== baseline.generation || revision?.seq !== baseline.revision) return false;
+        await commit();
+        this.generation = baseline.generation;
+        return true;
+      });
+      if (committed && request === this.reconcileRequest) {
+        this.nextReconcileRetryAt = 0;
+        this.reconcileRetryDelayMs = RECONCILE_RETRY_BASE_MS;
+        this.reconcileRetryTimer.cancel();
+        return;
+      }
+      this.projector.invalidateFingerprint();
+      this.reuseReconcileFingerprints = false;
+    }
+    const delay = this.reconcileRetryDelayMs;
+    this.nextReconcileRetryAt = Date.now() + delay;
+    this.reconcileRetryDelayMs = Math.min(delay * 2, RECONCILE_RETRY_MAX_MS);
+    this.reconcileRetryTimer.cancelAndSet(() => {
+      void this.reconcileNow().catch((error: unknown) => {
+        this.log.warn('session index deferred reconciliation incomplete', { error: String(error) });
+      });
+    }, delay);
+    throw new SessionIndexReconcilePendingError('concurrent_changes', RECONCILE_MAX_ATTEMPTS, delay);
+  }
+
+  /** Explicitly retry an exhausted recovery or project a fresh generation (single-flight). */
   async reprojectNow(): Promise<void> {
-    if (!this.readModelEnabled()) return;
+    if (this._store.isDisposed || !this.readModelEnabled()) return;
+    if (this.recoveryRequired) {
+      this.recoveryAttempts = 0;
+      this.nextPrepareRetryAt = 0;
+      await this.prepare();
+      return;
+    }
     await this.ensureProjection();
   }
 
@@ -349,30 +543,29 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private async tick(): Promise<void> {
     if (!this.readModelEnabled()) return;
     if (this.state === 'degraded') {
-      void this.prepare();
+      this.kickPrepare();
       return;
     }
     if (this.state !== 'ready') return;
     try {
-      await this.mirror.runExclusive(async () => {
-        const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-        if (manifest === undefined) {
-          this.markDegraded('published generation lost');
-          void this.prepare();
-          return;
-        }
-        this.generation = manifest.seq;
-        await this.projector.reconcile(manifest.seq, { reuseFingerprints: true });
-      });
+      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+      if (manifest === undefined) {
+        this.markDegraded('published generation lost');
+        void this.prepare();
+        return;
+      }
+      await this.reconcileNow({ reuseFingerprints: true });
     } catch (error) {
       this.log.warn('session index reconciliation failed', { error: String(error) });
     }
   }
 
   private markReady(): void {
+    if (this.recoveryRequired) return;
     this.state = 'ready';
     this.statusReason = undefined;
     this.ensureReconcileTimer();
+    this.scheduleWatchedReconcile();
     this.emitStatusIfChanged();
   }
 
@@ -380,7 +573,16 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     this.state = 'degraded';
     this.statusReason = reason;
     this.degradedCount += 1;
-    this.nextPrepareRetryAt = Date.now() + DEGRADED_RETRY_MS;
+    this.recoveryRequired = true;
+    const exhausted = this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS;
+    if (exhausted) this.statusReason = `${reason}; automatic recovery exhausted; next read can retry after ${RECOVERY_COOLDOWN_MS}ms cooldown`;
+    this.nextPrepareRetryAt = Date.now() + (exhausted ? RECOVERY_COOLDOWN_MS : DEGRADED_RETRY_MS);
+    if (!exhausted) this.recoveryTimer.cancelAndSet(() => this.kickPrepare(), DEGRADED_RETRY_MS);
+    else this.log.error('session index automatic recovery exhausted; waiting for read after cooldown', {
+      attempts: this.recoveryAttempts,
+      retryAfterMs: RECOVERY_COOLDOWN_MS,
+      error: String(error),
+    });
     this.ensureReconcileTimer();
     this.emitStatusIfChanged();
     const detail =
@@ -405,6 +607,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       (generation) => this.getFromReadModel(generation, id, undefined, workspaceId),
       () => this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]),
     );
+  }
+
+  archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]> {
+    return readSessionArchiveFamily(this.storage, this.docs, this.sessionsScope, id, excludedIds, this.log);
   }
 
   async listRecent(query: SessionListQuery): Promise<Page<SessionSummary>> {
@@ -447,19 +653,27 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       return legacy();
     }
     if (this.state !== 'ready') {
-      if (this.state !== 'preparing' && Date.now() >= this.nextPrepareRetryAt) this.kickPrepare();
+      if (this.state !== 'preparing' && Date.now() >= this.nextPrepareRetryAt) this.kickPrepare(true);
       return legacy();
     }
+    let manifest: Checkpoint | undefined;
     try {
-      const manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
-      if (manifest === undefined) {
-        this.markDegraded('published generation lost');
-        this.kickPrepare();
-        return await legacy();
-      }
-      this.generation = manifest.seq;
+      manifest = await this.queryStore.getCheckpoint(SESSION_INDEX_MANIFEST);
+    } catch (error) {
+      this.markDegraded('read model read failed', error);
+      this.kickPrepare();
+      return legacy();
+    }
+    if (manifest === undefined) {
+      this.markDegraded('published generation lost');
+      this.kickPrepare();
+      return legacy();
+    }
+    this.generation = manifest.seq;
+    try {
       return await op(manifest.seq);
     } catch (error) {
+      if (error instanceof AuthoritativeReadFailure) throw error.cause;
       this.markDegraded('read model read failed', error);
       this.kickPrepare();
       return legacy();
@@ -472,6 +686,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     exclusive = false,
   ): Promise<T> {
     if (!this.readModelEnabled()) return legacy();
+    if (this.recoveryRequired) {
+      if (Date.now() >= this.nextPrepareRetryAt || this.recoveryAttempts === 0) this.kickPrepare(true);
+      throw new SessionIndexBuildingError();
+    }
     if (this.mirror.dirtyEpoch() !== undefined) {
       void this.ensureDirtyCatchUp().catch(() => false);
       throw new SessionIndexBuildingError();
@@ -509,6 +727,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       try {
         return await op(generation);
       } catch (error) {
+        if (error instanceof AuthoritativeReadFailure) throw error.cause;
         this.markDegraded('read model read failed', error);
         this.kickPrepare();
         throw new SessionIndexBuildingError();
@@ -517,8 +736,16 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     return exclusive ? this.mirror.runExclusive(read) : read();
   }
 
-  private kickPrepare(): void {
-    void this.prepare().catch(() => undefined);
+  private kickPrepare(requested = false): void {
+    if (this.prepareFlight !== undefined || this.state === 'preparing') return;
+    if (this.recoveryRequired && this.recoveryAttempts >= RECOVERY_MAX_ATTEMPTS) {
+      if (!requested || this.state !== 'degraded' || Date.now() < this.nextPrepareRetryAt) return;
+      this.recoveryAttempts = 0;
+      this.log.info('session index recovery resumed by read after cooldown');
+    }
+    void this.prepare().catch((error: unknown) => {
+      this.log.error('session index recovery failed', { error: String(error) });
+    });
   }
 
   private async getFromReadModel(
@@ -537,7 +764,8 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
         if (workspaceId === undefined || summary.workspaceId === workspaceId) return this.withOwnUpdatedAt(summary);
       }
     }
-    const summary = await this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId]);
+    const summary = await this.getLegacy(id, workspaceId === undefined ? undefined : [workspaceId])
+      .catch((error: unknown) => { throw new AuthoritativeReadFailure(error); });
     if (summary !== undefined) this.mirror.record(summary);
     return summary;
   }
@@ -652,6 +880,7 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     const collection = sessionCollection(generation);
     const storedValue: unknown = await this.queryStore.get(collection, id);
     if (storedValue === undefined) return;
+    await advanceSessionIndexRevision(this.queryStore);
     if (!isSessionSummaryShape(storedValue)) {
       await this.queryStore.delete(collection, id);
       return;
@@ -746,15 +975,18 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     | { filter: QueryFilter; bounds: ColumnBounds; position?: { u: number; id: string; before: boolean } }
     | undefined
   > {
-    const id = query.before ?? query.after;
+    const id = query.beforePosition?.id ?? query.before ?? query.after;
     if (id === undefined) return { filter: {}, bounds: {} };
-    const queued = pending.find((summary) => summary.id === id);
-    const storedValue: unknown = await this.queryStore.get(sessionCollection(generation), id);
-    const stored = isSessionSummaryShape(storedValue) ? storedValue : undefined;
-    const cursor = queued ?? stored;
+    let cursor: { readonly updatedAt: number; readonly id: string } | undefined = query.beforePosition;
+    if (cursor === undefined) {
+      const queued = pending.find((summary) => summary.id === id);
+      const storedValue: unknown = await this.queryStore.get(sessionCollection(generation), id);
+      const stored = isSessionSummaryShape(storedValue) ? storedValue : undefined;
+      cursor = queued ?? stored;
+    }
     if (cursor === undefined) return undefined;
     const u = cursor.updatedAt;
-    if (query.before !== undefined) {
+    if (query.beforePosition !== undefined || query.before !== undefined) {
       return {
         bounds: { lte: u },
         filter: {
@@ -818,7 +1050,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     let start = 0;
     let end = items.length;
     const cursorId = query.before ?? query.after;
-    if (cursorId !== undefined) {
+    if (query.beforePosition !== undefined) {
+      const position = query.beforePosition;
+      start = items.findIndex((summary) => canonicalOrder(summary, position) > 0);
+      if (start === -1) start = items.length;
+    } else if (cursorId !== undefined) {
       const index = items.findIndex((summary) => summary.id === cursorId);
       if (index === -1) return { items: [] };
       if (query.before !== undefined) start = index + 1;
@@ -837,7 +1073,10 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
     id: string,
     knownWorkspaceIds?: readonly string[],
   ): Promise<SessionSummary | undefined> {
-    return this.readAuthoritativeWithRetry(async () => {
+    const key = JSON.stringify([id, knownWorkspaceIds?.toSorted()]);
+    const existing = this.authoritativePointFlights.get(key);
+    if (existing !== undefined) return existing;
+    const flight = this.readAuthoritativeWithRetry(id, async () => {
       const pendingBefore = this.mirror.pending().find(
         (summary) =>
           summary.id === id &&
@@ -845,22 +1084,19 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
       );
       let authoritative: SessionSummary | undefined;
       const workspaceIds =
-        knownWorkspaceIds ?? (await this.listStorage(this.sessionsScope)) ?? [];
-      for (const workspaceId of workspaceIds) {
-        if (knownWorkspaceIds === undefined) {
-          const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
-          if (sessionIds === undefined || !sessionIds.includes(id)) continue;
-        }
-        const result = await readSessionSummaryResult(
-          this.docs,
-          this.sessionsScope,
-          workspaceId,
-          id,
-          this.log,
-        );
-        if (result.kind === 'found') {
-          authoritative = result.summary;
-          break;
+        knownWorkspaceIds ?? await listWorkspaceIds(this.storage, this.sessionsScope, this.log);
+      for (let offset = 0; offset < workspaceIds.length && authoritative === undefined; offset += POINT_PROBE_CONCURRENCY) {
+        const results = await Promise.all(workspaceIds.slice(offset, offset + POINT_PROBE_CONCURRENCY).map((workspaceId) =>
+          knownWorkspaceIds === undefined
+            ? probeSessionSummaryResult(this.storage, this.docs, this.sessionsScope, workspaceId, id, this.log)
+            : readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log),
+        ));
+        for (const result of results) {
+          if (result.kind === 'error') throw result.error;
+          if (result.kind === 'found') {
+            authoritative = result.summary;
+            break;
+          }
         }
       }
       if (!this.readModelEnabled()) return authoritative;
@@ -870,7 +1106,11 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
           (knownWorkspaceIds === undefined || knownWorkspaceIds.includes(summary.workspaceId)),
       );
       return pendingAfter ?? pendingBefore ?? authoritative;
+    }).finally(() => {
+      if (this.authoritativePointFlights.get(key) === flight) this.authoritativePointFlights.delete(key);
     });
+    this.authoritativePointFlights.set(key, flight);
+    return flight;
   }
 
   private async countLegacy(query: SessionCountQuery): Promise<number> {
@@ -884,39 +1124,50 @@ export class FileSessionIndex extends Disposable implements ISessionIndex {
   private collectAuthoritative(
     workspaceIds: readonly string[] | undefined,
   ): Promise<SessionSummary[]> {
-    return this.readAuthoritativeWithRetry(async () => {
-      let ids = workspaceIds;
-      if (ids === undefined) ids = (await this.listStorage(this.sessionsScope)) ?? [];
-      const collected: SessionSummary[] = [];
+    const key = workspaceIds === undefined ? '*' : [...workspaceIds].toSorted().join('\u0000');
+    const existing = this.authoritativeFlights.get(key);
+    if (existing !== undefined) return existing.then((items) => [...items]);
+    const flight = this.scanAuthoritativeSnapshot(workspaceIds).finally(() => {
+      if (this.authoritativeFlights.get(key) === flight) this.authoritativeFlights.delete(key);
+    });
+    this.authoritativeFlights.set(key, flight);
+    return flight.then((items) => [...items]);
+  }
+
+  private async scanAuthoritativeSnapshot(workspaceIds: readonly string[] | undefined): Promise<SessionSummary[]> {
+    const changed = new Map<string, string | undefined>();
+    const subscription = this.mirror.onDidChange(({ id, workspaceId }) => changed.set(id, workspaceId));
+    const collected = new Map<string, SessionSummary>();
+    try {
+      const ids = workspaceIds ?? await listWorkspaceIds(this.storage, this.sessionsScope, this.log);
       for (const workspaceId of ids) {
-        const sessionIds = await this.listStorage(`${this.sessionsScope}/${workspaceId}`);
-        if (sessionIds === undefined) continue;
+        const sessionIds = await listSessionIds(this.storage, this.sessionsScope, workspaceId, this.log);
         for (const sessionId of sessionIds) {
-          const result = await readSessionSummaryResult(
-            this.docs,
-            this.sessionsScope,
-            workspaceId,
-            sessionId,
-            this.log,
-          );
-          if (result.kind === 'found') collected.push(result.summary);
+          const result = await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, sessionId, this.log);
+          if (result.kind === 'found') collected.set(sessionId, result.summary);
         }
       }
-      return collected;
-    });
+    } finally {
+      subscription.dispose();
+    }
+    for (const [id, changedWorkspace] of changed) {
+      const workspaceId = changedWorkspace ?? collected.get(id)?.workspaceId;
+      collected.delete(id);
+      if (workspaceId === undefined || workspaceIds !== undefined && !workspaceIds.includes(workspaceId)) continue;
+      const result = await readSessionSummaryResult(this.docs, this.sessionsScope, workspaceId, id, this.log);
+      if (result.kind === 'found') collected.set(id, result.summary);
+    }
+    return [...collected.values()];
   }
 
-  private async readAuthoritativeWithRetry<T>(read: () => Promise<T>): Promise<T> {
-    const before = this.mirror.epoch();
-    const result = await read();
-    return this.mirror.epoch() === before ? result : read();
-  }
-
-  private async listStorage(scope: string): Promise<readonly string[] | undefined> {
+  private async readAuthoritativeWithRetry<T>(id: string, read: () => Promise<T>): Promise<T> {
+    let changed = false;
+    const subscription = this.mirror.onDidChange((mutation) => { if (mutation.id === id) changed = true; });
     try {
-      return await this.storage.list(scope);
-    } catch {
-      return undefined;
+      const result = await read();
+      return changed ? await read() : result;
+    } finally {
+      subscription.dispose();
     }
   }
 

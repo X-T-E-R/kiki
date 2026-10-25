@@ -352,6 +352,23 @@ function sessionRequests() { return requests.filter((request) => request.include
     expect(current.scope.scopeId).toBe('ssh:example'); expect(router.state.location.pathname).toBe('/s/shared');
   });
 
+  it('keeps content, cwd, and history misses on the session and still separates real absence from auth', async () => {
+    const signal = new AbortController().signal;
+    const getSession = vi.mocked(KikiClient.prototype.getSession);
+    getSession.mockRejectedValueOnce(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'content unavailable', data: null }));
+    await expect(validateScopeRoute(current.client, '/s/shared', signal)).rejects.toThrow('content unavailable');
+    getSession.mockRejectedValueOnce(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session shared has no recoverable cwd', data: null }));
+    await expect(validateScopeRoute(current.client, '/s/shared', signal)).rejects.toThrow('no recoverable cwd');
+    getSession.mockRejectedValueOnce(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session not found: shared', data: null }));
+    await expect(validateScopeRoute(current.client, '/s/shared', signal)).rejects.toThrow('session not found:');
+    getSession.mockRejectedValueOnce(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session shared does not exist', data: null }));
+    await expect(validateScopeRoute(current.client, '/s/shared', signal)).rejects.toMatchObject({ reason: 'target-missing' });
+    getSession.mockRejectedValueOnce(new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session.not_found', data: null }));
+    await expect(validateScopeRoute(current.client, '/s/shared', signal)).rejects.toMatchObject({ reason: 'target-missing' });
+    getSession.mockRejectedValueOnce(new ApiError({ code: API_CODES.UNAUTHORIZED, msg: 'auth.invalid_token', data: null }));
+    await expect(validateScopeRoute(current.client, '/s/shared', signal)).rejects.toMatchObject({ reason: 'auth-required' });
+  });
+
   it('checks room existence through the verified client facade and distinguishes missing from offline', async () => {
     const rooms = current.client.klient.rest!.rooms;
     const get = vi.spyOn(rooms, 'get').mockResolvedValue(undefined);
@@ -598,6 +615,9 @@ describe('confirmed missing navigation', () => {
     ['offline', () => new Error('temporary offline'), 'offline'],
     ['auth', () => new ApiError({ code: API_CODES.UNAUTHORIZED, msg: 'auth.invalid_token', data: null }), 'auth-required'],
     ['non-entity 404', () => new ApiError({ code: API_CODES.PROMPT_NOT_FOUND, msg: 'prompt.not_found', data: null }), 'offline'],
+    ['content 404', () => new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'content unavailable', data: null }), 'offline'],
+    ['cwd 404', () => new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session b has no recoverable cwd', data: null }), 'offline'],
+    ['history 404', () => new ApiError({ code: API_CODES.SESSION_NOT_FOUND, msg: 'session not found: b', data: null }), 'offline'],
   ] as const)('does not skip %s; keeps the source DOM and retries the original blocked visit', async (_kind, error, reason) => {
     const { router, source } = await threeVisits(true); const input = container.querySelector('[data-buffer]');
     const sourceVisit = getCurrentVisit()!.visitId;
@@ -664,10 +684,16 @@ describe('confirmed missing navigation', () => {
   it('does not push a deleted explicit destination when the current source is still valid', async () => {
     const router = await mount('/s/a'); const source = router.state.location; const visit = getCurrentVisit()!.visitId;
     entityFailures.set(`${endpoints.b}/api/sessions/gone`, gone()); requests = [];
-    await act(async () => { await requestScopeNavigation({ homeId: 'home-b', route: '/s/gone' }); }); await flush();
+    await act(async () => {
+      await expect(requestScopeNavigation({ homeId: 'home-b', route: '/s/gone' })).rejects.toMatchObject({ reason: 'target-missing' });
+    }); await flush();
     expect(router.state.location.key).toBe(source.key); expect(getCurrentVisit()!.visitId).toBe(visit);
-    expect(current.scope.homeId).toBe('home-a'); expect(nativeHome).toBe('home-a'); expect(recovery!.state.phase).toBe('idle');
-    expect(canGoBack()).toBe(false); expect(sessionRequests()).toEqual([`${endpoints.b}/api/sessions/gone`, `${endpoints.a}/api/sessions/a`]);
+    expect(current.scope.homeId).toBe('home-a'); expect(nativeHome).toBe('home-a');
+    expect(recovery!.state).toMatchObject({ phase: 'failed', reason: 'target-missing', target: { route: '/s/gone' } });
+    expect(canGoBack()).toBe(false); expect(sessionRequests()).toEqual([`${endpoints.b}/api/sessions/gone`]);
+    await act(async () => { recovery!.cancel(); }); await flush();
+    expect(recovery!.state.phase).toBe('idle');
+    expect(router.state.location.key).toBe(source.key); expect(getCurrentVisit()!.visitId).toBe(visit);
   });
 
   it('replaces a deleted cold cross-scope destination in the confirmed scope without inventing a source', async () => {

@@ -1225,7 +1225,7 @@ describe('AgentTaskService — notification delivery', () => {
       expect(notifiedCount(ctx)).toBe(1);
     } finally {
       release();
-      hook.dispose();
+      await hook.dispose();
       await ctx.get(ISessionMetadata).ready;
       await ctx.dispose();
     }

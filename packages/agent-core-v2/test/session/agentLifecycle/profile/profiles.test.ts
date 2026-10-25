@@ -24,10 +24,11 @@ describe('shipped agent profiles', () => {
     expect(agent.allowedSubagents).toBeUndefined();
   });
 
-  it.each(['BoardRead', 'BoardWrite'])('enables %s for the default profile unless explicitly disabled', (tool) => {
+  it('does not ship BoardRead or BoardWrite on the default profile', () => {
     const agent = source().get('agent')!;
-    expect(isToolActive(agent, tool)).toBe(true);
-    expect(isToolActive({ ...agent, disallowedTools: [tool] }, tool)).toBe(false);
+    expect(agent.tools).not.toContain('BoardRead');
+    expect(agent.tools).not.toContain('BoardWrite');
+    expect(isToolActive({ ...agent, tools: [...(agent.tools ?? []), 'BoardRead'] }, 'BoardRead')).toBe(true);
   });
 
   it('keeps the shipped general profile a strict leaf with editing tools', () => {
@@ -36,7 +37,7 @@ describe('shipped agent profiles', () => {
       expect.arrayContaining(['Read', 'Edit', 'Write', 'Bash', 'Skill']),
     );
     expect(general.tools).not.toContain('AgentRun');
-    expect(general.tools).not.toContain('TaskWait');
+    expect(general.tools).toContain('TaskWait');
     expect(general.canSpawnSubagents).toBe(false);
     expect(general.main).toBeUndefined();
   });

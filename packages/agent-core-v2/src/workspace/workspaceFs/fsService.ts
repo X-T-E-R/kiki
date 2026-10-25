@@ -60,6 +60,7 @@ import { type FsDownloadResolved, type FsPathResolved, IWorkspaceFsService } fro
 import { readStream, runCommand } from './internal/fsProcess';
 import { guiWorkspacePathError } from './internal/errors';
 import { ensureRgPath, type RgProbe, type RgResolution } from './internal/rgLocator';
+import { invalidSearchCursor, readSearchCursor, writeSearchCursor } from './internal/searchCursor';
 import {
   compileGrepPattern,
   computeFuzzyScore,
@@ -442,63 +443,110 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     };
   }
 
-  async search(req: FsSearchRequest): Promise<FsSearchResponse> {
-    if (req.query === '') {
-      const listed = await this.list({
-        path: '.',
-        depth: 1,
-        limit: req.limit,
-        show_hidden: false,
-        follow_gitignore: req.follow_gitignore,
-        exclude_globs: req.exclude_globs,
-        sort: 'type_first',
-        include_git_status: false,
-      });
-      const items = listed.items
-        .filter(
-          (entry) =>
-            req.include_globs === undefined || matchesAnyGlob(entry.path, req.include_globs),
-        )
-        .map((entry) => ({
-          path: entry.path,
-          name: entry.name,
-          kind: entry.kind,
-          score: 1,
-          match_positions: [],
-        }));
-      return { items, truncated: listed.truncated };
+  async search(req: FsSearchRequest, signal?: AbortSignal): Promise<FsSearchResponse> {
+    signal?.throwIfAborted();
+    const query = req.query.toLowerCase();
+    const rules = req.follow_gitignore ? await this.hostFs.readText(this.path.join(this.workDir, '.gitignore')).catch(() => '') : '';
+    signal?.throwIfAborted();
+    const matcher = req.follow_gitignore ? ignore().add(['.git/', rules]) : undefined;
+    const binding = JSON.stringify([this.workDir, this.runtimeId, query, req.limit, req.follow_gitignore, req.include_globs ?? null, req.exclude_globs ?? null, rules]);
+    const stack = readSearchCursor(req.cursor, binding, this.path.separator);
+    if (query === '' && stack.length !== 1) throw invalidSearchCursor();
+    for (const frame of stack.slice(0, -1)) {
+      signal?.throwIfAborted();
+      const { stat } = await this.searchDirectory(frame.path, req.cursor !== undefined, signal);
+      signal?.throwIfAborted();
+      if (!stat.isDirectory || stat.isSymbolicLink || (matcher && frame.path !== '' && matcher.ignores(`${frame.path}/`))) throw invalidSearchCursor();
+      if (frame.mtime !== undefined && (frame.mtime !== stat.mtimeMs || frame.ino !== stat.ino)) throw invalidSearchCursor();
     }
-
-    const matcher = req.follow_gitignore ? await this.matcher() : undefined;
-    const candidates: FsSearchHit[] = [];
-    const queryLower = req.query.toLowerCase();
-
-    await this.walk('', matcher, async (relPath, name, kind) => {
-      const score = computeFuzzyScore(name, queryLower);
-      if (score <= 0) return;
-      if (req.include_globs && !matchesAnyGlob(relPath, req.include_globs)) {
-        return;
+    const items: FsSearchHit[] = [];
+    let visited = 0;
+    let directories = 0;
+    const loaded = new Map<string, readonly HostDirEntry[]>();
+    while (stack.length > 0 && visited < 256 && directories < 32 && items.length < req.limit) {
+      signal?.throwIfAborted();
+      const frame = stack[stack.length - 1]!;
+      let entries = loaded.get(frame.path);
+      if (entries === undefined) {
+        const { abs, stat } = await this.searchDirectory(frame.path, req.cursor !== undefined, signal);
+        signal?.throwIfAborted();
+        if (!stat.isDirectory || stat.isSymbolicLink || (matcher && frame.path !== '' && matcher.ignores(`${frame.path}/`))) throw invalidSearchCursor();
+        if (frame.mtime !== undefined && (frame.mtime !== stat.mtimeMs || frame.ino !== stat.ino)) throw invalidSearchCursor();
+        frame.mtime = stat.mtimeMs;
+        frame.ino = stat.ino;
+        try {
+          entries = await this.hostFs.readdir(abs);
+        } catch (error) {
+          signal?.throwIfAborted();
+          if (req.cursor !== undefined && isMissingPathError(error)) throw invalidSearchCursor();
+          if (frame.path === '') throw mapFsError(error, '.');
+          stack.pop();
+          directories += 1;
+          continue;
+        }
+        signal?.throwIfAborted();
+        entries = [...entries].sort((a, b) => a.name.localeCompare(b.name));
+        loaded.set(frame.path, entries);
+        directories += 1;
       }
-      if (req.exclude_globs && matchesAnyGlob(relPath, req.exclude_globs)) {
-        return;
+      if (frame.offset >= entries.length) {
+        stack.pop();
+        continue;
       }
-      candidates.push({
+      const entry = entries[frame.offset++]!;
+      visited += 1;
+      const relPath = frame.path === '' ? entry.name : `${frame.path}/${entry.name}`;
+      const isDir = entry.isDirectory && !entry.isSymbolicLink;
+      if (entry.name === '.git' || (query === '' && isHidden(entry.name))) continue;
+      if (matcher?.ignores(isDir ? `${relPath}/` : relPath)) continue;
+      if (isDir && query !== '') stack.push({ path: relPath, offset: 0 });
+      if (req.include_globs && !matchesAnyGlob(relPath, req.include_globs)) continue;
+      if (req.exclude_globs && matchesAnyGlob(relPath, req.exclude_globs)) continue;
+      const score = query === '' ? 1 : computeFuzzyScore(entry.name, query);
+      if (score <= 0) continue;
+      items.push({
         path: relPath,
-        name,
-        kind,
+        name: entry.name,
+        kind: entry.isSymbolicLink ? 'symlink' : isDir ? 'directory' : 'file',
         score,
-        match_positions: computeMatchPositions(relPath, queryLower),
+        match_positions: query === '' ? [] : computeMatchPositions(relPath, query),
       });
+    }
+    while (stack.length > 0) {
+      const frame = stack[stack.length - 1]!;
+      const entries = loaded.get(frame.path);
+      if (entries === undefined || frame.offset < entries.length) break;
+      stack.pop();
+    }
+    items.sort((a, b) => {
+      if (query === '' && (a.kind === 'directory') !== (b.kind === 'directory')) return a.kind === 'directory' ? -1 : 1;
+      return b.score - a.score || a.path.localeCompare(b.path);
     });
+    signal?.throwIfAborted();
+    const next_cursor = writeSearchCursor(stack, binding);
+    return { items, truncated: next_cursor !== undefined, next_cursor, sort_scope: 'page' };
+  }
 
-    candidates.sort((a, b) => {
-      if (b.score !== a.score) return b.score - a.score;
-      return a.path.localeCompare(b.path);
-    });
-
-    const effectiveCap = Math.min(req.limit, SEARCH_HARD_CAP);
-    const truncated = candidates.length > effectiveCap;
-    return { items: candidates.slice(0, effectiveCap), truncated };
+  private async searchDirectory(rel: string, continued: boolean, signal?: AbortSignal): Promise<{ abs: string; stat: HostFileStat }> {
+    signal?.throwIfAborted();
+    const abs = this.absOf(rel);
+    try {
+      const real = await this.hostFs.realpath(abs);
+      signal?.throwIfAborted();
+      const roots = await this.realRoots(signal);
+      if (!roots.some((root) => {
+        const relative = this.path.relative(root, real);
+        return relative === '' || (relative !== '..' && !relative.startsWith(`..${this.path.separator}`) && !this.path.isAbsolute(relative));
+      })) throw invalidSearchCursor();
+      signal?.throwIfAborted();
+      const stat = rel === '' ? await this.hostFs.stat(abs) : await this.hostFs.lstat(abs);
+      signal?.throwIfAborted();
+      return { abs, stat };
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (continued && isMissingPathError(error)) throw invalidSearchCursor();
+      throw mapFsError(error, rel || '.');
+    }
   }
 
   async suggest(req: FsSuggestRequest): Promise<FsSuggestResponse> {
@@ -969,17 +1017,19 @@ export class WorkspaceFsService implements IWorkspaceFsService {
     return this.rgResolution;
   }
 
-  private async realRoots(): Promise<readonly string[]> {
+  private async realRoots(signal?: AbortSignal): Promise<readonly string[]> {
     const dirs = [this.workDir, ...this.workspaceDirs.additionalDirs.map((d) => this.path.resolve(d))];
     const key = dirs.join('\n');
     if (this.realRootsCache?.key === key) return this.realRootsCache.roots;
     const roots: string[] = [];
     for (const dir of dirs) {
+      signal?.throwIfAborted();
       try {
         roots.push(await this.hostFs.realpath(dir));
       } catch {
         roots.push(dir);
       }
+      signal?.throwIfAborted();
     }
     this.realRootsCache = { key, roots };
     return roots;

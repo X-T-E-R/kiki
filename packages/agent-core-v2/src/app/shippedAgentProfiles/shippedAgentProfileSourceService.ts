@@ -38,7 +38,8 @@ export class ShippedAgentProfileSourceService
         });
         return [
           definition.name,
-          agentProfileFromFile(definition, renderShippedBasePrompt, renderShippedBasePrompt),
+          { ...agentProfileFromFile(definition, renderShippedBasePrompt, renderShippedBasePrompt),
+            toolsSource: definition.name === DEFAULT_AGENT_PROFILE_NAME ? 'builtin-default' as const : 'declared' as const },
         ];
       }),
     );

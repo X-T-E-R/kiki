@@ -17,7 +17,8 @@ import type {
   StepHeader,
 } from './operation';
 import { transcriptValueEquals } from './equality';
-import { carryContentHydration, mergeContentPreview } from '../contract/content';
+import { safetyBoundaryIndex } from './framePlace';
+import { carryContentHydration, mergeContentPreview, noteHiddenStructuralInsert } from '../contract/content';
 
 const EMPTY_REMOVED_ITEM_IDS: ReadonlySet<string> = new Set();
 const REMOVED_ITEM_ID_LIMIT = 2048;
@@ -411,6 +412,8 @@ function applyStepUpsert(state: AgentState, turnId: TurnId, header: StepHeader):
   const located = findTurn(state.items, turnId);
   const turn = located?.turn ?? skeletonTurn(turnId);
   const stepIndex = turn.steps.findIndex((step) => step.stepId === header.stepId);
+  const omitted = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
+  if (stepIndex < 0 && omitted !== undefined && header.ordinal < omitted.offset) return { state, changed: false, toolCallCountDelta: 0 };
   let steps: readonly TranscriptStep[];
   let changed = true;
   if (stepIndex >= 0) {
@@ -454,6 +457,28 @@ function applyFrameUpsert(
   const stepIndex = turn.steps.findIndex((entry) => entry.stepId === op.stepId);
   const step = turn.steps[stepIndex] ?? skeletonStep(op.stepId, op.turnId);
   const frameIndex = step.frames.findIndex((frame) => frame.frameId === op.frame.frameId);
+  const omittedSteps = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 1 && ref.path[0] === 'steps');
+  const omittedFrames = turn.contentRefs?.find((ref) => ref.direction === 'backward' && ref.path.length === 3 &&
+    ref.path[0] === 'steps' && ref.path[1] === (op.stepIndex ?? step.ordinal) && ref.path[2] === 'frames');
+  const hiddenStep = frameIndex < 0 && stepIndex < 0 && omittedSteps !== undefined
+    && (op.stepIndex ?? step.ordinal) < omittedSteps.offset;
+  const hiddenFrame = frameIndex < 0 && op.frameIndex !== undefined && omittedFrames !== undefined
+    && op.frameIndex < omittedFrames.offset;
+  if (hiddenStep) return { state, changed: false, toolCallCountDelta: 0 };
+  if (hiddenFrame && op.place !== 'safety_boundary') return { state, changed: false, toolCallCountDelta: 0 };
+  if (hiddenFrame && omittedFrames !== undefined) {
+    const contentRefs = turn.contentRefs?.map((ref) => ref === omittedFrames
+      ? { ...ref, offset: ref.offset + 1, total: ref.total + 1 }
+      : ref);
+    const bumped = carryContentHydration(turn, { ...turn, contentRefs });
+    if (!noteHiddenStructuralInsert(turn, bumped, op.frame.frameId)) {
+      return { state, changed: false, toolCallCountDelta: 0 };
+    }
+    const items = located !== undefined
+      ? replaceAt(state.items, located.index, bumped)
+      : insertTurn(state.items, bumped);
+    return { state: { ...state, items }, changed: true, toolCallCountDelta: 0 };
+  }
   let frames: readonly TranscriptFrame[];
   let toolCallCount = state.toolCallCount;
   let toolCallCountDelta = 0;
@@ -473,7 +498,15 @@ function applyFrameUpsert(
       toolCallCountDelta = 1;
       toolCallCount = adjustToolCallCount(toolCallCount, 1);
     }
-    frames = [...step.frames, op.frame];
+    const omittedOffset = omittedFrames?.offset;
+    let index = step.frames.length;
+    if (op.place === 'safety_boundary') {
+      if (omittedOffset === undefined || omittedOffset === 0) index = safetyBoundaryIndex(step.frames);
+      else if (op.frameIndex !== undefined) index = Math.min(step.frames.length, Math.max(0, op.frameIndex - omittedOffset));
+    }
+    frames = index >= step.frames.length
+      ? [...step.frames, op.frame]
+      : [...step.frames.slice(0, index), op.frame, ...step.frames.slice(index)];
   }
   const nextStep: TranscriptStep = { ...step, frames: [...frames] };
   const steps =
@@ -536,6 +569,12 @@ function applyAppend(state: AgentState, op: AppendOp): ApplyResult {
   const step = turn.steps[stepIndex];
   const frameIndex = step?.frames.findIndex((entry) => entry.frameId === frameId) ?? -1;
   const frame = step?.frames[frameIndex];
+  if (frame === undefined && (op.stepIndex !== undefined && turn.contentRefs?.some((ref) => ref.direction === 'backward' &&
+    ref.path.length === 1 && ref.path[0] === 'steps' && op.stepIndex! < ref.offset) ||
+    op.frameIndex !== undefined && turn.contentRefs?.some((ref) => ref.direction === 'backward' && ref.path.length === 3 &&
+      ref.path[0] === 'steps' && ref.path[1] === (op.stepIndex ?? step?.ordinal) && ref.path[2] === 'frames' && op.frameIndex! < ref.offset))) {
+    return { state, changed: false, toolCallCountDelta: 0 };
+  }
   if (!step || !frame || (frame.kind !== 'text' && frame.kind !== 'thinking')) {
     return { state, changed: false, gap: { expected: 0, got: op.offset } };
   }

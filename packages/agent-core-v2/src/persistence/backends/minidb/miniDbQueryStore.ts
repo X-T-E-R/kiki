@@ -68,6 +68,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
   private readonly dir: string;
   private dbPromise: Promise<ClusterDb> | undefined;
   private rebuildPromise: Promise<void> | undefined;
+  private recoveryFlight: Promise<void> | undefined;
   private readonly ensuredIndexes = new Set<string>();
 
   constructor(
@@ -84,6 +85,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
   }
 
   private openDb(): Promise<ClusterDb> {
+    if (this.recoveryFlight !== undefined) return this.recoveryFlight.then(() => this.openDb());
     if (this.rebuildPromise !== undefined) return this.openDbAfterRebuild();
     this.dbPromise ??= this.openFresh();
     return this.dbPromise;
@@ -290,7 +292,23 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
     }
   }
 
+  recover(): Promise<void> {
+    if (this.recoveryFlight !== undefined) return this.recoveryFlight;
+    const previous = this.dbPromise;
+    const flight = (async () => {
+      await this.rebuildPromise;
+      const db = await previous?.catch(() => undefined);
+      await db?.close();
+      this.dbPromise = undefined;
+      this.ensuredIndexes.clear();
+      this.log.info('minidb query-store readers retired for recovery');
+    })();
+    this.recoveryFlight = flight.finally(() => { this.recoveryFlight = undefined; });
+    return this.recoveryFlight;
+  }
+
   async close(): Promise<void> {
+    await this.recoveryFlight;
     const db = await this.dbPromise?.catch(() => undefined);
     await db?.close();
   }

@@ -5,6 +5,8 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../i18n';
+import { MODAL_BASE_Z_INDEX } from '../lib/uiBusy';
+import { Dialog } from './Dialog';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 
 const containers: HTMLDivElement[] = [];
@@ -315,6 +317,67 @@ describe('SearchableSelect disabled options', () => {
     await press(input, 'Enter');
     expect(onChange).not.toHaveBeenCalled();
     expect(document.querySelector('[data-select-panel]')).not.toBeNull();
+  });
+});
+
+/**
+ * The first-run wizard's model dropdown was in the DOM and dead on screen: the
+ * panel renders in <body> at the page-level z-index, while the dialog that owns
+ * it sits one depth higher — so the wizard's own panel painted over the list.
+ * Opening a picker from inside a dialog has to clear that dialog.
+ */
+describe('SearchableSelect inside a dialog', () => {
+  it('paints above the dialog it was opened from', async () => {
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <I18nProvider>
+          <Dialog
+            onClose={() => undefined}
+            ariaLabel="Test dialog"
+            overlayId="test-dialog"
+            stacked
+            overlayData={{ 'data-test-dialog-overlay': 'true' }}
+            panelClassName="relative h-40 bg-panel"
+          >
+            <SearchableSelect
+              id="in-dialog"
+              options={OPTIONS}
+              value="a"
+              onChange={vi.fn()}
+              ariaLabel="Pick one"
+            />
+          </Dialog>
+        </I18nProvider>,
+      );
+    });
+
+    const inDialog = container.ownerDocument.querySelector<HTMLButtonElement>(
+      '[data-test-dialog-overlay] [aria-haspopup="listbox"]',
+    );
+    expect(inDialog).not.toBeNull();
+    await act(async () => { inDialog!.click(); });
+
+    const panel = document.querySelector<HTMLElement>('[data-select-panel]');
+    const overlay = document.querySelector<HTMLElement>('[data-test-dialog-overlay]');
+    expect(panel).not.toBeNull();
+    expect(overlay).not.toBeNull();
+    const overlayZ = Number.parseFloat(overlay!.style.zIndex);
+    const panelZ = Number.parseFloat(panel!.style.zIndex);
+    expect(Number.isNaN(overlayZ)).toBe(false);
+    expect(panelZ).toBeGreaterThan(overlayZ);
+  });
+
+  it('leaves a picker on the plain page at the shared page-level z-index', async () => {
+    const { container } = await renderSelect();
+    await act(async () => { trigger(container).click(); });
+    const panel = document.querySelector<HTMLElement>('[data-select-panel]');
+    expect(panel).not.toBeNull();
+    expect(Number.parseFloat(panel!.style.zIndex)).toBe(MODAL_BASE_Z_INDEX);
   });
 });
 

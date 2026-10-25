@@ -127,41 +127,16 @@ const GOAL_STALE_TOOL_RESULT =
   'Goal changed since this turn started; ignored stale goal tool call.';
 
 const GOAL_CONTINUATION_PROMPT = [
-  'Continue working toward the active goal.',
-  'Keep the self-audit brief. Do not explore unrelated interpretations once the goal can be',
-  'decided. If the objective is simple, already answered, impossible, unsafe, or contradictory,',
-  'do not run another goal turn. Explain briefly if useful, then call UpdateGoal with `complete`',
-  'or `blocked` in the same turn. Otherwise, weigh the objective and any completion criteria',
-  'against the work done so far, choose one bounded, useful slice of work, and use the existing',
-  'conversation context and your tools. Do not try to finish a broad goal in one turn unless the',
-  'whole goal is genuinely small. Most goal turns should not call UpdateGoal: after completing a',
-  'useful slice, if material work remains, end the turn normally without calling UpdateGoal so',
-  'the runtime can continue the goal once its follow-up conditions are met. Call UpdateGoal with',
-  '`complete` only when',
-  'all required work is done, any stated validation has passed, and there is no useful next',
-  'action. Completion audit: before calling `complete`, verify the current state against the',
-  'actual objective and every explicit requirement. Treat weak or indirect evidence as not',
-  'complete. Do not mark complete after only producing a plan, summary, first pass, or partial',
-  'result. Do not mark complete merely because a budget is nearly exhausted or you want to stop.',
-  'Blocked audit: do not call UpdateGoal with `blocked` the first time you hit a blocker. Use',
-  '`blocked` only for a genuine impasse: an external condition, required user input, missing',
-  'credentials or permissions, or a persistent technical failure. For those non-terminal',
-  'blockers, the same blocking condition must repeat for at least 3 consecutive goal turns before',
-  'you call `blocked`, counting the original/user-triggered turn and automatic continuations.',
-  'If a previously blocked goal is resumed, treat the resumed run as a fresh blocked audit.',
-  'Exception: if the objective itself is impossible, unsafe, or contradictory, call UpdateGoal',
-  'with `blocked` in the same turn; do not run more goal turns just to satisfy the audit. Do not',
-  'use `blocked` because the work is large, hard, slow, uncertain, incomplete, still needs',
-  'validation, would benefit from clarification, or needs more goal turns. Once the 3-turn',
-  'threshold is met and you cannot make meaningful progress without user input or an',
-  'external-state change, call UpdateGoal with `blocked`; do not keep reporting the blocker while',
-  'leaving the goal active. Do not ask the user for input unless a real blocker prevents progress.',
+  'Continue the active goal from the current state. Apply the latest user instructions,',
+  'active goal constraints, and still-valid evidence. Advance the next useful action without',
+  'repeating completed work. If every explicit requirement is now verified or a genuine',
+  'impasse is established, use Goal({action:"update",status:"complete"}) or',
+  'Goal({action:"update",status:"blocked"}) accordingly; otherwise continue under the existing authorization.',
 ].join(' ');
 
 const GOAL_STEP_CAP_CONTINUATION_PROMPT = [
   'The previous goal turn reached the per-turn step limit before finishing its work,',
-  'so a new turn was started for you. Pick up where that turn stopped and keep each',
-  'slice of work small enough to fit the limit.',
+  'so a new turn was started for you. Continue from its verified state.',
   GOAL_CONTINUATION_PROMPT,
 ].join(' ');
 
@@ -273,6 +248,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
 
   private readonly wallClockDeadline = this._register(new MutableDisposable<IDisposable>());
   private readonly independentScheduledTurns = new Set<number>();
+  private readonly notificationTurns = new Set<number>();
   private pendingContinuation?: PendingContinuation;
   private yieldedGoalId?: string;
 
@@ -663,9 +639,18 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         `Cannot pause a goal in status "${state.status}"`,
       );
     }
-    return this.applyLifecycle(state, 'paused', input.reason, actor, {
-      preserveLiveContinuation: true,
+    const liveTurnId = this.liveTurnId;
+    const pendingTurnId = this.pendingContinuation?.turnId;
+    const snapshot = this.applyLifecycle(state, 'paused', input.reason, actor, {
+      preserveLiveContinuation: actor !== 'user',
     });
+    if (
+      actor === 'user' && liveTurnId !== undefined && liveTurnId !== pendingTurnId &&
+      this.goalTurnTarget(liveTurnId) === state.goalId
+    ) {
+      this.loopService.cancel(liveTurnId, abortError('Goal paused'));
+    }
+    return snapshot;
   }
 
   async pauseActiveGoal(
@@ -844,13 +829,16 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     this.goalTurnTargets.delete(turnId);
     this.goalTurnRevisions.delete(turnId);
     this.exhaustedTurnBudgetGoals.delete(turnId);
+    const notificationTurn = origin.kind === 'task';
+    if (notificationTurn) this.notificationTurns.add(turnId);
+    else this.notificationTurns.delete(turnId);
     const independentScheduled = isIndependentScheduledOrigin(origin);
-    if (independentScheduled) {
+    if (independentScheduled || notificationTurn) {
       this.independentScheduledTurns.add(turnId);
     } else {
       this.independentScheduledTurns.delete(turnId);
     }
-    if (!independentScheduled && !this.goalDrivenTurns.has(turnId)) {
+    if (!independentScheduled && !notificationTurn && !this.goalDrivenTurns.has(turnId)) {
       const state = this.goalState;
       const continuationGoalId = isGoalContinuationOrigin(origin)
         ? this.pendingContinuationGoals.get(turnId)
@@ -966,6 +954,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     turnId: number,
     result: Pick<TurnEnded, 'reason' | 'error'>,
   ): Promise<void> {
+    const notificationTurn = this.notificationTurns.has(turnId);
     const { goalId, lifecycleGoalId, starterTurn } = this.clearTurnTracking(turnId);
     const resumeContinuation = this.resumeContinuation;
     if (resumeContinuation?.turnId === turnId) this.resumeContinuation = undefined;
@@ -978,7 +967,15 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
       this.launchContinuationTurn(resumeContinuation.goalId);
       return;
     }
-    if (goalId === undefined || lifecycleGoalId === undefined) return;
+    if (goalId === undefined || lifecycleGoalId === undefined) {
+      if (notificationTurn && result.reason === 'completed') {
+        const state = this.goalState;
+        if (state !== null && state.status === 'active' && this.blockIfBudgetReached(state) === null) {
+          this.launchContinuationTurn(state.goalId);
+        }
+      }
+      return;
+    }
     const stepCapped = isMaxStepsTurnFailure(result);
     if (
       !stepCapped &&
@@ -1010,6 +1007,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
     const lifecycleGoalId = this.goalTurnTarget(turnId);
     const starterTurn = this.goalStarterTurns.delete(turnId);
     this.independentScheduledTurns.delete(turnId);
+    this.notificationTurns.delete(turnId);
     this.goalDrivenTurns.delete(turnId);
     this.countedGoalTurns.delete(turnId);
     this.goalOutcomeToolResultTurns.delete(turnId);
@@ -1105,6 +1103,10 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
         }
         return turn.result;
       })
+      .catch(async (error: unknown) => {
+        if (this.pendingContinuation !== pending) return;
+        await this.settleGoalAfterContinuationFailure(error, pending.goalId);
+      })
       .finally(() => {
         if (pending.turnId !== undefined) this.pendingContinuationGoals.delete(pending.turnId);
         if (this.pendingContinuation === pending) this.pendingContinuation = undefined;
@@ -1140,7 +1142,7 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
 
   private isStaleGoalToolCall(ctx: BeforeToolExecuteEvent): boolean {
     const toolName = ctx.toolCall.name;
-    if (!isGoalMutationTool(toolName)) return false;
+    if (!isGoalMutationTool(toolName, ctx.args)) return false;
     const goalId = this.goalTurnTarget(ctx.turnId);
     if (goalId === undefined) return false;
     const state = this.goalState;
@@ -1412,8 +1414,11 @@ function isGoalBlockingFiniteTask(task: AgentTaskInfo): boolean {
   return task.kind === 'agent' || (task.kind === 'process' && task.lifetime !== 'service');
 }
 
-function isGoalMutationTool(toolName: string): boolean {
-  return toolName === 'CreateGoal' || toolName === 'UpdateGoal' || toolName === 'SetGoalBudget';
+function isGoalMutationTool(toolName: string, args: unknown): boolean {
+  if (toolName === 'CreateGoal' || toolName === 'UpdateGoal' || toolName === 'SetGoalBudget') return true;
+  if (toolName !== 'Goal' || !isPlainRecord(args)) return false;
+  const action = args['action'];
+  return action === 'create' || action === 'update' || action === 'set_budget';
 }
 
 function toGoalStartReviewPermissionMode(label: string | undefined): PermissionMode | undefined {
@@ -1460,10 +1465,10 @@ function isTerminalUpdateGoalResult(
   args: unknown,
   result: ExecutableToolResult,
 ): boolean {
-  if (toolName !== 'UpdateGoal' || result.isError === true || result.stopTurn !== true) {
+  if (result.isError === true || result.stopTurn !== true || !isPlainRecord(args)) {
     return false;
   }
-  if (!isPlainRecord(args)) return false;
+  if (toolName !== 'UpdateGoal' && !(toolName === 'Goal' && args['action'] === 'update')) return false;
   const status = args['status'];
   return status === 'complete' || status === 'blocked';
 }

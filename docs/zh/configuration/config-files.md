@@ -109,6 +109,57 @@ command = "node ~/.kiki/hooks/check-bash.mjs"
 timeout = 5
 ```
 
+## 外部 harness 默认设置
+
+外部 harness（实际运行 Agent 的程序）可以不选 Kiki profile，使用自身配置。main agent 的 `execution` 选择通过 `[agent_executor_overrides.<id>.defaults]` 保存可复用的 Kiki 覆盖值；会话覆盖优先于 profile 显式声明，profile 显式声明优先于这些设置，仍未设置的值由 harness 自己决定。原生执行保持 Kiki 既有的模型与 profile 默认行为。
+
+```toml
+[agent_executor_overrides."claude-acp".defaults]
+# 可选：填写 harness 自己的模型 ID，而非 Kiki 原生模型 alias。
+model_alias = "YOUR_HARNESS_MODEL"
+thinking_effort = "high"
+permission_mode = "auto"
+kiki_context = []
+allow_kiki_subagents = false
+```
+
+省略模型、思考强度与权限字段，就交给 harness 自己选择。`kiki_context` 接受 `memory`、`board`、`cron`、`threads`、`history`、`hooks`；`[]` 明确关闭全部组，`allow_kiki_subagents = false` 明确关闭委派。在这条 execution 路径中，profile 未声明的字段继承 harness 设置。修改设置不会改写已有绑定；重新选择 execution 或显式重建上下文才会采用新值。
+
+`native_agent` 选择厂商自己的 Agent。它是会话覆盖，或这里 defaults 中的一项，不是 profile 字段。会话覆盖上的 JSON `null` 清除这项选择，并继承 defaults。省略它，或写成 `engine-default`，就保留厂商默认 Agent；Kiki 此时不发送自定义 Agent 选择。新选择的值必须是该执行器已经宣告的 Agent。尚未发现时，只有执行器、该 Agent 和描述符版本仍与当前绑定一致，已有选择才会保留；发现结果不含该值时拒绝，当前绑定保持不变。
+
+Kiki 自己的执行器只接受省略或 `engine-default`。AGY CLI 的菜单目前只提供 `engine-default`，因此默认 main agent 仍是 AGY 自己的，不会作为自定义 `--agent` 传出。
+
+`inject_kiki_mcp` 打开或关闭 Kiki 工具桥。`true` 打开工具桥，且不会授予绑定已经拒绝的工具。`false` 关闭工具桥，已经发出的凭证也包括在内。会话覆盖上的 JSON `null` 继承 profile 值或这些 defaults。工具桥规则见 [外部 harness 中的 Kiki 工具](../server/acp.md#外部-harness-中的-kiki-工具)。
+
+`defaults.executor_prompt` 接受 `delivery`（`append`、`replace`、`preamble`）、`body`、`append`、`include` 和 `per_engine.<id>` 覆盖。这些字段与所选 profile 逐项合并，因此只设置 `delivery` 不会抹掉默认正文。省略 `include` 会继承，`include = []` 关闭附加段落。没有有效的 `executor_prompt.body` 时才使用 profile 正文。外部 execution 不会自动添加 Kiki cognition 或共享提示字段；需要哪些字段，在 `include` 中显式选择。
+
+通过 [REST API](../server/rest-api.md#会话) 修改时，向 `POST /api/config` 发送 `agent_executor_overrides` 对象。defaults 字段的 JSON `null` 删除该项保存值，`defaults: null` 删除整个默认设置块。TOML 不支持 `null`，直接编辑文件时删除对应键即可。`bin_path`、`home_dir`、`env`、`args` 等启动设置与 defaults 分开保存。
+
+显示偏好与执行设置分开。外部引擎要成为新的 profile 或执行选择，需要在 `[agent_executor_overrides.<id>]` 下写成 `show_in_profile_list = true`。字段不存在时，该引擎留在设置页，不进入新选择。`show_in_profile_list = false` 会一直保持关闭：刷新、重新检查和再次导入都沿用这个关闭。`[agent_executor_display]` 的 `externals_visible = false` 同时挡住全部外部引擎的新选择；省略或写成 `true` 只打开这道总闸，已经明确关闭的引擎仍保持关闭。总闸重新打开后，只有仍为 `true` 的引擎回到新选择。`discovery_initialized = true` 记录设置页已经完成过一次导入检测，它本身不开关任何引擎。原生引擎始终留在选择里。已经绑定某个隐藏或不可用引擎的 profile 与会话继续使用该身份；这些引擎留作当前值，不会被换掉，也不会因此回到新选择列表。关闭显示不会卸载引擎、不会改已有执行绑定，也不会取消任务。
+
+```toml
+[agent_executor_overrides."claude-acp"]
+show_in_profile_list = true
+
+[agent_executor_display]
+externals_visible = true
+discovery_initialized = true
+```
+
+向 `POST /api/config` 发送同名 snake_case 字段。JSON `null` 只删除对应的显示偏好，启动设置与 defaults 仍在。`GET /api/config` 和写入响应通过 `raw.agent_executor_overrides`、`raw.agent_executor_display` 返回这些字段；`raw.agent_executors` 只包含已配置的描述符，不是内置引擎目录。`GET /api/executors` 只读最近一次检查，不探测程序或登录。检查某一个引擎用 `POST /api/executors/{id}/check`。目录 `status: "unknown"` 表示这个引擎还没有检查结果。超过 60 秒后，响应仍带上一次的 `check_status` 和 `checked_at`，并用 `check_stale: true` 标明它已过新鲜期。某一引擎超时或失败只出现在该引擎上。设置页列出全部引擎，可以继续配置或 Check。第一次打开设置页且 `discovery_initialized` 还不是 `true` 时，每个外部引擎各检查一次；结果为 `ready` 或 `warning`、并且该引擎还没有明确开关的，会写成 `show_in_profile_list = true`。失败、超时，以及已经是 `false` 的引擎保持原样。这次导入记下 `discovery_initialized = true` 之后，再次进入设置页不再重跑。裸执行入口要同时满足三件事：程序就绪、已确认登录或已配置该引擎声明的 API 密钥环境变量、并且 `show_in_profile_list` 为 `true`。只保存了 profile、启动偏好或 Kiki 原生模型，还不能把它放进新选择。
+
+自定义执行器描述符可通过 `[agent_executors.<id>.model_probe]`，从只查询元数据的命令读取模型 ID。若命令的 JSON 响应把模型列表放在 `command.data.models`，可配置：
+
+```toml
+[agent_executors.example.model_probe]
+command = "vendor.exe"
+args = ["--output-format", "json", "models"]
+format = "json"
+json_path = ["command", "data", "models"]
+```
+
+使用厂商真实的元数据子命令与参数顺序；print、prompt 或斜杠命令并不保证不会发起模型请求。参数以数组直接传给程序，不经过 Shell。`format` 接受 `lines`（默认）、`tab` 或 `json`；`json_path` 选中由字符串或带 `id` 对象组成的 JSON 数组，保留原始 ID。JSON 无效或数组缺失时，目录保持部分已知，不据此判定已保存的模型 ID 无效。
+
 ## 连续性提醒词表
 
 Kiki 会提醒 Agent 记录持续有效的指示、查找早先决定、更新未完成待办，并在上下文压缩前后保留工作笔记。提醒追加到对话历史，不会自动保存记忆或修改系统提示词。进度提醒需要 `TodoList`；`TodoList` 不可用但记忆访问已获批准时，记录指示和回看历史提醒仍可工作。
@@ -164,10 +215,11 @@ api_key = "YOUR_API_KEY"
 | `retry` | `table` | — | 按错误定制的单步重试策略 → [`retry`](#retry) |
 | `request_governance` | `table` | 无规则 | 模型请求与 Agent 执行并发和等待预算 → [`request_governance`](#request-governance) |
 | `token_counting` | `table` | — | 对外上报哪种上下文 token 计数 → [`token_counting`](#token-counting) |
+| `transcript_memory` | `table` | — | 服务端转录历史的内存预算 → [`transcript_memory`](#transcript-memory) |
 | `background` | `table` | — | 后台任务运行参数 → [`background`](#background) |
 | `subagent` | `table` | — | subagent 运行默认值与限额 → [`subagent`](#subagent) |
 | `agents` | `table` | — | 委派说明默认值 → [`agents`](#agents) |
-| `thread_communication` | `table` | `{ enabled = false }` | 本地 peer thread 通信 → [`thread_communication`](#thread-communication) |
+| `thread_communication` | `table` | 不写 | 允许 peer thread 工具，默认关闭 → [`thread_communication`](#thread-communication) |
 | `mcp` | `table` | — | MCP server 全局超时默认值 → [`mcp`](#mcp) |
 | `tools` | `table` | — | 全局工具开关 → [`tools`](#tools) |
 | `image` | `table` | — | 图片压缩参数 → [`image`](#image) |
@@ -181,22 +233,23 @@ api_key = "YOUR_API_KEY"
 | `identity` | `table` | — | 自定义 Agent 身份 → [`identity`](#identity) |
 | `prompt` | `table` | `{}` | 提示词字段覆写与自定义变量 → [`prompt`](#prompt) |
 
-以下各节对 `providers`、`models`、`model_switch`、`thinking`、`loop_control`、`retry`、`token_counting`、`background`、`subagent`、`agents`、`thread_communication`、`mcp`、`tools`、`image`、`session_title`、`experimental`、`nb_search`、`permission`、`interaction`、`prompt` 等嵌套表逐一展开。
+以下各节逐一展开上表中的嵌套配置。
 
 ## `providers`
 
-`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。供应商的 `api_key` 放在 [`credentials.toml`](#供应商凭证)，CLI **不会**从 shell 环境变量自动取后备值——在终端里 `export KIMI_API_KEY` 不会让供应商自动获得密钥，请写在 `credentials.toml` 里。
+`providers` 表的每一项定义一个 API 供应商，以唯一名称为 key。可以把 API 密钥存入 [`credentials.toml`](#供应商凭证)，也可以在 `config.toml` 中设置 `api_key_env`，读取 Kiki 进程里的指定环境变量。没有这个显式引用时，在 shell 中导出密钥变量不会生效。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `type` | `string` | 是 | 供应商类型：`kimi`、`anthropic`、`openai`、`openai_responses`、`google-genai`、`vertexai` |
 | `api_key` | `string` | 否 | API 密钥。存放在 `credentials.toml`；仅当 `credentials.toml` 中没有该供应商的值时，才使用 `config.toml` 里的值 |
+| `api_key_env` | `string` | 否 | 非空的环境变量名，不是密钥值。存放在 `config.toml`；仅当 `api_key` 为空时读取。见[凭证优先级与示例](./overrides.md#供应商凭证) |
 | `base_url` | `string` | 否 | API 基础 URL |
 | `oauth` | `table` | 否 | OAuth 凭据引用（`storage`、`key` 两个字段），由登录流程自动注入，通常无需手写 |
-| `env` | `table<string, string>` | 否 | 供应商凭证的备用来源，详见下文 |
+| `env` | `table<string, string>` | 否 | 供应商环境值，详见下文 |
 | `custom_headers` | `table<string, string>` | 否 | 每次请求附加的自定义 HTTP 头 |
 
-**`env` 子表**：可以把供应商惯用的键名（如 `KIMI_API_KEY`）写在 `[providers.<name>.env]` 里，作为 `api_key` / `base_url` 的备用来源。这个子表**只在配置文件里读取**，不会修改 shell 环境：
+**`env` 子表**：可以把供应商惯用的键名（如 `KIMI_API_KEY`）写在 `[providers.<name>.env]` 里，作为 `api_key` / `base_url` 的备用来源。对于 `api_key_env` 指定的变量，此表中的同名值优先于进程环境，包括显式空值。这个子表**只在配置文件里读取**，不会修改 shell 环境：
 
 ```toml
 [providers.kimi.env]
@@ -204,7 +257,7 @@ KIMI_API_KEY = "sk-xxx"
 KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 ```
 
-优先级：`api_key` 字段 > `env` 子表键 > 两者都缺时启动报错。
+`api_key_env` 指定的变量缺失或为空时，不会再尝试其他凭证变量。完整解析顺序见[配置覆盖](./overrides.md#供应商凭证)。`type = "vertexai"` 可以不填 `api_key`，只要 env 子表同时写了 `GOOGLE_CLOUD_PROJECT` 和 `GOOGLE_CLOUD_LOCATION`。如果同时还设置了 API 密钥，该密钥仍会发送。见 [Vertex AI](./providers.md#vertexai)。
 
 ## `models`
 
@@ -227,9 +280,9 @@ KIMI_BASE_URL = "https://api.moonshot.ai/v1"
 | `auto_compact` | `integer` | 否 | 该模型的自动压缩点，写绝对 token 数。profile 或会话层的值优先；不改变模型窗口上限。该字段也可写在本模型的 `overrides` 表中 |
 | `max_completion_tokens` | `integer` | 否 | 单次请求补全 token 的上限。跨层取最小值，且受模型输出上限约束 |
 | `off_effort` | `string` | 否 | 关闭 Thinking 时在线上传输的 effort 编码（如 xai grok 的 `none`）。仅对声明了该编码的模型（catalog 会导入）有意义：设置后选择 Off 会发送这个值而不是省略 effort 字段——对默认就会推理的模型，这是真正关闭推理的唯一方式 |
-| `protocol` | `string` | 否 | 传输层覆盖；目前仅支持 `anthropic`，将此模型的请求路由到 Anthropic Messages 传输层。不接受写入 `overrides` |
+| `protocol` | `string` | 否 | 此模型的请求格式：`anthropic`、`openai`、`openai_responses` 或 `google-genai`。解析顺序是该字段，然后是本身属于这四值之一的供应商类型，最后是厂商基座格式。与供应商类型不同是合法的网关选择。不接受写入 `overrides`；写在那里会给出警告且不会生效 |
 | `beta_api` | `boolean` | 否 | 仅 `anthropic` 传输层：让请求走 beta Messages API 端点而不是标准端点。不接受写入 `overrides` |
-| `base_url` | `string` | 否 | 模型级端点覆盖（catalog 导入网关模型时写入，这些模型与供应商默认端点不同）。解析时优先于供应商的 `base_url`；仅在与 `protocol` 配合时生效 |
+| `base_url` | `string` | 否 | 模型级端点。即使省略 `protocol`，解析时也优先于供应商的 `base_url`，且它本身不改变请求格式。不接受写入 `overrides`；写在那里会给出警告且不会生效 |
 | `display_name` | `string` | 否 | UI 中显示的名称，未设时回退到 `model` |
 | `aliases` | `array<string>` | 否 | 该模型的额外路由键。任意一项精确匹配都会解析到这个表键，包含 `/` 的旧名称也可以。这是重命名表键后让旧名称继续可用的正规做法。两个模型声明同一段 alias 字符串会报错 |
 | `reasoning_key` | `string` | 否 | 仅 `openai` 供应商。当网关用非标准字段名返回推理内容时才需要设置；默认自动识别 `reasoning_content` / `reasoning_details` / `reasoning` |
@@ -302,7 +355,9 @@ max_context_size = 131072
 display_name = "Kimi for Coding (custom)"
 ```
 
-`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
+`[models."<alias>".overrides]` 接受普通模型字段，例如 `max_context_size`、`max_input_size`、`max_output_size`、`capabilities`、`display_name`、`reasoning_key`、`adaptive_thinking`、`support_efforts`、`default_effort`、`off_effort`、`service_tier`、`request_params`、`context_budget`、`auto_compact` 与 `max_completion_tokens`。不接受身份 / 路由字段：`provider`、`model`、`protocol`、`beta_api` 和 `base_url`。把这些字段写进 `overrides` 会在加载配置时给出警告，且不会改到模型；请写在模型自身上。模型设置页会标出这条警告，并显示有效格式、端点和凭据来自模型、提供商还是环境变量，不显示密钥或端点地址。对这些新增字段，先得到模型 alias 的有效配置（包括其 `overrides`），再按 "模型 alias → profile 顶层 → 命中的 `model_profiles` 条目" 合并：`request_params` 逐键覆盖，`service_tier` 使用最后一个明确值；`context_budget` 和 `max_completion_tokens` 是限制，取各层声明值的最小值，并继续受模型容量与输出上限约束。省略限制表示不增加限制。
+
+Recipe 可以覆盖支持的模型提示词与生成参数，但不改变模型的提供商、请求格式、端点或凭据。Recipe 中的路由字段会被拒绝；请把这些字段写在模型自身上。通过程序传入的模型设置覆盖也遵循这一规则，包括嵌套在 `overrides` 中的路由字段。
 
 无需修改配置文件也可以临时切换模型——通过 `KIKI_MODEL_*` 环境变量在内存里合成一个临时供应商，详见[用环境变量定义模型](./env-vars.md#用环境变量定义模型-kiki-model)。
 
@@ -318,7 +373,7 @@ display_name = "Kimi for Coding (custom)"
 | `steering_on_turn` | `boolean` | `true` | 在用户来源的新轮次及其压缩后重新装填上下文时注入 |
 | `steering_on_input` | `boolean` | `true` | 在新接纳的人类输入后注入，包括轮内「立即发送」的纠偏 |
 | `steering_interval_steps` | `integer` | `0` | 每隔用户输入驱动的 N 个模型步骤重复注入；必须非负，`0` 关闭定期 steering |
-| `steering_sources` | `table` | 其他来源关闭 | 按来源选择 `mode`：`off`、`inherit`（沿用用户设置）或 `custom`（单独正文与节奏） |
+| `steering_sources` | `table` | 已核验的子任务完成回执继承，其它来源关闭 | 按来源选择 `mode`：`off`、`inherit`（沿用用户设置）或 `custom`（单独正文与节奏） |
 | `anchor` | `{text: string}`、`string` 或 `array<string>` | — | 用作一轮开头若干步的完整系统提示词的正文，会替换 profile 提示词以及任何 `overlay` |
 | `anchor_steps` | `integer` | `1` | 被锚定的一轮开头有多少次模型请求使用 `anchor` 正文；必须至少为 1 |
 | `anchor_scope` | `string` | `session` | `session` 只锚定会话的第一轮；`turn` 锚定每一轮的开头若干步 |
@@ -348,7 +403,7 @@ await klient.global.kosong.updateModel(baseline.id, {
 
 路径相对于 [数据根目录](./data-locations.md#数据根目录)（默认为 `~/.kiki`）。绝对路径、解析后落到数据根之外的路径（包括经由符号链接）以及缺失的文件，会在 profile 绑定时被拒绝，错误信息会标出字段和路径。已声明且存在但内容为空的文件会被跳过；某个字段声明的文件全部为空时，该字段视为未设置。读取模型不改变这些文件。明确把编辑后的文件槽保存为 `{text}` 时，正文改存到模型中，原文件保持不变；要再次使用原文件，恢复原路径引用即可。已有会话保留冻结正文，直到显式重建上下文或换模。
 
-三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。其他来源默认关闭，需在 `steering_sources` 中启用；重试沿用原输入来源。
+三个正文槽离模型下一个 token 的远近不同。`overlay` 和 `anchor` 改写系统提示词，模型在你的请求之前读取。`steering` 作为普通 User 消息跟在输入之后注入，不包装成 `<system-reminder>`。它的正文与节奏适用于直接用户消息，包括排队输入、「立即发送」、用户斜杠激活的 Skill 和插件命令。已核验且完成的 subagent 任务回执默认继承该 steering；明确设置 `steering_sources.task.mode = "off"` 仍优先关闭。普通进程结果、失败子任务及其它非用户来源保持关闭，需在 `steering_sources` 中启用。重试沿用原输入来源。
 
 选 `mode = "inherit"` 沿用当前选中身份上、用户消息已经在用的 steering 正文和节奏，选 `mode = "custom"` 则使用 `custom.steering`、`custom.steering_on_turn`、`custom.steering_on_input` 和 `custom.steering_interval_steps`。单独正文接受相同的内联、路径及路径数组形式；缺正文时不会继承用户文本。`off` 和 `inherit` 都保留已保存的 custom 草稿。来源键包括 `thread`（peer 消息和模型创建的 thread）、`room`、`agent`（子 Agent 消息与父级通知）、`task`、`cron`、`hook`、`automation`（goal 自动继续）、`skill`（模型工具激活）及 `external`（外部客户端 thread 输入）。未知来源保持关闭；通过「立即发送」投递不会把其他来源变成用户输入。
 
@@ -468,6 +523,8 @@ confirm = false
 | --- | --- | --- | --- |
 | `max_steps_per_turn` | `integer` | — | 单轮最大步数；不设或设为 `0` 则无上限 |
 | `max_attempts_per_step` | `integer` | `5` | 单步失败后的最大总尝试次数（含首次尝试） |
+| `thinking_only_continuation` | `boolean` | `true` | 模型正常结束且只有非空思考时，显式发送一次 `Continue.` User 消息 |
+| `zero_output_continuation` | `boolean` | `false` | 正常结束且没有思考文本、可见正文和工具调用时，显式发送一次 `Continue.` User 消息 |
 | `reserved_context_size` | `integer` | `50000` | 自动压缩点以上为模型输出预留的 token 数 |
 | `auto_compact` | `string` | — | 全局默认自动压缩点，按模型可用窗口写百分比，如 `"85%"`。全局不接受 token 数；模型、profile、会话用正整数 token |
 | `compaction_trigger_ratio` | `number` | `0.85` | 旧版触发比例，仅在各层都没有设置 `auto_compact` 时使用 |
@@ -478,7 +535,13 @@ confirm = false
 
 `max_steps_per_turn` 可被环境变量 `KIKI_LOOP_MAX_STEPS_PER_TURN` 覆盖，`max_attempts_per_step` 可被 `KIKI_LOOP_MAX_ATTEMPTS_PER_STEP` 覆盖，优先级均高于配置文件。
 
-重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流，以及所有 HTTP 500–599 服务端错误。账户额度耗尽或余额不足导致的 429 不会重试，会立即失败：在充值之前重试不可能成功。
+重试仅针对瞬时故障——连接错误、超时、HTTP 429 限流，以及符合重试条件的 HTTP 500–599 服务端错误。已有部分输出、安全拒绝或额度耗尽时会停止，不重放请求。
+
+当供应商确认模型正常结束，且只有非空思考、没有正文、工具调用或拒绝时，Kiki 会保留思考及原始签名，每轮最多显式发送一条 `Continue.` User 消息。网关的精确 `antigravity_thinking_only` 事件也可触发续接，但 Kiki 必须实际保留了思考，并确认没有其它输出、外部信息检索（grounding）或拒绝。取消、缺少终态事件、流中断、token 上限导致的停止均不符合条件。续接算一次真实模型请求，用量单独记录。第二次仍为空或请求失败时停止本轮；这次续接即使遇到 HTTP 429 或临时服务端错误，也不重试。
+
+设置 `[loop_control] thinking_only_continuation = false` 可关闭这条自动消息，从下一个 step 边界起生效。拒绝尾部 Model 消息的 Google 模型仍保留原有的原始快照重试，它与显式续接共用每轮一次的恢复预算，不受该设置关闭。Google `CONTINUATION` 终态仍需此 SDK 无法发送的 continuation token。
+
+未配置或设为 `false` 时，`zero_output_continuation` 保持关闭。设为 `[loop_control] zero_output_continuation = true` 后，供应商确认正常结束，且思考文本、可见回答和工具调用都为空时，Kiki 会在同一轮发送一条 `Continue.` User 消息。附在空思考上的签名不是思考内容，并保留在对话里。非空的 redacted 思考数据算输出。非空思考文本仍走 `thinking_only_continuation`。子 Agent 使用同一规则；开关关闭时，没有内容的子任务完成仍失败，第二次仍为空也会停止本轮。token 用量不参与判断。该选择从下一个 step 边界起生效。这次续接是同一轮里的一次模型请求，不按连接错误或限流重试。取消、供应商错误，以及没有正常停止终态的流，仍走原有路径。
 
 ### 连续性提醒设置
 
@@ -522,7 +585,7 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 ## `retry`
 
-`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。默认情况下，可重试的单步最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
+`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。默认情况下，可重试的单步最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -533,26 +596,39 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
-| `match` | `string` | 是 | 与错误码和错误名称匹配的正则表达式（按模式匹配文本的规则） |
+| `match` | `string` | 是 | 与错误码和错误名称匹配的 JavaScript 正则表达式（按模式匹配文本的规则）；`(?i)` 等内联修饰符无效，该策略会被忽略并产生配置警告 |
+| `models` | `array<string>` | 否 | 精确的规范 `[models]` 配置键；仅绑定模型在列表中时生效 |
+| `providers` | `array<string>` | 否 | 精确的 `[providers]` 配置键；仅绑定 provider 在列表中时生效 |
 | `max_attempts` | `integer` | 否 | 命中错误的最大总尝试次数（含首次尝试）；优先于本节的总预算 |
 | `backoff` | `integer` | 否 | 每次重试前固定等待的毫秒数；provider 返回的 retry-after 提示仍优先 |
 | `retry` | `boolean` | 否 | 默认为 `true`。`false` 可抑制 Kiki 内建判定原本会重试的错误；`true` 不能强制重试被判定为不可重试的错误 |
 
-策略从上到下检查，因此应把更具体的正则表达式放在更宽泛的规则之前：
+策略从上到下检查。`models` 或 `providers` 不包含当前绑定时会跳过该策略，余下策略中首个 `match` 命中错误的策略生效；同时设置两个 selector（选择条件）时必须全部命中。省略两个 selector 时保持原有的全局逐错误行为。
+
+下面的配置只为一个原生 Google GenAI Argon 绑定的 HTTP 429 提供最多 20 次总尝试；其它模型和 provider 仍使用默认的 5 次：
 
 ```toml
-[retry]
-max_attempts = 4
-
 [[retry.policies]]
 match = '^provider\.rate_limit$'
-max_attempts = 6
-backoff = 1000
-
-[[retry.policies]]
-match = '^provider\.'
-retry = false
+models = ['gemini-4-argon']
+providers = ['google-native']
+max_attempts = 20
+backoff = 15000
 ```
+
+请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。该策略不会让 HTTP 400、额度耗尽、部分输出或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
+
+## `transcript_memory`
+
+`transcript_memory` 控制服务端把多少转录历史留在内存里。三个字段都是可选的：省略即使用默认值。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `tail_turns` | 正整数 | `20` | 每个 agent 常驻保留多少个已结束的 turn |
+| `max_agent_bytes` | 正整数 | `16777216`（16 MiB） | 每个 agent 的常驻字节预算，即留在内存里的量。更早的 turn 会按需从磁盘读取 |
+| `max_detail_cache_bytes` | 非负安全整数 | `268435456`（256 MiB） | 单次完整正文读取的最大缓存量。`0` 关掉这个额外缓存槽，内容照样读取，只是不留在该缓存里。改动后的值在下一次缓存准入或淘汰时生效；调低会淘汰放不下的内容，不会取消正在进行中的读取 |
+
+这些是服务端内存预算，不是读取上限。调低它们会减少内存占用，可能增加从磁盘重复读取的次数。
 
 ## `token_counting`
 
@@ -586,23 +662,23 @@ retry = false
 
 ## `subagent`
 
-`subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents.md#agent-文件格式)；原宿主派发策略设置已移除。
+`subagent` 控制派生 subagent（`AgentRun`）的运行方式。角色选择使用 profile 的 [`can_spawn_subagents`、`allowed_subagents`、`preferred_subagents` 和 `deny_subagents`](../customization/agents-and-subagents.md#agent-文件格式)；原宿主派发策略设置已移除。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `default_profile` | `string` | 内建通用提示词 | `AgentRun` 省略 `profile`、`route` 和 `profile_file` 时采用的显式 profile 覆盖。该键不存在时（包括只配置了部分字段的 `[subagent]` 表），`AgentRun` 使用内建通用 subagent 提示词，不加载目录中的 profile。设为 `""` 要求显式指定目标（严格模式） |
 | `default_model` | `string` | — | 仅在派发参数与生效 profile、route、caller lease pin 都未选模型时使用的显式兜底；从不继承调用方 |
 | `deny_models` | `string[]` | — | alias 解析后应用于所有子 Agent 绑定的硬禁止列表；pin、人工切换、恢复与 advisory 派遣都不能绕过。Profile / lease / 树策略 / model-profile 硬规则仍是额外边界 |
-| `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，适用于 subagent 默认拿不到的全部工具（`BoardRead`、`BoardWrite`、`AskUserQuestion`、`Cron`、`EnterPlanMode` / `ExitPlanMode`、`ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`）；不会覆盖 profile 白名单、黑名单或其他策略限制 |
+| `allowed_tools` | `string[]` | `[]` | 允许越过原生 subagent 默认限制的精确工具名，适用于 subagent 默认拿不到的内置工具（`AskUserQuestion`、`Cron`、`EnterPlanMode` / `ExitPlanMode`、`ThreadCreate` / `ThreadList` / `ThreadRead` / `ThreadWait`）；不会覆盖 profile 白名单、黑名单或其他策略限制 |
 | `max_direct_children` | `integer` | `16` | 每个派遣者同时在途的直属子 Agent 执行数上限，包括启动中和取消中；`0` 表示不限 |
 | `max_total_subagents` | `integer` | `0` | 单棵会话树同时在途的子 Agent 执行总数上限，包括孙代及更深后代，不含 main；`0` 表示不限 |
 | `timeout_ms` | `integer` | `7200000`（2 小时） | 单个 subagent（`AgentRun`）允许运行的最长时间（毫秒）。超时后 subagent 以 `timed_out` 收尾。`0` 表示无超时——subagent 一直运行到自行结束或被模型手动停止。该值是后台任务管理器对每个 subagent 任务的 per-task timeout，因此对前台与后台 subagent 同时生效。在 print 模式（`kiki -p`）下未显式设置时默认为 `0`。注意：超过 `2147483647`（约 24.8 天）的值会被运行时钳到约 24.8 天 |
 
-原生 subagent 默认可以使用普通工具，包括只读的 `MemorySearch` 和 `MemoryRead`。有一批工具默认关闭，需要显式开放：`BoardRead`、`BoardWrite`、`AskUserQuestion`、`Cron`、`EnterPlanMode` 与 `ExitPlanMode`，以及 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`。可以按档案在 subagent profile 的 [`tools`](../customization/agents.md#agent-文件格式) 列表中点名，也可以设置服务端默认值：
+原生 subagent 默认可以使用普通工具，包括只读的 `MemorySearch` 和 `MemoryRead`。有一批内置工具默认关闭，需要显式开放：`AskUserQuestion`、`Cron`、`EnterPlanMode` 与 `ExitPlanMode`，以及 `ThreadCreate`、`ThreadList`、`ThreadRead` 和 `ThreadWait`。可以按档案在 subagent profile 的 [`tools`](../customization/agents-and-subagents.md#agent-文件格式) 列表中点名，也可以设置服务端默认值：
 
 ```toml
 [subagent]
-allowed_tools = ["BoardRead", "ThreadRead"]
+allowed_tools = ["AskUserQuestion", "ThreadRead"]
 ```
 
 省略 `tools` 或只写 `*` 不算显式开放：只有具体工具名才算，通配符本身不会顺带开启任何 opt-in。这两处开放彼此是「或」的关系，但 profile 自己的名单仍会过滤结果：子智能体能用这类工具，只要服务端名单点名了它，**或者**该 subagent profile 的 `tools` 名单点名了它，同时该 profile 还得选中这个工具。因此写了有限 `tools` 名单的 profile 会挡住它没列出的工具，即使服务端开放了这一项；而没写名单（或写了 `*`）的 profile，则对两处开放覆盖到的工具都是开放的。`allowed_tools = []` 会清除服务端额外允许，但不会移除 profile 的显式条目。profile 白名单、`disallowedTools`、禁用工具组、调用方限制、全局与会话策略、功能开关、Plan 模式和调用审批仍然生效；profile 自己的 `disallowedTools` 也能禁用这两处开放过的工具。`MemoryWrite`、`ThreadSend`、`SendMessage` 和 Goal 工具仍仅供 main agent 使用，不能通过这两个入口开放。`Cron` 安排的是当前会话的调度并唤醒 main agent，并不是子 Agent 私有的定时器。MCP 工具、继承的用户工具及其他扩展保持原有默认行为；外部执行器自行管理工具。
@@ -617,7 +693,7 @@ profile 描述和设置页中的工具列表是配置预览，不保证运行时
 
 ## `agents`
 
-这个严格配置节控制[委派说明](../customization/agents.md)的布尔 gate。未知字段会被报告为配置错误。
+这个严格配置节控制[委派说明](../customization/agents-and-subagents.md)的布尔 gate。未知字段会被报告为配置错误。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
@@ -635,13 +711,28 @@ profile 描述和设置页中的工具列表是配置预览，不保证运行时
 
 ## `thread_communication`
 
-这个严格配置节控制[本地 peer thread 通信](../customization/agents.md#peer-thread-通信)。功能默认关闭，没有对应的环境变量覆盖。
+这个严格配置节是[本地 peer thread 通信](../customization/agents-and-subagents.md#peer-thread-通信)的允许开关。不写 `enabled` 时工具允许使用，但默认关闭，直到某个会话打开，或声明的 profile、这次任务点名它们。你写成 `enabled = false` 就是完全关闭，会话不能再打开。已经保存的 `enabled = true` 会保持原先的默认开启，直到 `[optional_capabilities.defaults] thread` 另作选择。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `enabled` | `boolean` | `false` | 允许 4 个主 Agent peer thread 工具以及本地 REST 与 Klient thread 操作；设为 `true` 可全局启用这些操作 |
+| `enabled` | `boolean` | 不写 | 允许 4 个主 Agent peer thread 工具以及本地 REST 与 Klient thread 操作。你写成 `false` 即完全关闭 |
 
-单个工作区的覆盖值单独持久化，通过本地 REST API 或 Klient 管理。全局开关开启时，覆盖值可以关闭某个工作区；全局开关关闭时，覆盖值不能重新启用通信。
+单个工作区的覆盖值单独持久化，通过本地 REST API 或 Klient 管理。工具仍允许时，覆盖值可以关闭某个工作区；完全关闭后，覆盖值不能重新启用通信。
+
+## `optional_capabilities`
+
+这一节把浏览器、电脑、记忆、线程和网页（`WebSearch` 与 `FetchURL`）的「允许使用」和「默认开启」分开。
+
+| 字段 | 类型 | 默认值 | 说明 |
+| --- | --- | --- | --- |
+| `defaults.browser` | `boolean` | `true` | 新会话是否一开始就有浏览器工具 |
+| `defaults.computer` | `boolean` | `true` | 新会话是否一开始就有电脑工具 |
+| `defaults.memory` | `boolean` | `true` | 新会话是否一开始就有记忆工具 |
+| `defaults.thread` | `boolean` | `false` | 新会话是否一开始就有 peer thread 工具 |
+| `defaults.web` | `boolean` | `true` | 新会话是否一开始就有网页工具 |
+| `web.allowed` | `boolean` | `true` | `false` 会完全关闭网页工具 |
+
+浏览器、电脑、记忆和线程的允许位仍写在原有键上（`native_browser`、`computer_control.enabled`、`memory.enabled`、`thread_communication.enabled`）。会话可以打开或关闭一项仍允许的能力，但不能越过完全关闭。记忆的审批和预算、浏览器连接、电脑使用倾向是各自独立的设置。
 
 ## `mcp`
 
@@ -715,8 +806,13 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 | --- | --- | --- | --- |
 | `model` | `string` | 未设置 | 用于写会话标题的模型别名。未设置（或留空）时 Kiki 完全不发标题请求：既不回退到 `fast_model`，也不使用托管的 `chat_title` 工具，因此标题生成不消耗任何订阅用量 |
 | `triggers` | `array<string>` | `["first_turn_completed"]` | Kiki 主动写标题的时刻，取值为 `first_user_message`、`first_turn_completed`、`context_compacted` 中的一项或多项。空数组表示关闭自动生成；按需生成标题仍然可用，且仍需配置 `model` |
+| `prompt` | `string` | 内置提示词 | 可选的标题模型系统提示词。多行正文完整发送，不展开模板。删除该字段或留空恢复内置提示词；默认全文不会另存为覆盖 |
 
-选定的模型按原有的标题提示词预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+内置提示词根据当前目的和具体对象生成便于辨认的标题，保留有用的名字与标识符，不虚报尚未证实的成功。修改 `prompt` 会在下一次标题请求生效，已打开的会话也无需重启。保存或删除覆盖不改已有会话标题，也不主动发起标题请求。
+
+选定的模型按原有的会话摘录预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+
+`GET /api/config` 与成功的 `POST /api/config` 响应包含 `session_title.default_prompt` 和 `prompt_source`（`default` 或 `custom`）。它们是只读字段；仅存在非空白覆盖时才返回 `prompt`。发送 `{ "session_title": { "prompt": "你的标题规则" } }` 保存，发送 `{ "session_title": { "prompt": null } }` 删除覆盖。省略的字段保持不变，因此这两种写入保留 `model` 与 `triggers`；`model: null` 只移除模型，保留提示词和生成时机。修改单个字段时不要使用 `replace_domains`。
 
 按需生成对应 `POST /api/sessions/{session_id}/title/generate`，SDK 暴露了这个调用。它同样需要 `model`，没有模型就无从发问；其中 `force` 选项才是替换手写标题的那一个，不传则保留你写的标题。
 
@@ -724,26 +820,31 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 ## `experimental`
 
-`experimental` 以 flag id 为 key，存放实验功能 flag 的持久化覆盖。每个 flag 的优先级从高到低：对应的 `KIKI_EXPERIMENTAL_<NAME>` 环境变量、本节、`KIKI_EXPERIMENTAL_FLAG` 总开关，最后是 flag 的内置默认值。
+`experimental` 以 flag id 为 key，存放内置功能的发布与回退开关覆盖。内置功能默认可用；显式设为 `false` 仍会关闭。每个 flag 的优先级从高到低：对应的 `KIKI_EXPERIMENTAL_<NAME>` 环境变量、本节、真值的 `KIKI_EXPERIMENTAL_FLAG` 总开关，最后是 flag 的内置默认值。总开关为假值时视为未设置，不会全局关闭功能。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
 | `auto_session_title` | `boolean` | `true` | 是否自动生成会话标题；见 [`session_title`](#session-title) |
-| `native_browser` | `boolean` | `false` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
-| `usage_export` | `boolean` | `false` | 把不含内容的用量批次发送到「用量 → 外部同步」中配置的目的地；关闭时这些路由根本不注册 |
+| `native_browser` | `boolean` | `true` | 经由受管浏览器后端运行已保存的浏览器连接；未开启时连接会被拒绝，Agent 也拿不到[浏览器工具](../reference/tools.md#浏览器类) |
+| `local_session_resume` | `boolean` | `true` | 接续本机已有的 Claude Code 和 Codex 会话；在「设置 → 会话」管理，每次新接续时读取 |
 
-任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。带有自己控件的 flag 在对应功能页开关；没有的会出现在 **Settings → 开发者 → 实验性**，该页按 id 列出服务器上报的 flag。
+任何已注册的 flag 都可以按 id 用布尔值在这里覆盖。每个内置开关都在相关设置页提供名称与说明；**设置 → 高级 → 开发与实验**末尾的**实验功能入口**会链接到这些开关所在的页面，并显示更改何时生效。未知的扩展开关按 id 显示在该页。功能可用不代表会安装插件、授权脚本或连接未配置的外部目的端。
 
 ## `browser_control`
 
-`browser_control` 存放由[浏览器控制](../guides/settings.md#浏览器控制)管理的浏览器连接，以及新会话默认项。设置页是受支持的编辑入口：它按连接保存条目、保存后读回结果再显示，且保存从不启动浏览器。
+`browser_control` 存放由[浏览器控制](../guides/settings.md#浏览器控制)管理的浏览器连接，以及新会话默认项。设置页是受支持的编辑入口：它按连接保存条目、保存后读回结果再显示，且保存从不启动浏览器。要新增 HTTP 桥连接，点击「添加浏览器」，将「接法」选为「Kimi WebBridge」。
 
 | 字段 | 类型 | 说明 |
 | --- | --- | --- |
 | `default_browser` | `string` | 之后创建的会话使用的连接 id；未设置时调用必须自己指定连接 |
+| `allowed_browsers` | `string[]` | Agent 可以使用的连接 id。不写这一项时沿用原先的默认。空列表仍允许列出和发现 |
+| `disabled_sources` | `string[]` | 已关闭的来源：`kimi-webbridge`、`independent-browser`、`codex-browser`、`ego-lite`。关闭来源不会清空 `allowed_browsers` |
+| `webbridge_preset_route` | `boolean` | 默认 `true`：将旧版保存为 `agent-browser-cdp`、id 恰为 `kimi-webbridge` 的条目接到 Kimi HTTP 桥；设为 `false` 则让该条目继续走 CDP 驱动 |
 | `connections` | `table` | 每条连接一个条目，以连接的固定 id 为 key |
 
-每个条目通过 `type`（`agent-browser-profile` 或 `agent-browser-cdp`）、`name`、`enabled` 以及该接法所需字段描述一条连接；每种接法的字段见设置页。字段与接法不符的条目会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。
+每个条目包含 `name`、`enabled` 与 `type`。类型为 `agent-browser-profile`、`agent-browser-cdp`、`codex-extension`、`ego-lite`、`kimi-webbridge` 或 `webbridge-command`；各类型字段见[浏览器连接 API](../server/rest-api.md#浏览器连接)。字段与类型不符时会被拒绝，已保存的文件保持不变。存入的 CDP 地址按凭据对待：页面显示掩码，只有显式请求时才读取明文。`webbridge-command` 只接受 `name` 和 `enabled`，使用固定的本地命令桥，归 `kimi-webbridge` 来源开关控制。它没有 endpoint 或驱动路径；CDP 条目不会被改成此类型。
+
+`kimi-webbridge` 类型使用服务器本机 `http://127.0.0.1:10086` 的 HTTP 桥接程序，不接受 endpoint；这不是 CDP 地址。上述旧 id 兼容路由不改写保存条目，也不影响其他 CDP id。显式 `kimi-webbridge` 类型始终使用 HTTP，不受 `webbridge_preset_route = false` 影响。
 
 ## `computer_control`
 
@@ -754,7 +855,9 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 usage_preference = "avoid"
 ```
 
-`usage_preference` 可设为 `"avoid"`（默认）或 `"prefer"`。`"avoid"` 提示模型：除非用户或用户规则明确要求，否则一般不用电脑控制，优先已有 CLI、API、MCP、短脚本及浏览器专用能力。`"prefer"` 偏好用电脑控制处理适合的交互任务。两种倾向都以用户当前明确要求、正确性、工具可用性与权限规则为先。改动在下次模型请求生效，无需重连，也不会安装组件；删除字段会恢复继承。
+`enabled = false` 会完全关闭电脑工具。不写这一项则允许使用。新会话是否一开始就带上这些工具，由 `[optional_capabilities.defaults] computer` 决定，默认开启。
+
+`usage_preference` 可设为 `"avoid"`（默认）或 `"prefer"`。`"avoid"` 提示模型：除非用户或用户规则明确要求，否则一般不用电脑控制，优先已有 CLI、API、MCP、短脚本及浏览器专用能力。`"prefer"` 偏好用电脑控制处理适合的交互任务。两种倾向都以用户当前明确要求、正确性、工具可用性与权限规则为先。使用倾向不授予也不收回工具。改动在下次模型请求生效，无需重连，也不会安装组件；删除字段会恢复继承。
 
 已识别的 cua-driver MCP 电脑工具默认向每个会话的 main agent 暴露，独立会话也有自己的 main agent。子 Agent 需要在 profile、route 或派发的工具选择、`[subagent].allowed_tools` 或 `[tools].enabled` 中显式指定 MCP 工具模式。安装所得连接可用 `mcp__kiki-computer__*` 开启；仅有 `tools: ["*"]` 不算明确开启。现有允许范围上限、deny 规则和已停用连接继续生效。输入结果未知的调用不会重放：先重连并观察，再决定下一步操作。
 
@@ -762,18 +865,18 @@ usage_preference = "avoid"
 
 `nb_search` 配置 Kiki 内置的搜索与抓取模块，也就是 `WebSearch` 和 `FetchURL` 工具背后的能力。该模块是 Kiki 的一部分：随产品一起安装，不需要额外的安装步骤；其中的 provider 实例、凭证槽、lane 和默认 fetch chain 都已经内置。
 
-默认的 `WebSearch` lane 是 `github.repositories`，不需要凭证或配置，但只检索 GitHub 仓库。查阅代码库文档时可显式选择 `context7.docs`；它返回 typed 文档上下文，不能与结果型 lane 组合。`duckduckgo.search` 是可选的免密钥通用网页 lane，但其公共 HTML 端点可能返回 CAPTCHA；如需更稳定的通用检索，请配置其他 provider 的凭证并覆盖 `defaults.search_lane`。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
+默认的 `WebSearch` lane 是 `duckduckgo.search`，无需注册、凭证或配置即可检索通用网页。公共 HTML 端点可能触发验证或限流；等待后再试，或显式选择其他已配置的来源。这些失败会报告错误，不会伪装为空结果，也不会静默切换到收费 provider。已配置的默认值和显式 lane 选择优先。仓库检索或代码库文档可显式选择 `github.repositories`、`context7.docs`；后者返回 typed 文档上下文，不能与结果型 lane 组合。字段名与合并行为遵循该模块的规范配置约定，与独立的 nb-search CLI 共用同一份 schema，因此已有的 nb-search 配置文件可以直接沿用。
 
 | 字段 | 类型 | 必填 | 说明 |
 | --- | --- | --- | --- |
 | `provider_instances` | `table` | 否 | 命名 provider 实例，包含 `provider_id`、`enabled`、可选的 `credential_slot_id` / `base_url`、`key_strategy`（`round-robin` 或 `priority`）、`balance_ttl_ms`（60,000–86,400,000 毫秒）及 provider 专属 `options` |
 | `credential_slots` | `table` | 否 | 命名凭据槽，只包含 `provider_id` 和 `env` 中的环境变量名 |
 | `lanes` | `table` | 否 | 命名 operation lane，包含 `provider_instance_id`、`operation_id`、`latency`、`cost` 和可选 `evidence_groups` |
-| `defaults.search_lane` | `string` | 否 | 内置默认值为 `github.repositories`（仅仓库）；通用网页检索需要覆盖。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
+| `defaults.search_lane` | `string` | 否 | 内置默认值为免密钥的 `duckduckgo.search`（通用网页）；已配置的默认值优先。显式删除默认值且不指定 lane 时，`WebSearch` 仍会拒绝运行 |
 | `defaults.fetch_chain` | `array<table>` | 否 | URL 默认先用 `direct.fetch`，失败时尝试免密钥的 `jina.reader`；直连成功但内容无用时，需显式配置 `execution.fetch.quality` 规则才能触发回退 |
 | `execution` | `table` | 否 | provider 调用数、并发、重试、超时、内联输出、响应大小、重定向、内容长度和质量预算 |
 
-凭据值不会写入 `config.toml`；规范凭据槽仍只有 `provider_id` 与环境变量名 `env`。Kiki 服务器进程环境变量优先，包括显式设置的空值。启用本机复用后，Kiki 会从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 nb-search `secrets.json` 补充缺少的变量，仅导入匹配的凭据槽并校验绑定；重定向会被拒绝。如果这两种来源都没有提供值，可选择使用该凭据槽的 **Kiki 管理凭据**。在「设置 → 搜索与抓取 → 提供商」可保存、显式查看已存值、编辑、覆写或清除。凭据保存在当前 Kiki 服务器主目录下受保护的 `secrets/nb-search/gui-credentials.json`，而非 `config.toml`、nb-search CLI 文件或浏览器存储。修改凭据槽的提供商、变量名、使用该槽的实例或端点会使已存绑定失效，不会静默改绑；核对新绑定后显式覆写或清除旧值。只有 Kiki 管理的值可被查看；服务器环境变量及 CLI `secrets.json` 只显示来源，其值不会发送到 GUI。被引用的不同凭据槽必须使用不同的环境变量名，避免托管凭据跨提供商混用。如果另一处在凭据编辑器打开期间修改了槽的变量名、提供商、使用实例或端点，旧草稿保存时会提示冲突：请重新加载、核对目标后再保存。读写 REST 接口沿用现有 Kiki bearer token；持有它的人可显式查看 Kiki 管理的密钥。远程连接时凭据位于远程服务器；切换连接不会转移编辑器内的值。该模块不会读取其他终端的变量，也不会自动加载 `.env` 文件。
+凭据值不会写入 `config.toml`；规范凭据槽仍只有 `provider_id` 与环境变量名 `env`。Kiki 服务器进程环境变量优先，包括显式设置的空值。启用本机复用后，Kiki 会从服务器 `NB_SEARCH_HOME`（默认 `~/.nb-search`）下的 nb-search `secrets.json` 补充缺少的变量，仅导入匹配的凭据槽并校验绑定；重定向会被拒绝。如果这两种来源都没有提供值，可选择使用该凭据槽的 **Kiki 管理凭据**。在「设置 → 搜索与抓取 → 服务与凭证」可保存、显式查看已存值、编辑、覆写或清除。凭据保存在当前 Kiki 服务器主目录下受保护的 `secrets/nb-search/gui-credentials.json`，而非 `config.toml`、nb-search CLI 文件或浏览器存储。修改凭据槽的提供商、变量名、使用该槽的实例或端点会使已存绑定失效，不会静默改绑；核对新绑定后显式覆写或清除旧值。只有 Kiki 管理的值可被查看；服务器环境变量及 CLI `secrets.json` 只显示来源，其值不会发送到 GUI。被引用的不同凭据槽必须使用不同的环境变量名，避免托管凭据跨提供商混用。如果另一处在凭据编辑器打开期间修改了槽的变量名、提供商、使用实例或端点，旧草稿保存时会提示冲突：请重新加载、核对目标后再保存。读写 REST 接口沿用现有 Kiki bearer token；持有它的人可显式查看 Kiki 管理的密钥。远程连接时凭据位于远程服务器；切换连接不会转移编辑器内的值。该模块不会读取其他终端的变量，也不会自动加载 `.env` 文件。
 
 开启本机复用时，`~/.nb-search/secrets.json` 中 `values.NB_SEARCH_TAVILY_API_KEY` 原有的单个 Tavily 密钥可以直接沿用，无须迁移或补充第二个密钥。需要多个密钥时，把同一字段或 Kiki 服务器的 `NB_SEARCH_TAVILY_API_KEY` 环境变量设为有序、逗号分隔的 1–32 个不同且非空的密钥，例如 `YOUR_FIRST_API_KEY,YOUR_SECOND_API_KEY`；逗号两侧的空格会被忽略。不要把密钥写入 `config.toml`，且服务器环境变量仍优先于本机凭证文件。其他已配置凭证槽也使用相同格式。
 
@@ -1022,7 +1125,7 @@ prompt_overrides:
 旧的 `[prompt] shared` 和 `[prompt.tools]` 键已经移除，继续使用会触发严格配置解析错误。把 `shared` 迁到 `[prompt.overrides.fields]` 下的 `"system.shared"` 键；每个工具条目迁到 `tool.<kebab-case-name>.guidance`（例如 `WebSearch` 对应 `tool.web-search.guidance`）。
 :::
 
-桌面 GUI 中，请进入「设置 → 智能体 → 提示词」编辑本节；该卡片默认折叠，展开后再编辑。
+桌面 GUI 中，请进入「设置 → 智能体 → 提示词字段」编辑本节；该卡片默认折叠，展开后再编辑。
 
 ## `[request_governance]`
 

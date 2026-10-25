@@ -96,7 +96,7 @@ describe('SessionController suspend / resume', () => {
     deliver({ ...summaryReset, grade: 'turn' });
     controller.suspend();
     controller.setFocusedAgent('child-1');
-    controller.resume();
+    await controller.resume();
     expect(attachments[1]!.input.transcriptSince?.['child-1']).toBeUndefined();
     expect(controller.getAgentState('child-1').transcriptReady).toBe(false);
     deliver(resetEvent('child-1', full, 3));
@@ -130,14 +130,15 @@ describe('SessionController suspend / resume', () => {
     controller.suspend();
     read.mockResolvedValueOnce(snapshot({ as_of_seq: 14, session: { ...session, title: 'Renamed' } }));
 
-    controller.resume();
+    const resumed = controller.resume();
     expect(controller.suspended).toBe(false);
     expect(attachments).toHaveLength(2);
     expect(attachments[1]!.input.sessionCursor).toEqual({ seq: 10, epoch: 'epoch-1' });
     expect(attachments[1]!.input.transcriptSince).toEqual({ main: { seq: 3, epoch: 'epoch-canonical' } });
     // The retained window is visible before any server round trip completes.
     expect(controller.getState().blocks.length).toBeGreaterThan(0);
-    await vi.waitFor(() => { expect(controller.getState().session?.title).toBe('Renamed'); });
+    await resumed;
+    expect(controller.getState().session?.title).toBe('Renamed');
     expect(read).toHaveBeenCalledTimes(2);
     controller.close();
   });
@@ -147,7 +148,7 @@ describe('SessionController suspend / resume', () => {
     await parked.controller.open();
     parked.deliver(resetEvent('main', userTurnSnapshot({ assistantText: 'Hello' }), 3));
     parked.controller.suspend();
-    parked.controller.resume();
+    await parked.controller.resume();
     parked.deliver(opsEvent('main', appendOps(5, ' world'), 4));
 
     const fresh = harness();
@@ -169,7 +170,7 @@ describe('SessionController suspend / resume', () => {
     void controller.open();
     controller.suspend();
     read.mockResolvedValueOnce(snapshot());
-    controller.resume();
+    await controller.resume();
     await vi.waitFor(() => { expect(attachments).toHaveLength(1); });
     expect(controller.getState().loaded).toBe(true);
     controller.close();

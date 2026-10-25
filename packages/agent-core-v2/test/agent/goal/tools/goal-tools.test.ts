@@ -183,7 +183,7 @@ describe('goal tools', () => {
 
     expect(result.stopTurn).toBe(true);
     expect(result.output).toContain('Goal completed successfully');
-    expect(result.output).toContain('Worked');
+    expect(result.output).toContain('State that the goal is complete');
     expect(result.output).toContain('Write a concise final message for the user');
   });
 
@@ -195,7 +195,7 @@ describe('goal tools', () => {
 
     expect(result.stopTurn).toBe(true);
     expect(result.output).toContain('Goal blocked.');
-    expect(result.output).toContain('Worked');
+    expect(result.output).toContain('State that the goal is blocked');
     expect(result.output).toContain('concrete blocker');
   });
 

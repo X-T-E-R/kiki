@@ -78,6 +78,46 @@ describe('Kiki external delegation MCP projector', () => {
     await Promise.all(close.splice(0).map((dispose) => dispose()));
   });
 
+  it.each(['union', 'reference', 'object'] as const)('advertises the original %s context schema without weakening validation', async (kind) => {
+    const object = { type: 'object', properties: { action: { type: 'string', const: 'preview' } },
+      required: ['action'], additionalProperties: false };
+    const parameters = kind === 'union' ? { anyOf: [object, { type: 'object',
+      properties: { action: { type: 'string', const: 'list' } }, required: ['action'], additionalProperties: false }] }
+      : kind === 'reference' ? { $defs: { request: object }, $ref: '#/$defs/request' } : object;
+    const contextCall = vi.fn(async () => ({ output: { accepted: true } }));
+    const { client } = await connect(fakeKlient(), { contextCatalog: { delegation: true, tools: [{
+      name: 'board_read', toolName: 'kiki_board_read', description: 'Read the board.', parameters,
+    }] }, contextCall });
+    const catalog = await client.listTools();
+    expect(catalog.tools.find((tool) => tool.name === 'kiki_board_read')?.inputSchema).toEqual({ ...parameters, type: 'object' });
+    expect(catalog.tools.find((tool) => tool.name === 'kiki_dispatch')?.inputSchema.properties).toHaveProperty('message');
+    const valid = await client.callTool({ name: 'kiki_board_read', arguments: { action: 'preview' } });
+    expect(valid.isError).not.toBe(true);
+    expect(contextCall).toHaveBeenCalledWith({ name: 'board_read', arguments: { action: 'preview' } }, expect.any(AbortSignal));
+    const invalid = await client.callTool({ name: 'kiki_board_read', arguments: {} });
+    expect(invalid.isError).toBe(true);
+    expect(contextCall).toHaveBeenCalledTimes(1);
+  });
+
+  it('starts a native tool connection with an empty policy and reflects later activation and revocation', async () => {
+    const tool = { name: 'example_tool', toolName: 'kiki_example_tool', description: 'Example tool',
+      parameters: { type: 'object', properties: {} } };
+    let active = false;
+    const contextCall = vi.fn(async () => ({ output: 'native result' }));
+    const { client } = await connect(fakeKlient(), {
+      contextCatalog: { delegation: false, nativeTools: true, tools: [] },
+      contextList: async () => ({ delegation: false, nativeTools: true, tools: active ? [tool] : [] }), contextCall,
+    });
+    expect((await client.listTools()).tools).toEqual([]);
+    active = true;
+    expect((await client.listTools()).tools.map((entry) => entry.name)).toEqual(['kiki_example_tool']);
+    expect((await client.callTool({ name: tool.toolName, arguments: {} })).content).toEqual([{ type: 'text', text: 'native result' }]);
+    active = false;
+    expect((await client.callTool({ name: tool.toolName, arguments: {} })).isError).toBe(true);
+    expect(contextCall).toHaveBeenCalledTimes(1);
+    expect((await client.listTools()).tools).toEqual([]);
+  });
+
   it('registers the thirteen table-owned tools and preserves text/structured parity', async () => {
     const { client } = await connect(fakeKlient());
     const tools = await client.listTools();
@@ -324,8 +364,8 @@ describe('Kiki external delegation MCP projector', () => {
   });
 });
 
-async function connect(klient: SeatKlient): Promise<{ client: Client }> {
-  const server = createKikiMcpServer(klient);
+async function connect(klient: SeatKlient, options?: Parameters<typeof createKikiMcpServer>[1]): Promise<{ client: Client }> {
+  const server = createKikiMcpServer(klient, options);
   const client = new Client({ name: 'test-client', version: '1.0.0' });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);

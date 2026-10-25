@@ -1,7 +1,9 @@
-import { useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useLocation } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import type { NotificationChannel, NotificationDelivery } from '@kiki/klient';
-import { errorText } from '@kiki/session-core/i18n';
+import type { ImSessionSnapshot } from '@kiki/protocol';
+import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
 import { FeedbackLine } from '../controls';
@@ -12,6 +14,7 @@ import { AddChannelForm } from './notifications/AddChannelForm';
 import { AwayNotificationsCard } from './notifications/AwayNotificationsCard';
 import { ChannelRow } from './notifications/ChannelRow';
 import { channelState, isAddable, providerLabel, sortedChannels } from './notifications/model';
+import { ImSessionCard } from './notifications/ImSessionCard';
 import { NotificationRulesCard } from './notifications/NotificationRulesCard';
 import { useNotificationData } from './notifications/useNotifications';
 import { SectionCard, SettingsFlashContext } from './SectionCard';
@@ -21,28 +24,90 @@ const ADD_CARD = 'st-card-notify-add';
 
 type ChannelEntry = readonly [string, NotificationChannel];
 
+type NotifySubTab = 'im' | 'channels' | 'away';
+
+const NOTIFY_TABS: readonly NotifySubTab[] = ['im', 'channels', 'away'];
+
+const CARD_TO_TAB: Readonly<Record<string, NotifySubTab>> = {
+  'st-card-im-session': 'im',
+  'st-card-notify-channels': 'channels',
+  'st-card-notify-add': 'channels',
+  'st-card-notify-rules': 'channels',
+  'st-card-notify-away': 'away',
+};
+
 /** States a channel can be in that ask the user to do something. */
 const ATTENTION = new Set(['dependency', 'unauthorized', 'connection', 'noCredential']);
 
+function resolveInitialTab(search: string, hash: string, flashId: string | null): NotifySubTab {
+  const cleanHash = hash.replace(/^#/, '');
+  if (cleanHash !== '' && CARD_TO_TAB[cleanHash] !== undefined) {
+    return CARD_TO_TAB[cleanHash]!;
+  }
+  if (flashId !== null && CARD_TO_TAB[flashId] !== undefined) {
+    return CARD_TO_TAB[flashId]!;
+  }
+  const tabParam = new URLSearchParams(search).get('tab');
+  if (tabParam === 'im' || tabParam === 'channels' || tabParam === 'away') {
+    return tabParam;
+  }
+  return 'im';
+}
+
+function tabLabelKey(tab: NotifySubTab): I18nKey {
+  switch (tab) {
+    case 'im':
+      return 'st.notify.tab.im';
+    case 'channels':
+      return 'st.notify.tab.channels';
+    case 'away':
+      return 'st.notify.tab.away';
+  }
+}
+
 /**
- * Settings → Notifications & messages. This device's system notifications
- * first (they need no server), then nb-IM: rules every channel shares, the
- * channel list rendered from the provider registry, and the add form for
- * built-in channels. Receiving replies is not part of this
- * release, so nothing here offers it.
+ * Settings → Notifications & messages. Organized into three focused sub-views:
+ * Two-way chat (IM sessions & bindings), Push channels (one-way webhooks & shared
+ * delivery rules), and System alerts (device-local notifications).
  */
 export function NotificationsSection() {
   const { t, locale } = useI18n();
+  const queryClient = useQueryClient();
   const { settings, providers, deliveries } = useNotificationData();
-  const { hash } = useLocation();
+  const { hash, search } = useLocation();
   const flashId = useContext(SettingsFlashContext);
   const target = hash === `#${ADD_CARD}` || flashId === ADD_CARD;
   const [adding, setAdding] = useState(target);
   const [opened, setOpened] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<NotifySubTab>(() => resolveInitialTab(search, hash, flashId));
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const cleanHash = hash.replace(/^#/, '');
+    if (cleanHash !== '' && CARD_TO_TAB[cleanHash] !== undefined) {
+      setActiveTab(CARD_TO_TAB[cleanHash]!);
+      return;
+    }
+    if (flashId !== null && CARD_TO_TAB[flashId] !== undefined) {
+      setActiveTab(CARD_TO_TAB[flashId]!);
+      return;
+    }
+    const tabParam = new URLSearchParams(search).get('tab');
+    if (tabParam === 'im' || tabParam === 'channels' || tabParam === 'away') {
+      setActiveTab(tabParam);
+    }
+  }, [hash, flashId, search]);
+
   // A search hit or deep link to the add card opens the form it points at.
   useEffect(() => { if (target) setAdding(true); }, [target]);
 
   const data = settings.data;
+  const imCached = queryClient.getQueryData<ImSessionSnapshot>(['im-sessions']);
+  const imNeedsAttention = imCached !== undefined && (
+    imCached.discoveries.length > 0 ||
+    imCached.instances.some((inst) => inst.connection === 'auth_expired' || (inst.listening && (inst.connection === 'stopped' || inst.adapter === 'stopped' || inst.adapter === 'missing')))
+  );
+  const pushPaused = data !== undefined && !data.global.enabled;
   const registry = useMemo(() => providers.data ?? [], [providers.data]);
   const channels = useMemo<readonly ChannelEntry[]>(() => (data === undefined ? [] : sortedChannels(data)), [data]);
   const byChannel = new Map<string, NotificationDelivery[]>();
@@ -73,60 +138,165 @@ export function NotificationsSection() {
   ], [t, nameOf]);
   const view = useListView({ listId: 'notify-channels', items: channels, keyOf, textOf, filters, sorts });
 
+  const focusTab = (index: number) => {
+    const buttons = tabsRef.current?.querySelectorAll<HTMLButtonElement>('[role="tab"]');
+    buttons?.[index]?.focus();
+  };
+
+  const handleTabKeyDown = (event: React.KeyboardEvent, index: number) => {
+    if (event.key === 'ArrowRight') {
+      event.preventDefault();
+      const nextIndex = (index + 1) % NOTIFY_TABS.length;
+      setActiveTab(NOTIFY_TABS[nextIndex]!);
+      focusTab(nextIndex);
+    } else if (event.key === 'ArrowLeft') {
+      event.preventDefault();
+      const prevIndex = (index - 1 + NOTIFY_TABS.length) % NOTIFY_TABS.length;
+      setActiveTab(NOTIFY_TABS[prevIndex]!);
+      focusTab(prevIndex);
+    } else if (event.key === 'Home') {
+      event.preventDefault();
+      setActiveTab(NOTIFY_TABS[0]!);
+      focusTab(0);
+    } else if (event.key === 'End') {
+      event.preventDefault();
+      const lastIndex = NOTIFY_TABS.length - 1;
+      setActiveTab(NOTIFY_TABS[lastIndex]!);
+      focusTab(lastIndex);
+    }
+  };
+
+  const tabBar = (
+    <div
+      ref={tabsRef}
+      role="tablist"
+      aria-label={t('st.section.notifications')}
+      className="flex flex-wrap items-center gap-1 border-b border-hairline pb-px text-[12.5px]"
+    >
+      {NOTIFY_TABS.map((tab, index) => {
+        const active = tab === activeTab;
+        return (
+          <button
+            key={tab}
+            id={`notify-tab-${tab}`}
+            type="button"
+            role="tab"
+            aria-selected={active}
+            aria-controls={`notify-panel-${tab}`}
+            tabIndex={active ? 0 : -1}
+            data-notify-tab={tab}
+            onClick={() => { setActiveTab(tab); }}
+            onKeyDown={(event) => { handleTabKeyDown(event, index); }}
+            className={`relative -mb-px flex items-center gap-1.5 rounded-t-md border-b-2 px-3 py-2 text-left transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 ${
+              active
+                ? 'border-ink font-medium text-ink'
+                : 'border-transparent text-ink-soft hover:border-hairline hover:text-ink'
+            }`}
+          >
+            <span>{t(tabLabelKey(tab))}</span>
+            {tab === 'im' && imNeedsAttention ? (
+              <span aria-hidden className="h-1.5 w-1.5 rounded-full bg-amber-ink" data-notify-tab-attention="im" />
+            ) : null}
+            {tab === 'channels' && pushPaused ? (
+              <span className="text-[11px] font-normal text-ink-faint" data-notify-tab-paused>
+                {t('st.notify.pausedShort')}
+              </span>
+            ) : null}
+          </button>
+        );
+      })}
+    </div>
+  );
+
   if (settings.isError || providers.isError) {
-    return <><AwayNotificationsCard /><FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} /></>;
+    return (
+      <div className="space-y-5">
+        {tabBar}
+        <div id="notify-panel-im" role="tabpanel" aria-labelledby="notify-tab-im" className={activeTab === 'im' ? 'space-y-5' : 'hidden'}>
+          <ImSessionCard />
+        </div>
+        <div id="notify-panel-channels" role="tabpanel" aria-labelledby="notify-tab-channels" className={activeTab === 'channels' ? 'space-y-5' : 'hidden'}>
+          <FeedbackLine feedback={{ tone: 'error', text: t('st.notify.loadFailed', { detail: errorText(locale, settings.error ?? providers.error) }) }} />
+        </div>
+        <div id="notify-panel-away" role="tabpanel" aria-labelledby="notify-tab-away" className={activeTab === 'away' ? 'space-y-5' : 'hidden'}>
+          <AwayNotificationsCard />
+        </div>
+      </div>
+    );
   }
-  if (data === undefined || providers.data === undefined) return <><AwayNotificationsCard /><div data-notify-loading aria-busy="true" className="min-h-40" /></>;
+  if (data === undefined || providers.data === undefined) {
+    return (
+      <div className="space-y-5">
+        {tabBar}
+        <div id="notify-panel-im" role="tabpanel" aria-labelledby="notify-tab-im" className={activeTab === 'im' ? 'space-y-5' : 'hidden'}>
+          <ImSessionCard />
+        </div>
+        <div id="notify-panel-channels" role="tabpanel" aria-labelledby="notify-tab-channels" className={activeTab === 'channels' ? 'space-y-5' : 'hidden'}>
+          <div data-notify-loading aria-busy="true" className="min-h-40" />
+        </div>
+        <div id="notify-panel-away" role="tabpanel" aria-labelledby="notify-tab-away" className={activeTab === 'away' ? 'space-y-5' : 'hidden'}>
+          <AwayNotificationsCard />
+        </div>
+      </div>
+    );
+  }
 
   return (
-    <>
-      <AwayNotificationsCard />
-      <NotificationRulesCard global={data.global} />
-      <SectionCard id="st-card-notify-channels" title={t('st.notify.channelsTitle')}>
-        <div className="space-y-3">
-          {channels.length > 0 ? (
-            <>
-              <ListToolbar view={view} total={channels.length} filters={filters} sorts={sorts}
-                searchLabel={t('st.notify.search')} searchPlaceholder={t('st.notify.searchPlaceholder')}
-                actions={canAdd && !adding ? (
-                  <button type="button" data-notify-add-open className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-                    onClick={() => { setAdding(true); }}>
-                    <Icon name="plus" size={12} />
-                    {t('st.notify.choose')}
-                  </button>
-                ) : undefined} />
-              {view.visible.length === 0 ? (
-                <ListEmpty kind="no-match" title={t('st.notify.noMatchTitle')}
-                  body={view.query.trim() !== '' ? t('st.notify.noMatches', { query: view.query.trim() }) : undefined}
-                  onClear={view.clear} />
-              ) : (
-                <div data-notify-channels>
-                  <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.notify.channelsTitle')}
-                    virtualizeAfter={Number.POSITIVE_INFINITY}
-                    renderRow={([id, channel]) => (
-                      <ChannelRow channelId={id} channel={channel} settings={data}
-                        provider={providerOf(channel)}
-                        deliveries={byChannel.get(id) ?? []} defaultOpen={opened === id} density={view.density} />
-                    )} />
-                </div>
-              )}
-            </>
-          ) : !adding ? (
-            <>
+    <div className="space-y-5">
+      {tabBar}
+
+      <div id="notify-panel-im" role="tabpanel" aria-labelledby="notify-tab-im" className={activeTab === 'im' ? 'space-y-5' : 'hidden'}>
+        <ImSessionCard />
+      </div>
+
+      <div id="notify-panel-channels" role="tabpanel" aria-labelledby="notify-tab-channels" className={activeTab === 'channels' ? 'space-y-5' : 'hidden'}>
+        <NotificationRulesCard global={data.global} part="master" />
+        <SectionCard
+          id="st-card-notify-channels"
+          title={t('st.notify.channelsTitle')}
+          actions={canAdd && !adding ? (
+            <button type="button" data-notify-add-open className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
+              onClick={() => { setAdding(true); }}>
+              <Icon name="plus" size={12} />
+              {t('st.notify.choose')}
+            </button>
+          ) : undefined}
+        >
+          <div className={`space-y-3 ${!data.global.enabled ? 'opacity-60' : ''}`}>
+            {channels.length > 0 ? (
+              <>
+                <ListToolbar view={view} total={channels.length} filters={filters} sorts={sorts}
+                  searchLabel={t('st.notify.search')} searchPlaceholder={t('st.notify.searchPlaceholder')} />
+                {view.visible.length === 0 ? (
+                  <ListEmpty kind="no-match" title={t('st.notify.noMatchTitle')}
+                    body={view.query.trim() !== '' ? t('st.notify.noMatches', { query: view.query.trim() }) : undefined}
+                    onClear={view.clear} />
+                ) : (
+                  <div data-notify-channels>
+                    <ListBody items={view.visible} keyOf={keyOf} density={view.density} label={t('st.notify.channelsTitle')}
+                      virtualizeAfter={Number.POSITIVE_INFINITY}
+                      renderRow={([id, channel]) => (
+                        <ChannelRow channelId={id} channel={channel} settings={data}
+                          provider={providerOf(channel)}
+                          deliveries={byChannel.get(id) ?? []} defaultOpen={opened === id} density={view.density} />
+                      )} />
+                  </div>
+                )}
+              </>
+            ) : !adding ? (
               <div data-notify-empty>
                 <ListEmpty kind="none" title={t('st.notify.emptyTitle')} body={t('st.notify.emptyBody')} />
               </div>
-              {canAdd ? (
-                <button type="button" data-notify-add-open className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
-                  onClick={() => { setAdding(true); }}>
-                  <Icon name="plus" size={12} />
-                  {t('st.notify.choose')}
-                </button>
-              ) : null}
-            </>
-          ) : null}
-        </div>
-      </SectionCard>
+            ) : null}
+          </div>
+        </SectionCard>
+        <NotificationRulesCard global={data.global} part="rules" />
+      </div>
+
+      <div id="notify-panel-away" role="tabpanel" aria-labelledby="notify-tab-away" className={activeTab === 'away' ? 'space-y-5' : 'hidden'}>
+        <AwayNotificationsCard />
+      </div>
+
       {adding ? (
         <SidePanel
           title={t('st.notify.addTitle')}
@@ -139,6 +309,6 @@ export function NotificationsSection() {
           </div>
         </SidePanel>
       ) : null}
-    </>
+    </div>
   );
 }

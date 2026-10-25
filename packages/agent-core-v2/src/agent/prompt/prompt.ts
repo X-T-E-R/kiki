@@ -9,6 +9,7 @@ import type { GoalFollowUpTiming } from '#/agent/goal/types';
 import type { PermissionMode } from '#/agent/permissionPolicy/types';
 import type { PlanGate } from '#/features/plan/configSection';
 
+/** One hook invocation per consumed input batch; promptMessage summarizes the batch while original messages retain their identities. */
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
   readonly isSteer: boolean;
@@ -39,7 +40,7 @@ export interface PromptExecutionBinding {
   readonly personaGreetingReply?: boolean;
   readonly profile?: string;
   readonly model?: string;
-  readonly thinking?: string;
+  readonly thinking?: string | null;
   readonly permissionMode?: PermissionMode;
   readonly planGate?: PlanGate;
   /** Applied at prompt launch, after media intake and submit hooks; never while queued. */
@@ -51,9 +52,20 @@ export interface PromptExecutionBinding {
   readonly goalControl?: 'pause' | 'resume' | 'cancel';
 }
 
+export interface PromptContentRange {
+  readonly index: number;
+  readonly start: number;
+  readonly end: number;
+}
+
 export interface PromptInput {
   readonly id?: string;
+  readonly userMessageId?: string;
+  readonly retryFingerprint?: string;
+  readonly retryContentRanges?: readonly PromptContentRange[];
   readonly message: ContextMessage;
+  /** Commits an admitted history rewrite after prompt preparation, before queue publication. */
+  readonly commitHistoryRewrite?: (prompt: import('./promptService').PromptEnqueuedPayload) => Promise<void>;
   readonly execution?: PromptExecutionBinding;
   readonly appendTiming?: DeferredAppendTiming;
   readonly deferredDisabledTools?: readonly string[];
@@ -94,6 +106,7 @@ export interface PromptSnapshot {
 }
 
 export interface PromptHandle extends PromptSnapshot {
+  readonly deliveryReason?: 'model_switch_boundary' | 'no_active_turn' | 'executor_deferred' | 'external_retry';
   readonly launched: Promise<Turn | undefined>;
   readonly completion: Promise<PromptCompletion>;
 }
@@ -145,6 +158,11 @@ export interface PromptInjectOptions {
 
 export interface PromptLaunchResult {
   readonly turn_id: number;
+  readonly prompt_id?: string;
+  readonly created_at?: string;
+  readonly state?: 'running' | 'queued' | 'blocked';
+  readonly append_timing?: DeferredAppendTiming;
+  readonly revision?: number;
 }
 
 /** A serializable terminal receipt for this submission, including prompts that never launch. */
@@ -171,12 +189,17 @@ export interface PromptReservation extends IDisposable {
 
 export const promptAdmission = Symbol('promptAdmission');
 
-type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean) => PromptReservation;
+export interface PromptAdmissionOptions {
+  readonly waitForLaunch?: boolean;
+  readonly contentRanges?: readonly PromptContentRange[];
+}
 
-export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false): PromptReservation {
+type PromptAdmissionHook = (promptId?: string, durableAcceptance?: boolean, retryFingerprint?: string, options?: PromptAdmissionOptions) => PromptReservation;
+
+export function reservePrompt(service: IAgentPromptService, promptId?: string, durableAcceptance = false, retryFingerprint?: string, options?: PromptAdmissionOptions): PromptReservation {
   return (service as IAgentPromptService & { [promptAdmission]: PromptAdmissionHook })[
     promptAdmission
-  ](promptId, durableAcceptance);
+  ](promptId, durableAcceptance, retryFingerprint, options);
 }
 
 export const promptRetry = Symbol('promptRetry');
@@ -201,14 +224,15 @@ export interface IAgentPromptService {
   recoverModelSwitch(operationId: string, action: 'retry' | 'keep_original', mode?: import('#/agent/modelSwitch/modelSwitch').ModelSwitchMode): Promise<import('#/agent/modelSwitch/modelSwitch').ModelSwitchReceipt>;
   lookup(promptId: string, input?: PromptInput): import('./promptReplay').PromptLookup | undefined;
   enqueue(input: PromptInput): Promise<PromptHandle>;
+  enqueueCron(input: { readonly origin: import('#/agent/contextMemory/types').CronJobOrigin; readonly prompt: string }): Promise<PromptHandle>;
   submit(payload: PromptPayload): Promise<PromptLaunchResult | undefined>;
   /** Abort cancels only the wait; use abort(promptId) to cancel the submitted prompt. */
   submitAndWait(payload: PromptPayload, signal?: AbortSignal): Promise<PromptTerminalResult>;
   submitSteer(payload: SteerPayload): Promise<PromptLaunchResult | undefined>;
   /**
    * The queue as callers may act on it: `active` is the running prompt,
-   * `pending` the prompts still queued for their own turn, and `launching` the
-   * one admission has taken out of the queue and not yet assigned a turn. A
+   * `pending` the prompts awaiting a compatible input batch, and `launching`
+   * the leading prompt preparing that batch before turn assignment. A
    * launching prompt accepts `abort` only; replace/move/timing/steer cannot
    * address it.
    */
@@ -231,7 +255,7 @@ export interface IAgentPromptService {
    * queue. Explicit steer still bypasses it.
    */
   setEditHold(promptId: string, held: boolean): void;
-  /** Send selected prompts now: join the active turn, or launch their own turns while idle, bypassing timing and recovery holds only for those prompts. */
+  /** Send selected prompts at the next safe boundary; compatible native inputs share one batch and submit hook while keeping their own handles. Timing and recovery holds are bypassed only for selected prompts. */
   steer(promptIds: readonly string[]): Promise<readonly PromptHandle[]>;
   /**
    * Cancels one prompt and returns whether this call cancelled something.
@@ -244,7 +268,14 @@ export interface IAgentPromptService {
    * to another prompt.
    */
   abort(promptId: string, reason?: Error): boolean;
-  drain(reason?: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
+  /**
+   * Stops admission and settles owned launch preparation and recovery hydration.
+   * The default cancels durable pending requests. Normal owner shutdown uses
+   * `preserve-pending`: local waiters settle without a durable cancellation for
+   * unlaunched requests. Restore holds those requests until explicit resume;
+   * launched or outcome-unknown requests are never automatically resent.
+   */
+  drain(reason: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
   inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined>;
   retry(): Promise<Turn | undefined>;
   clear(): void;

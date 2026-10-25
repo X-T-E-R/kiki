@@ -11,7 +11,7 @@ import { UnifiedAgentManager } from './UnifiedAgentManager';
 const { client, reportDirty, confirmDiscard, navigate } = vi.hoisted(() => ({
   reportDirty: vi.fn(), navigate: vi.fn(), confirmDiscard: vi.fn((_id: string, action: () => void) => action()),
   client: {
-    listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaces: vi.fn(), getConfig: vi.fn(),
+    listNamedAgentProfiles: vi.fn(), listShippedAgentProfiles: vi.fn(), listWorkspaceCatalog: vi.fn(), getConfig: vi.fn(),
     updateNamedAgentProfile: vi.fn(), createAgentProfile: vi.fn(), patchConfig: vi.fn(), restoreShippedAgentProfile: vi.fn(),
     readHostFile: vi.fn(), getAgentCapabilities: vi.fn(), listModels: vi.fn(), listExecutors: vi.fn(),
     previewExecutorPrompt: vi.fn(), createSession: vi.fn(),
@@ -82,7 +82,7 @@ beforeEach(() => {
   (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore], complete: true });
   client.listShippedAgentProfiles.mockResolvedValue({ items: [] });
-  client.listWorkspaces.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture' }] });
+  client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'ws-one', root: '/fixture', name: 'Fixture' }] });
   client.getConfig.mockResolvedValue({});
   client.listExecutors.mockResolvedValue({ items: [] });
   client.previewExecutorPrompt.mockRejectedValue(new Error('preview unavailable'));
@@ -293,6 +293,22 @@ describe('profile editor sheet', () => {
     }));
   });
 
+  it('keeps raw external model rules and child leases separate from the native catalog', async () => {
+    const external: NamedAgentProfile = { ...sub, executor: 'example-acp', pinned_model_alias: 'vendor-high',
+      thinking_effort: 'max', allowed_models: ['vendor-high'], preferred_models: ['vendor-fast'],
+      deny_models: ['vendor-retired'], model_profiles: [{ alias: 'vendor-high', thinking_effort: 'max' }] };
+    const lead = { ...main, allowed_subagents: [{ name: 'reviewer', model_alias: 'vendor-high' }] };
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [lead, external, explore], complete: true });
+    await render();
+    await open('reviewer');
+    expect(sheet().querySelector('[data-alias-missing]')).toBeNull();
+    expect(sheet().querySelector('[data-alias-missing="true"]')).toBeNull();
+    expect(sheet().querySelector('#profile-effort')?.textContent).toContain('Max');
+    await act(async () => sheet().querySelector<HTMLButtonElement>('[data-agent-back]')!.click());
+    await open('agent');
+    expect(sheet().querySelector('#lease-model-reviewer [data-alias-missing]')).toBeNull();
+  });
+
   it('reports the missing alias beside the model field and in diagnostics', async () => {
     await render();
     await open('reviewer');
@@ -329,18 +345,22 @@ describe('profile editor sheet', () => {
     const grok: NamedAgentProfile = { ...sub, name: 'grok-helper', executor: 'grok-acp', tools: ['Read'], pinned_model_alias: 'grok-4.7',
       executor_fields: { tools: { state: 'ignored', reason: 'Grok Build decides its own tools.' }, thinking_effort: { state: 'mapped' } } };
     client.listNamedAgentProfiles.mockResolvedValue({ items: [main, sub, explore, grok], complete: true });
+    client.getConfig.mockResolvedValue({ raw: { agent_executor_overrides: { 'claude-acp': { show_in_profile_list: true } } } });
     client.listExecutors.mockResolvedValue({ items: [
       { id: 'native', label: 'Kiki', protocol: 'native', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
       { id: 'grok-acp', label: 'Grok Build', protocol: 'acp', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
       { id: 'claude-acp', label: 'Claude Code', protocol: 'acp', status: 'unavailable', model_binding: 'mapped', thinking_binding: 'unavailable' },
+      { id: 'codex-app-server', label: 'Codex', protocol: 'codex-app-server', status: 'ready', model_binding: 'mapped', thinking_binding: 'mapped' },
     ] });
     await render();
     expect(container.querySelector('[data-team-row="grok-helper"] [data-team-engine]')?.textContent).toBe('Grok Build');
     await open('grok-helper');
-    // The engine picker lists the catalog, not a hard-coded set; a missing binary says so.
+    // New choices are engines explicitly turned on. The bound engine stays. An enabled missing binary says so.
     await act(async () => sheet().querySelector<HTMLElement>('#profile-engine')!.click());
     const engineOptions = [...document.body.querySelectorAll<HTMLElement>('[role="option"]')].map((option) => option.textContent ?? '');
     expect(engineOptions.some((text) => text.includes('Claude Code') && text.includes('not found on this machine'))).toBe(true);
+    expect(engineOptions.some((text) => text.includes('Grok Build'))).toBe(true);
+    expect(engineOptions.some((text) => text.includes('Codex'))).toBe(false);
     expect(engineOptions.some((text) => text.includes('OpenCode'))).toBe(false);
     await act(async () => sheet().querySelector<HTMLElement>('#profile-engine')!.click());
     expect(sheet().querySelector('[data-profile-field="tools"]')?.getAttribute('data-field-applicability')).toBe('ignored');
@@ -780,7 +800,7 @@ describe('handing a new agent to Kiki', () => {
   });
 
   it('addresses the workspace the picker actually shows, not the first one', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [
       { id: 'ws-old', root: '/old', name: 'Older' },
       { id: 'ws-new', root: '/new', name: 'Chosen' },
     ] });
@@ -799,7 +819,7 @@ describe('handing a new agent to Kiki', () => {
   });
 
   it('refuses the handoff, and says why, while the workspace list has failed', async () => {
-    client.listWorkspaces.mockRejectedValue(new Error('workspace list unavailable'));
+    client.listWorkspaceCatalog.mockRejectedValue(new Error('workspace list unavailable'));
     client.createSession.mockResolvedValue({ id: 'agent-ask-unknown' });
     await render();
 
@@ -819,7 +839,7 @@ describe('handing a new agent to Kiki', () => {
 
   it('refuses the handoff while the workspace list is still loading', async () => {
     let release: (value: { items: unknown[] }) => void = () => {};
-    client.listWorkspaces.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    client.listWorkspaceCatalog.mockReturnValue(new Promise((resolve) => { release = resolve; }));
     client.createSession.mockResolvedValue({ id: 'agent-ask-loading' });
     await render();
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
@@ -841,7 +861,7 @@ describe('handing a new agent to Kiki', () => {
   });
 
   it('keeps a working handoff when this machine truly has no workspace', async () => {
-    client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [] });
     client.createSession.mockResolvedValue({ id: 'agent-ask-none' });
     await render();
 

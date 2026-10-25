@@ -5,7 +5,9 @@ import type { McpServer, SkillDescriptor, Workspace } from '@kiki/protocol';
 import { bridgeBody } from '../components/capabilities/PluginPanelHost';
 import type { PluginMarketplaceEntry } from './client';
 import {
+  catalogMatches,
   installedMatches,
+  localizeEntry,
   pluginOrigin,
   hasAnyPermission,
   planContributionGroups,
@@ -163,7 +165,7 @@ describe('plugin catalog shaping', () => {
     id, tier, displayName: id, source: `https://example.test/${id}`, keywords, ...extra,
   });
 
-  it('lifts official and workspace-relevant entries into Featured and places the rest by keyword', () => {
+  it('leads with workspace matches, then shelves the rest by declared tier', () => {
     const shelves = shelveCatalog([
       entry('office', 'official', ['office']),
       entry('pdf', 'curated', ['pdf']),
@@ -172,11 +174,51 @@ describe('plugin catalog shaping', () => {
       entry('lens', 'curated', ['sql']),
       entry('theme', 'third-party', ['sql']),
     ], '', new Set(['lens', 'theme']));
+    // Tiers, not keywords, decide the shelf: what a package *is* is catalog
+    // data, and guessing a category from a word in its keywords was the rule
+    // this replaced. A workspace match leads as its own shelf; everything
+    // else follows its tier, so the third-party entry drops to `more`.
     expect(shelves.map((shelf) => [shelf.id, shelf.entries.map((item) => item.id)])).toEqual([
-      ['featured', ['lens', 'office']], ['productivity', ['pdf']], ['coding', ['tdd']], ['data', ['theme']], ['more', ['odd']],
+      ['recommended', ['lens']], ['official', ['office']], ['community', ['pdf', 'tdd', 'odd']], ['more', ['theme']],
     ]);
     expect(shelveCatalog([entry('office', 'official', ['docx'])], 'DOCX').length).toBe(1);
     expect(shelveCatalog([entry('office', 'official')], 'zzz')).toEqual([]);
+  });
+
+  it('breaks a tier into one block per declared sub-group', () => {
+    const shelves = shelveCatalog([
+      entry('media', 'official', [], { group: 'media' }),
+      entry('media-ark', 'official', [], { group: 'media' }),
+      entry('writing', 'official', []),
+    ], '', new Set());
+    expect(shelves.flatMap((shelf) => [shelf.group, ...shelf.entries.map((item) => item.id)])).toEqual([
+      'media', 'media', 'media-ark', undefined, 'writing',
+    ]);
+  });
+
+  it('reads an entry in the reader language and falls back field by field', () => {
+    const office = entry('kiki-office', 'official', ['office'], {
+      localizations: { zh: { description: '在本机创建 Word、Excel 与 PowerPoint 文件。', keywords: ['办公', '文档'] } },
+    });
+    // The catalog translated the description and the search words but not the
+    // name, so a brand name keeps its own spelling.
+    expect(localizeEntry(office, 'en')).toEqual({ displayName: 'kiki-office', description: undefined, keywords: ['office'] });
+    expect(localizeEntry(office, 'zh')).toEqual({ displayName: 'kiki-office', description: '在本机创建 Word、Excel 与 PowerPoint 文件。', keywords: ['办公', '文档'] });
+    // An entry nobody translated reads exactly as written.
+    expect(localizeEntry(entry('notes', 'curated', ['notes']), 'zh')).toEqual({ displayName: 'notes', description: undefined, keywords: ['notes'] });
+  });
+
+  it('searches every language the catalog declares, not only the one on screen', () => {
+    const office = entry('kiki-office', 'official', ['office'], {
+      localizations: { zh: { description: '在本机创建 Word、Excel 与 PowerPoint 文件。', keywords: ['办公', '文档'] } },
+    });
+    expect(catalogMatches(office, '办公')).toBe(true);
+    expect(catalogMatches(office, '文档')).toBe(true);
+    // The original words still match, so a reader who knows a package by the
+    // name they always saw finds it in a Chinese window.
+    expect(catalogMatches(office, 'office')).toBe(true);
+    expect(catalogMatches(office, 'kiki-office')).toBe(true);
+    expect(catalogMatches(office, 'nope')).toBe(false);
   });
 
   it('labels an installed plugin by its origin and matches it by name or source', () => {
@@ -241,6 +283,18 @@ describe('plugin panel bridge', () => {
     expect(typeof bridgeBody({ ...base, method: 'plugin.call', action: '../x' }, 's1')).toBe('string');
     expect(bridgeBody({ ...base, method: 'plugin.call', action: 'save', args: { a: 1 } }, 's1'))
       .toEqual({ method: 'plugin.call', session_id: 's1', action: 'save', args: { a: 1 } });
+    expect(bridgeBody({ ...base, method: 'plugin.call', action: 'save', args: {} }, undefined))
+      .toEqual({ method: 'plugin.call', session_id: undefined, action: 'save', args: {} });
+    expect(bridgeBody({ ...base, method: 'plugin.models.list' }, undefined))
+      .toEqual({ method: 'plugin.models.list' });
+    expect(bridgeBody({ ...base, method: 'plugin.settings.get' }, undefined))
+      .toEqual({ method: 'plugin.settings.get' });
+    expect(bridgeBody({ ...base, method: 'plugin.settings.patch', values: { k: 'v', n: 1, b: true, nil: null } }, undefined))
+      .toEqual({ method: 'plugin.settings.patch', values: { k: 'v', n: 1, b: true, nil: null } });
+    expect(bridgeBody({ ...base, method: 'plugin.settings.patch', values: 'invalid' }, undefined))
+      .toBe('invalid settings');
+    expect(bridgeBody({ ...base, method: 'session.summary' }, undefined))
+      .toBe('no session');
   });
 });
 

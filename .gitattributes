@@ -8,3 +8,4 @@
 *.gif binary
 *.ico binary
 *.png binary
+apps/kiki-gui/src/components/preview/fixtures/letter-portrait.pdf binary

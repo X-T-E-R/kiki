@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
-import { requestIdentityPolicySchema } from '../modelCatalog';
+import { requestCompressionWireSchema, requestIdentityPolicySchema, responsesWebSocketWireSchema } from '../modelCatalog';
+import { browserControlSettingsPatchSchema, browserControlSettingsSchema } from './browser';
 import { interactionConfigSchema, askUserQuestionGuardWireSchema } from '../questionGuard';
 import { hooksConfigSchema } from './hooksConfig';
 import { nbSearchConfigPatchSchema, nbSearchSourceConfigSchema } from './nbSearch';
@@ -9,13 +10,24 @@ import { spaceUiConfigSchema, spaceUiConfigPatchSchema } from './space';
 
 export const computerUsagePreferenceSchema = z.enum(['avoid', 'prefer']);
 export type ComputerUsagePreference = z.infer<typeof computerUsagePreferenceSchema>;
+export const CUA_COMPUTER_CONNECTION = 'kiki-computer';
+export const WINDOWS_MCP_COMPUTER_CONNECTION = 'kiki-windows-mcp';
+export const computerExecutorKindSchema = z.enum(['cua', 'windows-mcp']);
+export type ComputerExecutorKind = z.infer<typeof computerExecutorKindSchema>;
 export const computerControlConfigResponseSchema = z.object({
+  enabled: z.boolean().optional(),
+  enabledSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
   usagePreference: computerUsagePreferenceSchema,
   usagePreferenceSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']),
   appliesOn: z.literal('next-model-request'),
+  toolsApplyOn: z.literal('next-step').optional(),
+  connection: z.string().trim().min(1).optional(),
+  connectionSource: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']).optional(),
 }).strict();
 export const computerControlConfigPatchSchema = z.object({
+  enabled: z.boolean().nullable().optional(),
   usage_preference: computerUsagePreferenceSchema.nullable().optional(),
+  connection: z.string().trim().min(1).nullable().optional(),
 }).strict();
 
 export const modelSwitchModeSchema = z.enum(['direct', 'compact', 'fresh']);
@@ -68,6 +80,36 @@ export const promptConfigSchema = z.object({
 }).strict();
 export type PromptConfig = z.infer<typeof promptConfigSchema>;
 
+export const retryPolicySchema = z.object({
+  match: z.string().min(1),
+  models: z.array(z.string().min(1)).min(1).optional(),
+  providers: z.array(z.string().min(1)).min(1).optional(),
+  max_attempts: z.number().int().min(1).optional(),
+  backoff: z.number().int().min(0).optional(),
+  retry: z.boolean().optional(),
+}).strict();
+export type RetryPolicy = z.infer<typeof retryPolicySchema>;
+
+export const retryConfigSchema = z.object({
+  max_attempts: z.number().int().min(1).optional(),
+  policies: z.array(retryPolicySchema).optional(),
+}).strict();
+export type RetryConfig = z.infer<typeof retryConfigSchema>;
+
+export const retryPolicyResponseSchema = z.object({
+  match: z.string().min(1),
+  models: z.array(z.string().min(1)).min(1).optional(),
+  providers: z.array(z.string().min(1)).min(1).optional(),
+  maxAttempts: z.number().int().min(1).optional(),
+  backoff: z.number().int().min(0).optional(),
+  retry: z.boolean(),
+}).strict();
+export const retryConfigResponseSchema = z.object({
+  maxAttempts: z.number().int().min(1).optional(),
+  policies: z.array(retryPolicyResponseSchema).optional(),
+}).strict();
+export type RetryConfigResponse = z.infer<typeof retryConfigResponseSchema>;
+
 export const providerConfigResponseSchema = z.object({
   type: z.string(),
   base_url: z.string().optional(),
@@ -106,7 +148,15 @@ export type SessionTitleTrigger = z.infer<typeof sessionTitleTriggerSchema>;
 export const sessionTitleConfigResponseSchema = z.object({
   model: z.string().optional(),
   triggers: z.array(sessionTitleTriggerSchema).optional(),
+  prompt: z.string().optional(),
+  default_prompt: z.string().optional(),
+  prompt_source: z.enum(['default', 'custom']).optional(),
 });
+
+export const sessionTitleConfigPatchSchema = sessionTitleConfigResponseSchema
+  .omit({ default_prompt: true, prompt_source: true })
+  .extend({ model: z.string().nullable().optional(), prompt: z.string().nullable().optional() })
+  .strict();
 
 export const planConfigResponseSchema = z.object({
   gate: z.enum(['free', 'gated']),
@@ -200,6 +250,7 @@ export const sessionResidencyConfigResponseSchema = z.object({
   sweepIntervalMs: z.number().int().optional(),
   maxConcurrentRestores: z.number().int().optional(),
   maxQueuedRestores: z.number().int().optional(),
+  maxResidentHeapBytes: z.number().int().optional(),
 });
 
 export const sessionResidencyConfigPatchSchema = z.object({
@@ -209,6 +260,7 @@ export const sessionResidencyConfigPatchSchema = z.object({
   sweep_interval_ms: z.number().int().min(1_000).max(300_000).optional(),
   max_concurrent_restores: z.number().int().min(1).max(4).optional(),
   max_queued_restores: z.number().int().min(0).max(64).optional(),
+  max_resident_heap_bytes: z.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
 }).strict();
 
 export const interactionConfigResponseSchema = interactionConfigSchema;
@@ -218,8 +270,72 @@ export const interactionConfigPatchSchema = z.object({
   ask_user_question_guard: askUserQuestionGuardWireSchema.optional(),
 }).strict();
 
+export const agentExecutorDisplayConfigSchema = z.object({
+  externalsVisible: z.boolean().optional(),
+  discoveryInitialized: z.boolean().optional(),
+}).strict();
+
+export const agentExecutorDisplayConfigPatchSchema = z.object({
+  externals_visible: z.boolean().nullable().optional(),
+  discovery_initialized: z.boolean().nullable().optional(),
+}).strict();
+
+export const optionalCapabilityStateSchema = z.object({
+  allowed: z.boolean(),
+  host_locked: z.boolean(),
+  default_on: z.boolean(),
+  origin: z.enum(['default', 'preset', 'base', 'home', 'env', 'memory', 'unreadable']),
+  unresolved: z.boolean(),
+}).strict();
+export const optionalCapabilitiesResponseSchema = z.object({
+  browser: optionalCapabilityStateSchema,
+  computer: optionalCapabilityStateSchema,
+  memory: optionalCapabilityStateSchema,
+  thread: optionalCapabilityStateSchema,
+  web: optionalCapabilityStateSchema,
+  send_message: optionalCapabilityStateSchema,
+}).strict();
+export const optionalCapabilitiesPatchSchema = z.object({
+  defaults: z.object({
+    browser: z.boolean().nullable().optional(),
+    computer: z.boolean().nullable().optional(),
+    memory: z.boolean().nullable().optional(),
+    thread: z.boolean().nullable().optional(),
+    web: z.boolean().nullable().optional(),
+    send_message: z.boolean().nullable().optional(),
+  }).strict().optional(),
+  web_allowed: z.boolean().nullable().optional(),
+}).strict();
+export const optionalCapabilityChoiceSchema = z.enum(['on', 'off', 'inherit']);
+export const optionalCapabilitySessionRowSchema = z.object({
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web', 'send_message']),
+  choice: optionalCapabilityChoiceSchema,
+  effective: z.boolean(),
+  source: z.enum(['session', 'default', 'off']),
+  reason: z.string(),
+  allowed: z.boolean(),
+  host_locked: z.boolean(),
+  default_on: z.boolean(),
+  unresolved: z.boolean(),
+  applies: z.enum(['next-model-request', 'next-step']),
+}).strict();
+export const optionalCapabilitySessionResponseSchema = z.object({
+  revision: z.number().int().nonnegative(),
+  host_id: z.string().min(1),
+  rows: z.array(optionalCapabilitySessionRowSchema),
+}).strict();
+export type OptionalCapabilitySessionResponse = z.infer<typeof optionalCapabilitySessionResponseSchema>;
+export const optionalCapabilitySessionRequestSchema = z.object({
+  id: z.enum(['browser', 'computer', 'memory', 'thread', 'web', 'send_message']),
+  choice: optionalCapabilityChoiceSchema,
+}).strict();
+export type OptionalCapabilitySessionRequest = z.infer<typeof optionalCapabilitySessionRequestSchema>;
+
 export const configResponseSchema = z.object({
+  browser_control: browserControlSettingsSchema.optional(),
+  optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
+  agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   model_switch: modelSwitchConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
@@ -228,6 +344,8 @@ export const configResponseSchema = z.object({
   fast_model: z.string().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.optional(),
+  request_compression: requestCompressionWireSchema.optional(),
+  responses_web_socket: responsesWebSocketWireSchema.optional(),
   thinking: z.unknown().optional(),
   plan: planConfigResponseSchema.optional(),
   plan_mode: z.boolean().optional(),
@@ -254,14 +372,16 @@ export const configResponseSchema = z.object({
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigResponseSchema.optional(),
   plugins: z.object({ marketplaceUrl: z.string().optional() }).passthrough().optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
 });
 export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
+  browser_control: browserControlSettingsPatchSchema.optional(),
   computer_control: computerControlConfigPatchSchema.optional(),
+  agent_executor_display: agentExecutorDisplayConfigPatchSchema.optional(),
   model_switch: modelSwitchConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),
@@ -270,6 +390,8 @@ export const patchConfigRequestSchema = z.object({
   fast_model: z.string().nullable().optional(),
   models: z.record(z.string(), z.unknown()).optional(),
   request_identity: requestIdentityPolicySchema.nullable().optional(),
+  request_compression: requestCompressionWireSchema.nullable().optional(),
+  responses_web_socket: responsesWebSocketWireSchema.nullable().optional(),
   thinking: z.unknown().optional(),
   plan: planConfigRequestSchema.optional(),
   plan_mode: z.boolean().optional(),
@@ -305,14 +427,15 @@ export const patchConfigRequestSchema = z.object({
     delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: sessionTitleConfigResponseSchema.optional(),
+  session_title: sessionTitleConfigPatchSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   skip_builtin_profile_installation: z.array(z.string()).optional(),
   disabled_named_profiles: z.array(z.string()).optional(),
   /** Per-engine launch overrides keyed by executor id; a null value removes a field. */
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),
   request_governance: requestGovernanceConfigPatchSchema.optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigSchema.optional(),
   plugins: z.object({ marketplace_url: z.string().optional() }).optional(),
+  optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
 });
 export type PatchConfigRequest = z.infer<typeof patchConfigRequestSchema>;

@@ -108,6 +108,7 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.setItem('kiki.locale', 'en');
   localStorage.removeItem('kiki.onboarding');
+  localStorage.removeItem('kiki.onboarding.step');
   localStorage.removeItem('kiki.settings');
   clearStoredDrafts();
   resetDraftMemoryForTests();
@@ -273,53 +274,54 @@ describe('manual re-entry channel', () => {
   });
 });
 
-/** Welcome → agreement: the second of three steps. */
+/** Agreement: the first of three steps. */
 async function toAgreementStep(): Promise<void> {
+  // Step 1 is agreement; already on agreement
+}
+
+/** Agreement (Next saves mode) → appearance. */
+async function toAppearanceStep(): Promise<void> {
   await click(buttonByText('Next'));
   await flush();
 }
 
-/** … → agreement (Next saves the mode) → the depart page. */
+/** Agreement → appearance → depart page. */
 async function toDepartStep(): Promise<void> {
-  await toAgreementStep();
+  await toAppearanceStep();
   await click(buttonByText('Next'));
   await flush();
 }
 
-/** The depart page folds its five routes away; open the disclosure first. */
+/** The depart page lists routes directly. */
 async function openBrowse(): Promise<void> {
-  await click(dialog().querySelector('[data-onboarding-browse-open]')!);
-  await flush();
+  const btn = dialog().querySelector('[data-onboarding-browse-open]');
+  if (btn) {
+    await click(btn);
+    await flush();
+  }
 }
 
 describe('OnboardingWizard', () => {
-  it('opens on what Kiki is for: four uses, a language switch, and appearance folded away', async () => {
+  it('opens on the agreement step with full header and language switch', async () => {
     await mount();
     expect(dialog().getAttribute('aria-label')).toBe('Welcome to Kiki');
+    expect(dialog().parentElement?.getAttribute('data-onboarding-dialog')).toBe('');
     expect(dialog().textContent).toContain('Step 1 of 3');
-    expect(dialog().textContent).toContain('What Kiki can help you do');
+    expect(dialog().textContent).toContain('How should Kiki work with you?');
     expect(dialog().querySelector('[data-onboarding-header="full"]')).not.toBeNull();
-    // The four uses carry the discovery routes' own names, in route order.
-    const uses = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-intro] [data-onboarding-use]')];
-    expect(uses.map((use) => use.dataset['onboardingUse'])).toEqual(['do-first', 'understand', 'sustain', 'extend']);
-    expect(uses[2]?.textContent).toContain('Keep work going');
     // Language stays on the first screen as one small switch beside the title.
     expect(dialog().querySelector('[data-onboarding-language] [aria-labelledby="onboarding-language-label"]')).not.toBeNull();
-    // Appearance is one row away, complete, but not the first thing read.
-    const toggle = dialog().querySelector<HTMLElement>('[data-onboarding-appearance-toggle]')!;
-    expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(dialog().querySelector('[data-onboarding-appearance]')).toBeNull();
-    await click(toggle);
-    expect(toggle.getAttribute('aria-expanded')).toBe('true');
-    expect(dialog().querySelector('[data-onboarding-welcome] #onboarding-appearance-panel [data-onboarding-appearance]')).not.toBeNull();
-    // First page: nothing to go back to, and nothing to defer.
+    // Permission choices are visible on step 1.
+    expect(dialog().querySelector('[data-permission-choice="auto"]')).not.toBeNull();
+    // First page: nothing to go back to, but has Set up later.
     expect([...dialog().querySelectorAll('button')].some((button) => button.textContent === 'Back')).toBe(false);
-    expect([...dialog().querySelectorAll('button')].some((button) => button.textContent === 'Set up later')).toBe(false);
+    expect([...dialog().querySelectorAll('button')].some((button) => button.textContent === 'Set up later')).toBe(true);
   });
 
   it('shows the full masthead once, then a compact header on later steps', async () => {
     await mount();
-    await toAgreementStep();
+    expect(dialog().querySelector('[data-onboarding-header="full"]')).not.toBeNull();
+    await toAppearanceStep();
     expect(dialog().querySelector('[data-onboarding-header="compact"]')).not.toBeNull();
     expect(dialog().querySelector('[data-onboarding-header="full"]')).toBeNull();
     // The step keeps one title; the close and the progress stay reachable.
@@ -328,10 +330,11 @@ describe('OnboardingWizard', () => {
     expect(dialog().querySelector('[aria-label="Close setup"]')).not.toBeNull();
   });
 
-  it('applies theme, palette and an optional picture at once from the welcome page', async () => {
+  it('applies theme, palette and an optional picture from the appearance step', async () => {
     await mount();
-    expect(dialog().textContent).not.toMatch(/token|skin/i);
-    await click(dialog().querySelector('[data-onboarding-appearance-toggle]')!);
+    await toAppearanceStep();
+    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
     await click(dialog().querySelector('[data-onboarding-appearance] [data-theme-choice="dark"]')!);
     expect(readSettings().theme).toBe('dark');
     await click(dialog().querySelector('[data-onboarding-palette="porcelain"]')!);
@@ -347,11 +350,12 @@ describe('OnboardingWizard', () => {
 
   it('walks forward and back through the setup steps', async () => {
     await mount();
-    // The welcome page is the only look step: nothing configures a model here,
-    // so the next page is already the agreement.
-    await toAgreementStep();
-    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().textContent).toContain('Step 1 of 3');
     expect(dialog().textContent).toContain('How should Kiki work with you?');
+
+    await toAppearanceStep();
+    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
 
     await click(buttonByText('Next'));
     await flush();
@@ -360,9 +364,32 @@ describe('OnboardingWizard', () => {
 
     await click(buttonByText('Back'));
     expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
+
     await click(buttonByText('Back'));
     expect(dialog().textContent).toContain('Step 1 of 3');
-    expect(dialog().querySelector('[data-onboarding-intro]')).not.toBeNull();
+    expect(dialog().textContent).toContain('How should Kiki work with you?');
+  });
+
+  it('scrolls the step itself and leaves the header and footer outside that scroller', async () => {
+    await mount();
+    const scroller = dialog().querySelector<HTMLElement>('[data-onboarding-step-scroll]')!;
+    // height:100% never became the scrollport; the row clipped the step.
+    expect(scroller.className.split(/\s+/)).not.toContain('h-full');
+    expect(scroller.className).toContain('overflow-y-auto');
+    expect(scroller.className).toContain('min-h-0');
+    expect(scroller.className).toContain('flex-1');
+    const frame = scroller.parentElement;
+    expect(frame?.className).toContain('min-h-0');
+    expect(frame?.className).toContain('overflow-hidden');
+    expect(frame?.className).toContain('flex-col');
+    // The cap stays a cap. A fitting step must not be pinned to 85vh.
+    expect(dialog().className).toContain('max-h-[85vh]');
+    expect(dialog().className.split(/\s+/)).not.toContain('h-[85vh]');
+    expect(dialog().className.split(/\s+/)).not.toContain('h-full');
+    expect(scroller.contains(buttonByText('Next'))).toBe(false);
+    expect(scroller.contains(buttonByText('Set up later'))).toBe(false);
+    expect(dialog().querySelector('[aria-label="Close setup"]')?.closest('[data-onboarding-step-scroll]')).toBeNull();
   });
 
   it('says there is more below from the first frame, and stops saying so at the end', async () => {
@@ -440,7 +467,7 @@ describe('OnboardingWizard', () => {
     await click(buttonByText('Next'));
     await flush();
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 2 of 3');
   });
 
   it('a failed permission save stays on the step', async () => {
@@ -449,7 +476,7 @@ describe('OnboardingWizard', () => {
     await toAgreementStep();
     await click(buttonByText('Next'));
     await flush();
-    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().textContent).toContain('Step 1 of 3');
     expect(dialog().querySelector('[data-onboarding-depart]')).toBeNull();
   });
 
@@ -467,6 +494,7 @@ describe('OnboardingWizard', () => {
     getConfig.mockResolvedValue({ default_permission_mode: 'review' });
     await mount();
     await toAgreementStep();
+    await flush();
     const review = dialog().querySelector('[data-permission-choice="review"]');
     expect(review).not.toBeNull();
     expect(review?.getAttribute('aria-checked')).toBe('true');
@@ -485,7 +513,7 @@ describe('OnboardingWizard', () => {
     expect(readSettings().awayNotifications.approval).toBe(true);
     // No server write and no step change: this is a local device preference.
     expect(patchConfig).not.toHaveBeenCalled();
-    expect(dialog().textContent).toContain('Step 2 of 3');
+    expect(dialog().textContent).toContain('Step 1 of 3');
   });
 
   it('stores the reply paragraph in the prompt domain and never touches memory', async () => {
@@ -590,12 +618,13 @@ describe('OnboardingWizard', () => {
 
   it.each(['yolo', 'review'] as const)('R040 pending config preserves %s when untouched Next or Set up later is used', async (mode) => {
     for (const action of ['Next', 'Set up later']) {
+      localStorage.removeItem('kiki.onboarding.step');
       let resolve!: (value: { default_permission_mode: typeof mode }) => void;
       getConfig.mockImplementation(() => new Promise((done) => { resolve = done; }));
       await mount();
       await toAgreementStep();
       await click(buttonByText(action));
-      expect(dialog().textContent).toContain('Step 3 of 3');
+      expect(dialog().textContent).toContain('Step 2 of 3');
       expect(patchConfig).not.toHaveBeenCalled();
       await act(async () => { resolve({ default_permission_mode: mode }); });
       expect(patchConfig).not.toHaveBeenCalled();
@@ -611,7 +640,7 @@ describe('OnboardingWizard', () => {
     await click(dialog().querySelector('[data-permission-choice="manual"]')!);
     await click(buttonByText('Next'));
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'manual' });
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 2 of 3');
   });
 
   it('saves an editable paragraph and rejects removing the default reply guide before any request', async () => {
@@ -637,20 +666,18 @@ describe('OnboardingWizard', () => {
     await click(dialog().querySelector('[data-onboarding-voice="concise"]')!);
     expect(dialog().textContent).toContain('config write unavailable');
     await click(buttonByText('Next'));
-    expect(dialog().textContent).toContain('Step 3 of 3');
+    expect(dialog().textContent).toContain('Step 2 of 3');
     expect(putMemory).not.toHaveBeenCalled();
   });
 
-  it('the first step asks nothing, so it offers only Next and keeps the run open', async () => {
+  it('the first step advances to appearance and keeps the run open', async () => {
     const onClose = vi.fn();
     await mount(onClose);
-    const buttons = [...dialog().querySelectorAll('button')].map((button) => button.textContent);
-    expect(buttons).not.toContain('Set up later');
-    expect(buttons).not.toContain('Not now');
+    expect(dialog().textContent).toContain('Step 1 of 3');
     await click(buttonByText('Next'));
     await flush();
     expect(onClose).not.toHaveBeenCalled();
-    expect(dialog().querySelector('[data-permission-choice]')).not.toBeNull();
+    expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
     expect(dialog().textContent).toContain('Step 2 of 3');
     expect(localStorage.getItem('kiki.onboarding')).toBeNull();
   });
@@ -664,7 +691,7 @@ describe('OnboardingWizard', () => {
     // Skipping past the step must not silently discard the choice already made.
     expect(patchConfig).toHaveBeenCalledWith({ default_permission_mode: 'auto' });
     expect(onClose).not.toHaveBeenCalled();
-    expect(dialog().querySelector('[data-onboarding-depart]')).not.toBeNull();
+    expect(dialog().querySelector('[data-onboarding-appearance]')).not.toBeNull();
     expect(localStorage.getItem('kiki.onboarding')).toBeNull();
   });
 
@@ -690,15 +717,15 @@ describe('OnboardingWizard', () => {
 
       expect(dialog().querySelector('[data-onboarding-depart-model]')).not.toBeNull();
       const open = dialog().querySelector<HTMLButtonElement>('[data-onboarding-model-settings]')!;
-      expect(open.textContent).toBe('Open model settings');
+      expect(open.textContent).toBe('Configure model service in Settings →');
       // Auth "not ready" yet: the run is unmarked, so a user who comes back
       // without a model is offered the walk again.
       expect(localStorage.getItem('kiki.onboarding')).toBeNull();
 
       await click(open);
       await flush();
-      expect(router.state.location.pathname).toBe('/settings/ai');
-      expect(router.state.location.search).toBe('?tab=providers');
+      expect(router.state.location.pathname).toBe('/settings/providers');
+      expect(router.state.location.search).toBe('?from=onboarding');
       expect(onClose).toHaveBeenCalledTimes(1);
       // The hand-off is not an exit: the run stays unmarked.
       expect(localStorage.getItem('kiki.onboarding')).toBeNull();
@@ -752,17 +779,14 @@ describe('OnboardingWizard', () => {
   });
 
   describe('the depart page starts a discovery route in place', () => {
-    it('folds the five catalog routes away and lists nothing the hub owns', async () => {
+    it('lists the five catalog routes directly and lists nothing the hub owns', async () => {
       await mount();
       await toDepartStep();
 
       expect(dialog().textContent).toContain('Step 3 of 3');
-      expect(dialog().textContent).toContain('Go');
       expect(dialog().querySelector('[data-onboarding-depart-browse]')).not.toBeNull();
-      // Folded until asked for.
-      expect(dialog().querySelector('[data-onboarding-route]')).toBeNull();
+      expect(dialog().querySelector('[data-onboarding-tour-start]')).not.toBeNull();
 
-      await openBrowse();
       const rows = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-route]')];
       expect(rows.map((row) => row.dataset['onboardingRoute'])).toEqual([
         'overview', 'do-first', 'understand', 'sustain', 'extend',
@@ -770,7 +794,7 @@ describe('OnboardingWizard', () => {
       expect(rows[0]?.textContent).toContain('Take me on a tour');
       expect(rows[0]?.textContent).toContain('5 stops');
       expect(rows[3]?.textContent).toContain('Keep work going');
-      expect(rows[3]?.textContent).toContain('3 stops');
+      expect(rows[3]?.textContent).toContain('2 stops');
 
       // Everything the hub owns stays on the hub: no second copy in the welcome.
       expect(dialog().querySelector('[data-onboarding-discover-start]')).toBeNull();
@@ -898,20 +922,19 @@ describe('OnboardingWizard', () => {
       expect(localStorage.getItem('kiki.onboarding')).toContain('completedAt');
     });
 
-    it('names the four uses on the welcome exactly as the routes on the closing step', async () => {
-      await mount();
-      const useTitles = [...dialog().querySelectorAll<HTMLElement>('[data-onboarding-use]')]
-        .map((use) => ({ id: use.dataset['onboardingUse'], title: use.querySelector('span > span')?.textContent }));
+    it('shows ready badge and start chat button when model connection is ready', async () => {
+      getAuth.mockResolvedValue({ ...AUTH_EMPTY, ready: true, default_model: 'kimi-k2' });
+      const onClose = vi.fn();
+      const { router } = await mountWithDiscovery({ onClose });
       await toDepartStep();
-      await openBrowse();
-      for (const { id, title } of useTitles) {
-        const row = dialog().querySelector<HTMLElement>(`[data-onboarding-route="${id}"]`);
-        expect(row).not.toBeNull();
-        expect(title).toBeTruthy();
-        expect(row?.textContent).toContain(title!);
-      }
-      // The closing step's rows are the shared route row, not a local copy.
-      expect(dialog().querySelectorAll('[data-onboarding-route][data-discovery-route-row]')).toHaveLength(5);
+
+      expect(dialog().querySelector('[data-onboarding-model-ready]')).not.toBeNull();
+      const startChat = dialog().querySelector<HTMLButtonElement>('[data-onboarding-start-chat]')!;
+      expect(startChat).not.toBeNull();
+      await click(startChat);
+      await flush();
+      expect(router.state.location.pathname).toBe('/new');
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
   });
 

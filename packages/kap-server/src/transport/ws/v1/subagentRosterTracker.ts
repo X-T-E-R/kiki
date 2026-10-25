@@ -136,7 +136,6 @@ export class SubagentRosterTracker {
           restarted && eventAt !== undefined
             ? this.resetGeneration(sessionId, event.subagentId, eventAt)
             : undefined;
-        const createdAt = isoTime(eventAt) ?? new Date().toISOString();
         roster.set(event.subagentId, {
           ...existing,
           ...generationReset,
@@ -196,11 +195,7 @@ export class SubagentRosterTracker {
           executor_protocol: acceptedRun
             ? restarted ? event.executorProtocol : (event.executorProtocol ?? existing?.executor_protocol)
             : existing!.executor_protocol,
-          created_at: acceptedRun
-            ? restarted
-              ? createdAt
-              : (existing?.created_at ?? createdAt)
-            : existing!.created_at,
+          created_at: existing?.created_at,
           started_at: acceptedRun
             ? restarted
               ? isoTime(eventAt)
@@ -511,7 +506,7 @@ export class SubagentRosterTracker {
         executor_protocol: restarted
           ? info.executorProtocol
           : (info.executorProtocol ?? existing?.executor_protocol),
-        created_at: restarted ? startedAt : (existing?.created_at ?? startedAt),
+        created_at: existing?.created_at,
         started_at: restarted ? startedAt : (existing?.started_at ?? startedAt),
         completed_at: restarted ? endedAt : (existing?.completed_at ?? endedAt),
         output_preview:
@@ -588,7 +583,7 @@ export class SubagentRosterTracker {
       executor_protocol: restarted
         ? info.executorProtocol
         : (info.executorProtocol ?? existing?.executor_protocol),
-      created_at: restarted ? startedAt : (existing?.created_at ?? startedAt),
+      created_at: existing?.created_at,
       started_at: restarted ? startedAt : (existing?.started_at ?? startedAt),
       completed_at: undefined,
       output_preview: undefined,
@@ -653,7 +648,6 @@ export class SubagentRosterTracker {
       run_in_background: undefined,
       model: undefined,
       thinking_effort: undefined,
-      created_at: timestamp,
       started_at: timestamp,
       completed_at: undefined,
       output_preview: undefined,

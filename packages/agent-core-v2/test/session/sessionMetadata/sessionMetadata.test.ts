@@ -48,6 +48,16 @@ function makeContext(): ISessionContext {
   });
 }
 
+function deferred(): { readonly promise: Promise<void>; readonly resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+async function ticks(): Promise<void> {
+  for (let index = 0; index < 30; index += 1) await Promise.resolve();
+}
+
 describe('SessionMetadata', () => {
   let disposables: DisposableStore;
   let ix: TestInstantiationService;
@@ -67,8 +77,9 @@ describe('SessionMetadata', () => {
     ix.set(ISessionMetadata, new SyncDescriptor(SessionMetadata));
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
+    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -91,6 +102,7 @@ describe('SessionMetadata', () => {
     expect(readSpy).not.toHaveBeenCalled();
   });
 
+
   it('returns registered native and external executor ids', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.registerAgent('native-agent', { executor: 'native' });
@@ -98,6 +110,41 @@ describe('SessionMetadata', () => {
 
     await expect(meta.getAgentExecutor('native-agent')).resolves.toBe('native');
     await expect(meta.getAgentExecutor('external-agent')).resolves.toBe('external');
+  });
+
+  it('keeps birth immutable through registration, agent updates, bulk patches and reload', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('child', { createdAt: 100, model: 'first' });
+    await meta.registerAgent('child', { createdAt: 200, model: 'second' });
+    await meta.updateAgent('child', () => ({ model: 'third' }));
+    await meta.update({ agents: { child: { createdAt: 300, model: 'fourth' } } });
+    expect((await meta.read()).agents?.['child']).toEqual({ createdAt: 100, model: 'fourth' });
+    expect((await createFreshMetadata(ix).read()).agents?.['child']).toEqual({ createdAt: 100, model: 'fourth' });
+  });
+
+
+  it('does not backfill a legacy agent birth when loading or updating metadata', async () => {
+    const store = ix.get(IAtomicDocumentStore);
+    await store.set(META_SCOPE, 'state.json', { id: 's1', version: 2, createdAt: 1, updatedAt: 2,
+      archived: false, agents: { legacy: { model: 'old' } }, custom: {}, isCustomTitle: false });
+    const writes = vi.spyOn(store, 'set');
+    const meta = ix.get(ISessionMetadata);
+    await meta.read();
+    expect(writes).not.toHaveBeenCalled();
+    await meta.registerAgent('legacy', { createdAt: 500, model: 'new' });
+    await meta.updateAgent('legacy', (current) => ({ ...current, createdAt: 600 }));
+    expect((await createFreshMetadata(ix).read()).agents?.['legacy']?.createdAt).toBeUndefined();
+  });
+
+
+  it('persists activity recency without rewriting main prompt time or custom title', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.update({ title: 'Custom title', titleKind: 'custom', lastPrompt: 'Main prompt', updatedAt: 1_000 });
+    await meta.update({ activityUpdatedAt: 5_000 }, { touchUpdatedAt: false });
+    await meta.update({ activityUpdatedAt: 3_000 }, { touchUpdatedAt: false });
+    expect(await meta.read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000, title: 'Custom title', lastPrompt: 'Main prompt' });
+    expect(mirror.recorded.at(-1)?.updatedAt).toBe(5_000);
+    expect(await createFreshMetadata(ix).read()).toMatchObject({ activityUpdatedAt: 5_000, updatedAt: 1_000 });
   });
 
   it('persists creator metadata and mirrors it for session-list reads', async () => {
@@ -113,6 +160,18 @@ describe('SessionMetadata', () => {
     expect((await createFreshMetadata(ix).read()).custom).toEqual(custom);
   });
 
+  it('persists persona-only changes and mirrors canonical identity ahead of conflicting legacy tags', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('main', { executor: 'native' });
+    await meta.update({ custom: { bot_persona_id: 'other', room_persona_id: 'other' } });
+    await meta.updateAgent('main', (current) => ({ ...current, personaId: 'example' }));
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.personaId).toBe('example');
+    expect(mirror.recorded.at(-1)).toMatchObject({ personaId: 'example', custom: { bot_persona_id: 'other', room_persona_id: 'other' } });
+    await meta.updateAgent('main', (current) => ({ ...current, personaId: undefined }));
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.personaId).toBeUndefined();
+    expect(mirror.recorded.at(-1)?.personaId).toBeUndefined();
+  });
+
   it('persists per-session handshake snapshots and restores them without a catalog lookup', async () => {
     const meta = ix.get(ISessionMetadata);
     const negotiated = { agentVersion: '1.2.3', image: false, audio: true, fork: true,
@@ -126,7 +185,7 @@ describe('SessionMetadata', () => {
     expect((await createFreshMetadata(ix).read()).agents?.['main']?.negotiated).toBeUndefined();
   });
 
-  it('persists activity recency without rewriting main prompt time or custom title', async () => {
+  it('preserves the higher activity recency after a later stale activity update', async () => {
     const meta = ix.get(ISessionMetadata);
     await meta.update({ title: 'Custom title', titleKind: 'custom', lastPrompt: 'Main prompt', updatedAt: 1_000 });
     await meta.update({ activityUpdatedAt: 5_000 }, { touchUpdatedAt: false });
@@ -158,6 +217,152 @@ describe('SessionMetadata', () => {
       .get(IAtomicDocumentStore)
       .get<{ usage?: { wireComplete?: boolean } }>(META_SCOPE, 'state.json');
     expect(persisted?.usage?.wireComplete).toBeUndefined();
+    expect(mirror.recorded.at(-1)?.usage).toEqual((await meta.read()).usage);
+  });
+
+  it('flushes delayed usage during direct metadata disposal', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    meta.recordUsage('example-model', {
+      inputOther: 1,
+      output: 2,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+
+    await meta.dispose();
+
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(2);
+  });
+
+  it('propagates usage write failures from drain and retries them on direct disposal', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    const storage = ix.get(IFileSystemStorageService);
+    const original = storage.write.bind(storage);
+    storage.write = async (scope, key, data, options) => {
+      if (key === 'state.json') throw new Error('injected usage write failure');
+      return original(scope, key, data, options);
+    };
+    meta.recordUsage('example-model', {
+      inputOther: 1,
+      output: 2,
+      inputCacheRead: 0,
+      inputCacheCreation: 0,
+    });
+
+    await expect(drainSessionMetadataWrites(false)).rejects.toThrow('injected usage write failure');
+    storage.write = original;
+    await meta.dispose();
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(2);
+  });
+
+  it('waits for an already queued usage flush during direct disposal', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    const storage = ix.get(IFileSystemStorageService);
+    const original = storage.write.bind(storage);
+    const entered = deferred();
+    const release = deferred();
+    let first = true;
+    storage.write = async (scope, key, data, options) => {
+      if (first && key === 'state.json') {
+        first = false;
+        entered.resolve();
+        await release.promise;
+      }
+      return original(scope, key, data, options);
+    };
+    vi.useFakeTimers();
+    const prior = meta.setTitle('already-writing');
+    await entered.promise;
+    meta.recordUsage('example-model', { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    let settled = false;
+    const disposing = meta.dispose().then(() => { settled = true; });
+    await ticks();
+    expect(settled).toBe(false);
+    release.resolve();
+    await prior;
+    await disposing;
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(2);
+    expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('propagates rejection from an in-flight usage timer through drain', async () => {
+    const meta = ix.get(ISessionMetadata) as SessionMetadata;
+    await meta.ready;
+    const storage = ix.get(IFileSystemStorageService);
+    const original = storage.write.bind(storage);
+    const entered = deferred();
+    const release = deferred();
+    storage.write = async () => {
+      entered.resolve();
+      await release.promise;
+      throw new Error('injected timer usage failure');
+    };
+    vi.useFakeTimers();
+    meta.recordUsage('example-model', { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    await vi.advanceTimersByTimeAsync(1_000);
+    await entered.promise;
+    const draining = drainSessionMetadataWrites(false);
+    await ticks();
+    release.resolve();
+    await expect(draining).rejects.toThrow('injected timer usage failure');
+    expect(vi.getTimerCount()).toBe(0);
+    storage.write = original;
+    await drainSessionMetadataWrites(false);
+    await meta.dispose();
+  });
+
+  it('writes one session document for several usage records', async () => {
+    const storage = ix.get(IFileSystemStorageService);
+    let stateWrites = 0;
+    const original = storage.write.bind(storage);
+    storage.write = async (scope, key, data, options) => {
+      if (key === 'state.json') stateWrites += 1;
+      return original(scope, key, data, options);
+    };
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    const afterCreate = stateWrites;
+    const usage = { inputOther: 1, output: 2, inputCacheRead: 0, inputCacheCreation: 0 };
+    meta.recordUsage('example-model', usage);
+    meta.recordUsage('example-model', usage);
+    expect(stateWrites).toBe(afterCreate);
+    expect((await meta.read()).usage?.total.output).toBe(4);
+    await drainSessionMetadataWrites();
+    expect(stateWrites).toBe(afterCreate + 1);
+    const persisted = await ix.get(IAtomicDocumentStore).get<{ usage?: { total?: { output?: number } } }>(META_SCOPE, 'state.json');
+    expect(persisted?.usage?.total?.output).toBe(4);
+  });
+
+  it('keeps an agent contextTokens snapshot apart from session usage totals', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    await meta.registerAgent('main', { executor: 'native' });
+    await meta.updateAgent('main', (current) => ({ ...current, contextTokens: 424_458 }));
+    meta.recordUsage('example-model', {
+      inputOther: 3,
+      output: 2,
+      inputCacheRead: 1,
+      inputCacheCreation: 0,
+    });
+    await drainSessionMetadataWrites();
+    const persisted = await ix.get(IAtomicDocumentStore).get<{
+      agents?: { main?: { contextTokens?: number } };
+      usage?: { total?: { inputOther: number; output: number; inputCacheRead: number; inputCacheCreation: number } };
+    }>(META_SCOPE, 'state.json');
+    expect(persisted?.agents?.main?.contextTokens).toBe(424_458);
+    expect(persisted?.usage?.total).toEqual({
+      inputOther: 3,
+      output: 2,
+      inputCacheRead: 1,
+      inputCacheCreation: 0,
+    });
   });
 
   it('update merges fields and bumps updatedAt', async () => {

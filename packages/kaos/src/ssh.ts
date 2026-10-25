@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises';
-import { isAbsolute, join, normalize, resolve } from 'pathe';
+import { win32 } from 'node:path';
+import { isAbsolute, join, normalize } from 'pathe';
 import type { Readable, Writable } from 'node:stream';
 
 import * as ssh2 from 'ssh2';
@@ -346,6 +347,8 @@ function sftpRealpath(sftp: SFTPWrapper, path: string): Promise<string> {
     sftp.realpath(path, (err, absPath) => {
       if (err) {
         reject(mapSftpError('realpath', err));
+      } else if (typeof absPath !== 'string' || absPath.length === 0) {
+        reject(new KaosSSHError(`SFTP realpath returned no canonical path for ${JSON.stringify(path)}`));
       } else {
         resolve(absPath);
       }
@@ -485,22 +488,46 @@ export class SSHKaos implements Kaos {
     return this._osEnv;
   }
 
-  async probeEnvironment(): Promise<Environment> {
-    const proc = await this.exec('/bin/sh', '-c', 'printf "KIKI_SSH_ENV\\n%s\\n%s\\n%s\\n" "$(uname -s)" "$(uname -m)" "$(uname -r)"; printf "%s\\n" "$SHELL"');
-    const chunks: Buffer[] = [];
-    for await (const chunk of proc.stdout) chunks.push(Buffer.from(chunk as Buffer));
-    if (await proc.wait() !== 0) throw new KaosSSHError('Remote POSIX environment probe failed');
-    const [marker, kind, arch, version, shell] = Buffer.concat(chunks).toString('utf8').trim().split(/\r?\n/);
-    if (marker !== 'KIKI_SSH_ENV' || !kind || !arch || !version) {
-      throw new KaosSSHError('Remote POSIX environment probe returned invalid data');
+  private async _probe(command: string): Promise<string | undefined> {
+    this._activity.count += 1;
+    let proc: SSHProcess | undefined;
+    try {
+      proc = new SSHProcess(await clientExec(this._client, command));
+      const chunks: Buffer[] = [];
+      for await (const chunk of proc.stdout) chunks.push(Buffer.from(chunk as Buffer));
+      return await proc.wait() === 0 ? Buffer.concat(chunks).toString('utf8').trim() : undefined;
+    } finally {
+      proc?.dispose();
+      this._activity.count -= 1;
     }
-    const shellPath = shell?.startsWith('/') && !/[\r\n]/.test(shell) ? shell : '/bin/sh';
-    this._osEnv = {
-      osKind: kind === 'Darwin' ? 'macOS' : kind === 'Linux' ? 'Linux' : kind,
-      osArch: arch, osVersion: version,
-      shellName: shellPath.endsWith('/bash') ? 'bash' : 'sh', shellPath,
-    };
+  }
+
+  async probeEnvironment(): Promise<Environment> {
+    if (this.pathClass() !== 'win32') {
+      const output = await this._probe(SSHKaos._buildExecCommand(['/bin/sh', '-c', 'printf "KIKI_SSH_ENV\\n%s\\n%s\\n%s\\n" "$(uname -s)" "$(uname -m)" "$(uname -r)"; printf "%s\\n" "$SHELL"'], ''));
+      const [marker, kind, arch, version, shell] = output?.split(/\r?\n/) ?? [];
+      if (marker === 'KIKI_SSH_ENV' && kind && arch && version) {
+        const shellPath = shell?.startsWith('/') && !/[\r\n]/.test(shell) ? shell : '/bin/sh';
+        this._osEnv = {
+          osKind: kind === 'Darwin' ? 'macOS' : kind === 'Linux' ? 'Linux' : kind,
+          osArch: arch, osVersion: version,
+          shellName: shellPath.endsWith('/bash') ? 'bash' : 'sh', shellPath,
+        };
+        return this._osEnv;
+      }
+    }
+    const script = '$ErrorActionPreference="Stop"; $bash=Get-Command bash.exe -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source; if (!$bash) { foreach ($root in @($env:ProgramW6432,$env:ProgramFiles,${env:ProgramFiles(x86)},$env:LOCALAPPDATA)) { if (!$root) { continue }; foreach ($suffix in @("Git/bin/bash.exe","Programs/Git/bin/bash.exe")) { $p=Join-Path $root $suffix; if (Test-Path -LiteralPath $p -PathType Leaf) { $bash=$p; break } }; if ($bash) { break } } }; "KIKI_SSH_WINDOWS"; $env:PROCESSOR_ARCHITECTURE; [Environment]::OSVersion.Version.ToString(); $bash';
+    const output = await this._probe(`powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(script, 'utf16le').toString('base64')}`);
+    const [marker, arch, version, shell] = output?.split(/\r?\n/) ?? [];
+    if (marker !== 'KIKI_SSH_WINDOWS' || !arch || !version) throw new KaosSSHError('Could not probe the remote SSH platform; neither POSIX nor Windows returned valid environment data');
+    this._osEnv = { osKind: 'Windows', osArch: arch, osVersion: version, shellName: 'bash', shellPath: shell?.replaceAll('\\', '/') ?? '' };
+    this._home = this._nativePath(this._home);
+    this._cwd = this._nativePath(this._cwd);
     return this._osEnv;
+  }
+
+  private _nativePath(path: string): string {
+    return this.pathClass() === 'win32' ? path.replace(/^\/([A-Za-z]:[\\/])/, '$1').replaceAll('\\', '/') : path;
   }
 
   private constructor(
@@ -530,16 +557,28 @@ export class SSHKaos implements Kaos {
   }
 
   withCwd(cwd: string): SSHKaos {
-    return new SSHKaos(this._client, this._sftp, this._home, cwd, this._envLayers, this._activity);
+    const scoped = new SSHKaos(this._client, this._sftp, this._home, this._resolvePath(cwd), this._envLayers, this._activity);
+    scoped._osEnv = this._osEnv;
+    return scoped;
   }
 
   withEnv(env: Record<string, string>): SSHKaos {
-    return new SSHKaos(this._client, this._sftp, this._home, this._cwd, [...this._envLayers, env], this._activity);
+    const scoped = new SSHKaos(this._client, this._sftp, this._home, this._cwd, [...this._envLayers, env], this._activity);
+    scoped._osEnv = this._osEnv;
+    return scoped;
   }
 
   private _resolvePath(path: string): string {
-    if (isAbsolute(path)) return path;
-    return join(this._cwd, path);
+    const native = this._nativePath(path);
+    if (this.pathClass() === 'win32') {
+      const cwd = this._nativePath(this._cwd);
+      if (![native, cwd].some((value) => /^[A-Za-z]:[\\/]|^[\\/]{2}[^\\/]/.test(value))) {
+        throw new KaosValueError('Remote Windows paths require an absolute drive or UNC working directory');
+      }
+      return win32.resolve(cwd, native).replaceAll('\\', '/');
+    }
+    if (isAbsolute(native)) return native;
+    return join(this._cwd, native);
   }
 
   /**
@@ -632,11 +671,11 @@ export class SSHKaos implements Kaos {
   // ── Path operations (sync) ─────────────────────────────────────────
 
   pathClass(): 'posix' | 'win32' {
-    return 'posix';
+    return this._osEnv.osKind === 'Windows' || /^\/?[A-Za-z]:[\\/]/.test(this._home) ? 'win32' : 'posix';
   }
 
   normpath(path: string): string {
-    return normalize(path);
+    return this.pathClass() === 'win32' ? win32.normalize(this._nativePath(path)).replaceAll('\\', '/') : normalize(path);
   }
 
   gethome(): string {
@@ -650,14 +689,7 @@ export class SSHKaos implements Kaos {
   // ── Directory operations (async) ───────────────────────────────────
 
   async chdir(path: string): Promise<void> {
-    let target: string;
-    if (isAbsolute(path)) {
-      target = path;
-    } else {
-      target = resolve(this._cwd, path);
-    }
-    // Resolve to the real path via SFTP
-    const resolved = await sftpRealpath(this._sftp, target);
+    const resolved = this._nativePath(await sftpRealpath(this._sftp, this._resolvePath(path)));
     // Verify the resolved target is actually a directory. Without this
     // guard, `realpath` happily returns file paths, causing later relative
     // reads/writes/execs to treat a regular file as a working directory.
@@ -823,7 +855,7 @@ export class SSHKaos implements Kaos {
   }
 
   async realpath(path: string): Promise<string> {
-    return sftpRealpath(this._sftp, this._resolvePath(path));
+    return this._nativePath(await sftpRealpath(this._sftp, this._resolvePath(path)));
   }
 
   async createExclusive(path: string, data: Buffer): Promise<boolean> {
@@ -1061,8 +1093,22 @@ export class SSHKaos implements Kaos {
     return command;
   }
 
+  private static _buildWindowsExecCommand(args: string[], cwd: string, env?: Record<string, string>): string {
+    const quote = (value: string) => `'${value.replaceAll("'", "''")}'`;
+    const statements = ['$ErrorActionPreference="Stop"'];
+    if (cwd !== '') statements.push(`Set-Location -LiteralPath ${quote(cwd)}`);
+    for (const [key, value] of Object.entries(env ?? {})) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new KaosValueError(`SSHKaos.execWithEnv(): invalid env variable name ${JSON.stringify(key)}`);
+      statements.push(`$env:${key}=${quote(value)}`);
+    }
+    statements.push(`& ${args.map(quote).join(' ')}`, 'if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }');
+    return `powershell.exe -NoLogo -NoProfile -NonInteractive -EncodedCommand ${Buffer.from(statements.join('; '), 'utf16le').toString('base64')}`;
+  }
+
   private async _execInternal(args: string[], env?: Record<string, string>): Promise<KaosProcess> {
-    const command = SSHKaos._buildExecCommand(args, this._cwd, env);
+    const command = this.pathClass() === 'win32'
+      ? SSHKaos._buildWindowsExecCommand(args, this._cwd, env)
+      : SSHKaos._buildExecCommand(args, this._cwd, env);
     this._activity.count += 1;
     try {
       const channel = await clientExec(this._client, command);

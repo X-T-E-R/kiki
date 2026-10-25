@@ -4,9 +4,12 @@ import {
   IAgentContextMemoryService,
   IAgentScopeContext,
   IAppendLogStore,
+  IBlobStore,
+  IBootstrapService,
   IFileSystemStorageService,
   IQueryStore,
   ISessionIndex,
+  ISessionManager,
   IWireService,
   createContextTranscriptReducer,
   ensureMainAgent,
@@ -16,8 +19,13 @@ import {
   type IAgentScopeHandle,
   type ISessionScopeHandle,
   type Scope,
+  type SessionSummary,
   type WireRecord,
 } from '@kiki/agent-core-v2';
+import type { ContentPart } from '@kiki/agent-core-v2/kosong/contract/message';
+import { MISSING_MEDIA_PLACEHOLDER } from '@kiki/agent-core-v2/agent/blob/agentBlobService';
+import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
+import { parseMediaBlobRef } from '@kiki/transcript';
 
 import { acquireSessionOperation } from '../../lib/sessionOperationLease';
 import type { Message, MessageRole } from '../../protocol/message';
@@ -43,6 +51,7 @@ interface MessageHistoryCacheEntry {
   readonly explicitIndexes: Map<string, number>;
   readonly observedContext: ContextMessage[];
   readonly scope: string;
+  readonly coldMtimeMs?: number;
   offset: number;
   bytes: number;
 }
@@ -56,6 +65,14 @@ interface MessageHistoryCacheState {
 const messageHistoryCacheStates = new WeakMap<Scope, MessageHistoryCacheState>();
 const messageHistoryLifecycleScopes = new WeakSet<Scope>();
 const messageHistoryRefreshes = new WeakMap<Scope, Map<string, Promise<MessageHistoryCacheEntry>>>();
+interface ColdHistoryFlight {
+  promise: Promise<MessageHistoryCacheEntry>;
+  readonly controller: AbortController;
+  waiters: number;
+  settled: boolean;
+}
+
+const coldMessageHistoryRefreshes = new WeakMap<Scope, Map<string, ColdHistoryFlight>>();
 
 /** Count a compatible, already-materialized history plus its live tail without reading the wire. */
 export function cachedMessageCount(
@@ -64,7 +81,7 @@ export function cachedMessageCount(
   contextMessages: readonly ContextMessage[],
 ): number | undefined {
   const entry = messageHistoryCacheStates.get(core)?.cache.get(sessionId);
-  if (entry === undefined || !contextTailCompatible(entry.observedContext, contextMessages)) return undefined;
+  if (entry === undefined || entry.coldMtimeMs !== undefined || !contextTailCompatible(entry.observedContext, contextMessages)) return undefined;
   return entry.messages.length + contextMessages.length - entry.observedContext.length;
 }
 
@@ -121,17 +138,26 @@ export interface MessageHistoryEntry {
   readonly message: Message;
 }
 
+interface ReadMessageHistory {
+  readonly createdAt: number;
+  readonly messages: readonly ContextMessage[];
+  readonly createdAtMs: readonly number[];
+  readonly explicitIndexes: ReadonlyMap<string, number>;
+  readonly hydrate: (messages: readonly ContextMessage[]) => Promise<readonly ContextMessage[]>;
+  readonly dispose: () => Promise<void>;
+}
+
 export async function listMessages(
   core: Scope,
   sessionId: string,
   query: MessageListQuery,
+  signal?: AbortSignal,
 ): Promise<PageResponse<Message>> {
+  signal?.throwIfAborted();
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   if (summary === undefined) throw new SessionNotFoundError(sessionId);
-  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  const history = await openMessageHistory(core, sessionId, summary, signal);
   try {
-    if (lease.handle === undefined) throw new SessionNotFoundError(sessionId);
-    const history = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt);
     const requestedSize = query.page_size ?? DEFAULT_PAGE_SIZE;
     const pageSize = Math.min(Math.max(requestedSize, 1), MAX_PAGE_SIZE);
     const pivotId = query.before_id ?? query.after_id;
@@ -149,7 +175,8 @@ export async function listMessages(
     }
     const hasMore = selected.length > pageSize;
     const page = selected.slice(0, pageSize);
-    const hydrated = await rehydrate(history.agent, page.map((entry) => entry.message));
+    signal?.throwIfAborted();
+    const hydrated = await history.hydrate(page.map((entry) => entry.message));
     const projected = hydrated.map((message, pageIndex) => {
       const index = page[pageIndex]!.index;
       return toProtocolMessage(sessionId, index, message, history.createdAt, history.createdAtMs[index]);
@@ -159,7 +186,7 @@ export async function listMessages(
       : projected;
     return { items: filtered, has_more: hasMore };
   } finally {
-    lease.dispose();
+    await history.dispose();
   }
 }
 
@@ -167,13 +194,13 @@ export async function getMessage(
   core: Scope,
   sessionId: string,
   messageId: string,
+  signal?: AbortSignal,
 ): Promise<Message> {
+  signal?.throwIfAborted();
   const summary = await core.accessor.get(ISessionIndex).get(sessionId);
   if (summary === undefined) throw new SessionNotFoundError(sessionId);
-  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  const history = await openMessageHistory(core, sessionId, summary, signal);
   try {
-    if (lease.handle === undefined) throw new SessionNotFoundError(sessionId);
-    const history = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt);
     const index = resolveMessageIndex(
       sessionId,
       history.messages,
@@ -183,7 +210,8 @@ export async function getMessage(
     if (index === undefined) throw new MessageNotFoundError(sessionId, messageId);
     const contextMessage = history.messages[index];
     if (contextMessage === undefined) throw new MessageNotFoundError(sessionId, messageId);
-    const [hydrated] = await rehydrate(history.agent, [contextMessage]);
+    signal?.throwIfAborted();
+    const [hydrated] = await history.hydrate([contextMessage]);
     return toProtocolMessage(
       sessionId,
       index,
@@ -192,7 +220,7 @@ export async function getMessage(
       history.createdAtMs[index],
     );
   } finally {
-    lease.dispose();
+    await history.dispose();
   }
 }
 
@@ -223,8 +251,35 @@ export async function loadMessageHistoryEntries(
       };
     });
   } finally {
-    lease.dispose();
+    await lease.dispose();
   }
+}
+
+async function openMessageHistory(
+  core: Scope,
+  sessionId: string,
+  summary: SessionSummary,
+  signal?: AbortSignal,
+): Promise<ReadMessageHistory> {
+  signal?.throwIfAborted();
+  const manager = core.accessor.get(ISessionManager);
+  if (manager.acquireLive === undefined) throw new Error('live session operation leases are unavailable');
+  const lease = await manager.acquireLive(sessionId, 'messages-read');
+  if (lease !== undefined) {
+    try {
+      signal?.throwIfAborted();
+      const active = await loadActiveMessageHistory(core, lease.handle, sessionId, summary.createdAt);
+      return {
+        ...active,
+        hydrate: (messages) => rehydrate(active.agent, messages),
+        dispose: async () => { await lease.dispose(); },
+      };
+    } catch (error) {
+      await lease.dispose();
+      throw error;
+    }
+  }
+  return loadColdMessageHistory(core, sessionId, summary, signal);
 }
 
 async function loadActiveMessageHistory(
@@ -248,6 +303,124 @@ async function loadActiveMessageHistory(
     createdAtMs: entry.createdAtMs,
     explicitIndexes: entry.explicitIndexes,
   };
+}
+
+async function loadColdMessageHistory(
+  core: Scope,
+  sessionId: string,
+  summary: SessionSummary,
+  signal?: AbortSignal,
+): Promise<ReadMessageHistory> {
+  signal?.throwIfAborted();
+  const sessionScope = sessionScopeOf(
+    workspacePersistenceScope(core.accessor.get(IBootstrapService).scope('sessions'), summary.workspaceId),
+    sessionId,
+  );
+  let refreshes = coldMessageHistoryRefreshes.get(core);
+  if (refreshes === undefined) {
+    refreshes = new Map();
+    coldMessageHistoryRefreshes.set(core, refreshes);
+  }
+  let flight = refreshes.get(sessionId);
+  if (flight === undefined) {
+    const controller = new AbortController();
+    const created: ColdHistoryFlight = {
+      controller,
+      waiters: 0,
+      settled: false,
+      promise: undefined as unknown as Promise<MessageHistoryCacheEntry>,
+    };
+    created.promise = refreshColdMessageHistory(
+      core, sessionId, sessionScope, summary.createdAt, controller.signal,
+    ).finally(() => {
+      created.settled = true;
+      if (refreshes.get(sessionId) === created) refreshes.delete(sessionId);
+    });
+    void created.promise.catch(() => undefined);
+    flight = created;
+    refreshes.set(sessionId, created);
+  }
+  flight.waiters += 1;
+  try {
+    const entry = await waitForColdHistory(flight.promise, signal);
+    return {
+      createdAt: summary.createdAt,
+      messages: entry.messages,
+      createdAtMs: entry.createdAtMs,
+      explicitIndexes: entry.explicitIndexes,
+      hydrate: (items) => rehydrateCold(core, sessionScope, items),
+      dispose: async () => {},
+    };
+  } finally {
+    flight.waiters -= 1;
+    if (!flight.settled && flight.waiters === 0) {
+      if (refreshes.get(sessionId) === flight) refreshes.delete(sessionId);
+      flight.controller.abort();
+    }
+  }
+}
+
+function waitForColdHistory<T>(promise: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
+  if (signal === undefined) return promise;
+  signal.throwIfAborted();
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => {
+      reject(signal.reason instanceof Error
+        ? signal.reason
+        : new DOMException('The operation was aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(value);
+      },
+      (error: unknown) => {
+        signal.removeEventListener('abort', onAbort);
+        reject(error);
+      },
+    );
+  });
+}
+
+async function refreshColdMessageHistory(
+  core: Scope,
+  sessionId: string,
+  sessionScope: string,
+  createdAt: number,
+  signal?: AbortSignal,
+): Promise<MessageHistoryCacheEntry> {
+  ensureMessageHistoryLifecycle(core);
+  const scope = agentScopeOf(sessionScope, 'main');
+  const storage = core.accessor.get(IFileSystemStorageService);
+  const [offset, mtime] = await Promise.all([
+    storage.size(scope, AGENT_WIRE_RECORD_KEY),
+    storage.mtime(scope, AGENT_WIRE_RECORD_KEY),
+  ]);
+  const state = messageHistoryCacheState(core);
+  const generation = state.generation;
+  const existing = state.cache.get(sessionId);
+  if (existing !== undefined && existing.coldMtimeMs === (mtime ?? 0) &&
+    existing.scope === scope && existing.offset === (offset ?? 0)) return existing;
+  signal?.throwIfAborted();
+  const reducer = createContextTranscriptReducer();
+  for await (const record of core.accessor.get(IAppendLogStore).read<WireRecord>(scope, AGENT_WIRE_RECORD_KEY, { signal })) {
+    reducer.add(record);
+  }
+  const transcript = reducer.result();
+  const messages = [...transcript.entries];
+  const entry: MessageHistoryCacheEntry = {
+    messages,
+    createdAtMs: buildCreatedAtMs(transcript.times, messages.length, createdAt),
+    explicitIndexes: buildExplicitIndexes(messages),
+    observedContext: [],
+    scope,
+    coldMtimeMs: mtime ?? 0,
+    offset: offset ?? 0,
+    bytes: 0,
+  };
+  admitMessageHistoryCacheEntry(state, sessionId, entry, generation);
+  return entry;
 }
 
 async function refreshMessageHistoryCache(
@@ -287,7 +460,7 @@ async function refreshMessageHistoryCacheNow(
   const contextMessages = agent.accessor.get(IAgentContextMemoryService).get();
   const existing = state.cache.get(sessionId) ?? await loadSpilledMessageHistory(core, sessionId);
   let entry: MessageHistoryCacheEntry;
-  if (existing === undefined) {
+  if (existing === undefined || existing.coldMtimeMs !== undefined) {
     entry = await rebuildMessageHistoryCache(core, agent, contextMessages, sessionCreatedAtMs);
   } else {
     const tail = await readDurableWireTail(core, agent, existing);
@@ -727,8 +900,24 @@ export async function loadCapturedMessageHistoryTail(
 ): Promise<CapturedMessageHistoryTail> {
   const startIndex = Math.max(0, contextMessages.length - Math.max(0, tailCount));
   const hydrated = await rehydrate(agent, contextMessages.slice(startIndex));
+  return projectHydratedMessageHistoryTail(
+    sessionId,
+    sessionCreatedAtMs,
+    hydrated,
+    contextMessageTimes,
+    startIndex,
+  );
+}
+
+export function projectHydratedMessageHistoryTail(
+  sessionId: string,
+  sessionCreatedAtMs: number,
+  hydratedTail: readonly ContextMessage[],
+  contextMessageTimes: readonly (number | undefined)[],
+  startIndex: number,
+): CapturedMessageHistoryTail {
   let previousMs = normalizedPrefixEndMs(contextMessageTimes, startIndex, sessionCreatedAtMs);
-  const items = hydrated.map((message, offset) => {
+  const items = hydratedTail.map((message, offset) => {
     const index = startIndex + offset;
     const baseMs = contextMessageTimes[index] ?? sessionCreatedAtMs + index;
     const createdAtMs = Math.max(previousMs + 1, baseMs);
@@ -768,6 +957,37 @@ async function projectMessageHistory(
   });
 }
 
+export async function rehydrateCold(
+  core: Scope,
+  sessionScope: string,
+  messages: readonly ContextMessage[],
+): Promise<readonly ContextMessage[]> {
+  const blobs = core.accessor.get(IBlobStore);
+  const out: ContextMessage[] = [];
+  for (const message of messages) {
+    const content: ContentPart[] = [];
+    for (const part of message.content) {
+      let updated: Record<string, unknown> | undefined;
+      for (const [key, value] of Object.entries(part)) {
+        if (value === null || typeof value !== 'object' || !('url' in value) || typeof value.url !== 'string') continue;
+        if (!value.url.startsWith('blobref:')) continue;
+        const ref = parseMediaBlobRef(value.url);
+        const bytes = ref?.kind === 'mime'
+          ? await blobs.get(`${agentScopeOf(sessionScope, 'main')}/blobs`, ref.hash).catch(() => undefined)
+          : undefined;
+        const url = bytes === undefined || ref?.kind !== 'mime'
+          ? MISSING_MEDIA_PLACEHOLDER
+          : `data:${ref.mime};base64,${Buffer.from(bytes).toString('base64')}`;
+        updated ??= { ...part };
+        updated[key] = { ...value, url };
+      }
+      content.push(updated === undefined ? part : updated as unknown as ContentPart);
+    }
+    out.push({ ...message, content });
+  }
+  return out;
+}
+
 async function rehydrate(
   agent: IAgentScopeHandle,
   messages: readonly ContextMessage[],
@@ -799,7 +1019,7 @@ async function readTranscript(core: Scope, agent: IAgentScopeHandle): Promise<Co
   return reducer.result();
 }
 
-function alignFrozenContextHistory(
+export function alignFrozenContextHistory(
   transcript: ContextTranscript,
   contextMessages: readonly ContextMessage[],
 ): CapturedContextMessageHistory {

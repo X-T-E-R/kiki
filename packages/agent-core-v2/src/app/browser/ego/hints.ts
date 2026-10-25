@@ -1,0 +1,154 @@
+import { posix, win32 } from 'node:path';
+import { join } from 'pathe';
+
+import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
+import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+
+import { EGO_BROWSER_EXE, EGO_LITE_DISPLAY_NAME, EGO_PUBLISHER_MARK, type EgoUninstallRecord } from './resolveCli';
+
+export async function egoFileExists(files: IHostFileSystem, file: string): Promise<boolean> {
+  try {
+    const stat = await files.stat(file);
+    return stat.isFile === true;
+  } catch {
+    return false;
+  }
+}
+
+export async function egoChildNames(files: IHostFileSystem, directory: string): Promise<readonly string[]> {
+  try {
+    const entries = await files.readdir(directory);
+    return entries.filter((entry) => entry.isDirectory).map((entry) => entry.name);
+  } catch {
+    return [];
+  }
+}
+
+export function egoPathDelimiter(platform: NodeJS.Platform = process.platform): string {
+  return platform === 'win32' ? win32.delimiter : posix.delimiter;
+}
+
+export async function egoPathHits(pathEnv: string | undefined, exists: (file: string) => Promise<boolean>, platform: NodeJS.Platform = process.platform): Promise<string[]> {
+  if (pathEnv === undefined || pathEnv.trim() === '') return [];
+  const hits: string[] = [];
+  for (const directory of pathEnv.split(egoPathDelimiter(platform))) {
+    if (directory.trim() === '') continue;
+    const candidate = join(directory, EGO_BROWSER_EXE);
+    if (await exists(candidate) && !hits.includes(candidate)) hits.push(candidate);
+  }
+  return hits;
+}
+
+export function parseEgoUninstallExport(text: string): EgoUninstallRecord[] {
+  const records: EgoUninstallRecord[] = [];
+  let current: { displayName?: string; publisher?: string; installLocation?: string; displayVersion?: string } | undefined;
+  const flush = (): void => {
+    if (current?.displayName !== undefined && current.publisher !== undefined && current.installLocation !== undefined && current.installLocation !== '') {
+      records.push({
+        displayName: current.displayName,
+        publisher: current.publisher,
+        installLocation: current.installLocation,
+        ...(current.displayVersion !== undefined && current.displayVersion !== '' ? { displayVersion: current.displayVersion } : {}),
+      });
+    }
+    current = undefined;
+  };
+  for (const line of text.split(/\r?\n/)) {
+    if (/^HKEY_/i.test(line.trim())) {
+      flush();
+      current = {};
+      continue;
+    }
+    const match = /^\s+(DisplayName|Publisher|InstallLocation|DisplayVersion)\s+REG_\w+\s+(.*)$/.exec(line);
+    if (match === null || current === undefined) continue;
+    const value = match[2]?.trim() ?? '';
+    if (match[1] === 'DisplayName') current.displayName = value;
+    else if (match[1] === 'Publisher') current.publisher = value;
+    else if (match[1] === 'InstallLocation') current.installLocation = value;
+    else current.displayVersion = value;
+  }
+  flush();
+  return records.filter((record) => record.displayName === EGO_LITE_DISPLAY_NAME && record.publisher.includes(EGO_PUBLISHER_MARK));
+}
+
+async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  return Buffer.concat(chunks).toString('utf8');
+}
+
+export function expandRegistryPath(value: string, env: NodeJS.ProcessEnv): string {
+  return value.replace(/%([^%]+)%/g, (whole, name: string) => {
+    if (Object.prototype.hasOwnProperty.call(env, name)) return env[name] ?? whole;
+    const key = Object.keys(env).find((candidate) => candidate.toLowerCase() === name.toLowerCase());
+    return key === undefined ? whole : env[key] ?? whole;
+  });
+}
+
+export function parseRegistryPathValue(text: string): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const match = /^\s+Path\s+REG_(?:SZ|EXPAND_SZ)\s+(.*)$/i.exec(line);
+    if (match === null) continue;
+    const value = match[1]?.trim() ?? '';
+    return value === '' ? undefined : value;
+  }
+  return undefined;
+}
+
+async function readRegistryPath(processes: IHostProcessService, key: string): Promise<string | undefined> {
+  let child: IHostProcess | undefined;
+  try {
+    child = await processes.spawn('reg.exe', ['query', key, '/v', 'Path'], { shell: false, windowsHide: true });
+    (child.stdin as { end?: () => void } | undefined)?.end?.();
+    const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
+    if (code !== 0) return undefined;
+    return parseRegistryPathValue(stdout);
+  } catch {
+    return undefined;
+  } finally {
+    await child?.dispose();
+  }
+}
+
+export async function readRegisteredEgoPath(processes: IHostProcessService, env: NodeJS.ProcessEnv, platform = process.platform): Promise<string | undefined> {
+  if (platform !== 'win32') return undefined;
+  const [user, system] = await Promise.all([
+    readRegistryPath(processes, 'HKCU\\Environment'),
+    readRegistryPath(processes, 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
+  ]);
+  const parts = [user, system].filter((part): part is string => part !== undefined).map((part) => expandRegistryPath(part, env));
+  return parts.length === 0 ? undefined : parts.join(egoPathDelimiter(platform));
+}
+
+const EGO_UNINSTALL_KEYS = [
+  'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+  'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
+] as const;
+
+async function readUninstallHive(processes: IHostProcessService, key: string): Promise<readonly EgoUninstallRecord[]> {
+  let child: IHostProcess | undefined;
+  try {
+    child = await processes.spawn('reg.exe', ['query', key, '/s'], { shell: false, windowsHide: true });
+    (child.stdin as { end?: () => void } | undefined)?.end?.();
+    const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
+    if (code !== 0) return [];
+    return parseEgoUninstallExport(stdout);
+  } catch {
+    return [];
+  } finally {
+    await child?.dispose();
+  }
+}
+
+export async function readEgoUninstallRecords(processes: IHostProcessService, platform = process.platform): Promise<readonly EgoUninstallRecord[]> {
+  if (platform !== 'win32') return [];
+  const records: EgoUninstallRecord[] = [];
+  for (const key of EGO_UNINSTALL_KEYS) {
+    for (const record of await readUninstallHive(processes, key)) {
+      const known = records.some((item) => item.displayName === record.displayName && item.installLocation === record.installLocation && item.displayVersion === record.displayVersion);
+      if (!known) records.push(record);
+    }
+  }
+  return records;
+}

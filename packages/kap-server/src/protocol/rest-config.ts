@@ -1,7 +1,7 @@
 import { IdentityConfigSchema } from '@kiki/agent-core-v2/app/agentIdentity/configSection';
 import { TaskBoardConfigSchema } from '@kiki/agent-core-v2/app/taskBoard/configSection';
 import { SubagentConfigSchema } from '@kiki/agent-core-v2/session/subagent/configSection';
-import { SessionTitleConfigSchema } from '@kiki/agent-core-v2/session/sessionTitle/configSection';
+
 import { McpSectionSchema } from '@kiki/agent-core-v2/app/mcpConfig/configSection';
 import { PluginsSectionSchema } from '@kiki/agent-core-v2/app/plugin/configSection';
 import { ThreadCommunicationConfigSchema } from '@kiki/agent-core-v2/app/threadCommunication/configSection';
@@ -22,13 +22,13 @@ import {
   ExtraAgentDirsConfigSchema,
 } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/configSection';
 import { WorkspaceInstanceConfigSchema } from '@kiki/agent-core-v2/workspace/workspaceInstance/configSection';
+import { RequestCompressionWireSchema, ResponsesWebSocketWireSchema } from '@kiki/agent-core-v2/kosong/provider/requestCompression';
 import { RequestIdentityPolicyWireSchema } from '@kiki/agent-core-v2/kosong/requestIdentity/requestIdentityPolicy';
-import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema } from '@kiki/protocol';
+import { modelSwitchConfigSchema, modelSwitchConfigPatchSchema, agentExecutorDisplayConfigSchema, agentExecutorDisplayConfigPatchSchema, nbSearchConfigPatchSchema, nbSearchSourceConfigSchema, requestGovernanceConfigPatchSchema, retryConfigResponseSchema, retryConfigSchema, spaceUiConfigSchema, spaceUiConfigPatchSchema, sessionTitleConfigResponseSchema, sessionTitleConfigPatchSchema, interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 import { worktreeConfigSchema } from '@kiki/agent-core-v2/app/git/worktreeConfig';
 import { SessionResidencyConfigSchema } from '@kiki/agent-core-v2/app/sessionManager/configSection';
 import { z } from 'zod';
-import { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
-import { computerControlConfigResponseSchema, computerControlConfigPatchSchema } from '@kiki/protocol';
+import { browserControlSettingsPatchSchema, browserControlSettingsSchema, computerControlConfigResponseSchema, computerControlConfigPatchSchema, optionalCapabilitiesPatchSchema, optionalCapabilitiesResponseSchema } from '@kiki/protocol';
 export { interactionConfigResponseSchema, interactionConfigPatchSchema } from '@kiki/protocol';
 
 const tokenCountingConfigSchema = TokenCountingConfigSchema as z.ZodType<TokenCountingConfig>;
@@ -92,6 +92,7 @@ const sessionResidencyConfigRequestSchema = z.object({
   sweep_interval_ms: SessionResidencyConfigSchema.shape.sweepIntervalMs,
   max_concurrent_restores: SessionResidencyConfigSchema.shape.maxConcurrentRestores,
   max_queued_restores: SessionResidencyConfigSchema.shape.maxQueuedRestores,
+  max_resident_heap_bytes: SessionResidencyConfigSchema.shape.maxResidentHeapBytes,
 }).strict();
 
 const agentsDelegationConfigSchema = z.object({
@@ -123,6 +124,8 @@ const replaceableConfigDomainSchema = z.enum([
   'task',
   'identity',
   'request_identity',
+  'request_compression',
+  'responses_web_socket',
   'extra_agent_dirs',
   'skip_builtin_profile_installation',
   'disabled_named_profiles',
@@ -191,6 +194,7 @@ export const permissionConfigPatchSchema = z.object({
 
 export const configResponseSchema = z.object({
   model_switch: modelSwitchConfigSchema.optional(),
+  agent_executor_display: agentExecutorDisplayConfigSchema.optional(),
   space_ui: spaceUiConfigSchema.optional(),
   providers: z.record(z.string(), providerConfigResponseSchema).default({}),
   default_provider: z.string().optional(),
@@ -205,6 +209,7 @@ export const configResponseSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigResponseSchema.optional(),
   interaction: interactionConfigResponseSchema.optional(),
+  browser_control: browserControlSettingsSchema.optional(),
   computer_control: computerControlConfigResponseSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
@@ -216,7 +221,7 @@ export const configResponseSchema = z.object({
   subagent: subagentConfigResponseSchema.optional(),
   agents: agentsConfigResponseSchema.optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: SessionTitleConfigSchema.optional(),
+  session_title: sessionTitleConfigResponseSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
   cron: cronConfigResponseSchema.optional(),
   thread_communication: ThreadCommunicationConfigSchema.optional(),
@@ -226,15 +231,18 @@ export const configResponseSchema = z.object({
   task: AgentTaskConfigSchema.optional(),
   identity: IdentityConfigSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.optional(),
+  request_compression: RequestCompressionWireSchema.optional(),
+  responses_web_socket: ResponsesWebSocketWireSchema.optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   skip_builtin_profile_installation: SkipBuiltinProfileInstallationConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: McpSectionSchema.optional(),
   plugins: PluginsSectionSchema.optional(),
   tools: ToolsConfigSchema.optional(),
+  optional_capabilities: optionalCapabilitiesResponseSchema.optional(),
   prompt: PromptConfigSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigResponseSchema.optional(),
   raw: z.record(z.string(), z.unknown()).optional(),
   origins: z.record(z.string(), z.record(z.string(), z.enum(['default', 'preset', 'base', 'home', 'env', 'memory']))).optional(),
 });
@@ -242,6 +250,7 @@ export type ConfigResponse = z.infer<typeof configResponseSchema>;
 
 export const patchConfigRequestSchema = z.object({
   model_switch: modelSwitchConfigPatchSchema.optional(),
+  agent_executor_display: agentExecutorDisplayConfigPatchSchema.optional(),
   space_ui: spaceUiConfigPatchSchema.optional(),
   providers: z.record(z.string(), z.unknown()).optional(),
   default_provider: z.string().optional(),
@@ -256,6 +265,7 @@ export const patchConfigRequestSchema = z.object({
   default_plan_mode: z.boolean().optional(),
   permission: permissionConfigPatchSchema.optional(),
   interaction: interactionConfigPatchSchema.optional(),
+  browser_control: browserControlSettingsPatchSchema.optional(),
   computer_control: computerControlConfigPatchSchema.optional(),
   hooks: HooksConfigSchema.optional(),
   nb_search: nbSearchConfigPatchSchema.optional(),
@@ -281,24 +291,27 @@ export const patchConfigRequestSchema = z.object({
     delegation: agentsDelegationConfigSchema.optional(),
   }).optional(),
   builtin_product_skills: z.boolean().optional(),
-  session_title: SessionTitleConfigSchema.optional(),
+  session_title: sessionTitleConfigPatchSchema.optional(),
   experimental: z.record(z.string(), z.boolean()).optional(),
-  thread_communication: ThreadCommunicationConfigSchema.optional(),
+  thread_communication: z.object({ enabled: z.boolean().nullable() }).strict().optional(),
   token_counting: tokenCountingConfigSchema.optional(),
   workspace_instance: workspaceInstanceConfigRequestSchema.optional(),
   image: imageConfigRequestSchema.optional(),
   task: taskConfigRequestSchema.optional(),
   identity: identityConfigRequestSchema.optional(),
   request_identity: RequestIdentityPolicyWireSchema.nullable().optional(),
+  request_compression: RequestCompressionWireSchema.nullable().optional(),
+  responses_web_socket: ResponsesWebSocketWireSchema.nullable().optional(),
   extra_agent_dirs: ExtraAgentDirsConfigSchema,
   skip_builtin_profile_installation: SkipBuiltinProfileInstallationConfigSchema,
   disabled_named_profiles: DisabledNamedProfilesConfigSchema,
   mcp: mcpConfigRequestSchema.optional(),
   plugins: pluginsConfigRequestSchema.optional(),
   tools: ToolsConfigSchema.optional(),
+  optional_capabilities: optionalCapabilitiesPatchSchema.optional(),
   prompt: PromptConfigPatchSchema.optional(),
   task_board: TaskBoardConfigSchema.optional(),
-  retry: z.unknown().optional(),
+  retry: retryConfigSchema.optional(),
   request_governance: requestGovernanceConfigPatchSchema.optional(),
   replace_domains: z.array(replaceableConfigDomainSchema).optional(),
   agent_executor_overrides: z.record(z.string(), z.unknown()).optional(),

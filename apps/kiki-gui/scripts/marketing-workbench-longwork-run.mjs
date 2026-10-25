@@ -17,7 +17,7 @@
  * KIKI_MARKETING_CAMPAIGN_DIR and deletes nothing.
  *
  *   node scripts/marketing-workbench-longwork-run.mjs
- *   node scripts/marketing-workbench-longwork-run.mjs --only=wl-longwork-board --locales=zh
+ *   node scripts/marketing-workbench-longwork-run.mjs --only=wl-longwork-scheduled --locales=zh
  */
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs';

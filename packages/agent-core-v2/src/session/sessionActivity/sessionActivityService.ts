@@ -1,4 +1,6 @@
-import { Disposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { Disposable, DisposableStore, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { LifecycleScope } from '#/app/scopes';
 import {
   ScopeActivation,
@@ -8,6 +10,12 @@ import {
 import { Emitter, type Event } from '#/_base/event';
 import { defineState } from '#/state/state';
 import { IEventBus } from '#/app/event/eventBus';
+import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentTaskService } from '#/agent/task/task';
+import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentExecutionService } from '#/agent/execution/execution';
+import { IAgentStateService } from '#/agent/state/agentState';
+import { goalKey } from '#/agent/goal/goalOps';
 import {
   AgentActivityUpdated,
   IAgentActivityView,
@@ -39,6 +47,7 @@ export const sessionActivityFoldsKey = defineState<Map<string, AgentWorkFold>>(
 );
 export const sessionActivityCurrentKey = defineState<SessionActivityState>('sessionActivity.current', () => ({
   busy: false,
+  executing: false,
   mainTurnActive: false,
   pendingInteraction: 'none',
   lastTurnReason: undefined,
@@ -70,15 +79,16 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     );
     this._register(
       this.agents.onDidDispose((agentId) => {
-        this.agentSubscriptions.get(agentId)?.dispose();
+        const result = this.agentSubscriptions.get(agentId)?.dispose();
+        if (isPromiseLike(result)) result.catch(onUnexpectedError);
         this.agentSubscriptions.delete(agentId);
         if (this.folds.delete(agentId)) this.recompute('agent_lifecycle');
       }),
     );
     this._register(this.interactions.onDidChangePending(() => this.recompute('interaction')));
     this._register(
-      toDisposable(() => {
-        for (const subscription of this.agentSubscriptions.values()) subscription.dispose();
+      toDisposable(async () => {
+        for (const subscription of this.agentSubscriptions.values()) await subscription.dispose();
         this.agentSubscriptions.clear();
       }),
     );
@@ -104,11 +114,29 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
     if (this.folds.has(handle.id)) return;
     const view = handle.accessor.get(IAgentActivityView) as IAgentActivityView | undefined;
     this.folds.set(handle.id, foldOf(handle.id, view?.state()));
+    const subscriptions = new DisposableStore();
+    this.agentSubscriptions.set(handle.id, subscriptions);
+    const execution = handle.accessor.get(IAgentExecutionService);
+    if (execution?.onDidChangeStatus !== undefined) {
+      subscriptions.add(execution.onDidChangeStatus(() => this.recompute('background')));
+    }
     const bus = handle.accessor.get(IEventBus) as IEventBus | undefined;
     if (bus === undefined) return;
-    this.agentSubscriptions.set(
-      handle.id,
-      bus.subscribe(AgentActivityUpdated, (event) => this.onActivity(handle.id, event)),
+    subscriptions.add(
+      bus.subscribe((event) => {
+        if (event.type === AgentActivityUpdated.type) this.onActivity(handle.id, event as AgentActivityUpdated);
+        if (!/^(turn\.|task\.|prompt\.|goal\.|compaction\.)/u.test(event.type)) return;
+        queueMicrotask(() => {
+          if (this.agentSubscriptions.has(handle.id)) this.recompute('background');
+        });
+        if (event.type === 'turn.ended') {
+          const loop = handle.accessor.get(IAgentLoopService);
+          const execution = handle.accessor.get(IAgentExecutionService);
+          void Promise.all([loop?.settled(), execution?.settled()]).then(() => {
+            if (this.agentSubscriptions.has(handle.id)) this.recompute('background');
+          }, onUnexpectedError);
+        }
+      }),
     );
   }
 
@@ -139,14 +167,34 @@ export class SessionActivityView extends Disposable implements ISessionActivityV
 
   private aggregate(): SessionActivityState {
     let busy = false;
-    for (const fold of this.folds.values()) {
-      if (fold.turnActive || fold.background > 0) {
+    let executing = false;
+    for (const handle of this.agents.list()) {
+      const fold = this.folds.get(handle.id);
+      const tasks = handle.accessor.get(IAgentTaskService);
+      const activity = handle.accessor.get(IAgentActivityView)?.state();
+      const background = tasks === undefined ? (fold?.background ?? 0) > 0 :
+        activity?.background.some((item) => item.kind === 'compaction') === true;
+      const loop = handle.accessor.get(IAgentLoopService)?.status();
+      const prompt = handle.accessor.get(IAgentPromptService)?.list();
+      const execution = handle.accessor.get(IAgentExecutionService)?.status();
+      const state = handle.accessor.get(IAgentStateService);
+      const goalActive = state?.has(goalKey) === true && state.get(goalKey)?.status === 'active';
+      const executorActive = execution?.state === 'starting' || execution?.state === 'running' || execution?.state === 'cancelling';
+      const turnExecuting = execution === undefined ? fold?.turnActive === true : executorActive;
+      const taskExecuting = tasks?.list(true).some((task) => task.status === 'running' &&
+        task.lifetime !== 'service' && task.kind !== 'agent' && task.kind !== 'question') === true;
+      executing ||= turnExecuting || background || taskExecuting || loop?.state === 'running' || loop?.finalizing === true;
+      if (fold?.turnActive || background || tasks?.hasUnfinishedWork() || goalActive ||
+        loop?.state === 'running' || loop?.finalizing || loop?.persistenceFailure || loop?.hasPendingRequests ||
+        (loop?.pendingTurnIds.length ?? 0) > 0 || prompt?.active !== undefined || prompt?.launching !== undefined ||
+        (prompt?.pending.length ?? 0) > 0 || execution?.state === 'starting' ||
+        execution?.state === 'running' || execution?.state === 'cancelling') {
         busy = true;
-        break;
       }
     }
     return {
       busy,
+      executing,
       mainTurnActive: this.folds.get(MAIN_AGENT_ID)?.turnActive ?? false,
       pendingInteraction: resolvePendingInteraction(this.interactions.listPending()),
       lastTurnReason: this.folds.get(MAIN_AGENT_ID)?.lastTurnReason,
@@ -181,6 +229,7 @@ function resolvePendingInteraction(pending: readonly Interaction[]): SessionPend
 function activityEquals(a: SessionActivityState, b: SessionActivityState): boolean {
   return (
     a.busy === b.busy &&
+    a.executing === b.executing &&
     a.mainTurnActive === b.mainTurnActive &&
     a.pendingInteraction === b.pendingInteraction &&
     a.lastTurnReason === b.lastTurnReason

@@ -1,17 +1,146 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
+import { statSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
+import { FSWatcher } from 'chokidar';
 import { join } from 'pathe';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { cleanupExpiredSessionLocks, isSessionLockActive } from '#/persistence/backends/node-fs/fileLock';
-import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { FileStorageService, openAppendAfterTransientDenial } from '#/persistence/backends/node-fs/fileStorageService';
+
+vi.mock('node:fs', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs')>();
+  return { ...actual, statSync: vi.fn(actual.statSync) };
+});
 
 const isWin = process.platform === 'win32';
 const encoder = new TextEncoder();
+
+describe('FileStorageService — watch initialization', () => {
+  let dir: string;
+  let watchers: FSWatcher[];
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-watch-'));
+    watchers = [];
+    vi.useFakeTimers();
+    vi.spyOn(FSWatcher.prototype, 'add').mockImplementation(function (this: FSWatcher) {
+      watchers.push(this);
+      return this;
+    });
+  });
+
+  afterEach(async () => {
+    vi.restoreAllMocks();
+    vi.useRealTimers();
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it.each([
+    ['rewrite', 'first', 'second'],
+    ['creation', undefined, 'created'],
+    ['deletion', 'first', undefined],
+  ] as const)('reconciles a %s before the watcher is ready', async (_operation, initial, next) => {
+    const target = join(dir, 'config.toml');
+    if (initial !== undefined) await writeFile(target, initial);
+    const storage = new FileStorageService(dir);
+    const changed = vi.fn();
+    const subscription = storage.watch('', 'config.toml')(changed);
+    try {
+      if (next === undefined) await unlink(target);
+      else await writeFile(target, next);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(changed).not.toHaveBeenCalled();
+      watchers[0]!.emit('ready');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledOnce();
+      const bytes = await storage.read('', 'config.toml');
+      expect(bytes === undefined ? undefined : new TextDecoder().decode(bytes)).toBe(next);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it('ignores unchanged startup and unrelated paths, and still debounces matching events', async () => {
+    const target = join(dir, 'config.toml');
+    await writeFile(target, 'first');
+    const storage = new FileStorageService(dir);
+    const changed = vi.fn();
+    const subscription = storage.watch('', 'config.toml')(changed);
+    try {
+      watchers[0]!.emit('ready');
+      watchers[0]!.emit('all', 'change', join(dir, 'other.toml'));
+      await vi.advanceTimersByTimeAsync(300);
+      expect(changed).not.toHaveBeenCalled();
+      watchers[0]!.emit('all', 'change', target);
+      watchers[0]!.emit('all', 'change', target);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledOnce();
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it.each(['subscription', 'ready'] as const)('keeps observing the key when metadata is unavailable at %s', async (stage) => {
+    const target = join(dir, 'config.toml');
+    await writeFile(target, 'first');
+    const storage = new FileStorageService(dir);
+    const changed = vi.fn();
+    const error = Object.assign(new Error('metadata unavailable fixture'), { code: 'EACCES' });
+    const reported = vi.spyOn(console, 'error');
+    const failMetadata = (): void => {
+      vi.mocked(statSync).mockImplementationOnce(() => { throw error; });
+    };
+    if (stage === 'subscription') failMetadata();
+    const subscription = storage.watch('', 'config.toml')(changed);
+    try {
+      expect(watchers).toHaveLength(1);
+      if (stage === 'ready') failMetadata();
+      watchers[0]!.emit('ready');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(reported).toHaveBeenCalledWith('[unexpected]', error);
+      expect(changed).toHaveBeenCalledOnce();
+      watchers[0]!.emit('all', 'change', target);
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledTimes(2);
+    } finally {
+      subscription.dispose();
+    }
+  });
+
+  it('ignores ready and file events from a closed watcher after resubscription', async () => {
+    const target = join(dir, 'config.toml');
+    await writeFile(target, 'first');
+    const storage = new FileStorageService(dir);
+    const watch = storage.watch('', 'config.toml');
+    const changed = vi.fn();
+    const first = watch(changed);
+    await writeFile(target, 'second');
+    first.dispose();
+    const second = watch(changed);
+    try {
+      watchers[0]!.emit('ready');
+      watchers[0]!.emit('all', 'change', target);
+      await vi.advanceTimersByTimeAsync(300);
+      expect(changed).not.toHaveBeenCalled();
+      await writeFile(target, 'third');
+      watchers[1]!.emit('ready');
+      await vi.advanceTimersByTimeAsync(150);
+      expect(changed).toHaveBeenCalledOnce();
+      watchers[1]!.emit('all', 'change', target);
+      second.dispose();
+      await vi.advanceTimersByTimeAsync(300);
+      expect(changed).toHaveBeenCalledOnce();
+    } finally {
+      first.dispose();
+      second.dispose();
+    }
+  });
+});
 
 describe('FileStorageService — file permissions', () => {
   let dir: string;
@@ -89,6 +218,88 @@ describe('FileStorageService — error translation', () => {
       code: 'storage.io_failed',
       details: { op: 'write', errno: expect.any(String) },
     });
+  });
+});
+
+describe('FileStorageService — transient append open', () => {
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = await mkdtemp(join(tmpdir(), 'fss-ebusy-'));
+  });
+
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  });
+
+  it('opens once after transient denials and does not repeat a non-transient error', async () => {
+    const handle = { close: async () => {} } as never;
+    let busy = 0;
+    const opened = await openAppendAfterTransientDenial(async () => {
+      busy += 1;
+      if (busy < 3) throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'open' });
+      return handle;
+    }, 4, 0);
+    expect(opened).toBe(handle);
+    expect(busy).toBe(3);
+
+    let other = 0;
+    await expect(openAppendAfterTransientDenial(async () => {
+      other += 1;
+      throw Object.assign(new Error('io'), { code: 'EIO' });
+    }, 4, 0)).rejects.toMatchObject({ code: 'EIO' });
+    expect(other).toBe(1);
+  });
+
+  it('retries a transient open and writes the appended bytes once', async () => {
+    const fs = await import('node:fs/promises');
+    let opens = 0;
+    const svc = new FileStorageService(dir, undefined, undefined, true, async (path) => {
+      opens += 1;
+      if (opens < 3) throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'open' });
+      return fs.open(path, 'a');
+    });
+    await svc.append('agents/main', 'wire.jsonl', encoder.encode('{"n":1}\n'));
+    expect(opens).toBe(3);
+    expect(await readFile(join(dir, 'agents/main', 'wire.jsonl'), 'utf8')).toBe('{"n":1}\n');
+  });
+
+  it('exhausts a transient open without writing and marks the append uncommitted', async () => {
+    let opens = 0;
+    const svc = new FileStorageService(dir, undefined, undefined, true, async () => {
+      opens += 1;
+      throw Object.assign(new Error('busy'), { code: 'EBUSY', syscall: 'open' });
+    });
+    await expect(svc.append('agents/main', 'wire.jsonl', encoder.encode('{"n":1}\n'))).rejects.toMatchObject({
+      code: 'storage.io_failed',
+      details: { op: 'append', errno: 'EBUSY', committed: false },
+    });
+    expect(opens).toBe(4);
+    await expect(readFile(join(dir, 'agents/main', 'wire.jsonl'))).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
+  it('does not retry an append after the write has started', async () => {
+    let opens = 0;
+    let writes = 0;
+    const bytes = encoder.encode('{"n":1}\n');
+    const svc = new FileStorageService(dir, undefined, undefined, true, async () => {
+      opens += 1;
+      return {
+        writeFile: async (data: Uint8Array) => {
+          writes += 1;
+          expect(Buffer.from(data)).toEqual(Buffer.from(bytes));
+          throw Object.assign(new Error('io after write'), { code: 'EIO' });
+        },
+        sync: async () => { throw new Error('sync should not run'); },
+        close: async () => {},
+      } as unknown as Awaited<ReturnType<typeof import('node:fs/promises').open>>;
+    });
+    await expect(svc.append('agents/main', 'wire.jsonl', bytes)).rejects.toMatchObject({
+      code: 'storage.io_failed',
+      details: { op: 'append', errno: 'EIO', committed: true },
+    });
+    expect(opens).toBe(1);
+    expect(writes).toBe(1);
   });
 });
 

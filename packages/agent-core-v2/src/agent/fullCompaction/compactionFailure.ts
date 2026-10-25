@@ -22,15 +22,16 @@ export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'qu
 }
 
 export function isRetryableCompactionError(error: unknown): boolean {
+  if (!isRetryableGenerateError(error)) return false;
   const cause = unwrapErrorCause(error);
   if (isAbortError(cause)) return false;
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;
   if (cause instanceof APIStatusError && cause.statusCode === 400 && !(cause instanceof APIContextOverflowError)) return false;
-  return isRetryableGenerateError(cause);
+  return true;
 }
 
-export function describeCompactionFailure(error: unknown, provider: string, model: string, attempts: number): string {
+export function describeCompactionFailure(error: unknown, provider: string, model: string, attempts: number, source: 'manual' | 'auto' = 'auto'): string {
   const cause = unwrapErrorCause(error);
   const status = cause instanceof APIStatusError ? cause : undefined;
   const kind = compactionFailureKind(error);
@@ -41,5 +42,5 @@ export function describeCompactionFailure(error: unknown, provider: string, mode
     .slice(0, 200);
   const code = /\b(CONTENT_FILTERED|content_filter|[A-Z][A-Z0-9_]{3,})\s*:/i.exec(detail)?.[1];
   const request = status?.requestId ?? status?.traceId;
-  return `Automatic compaction failed (${labels[kind]}; HTTP ${status?.statusCode ?? 'n/a'}${code ? ` ${code}` : ''}; ${provider}/${model}${request ? `; request ${request}` : ''}; ${attempts} attempt${attempts === 1 ? '' : 's'}): ${sanitized}`;
+  return `${source === 'manual' ? 'Manual' : 'Automatic'} compaction failed (${labels[kind]}; HTTP ${status?.statusCode ?? 'n/a'}${code ? ` ${code}` : ''}; ${provider}/${model}${request ? `; request ${request}` : ''}; ${attempts} attempt${attempts === 1 ? '' : 's'}): ${sanitized}`;
 }

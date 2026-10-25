@@ -8,7 +8,7 @@ export const UpdateGoalToolInputSchema = z
     status: z
       .enum(['active', 'complete', 'blocked'])
       .describe(
-        'The lifecycle status to set for the current goal. Use `blocked` for impossible, unsafe, or contradictory objectives, or after the same non-terminal blocking condition repeats for at least 3 consecutive goal turns.',
+        'The lifecycle status to set for the current goal. Use complete only when every explicit requirement and relevant validation is met. Use blocked for a demonstrated impasse requiring user input or an external change after reasonable local diagnosis; do not retry an unchanged blocker merely to reach a turn count.',
       ),
   })
   .strict();

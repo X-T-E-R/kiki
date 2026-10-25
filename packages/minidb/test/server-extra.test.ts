@@ -5,7 +5,7 @@ import net from 'node:net';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { startServer } from '../src/server.js';
+import { RespParser, startServer } from '../src/server.js';
 
 async function tmpDir() {
   return fs.mkdtemp(path.join(os.tmpdir(), 'minidb-srv2-'));
@@ -143,14 +143,19 @@ test('RESP: inline (non-array) command path', async () => {
 function collectUntil(sock: net.Socket, done: (s: string) => boolean): Promise<string> {
   return new Promise((resolve, reject) => {
     let buf = '';
-    const timer = setTimeout(() => reject(new Error(`timed out waiting for reply; got ${buf.length} bytes`)), 20_000);
-    sock.on('data', (d) => {
+    const onData = (d: Buffer) => {
       buf += d.toString();
       if (done(buf)) {
         clearTimeout(timer);
+        sock.off('data', onData);
         resolve(buf);
       }
-    });
+    };
+    const timer = setTimeout(() => {
+      sock.off('data', onData);
+      reject(new Error(`timed out waiting for reply; got ${buf.length} bytes`));
+    }, 20_000);
+    sock.on('data', onData);
   });
 }
 
@@ -184,23 +189,116 @@ test('RESP: an oversized request gets -ERR and the connection recovers', { timeo
   const srv = await startServer({ dir, port: 0, fsyncPolicy: 'no' });
   try {
     const sock = await connect(srv.port);
-    // 65MB of bulk payload crosses the parser's 64MB cap.
+    // 65 MiB of bulk payload crosses the parser's 64 MiB cap. The cap is the
+    // unparsed-request buffer, in bytes; this payload is intentionally over it.
+    const cap = 64 * 1024 * 1024;
     const big = Buffer.alloc(65 * 1024 * 1024, 'x'.charCodeAt(0));
     const head = Buffer.from(`*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$${big.length}\r\n`);
     sock.write(Buffer.concat([head, big, Buffer.from('\r\n')]));
     // Pipelined right behind it: once the parser recovers from the -ERR this
-    // fresh small command must still be answered.
+    // fresh small command must still be answered, with no leftover payload
+    // parsed as another command.
     sock.write(encode('PING'));
     const data = await collectUntil(sock, (s) => s.includes('+PONG'));
-    const tooLarge = data.indexOf('too large');
-    const pong = data.indexOf('+PONG');
-    assert.ok(tooLarge !== -1, `expected a too-large -ERR, got ${JSON.stringify(data.slice(0, 120))}`);
-    assert.ok(pong > tooLarge, 'PING after the oversized request must be answered');
+    assert.equal(data, `-ERR RESP request too large (>${cap} bytes)\r\n+PONG\r\n`);
+    // The rejected SET must not land, and the same socket still serves a write.
+    assert.equal(await send(sock, encode('GET', 'k')), '$-1\r\n');
+    assert.equal(await send(sock, encode('SET', 'ok', 'v')), '+OK\r\n');
+    assert.equal(await send(sock, encode('GET', 'ok')), '$1\r\nv\r\n');
     sock.end();
   } finally {
     await srv.close();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
+});
+
+function feedAll(parser: RespParser, bytes: Buffer, chunkSize = 1): Array<Buffer[] | { error: string }> {
+  const out: Array<Buffer[] | { error: string }> = [];
+  for (let i = 0; i < bytes.length; i += chunkSize) out.push(...parser.feed(bytes.subarray(i, i + chunkSize)));
+  return out;
+}
+
+function describeItems(items: Array<Buffer[] | { error: string }>): Array<{ error: string } | string[]> {
+  return items.map((item) => (Array.isArray(item) ? item.map((b) => b.toString()) : item));
+}
+
+test('RESP parser: a declared bulk over the cap errors before the body and keeps the next command', () => {
+  const cap = 32;
+  const parser = new RespParser({ maxBuf: cap });
+  const body = Buffer.alloc(40, 0x78);
+  const head = Buffer.from(`*3\r\n$3\r\nSET\r\n$1\r\nk\r\n$${body.length}\r\n`);
+  // The length is known here. No body byte has been fed, so this must already be -ERR-shaped.
+  assert.deepEqual(describeItems([...parser.feed(head)]), [{ error: `RESP request too large (>${cap} bytes)` }]);
+  assert.deepEqual([...parser.feed(body)], []);
+  assert.deepEqual([...parser.feed(Buffer.from('\r\n'))], []);
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('*1\r\n$4\r\nPING\r\n'))]), [['PING']]);
+});
+
+test('RESP parser: bytes after an oversized bulk are not a new command, including a later arg', () => {
+  const parser = new RespParser({ maxBuf: 32 });
+  const body = Buffer.alloc(40, 0x78);
+  // The oversized value is not the last bulk. `$1\r\nv` belongs to the rejected SET.
+  const bytes = Buffer.concat([
+    Buffer.from(`*4\r\n$3\r\nSET\r\n$1\r\nk\r\n$${body.length}\r\n`),
+    body,
+    Buffer.from('\r\n$1\r\nv\r\n'),
+    Buffer.from('*1\r\n$4\r\nPING\r\n'),
+  ]);
+  assert.deepEqual(describeItems(feedAll(parser, bytes)), [
+    { error: 'RESP request too large (>32 bytes)' },
+    ['PING'],
+  ]);
+});
+
+test('RESP parser: an inline line with no CRLF still errors at the cap and the next command parses', () => {
+  // 16 bytes holds `*1\r\n$4\r\nPING\r\n` (14) and still rejects a CRLF-less line.
+  const parser = new RespParser({ maxBuf: 16 });
+  assert.throws(() => [...parser.feed(Buffer.from('x'.repeat(17)))], /RESP request too large \(>16 bytes\)/);
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('*1\r\n$4\r\nPING\r\n'))]), [['PING']]);
+});
+
+test('RESP parser: a complete inline line over the cap is rejected and a later PING recovers', () => {
+  const parser = new RespParser({ maxBuf: 16 });
+  const line = Buffer.from(`PING ${'x'.repeat(20)}\r\n`);
+  assert.ok(line.length > 16);
+  assert.throws(() => [...parser.feed(line)], /RESP request too large \(>16 bytes\)/);
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('PING\r\n'))]), [['PING']]);
+});
+
+test('RESP parser: an inline line completed by a later CRLF chunk over the cap is rejected and PING recovers', () => {
+  const parser = new RespParser({ maxBuf: 16 });
+  const head = Buffer.from(`PING ${'x'.repeat(10)}`);
+  assert.equal(head.length, 15);
+  assert.deepEqual([...parser.feed(head)], []);
+  assert.throws(() => [...parser.feed(Buffer.from(`${'x'.repeat(10)}\r\n`))], /RESP request too large \(>16 bytes\)/);
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('PING\r\n'))]), [['PING']]);
+});
+
+test('RESP parser: an inline line exactly at the cap is kept, and small lines sharing a chunk are kept', () => {
+  const exact = new RespParser({ maxBuf: 16 });
+  const line = Buffer.from(`PING ${'x'.repeat(9)}\r\n`);
+  assert.equal(line.length, 16);
+  assert.deepEqual(describeItems([...exact.feed(line)]), [['PING', 'x'.repeat(9)]]);
+
+  // 18 bytes in one chunk, three requests of 6. The cap is per unparsed request.
+  const pipelined = new RespParser({ maxBuf: 16 });
+  const chunk = Buffer.from('PING\r\nPING\r\nPING\r\n');
+  assert.equal(chunk.length, 18);
+  assert.deepEqual(describeItems([...pipelined.feed(chunk)]), [['PING'], ['PING'], ['PING']]);
+});
+
+test('RESP parser: a complete array frame over the cap is not returned as arguments', () => {
+  const parser = new RespParser({ maxBuf: 16 });
+  const frame = Buffer.from('*2\r\n$1\r\nA\r\n$1\r\nB\r\n');
+  assert.equal(frame.length, 18);
+  let items: Array<Buffer[] | { error: string }> = [];
+  try {
+    items = [...parser.feed(frame)];
+  } catch (error) {
+    assert.match((error as Error).message, /RESP request too large \(>16 bytes\)/);
+  }
+  assert.ok(items.every((item) => !Array.isArray(item)));
+  assert.deepEqual(describeItems([...parser.feed(Buffer.from('PING\r\n'))]), [['PING']]);
 });
 
 test('RESP: one bad command does not starve its pipelined siblings', async () => {

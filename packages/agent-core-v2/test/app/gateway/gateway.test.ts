@@ -63,6 +63,7 @@ describe('RestGateway', () => {
       trackPromptRun: (_completion, signal) => signal,
       status: () => ({ state: 'running', turnId: 7 }),
       canResumeBrokenOriginal: () => false,
+      canRetryBrokenExecution: () => false,
       cancel: (reason) => turnService.cancel(undefined, reason),
       settled: () => Promise.resolve(),
       shutdown: () => Promise.resolve(),
@@ -79,6 +80,7 @@ describe('RestGateway', () => {
       cancelModelSwitch: async () => { throw new Error('unexpected model switch cancellation'); },
       recoverModelSwitch: async () => { throw new Error('unexpected model switch recovery'); },
       enqueue: () => Promise.resolve({ id: 'p', launched: Promise.resolve(undefined) } as never),
+      enqueueCron: async () => { throw new Error('unexpected cron prompt'); },
       submit: () => Promise.resolve(undefined),
       submitAndWait: async () => {
         throw new Error('IAgentPromptService.submitAndWait is not supported in the gateway test');

@@ -32,6 +32,8 @@ export interface AppendLogReadOptions {
   readonly onTruncate?: (truncation: AppendLogTruncation) => void;
   readonly signal?: AbortSignal;
   readonly chunkBytes?: number;
+  /** Called before each yielded record with its UTF-8 source line length, including a present newline. */
+  readonly onRecordBytes?: (byteLength: number) => void;
 }
 
 export interface AppendLogWrite {
@@ -39,14 +41,51 @@ export interface AppendLogWrite {
   readonly key: string;
 }
 
+export interface AppendLogCommit extends AppendLogWrite {
+  readonly generation: string;
+  readonly start: number;
+  readonly end: number;
+  readonly boundaryHash: string;
+  readonly rewrite: boolean;
+}
+
+/** Projection work is bounded by the writer: prepare retains only derived data, commit runs after canonical success, and failures never reject a successful canonical write. */
+export interface AppendLogProjection<T> {
+  readonly key: string;
+  prepare(scope: string, records: readonly unknown[]): T;
+  commit(position: AppendLogCommit, value: T): Promise<void>;
+  onError(error: unknown): void;
+}
+
+export interface ColdSealOptions {
+  readonly segmentBytes?: number;
+  readonly signal?: AbortSignal;
+}
+
+export interface ColdSealResult {
+  readonly format: 1;
+  readonly codec: 'deflate-raw';
+  readonly level: 6;
+  readonly segmentBytes: number;
+  readonly sealedCut: number;
+  readonly logicalSize: number;
+  readonly segmentCount: number;
+  readonly generation: string;
+  readonly originalRetained: true;
+}
+
 export interface IAppendLogStore {
   readonly _serviceBrand: undefined;
 
   readonly onDidWrite: Event<AppendLogWrite>;
+  registerProjection<T>(projection: AppendLogProjection<T>): IDisposable;
+  generation(scope: string, key: string): Promise<string>;
 
   append<R>(scope: string, key: string, record: R, options?: AppendLogOptions): void;
   read<R>(scope: string, key: string, options?: AppendLogReadOptions): AsyncIterable<R>;
   rewrite<R>(scope: string, key: string, records: readonly R[]): Promise<void>;
+  sealCold(scope: string, key: string, sealedCut: number, options?: ColdSealOptions): Promise<ColdSealResult>;
+  discardCold(scope: string, key: string): Promise<void>;
   flush(): Promise<void>;
   flush(scope: string, key: string): Promise<void>;
   close(): Promise<void>;

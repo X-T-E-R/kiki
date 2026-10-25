@@ -1,4 +1,6 @@
 import { toDisposable, type IDisposable } from '#/_base/di/lifecycle';
+import { isPromiseLike } from '#/_base/lifecycle/disposer';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
 import { Service } from '#/_base/di/service';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
@@ -10,7 +12,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IFlagService } from '#/app/flag/flag';
 import { IModelCatalog, type Model } from '#/kosong/model/catalog';
 import { type ModelRequester } from '#/kosong/model/modelRequester';
-import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
+import { IAgentRuntimeService, inspectAgentWorkspaceRoots } from '#/agent/runtimeBinding/agentRuntime';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -79,7 +81,8 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       ].join('|');
       if (key === this.registeredKey) return;
       this.registeredKey = key;
-      this.registration?.dispose();
+      const previous = this.registration?.dispose();
+      if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
       this.registration = undefined;
       return;
     }
@@ -113,7 +116,8 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
     ].join('|');
     if (key === this.registeredKey) return;
     this.registeredKey = key;
-    this.registration?.dispose();
+    const previous = this.registration?.dispose();
+    if (isPromiseLike(previous)) previous.catch(onUnexpectedError);
     const workspaceCtx = this.workspaceCtx;
     const skillCatalog = this.skillCatalog;
     const runtime = this.runtime;
@@ -129,10 +133,10 @@ export class AgentMediaToolsRegistrar extends Service implements IAgentMediaTool
       runtime,
       workspace: {
         get workspaceDir() {
-          return workspaceCtx.workDir;
+          return inspectAgentWorkspaceRoots(runtime, workspaceCtx).workDir;
         },
         get additionalDirs() {
-          return workspaceCtx.additionalDirs;
+          return inspectAgentWorkspaceRoots(runtime, workspaceCtx).additionalDirs ?? [];
         },
         get definitionReadRoots() {
           return skillCatalog?.catalog.getSkillRoots() ?? [];

@@ -18,6 +18,7 @@ import {
   SessionInspectionError,
 } from '#/kiki/session-inspect';
 import { renderSessionInspection } from '#/kiki/session-inspect-render';
+import * as sessionWire from '#/kiki/session-inspect-wire';
 
 const UUID = '2fd93c4b-8945-479b-b61a-cf106bcf2e9b';
 const SESSION_ID = `session_${UUID}`;
@@ -223,7 +224,7 @@ describe('offline session inspection', () => {
     expect(after).toEqual(before);
   });
 
-  it('ignores one unterminated partial tail and reports the limitation', async () => {
+  it('reports a partial-tail-only read without calling it a bounded window', async () => {
     await createSessionFixture(homeDir, 'wd_alpha', SESSION_ID);
     const wirePath = await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'main', standardWire('safe', 'answer'));
     await writeFile(wirePath, `${await readFile(wirePath, 'utf8')}{"type":"turn.prompt"`, 'utf8');
@@ -233,7 +234,10 @@ describe('offline session inspection', () => {
     expect(result.timeline).toContainEqual(
       expect.objectContaining({ type: 'message', role: 'assistant', text: 'answer' }),
     );
-    expect(result.warnings.join('\n')).toMatch(/partial record/i);
+    expect(result.wire).toMatchObject({ startByteOffset: 0, partialTail: true });
+    expect(result.wire?.endByteOffset).toBe(result.wire?.watermark);
+    expect(result.warnings.join('\n')).toMatch(/incomplete tail was ignored/i);
+    expect(result.warnings.join('\n')).not.toMatch(/bounded wire window/i);
     expect(result.agents[0]?.wireComplete).toBe(false);
   });
 
@@ -258,6 +262,89 @@ describe('offline session inspection', () => {
 
     expect(result.session).toMatchObject({ status: 'completed', statusBasis: 'metadata' });
     expect(result.agents.find((agent) => agent.id === 'child')?.status).toBe('running');
+  });
+
+  it('pages a timeline through the real inspector without gaps and keeps an appended tail outside the original watermark', async () => {
+    await createSessionFixture(homeDir, 'wd_alpha', SESSION_ID);
+    const records = Array.from({ length: 12 }, (_, turn) => standardWire(`prompt-${turn}`, `answer-${turn}`)
+      .map((record) => remapWireTurn(record, turn, `-${turn}`))).flat();
+    const wire = await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'main', records);
+    const options = { homeDir, reference: SESSION_ID, workspace: 'wd_alpha', agent: 'main', maxBytes: 1500 };
+    const first = await inspectOfflineSession(options);
+    expect(first.selectedAgent.wireComplete).toBe(false);
+    expect(first.warnings.join('\n')).toMatch(/bounded wire window/);
+    expect(renderSessionInspection(first)).toContain('--before ');
+    const watermark = first.wire!.watermark;
+    await appendFile(wire, `${standardWire('later', 'later answer').map((record) => JSON.stringify(remapWireTurn(record, 12, '-12'))).join('\n')}\n`);
+    const answers: string[] = [];
+    let page = first;
+    for (let pages = 0; pages < 20; pages++) {
+      answers.unshift(...page.timeline.filter((entry) => entry.type === 'message' && entry.role === 'assistant').map((entry) => entry.type === 'message' ? entry.text : ''));
+      if (page.wire!.nextCursor === null) break;
+      const older = await inspectOfflineSession({ ...options, before: page.wire!.nextCursor });
+      expect(older.wire!.watermark).toBe(watermark);
+      expect(older.wire!.endByteOffset).toBe(page.wire!.startByteOffset);
+      page = older;
+    }
+    expect(page.wire!.startByteOffset).toBe(0);
+    expect(page.selectedAgent.wireComplete).toBe(false);
+    expect(page.warnings.join('\n')).toMatch(/bounded wire window/);
+    expect(answers).toEqual(Array.from({ length: 12 }, (_, index) => `answer-${index}`));
+    const reopened = await inspectOfflineSession(options);
+    expect(reopened.wire!.watermark).toBeGreaterThan(watermark);
+    expect(reopened.timeline).toContainEqual(expect.objectContaining({ type: 'message', text: 'later answer' }));
+  });
+
+  it.each([true, false])('keeps the actual prompt and early answer before a mid-turn user injection (delivery: %s)', async (delivery) => {
+    await createSessionFixture(homeDir, 'wd_alpha', SESSION_ID);
+    const records = standardWire('Q1', 'A1');
+    records.splice(records.length - 1, 0, {
+      type: 'context.append_message',
+      message: { role: 'user', content: [{ type: 'text', text: 'injected note' }] },
+      delivery: delivery ? { turnId: 0, step: 1, origin: 'injection', messageId: 'injected' } : undefined,
+      time: 3,
+    }, {
+      type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'A2' }] }, time: 4,
+    });
+    await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'main', records);
+    const page = await inspectOfflineSession({ homeDir, reference: SESSION_ID, agent: 'main', maxBytes: 80 });
+    expect(page.wire?.startByteOffset).toBe(0);
+    expect(page.wire?.startBoundary).toBe('turn');
+    expect(page.timeline).toContainEqual(expect.objectContaining({ type: 'message', role: 'user', text: 'Q1' }));
+    expect(page.timeline).toContainEqual(expect.objectContaining({ type: 'message', role: 'assistant', text: 'A1' }));
+    expect(page.timeline).toContainEqual(expect.objectContaining({ type: 'message', role: 'assistant', text: 'A2' }));
+  });
+
+  it.each(['start', 'end'] as const)('shows actual records, including unanchored tool results, when the %s boundary splits a turn', async (split) => {
+    await createSessionFixture(homeDir, 'wd_alpha', SESSION_ID, {
+      agents: { main: { type: 'main' }, child: { type: 'sub', parentAgentId: 'main' } },
+    });
+    await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'main', []);
+    await writeWire(homeDir, 'wd_alpha', SESSION_ID, 'child', []);
+    const records = [
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'outside-call', result: { output: 'actual output', isError: false } }, time: 1 },
+      { type: 'context.append_message', message: { role: 'assistant', content: [{ type: 'text', text: 'actual continuation' }] }, time: 2 },
+    ];
+    vi.spyOn(sessionWire, 'readSessionWireWindow').mockImplementation(async (_handle, _info, _identity, _options, onRecord) => {
+      for (const [index, record] of records.entries()) onRecord(record, index + 1, { byteOffset: 100 + index * 100, continuation: true });
+      return {
+        startBoundary: split === 'start' ? 'record' : 'turn', endBoundary: split === 'end' ? 'record' : 'watermark',
+        watermark: 1000, startByteOffset: 100, endByteOffset: 500, bytesRead: 400,
+        recordCount: records.length, partialTail: false, nextCursor: 'older',
+      };
+    });
+    const page = await inspectOfflineSession({ homeDir, reference: SESSION_ID });
+    expect(page.selectedAgent.wireComplete).toBe(false);
+    expect(page.agents).toHaveLength(2);
+    expect(page.warnings.filter((warning) => warning.includes('bounded wire window'))).toHaveLength(1);
+    expect(page.timeline.map((entry) => entry.type === 'wire-record' ? entry.record : undefined)).toEqual(records);
+    expect(page.timeline.map((entry) => entry.id)).toEqual(['main:wire:100', 'main:wire:200']);
+    expect(page.warnings.join('\n')).toMatch(/splits a turn at a record boundary/);
+    const text = renderSessionInspection(page);
+    expect(text).toContain('actual output');
+    expect(text).toContain('actual continuation');
+    expect(text).toContain('turn continuation');
+    expect(text).not.toContain('USER');
   });
 
   it('follows the initial snapshot and appended wire events until aborted', async () => {
@@ -346,6 +433,21 @@ describe('kiki session command', () => {
       workspace: 'wd_alpha',
     }]);
     expect(JSON.parse(stdout.join(''))).toEqual(fixture);
+  });
+
+  it('passes bounded-window controls through the command and refuses a frozen page with follow', async () => {
+    const seen: unknown[] = [];
+    const { deps, stderr, exitCodes } = makeDeps({ inspectSession: async (options) => {
+      seen.push(options);
+      return makeInspection();
+    } });
+    const program = new Command('kiki');
+    registerSessionCommand(program, deps);
+    await program.parseAsync(['node', 'kiki', 'session', 'show', SESSION_ID, '--before', 'cursor', '--max-bytes', '4096', '--json']);
+    expect(seen).toEqual([expect.objectContaining({ before: 'cursor', maxBytes: 4096 })]);
+    await expect(handleSessionShow(deps, SESSION_ID, { json: true, before: 'cursor', follow: true })).rejects.toBeInstanceOf(ExitCalled);
+    expect(exitCodes).toEqual([1]);
+    expect(stderr.join('')).toContain('--before cannot be combined with --follow');
   });
 
   it('prints a full observational first render before follow updates', async () => {

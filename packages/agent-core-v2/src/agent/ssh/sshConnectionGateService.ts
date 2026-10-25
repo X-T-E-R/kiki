@@ -29,6 +29,7 @@ export const ISshConnectionGateService = createDecorator<SshConnectionGateServic
 
 export class SshConnectionGateService extends Disposable {
   private readonly pending = new Map<string, Promise<string | undefined>>();
+  private readonly approved = new Map<string, string>();
   private membershipQueue: Promise<void> = Promise.resolve();
   readonly ready: Promise<void>;
 
@@ -185,13 +186,11 @@ export class SshConnectionGateService extends Disposable {
     host: string, workspaceId: string, snapshot: { record: SshHostRecord; fingerprint: string },
     context: BeforeResolveToolContext, alreadyJoined: boolean,
   ): Promise<string | undefined> {
-    if (!alreadyJoined && this.scope.agentId !== 'main') {
-      return `SSH host "${host}" has not been added to this session; a subagent cannot connect it.`;
-    }
+    const alreadyApproved = alreadyJoined || this.approved.get(host) === snapshot.fingerprint;
     const target = await this.hosts.resolveTarget(host, workspaceId);
     let credential;
-    const disconnected = alreadyJoined && ['idle', 'failed', 'disconnected'].includes(this.hosts.status(host, workspaceId).state);
-    if ((!alreadyJoined || disconnected) && this.mode.mode !== 'yolo' && await this.hosts.connectionApprovalEnabled()) {
+    const disconnected = alreadyApproved && ['idle', 'failed', 'disconnected'].includes(this.hosts.status(host, workspaceId).state);
+    if ((!alreadyApproved || disconnected) && this.mode.mode !== 'yolo' && await this.hosts.connectionApprovalEnabled()) {
       const id = `approval_${randomUUID()}`;
       try {
         const result = await this.approvals.request({
@@ -230,7 +229,6 @@ export class SshConnectionGateService extends Disposable {
       algorithm?: string; fingerprint?: string; prompts?: readonly { prompt: string; echo: boolean }[];
     }) => {
       context.signal.throwIfAborted();
-      if (this.scope.agentId !== 'main') return { approved: false, credential: undefined };
       const id = `approval_${randomUUID()}`;
       try {
         const response = await this.approvals.request({
@@ -261,6 +259,7 @@ export class SshConnectionGateService extends Disposable {
     await this.setSessionHosts((joined) => ({ ...joined, [host]: snapshot.fingerprint }));
     context.signal.throwIfAborted();
     this.runtime.approveSshTarget?.(host, snapshot.fingerprint, trustUnknown, credential, keyboardInteractive);
+    this.approved.set(host, snapshot.fingerprint);
     return undefined;
   }
 }

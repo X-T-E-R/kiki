@@ -26,15 +26,13 @@ export function MemorySharingControls({ snapshot }: { readonly snapshot: Persona
     onError: () => { void queryClient.invalidateQueries({ queryKey: personaQueryKey(snapshot.definition.id) }); },
   });
   return (
-    <div data-memory-sharing className="px-4 pt-1 pb-3 lg:px-6">
-      <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-        <span className="text-[12px] text-ink-soft">{t('memory.sharing.label', { name: snapshot.definition.name })}</span>
-        {(['global', 'workspace'] as const).map((scope) => (
-          <Toggle key={scope} id={`memory-share-${scope}`} label={t(`memory.scopeTag.${scope}`)} checked={shared.includes(scope)} disabled={change.isPending}
-            onChange={(enabled) => { change.mutate(enabled ? [...shared, scope] : shared.filter((item) => item !== scope)); }} />
-        ))}
-      </div>
-      {change.isError ? <p role="alert" className="mt-2 text-[12px] text-danger">{t('memory.toggleFailed', { detail: errorText(locale, change.error) })}</p> : null}
+    <div data-memory-sharing className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+      <span className="text-[12px] text-ink-soft">{t('memory.sharing.label', { name: snapshot.definition.name })}</span>
+      {(['global', 'workspace'] as const).map((scope) => (
+        <Toggle key={scope} id={`memory-share-${scope}`} label={t(`memory.scopeTag.${scope}`)} checked={shared.includes(scope)} disabled={change.isPending}
+          onChange={(enabled) => { change.mutate(enabled ? [...shared, scope] : shared.filter((item) => item !== scope)); }} />
+      ))}
+      {change.isError ? <p role="alert" className="w-full text-[12px] text-danger">{t('memory.toggleFailed', { detail: errorText(locale, change.error) })}</p> : null}
     </div>
   );
 }

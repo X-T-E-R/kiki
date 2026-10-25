@@ -3,12 +3,15 @@ import type {
   ApprovalResolveResult,
   CancelTaskQuery,
   ConfigResponse,
+  CronDeliveryMode,
   DeferredAppendTiming,
   MessageContent,
   PageResponse,
   PatchConfigRequest,
   PermissionMode,
   PromptAbortResponse,
+  PromptItem,
+  PromptListResponse,
   TurnAbortResponse,
   PromptMoveRequest,
   PromptMoveResult,
@@ -28,7 +31,9 @@ import type {
   RequestIdentityPolicyWire,
   Session,
 } from '@kiki/protocol';
-import type { TranscriptGradeSpec } from '@kiki/transcript';
+import type { GoalMeta, TranscriptGradeSpec } from '@kiki/transcript';
+
+export type ApiErrorSource = 'server' | 'transport';
 
 export class ApiError extends Error {
   readonly code: number;
@@ -36,14 +41,28 @@ export class ApiError extends Error {
   readonly data: unknown;
   /** Structured error context from the envelope (e.g. shortcut conflicts). */
   readonly details: unknown;
+  /** Whether the failure came from the server envelope or the client transport. */
+  readonly source: ApiErrorSource;
+  /** Stable transport/server reason when the adapter supplied one. */
+  readonly reason: string | undefined;
 
-  constructor(envelope: { code: number; msg: string; data: unknown; request_id?: string; details?: unknown }) {
+  constructor(envelope: {
+    code: number;
+    msg: string;
+    data: unknown;
+    request_id?: string;
+    details?: unknown;
+    source?: ApiErrorSource;
+    reason?: string;
+  }) {
     super(`${envelope.msg} (code ${envelope.code})`);
     this.name = 'ApiError';
     this.code = envelope.code;
     this.data = envelope.data;
     this.details = envelope.details;
     this.requestId = envelope.request_id;
+    this.source = envelope.source ?? 'server';
+    this.reason = envelope.reason;
   }
 }
 
@@ -73,14 +92,46 @@ export const API_CODES = {
   SESSION_INDEX_BUILDING: 40939,
 } as const;
 
+export function isUnconfirmedTransportError(error: unknown): boolean {
+  return error instanceof ApiError && error.source === 'transport';
+}
+
+const API_ERROR_CODE_SUFFIX = /\s*\(code -?\d+\)$/;
+
+/**
+ * The whole error text says the session entity is gone. A sentence having a
+ * producer is not enough.
+ *
+ * Entity gone:
+ * - `session.not_found` — protocol reason (`packages/protocol/src/error-codes.ts`)
+ * - `session <id> does not exist`, `temporary session <id> does not exist`
+ *   — index or stored-handle miss (`packages/kap-server/src/routes/sessions.ts`
+ *   GET, `routes/snapshot.ts`, `services/messages/messageHistory.ts`)
+ * - `session not found` — preview and media when the session record is absent
+ *   (`routes/documentPreview.ts`, `routes/sessionMedia.ts`)
+ *
+ * Not entity gone: `session <id> not found`. `businessSnapshotDispatcher.ts`
+ * and `transport/dispatcher.ts` throw it when `getLiveSessionById` misses.
+ * That is a missing live handle, not proof the stored session is gone.
+ * `session not found: <id>` is the history page, cold baseline, and transcript
+ * route (`transport/klient/sessionViewHttp.ts`, `routes/transcript.ts`).
+ */
+export function isDefiniteSessionAbsenceMessage(message: string): boolean {
+  const text = message.replace(API_ERROR_CODE_SUFFIX, '').trim();
+  if (text === 'session.not_found') return true;
+  if (/^session not found$/i.test(text)) return true;
+  if (/^(?:temporary )?session \S+ does not exist$/i.test(text)) return true;
+  return false;
+}
+
 export const DEFAULT_TRANSCRIPT_GRADES: TranscriptGradeSpec = {
-  '*': 'turn',
+  '*': 'off',
   main: 'delta',
 };
 
 export function transcriptGradesForFocus(focusedAgentId: string | undefined): TranscriptGradeSpec {
   if (focusedAgentId === undefined || focusedAgentId === 'main') return DEFAULT_TRANSCRIPT_GRADES;
-  return { '*': 'turn', main: 'off', [focusedAgentId]: 'delta' };
+  return { '*': 'off', main: 'off', [focusedAgentId]: 'delta' };
 }
 
 export interface SearchMessageHit {
@@ -103,18 +154,20 @@ export interface SessionCursor {
 
 export interface MessageRunOverrides {
   readonly model?: string;
-  readonly thinking?: string;
+  readonly thinking?: string | null;
   readonly permission_mode?: PermissionMode;
   readonly plan_gate?: PromptPlanGate;
   readonly plan_mode?: boolean;
 }
 
 export interface EditMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly content: MessageContent[];
   readonly expected_cursor: SessionCursor;
 }
 
 export interface RegenerateMessageRequest extends MessageRunOverrides {
+  readonly operation_id?: string;
   readonly expected_cursor: SessionCursor;
 }
 
@@ -198,7 +251,7 @@ export interface RuntimeConfigPatch {
     readonly clock?: string;
     readonly poll_interval_ms?: number | null;
   };
-  readonly thread_communication?: { readonly enabled: boolean };
+  readonly thread_communication?: { readonly enabled: boolean | null };
   readonly token_counting?: { readonly strategy: 'measured+estimated' | 'measured' | 'estimated' };
   readonly workspace_instance?: { readonly idle_ttl_ms?: number };
   readonly image?: { readonly max_edge_px?: number; readonly read_byte_budget?: number };
@@ -377,16 +430,17 @@ export interface AgentTranscriptStepUsage {
 }
 
 export interface AgentTranscriptTask {
-  readonly thinkingEffort?: string;
-  readonly thinkingEffortExplicit?: boolean;
-  readonly executorId?: string;
-  readonly executorProtocol?: string;
   readonly taskId: string;
   readonly kind: 'shell' | 'subagent' | 'tool' | 'other';
   readonly state: 'running' | 'completed' | 'failed' | 'timed_out' | 'killed' | 'lost';
   readonly detached: boolean;
   readonly name?: string;
   readonly subagentName?: string;
+  readonly model?: string;
+  readonly thinkingEffort?: string;
+  readonly thinkingEffortExplicit?: boolean;
+  readonly executorId?: string;
+  readonly executorProtocol?: string;
   readonly description?: string;
   readonly command?: string;
   readonly ownerTurnId?: number;
@@ -430,6 +484,8 @@ export interface AgentTranscriptPrompt {
   readonly status: 'running' | 'queued' | 'blocked' | 'completed' | 'failed' | 'aborted';
   readonly userMessageId?: string;
   readonly content?: unknown;
+  readonly originKind?: 'cron_job';
+  readonly originDeliveryMode?: CronDeliveryMode;
   readonly createdAt: string;
   readonly finishedAt?: string;
   readonly queuePosition?: number;
@@ -440,7 +496,7 @@ export interface AgentTranscriptPrompt {
 }
 
 export interface AgentTranscriptMeta {
-  readonly goal?: import('@kiki/transcript').GoalMeta;
+  readonly goal?: GoalMeta;
   readonly modes?: {
     readonly plan?: { readonly reviewPath?: string; readonly version?: number };
   };
@@ -473,7 +529,9 @@ export interface AgentTranscriptResponse {
     | { kind: 'taskref'; refId: string; taskId: string; at?: string }
   )[];
   readonly has_more: boolean;
+  readonly next_cursor?: string;
   readonly coverage?: { readonly kind: 'full' | 'tail' | 'unknown'; readonly hasMoreOlder: boolean };
+  readonly read?: import('@kiki/transcript').TranscriptRead;
   readonly tool_call_count?: number;
   readonly cursor?: { readonly seq: number; readonly epoch?: string };
   readonly interactions?: readonly AgentTranscriptInteraction[];
@@ -492,6 +550,10 @@ export interface AgentTranscriptResponse {
 export interface SessionTransport {
   getSession(sessionId: string): Promise<Session>;
   submitPrompt(sessionId: string, body: PromptSubmission): Promise<PromptSubmitResult>;
+  /** HTTP-only durable ingress reconciliation; absent on memory/legacy transports. */
+  listDurableIngress?(sessionId: string, options?: { readonly agentId?: string; readonly cursor?: string }): Promise<PromptListResponse>;
+  getDurableIngress?(sessionId: string, promptId: string, agentId?: string): Promise<PromptItem>;
+  resumeDurableIngress?(sessionId: string, promptId: string, body: PromptSubmission, agentId?: string): Promise<PromptItem>;
   editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;

@@ -7,11 +7,20 @@
 import type { Task, Workspace } from '@kiki/protocol';
 
 /**
+ * The three fields recency ordering reads. The metadata-only catalog entry
+ * (`WorkspaceCatalogEntry`, which carries no `session_count` / `isGit`) sorts
+ * exactly like the full wire `Workspace`; every helper below is generic over
+ * its element type, so a full input still comes back full instead of being
+ * narrowed to the reading subset.
+ */
+export type WorkspaceRecencyFields = Pick<Workspace, 'id' | 'name' | 'last_opened_at'>;
+
+/**
  * Most-recently-opened first; workspaces without a usable timestamp sink to
  * the bottom, and ties fall back to a deterministic code-unit name compare
  * (not localeCompare, so the order cannot drift with the runtime locale).
  */
-export function compareWorkspacesByRecency(a: Workspace, b: Workspace): number {
+export function compareWorkspacesByRecency<T extends WorkspaceRecencyFields>(a: T, b: T): number {
   const aTime = Date.parse(a.last_opened_at);
   const bTime = Date.parse(b.last_opened_at);
   const aHas = Number.isFinite(aTime);
@@ -22,7 +31,7 @@ export function compareWorkspacesByRecency(a: Workspace, b: Workspace): number {
   return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
 }
 
-export function sortWorkspacesByRecency(workspaces: readonly Workspace[]): Workspace[] {
+export function sortWorkspacesByRecency<T extends WorkspaceRecencyFields>(workspaces: readonly T[]): T[] {
   return [...workspaces].sort(compareWorkspacesByRecency);
 }
 
@@ -31,9 +40,9 @@ export function sortWorkspacesByRecency(workspaces: readonly Workspace[]): Works
  * picker that lists workspaces reads this so a pin means the same thing in the
  * sidebar, the /new draft, and the settings list.
  */
-export function sortWorkspacesByPinnedThenRecency(
-  workspaces: readonly Workspace[],
-): Workspace[] {
+export function sortWorkspacesByPinnedThenRecency<T extends WorkspaceRecencyFields & Pick<Workspace, 'pinned'>>(
+  workspaces: readonly T[],
+): T[] {
   return [...workspaces].sort((a, b) => {
     if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
     return compareWorkspacesByRecency(a, b);
@@ -45,10 +54,10 @@ export function sortWorkspacesByPinnedThenRecency(
  * workspace list narrows on either, since the root is what disambiguates
  * same-named checkouts.
  */
-export function filterWorkspaces(
-  workspaces: readonly Workspace[],
+export function filterWorkspaces<T extends Pick<Workspace, 'name' | 'root'>>(
+  workspaces: readonly T[],
   query: string,
-): Workspace[] {
+): T[] {
   const needle = query.trim().toLowerCase();
   if (needle === '') return [...workspaces];
   return workspaces.filter(

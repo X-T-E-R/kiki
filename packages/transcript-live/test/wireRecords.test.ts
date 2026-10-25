@@ -297,6 +297,41 @@ describe('streamWireRecords', () => {
     });
   });
 
+  it('keeps an absolute watermark across awaited batches without treating it as an IO budget', async () => {
+    const records = Array.from({ length: 260 }, (_, index) => ({ type: 'metadata', index, text: '中文' }));
+    const prefix = records.slice(0, 256).map((record) => `${JSON.stringify(record)}\n`).join('');
+    const raw = records.map((record) => `${JSON.stringify(record)}\n`).join('');
+    await withWireFile(raw, async (wirePath) => {
+      const streamed: ContextRecord[] = [];
+      const result = await streamWireRecordsAwaited(wirePath, {
+        endByteOffset: Buffer.byteLength(prefix), maxBytes: 1 << 20, chunkBytes: 64 << 10,
+        onRecord: async (record) => { streamed.push(record); },
+      });
+      expect(streamed).toEqual(records.slice(0, 256));
+      expect(result).toMatchObject({ recordCount: 256, nextByteOffset: Buffer.byteLength(prefix), complete: true });
+      expect(result.bytesRead).toBeGreaterThan(Buffer.byteLength(prefix));
+      expect(result.bytesRead).toBeLessThanOrEqual(1 << 20);
+      expect(await readWireRecords(wirePath)).toEqual(records);
+    });
+  });
+
+  it('reports a captured partial record instead of consuming a completed suffix beyond its watermark', async () => {
+    const first = '{"type":"metadata","index":0}\n';
+    const second = '{"type":"metadata","index":1}\n';
+    await withWireFile(first + second, async (wirePath) => {
+      const records: ContextRecord[] = [];
+      const result = await streamWireRecords(wirePath, {
+        endByteOffset: Buffer.byteLength(first) + 8,
+        onRecord: (record) => { records.push(record); },
+      });
+      expect(records).toEqual([{ type: 'metadata', index: 0 }]);
+      expect(result).toMatchObject({ complete: false, incompleteReason: 'partial_tail',
+        nextByteOffset: Buffer.byteLength(first), bytesRead: Buffer.byteLength(first) + 8 });
+      await expect(streamWireRecords(wirePath, { startByteOffset: 20, endByteOffset: 10,
+        onRecord: () => undefined })).rejects.toThrow('invalid wire end offset');
+    });
+  });
+
   it.each([1, 2, 4])('[STAT-R3] stops at the byte budget without emitting a truncated record (%i)', async (extraBytes) => {
     const first = { type: 'metadata', index: 0 };
     const padded = `${JSON.stringify({ type: 'metadata', index: 9 })}${' '.repeat(64)}`;
@@ -482,6 +517,25 @@ describe('streamWireRecords', () => {
       expect(WIRE_COLD_READ_MAX_BYTES).toBeGreaterThan(Buffer.byteLength(raw) * 100);
       expect(WIRE_COLD_READ_MAX_RECORDS).toBeGreaterThan(1_000_000);
       expect(WIRE_COLD_READ_MAX_LINE_BYTES).toBeGreaterThan(WIRE_READ_CHUNK_BYTES);
+    });
+  });
+
+  it('keeps compaction headline fields from a segmented summary line', async () => {
+    const summary = 'S'.repeat(80_000);
+    const broken = `${summary},"strategy":"summarize","shapeVersion":1,"reasonCodes":["notes_missing"],"fallbackFrom":"relay","time":42}\n`;
+    const raw = `${broken}${JSON.stringify({ type: 'metadata', index: 1 })}\n`;
+    await withWireFile(raw, async (wirePath) => {
+      const streamed: ContextRecord[] = [];
+      const result = await streamWireRecords(wirePath, { onRecord: (record) => streamed.push(record) });
+      expect(result.complete).toBe(true);
+      expect(streamed[0]).toMatchObject({
+        type: 'context.apply_compaction',
+        strategy: 'summarize',
+        fallbackFrom: 'relay',
+        time: 42,
+      });
+      expect(streamed[1]).toEqual({ type: 'metadata', index: 1 });
+      expect(JSON.stringify(streamed[0])).not.toContain(summary);
     });
   });
 
@@ -739,6 +793,36 @@ describe('streamWireRecordsAwaited', () => {
       })).rejects.toThrow('awaited read stopped');
       expect(received).toEqual([0]);
     });
+  });
+});
+
+describe('wire byte source', () => {
+  it('reads the supplied bytes instead of the file', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'transcript-live-byte-source-'));
+    try {
+      const wirePath = join(home, 'wire.jsonl');
+      await writeFile(wirePath, '{"type":"note","id":"file"}\n');
+      const logical = Buffer.from('{"type":"note","id":"logical"}\n');
+      const source = {
+        size: logical.byteLength,
+        readAt: async (position: number, length: number) => logical.subarray(position, position + length),
+      };
+      const direct: ContextRecord[] = [];
+      await streamWireRecords(wirePath, {
+        byteSource: source,
+        onRecord: (record) => { direct.push(record); },
+      });
+      const awaited: ContextRecord[] = [];
+      await streamWireRecordsAwaited(wirePath, {
+        byteSource: source,
+        onRecord: (record) => { awaited.push(record); },
+      });
+      expect(direct).toEqual([{ type: 'note', id: 'logical' }]);
+      expect(awaited).toEqual([{ type: 'note', id: 'logical' }]);
+      expect(await readFile(wirePath, 'utf8')).toBe('{"type":"note","id":"file"}\n');
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
   });
 });
 

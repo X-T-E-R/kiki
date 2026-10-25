@@ -1,6 +1,6 @@
 {
   "name": "@kiki/cli",
-  "version": "0.4.0",
+  "version": "0.4.4",
   "description": "Kiki local agent workspace and shared daemon",
   "license": "MIT",
   "author": "Moonshot AI",
@@ -43,7 +43,7 @@
     "provenance": true
   },
   "scripts": {
-    "build": "node ../../packages/auth-native/scripts/build.mjs && tsdown && tsdown --config tsdown.dist-worker.config.ts && tsdown --config tsdown.dist-sqlite.config.ts && node scripts/copy-native-assets.mjs && node scripts/copy-doc-assets.mjs && node scripts/copy-web-assets.mjs",
+    "build": "node ../../packages/auth-native/scripts/build.mjs && node ../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs && tsdown && tsdown --config tsdown.dist-worker.config.ts && tsdown --config tsdown.dist-sqlite.config.ts && node scripts/copy-native-assets.mjs && node scripts/copy-doc-assets.mjs && node scripts/copy-web-assets.mjs",
     "prebuild": "pnpm -C ../kiki-gui build",
     "catalog:update": "node scripts/update-catalog.mjs --out dist/built-in-catalog.json",
     "smoke": "node scripts/smoke.mjs",
@@ -55,11 +55,11 @@
     "release:native:resolve": "node scripts/native/resolve-release.mjs",
     "test:native:smoke": "node scripts/native/smoke.mjs",
     "stress:shared-home": "node scripts/stress-shared-home.mjs",
-    "dev": "node ../../packages/auth-native/scripts/build.mjs && node scripts/dev.mjs",
-    "dev:cli-only": "node ../../packages/auth-native/scripts/build.mjs && tsx --import ../../build/register-raw-text-loader.mjs ./src/main.ts",
-    "dev:server": "node ../../packages/auth-native/scripts/build.mjs && KIKI_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts serve --debug-endpoints --idle-exit 0ms",
-    "dev:kap-server": "node ../../packages/auth-native/scripts/build.mjs && KIKI_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts serve --debug-endpoints --idle-exit 0ms",
-    "dev:kap-server:multi": "node ../../packages/auth-native/scripts/build.mjs && KIKI_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts serve --debug-endpoints --idle-exit 0ms",
+    "dev": "node ../../packages/auth-native/scripts/build.mjs && node ../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs && node scripts/dev.mjs",
+    "dev:cli-only": "node ../../packages/auth-native/scripts/build.mjs && node ../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs && tsx --import ../../build/register-raw-text-loader.mjs ./src/main.ts",
+    "dev:server": "node ../../packages/auth-native/scripts/build.mjs && node ../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs && KIKI_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts serve --debug-endpoints --idle-exit 0ms",
+    "dev:kap-server": "node ../../packages/auth-native/scripts/build.mjs && node ../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs && KIKI_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts serve --debug-endpoints --idle-exit 0ms",
+    "dev:kap-server:multi": "node ../../packages/auth-native/scripts/build.mjs && node ../../packages/agent-core-v2/scripts/build-windows-process-helper.mjs && KIKI_DEV_SERVER=1 tsx --tsconfig ./tsconfig.dev.json --import ../../build/register-raw-text-loader.mjs ./src/main.ts serve --debug-endpoints --idle-exit 0ms",
     "dev:server:restart": "node scripts/dev-server-restart.mjs",
     "dev:plugin-marketplace": "npm --prefix ../../../kiki-plugins run dev",
     "build:plugin-marketplace": "npm --prefix ../../../kiki-plugins run build",
@@ -86,7 +86,7 @@
     "@kiki/oauth": "workspace:^",
     "@kiki/pi-tui": "workspace:^",
     "@types/semver": "^7.7.0",
-    "@types/ws": "^8.18.0",
+    "@types/ws": "^8.18.1",
     "@types/yazl": "^2.4.6",
     "chalk": "^5.4.1",
     "cli-highlight": "^2.1.11",
@@ -95,19 +95,19 @@
     "pathe": "^2.0.3",
     "postject": "1.0.0-alpha.6",
     "semver": "^7.7.4",
-    "smol-toml": "^1.6.1",
+    "smol-toml": "^1.9.0",
     "tsx": "^4.21.0",
     "yazl": "^3.3.1",
     "zod": "^4.3.6"
   },
   "engines": {
-    "node": ">=24.15.0"
+    "node": ">=24.22.1 <25 || >=26.12.1"
   },
   "dependencies": {
     "@kiki/klient": "workspace:^",
     "@kiki/protocol": "workspace:^",
     "@kiki/session-core": "workspace:^",
     "@kiki/transcript": "workspace:^",
-    "ws": "^8.18.0"
+    "ws": "^8.22.0"
   }
 }

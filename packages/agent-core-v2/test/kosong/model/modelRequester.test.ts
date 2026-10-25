@@ -7,6 +7,7 @@ import { RequestGovernanceService } from '#/app/requestGovernance/requestGoverna
 import { StubConfigService } from '../stubs';
 import type OpenAI from 'openai';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
+import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
 
 import { isError2 } from '#/_base/errors/errors';
 import { APIStatusError, createAbortError } from '#/kosong/contract/errors';
@@ -17,6 +18,7 @@ import type {
   StreamedMessage,
 } from '#/kosong/contract/provider';
 import type { Tool } from '#/kosong/contract/tool';
+import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { ProtocolErrors } from '#/kosong/protocol/errors';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
@@ -146,7 +148,104 @@ async function collect(stream: AsyncIterable<ModelRequestEvent>): Promise<ModelR
 
 const INPUT = { systemPrompt: 'sys', tools: [], messages: [] };
 
+function promiseGate<T = void>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 describe('ModelRequesterImpl request execution', () => {
+  it('rejects buffered old parts after abort instead of draining them into a later consumer', async () => {
+    const provider = new FakeChatProvider();
+    provider.handler = async () => streamOf(Array.from({ length: 200 }, (_, index) => ({ type: 'text', text: String(index) })));
+    const release = vi.fn();
+    const controller = new AbortController();
+    const requester = new ModelRequesterImpl(modelWith(staticAuth()), registryReturning(provider), {
+      acquire: async () => ({ release }),
+    });
+    const iterator = requester.request(INPUT, controller.signal)[Symbol.asyncIterator]();
+    expect((await iterator.next()).value).toMatchObject({ type: 'part' });
+    await vi.waitFor(() => expect(release).toHaveBeenCalledOnce());
+    controller.abort();
+    await expect(iterator.next()).rejects.toMatchObject({ name: 'AbortError' });
+    await iterator.return!();
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it('does not refresh or replay an unauthorized request when retry is never', async () => {
+    const provider = new FakeChatProvider();
+    const error = new APIStatusError(401, 'fixture auth failure');
+    provider.handler = async () => { throw error; };
+    const getAuth = vi.fn(async () => ({ apiKey: 'example-key' }));
+    const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+    await expect(collect(requester.request(INPUT, undefined, { retry: 'never' }))).rejects.toBe(error);
+    expect(getAuth).toHaveBeenCalledOnce();
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it('does not refresh or replay an unauthorized request after cancellation', async () => {
+    const provider = new FakeChatProvider();
+    const entered = promiseGate<void>();
+    const finish = promiseGate<StreamedMessage>();
+    provider.handler = () => { entered.resolve(); return finish.promise; };
+    const getAuth = vi.fn(async () => ({ apiKey: 'example-key' }));
+    const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+    const controller = new AbortController();
+    const result = collect(requester.request(INPUT, controller.signal));
+    const rejected = expect(result).rejects.toMatchObject({ name: 'AbortError' });
+    await entered.promise;
+    controller.abort();
+    finish.reject(new APIStatusError(401, 'cancelled request'));
+    await rejected;
+    expect(getAuth).toHaveBeenCalledOnce();
+    expect(provider.calls).toHaveLength(1);
+  });
+
+  it.each(['openai', 'openai_responses'] as const)('omits speculative %s output fields and preserves real ceilings on the wire', async (protocol) => {
+    const payloads: Record<string, unknown>[] = [];
+    const client = {
+      chat: { completions: { create: (params: Record<string, unknown>) => {
+        payloads.push(params);
+        return { withResponse: async () => ({
+          response: new Response(),
+          data: { id: 'chat-1', choices: [{ message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' }] },
+        }) };
+      } } },
+      responses: { create: async (params: Record<string, unknown>) => {
+        payloads.push(params);
+        return { async *[Symbol.asyncIterator]() {
+          yield { type: 'response.output_text.delta', delta: 'ok' };
+          yield { type: 'response.completed', response: { id: 'response-1', status: 'completed', output: [] } };
+        } };
+      } },
+    } as unknown as OpenAI;
+    const provider = protocol === 'openai'
+      ? new OpenAILegacyChatProvider({ apiKey: '', model: 'example-model', stream: false, clientFactory: () => client })
+      : new OpenAIResponsesChatProvider({ apiKey: '', model: 'example-model', clientFactory: () => client });
+    const model = { ...modelWith(staticAuth()), protocol };
+    const requester = new ModelRequesterImpl(model, registryReturning(provider));
+    await collect(requester.request(INPUT));
+    await collect(new ModelRequesterImpl({ ...model, maxContextSize: 0 }, registryReturning(provider)).request(INPUT));
+    await collect(requester.request(INPUT, undefined, { maxCompletionTokens: 600 }));
+    await collect(new ModelRequesterImpl({ ...model, maxOutputSize: 800 }, registryReturning(provider)).request(INPUT));
+    await collect(requester.request(INPUT, undefined, { usedContextTokens: 127500, usedContextTokensTrusted: true }));
+    await collect(requester.request(INPUT, undefined, { usedContextTokens: 127500, usedContextTokensTrusted: false }));
+    await collect(requester.request(INPUT, undefined, { maxContextTokens: 900, usedContextTokens: 700, usedContextTokensTrusted: true }));
+    const largeWindow = { ...model, maxContextSize: 300000 };
+    await collect(new ModelRequesterImpl(largeWindow, registryReturning(provider)).request(INPUT, undefined, { maxCompletionTokens: 200000 }));
+    await collect(new ModelRequesterImpl({ ...largeWindow, maxOutputSize: 150000 }, registryReturning(provider)).request(INPUT, undefined, { maxCompletionTokens: 200000 }));
+    await collect(new ModelRequesterImpl(largeWindow, registryReturning(provider)).request(INPUT, undefined, {
+      maxCompletionTokens: 200000, usedContextTokens: 250000, usedContextTokensTrusted: true,
+    }));
+    const field = protocol === 'openai' ? 'max_tokens' : 'max_output_tokens';
+    expect(payloads.map((payload) => payload[field])).toEqual([undefined, undefined, 600, 800, 500, undefined, 200, 200000, 150000, 50000]);
+    for (const index of [0, 1, 5]) {
+      expect(payloads[index]).not.toHaveProperty('max_tokens');
+      expect(payloads[index]).not.toHaveProperty('max_completion_tokens');
+      expect(payloads[index]).not.toHaveProperty('max_output_tokens');
+    }
+  });
   it('uses model tier as a default beneath resolved request overrides without leaking to another model', async () => {
     const provider = new FakeChatProvider();
     const model = modelWith(staticAuth());
@@ -277,6 +376,11 @@ describe('ModelRequesterImpl request execution', () => {
     const provider = new FakeChatProvider();
     const requester = new ModelRequesterImpl(modelWith(staticAuth('sk-1')), registryReturning(provider));
     const signal = AbortSignal.timeout(1000);
+    const responsesTransport: ResponsesRequestTransport = {
+      request: async () => ({ async *[Symbol.asyncIterator]() {} }),
+      commitResponse: vi.fn(),
+      close: vi.fn(),
+    };
 
     await collect(
       requester.request(
@@ -303,6 +407,7 @@ describe('ModelRequesterImpl request execution', () => {
           requestIdentity: {
             responsesClientMetadata: { turn_id: '00000000-0000-7000-8000-000000000004' },
           },
+          responsesTransport,
         },
       ),
     );
@@ -328,6 +433,7 @@ describe('ModelRequesterImpl request execution', () => {
     expect(options?.requestIdentity?.responsesClientMetadata).toEqual({
       turn_id: '00000000-0000-7000-8000-000000000004',
     });
+    expect(options?.responsesTransport).toBe(responsesTransport);
   });
 
   it('omits the thinking intent when no effort is requested', async () => {
@@ -658,7 +764,7 @@ it('limits actual native provider streams from two sessions to two, and never se
     expect(peak).toBe(2);
     expect(liveStreams).toBe(0);
     expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
-  } finally { ix.dispose(); }
+  } finally { await ix.dispose(); }
 });
 
 it('requires an explicit requester owner at runtime instead of inferring system ownership', () => {
@@ -691,5 +797,28 @@ it('queues a session-owned auxiliary model request behind that session main slot
     await Promise.all([main, auxiliary]);
     expect(provider.calls).toHaveLength(2);
     expect(governor.snapshot()).toMatchObject({ active: 0, queued: 0 });
-  } finally { release(); ix.dispose(); }
+  } finally { release(); await ix.dispose(); }
+});
+
+it('does not force-refresh or replay a production Responses 401 received after partial output', async () => {
+  const getAuth = vi.fn(async (_options?: { force?: boolean }) => ({ apiKey: 'YOUR_API_KEY' }));
+  let calls = 0;
+  const provider = new OpenAIResponsesChatProvider({
+    model: 'synthetic', baseUrl: 'https://example.test/v1', apiKey: 'YOUR_API_KEY',
+    requestCompression: { encoding: 'gzip', targets: ['https://example.test/v1'] },
+    convertError: () => new APIStatusError(401, 'synthetic revoked after partial output'),
+    clientFactory: () => ({ responses: { create: async () => {
+      calls += 1;
+      return { async *[Symbol.asyncIterator]() {
+        yield { type: 'response.created', response: { id: 'resp_partial', status: 'in_progress', output: [] } };
+        yield { type: 'response.output_text.delta', item_id: 'msg_partial', output_index: 0, content_index: 0, delta: 'partial' };
+        yield { type: 'error', code: 'authentication_error', message: 'synthetic revoked after partial output' };
+      } };
+    } } }) as unknown as OpenAI,
+  });
+  const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+  await expect(collect(requester.request(INPUT))).rejects.toMatchObject({ statusCode: 401, message: 'synthetic revoked after partial output' });
+  expect(calls).toBe(1);
+  expect(getAuth).toHaveBeenCalledTimes(1);
+  expect(getAuth).not.toHaveBeenCalledWith({ force: true });
 });

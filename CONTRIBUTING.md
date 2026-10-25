@@ -45,7 +45,7 @@ fields for its current distribution state. For the full map, see
 
 ## Development Setup
 
-Prerequisites: Node.js >= 24.15.0, pnpm 10.33.0, Git.
+Prerequisites: Node.js >=24.22.1 <25 or >=26.12.1, pnpm 10.33.0, Git.
 
 ```sh
 git clone https://github.com/X-T-E-R/kiki.git

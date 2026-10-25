@@ -17,6 +17,7 @@
 
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
+import fsSync from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import type { PathLike } from 'node:fs';
@@ -38,6 +39,7 @@ function mockFsPromises(open: (path: string, flags?: string) => Promise<MockHand
 }
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.doUnmock('node:fs/promises');
   vi.doUnmock('../src/snapshot.js');
   vi.resetModules();
@@ -162,6 +164,12 @@ function mockFsWithFaults(faults: {
   rename?: (src: string, dst: string) => Error | null;
   open?: (path: string, flags: string | number | undefined) => Error | null;
 }): void {
+  const renameSync = fsSync.renameSync.bind(fsSync);
+  vi.spyOn(fsSync, 'renameSync').mockImplementation((src, dst) => {
+    const err = faults.rename?.(String(src), String(dst));
+    if (err) throw err;
+    renameSync(src, dst);
+  });
   const rename = async (src: PathLike, dst: PathLike): Promise<void> => {
     const err = faults.rename?.(String(src), String(dst));
     if (err) throw err;
@@ -312,6 +320,79 @@ test('rotation: a WAL close() failure leaves the db writable and compact() retri
     assert.equal(db.get('post'), 'still-writable');
     await db.close();
   } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('Windows rotation never exposes closed readers to queued reads across repeated compactions', async () => {
+  const { MiniDb } = await import('../src/index.js');
+  const dir = await tmpDir();
+  try {
+    await asWindows(async () => {
+      const db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'no', compactThresholdBytes: 1 << 30, indexGenerations: false });
+      try {
+        await db.set('saved', 'history');
+        await db.compact();
+        const errors: unknown[] = [];
+        const reads: Promise<unknown>[] = [];
+        for (const method of ['closeSnapshot', 'closeWal'] as const) {
+          const close = db.valueReader![method].bind(db.valueReader);
+          vi.spyOn(db.valueReader!, method).mockImplementation(() => {
+            assert.equal(db.valueReader!.idle, true);
+            close();
+            reads.push(new Promise<void>((resolve) => {
+              queueMicrotask(() => {
+                try { assert.equal(db.get('saved'), 'history'); } catch (error) { errors.push(error); }
+                resolve();
+              });
+            }));
+          });
+        }
+        for (let visit = 0; visit < 4; visit++) {
+          await db.set(`visit-${visit}`, String(visit));
+          const pending = db.getAsync('saved');
+          await db.compact();
+          assert.equal(await pending, 'history');
+          assert.equal(db.get('saved'), 'history');
+        }
+        await Promise.all(reads);
+        assert.deepEqual(errors, []);
+      } finally {
+        await db.close();
+      }
+    });
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('close drains positioned value reads before releasing readers and the lock', async () => {
+  const { MiniDb } = await import('../src/index.js');
+  const dir = await tmpDir();
+  const db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'no', indexGenerations: false });
+  let release!: () => void;
+  let entered!: () => void;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  const draining = new Promise<void>((resolve) => { entered = resolve; });
+  const reader = db.valueReader!;
+  const whenIdle = reader.whenIdle.bind(reader);
+  vi.spyOn(reader, 'whenIdle').mockImplementation(async () => { entered(); await gate; await whenIdle(); });
+  const closeReader = vi.spyOn(reader, 'close');
+  let closing: Promise<void> | undefined;
+  try {
+    await db.set('saved', 'history');
+    closing = db.close();
+    await draining;
+    expect(closeReader).not.toHaveBeenCalled();
+    expect(db.lock).not.toBeNull();
+    release();
+    await closing;
+    expect(closeReader).toHaveBeenCalledOnce();
+    expect(db.lock).toBeNull();
+  } finally {
+    release();
+    await closing;
+    await db.close();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
@@ -750,6 +831,117 @@ test('a WAL poison during the snapshot phase aborts this compaction; the next co
     assert.equal(db.get('post'), 'ok');
     await db.close();
   } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+
+test('auto-compaction backs off repeated snapshot failures without blocking durable writes or explicit recovery', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-auto-backoff-'));
+  const { MiniDb } = await import('../src/index.js');
+  const db = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'everysec', compactThresholdBytes: 4 * 1024 * 1024, autoCompact: false, indexGenerations: false });
+  const originalRename = fsSync.renameSync.bind(fsSync);
+  const rename = vi.spyOn(fsSync, 'renameSync').mockImplementation((from, to) => {
+    if (String(from).endsWith('db.snapshot.tmp')) throw Object.assign(new Error('injected snapshot rotation failure'), { code: 'EIO' });
+    originalRename(from, to);
+  });
+  const idle = async () => {
+    await expect.poll(() => db.maintenanceStatus().some((task) => ['queued', 'running', 'publishing'].includes(task.state))).toBe(false);
+  };
+  let clock: ReturnType<typeof vi.spyOn> | undefined;
+  try {
+    for (let index = 0; index < 5; index++) await db.set(`body-${index}`, 'x'.repeat(1024 * 1024));
+    db.autoCompact = true;
+    const cpu = process.cpuUsage();
+    await db.set('trigger', 'initial');
+    await idle();
+    expect(db.stats.compactErrors).toBe(1);
+    const firstBytes = db.stats.snapshotBytesWritten;
+    const heaps: number[] = [];
+    for (let index = 0; index < 6; index++) {
+      await db.set('live', `value-${index}`);
+      await idle();
+      expect(await db.getAsync('live')).toBe(`value-${index}`);
+      heaps.push(process.memoryUsage().heapUsed);
+    }
+    console.log(JSON.stringify({ scenario: 'failed-auto-compaction', attempts: db.stats.compactErrors, snapshotBytes: db.stats.snapshotBytesWritten, firstSnapshotBytes: firstBytes, cpu: process.cpuUsage(cpu), heapUsed: heaps }));
+    expect(db.stats.compactErrors).toBe(1);
+    expect(db.stats.snapshotBytesWritten).toBe(firstBytes);
+    let now = Date.now() + 5001;
+    clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    await db.set('live', 'second-attempt');
+    await idle();
+    expect(db.stats.compactErrors).toBe(2);
+    now += 5001;
+    await db.set('live', 'still-in-backoff');
+    await idle();
+    expect(db.stats.compactErrors).toBe(2);
+    rename.mockRestore();
+    await db.compact();
+    expect(db.stats.compactions).toBe(1);
+    expect(await db.getAsync('live')).toBe('still-in-backoff');
+    clock.mockRestore();
+    clock = undefined;
+    await db.close();
+    const reopened = await MiniDb.open<string>({ dir, valueCodec: 'string', valueMode: 'disk', autoCompact: false, indexGenerations: false });
+    try {
+      expect(await reopened.getAsync('live')).toBe('still-in-backoff');
+      expect((await reopened.getAsync('body-4'))?.length).toBe(1024 * 1024);
+    } finally {
+      await reopened.close();
+    }
+  } finally {
+    clock?.mockRestore();
+    rename.mockRestore();
+    await db.close();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+
+test('cluster shard lease handoff retains automatic compaction failure backoff', async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'minidb-shard-backoff-'));
+  const { ShardLockPool } = await import('../src/cluster/lock-pool.js');
+  const pool = new ShardLockPool({
+    writerOpts: { valueCodec: 'string', valueMode: 'disk', fsyncPolicy: 'everysec', compactThresholdBytes: 4 * 1024 * 1024, indexGenerations: false },
+    readerOpts: { valueCodec: 'string', valueMode: 'disk', indexGenerations: false },
+    lockRenewMs: 0, lockAcquireTimeoutMs: 1000, lockHoldMs: 20, maxWriters: 1, maxReaders: 1, readOnly: false,
+    applyDefs: async () => {},
+  });
+  const originalRename = fsSync.renameSync.bind(fsSync);
+  let rotations = 0;
+  const rename = vi.spyOn(fsSync, 'renameSync').mockImplementation((from, to) => {
+    if (String(from).endsWith('db.snapshot.tmp')) {
+      rotations++;
+      throw Object.assign(new Error('injected shard snapshot failure'), { code: 'EIO' });
+    }
+    originalRename(from, to);
+  });
+  try {
+    await pool.withWriter(0, dir, async (db) => {
+      db.autoCompact = false;
+      for (let index = 0; index < 5; index++) await db.set(`body-${index}`, 'x'.repeat(1024 * 1024));
+      db.autoCompact = true;
+      await db.set('live', 'initial');
+      await expect.poll(() => db.stats.compactErrors).toBe(1);
+    });
+    for (let index = 0; index < 3; index++) {
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      await pool.withWriter(0, dir, async (db) => {
+        await db.set('live', `update-${index}`);
+        await expect.poll(() => db.maintenanceStatus().some((task) => ['queued', 'running', 'publishing'].includes(task.state))).toBe(false);
+      });
+    }
+    expect(pool.stats.writerOpens).toBeGreaterThanOrEqual(2);
+    expect(rotations).toBe(1);
+    rename.mockRestore();
+    await pool.withWriter(0, dir, async (db) => {
+      await db.compact();
+      expect(await db.getAsync('live')).toBe('update-2');
+    });
+  } finally {
+    rename.mockRestore();
+    await pool.closeAll();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

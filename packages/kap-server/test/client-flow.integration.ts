@@ -6,17 +6,339 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IFileService, getLiveSessionById } from '@kiki/agent-core-v2';
+import {
+  IAgentExecutionService, IAgentLifecycleService, IAgentTaskService, IAppendLogStore, IFileService,
+  IHomeRuntimeService, IMcpOAuthService, IPluginHostService, ISessionIndexMirror, ISessionManager,
+  IThreadCommunicationService, IThreadMailboxStore, IWorktreeService, getLiveSessionById,
+  type ServiceIdentifier,
+} from '@kiki/agent-core-v2';
+import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiationService';
+import { IGlobalSearchService, InlineSearchBackend } from '../src/search/searchService';
+import { SqliteSearchHost } from '../src/search/sqlite/host';
+import { SearchWorkerHost } from '../src/search/worker/host';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-core/src/session/transcript/project';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
 import { startServer, type RunningServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
+import { paddedPng } from './helpers/png';
 
 interface ModelRequest {
   model: string;
   messages: { role: string; content: unknown }[];
 }
+
+interface ClosePhase {
+  phase: string;
+  state: 'pending' | 'done' | 'failed';
+  elapsedMs: number;
+  error?: string;
+}
+
+function closePhaseText(error: unknown): string {
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string' || typeof error === 'number' || typeof error === 'boolean' || typeof error === 'bigint') return `${error}`;
+  try {
+    const text = JSON.stringify(error);
+    return typeof text === 'string' ? text : 'close failed';
+  } catch {
+    return 'close failed';
+  }
+}
+
+class ClosePhaseWatch {
+  private readonly entries: Array<ClosePhase & { started: number; ended?: number }> = [];
+  private readonly stack: Array<{ phase: string }> = [];
+  private readonly restores: Array<() => void> = [];
+
+  track<T>(phase: string, run: () => T): T {
+    const started = Date.now();
+    const token = { phase };
+    const entry: (typeof this.entries)[number] = { phase, state: 'pending', elapsedMs: 0, started };
+    this.entries.push(entry);
+    this.stack.push(token);
+    const finish = (state: 'done' | 'failed', error?: unknown): void => {
+      entry.state = state;
+      entry.ended = Date.now();
+      entry.elapsedMs = entry.ended - started;
+      if (error !== undefined) entry.error = closePhaseText(error).slice(0, 180);
+      const index = this.stack.lastIndexOf(token);
+      if (index >= 0) this.stack.splice(index, 1);
+    };
+    try {
+      const result = run();
+      const settled: unknown = result;
+      if (settled instanceof Promise || (settled !== null && typeof settled === 'object' &&
+        typeof (settled as { then?: unknown }).then === 'function')) {
+        const thenable = settled as Promise<unknown>;
+        return thenable.then(
+          (value: unknown) => { finish('done'); return value; },
+          (error: unknown) => { finish('failed', error); throw error; },
+        ) as T;
+      }
+      finish('done');
+      return result;
+    } catch (error) {
+      finish('failed', error);
+      throw error;
+    }
+  }
+
+  watch(target: object, method: string, phase: string): void {
+    const record = target as Record<string, unknown>;
+    const original = record[method];
+    if (typeof original !== 'function') return;
+    const own = Object.prototype.hasOwnProperty.call(target, method);
+    const descriptor = own ? Object.getOwnPropertyDescriptor(target, method) : undefined;
+    const track = (run: () => unknown) => this.track(phase, run);
+    const wrapped = function (this: unknown, ...args: unknown[]) {
+      return track(() => original.apply(this, args));
+    };
+    try { record[method] = wrapped; } catch { return; }
+    this.restores.push(() => {
+      if (!own) { delete record[method]; return; }
+      if (descriptor) Object.defineProperty(target, method, descriptor);
+      else record[method] = original;
+    });
+  }
+
+  snapshot(): { pending: string | null; after: string | null; phases: ClosePhase[] } {
+    const now = Date.now();
+    const phases = this.entries.map((entry) => {
+      const phase: ClosePhase = {
+        phase: entry.phase,
+        state: entry.state,
+        elapsedMs: (entry.ended ?? now) - entry.started,
+      };
+      if (entry.error !== undefined) phase.error = entry.error;
+      return phase;
+    });
+    const pending = this.stack.at(-1)?.phase ?? null;
+    const after = pending === null ? phases.at(-1)?.phase ?? 'before:app.close' : null;
+    return { pending, after, phases };
+  }
+
+  undo(restore: () => void): void {
+    this.restores.push(restore);
+  }
+
+  restore(): void {
+    for (const restore of this.restores.splice(0).toReversed()) restore();
+  }
+}
+
+interface CloseWatchTarget {
+  app: object;
+  core: {
+    dispose(): unknown;
+    accessor: { get<T>(id: ServiceIdentifier<T>): T };
+    instantiation: object;
+  };
+}
+
+function alreadyMaterialized<T>(host: CloseWatchTarget, id: ServiceIdentifier<T>): T | undefined {
+  const container = host.core.instantiation;
+  if (!(container instanceof InstantiationService)) return undefined;
+  return container.fiberHost.materializedInstance(id);
+}
+
+function watchHostClose(host: CloseWatchTarget): ClosePhaseWatch {
+  const watch = new ClosePhaseWatch();
+  const armed = new Set<object>();
+  const arm = (instance: object, method: string, phase: string): void => {
+    if (armed.has(instance)) return;
+    const current = (instance as Record<string, unknown>)[method];
+    if (typeof current !== 'function') return;
+    armed.add(instance);
+    watch.watch(instance, method, phase);
+  };
+  const specs: Array<{ id: object; method: string; phase: string }> = [];
+  const trackService = <T>(id: ServiceIdentifier<T>, method: string, phase: string): void => {
+    specs.push({ id, method, phase });
+    const existing = alreadyMaterialized(host, id);
+    if (existing !== null && typeof existing === 'object') arm(existing, method, phase);
+  };
+  try {
+    trackService(IThreadCommunicationService, 'shutdown', 'threadComm.shutdown');
+    trackService(ISessionManager, 'close', 'session.close');
+    trackService(IWorktreeService, 'remove', 'worktree.remove');
+    trackService(IThreadMailboxStore, 'close', 'mailbox.close');
+    trackService(IHomeRuntimeService, 'close', 'homeRuntime.close');
+    trackService(ISessionIndexMirror, 'drain', 'sessionIndexMirror.drain');
+    trackService(IMcpOAuthService, 'shutdown', 'mcpOAuth.shutdown');
+    trackService(IPluginHostService, 'stopAll', 'pluginHost.stopAll');
+    trackService(IAppendLogStore, 'drainRetirements', 'appendLog.drainRetirements');
+    trackService(IGlobalSearchService, 'dispose', 'globalSearch.dispose');
+    const accessor = host.core.accessor;
+    const originalGet = accessor.get;
+    const wrappedGet = function <T>(id: ServiceIdentifier<T>): T {
+      const instance = originalGet(id);
+      const spec = specs.find((item) => item.id === id);
+      if (spec && instance !== null && typeof instance === 'object') arm(instance, spec.method, spec.phase);
+      return instance;
+    };
+    accessor.get = wrappedGet;
+    watch.undo(() => { accessor.get = originalGet; });
+    watch.watch(host.app, 'close', 'app.close');
+    watch.watch(host.core, 'dispose', 'core.dispose');
+    watch.watch(SqliteSearchHost.prototype, 'close', 'sqliteHost.close');
+    watch.watch(InlineSearchBackend.prototype, 'dispose', 'inlineSearch.dispose');
+    watch.watch(SearchWorkerHost.prototype, 'dispose', 'searchWorker.dispose');
+    return watch;
+  } catch (error) {
+    watch.restore();
+    if (error instanceof Error) throw error;
+    throw new Error(closePhaseText(error), { cause: error });
+  }
+}
+
+async function awaitNaturalClose(input: {
+  close: () => Promise<unknown>;
+  install: () => ClosePhaseWatch;
+  restoreSpy: () => void;
+  onTimeout: () => void;
+  detail: (phases: ClosePhaseWatch) => unknown;
+}): Promise<void> {
+  let phases: ClosePhaseWatch | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let timedOut = false;
+  let closing: Promise<boolean> | undefined;
+  try {
+    const installed = input.install();
+    phases = installed;
+    let closeError: unknown;
+    closing = new Promise<boolean>((resolve) => {
+      try {
+        void Promise.resolve(input.close()).then(
+          () => { resolve(true); },
+          (error: unknown) => { closeError = error; resolve(false); },
+        );
+      } catch (error) {
+        closeError = error;
+        resolve(false);
+      }
+    });
+    const naturallyClosed = await Promise.race([
+      closing,
+      new Promise<false>((resolve) => { timer = setTimeout(() => { resolve(false); }, 2000); }),
+    ]);
+    if (closeError instanceof Error) throw closeError;
+    if (closeError !== undefined) throw new Error('close failed', { cause: closeError });
+    if (!naturallyClosed) {
+      timedOut = true;
+      throw new Error(`Host did not close naturally within 2000ms: ${JSON.stringify(input.detail(installed))}`);
+    }
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+    if (timedOut) input.onTimeout();
+    try {
+      await closing;
+    } finally {
+      phases?.restore();
+      input.restoreSpy();
+    }
+  }
+}
+
+describe('close phase watch', () => {
+  it('names the unfinished close phase and still runs the following cleanup', async () => {
+    const seen: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const enteredGate = new Promise<void>((resolve) => { entered = resolve; });
+    const steps = {
+      marker: 'host',
+      shutdown() { seen.push('shutdown'); return Promise.resolve(this.marker); },
+      close(arg: string) { seen.push(`close:${arg}`); entered(); return gate.then(() => 'close-result'); },
+      dispose() { seen.push('dispose'); return Promise.resolve('disposed'); },
+    };
+    const originalClose = steps.close;
+    const watch = new ClosePhaseWatch();
+    watch.watch(steps, 'shutdown', 'threadComm.shutdown');
+    watch.watch(steps, 'close', 'mailbox.close');
+    watch.watch(steps, 'dispose', 'core.dispose');
+    const values: unknown[] = [];
+    const running = (async () => {
+      values.push(await steps.shutdown());
+      values.push(await steps.close('keep'));
+      values.push(await steps.dispose());
+    })();
+    await enteredGate;
+    expect(watch.snapshot()).toMatchObject({
+      pending: 'mailbox.close',
+      after: null,
+      phases: [
+        { phase: 'threadComm.shutdown', state: 'done' },
+        { phase: 'mailbox.close', state: 'pending' },
+      ],
+    });
+    release();
+    await running;
+    expect(values).toEqual(['host', 'close-result', 'disposed']);
+    expect(seen).toEqual(['shutdown', 'close:keep', 'dispose']);
+    expect(watch.snapshot().pending).toBeNull();
+    expect(watch.snapshot().phases.map((phase) => `${phase.phase}:${phase.state}`)).toEqual([
+      'threadComm.shutdown:done', 'mailbox.close:done', 'core.dispose:done',
+    ]);
+    watch.restore();
+    expect(steps.close).toBe(originalClose);
+
+    const broken = { close: () => Promise.reject(new Error('close failed')) };
+    const failure = new ClosePhaseWatch();
+    failure.watch(broken, 'close', 'mailbox.close');
+    await expect(broken.close()).rejects.toThrow('close failed');
+    expect(failure.snapshot().phases[0]).toMatchObject({ phase: 'mailbox.close', state: 'failed', error: 'close failed' });
+    failure.restore();
+  });
+
+  it('restores prototype wrappers when close rejects', async () => {
+    const originals = {
+      sqlite: SqliteSearchHost.prototype.close,
+      inline: InlineSearchBackend.prototype.dispose,
+      worker: SearchWorkerHost.prototype.dispose,
+    };
+    let gets = 0;
+    const get = <T,>(_id: ServiceIdentifier<T>): T => {
+      gets += 1;
+      throw new Error('accessor.get');
+    };
+    const server = { close() {}, closeAllConnections: vi.fn() };
+    const originalServerClose = server.close;
+    const spy = vi.spyOn(server, 'close');
+    let wrappedDuringClose = false;
+    const host: CloseWatchTarget = {
+      app: { close() { return undefined; }, server },
+      core: { dispose() { return undefined; }, accessor: { get }, instantiation: {} },
+    };
+    try {
+      await expect(awaitNaturalClose({
+        close: () => {
+          wrappedDuringClose = SqliteSearchHost.prototype.close !== originals.sqlite
+            && InlineSearchBackend.prototype.dispose !== originals.inline
+            && SearchWorkerHost.prototype.dispose !== originals.worker;
+          return Promise.reject(new Error('close failed'));
+        },
+        install: () => watchHostClose(host),
+        restoreSpy: () => { spy.mockRestore(); },
+        onTimeout: () => server.closeAllConnections(),
+        detail: () => ({}),
+      })).rejects.toThrow('close failed');
+      expect(wrappedDuringClose).toBe(true);
+      expect(gets).toBe(0);
+      expect(SqliteSearchHost.prototype.close).toBe(originals.sqlite);
+      expect(InlineSearchBackend.prototype.dispose).toBe(originals.inline);
+      expect(SearchWorkerHost.prototype.dispose).toBe(originals.worker);
+      expect(server.close).toBe(originalServerClose);
+      expect(server.closeAllConnections).not.toHaveBeenCalled();
+    } finally {
+      if (SqliteSearchHost.prototype.close !== originals.sqlite) SqliteSearchHost.prototype.close = originals.sqlite;
+      if (InlineSearchBackend.prototype.dispose !== originals.inline) InlineSearchBackend.prototype.dispose = originals.inline;
+      if (SearchWorkerHost.prototype.dispose !== originals.worker) SearchWorkerHost.prototype.dispose = originals.worker;
+      if (server.close !== originalServerClose) spy.mockRestore();
+    }
+  });
+});
 
 describe('GUI shared client against an isolated KAP host', () => {
   let host: RunningServer;
@@ -64,7 +386,8 @@ describe('GUI shared client against an isolated KAP host', () => {
       '[models.unavailable]', 'provider = "managed:kimi-code"', 'model = "unavailable"', 'max_context_size = 100000',
       ...['first', 'second'].flatMap((model) => [
         `[models.${model}]`, 'provider = "local"', `model = "${model}"`,
-        'max_context_size = 100000', 'capabilities = ["image_in"]',
+        'max_context_size = 100000', 'capabilities = ["image_in", "thinking"]',
+        'support_efforts = ["low", "high"]', 'default_effort = "high"',
       ]),
       '',
     ].join('\n'));
@@ -90,21 +413,18 @@ describe('GUI shared client against an isolated KAP host', () => {
     provider.closeAllConnections();
     const initialResponses = responseFacts.map((read) => read());
     const serverClose = vi.spyOn(host.app.server, 'close');
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const closing = host.close();
-    const naturallyClosed = await Promise.race([
-      closing.then(() => true),
-      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), 2000); }),
-    ]);
-    if (timer !== undefined) clearTimeout(timer);
     try {
-      if (!naturallyClosed) {
-        throw new Error(`Host did not close naturally within 2000ms: ${JSON.stringify({ initialResponses, serverCloseCalled: serverClose.mock.calls.length, responses: responseFacts.map((read) => read()) })}`);
-      }
+      await awaitNaturalClose({
+        close: () => host.close(),
+        install: () => watchHostClose(host),
+        restoreSpy: () => { serverClose.mockRestore(); },
+        onTimeout: () => { host.app.server.closeAllConnections(); },
+        detail: (phases) => ({
+          initialResponses, serverCloseCalled: serverClose.mock.calls.length,
+          responses: responseFacts.map((read) => read()), ...phases.snapshot(),
+        }),
+      });
     } finally {
-      if (!naturallyClosed) host.app.server.closeAllConnections();
-      await closing;
-      serverClose.mockRestore();
       await new Promise<void>((resolve, reject) => provider.close((error) => {
         if (error) reject(error);
         else resolve();
@@ -305,13 +625,24 @@ describe('GUI shared client against an isolated KAP host', () => {
       expect(cold.data.tasks.find((task) => task.agentId === child.id)?.state).toBe('completed');
       expect(getLiveSessionById(host.core.accessor, id)).toBeUndefined();
     }
-    const controller = new SessionController(client.sessions, client.sessionView(id), id);
+    const view = client.sessionView(id);
+    let ready = false;
+    const subscribe = view.subscribe.bind(view);
+    const subscriptionSpy = vi.spyOn(view, 'subscribe').mockImplementation((options, callback) =>
+      subscribe(options, (signal) => {
+        if (signal.type === 'ready') ready = true;
+        callback(signal);
+      }),
+    );
+    const controller = new SessionController(client.sessions, view, id);
     const mainChanges = vi.fn();
     const childChanges = vi.fn();
     const offMain = controller.subscribe(mainChanges);
     const offChild = controller.subscribeAgent(child.id, childChanges);
     try {
       await controller.open();
+      await vi.waitFor(() => expect(ready).toBe(true), { timeout: 10000 });
+      controller.flushFrames();
       await vi.waitFor(() => {
         controller.flushFrames();
         expect(controller.getForest()?.byId[child.id]?.status).toBe('completed');
@@ -358,6 +689,7 @@ describe('GUI shared client against an isolated KAP host', () => {
     } finally {
       offMain();
       offChild();
+      subscriptionSpy.mockRestore();
       controller.close();
     }
   }, 40000);
@@ -415,9 +747,8 @@ describe('GUI shared client against an isolated KAP host', () => {
 
   it('accepts three uploaded and three inline images through the GUI adapter and downloads session media', async () => {
     const id = await session();
-    const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=', 'base64');
-    const image = Buffer.concat([png, Buffer.alloc(600 * 1024)]);
-    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([image], `image-${index}.png`, { type: 'image/png' }))));
+    const image = paddedPng(600 * 1024, 1);
+    const uploaded = await Promise.all([0, 1, 2].map((index) => client.uploadFile(new File([new Uint8Array(image)], `image-${index}.png`, { type: 'image/png' }))));
     const submission = {
       model: 'first',
       content: uploaded.map((file) => ({ type: 'image' as const, source: { kind: 'file' as const, file_id: file.id } })),

@@ -3,6 +3,7 @@ import { mkdir, mkdtemp, readdir, readFile, rename, rm, stat, writeFile } from '
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { inflateRawSync } from 'node:zlib';
+import { inspect } from 'node:util';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -21,6 +22,7 @@ import {
   setSessionArchivedBatch,
   IAgentGoalService,
   IAgentLifecycleService,
+  IAgentProfileService,
   IAgentUsageService,
   IAppendLogStore,
   IAtomicDocumentStore,
@@ -51,6 +53,7 @@ import {
 } from '@kiki/agent-core-v2';
 import { Event, type IWaitUntil } from '@kiki/agent-core-v2/_base/event';
 import { TurnStarted } from '@kiki/agent-core-v2/agent/loop/turnEvents';
+import { AgentLifecycleService } from '@kiki/agent-core-v2/session/agentLifecycle/agentLifecycleService';
 import { sessionWarningsResponseSchema } from '@kiki/agent-core-v2/app/sessionLegacy/sessionProtocol';
 import { encodeLegacyWorkDirKey, encodeWorkDirKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 
@@ -58,6 +61,14 @@ import { type RunningServer, startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
 import { authHeaders } from './helpers/auth';
 import { createKlient as createMemoryKlient } from '@kiki/klient/memory';
+import {
+  SessionCreateReceiptStore,
+  sessionCreateConnectionScope,
+  sessionCreateReceiptFingerprint,
+  sessionCreateReceiptHomeScope,
+  sessionCreateReceiptIdentity,
+  sessionCreateReceiptStorageScope,
+} from '../src/services/sessionCreateReceipt';
 
 interface Envelope<T> {
   code: number;
@@ -189,6 +200,196 @@ describe('server-v2 /api/sessions', () => {
     } as never);
     return { status: res.status, body: (await res.json()) as Envelope<T> };
   }
+
+  async function postJsonWithSignal<T>(
+    path: string,
+    body: unknown,
+    signal: AbortSignal,
+  ): Promise<{ status: number; body: Envelope<T> }> {
+    const res = await fetch(`${base}${path}`, {
+      method: 'POST',
+      headers: authHeaders(server as RunningServer, { 'content-type': 'application/json' }),
+      body: JSON.stringify(body),
+      signal,
+    } as never);
+    return { status: res.status, body: (await res.json()) as Envelope<T> };
+  }
+
+  it('reads archived messages without restore and permanently deletes only the attached archived family', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'archive-readable', workDir: home! });
+    const agent = await root.accessor.get(IAgentLifecycleService).create({ agentId: 'main' });
+    agent.accessor.get(IAgentContextMemoryService).append({ role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: 'Saved archive message' }], toolCalls: [] });
+    await agent.accessor.get(IWireService).flush();
+    const attached = await manager.create({ sessionId: 'archive-attached', workDir: home! });
+    const promoted = await manager.create({ sessionId: 'archive-independent', workDir: home! });
+    const neighbor = await manager.create({ sessionId: 'archive-unarchived', workDir: home! });
+    for (const handle of [attached, promoted, neighbor]) await handle.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    await postJson(`/api/sessions/${root.id}:archive`, { include_attached: true, exclude_session_ids: [promoted.id, neighbor.id] });
+    await manager.archive(promoted.id);
+    const restore = vi.spyOn(manager, 'restore');
+    const messages = await getJson<{ items: { content: unknown }[] }>(`/api/sessions/${root.id}/messages`);
+    expect(messages.body.code).toBe(0);
+    expect(JSON.stringify(messages.body.data)).toContain('Saved archive message');
+    expect((await core.get(ISessionIndex).get(root.id))?.archived).toBe(true);
+    expect(restore).not.toHaveBeenCalled();
+    const deleted = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>(`/api/sessions/${root.id}:delete-archived`, { exclude_session_ids: [promoted.id] });
+    expect(deleted.body.code).toBe(0);
+    expect(deleted.body.data.deleted_ids.toSorted()).toEqual([root.id, attached.id].toSorted());
+    expect(deleted.body.data.failed).toEqual([]);
+    expect(await core.get(ISessionIndex).get(root.id)).toBeUndefined();
+    expect(await core.get(ISessionIndex).get(promoted.id)).toMatchObject({ archived: true });
+    expect(await core.get(ISessionIndex).get(neighbor.id)).toMatchObject({ archived: false });
+    const refused = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>(`/api/sessions/${neighbor.id}:delete-archived`, {});
+    expect(refused.body.data.failed).toHaveLength(1);
+    expect(await core.get(ISessionIndex).get(neighbor.id)).toBeDefined();
+  });
+
+  it('deletes every archived page with partial failure and preserves restored and newly created unarchived sessions', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const index = core.get(ISessionIndex);
+    const registry = core.get(IWorkspaceService);
+    const workspace = await registry.createOrTouch(home!);
+    const docs = core.get(IAtomicDocumentStore);
+    for (let i = 0; i < 105; i++) await docs.set(`sessions/${workspace.id}/archive-page-${i}`, 'state.json', {
+      version: 2, id: `archive-page-${i}`, cwd: home, title: `Saved ${i}`, createdAt: i + 1, updatedAt: i + 1, archived: true,
+    });
+    await index.prepare();
+    const page = await getJson<PageWire>('/api/sessions?archived_only=true&page_size=50');
+    expect(page.body.data.items).toHaveLength(50);
+    expect(page.body.data.has_more).toBe(true);
+    const searched = await getJson<PageWire>('/api/sessions?archived_only=true&q=Saved%20104');
+    expect(searched.body.data.items.map((item) => item.id)).toEqual(['archive-page-104']);
+    const original = manager.withLifecycleSerialization.bind(manager);
+    vi.spyOn(manager, 'withLifecycleSerialization').mockImplementation((id, work) => original(id, async (lifecycle) => {
+      if (id === 'archive-page-10') throw new Error('fixture deletion blocked');
+      if (id === 'archive-page-11') await lifecycle.restore();
+      return work(lifecycle);
+    }));
+    await manager.create({ sessionId: 'archive-new-active', workDir: home! });
+    const result = await postJson<import('@kiki/protocol').DeleteArchivedSessionsResponse>('/api/sessions:delete-archived', {});
+    expect(result.body.code).toBe(0);
+    expect(result.body.data.deleted_ids).toHaveLength(103);
+    expect(result.body.data.failed.map((item) => item.id).toSorted()).toEqual(['archive-page-10', 'archive-page-11']);
+    expect(await index.get('archive-new-active')).toMatchObject({ archived: false });
+    expect(await index.get('archive-page-11')).toMatchObject({ archived: false });
+    const fresh = await getJson<PageWire>('/api/sessions?archived_only=true');
+    expect(fresh.body.data.items.map((item) => item.id)).toEqual(['archive-page-10']);
+  });
+
+  it('archives the authoritative attached family across cold pages and workspaces while preserving promoted subtrees', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const index = core.get(ISessionIndex);
+    await index.prepare();
+    const root = await manager.create({ sessionId: 'family-root', workDir: home! });
+    const rootDir = root.accessor.get(ISessionContext).sessionDir;
+    const workspaceId = root.accessor.get(ISessionContext).workspaceId;
+    const docs = core.get(IAtomicDocumentStore);
+    const scope = (id: string, workspace = workspaceId) => `sessions/${workspace}/${id}`;
+    const put = (id: string, custom: Record<string, unknown>, workspace = workspaceId, archived = false) => docs.set(scope(id, workspace), 'state.json', {
+      version: 2, id, cwd: home, createdAt: 1, updatedAt: 1, archived, archivedAt: archived ? 7 : undefined, custom,
+      agents: { main: { model: 'fixture-model', personaId: 'fixture-persona' } },
+      worktree: { worktreeId: 'fixture-worktree', branch: 'fixture-branch', sourceRoot: home, baseRef: 'HEAD' },
+    });
+    for (let i = 0; i < 105; i++) await put(`family-child-${i}`, { created_by_session_id: root.id });
+    await put('family-deep', { child_session_kind: 'child', parent_session_id: 'family-child-104' }, 'other-workspace');
+    await put('family-promoted', { created_by_session_id: root.id });
+    await put('family-promoted-child', { created_by_session_id: 'family-promoted' });
+    await put('family-fork', { parent_session_id: root.id });
+    await put('family-sibling', { created_by_session_id: 'other-root' });
+    await put('family-historical-archived', { created_by_session_id: root.id }, workspaceId, true);
+    const events: string[] = [];
+    const subscription = core.get(IEventService).onDidPublish((event) => { if (event.type === 'event.session.archived') events.push((event as unknown as { payload: { sessionId: string } }).payload.sessionId); });
+    const body = { include_attached: true, exclude_session_ids: ['family-promoted', root.id] };
+    try {
+      const first = await postJson<{ archived: boolean; outcomes: { id: string; ok: boolean }[] }>(`/api/sessions/${root.id}:archive`, body);
+      expect(first.body.code).toBe(0);
+      expect(first.body.data.archived).toBe(true);
+      expect(first.body.data.outcomes).toHaveLength(108);
+      expect(first.body.data.outcomes.every((item) => item.ok)).toBe(true);
+      expect(JSON.parse(await readFile(join(rootDir, 'state.json'), 'utf8')).archived).toBe(true);
+      expect(await docs.get(scope('family-deep', 'other-workspace'), 'state.json')).toMatchObject({ archived: true });
+      for (const id of ['family-promoted', 'family-promoted-child', 'family-fork', 'family-sibling']) {
+        expect(await docs.get(scope(id), 'state.json')).toMatchObject({ archived: false });
+      }
+      expect(await index.get('family-child-104')).toMatchObject({ archived: true, personaId: 'fixture-persona', worktree: { worktreeId: 'fixture-worktree' } });
+      expect(events).toHaveLength(107);
+      const defaultList = await getJson<PageWire>('/api/sessions');
+      expect(defaultList.body.data.items.map((item) => item.id).toSorted()).toEqual(['family-fork', 'family-promoted', 'family-promoted-child', 'family-sibling']);
+      let archivedList = await getJson<PageWire>('/api/sessions?archived_only=true&page_size=100');
+      expect(archivedList.body.data.has_more).toBe(true);
+      const archivedIds = archivedList.body.data.items.map((item) => item.id);
+      while (archivedList.body.data.has_more) {
+        const cursor = archivedList.body.data.items.at(-1)!.id;
+        archivedList = await getJson<PageWire>(`/api/sessions?archived_only=true&page_size=100&before_id=${cursor}`);
+        archivedIds.push(...archivedList.body.data.items.map((item) => item.id));
+      }
+      expect(archivedIds.toSorted()).toEqual(first.body.data.outcomes.map((item) => item.id).toSorted());
+      const retry = await postJson<{ archived: boolean }>(`/api/sessions/${root.id}:archive`, body);
+      expect(retry.body.data.archived).toBe(true);
+      expect(events).toHaveLength(107);
+      expect(await docs.get(scope('family-historical-archived'), 'state.json')).toMatchObject({ archivedAt: 7 });
+      const promoted = await postJson<{ archived: boolean; outcomes: { id: string }[] }>('/api/sessions/family-promoted:archive', body);
+      expect(promoted.body.data.outcomes.map((item) => item.id).toSorted()).toEqual(['family-promoted', 'family-promoted-child']);
+      expect(promoted.body.data.archived).toBe(true);
+      const restored = await postJson<SessionWire>(`/api/sessions/${root.id}:restore`);
+      expect(restored.body.data.archived).toBe(false);
+      expect(await docs.get(scope('family-child-0'), 'state.json')).toMatchObject({ archived: true });
+    } finally { subscription.dispose(); }
+  });
+
+  it('reports unfinished family items, keeps fresh lists and safely retries concurrent archive requests', async () => {
+    const core = server!.core.accessor;
+    await core.get(ISessionIndex).prepare();
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'retry-family-root', workDir: home! });
+    const child = await manager.create({ sessionId: 'retry-family-child', workDir: home! });
+    await child.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    const childDir = child.accessor.get(ISessionContext).sessionDir;
+    await manager.close(child.id);
+    const docs = core.get(IAtomicDocumentStore);
+    const set = docs.set.bind(docs);
+    let failed = false;
+    const writing = vi.spyOn(docs, 'set').mockImplementation(async (scope, key, value) => {
+      if (!failed && scope.endsWith(`/${child.id}`) && (value as { archived?: boolean }).archived) { failed = true; throw new Error('injected child archive write failure'); }
+      await set(scope, key, value);
+    });
+    const first = await postJson<{ archived: boolean; outcomes: unknown[] }>(`/api/sessions/${root.id}:archive`, { include_attached: true });
+    expect(first.body.code).toBe(0);
+    expect(first.body.data.archived).toBe(false);
+    expect(first.body.data.outcomes).toContainEqual({ id: child.id, ok: false, reason: 'error', message: 'injected child archive write failure' });
+    expect(JSON.parse(await readFile(join(childDir, 'state.json'), 'utf8')).archived).toBe(false);
+    const fresh = await getJson<PageWire>('/api/sessions');
+    expect(fresh.body.data.items.map((item) => item.id)).toEqual([child.id]);
+    writing.mockRestore();
+    const retries = await Promise.all([1, 2].map(() => postJson<{ archived: boolean }>(`/api/sessions/${root.id}:archive`, { include_attached: true })));
+    expect(retries.map((item) => item.body.data.archived)).toEqual([true, true]);
+    expect(JSON.parse(await readFile(join(childDir, 'state.json'), 'utf8')).archived).toBe(true);
+    expect((await getJson<PageWire>('/api/sessions')).body.data.items).toEqual([]);
+    expect(manager.residencyReport?.()).toMatchObject({ lifecycleOperations: 0 });
+  });
+
+  it('fails family discovery before mutation when authoritative metadata is unreadable', async () => {
+    const core = server!.core.accessor;
+    const manager = core.get(ISessionManager);
+    const root = await manager.create({ sessionId: 'unreadable-family-root', workDir: home! });
+    const child = await manager.create({ sessionId: 'unreadable-family-child', workDir: home! });
+    await child.accessor.get(ISessionMetadata).update({ custom: { created_by_session_id: root.id } });
+    const docs = core.get(IAtomicDocumentStore);
+    const get = docs.get.bind(docs);
+    vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (scope.endsWith(`/${child.id}`) && key === 'state.json') throw new Error('injected unreadable metadata');
+      return get(scope, key);
+    });
+    const result = await postJson<unknown>(`/api/sessions/${root.id}:archive`, { include_attached: true });
+    expect(result.body.code).not.toBe(0);
+    expect(result.body.msg).toContain(child.id);
+    expect((await root.accessor.get(ISessionMetadata).read()).archived).toBe(false);
+    expect((await child.accessor.get(ISessionMetadata).read()).archived).toBe(false);
+  });
 
   it('downloads a ZIP with the supplied Web log and cleans up its temporary directory', async () => {
     const created = await postJson<SessionWire>('/api/sessions', {
@@ -351,7 +552,7 @@ describe('server-v2 /api/sessions', () => {
       eventBus,
       events,
       cancel: async () => {
-        subscription.dispose();
+        await subscription.dispose();
         await postJson<SessionWire>(`/api/sessions/${id}/profile`, {
           agent_config: { goal_control: 'cancel' },
         });
@@ -434,6 +635,316 @@ describe('server-v2 /api/sessions', () => {
     expect(Number.isNaN(Date.parse(body.data.created_at))).toBe(false);
   });
 
+  it('shares a durable in-flight creation across a timed-out waiter and replays its completion', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3d';
+    const body = { creation_id: creationId, title: 'in-flight', metadata: { cwd: home as string } };
+    const manager = (server as RunningServer).core.accessor.get(ISessionManager);
+    const originalCreate = manager.create.bind(manager);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+    const create = vi.spyOn(manager, 'create').mockImplementation(async (options) => {
+      if (options.sessionId === `session_${creationId}`) {
+        entered();
+        await gate;
+      }
+      return originalCreate(options);
+    });
+    const controller = new AbortController();
+    const first = postJsonWithSignal<SessionWire>('/api/sessions', body, controller.signal).catch((error: unknown) => error);
+    try {
+      await enteredPromise;
+      const second = postJson<SessionWire>('/api/sessions', body);
+      controller.abort();
+      expect(await first).toBeInstanceOf(Error);
+      release();
+      const replayed = await second;
+      expect(replayed.body.code, JSON.stringify(replayed.body)).toBe(0);
+      expect(replayed.body.data.id).toBe(`session_${creationId}`);
+      expect(create).toHaveBeenCalledTimes(1);
+      const lateReplay = await postJson<SessionWire>('/api/sessions', body);
+      expect(lateReplay.body.code).toBe(0);
+      expect(lateReplay.body.data).toEqual(replayed.body.data);
+      expect(create).toHaveBeenCalledTimes(1);
+    } finally {
+      release();
+      create.mockRestore();
+    }
+  });
+
+  it('returns a 40948 business conflict when a creation_id is reused with another body', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3e';
+    const first = await postJson<SessionWire>('/api/sessions', {
+      creation_id: creationId,
+      title: 'first body',
+      metadata: { cwd: home as string },
+    });
+    expect(first.body.code).toBe(0);
+    const conflict = await postJson<null>('/api/sessions', {
+      creation_id: creationId.toUpperCase(),
+      title: 'different body',
+      metadata: { cwd: home as string },
+    });
+    expect(conflict.body.code).toBe(40948);
+    expect(conflict.body.details).toEqual({ creation_id: creationId, reason: 'body_mismatch' });
+  });
+
+  it('replays a durable creation failure instead of retrying lifecycle side effects', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3a';
+    const body = {
+      creation_id: creationId,
+      metadata: { cwd: home as string },
+      agent_config: { profile: 'missing-profile' },
+    };
+    const first = await postJson<null>('/api/sessions', body);
+    expect(first.body.code).toBe(40001);
+    const second = await postJson<null>('/api/sessions', body);
+    expect(second.body.code).toBe(first.body.code);
+    expect(second.body.msg).toBe(first.body.msg);
+    expect((server as RunningServer).core.accessor.get(ISessionManager).list()).toEqual([]);
+  });
+
+  it('replays a completed receipt after a server restart without creating again', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c3f';
+    const body = { creation_id: creationId, title: 'restart replay', metadata: { cwd: home as string } };
+    const first = await postJson<SessionWire>('/api/sessions', body);
+    expect(first.body.code).toBe(0);
+    await server!.close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const manager = server.core.accessor.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const replay = await postJson<SessionWire>('/api/sessions', body);
+    expect(replay.body.code).toBe(0);
+    expect(replay.body.data).toEqual(first.body.data);
+    expect(create).not.toHaveBeenCalled();
+    create.mockRestore();
+  });
+
+  it('releases the receipt lock when a raced read finds a completed receipt', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c44';
+    const body = { creation_id: creationId, title: 'terminal race', metadata: { cwd: home as string } };
+    const first = await postJson<SessionWire>('/api/sessions', body);
+    expect(first.body.code).toBe(0);
+    const core = (server as RunningServer).core.accessor;
+    const bootstrap = core.get(IBootstrapService);
+    const docs = core.get(IAtomicDocumentStore);
+    const receiptScope = sessionCreateReceiptStorageScope(
+      bootstrap.scope('store'),
+      sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId),
+      sessionCreateConnectionScope({}),
+    );
+    const get = docs.get.bind(docs);
+    let firstRead = true;
+    const read = vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (firstRead && scope === receiptScope && key === `${creationId}.json`) {
+        firstRead = false;
+        return undefined;
+      }
+      return get(scope, key);
+    });
+    const storage = core.get(IFileSystemStorageService);
+    const acquireLock = storage.acquireLock.bind(storage);
+    const lockCalls: { scope: string; key: string }[] = [];
+    const lockSpy = vi.spyOn(storage, 'acquireLock').mockImplementation(async (scope, key, options) => {
+      if (scope.includes('/session-create-locks/') && key === `${creationId}.lock`) lockCalls.push({ scope, key });
+      return acquireLock(scope, key, options);
+    });
+    const manager = core.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const raced = await postJson<SessionWire>('/api/sessions', body);
+    expect(raced.body.data).toEqual(first.body.data);
+    const racedLock = lockCalls.at(-1);
+    expect(racedLock).toBeDefined();
+    const proofLock = await acquireLock(racedLock!.scope, racedLock!.key, { waitForMs: 0 });
+    await proofLock.release();
+    lockSpy.mockRestore();
+    read.mockRestore();
+    const replay = await postJson<SessionWire>('/api/sessions', body);
+    expect(replay.body.data).toEqual(first.body.data);
+    expect(create).not.toHaveBeenCalled();
+    create.mockRestore();
+  });
+
+  it('releases the receipt lock when a raced read resolves a pending receipt to unknown', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c45';
+    const body = { creation_id: creationId, title: 'unknown race', metadata: { cwd: home as string } };
+    const core = (server as RunningServer).core.accessor;
+    const bootstrap = core.get(IBootstrapService);
+    const docs = core.get(IAtomicDocumentStore);
+    const homeScope = sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId);
+    const connectionScope = sessionCreateConnectionScope({});
+    const receiptScope = sessionCreateReceiptStorageScope(bootstrap.scope('store'), homeScope, connectionScope);
+    const identity = sessionCreateReceiptIdentity(homeScope, connectionScope);
+    await docs.set(receiptScope, `${creationId}.json`, {
+      version: 1, scope: identity, creation_id: creationId, session_id: `session_${creationId}`,
+      fingerprint: sessionCreateReceiptFingerprint(body), body, status: 'pending',
+    });
+    const get = docs.get.bind(docs);
+    let firstRead = true;
+    const read = vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (firstRead && scope === receiptScope && key === `${creationId}.json`) {
+        firstRead = false;
+        return undefined;
+      }
+      return get(scope, key);
+    });
+    const storage = core.get(IFileSystemStorageService);
+    const acquireLock = storage.acquireLock.bind(storage);
+    const lockCalls: { scope: string; key: string }[] = [];
+    const lockSpy = vi.spyOn(storage, 'acquireLock').mockImplementation(async (scope, key, options) => {
+      if (scope.includes('/session-create-locks/') && key === `${creationId}.lock`) lockCalls.push({ scope, key });
+      return acquireLock(scope, key, options);
+    });
+    try {
+      const first = await postJson<null>('/api/sessions', body);
+      expect(first.body.code).toBe(50006);
+      expect(first.body.details).toEqual({
+        creation_id: creationId,
+        session_id: `session_${creationId}`,
+        evidence: 'session_absent',
+      });
+      const racedLock = lockCalls.at(-1);
+      expect(racedLock).toBeDefined();
+      const proofLock = await acquireLock(racedLock!.scope, racedLock!.key, { waitForMs: 0 });
+      await proofLock.release();
+    } finally {
+      lockSpy.mockRestore();
+      read.mockRestore();
+    }
+    const replay = await postJson<null>('/api/sessions', body);
+    expect(replay.body.code).toBe(50006);
+    expect(replay.body.details).toEqual({
+      creation_id: creationId,
+      session_id: `session_${creationId}`,
+      evidence: 'session_absent',
+    });
+  });
+
+  it('lets separate receipt-store instances join an existing durable flight', async () => {
+    const creationId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c46';
+    const body = { creation_id: creationId, metadata: { cwd: home as string } };
+    const seed = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
+    const result = seed.body.data as unknown as import('../src/protocol/session').Session;
+    const store1 = new SessionCreateReceiptStore((server as RunningServer).core);
+    const store2 = new SessionCreateReceiptStore((server as RunningServer).core);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+    const operation = async () => {
+      entered();
+      await gate;
+      return result;
+    };
+    const mapError = (error: unknown) => ({ code: 50001, message: error instanceof Error ? error.message : String(error) });
+    const probe = async () => 'absent' as const;
+    const first = store1.run('local', body, operation, mapError, probe);
+    await enteredPromise;
+    const second = store2.run('local', body, async () => { throw new Error('second store executed side effects'); }, mapError, probe);
+    release();
+    await expect(first).resolves.toEqual(result);
+    await expect(second).resolves.toEqual(result);
+  });
+
+  it('marks pending partial and absent receipts unknown instead of recreating a session', async () => {
+    const core = (server as RunningServer).core.accessor;
+    const bootstrap = core.get(IBootstrapService);
+    const docs = core.get(IAtomicDocumentStore);
+    const homeScope = sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId);
+    const connectionScope = sessionCreateConnectionScope({});
+    const receiptScope = sessionCreateReceiptStorageScope(bootstrap.scope('store'), homeScope, connectionScope);
+    const identity = sessionCreateReceiptIdentity(homeScope, connectionScope);
+    const partialId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c40';
+    const partialBody = { creation_id: partialId, title: 'partial', metadata: { cwd: home as string } };
+    await core.get(ISessionManager).create({ sessionId: `session_${partialId}`, workDir: home as string });
+    await docs.set(receiptScope, `${partialId}.json`, {
+      version: 1, scope: identity, creation_id: partialId, session_id: `session_${partialId}`,
+      fingerprint: sessionCreateReceiptFingerprint(partialBody), body: partialBody, status: 'pending',
+    });
+    const absentId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c41';
+    const absentBody = { creation_id: absentId, title: 'absent', metadata: { cwd: home as string } };
+    await docs.set(receiptScope, `${absentId}.json`, {
+      version: 1, scope: identity, creation_id: absentId, session_id: `session_${absentId}`,
+      fingerprint: sessionCreateReceiptFingerprint(absentBody), body: absentBody, status: 'pending',
+    });
+
+    await server!.close();
+    server = await startServer({
+      hostIdentity: TEST_HOST_IDENTITY,
+      host: '127.0.0.1',
+      port: 0,
+      homeDir: home as string,
+      logLevel: 'silent',
+      debugEndpoints: true,
+    });
+    base = `http://127.0.0.1:${server.port}`;
+    const manager = server.core.accessor.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const partial = await postJson<null>('/api/sessions', partialBody);
+    expect(partial.body.code).toBe(50006);
+    expect(partial.body.details).toEqual({
+      creation_id: partialId,
+      session_id: `session_${partialId}`,
+      evidence: 'session_present_without_completion',
+    });
+    const absent = await postJson<null>('/api/sessions', absentBody);
+    expect(absent.body.code).toBe(50006);
+    expect(absent.body.details).toEqual({
+      creation_id: absentId,
+      session_id: `session_${absentId}`,
+      evidence: 'session_absent',
+    });
+    expect(create).not.toHaveBeenCalled();
+    expect(await server.core.accessor.get(ISessionIndex).get(`session_${partialId}`)).toBeDefined();
+    create.mockRestore();
+  });
+
+  it('distinguishes an unreadable receipt from a missing receipt', async () => {
+    const missingId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c42';
+    const missing = await postJson<SessionWire>('/api/sessions', {
+      creation_id: missingId,
+      metadata: { cwd: home as string },
+    });
+    expect(missing.body.code).toBe(0);
+
+    const unreadableId = '4e2c2d72-2d24-4d7e-9f5e-8d7c0a1b2c43';
+    const unreadableBody = { creation_id: unreadableId, metadata: { cwd: home as string } };
+    const bootstrap = (server as RunningServer).core.accessor.get(IBootstrapService);
+    const receiptScope = sessionCreateReceiptStorageScope(
+      bootstrap.scope('store'),
+      sessionCreateReceiptHomeScope(bootstrap.homeDir, bootstrap.spaceId),
+      sessionCreateConnectionScope({}),
+    );
+    const docs = (server as RunningServer).core.accessor.get(IAtomicDocumentStore);
+    const get = docs.get.bind(docs);
+    const read = vi.spyOn(docs, 'get').mockImplementation(async (scope, key) => {
+      if (scope === receiptScope && key === `${unreadableId}.json`) throw new Error('receipt read failed');
+      return get(scope, key);
+    });
+    const manager = (server as RunningServer).core.accessor.get(ISessionManager);
+    const create = vi.spyOn(manager, 'create');
+    const unreadable = await postJson<null>('/api/sessions', unreadableBody);
+    expect(unreadable.body.code).toBe(50006);
+    expect(unreadable.body.details).toEqual({
+      creation_id: unreadableId,
+      session_id: `session_${unreadableId}`,
+      evidence: 'receipt_read_error',
+    });
+    expect(unreadable.body.msg).toContain('receipt read failed');
+    expect(create).not.toHaveBeenCalled();
+    create.mockRestore();
+    read.mockRestore();
+  });
+
   it('returns persisted thread creators in paged and unpaged session lists without attributing forks', async () => {
     const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
     const created = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home as string } });
@@ -481,7 +992,8 @@ describe('server-v2 /api/sessions', () => {
         'max_context_size = 1000',
         'capabilities = ["thinking"]',
         'support_efforts = ["low", "medium", "high"]',
-        '',
+        'default_effort = "high"',
+        ''
       ].join('\n'),
       'utf8',
     );
@@ -583,7 +1095,7 @@ describe('server-v2 /api/sessions', () => {
     expect(sessions.body.data.items).toEqual([]);
   });
 
-  it('maps inactive profile tool patterns on create to request invalid', async () => {
+  it.each([false, true])('maps inactive profile tool patterns on create to request invalid (pending append=%s)', async (pendingAppend) => {
     await (server as RunningServer).close();
     server = undefined;
     await writeFile(
@@ -620,6 +1132,20 @@ describe('server-v2 /api/sessions', () => {
       ].join('\n'),
       'utf8',
     );
+    await writeFile(
+      join(agentsDir, 'active-tools.md'),
+      [
+        '---',
+        'name: active-tools',
+        'description: Profile with an available denylist',
+        'disallowedTools: [Read]',
+        '---',
+        '',
+        'Reject file reads.',
+        '',
+      ].join('\n'),
+      'utf8',
+    );
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
       host: '127.0.0.1',
@@ -630,14 +1156,109 @@ describe('server-v2 /api/sessions', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const created = await postJson<null>('/api/sessions', {
+    const manager = server.core.accessor.get(ISessionManager);
+    const create = manager.create.bind(manager);
+    let failure: unknown;
+    vi.spyOn(manager, 'create').mockImplementation(async (options) => {
+      try {
+        return await create(options);
+      } catch (error) {
+        failure = error;
+        throw error;
+      }
+    });
+    const announcements: string[] = [];
+    const sessionDirs: string[] = [];
+    let releaseAppend!: () => void;
+    let markAppend!: () => void;
+    let markCleanup!: () => void;
+    const appendGate = new Promise<void>((resolve) => { releaseAppend = resolve; });
+    const appendEntered = new Promise<void>((resolve) => { markAppend = resolve; });
+    const cleanupEntered = new Promise<void>((resolve) => { markCleanup = resolve; });
+    const storage = server.core.accessor.get(IFileSystemStorageService);
+    const append = storage.append.bind(storage);
+    if (pendingAppend) vi.spyOn(storage, 'append').mockImplementation(async (scope, key, content, options) => {
+      if (key === 'wire.jsonl' && Buffer.from(content).includes('pending-profile-create')) {
+        markAppend();
+        await appendGate;
+      }
+      return append(scope, key, content, options);
+    });
+    const onCreated = manager.onDidCreateSession?.(({ sessionId }) => announcements.push(sessionId));
+    const onMaterialized = manager.onWillCreateSession?.((event) => {
+      sessionDirs.push(event.readSeed(ISessionContext).sessionDir);
+    });
+    const createAgent = AgentLifecycleService.prototype.create;
+    if (pendingAppend) vi.spyOn(AgentLifecycleService.prototype, 'create').mockImplementation(async function (this: AgentLifecycleService, options) {
+      const subscription = this.onWillCreate((agent) => {
+        const wire = agent.accessor.get(IWireService);
+        const flush = wire.flush.bind(wire);
+        const dispose = agent.dispose.bind(agent);
+        let disposed = false;
+        vi.spyOn(agent, 'dispose').mockImplementation(async () => {
+          await dispose();
+          disposed = true;
+        });
+        vi.spyOn(wire, 'flush').mockImplementation(async () => {
+          if (disposed) markCleanup();
+          await flush();
+        });
+        const profile = agent.accessor.get(IAgentProfileService);
+        const bind = profile.bind.bind(profile);
+        vi.spyOn(profile, 'bind').mockImplementation(async (input) => {
+          wire.appendRecord({ type: 'warning.issued', code: 'pending-profile-create', message: 'Creation cleanup barrier' });
+          await bind(input);
+        });
+      });
+      try {
+        return await createAgent.call(this, options);
+      } finally {
+        subscription.dispose();
+      }
+    });
+    const creating = postJson<null>('/api/sessions', {
       metadata: { cwd: home as string },
       agent_config: { profile: 'inactive-tools' },
     });
+    let created: Awaited<typeof creating>;
+    try {
+      if (pendingAppend) {
+        await appendEntered;
+        const reachedCleanup = await Promise.race([cleanupEntered.then(() => true), creating.then(() => false)]);
+        expect(reachedCleanup, 'rejected creation must drain its wire before returning to session rollback').toBe(true);
+        expect(announcements).toEqual([]);
+        expect(sessionDirs).toHaveLength(1);
+        await expect(stat(sessionDirs[0]!)).resolves.toBeDefined();
+      }
+    } finally {
+      releaseAppend();
+      created = await creating;
+      onCreated?.dispose();
+      onMaterialized?.dispose();
+    }
 
-    expect(created.body.code).toBe(40001);
+    expect(created.body.code, `${JSON.stringify(created.body)}\n${inspect(failure, { depth: 6 })}`).toBe(40001);
+    expect(failure).toMatchObject({ name: 'ProfileError', code: 'profile.tool_pattern_inactive' });
+    expect(created.body.msg).toBe((failure as Error).message);
     expect(created.body.msg).toContain('DefinitelyMissingTool');
     expect(created.body.msg).toContain('disallowedTools');
+    expect(announcements).toEqual([]);
+    expect(manager.list()).toEqual([]);
+    expect(sessionDirs).toHaveLength(1);
+    for (const dir of sessionDirs) await expect(stat(dir)).rejects.toMatchObject({ code: 'ENOENT' });
+    const sessions = await getJson<PageWire>('/api/sessions');
+    expect(sessions.body.data.items).toEqual([]);
+
+    const valid = await postJson<SessionWire>('/api/sessions', {
+      metadata: { cwd: home as string },
+      agent_config: { profile: 'active-tools' },
+    });
+    expect(valid.body.code, JSON.stringify(valid.body)).toBe(0);
+    const main = manager.get(valid.body.data.id)?.accessor.get(IAgentLifecycleService).get('main');
+    expect(main?.accessor.get(IAgentProfileService).data()).toMatchObject({
+      profileName: 'active-tools',
+      disallowedTools: ['Read'],
+    });
   });
 
   it('creates and registers a new directory for each session without a workspace target', async () => {
@@ -699,7 +1320,7 @@ describe('server-v2 /api/sessions', () => {
     } finally {
       await rename(backupDir, instancesDir);
       onCreated?.dispose();
-      onEvent.dispose();
+      await onEvent.dispose();
     }
 
     expect(failed.status).toBe(200);
@@ -828,6 +1449,118 @@ describe('server-v2 /api/sessions', () => {
     expect(body.code).toBe(0);
     expect(body.data.items.some((s) => s.id === created.body.data.id)).toBe(true);
     expect(typeof body.data.has_more).toBe('boolean');
+  });
+
+  it('keeps every canonical sidebar ID reachable under preview pressure and does not resolve missing prefixes', async () => {
+    const metadata = { cwd: home, coverUrl: 'u'.repeat(70000), ...Object.fromEntries(Array.from({ length: 36 }, (_, index) => [`p${index}`, 'body'.repeat(1000)])) };
+    const ids: string[] = [];
+    for (let index = 0; index < 3; index++) {
+      const created = await postJson<SessionWire>('/api/sessions', { title: `Session ${index}`, metadata });
+      expect(created.body.code).toBe(0);
+      expect(created.body.data.id).toHaveLength(44);
+      ids.push(created.body.data.id);
+    }
+    const source = server!.core.accessor.get(ISessionIndex);
+    for (let visit = 0; visit < 2; visit++) {
+      const page = await getJson<PageWire>('/api/sessions?page_size=2');
+      expect(page.body.code).toBe(0);
+      expect(Buffer.byteLength(JSON.stringify(page.body))).toBeLessThan(64 * 1024);
+      expect(page.body.data.items).toHaveLength(2);
+      expect(page.body.data.has_more).toBe(true);
+      const older = await getJson<PageWire>(`/api/sessions?page_size=2&before_id=${encodeURIComponent(page.body.data.next_cursor!)}`);
+      expect(older.body.code).toBe(0);
+      const rows = [...page.body.data.items, ...older.body.data.items];
+      expect(rows.map((row) => row.id).toSorted()).toEqual(ids.toSorted());
+      for (const row of rows) {
+        expect((await source.get(row.id))?.id).toBe(row.id);
+        const opened = await getJson<SessionWire>(`/api/sessions/${row.id}`);
+        expect(opened.body.code).toBe(0);
+        expect(opened.body.data.id).toBe(row.id);
+      }
+    }
+    for (const id of [ids[0]!.slice(0, 30), 'session_', 'session_00000000-0000-4000-8000-000000000000']) {
+      const missing = await getJson<null>(`/api/sessions/${id}`);
+      expect(missing.body.code).toBe(40401);
+    }
+  });
+
+  it('serves and drains the sidebar without global workspace discovery', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
+    const discovery = vi.spyOn(server!.core.accessor.get(IWorkspaceService), 'list').mockRejectedValue(new Error('Global discovery is unavailable'));
+    const rows: SessionSummary[] = Array.from({ length: 75 }, (_, index) => ({
+      id: `catalog-sidebar-${index}`, workspaceId: index % 2 === 0 ? created.workspace_id : 'wd_legacy_000000000001',
+      cwd: index % 2 === 0 ? undefined : home,
+      createdAt: 1, updatedAt: 1000 - index, archived: false,
+    }));
+    const index = server!.core.accessor.get(ISessionIndex);
+    vi.spyOn(index, 'count').mockImplementation(async (query) => rows.filter((row) => query.workspaceIds === undefined || query.workspaceIds.includes(row.workspaceId)).length);
+    vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      const before = query.before === undefined ? -1 : rows.findIndex((row) => row.id === query.before);
+      const candidates = rows.slice(before + 1).filter((row) => query.workspaceIds === undefined || query.workspaceIds.includes(row.workspaceId));
+      const items = candidates.slice(0, query.limit);
+      return { items, nextCursor: items.length < candidates.length ? items.at(-1)?.id : undefined };
+    });
+    const first = (await getJson<PageWire>('/api/sessions?page_size=50')).body;
+    expect(first.code).toBe(0);
+    expect(first.data.items).toHaveLength(50);
+    expect(first.data.items.every((row) => row.metadata.cwd === home)).toBe(true);
+    expect(first.data.has_more).toBe(true);
+    const second = (await getJson<PageWire>(`/api/sessions?page_size=50&before_id=${first.data.next_cursor}`)).body;
+    expect(second.code).toBe(0);
+    expect(second.data.has_more).toBe(false);
+    expect([...first.data.items, ...second.data.items].map((row) => row.id)).toEqual(rows.map((row) => row.id));
+    const filtered = (await getJson<PageWire>(`/api/sessions?workspace_id=${created.workspace_id}`)).body;
+    expect(filtered.code).toBe(0);
+    expect(filtered.data.items.map((row) => row.id)).toEqual(rows.filter((row) => row.workspaceId === created.workspace_id).map((row) => row.id));
+    const legacy = (await getJson<PageWire>('/api/sessions?workspace_id=wd_legacy_000000000001')).body;
+    expect(legacy.code).toBe(0);
+    expect(legacy.data.items.map((row) => row.id)).toEqual(rows.filter((row) => row.workspaceId === 'wd_legacy_000000000001').map((row) => row.id));
+    expect(discovery).not.toHaveBeenCalled();
+  });
+
+  it('stops filtered list paging when its HTTP reader disconnects', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const index = server!.core.accessor.get(ISessionIndex);
+    const original = index.listRecent.bind(index);
+    let routePages = 0;
+    vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      if (query.limit !== 51 || query.includeArchived === true) return original(query);
+      routePages += 1;
+      await gate;
+      return { items: [{ id: 'filtered-row', workspaceId: 'wd_example_000000000001', cwd: home, title: 'unmatched', createdAt: 1, updatedAt: 1, archived: false }], nextCursor: routePages < 3 ? 'filtered-row' : undefined };
+    });
+    const controller = new AbortController();
+    const request = fetch(`${base}/api/sessions?q=absent`, { headers: authHeaders(server!), signal: controller.signal }).catch((error: unknown) => error);
+    try {
+      await vi.waitFor(() => expect(routePages).toBe(1));
+      controller.abort();
+      expect(await request).toBeInstanceOf(Error);
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      release();
+      await new Promise((resolve) => setTimeout(resolve, 25));
+      expect(routePages).toBe(1);
+    } finally { release(); }
+  });
+
+  it('projects cold sidebar personas from summaries without replaying agent wires', async () => {
+    const created = (await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } })).body.data;
+    const rows: SessionSummary[] = Array.from({ length: 50 }, (_, index) => ({
+      id: `cold-sidebar-${index}`, workspaceId: created.workspace_id, cwd: home,
+      personaId: index === 0 ? 'summary-persona' : undefined,
+      custom: index === 1 ? { bot_persona_id: 'legacy-persona' } : undefined,
+      createdAt: 1, updatedAt: 1000 - index, archived: false,
+    }));
+    vi.spyOn(server!.core.accessor.get(ISessionIndex), 'listRecent').mockResolvedValue({ items: rows, nextCursor: undefined });
+    const read = vi.spyOn(server!.core.accessor.get(IAppendLogStore), 'read').mockImplementation(() => {
+      throw new Error('Sidebar must not replay an agent wire');
+    });
+    const { body } = await getJson<PageWire>('/api/sessions?page_size=50');
+    expect(body.code).toBe(0);
+    expect(body.data.items).toHaveLength(50);
+    expect(body.data.items[0]?.agent_config).toMatchObject({ persona: { id: 'summary-persona' } });
+    expect(body.data.items[1]?.agent_config).toMatchObject({ persona: { id: 'legacy-persona' } });
+    expect(read).not.toHaveBeenCalled();
   });
 
   it('bounds default list bytes, drains every ID, preserves an after range, and filters busy before paging', async () => {
@@ -1891,6 +2624,33 @@ describe('server-v2 /api/sessions', () => {
     expect(childChildren.body.data.items.some((s) => s.id === grandchildId)).toBe(true);
   });
 
+  it.each(['custom', 'generated', 'replaceable'] as const)('preserves the source title kind on a default fork (%s)', async (kind) => {
+    const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(parent.body.code).toBe(0);
+    const source = getLiveSessionById(server!.core.accessor, parent.body.data.id)!;
+    await source.accessor.get(ISessionMetadata).update({ title: 'Source title', titleKind: kind });
+    const forked = await postJson<SessionWire>(`/api/sessions/${source.id}:fork`, {});
+    expect(forked.body.code).toBe(0);
+    const target = getLiveSessionById(server!.core.accessor, forked.body.data.id)!;
+    expect(await target.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Fork: Source title', titleKind: kind });
+    const disk = JSON.parse(await readFile(join(home!, 'sessions', parent.body.data.workspace_id, forked.body.data.id, 'state.json'), 'utf8'));
+    expect(disk.titleKind).toBe(kind);
+    await closeSessionById(server!.core.accessor, target.id);
+    const resumed = await resumeSessionById(server!.core.accessor, target.id);
+    expect(await resumed!.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Fork: Source title', titleKind: kind });
+  });
+
+  it('marks an explicitly named fork custom even when the source title is replaceable', async () => {
+    const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd: home } });
+    expect(parent.body.code).toBe(0);
+    const source = getLiveSessionById(server!.core.accessor, parent.body.data.id)!;
+    await source.accessor.get(ISessionMetadata).update({ title: 'Source title', titleKind: 'replaceable' });
+    const forked = await postJson<SessionWire>(`/api/sessions/${source.id}:fork`, { title: 'Named fork' });
+    expect(forked.body.code).toBe(0);
+    const target = getLiveSessionById(server!.core.accessor, forked.body.data.id)!;
+    expect(await target.accessor.get(ISessionMetadata).read()).toMatchObject({ title: 'Named fork', titleKind: 'custom' });
+  });
+
   it('does not list a plain fork as a child (kind must be "child")', async () => {
     const cwd = home as string;
     const parent = await postJson<SessionWire>('/api/sessions', { metadata: { cwd } });
@@ -2276,7 +3036,8 @@ describe('server-v2 /api/sessions', () => {
         'max_context_size = 1000',
         'capabilities = ["thinking"]',
         'support_efforts = ["low", "medium", "high"]',
-        '',
+        'default_effort = "high"',
+        ''
       ].join('\n'),
       'utf8',
     );
@@ -2384,7 +3145,7 @@ describe('server-v2 /api/sessions', () => {
       title: 'renamed-via-profile',
     });
     expect(updated.body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const meta = events.find((e) => e.type === 'session.meta.updated');
     expect(meta).toBeDefined();
@@ -2570,7 +3331,7 @@ describe('server-v2 /api/sessions', () => {
       { content: [{ type: 'text', text: 'hello web title' }] },
     );
     expect(submitted.body.code).toBe(0);
-    sub.dispose();
+    await sub.dispose();
 
     const got = await getJson<SessionWire>(`/api/sessions/${id}`);
     expect(got.body.code).toBe(0);

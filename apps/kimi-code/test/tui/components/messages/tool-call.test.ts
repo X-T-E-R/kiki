@@ -2,7 +2,7 @@ import { visibleWidth, type TUI } from '@kiki/pi-tui';
 import chalk from 'chalk';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-import { ToolCallComponent } from '#/tui/components/messages/tool-call';
+import { extractKeyArgument, ToolCallComponent } from '#/tui/components/messages/tool-call';
 import { STATUS_BULLET } from '#/tui/constant/symbols';
 import { darkColors } from '#/tui/theme/colors';
 
@@ -139,14 +139,14 @@ describe('ToolCallComponent', () => {
     expect(collapsed).toContain('line2');
     expect(collapsed).toContain('line3');
     expect(collapsed).not.toContain('line4');
-    expect(collapsed).toContain('... (2 more lines, ctrl+o to expand)');
+    expect(collapsed).toContain('... (2 more lines, Ctrl+O to expand)');
 
     component.setExpanded(true);
 
     const expanded = strip(component.render(100).join('\n'));
     expect(expanded).toContain('line4');
     expect(expanded).toContain('line5');
-    expect(expanded).not.toContain('ctrl+o to expand');
+    expect(expanded).not.toContain('Ctrl+O to expand');
   });
 
   it('renders live Bash output while the command is running', () => {
@@ -838,6 +838,108 @@ describe('ToolCallComponent', () => {
     expect(out).not.toContain('apps/kimi-code/src/tui/components/messages/tool-renderers/long-pa…');
   });
 
+  describe('key argument truncation', () => {
+    it('caps a CJK query by terminal cells instead of UTF-16 length', () => {
+      // 70 CJK characters = 140 cells; a UTF-16 budget of 60 would let 60
+      // characters (120 cells) through and wrap the header.
+      const keyArg = extractKeyArgument('WebSearch', { query: '中文搜索关键词'.repeat(10) });
+      expect(keyArg).not.toBeNull();
+      expect(visibleWidth(keyArg!)).toBeLessThanOrEqual(60);
+      expect(keyArg!.endsWith('…')).toBe(true);
+      expect(keyArg!.startsWith('中')).toBe(true);
+    });
+
+    it('never splits an emoji at the cut', () => {
+      // 40 emoji = 80 UTF-16 code units; slicing at 57 code units used to
+      // break a surrogate pair.
+      const keyArg = extractKeyArgument('WebSearch', { query: '😀'.repeat(40) }) ?? '';
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+      expect(keyArg.endsWith('…')).toBe(true);
+      const kept = keyArg.slice(0, -1);
+      expect(kept).toMatch(/^(?:😀)+$/u);
+    });
+
+    it('caps mixed CJK and ASCII by cells', () => {
+      const keyArg = extractKeyArgument('Grep', { pattern: `搜索${'abc'.repeat(40)}` }) ?? '';
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+      expect(keyArg.endsWith('…')).toBe(true);
+      expect(keyArg.startsWith('搜')).toBe(true);
+    });
+
+    it('keeps short and 60-cell ASCII arguments unchanged', () => {
+      expect(extractKeyArgument('WebSearch', { query: 'hello world' })).toBe('hello world');
+      expect(extractKeyArgument('WebSearch', { query: 'a'.repeat(60) })).toBe('a'.repeat(60));
+    });
+
+    it('truncates long ASCII arguments to the same 60-cell budget with an ellipsis', () => {
+      const keyArg = extractKeyArgument('WebSearch', { query: 'a'.repeat(100) });
+      expect(keyArg).toBe(`${'a'.repeat(59)}…`);
+      expect(visibleWidth(keyArg!)).toBe(60);
+    });
+
+    it('keeps the tail of a long CJK path recognizable', () => {
+      const path = '项目/源码/组件/界面/消息/工具调用/渲染/输出/最终/深层/目标文件.ts';
+      const keyArg = extractKeyArgument('Read', { path }) ?? '';
+      expect(keyArg.startsWith('…')).toBe(true);
+      expect(keyArg.endsWith('目标文件.ts')).toBe(true);
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+    });
+
+    it('keeps the tail of a long emoji path without broken characters', () => {
+      const path = `${'dir/'.repeat(30)}📦/目标.ts`;
+      const keyArg = extractKeyArgument('Read', { path }) ?? '';
+      expect(keyArg.startsWith('…')).toBe(true);
+      expect(keyArg.endsWith('目标.ts')).toBe(true);
+      expect(visibleWidth(keyArg)).toBeLessThanOrEqual(60);
+      expect(keyArg).not.toContain('\uFFFD');
+    });
+
+    it('keeps the header on one row for a long CJK query', () => {
+      const component = new ToolCallComponent(
+        {
+          id: 'call_cjk_query',
+          name: 'WebSearch',
+          args: { query: '中文搜索关键词'.repeat(10) },
+        },
+        undefined,
+      );
+
+      // spacer + header; before cell budgeting the 120-cell summary wrapped
+      // the header onto a second row.
+      const lines = component.render(100);
+      expect(lines).toHaveLength(2);
+      expect(strip(lines[1] ?? '')).toContain('…');
+    });
+
+    it('keeps a long CJK subagent description on a single header row', () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(10_000);
+      const component = new ToolCallComponent(
+        {
+          id: 'call_agent_cjk',
+          name: 'AgentRun',
+          args: { description: '调查项目里所有的中文测试文件并汇总结果'.repeat(3) },
+        },
+        undefined,
+      );
+      component.onSubagentSpawned({
+        agentId: 'sub_cjk_1',
+        agentName: 'explore',
+        runInBackground: false,
+      });
+
+      // spacer + header + summary line + two-row active window; a 120-cell
+      // description used to wrap the header and grow the card by a row.
+      const lines = component.render(120);
+      expect(lines).toHaveLength(5);
+      const header = strip(lines[1] ?? '');
+      expect(header).toContain('Explore Agent Queued (');
+      expect(header).toContain('…');
+
+      component.dispose();
+    });
+  });
+
   it('shows Read paths relative to the active workspace', () => {
     const component = new ToolCallComponent(
       {
@@ -1202,7 +1304,7 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('bash-line-9');
     expect(out).not.toContain('bash-line-7');
     // No ctrl+o promise for the subagent window.
-    expect(out).not.toContain('ctrl+o');
+    expect(out).not.toContain('Ctrl+O');
 
     // The global ctrl+o expand toggle must NOT expand the window.
     component.setExpanded(true);
@@ -1254,7 +1356,7 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('mcp-line-3');
     expect(out).toContain('mcp-line-4');
     expect(out).not.toContain('mcp-line-2');
-    expect(out).not.toContain('ctrl+o');
+    expect(out).not.toContain('Ctrl+O');
   });
 
   it('renders failed single subagents with the dedicated header and error text', () => {
@@ -1553,7 +1655,7 @@ describe('ToolCallComponent', () => {
     // Line numbers should reflect actual file positions.
     expect(out).toContain('  21');
     expect(out).toContain('  30');
-    expect(out).not.toContain('ctrl+o to expand');
+    expect(out).not.toContain('Ctrl+O to expand');
   });
 
   it('switches a streaming tool call to Truncated when the step ended with max_tokens', () => {
@@ -1618,7 +1720,7 @@ describe('ToolCallComponent', () => {
     expect(out).not.toContain('old20');
     expect(out).not.toContain('new20');
     expect(out).not.toMatch(/^\s*\d+\s+[+-]\s/m);
-    expect(out).not.toContain('ctrl+o to expand');
+    expect(out).not.toContain('Ctrl+O to expand');
   });
 
   it('caps the Write preview between finalized args and result to keep transcript height stable', () => {
@@ -1646,7 +1748,7 @@ describe('ToolCallComponent', () => {
     expect(out).toContain('line10');
     expect(out).not.toContain('line11');
     expect(out).not.toContain('line25');
-    expect(out).toContain('ctrl+o to expand');
+    expect(out).toContain('Ctrl+O to expand');
   });
 
   it('snaps a long Write preview to the collapsed cap when the result arrives', () => {
@@ -1673,7 +1775,7 @@ describe('ToolCallComponent', () => {
     const after = strip(component.render(100).join('\n'));
     expect(after).toContain('line1');
     expect(after).not.toContain('line25');
-    expect(after).toContain('ctrl+o to expand');
+    expect(after).toContain('Ctrl+O to expand');
   });
 
   it('refreshes the header when file_path arrives in a later streaming delta', () => {
@@ -1820,14 +1922,14 @@ describe('ToolCallComponent', () => {
     expect(collapsed).toContain('line1');
     expect(collapsed).toContain('line10');
     expect(collapsed).not.toContain('line25');
-    expect(collapsed).toContain('ctrl+o to expand');
+    expect(collapsed).toContain('Ctrl+O to expand');
 
     component.setExpanded(true);
 
     const expanded = strip(component.render(100).join('\n'));
     expect(expanded).toContain('line25');
     expect(expanded).toContain('line30');
-    expect(expanded).not.toContain('ctrl+o to expand');
+    expect(expanded).not.toContain('Ctrl+O to expand');
   });
 
   it('renders unknown Write file extensions as plain text without stderr noise', () => {

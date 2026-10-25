@@ -125,6 +125,11 @@ class AtomicDocumentStoreBase implements IAtomicDocumentStore {
   }
 }
 
+export function createJsonDocumentReader(storage: IFileSystemStorageService): Pick<IAtomicDocumentStore, 'get'> {
+  const documents = new AtomicDocumentStoreBase(storage, jsonDocumentCodec);
+  return { get: documents.get.bind(documents) };
+}
+
 export class JsonAtomicDocumentStore extends AtomicDocumentStoreBase {
   constructor(@IFileSystemStorageService storage: IFileSystemStorageService) {
     super(storage, jsonDocumentCodec);

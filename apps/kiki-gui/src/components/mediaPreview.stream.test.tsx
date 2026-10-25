@@ -49,11 +49,11 @@ beforeEach(async () => {
     if (request.headers.authorization !== 'Bearer fixture-token') { response.writeHead(401).end(); return; }
     if (/^\/api\/sessions\/session\/media\/image(?:-\d+)?\/preview(?:\?|$)/.test(request.url ?? '')) {
       previewRequests += 1;
-      const bytes = boundaryPreviews ? block.byteLength : 1024;
+      const bytes = boundaryPreviews ? 512 * 1024 : 1024;
       const oversized = boundaryPreviews && request.url?.includes('/image-4/preview');
       // Chunked responses force the production reader to count actual bytes.
       response.writeHead(200, { 'content-type': 'image/jpeg' });
-      response.write(block.subarray(0, bytes));
+      response.write(new Uint8Array(bytes).fill(0x5a));
       response.end(oversized ? new Uint8Array([0x5a]) : undefined);
       return;
     }
@@ -100,17 +100,13 @@ afterEach(async () => {
 
 async function openAttachment() {
   await act(async () => {
-    root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[item]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
+    root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ ...item, kind: 'file', mime: 'application/octet-stream', name: 'original.bin' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
   });
-  for (let tries = 0; !container.querySelector('img') && tries < 40; tries += 1) {
-    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
-  }
-  expect(container.querySelector('img')).not.toBeNull();
+  expect(container.querySelector('button')).not.toBeNull();
   await act(async () => { container.querySelector<HTMLButtonElement>('button')!.click(); });
-  await act(async () => {
-    document.querySelector('[data-attachment-preview]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: 20, clientY: 20 }));
-  });
-  return document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [data-menu-item="save-image"]')!;
+  const download = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Download');
+  expect(download).toBeDefined();
+  return download!;
 }
 
 describe('media original GUI stream', () => {
@@ -170,6 +166,69 @@ describe('media original GUI stream', () => {
     expect(await readFile(target, 'utf8')).toBe('existing user file');
     expect(document.body.textContent).not.toContain('Saved');
   }, 15_000);
+
+  it('saves image through single-layer gallery lightbox context menu and reflects transfer state', async () => {
+    originalBytes = 16 * 1024 * 1024;
+    const client = fixture.client as KikiClient;
+    vi.spyOn(client, 'readSessionMediaPreviewBytes').mockResolvedValue({ bytes: new Uint8Array(1024), mime: 'image/png' });
+    vi.spyOn(client, 'readSessionMediaBytes').mockResolvedValue({ bytes: new Uint8Array(1024), mime: 'image/png' });
+    const target = join(directory, 'single-layer-save.png');
+    await writeFile(target, 'initial content');
+    const first = deferred<void>();
+    const resume = deferred<void>();
+    const aborted = deferred<void>();
+    let writes = 0;
+    fixture.openSaveSink.mockImplementation(async () => {
+      const stream = await StreamSave.open(target);
+      return {
+        streaming: true,
+        async write(chunk: Uint8Array) { writes += 1; await stream.write(chunk, 0); first.resolve(); await resume.promise; },
+        close: () => stream.close(),
+        async abort() { await stream.abort(); aborted.resolve(); },
+      };
+    });
+
+    await act(async () => {
+      root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ ...item, kind: 'image', mime: 'image/png', name: 'lightbox-image.png' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
+    });
+    const trigger = container.querySelector<HTMLButtonElement>('button');
+    expect(trigger).not.toBeNull();
+    await act(async () => { trigger!.click(); });
+
+    const dialog = document.querySelector('[role="dialog"]');
+    expect(dialog).not.toBeNull();
+    const surface = dialog!.querySelector<HTMLElement>('[data-lightbox-viewport]')!;
+    expect(surface).not.toBeNull();
+
+    // Trigger save via context menu
+    await act(async () => { surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
+    const saveMenuItem = document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!;
+    expect(saveMenuItem).not.toBeNull();
+
+    await act(async () => {
+      saveMenuItem.click();
+      await first.promise;
+    });
+
+    // Transfer status bar shows progress and Cancel button
+    const transferBar = dialog!.querySelector('[role="status"]');
+    expect(transferBar).not.toBeNull();
+    const cancel = transferBar!.querySelector<HTMLButtonElement>('button');
+    expect(cancel).not.toBeNull();
+    expect(cancel!.textContent).toBe('Cancel');
+
+    // Cancel aborts HTTP request and sink
+    await act(async () => {
+      cancel!.click();
+      resume.resolve();
+      await aborted.promise;
+    });
+    await closed.promise;
+
+    expect(writes).toBe(1);
+    expect(await readFile(target, 'utf8')).toBe('initial content');
+    expect(document.body.textContent).not.toContain('Saved');
+  }, 15_000);
 });
 
 
@@ -187,20 +246,17 @@ describe('media preview budget and ownership', () => {
     expect(previewRequests).toBe(5);
     for (const result of results.slice(0, 4)) {
       expect(result.status).toBe('fulfilled');
-      if (result.status === 'fulfilled') expect(result.value.bytes.byteLength).toBe(64 * 1024);
+      if (result.status === 'fulfilled') expect(result.value.bytes.byteLength).toBe(512 * 1024);
     }
     expect(results[4]).toMatchObject({ status: 'rejected', reason: new Error('Media preview exceeds its byte budget') });
     expect(container.querySelectorAll('img')).toHaveLength(4);
     expect(URL.createObjectURL).toHaveBeenCalledTimes(4);
     expect(originals).not.toHaveBeenCalled();
     expect(originalRequests).toBe(0);
-    const unavailable = [...container.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.title === 'image-4');
-    expect(unavailable).toBeDefined();
+    const unavailable = container.querySelector<HTMLButtonElement>('[data-media-broken]');
+    expect(unavailable).not.toBeNull();
     await act(async () => { unavailable!.click(); });
-    expect(originals).not.toHaveBeenCalled();
-    const full = [...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Load full file')!;
-    expect(full).toBeDefined();
-    await act(async () => { full.click(); });
+    expect([...document.querySelectorAll<HTMLButtonElement>('button')].find((button) => button.textContent === 'Load full file')).toBeUndefined();
     expect(originals).toHaveBeenCalledExactlyOnceWith('session', 'image-4', expect.objectContaining({ signal: expect.any(AbortSignal), timeoutMs: 0 }));
   });
 
@@ -223,29 +279,27 @@ describe('media preview budget and ownership', () => {
     const render = () => <MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[item]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>;
     await act(async () => { root.render(render()); });
     await act(async () => { container.querySelector<HTMLButtonElement>('button')!.click(); });
-    expect(document.querySelector('[data-attachment-preview]')).not.toBeNull();
+    expect(document.querySelector('[data-lightbox-viewport]')).not.toBeNull();
     const next = new KikiClient({ baseUrl: 'http://unused.invalid', token: 'fixture-token' });
     const preview = vi.spyOn(next, 'readSessionMediaPreviewBytes').mockResolvedValue({ bytes: new Uint8Array(10), mime: 'image/jpeg' });
     const original = vi.spyOn(next, 'readSessionMediaBytes');
     fixture.client = next;
     await act(async () => { root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="other"><MediaPartList media={[]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>); });
-    expect(document.querySelector('[data-attachment-preview]')).toBeNull();
+    expect(document.querySelector('[data-lightbox-viewport]')).toBeNull();
     expect(preview).not.toHaveBeenCalled();
     expect(original).not.toHaveBeenCalled();
   });
 
-  it('keeps external URL originals explicit instead of auto-loading them or forwarding a bearer header', async () => {
+  it('displays external images automatically without forwarding a bearer header or adding a download link', async () => {
     await act(async () => {
-      root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', url: 'https://fixture.invalid/original.png', name: 'external.png' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
+      root.render(<MemoryRouter><I18nProvider><MediaPreviewProvider sessionId="session"><MediaPartList media={[{ kind: 'image', url: 'https://example.test/original.png', name: 'external.png' }]} /></MediaPreviewProvider></I18nProvider></MemoryRouter>);
     });
-    expect(container.querySelector('img')).toBeNull();
-    await act(async () => { container.querySelector<HTMLButtonElement>('button')!.click(); });
-    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://fixture.invalid/original.png');
-    expect(container.querySelector('a')?.getAttribute('rel')).toBe('noopener noreferrer');
+    expect(container.querySelector('img')?.getAttribute('src')).toBe('https://example.test/original.png');
+    expect(container.querySelector('a[download]')).toBeNull();
     expect(originalRequests).toBe(0);
   });
 
-  it('renders image attachment preview with readable floating header card and accessible controls', async () => {
+  it('renders single-layer image preview with accessible controls and context menu saving', async () => {
     const client = fixture.client as KikiClient;
     vi.spyOn(client, 'readSessionMediaPreviewBytes').mockResolvedValue({ bytes: new Uint8Array(1024), mime: 'image/png' });
     vi.spyOn(client, 'readSessionMediaBytes').mockResolvedValue({ bytes: new Uint8Array(1024), mime: 'image/png' });
@@ -258,29 +312,27 @@ describe('media preview budget and ownership', () => {
 
     const dialog = document.querySelector('[role="dialog"]');
     expect(dialog).not.toBeNull();
-    const header = dialog!.querySelector('header');
-    expect(header).not.toBeNull();
-    expect(header!.className).toContain('bg-panel/90');
-    expect(header!.className).toContain('border-hairline');
-    expect(header!.className).toContain('backdrop-blur-md');
-    expect(header!.textContent).toContain('step-after.png');
-    expect(header!.textContent).toContain('image/png');
+    expect(dialog!.textContent).toContain('step-after.png');
 
-    const downloadBtn = [...header!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Download');
+    const downloadBtn = [...dialog!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === 'Download');
     expect(downloadBtn).toBeUndefined();
-    const surface = dialog!.querySelector<HTMLElement>('[data-attachment-preview]')!;
+    const surface = dialog!.querySelector<HTMLElement>('[data-lightbox-viewport]')!;
+    expect(surface).not.toBeNull();
     await act(async () => { surface.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });
-    expect(document.querySelector('[data-attachment-image-menu] [data-menu-item="save-image"]')).not.toBeNull();
+    expect(document.querySelector('[data-lightbox-image-menu] [data-menu-item="save-image"]')).not.toBeNull();
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
-    expect(document.querySelector('[data-attachment-image-menu]')).toBeNull();
+    expect(document.querySelector('[data-lightbox-image-menu]')).toBeNull();
     expect(document.querySelector('[role="dialog"]')).toBe(dialog);
     await act(async () => { surface.dispatchEvent(new KeyboardEvent('keydown', { key: 'F10', shiftKey: true, bubbles: true, cancelable: true })); });
-    const save = document.querySelector<HTMLButtonElement>('[data-attachment-image-menu] [data-menu-item="save-image"]')!;
-    expect(document.activeElement).toBe(save);
+    const save = document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!;
+    expect(document.activeElement?.getAttribute('data-menu-item')).toBe('copy-image');
+    expect(document.querySelector('[data-lightbox-image-menu] [data-menu-item="copy-path"]')).toBeNull();
+    expect(document.querySelector('[data-lightbox-image-menu] [data-menu-item="show-in-folder"]')).toBeNull();
+    expect(document.querySelector('[data-lightbox-image-menu] [data-menu-item="copy-link"]')).toBeNull();
     fixture.openSaveSink.mockResolvedValue(null);
     await act(async () => { save.click(); });
     expect(fixture.openSaveSink).toHaveBeenCalledWith('step-after.png');
-    const closeBtn = [...header!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.getAttribute('aria-label') === 'Close');
+    const closeBtn = [...dialog!.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.getAttribute('aria-label') === 'Close');
     expect(closeBtn).toBeDefined();
     expect(closeBtn!.className).toContain('focus-visible:outline-selected-ink');
   });
@@ -298,7 +350,8 @@ it('saves a lightbox image from the keyboard context menu without a persistent D
     const image = document.querySelector('img')!;
     await act(async () => { image.dispatchEvent(new KeyboardEvent('keydown', { key: 'ContextMenu', bubbles: true, cancelable: true })); });
     const save = document.querySelector<HTMLButtonElement>('[data-lightbox-image-menu] [data-menu-item="save-image"]')!;
-    expect(document.activeElement).toBe(save);
+    expect(document.activeElement?.getAttribute('data-menu-item')).toBe('copy-image');
+    expect(document.querySelector('[data-lightbox-image-menu] [data-menu-item="copy-path"]')).toBeNull();
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); });
     expect(close).not.toHaveBeenCalled();
     await act(async () => { image.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true })); });

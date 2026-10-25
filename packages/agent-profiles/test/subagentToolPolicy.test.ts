@@ -31,6 +31,18 @@ describe('subagent tool defaults', () => {
     expect(isSubagentToolAllowed({ allowedTools: ['mcp__browser__*'] }, name, 'mcp', 'opt-in')).toBe(false);
   });
 
+  it('keeps browser__ego_run opt-in and ignores browser wildcards and Bash', () => {
+    const name = 'browser__ego_run';
+    expect(subagentToolDefault(name)).toBe('opt-in');
+    expect(isSubagentToolAllowed({}, name)).toBe(false);
+    expect(isSubagentToolAllowed({ allowedTools: ['browser__*'] }, name)).toBe(false);
+    expect(isSubagentToolAllowed({ allowedTools: ['Bash'] }, name)).toBe(false);
+    expect(isSubagentToolAllowed({ explicitProfileTools: ['*'] }, name)).toBe(false);
+    expect(isSubagentToolAllowed({ allowedTools: [name] }, name)).toBe(true);
+    expect(isSubagentToolAllowed({ explicitProfileTools: [name] }, name)).toBe(true);
+    expect(isSubagentToolAllowed({ allowedTools: ['browser__*'] }, 'browser__codex_browser_js')).toBe(true);
+  });
+
   it('preserves MCP, user and unknown extension defaults', () => {
     expect(isSubagentToolAllowed({}, 'mcp__example__write', 'mcp')).toBe(true);
     expect(isSubagentToolAllowed({}, 'CustomWrite', 'user')).toBe(true);

@@ -53,4 +53,8 @@ describe('workspaceGitState', () => {
     expect(workspaceGitState('/unregistered', workspaces)).toBeUndefined();
     expect(workspaceGitState(undefined, workspaces)).toBeUndefined();
   });
+
+  it('leaves catalog roots unclassified until the selected root is inspected', () => {
+    expect(workspaceGitState('C:/example/project', [{ root: 'C:/example/project' }])).toBeUndefined();
+  });
 });

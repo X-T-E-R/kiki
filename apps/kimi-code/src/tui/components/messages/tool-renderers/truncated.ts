@@ -39,7 +39,7 @@ export class TruncatedOutputComponent implements Component {
       isError: boolean | undefined;
       maxLines?: number;
       indent?: number;
-      // When false, the truncation footer omits the "ctrl+o to expand" promise
+      // When false, the truncation footer omits the "Ctrl+O to expand" promise
       // (for contexts whose output is fixed-truncated and never expands).
       expandHint?: boolean;
       // When true, collapsed rendering keeps the latest visual rows instead of
@@ -94,7 +94,7 @@ export class TruncatedOutputComponent implements Component {
 
     const shown = contentLines.slice(0, this.maxLines);
     const hint = this.expandHint
-      ? `... (${String(remaining)} more lines, ctrl+o to expand)`
+      ? `... (${String(remaining)} more lines, Ctrl+O to expand)`
       : `... (${String(remaining)} more lines)`;
     return [...shown, this.renderHint(width, hint)];
   }

@@ -57,6 +57,8 @@ interface WriterEntry {
   retire: boolean;
   /** When the process should yield this shard's lock (Infinity: never by time). */
   expiresAt: number;
+  timer?: NodeJS.Timeout;
+  closing?: Promise<void>;
 }
 
 interface ReaderEntry {
@@ -109,10 +111,12 @@ function readerFingerprint(parts: string[], mark: ReaderEntry['walMark']): strin
 
 export class ShardLockPool {
   private readonly writers = new Map<number, WriterEntry>();
+  private readonly compactionRetries = new Map<number, MiniDb<unknown>['autoCompactionRetry']>();
   private readonly readers = new Map<number, ReaderEntry>();
   private readonly openingWriters = new Map<number, Promise<WriterEntry>>();
   private readonly openingReaders = new Map<number, Promise<ReaderEntry>>();
-  private closed = false;
+  private readonly closingWriters = new Map<number, WriterEntry>();
+  private closeFlight: Promise<void> | undefined;
   /** Lifecycle gates behind closeAll() (review #18): every withWriter /
    *  withReader — acquire AND callback — runs inside one enter/leave, so the
    *  trackers' drain in closeAll() means "no callback can still touch a
@@ -153,12 +157,7 @@ export class ShardLockPool {
       } finally {
         entry.busy--;
         entry.lastUsedAt = Date.now();
-        if (entry.retire && entry.busy === 0) {
-          // The hold window expired while ops were in flight: yield the lock so
-          // other processes can take the shard over.
-          if (this.writers.get(shardId) === entry) this.writers.delete(shardId);
-          await entry.handle.close().catch(() => {});
-        }
+        if (entry.retire && entry.busy === 0) await this.closeWriter(entry);
         await this.evictWriters();
       }
     } finally {
@@ -181,6 +180,8 @@ export class ShardLockPool {
           } finally {
             w.busy--;
             w.lastUsedAt = Date.now();
+            if (w.retire && w.busy === 0) await this.closeWriter(w);
+            await this.evictWriters();
           }
         }
       }
@@ -198,9 +199,12 @@ export class ShardLockPool {
     }
   }
 
-  async closeAll(): Promise<void> {
-    if (this.closed) return;
-    this.closed = true;
+  closeAll(): Promise<void> {
+    this.closeFlight ??= this.drainAndClose().finally(() => { this.closeFlight = undefined; });
+    return this.closeFlight;
+  }
+
+  private async drainAndClose(): Promise<void> {
     // Close both gates and wait for every in-flight op — including its user
     // callback — to settle (review #18). New withWriter/withReader reject at
     // enter() from now on, so after the drain no busy counter can be non-zero
@@ -215,18 +219,30 @@ export class ShardLockPool {
     for (const opening of [...this.openingWriters.values(), ...this.openingReaders.values()]) {
       await opening.catch(() => {});
     }
-    const writers = [...this.writers.values()];
-    const readers = [...this.readers.values()];
-    this.writers.clear();
-    this.readers.clear();
-    const results = await Promise.allSettled([...writers, ...readers].map((e) => e.handle.close()));
+    const writers = [...new Set([...this.writers.values(), ...this.closingWriters.values()])];
+    const readers = [...this.readers.entries()];
+    const results = await Promise.allSettled([
+      ...writers.map((entry) => this.closeWriter(entry)),
+      ...readers.map(async ([id, entry]) => {
+        await entry.handle.close();
+        this.readers.delete(id);
+      }),
+    ]);
     const failed = results.find((r): r is PromiseRejectedResult => r.status === 'rejected');
     if (failed) throw failed.reason;
   }
 
   // ---- writers ------------------------------------------------------------
 
-  private async acquireWriter(shardId: number, dir: string): Promise<WriterEntry> {
+  private acquireWriter(shardId: number, dir: string): Promise<WriterEntry> {
+    const inflight = this.openingWriters.get(shardId);
+    if (inflight) return inflight;
+    const opening = this.refreshWriter(shardId, dir).finally(() => this.openingWriters.delete(shardId));
+    this.openingWriters.set(shardId, opening);
+    return opening;
+  }
+
+  private async refreshWriter(shardId: number, dir: string): Promise<WriterEntry> {
     const cached = this.writers.get(shardId);
     if (cached) {
       if (cached.expiresAt > Date.now()) {
@@ -239,14 +255,11 @@ export class ShardLockPool {
         cached.retire = true;
         return cached;
       }
-      if (this.writers.get(shardId) === cached) this.writers.delete(shardId);
-      await cached.handle.close().catch(() => {});
+      await this.closeWriter(cached);
     }
-    const inflight = this.openingWriters.get(shardId);
-    if (inflight) return inflight;
-    const opening = this.openWriter(shardId, dir).finally(() => this.openingWriters.delete(shardId));
-    this.openingWriters.set(shardId, opening);
-    return opening;
+    const closing = this.closingWriters.get(shardId);
+    if (closing) await this.closeWriter(closing);
+    return this.openWriter(shardId, dir);
   }
 
   private async openWriter(shardId: number, dir: string): Promise<WriterEntry> {
@@ -254,7 +267,9 @@ export class ShardLockPool {
     let delay = 10;
     for (;;) {
       try {
-        const handle = await ShardHandle.openWriter(shardId, dir, this.opts.writerOpts, this.opts.lockRenewMs);
+        const retry = this.compactionRetries.get(shardId) ?? { nextAt: 0, delayMs: 5_000 };
+        this.compactionRetries.set(shardId, retry);
+        const handle = await ShardHandle.openWriter(shardId, dir, this.opts.writerOpts, this.opts.lockRenewMs, retry);
         this.stats.writerOpens++;
         try {
           await this.opts.applyDefs(handle.db);
@@ -273,19 +288,15 @@ export class ShardLockPool {
           // Proactively yield the lock at the end of the hold window even if
           // this process goes idle, so a waiting process is never starved by
           // a holder that stopped writing but kept the process alive.
-          const timer = setTimeout(() => {
+          entry.timer = setTimeout(() => {
             if (entry.busy > 0) {
               entry.retire = true;
               return;
             }
             if (!this.writerOps.enter()) return;
-            if (this.writers.get(shardId) === entry) this.writers.delete(shardId);
-            void entry.handle
-              .close()
-              .catch(() => {})
-              .finally(() => this.writerOps.leave());
+            void this.closeWriter(entry).catch(() => {}).finally(() => this.writerOps.leave());
           }, this.opts.lockHoldMs);
-          timer.unref();
+          entry.timer.unref();
         }
         this.writers.set(shardId, entry);
         return entry;
@@ -300,6 +311,19 @@ export class ShardLockPool {
     }
   }
 
+  private closeWriter(entry: WriterEntry): Promise<void> {
+    if (entry.closing) return entry.closing;
+    const shardId = entry.handle.shardId;
+    if (entry.timer) clearTimeout(entry.timer);
+    if (this.writers.get(shardId) === entry) this.writers.delete(shardId);
+    const closing = entry.handle.close().then(() => {
+      if (this.closingWriters.get(shardId) === entry) this.closingWriters.delete(shardId);
+    }).finally(() => { entry.closing = undefined; });
+    entry.closing = closing;
+    this.closingWriters.set(shardId, entry);
+    return closing;
+  }
+
   private async evictWriters(): Promise<void> {
     while (this.writers.size > this.opts.maxWriters) {
       let victim: WriterEntry | null = null;
@@ -308,9 +332,8 @@ export class ShardLockPool {
         if (!victim || entry.lastUsedAt < victim.lastUsedAt) victim = entry;
       }
       if (!victim) return; // everything busy: soft cap exceeded temporarily
-      this.writers.delete(victim.handle.shardId);
       this.stats.evictions++;
-      await victim.handle.close().catch(() => {});
+      await this.closeWriter(victim);
     }
   }
 

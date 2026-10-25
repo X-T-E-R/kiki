@@ -8,7 +8,15 @@ import { tmpdir } from 'node:os';
 import nodePath from 'node:path';
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Event } from '#/_base/event';
+import { createControlledPromise } from '@antfu/utils';
+import { IAgentTaskService } from '#/agent/task/task';
+import { SubagentTask } from '#/agent/tools/agent/subagent-task';
+import { createAgentTaskPersistence, type TaskServiceTestManager } from '../../agent/task/stubs';
+import { IAgentCollaborationMessageStore } from '#/session/agentCollaboration/messageMailbox';
+import { appServices, homeDirServices } from '../../harness';
+import { Emitter, Event } from '#/_base/event';
+import { IPluginUsageService, type PluginUsageChange } from '#/app/pluginUsage/pluginUsage';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { ContextAppendLoopEvent, ContextApplyCompaction, ContextUndo } from '#/agent/contextMemory/contextEvents';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -168,6 +176,39 @@ describe('hooks v2 loading contract', () => {
 });
 
 describe('hooks v2 session workspace loading', () => {
+  it('filters plugin rules by workspace without changing user rules or the home registry', async () => {
+    const change = new Emitter<PluginUsageChange>();
+    let overrides: Readonly<Record<string, boolean>> = { example: false };
+    const global = snapshot([rule({ id: 'user' }), rule({ id: 'plugin' })]);
+    const plugin = global.rules[1]!;
+    const merged: HookRulesSnapshot = { ...global, rules: [global.rules[0]!, { ...plugin, id: 'plugin/example/plugin', namespace: 'plugin/example' }] };
+    const usage: IPluginUsageService = { _serviceBrand: undefined, enabled: () => true,
+      read: async (workspaceId) => ({ workspaceId, revision: 0, overrides, applyState: 'applied', errors: [] }),
+      allows: async (_workspaceId, id) => overrides[id] !== false, set: async () => { throw new Error('unused'); },
+      registerPluginStateReader: () => ({ dispose: () => {} }),
+      readSession: async (workspaceId, sessionId) => ({ workspaceId, sessionId, revision: 0, overrides: {}, applyState: 'applied' as const, errors: [] }),
+      applySession: async (snapshot) => snapshot,
+      onDidChange: change.event, onDidApply: Event.None as IPluginUsageService['onDidApply'] };
+    const session = new HookRulesSession(
+      { _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as IHookRulesRegistry['onDidChange'], snapshot: () => merged, disabled: () => [], reload: async () => {} },
+      { onDidChangeModels: Event.None } as unknown as IModelService,
+      { current: undefined, onDidChange: Event.None } as unknown as import('#/_base/di/instantiation').LiveRef<import('#/features/externalHooks/session/hookRules').ISessionHookWorkspace>,
+      usage, { workspaceId: 'workspace-a' } as unknown as ISessionContext,
+    );
+    try {
+      await session.ready;
+      expect(session.snapshot().rules.find((entry) => entry.namespace === 'plugin/example')).toMatchObject({ active: false, reason: 'workspace_plugin_disabled' });
+      expect(session.snapshot().rules.find((entry) => entry.namespace === 'user')?.active).toBe(true);
+      expect(merged.rules.every((entry) => entry.active)).toBe(true);
+      overrides = {};
+      const waiters: Promise<unknown>[] = [];
+      change.fire({ workspaceId: 'workspace-a', pluginId: 'example', revision: 1, waitUntil: (work) => { waiters.push(work); } });
+      await session.ready;
+      await Promise.all(waiters);
+      expect(session.snapshot().rules.every((entry) => entry.active)).toBe(true);
+    } finally { await session.dispose(); change.dispose(); }
+  });
+
   it('watches absent files, hot-loads rules, follows trust revocation and reports syntax errors before execution', async () => {
     const entry = await source(undefined, 'workspace', false);
     const file = nodePath.join(entry.root, '.kiki', 'hooks.toml');
@@ -179,6 +220,8 @@ describe('hooks v2 session workspace loading', () => {
       const noEvent = () => ({ dispose: () => {} });
       reg.definePartialInstance(IHookRulesRegistry, { ready: Promise.resolve(), onDidChange: noEvent, snapshot: () => snapshot([]), disabled: () => [] });
       reg.definePartialInstance(IModelService, { onDidChangeModels: noEvent, resolveId: (id) => id });
+      reg.definePartialInstance(IPluginUsageService, { enabled: () => false, onDidChange: noEvent });
+      reg.definePartialInstance(ISessionContext, { workspaceId: 'example' });
       reg.defineInstance(ISessionHookWorkspace, {
         _serviceBrand: undefined, root: entry.root,
         trust: { _serviceBrand: undefined, ready: Promise.resolve(), get: async () => trusted, isTrusted: () => trusted, trust: async () => { trusted = true; }, untrust: async () => { trusted = false; }, onDidChange: noEvent },
@@ -226,11 +269,135 @@ describe('hooks v2 session workspace loading', () => {
       expect(restored.revision).toBe(before.revision);
       expect(Object.values(restored.buckets)[0]?.completed).toBe(3);
       expect(watched).toContain(file);
-    } finally { disposables.dispose(); }
+    } finally { await disposables.dispose(); }
   });
 });
 
 describe('hooks v2 completed-step engine contract', () => {
+  it.each([false, true])('consumes durable child notifications through task rules once before the next actual request (busy=%s)', async (busy) => {
+    const observed: HookEvent[] = [];
+    const ctx = agentWithRules(() => snapshot([
+      rule({ id: 'human', event: 'prompt.submit', cadence: undefined, match: {}, action: { type: 'inject', text: 'HUMAN ONLY' } }),
+      rule({ id: 'task', event: 'prompt.submit', cadence: undefined, match: { sources: ['task'], agentRoles: ['root'] }, action: { type: 'inject', text: 'TASK CONSUMPTION CUE' } }),
+      rule({ id: 'task-observe', event: 'prompt.submit', cadence: undefined, match: { sources: ['task'] }, action: { type: 'observe' } }),
+      rule({ id: 'child-only', event: 'prompt.submit', cadence: undefined, match: { sources: ['task'], agentRoles: ['subagent'] }, action: { type: 'inject', text: 'WRONG ROLE' } }),
+    ]), (event) => observed.push(event));
+    const model = ctx.kimiConfig.models!['mock-model']!;
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, 'mock-model': { ...model, cognition: { steering: { text: 'COMPLETION STEERING' } } } } };
+    await ctx.get(IAgentProfileService).bind({ profile: 'agent', model: 'mock-model' });
+    const loop = ctx.get(IAgentLoopService);
+    const tasks = ctx.get(IAgentTaskService) as TaskServiceTestManager;
+    const entered = createControlledPromise<void>();
+    const release = createControlledPromise<void>();
+    const hold = loop.hooks.onWillBeginStep.register('hold-current-request', async (step, next) => {
+      if (busy && step.firstStepOfTurn) { entered.resolve(); await release; }
+      await next();
+    });
+    const completion = createControlledPromise<{ result: string }>();
+    const taskId = tasks.registerTask(new SubagentTask({ agentId: 'example-child', profileName: 'worker', completion }, 'child result', new AbortController()));
+    try {
+      if (busy) {
+        ctx.mockNextResponse({ type: 'text', text: 'Parent finishes first request' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Parent work' }] });
+        await entered;
+      }
+      expect(observed).toHaveLength(0);
+      ctx.mockNextResponse({ type: 'text', text: 'Consume child result' });
+      const ended = ctx.untilTurnEnd();
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      completion.resolve({ result: 'COMMITTED CHILD OUTPUT' });
+      await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
+      if (busy) expect(injections(ctx).filter((message) => JSON.stringify(message).includes('TASK CONSUMPTION CUE'))).toHaveLength(0);
+      release.resolve();
+      await ended;
+      await loop.settled();
+      expect(ctx.llmCalls).toHaveLength(busy ? 2 : 1);
+      const texts = ctx.llmCalls.at(-1)!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
+      const receiptIndex = texts.findIndex((text) => text.includes(taskId));
+      const hookIndex = texts.findIndex((text) => text.includes('TASK CONSUMPTION CUE'));
+      expect(receiptIndex).toBeGreaterThanOrEqual(0);
+      expect(hookIndex).toBeGreaterThan(receiptIndex);
+      expect(texts.findLastIndex((text) => text === 'COMPLETION STEERING')).toBeGreaterThan(hookIndex);
+      expect(texts.filter((text) => text === 'COMPLETION STEERING')).toHaveLength(busy ? 2 : 1);
+      expect(texts.some((text) => text.includes('WRONG ROLE'))).toBe(false);
+      expect(texts.filter((text) => text.includes('HUMAN ONLY'))).toHaveLength(busy ? 1 : 0);
+      expect(observed).toMatchObject([{ event: 'prompt.submit', source: 'task', agentRole: 'root', eventId: `task/task:${taskId}:completed` }]);
+      expect(injections(ctx).filter((message) => JSON.stringify(message).includes('TASK CONSUMPTION CUE'))).toHaveLength(1);
+      await tasks.reconcile();
+      await ctx.expectResumeMatches();
+      expect(observed).toHaveLength(1);
+    } finally {
+      release.resolve();
+      completion.resolve({ result: 'cleanup' });
+      await hold.dispose();
+    }
+  });
+
+  it('consumes an undelivered persisted child receipt once and does not replay its task hooks', async () => {
+    const home = await mkdtemp(nodePath.join(tmpdir(), 'task-hook-restore-'));
+    temporary.push(home);
+    const persistence = createAgentTaskPersistence(home);
+    await persistence.commitTerminalTask({ taskId: 'agent-example1', kind: 'agent', agentId: 'example-child', description: 'completed work', status: 'completed', detached: true, startedAt: 1, endedAt: 2 }, 'RESTORED CHILD OUTPUT');
+    const observed: HookEvent[] = [];
+    const rules = snapshot([
+      rule({ id: 'task', event: 'prompt.submit', cadence: undefined, match: { sources: ['task'] }, action: { type: 'inject', text: 'RESTORED TASK CUE' } }),
+      rule({ id: 'observe', event: 'prompt.submit', cadence: undefined, match: { sources: ['task'] }, action: { type: 'observe' } }),
+    ]);
+    const ctx = createTestAgent(homeDirServices(home), appServices((reg) => {
+      reg.definePartialInstance(IAgentCollaborationMessageStore, { listPendingAgents: async () => [], nextQueued: async () => undefined });
+    }), sessionService(IHookRulesSession, {
+      _serviceBrand: undefined, ready: Promise.resolve(), onDidChange: Event.None as IHookRulesSession['onDidChange'], onDidObserve: Event.None as IHookRulesSession['onDidObserve'],
+      snapshot: () => rules, reload: async () => {}, observe: (event) => { observed.push(event); },
+    }));
+    agents.push(ctx);
+    const tasks = ctx.get(IAgentTaskService) as TaskServiceTestManager;
+    await tasks.loadFromDisk();
+    await tasks.reconcile();
+    expect(ctx.llmCalls).toHaveLength(0);
+    expect(observed).toMatchObject([{ source: 'task', eventId: 'task/task:agent-example1:completed' }]);
+    await tasks.reconcile();
+    await ctx.expectResumeMatches();
+    expect(observed).toHaveLength(1);
+    await turn(ctx);
+    const text = JSON.stringify(ctx.llmCalls[0]!.history);
+    expect(text.indexOf('RESTORED TASK CUE')).toBeGreaterThan(text.indexOf('RESTORED CHILD OUTPUT'));
+    expect(injections(ctx)).toHaveLength(1);
+    expect(observed).toHaveLength(1);
+  });
+
+  it('holds task guidance after user cancel until an authorized input and never injects for unfinished work', async () => {
+    const observed: HookEvent[] = [];
+    const ctx = agentWithRules(() => snapshot([
+      rule({ id: 'task', event: 'prompt.submit', cadence: undefined, match: { sources: ['task'] }, action: { type: 'inject', text: 'HELD TASK CUE' } }),
+      rule({ id: 'observe', event: 'prompt.submit', cadence: undefined, match: { sources: ['task'] }, action: { type: 'observe' } }),
+    ]), (event) => observed.push(event));
+    const loop = ctx.get(IAgentLoopService);
+    const tasks = ctx.get(IAgentTaskService);
+    const completion = createControlledPromise<{ result: string }>();
+    const taskId = tasks.registerTask(new SubagentTask({ agentId: 'example-child', profileName: 'worker', completion }, 'unfinished work', new AbortController()));
+    const cancel = loop.hooks.onDidFinishStep.register('test.cancel', async (_step, next) => { loop.cancel(); await next(); });
+    try { await turn(ctx, 'Start work'); await loop.settled(); }
+    finally { await cancel.dispose(); }
+    expect(loop.status().lastTurnResult).toBe('cancelled');
+    expect(observed).toHaveLength(0);
+    expect(injections(ctx)).toHaveLength(0);
+    const enqueue = vi.spyOn(loop, 'enqueue');
+    completion.resolve({ result: 'HELD COMPLETION' });
+    await vi.waitFor(() => expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true));
+    expect(ctx.llmCalls).toHaveLength(1);
+    expect(observed).toHaveLength(0);
+    expect(injections(ctx)).toHaveLength(0);
+    await turn(ctx, 'Inspect the completed result');
+    await loop.settled();
+    expect(ctx.llmCalls).toHaveLength(2);
+    expect(JSON.stringify(ctx.llmCalls[1]!.history)).toContain('HELD COMPLETION');
+    expect(JSON.stringify(ctx.llmCalls[1]!.history)).toContain('HELD TASK CUE');
+    expect(observed).toMatchObject([{ source: 'task', eventId: `task/task:${taskId}:completed` }]);
+    expect(injections(ctx)).toHaveLength(1);
+    await ctx.expectResumeMatches();
+    expect(observed).toHaveLength(1);
+  });
+
   it('runs Send now guidance once at safe materialization while retaining user/mailbox source identity', async () => {
     const observed: HookEvent[] = [];
     const ctx = agentWithRules(() => snapshot([
@@ -343,7 +510,7 @@ describe('hooks v2 completed-step engine contract', () => {
       await ctx.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
       expect(injections(ctx)).toHaveLength(0);
       await ctx.expectResumeMatches();
-    } finally { compact.dispose(); }
+    } finally { await compact.dispose(); }
   });
 
   it('does not credit an in-flight old step to a replacement semantic revision', async () => {
@@ -438,7 +605,7 @@ describe('hooks v2 completed-step engine contract', () => {
       expect(outputs).toHaveLength(1);
       expect(JSON.parse(outputs[0]!)).toMatchObject({ rules: [{ id: 'user/focus', completedSteps: 0, nextDue: 1 }] });
       expect(ctx.get(IAgentContextMemoryService).get()).toEqual(before);
-    } finally { subscription.dispose(); }
+    } finally { await subscription.dispose(); }
   });
 
   it('keeps prompt input intact and skips a failed prompt injection without consuming its receipt', async () => {

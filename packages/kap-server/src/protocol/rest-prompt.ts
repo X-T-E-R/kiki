@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { transcriptPromptRuntimeControlsSchema } from '@kiki/transcript';
-import { executionSelectionSchema } from '@kiki/protocol';
+import { executionSelectionSchema, promptDeliveryReasonSchema } from '@kiki/protocol';
 
 import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import { messageContentSchema } from './message';
@@ -33,6 +33,8 @@ export const goalInitialStatusSchema = z.enum(['active', 'paused']);
 export type GoalInitialStatus = z.infer<typeof goalInitialStatusSchema>;
 
 export const promptSubmissionSchema = z.object({
+  admission: z.literal('durable').optional(),
+  delivery_mode: z.literal('steer').optional(),
   execution: executionSelectionSchema.optional(),
   after_model_switch: z.string().min(1).optional(),
   model_switch_mode: z.enum(['direct', 'compact', 'fresh']).optional(),
@@ -74,6 +76,11 @@ export const promptStatusSchema = z.enum(['running', 'queued', 'blocked']);
 export type PromptStatus = z.infer<typeof promptStatusSchema>;
 
 export const promptItemSchema = z.object({
+  admission: z.enum(['restoring', 'admitted', 'failed', 'cancelled', 'held']).optional(),
+  delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_reason: promptDeliveryReasonSchema.optional(),
+  admission_error: z.object({ code: z.number().int(), message: z.string() }).optional(),
+  admission_content_truncated: z.boolean().optional(),
   runtime_controls: transcriptPromptRuntimeControlsSchema.optional(),
   prompt_id: z.string().min(1),
   user_message_id: z.string().min(1),
@@ -93,6 +100,8 @@ export type PromptItem = z.infer<typeof promptItemSchema>;
 export const promptListResponseSchema = z.object({
   active: promptItemSchema.nullable(),
   queued: z.array(promptItemSchema),
+  ingress: z.array(promptItemSchema).optional(),
+  ingress_next_cursor: z.string().optional(),
 });
 export type PromptListResponse = z.infer<typeof promptListResponseSchema>;
 
@@ -155,6 +164,8 @@ export type PromptSteerRequest = z.infer<typeof promptSteerRequestSchema>;
 export const promptSteerResultSchema = z.object({
   steered: z.literal(true),
   prompt_ids: z.array(z.string().min(1)).min(1),
+  delivery_state: z.enum(['queued', 'steered']).optional(),
+  delivery_reason: promptDeliveryReasonSchema.optional(),
 });
 export type PromptSteerResult = z.infer<typeof promptSteerResultSchema>;
 

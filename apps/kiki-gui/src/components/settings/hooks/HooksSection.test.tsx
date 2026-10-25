@@ -25,6 +25,8 @@ const client = {
   }),
   createSession: vi.fn(async () => ({ id: 'hooks-ask-session' })),
   listWorkspaces: vi.fn(async () => ({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] })),
+  // The picker behind the handoff button reads the metadata-only catalog.
+  listWorkspaceCatalog: vi.fn(async () => ({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] })),
 };
 vi.mock('../../../state/connection', () => ({ useConnection: () => ({ client, scopeId: 'local' }) }));
 // No `runAction` here on purpose: this file drives the guard away so the form
@@ -57,7 +59,7 @@ const V2_MIXED = {
 let root: Root;
 let container: HTMLDivElement;
 let query: QueryClient;
-const flush = async () => { await act(async () => { await new Promise((resolve) => setTimeout(resolve, 5)); }); };
+const flush = async () => { await act(async () => { await vi.advanceTimersByTimeAsync(5); }); };
 async function change(element: HTMLInputElement | HTMLTextAreaElement, value: string) {
   await act(async () => {
     Object.getOwnPropertyDescriptor(Object.getPrototypeOf(element), 'value')!.set!.call(element, value);
@@ -96,6 +98,7 @@ const editor = (kind: 'legacy' | 'declarative') => container.querySelector(`[dat
 const saveActions = () => click('Save actions');
 
 beforeEach(() => {
+  vi.useFakeTimers();
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   config = { hooks: [] };
   patchError = null;
@@ -103,6 +106,8 @@ beforeEach(() => {
   client.createSession.mockClear();
   client.listWorkspaces.mockClear();
   client.listWorkspaces.mockResolvedValue({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] });
+  client.listWorkspaceCatalog.mockClear();
+  client.listWorkspaceCatalog.mockResolvedValue({ items: [{ id: 'wd_hooks_000000000000', name: 'Hooks WS', root: '/hooks-ws' }] });
   navigate.mockClear();
   resetDraftMemoryForTests();
   query = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -110,7 +115,16 @@ beforeEach(() => {
   document.body.append(container);
   root = createRoot(container);
 });
-afterEach(async () => { await act(async () => root.unmount()); container.remove(); query.clear(); });
+afterEach(async () => {
+  try {
+    await act(async () => { root.unmount(); });
+    container.remove();
+    query.clear();
+    await vi.runAllTimersAsync();
+  } finally {
+    vi.useRealTimers();
+  }
+});
 
 describe('hooks settings (dual shape)', () => {
   it('reads, edits, saves and re-reads a legacy rule without losing fields', async () => {
@@ -286,7 +300,8 @@ describe('hooks settings (dual shape)', () => {
     await saveActions();
     const saved = container.querySelector<HTMLTextAreaElement>('#st-card-hooks textarea')!;
     expect(saved.isConnected).toBe(true);
-    expect(saved.value).toBe(JSON.stringify([LEGACY_RULE], null, 2));
+    expect(JSON.parse(saved.value)).toEqual([LEGACY_RULE]);
+    expect(saved.value).toBe(JSON.stringify(config.hooks, null, 2));
     expect(config.hooks).toEqual([LEGACY_RULE]);
   });
 
@@ -376,6 +391,8 @@ describe('handing a new hook rule to Kiki', () => {
     // No rule was invented, and the server config was not touched.
     expect(config.hooks).toEqual([]);
     expect(client.patchConfig).not.toHaveBeenCalled();
+    await act(async () => { await vi.runAllTimersAsync(); });
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('keeps an unsaved rule draft on screen: the handoff leaves it to the guard, not over it', async () => {
@@ -408,6 +425,7 @@ describe('handing a new hook rule to Kiki', () => {
 
   it('falls back to the auto-workspace mechanism when this machine truly has none', async () => {
     client.listWorkspaces.mockResolvedValue({ items: [] });
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [] });
     client.createSession.mockResolvedValue({ id: 'hooks-ask-empty' });
     await mount();
 
@@ -423,6 +441,7 @@ describe('handing a new hook rule to Kiki', () => {
 
   it('refuses to press while the workspace list is unknown, rather than guessing', async () => {
     client.listWorkspaces.mockRejectedValue(new Error('list unavailable'));
+    client.listWorkspaceCatalog.mockRejectedValue(new Error('list unavailable'));
     client.createSession.mockResolvedValue({ id: 'hooks-ask-unknown' });
     await mount();
 

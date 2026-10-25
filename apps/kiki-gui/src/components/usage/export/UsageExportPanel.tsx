@@ -15,8 +15,7 @@
  * destination that cannot authenticate never covers the list, and nothing here
  * touches the chat surface.
  *
- * Honesty rules: with the `usage_export` flag off the server registers no routes
- * at all, and that is reported as unavailable rather than as an empty list; a
+ * Honesty rules: a failed status request is never shown as an empty list; a
  * `writer: false` snapshot is shown read-only; the consent state is the server's
  * own fingerprint, never a client guess; a paused or drafted destination keeps
  * its queue and says so; and every count comes from the wire.
@@ -57,7 +56,6 @@ import {
   usageExportApi,
   handoffViewOf,
   utcLabel,
-  useUsageExportEnabled,
   type UsageExportEntry,
 } from '../../../lib/usageExport';
 
@@ -75,16 +73,15 @@ function shortId(value: string): string {
 }
 
 export function UsageExportPanel() {
-  const { client, klient, scopeId, meta, config, sshLabel } = useConnection();
+  const { klient, scopeId, meta, config, sshLabel } = useConnection();
   const { t } = useI18n();
   const queryClient = useQueryClient();
   const api = usageExportApi(klient);
-  const { enabled, loading: flagLoading } = useUsageExportEnabled(client);
 
   const statusQuery = useQuery({
     queryKey: [USAGE_EXPORT_QUERY_KEY, 'status', scopeId],
     queryFn: () => api!.status(),
-    enabled: api !== undefined && enabled === true,
+    enabled: api !== undefined,
     retry: false,
     refetchInterval: (query) => {
       if (query.state.status === 'error') return 10_000;
@@ -180,32 +177,6 @@ export function UsageExportPanel() {
       <div className="space-y-3" data-usage-export-panel>
         <SourceLine server={sourceLabel} home={home} />
         <p role="alert" data-usage-export-no-transport className={NOTICE_AMBER}>{t('usage.export.noTransport')}</p>
-      </div>
-    );
-  }
-
-  if (flagLoading || (enabled === undefined && !statusQuery.isError)) {
-    return (
-      <div className="space-y-3" data-usage-export-panel>
-        <SourceLine server={sourceLabel} home={home} />
-        <div role="status" className="flex items-center justify-center gap-2 rounded-xl border border-hairline bg-panel px-4 py-12 text-[13px] text-ink-faint">
-          <span className="status-dot-busy h-1.5 w-1.5 rounded-full bg-accent" />
-          {t('usage.export.loading')}
-        </div>
-      </div>
-    );
-  }
-
-  if (enabled !== true) {
-    return (
-      <div className="space-y-3" data-usage-export-panel>
-        <SourceLine server={sourceLabel} home={home} />
-        <div data-usage-export-unavailable className="rounded-xl border border-hairline bg-panel px-4 py-8">
-          <p className="text-[13px] font-medium text-ink">{t('usage.export.unavailable.title')}</p>
-          <p className="mt-1 max-w-[76ch] text-[12.5px] leading-relaxed text-ink-soft">
-            {t('usage.export.unavailable.body', { flag: 'usage_export' })}
-          </p>
-        </div>
       </div>
     );
   }
@@ -501,7 +472,7 @@ function BackfillForm({ entry, onRun, onPreview, onClose }: {
       </div>
       <label className="flex items-center gap-2 text-[12px] text-ink-soft">
         <input type="checkbox" checked={bounded} onChange={(event) => { setBounded(event.target.checked); }} />
-        {t('usage.customRange.end')}
+        {t('usage.export.form.historyBounded')}
       </label>
       {invalid ? <p role="alert" className="text-[12px] text-danger">{t('usage.export.handoff.cutoffInvalid')}</p> : null}
     </div>
@@ -766,99 +737,109 @@ function DestinationRow({
             </div>
           )}
 
-          <div data-usage-export-actions className="flex flex-wrap items-center gap-x-2 gap-y-1.5 border-t border-hairline pt-3">
-            <button
-              type="button"
-              data-usage-export-sync
-              disabled={anyBusy || !actionable || !destination.enabled || needsAttention(destination.state)}
-              onClick={() => { void onRun(`sync:${destination.id}`, destination.id, () => api!.syncNow(destination.id)); }}
-              className={SECONDARY_BUTTON}
-            >
-              {t(busy('sync') ? 'usage.export.busy.working' : 'usage.export.action.sync')}
-            </button>
-            <button
-              type="button"
-              data-usage-export-test
-              disabled={anyBusy || !actionable}
-              onClick={() => { void onRun(`test:${destination.id}`, destination.id, () => api!.testProtocol(destination.id)); }}
-              className={SECONDARY_BUTTON}
-            >
-              {t(busy('test') ? 'usage.export.busy.working' : 'usage.export.action.test')}
-            </button>
-            {destination.enabled ? (
+          <div data-usage-export-actions className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-hairline pt-3">
+            {/* Run it: the frequent verbs on this destination. Retry stays here
+                because quarantined items are real pending work, not a menu entry. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1.5">
               <button
                 type="button"
-                data-usage-export-pause
-                disabled={anyBusy || !actionable}
-                onClick={() => { void onRun(`pause:${destination.id}`, destination.id, () => api!.disable(destination.id)); }}
+                data-usage-export-sync
+                disabled={anyBusy || !actionable || !destination.enabled || needsAttention(destination.state)}
+                onClick={() => { void onRun(`sync:${destination.id}`, destination.id, () => api!.syncNow(destination.id)); }}
                 className={SECONDARY_BUTTON}
               >
-                {t('usage.export.action.pause')}
+                {t(busy('sync') ? 'usage.export.busy.working' : 'usage.export.action.sync')}
               </button>
-            ) : consent ? (
               <button
                 type="button"
-                data-usage-export-resume
+                data-usage-export-test
                 disabled={anyBusy || !actionable}
-                onClick={() => { void onRun(`resume:${destination.id}`, destination.id, resume); }}
+                onClick={() => { void onRun(`test:${destination.id}`, destination.id, () => api!.testProtocol(destination.id)); }}
                 className={SECONDARY_BUTTON}
               >
-                {t('usage.export.action.resume')}
+                {t(busy('test') ? 'usage.export.busy.working' : 'usage.export.action.test')}
               </button>
-            ) : null}
-            <button
-              type="button"
-              data-usage-export-preview
-              disabled={anyBusy || api === undefined}
-              onClick={() => {
-                void onRun(`preview:${destination.id}`, destination.id, async () => {
-                  onPreview(await api!.preview(destination.id));
-                });
-              }}
-              className={SECONDARY_BUTTON}
-            >
-              {t('usage.export.action.preview')}
-            </button>
-            {queue.quarantined > 0 ? (
+              {destination.enabled ? (
+                <button
+                  type="button"
+                  data-usage-export-pause
+                  disabled={anyBusy || !actionable}
+                  onClick={() => { void onRun(`pause:${destination.id}`, destination.id, () => api!.disable(destination.id)); }}
+                  className={SECONDARY_BUTTON}
+                >
+                  {t('usage.export.action.pause')}
+                </button>
+              ) : consent ? (
+                <button
+                  type="button"
+                  data-usage-export-resume
+                  disabled={anyBusy || !actionable}
+                  onClick={() => { void onRun(`resume:${destination.id}`, destination.id, resume); }}
+                  className={SECONDARY_BUTTON}
+                >
+                  {t('usage.export.action.resume')}
+                </button>
+              ) : null}
+              {queue.quarantined > 0 ? (
+                <button
+                  type="button"
+                  data-usage-export-retry
+                  disabled={anyBusy || !actionable}
+                  onClick={() => { void onRun(`retry:${destination.id}`, destination.id, () => api!.retry(destination.id)); }}
+                  className={SECONDARY_BUTTON}
+                >
+                  {t('usage.export.action.retry')}
+                </button>
+              ) : null}
+            </div>
+            {/* Inspect and configure: quieter ghost weight, same row. */}
+            <div className="flex flex-wrap items-center gap-x-1 gap-y-1.5">
               <button
                 type="button"
-                data-usage-export-retry
-                disabled={anyBusy || !actionable}
-                onClick={() => { void onRun(`retry:${destination.id}`, destination.id, () => api!.retry(destination.id)); }}
-                className={SECONDARY_BUTTON}
+                data-usage-export-preview
+                disabled={anyBusy || api === undefined}
+                onClick={() => {
+                  void onRun(`preview:${destination.id}`, destination.id, async () => {
+                    onPreview(await api!.preview(destination.id));
+                  });
+                }}
+                className={GHOST}
               >
-                {t('usage.export.action.retry')}
+                {t('usage.export.action.preview')}
               </button>
-            ) : null}
-            <button type="button" data-usage-export-edit disabled={anyBusy || !actionable} onClick={onEdit} className={GHOST}>
-              {t('usage.export.action.edit')}
-            </button>
-            <button
-              type="button"
-              data-usage-export-export-local
-              disabled={anyBusy || api === undefined}
-              onClick={() => {
-                void onRun(`export:${destination.id}`, destination.id, async () => {
-                  onExport(await api!.exportLocal(destination.id), 'pending');
-                });
-              }}
-              className={GHOST}
-            >
-              {t('usage.export.action.exportLocal')}
-            </button>
-            {!queueIsEmpty(queue) ? (
-              <button type="button" data-usage-export-clear-queue disabled={anyBusy || !actionable} onClick={() => { onConfirm('clearQueue'); }} className={DANGER_GHOST_BUTTON}>
-                {t('usage.export.action.clearQueue')}
+              <button type="button" data-usage-export-edit disabled={anyBusy || !actionable} onClick={onEdit} className={GHOST}>
+                {t('usage.export.action.edit')}
               </button>
-            ) : null}
-            {destination.target.kind !== 'vibe' && destination.last_success_at !== null ? (
-              <button type="button" data-usage-export-withdraw disabled={anyBusy || !actionable} onClick={() => { onConfirm('withdraw'); }} className={DANGER_GHOST_BUTTON}>
-                {t('usage.export.action.withdraw')}
+              <button
+                type="button"
+                data-usage-export-export-local
+                disabled={anyBusy || api === undefined}
+                onClick={() => {
+                  void onRun(`export:${destination.id}`, destination.id, async () => {
+                    onExport(await api!.exportLocal(destination.id), 'pending');
+                  });
+                }}
+                className={GHOST}
+              >
+                {t('usage.export.action.exportLocal')}
               </button>
-            ) : null}
-            <button type="button" data-usage-export-remove disabled={anyBusy || !actionable} onClick={() => { onConfirm('remove'); }} className={`ml-auto ${DANGER_GHOST_BUTTON}`}>
-              {t('usage.export.action.remove')}
-            </button>
+            </div>
+            {/* Destructive verbs stay off to the right, away from the run cluster. */}
+            <div className="ml-auto flex flex-wrap items-center gap-x-2 gap-y-1.5">
+              {!queueIsEmpty(queue) ? (
+                <button type="button" data-usage-export-clear-queue disabled={anyBusy || !actionable} onClick={() => { onConfirm('clearQueue'); }} className={DANGER_GHOST_BUTTON}>
+                  {t('usage.export.action.clearQueue')}
+                </button>
+              ) : null}
+              {destination.target.kind !== 'vibe' && destination.last_success_at !== null ? (
+                <button type="button" data-usage-export-withdraw disabled={anyBusy || !actionable} onClick={() => { onConfirm('withdraw'); }} className={DANGER_GHOST_BUTTON}>
+                  {t('usage.export.action.withdraw')}
+                </button>
+              ) : null}
+              <button type="button" data-usage-export-remove disabled={anyBusy || !actionable} onClick={() => { onConfirm('remove'); }} className={DANGER_GHOST_BUTTON}>
+                {t('usage.export.action.remove')}
+              </button>
+            </div>
           </div>
 
           {destination.target.kind === 'vibe' && destination.last_success_at !== null ? (

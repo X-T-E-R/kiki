@@ -50,9 +50,7 @@ export class WorkspaceSkillCatalogService extends Disposable implements IWorkspa
     for (const s of this.sources) {
       if (s.onDidChange)
         this._register(
-          s.onDidChange(() => {
-            void this.reloadSource(s.id);
-          }),
+          s.onDidChange(() => this.reloadSource(s.id)),
         );
     }
     this.ready = this.loadAll();

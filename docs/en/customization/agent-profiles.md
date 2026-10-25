@@ -1,10 +1,12 @@
 # Agent Profiles: Concepts and Design
 
-Every agent in Kiki — the main agent and each subagent — is defined by a **profile**. This page explains what a profile is, where the files live, when changes take effect, and how profiles relate to the other customization mechanisms (Skills, prompt-field overrides, plugins, hooks, themes). For field-level usage see [Agents and Sub-Agents](./agents.md).
+Every agent in Kiki — the main agent and each subagent — is defined by a **profile**. This page explains what a profile is, where the files live, when changes take effect, and how profiles relate to the other customization mechanisms (Skills, prompt-field overrides, plugins, hooks, themes). For field-level usage see [Agents and Sub-Agents](./agents-and-subagents.md).
 
 ## What a profile is
 
 A profile is a single Markdown file. The **frontmatter** (the YAML metadata block at the top) declares its name, description, tool allowlist, model binding and more; the file body **is** the agent's system prompt.
+
+A profile file selected directly in the composer is a session-scoped source rather than a discovered catalog entry; its controls and recovery are described in [Choosing the engine and its profile](./agents-and-subagents.md#choosing-the-engine-and-its-profile).
 
 Kiki ships a few built-in profiles: the main `agent` that drives sessions, the default subagent `general`, and `explore` for read-only exploration. Creating your own agent needs no code — write a Markdown file in the same shape and it is discovered automatically, alongside the built-ins.
 
@@ -24,11 +26,11 @@ When two files define the same `name`, the higher-priority one wins — unless i
 Project-level profiles come from the repository itself — including repositories you have just cloned and do not trust yet. A project file named `agent.md` can replace the default main agent's entire system prompt. Before running Kiki in an unfamiliar repository, inspect its `.kiki/agents/` directory with the same caution you would apply to scripts.
 :::
 
-The full scope rules and directory list are in [Agent Locations](./agents.md#agent-locations).
+The full scope rules and directory list are in [Agent Locations](./agents-and-subagents.md#agent-locations).
 
 ## When changes take effect
 
-Profile files under the user, project and extra-directory roots — plus `$KIKI_HOME/SYSTEM.md` — are watched: additions, edits and deletions reload automatically after roughly 200 ms, and a newly dispatched subagent picks up the reloaded version immediately. An existing session's main agent stays bound to the snapshot taken when the session was created, so use **Rebuild context** to pick up your edit while keeping the conversation. See [Rebuilding a session context](./agents.md#rebuilding-a-session-context).
+Profile files under the user, project and extra-directory roots — plus `$KIKI_HOME/SYSTEM.md` — are watched: additions, edits and deletions reload automatically after roughly 200 ms, and a newly dispatched subagent picks up the reloaded version immediately. An existing session's main agent stays bound to the snapshot taken when the session was created, so use **Rebuild context** to pick up your edit while keeping the conversation. See [Rebuilding a session context](./agents-and-subagents.md#rebuilding-a-session-context).
 
 ## Main agents and subagents
 
@@ -66,7 +68,7 @@ tools: ["*", ThreadRead]
 
 `*` on its own opens no opt-in and never crosses a deny. A finite list stays finite: `tools: [Read, Grep, ThreadRead]` selects exactly those three. The server-wide `subagent.allowed_tools` is an alternative to naming the tool here, but the profile still has to select it — which is what the `["*", ThreadRead]` form is for. A profile with no list, or `*`, is open to everything that entry allows, and its own `disallowedTools` still denies. A main conversation is not subject to these opt-ins; the profile's own lists decide there. See [Subagent defaults](../configuration/config-files.md#subagent) for the full list and the tools that stay main-only.
 
-To permanently replace the default main agent's configuration, use the one special file: `$KIKI_HOME/SYSTEM.md` (default `~/.kiki/SYSTEM.md`). A body-only `SYSTEM.md` replaces just the default main agent's system prompt; one starting with `---` frontmatter can also change profile fields such as `tools`, `subagents` and the model binding. See [Overriding the main agent's system prompt with SYSTEM.md](./agents.md#overriding-the-main-agent-s-system-prompt-with-system-md).
+To permanently replace the default main agent's configuration, use the one special file: `$KIKI_HOME/SYSTEM.md` (default `~/.kiki/SYSTEM.md`). A body-only `SYSTEM.md` replaces just the default main agent's system prompt; one starting with `---` frontmatter can also change profile fields such as `tools`, `subagents` and the model binding. See [Overriding the main agent's system prompt with SYSTEM.md](./agents-and-subagents.md#overriding-the-main-agent-s-system-prompt-with-system-md).
 
 ## Model menus and hard boundaries
 
@@ -111,7 +113,7 @@ Turn the switch on for a profile whose `model_profiles` is already the complete 
 | Advice about cost, speed or experience, where users should still be able to try other models | Leave it off; use `preferred_models`, `preferred_efforts` or `discouraged_models` |
 | A real budget, compliance, deployment or descendant-tree boundary, independent of the menu | Use `allowed_models` / `deny_models` on their own, and combine with the switch only if you also want the menu enforced |
 
-See [Agent file format](./agents.md#agent-file-format) for the field reference and more examples.
+See [Agent file format](./agents-and-subagents.md#agent-file-format) for the field reference and more examples.
 
 ## Customization mechanism map
 
@@ -120,7 +122,7 @@ Each mechanism below changes a different thing. Decide what you want to change f
 | What you want to change | Use |
 | --- | --- |
 | A reusable identity and private memory across conversations | [Personas, Bots, and rooms](./personas.md) |
-| An agent's execution instructions, tools, permissions or model | **Profile files** (this page and [Agents and Sub-Agents](./agents.md)) |
+| An agent's execution instructions, tools, permissions or model | **Profile files** (this page and [Agents and Sub-Agents](./agents-and-subagents.md)) |
 | One named passage inside the built-in prompts (language rules, tool descriptions) | [Prompt field overrides](./prompt-fields.md) |
 | Expertise or workflows the agent picks up when relevant | [Agent Skills](./skills.md) |
 | Prompt snippets you trigger yourself with `/name` | [Custom prompt commands](./skills.md#custom-prompt-commands) |
@@ -130,5 +132,5 @@ Each mechanism below changes a different thing. Decide what you want to change f
 
 ## Next steps
 
-- [Agents and Sub-Agents](./agents.md) — profile field reference, dispatch behavior, SYSTEM.md, and runtime details
+- [Agents and Sub-Agents](./agents-and-subagents.md) — profile field reference, dispatch behavior, SYSTEM.md, and runtime details
 - [Agent Skills](./skills.md) — inject reusable workflows into agents

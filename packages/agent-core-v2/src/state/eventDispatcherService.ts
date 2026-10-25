@@ -15,7 +15,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import type { ContentPart } from '#/kosong/contract/message';
 import { OrderedHookSlot } from '#/hooks';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
-import { IWireService } from '#/wire/wire';
+import { IWireService, JOURNAL_HEAD_HASH_BYTES, JournalTailUnreadableError } from '#/wire/wire';
 import { WireError, WireErrors } from '#/wire/errors';
 import type { PartsTransformer } from '#/wire/record';
 
@@ -43,6 +43,8 @@ const MAX_DRAIN = 100;
 const HISTORY_TAIL = 500;
 const REPLAY_CHECKPOINT_SCOPE = 'replay-checkpoints';
 const REPLAY_CHECKPOINT_KEY = 'engine-v1';
+export const REPLAY_CHECKPOINT_GROWTH_BYTES = 8 * 1024 * 1024;
+const REPLAY_CHECKPOINT_GROWTH_DELAY_MS = 1_000;
 export const REPLAY_ABI_VERSION = 2;
 
 interface ReplayCheckpointEnvelope {
@@ -52,6 +54,7 @@ interface ReplayCheckpointEnvelope {
     readonly size: number;
     readonly mtimeMs: number;
     readonly headHash?: string;
+    readonly prefixSha256?: string;
   };
   readonly stateNames: readonly string[];
   readonly graph: ReplayCheckpointGraph;
@@ -117,8 +120,11 @@ class FoldContextImpl implements FoldContext {
     this.pendingClear = true;
   }
 
-  undoToCheckpoint(count: number): void {
+  afterUndo: ((state: any) => any) | undefined;
+
+  undoToCheckpoint(count: number, afterUndo?: (state: any) => any): void {
     this.pendingUndo = count;
+    this.afterUndo = afterUndo;
   }
 
   emit(event: Event2<any>): void {
@@ -139,6 +145,10 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
 
   private restorePhase: RestorePhase = 'new';
   private checkpointSave: Promise<boolean> | undefined;
+  private growthCheckpointTimer: ReturnType<typeof setTimeout> | undefined;
+  private growthCheckpointBaseline = 0;
+  private checkpointGeneration = 0;
+  private disposed = false;
   private dispatching = false;
   private queue: QueuedEvent[] = [];
   private drainDepth = 0;
@@ -179,6 +189,17 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         this.folded = this.foldContributions(view);
       }),
     );
+    this._register(this.wire.onDidAppendBytes?.((appendedBytes) => {
+      this.noteJournalGrowth(appendedBytes);
+    }) ?? { dispose: () => {} });
+    this._register({
+      dispose: () => {
+        this.disposed = true;
+        this.checkpointGeneration += 1;
+        if (this.growthCheckpointTimer !== undefined) clearTimeout(this.growthCheckpointTimer);
+        this.growthCheckpointTimer = undefined;
+      },
+    });
   }
 
   private foldContributions(
@@ -299,8 +320,9 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       for (const { key, fold } of folds) {
         const meta = this.ensureMeta(key);
         const ctx = new FoldContextImpl(this, silent);
-        const [next, patches, inversePatches] = produceWithPatches<any>(
-          this.agentState.get(key),
+        let previous = this.agentState.get(key);
+        let [next, patches, inversePatches] = produceWithPatches<any>(
+          previous,
           (draft: any) => fold(draft, event, ctx) as any,
         );
         if (ctx.pendingUndo !== undefined && patches.length > 0) {
@@ -316,7 +338,17 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         ) {
           ctx.pendingUndo = undefined;
         }
-        prepared.push({ key, meta, ctx, next, patches, inversePatches });
+        if (ctx.pendingUndo !== undefined && ctx.afterUndo !== undefined) {
+          const targetId = meta.checkpoints[meta.checkpoints.length - ctx.pendingUndo]!;
+          let restored = this.agentState.get(key);
+          for (let index = meta.history.length - 1; index >= 0 && meta.history[index]!.id > targetId; index--) {
+            restored = applyPatches(restored, [...meta.history[index]!.inversePatches]);
+          }
+          previous = restored;
+          [next, patches, inversePatches] = produceWithPatches<any>(restored, ctx.afterUndo);
+        }
+        const compacted = compactArrayReplacement(previous, next, patches, inversePatches);
+        prepared.push({ key, meta, ctx, next, ...compacted });
       }
     }
     for (const p of prepared) {
@@ -349,7 +381,7 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
       const targetId = meta.checkpoints[targetIndex]!;
       this.rollback(key, meta, targetId);
       meta.checkpoints = meta.checkpoints.slice(0, targetIndex);
-      return;
+      if (ctx.afterUndo === undefined) return;
     }
     this.agentState.set(key, next);
     if (ctx.pendingClear) {
@@ -406,35 +438,102 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     return meta;
   }
 
+  private noteJournalGrowth(appendedBytes: number): void {
+    if (this.disposed) return;
+    if (appendedBytes < this.growthCheckpointBaseline) this.growthCheckpointBaseline = appendedBytes;
+    if (this.restorePhase !== 'ready' || this.growthCheckpointTimer !== undefined) return;
+    if (appendedBytes - this.growthCheckpointBaseline < REPLAY_CHECKPOINT_GROWTH_BYTES) return;
+    const generation = this.checkpointGeneration;
+    const timer = setTimeout(() => {
+      if (this.growthCheckpointTimer === timer) this.growthCheckpointTimer = undefined;
+      if (!this.isCheckpointGenerationCurrent(generation)) return;
+      void this.saveReplayCheckpoint().catch((error: unknown) => {
+        if (this.isCheckpointGenerationCurrent(generation)) onUnexpectedError(error);
+      });
+    }, REPLAY_CHECKPOINT_GROWTH_DELAY_MS);
+    timer.unref?.();
+    this.growthCheckpointTimer = timer;
+  }
+
   private checkpointScope(): string | undefined {
     return this.scope.current?.scope(REPLAY_CHECKPOINT_SCOPE);
+  }
+
+  private isCheckpointGenerationCurrent(generation: number): boolean {
+    return !this.disposed && generation === this.checkpointGeneration;
   }
 
   async saveReplayCheckpoint(): Promise<boolean> {
     const ongoing = this.checkpointSave;
     if (ongoing !== undefined) return ongoing;
-    const save = this.writeReplayCheckpoint();
+    const generation = this.checkpointGeneration;
+    const startedAppendedBytes = this.wire.appendedByteCount?.();
+    const save = this.writeReplayCheckpoint(generation);
     this.checkpointSave = save;
     try {
-      return await save;
+      const saved = await save;
+      if (this.isCheckpointGenerationCurrent(generation)) {
+        const appendedBytes = this.wire.appendedByteCount?.();
+        if (saved) {
+          this.noteJournalGrowth(appendedBytes ?? this.growthCheckpointBaseline);
+        } else if (
+          startedAppendedBytes !== undefined &&
+          appendedBytes !== undefined &&
+          appendedBytes > startedAppendedBytes
+        ) {
+          this.noteJournalGrowth(appendedBytes);
+        }
+      }
+      return saved;
     } finally {
       if (this.checkpointSave === save) this.checkpointSave = undefined;
     }
   }
 
-  private async writeReplayCheckpoint(): Promise<boolean> {
+  private checkpointSkipReason: string | undefined;
+
+  replayCheckpointSkipReason(): string | undefined {
+    return this.checkpointSkipReason;
+  }
+
+  private skipReplayCheckpoint(reason: string): false {
+    this.checkpointSkipReason = reason;
+    return false;
+  }
+
+  private checkpointStable(generation: number, revision = this.liveRevision): boolean {
+    if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
+    if (this.deferredObservable.size > 0) return this.skipReplayCheckpoint('pending_events');
+    if (revision !== this.liveRevision) return this.skipReplayCheckpoint('state_changed');
+    return true;
+  }
+
+  private async writeReplayCheckpoint(generation: number): Promise<boolean> {
+    this.checkpointSkipReason = undefined;
     const checkpointScope = this.checkpointScope();
     const docs = this.docs.current;
+    if (!this.checkpointStable(generation)) return false;
     if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
-      return false;
+      return this.skipReplayCheckpoint('unavailable');
     }
+    let phase = 'flush';
     try {
       const keys = this.agentState.replayableKeys()
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
       await this.wire.flush();
-      if (this.deferredObservable.size > 0) return false;
+      if (!this.checkpointStable(generation)) return false;
       const revision = this.liveRevision;
+      phase = 'journal_identity';
+      const wire = await this.wire.journalIdentity();
+      if (!this.checkpointStable(generation, revision)) return false;
+      phase = 'journal_digest';
+      const prefixSha256 = this.wire.journalSha256 === undefined
+        ? undefined
+        : await this.wire.journalSha256(wire.size);
+      if (this.wire.journalSha256 !== undefined && prefixSha256 === undefined) return this.skipReplayCheckpoint('journal_changed');
+      if (!this.checkpointStable(generation, revision)) return false;
+      phase = 'encode';
       const payload: ReplayCheckpointPayload = {
         states: keys.map((key) => ({
           name: key.name,
@@ -443,39 +542,40 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         })),
       };
       const graph = encodeReplayCheckpointGraph(payload);
-      const wire = await this.wire.journalIdentity();
-      if (revision !== this.liveRevision || this.deferredObservable.size > 0) return false;
+      if (!this.checkpointStable(generation, revision)) return false;
+      const coveredAppendedBytes = this.wire.appendedByteCount?.() ?? this.growthCheckpointBaseline;
       const envelope: ReplayCheckpointEnvelope = {
         format: 1,
         replayAbi: REPLAY_ABI_VERSION,
-        wire,
+        wire: prefixSha256 === undefined ? wire : { ...wire, prefixSha256 },
         stateNames: keys.map((key) => key.name),
         graph,
       };
+      phase = 'write';
       await docs.set(checkpointScope, REPLAY_CHECKPOINT_KEY, envelope);
+      if (!this.isCheckpointGenerationCurrent(generation)) return this.skipReplayCheckpoint('disposed');
+      this.growthCheckpointBaseline = coveredAppendedBytes;
       return true;
-    } catch {
-      return false;
+    } catch (error) {
+      throw new Error(`replay checkpoint ${phase} failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
     }
   }
 
-  private async restoreReplayCheckpoint(): Promise<boolean> {
+  private async restoreReplayCheckpoint(): Promise<{ readonly tailByte?: number } | undefined> {
     const checkpointScope = this.checkpointScope();
     const docs = this.docs.current;
     if (docs === undefined || checkpointScope === undefined || this.wire.journalIdentity === undefined) {
-      return false;
+      return undefined;
     }
     try {
       const envelope = await docs.get<ReplayCheckpointEnvelope>(
         checkpointScope,
         REPLAY_CHECKPOINT_KEY,
       );
-      if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return false;
+      if (envelope?.format !== 1 || envelope.replayAbi !== REPLAY_ABI_VERSION) return undefined;
       const wire = await this.wire.journalIdentity();
-      if (wire.size !== envelope.wire.size || wire.mtimeMs !== envelope.wire.mtimeMs) return false;
-      if (envelope.wire.headHash === undefined || envelope.wire.headHash !== wire.headHash) {
-        return false;
-      }
+      if (envelope.wire.headHash === undefined) return undefined;
+      const headMatches = envelope.wire.headHash === wire.headHash;
       const keys = this.agentState.replayableKeys()
         .filter((key) => key.replayable.durable)
         .toSorted((left, right) => left.name.localeCompare(right.name));
@@ -483,27 +583,47 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
         keys.length !== envelope.stateNames.length ||
         keys.some((key, index) => key.name !== envelope.stateNames[index])
       ) {
-        return false;
+        return undefined;
+      }
+      const exact = headMatches && wire.size === envelope.wire.size && wire.mtimeMs === envelope.wire.mtimeMs;
+      let tailByte: number | undefined;
+      if (!exact) {
+        if (wire.size < envelope.wire.size) return undefined;
+        if (!headMatches && envelope.wire.size >= JOURNAL_HEAD_HASH_BYTES) return undefined;
+        const sealed = this.wire.sealedJournalDigest?.();
+        const prefixSha256 = isSha256(envelope.wire.prefixSha256)
+          ? envelope.wire.prefixSha256
+          : sealed !== undefined && sealed.size === envelope.wire.size && isSha256(sealed.sha256)
+            ? sealed.sha256
+            : undefined;
+        if (prefixSha256 === undefined || this.wire.journalSha256 === undefined) return undefined;
+        if (await this.wire.journalSha256(envelope.wire.size) !== prefixSha256) return undefined;
+        if (wire.size > envelope.wire.size) tailByte = envelope.wire.size;
       }
       const payload = decodeReplayCheckpointGraph(envelope.graph) as ReplayCheckpointPayload;
-      if (!Array.isArray(payload.states) || payload.states.length !== keys.length) return false;
+      if (!Array.isArray(payload.states) || payload.states.length !== keys.length) return undefined;
       const restored: { readonly key: ReplayableStateKey<any>; readonly value: unknown; readonly meta: StateMeta }[] = [];
       for (let index = 0; index < keys.length; index += 1) {
         const key = keys[index]!;
         const saved = payload.states[index];
-        if (saved?.name !== key.name || !isStateMeta(saved.meta)) return false;
+        if (saved?.name !== key.name || !isStateMeta(saved.meta)) return undefined;
         const parsed = key.replayable.schema.safeParse(saved.value);
-        if (!parsed.success) return false;
-        restored.push({ key, value: parsed.data, meta: saved.meta });
+        if (!parsed.success) return undefined;
+        const meta: StateMeta = saved.meta;
+        meta.history = meta.history.map((entry) => ({
+          ...entry,
+          ...compactArrayReplacement(entry.inversePatches[0]?.value, entry.patches[0]?.value, entry.patches, entry.inversePatches),
+        }));
+        restored.push({ key, value: parsed.data, meta });
       }
       for (const entry of restored) {
         this.agentState.set(entry.key, Object.freeze(entry.value));
         this.metas.set(entry.key, entry.meta);
       }
-      return true;
+      return { tailByte };
     } catch {
       this.resetReplayableState();
-      return false;
+      return undefined;
     }
   }
 
@@ -523,30 +643,50 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
     this.restorePhase = 'restoring';
     try {
       const checkpointRestored = await this.restoreReplayCheckpoint();
-      let recordIndex = 0;
-      if (!checkpointRestored) for await (const record of this.wire.readJournal()) {
-        if (record.type === 'metadata') continue;
-        const cls = this.folded.events.get(record.type);
-        if (cls === undefined) {
-          this.reportSkippedRecord(record.type, recordIndex, false);
-          recordIndex++;
-          continue;
+      if (checkpointRestored === undefined) {
+        await this.replayJournal();
+      } else if (checkpointRestored.tailByte !== undefined) {
+        try {
+          await this.replayJournal(checkpointRestored.tailByte);
+        } catch (error) {
+          if (!(error instanceof JournalTailUnreadableError)) throw error;
+          this.resetReplayableState();
+          await this.replayJournal();
         }
-        const event = event2FromRecord(cls, record);
-        if (event === undefined) {
-          this.reportSkippedRecord(record.type, recordIndex, true);
-          recordIndex++;
-          continue;
-        }
-        this.executeEvent(event, true);
-        recordIndex++;
       }
       await this.rehydrateStates();
       this.restorePhase = 'ready';
+      if (checkpointRestored === undefined || checkpointRestored.tailByte !== undefined) {
+        void this.saveReplayCheckpoint().catch(onUnexpectedError);
+      }
       await this.hooks.onDidRestore.run({});
     } catch (error) {
       this.restorePhase = 'failed';
       throw error;
+    }
+  }
+
+  private async replayJournal(startByte?: number): Promise<void> {
+    let recordIndex = 0;
+    const source = startByte === undefined
+      ? this.wire.readJournal()
+      : this.wire.readJournal({ startByte });
+    for await (const record of source) {
+      if (record.type === 'metadata') continue;
+      const cls = this.folded.events.get(record.type);
+      if (cls === undefined) {
+        this.reportSkippedRecord(record.type, recordIndex, false);
+        recordIndex++;
+        continue;
+      }
+      const event = event2FromRecord(cls, record);
+      if (event === undefined) {
+        this.reportSkippedRecord(record.type, recordIndex, true);
+        recordIndex++;
+        continue;
+      }
+      this.executeEvent(event, true);
+      recordIndex++;
     }
   }
 
@@ -575,6 +715,52 @@ export class EventDispatcherService extends Service implements IEventDispatcher 
   async flush(): Promise<void> {
     await this.wire.flush();
   }
+}
+
+function compactArrayReplacement(
+  previous: unknown,
+  next: unknown,
+  patches: PatchEntry['patches'],
+  inversePatches: PatchEntry['inversePatches'],
+): Pick<PreparedFold, 'patches' | 'inversePatches'> {
+  if (patches.length !== 1 || inversePatches.length !== 1 ||
+      patches[0]?.op !== 'replace' || patches[0].path.length > 0 ||
+      inversePatches[0]?.op !== 'replace' || inversePatches[0].path.length > 0 ||
+      !isDenseArray(previous) || !isDenseArray(next)) return { patches, inversePatches };
+  const forward: import('immer').Patch[] = [];
+  const backward: import('immer').Patch[] = [];
+  const shared = Math.min(previous.length, next.length);
+  for (let index = 0; index < shared; index++) {
+    if (Object.is(previous[index], next[index])) continue;
+    forward.push({ op: 'replace', path: [index], value: next[index] });
+    backward.push({ op: 'replace', path: [index], value: previous[index] });
+  }
+  for (let index = previous.length - 1; index >= next.length; index--) {
+    forward.push({ op: 'remove', path: [index] });
+  }
+  for (let index = shared; index < next.length; index++) {
+    forward.push({ op: 'add', path: [index], value: next[index] });
+  }
+  for (let index = next.length - 1; index >= previous.length; index--) {
+    backward.push({ op: 'remove', path: [index] });
+  }
+  for (let index = shared; index < previous.length; index++) {
+    backward.push({ op: 'add', path: [index], value: previous[index] });
+  }
+  return { patches: forward, inversePatches: backward };
+}
+
+function isDenseArray(value: unknown): value is readonly unknown[] {
+  if (!Array.isArray(value) || Object.getPrototypeOf(value) !== Array.prototype ||
+      Reflect.ownKeys(value).length !== value.length + 1) return false;
+  for (let index = 0; index < value.length; index++) {
+    if (!Object.hasOwn(value, index)) return false;
+  }
+  return true;
+}
+
+function isSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 }
 
 function isStateMeta(value: unknown): value is StateMeta {

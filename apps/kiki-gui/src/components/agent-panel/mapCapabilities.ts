@@ -35,12 +35,29 @@ export const CAPABILITY_REASON_LABEL_KEYS: Readonly<Record<AgentCapabilityReason
   research_readonly_dispatch_forbidden: 'capabilityReason.research_readonly_dispatch_forbidden',
   plan_resume_forbidden: 'capabilityReason.plan_resume_forbidden',
   native_executor_required: 'capabilityReason.native_executor_required',
+  tool_not_registered: 'capabilityReason.tool_not_registered',
+  plugin_catalog_failed: 'capabilityReason.plugin_catalog_failed',
+  plugin_usage_disabled: 'capabilityReason.plugin_usage_disabled',
+  plugin_usage_unavailable: 'capabilityReason.plugin_usage_unavailable',
 };
 
 const AGENT_CAPABILITIES_ERROR_KEYS: Readonly<Record<number, I18nKey>> = {
   [ErrorCode.VALIDATION_FAILED]: 'agentPanel.error.validationFailed',
   [ErrorCode.WORKSPACE_NOT_FOUND]: 'agentPanel.error.workspaceNotFound',
   [ErrorCode.AGENT_PROFILE_NOT_FOUND]: 'agentPanel.error.agentProfileNotFound',
+};
+
+/**
+ * Why a skill's own SKILL.md could not be read. The host answers a missing or
+ * forbidden file with the fs wire codes (HTTP 404 / 403 over REST, the same
+ * numbers in process), so they are named here and the reader is never shown a
+ * code or a host message. An unmapped failure falls back to the generic
+ * sentence rather than to its raw text: a transport string is not an
+ * explanation.
+ */
+const SKILL_READ_ERROR_KEYS: Readonly<Record<number, I18nKey>> = {
+  [ErrorCode.FS_PATH_NOT_FOUND]: 'agentPanel.skillMdMissing',
+  [ErrorCode.FS_PERMISSION_DENIED]: 'agentPanel.skillMdForbidden',
 };
 
 /** Resolve a capability reason code to localized copy, retaining legacy raw copy as a fallback. */
@@ -53,6 +70,13 @@ export function capabilityReasonText(
     ? undefined
     : CAPABILITY_REASON_LABEL_KEYS[code as AgentCapabilityReasonCode];
   return key === undefined ? rawReason : t(key);
+}
+
+/** The reader-facing sentence for a failed SKILL.md read. */
+export function skillReadFailureText(t: Translate, error: unknown): string {
+  const code = errorCodeOf(error);
+  const key = code === undefined ? undefined : SKILL_READ_ERROR_KEYS[code];
+  return key === undefined ? t('agentPanel.skillMdReadFailed') : t(key);
 }
 
 function errorCodeOf(error: unknown): number | undefined {
@@ -89,6 +113,27 @@ export function agentCapabilitiesErrorText(error: unknown, t: Translate): string
   const key = code === undefined ? undefined : AGENT_CAPABILITIES_ERROR_KEYS[code];
   if (key !== undefined) return t(key);
   return error instanceof Error ? error.message : String(error);
+}
+
+/** A capability kind whose field was absent from an otherwise good answer. */
+export type CapabilityGapKind = 'tools' | 'skills' | 'subagents';
+
+/**
+ * The fields a good answer did not carry. Absent optional fields (tools,
+ * skills) are a partial answer, not a verdict that the scope is unoffered:
+ * the wire marks "not offered" with an explicit unsupported error, while
+ * `available: false` only says dispatch is degraded — live answers ship it
+ * with the full tools/skills inventory. So the tabs that answered keep their
+ * content and the missing ones get the quiet line and retry. `targets` is
+ * required by the schema; a host that omits it gets the same treatment rather
+ * than a silent zero.
+ */
+export function capabilityFieldGaps(data: AgentCapabilitiesResponse): readonly CapabilityGapKind[] {
+  return [
+    ...(data.tools === undefined ? ['tools' as const] : []),
+    ...(data.skills === undefined ? ['skills' as const] : []),
+    ...(data.targets === undefined ? ['subagents' as const] : []),
+  ];
 }
 
 export function mapPanelSubagentTargets(
@@ -142,6 +187,8 @@ export function mapPanelTools(
     ...tool,
     unavailableReason: tool.unavailable_reason,
     unavailableReasonCode: tool.unavailable_reason_code,
+    policyAllowed: tool.policy_allowed,
+    requestState: tool.request_state,
     parametersSchema: tool.parameters ? JSON.stringify(tool.parameters, null, 2) : undefined,
     readOnly: tool.read_only,
   }));

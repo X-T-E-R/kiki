@@ -61,14 +61,21 @@ export interface DefaultCatalogResult {
 export async function readDefaultPluginCatalog(
   options: { readonly fetchImpl?: typeof fetch; readonly url?: string } = {},
 ): Promise<DefaultCatalogResult> {
-  const published = await readPublishedCatalog(options.fetchImpl ?? fetch, options.url ?? OFFICIAL_PLUGIN_CATALOG_URL);
-  if (published !== undefined) {
-    return {
-      marketplace: { source: OFFICIAL_PLUGIN_CATALOG_SOURCE, plugins: published },
-      installable: published.filter((entry) => entry.source !== '').length,
-    };
-  }
+  return await readPublishedPluginCatalog(options) ?? readBundledPluginCatalog();
+}
 
+export async function readPublishedPluginCatalog(
+  options: { readonly fetchImpl?: typeof fetch; readonly url?: string } = {},
+): Promise<DefaultCatalogResult | undefined> {
+  const published = await readPublishedCatalog(options.fetchImpl ?? fetch, options.url ?? OFFICIAL_PLUGIN_CATALOG_URL);
+  if (published === undefined) return undefined;
+  return {
+    marketplace: { source: OFFICIAL_PLUGIN_CATALOG_SOURCE, plugins: published },
+    installable: published.filter((entry) => entry.source !== '').length,
+  };
+}
+
+export function readBundledPluginCatalog(): DefaultCatalogResult {
   const entries: PluginMarketplaceEntry[] = bundled.official.map((plugin) => ({
     id: plugin.id,
     tier: 'official',
@@ -106,7 +113,7 @@ async function readPublishedCatalog(
     const response = await fetchImpl(url, { signal: AbortSignal.timeout(CATALOG_FETCH_TIMEOUT_MS) });
     if (!response.ok) return undefined;
     const raw = await response.text();
-    const parsed = parsePluginMarketplace(raw, { raw, kind: 'remote', resolved: url });
+    const parsed = parsePluginMarketplace(raw, { raw, kind: 'remote', resolved: url }, true);
     return [...parsed.plugins];
   } catch {
     return undefined;

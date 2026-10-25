@@ -278,11 +278,11 @@ export class RequestGovernanceService extends Disposable implements IRequestGove
     };
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     this.closed = true;
     this.drain();
     this.active.clear();
-    super.dispose();
+    return super.dispose();
   }
 }
 

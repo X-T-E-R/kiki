@@ -90,7 +90,7 @@ export async function hydrateUpdatePrefs(host: UpdatePrefsHost): Promise<void> {
     const pending = preferenceWrites;
     await pending;
     const native = await host.readDesktopPrefs();
-    if (pending !== preferenceWrites) return hydrateUpdatePrefs(host);
+    if (pending !== preferenceWrites) return await hydrateUpdatePrefs(host);
     if (native !== null) writeDesktopPrefs({ ...native, updateState: native.updateState ?? {} });
   } catch {
     // An unavailable native read leaves the existing mirror intact.

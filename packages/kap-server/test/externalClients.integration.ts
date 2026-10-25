@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { afterEach,beforeEach,describe,it,expect,vi } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { createRequire } from 'node:module';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { ISessionManager, ISessionMetadata, ISessionInteractionService, IModelCatalogMutationService, IAgentLifecycleService, IAgentProfileService, IAgentLoopService, IAgentContextMemoryService } from '@kiki/agent-core-v2';
 import { createServer } from 'node:http';
 import { ISessionApprovalService } from '@kiki/agent-core-v2/session/approval/approval';
@@ -33,13 +36,47 @@ async function terminal(client:Client,result:any){for(let attempt=0;attempt<100&
 async function waiting(client:Client,result:any){for(let attempt=0;attempt<100&&['accepted','running'].includes(result.state);attempt++){
   await new Promise(resolve=>setTimeout(resolve,20));result=await call(client,'kiki_operation',{operation_id:result.operation_id});}return result;}
 describe('native external clients',()=>{
+  it('boots the actual CLI from the generated home-scoped stdio config without copying credentials', { timeout: 60_000 }, async () => {
+    const created = await owner('', { name: 'Stdio client', workspace, mode: 'yolo', tools: ['Read'] });
+    const config = await owner(`/${created.connection.id}/stdio`, {});
+    expect(config).toEqual({ command: 'kiki', args: ['mcp', '--client', created.connection.id, '--tools', '--home', home] });
+    expect(created.stdio).toEqual(config);
+    expect(config).not.toHaveProperty('env');
+    const require = createRequire(import.meta.url);
+    const cli = fileURLToPath(new URL('../../../apps/kimi-code/src/main.ts', import.meta.url));
+    const loader = new URL('../../../build/register-raw-text-loader.mjs', import.meta.url).href;
+    const client = new Client({ name: 'manual-stdio-fixture', version: '1' });
+    clients.push(client);
+    await client.connect(new StdioClientTransport({ command: process.execPath,
+      args: ['--import', pathToFileURL(require.resolve('tsx/esm')).href, '--import', loader, cli, ...config.args],
+      env: { ...Object.fromEntries(Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined)),
+        TSX_TSCONFIG_PATH: fileURLToPath(new URL('../../../apps/kimi-code/tsconfig.dev.json', import.meta.url)) }, cwd: workspace,
+    }));
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('kiki_session');
+    expect((await owner(`/${created.connection.id}/sessions`)).sessions).toEqual([]);
+    const selected = await call(client, 'kiki_session', { action: 'new', _kiki: { idempotency_key: 'stdio-session' } });
+    const result = await terminal(client, await call(client, 'Read', { path: join(workspace, 'source.txt'), _kiki: { session_ref: selected.session_ref } }));
+    expect(result.state).toBe('completed');
+    expect(result.result.isError).not.toBe(true);
+    expect(JSON.stringify(result.result.output)).toContain('native source');
+    const sessions = (await owner(`/${created.connection.id}/sessions`)).sessions;
+    expect(sessions).toHaveLength(1);
+    expect(sessions[0]).toMatchObject({ connectionId: created.connection.id, sessionRef: selected.session_ref });
+    await owner(`/${created.connection.id}`, { enabled: false }, 'PATCH');
+    await expect(client.listTools()).rejects.toThrow();
+    await owner(`/${created.connection.id}`, { enabled: true }, 'PATCH');
+    expect((await client.listTools()).tools.map((tool) => tool.name)).toContain('Read');
+    await owner(`/${created.connection.id}`, undefined, 'DELETE');
+    await expect(client.listTools()).rejects.toThrow();
+  });
+
   it('runs model-free native tools, splits conversations, persists records and retries without duplicate side effects',async()=>{
     const {connection}=await owner('',{name:'Example client',workspace,mode:'yolo'});
     const {client,mcpUrl,token}=await connect(connection.id);
     const invalidOrigin=await authedFetch(server,`http://127.0.0.1:${server.port}`,'/api/external-clients/listener',{method:'PUT',headers:{'content-type':'application/json'},body:JSON.stringify({enabled:true,publicUrl:'https://example.test/base'})});
     expect(await invalidOrigin.json()).toMatchObject({code:40001,details:{code:'invalid_public_origin'}});expect((await owner('/listener')).mcpUrl).toBe(mcpUrl);
     const before=(await owner(`/${connection.id}/sessions`)).sessions;expect(before).toEqual([]);
-    const listed=await client.listTools();expect(listed.tools.some(t=>t.name==='Read')).toBe(false);expect(listed.tools.some(t=>t.name==='kiki_session')).toBe(true);
+    const listed=await client.listTools();expect(listed.tools.some(t=>t.name==='Read')).toBe(false);expect(listed.tools.some(t=>t.name==='kiki_session')).toBe(true);expect(listed.tools.some(t=>t.name==='kiki_respond')).toBe(false);
     expect((await owner(`/${connection.id}/sessions`)).sessions).toEqual([]);
     await call(client,'kiki_session',{action:'new',_kiki:{idempotency_key:'new-chat-one'}},{'openai/session':'chat-one'});
     expect((await client.listTools()).tools.some(t=>t.name==='Read')).toBe(true);
@@ -76,6 +113,16 @@ describe('native external clients',()=>{
       search=await terminal(client,await call(client,'HistorySearch',{cursor:page.next_cursor,_kiki:{session_ref:first.session_ref}}));page=JSON.parse(search.result.output);
     }
     expect(search.result.isError,JSON.stringify(page)).not.toBe(true);expect(JSON.stringify(page)).toContain('Explicit saved material');
+    for (const include_tool_output of [false, true, false]) {
+      let outputSearch=await terminal(client,await call(client,'HistorySearch',{query:'once',include_tool_output,source:'transcript',_kiki:{session_ref:first.session_ref}}));
+      let outputPage=JSON.parse(outputSearch.result.output);
+      for(let i=0;i<5&&outputPage.hits?.length===0&&outputPage.next_cursor;i++) {
+        outputSearch=await terminal(client,await call(client,'HistorySearch',{cursor:outputPage.next_cursor,_kiki:{session_ref:first.session_ref}}));outputPage=JSON.parse(outputSearch.result.output);
+      }
+      expect(outputSearch.result.isError,JSON.stringify(outputPage)).not.toBe(true);
+      expect(outputPage.hits.length>0).toBe(include_tool_output);
+      if(include_tool_output) expect(outputPage.hits.every((hit:{role:string})=>hit.role==='tool')).toBe(true);
+    }
     const fork=await owner(`/sessions/${record.sessionId}/continue`,{});expect(fork.sessionId).not.toBe(record.sessionId);
     const forkMeta=await server.core.accessor.get(ISessionManager).get(fork.sessionId)!.accessor.get(ISessionMetadata).read();expect(forkMeta.custom?.['externalClient']).toBeUndefined();
     await owner(`/${connection.id}`,undefined,'DELETE');

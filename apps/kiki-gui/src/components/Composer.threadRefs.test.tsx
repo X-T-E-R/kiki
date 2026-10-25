@@ -6,7 +6,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { Session, Workspace } from '@kiki/protocol';
+import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { requestComposerInsert } from '@kiki/session-core/composer';
 import { writeSettings } from '@kiki/session-core/settings';
@@ -33,6 +33,7 @@ vi.mock('../state/connection', () => ({
       klient: { global: { threads: { hostId: getHostId } } },
     },
   }),
+  useOptionalConnection: () => null,
 }));
 vi.mock('../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../host/vscode', () => ({ isVscodeWebview: () => false, vscodeHost: {} }));
@@ -62,9 +63,10 @@ function referenced(): Session {
   };
 }
 
-const workspace: Workspace = {
+/** The metadata-only catalog row App caches: no `session_count` / `isGit`. */
+const workspace: WorkspaceCatalogEntry = {
   id: 'wd_kiki', root: 'C:/src/kiki', name: 'kiki', created_at: '2026-01-01T00:00:00.000Z',
-  last_opened_at: '2026-01-01T00:00:00.000Z', session_count: 1, pinned: false, isGit: true,
+  last_opened_at: '2026-01-01T00:00:00.000Z', pinned: false,
 };
 
 beforeAll(() => {
@@ -134,7 +136,8 @@ async function render(props: Props & { initial?: string }, seed?: (client: Query
 
 const seedLists = (client: QueryClient) => {
   client.setQueryData(['sessions', false, undefined], { pages: [{ items: [referenced()], has_more: false }], pageParams: [undefined] });
-  client.setQueryData(['workspaces'], { items: [workspace] });
+  // App's directory cache: the metadata-only catalog key, not a full listing.
+  client.setQueryData(['workspaces', 'catalog'], { items: [workspace] });
 };
 
 const textarea = (container: HTMLDivElement) => container.querySelector<HTMLTextAreaElement>('textarea[data-composer]')!;
@@ -174,7 +177,9 @@ describe('Composer thread links', () => {
         `<thread_ref id="${REF_ID}" host_id="host-example" title="Fix the flaky upload test" workspace="kiki" workspace_id="wd_kiki" ` +
         'cwd="C:/src/kiki" status="running" updated_at="2026-01-01T11:30:00.000Z"/>\n' +
         'The user linked the Kiki threads above. Read one with ThreadRead using its host_id, workspace_id and id as session_id ' +
-        '(omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).\n</thread_refs>',
+        '(omit host_id for this host if absent), or search it with HistorySearch (scope=session, session_id=<id>).' +
+        ' A <room_ref> is a Kiki room the user linked; its page and log live at that room id, and speaking there uses ' +
+        'ThreadSend({room: "<id>", content, mentions?}).\n</thread_refs>',
     );
     // The record came from the cache: no extra fetch.
     expect(getSession).not.toHaveBeenCalled();
@@ -201,6 +206,23 @@ describe('Composer thread links', () => {
     await settle();
     expect(textarea(container).value).toBe('see now');
     expect(container.querySelector('[data-thread-ref-chip]')).toBeNull();
+  });
+
+  it('names a thread from the catalog cache and follows a workspace rename in it', async () => {
+    let queryClient: QueryClient | undefined;
+    const container = await render({ sessionId: 'session_current', initial: `see /s/${REF_ID} now` }, (client) => {
+      seedLists(client);
+      // A stale full listing under the retired key: the chip must ignore it.
+      client.setQueryData(['workspaces'], { items: [{ id: 'wd_kiki', name: 'stale-full-list-name' }] });
+      queryClient = client;
+    });
+    const chip = () => container.querySelector<HTMLElement>(`[data-thread-ref-chip="${REF_ID}"]`);
+    expect(chip()?.textContent).toContain('kiki');
+    await act(async () => {
+      queryClient!.setQueryData(['workspaces', 'catalog'], { items: [{ ...workspace, name: 'kiki-renamed' }] });
+    });
+    await settle();
+    expect(chip()?.textContent).toContain('kiki-renamed');
   });
 
   it('falls back to the short id for a thread it cannot resolve', async () => {
@@ -232,5 +254,93 @@ describe('Composer thread links', () => {
     expect(accepted).toBe(true);
     expect(node.value).toBe(`before /s/${REF_ID} after`);
     expect(requestComposerInsert('session_other', '/s/x')).toBe(false);
+  });
+});
+
+describe('Composer room links', () => {
+  const ROOM_ID = 'release-contract';
+
+  const withRooms = (client: QueryClient, rooms: readonly { id: string; name: string; members: readonly unknown[] }[]) => {
+    seedLists(client);
+    // The key the sidebar and every room surface share.
+    client.setQueryData(['rooms', 'items'], rooms);
+  };
+
+  it('recognises a pasted room link as a chip that opens the room and rides along as context', async () => {
+    const onSend = vi.fn();
+    const container = await render({ sessionId: 'session_current', onSend, initial: `what did /rooms/${ROOM_ID} decide` }, (client) => {
+      withRooms(client, [{ id: ROOM_ID, name: 'Release contract', members: [{}, {}] }]);
+    });
+    const chip = container.querySelector<HTMLElement>(`[data-room-ref-chip="${ROOM_ID}"]`);
+    expect(chip).not.toBeNull();
+    expect(chip!.textContent).toContain('Release contract');
+    expect(chip!.querySelector('button[aria-label^="Remove link to room"]')).not.toBeNull();
+    // The raw link stays the user's own text in the draft, never rewritten.
+    expect(textarea(container).value).toContain(`/rooms/${ROOM_ID}`);
+    await click(sendButton(container));
+    await settle();
+    const sent = onSend.mock.calls[0]?.[0] as string;
+    expect(sent).toContain(`<room_ref id="${ROOM_ID}" name="Release contract" member_count="2"/>`);
+    expect(sent).toContain('speaking there uses ThreadSend({room: "<id>", content, mentions?}).');
+  });
+
+  it('links a room and a thread in one draft and keeps them distinct', async () => {
+    const onSend = vi.fn();
+    const container = await render({ sessionId: 'session_current', onSend, initial: `/rooms/${ROOM_ID} versus /s/${REF_ID}` }, (client) => {
+      withRooms(client, [{ id: ROOM_ID, name: 'Release contract', members: [{}] }]);
+    });
+    expect(container.querySelector(`[data-room-ref-chip="${ROOM_ID}"]`)).not.toBeNull();
+    expect(container.querySelector(`[data-thread-ref-chip="${REF_ID}"]`)).not.toBeNull();
+    const kinds = [...container.querySelectorAll('[data-thread-ref-token]')].map((node) => node.getAttribute('data-ref-kind'));
+    expect(kinds).toEqual(['room', 'session']);
+    await click(sendButton(container));
+    await settle();
+    const sent = onSend.mock.calls[0]?.[0] as string;
+    expect(sent).toContain('<room_ref ');
+    expect(sent).toContain(`<thread_ref id="${REF_ID}"`);
+  });
+
+  it('falls back to the raw id for an unknown room without blocking the send', async () => {
+    const onSend = vi.fn();
+    const container = await render({ sessionId: 'session_current', onSend, initial: `look at /rooms/${ROOM_ID}` }, (client) => {
+      withRooms(client, []);
+    });
+    const chip = container.querySelector<HTMLElement>(`[data-room-ref-chip="${ROOM_ID}"]`);
+    expect(chip!.textContent).toContain(ROOM_ID);
+    await click(sendButton(container));
+    await settle();
+    const sent = onSend.mock.calls[0]?.[0] as string;
+    // Only the id is known, and only the id is claimed.
+    expect(sent).toContain(`<room_ref id="${ROOM_ID}"/>`);
+    expect(sent).not.toContain('name=');
+  });
+
+  it('deletes a room link whole with Backspace and removes it from the tray', async () => {
+    const container = await render({ sessionId: 'session_current', initial: `go /rooms/${ROOM_ID} now` }, (client) => {
+      withRooms(client, [{ id: ROOM_ID, name: 'Release contract', members: [{}] }]);
+    });
+    expect(container.querySelector(`[data-room-ref-chip="${ROOM_ID}"]`)).not.toBeNull();
+    const input = textarea(container);
+    const afterLink = `go /rooms/${ROOM_ID}`.length;
+    await act(async () => {
+      input.focus();
+      input.setSelectionRange(afterLink, afterLink);
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
+    });
+    await settle();
+    expect(container.querySelector(`[data-room-ref-chip="${ROOM_ID}"]`)).toBeNull();
+    expect(textarea(container).value).not.toContain('/rooms/');
+  });
+
+  it('leaves an external same-shaped URL as ordinary text', async () => {
+    const onSend = vi.fn();
+    const container = await render({ sessionId: 'session_current', onSend, initial: 'see https://example.com/rooms/other' }, (client) => {
+      withRooms(client, [{ id: ROOM_ID, name: 'Release contract', members: [{}] }]);
+    });
+    expect(container.querySelector('[data-room-ref-chip]')).toBeNull();
+    expect(container.querySelector('[data-thread-ref-backdrop]')).toBeNull();
+    await click(sendButton(container));
+    await settle();
+    expect(onSend.mock.calls[0]?.[0]).toBe('see https://example.com/rooms/other');
   });
 });

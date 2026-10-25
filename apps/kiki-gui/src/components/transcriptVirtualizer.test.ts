@@ -3,7 +3,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Virtualizer, type VirtualItem } from '@tanstack/react-virtual';
 
-import { installTranscriptAnchoring, noteReaderDisclosure, shouldCompensateRowResize, type RowResize } from './transcriptVirtualizer';
+import { installTranscriptAnchoring, noteReaderDisclosure, observeRowMutations, shouldCompensateRowResize, type RowResize } from './transcriptVirtualizer';
 
 const base: RowResize = {
   itemStart: 0,
@@ -286,5 +286,43 @@ describe('in-row prose anchoring', () => {
     disposed.setInset(250);
     expect(disposed.resize()).toBe(false);
     expect(disposed.move).not.toHaveBeenCalled();
+  });
+});
+
+
+describe('hydrated row measurement', () => {
+  it('reconciles text/disclosure mutations before the next paint and ignores disposed work', async () => {
+    const scroll = document.createElement('div');
+    const row = document.createElement('div');
+    row.dataset['index'] = '0';
+    scroll.append(row);
+    document.body.append(scroll);
+    let height = 120;
+    Object.defineProperty(row, 'offsetHeight', { get: () => height });
+    const instance = new Virtualizer<HTMLDivElement, HTMLDivElement>({
+      count: 1, getScrollElement: () => scroll, estimateSize: () => 120, getItemKey: () => 'row',
+      scrollToFn: () => {}, observeElementRect: () => {}, observeElementOffset: () => {},
+    });
+    instance.elementsCache.set('row', row);
+    instance.itemSizeCache.set('row', 120);
+    const resize = vi.spyOn(instance, 'resizeItem');
+    const dispose = observeRowMutations(scroll, instance);
+    const text = document.createTextNode('preview');
+    row.append(text);
+    height = 640;
+    await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
+    expect(resize).toHaveBeenLastCalledWith(0, 640);
+    resize.mockClear();
+    height = 880;
+    text.data = 'the complete asynchronous body';
+    await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
+    expect(resize).toHaveBeenLastCalledWith(0, 880);
+    resize.mockClear();
+    row.className = 'expanded';
+    dispose();
+    height = 1000;
+    await new Promise<void>((resolve) => queueMicrotask(() => queueMicrotask(resolve)));
+    expect(resize).not.toHaveBeenCalled();
+    scroll.remove();
   });
 });

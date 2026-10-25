@@ -521,29 +521,53 @@ export class MemoryStore extends Disposable implements IMemoryStore {
       }
       return Buffer.concat(parts);
     };
+    const sourceBatch = async (offset: number, start: number, bytes: number) => {
+      const count = Math.min(16, this.queryBudget.records - (offset - start), Math.max(1, Math.floor((this.queryBudget.bytes - bytes) / (64 * 1024 + 1))));
+      const candidates = await Promise.all(sources.slice(offset, offset + count).map(async (source, index) => ({
+        ...source, index: offset + index, size: await this.storage.size(source.base, source.key).catch(() => undefined),
+      })));
+      let reserved = bytes;
+      const batch: typeof candidates = [];
+      for (const candidate of candidates) {
+        const size = candidate.size;
+        if (size !== undefined && size <= 64 * 1024) {
+          if (reserved + size > this.queryBudget.bytes && offset + batch.length > start) break;
+          reserved += size;
+        }
+        batch.push(candidate);
+      }
+      return batch;
+    };
     let validationHash = position.validationHash;
     let validationEnd = position.validationOffset;
     let validationBytes = 0;
     const validated = new Map<number, { bytes: Uint8Array; size: number; mtime: number }>();
     while (validationEnd < sources.length && validationEnd - position.validationOffset < this.queryBudget.records) {
       signal?.throwIfAborted();
-      const { base, key } = sources[validationEnd]!;
-      const size = await this.storage.size(base, key).catch(() => undefined);
-      if (size !== undefined && size <= 64 * 1024 && validationBytes + size > this.queryBudget.bytes && validationEnd > position.validationOffset) break;
-      const beforeMtime = await this.storage.mtime(base, key).catch(() => undefined);
-      let contentHash: string | undefined;
-      let bytes: Uint8Array | undefined;
-      if (size !== undefined && size <= 64 * 1024) {
-        try {
-          bytes = await readBytes(base, key, (count) => { validationBytes += count; });
-          contentHash = createHash('sha256').update(bytes).digest('hex');
-        } catch { contentHash = 'unavailable'; }
+      const batch = await sourceBatch(validationEnd, position.validationOffset, validationBytes);
+      if (batch.length === 0) break;
+      const records = await Promise.all(batch.map(async ({ base, key, size, index }) => {
+        signal?.throwIfAborted();
+        const beforeMtime = await this.storage.mtime(base, key).catch(() => undefined);
+        let contentHash: string | undefined;
+        let bytes: Uint8Array | undefined;
+        let byteCount = 0;
+        if (size !== undefined && size <= 64 * 1024) {
+          try {
+            bytes = await readBytes(base, key, (count) => { byteCount += count; });
+            contentHash = createHash('sha256').update(bytes).digest('hex');
+          } catch { contentHash = 'unavailable'; }
+        }
+        const mtime = await this.storage.mtime(base, key).catch(() => undefined);
+        return { key, size, index, bytes, byteCount, contentHash, mtime, beforeMtime };
+      }));
+      for (const { key, size, index, bytes, byteCount, contentHash, mtime, beforeMtime } of records) {
+        validationBytes += byteCount;
+        if (bytes !== undefined && beforeMtime !== mtime) invalidated();
+        if (bytes !== undefined && size !== undefined && mtime !== undefined && index >= position.sourceOffset && index - position.sourceOffset < this.queryBudget.records) validated.set(index, { bytes, size, mtime });
+        validationHash = revision(JSON.stringify([validationHash, key, size, mtime, contentHash]));
       }
-      const mtime = await this.storage.mtime(base, key).catch(() => undefined);
-      if (bytes !== undefined && beforeMtime !== mtime) invalidated();
-      if (bytes !== undefined && size !== undefined && mtime !== undefined && validationEnd >= position.sourceOffset && validationEnd - position.sourceOffset < this.queryBudget.records) validated.set(validationEnd, { bytes, size, mtime });
-      validationHash = revision(JSON.stringify([validationHash, key, size, mtime, contentHash]));
-      validationEnd++;
+      validationEnd += batch.length;
     }
     signal?.throwIfAborted();
     if (validationEnd < sources.length) {
@@ -560,22 +584,38 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     let reused = false;
     while (nextSourceOffset < sources.length && nextSourceOffset - position.sourceOffset < this.queryBudget.records) {
       signal?.throwIfAborted();
-      const { base, key, scope } = sources[nextSourceOffset]!;
-      const cached = validated.get(nextSourceOffset);
-      const size = await this.storage.size(base, key).catch(() => undefined);
-      if (cached !== undefined && (size !== cached.size || await this.storage.mtime(base, key).catch(() => undefined) !== cached.mtime)) invalidated();
-      if (size !== undefined && size <= 64 * 1024 && bytesRead + size > this.queryBudget.bytes && nextSourceOffset > position.sourceOffset) break;
-      nextSourceOffset++;
-      if (size === undefined || size > 64 * 1024) { skipped++; chunkHash = revision(JSON.stringify([chunkHash, key, size])); continue; }
-      try {
-        const bytes = cached?.bytes ?? await readBytes(base, key, (count) => { bytesRead += count; });
-        if (cached !== undefined) { bytesRead += bytes.byteLength; reused = true; }
-        const text = decoder.decode(bytes);
-        chunkHash = revision(JSON.stringify([chunkHash, key, revision(text)]));
-        const entry = decode(text);
-        if (entry.id !== key.slice(key.lastIndexOf('/') + 1, -3)) throw new Error('Memory identity mismatch');
-        entries.push({ ...entry, scope });
-      } catch { skipped++; }
+      const batch = await sourceBatch(nextSourceOffset, position.sourceOffset, bytesRead);
+      if (batch.length === 0) break;
+      const checks = await Promise.all(batch.map(async (source) => {
+        const cached = validated.get(source.index);
+        const mtime = cached === undefined ? undefined : await this.storage.mtime(source.base, source.key).catch(() => undefined);
+        return { ...source, cached, mtime };
+      }));
+      if (checks.some(({ cached, size, mtime }) => cached !== undefined && (size !== cached.size || mtime !== cached.mtime))) invalidated();
+      const records = await Promise.all(checks.map(async (source) => {
+        const { base, key, size, cached } = source;
+        let byteCount = 0;
+        if (size === undefined || size > 64 * 1024) return { ...source, bytes: undefined, byteCount };
+        try {
+          const bytes = cached?.bytes ?? await readBytes(base, key, (count) => { byteCount += count; });
+          if (cached !== undefined) byteCount += bytes.byteLength;
+          return { ...source, bytes, byteCount };
+        } catch { return { ...source, bytes: undefined, byteCount }; }
+      }));
+      for (const { key, scope, size, bytes, byteCount, cached } of records) {
+        bytesRead += byteCount;
+        if (size === undefined || size > 64 * 1024) { skipped++; chunkHash = revision(JSON.stringify([chunkHash, key, size])); continue; }
+        if (bytes === undefined) { skipped++; continue; }
+        reused ||= cached !== undefined;
+        try {
+          const text = decoder.decode(bytes);
+          chunkHash = revision(JSON.stringify([chunkHash, key, revision(text)]));
+          const entry = decode(text);
+          if (entry.id !== key.slice(key.lastIndexOf('/') + 1, -3)) throw new Error('Memory identity mismatch');
+          entries.push({ ...entry, scope });
+        } catch { skipped++; }
+      }
+      nextSourceOffset += batch.length;
     }
     if (reused) {
       const currentProof: unknown[] = [];
@@ -687,11 +727,16 @@ export class MemoryStore extends Disposable implements IMemoryStore {
 
   private async rebuildCatalog(base: string): Promise<void> {
     const entries: MemoryEntry[] = [];
-    for (const name of (await this.storage.list(`${base}/entries`)).toSorted()) {
-      if (!/^m_[a-zA-Z0-9_]+\.md$/.test(name)) continue;
-      if ((await this.storage.size(base, `entries/${name}`) ?? 0) > 64 * 1024) continue;
-      const raw = await this.storage.read(base, `entries/${name}`, { recoverMissing: false });
-      if (raw !== undefined) { try { entries.push(decode(decoder.decode(raw))); } catch { continue; } }
+    const names = (await this.storage.list(`${base}/entries`)).filter((name) => /^m_[a-zA-Z0-9_]+\.md$/.test(name)).toSorted();
+    for (let offset = 0; offset < names.length; offset += 16) {
+      const records = await Promise.all(names.slice(offset, offset + 16).map(async (name) => {
+        const key = `entries/${name}`;
+        if ((await this.storage.size(base, key) ?? 0) > 64 * 1024) return undefined;
+        const raw = await this.storage.read(base, key, { recoverMissing: false });
+        if (raw === undefined) return undefined;
+        try { return decode(decoder.decode(raw)); } catch { return undefined; }
+      }));
+      for (const entry of records) if (entry !== undefined) entries.push(entry);
     }
     const catalog = entries.filter((entry) => entry.status === 'active').sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.updated.localeCompare(a.updated))
       .map((entry) => `- [${entry.id}] ${entry.title.replaceAll('\n', ' ')} (${entry.type}${entry.pinned ? ', pinned' : ''})`).join('\n');

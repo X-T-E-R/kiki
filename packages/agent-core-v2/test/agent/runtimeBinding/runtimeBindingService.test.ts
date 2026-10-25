@@ -118,12 +118,44 @@ beforeEach(() => {
   disposables = new DisposableStore();
 });
 
-afterEach(() => {
-  disposables.dispose();
+afterEach(async () => {
+  await disposables.dispose();
   vi.restoreAllMocks();
 });
 
 describe('AgentRuntimeBindingService', () => {
+  it('prepares and leases the explicit local host without the native SSH feature', async () => {
+    const { binding, agentRuntime, local } = setup();
+    binding.switch('remote');
+
+    expect(await agentRuntime.prepareFor!('local')).toBe(local);
+    const lease = agentRuntime.acquireFor!('local', ['fs', 'process']);
+    expect(lease.runtime).toBe(local);
+    lease.dispose();
+    expect(binding.current.runtimeId).toBe('remote');
+    const currentLease = agentRuntime.acquire();
+    expect(currentLease.runtime.identity.runtimeId).toBe('remote');
+    currentLease.dispose();
+  });
+
+  it('keeps explicit SSH hosts gated when native SSH is disabled', async () => {
+    const { agentRuntime } = setup();
+    expect(() => agentRuntime.acquireFor!('example', ['fs'])).toThrow('Native SSH is disabled');
+    await expect(agentRuntime.prepareFor!('example')).rejects.toThrow('Native SSH is disabled');
+  });
+
+  it('leases the selected SSH runtime without changing it to local', () => {
+    const { ix, registry, binding } = setup();
+    const ssh = runtime('ssh:example', 'ssh-one', 'ready', ['fs']);
+    registry.register(ssh);
+    ix.set(IFlagService, stubFlag(true));
+    const agentRuntime = ix.get(IAgentRuntimeService);
+    const lease = agentRuntime.acquireFor!('example', ['fs']);
+    expect(lease.runtime).toBe(ssh);
+    expect(binding.current.runtimeId).toBe('local');
+    lease.dispose();
+  });
+
   it('switches only after the target can be acquired and emits the committed binding', () => {
     const { binding } = setup();
     const changes: RuntimeBinding[] = [];
@@ -300,8 +332,8 @@ describe('AgentRuntimeBindingService', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     invoke.mockClear();
 
+    const closing = ix.dispose();
     try {
-      ix.dispose();
       expect(phases).toEqual(['closing', 'draining']);
       await localRegistration.remove();
       binding.switch('remote');
@@ -310,11 +342,11 @@ describe('AgentRuntimeBindingService', () => {
       expect(refresh).toHaveBeenCalledTimes(1);
       expect(workspaceChanges.listenerCount).toBe(0);
       for (const dispose of subscriptionDisposals) expect(dispose).toHaveBeenCalledTimes(1);
-      ix.dispose();
+      expect(ix.dispose()).toBe(closing);
       expect(phases).toEqual(['closing', 'draining']);
     } finally {
       finishShutdown();
-      await shutdown;
+      await closing;
     }
     expect(phases).toEqual(['closing', 'draining', 'drained']);
   });

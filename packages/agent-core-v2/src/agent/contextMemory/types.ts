@@ -11,6 +11,7 @@ export interface UserPromptOrigin {
   readonly kind: 'user';
   readonly skillActivations?: readonly BundledSkillActivation[];
   readonly originalInput?: readonly ContentPart[];
+  readonly im?: import('@kiki/protocol').ImMessageMetadata;
 }
 
 export const USER_PROMPT_ORIGIN: UserPromptOrigin = { kind: 'user' };
@@ -87,6 +88,7 @@ export interface TaskOrigin {
 
 export interface CronJobOrigin {
   readonly kind: 'cron_job';
+  readonly deliveryMode?: import('@kiki/protocol').CronDeliveryMode;
   readonly jobId: string;
   readonly cron: string;
   readonly recurring: boolean;

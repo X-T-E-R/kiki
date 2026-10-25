@@ -13,10 +13,15 @@ import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDo
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IBlobStore } from '#/persistence/interface/blobStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 
 const BYTES = Buffer.from('media bytes');
+const BLOB_IMAGE = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
+  'base64',
+);
 
 function streamOf(bytes: Buffer): () => NodeJS.ReadableStream {
   return () => Readable.from([bytes]);
@@ -28,12 +33,14 @@ describe('SessionMediaStoreService', () => {
   let homeDir: string;
   let sessionDir: string;
   let store: ISessionMediaStore;
+  let blobBytes: Map<string, Uint8Array>;
 
   beforeEach(async () => {
     disposables = new DisposableStore();
     homeDir = await mkdtemp(join(tmpdir(), 'session-media-store-home-'));
     sessionDir = join(homeDir, 'sessions', 's1');
     await mkdir(sessionDir, { recursive: true });
+    blobBytes = new Map<string, Uint8Array>();
     ix = createServices(disposables, {
       strict: true,
       additionalServices: (reg) => {
@@ -45,6 +52,16 @@ describe('SessionMediaStoreService', () => {
           cwd: '/tmp',
         }));
         reg.defineInstance(IFileSystemStorageService, new FileStorageService(homeDir));
+        reg.defineInstance(IBlobStore, {
+          _serviceBrand: undefined,
+          put: async (_scope, key, data) => { blobBytes.set(key, data); },
+          putStream: async () => {},
+          get: async (_scope, key) => blobBytes.get(key),
+          getStream: async function* (_scope, key) { const data = blobBytes.get(key); if (data !== undefined) yield data; },
+          has: async (_scope, key) => blobBytes.has(key),
+          delete: async (_scope, key) => { blobBytes.delete(key); },
+          list: async () => [],
+        });
         reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
         reg.define(ISessionMediaStore, SessionMediaStoreService);
       },
@@ -53,7 +70,7 @@ describe('SessionMediaStoreService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -138,6 +155,18 @@ describe('SessionMediaStoreService', () => {
     });
   });
 
+  it('reads and opens a validated agent blob reference without using session media files', async () => {
+    const hash = 'a'.repeat(64);
+    blobBytes.set(hash, BLOB_IMAGE);
+    const fileId = `blobref:main:${hash}`;
+
+    await expect(store.read(fileId)).resolves.toEqual({ data: BLOB_IMAGE, name: fileId });
+    const opened = await store.open(fileId);
+    expect(opened).toMatchObject({ name: fileId, mediaType: 'image/png', size: BLOB_IMAGE.length });
+    expect(opened?.path).toBeUndefined();
+    expect(opened === undefined ? undefined : Buffer.from(await collect(opened.stream()))).toEqual(BLOB_IMAGE);
+  });
+
   it('opens canonical media with its persisted download metadata', async () => {
     await store.materialize(input({ name: 'original clip.mp4', mimeType: 'video/mp4' }));
 
@@ -215,6 +244,11 @@ it('retains canonical bytes without inventing a path for a non-filesystem backen
         cwd: '/tmp',
       }));
       reg.defineInstance(IFileSystemStorageService, new InMemoryStorageService());
+      reg.defineInstance(IBlobStore, {
+        _serviceBrand: undefined,
+        put: async () => {}, putStream: async () => {}, get: async () => undefined,
+        getStream: async function* () {}, has: async () => false, delete: async () => {}, list: async () => [],
+      });
       reg.define(IAtomicDocumentStore, JsonAtomicDocumentStore);
       reg.define(ISessionMediaStore, SessionMediaStoreService);
     },
@@ -231,7 +265,7 @@ it('retains canonical bytes without inventing a path for a non-filesystem backen
   expect(canonical?.name).toBe('f_1.mp4');
   expect(canonical === undefined ? undefined : Buffer.from(canonical.data)).toEqual(BYTES);
   expect((await store.open('f_1'))?.path).toBeUndefined();
-  disposables.dispose();
+  await disposables.dispose();
 });
 
 async function collect(source: AsyncIterable<Uint8Array>): Promise<Uint8Array> {

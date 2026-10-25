@@ -1,8 +1,11 @@
 import type { TranscriptFact } from './reducer';
+import { normalizeStoredExternalToolDisplay } from './externalToolDisplay';
+import { projectGoalChange } from './goalProjection';
 import { CompactionProjection, type CompactionProjectionCheckpoint } from './compactionProjection';
 import { bundledSkillActivations, isUndoAnchorOrigin, isVisibleLegacyTurnOrigin } from './wireIdentity';
 import { projectTranscriptUserOrigin } from '../contract/origin';
 import { contentTextPresentation, readTextPresentation } from '../contract/presentation';
+import { mediaUrlFromPart, parseDaemonFileRefFileId, sessionMediaIdFromBlobUrl } from '../contract/mediaRef';
 import { todoNotesUpdateSchema, transcriptPromptRuntimeControlsSchema, transcriptTaskSchema } from '../contract/schema';
 import type { AttachmentSource } from '../model/attachment';
 import { releaseFramePayload, releaseToolFramePayload, type MessageDelivery, type ToolCallFrame } from '../model/frame';
@@ -14,6 +17,7 @@ import type { ExternalActivityRecord, ExternalTextRecord } from '../model/extern
 import type { TranscriptMarker } from '../model/item';
 import type { TodoItem, TranscriptTodo } from '../model/todo';
 import type { StepHeader, TurnHeader, TranscriptOperation } from '../ops/operation';
+import { safetyBoundaryIndex } from '../ops/framePlace';
 import type { StepUsage, TranscriptTurnExecution, TurnCancellation, TurnOrigin } from '../model/turn';
 
 export interface TranscriptWireRecord {
@@ -29,6 +33,7 @@ export interface TranscriptWireAdapterLookups {
     | undefined;
   readonly task?: (taskId: string) => TranscriptTask | undefined;
   readonly todo?: (todoId: string) => TranscriptTodo | undefined;
+  readonly prompt?: (promptId: string) => TranscriptPrompt | undefined;
 }
 
 export function taskNotificationFrameId(sourceId: string): string {
@@ -113,6 +118,8 @@ export interface TranscriptWireAdapterCheckpoint {
   readonly currentTurnId?: string;
   readonly currentPromptId?: string;
   readonly modelAlias?: string;
+  readonly thinkingEffort?: string;
+  readonly modelSwitchChanges?: readonly [string, string][];
   readonly compaction?: CompactionProjectionCheckpoint;
   readonly queuedModelSwitchIds?: readonly string[];
   readonly prompts?: readonly [string, TranscriptPrompt][];
@@ -155,6 +162,7 @@ export class TranscriptWireAdapter {
   readonly #deliveries = new Map<string, MessageDelivery>();
   readonly #deliveryUndoRecords = new Map<string, DeliveryUndoRecord>();
   readonly #frameRecords = new Map<string, FrameRecord>();
+  readonly #frameOrder = new Map<string, string[]>();
   readonly #releasedTurnIds = new Set<string>();
   readonly #turnRecordOrdinals = new Map<string, number>();
   readonly #stepRecordOrdinals = new Map<string, number>();
@@ -167,6 +175,8 @@ export class TranscriptWireAdapter {
   #currentTurnId: string | undefined;
   #currentPromptId: string | undefined;
   #modelAlias: string | undefined;
+  #thinkingEffort: string | undefined;
+  readonly #modelSwitchChanges = new Map<string, string>();
   readonly #compaction = new CompactionProjection();
 
   activeCompactionOperations(): TranscriptOperation[] {
@@ -218,6 +228,8 @@ export class TranscriptWireAdapter {
       currentTurnId: this.#currentTurnId,
       currentPromptId: this.#currentPromptId,
       modelAlias: this.#modelAlias,
+      thinkingEffort: this.#thinkingEffort,
+      modelSwitchChanges: [...this.#modelSwitchChanges],
       compaction: this.#compaction.checkpoint(),
       queuedModelSwitchIds: [...this.#queuedModelSwitchIds],
       prompts: [...this.#prompts],
@@ -297,6 +309,8 @@ export class TranscriptWireAdapter {
     this.#currentTurnId = checkpoint.currentTurnId;
     this.#currentPromptId = checkpoint.currentPromptId;
     this.#modelAlias = checkpoint.modelAlias;
+    this.#thinkingEffort = checkpoint.thinkingEffort;
+    replaceMap(this.#modelSwitchChanges, checkpoint.modelSwitchChanges ?? []);
     this.#compaction.restore(checkpoint.compaction);
     replaceSet(this.#queuedModelSwitchIds, checkpoint.queuedModelSwitchIds ?? []);
     replaceMap(this.#prompts, checkpoint.prompts ?? []);
@@ -306,6 +320,7 @@ export class TranscriptWireAdapter {
     replaceMap(this.#frameRecords, checkpoint.messageProjection?.frames ?? []);
     replaceMap(this.#turnRecordOrdinals, checkpoint.messageProjection?.turns ?? []);
     replaceMap(this.#stepRecordOrdinals, checkpoint.messageProjection?.steps ?? []);
+    this.rebuildFrameOrder();
   }
 
   add(record: TranscriptWireRecord): TranscriptFact[] {
@@ -339,6 +354,7 @@ export class TranscriptWireAdapter {
         const previous = this.#frameRecords.get(key);
         const retained = this.#releasedTurnIds.has(operation.turnId) ? { ...operation, frame: releaseFramePayload(operation.frame) } : operation;
         this.#frameRecords.set(key, { ordinal: previous?.ordinal ?? ordinal, operation: retained });
+        this.rememberFrameOrder(retained);
       }
     }
   }
@@ -397,18 +413,42 @@ export class TranscriptWireAdapter {
       const from = stringOf(committed ? record['fromModel'] : receipt?.['fromModel']);
       const to = stringOf(committed ? record['toModel'] : receipt?.['toModel']);
       const state = committed ? (this.#queuedModelSwitchIds.has(operationId) ? 'preparing' : 'completed') : stringOf(receipt?.['state']);
-      if ((committed || state === 'completed') && to !== undefined) this.#modelAlias = to;
-      return [{ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
-        payload: { operationId, from, to, state, mode: committed ? record['mode'] : receipt?.['mode'],
+      const mode = committed ? record['mode'] : receipt?.['mode'];
+      const thinking = stringOf(committed ? record['thinking'] : objectOf(receipt?.['binding'])?.['thinking']);
+      const change = committed && from === to && mode === 'direct' && thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort
+        ? 'effort' : this.#modelSwitchChanges.get(operationId) ?? (from !== to ? 'model'
+        : mode !== 'direct' ? 'context'
+        : thinking !== undefined && this.#thinkingEffort !== undefined && thinking !== this.#thinkingEffort ? 'effort'
+        : operationId.startsWith('resume:') ? 'resume' : 'binding');
+      this.#modelSwitchChanges.set(operationId, change);
+      const operations: TranscriptOperation[] = [];
+      if (committed || state === 'completed') {
+        const agent: { model?: string; thinkingEffort?: string } = {};
+        if (to !== undefined) {
+          this.#modelAlias = to;
+          agent.model = to;
+        }
+        if (thinking !== undefined) {
+          this.#thinkingEffort = thinking;
+          agent.thinkingEffort = thinking;
+        }
+        if (Object.keys(agent).length > 0) operations.push({ op: 'meta.merge', meta: { agent } });
+      }
+      operations.push({ op: 'marker.upsert', item: { kind: 'marker', markerId: `model-switch:${operationId}`, marker: 'model.switch', at: isoOf(record.time),
+        payload: { operationId, from, to, state, mode, change,
           windowEpoch: committed ? record['newEpoch'] : receipt?.['windowEpoch'],
-          summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } }];
+          summaryGenerated: committed ? record['summaryGenerated'] : receipt?.['summaryGenerated'], error: receipt?.['error'] } } });
+      return operations;
     }
     if (record.type === 'profile.bind' || record.type === 'config.update') {
       const model = stringOf(record['modelAlias']);
       const thinkingEffort = stringOf(record['thinkingEffort']) ?? stringOf(record['thinkingLevel']);
       const agent: { model?: string; thinkingEffort?: string } = {};
       if (model !== undefined && model.length > 0) agent.model = model;
-      if (thinkingEffort !== undefined) agent.thinkingEffort = thinkingEffort;
+      if (thinkingEffort !== undefined) {
+        agent.thinkingEffort = thinkingEffort;
+        this.#thinkingEffort = thinkingEffort;
+      }
       const operations: TranscriptOperation[] = Object.keys(agent).length === 0
         ? [] : [{ op: 'meta.merge', meta: { agent } }];
       if (agent.model === undefined) return operations;
@@ -429,7 +469,15 @@ export class TranscriptWireAdapter {
       return event === undefined ? [] : this.loopEvent(event, ordinal, record.time);
     }
     if (record.type === 'turn.ended') return this.turnEnded(record);
-    if (record.type === 'context.undo') return this.undo(numberOf(record['count']) ?? 1);
+    if (record.type === 'context.undo') {
+      const operations = this.undo(numberOf(record['count']) ?? 1);
+      const prompt = objectOf(record['replacementPrompt']);
+      if (prompt !== undefined) {
+        operations.push(...this.legacyMessage({ ...record, type: 'context.append_message', message: prompt['message'] }, ordinal, true));
+        operations.push(...this.promptRecord({ ...prompt, type: 'prompt.enqueued', time: record.time }));
+      }
+      return operations;
+    }
     if (record.type === 'context.clear') return this.removeTurns(this.#turns.length);
     const compaction = this.#compaction.project(record, ordinal);
     if (compaction !== undefined) return compaction;
@@ -438,19 +486,24 @@ export class TranscriptWireAdapter {
   }
 
   private promptRecord(record: TranscriptWireRecord): TranscriptOperation[] {
-    const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']);
+    const terminal = objectOf(record['terminal']);
+    const promptId = stringOf(record['promptId']) ?? stringOf(record['activePromptId']) ?? stringOf(terminal?.['promptId']);
     if (promptId === undefined) return [];
     if (record.type === 'prompt.enqueued') {
       const message = objectOf(record['message']);
       const originKind = stringOf(objectOf(message?.['origin'])?.['kind']) ?? 'user';
-      if (originKind !== 'user') {
+      if (originKind !== 'user' && originKind !== 'cron_job') {
         this.#hiddenPromptIds.add(promptId);
         return [];
       }
+      this.#hiddenPromptIds.delete(promptId);
+      const origin = objectOf(message?.['origin']);
       const controls = transcriptPromptRuntimeControlsSchema.safeParse(record['execution']);
       const prompt: TranscriptPrompt = {
         promptId,
         runtimeControls: controls.success && Object.keys(controls.data).length > 0 ? controls.data : undefined,
+        originKind: originKind === 'cron_job' ? originKind : undefined,
+        originDeliveryMode: originKind === 'cron_job' ? cronDeliveryModeOf(origin?.['deliveryMode']) : undefined,
         status: 'queued',
         userMessageId: stringOf(record['userMessageId']) ?? stringOf(message?.['id']),
         content: projectPromptContent(message?.['content']),
@@ -507,6 +560,24 @@ export class TranscriptWireAdapter {
           status: 'running',
           queuePosition: undefined,
           revision: numberOf(record['revision']) ?? previous?.revision,
+        }),
+      ];
+    }
+    if (record.type === 'prompt.outcome_committed') {
+      const terminal = objectOf(record['terminal']);
+      const terminalPromptId = stringOf(terminal?.['promptId']);
+      if (terminalPromptId === undefined) return [];
+      const state = stringOf(terminal?.['state']);
+      const status: TranscriptPrompt['status'] = state === 'cancelled' ? 'aborted'
+        : state === 'failed' ? 'failed' : state === 'blocked' ? 'blocked' : 'completed';
+      const prior = this.lookups?.prompt?.(terminalPromptId) ?? this.#prompts.get(terminalPromptId);
+      return [
+        this.storePrompt({
+          ...promptOrMinimal(prior, terminalPromptId, record),
+          status,
+          finishedAt: isoOf(record.time) ?? prior?.finishedAt,
+          queuePosition: undefined,
+          abortedBeforeStart: status === 'aborted' ? prior?.abortedBeforeStart : undefined,
         }),
       ];
     }
@@ -603,6 +674,22 @@ export class TranscriptWireAdapter {
     }
     if (record.type === 'executor.tool.display') return this.externalToolDisplay(record);
     if (record.type === 'executor.runtime.update') {
+      if (record['kind'] === 'usage') {
+        const value = objectOf(record['value']);
+        const used = numberOf(value?.['used']);
+        const size = numberOf(value?.['size']);
+        if (used === undefined) return [];
+        return [{ op: 'meta.merge', meta: { agent: {
+          contextTokens: used,
+          maxContextTokens: size,
+          contextUsage: size !== undefined && size > 0 ? used / size : undefined,
+        } } }];
+      }
+      if (record['kind'] === 'tool_input') return this.externalToolInput(record);
+      if (record['kind'] === 'tool_progress') {
+        const value = objectOf(record['value']);
+        return value === undefined ? [] : this.toolProgress(value);
+      }
       const marker = record['kind'] === 'diff' ? 'executor.diff'
         : record['kind'] === 'compaction' ? 'executor.compaction'
         : record['kind'] === 'session' ? 'executor.session'
@@ -644,68 +731,55 @@ export class TranscriptWireAdapter {
       };
       return [{ op: 'todo.upsert', todo: this.#todo }];
     }
-    if (record.type === 'goal.create') {
+    if (record.type === 'goal.create' || record.type === 'goal.update' || record.type === 'goal.clear') {
+      const before = this.#goal;
       const status = stringOf(record['status']);
-      this.#goal = {
-        goalId: stringOf(record['goalId']),
-        objective: stringOf(record['objective']) ?? '',
-        status: isGoalStatus(status) ? status : 'active',
-        completionCriterion: stringOf(record['completionCriterion']),
-        followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
-        controlRevision: numberOf(record['controlRevision']) ?? 1,
-        turnsUsed: 0,
-        tokensUsed: 0,
-        wallClockMs: 0,
-        budgetUsed: 0,
-        budget: computeGoalBudget(undefined, 0, 0, 0),
-      };
-      return [
-        { op: 'meta.merge', meta: { goal: this.#goal } },
-        this.marker(record, ordinal, 'goal'),
-      ];
-    }
-    if (record.type === 'goal.update') {
-      if (this.#goal !== undefined) {
-        const status = stringOf(record['status']);
-        const budgetRecord = objectOf(record['budgetLimits']);
-        const completionCriterion = record['completionCriterion'];
-        const nextBudget = budgetRecord === undefined ? this.#goal.budget : {
-          tokenBudget: numberOf(budgetRecord['tokenBudget']) ?? null,
-          turnBudget: numberOf(budgetRecord['turnBudget']) ?? null,
-          wallClockBudgetMs: numberOf(budgetRecord['wallClockBudgetMs']) ?? null,
-        };
-        const nextTurnsUsed = numberOf(record['turnsUsed']) ?? this.#goal.turnsUsed ?? 0;
-        const nextTokensUsed = numberOf(record['tokensUsed']) ?? this.#goal.tokensUsed ?? this.#goal.budgetUsed ?? 0;
-        const nextWallClockMs = numberOf(record['wallClockMs']) ?? this.#goal.wallClockMs ?? 0;
+      const limits = objectOf(record['budgetLimits']);
+      if (record.type === 'goal.create') {
         this.#goal = {
-          ...this.#goal,
-          goalId: stringOf(record['goalId']) ?? this.#goal.goalId,
-          objective: stringOf(record['objective']) ?? this.#goal.objective,
+          goalId: stringOf(record['goalId']),
+          objective: stringOf(record['objective']) ?? '',
+          status: isGoalStatus(status) ? status : 'active',
+          completionCriterion: stringOf(record['completionCriterion']),
+          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? 'subagents_done',
+          controlRevision: numberOf(record['controlRevision']) ?? 1,
+          budgetUsed: 0,
+          turnsUsed: 0,
+          wallClockMs: 0,
+          budgetLimit: numberOf(limits?.['tokenBudget']),
+          turnBudget: numberOf(limits?.['turnBudget']),
+          wallClockBudgetMs: numberOf(limits?.['wallClockBudgetMs']),
+        };
+      } else if (record.type === 'goal.clear') {
+        this.#goal = undefined;
+      } else if (before !== undefined) {
+        const completionCriterion = record['completionCriterion'];
+        const nextStatus = isGoalStatus(status) ? status : before.status;
+        this.#goal = {
+          ...before,
+          objective: stringOf(record['objective']) ?? before.objective,
           completionCriterion: completionCriterion === null
-            ? undefined
-            : stringOf(completionCriterion) ?? this.#goal.completionCriterion,
-          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? this.#goal.followUpTiming,
-          controlRevision: numberOf(record['controlRevision']) ?? this.#goal.controlRevision,
-          status: isGoalStatus(status) ? status : this.#goal.status,
-          turnsUsed: nextTurnsUsed,
-          tokensUsed: nextTokensUsed,
-          wallClockMs: nextWallClockMs,
-          budgetUsed: nextTokensUsed,
-          budgetLimit: nextBudget?.tokenBudget ?? undefined,
-          budget: computeGoalBudget(nextBudget, nextTurnsUsed, nextTokensUsed, nextWallClockMs),
-          terminalReason: isGoalStatus(status) && status !== this.#goal.status
-            ? (status === 'active' ? undefined : stringOf(record['reason']))
-            : this.#goal.terminalReason,
+            ? undefined : stringOf(completionCriterion) ?? before.completionCriterion,
+          followUpTiming: goalFollowUpTimingOf(record['followUpTiming']) ?? before.followUpTiming,
+          controlRevision: numberOf(record['controlRevision']) ?? before.controlRevision,
+          status: nextStatus,
+          terminalReason: nextStatus !== before.status
+            ? nextStatus === 'active' ? undefined : stringOf(record['reason']) : before.terminalReason,
+          budgetUsed: numberOf(record['tokensUsed']) ?? before.budgetUsed,
+          turnsUsed: numberOf(record['turnsUsed']) ?? before.turnsUsed,
+          wallClockMs: numberOf(record['wallClockMs']) ?? before.wallClockMs,
+          budgetLimit: limits === undefined ? before.budgetLimit : numberOf(limits['tokenBudget']),
+          turnBudget: limits === undefined ? before.turnBudget : numberOf(limits['turnBudget']),
+          wallClockBudgetMs: limits === undefined ? before.wallClockBudgetMs : numberOf(limits['wallClockBudgetMs']),
         };
       }
-      return [
-        { op: 'meta.merge', meta: { goal: this.#goal } },
-        this.marker(record, ordinal, 'goal'),
-      ];
-    }
-    if (record.type === 'goal.clear') {
-      this.#goal = undefined;
-      return [{ op: 'meta.merge', meta: { goal: null } }];
+      const change = record.type === 'goal.create' ? { kind: 'created' as const }
+        : projectGoalChange(before, this.#goal, {
+          reason: stringOf(record['reason']), actor: stringOf(record['actor']),
+        });
+      const operations: TranscriptOperation[] = [{ op: 'meta.merge', meta: { goal: this.#goal ?? null } }];
+      if (change !== undefined) operations.push(this.marker(record, ordinal, 'goal', { change, snapshot: this.#goal ?? null }));
+      return operations;
     }
     if (record.type === 'plan_mode.enter') {
       this.#plan = undefined;
@@ -973,7 +1047,7 @@ export class TranscriptWireAdapter {
       ) {
         return [];
       }
-      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request']);
+      const request = projectWireQuestionRequest(interactionId, interactionKind, record['request'], record.time);
       const requestToolCallId = stringOf(objectOf(request)?.['toolCallId']);
       const toolCallId = stringOf(record['toolCallId']) ?? requestToolCallId;
       const recordOrigin = objectOf(record['origin']);
@@ -1189,10 +1263,11 @@ export class TranscriptWireAdapter {
     this.#canonicalTurns.add(turnId);
     this.trackTurn(turnId);
     const promptId = stringOf(record['promptId']) ?? stringOf(record['messageId']);
+    const messageId = promptId === undefined ? undefined : this.#prompts.get(promptId)?.userMessageId ?? promptId;
     const previous = this.#turnHeaders.get(turnId);
-    const alreadyDelivered = promptId !== undefined && this.#deliveries.has(promptId);
-    if (alreadyDelivered && previous?.message?.messageId === promptId) return [];
-    const materialized = record['managed'] === true && promptId !== undefined && previous?.message?.messageId === promptId
+    const alreadyDelivered = messageId !== undefined && this.#deliveries.has(messageId);
+    if (alreadyDelivered && previous?.message?.messageId === messageId) return [];
+    const materialized = record['managed'] === true && messageId !== undefined && previous?.message?.messageId === messageId
       ? previous
       : undefined;
     const headerOnly = record['managed'] === true || alreadyDelivered;
@@ -1249,7 +1324,7 @@ export class TranscriptWireAdapter {
       origin: mapOrigin(record['origin']),
       promptId: stringOf(record['promptId']),
       message: {
-        messageId: promptId ?? `legacy:v1:r${ordinal}:message`,
+        messageId: messageId ?? `legacy:v1:r${ordinal}:message`,
         role: 'user',
         revision: numberOf(record['revision']) ?? 0,
         provenance: {
@@ -1383,7 +1458,7 @@ export class TranscriptWireAdapter {
     return true;
   }
 
-  private legacyMessage(record: TranscriptWireRecord, ordinal: number): TranscriptOperation[] {
+  private legacyMessage(record: TranscriptWireRecord, ordinal: number, opensTurn = false): TranscriptOperation[] {
     const message = objectOf(record['message']);
     const role = stringOf(message?.['role']);
     const origin = objectOf(message?.['origin']);
@@ -1408,7 +1483,7 @@ export class TranscriptWireAdapter {
         notificationId !== undefined ||
         origin?.['kind'] === 'agent_message' ||
         origin?.['kind'] === 'injection' ||
-        (this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
+        (!opensTurn && this.#canonicalTurns.size > 0 && isVisibleLegacyTurnOrigin(this.agentId, origin))
       ) return this.deliveredMessage(record, message, ordinal);
       const turnOrdinal = this.#legacyTurnOrdinal++;
       if (!isVisibleLegacyTurnOrigin(this.agentId, origin)) return [];
@@ -1504,7 +1579,7 @@ export class TranscriptWireAdapter {
     canonical?: Readonly<Record<string, unknown>>,
   ): TranscriptOperation[] {
     const messageId = stringOf(canonical?.['messageId']) ?? stringOf(message['id']) ?? `legacy:v1:r${ordinal}:message`;
-    if (this.#deliveries.has(messageId)) return [];
+    if (this.#deliveries.has(messageId)) return this.reviseDeliveredUserFrame(messageId, message);
     const origin = objectOf(message['origin']);
     const current = this.#currentTurnId === undefined ? undefined : this.#turnHeaders.get(this.#currentTurnId);
     const inferredTurn = current?.state === 'running' ? current.turnId : undefined;
@@ -1513,8 +1588,9 @@ export class TranscriptWireAdapter {
       : turnIdOf(canonical['turnId'], undefined) ?? inferredTurn;
     const priorStep = turnId === undefined ? undefined : this.#steps.get(turnId);
     const inferredStep = canonical === undefined || canonical['turnId'] === undefined;
-    const acceptedStepId = inferredStep ? priorStep?.stepId : stringOf(canonical?.['stepId']);
-    const acceptedStep = inferredStep ? priorStep?.ordinal : numberOf(canonical?.['step']);
+    const openedStep = inferredStep && turnId !== undefined ? this.runningStepAhead(turnId, priorStep) : undefined;
+    const acceptedStepId = inferredStep ? openedStep?.stepId ?? priorStep?.stepId : stringOf(canonical?.['stepId']);
+    const acceptedStep = inferredStep ? openedStep?.ordinal ?? priorStep?.ordinal : numberOf(canonical?.['step']);
     const stepId = turnId === undefined ? undefined : acceptedStepId ?? priorStep?.stepId ?? `${turnId}.delivery`;
     const stepOrdinal = acceptedStep ?? priorStep?.ordinal ?? 0;
     const delivery: MessageDelivery = {
@@ -1528,21 +1604,22 @@ export class TranscriptWireAdapter {
     };
     this.#deliveries.set(messageId, delivery);
     const turn = turnId === undefined ? undefined : this.#turnHeaders.get(turnId);
+    const openedTurn = turn !== undefined && (turn.message?.messageId === messageId || turn.promptId === messageId) ? turn : undefined;
     this.#deliveryUndoRecords.set(messageId, {
       ordinal,
-      anchor: isUndoAnchorOrigin(message['origin']) && turn?.message?.messageId !== messageId,
+      anchor: isUndoAnchorOrigin(message['origin']) && openedTurn === undefined,
     });
-    if (turn?.message?.messageId === messageId) {
-      if (isUndoAnchorOrigin(message['origin'])) this.#undoAnchors.add(turn.turnId);
-      if (turn.prompt !== undefined) return [];
+    if (openedTurn !== undefined) {
+      if (isUndoAnchorOrigin(message['origin'])) this.#undoAnchors.add(openedTurn.turnId);
+      if (openedTurn.prompt !== undefined) return [];
     }
     const input = arrayOf(message['content']);
     const activations = bundledSkillActivations(message['origin']);
     const content = input.slice(activations.length);
     const text = content.map(textOfPart).join('');
     const operations: TranscriptOperation[] = [];
-    if (turn?.message?.messageId === messageId && activations.length > 0) {
-      this.#turnOwnedItemIds.set(turn.turnId, activations.map((activation) => `wire:v2:skill:${activation.activationId}`));
+    if (openedTurn !== undefined && activations.length > 0) {
+      this.#turnOwnedItemIds.set(openedTurn.turnId, activations.map((activation) => `wire:v2:skill:${activation.activationId}`));
       operations.push(...activations.map((activation, index): TranscriptOperation => ({
         op: 'marker.upsert',
         item: {
@@ -1550,7 +1627,7 @@ export class TranscriptWireAdapter {
           payload: { text: textOfPart(input[index]), origin: { kind: 'skill_activation', trigger: 'user-slash', ...activation } },
           at: delivery.deliveredAt,
         },
-        beforeTurn: turn.ordinal,
+        beforeTurn: openedTurn.ordinal,
       })));
     }
     const attachmentIds: string[] = [];
@@ -1561,18 +1638,18 @@ export class TranscriptWireAdapter {
         op: 'attachment.upsert',
         attachment: {
           attachmentId, mediaType: media.mediaType ?? `${media.kind}/*`, name: media.name, size: media.size, source: media.source,
-          owner: turn?.message?.messageId === messageId ? { kind: 'turn', turnId: turn.turnId }
+          owner: openedTurn !== undefined ? { kind: 'turn', turnId: openedTurn.turnId }
             : turnId === undefined || stepId === undefined ? undefined : { kind: 'frame', turnId, stepId, frameId: messageId },
         },
       });
     }
-    if (turn?.message?.messageId === messageId) {
+    if (openedTurn !== undefined) {
       const deliveredTurn: TurnHeader = {
-        ...turn, prompt: text.length === 0 ? undefined : text,
+        ...openedTurn, prompt: text.length === 0 ? undefined : text,
         presentation: contentTextPresentation(content),
         attachmentIds: attachmentIds.length === 0 ? undefined : attachmentIds, delivery,
       };
-      this.#turnHeaders.set(turn.turnId, deliveredTurn);
+      this.#turnHeaders.set(openedTurn.turnId, deliveredTurn);
       operations.push({ op: 'turn.upsert', turn: deliveredTurn });
       return operations;
     }
@@ -1597,8 +1674,11 @@ export class TranscriptWireAdapter {
       this.storeStep(stepId, step);
       operations.push({ op: 'step.upsert', turnId, step });
     }
+    const place = canonical?.['placement'] === 'safety_boundary' ? 'safety_boundary' as const : undefined;
+    const frameIndex = place === undefined ? undefined : this.boundaryFrameIndex(turnId, stepId);
     operations.push({
       op: 'frame.upsert', turnId, stepId,
+      place, frameIndex,
       frame: {
         kind: 'text', frameId: messageId,
         part: {
@@ -1612,6 +1692,34 @@ export class TranscriptWireAdapter {
       },
     });
     return operations;
+  }
+
+  private reviseDeliveredUserFrame(
+    messageId: string,
+    message: Readonly<Record<string, unknown>>,
+  ): TranscriptOperation[] {
+    const delivery = this.#deliveries.get(messageId);
+    const turnId = delivery?.turnId;
+    const stepId = delivery?.stepId;
+    if (turnId === undefined || stepId === undefined) return [];
+    const key = `${turnId}\0${stepId}\0${messageId}`;
+    const stored = this.#frameRecords.get(key)?.operation;
+    const previous = stored?.frame;
+    if (stored === undefined || previous === undefined || previous.kind !== 'text' || previous.role !== 'user') return [];
+    const incoming = arrayOf(message['content']).map(textOfPart).join('');
+    const text = previous.text.length > 0 && !incoming.startsWith(previous.text) ? `${previous.text}${incoming}` : incoming;
+    const revision = (previous.part?.revision ?? 0) + 1;
+    return [{
+      op: 'frame.upsert', turnId, stepId,
+      place: stored.place,
+      frameIndex: stored.frameIndex,
+      frame: {
+        ...previous,
+        text,
+        part: previous.part === undefined ? undefined : { ...previous.part, revision },
+        origin: projectTranscriptUserOrigin(message['origin']) ?? message['origin'] ?? previous.origin,
+      },
+    }];
   }
 
   private legacyAssistant(
@@ -1663,7 +1771,7 @@ export class TranscriptWireAdapter {
             presentation: readTextPresentation(part?.['presentation']),
           },
         });
-      } else if (type === 'think') {
+      } else if (type === 'think' && part?.['hidden'] !== true) {
         operations.push({
           op: 'frame.upsert',
           turnId,
@@ -1745,6 +1853,7 @@ export class TranscriptWireAdapter {
     if (type === 'content.part') return this.contentPart(event, ordinal);
     if (type === 'tool.call') return this.toolCall(event, ordinal, time);
     if (type === 'tool.result') return this.toolResult(event, time);
+    if (type === 'tool.progress') return this.toolProgress(event);
     return [];
   }
 
@@ -1853,6 +1962,7 @@ export class TranscriptWireAdapter {
       ];
     }
     if (type === 'think') {
+      if (part['hidden'] === true) return [];
       return [
         {
           op: 'frame.upsert',
@@ -1934,19 +2044,44 @@ export class TranscriptWireAdapter {
     if (toolCallId === undefined || stepId === undefined || turnId === undefined ||
       (state !== 'running' && state !== 'done' && state !== 'error' && state !== 'interrupted')) return [];
     const previous = this.#tools.get(toolCallId)?.frame ?? this.lookups?.tool?.(toolCallId)?.frame;
-    const output = record['output'];
-    const text = stringOf(objectOf(output)?.['text']);
+    const output = objectOf(record['output']);
+    const text = stringOf(output?.['text']);
+    const name = stringOf(record['name']) ?? stringOf(output?.['title']) ?? stringOf(output?.['name']) ?? previous?.name;
     const frame: ToolCallFrame = {
       ...previous,
       kind: 'tool', frameId: previous?.frameId ?? `${stepId}.${toolCallId}`,
-      toolCallId, name: stringOf(record['name']) ?? previous?.name ?? 'External tool',
-      state, input: record['input'], display: record['display'], output,
+      toolCallId, name: name ?? 'External tool',
+      state, input: record['input'] ?? output?.['rawInput'], display: normalizeStoredExternalToolDisplay(record['display'], {
+        name, title: stringOf(output?.['title']) ?? name, kind: stringOf(output?.['toolKind']),
+        rawInput: record['input'] ?? output?.['rawInput'],
+        content: Array.isArray(output?.['content']) ? output['content'] : undefined,
+        locations: Array.isArray(output?.['locations']) ? output['locations'] : undefined,
+      }), output: record['output'],
       error: state === 'error' ? text : undefined,
       startedAt: previous?.startedAt ?? isoOf(record.time),
       endedAt: state === 'running' ? undefined : previous?.endedAt ?? isoOf(record.time),
-      progress: state === 'running' ? { kind: 'status', text: stringOf(objectOf(output)?.['status']) } : previous?.progress,
+      progress: state === 'running' ? { kind: 'status', text: stringOf(output?.['status']) } : previous?.progress,
       todoId: undefined,
     };
+    const hit = { turnId, stepId, frame };
+    this.storeTool(toolCallId, hit);
+    return [{ op: 'frame.upsert', ...hit }];
+  }
+
+  private externalToolInput(record: TranscriptWireRecord): TranscriptOperation[] {
+    const value = objectOf(record['value']);
+    const toolCallId = stringOf(value?.['toolCallId']);
+    const stepId = stringOf(value?.['stepId']);
+    const turnId = turnIdOf(record['turnId'], undefined);
+    const inputText = stringOf(value?.['inputText']);
+    if (toolCallId === undefined || stepId === undefined || turnId === undefined || inputText === undefined) return [];
+    const previous = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    if (previous !== undefined && previous.frame.state !== 'running') return [];
+    const frame: ToolCallFrame = previous === undefined ? {
+      kind: 'tool', frameId: `${stepId}.${toolCallId}`, toolCallId,
+      part: { partId: toolCallId, messageId: stepId, revision: 0, provenance: { source: 'engine' } },
+      name: stringOf(value?.['name']) ?? '', state: 'running', inputText,
+    } : { ...previous.frame, name: stringOf(value?.['name']) ?? previous.frame.name, inputText };
     const hit = { turnId, stepId, frame };
     this.storeTool(toolCallId, hit);
     return [{ op: 'frame.upsert', ...hit }];
@@ -1961,6 +2096,8 @@ export class TranscriptWireAdapter {
     const stepId = stringOf(event['stepUuid']);
     const turnId = turnIdOf(event['turnId'], undefined) ?? this.turnForStep(stepId);
     if (toolCallId === undefined || stepId === undefined || turnId === undefined) return [];
+    const extras = objectOf(event['extras']);
+    const name = stringOf(event['name']);
     const frame: ToolCallFrame = {
       kind: 'tool',
       frameId: `${stepId}.${toolCallId}`,
@@ -1974,14 +2111,36 @@ export class TranscriptWireAdapter {
         },
       },
       toolCallId,
-      name: stringOf(event['name']) ?? '',
+      name: name ?? '',
       state: 'running',
       input: event['args'],
+      inputText: this.#tools.get(toolCallId)?.frame.inputText ?? this.lookups?.tool?.(toolCallId)?.frame.inputText,
+      display: normalizeStoredExternalToolDisplay(event['display'] ?? extras?.['display'], {
+        name, title: name, kind: stringOf(extras?.['kind']), rawInput: event['args'],
+        content: Array.isArray(extras?.['content']) ? extras['content'] : undefined,
+        locations: Array.isArray(event['locations']) ? event['locations'] : Array.isArray(extras?.['locations']) ? extras['locations'] : undefined,
+      }),
       startedAt: isoOf(time),
     };
     const hit = { turnId, stepId, frame };
     this.storeTool(toolCallId, hit);
     return [{ op: 'frame.upsert', ...hit }];
+  }
+
+  private toolProgress(event: Readonly<Record<string, unknown>>): TranscriptOperation[] {
+    const toolCallId = stringOf(event['toolCallId']);
+    if (toolCallId === undefined) return [];
+    const hit = this.#tools.get(toolCallId) ?? this.lookups?.tool?.(toolCallId);
+    const update = objectOf(event['update']);
+    const kind = stringOf(update?.['kind']);
+    if (hit === undefined || update === undefined ||
+        kind !== 'stdout' && kind !== 'stderr' && kind !== 'progress' && kind !== 'status' && kind !== 'custom') return [];
+    const frame: ToolCallFrame = { ...hit.frame, progress: {
+      kind, text: stringOf(update['text']), percent: typeof update['percent'] === 'number' ? update['percent'] : undefined,
+      customKind: stringOf(update['customKind']), customData: update['customData'],
+    } };
+    this.storeTool(toolCallId, { ...hit, frame });
+    return [{ op: 'frame.upsert', turnId: hit.turnId, stepId: hit.stepId, frame }];
   }
 
   private toolResult(
@@ -2157,6 +2316,45 @@ export class TranscriptWireAdapter {
 
   private turnForStep(stepId: string | undefined): string | undefined {
     return stepId === undefined ? undefined : this.#turnIdByStepId.get(stepId);
+  }
+
+  private boundaryFrameIndex(turnId: string, stepId: string): number {
+    const ids = this.#frameOrder.get(`${turnId}\0${stepId}`) ?? [];
+    return safetyBoundaryIndex(ids.flatMap((frameId) => {
+      const frame = this.#frameRecords.get(`${turnId}\0${stepId}\0${frameId}`)?.operation.frame;
+      return frame === undefined ? [] : [frame];
+    }));
+  }
+
+  private rememberFrameOrder(operation: Extract<TranscriptOperation, { op: 'frame.upsert' }>): void {
+    const key = `${operation.turnId}\0${operation.stepId}`;
+    const order = [...(this.#frameOrder.get(key) ?? [])];
+    if (order.includes(operation.frame.frameId)) return;
+    const index = operation.place === 'safety_boundary' ? this.boundaryFrameIndex(operation.turnId, operation.stepId) : order.length;
+    order.splice(index, 0, operation.frame.frameId);
+    this.#frameOrder.set(key, order);
+  }
+
+  private rebuildFrameOrder(): void {
+    this.#frameOrder.clear();
+    for (const record of [...this.#frameRecords.values()].toSorted((left, right) => left.ordinal - right.ordinal)) {
+      this.rememberFrameOrder(record.operation);
+    }
+  }
+
+  private runningStepAhead(
+    turnId: string,
+    cursor: { readonly stepId: string; readonly ordinal: number } | undefined,
+  ): StepHeader | undefined {
+    const cursorOpen = cursor !== undefined && this.#stepHeaders.get(cursor.stepId)?.state === 'running';
+    let selected: StepHeader | undefined;
+    for (const stepId of this.#stepIdsByTurn.get(turnId) ?? []) {
+      const step = this.#stepHeaders.get(stepId);
+      if (step === undefined || step.state !== 'running' || step.stepId === cursor?.stepId) continue;
+      if (cursorOpen && step.ordinal <= cursor.ordinal) continue;
+      if (selected === undefined || step.ordinal > selected.ordinal) selected = step;
+    }
+    return selected;
   }
 
   private stepForOrdinal(turnId: string, ordinal: number): StepHeader | undefined {
@@ -2339,6 +2537,9 @@ export class TranscriptWireAdapter {
       }
       this.#toolIdsByTurn.delete(turnId);
       this.#runningToolIdsByTurn.delete(turnId);
+      for (const key of this.#frameOrder.keys()) {
+        if (key.startsWith(`${turnId}\0`)) this.#frameOrder.delete(key);
+      }
     }
     for (const [interactionId, interaction] of this.#interactions) {
       if (interaction.toolCallId !== undefined && removedToolIds.has(interaction.toolCallId)) this.#interactions.delete(interactionId);
@@ -2460,6 +2661,7 @@ function durableRecord(type: string): boolean {
     type === 'prompt.timing_changed' ||
     type === 'prompt.moved' ||
     type === 'prompt.launch_committed' ||
+    type === 'prompt.outcome_committed' ||
     type === 'prompt.completed' ||
     type === 'prompt.aborted' ||
     type === 'prompt.steered' ||
@@ -2509,6 +2711,7 @@ function projectWireQuestionRequest(
   interactionId: string,
   interactionKind: 'approval' | 'question',
   request: unknown,
+  recordedAt: number | undefined,
 ): unknown {
   if (interactionKind !== 'question') return request;
   const payload = objectOf(request);
@@ -2517,6 +2720,7 @@ function projectWireQuestionRequest(
   return {
     ...payload,
     question_id: interactionId,
+    created_at: stringOf(payload?.['createdAt']) ?? stringOf(payload?.['created_at']) ?? isoOf(recordedAt),
     questions: questions.map((value, questionIndex) => {
       const question = objectOf(value);
       return {
@@ -2635,15 +2839,15 @@ function mediaOf(value: Readonly<Record<string, unknown>> | undefined): PendingS
   const ref = key === undefined ? objectOf(value?.['source']) : nested;
   const name = stringOf(attachment?.['name']) ?? stringOf(ref?.['name']) ?? stringOf(value?.['name']) ?? stringOf(resourceLink?.['name']);
   const size = numberOf(attachment?.['size']) ?? numberOf(ref?.['size']) ?? numberOf(value?.['size']) ?? numberOf(resourceLink?.['size']);
-  const mimeType = stringOf(attachment?.['mimeType']) ?? stringOf(ref?.['mimeType']) ?? stringOf(value?.['mimeType'])
+  const mimeType = stringOf(attachment?.['mimeType']) ?? stringOf(ref?.['mimeType']) ?? stringOf(ref?.['media_type']) ?? stringOf(value?.['mimeType'])
     ?? stringOf(resourceLink?.['mimeType']) ?? (kind === undefined ? undefined : `${kind}/*`);
   const fileId = stringOf(attachment?.['fileId']) ?? stringOf(attachment?.['file_id'])
-    ?? stringOf(ref?.['id']) ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']);
+    ?? stringOf(ref?.['fileId']) ?? stringOf(ref?.['file_id']) ?? stringOf(value?.['file_id']);
   if (kind === undefined || mimeType === undefined) return undefined;
   if (fileId !== undefined) return { kind, mediaType: mimeType, source: { kind: 'session_media', fileId }, name, size };
-  const url = stringOf(ref?.['url']) ?? stringOf(value?.['uri']) ?? stringOf(resourceLink?.['uri']);
+  const url = mediaUrlFromPart(value)?.url ?? stringOf(ref?.['url']) ?? stringOf(value?.['uri']) ?? stringOf(resourceLink?.['uri']);
   if (url === undefined) return { kind, mediaType: mimeType, source: undefined, name, size };
-  const daemonRef = /^kimi-file:\/\/([^?]+)/.exec(url)?.[1];
+  const daemonRef = sessionMediaIdFromBlobUrl(url) ?? parseDaemonFileRefFileId(url);
   return {
     kind,
     mediaType: mimeType,
@@ -2852,31 +3056,6 @@ function numberOf(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
 }
 
-function computeGoalBudget(
-  budget: Pick<NonNullable<GoalMeta['budget']>, 'tokenBudget' | 'turnBudget' | 'wallClockBudgetMs'> | undefined,
-  turnsUsed: number,
-  tokensUsed: number,
-  wallClockMs: number,
-): NonNullable<GoalMeta['budget']> {
-  const tokenBudget = budget?.tokenBudget ?? null;
-  const turnBudget = budget?.turnBudget ?? null;
-  const wallClockBudgetMs = budget?.wallClockBudgetMs ?? null;
-  return {
-    tokenBudget,
-    turnBudget,
-    wallClockBudgetMs,
-    remainingTokens: tokenBudget === null ? null : Math.max(0, tokenBudget - tokensUsed),
-    remainingTurns: turnBudget === null ? null : Math.max(0, turnBudget - turnsUsed),
-    remainingWallClockMs: wallClockBudgetMs === null ? null : Math.max(0, wallClockBudgetMs - wallClockMs),
-    tokenBudgetReached: tokenBudget !== null && tokensUsed >= tokenBudget,
-    turnBudgetReached: turnBudget !== null && turnsUsed >= turnBudget,
-    wallClockBudgetReached: wallClockBudgetMs !== null && wallClockMs >= wallClockBudgetMs,
-    overBudget: (tokenBudget !== null && tokensUsed >= tokenBudget) ||
-      (turnBudget !== null && turnsUsed >= turnBudget) ||
-      (wallClockBudgetMs !== null && wallClockMs >= wallClockBudgetMs),
-  };
-}
-
 function stringArrayOf(value: unknown): string[] {
   return arrayOf(value).flatMap((entry) => {
     const text = stringOf(entry);
@@ -2888,6 +3067,10 @@ function promptAppendTimingOf(value: unknown): TranscriptPromptAppendTiming | un
   return value === 'agent_idle' || value === 'subagents_done' || value === 'tasks_done'
     ? value
     : undefined;
+}
+
+function cronDeliveryModeOf(value: unknown): TranscriptPrompt['originDeliveryMode'] {
+  return value === 'queue' || value === 'steer' || value === 'idle' ? value : undefined;
 }
 
 function promptRecordTime(record: TranscriptWireRecord, keys: readonly string[]): string | undefined {

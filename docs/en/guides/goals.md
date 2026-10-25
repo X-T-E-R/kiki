@@ -80,11 +80,15 @@ A goal can stop in three ways:
 
 Describe completion conditions in the objective. Goals have no hard budget by default. To cap a goal's turns, output tokens, or active time, set a budget manually in the web goal editor; limits written in chat do not configure a budget.
 
-A blocked goal does not cancel work it already started. When a task launched for it finishes, the result wakes the main agent to process that one completion; the goal itself stays blocked until you resume it. The same result is held for your next message if you pause or cancel the goal, or if the budget runs out.
+Pausing a goal stops its current goal-driven turn and automatic follow-up turns without deleting the objective. Background tasks already launched continue; their results wait for your next message. You can send ordinary messages while the goal is paused. Reopening a session after a restart pauses an active goal; a goal you already paused or cancelled stays stopped until you explicitly resume or create one.
+
+A blocked goal does not cancel work it already started. When a task launched for it finishes, the result wakes the main agent to process that one completion; the goal itself stays blocked until you resume it. If you cancel the goal or its budget runs out, that result waits for your next message.
+
+While a goal is active, each finished background task is delivered when the main agent is idle, including when another task is still running. That delivery does not wait for the other tasks, and it is not the goal's follow-up turn. The goal follows up on its own timing.
 
 ## Manage goals in the web UI
 
-The web UI shows the current goal below the conversation. Expand it to see its details and budget usage, then select Edit to change the objective, completion criterion, follow-up timing, and budgets in one save.
+The web UI shows the current goal above the composer. The Pause button remains visible beside an active goal, even when its details are collapsed. Select the goal title to expand its objective, completion criterion, follow-up timing, budget usage, and other controls; editing or loading those details does not disable Pause.
 
 Budgets are optional and only you can set or clear them in this editor:
 
@@ -94,7 +98,7 @@ Budgets are optional and only you can set or clear them in this editor:
 
 Leave a budget blank to remove its limit, or use Clear limits to remove all three. Saving a budget does not reset usage or start another turn. Earlier saved budgets remain visible and can be cleared here.
 
-Use the goal actions to pause, resume, or cancel. If a budget blocks the goal, raise or clear that limit, save, then select Resume to start the next goal turn. Cancellation requires confirmation because it cannot be resumed afterwards.
+Use Resume to continue a paused or blocked goal, or Cancel to remove it. If a budget blocks the goal, raise or clear that limit, save, then select Resume to start the next goal turn. Cancellation requires confirmation because it cannot be resumed afterwards.
 
 ## Queue upcoming goals
 

@@ -4,7 +4,7 @@ import type { ModelSwitchMode, PermissionMode, PromptPlanGate } from '@kiki/prot
 
 import { parseExecutionChoice, type ExecutionChoice } from './executionSelection';
 import type { ComposerAttachment } from './attachments';
-import type { SelectionAnnotation } from './selectionQuote';
+import type { SelectionAnnotation, SelectionQuote } from './selectionQuote';
 import { readSettings } from '../settings/settings';
 import { spaceStorage } from '../storage/spaceStorage';
 
@@ -132,6 +132,7 @@ export function resetDraftMemoryForTests(): void {
 export interface ComposerSessionState {
   attachments: readonly ComposerAttachment[];
   annotations: readonly SelectionAnnotation[];
+  quotes?: readonly SelectionQuote[];
   quote?: string | null;
   quoteSource?: SelectionAnnotation['source'];
   /** Pill overrides; `undefined` means "no local override" (store/default). */

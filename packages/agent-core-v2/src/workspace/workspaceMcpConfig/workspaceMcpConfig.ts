@@ -5,6 +5,7 @@ import type { McpServerConfig } from '#/mcpCore/config-schema';
 export interface McpServersChange {
   readonly upsert: Readonly<Record<string, McpServerConfig>>;
   readonly remove: readonly string[];
+  readonly reportFailure?: (error: unknown) => void;
 }
 
 export type McpServersChangeEvent = McpServersChange & IWaitUntil;
@@ -30,8 +31,10 @@ export interface IWorkspaceMcpConfigService {
   readonly ready: Promise<void>;
 
   servers(): Readonly<Record<string, McpServerConfig>>;
+  isFileServer?(name: string): boolean;
 
   tunables(): McpTunables;
+  allowsCall?(name: string): Promise<boolean>;
 
   readonly onDidChange: Event<McpServersChangeEvent>;
 }

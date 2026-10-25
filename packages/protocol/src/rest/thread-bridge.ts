@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { connectionIdentitySchema } from './connections';
-import { contentRefSchema } from '@kiki/transcript';
+import { contentRefSchema, contentSegmentSchema, transcriptResponseSchema } from '@kiki/transcript';
 
 export const bridgeThreadRefSchema = z.object({ hostId: z.string().min(1).max(256), workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256) }).strict();
 export const bridgeScopeSchema = z.object({ workspaceId: z.string().min(1).max(512), sessionId: z.string().min(1).max(256).optional() }).strict();
@@ -35,6 +35,7 @@ export interface BridgeReceipt { id: string; bridgeId: string; connectionId: str
 export interface BridgeStatus { identity: z.infer<typeof connectionIdentitySchema>; inboundEnabled: boolean; inbound: BridgeGrant[]; outbound: BridgeLink[] }
 export type BridgeContentRef = import('@kiki/transcript').ContentRef;
 export interface BridgeReadView { transcript?: import('@kiki/transcript').TranscriptResponse; segment?: import('@kiki/transcript').ContentSegment }
+export const bridgeReadViewSchema = z.object({ transcript: transcriptResponseSchema.optional(), segment: contentSegmentSchema.optional() });
 export const localBridgePolicySchema = bridgePolicySchema.omit({ source: true, target: true, location: true }).extend({ spaceId: z.string().min(1).max(128) }).strict();
 export type LocalBridgePolicy = z.infer<typeof localBridgePolicySchema>;
 export const bridgeTargetInputSchema = z.object({ label: z.string().min(1).max(128), endpoint: z.string().url().max(2048), target: connectionIdentitySchema }).strict();

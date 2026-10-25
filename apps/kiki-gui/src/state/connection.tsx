@@ -35,6 +35,7 @@ import { ConnectScreen, type WebLinkProblem } from '../components/ConnectScreen'
 import { useHost } from '../host';
 import { translate, type I18nKey, type I18nParams } from '@kiki/session-core/i18n';
 import type { SessionController } from '@kiki/session-core/session';
+import { mergeSessionWorkChanged, type SessionListData } from '@kiki/session-core/sessions';
 import {
   settingsServerSnapshot,
   settingsSnapshot,
@@ -43,6 +44,8 @@ import {
 import { isVscodeWebview } from '../host/vscode';
 import { useI18n } from '../i18n';
 import { ApiError, createRemoteSpaceClient, KikiClient } from '../lib/client';
+import { subscribeUsageFreshness } from '../lib/usageFreshness';
+import { subscribePluginFreshness } from '../lib/pluginFreshness';
 import {
   clearStoredConfig,
   readDeepLinkConfig,
@@ -113,7 +116,7 @@ export function refreshSessionAttention(queryClient: Pick<QueryClient, 'invalida
   void queryClient.invalidateQueries({ queryKey: ['activity-tasks', sessionId] });
 }
 
-interface ConnectionValue {
+export interface ConnectionValue {
   readonly connectionId: string | null;
   /**
    * Which kind of connection this window is holding. `connectionId` names a
@@ -150,7 +153,7 @@ interface ConnectionValue {
 
 export interface ControllerLease {
   readonly controller: SessionController;
-  /** Initial open has settled; failures remain in the controller's load state. */
+  /** Initial open or cache resume has settled; failures remain in the controller's load state. */
   readonly ready: Promise<void>;
   /** Idempotent; the last lease closes and unregisters its controller. */
   release(): void;
@@ -164,6 +167,12 @@ export interface ControllerRegistry {
    * Lease ownership is separate from legacy add/delete; never borrow an externally owned controller.
    */
   acquire(sessionId: string, connectionScope: object, createController: () => SessionController): ControllerLease;
+  /**
+   * Leased or parked on this connection. The live iterator omits parked views
+   * so rails do not treat them as open; route admission must not treat that
+   * omission as "the transcript is gone".
+   */
+  hasRetained(sessionId: string, connectionScope: object): boolean;
   [Symbol.iterator](): Iterator<SessionController>;
   subscribe(listener: () => void): () => void;
   snapshot(): number;
@@ -274,8 +283,7 @@ export class LiveControllerRegistry implements ControllerRegistry {
       // Cache hit: the retained view repaints now and catches up behind it.
       this.unpark(entry);
       entry.references = 1;
-      entry.ready = Promise.resolve();
-      entry.controller.resume();
+      entry.ready = entry.controller.resume();
       this.add(entry.controller);
     } else {
       entry.references += 1;
@@ -299,6 +307,11 @@ export class LiveControllerRegistry implements ControllerRegistry {
   /** Number of parked views (for diagnostics and tests). */
   get parkedCount(): number {
     return this.parked.size;
+  }
+
+  hasRetained(sessionId: string, connectionScope: object): boolean {
+    if (sessionId === '') return false;
+    return this.retained.get(connectionScope)?.has(sessionId) === true;
   }
 
   /** Close every parked view that belongs to a connection that is going away. */
@@ -1020,6 +1033,15 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       return subscription;
     };
     let searchIndex = subscribeSearchIndex();
+    let offUsage = subscribeUsageFreshness(klient, queryClient);
+    // A plugin change moves capabilities, skills, MCP, panels and commands too,
+    // and a reconnect can carry one this window never saw.
+    let offPlugins = subscribePluginFreshness(klient, queryClient);
+    const workChanged = klient.events.on('session.workChanged', (change) => {
+      queryClient.setQueriesData<SessionListData>({ queryKey: ['sessions'] }, (old) =>
+        mergeSessionWorkChanged(old, change),
+      );
+    });
     const offStatus = socket.onStatus((status) => {
       if (!active) return;
       socketStatusRef.current = status;
@@ -1035,6 +1057,10 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       if (status === 'open') {
         searchIndex.dispose();
         searchIndex = subscribeSearchIndex();
+        offUsage();
+        offUsage = subscribeUsageFreshness(klient, queryClient);
+        offPlugins();
+        offPlugins = subscribePluginFreshness(klient, queryClient);
       }
     });
     const catalog = klient.events.on('kosong.changed', () => {
@@ -1045,6 +1071,9 @@ export function ConnectionProvider({ children }: { children: ReactNode }) {
       offStatus();
       catalog.dispose();
       searchIndex.dispose();
+      workChanged.dispose();
+      offUsage();
+      offPlugins();
     };
   }, [socket, klient, queryClient]);
 
@@ -1349,6 +1378,10 @@ export function useControllerRegistry(): ControllerRegistry {
 
 export function useOptionalControllerRegistry(): ControllerRegistry | null {
   return useContext(ControllerRegistryContext);
+}
+
+export function ConnectionScope({ value, children }: { readonly value: ConnectionValue; readonly children: ReactNode }) {
+  return <ConnectionContext.Provider value={value}>{children}</ConnectionContext.Provider>;
 }
 
 export function useConnection(): ConnectionValue {

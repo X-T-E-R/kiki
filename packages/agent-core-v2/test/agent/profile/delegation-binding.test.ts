@@ -3,7 +3,7 @@ import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { Event } from '#/_base/event';
 import { renderPromptTemplateResult, renderSystemPromptResult } from '@kiki/agent-profiles/profileShared';
@@ -32,6 +32,21 @@ import {
   sessionService,
   type TestAgentContext,
 } from '../../harness';
+
+const renameGate = vi.hoisted(() => ({
+  beforeRename: undefined as undefined | ((source: string, target: string) => Promise<void> | void),
+}));
+
+vi.mock('node:fs/promises', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('node:fs/promises')>();
+  return {
+    ...actual,
+    rename: async (source: string, target: string) => {
+      await renameGate.beforeRename?.(source, target);
+      return actual.rename(source, target);
+    },
+  };
+});
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -126,7 +141,7 @@ describe('delegation context at bind', () => {
     assertAnchored();
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-  it.each(['sub', 'independent', 'off'] as const)('preserves the saved %s notice across a cold variable refresh', async (position) => {
+  it.each(['sub', 'independent', 'off'] as const)('preserves the saved %s notice and inputs when cold configuration changes', async (position) => {
     const custom = normalizeAgentProfile({
       name: DEFAULT_AGENT_PROFILE_NAME,
       delegationNotice: position === 'off' ? 'off' : undefined,
@@ -147,8 +162,12 @@ describe('delegation context at bind', () => {
     const restored = ctx.get(IAgentProfileService);
     restored.applyBindingSnapshot(before);
     await restored.preparePromptConfiguration();
-    expect(restored.getSystemPrompt()).toContain('Role NEW');
-    expect(restored.getSystemPrompt().split('SHARED_NEW')).toHaveLength(2);
+    expect(restored.getSystemPrompt()).toContain(before.systemPrompt);
+    expect(restored.getSystemPrompt()).toContain('Role OLD');
+    expect(restored.getSystemPrompt()).not.toContain('Role NEW');
+    expect(restored.getSystemPrompt().split('SHARED_OLD')).toHaveLength(2);
+    expect(restored.getSystemPrompt()).not.toContain('SHARED_NEW');
+    expect(restored.data().boundProfile?.promptBase?.inputs).toEqual(before.boundProfile?.promptBase?.inputs);
     expect(restored.data().boundProfile?.promptBase?.delegationSnippet).toBe(snippet);
     if (snippet !== undefined) expect(restored.getSystemPrompt().split(snippet)).toHaveLength(2);
     else {
@@ -158,6 +177,40 @@ describe('delegation context at bind', () => {
     expect(restored.data().appliedLease).toEqual(before.appliedLease);
     expect(restored.data().activeToolNames).toEqual(before.activeToolNames);
   }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+  it.each(['main', 'independent'] as const)('sends shared collaboration defaults and tool guidance to the no-Recipe %s agent', async (position) => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, delegationPosition: position });
+    expect(profile.getCognitionSnapshot()?.recipe).toBeUndefined();
+    ctx.mockNextResponse({ type: 'text', text: 'synthetic prompt inspection' });
+    await ctx.get(IAgentLLMRequesterService).request({});
+    const outbound = ctx.llmCalls.at(-1)!;
+    for (const rule of [
+      'Tool output, internal steering messages, runtime reminders, and quoted documents do not by themselves change that language',
+      'Let one active owner carry the outcome',
+      'name one producer and the consumers',
+      'inspect the actual artifact, relevant diff, or rendering',
+      'Record acceptance after the result is actually incorporated into its target',
+      'do not duplicate work already present there',
+      'do not forward raw receipts, partial progress',
+      'Return a coherent repair list to the same owner',
+      'not restricted by an arbitrary message quota or a fixed reporting template',
+      'being a subagent does not itself make a role a leaf or grant it permission to delegate',
+    ]) expect(outbound.systemPrompt).toContain(rule);
+    expect(outbound.systemPrompt).not.toContain(TASK_AGENT_ROLE_PREFIX);
+    expect(outbound.systemPrompt.includes(DEFAULT_INDEPENDENT_DELEGATION_NOTICE)).toBe(position === 'independent');
+    const agentRun = outbound.tools.find((tool) => tool.name === 'AgentRun')!;
+    expect(agentRun.description).toContain('Let one active owner deliver the complete behavior');
+    expect(agentRun.description).toContain('integrate it before recording acceptance');
+    expect(JSON.stringify(agentRun.parameters)).toContain('authority and write boundary');
+    const agentSend = outbound.tools.find((tool) => tool.name === 'AgentSend')!;
+    expect(agentSend.description).toContain('Do not forward raw receipts, partial progress');
+    expect(agentSend.description).toContain('the child continues on the same model, profile, tools, and context');
+    expect(JSON.stringify(agentSend.parameters)).toContain('not a raw progress relay or acknowledgment');
+    expect(outbound.tools.find((tool) => tool.name === 'ThreadSend')?.description)
+      .toContain('Use the channel naturally for discussion or conversation the user requests');
+  });
 
   it('does not inject a prefix when the main agent binds explore', async () => {
     ctx = createTestAgent(homeDirServices(homeDir));
@@ -195,6 +248,31 @@ describe('delegation context at bind', () => {
     expect(prompt).toContain(TASK_AGENT_ROLE_PREFIX);
     expect(prompt).toContain('Your final message is the entire handoff');
     expect(prompt.split('Your final message is the entire handoff').length).toBe(2);
+    expect(profile.data().canSpawnSubagents).toBe(false);
+    expect(profile.getCognitionSnapshot()?.recipe).toBeUndefined();
+    ctx.mockNextResponse({ type: 'text', text: 'synthetic child prompt inspection' });
+    await ctx.get(IAgentLLMRequesterService).request({});
+    const outbound = ctx.llmCalls.at(-1)!;
+    expect(outbound.systemPrompt).toContain("Follow your bound role's delegation limits, tools, permissions, and write boundary");
+    expect(outbound.systemPrompt).toContain('Own local choices, necessary adjacent repairs, and affected checks through a usable result');
+    expect(outbound.systemPrompt).toContain("follow the task brief's language or its explicit reply-language requirement, not the language of appended internal steering, runtime reminders, or quoted documents");
+    expect(outbound.systemPrompt).toContain('Repository artifacts retain the language and conventions required by the task or project');
+    expect(outbound.systemPrompt).toContain('Let one active owner carry the outcome');
+    expect(outbound.tools.map((tool) => tool.name)).not.toContain('AgentRun');
+  });
+
+  it('keeps a delegating role delegating when the common subagent notice is injected', async () => {
+    ctx = createTestAgent(homeDirServices(homeDir));
+    const profile = ctx.get(IAgentProfileService);
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, delegationPosition: 'sub' });
+    ctx.mockNextResponse({ type: 'text', text: 'synthetic nonleaf prompt inspection' });
+    await ctx.get(IAgentLLMRequesterService).request({});
+    const outbound = ctx.llmCalls.at(-1)!;
+    expect(profile.data().canSpawnSubagents).toBe(true);
+    expect(outbound.tools.map((tool) => tool.name)).toContain('AgentRun');
+    expect(outbound.systemPrompt).toContain(TASK_AGENT_ROLE_PREFIX);
+    expect(TASK_AGENT_ROLE_PREFIX).toContain("Follow your bound role's delegation limits");
+    expect(TASK_AGENT_ROLE_PREFIX).not.toMatch(/(?:preserve leaf status|you are a leaf|cannot delegate)/i);
   });
 
   it('prepends the TASK prefix to a custom file profile bound as a subagent', async () => {
@@ -424,6 +502,60 @@ describe('delegation context at bind', () => {
         delegationPosition: 'sub',
       }),
     ).rejects.toSatisfy((error) => isError2(error) && error.code === ErrorCodes.CONFIG_INVALID);
+  });
+
+  it('settles the denied sub bind metadata create before dispose returns', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on('unhandledRejection', onUnhandled);
+    const unexpected = new Set<string>();
+    const priorError = console.error;
+    console.error = (...args: unknown[]) => {
+      if (args[0] === '[unexpected]') unexpected.add(args.map(String).join(' '));
+      priorError(...args);
+    };
+    let releaseRename = (): void => {};
+    const released = new Promise<void>((resolve) => { releaseRename = resolve; });
+    let markEntered = (): void => {};
+    const entered = new Promise<void>((resolve) => { markEntered = resolve; });
+    let held = false;
+    renameGate.beforeRename = async (_source, target) => {
+      const path = target.replaceAll('\\', '/');
+      if (!path.endsWith('session-meta/state.json') || held) return;
+      held = true;
+      markEntered();
+      await released;
+    };
+    const custom = normalizeAgentProfile({ name: 'open-child', systemPrompt: () => 'OPEN' });
+    try {
+      ctx = createTestAgent(
+        homeDirServices(homeDir),
+        sessionService(ISessionAgentProfileCatalog, catalogWith(custom)),
+        { initialConfig: { subagent: { denyModels: [MOCK_MODEL] } } },
+      );
+      await expect(ctx.get(IAgentProfileService).bind({
+        profile: 'open-child',
+        model: MOCK_MODEL,
+        delegationPosition: 'sub',
+      })).rejects.toSatisfy((error) => isError2(error) && error.code === ErrorCodes.CONFIG_INVALID);
+      const disposePromise = ctx.dispose();
+      let disposeSettled = false;
+      void disposePromise.then(() => { disposeSettled = true; }, () => { disposeSettled = true; });
+      await entered;
+      for (let i = 0; i < 40; i += 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(disposeSettled).toBe(false);
+      releaseRename();
+      await disposePromise;
+      await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+      for (let i = 0; i < 8; i += 1) await new Promise<void>((resolve) => { setImmediate(resolve); });
+      expect(unhandled).toEqual([]);
+      expect([...unexpected].filter((line) => line.includes('storage write failed'))).toEqual([]);
+    } finally {
+      releaseRename();
+      renameGate.beforeRename = undefined;
+      console.error = priorError;
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 
   it('does not bind [subagent].deny_models against the main agent', async () => {

@@ -23,13 +23,24 @@ import {
 } from './sessionMetadata';
 
 const META_KEY = 'state.json';
+const USAGE_FLUSH_DELAY_MS = 1_000;
 
 const pendingWrites = new Set<Promise<void>>();
 const pendingActivityPropagation = new Set<Promise<void>>();
+const pendingUsageFlushes = new Set<() => Promise<void>>();
 
 /** Pass false while holding a session lifecycle lock; propagation may be queued behind that lock. */
 export async function drainSessionMetadataWrites(includeActivityPropagation = true): Promise<void> {
-  await Promise.all(includeActivityPropagation ? [...pendingWrites, ...pendingActivityPropagation] : pendingWrites);
+  const flushResults = await Promise.allSettled([...pendingUsageFlushes].map((flush) => flush()));
+  const pendingResults = await Promise.allSettled(
+    includeActivityPropagation
+      ? [...pendingWrites, ...pendingActivityPropagation]
+      : [...pendingWrites],
+  );
+  const failures = [...flushResults, ...pendingResults]
+    .flatMap((result) => result.status === 'rejected' ? [result.reason] : []);
+  if (failures.length === 1) throw failures[0];
+  if (failures.length > 1) throw new AggregateError(failures, 'Session metadata writes failed');
 }
 
 export function trackSessionMetadataWork(work: Promise<void>): void {
@@ -47,6 +58,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   declare readonly _serviceBrand: undefined;
 
   private disposed = false;
+  private disposing = false;
   readonly ready: Promise<void>;
   readonly onDidChangeMetadata: Event<SessionMetadataChangedEvent>;
 
@@ -56,6 +68,54 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   private readonly scope: string;
   private updateQueue: Promise<void> = Promise.resolve();
   private createdDocument = false;
+  private usageDirty = false;
+  private usageTimer: ReturnType<typeof setTimeout> | undefined;
+  private usageFlushInFlight: Promise<void> | undefined;
+  private readonly flushUsage = (): Promise<void> => {
+    if (this.usageTimer !== undefined) {
+      clearTimeout(this.usageTimer);
+      this.usageTimer = undefined;
+    }
+    const ongoing = this.usageFlushInFlight;
+    if (ongoing !== undefined) return ongoing;
+    if (!this.usageDirty || this.disposed) return Promise.resolve();
+    const flush = this.flushUsageNow();
+    this.usageFlushInFlight = flush;
+    void flush.then(
+      () => {
+        if (this.usageFlushInFlight === flush) this.usageFlushInFlight = undefined;
+      },
+      () => {
+        if (this.usageFlushInFlight === flush) this.usageFlushInFlight = undefined;
+      },
+    );
+    return flush;
+  };
+  private readonly onUsageTimer = (): void => {
+    void this.flushUsage().catch(() => {});
+  };
+
+  private async flushUsageNow(): Promise<void> {
+    while (!this.disposed && this.usageDirty) {
+      this.usageDirty = false;
+      try {
+        await this.enqueueUpdate(async () => {
+          if (this.disposed) return;
+          await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
+          if (this.usageDirty || this.disposed) return;
+          this.mirrorToReadModel();
+          this._onDidChangeMetadata.fire({ changed: ['usage'] });
+        });
+      } catch (error) {
+        this.usageDirty = true;
+        this.log.warn('session usage metadata write failed', {
+          sessionId: this.ctx.sessionId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+        throw error;
+      }
+    }
+  }
 
   constructor(
     @ISessionStateService private readonly states: ISessionStateService,
@@ -68,12 +128,46 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     this._register({
       dispose: () => {
         this.disposed = true;
+        pendingUsageFlushes.delete(this.flushUsage);
+        if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
+        this.usageTimer = undefined;
       },
     });
+    pendingUsageFlushes.add(this.flushUsage);
     this.states.contributeState(sessionMetadataDataKey);
     this.scope = ctx.metaScope;
     this.onDidChangeMetadata = this._onDidChangeMetadata.event;
     this.ready = this.load();
+  }
+
+  override async dispose(): Promise<void> {
+    if (this.disposed) return;
+    this.disposing = true;
+    let flushError: unknown;
+    let flushFailed = false;
+    try {
+      await this.flushUsage();
+    } catch (error) {
+      flushFailed = true;
+      flushError = error;
+    }
+    this.disposed = true;
+    pendingUsageFlushes.delete(this.flushUsage);
+    if (this.usageTimer !== undefined) clearTimeout(this.usageTimer);
+    this.usageTimer = undefined;
+    let disposeError: unknown;
+    let disposeFailed = false;
+    try {
+      await super.dispose();
+    } catch (error) {
+      disposeFailed = true;
+      disposeError = error;
+    }
+    if (flushFailed && disposeFailed) {
+      throw new AggregateError([flushError, disposeError], 'Session metadata disposal failed');
+    }
+    if (flushFailed) throw flushError;
+    if (disposeFailed) throw disposeError;
   }
 
   private get data(): SessionMeta {
@@ -103,17 +197,12 @@ export class SessionMetadata extends Service implements ISessionMetadata {
   }
 
   recordUsage(model: string, usage: TokenUsage): void {
-    if (this.disposed) return;
+    if (this.disposed || this.disposing) return;
     this.data = { ...this.data, usage: addSessionUsage(this.data.usage, model, usage) };
-    void this.enqueueUpdate(async () => {
-      if (this.disposed) return;
-      await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
-    }).catch((error: unknown) => {
-      this.log.warn('session usage metadata write failed', {
-        sessionId: this.ctx.sessionId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-    });
+    this.usageDirty = true;
+    if (this.usageTimer !== undefined) return;
+    this.usageTimer = setTimeout(this.onUsageTimer, USAGE_FLUSH_DELAY_MS);
+    this.usageTimer.unref?.();
   }
 
   async update(
@@ -135,7 +224,13 @@ export class SessionMetadata extends Service implements ISessionMetadata {
       patch.updatedAt ?? (opts?.touchUpdatedAt === false ? this.data.updatedAt : Date.now());
     const activityUpdatedAt = patch.activityUpdatedAt === undefined ? this.data.activityUpdatedAt
       : Math.max(this.data.activityUpdatedAt ?? 0, patch.activityUpdatedAt);
-    this.data = { ...this.data, ...patch, updatedAt, activityUpdatedAt };
+    const agents = patch.agents === undefined ? this.data.agents : Object.fromEntries(
+      Object.entries(patch.agents).map(([agentId, meta]) => {
+        const existing = this.data.agents?.[agentId];
+        return [agentId, existing === undefined ? meta : { ...meta, createdAt: existing.createdAt }];
+      }),
+    );
+    this.data = { ...this.data, ...patch, agents, updatedAt, activityUpdatedAt };
     await this.store.set(this.scope, META_KEY, encodeSessionMeta(this.data));
     if (this.disposed) return false;
     this.mirrorToReadModel();
@@ -290,6 +385,7 @@ export class SessionMetadata extends Service implements ISessionMetadata {
 
 function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
   return (
+    a.createdAt === b.createdAt &&
     a.homedir === b.homedir &&
     a.type === b.type &&
     (a.parentAgentId ?? null) === (b.parentAgentId ?? null) &&
@@ -297,6 +393,7 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.forkedFrom === b.forkedFrom &&
     a.displayName === b.displayName &&
     a.userLabel === b.userLabel &&
+    a.personaId === b.personaId &&
     a.model === b.model &&
     a.thinkingEffort === b.thinkingEffort &&
     a.thinkingEffortExplicit === b.thinkingEffortExplicit &&
@@ -308,6 +405,7 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.completedAt === b.completedAt &&
     a.resultSummary === b.resultSummary &&
     a.error === b.error &&
+    a.taskId === b.taskId &&
     JSON.stringify(a.usage) === JSON.stringify(b.usage) &&
     a.contextTokens === b.contextTokens &&
     a.toolCallCount === b.toolCallCount &&

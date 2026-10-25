@@ -337,9 +337,22 @@ describe('BuiltinSkillSource product-skill switch', () => {
     }
     expect(profile?.content).toContain('Both templates set `model_alias: inherit`');
     expect(profile?.content).toContain('leave `thinking_effort` unset');
-    expect(ops?.content).toContain('Ask whether to create `implementer`');
-    expect(ops?.content).toContain('ask separately about `reviewer`');
+    expect(ops?.content).toContain('`implementer` for an engineering task');
+    expect(ops?.content).toContain('`reviewer` for a decision that needs an independent read-only check');
     expect(ops?.content).toContain('Copy the template with its `model_alias: inherit` frontmatter unchanged');
+  });
+
+  it('points built-in operations and profile skills at the current bilingual reference files', () => {
+    const path = 'customization/agents-and-subagents.md';
+    for (const name of ['kiki-ops', 'kiki-profile']) {
+      const content = BUILTIN_SKILLS.find((skill) => skill.name === name)!.content;
+      expect(content).toContain(path);
+      expect(content).not.toContain('customization/agents.md');
+    }
+    for (const locale of ['en', 'zh']) {
+      const text = readFileSync(new URL(`../../../../../docs/${locale}/${path}`, import.meta.url), 'utf8');
+      expect(text).toContain(locale === 'en' ? '## Instruction Files' : '## 指令文件');
+    }
   });
 
   it('keeps the primary kiki-ops triggers visible in the rendered model listing', () => {
@@ -351,6 +364,28 @@ describe('BuiltinSkillSource product-skill switch', () => {
     for (const trigger of KIKI_OPS_TRIGGERS) {
       expect(listing).toContain(trigger);
     }
+  });
+
+  it('runs the first-run request around the user\'s first task, with setup as a side effect', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    expect(ops).toContain('The first-run request is not a configuration interview');
+    expect(ops).toContain('Do that first thing, for real');
+    expect(ops).toContain('only when the first run shows the need');
+    expect(ops).toContain('The test is the task in front of them, not whether they code');
+    expect(ops).toContain('offer a profile shaped to what they are actually doing, or none');
+    expect(ops).toContain('only when the work needs read-only research');
+    expect(ops).toContain('or the sources and material a task has to check');
+    expect(ops).toContain('Never open with roles');
+    expect(ops).toContain('not a question to ask unprompted');
+  });
+
+  it('guides first-run web search without a credential gate or silent fallback', () => {
+    const ops = BUILTIN_SKILLS.find((skill) => skill.name === 'kiki-ops')!.content;
+    expect(ops).toContain('keyless general-web `duckduckgo.search`');
+    expect(ops).toContain('no registration, API key or lane selection is needed');
+    expect(ops).toContain('check it directly when requested instead of asking for a key');
+    expect(ops).toContain('failures never silently switch providers');
+    expect(ops).not.toContain('General web search needs a provider lane, its credential');
   });
 
   it('routes request-limit operations through installed docs and keeps reload timing specific', () => {
@@ -394,12 +429,13 @@ describe('BuiltinSkillSource product-skill switch', () => {
   });
 
   it.each([
-    ['en', 'opens **History** by default', 'Live → Concurrency limits', 'Request details'],
-    ['zh', '默认打开「历史」', '实时 → 并发限制', '请求详情'],
-  ])('keeps the %s Usage guide on the history/live/external-sync sections and legacy limits route', (locale, defaultTab, rulePath, details) => {
+    ['en', 'the page opens **Live**', '**Concurrency limits**', 'Request details', '**Quotas:**'],
+    ['zh', '打开的是**实时**', '「并发限制」', '请求详情', '**额度（Quotas）：**'],
+  ])('keeps the %s Usage guide on the history/live/quotas/external-sync sections and legacy limits route', (locale, defaultTab, rulePath, details, quotas) => {
     const text = readFileSync(new URL(`../../../../../docs/${locale}/guides/settings.md`, import.meta.url), 'utf8');
     const usage = text.split('## Usage\n')[1]!.split('\n## ')[0]!;
-    expect(usage.match(/^- \*\*/gm)).toHaveLength(3);
+    expect(usage.match(/^- \*\*/gm)).toHaveLength(4);
+    expect(usage).toContain(quotas);
     expect(usage).toContain(defaultTab);
     expect(usage).toContain(details);
     expect(usage).toContain('/usage?panel=limits');
@@ -411,7 +447,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
       const text = readFileSync(new URL(`../../../../../docs/${locale}/configuration/config-files.md`, import.meta.url), 'utf8');
       const section = text.split('## `[request_governance]`')[1]!.split('\n## ')[0]!;
       const examples = [...section.matchAll(/```toml\n([\s\S]*?)```/g)].map((match) => match[1]!);
-      expect(examples).toHaveLength(2);
+      expect(examples).toHaveLength(3);
       return RequestGovernanceConfigSchema.parse(requestGovernanceFromToml(parseToml(examples.join('\n'))['request_governance']));
     });
     expect(configurations[0]).toEqual(configurations[1]);
@@ -420,11 +456,12 @@ describe('BuiltinSkillSource product-skill switch', () => {
       rules: [
         { id: 'shared-provider', scope: 'global', providers: ['example-provider'], maxConcurrent: 2, overflow: 'queue', enabled: true },
         { id: 'session-model-children', scope: 'each_session', models: ['example-model'], subagentsOnly: true, maxConcurrent: 1, maxWaitMs: 60000 },
+        { id: 'executor-children', resource: 'agent_execution', executors: ['example-executor'], roles: ['subagent'], maxConcurrent: 2, overflow: 'queue' },
       ],
     });
   });
 
-  it.each(['en', 'zh'])('loads the %s continuity examples through the real TOML adapter and round-trips the memory switch', (locale) => {
+  it.each(['en', 'zh'])('loads the %s continuity examples through the real TOML adapter and round-trips the memory switch', async (locale) => {
     const registry = new ConfigRegistry();
     try {
       const text = readFileSync(new URL(`../../../../../docs/${locale}/configuration/config-files.md`, import.meta.url), 'utf8');
@@ -438,7 +475,7 @@ describe('BuiltinSkillSource product-skill switch', () => {
       expect(raw).toEqual({ loop_control: { continuity_cadence: { memory_maintenance: false } } });
       expect(LoopControlSchema.parse(transformTomlData(raw, registry)[LOOP_CONTROL_SECTION])).toEqual(values[1]);
     } finally {
-      registry.dispose();
+      await registry.dispose();
     }
   });
 

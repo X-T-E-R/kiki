@@ -289,8 +289,11 @@ function UsageTextInput({
   // restore control) re-reads it, but never mid-edit: that would move the caret
   // and discard what is being typed.
   useEffect(() => {
-    if (!editing) setText(display);
-  }, [display, editing]);
+    if (disabled) setEditing(false);
+  }, [disabled]);
+  useEffect(() => {
+    if (!editing || disabled) setText(display);
+  }, [display, editing, disabled]);
 
   return <input
     id={id} data-usage-value={field} aria-label={label} aria-invalid={invalid}

@@ -23,16 +23,20 @@ import { IAgentPlanService } from '#/features/plan/plan';
 import { IThreadCreateTool, ThreadCreateTool, ThreadCreateToolInputSchema } from '#/agent/tools/thread-communication/threadCreateTool';
 import {
   ListThreadsToolInputSchema,
+  IReadThreadTool,
+  ReadThreadTool,
   ReadThreadToolInputSchema,
   SendMessageToThreadToolInputSchema,
   SendMessageToThreadTool,
   ISendMessageToThreadTool,
   WaitThreadsToolInputSchema,
+  IRoomReadTool, RoomReadTool, RoomReadToolInputSchema,
+  IRoomAddTool, RoomAddTool, RoomAddToolInputSchema,
 } from '#/agent/tools/thread-communication/threadCommunicationTools';
 import { CREATED_BY_AGENT_ID_KEY, CREATED_BY_SESSION_ID_KEY } from '#/app/sessionIndex/sessionIndex';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
 import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
-import { IRoomService } from '#/app/room/room';
+import { IRoomService, type RoomDocument } from '#/app/room/room';
 import {
   SEND_PEER_THREAD_MESSAGE,
   type IThreadPeerSendCapability,
@@ -42,24 +46,30 @@ import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalo
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 
+function roomFixture(overrides: Partial<RoomDocument> = {}): RoomDocument {
+  return { version: 1, id: 'room-a', name: 'Room', host: 'thread-a', paused: false, mode: 'mention',
+    workspace: 'workspace-a', createdAt: '2026-01-01T00:00:00Z', generation: 1, budget: { botMessagesPerUserMessage: 12 },
+    budgetUsed: 0, userMessageCount: 0, cursors: {}, members: [
+      { kind: 'thread', sessionId: 'thread-a', muted: true, queueWhenBusy: false, joinedAt: '2026-01-01T00:00:00Z' },
+      { kind: 'thread', sessionId: 'thread-b', muted: false, queueWhenBusy: false, joinedAt: '2026-01-01T00:00:00Z' },
+    ], ...overrides };
+}
+
 describe('thread communication tools', () => {
-  it('keeps sending main-only and leaves the other four tools to shared opt-in policy', () => {
+  it('keeps sending and room access main-only and leaves the other four tools to shared opt-in policy', () => {
     const records = getAgentToolContributions().filter(
       (record) => record.options.domain === 'threadCommunication',
     );
     expect(records.map((record) => record.options.name).toSorted()).toEqual([
-      'ThreadCreate',
-      'ThreadList',
-      'ThreadRead',
-      'ThreadSend',
-      'ThreadWait',
+      'RoomAdd', 'RoomRead', 'ThreadCreate', 'ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait',
     ]);
-    const main = accessorFor('main');
-    const subagent = accessorFor('worker-1');
-    const send = records.find((record) => record.options.name === 'ThreadSend')!;
-    expect(send.options.when?.(main)).toBe(true);
-    expect(send.options.when?.(subagent)).toBe(false);
-    expect(records.filter((record) => record !== send).every((record) => record.options.when === undefined)).toBe(true);
+    const mainOnly = new Set(['ThreadSend', 'RoomRead', 'RoomAdd']);
+    for (const record of records) {
+      if (mainOnly.has(record.options.name)) {
+        expect(record.options.when?.(accessorFor('main'))).toBe(true);
+        expect(record.options.when?.(accessorFor('worker-1'))).toBe(false);
+      } else expect(record.options.when).toBeUndefined();
+    }
   });
 
   it('enforces strict bounded input schemas', () => {
@@ -86,6 +96,127 @@ describe('thread communication tools', () => {
         threads: Array.from({ length: 9 }, () => ({ thread: ref })),
       }).success,
     ).toBe(false);
+  });
+
+  it('describes preparation pages as incomplete rather than an empty thread', async () => {
+    const ix = new TestInstantiationService();
+    try {
+      ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true });
+      ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
+      ix.set(IReadThreadTool, new SyncDescriptor(ReadThreadTool));
+      const description = ix.get(IReadThreadTool).description;
+      expect(description).toContain('turns: []');
+      expect(description).toContain('incomplete: "history_preparing"');
+      expect(description).toContain('opaque `nextCursor`');
+      expect(description).toContain('stable contentRefs');
+      expect(description).toContain('16,384 UTF-16 units');
+      expect(description).toContain('history rewrite or generation change can invalidate a cursor');
+    } finally { await ix.dispose(); }
+  });
+
+  it('forwards content_ref and preserves a bounded local continuation segment', async () => {
+    const ix = new TestInstantiationService();
+    const contentRef = { source: { kind: 'turn' as const, id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text' as const, offset: 0, total: 32768 };
+    const next = { ...contentRef, offset: 16384 };
+    const readThread = vi.fn(async (input: Parameters<IThreadCommunicationService['readThread']>[0]) => ({
+      thread: input.thread,
+      turns: [],
+      view: { segment: { ref: contentRef, value: 'x'.repeat(16384), next, contentRefs: [] } },
+    }));
+    try {
+      ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true, readThread });
+      ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
+      ix.set(IReadThreadTool, new SyncDescriptor(ReadThreadTool));
+      const execution = ix.get(IReadThreadTool).resolveExecution(ReadThreadToolInputSchema.parse({
+        thread: { host_id: 'local', workspace_id: 'workspace-b', session_id: 'thread-b' }, content_ref: contentRef,
+      }));
+      if (!('execute' in execution)) throw new Error('Expected executable read tool.');
+      const result = JSON.parse((await execution.execute({ signal: new AbortController().signal } as never)).output as string);
+      expect(readThread).toHaveBeenCalledWith(expect.objectContaining({ contentRef, thread: { hostId: 'local', workspaceId: 'workspace-b', sessionId: 'thread-b' } }));
+      expect(result.view.segment.value).toHaveLength(16384);
+      expect(result.view.segment.next).toEqual(next);
+    } finally { await ix.dispose(); }
+  });
+
+  it('reads a member roster and bounded saved log without waking or joining anyone', async () => {
+    const ix = new TestInstantiationService();
+    const room = roomFixture({ host: 'persona-host', members: [
+      { kind: 'persona', personaId: 'persona-host', sessionId: 'thread-a', muted: true },
+      { kind: 'thread', sessionId: 'thread-b', muted: false, queueWhenBusy: false, joinedAt: '2026-01-01T00:00:00Z' },
+    ] });
+    const log = vi.fn<IRoomService['log']>(async () => ({ entries: [
+      { id: 'message-a', text: 'Saved body', at: '2026-01-01T00:00:00Z', kind: 'message', from: 'thread-b', mentions: [] },
+    ], nextCursor: 'message-a' }));
+    const addMember = vi.fn();
+    try {
+      ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true });
+      ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IRoomService, { get: async () => room, log, addMember });
+      ix.set(IRoomReadTool, new SyncDescriptor(RoomReadTool));
+      const execution = ix.get(IRoomReadTool).resolveExecution({ room: 'room-a', after_id: 'prior', limit: 2 });
+      if (!('execute' in execution)) throw new Error('Expected executable room read.');
+      const result = await execution.execute({} as never);
+      expect(log).toHaveBeenCalledExactlyOnceWith('room-a', { afterId: 'prior', limit: 2 });
+      expect(JSON.parse(result.output as string)).toMatchObject({ host: 'persona-host', members: [
+        { id: 'persona-host', muted: true }, { id: 'thread-b', queueWhenBusy: false },
+      ], entries: [{ text: 'Saved body' }], nextCursor: 'message-a' });
+      expect(addMember).not.toHaveBeenCalled();
+    } finally { await ix.dispose(); }
+  });
+
+  it('adds only an existing thread and leaves a duplicate member and host unchanged', async () => {
+    const ix = new TestInstantiationService();
+    const room = roomFixture({ host: 'thread-b' });
+    const addMember = vi.fn<IRoomService['addMember']>(async () => ({ ...room, members: [...room.members,
+      { kind: 'thread', sessionId: 'thread-c', muted: false, queueWhenBusy: true, joinedAt: '2026-01-01T00:00:00Z' },
+    ] }));
+    try {
+      ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => true });
+      ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IRoomService, { get: async () => room, addMember });
+      ix.set(IRoomAddTool, new SyncDescriptor(RoomAddTool));
+      const tool = ix.get(IRoomAddTool);
+      for (const sessionId of ['thread-c', 'thread-b']) {
+        const execution = tool.resolveExecution({ room: 'room-a', session_id: sessionId });
+        if (!('execute' in execution)) throw new Error('Expected executable room add.');
+        const result = JSON.parse((await execution.execute({} as never)).output as string);
+        expect(result).toMatchObject({ host: 'thread-b', added: sessionId === 'thread-c' });
+        expect(result.members[0]).toMatchObject({ muted: true, queueWhenBusy: false });
+      }
+      expect(addMember).toHaveBeenCalledExactlyOnceWith('room-a', { kind: 'thread', sessionId: 'thread-c' });
+      expect(RoomAddToolInputSchema.safeParse({ room: 'room-a', persona_id: 'new-persona' }).success).toBe(false);
+      expect(RoomReadToolInputSchema.safeParse({ room: 'room-a', limit: 101 }).success).toBe(false);
+    } finally { await ix.dispose(); }
+  });
+
+  it.each([
+    { agentId: 'worker-1', enabled: true, member: true },
+    { agentId: 'main', enabled: false, member: true },
+    { agentId: 'main', enabled: true, member: false },
+  ])('rejects room read and add for agent=$agentId enabled=$enabled member=$member', async ({ agentId, enabled, member }) => {
+    const ix = new TestInstantiationService();
+    const log = vi.fn();
+    const addMember = vi.fn();
+    try {
+      ix.stub(IThreadCommunicationService, { isWorkspaceEnabled: async () => enabled });
+      ix.stub(ISessionContext, { sessionId: 'thread-a', workspaceId: 'workspace-a' });
+      ix.stub(IAgentScopeContext, { agentId });
+      ix.stub(IRoomService, { get: async () => {
+        const room = roomFixture();
+        return member ? room : { ...room, members: room.members.filter((entry) => entry.sessionId !== 'thread-a') };
+      }, log, addMember });
+      ix.set(IRoomReadTool, new SyncDescriptor(RoomReadTool));
+      ix.set(IRoomAddTool, new SyncDescriptor(RoomAddTool));
+      const executions = [ix.get(IRoomReadTool).resolveExecution({ room: 'room-a' }), ix.get(IRoomAddTool).resolveExecution({ room: 'room-a', session_id: 'thread-b' })];
+      for (const execution of executions) {
+        if (!('execute' in execution)) throw new Error('Expected executable room tool.');
+        await expect(execution.execute({} as never)).rejects.toThrow();
+      }
+      expect(log).not.toHaveBeenCalled();
+      expect(addMember).not.toHaveBeenCalled();
+    } finally { await ix.dispose(); }
   });
 
   it('derives peer provenance from the ambient session', async () => {
@@ -132,12 +263,14 @@ describe('thread communication tools', () => {
     expect('execute' in execution).toBe(true);
     if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
     await execution.execute({} as never);
-    expect(sent).toEqual([{
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
       source: {
         hostId: 'local-host',
         workspaceId: 'workspace-a',
         sessionId: 'ambient-a',
       },
+      executingAgentId: 'main',
       target: {
         hostId: 'local-host',
         workspaceId: 'workspace-b',
@@ -145,8 +278,8 @@ describe('thread communication tools', () => {
       },
       content: 'from ambient',
       idempotencyKey: 'ambient-key',
-    }]);
-    } finally { ix.dispose(); }
+    });
+    } finally { await ix.dispose(); }
   });
 
   it.each([
@@ -166,7 +299,32 @@ describe('thread communication tools', () => {
       if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
       await expect(execution.execute({ toolCallId: 'call-1' } as never)).rejects.toThrow(error);
       expect(posted).toEqual([]);
-    } finally { ix.dispose(); }
+    } finally { await ix.dispose(); }
+  });
+
+  it('explains room mentions without promising a host wake and preserves the logged receipt', async () => {
+    const posted: unknown[] = [];
+    const ix = new TestInstantiationService();
+    try {
+      ix.set(IThreadCommunicationService, { _serviceBrand: undefined, hostId: 'local-host', isWorkspaceEnabled: async () => true } as unknown as IThreadCommunicationService);
+      ix.set(ISessionContext, { _serviceBrand: undefined, sessionId: 'thread-a', workspaceId: 'workspace-a' } as ISessionContext);
+      ix.stub(IRoomService, { postBotMessage: async (...args: unknown[]) => { posted.push(args); return { id: 'room-message-1' } as never; } });
+      ix.stub(IAgentScopeContext, { agentId: 'main' });
+      ix.stub(IAgentContextMemoryService, {});
+      ix.set(ISendMessageToThreadTool, new SyncDescriptor(SendMessageToThreadTool));
+      const tool = ix.get(ISendMessageToThreadTool);
+      expect(tool.description).toContain('exact member IDs (thread session id or persona id), not display names');
+      expect(tool.description).toContain('A message from a member wakes only the members it mentions');
+      expect(tool.description).toContain('A user message with no mention goes to the room host');
+      expect(tool.description).toContain('Text in this thread stays in this thread');
+      expect(tool.description).toContain('Room `delivered` means the room log has the message');
+      expect(tool.description).toContain('a successful catch-up covers older queued notifications');
+      const execution = tool.resolveExecution({ room: 'room-a', content: 'hello room' });
+      if (!('execute' in execution)) throw new Error('Expected executable send tool resolution.');
+      const result = await execution.execute({ toolCallId: 'call-1' } as never);
+      expect(posted).toEqual([['room-a', { sessionId: 'thread-a', toolCallId: 'call-1', text: 'hello room', mentions: undefined }]]);
+      expect(JSON.parse(result.output as string)).toEqual({ roomId: 'room-a', messageId: 'room-message-1', delivery: 'delivered' });
+    } finally { await ix.dispose(); }
   });
 
   it('creates a top-level session in an existing directory outside the current workspace', async () => {

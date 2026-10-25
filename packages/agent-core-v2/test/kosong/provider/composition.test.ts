@@ -1,13 +1,24 @@
+import { createRequire } from 'node:module';
 import { createServer } from 'node:http';
 import { release as osRelease } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { nativeSearchParameters, nativeFetchParameters } from '#/app/nbSearch/nativeInput';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
+import Anthropic, { APIError as AnthropicAPIError } from '@anthropic-ai/sdk';
+import { ApiError as GoogleApiError } from '@google/genai';
 import OpenAI from 'openai';
 import type { Response as OpenAIResponse, ResponseOutputMessage, ResponseOutputText, ResponseStreamEvent } from 'openai/resources/responses/responses';
-import { generate } from '#/kosong/contract/generate';
+import { generate, readGenerateFailureFacts } from '#/kosong/contract/generate';
+import { fromErrorPayload, toErrorPayload } from '#/_base/errors/serialize';
+import { safeProviderFailureDetails } from '#/kosong/contract/streamDiagnostics';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IAgentTaskService } from '#/agent/task/task';
+import { ITaskService } from '#/app/task/task';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
+import { createTestAgent, permissionModeServices, appService } from '../../harness';
 
 import { isUnknownCapability } from '#/kosong/contract/capability';
 import {
@@ -16,6 +27,7 @@ import {
   APIProviderRateLimitError,
   APIStatusError,
   isRetryableGenerateError,
+  readProviderEventErrorCode,
 } from '#/kosong/contract/errors';
 import type { Message } from '#/kosong/contract/message';
 import type {
@@ -30,10 +42,11 @@ import {
   resolveDefaultMaxTokens,
 } from '#/kosong/provider/bases/anthropic/anthropic';
 import '#/kosong/provider/bases/google-genai/index';
-import { GoogleGenAIChatProvider } from '#/kosong/provider/bases/google-genai/google-genai';
+import { GoogleGenAIChatProvider, GoogleGenAIStreamedMessage } from '#/kosong/provider/bases/google-genai/google-genai';
 import '#/kosong/provider/bases/openai/index';
-import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
-import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
+import { OpenAIResponsesChatProvider, OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
+import { OpenAILegacyChatProvider, OpenAILegacyStreamedMessage } from '#/kosong/provider/bases/openai/openai-legacy';
+import { ReasoningKeyDialect } from '#/kosong/provider/bases/openai/reasoning-key';
 import {
   mergeProviderRequestAuth,
   mergeRequestHeaders,
@@ -89,7 +102,15 @@ const ENV_KEYS = [
   'KIMI_API_KEY',
   'KIMI_BASE_URL',
   'GOOGLE_API_KEY',
+  'GEMINI_API_KEY',
   'VERTEXAI_API_KEY',
+  'GOOGLE_CLOUD_PROJECT',
+  'GOOGLE_CLOUD_LOCATION',
+  'GCLOUD_PROJECT',
+  'GOOGLE_GENAI_USE_VERTEXAI',
+  'GOOGLE_VERTEX_BASE_URL',
+  'GOOGLE_GEMINI_BASE_URL',
+  'GOOGLE_APPLICATION_CREDENTIALS',
 ] as const;
 
 let envSnapshot: Record<string, string | undefined>;
@@ -891,6 +912,22 @@ describe('google-genai vertex mode (providerOptions)', () => {
     });
     expect(Reflect.get(provider, '_apiKey')).toBe('google-env-key');
   });
+
+  it('reads VERTEXAI_API_KEY for the vertexai provider and ignores GOOGLE_API_KEY', () => {
+    expect(getProviderDefinition('vertexai')?.baseProtocol).toBe('google-genai');
+    expect(
+      resolveProviderEndpoint('vertexai', {
+        VERTEXAI_API_KEY: 'vertex-env-key',
+        GOOGLE_API_KEY: 'google-env-key',
+      }),
+    ).toEqual({ apiKey: 'vertex-env-key' });
+    expect(resolveProviderEndpoint('vertexai', { GOOGLE_API_KEY: 'google-env-key' })).toEqual({});
+    expect(
+      resolveProviderEndpoint('vertexai', {
+        GOOGLE_VERTEX_BASE_URL: 'https://vertex.example.test',
+      }),
+    ).toEqual({ baseUrl: 'https://vertex.example.test' });
+  });
 });
 
 describe('resolveProviderEndpoint', () => {
@@ -998,6 +1035,551 @@ async function drain(stream: StreamedMessage): Promise<void> {
   for await (const part of stream) void part;
 }
 
+const VERTEX_KEY = 'vk-local-fixture';
+const GEMINI_KEY = 'gk-local-fixture';
+const ARGON_MODEL = 'gemini-4-argon';
+
+type GoogleAuthCtor = {
+  prototype: { getRequestHeaders: (url?: string | URL) => Promise<Headers> };
+};
+
+async function loadGoogleAuth(): Promise<GoogleAuthCtor> {
+  const requireFromGenai = createRequire(import.meta.resolve('@google/genai'));
+  const authModule = await import(pathToFileURL(requireFromGenai.resolve('google-auth-library')).href) as {
+    GoogleAuth: GoogleAuthCtor;
+  };
+  return authModule.GoogleAuth;
+}
+
+function vertexSse(): Response {
+  const body =
+    'data: {"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}\n\n';
+  return new Response(body, { status: 200, headers: { 'content-type': 'text/event-stream' } });
+}
+
+function fetchBodyText(
+  input: Parameters<typeof globalThis.fetch>[0],
+  init: Parameters<typeof globalThis.fetch>[1],
+): Promise<string | undefined> {
+  if (input instanceof Request) return input.clone().text();
+  const body = init?.body;
+  if (typeof body === 'string') return Promise.resolve(body);
+  if (body instanceof Uint8Array) return Promise.resolve(new TextDecoder().decode(body));
+  return Promise.resolve(undefined);
+}
+
+function capturedFetch(
+  onRequest: (url: URL, headers: Headers) => void,
+): (
+  input: Parameters<typeof globalThis.fetch>[0],
+  init?: Parameters<typeof globalThis.fetch>[1],
+) => Promise<Response> {
+  return (input, init) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    const headers = new Headers(input instanceof Request ? input.headers : init?.headers);
+    onRequest(url, headers);
+    return Promise.resolve(vertexSse());
+  };
+}
+
+function findThinkingConfig(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      const found = findThinkingConfig(entry);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+  const record = value as Record<string, unknown>;
+  const direct = record['thinkingConfig'];
+  if (typeof direct === 'object' && direct !== null && !Array.isArray(direct)) {
+    return direct as Record<string, unknown>;
+  }
+  for (const entry of Object.values(record)) {
+    const found = findThinkingConfig(entry);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+}
+
+describe('google-genai SDK route (intercepted fetch)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  async function interceptSdk(adcAuthorization?: string) {
+    const seen: Array<{ url: URL; keyHeader: string | null; authorization: string | null }> = [];
+    const authHeaders = vi.spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders');
+    if (adcAuthorization === undefined) authHeaders.mockRejectedValue(new Error('adc-called'));
+    else authHeaders.mockResolvedValue(new Headers({ authorization: adcAuthorization }));
+    vi.stubGlobal(
+      'fetch',
+      capturedFetch((url, headers) => {
+        seen.push({
+          url,
+          keyHeader: headers.get('x-goog-api-key'),
+          authorization: headers.get('authorization'),
+        });
+      }),
+    );
+    return { seen, authHeaders };
+  }
+
+  function expectVertexKey(
+    request: { url: URL; keyHeader: string | null; authorization: string | null },
+    hostname: string,
+    pathname: string,
+  ) {
+    expect(request.url.hostname).toBe(hostname);
+    expect(request.url.pathname).toBe(pathname);
+    expect(request.url.searchParams.get('alt')).toBe('sse');
+    expect(request.url.hostname.includes('generativelanguage')).toBe(false);
+    expect(request.url.href.includes(VERTEX_KEY)).toBe(false);
+    expect(request.keyHeader).toBe(VERTEX_KEY);
+    expect(request.authorization).toBeNull();
+  }
+
+  it('sends a Vertex API key on the v1 publisher path', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({ model: ARGON_MODEL, vertexai: true });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+    expect(parts).toContainEqual({ type: 'text', text: 'ok' });
+    expect(seen).toHaveLength(1);
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(seen[0]!.url.pathname.includes('/projects/')).toBe(false);
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('keeps a Gemini API key on generativelanguage v1beta', async () => {
+    const seen: Array<{ url: URL; keyHeader: string | null }> = [];
+    vi.stubGlobal(
+      'fetch',
+      capturedFetch((url, headers) => {
+        seen.push({ url, keyHeader: headers.get('x-goog-api-key') });
+      }),
+    );
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash' });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: GEMINI_KEY } });
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    const request = seen[0]!;
+    expect(request.url.hostname).toBe('generativelanguage.googleapis.com');
+    expect(request.url.pathname).toBe('/v1beta/models/gemini-2.5-flash:streamGenerateContent');
+    expect(request.url.pathname.includes('publishers/google')).toBe(false);
+    expect(request.url.href.includes(GEMINI_KEY)).toBe(false);
+    expect(request.keyHeader).toBe(GEMINI_KEY);
+  });
+
+  it('keeps Gemini on generativelanguage when GOOGLE_GENAI_USE_VERTEXAI is set', async () => {
+    process.env['GOOGLE_GENAI_USE_VERTEXAI'] = 'true';
+    const seen: Array<{ url: URL; keyHeader: string | null }> = [];
+    vi.stubGlobal(
+      'fetch',
+      capturedFetch((url, headers) => {
+        seen.push({ url, keyHeader: headers.get('x-goog-api-key') });
+      }),
+    );
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash' });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: GEMINI_KEY } });
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('generativelanguage.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe('/v1beta/models/gemini-2.5-flash:streamGenerateContent');
+    expect(seen[0]!.keyHeader).toBe(GEMINI_KEY);
+  });
+
+  it('sends a Vertex API key on the regional project resource', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      apiKey: VERTEX_KEY,
+      vertexai: true,
+      project: 'example-project',
+      location: 'us-central1',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    expectVertexKey(
+      seen[0]!,
+      'us-central1-aiplatform.googleapis.com',
+      `/v1/projects/example-project/locations/us-central1/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sends a Vertex API key on the global project resource', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('uses the multi-region rep host for a Vertex API key in us', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'us',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.us.rep.googleapis.com',
+      `/v1/projects/example-project/locations/us/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('uses the multi-region rep host for a Vertex API key in eu', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'eu',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.eu.rep.googleapis.com',
+      `/v1/projects/example-project/locations/eu/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('keeps a request API key when the constructor has project coordinates and no key', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: VERTEX_KEY } });
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sends a fully qualified model resource unchanged with the Vertex API key', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const model = `projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}`;
+    const provider = new GoogleGenAIChatProvider({
+      model,
+      apiKey: VERTEX_KEY,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'aiplatform.googleapis.com',
+      `/v1/${model}:streamGenerateContent`,
+    );
+    expect(seen[0]!.url.pathname.includes('/publishers/google/models/projects/')).toBe(false);
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('honors a caller base URL on the project resource and still sends the key', async () => {
+    const { seen, authHeaders } = await interceptSdk();
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      apiKey: VERTEX_KEY,
+      vertexai: true,
+      project: 'example-project',
+      location: 'us-central1',
+      baseUrl: 'https://vertex.example.test',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expectVertexKey(
+      seen[0]!,
+      'vertex.example.test',
+      `/v1/projects/example-project/locations/us-central1/publishers/google/models/${ARGON_MODEL}:streamGenerateContent`,
+    );
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('uses project ADC when project and location are set and no API key is present', async () => {
+    const { seen, authHeaders } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'us-central1',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen).toHaveLength(1);
+    const request = seen[0]!;
+    expect(request.url.hostname).toBe('us-central1-aiplatform.googleapis.com');
+    expect(request.url.pathname).toBe(
+      '/v1beta1/projects/example-project/locations/us-central1/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(request.url.href.includes(VERTEX_KEY)).toBe(false);
+    expect(request.keyHeader).toBeNull();
+    expect(request.authorization).toBe('Bearer local-adc-stub');
+    expect(authHeaders).toHaveBeenCalled();
+  });
+
+  it('uses the SDK global host for project ADC', async () => {
+    const { seen } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('aiplatform.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe(
+      '/v1beta1/projects/example-project/locations/global/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(seen[0]!.keyHeader).toBeNull();
+    expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
+  });
+
+  it('uses the multi-region rep host for project ADC in us', async () => {
+    const { seen } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'us',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('aiplatform.us.rep.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe(
+      '/v1beta1/projects/example-project/locations/us/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(seen[0]!.keyHeader).toBeNull();
+    expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
+  });
+
+  it('uses the multi-region rep host for project ADC in eu', async () => {
+    const { seen } = await interceptSdk('Bearer local-adc-stub');
+    const provider = new GoogleGenAIChatProvider({
+      model: 'gemini-2.5-flash',
+      vertexai: true,
+      project: 'example-project',
+      location: 'eu',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    for await (const part of stream) void part;
+    expect(seen[0]!.url.hostname).toBe('aiplatform.eu.rep.googleapis.com');
+    expect(seen[0]!.url.pathname).toBe(
+      '/v1beta1/projects/example-project/locations/eu/publishers/google/models/gemini-2.5-flash:streamGenerateContent',
+    );
+    expect(seen[0]!.keyHeader).toBeNull();
+    expect(seen[0]!.authorization).toBe('Bearer local-adc-stub');
+  });
+
+  async function expectVertexRejected(
+    options: ConstructorParameters<typeof GoogleGenAIChatProvider>[0],
+    pattern: RegExp,
+  ) {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const authHeaders = vi
+      .spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders')
+      .mockRejectedValue(new Error('adc-called'));
+    const provider = new GoogleGenAIChatProvider(options);
+    await expect(provider.generate('', [], PROBE_HISTORY, { auth: { apiKey: options.apiKey } })).rejects.toThrow(pattern);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authHeaders).not.toHaveBeenCalled();
+  }
+
+  it('refuses a Vertex key route without calling fetch when no key and no project are set', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const authHeaders = vi
+      .spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders')
+      .mockRejectedValue(new Error('adc-called'));
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash', vertexai: true });
+    await expect(provider.generate('', [], PROBE_HISTORY)).rejects.toThrow(/apiKey is required for Vertex AI/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('rejects a Vertex project without a location', async () => {
+    await expectVertexRejected(
+      { model: ARGON_MODEL, vertexai: true, apiKey: VERTEX_KEY, project: 'example-project' },
+      /project and location must both be set/,
+    );
+  });
+
+  it('rejects a Vertex location without a project', async () => {
+    await expectVertexRejected(
+      { model: ARGON_MODEL, vertexai: true, apiKey: VERTEX_KEY, location: 'global' },
+      /project and location must both be set/,
+    );
+  });
+
+  it('rejects one Vertex coordinate when no API key is present', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const authHeaders = vi
+      .spyOn((await loadGoogleAuth()).prototype, 'getRequestHeaders')
+      .mockRejectedValue(new Error('adc-called'));
+    const provider = new GoogleGenAIChatProvider({
+      model: ARGON_MODEL,
+      vertexai: true,
+      project: 'example-project',
+    });
+    await expect(provider.generate('', [], PROBE_HISTORY)).rejects.toThrow(/project and location must both be set/);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(authHeaders).not.toHaveBeenCalled();
+  });
+
+  it('sends a thinking level for Gemini 4 and keeps thought text', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) => {
+        return fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          const payload = {
+            candidates: [{
+              content: { role: 'model', parts: [{ thought: true, text: 'step' }, { text: 'ok' }] },
+              finishReason: 'STOP',
+            }],
+          };
+          return new Response(`data: ${JSON.stringify(payload)}\n\n`, {
+            status: 200,
+            headers: { 'content-type': 'text/event-stream' },
+          });
+        });
+      },
+    );
+    const provider = new GoogleGenAIChatProvider({ model: ARGON_MODEL, vertexai: true });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: VERTEX_KEY },
+      thinking: { effort: 'high' },
+    });
+    const parts = [];
+    for await (const part of stream) parts.push(part);
+    expect(parts).toContainEqual({ type: 'think', think: 'step' });
+    expect(parts).toContainEqual({ type: 'text', text: 'ok' });
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingLevel']).toBe('HIGH');
+    expect(config?.['thinkingBudget']).toBeUndefined();
+    expect(config?.['includeThoughts']).toBe(true);
+  });
+
+  it('sends a thinking level for a fully qualified Gemini 4 model', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) =>
+        fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          return vertexSse();
+        }),
+    );
+    const model = `projects/example-project/locations/global/publishers/google/models/${ARGON_MODEL}`;
+    const provider = new GoogleGenAIChatProvider({
+      model,
+      vertexai: true,
+      project: 'example-project',
+      location: 'global',
+    });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: VERTEX_KEY },
+      thinking: { effort: 'high' },
+    });
+    for await (const part of stream) void part;
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingLevel']).toBe('HIGH');
+    expect(config?.['thinkingBudget']).toBeUndefined();
+  });
+
+  it('sends LOW for Gemini 4 when thinking is off', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) =>
+        fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          return vertexSse();
+        }),
+    );
+    const provider = new GoogleGenAIChatProvider({ model: ARGON_MODEL, vertexai: true });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: VERTEX_KEY },
+      thinking: { effort: 'off' },
+    });
+    for await (const part of stream) void part;
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingLevel']).toBe('LOW');
+    expect(config?.['thinkingBudget']).toBeUndefined();
+    expect(config?.['includeThoughts']).toBe(false);
+  });
+
+  it('keeps a thinking budget for gemini-2.5-flash', async () => {
+    const bodies: string[] = [];
+    vi.stubGlobal(
+      'fetch',
+      (input: Parameters<typeof globalThis.fetch>[0], init?: Parameters<typeof globalThis.fetch>[1]) =>
+        fetchBodyText(input, init).then((body) => {
+          bodies.push(body ?? '');
+          return vertexSse();
+        }),
+    );
+    const provider = new GoogleGenAIChatProvider({ model: 'gemini-2.5-flash' });
+    const stream = await provider.generate('', [], PROBE_HISTORY, {
+      auth: { apiKey: GEMINI_KEY },
+      thinking: { effort: 'high' },
+    });
+    for await (const part of stream) void part;
+    const config = findThinkingConfig(JSON.parse(bodies[0] ?? '{}'));
+    expect(config?.['thinkingBudget']).toBe(32_000);
+    expect(config?.['thinkingLevel']).toBeUndefined();
+  });
+
+  it('rejects a publishers model id when Vertex project and location are set', async () => {
+    await expectVertexRejected(
+      {
+        model: `publishers/google/models/${ARGON_MODEL}`,
+        vertexai: true,
+        apiKey: VERTEX_KEY,
+        project: 'example-project',
+        location: 'global',
+      },
+      /publishers\/ model id cannot be combined/,
+    );
+  });
+});
+
 const CODEX_SSE_RESPONSE = [
   'event: response.created',
   'data: {"type":"response.created","response":{"id":"resp_probe","status":"in_progress"}}',
@@ -1097,6 +1679,38 @@ async function* anthropicEventStream(): AsyncIterable<unknown> {
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
   yield { type: 'content_block_stop', index: 0 };
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+}
+
+async function* anthropicEventStreamWithStop(): AsyncIterable<unknown> {
+  yield* anthropicEventStream();
+  yield { type: 'message_stop' };
+}
+
+async function* anthropicThinkingOnlyStopStream(): AsyncIterable<unknown> {
+  yield {
+    type: 'message_start',
+    message: { id: 'msg_stop', usage: { input_tokens: 11, output_tokens: 3 } },
+  };
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'private reasoning' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-example' } };
+  yield { type: 'content_block_stop', index: 0 };
+  yield {
+    type: 'error',
+    error: { type: 'api_error', code: 'antigravity_thinking_only', message: 'clean eof after thinking' },
+  };
+}
+
+async function* anthropicSignedThinkUnnamedErrorStream(): AsyncIterable<unknown> {
+  yield {
+    type: 'message_start',
+    message: { id: 'msg_unnamed', usage: { input_tokens: 7, output_tokens: 2 } },
+  };
+  yield { type: 'content_block_start', index: 0, content_block: { type: 'thinking', thinking: '' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'kept thought' } };
+  yield { type: 'content_block_delta', index: 0, delta: { type: 'signature_delta', signature: 'sig-kept' } };
+  yield { type: 'content_block_stop', index: 0 };
+  yield { type: 'error', error: { type: 'api_error', message: 'upstream reset' } };
 }
 
 async function* anthropicEventStreamWithoutUsage(): AsyncIterable<unknown> {
@@ -1484,6 +2098,33 @@ describe('reasoning-only assistant history projection', () => {
     });
   });
 
+  it('keeps redacted thinking data beside a signature on the Anthropic wire', async () => {
+    const provider = new AnthropicChatProvider({
+      model: 'example-model',
+      apiKey: 'sk-probe',
+      stream: false,
+    });
+    const history: Message[] = [
+      {
+        role: 'assistant',
+        content: [{ type: 'think', think: '', redacted: 'redacted-example', encrypted: 'sig-kept' }],
+        toolCalls: [],
+      },
+      { role: 'user', content: [{ type: 'text', text: 'Hi' }], toolCalls: [] },
+    ];
+
+    const { params } = await captureAnthropicBody(provider, undefined, history);
+    const messages = params['messages'] as Array<Record<string, unknown>>;
+
+    expect(messages[0]).toEqual({
+      role: 'assistant',
+      content: [
+        { type: 'redacted_thinking', data: 'redacted-example' },
+        { type: 'thinking', thinking: '', signature: 'sig-kept' },
+      ],
+    });
+  });
+
   it('keeps unsigned thinking on the Google GenAI wire', async () => {
     const provider = new GoogleGenAIChatProvider({
       model: 'gemini-2.5-flash',
@@ -1846,6 +2487,38 @@ describe('responseFormat wire encoding (per base)', () => {
         description: undefined,
       },
     });
+  });
+});
+
+describe('Anthropic request tail structure', () => {
+  const user: Message = { role: 'user', content: [{ type: 'text', text: 'go' }], toolCalls: [] };
+  const thinking: Message = { role: 'assistant', content: [{ type: 'think', think: 'thought', encrypted: 'signature-fixture' }], toolCalls: [] };
+  const prefill: Message = { role: 'assistant', content: [{ type: 'text', text: 'partial answer' }], toolCalls: [] };
+  const toolCall: Message = { role: 'assistant', content: [], toolCalls: [{ type: 'function', id: 'call-fixture', name: 'Read', arguments: '{}' }] };
+  const toolResult: Message = { role: 'tool', content: [{ type: 'text', text: 'result' }], toolCallId: 'call-fixture', toolCalls: [] };
+
+  it.each([
+    { shape: 'thinking-only assistant', history: [user, thinking], roles: ['user', 'assistant'], tailTypes: ['thinking'] },
+    { shape: 'nonempty assistant prefill', history: [user, prefill], roles: ['user', 'assistant'], tailTypes: ['text'] },
+    { shape: 'empty trailing user', history: [user, prefill, { role: 'user', content: [], toolCalls: [] }], roles: ['user', 'assistant', 'user'], tailTypes: [] },
+    { shape: 'normal tool result', history: [user, toolCall, toolResult], roles: ['user', 'assistant', 'user'], tailTypes: ['tool_result'] },
+  ] satisfies Array<{ shape: string; history: Message[]; roles: string[]; tailTypes: string[] }>)('serializes $shape without rewriting its role', async ({ history, roles, tailTypes }) => {
+    let sent: { messages: Array<{ role: string; content: Array<{ type: string; tool_use_id?: string }> }> } | undefined;
+    const provider = new AnthropicChatProvider({
+      model: 'gemini-3.8-flash', apiKey: 'YOUR_API_KEY', stream: false,
+      clientFactory: () => new Anthropic({
+        apiKey: 'YOUR_API_KEY', maxRetries: 0,
+        fetch: async (_input, init) => {
+          sent = JSON.parse(String(init?.body));
+          return new Response(JSON.stringify(anthropicMessageResponse()), { status: 200, headers: { 'content-type': 'application/json' } });
+        },
+      }),
+    });
+    await drain(await provider.generate('', [], structuredClone(history), { maxCompletionTokens: 1024 }));
+    expect(sent?.messages.map((message) => message.role)).toEqual(roles);
+    expect(sent?.messages.at(-1)?.content.map((part) => part.type)).toEqual(tailTypes);
+    if (tailTypes[0] === 'tool_result') expect(sent?.messages.at(-1)?.content[0]?.tool_use_id).toBe('call-fixture');
+    expect(history[0]).toEqual(user);
   });
 });
 
@@ -2296,9 +2969,9 @@ describe('outbound transport', () => {
 function finalizedResponse(output: OpenAIResponse['output'], status: OpenAIResponse['status']): OpenAIResponse {
   return {
     id: 'resp_finalized', created_at: 1, object: 'response', model: 'gpt-5', output, output_text: '', status,
-    error: null, incomplete_details: null, instructions: null, metadata: null,
+    error: null, incomplete_details: null, instructions: null, metadata: null, access_programs: null,
     parallel_tool_calls: true, temperature: null, top_p: null, tool_choice: 'auto', tools: [],
-    usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5, input_tokens_details: { cached_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },
+    usage: { input_tokens: 3, output_tokens: 2, total_tokens: 5, input_tokens_details: { cached_tokens: 0, cache_write_tokens: 0 }, output_tokens_details: { reasoning_tokens: 0 } },
   };
 }
 
@@ -2361,6 +3034,14 @@ describe('Responses finalized text', () => {
     expect(result.finishReason).toBe('completed');
     expect(result.rawFinishReason).toBe('completed');
     expect(result.usage).toEqual({ inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalTextParts: 1,
+      terminalTextChars: 'Contract fixture text'.length, terminalToolCalls: 0,
+      emittedTextChars: 'Contract fixture text'.length, emittedToolHeaders: 0,
+      eventCount: events.length, textDeltaCount: mode === 'prefilled' ? 0 : 1,
+      textDoneCount: 1, contentPartAddedCount: 1, outputItemAddedCount: 1, outputItemDoneCount: 1,
+      terminalEventCount: 1, errorEventCount: 0,
+    });
   });
 
   it('isolates finalized text by output item and content identity', async () => {
@@ -2393,7 +3074,7 @@ describe('Responses finalized text', () => {
     const events: ResponseStreamEvent[] = [
       { type: 'response.created', sequence_number: 0, response: finalizedResponse([], 'in_progress') },
       { type: 'response.output_item.added', sequence_number: 1, output_index: 0, item: { ...item, arguments: '', status: 'in_progress' } },
-      { type: 'response.function_call_arguments.done', sequence_number: 2, output_index: 0, item_id: item.id, name: item.name, arguments: item.arguments },
+      { type: 'response.function_call_arguments.done', sequence_number: 2, output_index: 0, item_id: item.id, arguments: item.arguments },
       { type: 'response.output_item.done', sequence_number: 3, output_index: 0, item },
       { type: 'response.completed', sequence_number: 4, response: finalizedResponse([item], 'completed') },
     ];
@@ -2402,9 +3083,10 @@ describe('Responses finalized text', () => {
     expect(result.message.content).toEqual([]);
     expect(result.finishReason).toBe('completed');
     expect(result.usage?.output).toBe(2);
+    expect(result.diagnostics).toMatchObject({ terminalTextParts: 0, terminalTextChars: 0, terminalToolCalls: 1, emittedTextChars: 0, emittedToolHeaders: 1 });
   });
 
-  it('still rejects completed reasoning-only responses', async () => {
+  it('accepts completed reasoning-only responses without inventing text', async () => {
     const item = { id: 'rs_finalized', type: 'reasoning' as const, summary: [] };
     const events: ResponseStreamEvent[] = [
       { type: 'response.created', sequence_number: 0, response: finalizedResponse([], 'in_progress') },
@@ -2412,6 +3094,561 @@ describe('Responses finalized text', () => {
       { type: 'response.output_item.done', sequence_number: 2, output_index: 0, item },
       { type: 'response.completed', sequence_number: 3, response: finalizedResponse([item], 'completed') },
     ];
-    await expect(generateFinalizedFixture(events)).rejects.toMatchObject({ name: 'APIEmptyResponseError', finishReason: 'completed' });
+    const result = await generateFinalizedFixture(events);
+    expect(result.message.content).toEqual([{ type: 'think', think: '' }]);
+    expect(result.message.toolCalls).toEqual([]);
+    expect(result.finishReason).toBe('completed');
+    expect(result.usage?.output).toBe(2);
+  });
+});
+
+function diagnosticFixtureProvider(events: readonly unknown[], convertError?: ConstructorParameters<typeof OpenAIResponsesChatProvider>[0]['convertError'], tailFailure?: Error) {
+  const body = events.map(event => `data: ${JSON.stringify(event)}\n\n`).join('');
+  let sent = false;
+  const responseBody = tailFailure === undefined ? body : new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent) controller.error(tailFailure);
+      else { sent = true; controller.enqueue(new TextEncoder().encode(body)); }
+    },
+  }, { highWaterMark: 0 });
+  return new OpenAIResponsesChatProvider({
+    apiKey: 'fixture-only', model: 'gpt-5', convertError,
+    clientFactory: () => new OpenAI({
+      apiKey: 'fixture-only', baseURL: 'https://example.test/v1', maxRetries: 0,
+      fetch: async () => new Response(responseBody, { status: 200, headers: {
+        'content-type': 'text/event-stream', 'x-request-id': 'request-fixture', 'x-trace-id': 'trace-fixture',
+        authorization: 'Bearer header-secret',
+      } }),
+    }),
+  });
+}
+
+async function diagnosticFailure(events: readonly unknown[]) {
+  try {
+    await generate(diagnosticFixtureProvider(events), 'synthetic fixture', [], []);
+  } catch (error) {
+    return toErrorPayload(error);
+  }
+  throw new Error('expected diagnostic fixture failure');
+}
+
+describe('Responses terminal output contract', () => {
+  it.each(['empty-output', 'empty-content', 'unknown-output'] as const)('keeps %s distinct from lost text even with four output tokens', async mode => {
+    const output: OpenAIResponse['output'] = mode === 'empty-content'
+      ? [{ id: 'msg_empty', type: 'message', role: 'assistant', status: 'completed', content: [] }]
+      : [];
+    const completed = finalizedResponse(output, 'completed');
+    const response = { ...completed, usage: { ...completed.usage, output_tokens: 4, total_tokens: 7 } };
+    const { output: _output, ...withoutOutput } = response;
+    const provider = diagnosticFixtureProvider([{ type: 'response.completed', response: mode === 'unknown-output' ? withoutOutput : response }]);
+    const generateSpy = vi.spyOn(provider, 'generate');
+    const result = await generate(provider, 'synthetic fixture', [], []);
+    expect(generateSpy).toHaveBeenCalledTimes(1);
+    expect(result.message).toEqual({ role: 'assistant', content: [], toolCalls: [] });
+    expect(result.finishReason).toBe('completed');
+    expect(result.rawFinishReason).toBe('completed');
+    expect(result.completionAuthority).toBe(mode === 'unknown-output' ? undefined : 'normal');
+    expect(result.usage).toEqual({ inputOther: 3, output: 4, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalEventCount: 1,
+      terminalTextParts: mode === 'unknown-output' ? null : 0,
+      terminalTextChars: mode === 'unknown-output' ? null : 0,
+      emittedTextChars: 0, emittedToolHeaders: 0,
+    });
+  });
+
+  it('recovers promised text from the completed snapshot when all text deltas are absent', async () => {
+    const output: OpenAIResponse['output'] = [{
+      id: 'msg_snapshot', type: 'message', role: 'assistant', status: 'completed',
+      content: [{ type: 'output_text', text: 'Snapshot answer', annotations: [], logprobs: [] }],
+    }];
+    const result = await generate(diagnosticFixtureProvider([
+      { type: 'response.completed', response: finalizedResponse(output, 'completed') },
+    ]), 'synthetic fixture', [], []);
+    expect(result.message.content).toEqual([{ type: 'text', text: 'Snapshot answer' }]);
+    expect(result.completionAuthority).toBe('normal');
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalTextParts: 1, terminalTextChars: 'Snapshot answer'.length,
+      textDeltaCount: 0, emittedTextChars: 'Snapshot answer'.length,
+    });
+  });
+
+  it.each(['missing-text', 'empty-response-object', 'missing-terminal'] as const)('rejects %s rather than committing an empty success', async mode => {
+    const events = mode === 'missing-terminal' ? [] : [{
+      type: 'response.completed', response: mode === 'empty-response-object' ? {} : {
+        ...finalizedResponse([], 'completed'),
+        output: [{ id: 'msg_malformed', type: 'message', role: 'assistant', status: 'completed', content: [{ type: 'output_text' }] }],
+      },
+    }];
+    const error = await generate(diagnosticFixtureProvider(events), 'synthetic fixture', [], []).catch((error: unknown) => error);
+    const payload = toErrorPayload(error);
+    expect(payload.name).toBe(mode === 'empty-response-object' ? 'APIEmptyResponseError' : 'ChatProviderError');
+    expect(isRetryableGenerateError(error)).toBe(true);
+    expect(readGenerateFailureFacts(error)).toBeUndefined();
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: mode === 'missing-terminal' ? 'eof' : mode === 'missing-text' ? 'local_error' : 'terminal',
+      terminalStatus: mode === 'missing-terminal' ? null : 'completed',
+      terminalTextChars: null, emittedTextChars: 0, emittedToolHeaders: 0,
+      terminalEventCount: mode === 'missing-terminal' ? 0 : 1,
+    });
+  });
+});
+
+describe('Responses safe stream diagnostics', () => {
+  it.each(['empty', 'reasoning'] as const)('retains the real %s counts on normal completion', async mode => {
+    const output: OpenAIResponse['output'] = mode === 'empty' ? [] : [{ id: 'rs_fixture', type: 'reasoning', summary: [] }];
+    const events = mode === 'empty' ? [] : [{ type: 'response.output_item.done', output_index: 0, item: output[0] }];
+    const result = await generate(diagnosticFixtureProvider([...events, { type: 'response.completed', response: finalizedResponse(output, 'completed') }]), 'synthetic fixture', [], []);
+    expect(result.finishReason).toBe('completed');
+    expect(result.rawFinishReason).toBe('completed');
+    expect(result.message.content).toEqual(mode === 'empty' ? [] : [{ type: 'think', think: '' }]);
+    expect(result.message.toolCalls).toEqual([]);
+    expect(result.usage).toEqual({ inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalTextParts: 0, terminalTextChars: 0,
+      terminalToolCalls: 0, emittedTextChars: 0, emittedToolHeaders: 0, terminalEventCount: 1, errorEventCount: 0,
+    });
+  });
+
+  it('rejects EOF even after a text delta instead of accepting a truncated answer', async () => {
+    const error = await generate(diagnosticFixtureProvider([{ type: 'response.output_text.delta', delta: 'partial' }]), 'synthetic fixture', [], []).catch((error: unknown) => error);
+    expect(isRetryableGenerateError(error)).toBe(false);
+    const payload = toErrorPayload(error);
+    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'eof', emittedTextChars: 7, terminalEventCount: 0 });
+  });
+
+  it.each(['incomplete', 'max_output_tokens'] as const)('still rejects no-text output on %s', async reason => {
+    const response = { ...finalizedResponse([], 'incomplete'), incomplete_details: reason === 'incomplete' ? null : { reason } };
+    const error = await generate(diagnosticFixtureProvider([{ type: 'response.incomplete', response }]), 'synthetic fixture', [], []).catch((error: unknown) => error);
+    expect(isRetryableGenerateError(error)).toBe(true);
+    const payload = toErrorPayload(error);
+    expect(payload.name).toBe('APIEmptyResponseError');
+    expect(payload.details).toMatchObject({ finishReason: reason === 'incomplete' ? 'other' : 'truncated', streamDiagnostics: { endSource: 'terminal', terminalStatus: 'incomplete', terminalTextChars: 0 } });
+  });
+
+  it('does not accept a completed body carried by an incomplete event', async () => {
+    const payload = await diagnosticFailure([{ type: 'response.incomplete', response: finalizedResponse([], 'completed') }]);
+    expect(payload.name).toBe('APIEmptyResponseError');
+    expect(payload.details).toMatchObject({ finishReason: 'completed', streamDiagnostics: { terminalStatus: 'incomplete' } });
+  });
+
+  it('commits a normally completed response when the HTTP body fails only after its terminal event', async () => {
+    const provider = diagnosticFixtureProvider(finalizedTextEvents([['complete answer']], 'delta'), undefined, new TypeError('terminated'));
+    const result = await generate(provider, 'synthetic fixture', [], []);
+    expect(result.message.content).toEqual([{ type: 'text', text: 'complete answer' }]);
+    expect(result.completionAuthority).toBe('normal');
+    expect(result.usage?.output).toBe(2);
+    expect(result.diagnostics).toMatchObject({ endSource: 'terminal', terminalStatus: 'completed', terminalEventCount: 1 });
+  });
+
+  it.each(['incomplete', 'cancelled'] as const)('does not suppress %s when the HTTP body fails after a terminal event', async mode => {
+    const controller = new AbortController();
+    const events = mode === 'incomplete'
+      ? [{ type: 'response.incomplete', response: finalizedResponse([], 'incomplete') }]
+      : finalizedTextEvents([['complete answer']], 'delta');
+    const provider = diagnosticFixtureProvider(events, undefined, new TypeError('terminated'));
+    const error = await generate(provider, 'synthetic fixture', [], [], {
+      onMessagePart: () => { if (mode === 'cancelled') controller.abort(); },
+    }, { signal: controller.signal }).catch((error: unknown) => error);
+    expect(toErrorPayload(error)).toMatchObject(mode === 'cancelled'
+      ? { name: 'AbortError', details: { streamDiagnostics: { endSource: 'cancelled' } } }
+      : { name: 'APIConnectionError', details: { streamDiagnostics: { endSource: 'sdk_error', terminalStatus: 'incomplete' } } });
+  });
+
+  it.each(['error', 'sdk-error'] as const)('does not hide an explicit %s after a completed event', async mode => {
+    const payload = await diagnosticFailure([
+      { type: 'response.completed', response: finalizedResponse([], 'completed') },
+      mode === 'error' ? { type: 'error', code: 'stream_failed', message: 'fixture failure' }
+        : { error: { type: 'internal_server_error', code: 'stream_failed', message: 'fixture failure' } },
+    ]);
+    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: mode === 'error' ? 'event_error' : 'sdk_error', errorEventCount: mode === 'error' ? 1 : 0,
+    });
+  });
+
+  it('keeps unknown terminal counts distinct from zero when EOF has no terminal event', async () => {
+    const payload = await diagnosticFailure([]);
+    expect(payload.name).toBe('ChatProviderError');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: 'eof', terminalStatus: null,
+      terminalTextParts: null, terminalTextChars: null, terminalToolCalls: null,
+    });
+  });
+
+  it('accepts an explicitly completed empty response even when terminal statistics are unknown', async () => {
+    const { output: _output, ...withoutOutput } = finalizedResponse([], 'completed');
+    const provider = diagnosticFixtureProvider([{ type: 'response.completed', response: withoutOutput }]);
+    const generateSpy = vi.spyOn(provider, 'generate');
+    const result = await generate(provider, 'synthetic fixture', [], []);
+    expect(generateSpy).toHaveBeenCalledTimes(1);
+    expect(result.message).toEqual({ role: 'assistant', content: [], toolCalls: [] });
+    expect(result.finishReason).toBe('completed');
+    expect(result.rawFinishReason).toBe('completed');
+    expect(result.usage).toEqual({ inputOther: 3, output: 2, inputCacheRead: 0, inputCacheCreation: 0 });
+    expect(result.diagnostics).toMatchObject({
+      endSource: 'terminal', terminalStatus: 'completed', terminalEventCount: 1,
+      terminalTextParts: null, terminalTextChars: null, terminalToolCalls: null,
+    });
+  });
+
+  it.each(['error', 'response.failed'] as const)('retains direct %s classification and safe event identifiers', async type => {
+    const response = finalizedResponse([], 'failed');
+    const event = type === 'error'
+      ? { type, code: 'stream_failed', message: 'fixture failure', param: null, request_id: 'event-request', api_key: 'body-secret', text: 'private body' }
+      : { type, response: { ...response, error: { type: 'internal_server_error', code: 'stream_failed', message: 'fixture failure', thinking: 'private reasoning' } } };
+    const payload = await diagnosticFailure([event]);
+    expect(payload).toMatchObject({ name: 'ChatProviderError', code: 'provider.api_error' });
+    expect(payload.details).toMatchObject({
+      errorSource: 'provider_event', upstreamErrorCode: 'stream_failed',
+      streamDiagnostics: { endSource: 'event_error', errorEventCount: 1, eventCount: 1, emittedTextChars: 0 },
+    });
+    expect(payload.details?.['streamDiagnostics']).toMatchObject(type === 'error'
+      ? { terminalStatus: null, terminalTextChars: null, terminalEventCount: 0 }
+      : { terminalStatus: 'failed', terminalTextChars: 0, terminalEventCount: 1 });
+    expect(JSON.stringify(payload)).not.toMatch(/body-secret|private body|private reasoning|header-secret/);
+    expect(fromErrorPayload(payload).details).toEqual(payload.details);
+  });
+
+  it('distinguishes an SDK SSE exception before the converter receives an event', async () => {
+    const payload = await diagnosticFailure([{ error: {
+      type: 'internal_server_error', code: 'stream_failed', message: 'fixture SDK failure', api_key: 'sdk-secret', text: 'private SDK body',
+    } }]);
+    expect(payload.details).toMatchObject({
+      errorSource: 'provider_event', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
+      requestId: 'request-fixture', traceId: 'trace-fixture',
+      streamDiagnostics: { endSource: 'sdk_error', eventCount: 0, errorEventCount: 0, terminalTextChars: null },
+    });
+    expect(JSON.stringify(payload)).not.toMatch(/sdk-secret|private SDK body|header-secret/);
+    expect(safeProviderFailureDetails(payload.details)).toEqual({
+      errorSource: 'provider_event', upstreamErrorType: 'internal_server_error', upstreamErrorCode: 'stream_failed',
+      requestId: 'request-fixture', traceId: 'trace-fixture', streamDiagnostics: payload.details?.['streamDiagnostics'],
+    });
+  });
+
+  it('keeps event request IDs when status classification has no SDK request ID', async () => {
+    const payload = await diagnosticFailure([{ type: 'error', code: 'rate_limit_exceeded', message: 'fixture limit', request_id: 'event-request' }]);
+    expect(payload).toMatchObject({ name: 'APIProviderRateLimitError', code: 'provider.rate_limit', details: { requestId: 'event-request', upstreamErrorCode: 'rate_limit_exceeded' } });
+  });
+
+  it('marks a local text mismatch without exposing either text value', async () => {
+    const events = finalizedTextEvents([['private final text']], 'delta');
+    const delta = events.find(event => event.type === 'response.output_text.delta');
+    if (delta?.type !== 'response.output_text.delta') throw new Error('expected delta');
+    delta.delta = 'private different text';
+    const payload = await diagnosticFailure(events);
+    expect(payload.message).toBe('OpenAI Responses final text does not match the streamed text deltas.');
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({ endSource: 'local_error', emittedTextChars: delta.delta.length, terminalTextChars: null });
+    expect(JSON.stringify(payload)).not.toMatch(/private final text|private different text/);
+  });
+
+  it('preserves hook precedence and existing rate-limit classification', async () => {
+    const hooked = new APIProviderRateLimitError('hook fixture', 'hook-request');
+    const provider = diagnosticFixtureProvider([{ type: 'error', code: 'stream_failed', message: 'fixture failure' }], () => hooked);
+    let failure: unknown;
+    try { await generate(provider, 'synthetic fixture', [], []); } catch (error) { failure = error; }
+    expect(failure).toBe(hooked);
+    expect(toErrorPayload(failure)).toMatchObject({
+      name: 'APIProviderRateLimitError', code: 'provider.rate_limit',
+      details: { streamDiagnostics: { endSource: 'event_error' }, errorSource: 'provider_event', requestId: 'hook-request' },
+    });
+  });
+
+  it('records cancellation instead of a normal empty terminal and keeps AbortError semantics', async () => {
+    const controller = new AbortController();
+    const events = finalizedTextEvents([['private cancellation text']], 'delta');
+    let failure: unknown;
+    try {
+      await generate(diagnosticFixtureProvider(events), 'synthetic fixture', [], [], {
+        onMessagePart: () => { controller.abort(); },
+      }, { signal: controller.signal });
+    } catch (error) { failure = error; }
+    expect(failure).toBeInstanceOf(DOMException);
+    expect((failure as Error).name).toBe('AbortError');
+    const payload = toErrorPayload(failure);
+    expect(payload.details?.['streamDiagnostics']).toMatchObject({
+      endSource: 'cancelled', terminalStatus: null, terminalTextChars: null,
+      emittedTextChars: 'private cancellation text'.length, terminalEventCount: 0,
+    });
+    expect(JSON.stringify(payload)).not.toContain('private cancellation text');
+    expect(fromErrorPayload(payload).details).toEqual(payload.details);
+  });
+
+  it('filters untrusted extra fields using the shared room projection', async () => {
+    const payload = await diagnosticFailure([{ type: 'response.incomplete', response: finalizedResponse([], 'incomplete') }]);
+    const safe = safeProviderFailureDetails({
+      ...payload.details, requestId: 'sk-secret-value', traceId: 'Authorization: Bearer secret', headers: { authorization: 'secret' }, body: 'private body',
+      streamDiagnostics: { ...(payload.details?.['streamDiagnostics'] as object), text: 'private text', thinking: 'private thinking', arbitrary: 'secret' },
+    });
+    expect(safe).toEqual({ streamDiagnostics: payload.details?.['streamDiagnostics'] });
+    expect(safeProviderFailureDetails({ streamDiagnostics: { ...(payload.details?.['streamDiagnostics'] as object), terminalTextChars: -1 } })).toEqual({});
+    expect(JSON.stringify(safe)).not.toMatch(/private|secret|headers|body|thinking/);
+  });
+});
+
+
+describe('Responses completed silence through the agent loop', () => {
+  it.each(['empty', 'reasoning', 'unknown-statistics'] as const)('finishes after a tool result and %s completion without retrying', async mode => {
+    const call = { id: 'fc_lookup', type: 'function_call' as const, call_id: 'call_lookup', name: 'Lookup', arguments: '{}', status: 'completed' as const };
+    const reasoning = { id: 'rs_lookup', type: 'reasoning' as const, summary: [] };
+    const finalResponse = finalizedResponse(mode === 'reasoning' ? [reasoning] : [], 'completed');
+    const { output: _output, ...withoutOutput } = finalResponse;
+    const fixtures = [
+      [{ type: 'response.output_item.added', output_index: 0, item: call }, { type: 'response.completed', response: finalizedResponse([call], 'completed') }],
+      [...(mode === 'reasoning' ? [{ type: 'response.output_item.done', output_index: 0, item: reasoning }] : []), { type: 'response.completed', response: mode === 'unknown-statistics' ? withoutOutput : finalResponse }],
+    ];
+    let requests = 0;
+    const provider = new OpenAIResponsesChatProvider({
+      apiKey: 'fixture-only', model: 'gpt-5',
+      clientFactory: () => new OpenAI({
+        apiKey: 'fixture-only', baseURL: 'https://example.test/v1', maxRetries: 0,
+        fetch: async () => {
+          const events = fixtures[requests++];
+          if (events === undefined) throw new Error('unexpected fixture retry');
+          return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join(''), { status: 200, headers: { 'content-type': 'text/event-stream' } });
+        },
+      }),
+    });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider { return provider; }
+    }
+    const ctx = createTestAgent(permissionModeServices('yolo'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    const execute = vi.fn(async () => ({ output: 'lookup-result' }));
+    try {
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
+      ctx.get(IAgentToolRegistryService).register({
+        name: 'Lookup', description: 'Fixture lookup', parameters: { type: 'object', properties: {}, additionalProperties: false },
+        resolveExecution: () => ({ approvalRule: 'Lookup', execute }),
+      });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Check; stay silent when nothing changed.' }] });
+      await ctx.untilTurnEnd();
+      expect(requests).toBe(2);
+      expect(execute).toHaveBeenCalledTimes(1);
+      const wire = ctx.allEvents.filter(entry => entry.type === '[wire]');
+      expect(wire.find(entry => entry.event === 'turn.ended')?.args).toMatchObject({ reason: 'completed' });
+      expect(wire.filter(entry => entry.event === 'turn.step.retrying')).toEqual([]);
+      const loopEvents = wire.filter(entry => entry.event === 'context.append_loop_event').map(entry => (entry.args as { event: Record<string, unknown> }).event);
+      expect(loopEvents).toContainEqual(expect.objectContaining({ type: 'tool.result', toolCallId: 'call_lookup', result: { output: 'lookup-result' } }));
+      expect(loopEvents.filter(event => event['type'] === 'step.end')).toMatchObject([
+        { finishReason: 'tool_use', providerFinishReason: 'completed' },
+        { finishReason: 'end_turn', providerFinishReason: 'completed', rawFinishReason: 'completed', usage: { inputOther: 3, output: 2 } },
+      ]);
+      expect(loopEvents.filter(event => event['type'] === 'content.part').some(event => (event['part'] as { type: string }).type === 'text')).toBe(false);
+      expect(wire.filter(entry => entry.event === 'usage.record')).toHaveLength(2);
+    } finally {
+      await ctx.dispose();
+    }
+  });
+});
+
+describe('completion authority from the provider protocol', () => {
+  it('claims normal authority only for a Messages message_stop with a normal stop reason', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithStop());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.completionAuthority).toBe('normal');
+  });
+
+  it('claims no authority when the stream ends without message_stop', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithoutUsage());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.finishReason).toBe('completed');
+    expect(stream.completionAuthority).toBeUndefined();
+  });
+
+  it('keeps the provider event code exact and exposes thinking facts without claiming a normal completion', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicThinkingOnlyStopStream());
+
+    const failure = await generate(provider, '', [], PROBE_HISTORY).catch((error: unknown) => error);
+
+    expect(readProviderEventErrorCode(failure)).toBe('antigravity_thinking_only');
+    expect(toErrorPayload(failure).details).toMatchObject({
+      errorSource: 'provider_event',
+      upstreamErrorCode: 'antigravity_thinking_only',
+    });
+    expect(safeProviderFailureDetails(toErrorPayload(failure).details)).toMatchObject({
+      errorSource: 'provider_event',
+      upstreamErrorCode: 'antigravity_thinking_only',
+    });
+    const facts = readGenerateFailureFacts(failure);
+    expect(facts?.message.content).toEqual([
+      { type: 'think', think: 'private reasoning', encrypted: 'sig-example' },
+    ]);
+    expect(facts?.message.toolCalls).toEqual([]);
+    expect(facts?.usage).toMatchObject({ inputOther: 11, output: 3 });
+  });
+
+  it('preserves signed thinking for an unnamed api_error without inventing a machine code', async () => {
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    client.messages.create = vi.fn().mockResolvedValue(anthropicSignedThinkUnnamedErrorStream());
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    await drain(stream);
+
+    expect(stream.finishReason).toBe('completed');
+    expect(stream.completionAuthority).toBeUndefined();
+  });
+
+  it.each([
+    { name: 'google STOP', authority: 'normal', build: () => new GoogleGenAIStreamedMessage({ candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }, false, undefined) },
+    { name: 'google SAFETY', authority: undefined, build: () => new GoogleGenAIStreamedMessage({ candidates: [{ content: { parts: [] }, finishReason: 'SAFETY' }] }, false, undefined) },
+    { name: 'google blocked prompt', authority: undefined, build: () => new GoogleGenAIStreamedMessage({ promptFeedback: { blockReason: 'SAFETY' }, candidates: [{ content: { parts: [] }, finishReason: 'STOP' }] }, false, undefined) },
+    { name: 'chat stop', authority: 'normal', build: () => new OpenAILegacyStreamedMessage({ id: 'c1', created: 0, model: 'example', object: 'chat.completion', choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: 'ok', refusal: null }, finish_reason: 'stop' }] }, false, new ReasoningKeyDialect(undefined), null) },
+    { name: 'chat length', authority: undefined, build: () => new OpenAILegacyStreamedMessage({ id: 'c2', created: 0, model: 'example', object: 'chat.completion', choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: 'ok', refusal: null }, finish_reason: 'length' }] }, false, new ReasoningKeyDialect(undefined), null) },
+    { name: 'chat refusal', authority: undefined, build: () => new OpenAILegacyStreamedMessage({ id: 'c3', created: 0, model: 'example', object: 'chat.completion', choices: [{ index: 0, logprobs: null, message: { role: 'assistant', content: '', refusal: 'no' }, finish_reason: 'stop' }] }, false, new ReasoningKeyDialect(undefined), null) },
+    { name: 'responses completed', authority: 'normal', build: () => new OpenAIResponsesStreamedMessage({ id: 'r1', status: 'completed', output: [] }, false) },
+    { name: 'responses incomplete', authority: undefined, build: () => new OpenAIResponsesStreamedMessage({ id: 'r2', status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' }, output: [] }, false) },
+  ])('derives authority from the real finish evidence ($name)', async ({ authority, build }) => {
+    const stream = build();
+    await drain(stream);
+    expect(stream.completionAuthority).toBe(authority);
+  });
+
+  it('cancels the SDK transport a stream owns instead of waiting for another chunk', async () => {
+    const sdkController = new AbortController();
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
+    const client = sdkClient(provider) as { messages: { create: unknown } };
+    const held = new Promise<void>(() => {});
+    client.messages.create = vi.fn().mockResolvedValue({
+      controller: sdkController,
+      async *[Symbol.asyncIterator]() {
+        yield { type: 'message_start', message: { id: 'msg_hold', usage: { input_tokens: 1, output_tokens: 0 } } };
+        await held;
+      },
+    });
+
+    const stream = await provider.generate('', [], PROBE_HISTORY);
+    void (async () => { for await (const _part of stream) void _part; })().catch(() => undefined);
+    await vi.waitFor(() => expect(client.messages.create).toHaveBeenCalledOnce());
+    expect(sdkController.signal.aborted).toBe(false);
+    await stream.cancel?.();
+    expect(sdkController.signal.aborted).toBe(true);
+  });
+
+  it('aborts a real Anthropic SDK request against a silent upstream and closes its socket', async () => {
+    let closed!: () => void;
+    const socketClosed = new Promise<void>((resolve) => { closed = resolve; });
+    const server = createServer((request, response) => {
+      request.resume();
+      response.on('close', closed);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_live', usage: { input_tokens: 5, output_tokens: 1 } } })}\n\n`);
+      response.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'still reasoning' } })}\n\n`);
+    });
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: `http://127.0.0.1:${address.port}` });
+    const controller = new AbortController();
+    const parts: string[] = [];
+    try {
+      const consuming = generate(provider, '', [], PROBE_HISTORY, {
+        onMessagePart: (part) => { parts.push(part.type); },
+      }, { signal: controller.signal });
+      const rejected = expect(consuming).rejects.toMatchObject({ name: 'AbortError' });
+      await vi.waitFor(() => expect(parts.length).toBeGreaterThan(0));
+      const abortedAt = performance.now();
+      controller.abort();
+      await rejected;
+      await Promise.race([socketClosed, new Promise((_resolve, reject) => setTimeout(() => reject(new Error('upstream socket stayed open')), 1000))]);
+      expect(performance.now() - abortedAt).toBeLessThanOrEqual(1000);
+      const settled = parts.length;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(parts.length).toBe(settled);
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+});
+
+
+describe('native Google machine failure contract', () => {
+  it.each(['thinking-only', 'grounding', 'safety', 'partial'] as const)('keeps the ErrorInfo reason and guards local %s facts', async mode => {
+    const code = 'antigravity_thinking_only';
+    const stream = new GoogleGenAIStreamedMessage((async function* () {
+      yield { candidates: [{ content: { parts: [{ thought: true, text: 'private Google thought', thoughtSignature: 'signature-fixture' }] },
+        groundingMetadata: mode === 'grounding' ? { webSearchQueries: ['fixture'] } : undefined,
+        safetyRatings: mode === 'safety' ? [{ blocked: true }] : undefined,
+        finishReason: mode === 'partial' ? 'MAX_TOKENS' : undefined,
+      }], usageMetadata: { promptTokenCount: 7, candidatesTokenCount: 2 } };
+      throw new GoogleApiError({ status: 502, message: JSON.stringify({ error: { code: 502, status: 'UNAVAILABLE', details: [
+        { '@type': 'type.googleapis.com/google.rpc.ErrorInfo', domain: 'sub2api.antigravity', reason: code },
+      ] } }) });
+    })(), true);
+    const provider: ChatProvider = { name: 'google-genai', modelName: 'example-model', thinkingEffort: null, generate: async () => stream };
+    const failure = await generate(provider, '', [], PROBE_HISTORY).catch((error: unknown) => error);
+    expect(toErrorPayload(failure).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code, statusCode: 502 });
+    const facts = readGenerateFailureFacts(failure);
+    if (mode === 'thinking-only') {
+      expect(facts?.message.content).toEqual([{ type: 'think', think: 'private Google thought', encrypted: 'signature-fixture' }]);
+      expect(facts?.usage).toMatchObject({ inputOther: 7, output: 2 });
+    } else expect(facts).toBeUndefined();
+  });
+});
+
+
+describe('user stop through the real agent and Anthropic SDK', () => {
+  it('settles the current response promptly and preserves detached child work', async () => {
+    let calls = 0;
+    let closed!: () => void;
+    const socketClosed = new Promise<void>(resolve => { closed = resolve; });
+    const server = createServer((request, response) => {
+      calls += 1;
+      request.resume();
+      response.on('close', closed);
+      response.writeHead(200, { 'content-type': 'text/event-stream' });
+      response.write(`event: message_start\ndata: ${JSON.stringify({ type: 'message_start', message: { id: 'msg_stop_fixture', usage: { input_tokens: 1, output_tokens: 1 } } })}\n\n`);
+      response.write(`event: content_block_delta\ndata: ${JSON.stringify({ type: 'content_block_delta', index: 0, delta: { type: 'thinking_delta', thinking: 'waiting for user stop' } })}\n\n`);
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('fixture did not bind');
+    const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}` });
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider { return provider; }
+    }
+    const ctx = createTestAgent(permissionModeServices('yolo'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    const child = ctx.get(ITaskService).defer();
+    const tasks = ctx.get(IAgentTaskService);
+    const tracked = tasks.track(child, { description: 'detached child fixture', detached: true,
+      toInfo: base => ({ ...base, kind: 'agent', agentId: 'child-fixture' }) });
+    try {
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Wait until stopped.' }] });
+      await vi.waitFor(() => expect(ctx.allEvents.some(entry => entry.event === 'thinking.delta')).toBe(true));
+      const start = performance.now();
+      await ctx.rpc.cancel({});
+      expect(performance.now() - start).toBeLessThanOrEqual(200);
+      await ctx.untilTurnEnd();
+      await socketClosed;
+      expect(performance.now() - start).toBeLessThanOrEqual(1000);
+      expect(ctx.allEvents.find(entry => entry.event === 'turn.ended')?.args).toMatchObject({ reason: 'cancelled' });
+      expect(calls).toBe(1);
+      expect(tasks.list().find(task => task.taskId === tracked.taskId)).toMatchObject({ status: 'running', detached: true });
+      expect(child.state).toBe('pending');
+      const partCount = ctx.allEvents.filter(entry => entry.event === 'thinking.delta').length;
+      await new Promise(resolve => setTimeout(resolve, 30));
+      expect(ctx.allEvents.filter(entry => entry.event === 'thinking.delta')).toHaveLength(partCount);
+      await ctx.rpc.cancel({});
+      expect(calls).toBe(1);
+    } finally {
+      child.resolve(undefined);
+      await ctx.dispose();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
   });
 });

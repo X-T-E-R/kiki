@@ -5,17 +5,23 @@ import { z } from 'zod';
 
 import type { UsageExportAdapter, UsageExportAdapterContext, UsageExportAdapterResult } from './adapter';
 
-export const VIBE_MAPPING_VERSION = 'vibe-kimi-bucket-v1';
+export const VIBE_MAPPING_VERSION = 'vibe-kiki-bucket-v1';
+export const VIBE_LEGACY_MAPPING_VERSION = 'vibe-kimi-bucket-v1';
 const count = z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER);
-export const vibeUsageBucketSchema = z.object({
-  source: z.literal('kimi-code'), model: z.string().min(1).max(100).regex(/^[A-Za-z0-9._:/-]+$/),
+const vibeBucketFields = {
+  model: z.string().min(1).max(100).regex(/^[A-Za-z0-9._:/-]+$/),
   project: z.literal('unknown'), hostname: z.string().regex(/^kiki-[a-z0-9-]{16,96}$/),
   bucketStart: z.string().datetime({ offset: false }), inputTokens: count, outputTokens: count,
   cachedInputTokens: count, reasoningOutputTokens: z.literal(0), cacheCreation5mTokens: z.literal(0),
   cacheCreation1hTokens: z.literal(0), totalTokens: count,
-}).strict().superRefine((v, ctx) => {
-  if (v.totalTokens !== v.inputTokens + v.outputTokens) ctx.addIssue({ code: 'custom', message: 'Invalid compatible token total' });
-});
+};
+function vibeBucketSchema<S extends 'kiki' | 'kimi-code'>(source: S) {
+  return z.object({ source: z.literal(source), ...vibeBucketFields }).strict().superRefine((value, ctx) => {
+    if (value.totalTokens !== value.inputTokens + value.outputTokens) ctx.addIssue({ code: 'custom', message: 'Invalid compatible token total' });
+  });
+}
+export const vibeUsageBucketSchema = vibeBucketSchema('kiki');
+const vibeLegacyUsageBucketSchema = vibeBucketSchema('kimi-code');
 export const vibeUsagePayloadSchema = z.object({ buckets: z.array(vibeUsageBucketSchema).max(1) }).strict();
 const vibeReceiptSchema = z.object({
   ingested: count, sessions: z.literal(0).optional(),
@@ -23,24 +29,32 @@ const vibeReceiptSchema = z.object({
   protected: z.object({ buckets: count }).strict().optional(),
 }).strict();
 
-export function mapVibeUsageBucket(input: UsageExportItem): z.infer<typeof vibeUsageBucketSchema> {
+export function vibeAcknowledgedMappingVersion(stored: string | null | undefined): string {
+  if (stored === undefined || stored === null || stored === '') return VIBE_LEGACY_MAPPING_VERSION;
+  return stored;
+}
+
+export function mapVibeUsageBucket(input: UsageExportItem, mappingVersion: string = VIBE_MAPPING_VERSION): z.infer<typeof vibeUsageBucketSchema> | z.infer<typeof vibeLegacyUsageBucketSchema> {
   const item = usageExportItemSchema.parse(input);
   if (item.operation !== 'replace' || item.bucket === null) throw new Error('vibe_delete_unsupported');
   const { bucket } = item;
   if (!bucket.quality.complete) throw new Error('vibe_incomplete_bucket');
   const inputTokens = bucket.tokens.input_other + bucket.tokens.input_cache_creation;
   const outputTokens = bucket.tokens.output;
-  return vibeUsageBucketSchema.parse({
-    source: 'kimi-code', model: bucket.model, project: 'unknown', hostname: `kiki-${item.stream_id}`,
+  const parsed = {
+    model: bucket.model, project: 'unknown' as const, hostname: `kiki-${item.stream_id}`,
     bucketStart: bucket.start_at, inputTokens, outputTokens, cachedInputTokens: bucket.tokens.input_cache_read,
-    reasoningOutputTokens: 0, cacheCreation5mTokens: 0, cacheCreation1hTokens: 0, totalTokens: inputTokens + outputTokens,
-  });
+    reasoningOutputTokens: 0 as const, cacheCreation5mTokens: 0 as const, cacheCreation1hTokens: 0 as const, totalTokens: inputTokens + outputTokens,
+  };
+  if (mappingVersion === VIBE_MAPPING_VERSION) return vibeUsageBucketSchema.parse({ ...parsed, source: 'kiki' });
+  if (mappingVersion === VIBE_LEGACY_MAPPING_VERSION) return vibeLegacyUsageBucketSchema.parse({ ...parsed, source: 'kimi-code' });
+  throw new Error('vibe_mapping_unknown');
 }
 
-export function requiresVibeRemoteRebuild(previous: UsageExportItem, next: UsageExportItem): boolean {
-  const before = mapVibeUsageBucket(previous);
-  const after = mapVibeUsageBucket(next);
-  const key = (bucket: z.infer<typeof vibeUsageBucketSchema>): string => JSON.stringify([bucket.source, bucket.model, bucket.project, bucket.hostname, bucket.bucketStart]);
+export function requiresVibeRemoteRebuild(previous: UsageExportItem, next: UsageExportItem, previousMappingVersion: string = VIBE_MAPPING_VERSION): boolean {
+  const before = mapVibeUsageBucket(previous, previousMappingVersion);
+  const after = mapVibeUsageBucket(next, VIBE_MAPPING_VERSION);
+  const key = (bucket: { source: string; model: string; project: string; hostname: string; bucketStart: string }): string => JSON.stringify([bucket.source, bucket.model, bucket.project, bucket.hostname, bucket.bucketStart]);
   return key(before) !== key(after) || after.inputTokens < before.inputTokens || after.cachedInputTokens < before.cachedInputTokens || after.outputTokens < before.outputTokens;
 }
 
@@ -93,7 +107,8 @@ export function createVibeUsageAdapter(): UsageExportAdapter {
         if (parsed.items.length !== 1) return { outcome: 'invalid', errorCategory: 'invalid_protocol' };
         const item = parsed.items[0]!;
         const previous = context.previousAcknowledged?.find(ack => ack.stream_id === item.stream_id && ack.bucket_id === item.bucket_id);
-        if (previous !== undefined && (item.operation === 'delete' || requiresVibeRemoteRebuild(previous, item))) return { outcome: 'remote-diverged', errorCategory: 'remote_diverged' };
+        const previousMapping = previous === undefined ? VIBE_MAPPING_VERSION : (context.acknowledgedMappingVersion?.(previous) ?? VIBE_MAPPING_VERSION);
+        if (previous !== undefined && (item.operation === 'delete' || requiresVibeRemoteRebuild(previous, item, previousMapping))) return { outcome: 'remote-diverged', errorCategory: 'remote_diverged' };
         payload = mapVibeUsageBatch(parsed);
       } catch (error) {
         return { outcome: 'invalid', errorCategory: error instanceof Error && error.message === 'cached_only_unsupported' ? 'cached_only_unsupported' : 'invalid_protocol' };

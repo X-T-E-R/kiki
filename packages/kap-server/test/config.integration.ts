@@ -4,8 +4,9 @@ import { join } from 'node:path';
 
 import { ConfigChanged, IConfigService, IEventService } from '@kiki/agent-core-v2';
 import { HooksConfigSchema } from '@kiki/agent-core-v2/features/externalHooks/configSection';
+import { DEFAULT_SESSION_TITLE_PROMPT } from '@kiki/agent-core-v2/session/sessionTitle/defaultPrompt';
 import { ExternalHooksRunnerService } from '@kiki/agent-core-v2/features/externalHooks/app/externalHooksRunnerService';
-import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema } from '@kiki/protocol';
+import { configResponseSchema as sharedConfigResponseSchema, patchConfigRequestSchema as sharedPatchConfigRequestSchema, hooksConfigSchema, listExecutorsResponseSchema } from '@kiki/protocol';
 import { IRequestGovernance } from '@kiki/agent-core-v2/app/requestGovernance/requestGovernance';
 import type { RequestAttempt } from '@kiki/agent-core-v2/kosong/model/requestAdmission';
 import { configResponseSchema, patchConfigRequestSchema, type ConfigResponse } from '../src/protocol/rest-config';
@@ -240,22 +241,80 @@ describe('server-v2 /api/config', () => {
 
   it('round trips computer preference and removes the override without changing permissions or installing MCP', async () => {
     await boot('default_permission_mode="manual"\n[search]\nenabled=false\n');
-    expect((await getConfig()).computer_control).toEqual({ usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request' });
+    const computerBase = { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' };
+    expect((await getConfig()).computer_control).toEqual(computerBase);
     const patch = { computer_control: { usage_preference: 'prefer' } };
     expect(sharedPatchConfigRequestSchema.parse(patch).computer_control).toEqual(patch.computer_control);
     const edited = await patchConfig(patch);
-    expect(edited.computer_control).toEqual({ usagePreference: 'prefer', usagePreferenceSource: 'home', appliesOn: 'next-model-request' });
+    expect(edited.computer_control).toEqual({ ...computerBase, usagePreference: 'prefer', usagePreferenceSource: 'home' });
     expect(sharedConfigResponseSchema.parse(edited).computer_control).toEqual(edited.computer_control);
     expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toContain('usage_preference = "prefer"');
     await server!.close(); server = undefined; await boot();
     expect((await getConfig()).computer_control).toEqual(edited.computer_control);
     const reset = await patchConfig({ computer_control: { usage_preference: null } });
-    expect(reset.computer_control).toEqual({ usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request' });
+    expect(reset.computer_control).toEqual(computerBase);
     expect(reset.permission).toEqual(edited.permission);
     expect(reset.default_permission_mode).toBe(edited.default_permission_mode);
     expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('usage_preference');
     expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
     expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { usage_preference: false } }).success).toBe(false);
+    expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { connection: '' } }).success).toBe(false);
+    expect(sharedPatchConfigRequestSchema.safeParse({ computer_control: { connection: 'kiki-windows-mcp' } }).success).toBe(true);
+    const selected = await patchConfig({ computer_control: { connection: 'kiki-windows-mcp' } });
+    expect(selected.computer_control).toEqual({ ...computerBase, connection: 'kiki-windows-mcp', connectionSource: 'home' });
+    expect(sharedConfigResponseSchema.parse(selected).computer_control).toEqual(selected.computer_control);
+    expect(selected.permission).toEqual(edited.permission);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).toContain('connection = "kiki-windows-mcp"');
+    expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
+    const clearedConnection = await patchConfig({ computer_control: { connection: null } });
+    expect(clearedConnection.computer_control).toEqual(computerBase);
+    expect(clearedConnection.permission).toEqual(edited.permission);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('connection');
+  });
+
+  it('saves browser allow-set and computer enabled through POST /config and hot configuration, without installing MCP', async () => {
+    vi.stubEnv('KIKI_EXPERIMENTAL_NATIVE_BROWSER', undefined);
+    vi.stubEnv('KIKI_EXPERIMENTAL_FLAG', undefined);
+    await boot('default_permission_mode="manual"\n');
+    const before = await getConfig();
+    expect(before.browser_control).toEqual({ enabled: true, enabledSource: 'default', allowedBrowsers: [], allowedBrowsersConfigured: false, allowedBrowsersSource: 'default' });
+    expect(before.computer_control).toMatchObject({ enabled: true, enabledSource: 'default', toolsApplyOn: 'next-step' });
+    const alpha = join(home as string, 'alpha-bridge.exe');
+    const beta = join(home as string, 'beta-bridge.exe');
+    for (const [id, runtimeRoot] of [['alpha', alpha], ['beta', beta]] as const) {
+      const saved = await authedFetch(server as RunningServer, base, `/api/browser/connections/${id}`, {
+        method: 'PUT', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ type: 'codex-extension', name: id, enabled: true, runtimeRoot, browserId: `pipe-${id}` }),
+      });
+      expect(saved.status).toBe(200);
+    }
+    const allowed = await patchConfig({ browser_control: { allowed_browsers: ['beta', 'alpha'] }, computer_control: { enabled: false } });
+    expect(allowed.browser_control).toMatchObject({ enabled: true, allowedBrowsers: ['beta', 'alpha'], allowedBrowsersConfigured: true, allowedBrowsersSource: 'home' });
+    expect(allowed.computer_control).toMatchObject({ enabled: false, enabledSource: 'home', toolsApplyOn: 'next-step', usagePreference: 'avoid' });
+    expect(allowed.permission).toEqual(before.permission);
+    expect(allowed.default_permission_mode).toBe('manual');
+    const toml = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(toml).toContain('allowed_browsers');
+    expect(toml).toContain('enabled = false');
+    expect(await readFile(join(home as string, 'mcp.json'), 'utf-8').catch(() => undefined)).toBeUndefined();
+    const cleared = await patchConfig({ browser_control: { allowed_browsers: [] }, computer_control: { enabled: null } });
+    expect(cleared.browser_control).toMatchObject({ allowedBrowsers: [], allowedBrowsersConfigured: true });
+    expect(cleared.computer_control).toMatchObject({ enabled: true, enabledSource: 'default' });
+    const off = await patchConfig({ browser_control: { enabled: false } });
+    expect(off.browser_control).toMatchObject({ enabled: false, enabledSource: 'home' });
+    expect(off.experimental).toMatchObject({ native_browser: false });
+    await server!.close(); await boot();
+    expect((await getConfig()).browser_control).toMatchObject({ enabled: false, enabledSource: 'home', allowedBrowsers: [], allowedBrowsersConfigured: true });
+    vi.stubEnv('KIKI_EXPERIMENTAL_NATIVE_BROWSER', 'false');
+    await server!.close(); await boot();
+    const forced = await authedFetch(server!, base, '/api/config', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ browser_control: { enabled: true } }),
+    });
+    const forcedBody = await forced.json() as Envelope<ConfigResponse>;
+    expect(forcedBody.code).not.toBe(0);
+    expect(forcedBody.msg).toContain('KIKI_EXPERIMENTAL_NATIVE_BROWSER');
+    expect((await getConfig()).browser_control?.enabled).toBe(false);
   });
 
   it('round trips question frequency guard through global REST and cold config reload', async () => {
@@ -469,20 +528,37 @@ timeout = 600
     expect((await getConfig()).prompt).toEqual({});
   });
 
-  it('round trips the session_title model pin through its replace-domain', async () => {
-    await boot();
-    const pinned = await patchConfig({ session_title: { model: 'kimi-for-coding' }, replace_domains: ['session_title'] });
-    expect(pinned.session_title).toEqual({ model: 'kimi-for-coding' });
-    expect((await getConfig()).session_title).toEqual({ model: 'kimi-for-coding' });
-    const moments = { model: 'kimi-for-coding', triggers: ['first_user_message', 'context_compacted'] };
-    for (const schema of [sharedConfigResponseSchema, sharedPatchConfigRequestSchema]) expect(schema.parse({ session_title: moments }).session_title).toEqual(moments);
-    expect((await patchConfig({ session_title: moments, replace_domains: ['session_title'] })).session_title).toEqual(moments);
-    expect((await getConfig()).session_title).toEqual(moments);
-    expect((await patchConfig({ session_title: { model: 'kimi-for-coding', triggers: [] }, replace_domains: ['session_title'] })).session_title).toEqual({ model: 'kimi-for-coding', triggers: [] });
-    expect((await getConfig()).session_title?.triggers).toEqual([]);
-    const cleared = await patchConfig({ session_title: {}, replace_domains: ['session_title'] });
-    expect(cleared.session_title?.model).toBeUndefined();
-    expect((await getConfig()).session_title?.model).toBeUndefined();
+  it('round trips session_title prompt overrides, preserves sibling settings and reads the same default after cold reload', async () => {
+    await boot('[search]\nenabled=false\n');
+    const defaults = { default_prompt: DEFAULT_SESSION_TITLE_PROMPT, prompt_source: 'default' };
+    await patchConfig({ agent_executor_display: { externals_visible: false } });
+    expect((await getConfig()).session_title).toEqual(defaults);
+    const moments = { model: 'title-model', triggers: [] };
+    expect((await patchConfig({ session_title: moments })).session_title).toEqual({ ...moments, ...defaults });
+    const prompt = '  Name this conversation\n保留换行、{content}、${name}\n  ';
+    const custom = { ...moments, prompt, default_prompt: DEFAULT_SESSION_TITLE_PROMPT, prompt_source: 'custom' };
+    for (const schema of [sharedPatchConfigRequestSchema, patchConfigRequestSchema]) {
+      expect(schema.parse({ session_title: { prompt } }).session_title).toEqual({ prompt });
+      expect(schema.safeParse({ session_title: { default_prompt: 'not editable' } }).success).toBe(false);
+    }
+    expect((await patchConfig({ session_title: { prompt } })).session_title).toEqual(custom);
+    expect(sharedConfigResponseSchema.parse(await getConfig()).session_title).toEqual(custom);
+    expect((await patchConfig({ session_title: { model: 'another-title-model' } })).session_title).toEqual({ ...custom, model: 'another-title-model' });
+    expect((await patchConfig({ session_title: { triggers: ['context_compacted'] } })).session_title?.prompt).toBe(prompt);
+    expect((await patchConfig({ session_title: { model: null, triggers: [] } })).session_title).toEqual({ ...custom, model: undefined });
+    const text = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(text).toContain('prompt ='); expect(text).not.toContain('default_prompt'); expect(text).not.toContain('prompt_source');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).session_title).toEqual({ ...custom, model: undefined });
+    expect((await patchConfig({ session_title: { prompt: null } })).session_title).toEqual({ triggers: [], ...defaults });
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('prompt =');
+    await patchConfig({ session_title: { prompt, model: 'title-model' } });
+    expect((await patchConfig({ session_title: { prompt: ' \n\t ' } })).session_title).toEqual({ model: 'title-model', triggers: [], ...defaults });
+    await server!.close(); server = undefined; await boot();
+    const restored = await getConfig();
+    expect(restored.session_title).toEqual({ model: 'title-model', triggers: [], ...defaults });
+    expect(restored.agent_executor_display).toEqual({ externalsVisible: false });
+    expect(restored.raw?.['agent_executor_display']).toEqual({ externals_visible: false });
   });
 
   it('round trips board storage modes and subagent limits without retaining a stale fixed path', async () => {
@@ -680,6 +756,46 @@ timeout = 600
     expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain(
       '[request_identity',
     );
+  });
+
+  it('saves system transport sections and rejects an incomplete compression table', async () => {
+    await boot();
+    expect(await getConfig()).not.toHaveProperty('request_compression');
+    expect(await getConfig()).not.toHaveProperty('responses_web_socket');
+    const targets = ['https://b.example.test/v1', 'https://a.example.test/v1'];
+    const saved = await patchConfig({
+      request_compression: { encoding: 'zstd', targets, min_bytes: 1024, dictionary: true },
+      responses_web_socket: { targets },
+    });
+    expect(saved.request_compression).toEqual({ encoding: 'zstd', targets, min_bytes: 1024, dictionary: true });
+    expect(saved.responses_web_socket).toEqual({ targets });
+    const omitted = await patchConfig({ builtin_product_skills: true });
+    expect(omitted.request_compression).toEqual(saved.request_compression);
+    expect(omitted.responses_web_socket).toEqual(saved.responses_web_socket);
+    const off = await patchConfig({
+      request_compression: { encoding: 'off' },
+      responses_web_socket: { off: true },
+    });
+    expect(off.request_compression).toEqual({ encoding: 'off' });
+    expect(off.responses_web_socket).toEqual({ off: true });
+    const persisted = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(persisted).toContain('encoding = "off"');
+    expect(persisted).toContain('off = true');
+    const rejected = await authedFetch(server as RunningServer, base, '/api/config', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ request_compression: { min_bytes: 0 }, yolo: true }),
+    });
+    const failure = (await rejected.json()) as Envelope<null>;
+    expect(failure.code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(failure.msg).toContain('request_compression needs encoding and targets');
+    expect((await getConfig()).request_compression).toEqual({ encoding: 'off' });
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('yolo');
+    const cleared = await patchConfig({ request_compression: null, responses_web_socket: null });
+    expect(cleared).not.toHaveProperty('request_compression');
+    expect(cleared).not.toHaveProperty('responses_web_socket');
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('[request_compression');
+    expect(await readFile(join(home as string, 'config.toml'), 'utf-8')).not.toContain('[responses_web_socket');
   });
 
   it('rejects empty authored global request_identity layers', async () => {
@@ -1120,6 +1236,39 @@ timeout = 600
     expect(await readFile(configPath, 'utf-8')).toBe(before);
   });
 
+  it('round-trips model and provider retry selectors through REST and TOML', async () => {
+    await boot('[retry]\nmax_attempts = 5\n');
+
+    const patched = await patchConfig({
+      retry: {
+        max_attempts: 5,
+        policies: [{
+          match: '^provider\\.rate_limit$',
+          models: ['gemini-4-argon'],
+          providers: ['google-native'],
+          max_attempts: 20,
+          backoff: 15_000,
+        }],
+      },
+    });
+
+    expect(patched.retry).toEqual({
+      maxAttempts: 5,
+      policies: [{
+        match: '^provider\\.rate_limit$',
+        models: ['gemini-4-argon'],
+        providers: ['google-native'],
+        maxAttempts: 20,
+        backoff: 15_000,
+        retry: true,
+      }],
+    });
+    const saved = await readFile(join(home as string, 'config.toml'), 'utf-8');
+    expect(saved).toContain('models = [ "gemini-4-argon" ]');
+    expect(saved).toContain('providers = [ "google-native" ]');
+    expect((await getConfig()).retry).toEqual(patched.retry);
+  });
+
   it('rejects unknown retry keys without persisting them', async () => {
     await boot('[retry]\nmax_attempts = 2\n');
     const configPath = join(home as string, 'config.toml');
@@ -1136,6 +1285,113 @@ timeout = 600
     expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
     expect(await readFile(configPath, 'utf-8')).toBe(before);
     expect((await getConfig()).retry).toEqual({ maxAttempts: 2 });
+  });
+
+  it('stores a Kiki MCP injection default without rewriting the other executor defaults', async () => {
+    await boot(`[agent_executor_overrides.agy-cli.defaults]
+model_alias = "fixture-model"
+thinking_effort = "high"
+permission_mode = "manual"
+kiki_context = ["memory"]
+allow_kiki_subagents = true
+[agent_executor_overrides.agy-cli.defaults.executor_prompt]
+include = ["memory_snapshot"]
+`);
+    const patched = await patchConfig({ agent_executor_overrides: { 'agy-cli': { defaults: { inject_kiki_mcp: false } } } });
+    expect(patched.raw?.['agent_executor_overrides']).toEqual({
+      'agy-cli': { defaults: {
+        model_alias: 'fixture-model', thinking_effort: 'high', permission_mode: 'manual',
+        kiki_context: ['memory'], allow_kiki_subagents: true, inject_kiki_mcp: false,
+        executor_prompt: { include: ['memory_snapshot'] },
+      } },
+    });
+    const listed = await authedFetch(server as RunningServer, base, '/api/executors');
+    expect(listed.status).toBe(200);
+    const executors = listExecutorsResponseSchema.parse(((await listed.json()) as Envelope<unknown>).data);
+    const item = (id: string) => executors.items.find((entry) => entry.id === id);
+    expect(item('agy-cli')?.kiki_mcp).toMatchObject({
+      effective: false, source: 'harness-settings', applies: 'next_binding',
+      precedence: ['session', 'profile', 'harness-settings', 'harness-default'],
+      support: { state: 'supported' },
+    });
+    expect(item('agy-cli')?.kiki_mcp?.support.fact).toContain('supports_mcp is true');
+    expect(item('agy-cli')?.kiki_mcp?.support.fact).not.toMatch(/token|api[_-]?key|secret|bearer/i);
+    expect(item('openclaw-acp')?.kiki_mcp).toMatchObject({ effective: null, source: 'harness-default', support: { state: 'unsupported' } });
+    expect(item('openclaw-acp')?.kiki_mcp?.support.fact).toContain('mcpServers');
+    expect(item('claude-acp')?.kiki_mcp?.support).toMatchObject({ state: 'supported' });
+    expect(item('claude-acp')?.kiki_mcp?.support.fact).toContain('supports_mcp is true');
+    expect(item('gemini-acp')?.kiki_mcp?.support.state).toBe('undeclared');
+    expect(item('codex-app-server')?.kiki_mcp?.support).toMatchObject({ state: 'supported' });
+    const cleared = await patchConfig({ agent_executor_overrides: { 'agy-cli': { defaults: { inject_kiki_mcp: null } } } });
+    expect(cleared.raw?.['agent_executor_overrides']).toEqual({
+      'agy-cli': { defaults: {
+        model_alias: 'fixture-model', thinking_effort: 'high', permission_mode: 'manual',
+        kiki_context: ['memory'], allow_kiki_subagents: true,
+        executor_prompt: { include: ['memory_snapshot'] },
+      } },
+    });
+    const again = listExecutorsResponseSchema.parse(((await (await authedFetch(server as RunningServer, base, '/api/executors')).json()) as Envelope<unknown>).data);
+    expect(again.items.find((entry) => entry.id === 'agy-cli')?.kiki_mcp).toMatchObject({
+      effective: null, source: 'harness-default', support: { state: 'supported' },
+    });
+  });
+
+  it('persists display-only executor preferences through HTTP and cold restart without changing execution', async () => {
+    await boot('[search]\nenabled=false\n[agent_executors.example_custom]\nprotocol="acp-v1"\ncommand="example-custom"\n[agent_executor_overrides.claude-acp]\nbin_path="example-adapter"\nargs=["--example"]\n[agent_executor_overrides.claude-acp.defaults]\nmodel_alias="example-model"\n[unrelated]\nkeep="example-value"\n');
+    const { IAgentExecutorRegistry } = await import('@kiki/agent-core-v2/app/agentExecutor/agentExecutor');
+    const { executorProcessEnv, executorLaunchArgs } = await import('@kiki/agent-core-v2/app/agentExecutor/executorOverrides');
+    const registry = server!.core.accessor.get(IAgentExecutorRegistry);
+    const descriptor = registry.get('claude-acp')!;
+    const ids = registry.list().map((entry) => entry.id);
+    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: false }, 'not-configured': { show_in_profile_list: true } } });
+    await patchConfig({ agent_executor_display: { externals_visible: false } });
+    await patchConfig({ agent_executor_display: { discovery_initialized: true } });
+    const edited = await getConfig();
+    expect(edited.raw?.['agent_executor_overrides']).toEqual({
+      'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' }, show_in_profile_list: false },
+      'not-configured': { show_in_profile_list: true },
+    });
+    expect(edited.raw?.['agent_executor_display']).toEqual({ externals_visible: false, discovery_initialized: true });
+    expect(edited.raw?.['agent_executors']).toEqual({ example_custom: { protocol: 'acp-v1', command: 'example-custom', args: [] } });
+    expect(edited.agent_executor_display).toEqual({ externalsVisible: false, discoveryInitialized: true });
+    expect(sharedConfigResponseSchema.parse(edited).raw).toEqual(edited.raw);
+    expect(registry.list().map((entry) => entry.id)).toEqual(ids);
+    expect(registry.get('not-configured')).toBeUndefined();
+    expect(registry.get('agent_executor_display')).toBeUndefined();
+    expect(registry.get('claude-acp')).toEqual(descriptor);
+    expect(executorProcessEnv(registry.get('claude-acp')!)).toEqual(executorProcessEnv(descriptor));
+    expect(executorLaunchArgs(registry.get('claude-acp')!, ['stdio'])).toEqual(executorLaunchArgs(descriptor, ['stdio']));
+    const path = join(home as string, 'config.toml');
+    const saved = await readFile(path, 'utf-8');
+    expect(saved).toContain('show_in_profile_list = false');
+    expect(saved).toContain('externals_visible = false');
+    expect(saved).toContain('discovery_initialized = true');
+    expect(saved).not.toContain('showInProfileList');
+    for (const patch of [
+      { agent_executor_overrides: { 'claude-acp': { show_in_profile_list: 'no' } } },
+      { agent_executor_overrides: { _external_engines: { externals_visible: false } } },
+      { agent_executor_overrides: { 'claude-acp': { unexpected_option: true } } },
+      { agent_executor_display: { externals_visible: 'no' } },
+      { agent_executor_display: { unexpected_option: true } },
+    ]) {
+      const response = await authedFetch(server!, base, '/api/config', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(patch) });
+      expect((await response.json() as Envelope<unknown>).code).toBe(ErrorCode.VALIDATION_FAILED);
+      expect(await readFile(path, 'utf-8')).toBe(saved);
+    }
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).raw).toEqual(edited.raw);
+    expect(server!.core.accessor.get(IAgentExecutorRegistry).get('claude-acp')).toEqual(descriptor);
+    await patchConfig({ agent_executor_overrides: { 'claude-acp': { show_in_profile_list: null }, 'not-configured': { show_in_profile_list: null } }, agent_executor_display: { externals_visible: null, discovery_initialized: null } });
+    const cleared = await getConfig();
+    expect(cleared.raw?.['agent_executor_display']).toEqual({});
+    expect(cleared.agent_executor_display).toEqual({});
+    expect(cleared.raw?.['agent_executor_overrides']).toEqual({ 'claude-acp': { bin_path: 'example-adapter', args: ['--example'], defaults: { model_alias: 'example-model' } }, 'not-configured': {} });
+    expect(await readFile(path, 'utf-8')).toContain('keep="example-value"');
+    expect(await readFile(path, 'utf-8')).not.toContain('show_in_profile_list');
+    expect(await readFile(path, 'utf-8')).not.toContain('externals_visible');
+    expect(await readFile(path, 'utf-8')).not.toContain('discovery_initialized');
+    await server!.close(); server = undefined; await boot();
+    expect((await getConfig()).raw).toEqual(cleared.raw);
   });
 
   it('saves executor overrides and preserves executor ids and environment variable names', async () => {
@@ -1187,6 +1443,25 @@ timeout = 600
       const body = (await res.json()) as Envelope<null>;
       expect(body.code).toBe(ErrorCode.VALIDATION_FAILED);
     }
+  });
+
+  it.each([
+    ['', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: false }],
+    ['[cron]\n', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: false }],
+    ['[cron]\nmanualTick = true\n', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: true }],
+    ['[cron]\nmanual_tick = true\n', { debug: false, noJitter: false, noStale: false, disabled: false, manualTick: true }],
+    ['[cron]\ndebug = true\nno_jitter = false\nno_stale = true\ndisabled = false\nmanual_tick = true\nclock = "system"\npoll_interval_ms = 0\n', { debug: true, noJitter: false, noStale: true, disabled: false, manualTick: true, clock: 'system', pollIntervalMs: 0 }],
+    ['[cron]\ndebug = false\nno_jitter = true\nno_stale = false\ndisabled = true\nmanual_tick = false\n', { debug: false, noJitter: true, noStale: false, disabled: true, manualTick: false }],
+  ])('reads cron defaults and explicit settings through GET without rewriting %j', async (toml, expected) => {
+    for (const key of ['KIKI_CRON_DEBUG', 'KIKI_CRON_NO_JITTER', 'KIKI_CRON_NO_STALE', 'KIKI_DISABLE_CRON', 'KIKI_CRON_MANUAL_TICK', 'KIKI_CRON_CLOCK', 'KIKI_CRON_POLL_INTERVAL_MS']) {
+      vi.stubEnv(key, undefined);
+    }
+    await boot(toml);
+    const config = (server as RunningServer).core.accessor.get(IConfigService);
+    expect(config.get('cron')).toEqual(expected);
+    expect(config.diagnostics().filter((diagnostic) => diagnostic.domain === 'cron')).toEqual([]);
+    expect((await getConfig()).cron).toEqual(expected);
+    expect(await readFile(join(home as string, 'config.toml'), 'utf8')).toBe(toml);
   });
 
   it('keeps cron operational settings non-writable through POST /config', async () => {
@@ -1385,12 +1660,25 @@ timeout = 600
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: space, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
     expect((await getConfig()).origins?.['default_model']?.['']).toBe('base');
-    await writeFile(join(root, 'config.toml'), 'default_model = "base-second"\n');
-    await expect.poll(async () => (await getConfig()).default_model).toBe('base-second');
-    await patchConfig({ default_model: 'home-model' });
-    expect((await getConfig()).origins?.['default_model']?.['']).toBe('home');
-    expect(await readFile(join(root, 'config.toml'), 'utf8')).toContain('base-second');
-    expect(await readFile(join(space, 'config.toml'), 'utf8')).toContain('home-model');
+    const config = server.core.accessor.get(IConfigService);
+    let finishReload!: () => void;
+    const reloaded = new Promise<void>((resolve) => { finishReload = resolve; });
+    const subscription = config.onDidChangeConfiguration((event) => {
+      if (event.domain === 'defaultModel' && event.source === 'reload' && config.get('defaultModel') === 'base-second') {
+        finishReload();
+      }
+    });
+    try {
+      await writeFile(join(root, 'config.toml'), 'default_model = "base-second"\n');
+      await reloaded;
+      expect((await getConfig()).default_model).toBe('base-second');
+      await patchConfig({ default_model: 'home-model' });
+      expect((await getConfig()).origins?.['default_model']?.['']).toBe('home');
+      expect(await readFile(join(root, 'config.toml'), 'utf8')).toContain('base-second');
+      expect(await readFile(join(space, 'config.toml'), 'utf8')).toContain('home-model');
+    } finally {
+      subscription.dispose();
+    }
   });
 
   it('returns the last acknowledged rapid config write on GET and disk', async () => {

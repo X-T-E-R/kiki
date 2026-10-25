@@ -67,7 +67,13 @@ async function knownHostsPaths(alias: string, args: readonly string[], value: st
   const candidates = new Set<string>(['~/.ssh/known_hosts ~/.ssh/known_hosts2']);
   const files = new Set([...diagnostics.matchAll(/^debug\d+: Reading configuration data (.+)\r?$/gm)].map((match) => match[1]!.replace(/\r$/, '')));
   for (const file of files) {
-    const text = await readFile(process.platform === 'win32' ? translateShellDrivePath(file) : file, 'utf8');
+    let text: string;
+    try {
+      text = await readFile(process.platform === 'win32' ? translateShellDrivePath(file) : file, 'utf8');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
     for (const line of text.split(/\r?\n/)) {
       const match = /^\s*UserKnownHostsFile(?:\s*=\s*|\s+)(.+)$/i.exec(line);
       if (match !== null) candidates.add(match[1]!);

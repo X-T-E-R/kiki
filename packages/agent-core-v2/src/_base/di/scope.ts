@@ -1,3 +1,4 @@
+import { onUnexpectedError } from '../errors/unexpectedError';
 import { BugIndicatingError } from '../errors/errors';
 import { SyncDescriptor } from './descriptors';
 import { ScopeActivation, type ProvideAllEntry } from './instantiation';
@@ -5,6 +6,7 @@ import type { ServiceIdentifier, ServicesAccessor, IInstantiationService } from 
 import { InstantiationService } from './instantiationService';
 import { DisposableStore, type IDisposable } from './lifecycle';
 import { Ledger, type LedgerEntry } from '../lifecycle/ledger';
+import { isPromiseLike } from '../lifecycle/disposer';
 import { ServiceCollection } from './serviceCollection';
 import { watchScopeUnits } from './scopeUnits';
 
@@ -113,7 +115,7 @@ export interface IScopeHandle<K extends ScopeKind = ScopeKind> {
   readonly id: string;
   readonly kind: K;
   readonly accessor: ServicesAccessor;
-  dispose(): void;
+  dispose(): void | Promise<void>;
 }
 
 export type IAppScopeHandle = IScopeHandle<'app'>;
@@ -161,11 +163,12 @@ export function createScopedChildHandle(
   const child = parent.createChild(collection);
   (child as InstantiationService).debugLabel = id;
   try {
-    watchScopeUnits(child as InstantiationService, kind);
     options.configureContainer?.(child as InstantiationService);
+    watchScopeUnits(child as InstantiationService, kind);
     provideScopeServices(child, kind, collection);
   } catch (error) {
-    child.dispose();
+    const result = child.dispose();
+    if (isPromiseLike(result)) result.catch(onUnexpectedError);
     throw error;
   }
   const accessor: ServicesAccessor = {
@@ -191,12 +194,8 @@ export class Scope implements IDisposable {
     private readonly _parent?: Scope,
   ) {
     this._ledger = new Ledger(`scope:${id}`);
-    this._ledger.register(() => {
-      this.instantiation.dispose();
-    }, 'instantiation');
-    this._ledger.register(() => {
-      this._store.dispose();
-    }, 'store');
+    this._ledger.register(() => this.instantiation.dispose(), 'instantiation');
+    this._ledger.register(() => this._store.dispose(), 'store');
     this.accessor = {
       get: <T>(serviceId: ServiceIdentifier<T>): T =>
         instantiation.invokeFunction((a) => a.get(serviceId)),
@@ -213,11 +212,12 @@ export class Scope implements IDisposable {
     const instantiation = new InstantiationService(collection, true);
     instantiation.debugLabel = options.id ?? 'app';
     try {
-      watchScopeUnits(instantiation, kind);
       options.configureContainer?.(instantiation);
+      watchScopeUnits(instantiation, kind);
       provideScopeServices(instantiation, kind, collection);
     } catch (error) {
-      instantiation.dispose();
+      const result = instantiation.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       throw error;
     }
     return new Scope(options.id ?? 'app', kind, instantiation);
@@ -247,18 +247,17 @@ export class Scope implements IDisposable {
     const childInstantiation = this.instantiation.createChild(collection);
     (childInstantiation as InstantiationService).debugLabel = id;
     try {
-      watchScopeUnits(childInstantiation as InstantiationService, kind);
       options.configureContainer?.(childInstantiation as InstantiationService);
+      watchScopeUnits(childInstantiation as InstantiationService, kind);
       provideScopeServices(childInstantiation, kind, collection);
     } catch (error) {
-      childInstantiation.dispose();
+      const result = childInstantiation.dispose();
+      if (isPromiseLike(result)) result.catch(onUnexpectedError);
       throw error;
     }
     const child = new Scope(id, kind, childInstantiation, this);
     this.children.set(id, child);
-    child._ledgerEntry = this._ledger.register(() => {
-      child.dispose();
-    }, `scope:${id}`);
+    child._ledgerEntry = this._ledger.register(() => child.dispose(), `scope:${id}`);
     return child;
   }
 
@@ -266,22 +265,24 @@ export class Scope implements IDisposable {
     return { id: this.id, kind: this.kind, accessor: this.accessor, dispose: () => this.dispose() };
   }
 
-  dispose(): void {
-    if (this._disposed) {
-      return;
-    }
-    this._disposed = true;
+  private _disposeResult: void | Promise<void> = undefined;
 
-    this._ledgerEntry?.release();
-    this._ledgerEntry = undefined;
-    try {
-      void this._ledger.teardown('scope-close');
-    } finally {
+  dispose(): void | Promise<void> {
+    if (this._disposed) return this._disposeResult;
+    this._disposed = true;
+    const detach = (): void => {
+      this._ledgerEntry?.release();
+      this._ledgerEntry = undefined;
       this.children.clear();
-      if (this._parent) {
-        this._parent.children.delete(this.id);
-      }
+      this._parent?.children.delete(this.id);
+    };
+    this._disposeResult = this._ledger.teardown('scope-close');
+    if (isPromiseLike(this._disposeResult)) {
+      this._disposeResult = this._disposeResult.then(detach, (error) => { detach(); throw error; });
+    } else {
+      detach();
     }
+    return this._disposeResult;
   }
 }
 

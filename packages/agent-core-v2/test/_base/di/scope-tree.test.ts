@@ -58,15 +58,34 @@ describe('Scope tree', () => {
     return { app, session, agent };
   }
 
-  it('each scope resolves its own layer service', () => {
+  it('waits for the complete ledger of an independently disposing child scope', async () => {
+    const { app, session } = buildTree();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const events: string[] = [];
+    session.ledger.register(async () => { events.push('start'); await gate; events.push('end'); }, 'finalizer');
+    const childClose = session.dispose();
+    expect(session.dispose()).toBe(childClose);
+    let settled = false;
+    const parentClose = Promise.resolve(app.dispose()).then(() => { settled = true; });
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    const observed = { settled, events: [...events] };
+    release();
+    await Promise.all([childClose, parentClose]);
+    expect(observed).toEqual({ settled: false, events: ['start'] });
+    expect(events).toEqual(['start', 'end']);
+    expect(app.children.size).toBe(0);
+  });
+
+  it('each scope resolves its own layer service', async () => {
     const { app, session, agent } = buildTree();
     expect(app.accessor.get(IAppSvc).tag).toBe('app');
     expect(session.accessor.get(ISessionSvc).tag).toBe('session');
     expect(agent.accessor.get(IAgentSvc).tag).toBe('agent');
-    app.dispose();
+    await app.dispose();
   });
 
-  it('child resolves ancestor services via createChild fallback', () => {
+  it('child resolves ancestor services via createChild fallback', async () => {
     const { app, session, agent } = buildTree();
     const sessionSvc = session.accessor.get(ISessionSvc);
     const agentSvc = agent.accessor.get(IAgentSvc);
@@ -74,39 +93,39 @@ describe('Scope tree', () => {
     expect(agentSvc.session.tag).toBe('session');
     expect(agentSvc.app.tag).toBe('app');
     expect(agentSvc.app).toBe(app.accessor.get(IAppSvc));
-    app.dispose();
+    await app.dispose();
   });
 
-  it('parent cannot resolve a child-layer service', () => {
+  it('parent cannot resolve a child-layer service', async () => {
     const { app, session } = buildTree();
     expect(() => app.accessor.get(ISessionSvc)).toThrow();
     expect(() => session.accessor.get(IAgentSvc)).toThrow();
-    app.dispose();
+    await app.dispose();
   });
 
-  it('children map tracks created child scopes', () => {
+  it('children map tracks created child scopes', async () => {
     const { app, session, agent } = buildTree();
     expect(app.children.get('s1')).toBe(session);
     expect(session.children.get('main')).toBe(agent);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('rejects a child whose kind is not strictly greater', () => {
+  it('rejects a child whose kind is not strictly greater', async () => {
     const app = createAppScope();
     const session = app.createChild(LifecycleScope.Session, 's1');
     expect(() => session.createChild(LifecycleScope.Session, 's2')).toThrow(/greater/);
     expect(() => session.createChild(LifecycleScope.App, 'c2')).toThrow(/greater/);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('rejects duplicate child ids within a parent', () => {
+  it('rejects duplicate child ids within a parent', async () => {
     const app = createAppScope();
     app.createChild(LifecycleScope.Session, 's1');
     expect(() => app.createChild(LifecycleScope.Session, 's1')).toThrow(/already has a child/);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('dispose tears down children before the parent (C→B→A)', () => {
+  it('dispose tears down children before the parent (C→B→A)', async () => {
     const events: string[] = [];
     interface ITagged extends IDisposable {
       tag: string;
@@ -137,29 +156,29 @@ describe('Scope tree', () => {
     app.accessor.get(IA);
     session.accessor.get(IB);
     agent.accessor.get(IC);
-    app.dispose();
+    await app.dispose();
     expect(events).toEqual(['C', 'B', 'A']);
   });
 
-  it('disposing a child removes it from the parent children map', () => {
+  it('disposing a child removes it from the parent children map', async () => {
     const { app, session, agent } = buildTree();
-    agent.dispose();
+    await agent.dispose();
     expect(session.children.has('main')).toBe(false);
-    session.dispose();
+    await session.dispose();
     expect(app.children.has('s1')).toBe(false);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('toHandle exposes id/kind/accessor for parent-domain reach-in', () => {
+  it('toHandle exposes id/kind/accessor for parent-domain reach-in', async () => {
     const { app, session } = buildTree();
     const handle = session.toHandle();
     expect(handle.id).toBe('s1');
     expect(handle.kind).toBe(LifecycleScope.Session);
     expect(handle.accessor.get(ISessionSvc).tag).toBe('session');
-    app.dispose();
+    await app.dispose();
   });
 
-  it('seeds inject a context token resolvable from that scope', () => {
+  it('seeds inject a context token resolvable from that scope', async () => {
     interface ISessionContext {
       sessionId: string;
     }
@@ -172,18 +191,18 @@ describe('Scope tree', () => {
     });
     expect(session.accessor.get(ISessionContext).sessionId).toBe('s1');
     expect(() => app.accessor.get(ISessionContext)).toThrow();
-    app.dispose();
+    await app.dispose();
   });
 
-  it('use-after-dispose throws on createChild', () => {
+  it('use-after-dispose throws on createChild', async () => {
     const app = createAppScope();
     const session = app.createChild(LifecycleScope.Session, 's1');
-    session.dispose();
+    await session.dispose();
     expect(() => session.createChild(LifecycleScope.Agent, 'a1')).toThrow(/disposed/);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('does not construct OnDemand services until they are resolved', () => {
+  it('does not construct OnDemand services until they are resolved', async () => {
     let constructions = 0;
     interface ITagged {
       tag: string;
@@ -208,10 +227,10 @@ describe('Scope tree', () => {
     expect(constructions).toBe(0);
     expect(session.accessor.get(ITagged)).toBeInstanceOf(Tagged);
     expect(constructions).toBe(1);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('constructs OnScopeCreated services and their dependencies in dependency order', () => {
+  it('constructs OnScopeCreated services and their dependencies in dependency order', async () => {
     const events: string[] = [];
     interface ITagged {
       tag: string;
@@ -242,10 +261,10 @@ describe('Scope tree', () => {
     const app = createAppScope();
     app.createChild(LifecycleScope.Session, 's1');
     expect(events).toEqual(['dep', 'top']);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('an OnScopeCreated construction failure is sticky Failed (D5), not a scope-creation error', () => {
+  it('an OnScopeCreated construction failure is sticky Failed (D5), not a scope-creation error', async () => {
     interface IBoom {
       tag: 'boom';
     }
@@ -263,16 +282,16 @@ describe('Scope tree', () => {
     const session = app.createChild(LifecycleScope.Session, 's1');
     expect(session.instantiation.cascade.stateOf(IBoom)).toBe('Failed');
     expect(() => session.accessor.get(IBoom)).toThrow(/boom/);
-    app.dispose();
+    await app.dispose();
   });
 
-  it('exposes the scope ledger for debug introspection', () => {
+  it('exposes the scope ledger for debug introspection', async () => {
     const { app } = buildTree();
     expect(app.ledger.state).toBe('active');
     const labels = app.ledger.entries().map((entry) => entry.label);
     expect(labels).toContain('instantiation');
     expect(labels).toContain('scope:s1');
-    app.dispose();
+    await app.dispose();
     expect(app.ledger.state).toBe('disposed');
   });
 });

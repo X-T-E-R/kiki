@@ -15,7 +15,7 @@ export const AgentSendInputSchema = z
     message: z
       .string()
       .describe(
-        'Input the child needs to continue. A running native child takes it at the next step boundary; Codex or a steer-capable ACP child can take it during the run. A stopped child continues with its current binding.',
+        'Input the child still needs that changes its next action, or the discussion the user requested; not a raw progress relay or acknowledgment. A running native child takes it at the next step boundary; Codex or a steer-capable ACP child can take it during the run. A stopped child continues with its current binding.',
       ),
   })
   .strict();

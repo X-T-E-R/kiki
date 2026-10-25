@@ -120,10 +120,23 @@ function stubSessionIndex(summaries: SessionSummary[]): ISessionIndex {
       if (query.includeArchived !== true) {
         items = items.filter((summary) => !summary.archived);
       }
-      return { items, nextCursor: undefined };
+      items = items.toSorted((a, b) => b.updatedAt - a.updatedAt || (a.id < b.id ? 1 : -1));
+      if (query.beforePosition !== undefined) {
+        items = items.filter((item) => item.updatedAt < query.beforePosition!.updatedAt ||
+          (item.updatedAt === query.beforePosition!.updatedAt && item.id < query.beforePosition!.id));
+      } else if (query.before !== undefined) {
+        const position = items.findIndex((item) => item.id === query.before);
+        items = position === -1 ? [] : items.slice(position + 1);
+      }
+      const kept = query.limit === undefined ? items : items.slice(0, query.limit);
+      return { items: kept, nextCursor: kept.length < items.length ? kept.at(-1)?.id : undefined };
     },
     get: async (id) => summaries.find((summary) => summary.id === id),
-    count: async () => summaries.length,
+    archiveFamily: async () => [],
+    count: async (query) => summaries.filter((summary) =>
+      (query.workspaceIds === undefined || query.workspaceIds.includes(summary.workspaceId)) &&
+      (query.includeArchived === true || !summary.archived),
+    ).length,
     remove: async () => {},
   };
 }
@@ -212,6 +225,110 @@ describe('server /api/sessions/query', () => {
     expect(body.data).toBeNull();
     return body;
   }
+
+  it('pushes the default page limit and keyset into the index instead of draining all sessions', async () => {
+    const index = server!.core.accessor.get(ISessionIndex);
+    const list = vi.spyOn(index, 'listRecent');
+    const count = vi.spyOn(index, 'count');
+    try {
+      const first = await getData('?page_size=1');
+      expect(first.total).toBe(3);
+      expect(first.items.map((item) => item.id)).toEqual(['s1']);
+      const firstReads = list.mock.calls.filter(([query]) => query.includeArchived === false);
+      expect(firstReads).toHaveLength(1);
+      expect(firstReads[0]?.[0].limit).toBe(2);
+      expect(count.mock.calls.filter(([query]) => query.includeArchived === false)).toHaveLength(1);
+      list.mockClear();
+      const second = await getData(`?page_size=1&page_token=${first.next_page_token}`);
+      expect(second.total).toBe(3);
+      expect(second.items.map((item) => item.id)).toEqual(['s2']);
+      const nextReads = list.mock.calls.filter(([query]) => query.includeArchived === false);
+      expect(nextReads).toHaveLength(1);
+      expect(nextReads[0]?.[0]).toMatchObject({ limit: 2, beforePosition: { updatedAt: 5_000, id: 's1' } });
+    } finally {
+      list.mockRestore();
+      count.mockRestore();
+    }
+  });
+
+  it('reads filtered and alternate-sort pages through bounded index windows', async () => {
+    const list = vi.spyOn(server!.core.accessor.get(ISessionIndex), 'listRecent');
+    try {
+      const page = await getData('?sort=meta.created_at_desc&meta.updated_before=4500&page_size=1');
+      expect(page.items.map((item) => item.id)).toEqual(['s3']);
+      expect(page.total).toBe(2);
+      expect(page.has_more).toBe(true);
+      expect(list.mock.calls.filter(([query]) => query.includeArchived === false)
+        .every(([query]) => query.limit !== undefined && query.limit <= 500)).toBe(true);
+    } finally {
+      list.mockRestore();
+    }
+  });
+
+  it('stops a filtered index walk when the client disconnects', async () => {
+    const index = server!.core.accessor.get(ISessionIndex);
+    let host: object | null = index;
+    let raw: ISessionIndex['listRecent'] | undefined;
+    while (host !== null && raw === undefined) {
+      const value: unknown = Object.getOwnPropertyDescriptor(host, 'listRecent')?.value;
+      if (typeof value === 'function') raw = value as ISessionIndex['listRecent'];
+      host = Object.getPrototypeOf(host) as object | null;
+    }
+    if (raw === undefined) throw new Error('listRecent is not a concrete method');
+    let calls = 0;
+    let depth = 0;
+    let releaseSecond = (): void => {};
+    let enteredResolve = (): void => {};
+    const entered = new Promise<void>((resolve) => { enteredResolve = resolve; });
+    const list = vi.spyOn(index, 'listRecent').mockImplementation(async (query) => {
+      if (query.includeArchived !== false || query.limit !== 500) return raw.call(index, query);
+      depth += 1;
+      const outer = depth === 1;
+      try {
+        if (outer) calls += 1;
+        if (outer && calls === 2) {
+          enteredResolve();
+          await new Promise<void>((resolve) => { releaseSecond = resolve; });
+        }
+        const page = await raw.call(index, query);
+        if (outer && calls === 1 && page.nextCursor === undefined && page.items.length > 0) {
+          return { ...page, nextCursor: page.items.at(-1)!.id };
+        }
+        if (outer && calls === 2) {
+          return { ...page, nextCursor: page.items.at(-1)?.id ?? 'held' };
+        }
+        return page;
+      } finally {
+        depth -= 1;
+      }
+    });
+    const responseClosed = new Promise<void>((resolve) => {
+      server!.app.server.once('request', (_request, response) => {
+        response.once('close', resolve);
+      });
+    });
+    const controller = new AbortController();
+    const pending = authedFetch(
+      server as RunningServer,
+      base,
+      '/api/sessions/query?sort=meta.created_at_desc&page_size=1',
+      { signal: controller.signal },
+    );
+    void pending.catch(() => undefined);
+    try {
+      await entered;
+      controller.abort();
+      await expect(pending).rejects.toThrow();
+      await responseClosed;
+      releaseSecond();
+      await new Promise<void>((resolve) => { setImmediate(resolve); });
+      await index.listRecent({ includeArchived: true, limit: 100 });
+      expect(calls).toBe(2);
+    } finally {
+      releaseSecond();
+      list.mockRestore();
+    }
+  });
 
   it('lists sessions with domain-grouped shape, default sort, archived excluded', async () => {
     const page = await getData();
@@ -581,13 +698,13 @@ describe('server /api/sessions batch archive/restore', () => {
     return (server as RunningServer).core.accessor;
   }
 
-  function collectEvents(): { events: Event2[]; dispose(): void } {
+  function collectEvents(): { events: Event2[]; dispose(): Promise<void> } {
     const events: Event2[] = [];
     const sub = core().get(IEventService).subscribe((event) => events.push(event));
     return {
       events,
-      dispose: () => {
-        sub.dispose();
+      dispose: async () => {
+        await sub.dispose();
       },
     };
   }
@@ -669,7 +786,7 @@ describe('server /api/sessions batch archive/restore', () => {
           payload: (event as { readonly payload?: unknown }).payload,
         })),
     ).toEqual([{ type: 'event.session.archived', payload: { sessionId: created.id } }]);
-    dispose();
+    await dispose();
   });
 
   it('archives a live session through the full lifecycle chain', async () => {
@@ -691,7 +808,7 @@ describe('server /api/sessions batch archive/restore', () => {
       ),
     ).toBe(true);
     expect(await indexArchived(created.id)).toBe(true);
-    dispose();
+    await dispose();
   });
 
   it('settles an in-flight resume before classifying (no cold-write race)', async () => {
@@ -758,7 +875,7 @@ describe('server /api/sessions batch archive/restore', () => {
     expect(await indexArchived(created.id)).toBe(false);
     expect(await listedIds()).toEqual([created.id]);
     expect(events.filter((event) => event.type === 'event.session.archived')).toEqual([]);
-    dispose();
+    await dispose();
   });
 
   it('restores a live session through the lifecycle chain and keeps it live', async () => {

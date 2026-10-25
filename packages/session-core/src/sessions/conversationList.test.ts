@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import type { RoomListItem, Session, Workspace } from '@kiki/protocol';
+import type { RoomListItem, Session, Workspace, WorkspaceCatalogEntry } from '@kiki/protocol';
 import { buildConversationInbox, groupConversationItems, mergeConversationItems, roomWorkspaceId } from './conversationList';
-import { parseConversationLink, roomRefLink } from './conversationLinks';
+import { conversationRefLink, parseConversationLink, roomRefLink } from './conversationLinks';
 import { projectAttachedConversationGroups } from './attachedRecency';
 import { dedupeSessions, mergeSessionActivity, type SessionListData, type SessionSortOrder } from './sessionList';
 import { forgetRoomSeen, markRoomSeen, markSessionSeen, resetSessionSeen, roomUnreadCount, sessionSeenSnapshot } from '../settings';
@@ -13,6 +13,11 @@ function session(patch: Partial<Session> = {}): Session {
   return { id: 'example', title: 'Thread', workspace_id: 'ws-thread', created_at: '2026-01-01T00:00:00Z', updated_at: new Date(2026, 0, 3, 10).toISOString(), metadata: { cwd: '/example' }, busy: false, last_seq: 10, ...patch } as Session;
 }
 const workspaces = [{ id: 'ws-thread', name: 'Threads', root: '/example' }, { id: 'ws-room', name: 'Rooms', root: '/rooms' }] as Workspace[];
+/** The metadata-only listing the catalog route returns: no `session_count` / `isGit`. */
+const catalogWorkspaces: WorkspaceCatalogEntry[] = [
+  { id: 'ws-thread', name: 'Threads', root: '/example', created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z', pinned: false },
+  { id: 'ws-room', name: 'Rooms', root: '/rooms', created_at: '2026-01-01T00:00:00Z', last_opened_at: '2026-01-01T00:00:00Z', pinned: false },
+];
 const filters = { archived: 'hide' as const, status: [], workspaces: [] };
 afterEach(() => resetSessionSeen());
 
@@ -39,6 +44,50 @@ describe('conversation list and read state', () => {
     ['\\\\HOST\\Share\\Project', 'ws-unc'], ['ssh://other/project', 'ssh://other/project'],
   ])('resolves only registered room workspace identities: %s', (reference, expected) => {
     expect(roomWorkspaceId(reference, [...workspaces, { id: 'ws-windows', root: 'C:/Example/Project' }, { id: 'ws-unc', root: '//host/share/project' }])).toBe(expected);
+  });
+  it('groups the same workspace buckets from a metadata-only catalog listing', () => {
+    const rooms = [room({ workspace: '/rooms' })];
+    const items = mergeConversationItems([session()], rooms, {}, 'updated-desc', catalogWorkspaces);
+    const fromCatalog = groupConversationItems(items, { groupBy: 'workspace', workspaces: catalogWorkspaces, filters, nowMs: 0 });
+    const fromFull = groupConversationItems(items, { groupBy: 'workspace', workspaces, filters, nowMs: 0 });
+    expect(fromCatalog.map((group) => [group.key, group.label])).toEqual([['ws-thread', 'Threads'], ['ws-room', 'Rooms']]);
+    expect(fromCatalog.map((group) => [group.key, group.label, group.items.map((item) => item.key)]))
+      .toEqual(fromFull.map((group) => [group.key, group.label, group.items.map((item) => item.key)]));
+    expect(buildConversationInbox([session()], rooms, {}, catalogWorkspaces).unread.map((item) => [item.sessionId, item.workspaceId]))
+      .toEqual([['room:example', 'ws-room'], ['example', 'ws-thread']]);
+  });
+  it('sorts and groups by own recency without changing aggregate session facts, with an old-server fallback', () => {
+    const nowMs = new Date(2026, 9, 6, 12).getTime();
+    const today = new Date(2026, 9, 6, 10).toISOString();
+    const older = new Date(2026, 9, 2, 10).toISOString();
+    const parent = session({ id: 'parent', own_updated_at: older, updated_at: today });
+    const other = session({ id: 'other', updated_at: new Date(2026, 9, 4, 10).toISOString() });
+    const items = mergeConversationItems([parent, other], [], {});
+    expect(items.map((item) => item.id)).toEqual(['other', 'parent']);
+    expect(parent.updated_at).toBe(today);
+    for (const order of ['updated-desc', 'updated-asc'] as const) {
+      expect(groupConversationItems(items, { groupBy: 'none', workspaces, filters, nowMs, order })[0]?.items.map((item) => item.id))
+        .toEqual(order === 'updated-desc' ? ['other', 'parent'] : ['parent', 'other']);
+    }
+    const time = groupConversationItems(items, { groupBy: 'time', workspaces, filters, nowMs });
+    expect(time.map((group) => group.key)).toEqual(['week']);
+    const legacy = mergeConversationItems([{ ...parent, own_updated_at: undefined }, other], [], {});
+    expect(legacy.map((item) => item.id)).toEqual(['parent', 'other']);
+    expect(groupConversationItems(legacy, { groupBy: 'time', workspaces, filters, nowMs })[0]?.key).toBe('today');
+  });
+  it('does not leave a parent showing one minute ago between three- and five-day-old rows', () => {
+    const nowMs = Date.parse('2026-10-05T12:00:00Z');
+    const parent = session({ id: 'parent', updated_at: '2026-10-01T12:00:00Z' });
+    const items = mergeConversationItems([
+      parent, session({ id: 'three-days', updated_at: '2026-10-02T12:00:00Z' }),
+      session({ id: 'five-days', updated_at: '2026-09-30T12:00:00Z' }),
+    ], [], {}).map((item) => item.kind === 'session' && item.id === 'parent'
+      ? { ...item, session: { ...item.session, updated_at: '2026-10-05T11:59:00Z' } } : item);
+    const groups = groupConversationItems(items, { groupBy: 'none', workspaces, filters, nowMs });
+    expect(groups[0]?.items.map((item) => item.id)).toEqual(['parent', 'three-days', 'five-days']);
+    const time = groupConversationItems(items, { groupBy: 'time', workspaces, filters, nowMs });
+    expect(time[0]?.key).toBe('today');
+    expect(time[0]?.items[0]?.updated_at).toBe('2026-10-05T11:59:00Z');
   });
   it('interleaves rooms by activity and shares pins, workspace and archive filters', () => {
     const items = mergeConversationItems([session(), session({ id: 'newer', updated_at: new Date(2026, 0, 3, 14).toISOString() })], [room(), room({ id: 'hidden', archived: true }), room({ id: 'pin', pinned: true, updatedAt: '2025-12-01T00:00:00Z' })], {});
@@ -76,6 +125,7 @@ describe('conversation list and read state', () => {
     expect(groups[0]!.items[0]!.pending_interaction).toBe('none');
     expect(groupConversationItems(items, { groupBy: 'none', workspaces, filters: { ...filters, status: ['running'] }, nowMs: 0 })).toEqual([]);
   });
+  describe('recency with room filtering', () => {
   it('sorts and groups by own recency without changing aggregate session facts, with an old-server fallback', () => {
     const nowMs = new Date(2026, 9, 6, 12).getTime();
     const today = new Date(2026, 9, 6, 10).toISOString();
@@ -108,6 +158,7 @@ describe('conversation list and read state', () => {
     const time = groupConversationItems(items, { groupBy: 'time', workspaces, filters, nowMs });
     expect(time[0]?.key).toBe('today');
     expect(time[0]?.items[0]?.updated_at).toBe('2026-10-05T11:59:00Z');
+  });
   });
 });
 
@@ -188,6 +239,11 @@ describe('attached conversation recency', () => {
 });
 
 describe('conversation links', () => {
+  it('formats both conversation kinds using their existing canonical routes', () => {
+    expect(conversationRefLink('session', 'session_example')).toBe('/s/session_example');
+    expect(conversationRefLink('room', 'example-room')).toBe(roomRefLink('example-room'));
+    expect(conversationRefLink('room', 'example room/one')).toBe('/rooms/example%20room%2Fone');
+  });
   it('uses the room route and parses the short and protocol forms without losing context', () => {
     expect(roomRefLink('example-room')).toBe('/rooms/example-room');
     expect(parseConversationLink('/rooms/example-room')).toEqual({ kind: 'room', id: 'example-room', href: '/rooms/example-room' });

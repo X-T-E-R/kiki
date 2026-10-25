@@ -59,6 +59,7 @@ export interface SessionListQuery {
   readonly childOf?: string;
   /** Keyset cursor: the page strictly older than this session id. */
   readonly before?: string;
+  readonly beforePosition?: { readonly updatedAt: number; readonly id: string };
   /** Keyset cursor: the page strictly newer than this session id. */
   readonly after?: string;
 }
@@ -94,6 +95,8 @@ export interface ISessionIndex {
   readonly onDidChangeStatus: Event<SessionIndexStatus>;
   status(): SessionIndexStatus;
   get(id: string, workspaceId?: string): Promise<SessionSummary | undefined>;
+  /** Fresh authoritative metadata discovery; exclusions cut whole attached subtrees, never the root. */
+  archiveFamily(id: string, excludedIds: readonly string[]): Promise<SessionSummary[]>;
   /** Recency-ordered keyset page over the persisted session set. */
   listRecent(query: SessionListQuery): Promise<Page<SessionSummary>>;
   /** Materialized count over the given workspace-id set. */
@@ -109,8 +112,14 @@ export interface ISessionIndex {
 export const ISessionIndex: ServiceIdentifier<ISessionIndex> =
   createDecorator<ISessionIndex>('sessionIndex');
 
+export interface SessionIndexMutation {
+  readonly id: string;
+  readonly workspaceId?: string;
+}
+
 export interface ISessionIndexMirror {
   readonly _serviceBrand: undefined;
+  readonly onDidChange: Event<SessionIndexMutation>;
 
   /**
    * Enqueue the latest summary of a session for read-your-writes and eventual

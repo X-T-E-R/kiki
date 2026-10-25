@@ -2,9 +2,9 @@
  * Fixture stand-in for `GET /sessions/{id}/agents/{agent}/hooks`
  * (kap-server's agent-hooks inspect route).
  *
- * Why it exists: the agent panel's "Injected rules" block calls this on every
+ * Why it exists: the agent panel's "Automatic rules" block calls this on every
  * session. Without the route the request 404s and the panel renders its
- * failure state — "Could not read injected rules" with a Retry button — in
+ * failure state — "Could not read automatic rules" with a Retry button — in
  * every fixture capture, including the public ones. An error state is a true
  * rendering of an unreachable endpoint, but it is not a picture of the product
  * a reader is meant to believe in, so the route answers with the honest
@@ -21,8 +21,8 @@
  *     diagnostics:[{ path, hookId, message }],
  *     rules:      [{ id, path, namespace, event, action, active, … }]
  *   }
- * An absent seed is a valid answer: the agent has no injected rules, which is
- * what `rules: []` means and what the panel says in that case.
+ * An absent seed is a valid answer: the agent has no rules configured, which is
+ * what `rules: []` means and what the panel renders as no block at all.
  */
 
 const EVENTS = new Set([

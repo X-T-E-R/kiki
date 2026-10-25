@@ -1,6 +1,6 @@
 export { installNbSearchWorkerHost, runNbSearchWorkerCommand, NB_SEARCH_WORKER_COMMAND } from '#/nb-search-worker';
 export { KimiHarness } from '#/kimi-harness';
-export type { KimiHarnessRuntimeOptions } from '#/kimi-harness';
+export type { KimiHarnessExitReceipt, KimiHarnessRuntimeOptions } from '#/kimi-harness';
 export { Session } from '#/session';
 export { KimiAuthFacade } from '#/auth';
 export { createKimiHarness, SDKRpcClient, type SDKRpcClientOptions } from '#/sdk-rpc-client';
@@ -86,8 +86,16 @@ export { resolveKikiHome, analyzeBashCommand, matchBashPattern, matchesBashRuleS
 // by hosts (e.g. the CLI's server telemetry bootstrap) that need to inspect
 // config without spinning up a full engine.
 export { effectiveModelAlias, loadRuntimeConfigSafe, readMergedConfigData, resolveConfigPath } from '#/config';
+export {
+  discardPersistedSession,
+  isPersistedSessionBusy,
+  openPersistedJournal,
+  sealPersistedSession,
+} from '#/retained-session';
+export type { PersistedJournalRead, PersistedSessionMaintenance } from '#/retained-session';
 export { limitAgentReplayByTurns } from '#/wire/replay-turns';
 export { normalizeWorkDir, sameWorkDir } from '#/v2/session-mapper';
+export { inspectWorkspaceTrustSources } from '#/workspace-trust';
 export { parseAgentFileText } from '@kiki/agent-core-v2';
 export { resolveAgentPath } from '@kiki/agent-core-v2/workspace/workspaceAgentProfileLoader/internal/paths';
 

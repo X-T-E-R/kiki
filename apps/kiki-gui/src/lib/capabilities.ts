@@ -9,7 +9,7 @@
  * from older fixtures), so grouping normalizes instead of trusting the type.
  */
 
-import type { McpServer, SkillDescriptor, Workspace } from '@kiki/protocol';
+import type { McpServer, SkillDescriptor } from '@kiki/protocol';
 
 export type SkillGroupId = 'plugin' | 'project' | 'user' | 'extra' | 'builtin' | 'other';
 
@@ -108,12 +108,14 @@ export function filterMcpServers(
 /**
  * Resolve which workspace the page shows: an explicit request (deep-link
  * `?workspace=`) wins when it still exists, otherwise the first registered
- * workspace — the same default the settings skills card uses.
+ * workspace — the same default the settings skills card uses. Only the id
+ * takes part, so a metadata-only catalog entry resolves like a full one and
+ * the caller keeps its own element type back.
  */
-export function pickWorkspace(
-  workspaces: readonly Workspace[],
+export function pickWorkspace<T extends { readonly id: string }>(
+  workspaces: readonly T[],
   requestedId: string | undefined,
-): Workspace | undefined {
+): T | undefined {
   if (requestedId !== undefined) {
     const requested = workspaces.find((workspace) => workspace.id === requestedId);
     if (requested !== undefined) return requested;

@@ -5,13 +5,19 @@ import { createServer } from 'node:http';
 import { DatabaseSync, StatementSync } from 'node:sqlite';
 import { promisify } from 'node:util';
 import { gzipSync, gunzipSync } from 'node:zlib';
-import { AGENT_WIRE_RECORD_KEY, IBootstrapService, IFileSystemStorageService, IRetainedUsageService, ISessionIndex, type IBootstrapService as Bootstrap, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
+import { AGENT_WIRE_RECORD_KEY, IAppendLogStore, IBootstrapService, IEventService, IFileSystemStorageService, ILogService, IQueryStore, IRetainedUsageService, ISessionIndex, IUsageFactStore, type IBootstrapService as Bootstrap, type Scope, type SessionSummary, type WireRecord } from '@kiki/agent-core-v2';
 import { FileStorageService } from '@kiki/agent-core-v2/persistence/backends/node-fs/fileStorageService';
 import { AppendLogStore } from '@kiki/agent-core-v2/persistence/backends/node-fs/appendLogStore';
+import { MiniDbQueryStore, drainQueryStoreDisposals } from '@kiki/agent-core-v2/persistence/backends/minidb/miniDbQueryStore';
+import { UsageFactStore } from '@kiki/agent-core-v2/app/usageFacts/usageFactStore';
 import { RetainedUsageService } from '@kiki/agent-core-v2/app/retainedUsage/retainedUsageService';
+import { stubLog } from '../../agent-core-v2/test/_base/log/stubs';
+import { EventService } from '@kiki/agent-core-v2/app/event/eventService';
+import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
+import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { VIBE_CAFE_INGEST_ENDPOINT, usageExportBatchSchema, usageExportItemSchema, type UsageExportBatch } from '@kiki/protocol';
 import type { VibeAuthRequest } from '../src/usage/export/vibeAuth';
-import { createVibeUsageAdapter } from '../src/usage/export/vibe';
+import { VIBE_MAPPING_VERSION, createVibeUsageAdapter } from '../src/usage/export/vibe';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { execFile, spawn } from 'node:child_process';
@@ -44,12 +50,17 @@ function record(time: number, inputOther: number, other = { output: 3, inputCach
   return { type: 'usage.record', time, model, usageKnown: true, usage: { inputOther, ...other }, prompt: SENTINEL, reply: SENTINEL, reasoning: SENTINEL, profileName: SENTINEL, tool: { args: SENTINEL }, attachments: [SENTINEL], custom: { sentinel: SENTINEL } };
 }
 async function fixture(limits: ConstructorParameters<typeof UsageAggregationService>[2] = {}, now?: () => number, keyring?: ExportKeyring, vibeAuthRequest?: VibeAuthRequest) {
-  const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true }));
-  const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); append.dispose(); });
-  const bootstrap = { scope: (name: string) => name, credentialsHomeDir: home } as Bootstrap;
-  const retained = new RetainedUsageService(bootstrap, storage, append); const sessions: SessionSummary[] = [];
+  const home = await mkdtemp(join(tmpdir(), 'kiki-usage-export-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+  const storage = new FileStorageService(home, 0o700, 0o600); const append = new AppendLogStore(storage); cleanup.push(async () => { await append.flush(); await append.dispose(); });
+  const bootstrap = { scope: (name: string) => name, credentialsHomeDir: home, cacheDir: join(home, 'cache') } as Bootstrap;
+  const ix = new TestInstantiationService(); cleanup.push(() => drainQueryStoreDisposals()); cleanup.push(async () => { await ix.dispose(); });
+  const log = stubLog();
+  ix.stub(IBootstrapService, bootstrap); ix.stub(IFileSystemStorageService, storage); ix.stub(IAppendLogStore, append); ix.stub(ILogService, log);
+  ix.set(IEventService, new SyncDescriptor(EventService)); ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
+  ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore)); ix.set(IUsageFactStore, new SyncDescriptor(UsageFactStore));
+  const retained = ix.get(IRetainedUsageService); const facts = ix.get(IUsageFactStore); const query = ix.get(IQueryStore); const sessions: SessionSummary[] = [];
   const index = { listRecent: async (query: { before?: string; limit?: number }) => { const start = query.before === undefined ? 0 : sessions.findIndex((s) => s.id === query.before) + 1; const items = sessions.slice(start, start + (query.limit ?? 100)); return { items, nextCursor: start + items.length < sessions.length ? items.at(-1)?.id : undefined }; } };
-  const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap]]);
+  const services = new Map<unknown, unknown>([[IFileSystemStorageService, storage], [IRetainedUsageService, retained], [ISessionIndex, index], [IModelPricingService, priced], [IBootstrapService, bootstrap], [IAppendLogStore, append], [IUsageFactStore, facts], [IQueryStore, query], [ILogService, log]]);
   const core = { accessor: { get: (key: unknown) => services.get(key) } } as Scope;
   const reader = new UsageAggregationService(core, Date.now, limits); const path = join(home, 'export.sqlite'); let store = new UsageExportStore(path);
   const secretStore = () => new UsageExportSecretStore(home, store.installationKey(), keyring ?? (async () => { throw new Error('keyring-unavailable-fixture'); }));
@@ -57,7 +68,7 @@ async function fixture(limits: ConstructorParameters<typeof UsageAggregationServ
   let service = new UsageExportService(store, reader, priced, secrets, [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); cleanup.push(() => service.close());
   const write = async (session: string, agent: string, records: readonly WireRecord[]) => storage.write(`sessions/work/${session}/agents/${agent}`, AGENT_WIRE_RECORD_KEY, Buffer.from(records.map((v) => JSON.stringify(v)).join('\n') + '\n'));
   const add = (id: string) => { const summary: SessionSummary = { id, workspaceId: 'work', createdAt: T, updatedAt: T, archived: false, title: SENTINEL, cwd: SENTINEL, lastPrompt: SENTINEL }; sessions.push(summary); return summary; };
-  const restart = async () => { await service.close(); store = new UsageExportStore(path); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
+  const restart = async (legacyDisabled?: boolean) => { await service.close(); store = new UsageExportStore(path, legacyDisabled); service = new UsageExportService(store, new UsageAggregationService(core, Date.now, limits), priced, secretStore(), [createWebhookUsageAdapter()], { random: () => 0.5, now, sourceHome: home, vibeAuthRequest }); return service; };
   return { home, storage, retained, sessions, reader, core, write, add, get service() { return service; }, get store() { return store; }, restart };
 }
 async function receiverFixture() {
@@ -74,6 +85,40 @@ async function destination(service: UsageExportService, endpoint = 'https://exam
 async function enable(service: UsageExportService, id: string) { const preview = await service.preview(id); await service.enable(id, { preview_fingerprint: preview.preview_fingerprint, acknowledge: true }); return preview; }
 
 describe('usage export real source → SQLite outbox → loopback receiver → durable ACK', () => {
+  it('sends nothing without destinations or from draft and disabled destinations after retirement', async () => {
+    const f = await fixture(); const r = await receiverFixture();
+    await f.restart(false); f.service.start(); await f.service.tick();
+    expect(f.service.status().destinations).toEqual([]); expect(r.requests).toBe(0);
+    f.add('synthetic'); await f.write('synthetic', 'main', [record(T + 1, 10)]);
+    const draft = await destination(f.service, r.endpoint, r.port);
+    await f.service.syncNow(draft.id); expect(r.requests).toBe(0);
+    await enable(f.service, draft.id); f.service.disable(draft.id);
+    const disabled = f.store.get(draft.id);
+    await f.restart(false); f.service.start(); await f.service.tick(); await f.service.syncNow(draft.id);
+    expect(f.store.get(draft.id)).toEqual(disabled); expect(r.requests).toBe(0);
+  });
+
+  it('converts the old explicit off choice once to paused destinations, preserving consent and queued data', async () => {
+    const f = await fixture(); const r = await receiverFixture();
+    f.add('synthetic'); await f.write('synthetic', 'main', [record(T + 1, 10)]);
+    const d = await destination(f.service, r.endpoint, r.port); await enable(f.service, d.id);
+    const consent = f.store.get(d.id).consent_fingerprint; const queue = f.store.queue(d.id);
+    f.store.setMeta(`handoff-arm:${d.id}`, 'pending-old-arm');
+    await f.restart(true); f.service.start(); await f.service.tick(); await f.service.syncNow(d.id);
+    expect(f.store.get(d.id)).toMatchObject({ enabled: false, state: 'disabled', next_at: null, consent_fingerprint: consent });
+    expect(f.store.queue(d.id)).toEqual(queue); expect(f.store.meta(`handoff-arm:${d.id}`)).toBe(''); expect(r.requests).toBe(0);
+    await f.service.enable(d.id, { preview_fingerprint: consent!, acknowledge: true });
+    await f.restart(true);
+    expect(f.store.get(d.id).enabled).toBe(true);
+    await f.service.syncNow(d.id); expect(r.requests).toBe(1);
+  });
+
+  it('retiring an enabled legacy gate does not pause an explicitly enabled destination', async () => {
+    const f = await fixture(); const d = await destination(f.service); await enable(f.service, d.id);
+    const before = f.store.get(d.id); await f.restart(false);
+    expect(f.store.get(d.id)).toEqual(before);
+  });
+
   it('preserves timestamp and safe token boundaries without per-record temporary arrays', () => {
     const usage = { inputOther: 1, inputCacheRead: 2, inputCacheCreation: 3, output: 4 };
     const projected = projectSource({ key: 'boundary', workspaceId: 'work', kind: 'session', records: [
@@ -129,7 +174,7 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     await f.write(s.id, 'main', [record(T + 1, 10), record(T + 1, 10), record(T + 1_800_001, 20), { ...record(T + 2, 0, { output: 0, inputCacheRead: 0, inputCacheCreation: 0 }), usageKnown: false }, { ...record(T + 3, 0, { output: 0, inputCacheRead: 0, inputCacheCreation: 0 }), usageKnown: undefined }, record(T + 4, -1), record(T + 5, Number.MAX_SAFE_INTEGER + 1), record(T + 6, 7, undefined, SENTINEL)]);
     await f.write(s.id, 'subagent', [record(T + 7, 30)]);
     const deleted = f.add('deleted'); await f.write(deleted.id, 'main', [record(T + 8, 40)]); await f.retained.retainDeletedSession(deleted); f.sessions.splice(f.sessions.indexOf(deleted), 1);
-    await f.write('private', 'main', [record(T + 9, 50)]); await f.retained.retainEphemeralUsage('sessions/work/private', 'work');
+    await f.write('private', 'main', [record(T + 9, 50)]); await f.retained.retainEphemeralUsage!('sessions/work/private', 'work');
     const d = await destination(f.service, r.endpoint, r.port); const preview = await f.service.preview(d.id);
     expect(r.requests).toBe(0); expect(preview.source_complete).toBe(true); expect(preview.invalid_records).toBe(2);
     const totals = preview.items.reduce((sum, item) => { const t = item.bucket!.tokens; return [sum[0]! + t.input_other, sum[1]! + t.input_cache_read, sum[2]! + t.input_cache_creation, sum[3]! + t.output]; }, [0, 0, 0, 0]);
@@ -145,6 +190,66 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     const updated = await f.service.backfill(d.id, { ...d.scope, include_ephemeral: true }); expect(updated.destination.enabled).toBe(false); await enable(f.service, d.id); await f.service.syncNow(d.id);
     expect(f.store.preview(d.id).items.reduce((n, item) => n + item.bucket!.tokens.input_other, 0)).toBe(167);
     expect(r.observed.join('\n')).not.toContain(SENTINEL); expect(JSON.stringify(f.service.exportLocal(d.id))).not.toContain(SENTINEL);
+  });
+
+  it('publishes a complete source transaction before yielding through bounded staging cleanup', async () => {
+    const f = await fixture(); const d = await destination(f.service);
+    for (let i = 0; i < 33; i++) f.store.stage('bounded-cleanup', projectSource({ key: `cleanup-${i}`, workspaceId: 'work', kind: 'session', records: [{ time: T + 1, model: 'gpt-5', usageKnown: true, usage: { inputOther: 1, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } }] }, priced));
+    const db = (f.store as unknown as { db: DatabaseSync }).db;
+    const staged = () => Number(db.prepare('SELECT COUNT(*) AS n FROM temp.staging').get()!['n']);
+    expect(db.prepare("SELECT name FROM main.sqlite_master WHERE name='staging'").get()).toBeUndefined();
+    expect(db.prepare('PRAGMA main.synchronous').get()!['synchronous']).toBe(2);
+    expect(db.prepare('PRAGMA temp_store').get()!['temp_store']).toBe(1);
+    const publish = f.store.publishStage.bind(f.store);
+    const observed: number[] = [];
+    const spy = vi.spyOn(f.store, 'publishStage').mockImplementation((...args) => {
+      publish(...args);
+      expect(staged()).toBe(33);
+      expect(f.store.meta('scan-complete')).toBe('true');
+      expect(f.store.preview(d.id).items[0]!.bucket!.tokens.input_other).toBe(33);
+    });
+    let tick: NodeJS.Immediate;
+    const inspect = () => { observed.push(staged()); expect(f.store.preview(d.id).items[0]!.bucket!.tokens.input_other).toBe(33); tick = setImmediate(inspect); };
+    tick = setImmediate(inspect);
+    try {
+      await f.store.publishStageAsync('bounded-cleanup');
+      expect(staged()).toBe(0);
+      expect(observed).toEqual([17, 1, 0]);
+    } finally { clearImmediate(tick); spy.mockRestore(); }
+  });
+
+  it('replays cold fact journals without materializing a query index, preserving duplicate ordinals, zero quality and rewrite resets', async () => {
+    const f = await fixture({ cacheMaxRecords: 0 }); const s = f.add('journal');
+    const zero = { output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    const known = record(T + 1, 2, zero);
+    await f.write(s.id, 'main', [known, known, record(T + 2, 0, zero), { ...record(T + 2, 0, zero), usageKnown: false }, { ...record(T + 2, 0, zero), usageKnown: undefined }]);
+    const read = vi.spyOn(f.core.accessor.get(IUsageFactStore), 'read');
+    const batch = vi.spyOn(f.core.accessor.get(IQueryStore), 'batch');
+    try {
+      const d = await destination(f.service); await f.service.scan();
+      const original = f.store.preview(d.id).items;
+      expect(original[0]!.bucket).toMatchObject({ tokens: { input_other: 4 }, quality: { known_records: 3, missing_records: 1, legacy_zero_records: 1 } });
+      let visits = 0;
+      await f.reader.readExportSources(async (source) => {
+        if (source.kind !== 'session') return;
+        visits += source.records.length;
+        expect(source.records).toHaveLength(5);
+        expect(source.records[0]).toBe(source.records[1]);
+        expect(new Set(source.records).size).toBe(4);
+        expect(source.records.map((value) => value.usageKnown)).toEqual([true, true, true, false, undefined]);
+      });
+      expect(visits).toBe(5);
+      await f.restart(); await f.service.scan();
+      expect(f.store.preview(d.id).items).toEqual(original);
+      await f.storage.append('sessions/work/journal/agents/main', AGENT_WIRE_RECORD_KEY, Buffer.from(JSON.stringify(known) + '\n'));
+      await f.service.scan();
+      expect(f.store.preview(d.id).items[0]!.bucket).toMatchObject({ tokens: { input_other: 6 }, quality: { known_records: 4, missing_records: 1, legacy_zero_records: 1 } });
+      await f.core.accessor.get(IAppendLogStore).rewrite('sessions/work/journal/agents/main', AGENT_WIRE_RECORD_KEY, [record(T + 1, 7, zero)]);
+      await f.service.scan();
+      expect(f.store.preview(d.id).items[0]!.bucket).toMatchObject({ tokens: { input_other: 7 }, quality: { known_records: 1, missing_records: 0, legacy_zero_records: 0 } });
+      expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
+      expect(read).not.toHaveBeenCalled(); expect(batch).not.toHaveBeenCalled();
+    } finally { read.mockRestore(); batch.mockRestore(); }
   });
 
   it('retains the previous complete source while budget-limited, then publishes a complete correction; force detects same size/mtime rewrite without resetting ACK', async () => {
@@ -286,11 +391,18 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
 
   it('recovers a real cross-process writer crash with a new fence and the same durable in-flight payload', async () => {
     const f = await fixture(); f.add('process'); await f.write('process', 'main', [record(T + 1, 10)]); const d = await destination(f.service); await enable(f.service, d.id); const batch = f.store.take(d.id, 200, 1048576)!; await f.service.close();
-    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', "const {UsageExportStore}=await import(process.argv[1]); const s=new UsageExportStore(process.argv[2]); console.log(JSON.stringify({writer:s.writer,fence:s.meta('fence')})); setInterval(()=>{},1000);", new URL('../src/usage/export/store.ts', import.meta.url).href, join(f.home, 'export.sqlite')], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
-    cleanup.push(async () => { if (child.exitCode === null && child.signalCode === null) { child.kill('SIGKILL'); await new Promise<void>((resolve) => child.once('exit', () => resolve())); } });
-    const ready = await new Promise<{ writer: boolean; fence: string }>((resolve, reject) => { let text = ''; child.stdout.on('data', (data: Buffer) => { text += data.toString(); if (text.includes('\n')) { try { resolve(JSON.parse(text.trim())); } catch (error) { reject(error); } } }); child.once('error', reject); child.once('exit', (code) => { if (code !== null) reject(new Error(`writer-child-exited:${code}`)); }); });
+    const child = spawn(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', "const {UsageExportStore}=await import(process.argv[1]); const s=new UsageExportStore(process.argv[2]); console.log(JSON.stringify({writer:s.writer,fence:s.meta('fence')})); setInterval(()=>s.meta('fence'),1000);", new URL('../src/usage/export/store.ts', import.meta.url).href, join(f.home, 'export.sqlite')], { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] });
+    let stderr = ''; child.stderr.on('data', (data: Buffer) => { stderr += data.toString(); });
+    const closed = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => child.once('close', (code, signal) => resolve({ code, signal })));
+    cleanup.push(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL'); await closed; });
+    const ready = await new Promise<{ writer: boolean; fence: string }>((resolve, reject) => {
+      let text = '';
+      child.stdout.on('data', (data: Buffer) => { text += data.toString(); if (text.includes('\n')) { try { resolve(JSON.parse(text.trim())); } catch (error) { reject(error); } } });
+      child.once('error', reject);
+      void closed.then(({ code, signal }) => reject(new Error(`writer-child-exited:${code}:${signal}:${stderr}`)));
+    });
     expect(ready.writer).toBe(true); const standby = new UsageExportStore(join(f.home, 'export.sqlite')); cleanup.push(async () => standby.close()); expect(standby.writer).toBe(false); expect(standby.tryPromote()).toBe(false);
-    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve())); child.kill('SIGKILL'); await exited;
+    expect(child.kill('SIGKILL')).toBe(true); await closed;
     expect(standby.tryPromote()).toBe(true); expect(standby.meta('fence')).not.toBe(ready.fence); expect(standby.take(d.id, 200, 1048576)).toEqual(batch);
   }, 20000);
 
@@ -310,21 +422,55 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     const batch = f.store.take(d.id, 1, 1048576)!; f.store.updateWithMetadata(d.id, { enabled: false, next_at: null }, { [`handoff-arm:${d.id}`]: JSON.stringify({ file, fingerprint: preview.preview_fingerprint }) });
     available = false; now = plan.cutoff_at + 1800000; await f.restart(); f.service.registerAdapter(adapter); f.service.start(); await vi.waitFor(() => expect(f.store.get(d.id).enabled).toBe(true)); expect(f.store.get(d.id).scope.start_at).toBe(plan.cutoff_at); expect(f.store.take(d.id, 1, 1048576)).toEqual(batch);
     entry.active = true; entry.last_receipt = { completed_at: now, cutoff_at: plan.cutoff_at, ingested: 1, coverage_complete: true, cutoff_persisted: true, collector_version: 'synthetic-fixture', collector_identity: identity }; await writeProof(); await f.service.refreshHandoff(d.id); available = true; await f.service.deliver(d.id, true); expect(f.service.handoff(d.id)?.phase).toBe('completed');
-    const R = now + 3600000; const rollback = await f.service.rollbackHandoff(d.id, R, true); expect(rollback.phase).toBe('rollback-prepared'); expect(f.store.get(d.id).scope).toMatchObject({ start_at: plan.cutoff_at, end_at: R }); expect(JSON.parse(await readFile(file, 'utf8')).homes[0].resume_ranges).toEqual([{ start_at: R, end_at: null }]);
-    preview = await f.service.preview(d.id); expect(preview.items.every((item) => Date.parse(item.bucket!.start_at) >= plan.cutoff_at && Date.parse(item.bucket!.start_at) < R)).toBe(true);
+    const R = now + 3600000;
+    await f.write('handoff', 'main', [record(T + 1, 10), record(T + 3600001, 20), record(T + 7200001, 30), record(R, 40)]);
+    let markStaged!: () => void; let releasePublication!: () => void;
+    const staged = new Promise<void>((resolve) => { markStaged = resolve; });
+    const release = new Promise<void>((resolve) => { releasePublication = resolve; });
+    const publish = f.store.publishStageAsync.bind(f.store);
+    const publication = vi.spyOn(f.store, 'publishStageAsync').mockImplementationOnce(async (...args) => { markStaged(); await release; return publish(...args); });
+    const scan = f.service.scan(true); await staged;
+    const update = f.store.updateWithMetadataAsync.bind(f.store);
+    const rollbackUpdate = vi.spyOn(f.store, 'updateWithMetadataAsync').mockImplementationOnce(async (...args) => { releasePublication(); await Promise.resolve(); return update(...args); });
+    try {
+      const rollback = await f.service.rollbackHandoff(d.id, R, true); expect(rollback.phase).toBe('rollback-prepared'); expect(f.store.get(d.id).scope).toMatchObject({ start_at: plan.cutoff_at, end_at: R }); expect(JSON.parse(await readFile(file, 'utf8')).homes[0].resume_ranges).toEqual([{ start_at: R, end_at: null }]);
+    } finally { releasePublication(); await scan; publication.mockRestore(); rollbackUpdate.mockRestore(); }
+    expect(f.service.status().scan_error).toBeNull();
+    expect(f.store.ack(d.id, batch.items[0]!.bucket_id)).toEqual({ revision: batch.items[0]!.revision, hash: batch.items[0]!.payload_hash });
+    preview = await f.service.preview(d.id); expect(preview.items.map((item) => Date.parse(item.bucket!.start_at))).toEqual([plan.cutoff_at, T + 7200000]);
   });
 
-  it('uses the actual default-off Runtime registration and owner gate, including dangerous auth-bypass mode', async () => {
-    for (const mode of ['off', 'on', 'dangerous'] as const) {
+  it.each([
+    { config: false, env: undefined, enabled: false },
+    { config: true, env: 'off', enabled: false },
+    { config: false, env: 'on', enabled: true },
+  ])('migrates Runtime legacy overrides with the old env precedence (%j)', async (choice) => {
+    const f = await fixture(); const r = await receiverFixture();
+    const d = await destination(f.service, r.endpoint, r.port); await enable(f.service, d.id);
+    const before = { ...f.store.get(d.id), next_at: null };
+    const home = await mkdtemp(join(tmpdir(), 'kiki-export-upgrade-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
+    const saved = new UsageExportStore(join(home, 'usage-export', 'export.sqlite')); saved.save(before); saved.close();
+    await writeFile(join(home, 'config.toml'), `[experimental]\nusage_export = ${choice.config}\n`);
+    const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', env: { KIKI_EXPERIMENTAL_USAGE_EXPORT: choice.env }, seeds: [[IModelPricingService, priced]] });
+    cleanup.push(() => server.close());
+    const response = await fetch(`http://127.0.0.1:${server.port}/api/usage-export`, { headers: { authorization: `Bearer ${server.localOwnerToken}` } });
+    expect(response.status).toBe(200);
+    const current = (await response.json()).data.destinations[0].destination;
+    expect(current).toEqual(choice.enabled ? before : { ...before, enabled: false, state: 'disabled' });
+    expect(r.requests).toBe(0);
+  });
+
+  it('registers the Runtime without an experimental flag and keeps the owner gate, including dangerous auth-bypass mode', async () => {
+    for (const mode of ['default', 'legacy-off', 'dangerous'] as const) {
       const home = await mkdtemp(join(tmpdir(), 'kiki-export-owner-')); cleanup.push(() => rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }));
-      const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', disableAuth: mode === 'dangerous', env: { KIKI_EXPERIMENTAL_USAGE_EXPORT: mode === 'off' ? 'false' : 'true' }, seeds: [[IModelPricingService, priced]] });
-      cleanup.push(() => server.close()); const url = `http://127.0.0.1:${server.port}/api/usage-export`;
-      const owner = await fetch(url, { headers: { authorization: `Bearer ${server.localOwnerToken}` } }); expect(owner.status).toBe(mode === 'off' ? 404 : 200);
-      if (mode !== 'off') {
-        expect((await owner.json()).data.writer).toBe(true);
-        expect((await fetch(url, { headers: { authorization: `Bearer ${server.authTokenService.getToken()}` } })).status).toBe(403);
-        expect([401, 403]).toContain((await fetch(url)).status);
-      }
+      const server = await startServer({ homeDir: home, modelAccountHomeDir: home, userAgentProfileHomeDir: join(home, 'profiles'), userSkillDir: join(home, 'skills'), hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, logLevel: 'silent', disableAuth: mode === 'dangerous', env: mode === 'legacy-off' ? { KIKI_EXPERIMENTAL_USAGE_EXPORT: 'false' } : {}, seeds: [[IModelPricingService, priced]] });
+      cleanup.push(() => server.close()); const base = `http://127.0.0.1:${server.port}/api`;
+      const headers = { authorization: `Bearer ${server.localOwnerToken}` };
+      const owner = await fetch(`${base}/usage-export`, { headers }); expect(owner.status).toBe(200);
+      expect((await owner.json()).data).toMatchObject({ writer: true, destinations: [] });
+      expect((await (await fetch(`${base}/meta`, { headers })).json()).data.experimental_flags).not.toHaveProperty('usage_export');
+      expect((await fetch(`${base}/usage-export`, { headers: { authorization: `Bearer ${server.authTokenService.getToken()}` } })).status).toBe(403);
+      expect([401, 403]).toContain((await fetch(`${base}/usage-export`)).status);
       await server.close();
     }
   }, 30000);
@@ -348,6 +494,9 @@ it.runIf(process.env['KIKI_USAGE_EXPORT_SCALE'] === '1')('measures 500k records 
   }
   const d = await destination(f.service); const baseline = process.memoryUsage(); let maxHeap = baseline.heapUsed; let maxRss = baseline.rss;
   let publicationMs = 0; const publish = f.store.publishStage.bind(f.store); vi.spyOn(f.store, 'publishStage').mockImplementation((...args) => { const before = performance.now(); publish(...args); publicationMs = Math.max(publicationMs, performance.now() - before); });
+  let stageMs = 0; const stage = f.store.stage.bind(f.store); f.store.stage = (...args) => { const before = performance.now(); stage(...args); stageMs = Math.max(stageMs, performance.now() - before); };
+  let factReadCalls = 0; const facts = f.core.accessor.get(IUsageFactStore); const readFacts = facts.read.bind(facts);
+  facts.read = (...args) => { factReadCalls++; return readFacts(...args); };
   const sample = setInterval(() => { const usage = process.memoryUsage(); maxHeap = Math.max(maxHeap, usage.heapUsed); maxRss = Math.max(maxRss, usage.rss); }, 10);
   mark('baseline'); observer.observe({ entryTypes: ['gc'] });
   const delay = monitorEventLoopDelay({ resolution: 10 }); delay.enable(); const started = performance.now(); let slices = 0;
@@ -360,7 +509,8 @@ it.runIf(process.env['KIKI_USAGE_EXPORT_SCALE'] === '1')('measures 500k records 
   const incrementalStarted = performance.now(); await f.service.scan(); const incrementalMs = performance.now() - incrementalStarted;
   mark('unchanged');
   await new Promise<void>((resolve) => setTimeout(resolve, 20)); clearInterval(sample); delay.disable(); observer.disconnect();
-  process.stdout.write(JSON.stringify({ benchmark: 'usage-export-500k', records: ordinal, wire_files: 2000, sessions: 1000, slices, cold_ms: coldMs, unchanged_ms: incrementalMs, projection_ms: projectionMs, publication_max_ms: publicationMs, cache_records: f.reader.cacheStatus().records, additional_sampled_heap_mib: (maxHeap - baseline.heapUsed) / 1048576, additional_sampled_rss_mib: (maxRss - baseline.rss) / 1048576, event_loop_delay_max_ms: delay.max / 1e6, platform: process.platform, node: process.version, phases, gc_count: gcCount, gc_ms: gcMs, gc_max_ms: gcMaxMs }) + '\n');
+  process.stdout.write(JSON.stringify({ benchmark: 'usage-export-500k', records: ordinal, wire_files: 2000, sessions: 1000, slices, cold_ms: coldMs, unchanged_ms: incrementalMs, projection_ms: projectionMs, publication_max_ms: publicationMs, cache_records: f.reader.cacheStatus().records, additional_sampled_heap_mib: (maxHeap - baseline.heapUsed) / 1048576, additional_sampled_rss_mib: (maxRss - baseline.rss) / 1048576, event_loop_delay_max_ms: delay.max / 1e6, platform: process.platform, node: process.version, phases, gc_count: gcCount, gc_ms: gcMs, gc_max_ms: gcMaxMs, unchanged_scan_error: f.service.status().scan_error, stage_max_ms: stageMs, fact_read_calls: factReadCalls }) + '\n');
+  expect(f.service.status()).toMatchObject({ scan_complete: true, scan_error: null });
 }, 120000);
 
 describe('VibeCafe sign-in → consent → export using a synthetic destination service', () => {
@@ -369,16 +519,19 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     let approved = false;
     const key = 'vbu_SYNTHETIC_FIXTURE_KEY';
     const requests: { path: string; body: unknown; authorization?: string }[] = [];
-    const server = createServer(async (req, res) => {
-      const chunks: Buffer[] = []; for await (const chunk of req) chunks.push(Buffer.from(chunk));
-      const raw = Buffer.concat(chunks);
-      const body = JSON.parse((req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString('utf8')) as { buckets?: unknown[] };
-      const path = req.url ?? ''; requests.push({ path, body, authorization: req.headers.authorization });
-      res.setHeader('content-type', 'application/json');
-      if (path.endsWith('/code')) res.end(JSON.stringify({ deviceCode: 'SYNTHETIC_DEVICE_SECRET', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expiresIn: 900, interval: 1 }));
-      else if (path.endsWith('/poll')) res.end(JSON.stringify(approved ? { apiKey: key, apiUrl: 'https://vibecafe.ai' } : { error: 'authorization_pending' }));
-      else if (path.endsWith('/ingest') && req.headers.authorization === `Bearer ${key}`) res.end(JSON.stringify({ ingested: body.buckets?.length ?? 0, sessions: 0 }));
-      else { res.statusCode = 401; res.end('{}'); }
+    const server = createServer((req, res) => {
+      const chunks: Buffer[] = [];
+      req.on('data', (chunk: Buffer | string) => chunks.push(Buffer.from(chunk)));
+      req.on('end', () => {
+        const raw = Buffer.concat(chunks);
+        const body = JSON.parse((req.headers['content-encoding'] === 'gzip' ? gunzipSync(raw) : raw).toString('utf8')) as { buckets?: unknown[] };
+        const path = req.url ?? ''; requests.push({ path, body, authorization: req.headers.authorization });
+        res.setHeader('content-type', 'application/json');
+        if (path.endsWith('/code')) res.end(JSON.stringify({ deviceCode: 'SYNTHETIC_DEVICE_SECRET', userCode: 'ABCD-EFGH', verificationUriComplete: 'https://vibecafe.ai/usage/device?user_code=ABCD-EFGH', expiresIn: 900, interval: 1 }));
+        else if (path.endsWith('/poll')) res.end(JSON.stringify(approved ? { apiKey: key, apiUrl: 'https://vibecafe.ai' } : { error: 'authorization_pending' }));
+        else if (path.endsWith('/ingest') && req.headers.authorization === `Bearer ${key}`) res.end(JSON.stringify({ ingested: body.buckets?.length ?? 0, sessions: 0 }));
+        else { res.statusCode = 401; res.end('{}'); }
+      });
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
     cleanup.push(() => new Promise<void>((resolve) => server.close(() => resolve())));
@@ -410,11 +563,42 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     expect(requests.filter((request) => request.path.endsWith('/ingest'))).toHaveLength(0);
     await api.enable(d.id, { preview_fingerprint: preview.preview_fingerprint, acknowledge: true }); await api.syncNow(d.id);
     const ingest = requests.filter((request) => request.path.endsWith('/ingest')); expect(ingest).toHaveLength(1);
-    expect(ingest[0]!.body).toMatchObject({ buckets: [{ source: 'kimi-code', inputTokens: 15, cachedInputTokens: 4, outputTokens: 3 }] });
+    expect(ingest[0]!.body).toMatchObject({ buckets: [{ source: 'kiki', inputTokens: 15, cachedInputTokens: 4, outputTokens: 3 }] });
     expect(JSON.stringify(ingest[0]!.body)).not.toContain(SENTINEL);
     expect(f.store.queue(d.id).pending).toBe(0);
     const custom = await api.saveDraft({ draft: { label: 'Custom', target: { kind: 'vibe', endpoint: 'https://custom.example.test/api/usage/ingest' }, scope: d.scope, schedule_minutes: 0 } });
     await expect(api.beginVibeAuth(custom.id, { storage: 'keyring' })).rejects.toThrow('vibe-auth-official-only');
+  });
+
+  it('stores the Kiki mapping on a new ACK and does not repost a pre-migration kimi-code ACK or a later window as kimi-code', async () => {
+    const posts: unknown[] = [];
+    const f = await fixture();
+    f.add('synthetic-kiki-identity');
+    await f.write('synthetic-kiki-identity', 'main', [record(T + 1, 10)]);
+    const d = await f.service.saveDraft({ draft: { label: 'VibeCafe', target: { kind: 'vibe', endpoint: 'https://example.test/api/usage/ingest' }, schedule_minutes: 0, scope: { start_at: T, end_at: null, include_ephemeral: false, excluded_workspace_ids: [] } } });
+    const adapter = createVibeUsageAdapter();
+    const post: Parameters<typeof adapter.send>[1]['post'] = async (request) => {
+      posts.push(JSON.parse(gunzipSync(request.body).toString('utf8')));
+      return { status: 200, body: JSON.stringify({ ingested: 1, sessions: 0 }) };
+    };
+    f.service.registerAdapter({ ...adapter, send: (batch, context) => adapter.send(batch, { ...context, post }) });
+    await enable(f.service, d.id);
+    await f.service.syncNow(d.id);
+    expect(posts).toEqual([{ buckets: [expect.objectContaining({ source: 'kiki', inputTokens: 15, cachedInputTokens: 4, outputTokens: 3 })] }]);
+    const db = new DatabaseSync(join(f.home, 'export.sqlite'));
+    try {
+      expect(db.prepare('SELECT mapping_version FROM acknowledgements').get()).toEqual({ mapping_version: VIBE_MAPPING_VERSION });
+      db.prepare('UPDATE acknowledgements SET mapping_version=NULL').run();
+    } finally { db.close(); }
+    await f.write('synthetic-kiki-identity', 'main', [record(T + 1, 10), record(T + 2, 10), record(T + 1_800_000 + 1, 8)]);
+    await f.service.syncNow(d.id);
+    expect(posts).toHaveLength(2);
+    expect(posts[1]).toEqual({ buckets: [expect.objectContaining({ source: 'kiki', inputTokens: 13, cachedInputTokens: 4, outputTokens: 3 })] });
+    expect(JSON.stringify(posts)).not.toContain('kimi-code');
+    expect(JSON.stringify(posts)).not.toContain(SENTINEL);
+    expect(f.store.get(d.id).state).toBe('remote-diverged');
+    expect(f.store.queue(d.id).quarantined).toBe(1);
+    expect(f.store.queue(d.id).pending).toBe(0);
   });
 
   it.each(['keyring', 'private-file'] as const)('automatically persists to %s, cold-restores and sends the recovered bearer only after consent', async (expectedStorage) => {
@@ -471,7 +655,7 @@ describe('VibeCafe sign-in → consent → export using a synthetic destination 
     const preview = await enable(f.service, d.id);
     expect(JSON.stringify(preview)).not.toContain(key);
     await f.service.syncNow(d.id); expect(observed).toEqual([`Bearer ${key}`]);
-    f.service.disable(d.id); await f.restart();
+    f.service.disable(d.id); await f.restart(true);
     expect(f.store.get(d.id).enabled).toBe(false);
     await f.service.remove(d.id, true);
     await expect(stat(privatePath)).rejects.toMatchObject({ code: 'ENOENT' }); expect(keys.size).toBe(0);

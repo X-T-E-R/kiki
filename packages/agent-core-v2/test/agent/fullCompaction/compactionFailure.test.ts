@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { APIEmptyResponseError, APIProviderQuotaExhaustedError, APIStatusError, normalizeAPIStatusError, isRetryableGenerateError } from '#/kosong/contract/errors';
+import { attachErrorDetails, unwrapErrorCause } from '#/errors';
+import { APIConnectionError, APIEmptyResponseError, APIProviderQuotaExhaustedError, APIStatusError, APITimeoutError, ambiguousRequestDelivery, normalizeAPIStatusError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
 import { compactionFailureKind, describeCompactionFailure, isRetryableCompactionError } from '#/agent/fullCompaction/compactionFailure';
 
 describe('compaction-only retry classification', () => {
@@ -24,6 +25,26 @@ describe('compaction-only retry classification', () => {
     ]) expect(isRetryableCompactionError(error)).toBe(false);
     expect(isRetryableCompactionError(new APIEmptyResponseError('empty'))).toBe(true);
     expect(isRetryableCompactionError(new APIStatusError(503, 'down'))).toBe(true);
+  });
+
+  it('names manual and automatic failures from their actual trigger', () => {
+    const error = new Error('summary failed');
+    expect(describeCompactionFailure(error, 'fixture', 'model', 1, 'manual')).toMatch(/^Manual compaction failed/);
+    expect(describeCompactionFailure(error, 'fixture', 'model', 1, 'auto')).toMatch(/^Automatic compaction failed/);
+  });
+
+  it('classifies no-output unknown delivery and parsed failures through the shared retry policy', () => {
+    const unknown = ambiguousRequestDelivery(new APIConnectionError('terminated'));
+    const timedOut = ambiguousRequestDelivery(new APITimeoutError('timed out'));
+    const parsed = attachErrorDetails(new APIStatusError(429, 'slow down'), { errorSource: 'provider_event' });
+    for (const error of [unknown, timedOut, parsed]) {
+      expect(isRetryableCompactionError(error)).toBe(true);
+      expect(isRetryableCompactionError(unwrapErrorCause(error))).toBe(true);
+    }
+    expect(requestDeliveryProvenance(unknown)).toBe('unknown');
+    expect(parsed).toMatchObject({ statusCode: 429, message: 'slow down' });
+    expect(isRetryableCompactionError(new APIStatusError(503, 'down'))).toBe(true);
+    expect(requestDeliveryProvenance(new APIStatusError(401, 'unauthorized'))).toBeUndefined();
   });
 
   it('attaches sanitized status detail for all 4xx, including 429', () => {

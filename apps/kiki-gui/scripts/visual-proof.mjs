@@ -187,7 +187,7 @@ const SOURCES = {
   onboardingNext: { key: 'onboarding.next' },
   onboardingBack: { key: 'onboarding.back' },
   onboardingSaveNext: { key: 'onboarding.saveNext' },
-  onboardingFinish: { key: 'onboarding.finish' },
+  onboardingDiscover: { key: 'discovery.title' },
   onboardingSkipForNow: { key: 'onboarding.skipForNow' },
   onboardingSkip: { key: 'onboarding.skip' },
   onboardingRecommended: { key: 'onboarding.permissions.recommended' },
@@ -379,7 +379,6 @@ const LITERALS = {
   capEmptyFilter: { en: 'No capabilities match', zh: '没有匹配', anchor: 'cap.emptyFilter' },
   capNoWorkspace: { en: 'No workspace to show skills for yet', zh: '还没有可查看技能的工作区', anchor: 'cap.noWorkspace' },
   queueEditBanner: { en: 'Editing a queued message', zh: '正在编辑排队消息', anchor: 'composer.queueEditBanner' },
-  editNote: { en: 'Full replacement', zh: '完整替换语义', anchor: 'transcript.editAttachmentsNote' },
   compactionRequested: { en: 'Compaction requested', zh: '已请求压缩', anchor: 'context.strategy.compactRequested.summarize' },
   exportArchive: { en: 'Export archive', zh: '导出归档', anchor: 'menu.export' },
   undoLastTurn: { en: 'Undo last turn', zh: '撤销最后一轮', anchor: 'menu.undo' },
@@ -681,7 +680,7 @@ async function scenarioRewriteFlow() {
   await firstRow.locator('[data-row-action="edit"]').click();
   const editor = page.locator('[data-edit-editor]');
   await editor.waitFor({ timeout: 5_000 });
-  await waitForText(S.editNote);
+  await editor.locator('textarea').waitFor({ state: 'visible', timeout: 5_000 });
   await shot('rewrite-flow-editing');
   await editor.locator('textarea').fill('First fixture question — edited resend.');
   await editor.locator('[data-edit-submit]').click();
@@ -786,13 +785,22 @@ async function scenarioSubagentInvocations() {
   await run.locator('[data-binding-advisories]').waitFor();
   if (!(await run.innerText()).includes('model_not_preferred')) throw new Error('binding advisory missing');
   if (!(await run.innerText()).includes('actual_profile: explore')) throw new Error('actual binding missing');
-  if (await run.locator('details').getAttribute('open') !== null) throw new Error('prompt was not folded by default');
+  // One expand is the whole read: the prompt is on screen verbatim, and no
+  // inner disclosure stands between the expand and the text it exists for.
+  const prompt = run.locator('[data-invocation-text="prompt"] pre');
+  await prompt.waitFor();
+  if (!(await prompt.innerText()).includes('核对原始工具帧中的输入和输出')) throw new Error('prompt body missing after one expand');
+  if (await run.locator('details').count() !== 0) throw new Error('a second collapse still stands between the expand and the prompt');
   await log.evaluate((node) => { node.scrollTop = 0; });
   await shot('subagent-agentrun-details');
   await runToggle.click();
   await log.locator('[data-invocation-toggle="send-lead"]').click();
   const send = log.locator('[data-invocation-tool="send-lead"]');
-  await send.locator('summary').click();
+  // The injected message reads straight out of the one expand: no summary to
+  // press first, and the whole body on screen rather than a truncated head.
+  const message = send.locator('[data-invocation-text="message"] pre');
+  await message.waitFor();
+  if (!(await message.innerText()).includes('请同时检查嵌套智能体')) throw new Error('injected message missing after one expand');
   if (!(await send.innerText()).includes('message-example')) throw new Error('send receipt missing');
   await send.scrollIntoViewIfNeeded();
   await shot('subagent-agentsend-details');
@@ -810,6 +818,30 @@ async function scenarioSubagentInvocations() {
   if (await live.getAttribute('data-card-form') !== 'full') throw new Error('running nested agent was folded');
   await done.scrollIntoViewIfNeeded();
   await shot('subagent-nested-completed-folded');
+  // A long prompt is the same reading purpose at a size that needs scrolling,
+  // so it opens on the one press too rather than behind its own control.
+  const longCard = childLog.locator('[data-subagent-id="agent-long"]').first();
+  await longCard.waitFor();
+  if (await longCard.getAttribute('data-nested-folded') !== 'true') throw new Error('completed nested agent did not default-fold');
+  await longCard.locator('[data-card-expand]').click();
+  await longCard.locator('[data-invocation-toggle="call-long"]').click();
+  const longBody = childLog.locator('[data-subagent-id="agent-long"] [data-invocation-tool="call-long"]').first();
+  await longBody.waitFor();
+  const longPrompt = longBody.locator('[data-invocation-text="prompt"] pre');
+  await longPrompt.waitFor();
+  // The long case is the same one-press read at a size that needs scrolling:
+  // the body opens at its first line and scrolls from there, so the reader
+  // lands on the beginning of the text rather than mid-paragraph.
+  if (!(await longPrompt.innerText()).startsWith('第 1 行')) throw new Error('long prompt did not open at its first line');
+  await longPrompt.evaluate((node) => { node.scrollTop = 0; });
+  await longBody.scrollIntoViewIfNeeded();
+  await longPrompt.evaluate((node) => { node.scrollTop = 0; });
+  // The child log keeps its own scroll; put the body at the top of the reading
+  // column so the shot shows where a reader actually lands.
+  await childLog.evaluate((node) => { node.scrollTop = 0; });
+  await longBody.evaluate((node) => { node.scrollIntoView({ block: 'start' }); });
+  await longPrompt.evaluate((node) => { node.scrollTop = 0; });
+  await shot('subagent-nested-long-body');
   await live.locator('[data-invocation-toggle="call-live"]').click();
   await live.scrollIntoViewIfNeeded();
   await shot('subagent-nested-running-expanded');
@@ -855,11 +887,7 @@ async function scenarioSubagents() {
   // session's workspace; the inspector does not repeat it.
   const launcher = page.locator('aside [data-nav-board]');
   const openBoardFromNav = async () => {
-    await launcher.click();
-    await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
-    if (!/\/board\?workspace=/.test(page.url())) throw new Error(`board link lost the workspace scope: ${page.url()}`);
-    await page.goBack();
-    await page.waitForSelector('[data-rail-toggle]', { timeout: 10_000 });
+    if (await launcher.count() !== 0) throw new Error('sidebar still exposes a board route');
   };
   await ensureRailOpen();
   if (await rail.locator('[data-session-task-board]').count() !== 0) throw new Error('inspector still repeats the board link');
@@ -895,14 +923,8 @@ async function scenarioSubagents() {
   await page.locator('[data-agent-panel-scroll]').evaluate((node) => { node.scrollTop = node.scrollHeight; });
   await page.waitForTimeout(100);
   await shot('subagents-relief-narrow');
-  await page.goto(page.url().replace(/\/s\/[^?]+/, '/board'), { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-task-board-page]', { timeout: 10_000 });
-  console.log('[check] narrow viewport opened the /board page');
-  await page.waitForTimeout(400);
-  await shot('board-page-narrow');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(300);
-  await shot('board-page');
   // The Scheduled tasks nav row opens /cron with the same workspace scope.
   await page.locator('aside [data-nav-cron]').click();
   await page.waitForSelector('[data-cron-page]', { timeout: 10_000 });
@@ -1528,6 +1550,72 @@ async function scenarioExternalHarness() {
   await shot('external-harness-resolved');
 }
 
+/**
+ * The engine's own facts inside an external turn: Claude Code reporting a
+ * dropped pasted image and reading its context twice, and Codex reading its
+ * own context once. Each is a quiet row in the engine's turn, the image drop
+ * is stated rather than swallowed, and a superseded reading is not a second
+ * row. Runs against fixtures/external-main.
+ */
+async function scenarioCodexClaudeEngineFacts() {
+  const openSettledActivity = async () => {
+    const fold = page.locator('[data-history-fold] [data-activity-toggle]').first();
+    if ((await fold.count()) > 0) await fold.click();
+  };
+  const rows = (note) => page.locator(`[data-executor-note="${note}"]`);
+
+  await selectSession('Fixture: Claude main');
+  await openSettledActivity();
+  await page.waitForSelector('[data-executor-note="usage"]', { timeout: 10_000 });
+  const claudeUsage = rows('usage');
+  if ((await claudeUsage.count()) !== 1) {
+    throw new Error(`a turn shows one context reading, saw ${await claudeUsage.count()}`);
+  }
+  const claudeText = await claudeUsage.first().innerText();
+  if (!claudeText.includes('Engine context: 61.7k of 200.0k tokens')) {
+    throw new Error(`the Claude context row reads ${JSON.stringify(claudeText)}`);
+  }
+  const dropped = rows('session').first();
+  const droppedText = await dropped.innerText();
+  if (!droppedText.includes('dropped an image you sent: the image is larger than Claude Code accepts')) {
+    throw new Error(`the dropped-image row reads ${JSON.stringify(droppedText)}`);
+  }
+  const droppedTitle = await dropped.getAttribute('title');
+  if (droppedTitle === null || !droppedTitle.includes('Pasted screenshot.png')) {
+    throw new Error(`the dropped-image tooltip reads ${JSON.stringify(droppedTitle)}`);
+  }
+  // The engine's own identity: the observed model, once, with its source and
+  // agent version kept in the tooltip rather than read as a Kiki model choice.
+  const claudeModel = rows('session-model');
+  if ((await claudeModel.count()) !== 1) {
+    throw new Error(`a session shows one engine identity, saw ${await claudeModel.count()}`);
+  }
+  const claudeModelText = await claudeModel.first().innerText();
+  if (!claudeModelText.includes('The engine is running claude-sonnet-4.5')) {
+    throw new Error(`the Claude identity row reads ${JSON.stringify(claudeModelText)}`);
+  }
+  const claudeModelTitle = await claudeModel.first().getAttribute('title');
+  if (claudeModelTitle === null || !claudeModelTitle.includes('claude-acp') || !claudeModelTitle.includes('0.84.0')) {
+    throw new Error(`the Claude identity tooltip reads ${JSON.stringify(claudeModelTitle)}`);
+  }
+  await page.waitForTimeout(300);
+  await shot('codex-claude-engine-facts-claude');
+
+  await selectSession('Fixture: Codex main');
+  await openSettledActivity();
+  await page.waitForSelector('[data-executor-note="usage"]', { timeout: 10_000 });
+  const codexText = await rows('usage').first().innerText();
+  if (!codexText.includes('Engine context: 6.1k of 272.0k tokens')) {
+    throw new Error(`the Codex context row reads ${JSON.stringify(codexText)}`);
+  }
+  const codexModelText = await rows('session-model').first().innerText();
+  if (!codexModelText.includes('The engine is running gpt-5.5-codex')) {
+    throw new Error(`the Codex identity row reads ${JSON.stringify(codexModelText)}`);
+  }
+  await page.waitForTimeout(300);
+  await shot('codex-claude-engine-facts-codex');
+}
+
 async function scenarioReconnect() {
   await selectSession('Fixture: reconnect');
   await sendPrompt('Start the two-segment stream.');
@@ -2039,11 +2127,14 @@ async function scenarioSettings() {
   await page.waitForTimeout(400);
   await shot('settings-mcp');
 
-  // Plugins leaf: the capability link, the catalog source, and the web-bridge
-  // runtime readiness card.
+  // Plugins leaf: the installed plugins, each row opening that plugin's own
+  // settings page. The web-bridge readiness card lives on the browser leaf now,
+  // where the rest of the browser-control answer is.
   await page.locator('nav [data-settings-nav-leaf="plugins"]').click();
-  await page.waitForSelector('#st-card-plugins [data-capability-link="plugins"]', { timeout: 10_000 });
-  await page.waitForSelector('#st-card-webbridge', { timeout: 10_000 });
+  await page.waitForSelector('#st-card-plugins [data-plugins-installed-list], #st-card-plugins [data-plugins-installed-empty]', { timeout: 10_000 });
+  if (await page.locator('#st-card-webbridge').count() !== 0) {
+    throw new Error('the plugins leaf must not carry the browser runtime card');
+  }
   await page.waitForTimeout(300);
   await shot('settings-plugins');
 
@@ -5149,8 +5240,23 @@ async function scenarioUsageDashboard() {
   await setProofTheme('light');
 }
 
-/** Flip the stored theme preference and wait for `<html data-theme>`. */
+/** Keep the fixture's authoritative theme and the device boot value in step. */
 async function setProofTheme(theme) {
+  const headers = { authorization: `Bearer ${FIXTURE_TOKEN}` };
+  const request = async (path, data) => {
+    const response = data === undefined
+      ? await page.request.get(`${fixtureUrl()}/api${path}`, { headers })
+      : await page.request.post(`${fixtureUrl()}/api${path}`, { headers, data });
+    const body = await response.json();
+    if (!response.ok() || body.code !== 0) throw new Error(`Theme fixture request failed: ${path}: ${body.msg}`);
+    return body.data;
+  };
+  const meta = await request('/meta');
+  if (!meta.current_space_id) throw new Error('Theme fixture has no confirmed space identity');
+  const path = `/homes/${encodeURIComponent(meta.current_space_id)}/settings`;
+  const preview = await request(`${path}/preview`, { action: 'edit', changes: [{ id: 'pref:theme', value: theme }] });
+  const applied = await request(`${path}/apply`, { token: preview.token, selected: ['pref:theme'] });
+  if (!applied.detail.preference_authority || applied.detail.preferences.theme !== theme) throw new Error('Theme fixture did not confirm the requested preference');
   await page.evaluate((next) => {
     const raw = localStorage.getItem('kiki.settings');
     const settings = raw === null ? {} : JSON.parse(raw);
@@ -5162,9 +5268,8 @@ async function setProofTheme(theme) {
 }
 
 /**
- * /board and /cron across both scopes: all workspaces (every row tagged)
- * and one workspace (filtered, scope control shows it), at 1440 and 820 in
- * both themes. Switching the scope must land in the URL.
+ * Cron across both scopes: all workspaces and one workspace, at 1440 and 820
+ * in both themes. Switching the scope must land in the URL.
  */
 async function scenarioWorkspaceTools() {
   const pageUrl = (path) => `${WEB_URL}${path}${path.includes('?') ? '&' : '?'}server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
@@ -5190,70 +5295,6 @@ async function scenarioWorkspaceTools() {
   await page.waitForTimeout(300);
   await shot('cron-all-dark');
   await setProofTheme('light');
-
-  await page.goto(pageUrl('/board'), { waitUntil: 'domcontentloaded' });
-  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
-  await page.waitForTimeout(500);
-  const allCards = await page.locator('[data-board-task-card]').count();
-  if (allCards !== 8) throw new Error(`board all-scope expected 8 cards, got ${allCards}`);
-  await shot('board-all');
-  await page.locator('[data-scope-option="wd_fixture_000000000000"]').click();
-  await page.waitForFunction(() => document.querySelectorAll('[data-board-task-card]').length === 5, null, { timeout: 10_000 });
-  if (!page.url().includes('workspace=wd_fixture_000000000000')) throw new Error(`board scope not in URL: ${page.url()}`);
-  await page.waitForTimeout(300);
-  await shot('board-workspace');
-  await resizeViewport(820);
-  await shot('board-workspace-820');
-  await setProofTheme('dark');
-  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
-  await page.waitForTimeout(400);
-  await shot('board-workspace-820-dark');
-  await resizeViewport(1440);
-  await shot('board-workspace-dark');
-  // Workspace tags are an all-workspaces affordance only.
-  if (await page.locator('[data-board-card-workspace]').count() !== 0) throw new Error('board workspace scope still tags cards with their workspace');
-  await page.locator('[data-scope-option="all"]').click();
-  await page.waitForFunction(() => document.querySelectorAll('[data-board-task-card]').length === 8, null, { timeout: 10_000 });
-  if (await page.locator('[data-board-card-workspace]').count() !== 8) throw new Error('board all-scope cards are missing their workspace tag');
-  await page.waitForTimeout(300);
-  await shot('board-all-dark');
-
-  // Card detail: markdown description, linked session, status transitions.
-  const openDetail = async () => {
-    await page.locator('[data-board-task-card*="board_tools_flaky"]').click();
-    await page.waitForSelector('[data-task-detail-description] ul', { timeout: 10_000 });
-    await page.waitForTimeout(300);
-  };
-  await openDetail();
-  await shot('board-detail-dark');
-  await page.keyboard.press('Escape');
-  await setProofTheme('light');
-  await page.waitForSelector('[data-board-task-card]', { timeout: 15_000 });
-  await openDetail();
-  if (await page.locator('[data-task-detail-move="in_progress"][aria-pressed="true"]').count() !== 1) throw new Error('board detail does not mark the current status');
-  if (await page.locator('[data-task-detail-open-session]').count() !== 1) throw new Error('board detail lost its linked session');
-  await shot('board-detail');
-  await resizeViewport(390);
-  await page.waitForTimeout(300);
-  await shot('board-detail-390');
-  await page.keyboard.press('Escape');
-  await page.waitForTimeout(300);
-  await shot('board-all-390');
-  await resizeViewport(820);
-  await shot('board-all-820');
-  await resizeViewport(1440);
-
-  // Status transition from the detail footer lands the card in the next lane.
-  await openDetail();
-  await page.locator('[data-task-detail-next="done"]').click();
-  await page.waitForSelector('[data-board-column="done"] [data-board-task-card*="board_tools_flaky"]', { timeout: 10_000 });
-  await page.waitForSelector('[data-task-detail-move="done"][aria-pressed="true"]', { timeout: 5000 });
-  await page.waitForTimeout(300);
-  await shot('board-detail-moved');
-  // A linked session opens straight from the detail.
-  await page.locator('[data-task-detail-open-session]').first().click();
-  await page.waitForFunction(() => !location.pathname.startsWith('/board'), null, { timeout: 10_000 });
-  console.log('[check] board detail session link left the board');
 }
 
 /**
@@ -5835,57 +5876,39 @@ async function scenarioFirstRun() {
   await page.waitForTimeout(450);
   await shot('onboarding-1-welcome');
 
-  // Welcome (language + theme, palette, picture on one page) → model.
+  // Welcome (language + theme, palette, picture on one page) → approvals:
+  // there is no model page in between, so the advance lands on the permission
+  // default. Connecting a model is a row on the closing guide, and the settings
+  // card it opens is the connections proofs' subject.
   await wizard().locator('[data-onboarding-appearance]').waitFor({ timeout: 5000 });
   await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
-  await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
-  await shot('onboarding-2-model-light');
-  await shot('onboarding-2-model');
-  // Back to the welcome page for the theme, then forward again.
+  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
+  if (await wizard().locator('[data-onboarding-model-id]').count() !== 0) {
+    throw new Error('the run must not hold a model form of its own');
+  }
+  await shot('onboarding-2-permissions');
+
+  // The look is applied live from the welcome page, so the dark view is one
+  // Back away rather than a second pass through a connection form.
   await wizardButton(S.onboardingBack).click();
   await wizardButton(job().view.locale === 'zh' ? '暗色' : 'Dark').click();
-  await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
-  await wizard().locator('[data-provider-template="moonshot"]').waitFor({ timeout: 5000 });
   await page.waitForFunction(() => document.documentElement.dataset.theme === 'dark');
-  await shot('onboarding-2-model-dark');
-  await wizardButton(S.onboardingBack).click();
+  await shot('onboarding-1-welcome-dark');
   await wizardButton(job().view.locale === 'zh' ? '亮色' : 'Light').click();
+  await page.waitForFunction(() => document.documentElement.dataset.theme === 'light');
   await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-preset-grid] input[type="search"]').fill('kimi');
-
-  // API-key lane: search result → key → server probe → pick a suggested model,
-  // then "Save & continue" persists.
-  await wizard().locator('[data-provider-template="moonshot"]').click();
-  await wizard().locator('input[type="password"]').fill('sk-proof-key');
-  await wizardButton(S.onboardingTest).click();
-  const chip = wizard().locator('[data-model-suggestion="kimi-for-coding"]');
-  await chip.waitFor({ timeout: 5000 });
-  await waitForText(S.onboardingTestedOk);
-  await chip.click();
-  const modelId = await wizard().locator('input[placeholder="model-id"]').inputValue();
-  if (modelId !== 'kimi-for-coding') {
-    throw new Error(`suggestion chip must fill the model input, saw "${modelId}"`);
-  }
-  await shot('onboarding-3-model-form');
+  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
+  await shot('onboarding-2-permissions-light');
 
   // Mobile width: the dialog stays single-column and inside the viewport.
   await page.setViewportSize({ width: 390, height: 844 });
   await page.waitForTimeout(250);
   const overflows = await page.evaluate(() => document.documentElement.scrollWidth > window.innerWidth + 1);
   if (overflows) throw new Error('onboarding dialog overflows the mobile viewport');
-  await shot('onboarding-3-model-form-mobile');
+  await shot('onboarding-2-permissions-mobile');
   await page.setViewportSize({ width: 1440, height: 900 });
   await page.waitForTimeout(250);
 
-  await wizardButton(S.onboardingSaveNext).click();
-  await wizard().locator('[data-permission-choice]').first().waitFor({ timeout: 5000 });
-  // Saved + advanced: going Back shows the persisted connection read-out.
-  await wizardButton(S.onboardingBack).click();
-  await waitForText(S.onboardingReady);
-  await shot('onboarding-3-model-saved');
-  await wizardButton(S.onboardingNext).click();
   await waitForText(S.onboardingRecommended);
   if (await wizard().locator('[data-workspace-choice]').count() !== 0) {
     throw new Error('onboarding must not ask for a workspace');
@@ -5895,55 +5918,35 @@ async function scenarioFirstRun() {
   if (checked !== 'auto') throw new Error(`permissions step must preselect auto, saw "${checked}"`);
   const offered = await wizard().locator('[data-permission-choice]').count();
   console.log(`[check] onboarding offers ${offered} permission modes`);
-  await shot('onboarding-5-permissions');
+  await shot('onboarding-2-permissions-checked');
 
-  // The wizard gained a capabilities page after permissions, so the primary
-  // button on the permissions step advances rather than finishes.
+  // The last step is one invitation and one action, and the action is the real
+  // /discover hub — which owns the capability list, the routes and the model
+  // connection, so the welcome carries none of them.
   await wizardButton(S.onboardingNext).click();
-  await wizard().locator('[data-onboarding-capabilities]').waitFor({ timeout: 5000 });
-  await shot('onboarding-5-capabilities');
+  await wizard().locator('[data-onboarding-discover]').waitFor({ timeout: 5000 });
+  await shot('onboarding-5-discover');
 
-  await wizardButton(S.onboardingFinish).click();
+  await wizardButton(S.onboardingDiscover).click();
   await page.waitForSelector('[role="dialog"]', { state: 'detached', timeout: 15_000 });
-  await page.waitForSelector('textarea', { timeout: 15_000 });
-  await page.waitForTimeout(600);
-  // Finish lands on the /new hero with an EMPTY composer and starter chips.
-  await page.waitForSelector('[data-phase="hero"]', { timeout: 15_000 });
-  const draft = await page.locator('textarea').first().inputValue();
-  if (draft !== '') throw new Error(`finish must not prefill the composer, saw "${draft.slice(0, 80)}"`);
-  const starters = await page.locator('[data-hero-starter]').count();
-  if (starters !== 4) throw new Error(`hero must offer 4 starter chips, saw ${starters}`);
-  await page.locator('[data-hero-starter]').first().click();
-  const filled = await page.locator('textarea').first().inputValue();
-  if (filled === '') throw new Error('a starter chip must fill the draft');
-  if (page.url().includes('/s/')) throw new Error('a starter chip must not send');
-  await shot('onboarding-6-finished');
-  await page.fill('textarea', '');
+  await page.waitForURL(/\/discover/, { timeout: 15_000 });
+  await page.waitForSelector('[data-discovery-page]', { timeout: 15_000 });
+  await page.waitForTimeout(400);
+  await shot('onboarding-6-discover-hub');
 
-  // The saved provider seeds the server's default model; the composer must not
-  // greet the first session with a stale "model unavailable" diagnostic.
-  const serverDefault = await page.evaluate(async ([base, token]) => {
-    const res = await fetch(`${base}/api/config`, {
-      headers: { authorization: `Bearer ${token}` },
-    });
-    return (await res.json()).data?.default_model;
-  }, [fixtureUrl(), FIXTURE_TOKEN]);
-  const diagnostics = await page.locator('[data-selection-diagnostic]').allTextContents();
-  console.log(`[first-run] server default_model=${JSON.stringify(serverDefault)} diagnostics=${JSON.stringify(diagnostics)}`);
-  if (diagnostics.length !== 0) {
-    throw new Error(`finish leaves a selection diagnostic on /new: ${diagnostics.join(' | ')}`);
+  // Nothing is configured in this fixture, and the hub states that instead of
+  // greeting the user with a stale selection. Creating a provider is the
+  // connections proofs' subject (visual-proof-models-page.mjs), not this walk's.
+  const hubModelState = await page.locator('[data-discovery-model-connection] [data-model-connection]').getAttribute('data-model-connection');
+  if (hubModelState !== 'missing') {
+    throw new Error(`with nothing configured the hub must say so, saw "${hubModelState}"`);
   }
+  console.log(`[first-run] model connection on the hub with nothing configured=${hubModelState}`);
 
-  // Reload: onboarding stays completed and the saved provider keeps the
-  // wizard from ever auto-opening again.
-  await page.reload({ waitUntil: 'domcontentloaded' });
-  await page.waitForSelector(`text=${S.newSession}`, { timeout: 30_000 });
-  await page.waitForTimeout(1200);
-  if ((await page.locator('[role="dialog"]').count()) !== 0) {
-    throw new Error('onboarding wizard reopened after completion');
-  }
-  const diagnosticsAfter = await page.locator('[data-selection-diagnostic]').allTextContents();
-  console.log(`[first-run] diagnostics after reload=${JSON.stringify(diagnosticsAfter)}`);
+  // No reload check here: this fixture's own context script clears
+  // `kiki.onboarding` on every load (that is what makes the wizard auto-open at
+  // all), so a reload cannot prove the run is never offered twice. The rule
+  // itself is `shouldOfferOnboarding`, covered by the unit tests.
 }
 
 // ---------------------------------------------------------------------------
@@ -6191,6 +6194,159 @@ async function scenarioSettingsAppearance() {
   });
 }
 
+/**
+ * Workspace-row new session and composer history edges.
+ * Reuses the two-workspace sidebar fixture. The open conversation is workspace
+ * B; the plus on workspace A must not follow it.
+ */
+async function scenarioWorkspaceHistory() {
+  const wsA = 'wd_fixture_000000000000';
+  const wsB = 'wd_fixture_000000000001';
+  await page.waitForSelector('[data-view-menu-toggle]', { timeout: 15_000 });
+  await page.waitForSelector('textarea[data-composer]', { timeout: 20_000 });
+  await page.fill('textarea[data-composer]', 'keep this draft');
+
+  await pickViewOption('[data-group-by="workspace"]');
+  await closeViewMenu();
+  await page.waitForSelector(`[data-session-group-new="${wsA}"]`, { timeout: 10_000 });
+  if (await page.locator('[data-session-group-new="pinned"]').count() !== 0) {
+    throw new Error('pinned group forged a new-session target');
+  }
+
+  await selectSession('ws-b beta');
+  const sessionDraft = 'session draft stays';
+  await page.fill('textarea[data-composer]', sessionDraft);
+
+  const headerA = page.locator(`[data-session-group-header="${wsA}"]`);
+  await headerA.hover();
+  const plusA = page.locator(`[data-session-group-new="${wsA}"]`);
+  const hoverOpacity = Number(await plusA.evaluate((element) => getComputedStyle(element).opacity));
+  if (hoverOpacity < 0.9) throw new Error(`workspace plus stayed hidden on hover (${hoverOpacity})`);
+  await shot('workspace-new-hover');
+  await plusA.focus();
+  const focusOpacity = Number(await plusA.evaluate((element) => getComputedStyle(element).opacity));
+  if (focusOpacity < 0.9) throw new Error(`workspace plus stayed hidden on focus (${focusOpacity})`);
+  await shot('workspace-new-focus');
+
+  const expandedBefore = await page.locator(`[data-session-group="${wsA}"]`).getAttribute('aria-expanded');
+  if (expandedBefore !== 'true') throw new Error(`workspace A was already folded (${expandedBefore})`);
+  await plusA.click();
+  await page.waitForURL(new RegExp(`/new\\?workspace=${wsA}`), { timeout: 10_000 });
+  const opened = new URL(page.url());
+  if (opened.searchParams.get('workspace') !== wsA) {
+    throw new Error(`new draft did not use workspace A: ${opened.search}`);
+  }
+  if (opened.searchParams.get('workspace') === wsB) {
+    throw new Error('new draft followed the open session workspace');
+  }
+  await page.waitForFunction((name) => {
+    const chip = document.querySelector('[data-hero-workspace]');
+    const text = chip?.textContent ?? '';
+    return text.includes(name) && !text.includes('other');
+  }, 'fixture', { timeout: 10_000 });
+  await page.waitForFunction(() => {
+    const node = document.querySelector('textarea[data-composer]');
+    return node instanceof HTMLTextAreaElement && node.value === 'keep this draft';
+  }, undefined, { timeout: 10_000 });
+  const expandedAfter = await page.locator(`[data-session-group="${wsA}"]`).getAttribute('aria-expanded');
+  if (expandedAfter !== 'true') throw new Error('the workspace plus folded the group');
+  if (await page.locator('aside').getByText('Fixture: ws-a alpha', { exact: false }).count() === 0) {
+    throw new Error('workspace A rows disappeared after the plus');
+  }
+  await shot('workspace-new-target-a');
+
+  await selectSession('ws-b beta');
+  await page.waitForFunction((expected) => {
+    const node = document.querySelector('textarea[data-composer]');
+    return node instanceof HTMLTextAreaElement && node.value === expected;
+  }, sessionDraft, { timeout: 10_000 });
+  await shot('workspace-session-draft-restored');
+
+  await page.fill('textarea[data-composer]', 'boundary prompt');
+  await page.press('textarea[data-composer]', 'Enter');
+  await page.waitForFunction(() => {
+    const node = document.querySelector('textarea[data-composer]');
+    const sent = document.body.textContent?.includes('boundary prompt') === true;
+    return sent && node instanceof HTMLTextAreaElement && node.value === '';
+  }, undefined, { timeout: 15_000 });
+
+  const wrapped = `${'alpha '.repeat(80).trim()}`;
+  await page.fill('textarea[data-composer]', wrapped);
+  const textarea = page.locator('textarea[data-composer]');
+  await textarea.focus();
+  const before = await textarea.evaluate((node) => {
+    const at = Math.min(180, node.value.length - 1);
+    node.setSelectionRange(at, at);
+    return node.selectionStart;
+  });
+  await page.keyboard.press('ArrowUp');
+  const moved = await textarea.evaluate((node) => ({ start: node.selectionStart, value: node.value }));
+  if (moved.value !== wrapped) throw new Error(`ArrowUp replaced wrapped text: ${moved.value.slice(0, 80)}`);
+  if (moved.start >= before) {
+    throw new Error(`ArrowUp did not move the caret inside wrapped text (${before} -> ${moved.start})`);
+  }
+  await shot('composer-wrap-arrow-up');
+
+  const multiline = 'line one stays\nline two stays';
+  await page.fill('textarea[data-composer]', multiline);
+  await textarea.evaluate((node, value) => {
+    node.focus();
+    const at = value.indexOf('\n') + 3;
+    node.setSelectionRange(at, at);
+  }, multiline);
+  await page.keyboard.press('ArrowUp');
+  if (await textarea.inputValue() !== multiline) {
+    throw new Error('ArrowUp on the second line replaced the draft');
+  }
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(2, 2);
+  });
+  await page.keyboard.press('ArrowUp');
+  if (await textarea.inputValue() !== multiline) {
+    throw new Error('ArrowUp on the first logical line, not the text start, replaced the draft');
+  }
+
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(0, 0);
+  });
+  await page.keyboard.press('ArrowUp');
+  await page.waitForFunction(() => {
+    const node = document.querySelector('textarea[data-composer]');
+    return node instanceof HTMLTextAreaElement && node.value === 'boundary prompt';
+  }, undefined, { timeout: 5_000 });
+
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(node.value.length, node.value.length);
+  });
+  await page.keyboard.press('ArrowUp');
+  if (await textarea.inputValue() !== 'boundary prompt') {
+    throw new Error('ArrowUp while browsing ignored the end boundary');
+  }
+  await textarea.evaluate((node) => {
+    node.focus();
+    node.setSelectionRange(0, 0);
+  });
+  await page.keyboard.press('Shift+ArrowUp');
+  if (await textarea.inputValue() !== 'boundary prompt') {
+    throw new Error('Shift+ArrowUp recalled history');
+  }
+  await page.keyboard.press('Escape');
+  if (await textarea.inputValue() !== multiline) {
+    throw new Error(`Escape did not restore the draft: ${await textarea.inputValue()}`);
+  }
+  await shot('composer-history-restored');
+
+  await page.click('[data-new-session]');
+  await page.waitForURL(/\/new(?:\?|$)/, { timeout: 10_000 });
+  const globalNew = new URL(page.url());
+  if (globalNew.searchParams.has('workspace')) {
+    throw new Error(`the global new-session button pinned a workspace: ${globalNew.search}`);
+  }
+}
+
 // ---------------------------------------------------------------------------
 
 /**
@@ -6227,6 +6383,9 @@ function scenario(name, run, extra = {}) {
 const ENTRY_EXTRA = {
   'first-run': { onboarding: false },
   cockpit: { fixture: 'rail-scale' },
+  // Two engines' own facts, read from the one fixture that carries both.
+  'codex-claude-engine-facts': { fixture: 'external-main' },
+  'workspace-history': { fixture: 'sidebar-organize' },
 };
 
 /** Walk order. `responsive` shrinks the viewport, so it stays last. */
@@ -6255,12 +6414,14 @@ const BODIES = [
   ['error-abort', scenarioErrorAbort],
   ['approvals-gallery', scenarioApprovalsGallery],
   ['external-harness', scenarioExternalHarness],
+  ['codex-claude-engine-facts', scenarioCodexClaudeEngineFacts],
   ['external-main', scenarioExternalMain],
   ['reconnect', scenarioReconnect],
   ['reconnect-mid-turn', scenarioReconnectMidTurn],
   ['resync-hold', scenarioResyncHold],
   ['session-pages', scenarioSessionPages],
   ['sidebar-organize', scenarioSidebarOrganize],
+  ['workspace-history', scenarioWorkspaceHistory],
   ['empty-states', scenarioEmptyStates],
   ['new-no-workspace', scenarioNewNoWorkspace],
   ['first-run', scenarioFirstRun],

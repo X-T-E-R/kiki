@@ -8,14 +8,13 @@
  * are named `ia-<page>-<theme>-<width>`.
  */
 
-const PAGES = ['general', 'connection', 'sessions', 'permissions', 'tasks', 'hooks', 'workspaces', 'developer', 'labs', 'about'];
+const PAGES = ['general', 'connection', 'sessions', 'permissions', 'extensions', 'browser-control', 'hooks', 'workspaces', 'developer', 'about'];
 
 /** Feature pages and the experimental flags whose rows they must show. */
 const EXPERIMENTAL_PAGES = [
-  ['agents', ['agent-profile-routes']],
-  ['subagents', ['subagent_release_idle']],
-  ['mcp', ['tool-select', 'external_delegation_mcp']],
-  ['tasks', ['task_wait', 'task_board']],
+  ['agents', ['agent-profile-routes', 'subagent_release_idle']],
+  ['extensions', ['tool-select', 'external_delegation_mcp']],
+  ['sessions', ['session_idle_eviction', 'task_wait', 'local_session_resume']],
 ];
 
 /** Old section URLs and card hashes that other code or bookmarks still use. */
@@ -23,9 +22,9 @@ const REDIRECTS = [
   ['/settings/automation', 'permissions', null],
   ['/settings/communication#st-card-notify-parent', 'sessions', 'st-card-agent-messaging'],
   ['/settings/advanced', 'developer', null],
-  ['/settings/experimental#st-card-tool-experiments', 'labs', 'st-card-labs'],
-  ['/settings/labs#st-card-mcp-delegation', 'mcp', 'st-card-exp-mcp'],
-  ['/settings/agents#st-card-subagent-release-idle', 'subagents', 'st-card-exp-subagents'],
+  ['/settings/experimental#st-card-tool-experiments', 'developer', 'st-card-labs'],
+  ['/settings/labs#st-card-mcp-delegation', 'extensions', 'st-card-exp-extensions'],
+  ['/settings/agents#st-card-subagent-release-idle', 'agents', 'st-card-exp-agents'],
   ['/settings/ai?tab=defaults#st-card-reviewer', 'permissions', 'st-card-reviewer'],
   ['/settings/tasks#st-card-defaults', 'sessions', 'st-card-defaults'],
 ];
@@ -62,16 +61,26 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
       if (overflow > 1) throw new Error(`${section} overflows horizontally by ${overflow}px at ${width}`);
       await shot(`ia-${section}-${theme}-${width}`);
     }
+    await open('/settings/ai?tab=identity');
+    await shot(`ia-ai-identity-${theme}-${width}`);
+    await open('/settings/agents?tab=dispatch');
+    await shot(`ia-agents-dispatch-${theme}-${width}`);
+    await open('/settings/extensions?tab=skills');
+    await shot(`ia-extensions-skills-${theme}-${width}`);
+    await open('/settings/extensions?tab=mcp');
+    await shot(`ia-extensions-mcp-${theme}-${width}`);
+    await open('/settings/browser-control?tab=computer');
+    await shot(`ia-browser-computer-${theme}-${width}`);
   }
 
   async function nav(theme) {
     await open('/settings/permissions');
     if (await page.locator('nav [data-settings-nav-storage]').count() > 0) throw new Error('nav still draws scope blocks');
     const groups = await page.locator('nav [data-settings-nav-tree] > *').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-settings-nav-group')));
-    if (groups.join(',') !== 'device,connection,models-agents,work,capabilities,advanced') throw new Error(`nav groups: ${groups.join(',')}`);
+    if (groups.join(',') !== 'device,models-agents,sessions-work,capabilities,rules,connection,advanced') throw new Error(`nav groups: ${groups.join(',')}`);
     const leavesOf = async (id) => page.locator(`nav [data-settings-nav-group="${id}"] [data-settings-nav-leaf]`).evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-settings-nav-leaf')));
-    const work = await leavesOf('work');
-    if (!work.includes('workspaces')) throw new Error(`workspaces is not under work: ${work.join(',')}`);
+    const work = await leavesOf('sessions-work');
+    if (!work.includes('workspaces')) throw new Error(`workspaces is not under sessions-work: ${work.join(',')}`);
     const connection = await leavesOf('connection');
     if (!connection.includes('spaces')) throw new Error(`spaces is not under connection: ${connection.join(',')}`);
     const navText = await page.locator('nav').first().innerText();
@@ -109,8 +118,8 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
     if (await page.locator('#st-card-labs [data-experimental-row]').count() > 0) throw new Error('labs still holds switches');
     // Follow one link: it must land on the flag's own row.
     await page.locator('[data-labs-entry="external_delegation_mcp"] a').click();
-    await page.waitForURL(/\/settings\/mcp/, { timeout: 10_000 });
-    await page.waitForSelector('#st-card-exp-mcp.settings-card-flash', { timeout: 5000 });
+    await page.waitForURL(/\/settings\/extensions/, { timeout: 10_000 });
+    await page.waitForSelector('#st-card-exp-extensions.settings-card-flash', { timeout: 5000 });
     await page.waitForTimeout(700);
     await shot(`ia-labs-landed-${theme}-1440`);
   }

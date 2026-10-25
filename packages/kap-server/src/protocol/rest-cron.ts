@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { cronDeliveryModeSchema } from '@kiki/protocol';
 
 export const cronTaskSchema = z.object({
   id: z.string(),
@@ -9,12 +10,31 @@ export const cronTaskSchema = z.object({
   prompt_preview: z.string(),
   next_fire_at: z.string().nullable(),
   recurring: z.boolean(),
+  delivery_mode: cronDeliveryModeSchema,
   paused: z.boolean(),
   age_days: z.number(),
   stale: z.boolean(),
   created_at: z.string(),
   last_fired_at: z.string().nullable(),
 });
+
+export const cronTaskDetailSchema = cronTaskSchema.extend({ prompt: z.string() });
+
+export const cronTaskDetailResponseSchema = z.object({ task: cronTaskDetailSchema });
+
+export const createCronTaskRequestSchema = z.object({
+  session_id: z.string().min(1),
+  cron: z.string().trim().min(1),
+  prompt: z.string().refine((value) => value.trim().length > 0, 'prompt must not be blank'),
+  recurring: z.boolean().optional(),
+  delivery_mode: cronDeliveryModeSchema.optional(),
+  paused: z.boolean().optional(),
+}).strict();
+
+export const updateCronTaskRequestSchema = createCronTaskRequestSchema
+  .omit({ paused: true })
+  .partial()
+  .refine((value) => Object.keys(value).length > 0, 'at least one editable field is required');
 
 export const listCronTasksQuerySchema = z.object({
   session_id: z.string().min(1).optional(),

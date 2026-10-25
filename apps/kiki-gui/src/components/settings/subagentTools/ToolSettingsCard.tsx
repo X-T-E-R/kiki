@@ -10,7 +10,7 @@
  * are shown in that session's agent panel.
  */
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { errorText } from '@kiki/session-core/i18n';
@@ -27,7 +27,9 @@ import {
 } from '@kiki/session-core/settings';
 import { subagentToolsDraftFromConfig, subagentToolsPatch } from '@kiki/session-core/settings/subagentToolsSettings';
 import type { ListNamedAgentProfilesResponse, NamedAgentProfile, ToolDescriptor } from '@kiki/protocol';
+import type { KikiConfigPatch } from '../../../lib/client';
 
+import { DefaultOnSwitch, optionalCapabilityState } from '../../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../../i18n';
 import { invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../../lib/agentProfileCatalog';
 import { toolDisplayName } from '../../../lib/pluginCatalog';
@@ -57,6 +59,44 @@ import {
 /** The editor id this card's draft transaction reports under (see `dirtyGuard`). */
 const DRAFT_EDITOR_ID = 'subagent-tool-draft';
 
+function WebCapabilityControls() {
+  const { client } = useConnection();
+  const { t } = useI18n();
+  const queryClient = useQueryClient();
+  const query = useQuery({
+    queryKey: ['config', 'web-capability'],
+    queryFn: () => client.getConfig(),
+    enabled: typeof client.getConfig === 'function' && typeof client.patchConfig === 'function',
+    staleTime: 30_000,
+  });
+  const state = optionalCapabilityState(query.data, 'web');
+  if (state === undefined) return null;
+  const write = (patch: KikiConfigPatch) => {
+    void client.patchConfig(patch).then((echoed) => {
+      queryClient.setQueryData(['config', 'web-capability'], echoed);
+    });
+  };
+  return (
+    <div data-web-capability className="space-y-2 border-b border-hairline pb-3">
+      <div className="flex items-center justify-between gap-4">
+        <span className="text-[13px] text-ink">{t('cap.web')}</span>
+        <button
+          type="button"
+          role="switch"
+          aria-checked={state.allowed}
+          data-web-allow
+          disabled={state.host_locked}
+          onClick={() => { write({ optional_capabilities: { web_allowed: state.allowed ? false : null } }); }}
+          className="min-h-6 rounded px-2 text-[12px] text-ink-soft disabled:opacity-40"
+        >
+          {t(state.allowed ? 'cap.choice.on' : 'cap.choice.off')}
+        </button>
+      </div>
+      <DefaultOnSwitch id="web" state={state} onChange={(next) => { write({ optional_capabilities: { defaults: { web: next } } }); }} />
+    </div>
+  );
+}
+
 type ToolDraft =
   | { readonly kind: 'rule'; readonly allowedTools: readonly string[] }
   | { readonly kind: 'profile'; readonly object: string; readonly target: NamedAgentProfile; readonly profile: SubagentProfileToolDraft };
@@ -67,7 +107,11 @@ export function SubagentToolSettingsCard() {
   const queryClient = useQueryClient();
   const navigate = useGuardedNavigate();
   const guard = useDirtyGuard();
-  const [object, setObject] = useState<string>(DEFAULT_TOOL_OBJECT);
+  const [object, setObject] = useState<string>(() => {
+    if (typeof window === 'undefined') return DEFAULT_TOOL_OBJECT;
+    const requested = new URLSearchParams(window.location.search).get('object');
+    return requested !== null && requested !== '' ? requested : DEFAULT_TOOL_OBJECT;
+  });
   const [draft, setDraft] = useState<ToolDraft | null>(null);
   const [query, setQuery] = useState('');
   const [selectedTool, setSelectedTool] = useState<string | null>(null);
@@ -120,7 +164,16 @@ export function SubagentToolSettingsCard() {
         || !sameToolLists(draft.profile.tools, draftBaseline.tools)
         || !sameToolLists(draft.profile.disallowedTools, draftBaseline.disallowedTools);
 
-  const profile = object === DEFAULT_TOOL_OBJECT ? undefined : profiles.find((candidate) => profileIdentityKey(candidate) === object);
+  const profile = object === DEFAULT_TOOL_OBJECT ? undefined
+    : profiles.find((candidate) => profileIdentityKey(candidate) === object)
+      ?? profiles.find((candidate) => candidate.name === object);
+
+  useEffect(() => {
+    if (object !== DEFAULT_TOOL_OBJECT && profile !== undefined) {
+      const canonicalKey = profileIdentityKey(profile);
+      if (canonicalKey !== object) setObject(canonicalKey);
+    }
+  }, [object, profile]);
   const profileFields = useMemo(
     () => (profile === undefined ? [] : subagentProfileToolFields(profile)),
     [profile],
@@ -372,7 +425,7 @@ export function SubagentToolSettingsCard() {
         editable={profileEditable}
         native={nativeExecutor}
         onEdit={() => { setEditorOpen(true); }}
-        onNewSession={() => { navigate(namedAgentSessionHref(profile)); }}
+        onNewSession={() => { void navigate(namedAgentSessionHref(profile)); }}
         sessionBlocked={namedAgentNewSessionBlocked(profile)}
       />
     );
@@ -382,6 +435,7 @@ export function SubagentToolSettingsCard() {
     <SectionCard id="st-card-subagent-tool-defaults" title={t('st.subagentTools.title')}>
       <div className="space-y-3">
         <Hint>{t('st.subagentTools.hint')}</Hint>
+        <WebCapabilityControls />
         <fieldset disabled={saving} className="min-w-0 space-y-3 disabled:opacity-60">
           <div className="space-y-1" data-subagent-tools-object-row>
             <SettingField label={t('st.subagentTools.objectLabel')} labelId="subagent-tools-object-label">

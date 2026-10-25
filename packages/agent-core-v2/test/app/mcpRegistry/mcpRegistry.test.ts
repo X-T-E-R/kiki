@@ -102,7 +102,7 @@ describe('McpRegistryService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     vi.unstubAllEnvs();
     await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
   });
@@ -471,7 +471,7 @@ describe('McpRegistryService space inheritance', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     vi.unstubAllEnvs();
     await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
   });

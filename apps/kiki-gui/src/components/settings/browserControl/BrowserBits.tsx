@@ -1,8 +1,8 @@
 /**
  * Small pieces of the browser slice: the connection state mark (dot + word), the
  * named conditions of the ecosystems this version does not drive yet, and the
- * folded run facts — the status fields, the connected daemon's own target list,
- * and the managed backend's capability catalogue.
+ * folded run facts — the status fields, the connected browser's own target list,
+ * and the backend's capability catalogue.
  *
  * The words are the control service's own (`app/browser/browser.ts`
  * `BrowserStatus.state`). Only three of them carry a colour: a failure is
@@ -23,10 +23,11 @@ import { InlineError, Toggle } from '../../controls';
 import { INPUT, SECONDARY_BUTTON } from '../../ui';
 import { AdvancedDetails } from '../fields';
 import {
-  AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_STATES, browserApi, browserKeys, whenText, type BrowserStatus,
+  AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_STATES, browserApi, browserKeys, whenText, type BrowserConnectionType, type BrowserStatus,
 } from '../../../lib/browserRest';
 
-const STATE_KEYS: Readonly<Record<string, I18nKey>> = {  idle: 'st.browser.state.idle',
+const STATE_KEYS: Readonly<Record<string, I18nKey>> = {
+  idle: 'st.browser.state.idle',
   connecting: 'st.browser.state.connecting',
   ready: 'st.browser.state.ready',
   running: 'st.browser.state.running',
@@ -34,6 +35,8 @@ const STATE_KEYS: Readonly<Record<string, I18nKey>> = {  idle: 'st.browser.state
   disconnected: 'st.browser.state.disconnected',
   failed: 'st.browser.state.failed',
   unconfirmed: 'st.browser.state.unconfirmed',
+  requires_action: 'st.browser.status.requires_action',
+  unsupported: 'st.browser.status.unsupported',
   /** Not a service state: the connection is switched off in its configuration. */
   disabled: 'st.browser.state.disabled',
 };
@@ -72,36 +75,22 @@ export function BrowserStateMark({ state, compact = false }: {
   );
 }
 
-/** The ecosystems the design keeps on the route but this version does not drive. */
-const OTHER_ECOSYSTEMS = [
-  { id: 'webbridge', name: 'st.browser.other.webbridge.name', condition: 'st.browser.other.webbridge' },
-  { id: 'cloud', name: 'st.browser.other.cloud.name', condition: 'st.browser.other.cloud' },
-  { id: 'codex', name: 'st.browser.other.codex.name', condition: 'st.browser.other.codex' },
-  { id: 'executors', name: 'st.browser.other.executors.name', condition: 'st.browser.other.executors' },
-] as const satisfies readonly { id: string; name: I18nKey; condition: I18nKey }[];
-
 /**
- * Named, not clickable: each line is the real condition for that route, and the
- * page says outright that it is not wired. An inert button would claim a
- * capability the server does not have.
+ * The one other browser route that exists outside this page, named as the trip
+ * to where it is actually installed. It used to sit here as four inert lines of
+ * conditions; the Kimi route now has a real place in the wizard above, so what
+ * is left is the plugin page this page sends a reader to when the extension they
+ * want is installed from Kiki's plugin catalog rather than a store.
  */
 export function OtherBrowserEcosystems() {
   const { t } = useI18n();
   return (
-    <AdvancedDetails summary={t('st.browser.otherTitle')} data-browser-other>
-      <p className="max-w-[62ch]">{t('st.browser.otherHint')}</p>
-      <dl className="space-y-2">
-        {OTHER_ECOSYSTEMS.map((row) => (
-          <div key={row.id} data-browser-other-row={row.id}>
-            <dt className="flex flex-wrap items-baseline gap-1.5">
-              <span className="font-medium text-ink">{t(row.name)}</span>
-              {row.id === 'webbridge' ? <Link to="/settings/plugins" className="text-ink-soft underline underline-offset-2" data-browser-webbridge-link>{t('st.browser.other.webbridge.action')}</Link> : <Tag>{t('st.browser.other.state')}</Tag>}
-            </dt>
-            <dd className="max-w-[62ch]">{t(row.condition)}</dd>
-          </div>
-        ))}
-      </dl>
-    </AdvancedDetails>
+    <div className="space-y-1.5" data-browser-other>
+      <p className="max-w-[62ch] text-[12px] text-ink-faint">{t('st.browser.otherHint')}</p>
+      <Link to="/settings/plugins" className="inline-block text-[12px] text-selected-ink hover:underline" data-browser-webbridge-link>
+        {t('st.browser.other.webbridge.action')}
+      </Link>
+    </div>
   );
 }
 
@@ -112,9 +101,16 @@ export function OtherBrowserEcosystems() {
  * launches Chromium; schemas are a second, separate opt-in). The status facts
  * are the read's own fields; nothing here is inferred and no context tree is
  * drawn, because the service does not report one — the catalogue's own
- * `contextIsolation` token is shown as the server sent it.
+ * `contextIsolation` token is named in words, and stays as sent when it is a
+ * token this page does not know.
  */
-export function BrowserRuntimeDetails({ id, status }: { readonly id: string; readonly status: BrowserStatus }) {
+export function BrowserRuntimeDetails({ id, type, status }: {
+  readonly id: string;
+  /** The saved branch: the bridge reports a version and a tool list of its own,
+   *  with no managed build behind either. */
+  readonly type: BrowserConnectionType;
+  readonly status: BrowserStatus;
+}) {
   const { t, locale } = useI18n();
   const { client, scopeId } = useConnection();
   const [opened, setOpened] = useState(false);
@@ -159,9 +155,10 @@ export function BrowserRuntimeDetails({ id, status }: { readonly id: string; rea
         <dd className="min-w-0 break-all font-mono text-ink-soft" data-browser-execution-host>{status.executionHost}</dd>
         <dt className="text-ink-faint">{t('st.browser.detail.ownership')}</dt>
         <dd className="text-ink-soft" data-browser-ownership={status.ownership ?? 'unknown'}>
-          {status.ownership === undefined ? t('st.browser.ownership.unknown')
-            : status.ownership === 'managed-profile' ? t('st.browser.ownership.managedProfile')
-              : t('st.browser.ownership.externalBrowser')}
+          {type === 'kimi-webbridge' || type === 'webbridge-command' ? t('st.browser.ownership.webbridge')
+            : status.ownership === undefined ? t('st.browser.ownership.unknown')
+              : status.ownership === 'managed-profile' ? t('st.browser.ownership.managedProfile')
+                : t('st.browser.ownership.externalBrowser')}
         </dd>
         {status.runtimeSession === undefined ? null : (
           <>
@@ -177,10 +174,14 @@ export function BrowserRuntimeDetails({ id, status }: { readonly id: string; rea
         )}
         <dt className="text-ink-faint">{t('st.browser.detail.generation')}</dt>
         <dd className="text-ink-soft tabular-nums" data-browser-generation>{status.generation}</dd>
-        <dt className="text-ink-faint">{t('st.browser.detail.driverVersion')}</dt>
+        <dt className="text-ink-faint">{t(type === 'kimi-webbridge' || type === 'webbridge-command' ? 'st.browser.detail.bridgeVersion' : 'st.browser.detail.driverVersion')}</dt>
         <dd className="text-ink-soft" data-browser-driver-version>
           {status.driverVersion ?? t('st.browser.detail.driverUnknown')}
-          <span className="text-ink-faint"> · {t('st.browser.detail.driverRequirement', { version: AGENT_BROWSER_VERSION, markers: AGENT_BROWSER_MARKERS })}</span>
+          {/* The managed build is a real requirement of the agent-browser driver;
+              the bridge answers for itself, so nothing is demanded of it here. */}
+          {type === 'kimi-webbridge' || type === 'webbridge-command' ? null : (
+            <span className="text-ink-faint"> · {t('st.browser.detail.driverRequirement', { version: AGENT_BROWSER_VERSION, markers: AGENT_BROWSER_MARKERS })}</span>
+          )}
         </dd>
         <dt className="text-ink-faint">{t('st.browser.detail.checkedAt')}</dt>
         <dd className="text-ink-soft">{checkedAt ?? t('st.browser.detail.checkedNever')}</dd>
@@ -232,7 +233,7 @@ export function BrowserRuntimeDetails({ id, status }: { readonly id: string; rea
         <p className="font-medium">{t('st.browser.catalog.title')}</p>
         {!readCatalog ? (
           <>
-            <p className="max-w-[62ch]">{t(live ? 'st.browser.catalog.readHint' : 'st.browser.catalog.readHintIdle')}</p>
+            <p className="max-w-[62ch]">{t(type === 'kimi-webbridge' || type === 'webbridge-command' ? 'st.browser.catalog.readHintWebbridge' : live ? 'st.browser.catalog.readHint' : 'st.browser.catalog.readHintIdle')}</p>
             <button type="button" className={SECONDARY_BUTTON} data-browser-catalog-read
               onClick={() => { setReadCatalog(true); }}>
               {t('st.browser.catalog.read')}
@@ -246,7 +247,7 @@ export function BrowserRuntimeDetails({ id, status }: { readonly id: string; rea
             <p className="text-ink-soft">
               <span className="font-mono tabular-nums text-ink" data-browser-catalog-count>{catalogQuery.data.backendToolCount}</span>
               {' '}{t('st.browser.catalog.backendCount')}
-              <span className="text-ink-faint"> · {t('st.browser.catalog.isolation')} <span className="font-mono">{catalogQuery.data.contextIsolation}</span></span>
+              <span className="text-ink-faint"> · {t('st.browser.catalog.isolation')}{locale === 'zh' ? '：' : ': '}<span data-browser-catalog-isolation title={catalogQuery.data.contextIsolation}>{isolationLabel(t, catalogQuery.data.contextIsolation)}</span></span>
             </p>
             {capabilities.length === 0 ? <p data-browser-catalog-empty>{t('st.browser.catalog.empty')}</p> : (
               <>
@@ -321,6 +322,25 @@ function surfaceLabel(t: ReturnType<typeof useI18n>['t'], surface: string): stri
   const key = SURFACE_KEYS[surface];
   return key === undefined ? surface : t(key);
 }
+
+/**
+ * What the catalogue says about where its calls land. The server sends one of
+ * three tokens and nothing else: the Kimi bridge answers for the main frame of
+ * the selected tab only, the official extension keeps its own tab ids, and the
+ * managed driver runs each call in an opaque window context. A token outside
+ * that list stays as sent — it is never rounded to one of these, because each
+ * one of them names a different browser model.
+ */
+function isolationLabel(t: ReturnType<typeof useI18n>['t'], isolation: string): string {
+  const key = ISOLATION_KEYS[isolation];
+  return key === undefined ? isolation : t(key);
+}
+
+const ISOLATION_KEYS: Readonly<Record<string, I18nKey>> = {
+  'opaque-context-through-window': 'st.browser.catalog.isolation.window',
+  'official-extension-tab-ids': 'st.browser.catalog.isolation.officialTabs',
+  'main-frame-only': 'st.browser.catalog.isolation.mainFrame',
+};
 
 const GROUP_KEYS: Readonly<Record<string, I18nKey>> = {
   page: 'st.browser.group.page',

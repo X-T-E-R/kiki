@@ -6,10 +6,12 @@
  */
 
 import { act } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
+import { writeIaPrototypeMode } from '../../lib/settingsIaPrototype';
 import { SettingsNav } from './SettingsNav';
 import { UnknownSettingsSection } from './UnknownSection';
 
@@ -34,14 +36,24 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function render(node: React.ReactNode): Promise<HTMLDivElement> {
+async function render(node: React.ReactNode, queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
   await act(async () => {
-    root.render(<I18nProvider>{node}</I18nProvider>);
+    root.render(
+      // The navigation reads the installed-plugin cache to name what can be
+      // opened. A harness with no server gives it an empty cache rather than a
+      // missing provider, which is the state it renders in before a connection.
+      <QueryClientProvider client={queryClient}>
+        <I18nProvider>{node}</I18nProvider>
+      </QueryClientProvider>,
+    );
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
   });
   return container;
 }
@@ -63,6 +75,32 @@ async function click(element: Element): Promise<void> {
 const noop = () => {};
 
 describe('SettingsNav grouped tree', () => {
+  it('ignores stored prototype mode, renders no picker, keeps the 7 groups, and uses real names for renamed leaves', async () => {
+    writeIaPrototypeMode('objects');
+    try {
+      const container = await render(
+        <SettingsNav active="connection" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+      );
+      // No experimental picker rendered
+      expect(container.querySelector('[data-settings-ia-picker]')).toBeNull();
+
+      // Groups stay the 7 purpose groups
+      const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
+      expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
+        .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
+
+      // Assert leaf labels for connection, connection-services, extensions, browser-control, and developer
+      const leafText = (id: string) => container.querySelector(`[data-settings-nav-leaf="${id}"]`)?.textContent?.trim();
+      expect(leafText('connection')).toBe('Server connection');
+      expect(leafText('connection-services')).toBe('Access from elsewhere');
+      expect(leafText('extensions')).toBe('Extensions & tools');
+      expect(leafText('browser-control')).toBe('Browser & computer');
+      expect(leafText('developer')).toBe('Developer & labs');
+    } finally {
+      writeIaPrototypeMode(null);
+    }
+  });
+
   it('draws one continuous list of intent groups, every leaf reachable', async () => {
     const container = await render(
       <SettingsNav active="ai" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
@@ -75,27 +113,29 @@ describe('SettingsNav grouped tree', () => {
     expect(container.textContent).not.toMatch(/This device|All sessions|127\.0\.0\.1/);
     const groups = [...container.querySelectorAll('[data-settings-nav-group]')];
     expect(groups.map((group) => group.getAttribute('data-settings-nav-group')))
-      .toEqual(['device', 'connection', 'models-agents', 'work', 'capabilities', 'workspace', 'advanced']);
+      .toEqual(['device', 'models-agents', 'sessions-work', 'capabilities', 'rules', 'connection', 'advanced']);
     expect(groups.map((group) => group.querySelector('p')?.textContent))
-      .toEqual(['App', 'Connection & remote', 'Models & agents', 'How work runs', 'Capabilities', 'Workspaces', 'Advanced']);
+      .toEqual(['App', 'Models & agents', 'Sessions & work', 'Capabilities', 'Permissions & rules', 'Connection & remote', 'Advanced']);
     for (const group of groups) expect(group.querySelector(':scope > button')).toBeNull();
     const leaves = (index: number) => [...groups[index]!.querySelectorAll('[data-settings-nav-leaf]')].map((leaf) => leaf.getAttribute('data-settings-nav-leaf'));
-    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts']);
-    expect(leaves(1)).toEqual(['connection', 'ssh']);
-    expect(leaves(2)).toEqual(['ai', 'connection-services', 'identity', 'agents', 'subagents']);
-    expect(leaves(3)).toEqual(['sessions', 'notifications', 'memory', 'permissions', 'tasks']);
-    expect(leaves(4)).toEqual(['skills', 'mcp', 'plugins', 'search', 'browser-control', 'computer-control', 'hooks']);
-    expect(leaves(5)).toEqual(['workspaces', 'spaces']);
-    expect(leaves(6)).toEqual(['developer', 'labs', 'about']);
+    expect(leaves(0)).toEqual(['general', 'appearance', 'shortcuts', 'notifications']);
+    expect(leaves(1)).toEqual(['ai', 'agents']);
+    expect(leaves(2)).toEqual(['sessions', 'workspaces', 'memory']);
+    expect(leaves(3)).toEqual(['extensions', 'search', 'browser-control']);
+    expect(leaves(4)).toEqual(['permissions', 'hooks']);
+    // Spaces and external services sit with the ways of reaching a server;
+    // workspaces with the sessions that run in them.
+    expect(leaves(5)).toEqual(['connection', 'spaces', 'ssh', 'connection-services']);
+    expect(leaves(6)).toEqual(['developer', 'about']);
   });
 
   it('highlights only the active leaf and navigates on click', async () => {
     const visited: string[] = [];
     const container = await render(
-      <SettingsNav active="skills" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
+      <SettingsNav active="extensions" searchFocusToken={null} onNavigate={(id) => { visited.push(id); }} onSearchHit={noop} />,
     );
     const active = [...container.querySelectorAll('[aria-current="page"]')];
-    expect(active.map((button) => button.textContent)).toEqual(['Skills']);
+    expect(active.map((button) => button.textContent)).toEqual(['Extensions & tools']);
     // Selection is the shared row rule (a paper sheet + inset mark from
     // .row-interactive[aria-current]), not an accent fill.
     expect(active[0]!.classList.contains('row-interactive')).toBe(true);
@@ -150,6 +190,50 @@ describe('SettingsNav grouped tree', () => {
     await click(subtabButtons[2]!);
     expect(visited).toEqual(['search?tab=fetch']);
   });
+
+  it('updates nav error indicators after a background failure, recovery and removal without navigation', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await render(
+      <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />,
+      queryClient,
+    );
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
+    const fail = async () => {
+      await queryClient.fetchQuery({ queryKey: ['config'], queryFn: async () => { throw new Error('connection unavailable'); } }).catch(() => undefined);
+    };
+    await act(fail);
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).not.toBeNull();
+    await act(async () => { queryClient.setQueryData(['config'], { raw: {} }); });
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
+    await act(fail);
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).not.toBeNull();
+    await act(async () => { queryClient.removeQueries({ queryKey: ['config'] }); });
+    expect(container.querySelector('[data-settings-nav-error="ai"]')).toBeNull();
+    expect(container.querySelector('[aria-current="page"]')?.getAttribute('data-settings-nav-leaf')).toBe('general');
+  });
+
+  it('marks a nav leaf with data-settings-nav-error when its cached query or installed plugin has an error', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['plugins', 'local'], {
+      plugins: [{ id: 'broken-plugin', displayName: 'Broken', state: 'error', enabled: true }],
+    });
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <SettingsNav active="general" searchFocusToken={null} onNavigate={noop} onSearchHit={noop} />
+          </I18nProvider>
+        </QueryClientProvider>,
+      );
+    });
+    expect(container.querySelector('[data-settings-nav-error="extensions"]')).not.toBeNull();
+    expect(container.querySelector('[data-settings-nav-error="general"]')).toBeNull();
+  });
 });
 
 describe('UnknownSettingsSection', () => {
@@ -164,6 +248,6 @@ describe('UnknownSettingsSection', () => {
     await typeInto(input, 'mcp server');
     const option = container.querySelector('[role="option"]')!;
     await click(option);
-    expect(hits).toEqual(['mcp']);
+    expect(hits).toEqual(['extensions']);
   });
 });

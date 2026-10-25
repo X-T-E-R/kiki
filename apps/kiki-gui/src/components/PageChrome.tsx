@@ -13,26 +13,40 @@ import { useSearchParams } from 'react-router-dom';
 import type { Workspace } from '@kiki/protocol';
 
 import { useI18n } from '../i18n';
+import { useSidebarContext } from './sidebarContext';
 import { Icon } from './icons';
 import { NavBackButton } from './NavBackButton';
+
+export const PAGE_WIDTH = {
+  reading: 'max-w-[720px]',
+  split: 'max-w-[1040px]',
+  dashboard: 'max-w-[1120px]',
+} as const;
+
+export type PageWidth = keyof typeof PAGE_WIDTH;
 
 export function PageHeader({
   title,
   onToggleSidebar,
+  width,
   children,
 }: {
   title: string;
   onToggleSidebar: () => void;
+  width?: PageWidth;
   /** Right-aligned controls (refresh, primary action). */
   children?: ReactNode;
 }) {
   const { t } = useI18n();
-  return (
-    <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-2 bg-paper px-4 py-2 lg:px-6">
+  const { sidebarOpen } = useSidebarContext();
+  const content = (
+    <>
       <button
         type="button"
         onClick={onToggleSidebar}
         aria-label={t('sv.openMenuAria')}
+        aria-expanded={sidebarOpen}
+        aria-controls="app-sidebar"
         className="flex h-11 w-11 shrink-0 items-center justify-center rounded-md text-ink-soft transition-colors hover:bg-panel hover:text-ink md:hidden"
       >
         <Icon name="menu" size={16} />
@@ -42,6 +56,23 @@ export function PageHeader({
         {title}
       </h1>
       {children}
+    </>
+  );
+  if (width === undefined) {
+    return (
+      <header className="flex min-h-12 shrink-0 flex-wrap items-center gap-x-2 gap-y-2 bg-paper px-4 py-2 lg:px-6">
+        {content}
+      </header>
+    );
+  }
+  return (
+    <header className="flex min-h-12 shrink-0 items-center bg-paper px-4 py-2 lg:px-6">
+      <div
+        data-page-header-inner={width}
+        className={`mx-auto flex w-full ${PAGE_WIDTH[width]} flex-wrap items-center gap-x-2 gap-y-2`}
+      >
+        {content}
+      </div>
     </header>
   );
 }

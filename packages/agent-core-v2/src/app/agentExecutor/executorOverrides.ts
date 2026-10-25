@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { executionContextSchema, executionPermissionSchema } from '@kiki/protocol';
+import { agentExecutorDisplayConfigSchema, executionContextSchema, executionPermissionSchema } from '@kiki/protocol';
 import { executorPromptSchema } from '@kiki/agent-profiles/executorPrompt';
 
 import { registerConfigSection } from '#/app/config/configSectionContributions';
@@ -21,9 +21,11 @@ export const EXECUTOR_OVERRIDE_SOURCE_ID = 'override';
 export const AgentExecutorDefaultsSchema = z.strictObject({
   model_alias: z.string().min(1).optional(),
   thinking_effort: z.string().min(1).optional(),
+  native_agent: z.string().trim().min(1).optional(),
   permission_mode: executionPermissionSchema.optional(),
   kiki_context: z.array(executionContextSchema).optional(),
   allow_kiki_subagents: z.boolean().optional(),
+  inject_kiki_mcp: z.boolean().optional(),
   executor_prompt: executorPromptSchema.optional(),
 });
 export type AgentExecutorDefaults = z.infer<typeof AgentExecutorDefaultsSchema>;
@@ -34,7 +36,27 @@ export const AgentExecutorOverrideSchema = z.object({
   homeDir: z.string().trim().min(1).optional(),
   env: z.record(z.string(), z.string()).optional(),
   args: z.array(z.string()).optional(),
+  showInProfileList: z.boolean().optional(),
 }).strict();
+
+export const AGENT_EXECUTOR_DISPLAY_SECTION = 'agentExecutorDisplay';
+
+registerConfigSection(AGENT_EXECUTOR_DISPLAY_SECTION, agentExecutorDisplayConfigSchema, {
+  defaultValue: {},
+  merge: (base, patch) => {
+    const merged = deepMerge(base, patch) as Record<string, unknown>;
+    if (isPlainObject(patch) && patch['externalsVisible'] === null) delete merged['externalsVisible'];
+    if (isPlainObject(patch) && patch['discoveryInitialized'] === null) delete merged['discoveryInitialized'];
+    return merged;
+  },
+  toToml: (value) => {
+    if (!isPlainObject(value)) return {};
+    const toml: Record<string, unknown> = {};
+    if (value['externalsVisible'] !== undefined) toml['externals_visible'] = value['externalsVisible'];
+    if (value['discoveryInitialized'] !== undefined) toml['discovery_initialized'] = value['discoveryInitialized'];
+    return toml;
+  },
+});
 
 export const AgentExecutorOverridesSchema = z.record(z.string(), AgentExecutorOverrideSchema);
 export type AgentExecutorOverride = z.infer<typeof AgentExecutorOverrideSchema>;
@@ -51,6 +73,7 @@ function mergeAgentExecutorOverrides(
     const entry = { ...merged[id] };
     if (raw['binPath'] === null) delete entry['binPath'];
     if (raw['homeDir'] === null) delete entry['homeDir'];
+    if (raw['showInProfileList'] === null) delete entry['showInProfileList'];
     if (raw['args'] === null || (Array.isArray(raw['args']) && raw['args'].length === 0)) delete entry['args'];
     const envPatch = raw['env'];
     if (envPatch === null) {
@@ -80,11 +103,13 @@ function mergeAgentExecutorOverrides(
 const TOML_TO_RUNTIME = {
   bin_path: 'binPath',
   home_dir: 'homeDir',
+  show_in_profile_list: 'showInProfileList',
 } as const;
 
 const RUNTIME_TO_TOML = {
   binPath: 'bin_path',
   homeDir: 'home_dir',
+  showInProfileList: 'show_in_profile_list',
 } as const;
 
 export function agentExecutorOverridesFromToml(value: unknown): unknown {

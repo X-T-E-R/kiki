@@ -1,17 +1,34 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { useQueryClient } from '@tanstack/react-query';
 
 import type { I18nKey } from '@kiki/session-core/i18n';
 import {
+  PLUGIN_SETTINGS_QUERY_KEY,
   SETTINGS_NAV_TREE,
   buildSettingsSearchIndex,
+  canonicalNavSection,
   searchSettings,
   settingsSectionLabels,
   type SettingsNavGroupSpec,
+  type SettingsNavNode,
   type SettingsSearchEntry,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
+import { useOptionalInstalledPlugins } from '../capabilities/usePlugins';
 import { SECTIONS, type SectionId } from './sections';
+
+const LEAF_QUERY_PREFIXES: Readonly<Record<string, readonly (readonly unknown[])[]>> = {
+  ai: [['config']],
+  workspaces: [['workspaces', 'catalog']],
+  memory: [['memory-settings']],
+  extensions: [['workspace-skills'], ['mcp-managed-servers'], ['plugins']],
+  skills: [['workspace-skills']],
+  mcp: [['mcp-managed-servers']],
+  plugins: [['plugins']],
+  'browser-control': [['browser'], ['capability', 'kiki-computer']],
+  'computer-control': [['capability', 'kiki-computer']],
+};
 
 /**
  * Settings search field plus its hit list. Both the wide nav column and the
@@ -22,6 +39,7 @@ export function SettingsSearch({
   onSearchHit,
   className = '',
   idle,
+  navTree = SETTINGS_NAV_TREE,
 }: {
   /** Changes on every Ctrl+, so a repeat press refocuses; null means no focus. */
   focusToken: string | null;
@@ -29,11 +47,15 @@ export function SettingsSearch({
   className?: string;
   /** Navigation shown while the field is empty; hits replace it while typing. */
   idle?: React.ReactNode;
+  /** Navigation tree the breadcrumb group line follows. */
+  navTree?: readonly SettingsNavNode[];
 }) {
   const { t } = useI18n();
   const [query, setQuery] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
-  const index = useMemo(() => buildSettingsSearchIndex(settingsSectionLabels(t), t), [t]);
+  const index = useMemo(() => {
+    return buildSettingsSearchIndex(settingsSectionLabels(t), t, navTree);
+  }, [t, navTree]);
   const results = useMemo(() => searchSettings(index, query), [index, query]);
   const searching = query.trim() !== '';
 
@@ -104,32 +126,70 @@ export function SettingsSearch({
  */
 export function SettingsNavTree({
   active,
+  activeTab,
+  activePluginId,
   onNavigate,
   onAfterNavigate,
+  tree = SETTINGS_NAV_TREE,
 }: {
   /** Null on the unknown-section page: tree stays visible, nothing highlighted. */
   active: SectionId | null;
+  activeTab?: string | null;
+  /**
+   * The installed plugin whose own settings page is open, when one is. The
+   * Plugins group expands to name it, so the reader can see where they are
+   * without opening anything.
+   */
+  activePluginId?: string | null;
   onNavigate: (section: SectionId) => void;
   /** Drawer hosts pass a close hook; the desktop rail leaves it unset. */
   onAfterNavigate?: () => void;
+  /** Navigation tree. */
+  tree?: readonly SettingsNavNode[];
 }) {
   const { t } = useI18n();
+  const queryClient = useQueryClient();
+  // The Plugins group lists what is installed, so the reader can jump straight
+  // to one plugin's settings without going back through the list first. It
+  // reads the query the list reads, so it costs nothing extra and never shows
+  // a plugin the list would not.
+  const installed = useOptionalInstalledPlugins();
+  const plugins = installed.plugins;
   const labelFor = (id: string) => SECTIONS.find((section) => section.id === id)?.labelKey;
+  const activeCanonical = active !== null ? canonicalNavSection(active, activeTab) : null;
+
+  const subscribeErrors = useCallback((listener: () => void) => queryClient.getQueryCache().subscribe(listener), [queryClient]);
+  const readErrors = useCallback(() => Object.entries(LEAF_QUERY_PREFIXES).filter(([id, queryKeys]) => {
+    const cached = queryKeys.flatMap((queryKey) => queryClient.getQueryCache().findAll({ queryKey }));
+    return cached.some((query) => query.state.status === 'error' || (id === 'plugins' || id === 'extensions') &&
+      (query.state.data as { plugins?: { state?: string; hasErrors?: boolean }[] } | undefined)?.plugins?.some(
+        (plugin) => plugin.state === 'error' || plugin.hasErrors === true,
+      ));
+  }).map(([id]) => id).join('\0'), [queryClient]);
+  const errorKeys = useSyncExternalStore(subscribeErrors, readErrors, readErrors);
+  const errorLeaves = useMemo(() => new Set(errorKeys.split('\0')), [errorKeys]);
+
   const leafButton = (id: string) => {
     const labelKey = labelFor(id);
     if (labelKey === undefined) return null;
+    const isPluginContainer = id === 'plugins' || id === 'extensions';
+    const isCurrent = (id === active || id === activeCanonical) && !(isPluginContainer && activePluginId !== null && activePluginId !== undefined);
+    const errored = errorLeaves.has(id) || isPluginContainer && plugins.some((plugin) => plugin.state === 'error' || plugin.hasErrors);
     return (
       <button
         key={id}
         type="button"
         data-settings-nav-leaf={id}
-        aria-current={active === id ? 'page' : undefined}
+        aria-current={isCurrent ? 'page' : undefined}
         onClick={() => { onNavigate(id as SectionId); onAfterNavigate?.(); }}
-        className={`row-interactive flex h-8 items-center px-3 text-left text-[13px] ${
-          active === id ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+        className={`row-interactive flex h-8 items-center gap-2 px-3 text-left text-[13px] ${
+          isCurrent ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
         }`}
       >
-        {t(labelKey)}
+        <span className="min-w-0 flex-1 truncate">{t(labelKey)}</span>
+        {errored ? (
+          <span aria-hidden data-settings-nav-error={id} className="inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-danger" />
+        ) : null}
       </button>
     );
   };
@@ -142,7 +202,7 @@ export function SettingsNavTree({
     { tab: 'advanced', labelKey: 'st.nbSearch.tab.advanced' },
   ];
 
-  const groups = SETTINGS_NAV_TREE.filter(
+  const groups = tree.filter(
     (node): node is SettingsNavGroupSpec => node.kind === 'group' && node.sections.length > 0,
   );
 
@@ -157,7 +217,7 @@ export function SettingsNavTree({
             {node.sections.map((id) => (
               <div key={id} className="flex flex-col">
                 {leafButton(id)}
-                {id === 'search' && active === 'search' ? (
+                {id === 'search' && (active === 'search' || activeCanonical === 'search') ? (
                   <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="search">
                     {nbSearchSubtabs.map((sub) => (
                       <button
@@ -175,6 +235,32 @@ export function SettingsNavTree({
                     ))}
                   </div>
                 ) : null}
+                {(id === 'plugins' || id === 'extensions') && (active === id || activeCanonical === id) && plugins.length > 0 ? (
+                  <div className="mt-0.5 flex flex-col gap-0.5" data-settings-nav-subtabs="plugins">
+                    {plugins.map((plugin) => (
+                      <button
+                        key={plugin.id}
+                        type="button"
+                        data-settings-nav-plugin={plugin.id}
+                        aria-current={activePluginId === plugin.id ? 'page' : undefined}
+                        onClick={() => {
+                          onNavigate(`plugins?${PLUGIN_SETTINGS_QUERY_KEY}=${encodeURIComponent(plugin.id)}` as unknown as SectionId);
+                          onAfterNavigate?.();
+                        }}
+                        className={`row-interactive flex min-h-7 items-center gap-1.5 truncate py-1 pl-5 pr-2 text-left text-[12px] ${
+                          activePluginId === plugin.id ? 'font-medium text-ink' : 'text-ink-soft hover:text-ink'
+                        }`}
+                      >
+                        <span className="min-w-0 flex-1 truncate">{plugin.displayName}</span>
+                        {plugin.state === 'error' || plugin.hasErrors ? (
+                          <span className="shrink-0 text-[11px] font-medium text-danger">{t('cap.state.error')}</span>
+                        ) : plugin.enabled ? null : (
+                          <span className="shrink-0 text-[11px] text-ink-faint">{t('cap.state.off')}</span>
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
               </div>
             ))}
           </div>
@@ -186,11 +272,15 @@ export function SettingsNavTree({
 
 export function SettingsNav({
   active,
+  activeTab,
+  activePluginId,
   searchFocusToken,
   onNavigate,
   onSearchHit,
 }: {
   active: SectionId | null;
+  activeTab?: string | null;
+  activePluginId?: string | null;
   searchFocusToken: string | null;
   onNavigate: (section: SectionId) => void;
   onSearchHit: (entry: SettingsSearchEntry) => void;
@@ -201,7 +291,8 @@ export function SettingsNav({
       <SettingsSearch
         focusToken={searchFocusToken}
         onSearchHit={onSearchHit}
-        idle={<SettingsNavTree active={active} onNavigate={onNavigate} />}
+        navTree={SETTINGS_NAV_TREE}
+        idle={<SettingsNavTree active={active} activeTab={activeTab} activePluginId={activePluginId} onNavigate={onNavigate} tree={SETTINGS_NAV_TREE} />}
       />
     </nav>
   );

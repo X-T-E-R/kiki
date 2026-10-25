@@ -65,7 +65,7 @@ export class GoalMarkerComponent implements Component {
     }
     if (!this.expanded) {
       return this.clampToWidth(
-        [`${this.indent}${dot} ${head} ${currentTheme.fg('textMuted', '(ctrl+o)')}`],
+        [`${this.indent}${dot} ${head} ${currentTheme.fg('textMuted', '(Ctrl+O)')}`],
         width,
       );
     }

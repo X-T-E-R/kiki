@@ -9,6 +9,7 @@ const {
   onTrayNewSession,
   pickDirectories: selectDirectoriesNative,
   pickDirectory: selectDirectoryNative,
+  pickFilePath: selectFilePathNative,
   pickFiles: selectFilesNative,
   openUrl: openExternalUrl,
 } = tauriHost;
@@ -44,6 +45,42 @@ describe('native desktop bridge', () => {
     vi.unstubAllGlobals();
   });
 
+  it('shares the outstanding desktop IPC result and permits an explicit retry after failure', async () => {
+    let reject!: (error: Error) => void;
+    invoke.mockReturnValueOnce(new Promise((_resolve, no) => { reject = no; }));
+    const first = tauriHost.connection.discover();
+    const second = tauriHost.connection.discover();
+    const outcomes = Promise.allSettled([first, second]);
+    expect(invoke).toHaveBeenCalledOnce();
+    reject(new Error('startup failed'));
+    expect((await outcomes).map((item) => item.status)).toEqual(['rejected', 'rejected']);
+    const config = { url: 'http://127.0.0.1:43123', token: 'fixture-token' };
+    invoke.mockResolvedValueOnce(config);
+    await expect(tauriHost.connection.discover()).resolves.toEqual({ config, persist: false });
+    expect(invoke).toHaveBeenCalledTimes(2);
+  });
+
+  it('waits for cancellation and the old IPC to finish before admitting a new startup', async () => {
+    let rejectOld!: (error: Error) => void;
+    let cancelDone!: () => void;
+    invoke.mockReturnValueOnce(new Promise((_resolve, no) => { rejectOld = no; }))
+      .mockReturnValueOnce(new Promise<void>((resolve) => { cancelDone = resolve; }));
+    const old = tauriHost.connection.discover().catch(() => undefined);
+    const cancel = tauriHost.connection.cancelStartup();
+    const next = tauriHost.connection.discover();
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(['desktop_connection', 'cancel_desktop_startup']);
+    cancelDone();
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledTimes(2);
+    const config = { url: 'http://127.0.0.1:43124', token: 'fixture-token' };
+    invoke.mockResolvedValueOnce(config);
+    rejectOld(new Error('cancelled'));
+    await old;
+    await cancel;
+    await expect(next).resolves.toEqual({ config, persist: false });
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual(['desktop_connection', 'cancel_desktop_startup', 'desktop_connection']);
+  });
+
   it.each([
     ['/C:/work/中 dir', 'C:/work/中 dir'],
     ['/D:\\work\\dir', 'D:\\work\\dir'],
@@ -62,6 +99,7 @@ describe('native desktop bridge', () => {
   it('blocks native file and directory operations in SSH scope and restores local operations', async () => {
     tauriHost.connection.setWorkspaceScope('ssh');
     try {
+      await expect(tauriHost.pickFilePath()).rejects.toThrow('SSH workspace');
       await expect(tauriHost.pickDirectory()).rejects.toThrow('SSH workspace');
       await expect(tauriHost.pickDirectories()).rejects.toThrow('SSH workspace');
       await expect(tauriHost.revealPath('/home/dev/project')).rejects.toThrow('SSH workspace');
@@ -239,6 +277,14 @@ describe('native desktop bridge', () => {
 
     open.mockResolvedValueOnce(null);
     await expect(selectDirectoriesNative()).resolves.toBeNull();
+  });
+
+  it('picks a local file path without statting or reading its contents', async () => {
+    open.mockResolvedValueOnce('C:/work/profiles/research.md');
+    await expect(selectFilePathNative()).resolves.toBe('C:/work/profiles/research.md');
+    expect(open).toHaveBeenCalledWith({ directory: false, multiple: false });
+    expect(stat).not.toHaveBeenCalled();
+    expect(readFile).not.toHaveBeenCalled();
   });
 
   it('stats native file picks without reading their contents eagerly', async () => {

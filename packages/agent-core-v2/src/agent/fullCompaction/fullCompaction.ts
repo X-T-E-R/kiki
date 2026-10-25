@@ -24,6 +24,7 @@ export interface IAgentFullCompactionService {
   readonly _serviceBrand: undefined;
 
   readonly compacting: FullCompactionTask | null;
+  readonly queuedManualCompaction: boolean;
   isCompacting(): boolean;
   begin(input: FullCompactionInput): boolean;
   cancel(): void;

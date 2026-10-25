@@ -27,6 +27,8 @@ import type {
   PageResponse,
   PatchConfigRequest,
   ProbeProviderRequest,
+  PromptItem,
+  PromptSubmission,
   ProbeProviderResponse,
   PromptListResponse,
   RestoreSessionResponse,
@@ -120,6 +122,28 @@ export interface NotificationCredentialCheck {
   error_kind?: NotificationErrorKind;
 }
 
+export interface HttpRestManagedAdapterInstallation {
+  readonly version: string;
+  readonly integrity: string;
+  readonly source: string;
+  readonly install_id: string;
+}
+
+export interface HttpRestManagedAdapterStatus {
+  readonly id: string;
+  readonly release: {
+    readonly package_name: string;
+    readonly version: string;
+    readonly integrity: string;
+    readonly source: string;
+    readonly entry: string;
+  };
+  readonly active?: HttpRestManagedAdapterInstallation;
+  readonly previous?: HttpRestManagedAdapterInstallation;
+  readonly phase: 'idle' | 'downloading' | 'verifying' | 'installing' | 'activating' | 'failed';
+  readonly error?: string;
+}
+
 /** HTTP deadlines and cancellation remain active until the response body is consumed. */
 export interface HttpRestRequestOptions {
   readonly signal?: AbortSignal;
@@ -200,6 +224,7 @@ export interface HttpRestPluginMarketplaceEntry {
   };
   readonly version?: string;
   readonly source: string;
+  readonly sha256?: string;
   readonly installed?: { readonly version?: string; readonly enabled: boolean };
   readonly updateAvailable?: boolean;
 }
@@ -266,12 +291,32 @@ export interface HttpRestCronTask {
   readonly prompt_preview: string;
   readonly next_fire_at: string | null;
   readonly recurring: boolean;
+  /**
+   * Effective delivery mode. Older hosts omit the field; absent then reads as
+   * `idle`, the default a host applies on the task's next fire.
+   */
+  readonly delivery_mode?: import('@kiki/protocol').CronDeliveryMode;
   readonly paused: boolean;
   readonly age_days: number;
   readonly stale: boolean;
   readonly created_at: string;
   readonly last_fired_at: string | null;
 }
+
+export interface HttpRestCronTaskDetail extends HttpRestCronTask {
+  readonly prompt: string;
+}
+
+export interface HttpRestCreateCronTask {
+  readonly session_id: string;
+  readonly cron: string;
+  readonly prompt: string;
+  readonly recurring?: boolean;
+  readonly delivery_mode?: import('@kiki/protocol').CronDeliveryMode;
+  readonly paused?: boolean;
+}
+
+export type HttpRestUpdateCronTask = Partial<Omit<HttpRestCreateCronTask, 'paused'>>;
 
 /** `session_id` disambiguates a task id that exists in several sessions. */
 export interface HttpRestCronTaskQuery {
@@ -290,6 +335,7 @@ export type HttpRestConfigPatch = PatchConfigRequest & {
  * arbitrary URL or untyped request escape hatch.
  */
 export interface HttpRestFacade {
+  readonly outputLayer: import('./output-layer.js').OutputLayerFacade;
   readonly externalClients: import('./external-clients.js').ExternalClientsFacade;
   readonly webAccess: import('./web-access.js').WebAccessFacade;
   readonly connections: import('./connections.js').ConnectionsFacade;
@@ -302,7 +348,7 @@ export interface HttpRestFacade {
     readonly lease_id: string;
     readonly expires_at: number;
   } | undefined>;
-  usage(query: Record<string, string | number | boolean | undefined>): Promise<UsageResponse>;
+  usage(query: Record<string, string | readonly string[] | number | boolean | undefined>, options?: HttpRestRequestOptions): Promise<UsageResponse>;
   requestGovernance(): Promise<import('@kiki/protocol').RequestGovernanceSnapshot>;
   agentActivity(): Promise<import('@kiki/protocol').AgentActivitySnapshot>;
   readonly usageRescan: {
@@ -321,7 +367,17 @@ export interface HttpRestFacade {
   };
 
   readonly browser: {
+    setupPresets(): Promise<import('@kiki/protocol').BrowserSetupList>;
+    setupStatus(preset: import('@kiki/protocol').BrowserPresetId): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    prepare(preset: import('@kiki/protocol').BrowserPresetId, input: import('@kiki/protocol').BrowserSetupPrepareInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    connectPreset(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupConnectInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    openPreset(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupOpenInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    updatePreset(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupUpdateInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    createShortcut(preset: import('@kiki/protocol').BrowserPresetId, input?: import('@kiki/protocol').BrowserSetupShortcutInput): Promise<import('@kiki/protocol').BrowserSetupStatus>;
+    cancelSetup(preset: import('@kiki/protocol').BrowserPresetId): Promise<import('@kiki/protocol').BrowserSetupStatus>;
     list(): Promise<import('@kiki/protocol').BrowserControlList>;
+    /** Writes `browser_control` through POST /config. `enabled` is the existing native_browser flag. */
+    saveSettings(patch: import('@kiki/protocol').BrowserControlSettingsPatch): Promise<import('@kiki/protocol').ConfigResponse>;
     upsert(id: string, input: import('@kiki/protocol').BrowserConnectionInput): Promise<{ readonly connection: import('@kiki/protocol').BrowserConnection }>;
     remove(id: string): Promise<{ readonly removed: true }>;
     setDefault(browser?: string): Promise<{ readonly browser?: string }>;
@@ -362,7 +418,7 @@ export interface HttpRestFacade {
   };
 
   readonly sessions: {
-    list(query?: HttpRestListSessionsQuery): Promise<import('@kiki/protocol').ListSessionsResponse>;
+    list(query?: HttpRestListSessionsQuery, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').ListSessionsResponse>;
     listEphemeral(query?: Pick<HttpRestListSessionsQuery, 'before_id' | 'page_size' | 'workspace_id' | 'persona'>): Promise<import('@kiki/protocol').ListEphemeralSessionsResponse>;
     create(body: SessionCreate): Promise<Session>;
     saveEphemeral(sessionId: string): Promise<Session>;
@@ -375,14 +431,18 @@ export interface HttpRestFacade {
     updateProfile(sessionId: string, body: UpdateSessionProfileRequest): Promise<Session>;
     getPersonaSettings(sessionId: string): Promise<import('@kiki/protocol').SessionPersonaSettings>;
     applyPersonaSettings(sessionId: string, input?: import('@kiki/protocol').ApplyPersonaSettingsRequest): Promise<import('@kiki/protocol').SessionPersonaSettings>;
-    archive(sessionId: string): Promise<ArchiveSessionResponse>;
+    archive(sessionId: string, options?: import('@kiki/protocol').ArchiveSessionRequest): Promise<ArchiveSessionResponse>;
     restore(sessionId: string): Promise<RestoreSessionResponse>;
+    deleteArchived(sessionId: string, options?: import('@kiki/protocol').DeleteArchivedSessionRequest): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse>;
+    deleteAllArchived(): Promise<import('@kiki/protocol').DeleteArchivedSessionsResponse>;
     goal(sessionId: string): Promise<GoalSnapshot | null>;
     listMessages(
       sessionId: string,
       query?: { readonly before_id?: string; readonly page_size?: number },
     ): Promise<PageResponse<Message>>;
-    listPrompts(sessionId: string): Promise<PromptListResponse>;
+    listPrompts(sessionId: string, query?: { readonly admission?: 'durable'; readonly agent_id?: string; readonly cursor?: string }): Promise<PromptListResponse>;
+    getPrompt(sessionId: string, promptId: string, query?: { readonly admission?: 'durable'; readonly agent_id?: string }): Promise<PromptItem>;
+    resumePrompt(sessionId: string, promptId: string, body: PromptSubmission, query?: { readonly agent_id?: string }): Promise<PromptItem>;
     listApprovals(sessionId: string): Promise<ApprovalRequest[]>;
     listQuestions(sessionId: string): Promise<import('@kiki/protocol').QuestionRequest[]>;
     listTasks(sessionId: string, query?: { readonly status?: import('@kiki/protocol').TaskStatus; readonly page_size?: number; readonly offset?: number }): Promise<ListTasksResponse>;
@@ -397,12 +457,15 @@ export interface HttpRestFacade {
     ): Promise<ActivateSkillResult>;
     fsSearch(
       sessionId: string,
-      body: { readonly query: string; readonly limit?: number },
+      body: Partial<import('@kiki/protocol').FsSearchRequest> & { readonly query: string },
       options?: HttpRestRequestOptions,
     ): Promise<FsSearchResponse>;
     media(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     mediaPreview(sessionId: string, fileId: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     downloadMedia(sessionId: string, fileId: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
+    /** Canonical session audio or video. `url` is a bearer-free Range resource; close it when the element is done. */
+    openMediaPlayback(sessionId: string, fileId: string, options?: HttpRestRequestOptions): Promise<import('../../contract/session/media-playback.js').SessionMediaPlayback>;
+    closeMediaPlayback(previewId: string, options?: HttpRestRequestOptions): Promise<void>;
     export(sessionId: string): Promise<HttpRestSessionArchive>;
   };
 
@@ -430,7 +493,7 @@ export interface HttpRestFacade {
   readonly skills: {
     /** Read global skills, or a disposable directory snapshot for an absolute cwd, without registering a workspace or creating a session. */
     list(cwd?: string): Promise<ListSkillsResponse>;
-    readBuiltinContent(name: string): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
+    readBuiltinContent(name: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').BuiltinSkillContentResponse>;
     previewHostInstall(host: 'claude' | 'codex' | 'grok' | 'agents', skill: 'kiki-as-subagent' | 'kiki-ops'): Promise<{ readonly skill: string; readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
     installHost(host: 'claude' | 'codex' | 'grok' | 'agents', skill: 'kiki-as-subagent' | 'kiki-ops', revision: string): Promise<{ readonly skill: string; readonly host: string; readonly directory: string; readonly path: string; readonly overwrites: boolean; readonly revision: string }>;
   };
@@ -443,13 +506,26 @@ export interface HttpRestFacade {
 
   readonly workspaces: {
     list(): Promise<import('@kiki/protocol').ListWorkspacesResponse>;
+    listCatalog(): Promise<import('@kiki/protocol').ListWorkspaceCatalogResponse>;
+    detail(workspaceId: string): Promise<import('@kiki/protocol').Workspace>;
     inspect(root: string): Promise<import('@kiki/protocol').InspectWorkspaceResponse>;
     rename(workspaceId: string, name: string): Promise<import('@kiki/protocol').Workspace>;
     setPinned(workspaceId: string, pinned: boolean): Promise<import('@kiki/protocol').Workspace>;
+    /**
+     * Metadata-only rename/pin: `PATCH /workspaces/{id}?view=catalog` answers the
+     * catalog entry, so the server skips the session-count and git probes that
+     * the default full-workspace PATCH pays for. The body is the same
+     * `{ name?, pinned? }` patch as `rename`/`setPinned`.
+     */
+    updateCatalog(
+      workspaceId: string,
+      input: import('@kiki/protocol').WorkspaceUpdate,
+    ): Promise<import('@kiki/protocol').WorkspaceCatalogEntry>;
+    trust(workspaceId: string): Promise<{ readonly trusted: boolean }>;
+    setTrust(workspaceId: string, trusted: boolean): Promise<{ readonly trusted: boolean }>;
     remove(workspaceId: string): Promise<{ readonly deleted: true }>;
     listSkills(workspaceId: string): Promise<ListSkillsResponse>;
     getTrust(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse>;
-    trust(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse>;
     untrust(workspaceId: string): Promise<import('@kiki/protocol').WorkspaceTrustResponse>;
   };
 
@@ -522,6 +598,7 @@ export interface HttpRestFacade {
   };
 
   readonly notifications: {
+    listCompletions(): Promise<readonly { session_id: string; episode_id: string; completed_at: number }[]>;
     getSettings(): Promise<NotificationSettings>;
     updateSettings(settings: NotificationGlobalSettings): Promise<NotificationSettings>;
     listProviders(): Promise<readonly NotificationProviderDescriptor[]>;
@@ -535,6 +612,31 @@ export interface HttpRestFacade {
     listDeliveries(channelId?: string): Promise<readonly NotificationDelivery[]>;
   };
 
+  readonly imSessions: {
+    snapshot(): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    catalog(): Promise<import('@kiki/protocol').ImCatalog>;
+    setupCatalog(): Promise<import('@kiki/protocol').ImSetupCatalog>;
+    setup(input: import('@kiki/protocol').ImSetupRequest): Promise<import('@kiki/protocol').ImSetupResult>;
+    setPolicy(policy: import('@kiki/protocol').ImPolicy): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    paste(text: string, instanceId?: string): Promise<import('@kiki/protocol').ImPasteResult>;
+    check(instanceId: string): Promise<import('@kiki/protocol').ImCheckResult>;
+    listen(instanceId: string, listening: boolean): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    confirm(discoveryId: string, body: import('@kiki/protocol').ImConfirmRequest): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    dismiss(discoveryId: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    updateBinding(id: string, patch: import('@kiki/protocol').ImBindingPatch): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    removeBinding(id: string): Promise<import('@kiki/protocol').ImSessionSnapshot>;
+    testBinding(id: string): Promise<import('@kiki/protocol').ImBindingTestResult>;
+    /** Output catalog with real media capabilities; only enabled channels with `bound !== false` join this thread's default fan-out. */
+    channelViews(sessionId: string): Promise<import('@kiki/protocol').ImTargetChannels>;
+    /** The internal conversation view stays enabled; disabling it is rejected. */
+    setInternalChannel(sessionId: string, enabled: boolean): Promise<{ readonly enabled: boolean }>;
+    setNotificationChannel(sessionId: string, channelId: string, enabled: boolean): Promise<import('@kiki/protocol').ImTargetChannels>;
+    removeNotificationChannel(sessionId: string, channelId: string): Promise<import('@kiki/protocol').ImTargetChannels>;
+    startWechatQr(): Promise<{ readonly login_id: string; readonly image: string }>;
+    pollWechatQr(id: string, verifyCode?: string): Promise<{ readonly status: string; readonly provider_instance_id?: string; readonly account_id?: string }>;
+    cancelWechatQr(id: string): Promise<Record<string, never>>;
+  };
+
   readonly secrets: {
     /** Explicit, authenticated reveal of one secret value; bulk reads stay redacted. */
     reveal(ref: import('@kiki/protocol').SecretRef): Promise<import('@kiki/protocol').RevealedSecret>;
@@ -542,6 +644,11 @@ export interface HttpRestFacade {
 
   readonly executors: {
     list(): Promise<import('@kiki/protocol').ListExecutorsResponse>;
+    listInstallations(options?: HttpRestRequestOptions): Promise<{ readonly items: readonly HttpRestManagedAdapterStatus[] }>;
+    install(executorId: string, options?: HttpRestRequestOptions): Promise<HttpRestManagedAdapterStatus>;
+    rollback(executorId: string, options?: HttpRestRequestOptions): Promise<HttpRestManagedAdapterStatus>;
+    getModels(executorId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').GetExecutorModelsResponse>;
+    refreshModels(executorId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').RefreshExecutorModelsResponse>;
     listLocalSessions(executorId: string, query?: { readonly limit?: number }, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').LocalSessionDirectory>;
     getLocalSession(executorId: string, localSessionId: string, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').LocalSessionDetail>;
     /** Attaches without sending a prompt; duplicate calls return the existing Kiki session. */
@@ -565,14 +672,14 @@ export interface HttpRestFacade {
   readonly filesystem: {
     openHtmlPreview(input: import('@kiki/protocol').HtmlPreviewRequest, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').HtmlPreviewResponse>;
     closeHtmlPreview(previewId: string, options?: HttpRestRequestOptions): Promise<void>;
-    readHostFile(path: string): Promise<string>;
-    previewHostFile(path: string, maxBytes: number): Promise<{ readonly text: string; readonly truncated: boolean }>;
+    readHostFile(path: string, options?: HttpRestRequestOptions): Promise<string>;
+    previewHostFile(path: string, maxBytes: number, options?: HttpRestRequestOptions): Promise<{ readonly text: string; readonly truncated: boolean }>;
     readHostFileBytes(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     readHostMediaPreview(path: string, options?: HttpRestMediaOptions): Promise<HttpRestBinaryFile>;
     downloadHostFile(path: string, sink: HttpRestMediaSink, options?: HttpRestMediaOptions): Promise<HttpRestMediaReceipt>;
     workspaceFsSearch(
       workspace: string,
-      body: { readonly query: string; readonly limit?: number },
+      body: Partial<import('@kiki/protocol').FsSearchRequest> & { readonly query: string },
       options?: HttpRestRequestOptions,
     ): Promise<FsSearchResponse>;
   };
@@ -596,6 +703,9 @@ export interface HttpRestFacade {
 
   /** Cross-workspace cron aggregate: `GET /api/cron` plus per-task actions. */
   readonly cron: {
+    get(taskId: string, query?: HttpRestCronTaskQuery): Promise<{ readonly task: HttpRestCronTaskDetail }>;
+    create(input: HttpRestCreateCronTask): Promise<{ readonly task: HttpRestCronTaskDetail }>;
+    update(taskId: string, input: HttpRestUpdateCronTask, query?: HttpRestCronTaskQuery): Promise<{ readonly task: HttpRestCronTaskDetail }>;
     list(query?: HttpRestCronTaskQuery): Promise<{
       readonly items: readonly HttpRestCronTask[];
       readonly has_more?: boolean;
@@ -628,6 +738,8 @@ export interface HttpRestFacade {
 
   readonly plugins: {
     navigation(): Promise<import('@kiki/protocol').PluginNavigation>;
+    usage(target: import('@kiki/protocol').PluginUsageTarget): Promise<import('@kiki/protocol').PluginUsageResponse>;
+    setUsage(input: import('@kiki/protocol').PluginUsageRequest): Promise<import('@kiki/protocol').PluginUsageResponse>;
     marketplace(): Promise<HttpRestPluginMarketplaceResponse>;
     preview(input: import('@kiki/protocol').PluginPreviewRequest): Promise<import('@kiki/protocol').PluginInstallPlan>;
     install(input: string | import('@kiki/protocol').PluginInstallRequest): Promise<PluginSummary>;
@@ -638,10 +750,10 @@ export interface HttpRestFacade {
     remove(id: string, options?: { readonly deleteData?: boolean }): Promise<{ readonly ok: true }>;
     rollback(id: string): Promise<{ readonly ok: true }>;
     installPrerequisite(id: string, input: import('@kiki/protocol').PluginPrerequisiteInstall): Promise<{ readonly ok: true }>;
-    panels(): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }>;
-    panelDocument(id: string, panelId: string): Promise<import('@kiki/protocol').PluginPanelDocument>;
+    panels(target?: import('@kiki/protocol').PluginUsageTarget): Promise<{ readonly panels: readonly import('@kiki/protocol').PluginPanelSummary[] }>;
+    panelDocument(id: string, panelId: string, target?: import('@kiki/protocol').PluginUsageTarget): Promise<import('@kiki/protocol').PluginPanelDocument>;
     panelBridge(id: string, panelId: string, input: import('@kiki/protocol').PluginPanelBridgeRequest): Promise<import('@kiki/protocol').PluginPanelBridgeResponse>;
-    commands(): Promise<{ readonly commands: readonly { readonly pluginId: string; readonly name: string; readonly description: string; readonly prompt: string }[] }>;
+    commands(target?: import('@kiki/protocol').PluginUsageTarget): Promise<{ readonly commands: readonly { readonly pluginId: string; readonly name: string; readonly description: string; readonly prompt: string }[] }>;
     recommend(input: { readonly cwd?: string; readonly files?: readonly string[]; readonly commands?: readonly string[]; readonly dependencies?: readonly string[] }): Promise<{ readonly entries: readonly HttpRestPluginMarketplaceEntry[] }>;
     dismissRecommendation(id: string): Promise<{ readonly ok: true }>;
   };

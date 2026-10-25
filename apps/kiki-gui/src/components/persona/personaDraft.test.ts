@@ -124,7 +124,23 @@ describe('personaDraft', () => {
 
   it('drops blank optional fields instead of sending empty strings', () => {
     const saved = definitionFromDraft({ ...EMPTY_PERSONA_DRAFT, id: 'a', name: ' A ', description: 'd', title: '  ', greeting: ' ' });
-    expect(saved).toEqual({ id: 'a', name: 'A', description: 'd' });
+    expect(saved).toEqual({ id: 'a', name: 'A', description: 'd', delivery: 'message' });
+  });
+
+  it('keeps the delivery the editor shows through save and reopen', () => {
+    // A new persona opens on the mode its sessions actually run in.
+    expect(EMPTY_PERSONA_DRAFT.delivery).toBe('message');
+    // An explicit reply is written out: leaving the field off now means
+    // "message", so an omission would invert what the editor showed.
+    const reply = definitionFromDraft({ ...EMPTY_PERSONA_DRAFT, id: 'a', name: 'A', description: 'd', delivery: 'reply' });
+    expect(reply.delivery).toBe('reply');
+    expect(draftFromDefinition(reply).delivery).toBe('reply');
+    // Message is written too, and a definition stored before the field existed
+    // reads as the mode its sessions get.
+    const message = definitionFromDraft({ ...EMPTY_PERSONA_DRAFT, id: 'b', name: 'B', description: 'd' });
+    expect(message.delivery).toBe('message');
+    expect(draftFromDefinition(message).delivery).toBe('message');
+    expect(draftFromDefinition({ id: 'c', name: 'C', description: 'd' } as PersonaDefinition).delivery).toBe('message');
   });
 
   it('derives an id from the name, with a random suffix for non-ASCII names', () => {

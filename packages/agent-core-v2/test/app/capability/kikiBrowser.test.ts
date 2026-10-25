@@ -7,7 +7,8 @@ import { ZipFile } from 'yazl';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createKikiBrowserEntry } from '#/app/capability/entries/kikiBrowser';
-import { BROWSER_DRIVER_FILES, CHROME_METADATA_URL, browserResourcePaths, installedBrowserChrome, installedBrowserDriver, installBrowserChrome, installBrowserDriver } from '#/app/capability/entries/browserResourceStore';
+import { onUnexpectedError } from '#/_base/errors/unexpectedError';
+import { BROWSER_DRIVER_FILES, CHROME_METADATA_URL, browserResourcePaths, installedBrowserChrome, installedBrowserDriver, installBrowserChrome, installBrowserDriver, promoteResourcePath, updateBrowserChrome } from '#/app/capability/entries/browserResourceStore';
 import type { CapabilityEntryContext } from '#/app/capability/entries/context';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import type { IHostProcessService } from '#/os/interface/hostProcess';
@@ -50,14 +51,16 @@ describe('browser components in isolated Kiki home', () => {
     fail = false;
     stall = false;
     onRequest = undefined;
-    server = createServer(async (request, response) => {
-      if (fail) { response.writeHead(503); response.end('temporary failure'); return; }
-      if (stall) { onRequest?.(); return; }
-      const key = decodeURIComponent((request.url ?? '/').slice(1));
-      if (key === 'metadata') { response.end(JSON.stringify({ channels: { Stable: { version, downloads: { chrome: [{ platform: 'win64', url: chromeUrl }] } } } })); return; }
-      const bytes = key === 'chrome.zip' ? chromeBytes : await readFile(key === 'agent-browser.exe' ? driverSource : join(donor, key));
-      response.setHeader('content-length', bytes.length);
-      response.end(bytes);
+    server = createServer((request, response) => {
+      Promise.resolve().then(async () => {
+        if (fail) { response.writeHead(503); response.end('temporary failure'); return; }
+        if (stall) { onRequest?.(); return; }
+        const key = decodeURIComponent((request.url ?? '/').slice(1));
+        if (key === 'metadata') { response.end(JSON.stringify({ channels: { Stable: { version, downloads: { chrome: [{ platform: 'win64', url: chromeUrl }] } } } })); return; }
+        const bytes = key === 'chrome.zip' ? chromeBytes : await readFile(key === 'agent-browser.exe' ? driverSource : join(donor, key));
+        response.setHeader('content-length', bytes.length);
+        response.end(bytes);
+      }).catch(onUnexpectedError);
     });
     await new Promise<void>((done) => server.listen(0, '127.0.0.1', done));
     const address = server.address();
@@ -70,7 +73,7 @@ describe('browser components in isolated Kiki home', () => {
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
   const fetchSource: typeof fetch = (input, init) => {
-    const url = String(input);
+    const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
     const file = url === CHROME_METADATA_URL ? 'metadata' : url === chromeUrl ? 'chrome.zip' : Object.entries(BROWSER_DRIVER_FILES).find(([, artifact]) => artifact.url === url)?.[0];
     if (file === undefined) throw new Error(`Unexpected install URL: ${url}`);
     return fetch(`${base}/${encodeURIComponent(file)}`, init);
@@ -169,6 +172,44 @@ describe('browser components in isolated Kiki home', () => {
     await expect(installBrowserChrome(home, () => {}, fetchSource)).rejects.toThrow();
     expect(await installedBrowserChrome(home)).toBeUndefined();
     expect(await readdir(browserResourcePaths(home).root)).toEqual([]);
+  });
+
+  it('keeps the installed Chrome bytes when an update fails and reports a disk replacement when it succeeds', async () => {
+    await installBrowserChrome(home, () => {}, fetchSource);
+    const executable = browserResourcePaths(home).chrome;
+    const library = join(browserResourcePaths(home).chromeDirectory, 'chrome-win64', 'chrome.dll');
+    const beforeExe = await readFile(executable);
+    const beforeDll = await readFile(library);
+    fail = true;
+    await expect(updateBrowserChrome(home, () => {}, fetchSource)).rejects.toThrow('HTTP 503');
+    expect(await readFile(executable)).toEqual(beforeExe);
+    expect(await readFile(library)).toEqual(beforeDll);
+    expect(spawnProbe).not.toHaveBeenCalled();
+    fail = false;
+    chromeBytes = await archive({ 'chrome-win64/chrome.exe': 'updated executable', 'chrome-win64/chrome.dll': 'updated library' });
+    const entry = createKikiBrowserEntry(ctx(), driverSource);
+    expect(await entry.update!(() => {})).toBe('browser-components-updated-on-disk');
+    expect(await readFile(executable, 'utf8')).toBe('updated executable');
+    expect(spawnProbe).not.toHaveBeenCalled();
+    const names = await readdir(browserResourcePaths(home).root);
+    expect(names.filter((name) => name.includes('previous') || name.startsWith('.chrome-install-'))).toEqual([]);
+  }, 30_000);
+
+  it('rolls a failed resource promotion back onto the original bytes', async () => {
+    const destination = join(home, 'resource');
+    await mkdir(destination, { recursive: true });
+    await writeFile(join(destination, 'chrome.exe'), 'original-bytes');
+    await expect(promoteResourcePath(join(home, 'missing-staged'), destination)).rejects.toThrow();
+    expect(await readFile(join(destination, 'chrome.exe'), 'utf8')).toBe('original-bytes');
+    const staged = join(home, 'staged-file');
+    const file = join(home, 'daemon.bin');
+    await writeFile(file, 'original-file');
+    await expect(promoteResourcePath(join(home, 'missing-file'), file)).rejects.toThrow();
+    expect(await readFile(file, 'utf8')).toBe('original-file');
+    await writeFile(staged, 'updated-file');
+    await promoteResourcePath(staged, file);
+    expect(await readFile(file, 'utf8')).toBe('updated-file');
+    expect(await readdir(home)).not.toEqual(expect.arrayContaining([expect.stringContaining('previous')]));
   });
 
   it('reuses the bundled real driver without downloading it and rejects other platforms for automatic setup', async () => {

@@ -9,7 +9,7 @@ import { ZipFile, type ReadStreamOptions } from 'yazl';
 import { ErrorCodes, Error2 } from '#/errors';
 
 import {
-  openZipSource,
+  openExportZipSource,
   type ZipSource,
   type ZipSourceIdentity,
 } from './file-source';
@@ -162,7 +162,7 @@ export async function writeExportZip(args: {
       const sourcePath = sessionEntryPath(entry);
       const target = relative(args.sessionDir, sourcePath).split(/[\\/]/).join('/');
       if (typeof entry === 'string') {
-        addLazySource(target, {}, () => openZipSource(entry, args.signal));
+        addLazySource(target, {}, () => openExportZipSource(entry, args.signal));
       } else {
         addLazySource(
           target,

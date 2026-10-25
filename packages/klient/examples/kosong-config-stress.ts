@@ -218,7 +218,7 @@ async function main(): Promise<void> {
 
     await klient.close();
   } finally {
-    app.dispose();
+    await app.dispose();
   }
 
   // 7) Restart durability: a fresh engine on the SAME home must rehydrate the
@@ -249,7 +249,7 @@ async function main(): Promise<void> {
       }
       await klient2.close();
     } finally {
-      app2.dispose();
+      await app2.dispose();
     }
   });
 

@@ -2,8 +2,8 @@
 layout: home
 hero:
   name: Kiki
-  text: 你的智能体，你说了算。
-  tagline: 把一个文件夹和一件事交给它，它做计划、把活干完，还能让工作持续下去——开源，跑在你自己的机器上，桌面、终端、浏览器共用一个本地守护进程。
+  text: 把一个文件夹和一件事交给它。
+  tagline: 跑在你机器上的开源 AI 智能体工作台。摸清代码库、核对 PDF 与表格、写长文或改工程都能交出去——主会话按角色调度你选定的模型，桌面、终端与浏览器共用同一个本地会话存储。
   actions:
     - theme: brand
       text: 快速上手
@@ -15,31 +15,31 @@ hero:
       text: 发布说明
       link: ./release-notes/changelog
 features:
-  - title: 先做一件事
-    details: 选好它在哪个文件夹里工作、读哪些材料，再把任务交给它。欢迎页和「发现 Kiki」带你认路，全程不调用模型。
+  - title: "从一个文件夹和想要的结果开始"
+    details: "把 Kiki 指向代码库、一摞 PDF 与表格，或一份草稿。它先读材料、做计划，就在原地动手；在桌面应用、终端 `kiki` 或浏览器 `kiki web` 里开的会话，换个窗口打开还是它。"
     link: ./getting-started/first-launch
-  - title: 一个工作台，好几条线
-    details: 主会话派子智能体，每个智能体跑你为它选定的模型；耗时命令丢进后台，跑完自动回报。
+  - title: "一个主会话，调配不同模型的帮手"
+    details: "活能拆开时，主智能体把子任务派给上下文隔离的子智能体——探查用快模型、写作或实现换另一个、审查再换一家厂商。每个子智能体的记录都能点开看，后台任务跑完会自动回来报到。"
     link: ./features/workbench
-  - title: 知道花了多少
-    details: 用量页回答三个问题：这个区间花了多少、是哪条并发规则挡住了请求、这些不含内容的统计能送到哪儿。
-    link: ./features/daily
-  - title: 长时间的活
-    details: 跨轮次推进的目标、它忙时你先排的队、定时提示词、每个工作区一块任务看板，以及比会话活得更久的记忆。
+  - title: "每个角色就是一份可读可改的 Markdown"
+    details: "每个 Agent Profile 是一份由你掌控的纯文本 Markdown：Frontmatter 定模型、思考档位、可用工具与可派发的子智能体，正文就是系统提示词。可以直接用内置的 `explore`、`implementer`、`reviewer` 等角色，也能按需新建。"
+    link: ./features/agent-workflows
+  - title: "跨轮次与跨会话推进长线工作"
+    details: "用 `/goal` 让目标跨轮次留在视线里；趁它正忙先把消息排进队列，逐条选在空闲后、子智能体完成后或任务完成后送达；配合持有会话期间触发的定时提示词，以及可逐条撤销的分层记忆。"
     link: ./features/long-work
-  - title: Agent Profiles
-    details: 一份 Markdown 描述一类智能体：跑哪个模型、怎么指示、能用哪些工具、能派发谁，写一次到处复用。
-    link: ./features/agents
-  - title: 能一起干活的人
-    details: 角色是长期身份：有自己的记忆、固定的日常对话入口，还能进房间和别的角色一起讨论同一个话题。
+  - title: "有长期记忆的角色与多方讨论房间"
+    details: "给常驻搭档一个名字、长期规则、独立记忆和固定的日常对话入口；或者把两到六个角色与现有会话拉进同一个房间，在主持人和发言预算下围绕一个议题碰撞。"
     link: ./features/people
-  - title: 每一层都归你
-    details: 提示词细到单个工具描述，连接和 OAuth 一张列表，权限模式你定，hooks 跑你自己的脚本。
+  - title: "连接浏览器，或按需装上文档、表格、数据与媒体插件"
+    details: "当工作走出纯文本，可连接浏览器（Ego Lite、浏览器扩展或独立受管浏览器），或按需从目录安装对应插件：把本地 PDF 与 Office 提取成 Markdown（`Kiki Extract`）、读写 Word/Excel/PPT（`Kiki Office Suite`）、核对本地 CSV（`Kiki Work`）、查金融与文献数据（`Kimi Datasource`）或生成多模态素材（`Kiki Media`）。"
+    link: ./features/extend
+  - title: "提示词、工具描述与审批边界都能改"
+    details: "内置提示词的任意具名字段都能按全局、模型或智能体替换，细到单独给某个模型改写一条工具描述；用 `kiki prompt-fields` 核对实际生效文本，并在手动、自动、替我审批与 YOLO 之间设定边界。"
     link: ./features/freedom
-  - title: 数据与机器都在你手上
-    details: 各自带凭据的空间、有方向的远端连接、单向 thread bridge、Web 访问，以及会话内 SSH。
+  - title: "看得见花了多少，也看得见谁被哪条规则拦住"
+    details: "用量页直接标出挡住等待请求的那条并发规则；供应商未返回用量的调用标为未知而非伪装成 0；外部同步只发不含正文的统计数字，且必须由你预览载荷并同意后才启用。"
+    link: ./features/daily
+  - title: "跨空间、连手机，也接得进你现有的工具"
+    details: "工作文件留在你的目录里，会话、历史与凭据留在本机 Kiki home。支持分空间隔离工作与个人账号、绑微信或 QQ 在手机上回复和审批、把既有对话历史导成会话或只读归档，或通过 `kiki acp` 与 `kiki seat` 接入常用 IDE。"
     link: ./features/spaces
-  - title: 带过来，也接得进外面
-    details: 把别的工具的对话导进来接着做，在编辑器里通过 ACP 用 Kiki，或者让 Kiki 把别的智能体 harness 当引擎。
-    link: ./features/ecosystem
 ---

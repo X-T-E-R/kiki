@@ -2,6 +2,7 @@
 import { z } from 'zod';
 
 import { Disposable } from '#/_base/di/lifecycle';
+import { ILogService } from '#/_base/log/log';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { defineState } from '#/state/state';
@@ -23,10 +24,12 @@ import {
 import { LOOP_CONTROL_SECTION, type LoopControl } from '#/agent/loop/configSection';
 import { TurnStarted } from '#/agent/loop/turnEvents';
 import { IAgentStateService } from '#/agent/state/agentState';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { IModelCatalog } from '#/kosong/model/catalog';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 
 import { RETRY_SECTION, type RetryConfig } from './configSection';
-import { resolveRetryPolicy } from './retryPolicy';
+import { resolveRetryPolicy, type RetryBindingIdentity } from './retryPolicy';
 import { IAgentStepRetryService } from './stepRetry';
 
 const DEFAULT_STEP_RETRY_BASE_DELAY_MS = 2_000;
@@ -84,6 +87,9 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     @IEventBus private readonly eventBus: IEventBus,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentProfileService private readonly profile: IAgentProfileService,
+    @IModelCatalog private readonly models: IModelCatalog,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this.states.contributeState(stepRetryLastFailedDriverIdKey);
@@ -129,11 +135,30 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
     return this.config.get<RetryConfig | undefined>(RETRY_SECTION);
   }
 
+  private retryBinding(): RetryBindingIdentity | undefined {
+    const modelAlias = this.profile.data().modelAlias;
+    if (modelAlias === undefined) return undefined;
+    try {
+      const model = this.models.get(modelAlias, this.profile.getRecipeModelSettings(modelAlias));
+      return { model: model.id, provider: model.providerName };
+    } catch (error) {
+      this.log.error(
+        'failed to resolve model identity for retry policy selectors; selector policies are skipped',
+        { modelAlias, error },
+      );
+      return undefined;
+    }
+  }
+
   private shouldRetry(error: unknown): boolean {
-    return resolveRetryPolicy(this.retryConfig(), unwrapErrorCause(error)).retry;
+    return resolveRetryPolicy(
+      this.retryConfig(), error, () => this.retryBinding(),
+    ).retry;
   }
 
   private async recover(context: LoopErrorContext): Promise<boolean> {
+    const decision = resolveRetryPolicy(this.retryConfig(), context.error, () => this.retryBinding());
+    if (!decision.retry) return false;
     const driver = context.failedDriver;
     if (driver === undefined || context.step === undefined) return false;
 
@@ -145,7 +170,6 @@ export class AgentStepRetryService extends Disposable implements IAgentStepRetry
 
     const error = unwrapErrorCause(context.error);
     const retryConfig = this.retryConfig();
-    const decision = resolveRetryPolicy(retryConfig, error);
     const maxAttempts = Math.max(
       decision.maxAttempts ??
         retryConfig?.maxAttempts ??

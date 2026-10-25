@@ -1,3 +1,8 @@
+export * from './app/settingsTransfer/settingsTransfer';
+import './app/settingsTransfer/settingsTransferService';
+import './app/nbSearch/transferCredentials';
+import './os/backends/node-fs/settingsProfileResources';
+export * from './app/outputLayer/index';
 export * from './app/recipes/recipes';
 import './app/recipes/recipeService';
 import './app/recipes/configSection';
@@ -67,6 +72,7 @@ export * from '#/app/git/worktreeConfig';
 export * from '#/app/git/worktreeEvents';
 export * from '#/app/retainedUsage/retainedUsage';
 export * from '#/app/retainedUsage/retainedUsageService';
+export * from '#/app/usageFacts/usageFactStore';
 export * from '#/app/runtimeHost/index';
 
 export * from '#/_base/log/log';
@@ -159,6 +165,13 @@ export * from '#/app/sessionIndex/errors';
 export * from '#/app/sessionIndex/sessionIndexService';
 export * from '#/app/sessionIndex/sessionIndexMirrorService';
 import '#/app/threadCommunication/configSection';
+import '#/app/optionalCapability/configSection';
+export * from '#/app/optionalCapability/admit';
+export * from '#/app/optionalCapability/configSection';
+export * from '#/app/optionalCapability/policy';
+import '#/app/optionalCapability/policyService';
+import '#/session/optionalCapability/sessionOptionalCapabilityService';
+export * from '#/session/optionalCapability/sessionOptionalCapabilityService';
 export * from '#/app/capabilitySnapshot/capabilitySnapshot';
 import '#/app/capabilitySnapshot/capabilitySnapshotService';
 export * from '#/app/threadCommunication/configSection';
@@ -202,8 +215,11 @@ export * from '#/app/browser/browserConfig';
 export * from '#/app/computer/configSection';
 export * from '#/app/browser/browserConnectionStore';
 export * from '#/app/browser/browser';
+export * from '#/app/browser/browserSetup';
+export { BrowserError } from '#/app/browser/errors';
+import '#/app/browser/browserSetupService';
 import '#/app/browser/browserBackend';
-export { isBrowserOperation, browserToolGroup } from '#/app/browser/browserControlService';
+export { isBrowserOperation, browserToolGroup, admitEgoAfterAllow } from '#/app/browser/browserControlService';
 export * from '#/agent/tools/browser/browserTools';
 import '#/persistence/backends/node-fs/sshCredentialStore';
 import '#/persistence/backends/node-fs/sshHostDocumentStore';
@@ -271,6 +287,7 @@ import '#/kosong/provider/bases/openai/index';
 import '#/kosong/provider/providers/kimi/kimi.contrib';
 import '#/kosong/provider/providers/standard.contrib';
 export * from '#/app/agentExecutor/agentExecutor';
+export type { ExecutorCapabilityCatalog } from '@kiki/agent-profiles/ports';
 export * from '#/app/agentExecutor/capabilities';
 export * from '#/app/agentExecutor/builtinDescriptors';
 export * from '#/app/agentExecutor/configSection';
@@ -323,6 +340,10 @@ export * from '#/app/plugin/configSection';
 export * from '#/app/plugin/plugin';
 export * from '#/app/plugin/pluginEvents';
 export * from '#/app/plugin/pluginService';
+export * from '#/app/pluginUsage/pluginUsage';
+export * from '#/app/pluginUsage/flag';
+import '#/app/pluginUsage/pluginUsageService';
+export * from '#/session/pluginUsage/sessionPluginUsageService';
 export * from '#/app/plugin/pluginHostService';
 export * from '#/app/pluginImport/pluginImport';
 import '#/app/pluginImport/pluginImportService';
@@ -458,6 +479,8 @@ import '#/features/staleGuard/staleGuardFeature';
 import '#/wire/retiredTowerEvents';
 export * from '#/agent/usage/usage';
 export * from '#/agent/usage/usageService';
+export * from '#/agent/usage/usageFact';
+export * from '#/agent/usage/usageJson';
 export * from '#/agent/toolDedupe/toolDedupe';
 export * from '#/agent/toolDedupe/toolDedupeService';
 export * from '#/agent/agentsMdReminder/agentsMdReminder';
@@ -482,6 +505,7 @@ import '#/agent/toolPolicy/configSection';
 export * from '#/agent/toolPolicy/configSection';
 export * from '#/agent/toolPolicy/evaluate';
 export * from '#/agent/toolPolicy/toolPolicy';
+export * from '#/agent/toolPolicy/sendMessageAdmission';
 export * from '#/agent/toolPolicy/toolPolicyService';
 
 import '#/agent/task/configSection';
@@ -700,6 +724,10 @@ export {
   unsupportedImageMimeFromUrl,
 } from '#/agent/media/image-format-policy';
 export {
+  resolveRequestCompression,
+  resolveResponsesWebSocket,
+} from '#/kosong/provider/requestCompression';
+export {
   IMAGE_MIME_TYPES,
   providerImagePolicy,
   resolveImagePolicy,
@@ -812,6 +840,7 @@ export * from '#/agent/media/sessionMediaStore';
 import '#/agent/media/sessionMediaStoreService';
 export * from '#/agent/media/kimiFileUrl';
 export * from '#/agent/media/videoUpload';
+import '#/agent/media/flag';
 export * from '#/agent/media/mediaResolver';
 export * from '#/agent/media/mediaResolverService';
 import '#/agent/media/configSection';

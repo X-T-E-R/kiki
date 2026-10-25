@@ -164,6 +164,44 @@ export class CapabilityService extends Disposable implements ICapabilityService 
     return this.statusOf(entry);
   }
 
+  async updateCapability(id: string, expectedSha256?: string): Promise<CapabilityStatus> {
+    const entry = this.requireEntry(id);
+    if (typeof entry.update !== 'function') throw new Error2(CapabilityErrors.codes.CAPABILITY_UNSUPPORTED, `Capability "${entry.id}" does not support update`, { details: { id: entry.id } });
+    if (expectedSha256 !== undefined && entry.plan?.artifact.sha256 !== expectedSha256) {
+      throw new Error2(CapabilityErrors.codes.CAPABILITY_UNSUPPORTED, 'Capability release plan changed; refresh the plan and confirm again', { details: { id: entry.id } });
+    }
+    if (!entry.supported) {
+      throw new Error2(CapabilityErrors.codes.CAPABILITY_UNSUPPORTED, `Capability "${entry.id}" is not supported on ${process.platform}/${process.arch}`, { details: { id: entry.id } });
+    }
+    if (this.runningInstalls.has(entry.id)) {
+      throw new Error2(CapabilityErrors.codes.CAPABILITY_INSTALL_IN_PROGRESS, `Capability "${entry.id}" is already in progress`, { details: { id: entry.id } });
+    }
+    const controller = entry.id === 'kiki-browser' ? new AbortController() : undefined;
+    this.runningInstalls.add(entry.id);
+    this.setInstallProgress(entry.id, { running: true, step: 'update' });
+    const done = (async () => {
+      try {
+        const note = await entry.update!((step, percent) => {
+          this.setInstallProgress(entry.id, percent === undefined ? { running: true, step } : { running: true, step, percent });
+        }, controller?.signal);
+        this.setInstallProgress(entry.id, { running: false, note });
+      } catch (error) {
+        if (controller?.signal.aborted === true) {
+          this.setInstallProgress(entry.id, { running: false, note: 'cancelled' });
+        } else {
+          this.log.warn('capability update failed', { capabilityId: entry.id, error });
+          this.setInstallProgress(entry.id, { running: false, error: error instanceof Error ? error.message : String(error) });
+        }
+      } finally {
+        this.runningInstalls.delete(entry.id);
+        this.browserInstalls.delete(entry.id);
+      }
+    })();
+    if (controller !== undefined) this.browserInstalls.set(entry.id, { controller, done });
+    await done;
+    return this.statusOf(entry);
+  }
+
   async cancelCapability(id: string): Promise<CapabilityStatus> {
     const entry = this.requireEntry(id);
     if (entry.id !== 'kiki-browser') throw new Error2(CapabilityErrors.codes.CAPABILITY_UNSUPPORTED, 'Cancellation is supported for browser component installation only');
@@ -173,9 +211,9 @@ export class CapabilityService extends Disposable implements ICapabilityService 
     return this.statusOf(entry);
   }
 
-  override dispose(): void {
+  override dispose(): void | Promise<void> {
     for (const active of this.browserInstalls.values()) active.controller.abort();
-    super.dispose();
+    return super.dispose();
   }
 
   private requireEntry(id: string): CapabilityEntry {

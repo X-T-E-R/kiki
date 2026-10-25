@@ -98,7 +98,7 @@ describe('AgentHooksSection', () => {
     mockGetAgentHooksInspect.mockReturnValue(new Promise(() => {}));
     const { container, cleanup } = await renderSection('s-loading', 'main');
     expect(container.querySelector('[data-agent-hooks-state="loading"]')).not.toBeNull();
-    expect(container.querySelector('[role="status"]')?.textContent).toContain('Reading injected rules');
+    expect(container.querySelector('[role="status"]')?.textContent).toContain('Reading automatic rules');
     await cleanup();
   });
 
@@ -106,7 +106,7 @@ describe('AgentHooksSection', () => {
     mockGetAgentHooksInspect.mockRejectedValue(new ApiError({ code: 404, msg: 'Not found', data: null }));
     const { container, cleanup } = await renderSection('s-404', 'main');
     expect(container.querySelector('[data-agent-hooks-state="unavailable"]')).not.toBeNull();
-    expect(container.textContent).toContain('This server cannot show injected rules yet.');
+    expect(container.textContent).toContain('This server cannot show automatic rules yet.');
     await cleanup();
   });
 
@@ -118,25 +118,60 @@ describe('AgentHooksSection', () => {
     await cleanup();
   });
 
-  it('renders empty when rules list is empty', async () => {
+  it('renders nothing when no rule, source fault or diagnostic exists', async () => {
     mockGetAgentHooksInspect.mockResolvedValue({
       revision: 'rev-0',
       binding: { executorId: 'exec-1' },
-      sources: [],
+      sources: [{ namespace: 'workspace', path: '.kiki/hooks.ts', status: 'absent' }],
       diagnostics: [],
       rules: [],
     });
     const { container, cleanup } = await renderSection('s-empty', 'main');
-    expect(container.querySelector('[data-agent-hooks-state="empty"]')).not.toBeNull();
-    expect(container.textContent).toContain('No injected rules are active.');
+    expect(container.querySelector('[data-agent-hooks-section]')).toBeNull();
+    expect(container.textContent).toBe('');
+    await cleanup();
+  });
+
+  it('keeps the section when a source failed but no rule survived', async () => {
+    mockGetAgentHooksInspect.mockResolvedValue({
+      revision: 'rev-0',
+      binding: { executorId: 'exec-1' },
+      sources: [{ namespace: 'plugin', path: 'external/broken.ts', status: 'invalid' }],
+      diagnostics: [{ path: 'external/broken.ts', message: 'Syntax error on line 4' }],
+      rules: [],
+    });
+    const { container, cleanup } = await renderSection('s-faulty', 'main');
+    expect(container.querySelector('[data-agent-hooks-state="faulty"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-hooks-summary]')?.textContent).toBe('Check sources');
+
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    expect(container.querySelector('[data-agent-hooks-sources]')?.textContent).toContain('external/broken.ts');
+    expect(container.querySelector('[data-agent-hooks-diagnostics]')?.textContent).toContain('Syntax error on line 4');
+    expect(container.querySelector('[data-agent-hooks-rule]')).toBeNull();
+    await cleanup();
+  });
+
+  it('recovers from a read failure and keeps the rules it then finds', async () => {
+    mockGetAgentHooksInspect.mockRejectedValue(new Error('Network drop'));
+    const { container, cleanup } = await renderSection('s-recover', 'main');
+    expect(container.querySelector('[data-agent-hooks-state="failed"]')).not.toBeNull();
+
+    mockGetAgentHooksInspect.mockResolvedValue({ ...sampleInspect, sources: [], diagnostics: [] });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-agent-hooks-retry]')!.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-agent-hooks-state="ready"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-hooks-summary]')?.textContent).toBe('1 active');
+    expect(container.querySelector('[data-agent-hooks-retry]')).toBeNull();
     await cleanup();
   });
 
   it('renders summary when closed and unfolds rules + degraded sources + diagnostics', async () => {
     mockGetAgentHooksInspect.mockResolvedValue(sampleInspect);
     const { container, cleanup } = await renderSection('s-ready', 'main');
-    expect(container.querySelector('[data-agent-hooks-state="ready"]')).not.toBeNull();
-    expect(container.querySelector('[data-agent-hooks-summary]')?.textContent).toBe('1 active');
+    expect(container.querySelector('[data-agent-hooks-state="faulty"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-hooks-summary]')?.textContent).toBe('Check sources');
+    expect(container.textContent).toContain('Automatic rules');
 
     // Unfold
     const toggle = container.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
@@ -156,6 +191,24 @@ describe('AgentHooksSection', () => {
     // Check diagnostics block
     expect(container.querySelector('[data-agent-hooks-diagnostics]')?.textContent).toContain('Syntax error on line 4');
 
+    await cleanup();
+  });
+
+  it('keeps a loaded source out of the fault list and shows a rule set with no fault', async () => {
+    mockGetAgentHooksInspect.mockResolvedValue({
+      revision: 'rev-2',
+      binding: { executorId: 'exec-1' },
+      sources: [{ namespace: 'workspace', path: '.kiki/hooks.ts', status: 'loaded' }],
+      diagnostics: [],
+      rules: [sampleInspect.rules[0]],
+    });
+    const { container, cleanup } = await renderSection('s-clean', 'main');
+    expect(container.querySelector('[data-agent-hooks-state="ready"]')).not.toBeNull();
+    const toggle = container.querySelector<HTMLButtonElement>('button[aria-expanded]')!;
+    await act(async () => { toggle.click(); });
+    expect(container.querySelector('[data-agent-hooks-rule="guard-rule"]')).not.toBeNull();
+    expect(container.querySelector('[data-agent-hooks-sources]')).toBeNull();
+    expect(container.querySelector('[data-agent-hooks-diagnostics]')).toBeNull();
     await cleanup();
   });
 });

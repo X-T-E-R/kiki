@@ -27,6 +27,7 @@ export type SessionSeenMap = Readonly<Record<string, number>>;
 const EMPTY: SessionSeenMap = {};
 
 let cache: SessionSeenMap | undefined;
+let cacheKey: string | undefined;
 const listeners = new Set<() => void>();
 let storageBound = false;
 
@@ -47,7 +48,9 @@ function parse(raw: string | null): SessionSeenMap {
 }
 
 function read(): SessionSeenMap {
-  if (cache !== undefined) return cache;
+  const key = spaceStorageKey(KEY);
+  if (cache !== undefined && cacheKey === key) return cache;
+  cacheKey = key;
   try {
     cache = parse(spaceStorage.getItem(KEY));
   } catch {
@@ -57,6 +60,7 @@ function read(): SessionSeenMap {
 }
 
 function publish(next: SessionSeenMap): void {
+  cacheKey = spaceStorageKey(KEY);
   cache = next;
   for (const listener of listeners) listener();
 }

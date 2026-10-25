@@ -52,6 +52,7 @@ import { IEventBus } from '#/app/event/eventBus';
 import type { LLMRequestTrace } from '#/kosong/contract/requestTrace';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { ILogService } from '#/_base/log/log';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { registerLogServices } from '../../_base/log/stubs';
@@ -109,11 +110,217 @@ beforeEach(() => {
   registry = ix.get(IAgentToolRegistryService);
 });
 
-afterEach(() => {
-  disposables.dispose();
+afterEach(async () => {
+  await disposables.dispose();
 });
 
 describe('AgentToolExecutorService', () => {
+  it('separates slow resolve, admission, execution and finalization without logging arguments or outputs', async () => {
+    let clock = 0;
+    const now = vi.spyOn(Date, 'now').mockImplementation(() => clock);
+    const warn = vi.spyOn(ix.get(ILogService), 'warn');
+    const tool = new TestTool('phase-fixture', {
+      execute: async () => { clock += 1400; return { output: 'private result' }; },
+    });
+    registry.register(tool);
+    executor.registerBeforeResolveTool(async () => { clock += 1100; return undefined; });
+    const admission = executor.onBeforeExecuteTool(() => { clock += 1200; });
+    const beforeExecute = executor.onWillExecuteTool(() => { clock += 1300; });
+    truncateForModel = async (input) => { clock += 1500; return input.result; };
+    try {
+      const results = await execute([toolCall('phase-call', 'phase-fixture', { text: 'private argument' })]);
+      expect(results[0]?.output).toBe('private result');
+      const phases = warn.mock.calls.filter(([message]) => message === 'slow tool phase').map(([, data]) => data);
+      expect(phases).toEqual([
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'resolve', duration_ms: 1100 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'admission', duration_ms: 1200 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'before_execute', duration_ms: 1300 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'execute', duration_ms: 1400 },
+        { tool_name: 'phase-fixture', tool_call_id: 'phase-call', phase: 'finalize', duration_ms: 1500 },
+      ]);
+    } finally {
+      admission.dispose();
+      beforeExecute.dispose();
+      warn.mockRestore();
+      now.mockRestore();
+    }
+  });
+
+  it.each(['before-resolve', 'resolve', 'admission', 'before-execute'] as const)(
+    'returns and dispatches a ready result while a later %s gate is still held', async (phase) => {
+      const entered = deferred();
+      const release = deferred();
+      let gateReleased = false;
+      const ready = new TestTool('ready', { accesses: ToolAccesses.readFile('/repo/ready.txt') });
+      const gated = new TestTool('gated', { accesses: ToolAccesses.readFile('/repo/gated.txt') });
+      const last = new TestTool('last');
+      registry.register(ready);
+      registry.register(gated);
+      registry.register(last);
+      const calls = [toolCall('ready-call', 'ready', {}), toolCall('gated-call', 'gated', {}), toolCall('last-call', 'last', {})];
+      const gate = async () => { entered.resolve(); await release.promise; gateReleased = true; };
+      const lastResolve = vi.spyOn(last, 'resolveExecution');
+      executor.registerBeforeResolveTool(async (ctx) => {
+        expect(ctx.toolCalls).toBe(calls);
+        if (phase === 'before-resolve' && ctx.tool.name === 'gated') await gate();
+        return undefined;
+      });
+      if (phase === 'resolve') {
+        const resolve = gated.resolveExecution.bind(gated);
+        vi.spyOn(gated, 'resolveExecution').mockImplementation(async (args) => { await gate(); return resolve(args); });
+      }
+      executor.onBeforeExecuteTool((event) => {
+        expect(event.toolCalls).toBe(calls);
+        if (phase === 'admission' && event.toolCall.id === 'gated-call') event.waitUntil(async () => { await gate(); return undefined; });
+      });
+      executor.onWillExecuteTool((event) => {
+        if (phase === 'before-execute' && event.toolCall.id === 'gated-call') event.waitUntil(gate());
+      });
+      const stream = executor.execute(calls, { turnId: 0, signal: new AbortController().signal })[Symbol.asyncIterator]();
+      const first = stream.next();
+      try {
+        await entered.promise;
+        const result = await first;
+        expect(gateReleased).toBe(false);
+        expect(result).toMatchObject({ done: false, value: { toolCallId: 'ready-call', result: { output: 'ready result' } } });
+        expect(pairedToolCallIds()).toEqual({ calls: ['ready-call'], results: ['ready-call'] });
+        expect(gated.calls).toEqual([]);
+        expect(lastResolve).not.toHaveBeenCalled();
+      } finally {
+        release.resolve();
+        for await (const _result of { [Symbol.asyncIterator]: () => stream }) {}
+      }
+      expect(pairedToolCallIds()).toEqual({ calls: calls.map((call) => call.id), results: calls.map((call) => call.id) });
+    },
+  );
+
+  it.each(['return', 'abort'] as const)('drains started work and ignores late resolution after iterator %s', async (ending) => {
+    const controller = new AbortController();
+    const entered = deferred();
+    const late = deferred<ToolExecution>();
+    const sideEffectStarted = deferred();
+    const sideEffect = deferred<ExecutableToolResult>();
+    const ready = new TestTool('ready', { accesses: ToolAccesses.none() });
+    const writer = new TestTool('writer', { accesses: ToolAccesses.writeFile('/repo/write.txt'), execute: async () => {
+      sideEffectStarted.resolve();
+      return sideEffect.promise;
+    } });
+    const gated = new TestTool('gated');
+    const tail = new TestTool('tail');
+    registry.register(ready);
+    registry.register(writer);
+    registry.register(gated);
+    registry.register(tail);
+    vi.spyOn(gated, 'resolveExecution').mockImplementation(() => { entered.resolve(); return late.promise; });
+    const tailResolve = vi.spyOn(tail, 'resolveExecution');
+    const finalized = new Map<string, ToolExecutionOutcome>();
+    executor.hooks.onDidExecuteTool.register('capture', async (ctx) => {
+      expect(finalized.has(ctx.toolCall.id)).toBe(false);
+      finalized.set(ctx.toolCall.id, ctx.outcome);
+    });
+    const stream = executor.execute([
+      toolCall('ready-call', 'ready', {}), toolCall('writer-call', 'writer', {}),
+      toolCall('gated-call', 'gated', {}), toolCall('tail-call', 'tail', {}),
+    ], { turnId: 0, signal: controller.signal })[Symbol.asyncIterator]();
+    const first = await stream.next();
+    expect(first.value?.toolCallId).toBe('ready-call');
+    await Promise.all([entered.promise, sideEffectStarted.promise]);
+    let finishing: Promise<unknown>;
+    if (ending === 'return') {
+      finishing = stream.return!();
+    } else {
+      controller.abort();
+      finishing = (async () => { for await (const _result of { [Symbol.asyncIterator]: () => stream }) {} })();
+    }
+    sideEffect.resolve({ output: 'write completed' });
+    await finishing;
+    expect(finalized).toEqual(new Map([
+      ['ready-call', 'executed'], ['writer-call', 'executed'], ['gated-call', 'aborted'], ['tail-call', 'aborted'],
+    ]));
+    expect(protocolEvents.filter((event) => event.type === 'tool.result' && event.toolCallId === 'writer-call')).toEqual([
+      expect.objectContaining({ output: 'write completed', isError: undefined }),
+    ]);
+    expect(pairedToolCallIds()).toEqual({ calls: ['ready-call', 'writer-call', 'gated-call', 'tail-call'], results: expect.arrayContaining(['ready-call', 'writer-call', 'gated-call', 'tail-call']) });
+    expect(pairedToolCallIds().results).toHaveLength(4);
+    expect(tailResolve).not.toHaveBeenCalled();
+    late.reject(new Error('late resolution failed'));
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(gated.calls).toEqual([]);
+    expect(tail.calls).toEqual([]);
+    expect(pairedToolCallIds().results).toHaveLength(4);
+  });
+
+  it.each(['before-resolve', 'admission', 'before-execute'] as const)('cancels a held %s gate without starting its execution', async (phase) => {
+    const controller = new AbortController();
+    const entered = deferred();
+    const release = deferred();
+    const gate = async () => { entered.resolve(); await release.promise; };
+    const tool = new TestTool('gated');
+    registry.register(tool);
+    const resolution = vi.spyOn(tool, 'resolveExecution');
+    executor.registerBeforeResolveTool(async () => { if (phase === 'before-resolve') await gate(); return undefined; });
+    executor.onBeforeExecuteTool((event) => { if (phase === 'admission') event.waitUntil(async () => { await gate(); return undefined; }); });
+    executor.onWillExecuteTool((event) => { if (phase === 'before-execute') event.waitUntil(gate()); });
+    const execution = execute([toolCall('gated-call', 'gated', {})], controller.signal);
+    await entered.promise;
+    controller.abort();
+    expect(await execution).toEqual([expect.objectContaining({ output: 'Tool "gated" was aborted', isError: true })]);
+    expect(tool.calls).toEqual([]);
+    if (phase === 'before-resolve') expect(resolution).not.toHaveBeenCalled();
+    release.resolve();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(pairedToolCallIds()).toEqual({ calls: ['gated-call'], results: ['gated-call'] });
+    expect(tool.calls).toEqual([]);
+  });
+
+  it('finalizes an earlier completed side effect before propagating a later admission failure', async () => {
+    const release = deferred<ExecutableToolResult>();
+    const entered = deferred();
+    const writer = new TestTool('writer', { accesses: ToolAccesses.none(), execute: () => release.promise });
+    registry.register(writer);
+    registry.register(new TestTool('failing'));
+    const tail = new TestTool('tail');
+    registry.register(tail);
+    const tailResolve = vi.spyOn(tail, 'resolveExecution');
+    executor.onBeforeExecuteTool((event) => {
+      if (event.toolCall.id === 'failing-call') { entered.resolve(); throw new Error('admission failed'); }
+    });
+    const stream = executor.execute([
+      toolCall('writer-call', 'writer', {}), toolCall('failing-call', 'failing', {}), toolCall('tail-call', 'tail', {}),
+    ], { turnId: 0, signal: new AbortController().signal })[Symbol.asyncIterator]();
+    const first = stream.next();
+    await entered.promise;
+    release.resolve({ output: 'write completed' });
+    expect(await first).toMatchObject({ value: { toolCallId: 'writer-call', result: { output: 'write completed' } } });
+    await expect(stream.next()).rejects.toThrow('admission failed');
+    expect(pairedToolCallIds()).toEqual({ calls: ['writer-call'], results: ['writer-call'] });
+    expect(writer.calls).toHaveLength(1);
+    expect(tailResolve).not.toHaveBeenCalled();
+  });
+
+  it('keeps all-access tasks and their conflicting followers in original queue order', async () => {
+    const firstRelease = deferred<ExecutableToolResult>();
+    const exclusiveRelease = deferred<ExecutableToolResult>();
+    const exclusiveStarted = deferred();
+    const lastPrepared = deferred();
+    const first = new TestTool('first', { accesses: ToolAccesses.writeFile('/repo/a.txt'), execute: () => firstRelease.promise });
+    const exclusive = new TestTool('exclusive', { execute: async () => { exclusiveStarted.resolve(); return exclusiveRelease.promise; } });
+    const last = new TestTool('last', { accesses: ToolAccesses.readFile('/repo/b.txt') });
+    for (const tool of [first, exclusive, last]) registry.register(tool);
+    executor.onWillExecuteTool((event) => { if (event.toolCall.id === 'last-call') lastPrepared.resolve(); });
+    const execution = execute([toolCall('first-call', 'first', {}), toolCall('exclusive-call', 'exclusive', {}), toolCall('last-call', 'last', {})]);
+    await lastPrepared.promise;
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(first.calls).toHaveLength(1);
+    expect(exclusive.calls).toEqual([]);
+    expect(last.calls).toEqual([]);
+    firstRelease.resolve({ output: 'first' });
+    await exclusiveStarted.promise;
+    expect(last.calls).toEqual([]);
+    exclusiveRelease.resolve({ output: 'exclusive' });
+    expect(await execution).toEqual([expect.objectContaining({ output: 'first' }), expect.objectContaining({ output: 'exclusive' }), expect.objectContaining({ output: 'last result' })]);
+  });
+
   it('runs the connection gate before resolving a tool execution', async () => {
     const tool = new TestTool('echo');
     registry.register(tool);
@@ -207,7 +414,7 @@ describe('AgentToolExecutorService', () => {
       expect(tool.calls).toEqual([]);
       expect(policy.isToolActiveForDisclosure(name, source)).toBe(false);
       expect(policy.isToolActiveForProfile({}, name, source)).toBe(false);
-      registration.dispose();
+      await registration.dispose();
     }
     expect(approval).not.toHaveBeenCalled();
     for (const name of ['Read', 'ReadMediaFile', 'Glob', 'Grep', 'WebSearch', 'FetchURL']) {
@@ -511,7 +718,22 @@ describe('AgentToolExecutorService', () => {
     expect(inner.calls[0]?.args).toEqual({ value: 1, model: 'fast' });
   });
 
-  it('routes malformed JSON args through schema validation', async () => {
+  it.each(['{not valid json', '{}{', '{"text":"hi",}'])('rejects malformed JSON before resolving an optional-args tool: %s', async (argumentsText) => {
+    const tool = new TestTool('optional');
+    registry.register(tool);
+    const resolution = vi.spyOn(tool, 'resolveExecution');
+    const results = await execute([{
+      type: 'function', id: 'call_malformed_optional', name: 'optional', arguments: argumentsText,
+    }]);
+    expect(results[0]).toMatchObject({
+      isError: true,
+      output: expect.stringContaining('Invalid args for tool "optional": malformed JSON'),
+    });
+    expect(resolution).not.toHaveBeenCalled();
+    expect(tool.calls).toEqual([]);
+  });
+
+  it('rejects malformed JSON args before schema validation', async () => {
     const tool = new TestTool('strict', {
       parameters: {
         type: 'object',
@@ -686,6 +908,37 @@ describe('AgentToolExecutorService', () => {
     ]);
     expect(first.calls).toEqual([]);
     expect(second.calls).toHaveLength(1);
+  });
+
+  it.each(['synthetic', 'veto'] as const)('does not resolve or admit later calls after a %s batch stop', async (source) => {
+    const first = new TestTool('first');
+    const stopped = new TestTool('stopped');
+    const last = new TestTool('last');
+    for (const tool of [first, stopped, last]) registry.register(tool);
+    const calls = [toolCall('first-call', 'first', {}), toolCall('stopped-call', 'stopped', {}), toolCall('last-call', 'last', {})];
+    const lastResolve = vi.spyOn(last, 'resolveExecution');
+    const admitted: string[] = [];
+    const stopResult = { output: 'batch stopped', isError: true as const, stopTurn: true };
+    if (source === 'synthetic') vi.spyOn(stopped, 'resolveExecution').mockReturnValue(stopResult);
+    executor.onBeforeExecuteTool((event) => {
+      expect(event.toolCalls).toBe(calls);
+      admitted.push(event.toolCall.id);
+      if (source === 'veto' && event.toolCall.id === 'stopped-call') event.veto(stopResult);
+    });
+    const results = await execute(calls);
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ output: 'first result' }),
+      expect.objectContaining({ output: 'batch stopped', stopTurn: true }),
+      expect.objectContaining({ output: 'Tool skipped because a previous tool call stopped this batch.' }),
+    ]));
+    expect(lastResolve).not.toHaveBeenCalled();
+    expect(admitted).toEqual(source === 'veto' ? ['first-call', 'stopped-call'] : ['first-call']);
+    expect(stopped.calls).toEqual([]);
+    expect(last.calls).toEqual([]);
+    const paired = pairedToolCallIds();
+    expect(paired.calls).toEqual(calls.map((call) => call.id));
+    expect(paired.results).toHaveLength(3);
+    expect(new Set(paired.results)).toEqual(new Set(paired.calls));
   });
 
   it('skips later tool calls after an execution requests stopBatchAfterThis', async () => {
@@ -939,23 +1192,36 @@ describe('AgentToolExecutorService', () => {
     ]);
   });
 
-  it('onDidExecuteTool failures replace the raw output with a hook error', async () => {
-    const tool = new TestTool('echo');
+  it.each([false, true])('preserves a completed result and side effect when a post hook fails (isError=%s)', async (isError) => {
+    let writes = 0;
+    const memoryReceipt = { action: 'create' as const, id: 'memory-1', revision: 'r1', status: 'active', operationId: 'op1' };
+    const result = { output: 'write completed', isError, memoryReceipt, stopTurn: true };
+    const tool = new TestTool('write-once', { execute: async () => { writes++; return result; } });
     registry.register(tool);
-    executor.hooks.onDidExecuteTool.register('fail-finalize', async () => {
+    executor.hooks.onDidExecuteTool.register('fail-finalize', async (ctx) => {
+      ctx.result = { output: 'unfinished hook rewrite', isError: true };
       throw new Error('finalize crashed');
     });
+    const [actual] = await execute([toolCall('call_write', 'write-once', {})]);
+    expect(writes).toBe(1);
+    expect(actual).toMatchObject({ output: result.output, memoryReceipt, stopTurn: true });
+    expect(actual?.isError === true).toBe(isError);
+    expect(events).toContainEqual({ type: 'tool.result', toolCallId: 'call_write',
+      result: expect.objectContaining({ output: result.output, memoryReceipt, stopTurn: true }) });
+  });
 
-    const results = await execute([toolCall('call_echo', 'echo', { text: 'raw output' })]);
-
-    expect(results).toEqual([
-      expect.objectContaining({
-        output: 'onDidExecuteTool hook failed for "echo": finalize crashed',
-        isError: true,
-      }),
-    ]);
-    const toolResultEvents = events.filter((event) => event.type === 'tool.result');
-    expect(JSON.stringify(toolResultEvents)).not.toContain('raw output');
+  it('preserves a completed side effect when its post hook aborts', async () => {
+    const controller = new AbortController();
+    const tool = new TestTool('write-once', { result: { output: 'write completed' } });
+    registry.register(tool);
+    executor.hooks.onDidExecuteTool.register('abort-finalize', async () => {
+      controller.abort();
+      controller.signal.throwIfAborted();
+    });
+    const [actual] = await execute([toolCall('call_write', 'write-once', {})], controller.signal);
+    expect(tool.calls).toHaveLength(1);
+    expect(actual?.output).toBe('write completed');
+    expect(actual?.isError).not.toBe(true);
   });
 
   it('onDidExecuteTool can stop the turn without marking the tool failed', async () => {
@@ -1536,7 +1802,7 @@ class TestTool implements ExecutableTool<Record<string, unknown>> {
     this.parameters = options.parameters ?? { type: 'object', additionalProperties: true };
   }
 
-  resolveExecution(args: Record<string, unknown>): ToolExecution {
+  resolveExecution(args: Record<string, unknown>): ToolExecution | Promise<ToolExecution> {
     return {
       approvalRule: this.name,
       accesses: this.options.accesses,

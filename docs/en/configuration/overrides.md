@@ -25,7 +25,7 @@ For ordinary runtime parameters such as model alias, Plan mode, yolo mode, and S
 A small number of environment variables explicitly override specific config file fields — for example, `KIKI_BACKGROUND_KEEP_ALIVE_ON_EXIT` has higher priority than `[background].keep_alive_on_exit`. These exceptions are noted in [Environment variables](./env-vars.md) and in the relevant field descriptions in [Configuration files](./config-files.md).
 
 ::: warning
-**Ordinary runtime parameters do not fall back to shell environment variables.** Provider `api_key` / `base_url` are read only from the config files — secrets from `credentials.toml`, everything else from `config.toml` — and do not fall back to `export`-ed shell variables. The only exception is the explicit `KIKI_MODEL_*` channel — see [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kiki-model).
+**Ordinary runtime parameters do not fall back to shell environment variables.** A provider reads a shell credential only when you explicitly name it with `api_key_env`, as described below. The separate `KIKI_MODEL_*` channel can also supply a temporary model and key — see [Define a model from environment variables](./env-vars.md#define-a-model-from-environment-variables-kiki-model).
 :::
 
 The CLI reads user-level configuration from `KIKI_HOME` (default `~/.kiki`) and project-local settings from `<project-root>/.kiki/local.toml`. The legacy `.kimi-code/local.toml` path is not read. To isolate config between different projects, point `KIKI_HOME` at different data directories — see [Common scenarios](#common-scenarios) below.
@@ -36,15 +36,26 @@ Provider credentials (`api_key`, `base_url`) follow their own resolution rules, 
 
 Provider API keys are stored in `credentials/credentials.toml` under the data root. Kiki reads the two files as one document, and on a shared TOML path the value in `credentials.toml` wins; `config.toml` never holds a plaintext credential. See [Provider credentials](./config-files.md#provider-credentials) for the file, its permissions, and the first-load migration.
 
-For a single provider, credentials are resolved in this order:
+A model's own API key or OAuth reference takes priority over its provider's credential. For an API-key provider, the remaining order is:
 
-1. `[providers.<name>].api_key` — the key stored in `credentials.toml`; highest priority
-2. The matching key inside the `[providers.<name>.env]` sub-table (`KIMI_API_KEY`, `ANTHROPIC_API_KEY`, etc.) — consulted only when `api_key` is empty; these secret values live in `credentials.toml` too
-3. If both are absent — startup fails with an error indicating the provider is missing credentials
+1. `[providers.<name>].api_key` — the stored key; a non-empty value wins over environment sources.
+2. If `api_key_env` is set, read that variable from `[providers.<name>.env]` when the same name is present there; otherwise read it from the Kiki process environment. An explicitly empty sub-table value does not fall back to the process. A missing or blank variable leaves the API key unconfigured and does not try a different variable.
+3. If `api_key_env` is not set, use the provider type's existing key in `[providers.<name>.env]` (`KIMI_API_KEY`, `ANTHROPIC_API_KEY`, etc.). These stored secret values live in `credentials.toml` too; there is no implicit shell fallback.
 
-`base_url` is resolved the same way: first `[providers.<name>].base_url`, then the `*_BASE_URL` key in `[providers.<name>.env]`. `base_url` is not a secret, so it stays in `config.toml`.
+To keep the key in the environment, store only its name in `config.toml`:
 
-> The `[providers.<name>.env]` sub-table is just a TOML section in the config files — it does not write anything into the shell environment. It is only consulted when the corresponding direct field (`api_key` / `base_url`) is empty.
+```toml
+[providers.gateway]
+type = "openai"
+base_url = "https://api.example.com/v1"
+api_key_env = "YOUR_PROVIDER_KEY"
+```
+
+Start Kiki from a process that has `YOUR_PROVIDER_KEY` set. A desktop app launched from a shortcut may not inherit variables from your terminal. To switch an existing provider from a stored key, clear its `api_key`; otherwise the stored key still wins. Kiki does not copy the resolved environment value into its credential store. Provider readiness, model requests, and model discovery use the same resolution rule; readiness means a value is available, not that the remote service has accepted it.
+
+A provider's OAuth reference still uses its existing token flow. As with a stored key, a resolved environment key cannot be combined with OAuth at that same provider layer.
+
+`base_url` is unchanged: first `[providers.<name>].base_url`, then the `*_BASE_URL` key in `[providers.<name>.env]`. It is not a secret, so it stays in `config.toml`. The `env` sub-table does not write values into the shell environment.
 
 For the full list of credential key names, see [Environment variables: provider credential key names](./env-vars.md#provider-credential-key-names).
 
@@ -107,7 +118,7 @@ Every surface accepts `files` and `fields`. Files load from the Kiki home direct
 KIKI_HOME="$PWD/.kiki-sandbox" kiki
 ```
 
-**One-off test key** — since provider credentials are read only from the config files, write a test key into `credentials.toml`:
+**Test key saved in a config file** — write it into `credentials.toml`. For an environment-only key, use the `api_key_env` example above:
 
 ```toml
 # ~/.kiki/credentials/credentials.toml

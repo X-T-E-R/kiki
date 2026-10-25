@@ -35,6 +35,27 @@ async function reveal(page, selector) {
   await page.locator(selector).scrollIntoViewIfNeeded();
 }
 
+/** Two frames, so an expansion and the layout it causes have both landed. */
+const settle = (page) => page.evaluate(() => new Promise((done) => {
+  requestAnimationFrame(() => requestAnimationFrame(() => { done(undefined); }));
+}));
+
+/**
+ * A turn folds its worked steps into one row, so the memory writes this walk
+ * reads sit inside a folded block until it is opened. Open every fold that is
+ * still closed, the way a reader does, instead of asserting on rows the fold
+ * has not rendered.
+ */
+async function openFolds(page) {
+  for (let pass = 0; pass < 8; pass += 1) {
+    const closed = page.locator('[data-history-fold]:not([data-history-fold-open]) [data-activity-toggle]');
+    const count = await closed.count();
+    if (count === 0) return;
+    for (let index = 0; index < count; index += 1) await closed.nth(index).click();
+    await settle(page);
+  }
+}
+
 /**
  * Back to the list. Under the phone breakpoint the list is hidden while a
  * detail is open, so the walk returns the way a reader would instead of
@@ -47,8 +68,8 @@ async function backToList(page) {
   // so wait for a row that is actually on screen rather than for the container.
   const row = page.locator('[data-memory-row]').first();
   await row.waitFor({ state: 'visible', timeout: 15_000 });
-  // The detail pane's own scroll position does not reset; bring the row into
-  // view so the next click lands on it.
+  // The list keeps its own scroll position across a detail, so bring the row
+  // into view rather than assuming the list is still at its top.
   await row.scrollIntoViewIfNeeded();
 }
 
@@ -64,6 +85,7 @@ const scenarios = [
       // persona-scoped one whose View must land in the persona's namespace.
       await page.goto(link(`/s/session_fixture_memory_provenance`), { waitUntil: 'domcontentloaded' });
       await page.waitForSelector('[data-memory-tool="MemoryWrite"]', { timeout: 30_000 });
+      await openFolds(page);
       await page.waitForFunction(() => document.querySelectorAll('[data-memory-tool="MemoryWrite"]').length >= 4, null, { timeout: 15_000 });
 
       const outcomes = await page.evaluate(() => [...document.querySelectorAll('[data-memory-tool="MemoryWrite"]')]

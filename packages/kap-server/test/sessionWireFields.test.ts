@@ -32,6 +32,14 @@ const coldFacts: SessionFacts = {
   live: false,
 };
 
+describe('toWireSession execution activity', () => {
+  it.each([true, false, undefined])('preserves executing=%s separately from unfinished work', (executing) => {
+    const wire = toWireSession(fields, '/example', { ...coldFacts, busy: true, executing });
+    expect(wire.busy).toBe(true);
+    expect(wire.executing).toBe(executing);
+  });
+});
+
 describe('toWireSession independent recency', () => {
   it('retains aggregate recency but projects the original metadata time for live and cold sessions', () => {
     const live = toWireSession({ ...fields, updatedAt: 10, activityUpdatedAt: 100 }, '/example', coldFacts);

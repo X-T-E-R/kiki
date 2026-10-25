@@ -154,6 +154,8 @@ export const sessionSchema = z.object({
    *  states ride the approval/question channels, and turn outcomes ride
    *  turn.ended — clients compose their own presentation from the facts. */
   busy: z.boolean(),
+  /** Current execution, excluding queued work and terminal task receipts awaiting delivery. Absent on older servers. */
+  executing: z.boolean().optional(),
   /** Whether the MAIN agent currently owns an active turn. Unlike `busy`,
    *  this excludes background tasks and sub-agent turns. Optional for wire
    *  compatibility with older servers. */
@@ -191,6 +193,7 @@ export const sessionSchema = z.object({
 export type Session = z.infer<typeof sessionSchema>;
 
 export const sessionCreateSchema = z.object({
+  creation_id: z.string().uuid().transform((value) => value.toLowerCase()).optional(),
   title: z.string().min(1).optional(),
   delivery: sessionDeliverySchema.optional(),
   persona: z.string().min(1).optional(),

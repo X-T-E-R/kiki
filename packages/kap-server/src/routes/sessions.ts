@@ -2,9 +2,9 @@ import { randomUUID } from 'node:crypto';
 import { canonicalWorkspaceRoot } from '@kiki/agent-core-v2/_base/utils/paths';
 import { IBotService } from '@kiki/agent-core-v2/app/bot/bot';
 import { IPersonaStore } from '@kiki/agent-core-v2/app/persona/personaStore';
-import type { AgentMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
+import type { AgentMeta, SessionMeta } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetadata';
 import type { NegotiatedExecutorCapabilities } from '@kiki/agent-core-v2/app/agentExecutor/capabilities';
-import { readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
+import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot } from '@kiki/agent-core-v2/session/agentProfileSnapshot';
 import { ISessionDeliveryService } from '@kiki/agent-core-v2/session/delivery/delivery';
 import { rmdir } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -24,6 +24,7 @@ import {
   IAgentLoopService,
   IAgentLifecycleService,
   IAgentUsageService,
+  IAtomicDocumentStore,
   IAuthSummaryService,
   ILogService,
   ISessionActivityView,
@@ -45,11 +46,13 @@ import {
   IWorkspaceInstanceManager,
   IWorktreeService,
   IWorkspaceService,
+  IWorkspacePersistence,
   MAIN_AGENT_ID,
   ProfileError,
   getLiveSessionById,
   programForSession,
   setSessionArchivedBatch,
+  archiveSessionFamily,
   isError2,
   Error2,
   type ContextMessage,
@@ -63,7 +66,8 @@ import {
 import { SessionMetaUpdated } from '@kiki/agent-core-v2/session/sessionMetadata/sessionMetaEvents';
 import { workspaceRootKey } from '@kiki/agent-core-v2/_base/utils/workdir-slug';
 import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
-import { worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, worktreeRemovalOutcomeSchema } from '@kiki/protocol';
+import { deleteArchivedSessions } from '../services/archivedSessionDeletion';
 import { toRestContextBreakdown } from '../protocol/context-usage';
 import { ErrorCode } from '../protocol/error-codes';
 import { pageResponseSchema } from '../protocol/pagination';
@@ -98,6 +102,7 @@ import { z } from 'zod';
 
 import { errEnvelope, okEnvelope } from '../envelope';
 import { requestLog } from '../lib/requestLog';
+import { withReplyCloseSignal } from '../procedures/requestSignal';
 import { acquireSessionOperation, withSessionOperation } from '../lib/sessionOperationLease';
 import { defineRoute } from '../middleware/defineRoute';
 import {
@@ -120,6 +125,13 @@ import { updateSessionProfile } from './sessionProfile';
 import { registerPersonaSettingsRoutes } from './personaSettings';
 import { boundedListPreview } from '../transport/klient/boundedContent';
 import { jsonBytes } from '@kiki/transcript';
+import {
+  SessionCreateReceiptError,
+  SessionCreateReceiptStore,
+  sessionCreateConnectionScope,
+} from '../services/sessionCreateReceipt';
+import { peerAudience } from '../services/connections/audience';
+import { webPrincipal } from '../services/webAccess';
 
 interface SessionRouteHost {
   post(
@@ -158,6 +170,7 @@ const sessionsListQueryCoercion = z
     include_ephemeral: booleanQueryParam,
     exclude_empty: booleanQueryParam,
     archived_only: booleanQueryParam,
+    q: z.string().max(500).optional(),
     workspace_id: workspaceIdSchema.optional(),
     persona: z.string().min(1).optional(),
   })
@@ -211,6 +224,8 @@ const sessionActionRequestSchema = z.preprocess(
   z.object({
     title: z.string().min(1).optional(),
     metadata: z.record(z.string(), z.unknown()).optional(),
+    include_attached: z.boolean().optional(),
+    exclude_session_ids: z.array(z.string().min(1)).max(100_000).optional(),
     instruction: z.string().optional(),
     strategy: z.enum(['summarize', 'relay']).optional(),
     count: z.number().int().positive().optional(),
@@ -280,6 +295,16 @@ export function registerSessionsRoutes(
 ): void {
   registerPersonaSettingsRoutes(app, core);
   const overlayResourcesBySession = new Map<string, Set<string>>();
+  const pendingOverlayCleanups = new Set<Promise<void>>();
+  const createReceipts = new SessionCreateReceiptStore(core);
+  const log = core.accessor.get(ILogService);
+  const trackOverlayCleanup = (result: void | Promise<void>): void => {
+    if (!(result instanceof Promise)) return;
+    pendingOverlayCleanups.add(result);
+    result.finally(() => pendingOverlayCleanups.delete(result)).catch((error: unknown) => {
+      log.error('session source overlay release failed', { error });
+    });
+  };
   const releaseSessionOverlays = (sessionId: string) => {
     const resources = overlayResourcesBySession.get(sessionId);
     if (resources === undefined) return;
@@ -325,204 +350,263 @@ export function registerSessionsRoutes(
         [ErrorCode.VALIDATION_FAILED]: { detailsSchema },
         [ErrorCode.WORKSPACE_NOT_FOUND]: {},
         [ErrorCode.FS_PATH_NOT_FOUND]: {},
+        [ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT]: {},
+        [ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN]: {},
       },
       description: 'Create a new session',
       tags: ['sessions'],
     },
     async (req, reply) => {
       const body = req.body;
-      const callerCwd = typeof body.metadata?.cwd === 'string' ? body.metadata.cwd : undefined;
-      const workspaceId = body.workspace_id;
-      const registry = core.accessor.get(IWorkspaceService);
-      let workDir = callerCwd;
-      if (workspaceId !== undefined) {
-        const workspace = await registry.get(workspaceId);
-        if (workspace === undefined) {
-          reply.send(
-            errEnvelope(
-              ErrorCode.WORKSPACE_NOT_FOUND,
-              `workspace ${workspaceId} does not exist`,
-              req.id,
-            ),
-          );
-          return;
-        }
-        if (callerCwd !== undefined && canonicalWorkspaceRoot(callerCwd) !== canonicalWorkspaceRoot(workspace.root)) {
-          reply.send(
-            buildValidationEnvelope(
-              [
-                {
-                  path: 'metadata.cwd',
-                  message: `metadata.cwd (${callerCwd}) must equal workspace root (${workspace.root})`,
-                },
-              ],
-              req.id,
-            ),
-          );
-          return;
-        }
-        workDir = workspace.root;
-      }
-
-      let autoRoot: string | undefined;
-      let registeredAutoWorkspace: Workspace | undefined;
-      let sessionCreated = false;
-      let worktreeId: string | undefined;
-      let createdSessionId: string | undefined;
-      let externalConnectionId: string | undefined;
-      try {
-        const externalMark = body.metadata?.['externalClient'];
-        if (externalMark !== undefined) {
-          if (externalClients === undefined || externalMark === null || typeof externalMark !== 'object'
-            || !('driver' in externalMark) || externalMark.driver !== 'external'
-            || !('connectionId' in externalMark) || typeof externalMark.connectionId !== 'string') {
-            throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an available external client connection.');
-          }
-          externalConnectionId = externalMark.connectionId;
-        }
-        const persona = body.persona === undefined ? undefined : await core.accessor.get(IPersonaStore).get(body.persona);
-        if (body.persona !== undefined && (await core.accessor.get(IPersonaStore).getState(body.persona)).archived) {
-          throw new Error2(ErrorCodes.REQUEST_INVALID, 'Restore the archived persona before starting a conversation.');
-        }
-        if (workDir === undefined && persona !== undefined) {
-          const configured = persona.definition.homeWorkspace;
-          workDir = configured === undefined
-            ? join(core.accessor.get(IBootstrapService).homeDir, 'bots', persona.definition.id)
-            : (await registry.get(configured))?.root ?? configured;
-          if (persona.definition.homeWorkspace === undefined) await core.accessor.get(IHostFileSystem).mkdir(workDir, { recursive: true });
-        }
-        let autoWorkspaceName: string | undefined;
-        if (workDir === undefined) {
-          const date = new Date().toISOString().slice(0, 10);
-          const id = randomUUID();
-          const root = join(core.accessor.get(IBootstrapService).homeDir, 'workspaces');
-          const hostFs = core.accessor.get(IHostFileSystem);
-          await hostFs.mkdir(root, { recursive: true });
-          workDir = join(root, `${date}-${id}`);
-          autoWorkspaceName = `Untitled workspace ${date} ${id.slice(0, 8)}`;
-          await hostFs.mkdir(workDir);
-          autoRoot = workDir;
-        }
-        const touched = await registry.createOrTouch(workDir, autoWorkspaceName);
-        if (autoRoot === undefined) await onWorkspaceServed?.(touched.root);
-        else registeredAutoWorkspace = touched;
-        let worktree: Awaited<ReturnType<IWorktreeService['create']>> | undefined;
-        if (body.isolation !== undefined) {
-          const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: touched.id });
-          try {
-            createdSessionId = `session_${randomUUID()}`;
-            worktree = await core.accessor.get(IWorktreeService).create({
-              sessionId: createdSessionId, workspaceId: touched.id, sourceRoot: touched.root,
-              title: body.title, isolation: body.isolation,
-            });
-            worktreeId = worktree.id;
-            workDir = worktree.path;
-          } finally { lease.dispose(); }
-        }
-        if (externalConnectionId !== undefined) {
-          createdSessionId ??= `session_${randomUUID()}`;
-          await externalClients!.prepareOwnerSession(externalConnectionId, createdSessionId, workDir,
-            body.agent_config?.permission_mode ?? 'manual',
-            body.agent_config?.profile ?? body.agent_config?.execution?.profile,
-            body.agent_config?.execution?.profile_file).catch((error: unknown) => {
-              throw new Error2(ErrorCodes.REQUEST_INVALID, toErrorMessage(error));
-            });
-        }
-        const handle = await core.accessor.get(ISessionManager).create({
-          workspaceId: touched.id,
-          workDir,
-          sessionId: createdSessionId,
-          ephemeral: body.ephemeral,
-          delivery: body.delivery ?? persona?.definition.delivery,
-          worktree: worktree === undefined ? undefined : {
-            worktreeId: worktree.id, branch: worktree.branch,
-            sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
-          },
-          mainAgentBinding: externalConnectionId !== undefined
-            ? { driver: 'external', persona: body.persona, profile: body.agent_config?.profile,
-                execution: body.agent_config?.execution }
-            : body.persona === undefined
-              && body.agent_config?.model === undefined
-              && body.agent_config?.profile === undefined
-              && body.agent_config?.thinking === undefined
-              ? undefined
-              : {
-                  persona: body.persona,
-                  profile: body.agent_config?.profile
-                    ?? (body.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
-                  model: body.agent_config?.model,
-                  thinking: body.agent_config?.thinking,
-                  strictThinking: body.agent_config?.thinking !== undefined,
-                },
-        });
-        sessionCreated = true;
-        if (autoRoot !== undefined) {
-          try {
-            await onWorkspaceServed?.(touched.root);
-          } catch (error) {
-            await core.accessor.get(ISessionManager).delete(handle.id);
-            sessionCreated = false;
-            throw error;
-          }
-        }
-        if (typeof body.title === 'string') {
-          await handle.accessor.get(ISessionMetadata).setTitle(body.title);
-        }
-        if (
-          body.agent_config?.permission_mode !== undefined
-          || body.agent_config?.plan_mode !== undefined
-        ) {
-          await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
-        }
-        if (body.metadata !== undefined) {
-          const metadata = handle.accessor.get(ISessionMetadata);
-          const current = externalConnectionId === undefined ? undefined : await metadata.read();
-          const custom = externalConnectionId === undefined ? body.metadata : {
-            ...current?.custom, ...body.metadata, externalClient: current?.custom?.['externalClient'],
-          };
-          await metadata.update({ custom });
-        }
-        if (body.persona !== undefined && body.persona_home === true && body.ephemeral !== true) {
-          await core.accessor.get(IBotService).claimHomeSession(body.persona, handle.id).catch((error) => {
-            requestLog(req)?.warn({ session_id: handle.id, error: toErrorMessage(error) }, 'daily chat claim skipped; conversation retained');
-          });
-        }
-        const meta = await handle.accessor.get(ISessionMetadata).read();
-        const session = toWireSession(
-          { ...meta, workspaceId: touched.id },
-          workDir,
-          resolveSessionFacts(core, meta.id),
-          undefined,
-          body.ephemeral === true,
-        );
-        core.accessor.get(IEventService).publish(
-          new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
-        );
-        reply.send(okEnvelope(session, req.id));
-      } catch (error) {
-        if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
-          externalClients?.cancelPreparedSession(createdSessionId);
-        }
-        if (worktreeId !== undefined) {
-          if (sessionCreated && createdSessionId !== undefined) {
-            await core.accessor.get(ISessionManager).delete(createdSessionId).catch(() => {
-              requestLog(req)?.warn({ session_id: createdSessionId, event_type: 'worktree_rollback_failed' }, 'worktree session rollback failed');
-            });
-          }
-          const result = await core.accessor.get(IWorktreeService).remove(worktreeId).catch(() => undefined);
-          if (result?.outcome !== 'removed') requestLog(req)?.warn({ worktree_id: worktreeId, outcome: result?.outcome }, 'worktree rollback retained its checkout');
-        }
-        if (autoRoot !== undefined && !sessionCreated) {
-          try {
-            await removeUnusedAutoWorkspace(core, autoRoot, registeredAutoWorkspace);
-          } catch {
-            requestLog(req)?.warn(
-              { event_type: 'automatic_workspace_cleanup_failed' },
-              'automatic workspace cleanup failed',
+      const createSession = async (forcedSessionId?: string): Promise<Session> => {
+        if (forcedSessionId !== undefined) {
+          const manager = core.accessor.get(ISessionManager);
+          if (manager.get(forcedSessionId) !== undefined || await core.accessor.get(ISessionIndex).get(forcedSessionId) !== undefined) {
+            throw new SessionCreateReceiptError(
+              ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT,
+              `The reserved session id ${forcedSessionId} already exists.`,
+              { creation_id: body.creation_id, reason: 'session_id_exists' },
             );
           }
         }
-        sendMappedError(reply, req, error);
+        const callerCwd = typeof body.metadata?.cwd === 'string' ? body.metadata.cwd : undefined;
+        const workspaceId = body.workspace_id;
+        const registry = core.accessor.get(IWorkspaceService);
+        let workDir = callerCwd;
+        if (workspaceId !== undefined) {
+          const workspace = await registry.get(workspaceId);
+          if (workspace === undefined) {
+            throw new SessionCreateReceiptError(
+              ErrorCode.WORKSPACE_NOT_FOUND,
+              `workspace ${workspaceId} does not exist`,
+            );
+          }
+          if (callerCwd !== undefined && canonicalWorkspaceRoot(callerCwd) !== canonicalWorkspaceRoot(workspace.root)) {
+            throw new SessionCreateReceiptError(
+              ErrorCode.VALIDATION_FAILED,
+              `metadata.cwd: metadata.cwd (${callerCwd}) must equal workspace root (${workspace.root})`,
+              [{ path: 'metadata.cwd', message: `metadata.cwd (${callerCwd}) must equal workspace root (${workspace.root})` }],
+            );
+          }
+          workDir = workspace.root;
+        }
+
+        let autoRoot: string | undefined;
+        let registeredAutoWorkspace: Workspace | undefined;
+        let sessionCreated = false;
+        let worktreeId: string | undefined;
+        let createdSessionId: string | undefined = forcedSessionId;
+        let externalConnectionId: string | undefined;
+        try {
+          const externalMark = body.metadata?.['externalClient'];
+          if (externalMark !== undefined) {
+            if (externalClients === undefined || externalMark === null || typeof externalMark !== 'object'
+              || !('driver' in externalMark) || externalMark.driver !== 'external'
+              || !('connectionId' in externalMark) || typeof externalMark.connectionId !== 'string') {
+              throw new Error2(ErrorCodes.REQUEST_INVALID, 'Select an available external client connection.');
+            }
+            externalConnectionId = externalMark.connectionId;
+          }
+          const persona = body.persona === undefined ? undefined : await core.accessor.get(IPersonaStore).get(body.persona);
+          if (body.persona !== undefined && (await core.accessor.get(IPersonaStore).getState(body.persona)).archived) {
+            throw new Error2(ErrorCodes.REQUEST_INVALID, 'Restore the archived persona before starting a conversation.');
+          }
+          if (workDir === undefined && persona !== undefined) {
+            const configured = persona.definition.homeWorkspace;
+            workDir = configured === undefined
+              ? join(core.accessor.get(IBootstrapService).homeDir, 'bots', persona.definition.id)
+              : (await registry.get(configured))?.root ?? configured;
+            if (persona.definition.homeWorkspace === undefined) await core.accessor.get(IHostFileSystem).mkdir(workDir, { recursive: true });
+          }
+          let autoWorkspaceName: string | undefined;
+          if (workDir === undefined) {
+            const date = new Date().toISOString().slice(0, 10);
+            const id = randomUUID();
+            const root = join(core.accessor.get(IBootstrapService).homeDir, 'workspaces');
+            const hostFs = core.accessor.get(IHostFileSystem);
+            await hostFs.mkdir(root, { recursive: true });
+            workDir = join(root, `${date}-${id}`);
+            autoWorkspaceName = `Untitled workspace ${date} ${id.slice(0, 8)}`;
+            await hostFs.mkdir(workDir);
+            autoRoot = workDir;
+          }
+          const touched = await registry.createOrTouch(workDir, autoWorkspaceName);
+          if (autoRoot === undefined) await onWorkspaceServed?.(touched.root);
+          else registeredAutoWorkspace = touched;
+          let worktree: Awaited<ReturnType<IWorktreeService['create']>> | undefined;
+          if (body.isolation !== undefined) {
+            const lease = await core.accessor.get(IWorkspaceInstanceManager).acquire({ workspaceId: touched.id });
+            try {
+              createdSessionId ??= `session_${randomUUID()}`;
+              worktree = await core.accessor.get(IWorktreeService).create({
+                sessionId: createdSessionId, workspaceId: touched.id, sourceRoot: touched.root,
+                title: body.title, isolation: body.isolation,
+              });
+              worktreeId = worktree.id;
+              workDir = worktree.path;
+            } finally { lease.dispose(); }
+          }
+          if (externalConnectionId !== undefined) {
+            createdSessionId ??= `session_${randomUUID()}`;
+            await externalClients!.prepareOwnerSession(externalConnectionId, createdSessionId, workDir,
+              body.agent_config?.permission_mode ?? 'manual',
+              body.agent_config?.profile ?? body.agent_config?.execution?.profile,
+              body.agent_config?.execution?.profile_file).catch((error: unknown) => {
+                throw new Error2(ErrorCodes.REQUEST_INVALID, toErrorMessage(error));
+              });
+          }
+          const handle = await core.accessor.get(ISessionManager).create({
+            workspaceId: touched.id,
+            workDir,
+            sessionId: createdSessionId,
+            ephemeral: body.ephemeral,
+            delivery: body.delivery ?? persona?.definition.delivery,
+            worktree: worktree === undefined ? undefined : {
+              worktreeId: worktree.id, branch: worktree.branch,
+              sourceRoot: worktree.repo.sourceRoot, baseRef: worktree.base.ref,
+            },
+            mainAgentBinding: externalConnectionId !== undefined
+              ? { driver: 'external', persona: body.persona, profile: body.agent_config?.profile,
+                  execution: body.agent_config?.execution }
+              : body.persona === undefined
+                && body.agent_config?.execution === undefined
+                && body.agent_config?.model === undefined
+                && body.agent_config?.profile === undefined
+                && body.agent_config?.thinking === undefined
+                ? undefined
+                : {
+                    execution: body.agent_config?.execution === undefined ? undefined : { ...body.agent_config.execution, overrides: {
+                      ...body.agent_config.execution.overrides,
+                      permission_mode: body.agent_config.permission_mode ?? body.agent_config.execution.overrides?.permission_mode,
+                    } },
+                    persona: body.persona,
+                    profile: body.agent_config?.profile
+                      ?? (body.persona === undefined ? DEFAULT_AGENT_PROFILE_NAME : undefined),
+                    model: body.agent_config?.model,
+                    thinking: body.agent_config?.thinking,
+                    strictThinking: body.agent_config?.thinking !== undefined,
+                  },
+          });
+          sessionCreated = true;
+          if (autoRoot !== undefined) {
+            try {
+              await onWorkspaceServed?.(touched.root);
+            } catch (error) {
+              await core.accessor.get(ISessionManager).delete(handle.id);
+              sessionCreated = false;
+              throw error;
+            }
+          }
+          if (typeof body.title === 'string') {
+            await handle.accessor.get(ISessionMetadata).setTitle(body.title);
+          }
+          if (
+            body.agent_config?.permission_mode !== undefined
+            || body.agent_config?.plan_mode !== undefined
+          ) {
+            await applyAgentRuntimeControls(await ensureMainAgent(handle), body.agent_config);
+          }
+          if (body.metadata !== undefined) {
+            const metadata = handle.accessor.get(ISessionMetadata);
+            const current = externalConnectionId === undefined ? undefined : await metadata.read();
+            const custom = externalConnectionId === undefined ? body.metadata : {
+              ...current?.custom, ...body.metadata, externalClient: current?.custom?.['externalClient'],
+            };
+            await metadata.update({ custom });
+          }
+          if (body.persona !== undefined && body.persona_home === true && body.ephemeral !== true) {
+            await core.accessor.get(IBotService).claimHomeSession(body.persona, handle.id).catch((error) => {
+              requestLog(req)?.warn({ session_id: handle.id, error: toErrorMessage(error) }, 'daily chat claim skipped; conversation retained');
+            });
+          }
+          const meta = await handle.accessor.get(ISessionMetadata).read();
+          const session = toWireSession(
+            { ...meta, workspaceId: touched.id },
+            workDir,
+            resolveSessionFacts(core, meta.id),
+            undefined,
+            body.ephemeral === true,
+          );
+          core.accessor.get(IEventService).publish(
+            new SessionCreated({ payload: { agentId: 'main', sessionId: session.id, session } }),
+          );
+          return session;
+        } catch (error) {
+          if (!sessionCreated && externalConnectionId !== undefined && createdSessionId !== undefined) {
+            externalClients?.cancelPreparedSession(createdSessionId);
+          }
+          if (worktreeId !== undefined) {
+            if (sessionCreated && createdSessionId !== undefined) {
+              await core.accessor.get(ISessionManager).delete(createdSessionId).catch(() => {
+                requestLog(req)?.warn({ session_id: createdSessionId, event_type: 'worktree_rollback_failed' }, 'worktree session rollback failed');
+              });
+            }
+            const result = await core.accessor.get(IWorktreeService).remove(worktreeId).catch(() => undefined);
+            if (result?.outcome !== 'removed') requestLog(req)?.warn({ worktree_id: worktreeId, outcome: result?.outcome }, 'worktree rollback retained its checkout');
+          }
+          if (autoRoot !== undefined && !sessionCreated) {
+            try {
+              await removeUnusedAutoWorkspace(core, autoRoot, registeredAutoWorkspace);
+            } catch {
+              requestLog(req)?.warn(
+                { event_type: 'automatic_workspace_cleanup_failed' },
+                'automatic workspace cleanup failed',
+              );
+            }
+          }
+          throw error;
+        }
+      };
+
+      if (body.creation_id === undefined) {
+        try {
+          reply.send(okEnvelope(await createSession(), req.id));
+        } catch (error) {
+          sendMappedError(reply, req, error);
+        }
+        return;
+      }
+
+      const audience = peerAudience(req);
+      const principal = webPrincipal(req);
+      const connectionScope = sessionCreateConnectionScope({ peer: audience?.grantId, web: principal?.sessionId });
+      let cancelled = false;
+      try {
+        const session = await withReplyCloseSignal(
+          reply as unknown as Parameters<typeof withReplyCloseSignal>[0],
+          async (signal) => {
+            try {
+              const result = await createReceipts.run(
+                connectionScope,
+                body,
+                createSession,
+                (error) => {
+                  const mapped = mapSessionError(req, error);
+                  return { code: mapped.code, message: mapped.msg, details: mapped.details };
+                },
+                async (sessionId) => {
+                  const manager = core.accessor.get(ISessionManager);
+                  if (manager.get(sessionId) !== undefined) return 'present';
+                  return (await core.accessor.get(ISessionIndex).get(sessionId)) === undefined ? 'absent' : 'present';
+                },
+                signal,
+              );
+              if (signal.aborted) {
+                cancelled = true;
+                return undefined;
+              }
+              return result;
+            } catch (error) {
+              if (signal.aborted) cancelled = true;
+              throw error;
+            }
+          },
+          req,
+        );
+        if (!cancelled && session !== undefined) reply.send(okEnvelope(session, req.id));
+      } catch (error) {
+        if (cancelled) return;
+        reply.send(mapSessionError(req, error));
       }
     },
   );
@@ -546,7 +630,7 @@ export function registerSessionsRoutes(
       description: 'List sessions',
       tags: ['sessions'],
     },
-    async (req, reply) => {
+    async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const raw = req.query;
       let before = raw.before_id;
       let after = raw.after_id;
@@ -561,15 +645,17 @@ export function registerSessionsRoutes(
         }
       }
       const archivedOnly = raw.archived_only === true;
+      const needle = raw.q?.trim().toLocaleLowerCase();
 
-      const workspaces = await core.accessor.get(IWorkspaceService).list();
-      const roots = new Map(workspaces.map((w) => [w.id, w.root]));
-
+      const catalog = await core.accessor.get(IWorkspacePersistence).load();
+      const roots = new Map((catalog?.workspaces ?? []).map((w) => [w.id, w.root]));
+      const index = core.accessor.get(ISessionIndex);
       const workspaceIds =
         raw.workspace_id === undefined
           ? undefined
           : await core.accessor.get(IWorkspaceAliases).resolveAliasIds(raw.workspace_id);
-      if (workspaceIds !== undefined && !workspaceIds.some((id) => roots.has(id))) {
+      if (workspaceIds !== undefined && !workspaceIds.some((id) => roots.has(id)) &&
+        (workspaceIds.some((id) => catalog?.deletedIds.includes(id)) || await index.count({ workspaceIds, includeArchived: true }) === 0)) {
         reply.send(
           errEnvelope(
             ErrorCode.WORKSPACE_NOT_FOUND,
@@ -579,12 +665,12 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      const index = core.accessor.get(ISessionIndex);
       const includeArchived = archivedOnly ? true : raw.include_archive;
       const personaNames = new Map<string, Promise<string>>();
       const project = async (summary: SessionSummary, cwd: string, facts = resolveSessionFacts(core, summary.id, summary.usage)): Promise<Session> => {
         if (facts.live === false) {
-          const personaId = await core.accessor.get(IBotService).sessionPersonaId(summary);
+          const legacyPersona = summary.custom?.['bot_persona_id'] ?? summary.custom?.['room_persona_id'];
+          const personaId = summary.personaId ?? (typeof legacyPersona === 'string' && legacyPersona.length > 0 ? legacyPersona : undefined);
           if (personaId !== undefined) {
             let name = personaNames.get(personaId);
             if (name === undefined) {
@@ -615,6 +701,7 @@ export function registerSessionsRoutes(
           summary.updatedAt > afterCursor.updatedAt ||
           (summary.updatedAt === afterCursor.updatedAt && summary.id > afterCursor.id);
         while (collected.length < wanted) {
+          signal.throwIfAborted();
           const page = await index.listRecent({
             workspaceIds,
             includeArchived,
@@ -625,12 +712,14 @@ export function registerSessionsRoutes(
           if (page.items.length === 0) break;
           let exhausted = false;
           for (const summary of page.items) {
+            signal.throwIfAborted();
             if (!newerThanCursor(summary)) {
               exhausted = true;
               break;
             }
-            const cwd = summary.cwd ?? roots.get(summary.workspaceId);
+            const cwd = summary.cwd ?? roots.get(summary.workspaceId) ?? (archivedOnly ? '' : undefined);
             if (cwd === undefined) continue;
+            if (needle && ![summary.title ?? '', cwd, summary.workspaceId].some((value) => value.toLocaleLowerCase().includes(needle))) continue;
             if (raw.persona !== undefined && !(await core.accessor.get(IBotService).sessionBelongsToPersona(summary, raw.persona))) continue;
             if (raw.exclude_empty === true && (summary.lastPrompt ?? '').length === 0) continue;
             if (archivedOnly && !summary.archived) continue;
@@ -660,8 +749,9 @@ export function registerSessionsRoutes(
       const last = items.at(-1)?.id;
       const nextCursor = more && last !== undefined ? after === undefined ? last : `next:${Buffer.from(JSON.stringify({ before: last, after })).toString('base64url')}` : undefined;
       const busyCount = core.accessor.get(ISessionManager).list().filter((session) => session.accessor.get(ISessionActivityView).state().busy).length;
+      signal.throwIfAborted();
       reply.send(okEnvelope({ items, has_more: more, next_cursor: nextCursor, busy_count: busyCount, ephemeral: ephemeral?.items, ephemeral_has_more: ephemeral?.has_more, ephemeral_next_cursor: ephemeral?.next_cursor }, req.id));
-    },
+    }),
   );
   app.get(
     listRoute.path,
@@ -734,19 +824,7 @@ export function registerSessionsRoutes(
         );
         return;
       }
-      let facts = resolveSessionFacts(core, session_id, summary.usage);
-      if (!facts.live) {
-        const profile = await readPersistedAgentProfileSnapshot(core, summary.workspaceId, session_id, MAIN_AGENT_ID, undefined);
-        const persona = profile?.persona?.definition;
-        if (profile !== undefined) {
-          facts = { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
-            model: profile.modelAlias ?? '', profile: profile.profileName,
-            persona: persona === undefined ? undefined : {
-              id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
-            },
-          } };
-        }
-      }
+      const facts = await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage);
       reply.send(
         okEnvelope(
           toWireSession(
@@ -820,7 +898,7 @@ export function registerSessionsRoutes(
           toWireSession(
             summary,
             cwd,
-            resolveSessionFacts(core, session_id, summary.usage),
+            await resolveSessionBindingFacts(core, session_id, summary.workspaceId, summary.usage),
           ),
           req.id,
         ),
@@ -982,6 +1060,20 @@ export function registerSessionsRoutes(
     app.post(route.path, route.options, route.handler as Parameters<SessionRouteHost['post']>[2]);
   }
 
+  const deleteAllArchivedRoute = defineRoute(
+    {
+      method: 'POST', path: '/sessions::delete-archived',
+      body: z.object({}).strict(),
+      success: { data: deleteArchivedSessionsResponseSchema },
+      description: 'Permanently delete all archived conversations in the connected home',
+      tags: ['sessions'],
+    },
+    async (req, reply) => {
+      reply.send(okEnvelope(await deleteArchivedSessions(core), req.id));
+    },
+  );
+  app.post(deleteAllArchivedRoute.path, deleteAllArchivedRoute.options, deleteAllArchivedRoute.handler as Parameters<SessionRouteHost['post']>[2]);
+
   const sessionActionRoute = defineRoute(
     {
       method: 'POST',
@@ -996,6 +1088,7 @@ export function registerSessionsRoutes(
           sessionAbortResponseSchema,
           startBtwSessionResponseSchema,
           archiveSessionResponseSchema,
+          deleteArchivedSessionsResponseSchema,
         ]),
       },
       errors: {
@@ -1017,12 +1110,18 @@ export function registerSessionsRoutes(
         const { tail } = req.params;
         const parsed = parseActionSuffix({
           tail,
-          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'archive', 'restore'] as const,
+          allowedActions: ['fork', 'compact', 'undo', 'abort', 'btw', 'archive', 'restore', 'delete-archived'] as const,
           resourceLabel: 'session',
         });
         if (parsed.kind !== 'action') {
           const message = parsed.kind === 'invalid' ? parsed.reason : `unsupported action: ${tail}`;
           reply.send(buildValidationEnvelope([{ path: 'session_id', message }], req.id));
+          return;
+        }
+
+        if (parsed.action === 'delete-archived') {
+          const body = deleteArchivedSessionRequestSchema.parse(req.body);
+          reply.send(okEnvelope(await deleteArchivedSessions(core, parsed.id, body.exclude_session_ids), req.id));
           return;
         }
 
@@ -1092,11 +1191,11 @@ export function registerSessionsRoutes(
         if (parsed.action === 'compact') {
           const body = compactSessionRequestSchema.parse(req.body);
           await withMainAgent(core, parsed.id, async (agent) => {
-            agent.accessor
-              .get(IAgentFullCompactionService)
-              .begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
-            requestLog(req)?.info({ session_id: parsed.id, action: 'compact' }, 'session action completed');
-            reply.send(okEnvelope({}, req.id));
+            const compaction = agent.accessor.get(IAgentFullCompactionService);
+            const accepted = compaction.begin({ source: 'manual', instruction: normalizeOptional(body.instruction), strategy: body.strategy });
+            const status = compaction.queuedManualCompaction ? 'queued' : 'running';
+            requestLog(req)?.info({ session_id: parsed.id, action: 'compact', source: 'manual', accepted, status }, 'session compaction requested');
+            reply.send(okEnvelope({ accepted, status, source: 'manual' }, req.id));
           });
           return;
         }
@@ -1160,6 +1259,13 @@ export function registerSessionsRoutes(
           return;
         }
 
+        if (req.body.include_attached === true) {
+          const outcomes = await archiveSessionFamily(core.accessor, parsed.id, req.body.exclude_session_ids);
+          const archived = outcomes.every((outcome) => outcome.ok);
+          requestLog(req)?.info({ session_id: parsed.id, action: 'archive', archived, family_count: outcomes.length }, 'session family archive completed');
+          reply.send(okEnvelope({ archived, outcomes }, req.id));
+          return;
+        }
         const archiveOutcome = (await setSessionArchivedBatch(core.accessor, [parsed.id], true))[0]!;
         if (!archiveOutcome.ok) {
           if (archiveOutcome.reason === 'not_found') {
@@ -1387,6 +1493,9 @@ export function registerSessionsRoutes(
             return;
           }
           const overlayPin = await acquireSessionOperation(core, session_id, 'source-overlay');
+          const releaseOverlayPin = (): void => {
+            trackOverlayCleanup(overlayPin.dispose());
+          };
           let attached = false;
           try {
             if (overlayPin.handle === undefined) throw new Error2(ErrorCodes.SESSION_NOT_FOUND, `session ${session_id} does not exist`);
@@ -1403,7 +1512,7 @@ export function registerSessionsRoutes(
                 resources?.delete(resourceId);
                 if (resources?.size === 0) overlayResourcesBySession.delete(session_id);
               } finally {
-                overlayPin.dispose();
+                releaseOverlayPin();
               }
             });
             if (!attached) {
@@ -1420,7 +1529,7 @@ export function registerSessionsRoutes(
               skills: contributions.skills.skills.length,
             }, req.id));
           } finally {
-            if (!attached) overlayPin.dispose();
+            if (!attached) releaseOverlayPin();
           }
         });
       } catch (error) {
@@ -1553,6 +1662,7 @@ export function toWireSession(
     archived_at:
       fields.archivedAt === undefined ? undefined : new Date(fields.archivedAt).toISOString(),
     busy: facts.busy,
+    executing: facts.executing,
     main_turn_active: facts.mainTurnActive,
     pending_interaction: facts.pendingInteraction,
     last_turn_reason:
@@ -1579,6 +1689,7 @@ export function toWireSession(
 /** Live activity and interaction facts projected onto the wire `Session`. */
 export interface SessionFacts {
   readonly busy: boolean;
+  readonly executing?: boolean;
   readonly mainTurnActive: boolean;
   readonly pendingInteraction: SessionPendingInteraction;
   readonly lastTurnReason?: 'completed' | 'cancelled' | 'failed';
@@ -1594,6 +1705,30 @@ export interface SessionFacts {
   /** False when no live handle exists (cold session); live warm sessions
    *  always report their own outcome, never the persisted fallback. */
   readonly live?: boolean;
+}
+
+export async function resolveSessionBindingFacts(
+  core: Scope,
+  sessionId: string,
+  workspaceId: string,
+  persistedUsage?: SessionUsageSummary,
+  metadata?: AgentMeta,
+): Promise<SessionFacts> {
+  const facts = resolveSessionFacts(core, sessionId, persistedUsage);
+  if (facts.live) return facts;
+  const mainMetadata = metadata ?? (await core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
+    `sessions/${workspaceId}/${sessionId}`, 'state.json',
+  ))?.agents?.[MAIN_AGENT_ID];
+  const profile = await readPersistedAgentProfileSnapshot(core, workspaceId, sessionId, MAIN_AGENT_ID, mainMetadata, undefined,
+    { inlineByteBudget: PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET });
+  if (profile === undefined) return facts;
+  const persona = profile.persona?.definition;
+  return { ...facts, executorId: profile.executorId ?? 'native', agentConfig: {
+    execution: profile.execution, model: profile.modelAlias ?? '', profile: profile.profileName,
+    persona: persona === undefined ? undefined : {
+      id: persona.id, name: persona.name, avatarUrl: `/api/personas/${encodeURIComponent(persona.id)}/avatar`,
+    },
+  } };
 }
 
 /**
@@ -1612,6 +1747,7 @@ export function resolveSessionFacts(
   if (handle === undefined) {
     return {
       busy: false,
+      executing: false,
       mainTurnActive: false,
       pendingInteraction: 'none',
       usage:
@@ -1646,6 +1782,7 @@ export function resolveSessionFacts(
     agentConfig: profile === undefined
       ? undefined
       : {
+          execution: profile.execution,
           model: profile.modelAlias ?? '',
           profile: profile.profileName,
           persona: persona === undefined
@@ -1867,60 +2004,57 @@ function buildValidationEnvelope(
   };
 }
 
-function sendMappedError(
-  reply: { send(payload: unknown): unknown },
-  req: { id: string },
-  err: unknown,
-): void {
+interface SessionErrorEnvelope {
+  readonly code: number;
+  readonly msg: string;
+  readonly data: unknown;
+  readonly request_id: string;
+  readonly details?: unknown;
+  readonly stack?: string;
+}
+
+function mapSessionError(req: { id: string }, err: unknown): SessionErrorEnvelope {
   const requestId = req.id;
-  const log = requestLog(req);
+  if (err instanceof SessionCreateReceiptError) {
+    return { ...errEnvelope(err.code, err.message, requestId), details: err.details };
+  }
   if (err instanceof ProfileError) {
-    reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
-    return;
+    return errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack);
   }
   if (isError2(err)) {
-    switch (err.code) {
+    switch (err.code as unknown as string) {
       case 'session.not_found':
       case 'agent.not_found':
-        reply.send(errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.SESSION_NOT_FOUND, err.message, requestId, err.stack);
       case ErrorCodes.SESSION_TITLE_GENERATION_FAILED:
-        reply.send(errEnvelope(ErrorCode.SESSION_TITLE_UNAVAILABLE, err.message, requestId));
-        return;
+        return errEnvelope(ErrorCode.SESSION_TITLE_UNAVAILABLE, err.message, requestId);
       case 'session.fork_active_turn':
       case ErrorCodes.SESSION_BUSY:
-        reply.send({
+        return {
           code: ErrorCode.SESSION_BUSY,
           msg: err.message,
           data: null,
           request_id: requestId,
           details: err.details,
           stack: err.stack,
-        });
-        return;
+        };
       case ErrorCodes.STORAGE_LOCKED:
-        reply.send(errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.SESSION_LOCKED, err.message, requestId, err.stack);
       case ErrorCodes.SESSION_INDEX_BUILDING:
-        reply.send(
-          errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack),
-        );
-        return;
+        return errEnvelope(ErrorCode.SESSION_INDEX_BUILDING, err.message, requestId, err.stack);
       case 'compaction.unable':
-        reply.send(errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.COMPACTION_UNABLE, err.message, requestId, err.stack);
       case 'session.undo_unavailable':
-        reply.send({
+        return {
           code: ErrorCode.SESSION_UNDO_UNAVAILABLE,
           msg: err.message,
           data: (err as { details?: unknown }).details ?? null,
           request_id: requestId,
           stack: err.stack,
-        });
-        return;
+        };
       case 'message.action_unavailable':
       case 'session.cursor_mismatch':
-        reply.send({
+        return {
           code: err.code === 'message.action_unavailable'
             ? ErrorCode.MESSAGE_ACTION_UNAVAILABLE
             : ErrorCode.SESSION_CURSOR_MISMATCH,
@@ -1929,31 +2063,21 @@ function sendMappedError(
           request_id: requestId,
           details: err.details,
           stack: err.stack,
-        });
-        return;
+        };
       case ErrorCodes.GOAL_ALREADY_EXISTS:
-        reply.send(errEnvelope(ErrorCode.GOAL_ALREADY_EXISTS, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_ALREADY_EXISTS, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.GOAL_NOT_FOUND, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_NOT_FOUND, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_STATUS_INVALID:
-        reply.send(errEnvelope(ErrorCode.GOAL_STATUS_INVALID, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_STATUS_INVALID, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_NOT_RESUMABLE:
-        reply.send(errEnvelope(ErrorCode.GOAL_NOT_RESUMABLE, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_NOT_RESUMABLE, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_OBJECTIVE_EMPTY:
-        reply.send(errEnvelope(ErrorCode.GOAL_OBJECTIVE_EMPTY, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.GOAL_OBJECTIVE_EMPTY, err.message, requestId, err.stack);
       case ErrorCodes.GOAL_OBJECTIVE_TOO_LONG:
-        reply.send(
-          errEnvelope(ErrorCode.GOAL_OBJECTIVE_TOO_LONG, err.message, requestId, err.stack),
-        );
-        return;
+        return errEnvelope(ErrorCode.GOAL_OBJECTIVE_TOO_LONG, err.message, requestId, err.stack);
       case ErrorCodes.FS_PATH_NOT_FOUND:
-        reply.send(errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.FS_PATH_NOT_FOUND, err.message, requestId, err.stack);
       case 'request.invalid':
       case 'validation.failed':
       case ErrorCodes.CONFIG_INVALID:
@@ -1964,17 +2088,25 @@ function sendMappedError(
       case ErrorCodes.ROUTE_BINDING_CONFLICT:
       case ErrorCodes.ROUTE_MODEL_ALIAS_MISSING:
       case ErrorCodes.ROUTE_SWITCH_FORBIDDEN:
-        reply.send(errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack));
-        return;
+        return errEnvelope(ErrorCode.VALIDATION_FAILED, err.message, requestId, err.stack);
+      default:
+        requestLog(req)?.error({ request_id: requestId, error_type: err.name }, 'session request failed');
+        return errEnvelope(ErrorCode.INTERNAL_ERROR, err.message, requestId, err.stack);
     }
   }
-  log?.error({ request_id: requestId, error_type: err instanceof Error ? err.name : typeof err }, 'session request failed');
-  reply.send(
-    errEnvelope(
-      ErrorCode.INTERNAL_ERROR,
-      err instanceof Error ? err.message : String(err),
-      requestId,
-      err instanceof Error ? err.stack : undefined,
-    ),
+  requestLog(req)?.error({ request_id: requestId, error_type: err instanceof Error ? err.name : typeof err }, 'session request failed');
+  return errEnvelope(
+    ErrorCode.INTERNAL_ERROR,
+    err instanceof Error ? err.message : String(err),
+    requestId,
+    err instanceof Error ? err.stack : undefined,
   );
+}
+
+function sendMappedError(
+  reply: { send(payload: unknown): unknown },
+  req: { id: string },
+  err: unknown,
+): void {
+  reply.send(mapSessionError(req, err));
 }

@@ -7,6 +7,8 @@ import type { ContextMessage, PromptOrigin } from './types';
 export const COMPACTION_SUMMARY_PREFIX = summaryPrefixTemplate.trimEnd();
 export const COMPACT_USER_MESSAGE_MAX_TOKENS = 20_000;
 export const COMPACT_USER_MESSAGE_HEAD_TOKENS = 2_000;
+/** Shared budget for historical media in kept input, the handoff and the uncompacted tail. Pending user input is preserved. */
+export const COMPACT_CARRIED_MEDIA_MAX_TOKENS = COMPACT_USER_MESSAGE_MAX_TOKENS;
 export const COMPACTION_ELISION_VARIANT = 'compaction_elision';
 
 type MessageLike = ContextMessage;
@@ -81,8 +83,9 @@ export function buildContextCompactionShape(
     };
   }
 
-  const compactedHistory = history.slice(0, input.compactedCount);
-  const tail = history
+  const media = selectCompactionMedia(history, COMPACT_CARRIED_MEDIA_MAX_TOKENS, estimate);
+  const compactedHistory = media.messages.slice(0, input.compactedCount);
+  const tail = media.messages
     .slice(input.compactedCount)
     .filter((message) => message.origin?.kind !== 'injection');
   const compactableUserMessages = collectCompactableUserMessages(compactedHistory);
@@ -92,19 +95,26 @@ export function buildContextCompactionShape(
     input.userBudget?.head ?? COMPACT_USER_MESSAGE_HEAD_TOKENS,
     estimate.message,
   );
-  const elisionMessage = selection.elided
-    ? createCompactionElisionMessage(selection.omittedTokens)
+  const keptUserMessages = [...selection.head, ...selection.tail];
+  const contextSummary = input.contextSummary ?? input.summary;
+  const carriedMedia = retainedContinuableMedia(media.messages, input.compactedCount, [...keptUserMessages, ...tail]);
+  const mediaOmitted = media.omitted;
+  const elisionMessage = selection.elided || mediaOmitted > 0
+    ? createCompactionElisionMessage(selection.omittedTokens, mediaOmitted)
     : undefined;
   const keptMessages = elisionMessage === undefined
-    ? [...selection.head, ...selection.tail]
+    ? keptUserMessages
     : [...selection.head, elisionMessage, ...selection.tail];
-  const contextSummary = input.contextSummary ?? input.summary;
-  const summaryMessage = createCompactionSummaryMessage(contextSummary);
+  const summaryMessage = createCompactionSummaryMessage(contextSummary, carriedMedia);
   const messages = [...keptMessages, summaryMessage, ...tail];
+  const carriedMediaTokens = carriedMedia.length === 0
+    ? 0
+    : estimate.message(summaryMessage) - estimate.message(createCompactionSummaryMessage(contextSummary));
   const tokensAfter =
     input.tokensAfter ??
     (input.requestOverheadTokens ?? 0) +
       (input.summaryOutputTokens ?? estimate.text(contextSummary)) +
+      carriedMediaTokens +
       estimate.messages([...keptMessages, ...tail]);
   const keptUserMessageCount =
     input.keptUserMessageCount ?? selection.head.length + selection.tail.length;
@@ -129,28 +139,123 @@ export function buildCompactionSummaryText(summary: string): string {
   return `${COMPACTION_SUMMARY_PREFIX}\n${suffix.length > 0 ? suffix : '(no summary available)'}`;
 }
 
-export function createCompactionSummaryMessage(text: string): ContextMessage {
+export function createCompactionSummaryMessage(text: string, media: readonly ContentPart[] = []): ContextMessage {
   return {
     role: 'user',
-    content: [{ type: 'text', text }],
+    content: media.length === 0 ? [{ type: 'text', text }] : [{ type: 'text', text }, ...media],
     toolCalls: [],
     origin: { kind: 'compaction_summary' },
   };
 }
 
-export function createCompactionElisionMessage(omittedTokens: number): ContextMessage {
+export function isContinuableMediaPart(part: ContentPart): boolean {
+  const payload = part.type === 'image_url' ? part.imageUrl : part.type === 'audio_url' ? part.audioUrl : part.type === 'video_url' ? part.videoUrl : undefined;
+  if (payload === undefined) return false;
+  return (payload.url?.trim().length ?? 0) > 0 || (payload.id?.trim().length ?? 0) > 0 || (payload.attachment?.fileId?.trim().length ?? 0) > 0;
+}
+
+export function retainedContinuableMedia(
+  history: readonly ContextMessage[],
+  compactedCount: number,
+  retainedMessages: readonly ContextMessage[] = [],
+): readonly ContentPart[] {
+  const retainedParts = new Set<ContentPart>();
+  for (const message of retainedMessages) {
+    for (const part of message.content) {
+      if (isContinuableMediaPart(part)) retainedParts.add(part);
+    }
+  }
+  const parts: ContentPart[] = [];
+  for (const message of history.slice(0, Math.max(0, compactedCount))) {
+    for (const part of message.content) {
+      if (isContinuableMediaPart(part) && !retainedParts.has(part)) parts.push(part);
+    }
+  }
+  return parts;
+}
+
+function selectCompactionMedia(
+  history: readonly ContextMessage[], maxTokens: number, estimate: TokenEstimate,
+): { messages: readonly ContextMessage[]; omitted: number } {
+  const completed = history.findLastIndex(message => message.role === 'assistant' && message.toolCalls.length === 0);
+  const selected = new Map<number, Set<number>>();
+  let remaining = maxTokens;
+  let omitted = 0;
+  for (const userInput of [true, false]) {
+    for (let index = history.length - 1; index >= 0; index--) {
+      const message = history[index]!;
+      if (isRealUserInput(message) !== userInput) continue;
+      const currentInput = userInput && index > completed;
+      for (let partIndex = message.content.length - 1; partIndex >= 0; partIndex--) {
+        const part = message.content[partIndex]!;
+        if (!isContinuableMediaPart(part)) continue;
+        const cost = mediaPartTokens(part, estimate);
+        if (!currentInput && cost > remaining) { omitted++; continue; }
+        if (!currentInput) remaining -= cost;
+        let parts = selected.get(index);
+        if (parts === undefined) { parts = new Set(); selected.set(index, parts); }
+        parts.add(partIndex);
+      }
+    }
+  }
+  if (omitted === 0) return { messages: history, omitted };
+  return {
+    messages: history.map((message, index) => {
+      const content = message.content.filter((part, partIndex) => !isContinuableMediaPart(part) || selected.get(index)?.has(partIndex));
+      if (content.length === message.content.length) return message;
+      return { ...message, content: content.length > 0 ? content : [{ type: 'text', text: '[Earlier media is available in session history.]' }] };
+    }),
+    omitted,
+  };
+}
+
+export function limitCarriedMedia(
+  parts: readonly ContentPart[],
+  maxTokens: number,
+  estimate: TokenEstimate = defaultTokenEstimate,
+): ContentPart[] {
+  const kept: ContentPart[] = [];
+  let used = 0;
+  for (let index = parts.length - 1; index >= 0; index--) {
+    const part = parts[index]!;
+    const cost = mediaPartTokens(part, estimate);
+    if (cost > maxTokens - used) {
+      if (cost > maxTokens) continue;
+      break;
+    }
+    kept.push(part);
+    used += cost;
+  }
+  kept.reverse();
+  return kept;
+}
+
+function mediaPartTokens(part: ContentPart, estimate: TokenEstimate): number {
+  return Math.max(0, estimate.message(createCompactionSummaryMessage('', [part])) - estimate.message(createCompactionSummaryMessage('')));
+}
+
+export function createCompactionElisionMessage(omittedTokens: number, mediaOmitted = 0): ContextMessage {
   return {
     role: 'user',
-    content: [{ type: 'text', text: buildCompactionElisionText(omittedTokens) }],
+    content: [{ type: 'text', text: buildCompactionElisionText(omittedTokens, mediaOmitted) }],
     toolCalls: [],
     origin: { kind: 'injection', variant: COMPACTION_ELISION_VARIANT },
   };
 }
 
-export function buildCompactionElisionText(omittedTokens: number): string {
-  return wrapSystemReminder(
-    `Some of this conversation's user messages were omitted here during compaction: the messages above this note are the oldest user input, the messages below are the most recent, and roughly ${String(omittedTokens)} tokens in between were dropped. The omitted content is covered by the compaction summary at the end of the conversation.`,
-  );
+export function buildCompactionElisionText(omittedTokens: number, mediaOmitted = 0): string {
+  const notes: string[] = [];
+  if (omittedTokens > 0 || mediaOmitted <= 0) {
+    notes.push(
+      'Some earlier user messages were omitted here during compaction. Messages above this note are the oldest retained input; messages below it are the most recent. Consult the handoff for carried context and use available history tools for any missing original wording that changes the next action. The summary is not a substitute for an omitted instruction\'s source.',
+    );
+  }
+  if (mediaOmitted > 0) {
+    notes.push(
+      'Older media beyond the shared compaction limit was not reattached. Pending user input keeps its media; other user-provided media takes priority over tool media within that limit. Use history tools to retrieve other original media when needed; the files themselves are unchanged.',
+    );
+  }
+  return wrapSystemReminder(notes.join(' '));
 }
 
 export function collectCompactableUserMessages<T extends MessageLike>(messages: readonly T[]): T[] {

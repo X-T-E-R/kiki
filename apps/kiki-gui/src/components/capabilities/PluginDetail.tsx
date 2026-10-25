@@ -13,12 +13,15 @@ import { useQuery } from '@tanstack/react-query';
 import { errorText } from '@kiki/session-core/i18n';
 
 import { useI18n } from '../../i18n';
+import { ExternalLink } from '../../host/ExternalLink';
 import { importKeys, importsApi, type ImportsFacade } from '../../lib/importHistory';
 import {
   hasAnyPermission,
+  localizeEntry,
   pluginContributions,
   pluginPermissions,
   pluginPrerequisites,
+  pluginSurface,
   type PluginContributions,
   type PluginUpdateView,
 } from '../../lib/pluginCatalog';
@@ -32,11 +35,10 @@ import { DANGER_BUTTON, DANGER_GHOST_BUTTON, PRIMARY_BUTTON, SECONDARY_BUTTON } 
 import { CapabilityGlyph, CapabilityIcon } from './CapabilityIcon';
 import type { InstallRequest } from './InstallFlow';
 import { PermissionBoundary, PermissionList } from './PermissionList';
-import { PluginSettingsForm } from './PluginSettingsForm';
 import { Disclosure, FactList, QUIET_BUTTON, Tag } from './primitives';
 import {
   subjectIcon,
-  subjectName,
+  localizedSubjectName,
   useInvalidatePlugins,
   usePluginInfo,
   usePluginSkins,
@@ -51,6 +53,8 @@ export function PluginDetail({
   onUpdate,
   onOpenPanel,
   onOpenImport,
+  onOpenMedia,
+  onOpenSettings,
 }: {
   readonly subject: PluginSubject;
   /** Available update from the catalog or GitHub; shown, never auto-installed. */
@@ -59,8 +63,20 @@ export function PluginDetail({
   readonly onInstall: (request: InstallRequest) => void;
   readonly onUpdate?: (plugin: PluginSummary, update: PluginUpdateView) => void;
   readonly onOpenPanel?: (pluginId: string, panelId: string) => void;
+  /**
+   * This plugin's own settings page, which is where its configuration is
+   * edited. Unset where that page cannot be reached — the entry still renders
+   * nothing rather than pretending the plugin has no configuration.
+   */
+  readonly onOpenSettings?: (pluginId: string) => void;
   /** This plugin's importer in the host-managed import surface. */
   readonly onOpenImport?: (source: { readonly pluginId: string; readonly sourceId: string }) => void;
+  /**
+   * The media management surface. It belongs to the media package, so it is
+   * offered on that plugin's own page rather than as a global control that
+   * exists before anything is installed.
+   */
+  readonly onOpenMedia?: () => void;
 }) {
   const { client, scopeId } = useConnection();
   const { t, locale } = useI18n();
@@ -105,9 +121,9 @@ export function PluginDetail({
   });
   const permissions = pluginPermissions(manifest);
   const prerequisites = pluginPrerequisites(info, manifest);
-  const name = subjectName(subject);
+  const name = localizedSubjectName(subject, locale);
   const description = (manifest?.['description'] as string | undefined)
-    ?? subject.entry?.description;
+    ?? (subject.entry === undefined ? undefined : localizeEntry(subject.entry, locale).description);
   const broken = installed !== undefined && (installed.state === 'error' || installed.hasErrors);
   const catalogSource = subject.entry?.source;
   const version = installed?.version ?? subject.entry?.version;
@@ -126,9 +142,10 @@ export function PluginDetail({
   };
 
   const install = () => {
-    if (catalogSource === undefined) return;
+    if (catalogSource === undefined || subject.entry?.installable === false) return;
     onInstall({
       source: catalogSource,
+      sha256: subject.entry?.sha256,
       displayName: name,
       icon: subjectIcon(subject, info),
       entry: subject.entry,
@@ -172,7 +189,7 @@ export function PluginDetail({
         </div>
         <div className="flex shrink-0 items-center gap-2">
           {installed === undefined ? (
-            <button type="button" className={PRIMARY_BUTTON} onClick={install} disabled={catalogSource === undefined} data-plugin-install={subject.id}>
+            <button type="button" className={PRIMARY_BUTTON} onClick={install} disabled={catalogSource === undefined || subject.entry?.installable === false} data-plugin-install={subject.id}>
               {t('cap.action.install')}
             </button>
           ) : (
@@ -215,7 +232,41 @@ export function PluginDetail({
               />
             )}
           </section>
-          {installed !== undefined ? <PluginSettingsForm pluginId={subject.id} /> : null}
+          {/* A plugin's configuration is edited on its own settings page, not
+              here: this page describes what the plugin contributes and what it
+              needs, and the settings page is where its own form lives. One
+              place to edit, whichever surface the reader came from. */}
+          {installed !== undefined ? (
+            <section data-plugin-detail-settings>
+              <button
+                type="button"
+                className={`${QUIET_BUTTON} -ml-3`}
+                data-plugin-open-settings={subject.id}
+                onClick={() => { onOpenSettings?.(subject.id); }}
+                disabled={onOpenSettings === undefined}
+              >
+                <Icon name="chevron" size={14} className="text-ink-faint" />
+                {t('cap.detail.openSettings')}
+              </button>
+            </section>
+          ) : null}
+          {/* A plugin that contributes a management surface offers it here. The
+              manifest decides which one, so the page never names a plugin. */}
+          {installed !== undefined && onOpenMedia !== undefined && pluginSurface(manifest) !== undefined ? (
+            <section data-plugin-detail-surface>
+              <h2 className="text-[13px] font-medium text-ink">{t('cap.media.title')}</h2>
+              <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">{t('cap.media.manageHint')}</p>
+              <button
+                type="button"
+                className={`${QUIET_BUTTON} -ml-3 mt-1`}
+                data-plugin-open-media={subject.id}
+                onClick={() => { onOpenMedia(); }}
+              >
+                <Icon name="chevron" size={14} className="text-ink-faint" />
+                {t('cap.media.open')}
+              </button>
+            </section>
+          ) : null}
           {onOpenImport !== undefined && importerIds.length > 0 ? (
             <section data-plugin-detail-import>
               <h2 className="text-[13px] font-medium text-ink">{t('cap.import.title')}</h2>
@@ -271,7 +322,7 @@ export function PluginDetail({
                 { label: t('cap.detail.source'), value: installed?.originalSource ?? catalogSource ?? '—', mono: true },
                 ...(info?.root !== undefined ? [{ label: t('cap.detail.location'), value: info.root, mono: true }] : []),
                 ...(info?.installedAt !== undefined ? [{ label: t('cap.detail.installedAt'), value: new Date(info.installedAt).toLocaleString(locale === 'zh' ? 'zh-CN' : undefined) }] : []),
-                ...(subject.entry?.homepage !== undefined ? [{ label: t('cap.detail.homepage'), value: <a className="text-selected-ink hover:underline" href={subject.entry.homepage} target="_blank" rel="noopener noreferrer">{subject.entry.homepage}</a> }] : []),
+                ...(subject.entry?.homepage !== undefined ? [{ label: t('cap.detail.homepage'), value: <ExternalLink className="text-selected-ink hover:underline" href={subject.entry.homepage}>{subject.entry.homepage}</ExternalLink> }] : []),
               ]}
             />
             {installed !== undefined ? (

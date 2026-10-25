@@ -1,7 +1,7 @@
 import { runCommand } from '../host';
 import type { CapabilityEntry } from '../types';
 import type { CapabilityEntryContext } from './context';
-import { BROWSER_DRIVER_FILES, BROWSER_DRIVER_VERSION, browserResourcePaths, installedBrowserDriver, installedBrowserChrome, installBrowserDriver, installBrowserChrome, verifiedBrowserDriver } from './browserResourceStore';
+import { BROWSER_DRIVER_FILES, BROWSER_DRIVER_VERSION, browserResourcePaths, installedBrowserDriver, installedBrowserChrome, installBrowserDriver, installBrowserChrome, updateBrowserChrome, verifiedBrowserDriver } from './browserResourceStore';
 
 export function createKikiBrowserEntry(ctx: CapabilityEntryContext, bundledDriver?: string): CapabilityEntry {
   const supported = ctx.platform === 'win32' && ctx.arch === 'x64';
@@ -31,6 +31,14 @@ export function createKikiBrowserEntry(ctx: CapabilityEntryContext, bundledDrive
       if (browserMode !== 'driver-only') await installBrowserChrome(ctx.kimiHomeDir, report, ctx.fetchImpl, signal);
       signal?.throwIfAborted();
       return 'browser-components-installed';
+    },
+    update: async (report, signal) => {
+      if (!supported) throw new Error(`Managed browser update is unavailable on ${ctx.platform}/${ctx.arch}`);
+      if (await driver() === undefined) await installBrowserDriver(ctx.kimiHomeDir, report, ctx.fetchImpl, signal);
+      signal?.throwIfAborted();
+      await updateBrowserChrome(ctx.kimiHomeDir, report, ctx.fetchImpl, signal);
+      signal?.throwIfAborted();
+      return 'browser-components-updated-on-disk';
     },
     plan: {
       artifact: { version: BROWSER_DRIVER_VERSION, url: BROWSER_DRIVER_FILES['agent-browser.exe']!.url,

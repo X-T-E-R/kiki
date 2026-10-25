@@ -32,9 +32,9 @@ describe('hook support per engine', () => {
     expect(hookSupport('cursor-acp').level).toBe('unsupported');
   });
 
-  it('lists the eleven bridge tools across the five groups', () => {
+  it('lists the nine bridge tools and keeps the board group empty', () => {
     const counts = (['memory', 'board', 'cron', 'threads', 'history'] as const).map((group) => kikiGroupTools(group).length);
-    expect(counts).toEqual([3, 2, 1, 3, 2]);
+    expect(counts).toEqual([3, 0, 1, 3, 2]);
     expect(kikiGroupTools('hooks')).toEqual([]);
   });
 });

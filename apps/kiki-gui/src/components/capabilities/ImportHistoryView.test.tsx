@@ -20,7 +20,7 @@ const resume = vi.fn();
 const archives = vi.fn();
 const read = vi.fn();
 const meta = vi.fn();
-const listWorkspaces = vi.fn();
+const listWorkspaceCatalog = vi.fn();
 const listPlugins = vi.fn();
 const getPluginSettings = vi.fn();
 let remote = false;
@@ -29,7 +29,7 @@ vi.mock('../../state/connection', () => ({
   useConnection: () => ({
     client: {
       meta,
-      listWorkspaces,
+      listWorkspaceCatalog,
       listPlugins,
       getPluginSettings,
       klient: { global: { imports: { sources, discover, preview, start, jobs, job: jobById, cancel, resume, archives, read } } },
@@ -113,7 +113,7 @@ beforeEach(() => {
   archives.mockReset().mockResolvedValue({ items: [], cursor: null });
   jobById.mockReset().mockRejectedValue(new Error('no such job'));
   read.mockReset().mockResolvedValue({ records: [], nextCursor: null });
-  listWorkspaces.mockReset().mockResolvedValue(WORKSPACES);
+  listWorkspaceCatalog.mockReset().mockResolvedValue(WORKSPACES);
   // A first-party importer is served by the host and is deliberately absent
   // from the installed list; the page must still be fully usable.
   listPlugins.mockReset().mockResolvedValue({ plugins: [] });
@@ -317,11 +317,11 @@ describe('ImportHistoryView', () => {
     expect((target as HTMLElement).dataset['pluginImportTarget']).toBe('11111111-1111-4111-8111-111111111111');
   });
 
-  it('reports the server flag rather than pretending the feature is absent', async () => {
+  it('asks the server whether it can import rather than reading an experimental flag', async () => {
     meta.mockResolvedValue({ experimental_flags: {} });
     const { container } = await render();
-    expect(container.querySelector('[data-cap-import-disabled]')).not.toBeNull();
-    expect(sources).not.toHaveBeenCalled();
+    expect(sources).toHaveBeenCalled();
+    expect(container.querySelector('[data-cap-import-disabled]')).toBeNull();
   });
 
   it('labels a bounded preview as a sample and shows the server’s own losses', async () => {

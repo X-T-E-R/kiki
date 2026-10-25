@@ -359,6 +359,7 @@ class FakeSessionActivityView {
     const pending = this.interactions.listPending();
     return {
       busy,
+      executing: busy,
       mainTurnActive: this.folds.get(MAIN_AGENT_ID)?.turnActive ?? false,
       pendingInteraction: pending.some((i) => i.kind === 'approval')
         ? 'approval'
@@ -379,6 +380,7 @@ function makeCore(
     sessionId: string,
     reason: string,
     getHandle: (sessionId: string) => ISessionScopeHandle | undefined,
+    signal?: AbortSignal,
   ) => Promise<{ handle: ISessionScopeHandle; dispose(): void } | undefined>,
 ): Scope {
   const handles = new WeakMap<FakeLifecycle, ISessionScopeHandle>();
@@ -425,8 +427,8 @@ function makeCore(
       if (token === ISessionManager) {
         return {
           get: sessionFor,
-          acquire: acquire === undefined ? undefined : (sessionId: string, reason: string) =>
-            acquire(sessionId, reason, sessionFor),
+          acquire: acquire === undefined ? undefined : (sessionId: string, reason: string, _options?: unknown, signal?: AbortSignal) =>
+            acquire(sessionId, reason, sessionFor, signal),
           list: () => [...sessions.keys()].map((sessionId) => sessionFor(sessionId)),
           onDidCloseSession: (handler: (event: { sessionId: string }) => void) =>
             lifecycleEvents.onDidCloseSession(handler),
@@ -1021,7 +1023,28 @@ describe('SessionEventBroadcaster', () => {
     expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
     bc.unsubscribe('s1', target);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(release).toHaveBeenCalledOnce();
+  });
+
+  it('cancels 220 abandoned subscription acquisitions without waiting for cold replay', async () => {
+    let pins = 0;
+    const signals: AbortSignal[] = [];
+    bc = new SessionEventBroadcaster({ eventsDir: dir, core: makeCore(sessions, eventBus, {}, lifecycleEvents,
+      async (_sessionId, _reason, _getHandle, signal) => {
+        expect(signal).toBeDefined();
+        signals.push(signal!);
+        pins += 1;
+        try { return await new Promise<never>((_resolve, reject) => signal!.addEventListener('abort', () => reject(signal!.reason), { once: true })); }
+        finally { pins -= 1; }
+      }) });
+    const targets = Array.from({ length: 220 }, () => collectingTarget().target);
+    const requests = targets.map(target => bc!.subscribe('s1', target));
+    expect(pins).toBe(220);
+    for (const target of targets) bc.unsubscribe('s1', target);
+    expect(await Promise.all(requests)).toEqual(Array(220).fill(false));
+    expect(pins).toBe(0);
+    expect(signals.every(signal => signal.aborted)).toBe(true);
   });
 
   it('blocks idle eviction while a warm session subscription is pending', async () => {
@@ -1050,6 +1073,7 @@ describe('SessionEventBroadcaster', () => {
     finishAcquire();
     expect(await pending).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(pins).toBe(0);
     expect(release).toHaveBeenCalledOnce();
   });
@@ -1095,6 +1119,7 @@ describe('SessionEventBroadcaster', () => {
     await bc.getCursor('s1');
     expect(envelopes.some((event) => event.type === 'turn.started')).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(pins.get(newHandle)).toBe(0);
     expect(release).toHaveBeenCalledTimes(2);
   });
@@ -1163,6 +1188,7 @@ describe('SessionEventBroadcaster', () => {
     expect(await bc.subscribe('s1', target, new Set(['main']))).toBe(true);
     expect(acquire).toHaveBeenCalledTimes(2);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(firstRelease).toHaveBeenCalledOnce();
     expect(secondRelease).toHaveBeenCalledOnce();
   });
@@ -1187,6 +1213,7 @@ describe('SessionEventBroadcaster', () => {
     expect(await bc.subscribe('s1', target)).toBe(false);
     expect(await bc.subscribe('s1', target)).toBe(true);
     bc.unsubscribe('s1', target);
+    await bc.getCursor('s1');
     expect(release).toHaveBeenCalledOnce();
   });
 
@@ -2258,6 +2285,25 @@ describe('SessionEventBroadcaster', () => {
     ]);
   });
 
+  it('forwards execution-only changes while unfinished delivery keeps busy true', async () => {
+    const lc = new FakeLifecycle();
+    lc.addAgent('main');
+    const changes: Array<(change: SessionActivityChangedEvent) => void> = [];
+    vi.spyOn(lc.workView, 'onDidChange').mockImplementation((listener) => {
+      changes.push(listener);
+      return { dispose: () => {} };
+    });
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    await bc.subscribe('s1', target);
+    for (const executing of [true, false]) {
+      changes[0]!({ state: { busy: true, executing, mainTurnActive: false, pendingInteraction: 'none' }, cause: 'background' });
+      await bc.getCursor('s1');
+    }
+    expect(envelopes.filter((event) => event.type === 'event.session.work_changed').map((event) => event.payload))
+      .toMatchObject([{ busy: true, executing: true }, { busy: true, executing: false }]);
+  });
+
   it('flips busy from background tasks alone (no turn involved)', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');
@@ -2860,6 +2906,41 @@ describe('SessionEventBroadcaster', () => {
     expect(envelopes[0]!.type).toBe('session.meta.updated');
   });
 
+  it.each(['question', 'approval'] as const)('delivers session %s interactions past agent filters live and on replay', async (kind) => {
+    const lc = new FakeLifecycle();
+    lc.addAgent('main');
+    const sub = lc.addAgent('sub-1');
+    sessions.set('s1', lc);
+    const { target, envelopes } = collectingTarget();
+    const filter = new Set(['main']);
+    await bc.close();
+    bc = new SessionEventBroadcaster({ eventsDir: dir, core: makeCore(sessions, eventBus), maxBufferSize: 20 });
+    await bc.subscribe('s1', target, filter);
+
+    lc.interactions.enqueue({
+      id: 'interaction-sub', kind,
+      payload: kind === 'question'
+        ? { questions: [{ question: 'Pick', options: [{ label: 'A' }] }] }
+        : { toolCallId: 'call-sub', toolName: 'Bash', action: 'run' },
+      origin: { agentId: 'sub-1' },
+    });
+    await bc.getCursor('s1');
+    lc.interactions.respond('interaction-sub', kind === 'question'
+      ? { answers: { q_0: 'opt_0_0' } } : { decision: 'allow' });
+    sub.bus.emit(agentEvent('turn.ended', { turnId: 1 }));
+    await bc.getCursor('s1');
+
+    const expected = [`event.${kind}.requested`, `event.${kind}.${kind === 'question' ? 'answered' : 'resolved'}`];
+    const live = envelopes.filter((event) => expected.includes(event.type));
+    expect(live.map((event) => event.type)).toEqual(expected);
+    expect(live.every((event) => (event.payload as { agentId: string }).agentId === 'sub-1')).toBe(true);
+    expect(envelopes.some((event) => event.type === 'turn.ended')).toBe(false);
+    const replay = await bc.getBufferedSince('s1', { seq: 0 }, filter);
+    expect(replay.resyncRequired).toBe(false);
+    expect(replay.events.filter((event) => expected.includes(event.envelope.type)).map((event) => event.envelope)).toEqual(live);
+    expect(replay.events.some((event) => event.envelope.type === 'turn.ended')).toBe(false);
+  });
+
   it('replays only the allowlisted agent events while keeping the global sequence', async () => {
     const lc = new FakeLifecycle();
     const main = lc.addAgent('main');
@@ -3252,11 +3333,14 @@ describe('SessionEventBroadcaster', () => {
       sessions.set('s1', lc);
       const core = makeCore(sessions, eventBus);
       const service = new TranscriptService({ homeDir: dir, core });
-      const read = service.readColdSnapshot.bind(service);
+      const screen = service as unknown as {
+        readScreenSnapshot(sessionId: string, agentId: string): Promise<unknown>;
+      };
+      const read = screen.readScreenSnapshot.bind(service);
       let release!: () => void;
       const blocked = new Promise<void>((resolve) => { release = resolve; });
       let mainFinished = false;
-      const reads = vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => {
+      const reads = vi.spyOn(screen, 'readScreenSnapshot').mockImplementation(async (...args) => {
         if (args[1] === 'main') {
           await blocked;
           const snapshot = await read(...args);
@@ -3313,11 +3397,14 @@ describe('SessionEventBroadcaster', () => {
       });
       const core = makeCore(sessions, eventBus);
       const service = new TranscriptService({ homeDir: dir, core });
-      const read = service.readColdSnapshot.bind(service);
+      const screen = service as unknown as {
+        readScreenSnapshot(sessionId: string, agentId: string): Promise<unknown>;
+      };
+      const read = screen.readScreenSnapshot.bind(service);
       let releaseHistory!: () => void;
       const history = new Promise<void>((resolve) => { releaseHistory = resolve; });
       let blockedFinished = false;
-      vi.spyOn(service, 'readColdSnapshot').mockImplementation(async (...args) => {
+      vi.spyOn(screen, 'readScreenSnapshot').mockImplementation(async (...args) => {
         if (args[1] !== blockedAgent) return read(...args);
         await history;
         const result = await read(...args);

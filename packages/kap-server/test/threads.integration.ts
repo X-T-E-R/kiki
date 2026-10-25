@@ -12,11 +12,13 @@ import { describe, expect, it, vi } from 'vitest';
 import { ErrorCode } from '../src/protocol/error-codes';
 import {
   readThreadRequestSchema as publicReadThreadRequestSchema,
+  readThreadResponseSchema as publicReadThreadResponseSchema,
   sendThreadMessageRequestSchema as publicSendThreadMessageRequestSchema,
   waitThreadsRequestSchema as publicWaitThreadsRequestSchema,
 } from '../../protocol/src/rest/thread';
 import {
   readThreadRequestSchema as serverReadThreadRequestSchema,
+  readThreadResponseSchema as serverReadThreadResponseSchema,
   sendThreadMessageRequestSchema as serverSendThreadMessageRequestSchema,
   waitThreadsRequestSchema as serverWaitThreadsRequestSchema,
 } from '../src/protocol/rest-thread';
@@ -94,8 +96,10 @@ function reply() {
 
 describe('peer-thread routes', () => {
   it('keeps public and server schema mirrors behaviorally aligned', () => {
+    const contentRef = { source: { kind: 'turn', id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text', offset: 0, total: 5000 };
     const corpus = [
       { thread: targetWire, limit: 100 },
+      { thread: targetWire, content_ref: contentRef },
       { thread: { ...targetWire, host_id: '' } },
       { thread: targetWire, cursor: '' },
     ];
@@ -130,6 +134,53 @@ describe('peer-thread routes', () => {
     }
   });
 
+  it('preserves all produced thread origins in the public and server response schemas', async () => {
+    const origins = ['user', 'peer', 'bridged_peer', 'external', 'mixed', 'unknown', 'thread_created'] as const;
+    const contentRef = { source: { kind: 'turn' as const, id: '0' }, revision: 'wire-generation-span', path: ['output'], kind: 'text' as const, offset: 0, total: 5000 };
+    const service = makeService();
+    vi.mocked(service.readThread).mockResolvedValue({
+      thread: targetCore,
+      turns: origins.map((origin, turnId) => ({
+        turnId,
+        endedAt: 2,
+        reason: 'completed' as const,
+        origin,
+        input: 'request',
+        output: 'response',
+        contentRefs: turnId === 0 ? [contentRef] : undefined,
+      })),
+    });
+    const { route } = setup(service);
+    const response = reply();
+    await route('post', '/threads::read').handler(
+      request({ body: { thread: targetWire } }),
+      response,
+    );
+    const data = publicReadThreadResponseSchema.parse(response.send.mock.calls[0]?.[0]?.data);
+    expect(data.turns.map((turn) => turn.origin)).toEqual(origins);
+    expect(data.turns[0]?.content_refs).toEqual([contentRef]);
+    expect(serverReadThreadResponseSchema.parse(data)).toEqual(data);
+    const invalid = { ...data, turns: [{ ...data.turns[0], origin: 'not-an-origin' }] };
+    expect(publicReadThreadResponseSchema.safeParse(invalid).success).toBe(false);
+    expect(serverReadThreadResponseSchema.safeParse(invalid).success).toBe(false);
+  });
+
+  it('passes a preparing read page and opaque continuation cursor through the REST route', async () => {
+    const service = makeService();
+    vi.mocked(service.readThread).mockResolvedValue({
+      thread: targetCore,
+      turns: [],
+      incomplete: 'history_preparing',
+      nextCursor: 'opaque-preparation-cursor',
+    });
+    const { route } = setup(service);
+    const response = reply();
+    await route('post', '/threads::read').handler(request({ body: { thread: targetWire } }), response);
+    const data = publicReadThreadResponseSchema.parse(response.send.mock.calls[0]?.[0]?.data);
+    expect(data).toEqual({ thread: targetWire, turns: [], incomplete: 'history_preparing', next_cursor: 'opaque-preparation-cursor' });
+    expect(serverReadThreadResponseSchema.parse(data)).toEqual(data);
+  });
+
   it('registers all operations and preserves cross-workspace references', async () => {
     const service = makeService();
     vi.mocked(service.listThreads).mockResolvedValue({
@@ -158,7 +209,15 @@ describe('peer-thread routes', () => {
       request({ body: { thread: targetWire, limit: 4 } }),
       readReply,
     );
-    expect(service.readThread).toHaveBeenCalledWith({ thread: targetCore, cursor: undefined, limit: 4 });
+    expect(service.readThread).toHaveBeenCalledWith({ thread: targetCore, contentRef: undefined, cursor: undefined, limit: 4 });
+
+    const contentRef = { source: { kind: 'turn' as const, id: '7' }, revision: 'wire-generation-span', path: ['output'], kind: 'text' as const, offset: 0, total: 5000 };
+    const segmentReply = reply();
+    await route('post', '/threads::read').handler(
+      request({ body: { thread: targetWire, content_ref: contentRef } }),
+      segmentReply,
+    );
+    expect(service.readThread).toHaveBeenLastCalledWith({ thread: targetCore, contentRef, cursor: undefined, limit: undefined });
 
     const sendReply = reply();
     await route('post', '/threads::send').handler(
@@ -224,6 +283,51 @@ describe('peer-thread routes', () => {
     const response = reply();
     await route('get', '/threads').handler(request(), response);
     expect(response.send).toHaveBeenCalledWith(expect.objectContaining({ code: publicCode }));
+  });
+
+  it('delivers local content segments over authenticated REST until the continuation ends', { timeout: 30_000 }, async () => {
+    const home = await mkdtemp(join(tmpdir(), 'kap-thread-content-http-'));
+    await writeFile(join(home, 'config.toml'), '[thread_communication]\nenabled = true\n', 'utf8');
+    let server: RunningServer | undefined;
+    try {
+      server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+      const base = `http://127.0.0.1:${server.port}`;
+      const service = server.core.accessor.get(IThreadCommunicationService);
+      const thread = { host_id: service.hostId, workspace_id: 'workspace-b', session_id: 'session-b' };
+      const firstRef = { source: { kind: 'turn' as const, id: '7' }, revision: 'revision', path: ['output'], kind: 'text' as const, offset: 0, total: 11 };
+      const secondRef = { ...firstRef, offset: 5 };
+      const read = vi.spyOn(service, 'readThread').mockImplementation(async (input) => {
+        const ref = input.contentRef ?? firstRef;
+        return { thread: input.thread, turns: [], view: { segment: {
+          ref, value: ref.offset === 0 ? 'first' : 'second', next: ref.offset === 0 ? secondRef : undefined, contentRefs: [],
+        } } };
+      });
+      const post = async (body: unknown) => {
+        const response = await fetch(`${base}/api/threads:read`, {
+          method: 'POST', headers: authHeaders(server!, { 'content-type': 'application/json' }), body: JSON.stringify(body),
+        } as never);
+        return { response, body: await response.json() as { code: number; data: unknown } };
+      };
+      const values: string[] = [];
+      let ref: typeof firstRef | undefined = firstRef;
+      while (ref !== undefined) {
+        const result = await post({ thread, content_ref: ref });
+        expect(result.response.status).toBe(200);
+        expect(result.body.code).toBe(0);
+        const page = publicReadThreadResponseSchema.parse(result.body.data);
+        expect(page.turns).toEqual([]);
+        expect(page.view?.segment?.value).toBe(ref.offset === 0 ? 'first' : 'second');
+        values.push(page.view?.segment?.value as string);
+        ref = page.view?.segment?.next as typeof firstRef | undefined;
+      }
+      expect(values).toEqual(['first', 'second']);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect((await fetch(`${base}/api/threads:read`, { method: 'POST', body: JSON.stringify({ thread, content_ref: firstRef }) } as never)).status).toBe(401);
+      read.mockRestore();
+    } finally {
+      await server?.close();
+      await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
   });
 
   it('stops the long-poll response when the client disconnects', async () => {

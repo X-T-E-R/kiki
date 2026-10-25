@@ -330,7 +330,8 @@ describe('host key entries', () => {
 
     const panel = container.querySelector('[data-ssh-host-keys]');
     expect(panel?.getAttribute('data-state')).toBe('unavailable');
-    expect(panel?.textContent).toContain('Which known_hosts file this host uses cannot be determined');
+    expect(panel?.textContent).toContain('The known_hosts file paths cannot be separated unambiguously, so no entries were read.');
+    expect(panel?.textContent).toContain('Check this host’s SSH configuration.');
     expect(panel?.textContent).not.toContain('No entry for this host');
     const files = Array.from(panel?.querySelectorAll('[data-ssh-host-key-file]') ?? []);
     expect(files.map((file) => file.textContent).join(' ')).toContain('/srv/keys/ssh hosts');

@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -43,6 +44,11 @@ import {
   PermissionApprovalResolved,
 } from '#/agent/toolApproval/toolApprovalService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
+import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
+import { ToolAccesses } from '#/tool/toolContract';
 import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { ExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunnerService';
 import { makeHookRunner } from './runner-stub';
@@ -78,6 +84,9 @@ import {
 } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { IModelService } from '#/kosong/model/model';
+import { IAgentProfileService } from '#/agent/profile/profile';
+import { ISessionIndex } from '#/app/sessionIndex/sessionIndex';
+import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
 import { stubLoopWithHooks, stubToolExecutor } from '../../agent/loop/stubs';
@@ -137,6 +146,13 @@ function stubContextMemory(): IAgentContextMemoryService & {
       const cut = computeUndoCut(messages, count);
       if (cut.cutIndex >= 0 && cut.removedCount >= count) {
         messages.splice(cut.cutIndex);
+      }
+      return cut;
+    },
+    undoAndReplace: async (count, replacementPrompt) => {
+      const cut = computeUndoCut(messages, count);
+      if (cut.cutIndex >= 0 && cut.removedCount >= count) {
+        messages.splice(cut.cutIndex, messages.length - cut.cutIndex, replacementPrompt.message);
       }
       return cut;
     },
@@ -375,6 +391,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
@@ -437,8 +454,8 @@ describe('IExternalHooksRunnerService integration', () => {
       ]);
       expect(stopInputs).toEqual([{ stopHookActive: false }, { stopHookActive: false }]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -488,6 +505,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
@@ -532,8 +550,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -642,8 +660,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -694,7 +712,10 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
           reg.define(IHostProcessService, HostProcessService);
+          reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
           reg.defineInstance(IEventDispatcher, {
             _serviceBrand: undefined,
             hooks: { onDidRestore: new OrderedHookSlot() },
@@ -726,8 +747,8 @@ describe('IExternalHooksRunnerService integration', () => {
         }),
       );
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -754,6 +775,115 @@ describe('IExternalHooksRunnerService integration', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]?.stdout?.trim()).toBe('notified');
+  });
+
+  it.each(['complete', 'cancel'] as const)('R1 keeps a post-tool process on the caller lifecycle after batch done (%s)', async (ending) => {
+    const disposables = new DisposableStore();
+    let resolveSpawned!: () => void;
+    const spawned = new Promise<void>((resolve) => { resolveSpawned = resolve; });
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+    let resolveDisposed!: () => void;
+    const disposed = new Promise<void>((resolve) => { resolveDisposed = resolve; });
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const kills: Array<NodeJS.Signals | undefined> = [];
+    let processDisposed = false;
+    let processCompleted = false;
+    let postHook: ReturnType<IExternalHooksRunnerService['fireAndForgetTrigger']> | undefined;
+    const completeProcess = (): void => {
+      if (processCompleted) return;
+      processCompleted = true;
+      stdout.end('hook completed');
+      stderr.end();
+      resolveExited(0);
+    };
+    try {
+      const ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          registerTestAgentWireServices(reg, 'wire/post-hook-lifetime');
+          reg.define(IAgentToolExecutorService, AgentToolExecutorService);
+          reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+          reg.definePartialInstance(IAgentToolResultTruncationService, {
+            truncateForModel: async (input) => input.result,
+          });
+          reg.define(IExternalHooksRunnerService, ExternalHooksRunnerService);
+          reg.define(IAgentExternalHooksService, AgentExternalHooksService);
+          reg.definePartialInstance(IConfigService, {
+            ready: Promise.resolve(),
+            get: <T = unknown>(section: string): T => (section === HOOKS_SECTION
+              ? [{ event: 'PostToolUse', command: 'post-hook-fixture', timeout: 5 }] : undefined) as T,
+          });
+          reg.definePartialInstance(IPluginService, { enabledHooks: async () => [], onDidReload: () => ({ dispose() {} }) });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
+          reg.definePartialInstance(ISessionIndex, {});
+          reg.defineInstance(IBootstrapService, stubBootstrap('/tmp/post-hook-unused-home'));
+          reg.definePartialInstance(IHostProcessService, {
+            spawn: async () => {
+              resolveSpawned();
+              return {
+                _serviceBrand: undefined, pid: 12345, exitCode: null,
+                stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+                stdout, stderr,
+                wait: () => exited,
+                kill: async (signal) => { kills.push(signal); completeProcess(); },
+                dispose: () => { processDisposed = true; resolveDisposed(); },
+              };
+            },
+          });
+          reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
+          reg.definePartialInstance(IAgentPromptService, { hooks: createHooks(['onBeforeSubmitPrompt']) });
+          reg.definePartialInstance(IAgentFullCompactionService, { hooks: createHooks(['onWillCompact']) });
+          reg.definePartialInstance(IAgentTaskService, {});
+          reg.defineInstance(IAgentContextMemoryService, stubContextMemory());
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
+          reg.defineInstance(ISessionContext, stubSessionContext());
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+        },
+      });
+      const executor = ix.get(IAgentToolExecutorService);
+      const runner = ix.get(IExternalHooksRunnerService);
+      const trigger = vi.spyOn(runner, 'fireAndForgetTrigger');
+      ix.get(IAgentExternalHooksService);
+      ix.get(IAgentToolRegistryService).register({
+        name: 'ReadFixture', description: 'No IO', parameters: { type: 'object' },
+        resolveExecution: () => ({ approvalRule: 'ReadFixture', accesses: ToolAccesses.none(), execute: async () => ({ output: 'read completed' }) }),
+      });
+      const caller = new AbortController();
+      const stream = executor.execute([{ id: 'read-call', name: 'ReadFixture', type: 'function', arguments: '{}' }], {
+        turnId: 0, signal: caller.signal,
+      })[Symbol.asyncIterator]();
+      expect(await stream.next()).toMatchObject({ value: { toolCallId: 'read-call', result: { output: 'read completed' } } });
+      await spawned;
+      const triggered = trigger.mock.results[0]!;
+      expect(triggered.type).toBe('return');
+      postHook = triggered.value;
+      const hookSignal = trigger.mock.calls[0]?.[1]?.signal;
+      expect(hookSignal?.aborted).toBe(false);
+      expect(processDisposed).toBe(false);
+      expect((await stream.next()).done).toBe(true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(caller.signal.aborted).toBe(false);
+      expect(hookSignal?.aborted).toBe(false);
+      expect(hookSignal).toBe(caller.signal);
+      expect(kills).toEqual([]);
+      expect(processDisposed).toBe(false);
+      if (ending === 'cancel') caller.abort();
+      else completeProcess();
+      await disposed;
+      const results = await postHook;
+      expect(results).toEqual([expect.objectContaining(ending === 'cancel'
+        ? { action: 'block', timedOut: undefined }
+        : { action: 'allow', exitCode: 0, stdout: 'hook completed' })]);
+      expect(hookSignal?.aborted).toBe(ending === 'cancel');
+      expect(kills).toEqual(ending === 'cancel' ? ['SIGTERM', 'SIGKILL'] : []);
+    } finally {
+      completeProcess();
+      await postHook;
+      await disposables.dispose();
+    }
   });
 
   it('runs multiple hooks for the same event in parallel and collects every result', async () => {
@@ -973,6 +1103,8 @@ describe('IExternalHooksRunnerService integration', () => {
           });
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.define(IHostProcessService, HostProcessService);
+          reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
         },
       });
       ix.set(IExternalHooksRunnerService, new SyncDescriptor(ExternalHooksRunnerService));
@@ -1016,8 +1148,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1171,6 +1303,8 @@ describe('IExternalHooksRunnerService integration', () => {
           });
           reg.defineInstance(IBootstrapService, stubBootstrap());
           reg.define(IHostProcessService, HostProcessService);
+          reg.definePartialInstance(ISessionIndex, { get: async () => undefined });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
         },
       });
       ix.set(IExternalHooksRunnerService, new SyncDescriptor(ExternalHooksRunnerService));
@@ -1190,8 +1324,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1242,6 +1376,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
@@ -1314,8 +1449,8 @@ describe('IExternalHooksRunnerService integration', () => {
         },
       ]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 
@@ -1359,8 +1494,8 @@ describe('IExternalHooksRunnerService integration', () => {
       await vi.advanceTimersByTimeAsync(60_000);
       expect(fired).toEqual(['SessionHeartbeat', 'SessionHeartbeat']);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
       vi.useRealTimers();
     }
   });
@@ -1402,8 +1537,8 @@ describe('IExternalHooksRunnerService integration', () => {
       await vi.advanceTimersByTimeAsync(180_000);
       expect(fired).toEqual([]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
       vi.useRealTimers();
     }
   });
@@ -1459,8 +1594,8 @@ describe('IExternalHooksRunnerService integration', () => {
       await vi.advanceTimersByTimeAsync(120_000);
       expect(fired).toEqual(['SessionHeartbeat']);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
       vi.useRealTimers();
     }
   });
@@ -1500,6 +1635,7 @@ describe('IExternalHooksRunnerService integration', () => {
             hooks: createHooks(['onWillCompact']),
           });
           reg.definePartialInstance(IAgentTaskService, {});
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
         },
       });
       ix.set(IExternalHooksRunnerService, stubHookRunner(hookEngine));
@@ -1521,8 +1657,8 @@ describe('IExternalHooksRunnerService integration', () => {
       });
       expect(context.observableMessages).toEqual([context.messages[0]]);
     } finally {
-      ix?.dispose();
-      disposables.dispose();
+      await ix?.dispose();
+      await disposables.dispose();
     }
   });
 });

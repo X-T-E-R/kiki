@@ -4,8 +4,10 @@ import { compressImageForModel, MAX_IMAGE_DECODE_BYTES } from '@kiki/agent-core-
 import { sniffMediaFromMagic } from '@kiki/agent-core-v2/agent/media/file-type';
 import type { SessionMediaFile } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
 
-export const MEDIA_PREVIEW_BYTES = 64 * 1024;
-export const MEDIA_PREVIEW_EDGE = 384;
+import { MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
+
+export const MEDIA_PREVIEW_BYTES = MEDIA_PREVIEW_MAX_BYTES;
+export const MEDIA_PREVIEW_EDGE = 768;
 
 export class MediaPreviewUnavailableError extends Error {}
 
@@ -24,7 +26,8 @@ export async function createMediaPreview(file: SessionMediaFile, mediaType: stri
   if (!mime?.startsWith('image/')) throw new MediaPreviewUnavailableError('This media has no image preview. Open or download the original.');
   if (file.size > MAX_IMAGE_DECODE_BYTES) throw new MediaPreviewUnavailableError('This image is too large to decode as a preview. Open or download the original.');
   const bytes = await readPreviewSource(file, signal);
-  const image = await compressImageForModel(bytes, mime, { maxEdge: MEDIA_PREVIEW_EDGE, byteBudget: MEDIA_PREVIEW_BYTES, maxDecodeBytes: MAX_IMAGE_DECODE_BYTES, outputMimes: new Set(['image/jpeg']), acceptedMimes: new Set(['image/jpeg']) });
+  const sourceMime = sniffMediaFromMagic(bytes)?.mimeType ?? mime;
+  const image = await compressImageForModel(bytes, sourceMime, { maxEdge: MEDIA_PREVIEW_EDGE, byteBudget: MEDIA_PREVIEW_BYTES, maxDecodeBytes: MAX_IMAGE_DECODE_BYTES, outputMimes: new Set(['image/jpeg']), acceptedMimes: new Set(['image/png', 'image/jpeg']) });
   signal.throwIfAborted();
   if (image.data.byteLength > MEDIA_PREVIEW_BYTES || image.width <= 0 || image.height <= 0 || image.width > MEDIA_PREVIEW_EDGE || image.height > MEDIA_PREVIEW_EDGE) throw new MediaPreviewUnavailableError('This image could not be reduced to a small preview. Open or download the original.');
   return { bytes: image.data, mime: image.mimeType };

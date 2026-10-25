@@ -9,8 +9,9 @@ tools:
   - Grep
   - Glob
   - Bash
-  - BoardRead
-  - BoardWrite
+  - BrowserConnections
+  - BrowserTabs
+  - browser__*
   - TaskList
   - TaskOutput
   - TaskStop
@@ -19,6 +20,8 @@ tools:
   - ThreadRead
   - ThreadSend
   - ThreadWait
+  - RoomRead
+  - RoomAdd
   - TaskWait
   - Cron
   - MemoryRead

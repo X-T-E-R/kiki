@@ -1,6 +1,6 @@
 import '#/_base/utils/fsWatchGuard';
-import { createReadStream, mkdirSync } from 'node:fs';
-import { mkdir, open, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
+import { createReadStream, mkdirSync, statSync } from 'node:fs';
+import { mkdir, open, readFile, readdir, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
 import { FSWatcher } from 'chokidar';
 import { basename, dirname, join, normalize } from 'pathe';
 
@@ -25,6 +25,36 @@ import { acquireFileLock } from './fileLock';
 const WATCH_DEBOUNCE_MS = 150;
 const TORN_READ_RETRIES = 3;
 const TORN_READ_RETRY_DELAY_MS = 15;
+const TRANSIENT_OPEN_ATTEMPTS = 4;
+const TRANSIENT_OPEN_DELAY_MS = 10;
+const TRANSIENT_OPEN_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    timer.unref?.();
+  });
+}
+
+/** Retries only the open itself. A later write, sync, or close is not repeated. */
+export async function openAppendAfterTransientDenial(
+  openFile: () => Promise<FileHandle>,
+  attempts = TRANSIENT_OPEN_ATTEMPTS,
+  delayMs = TRANSIENT_OPEN_DELAY_MS,
+): Promise<FileHandle> {
+  let last: unknown;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await openFile();
+    } catch (error) {
+      last = error;
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === undefined || !TRANSIENT_OPEN_CODES.has(code) || attempt === attempts - 1) throw error;
+      if (delayMs > 0) await delay(delayMs);
+    }
+  }
+  throw last;
+}
 
 function isEnoent(error: unknown): boolean {
   return (error as NodeJS.ErrnoException).code === 'ENOENT';
@@ -91,6 +121,7 @@ export class FileStorageService implements IFileSystemStorageService {
     private readonly dirMode?: number,
     private readonly fileMode?: number,
     private readonly recoverMissingDocuments = true,
+    private readonly openAppend?: (path: string) => Promise<FileHandle>,
   ) {}
 
   async read(scope: string, key: string, options: StorageReadOptions = {}): Promise<Uint8Array | undefined> {
@@ -186,12 +217,16 @@ export class FileStorageService implements IFileSystemStorageService {
   ): Promise<void> {
     const filePath = this.pathFor(scope, key);
     const dir = dirname(filePath);
+    let committed = false;
     try {
       await mkdir(dir, { recursive: true, mode: this.dirMode });
 
-      const fh = await open(filePath, 'a', this.fileMode);
+      const fh = await openAppendAfterTransientDenial(() => this.openAppend === undefined
+        ? open(filePath, 'a', this.fileMode)
+        : this.openAppend(filePath));
       try {
         if (data.byteLength > 0) {
+          committed = true;
           await fh.writeFile(data);
         }
         if (options.durable !== false) {
@@ -202,7 +237,7 @@ export class FileStorageService implements IFileSystemStorageService {
       }
       await this.syncDirOnce(dir);
     } catch (error) {
-      throw toStorageIoError(error, { path: filePath, op: 'append' });
+      throw toStorageIoError(error, { path: filePath, op: 'append', committed });
     }
   }
 
@@ -290,19 +325,37 @@ export class FileStorageService implements IFileSystemStorageService {
       timer = setTimeout(() => emitter.fire(), WATCH_DEBOUNCE_MS);
     };
 
+    const fingerprint = (): string | undefined | null => {
+      try {
+        const info = statSync(target, { bigint: true });
+        return `${info.dev}:${info.ino}:${info.size}:${info.mtimeNs}:${info.ctimeNs}`;
+      } catch (error) {
+        if (isEnoent(error)) return undefined;
+        onUnexpectedError(error);
+        return null;
+      }
+    };
+
     const arm = (): void => {
       try {
         mkdirSync(dir, { recursive: true, mode: this.dirMode });
-        watcher = new FSWatcher({
+        const initial = fingerprint();
+        const current = new FSWatcher({
           ignoreInitial: true,
           awaitWriteFinish: false,
           depth: 0,
         });
-        watcher.on('all', (_event, changedPath) => {
-          if (normalize(changedPath) === normalizedTarget) schedule();
+        watcher = current;
+        current.on('all', (_event, changedPath) => {
+          if (watcher === current && normalize(changedPath) === normalizedTarget) schedule();
         });
-        watcher.on('error', (error: unknown) => onUnexpectedError(error));
-        watcher.add(dir);
+        current.once('ready', () => {
+          if (watcher !== current) return;
+          const latest = fingerprint();
+          if (initial === null || latest === null || latest !== initial) schedule();
+        });
+        current.on('error', (error: unknown) => onUnexpectedError(error));
+        current.add(dir);
       } catch (error) {
         onUnexpectedError(error);
       }
@@ -313,9 +366,10 @@ export class FileStorageService implements IFileSystemStorageService {
         clearTimeout(timer);
         timer = undefined;
       }
-      const closeResult = watcher?.close();
-      if (closeResult !== undefined) void closeResult.catch(() => undefined);
+      const current = watcher;
       watcher = undefined;
+      const closeResult = current?.close();
+      if (closeResult !== undefined) void closeResult.catch(() => undefined);
     };
 
     return (listener, thisArg, disposables) => {

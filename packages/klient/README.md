@@ -60,9 +60,13 @@ http │ ipc │ memory
   - `klient.session(id).*` — `get/setTitle/update/status/close/archive/
     restore/fork/createChild`, `approvals.*`, `questions.*`,
     `interactions.*`, `agents()`.
-  - `session.agent(id).*` — `prompt/steer/cancel/runShellCommand/
+  - `session.agent(id).*` — `prompt/steer/cancel/shutdownExecution/runShellCommand/
     cancelShellCommand/getModel/setModel/setPermission/getUsage/getContext/
     getPlan*/getTasks*/stopTask/getTaskOutput`.
+    `shutdownExecution(reason?)` permanently closes only that agent's local
+    executor, waits for owned execution cleanup, and preserves its records and
+    the enclosing session. Use `cancel()` for a resumable turn cancellation;
+    shutdown is a final management operation, not a retry or session close.
 - **Contract** — every method has a zod input tuple + output schema, validated
   on the client before send / after receive (default on; `validate: false` to
   disable). Validation is sub-µs for typical payloads — cheaper than the JSON
@@ -98,7 +102,7 @@ rather than reporting the session as idle.
 ## Ordered session views
 
 The HTTP transport additionally provides `klient.session(id).view`: `snapshot()`,
-`transcript.page({ agentId, beforeTurn?, afterTurn?, pageSize? })`,
+`transcript.page({ agentId, beforeTurn?, beforeItem?, afterTurn?, afterItem?, pageSize? })`,
 `transcript.catchUp({ agentId, since, grade? })`, and `subscribe(input, onSignal)`.
 This capability requires the current kap-server host and is not implemented by
 memory or IPC; those transports reject view calls rather than substituting
@@ -143,9 +147,39 @@ summaries; `ready` still waits for all admitted agents.
 `resyncRequired` invalidates the session checkpoint. A transcript catch-up with
 `complete: false` or a changed epoch requires a new baseline, not ordinary-event
 replay. Paged responses preserve `coverage`, cursor, and authoritative
-`tool_call_count`; an absent count means unknown, not zero. Close the subscription
-when leaving the view. `restart()` reconnects the shared socket and therefore
-also invalidates ordinary-event observations and in-flight streams.
+`tool_call_count`; an absent count means unknown, not zero. The optional `read`
+field identifies the source and its readiness; `partial` is not complete history.
+Pass page `next_cursor` back unchanged as `beforeItem` when loading older history.
+Opaque v2 page cursors may carry `beforeTurn`, the oldest turn actually delivered
+after page bounding and alignment. Marker-only and preparation pages inherit that
+boundary; `seekTurn` is only a location hint. When extending an unchanged source
+prefix absorbs an item anchor into a turn, the server uses the delivered boundary
+to continue without repeating delivered turns or skipping their older neighbour.
+Forward pagination keeps its existing `afterItem` and `afterTurn` behavior.
+
+Page and entity-list cursors bind their source. A source change returns an empty
+continuation with `has_more: true` and
+`read.stale: { reason: 'source_changed', retry: 'authoritative' }`. An older opaque
+page cursor whose item anchor disappeared without a provable delivered boundary
+returns `stale_cursor` with the same recovery action. Keep the displayed history,
+discard the stale token, and retry once using the oldest displayed turn as the
+logical `beforeTurn` anchor, or no cursor for entities. Do not merge stale payloads
+or treat empty stale items as completion. A second stale response remains
+retryable; it must not start an automatic retry loop. Legacy logical item anchors,
+opaque cursors with an existing anchor, and v1 entity cursors remain accepted;
+malformed or wrong-agent cursors still fail validation.
+
+A structural content read can return `40922` when an earlier source prefix changes
+its step or frame layout. Reload the turn preview once; a single-item page may
+contain a marker, so follow advancing `next_cursor` values until the turn appears.
+Rebind backward reads to the new window. Restart forward structure reads at offset
+zero under the refreshed revision, merging children by identity to preserve loaded
+content. An unchanged page cursor or a second structure conflict stops recovery
+and leaves the displayed content available for an explicit retry.
+
+Close the subscription when leaving the view. `restart()` reconnects the shared
+socket and therefore also invalidates ordinary-event observations and in-flight
+streams.
 
 Malformed view signals produce a payload-free `protocolError` diagnostic instead
 of being silently discarded. The first invalid signal is recoverable; another
@@ -163,6 +197,18 @@ it does not create another session store or retire all legacy endpoints. Memory
 and IPC reject these HTTP-only commands rather than silently emulating them.
 Inputs and outputs reuse the protocol schemas. Submission waits without the
 generic HTTP deadline; other commands use the normal request deadline.
+
+HTTP deadline errors retain `reason: "transport.timeout"` and carry
+`HttpTimeoutDetails` in `RPCError.details`: `method`, query-free `path`, `phase`
+(`headers` or `body`), `timeoutMs`, `elapsedMs`, and `request_id`. The same ID is
+available as `RPCError.requestId`; the GUI preserves both fields when mapping to
+its timeout error. Requests reuse a valid caller ULID in `x-request-id` or generate
+one using the existing ULID dependency. A valid response header ID replaces it;
+a valid parsed envelope ID takes precedence. Diagnostics contain no origin, query,
+headers, credentials, or body. Caller cancellation and server error envelopes
+remain distinct from deadlines. A timeout does not establish whether a mutation
+committed: inspect the session or operation before retrying; this transport does
+not retry automatically.
 
 ## GUI entry contracts
 
@@ -205,6 +251,18 @@ Pass the registered workspace catalog to `useConversationList(sessions, order, w
 Framework-free `mergeConversationItems` / `groupConversationItems` in `@kiki/session-core/sessions` share thread ordering, calendar-time grouping, workspace grouping, pinning, and archive filters. `buildConversationInbox` uses the same read store as threads. Room marks use `room:<id>` keys through `markRoomSeen` / `forgetRoomSeen` / `roomUnreadCount` in `@kiki/session-core/settings`. Only a successfully loaded, visible room log is marked read. Mark-all-read clears finished room items but never dismisses blocked room attention. Renaming, pinning, or archiving does not advance room unread activity.
 
 `roomRefLink(id)` produces `/rooms/<id>`; `parseConversationLink` also accepts `/r/<id>` and `kiki://rooms/<id>` / `kiki://r/<id>` text. The GUI redirects the short route while preserving query and fragment. These are in-app link contracts; no new operating-system protocol registration is provided.
+
+## Managed executor installations (HTTP)
+
+Use `rest.executors.listInstallations(options?)` to read pinned releases, active
+and previous versions, installation phase, and errors. `install(executorId,
+options?)` installs the host's checksum-pinned release; `rollback(executorId,
+options?)` activates its previous managed installation. These authenticated
+HTTP-only methods use `/api/executors/installations` and
+`/api/executors/{id}/install` or `/rollback`; they do not accept arbitrary package
+URLs or change provider credentials. Installation returns the resulting status,
+not a model-request or login receipt. Pass an appropriate `timeoutMs` for an
+installation and inspect its status before retrying a timed-out mutation.
 
 ## Local executor sessions (HTTP)
 

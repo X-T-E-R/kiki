@@ -34,7 +34,6 @@ import {
   markSpaceDeviceConflict,
   readSpacePreferenceDetail,
   resolveSpaceDeviceConflict,
-  spacePreferenceValue,
   writeSpacePreferenceValues,
   spaceAuthorityServerSnapshot,
   spaceAuthoritySnapshot,
@@ -105,14 +104,13 @@ function differsFromDefaults(values: Partial<SpacePreferenceValues>): boolean {
 
 function portableFromAuthority(): Partial<SpacePortableDesktopSettings> {
   const state = spaceAuthoritySnapshot();
-  if (state.confirmed === null) return {};
-  return {
-    theme: spacePreferenceValue('theme'),
-    proseFont: spacePreferenceValue('proseFont'),
-    defaultAppendTiming: spacePreferenceValue('defaultAppendTiming'),
-    foldSteps: spacePreferenceValue('foldSteps'),
-    worktreeSkipConfirm: spacePreferenceValue('worktreeSkipConfirm'),
-  };
+  // An empty space's effective defaults are not preferences this person chose.
+  // Keep device values until import succeeds, but show explicit drafts immediately.
+  const confirmed = state.authoritative || !state.loaded ? state.confirmed : null;
+  return Object.fromEntries(PORTABLE_ITEMS.flatMap((item) => {
+    const value = state.drafts[item] ?? confirmed?.[item];
+    return value === undefined ? [] : [[item, value]];
+  }));
 }
 
 /** The device-only items the portable bridge covers, for its write callback. */

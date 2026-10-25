@@ -4,8 +4,16 @@ import { basename, dirname, join } from 'node:path';
 
 import type { ToolCall } from '#/kosong/contract/message';
 import type { ToolInputDisplay } from '#/tool/toolInputDisplay';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { ILogService } from '#/_base/log/log';
+import { IEventDispatcher } from '#/state/eventDispatcher';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionApprovalService } from '#/session/approval/approval';
+import { AgentToolApprovalService } from '#/agent/toolApproval/toolApprovalService';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices, type TestInstantiationService } from '#/_base/di/test';
 import {
@@ -42,9 +50,10 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { ToolAccesses, type ToolAccesses as ToolAccessList } from '#/tool/toolContract';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
-import { authorizeExternalTool, externalPermissionMeta } from '#/agent/execution/externalPermission';
+import { authorizeExternalTool, externalPermissionMeta, externalToolPermission } from '#/agent/execution/externalPermission';
 import type { AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import { normalizeAgentProfile } from '@kiki/agent-profiles/agentProfile';
+import { parseAgentFileText } from '@kiki/agent-profiles/agentFile';
 import { isToolActive } from '@kiki/agent-profiles/toolPolicy';
 import { freezeBoundProfile } from '#/agent/profile/boundProfile';
 import { declaredExternalToolPolicy } from '#/agent/profile/toolBinding';
@@ -145,8 +154,8 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  afterEach(() => {
-    disposables.dispose();
+  afterEach(async () => {
+    await disposables.dispose();
   });
 
   function service(): IAgentPermissionPolicyService {
@@ -182,6 +191,96 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(JSON.stringify(meta)).not.toContain('"pattern"');
   });
 
+  it('projects external FetchURL subjects through the real gate without losing URL or generic rules', async () => {
+    const input = { url: 'https://DOCS.Example.test.:443/reference?q=one#part' };
+    const tool = externalToolPermission({ name: 'FetchURL', input })!;
+    const display = { kind: 'external_permission' as const, options: [], summary: 'FetchURL', detail: input };
+    const decide = () => authorizeExternalTool(externalContext(), tool, 1, 'url-read', signal, display);
+    mode = 'yolo';
+    expect(await decide()).toBe('allow');
+    for (const scope of ['user', 'turn-override', 'project'] as const) {
+      rules = [{ decision: 'allow', scope: 'user', pattern: 'FetchURL' },
+        { decision: 'deny', scope, pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+      expect(await decide()).toBe('deny');
+    }
+    rules = [{ decision: 'deny', scope: 'user', pattern: 'FetchURL' },
+      { decision: 'allow', scope: 'turn-override', pattern: 'FetchURL(https://docs.example.test/**)' }];
+    expect(await decide()).toBe('deny');
+    mode = 'manual';
+    rules = [{ decision: 'ask', scope: 'user', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await decide()).toBe('cancelled');
+    rules = [{ decision: 'allow', scope: 'user', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await decide()).toBe('allow');
+    const inherited = externalContext(true);
+    rules = [{ decision: 'ask', scope: 'turn-override', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await authorizeExternalTool(inherited, tool, 1, 'url-inherit-ask', signal, display)).toBe('cancelled');
+    rules = [{ decision: 'allow', scope: 'turn-override', pattern: 'FetchURL(https://docs.example.test/reference*)' }];
+    expect(await authorizeExternalTool(inherited, tool, 1, 'url-inherit-allow', signal, display)).toBe('allow');
+    rules = [];
+    expect(await authorizeExternalTool(inherited, tool, 1, 'url-inherit', signal, display)).toBe('inherit');
+  });
+
+  it('rejects malformed external FetchURL, forged URL aliases, cancellation and excluded tool names', async () => {
+    mode = 'yolo';
+    const context = externalContext();
+    const display = { kind: 'external_permission' as const, options: [], summary: 'URL read', detail: {} };
+    for (const input of [{}, { url: 'not-a-url' }, { url: 'file:///etc/passwd' }, { url: 'javascript:alert(1)' },
+      { url: 'https://user:password@example.test/' }, { url: 'https://example.test/\nother' },
+      { url: 'https://example.test/', source: { kind: 'url', url: 'https://other.example.test/' } }]) {
+      expect(externalToolPermission({ name: 'FetchURL', input })).toBeUndefined();
+      expect(await authorizeExternalTool(context, { name: 'FetchURL', input }, 1, 'bad-url', signal, display)).toBe('deny');
+    }
+    for (const value of [{ name: 'Bash', nativeName: 'read_url_content', input: { url: 'https://example.test/' } },
+      { name: 'FetchURL', nativeName: 'execute_url', input: { url: 'https://example.test/' } },
+      { name: 'FetchURL', nativeName: 'read_url_content', input: { url: 'https://example.test/', command: 'example-command' } },
+      { name: 'read_url_content', input: { Url: 'https://example.test/', Action: 'execute' } }]) expect(externalToolPermission(value)).toBeUndefined();
+    const tool = externalToolPermission({ name: 'FetchURL', input: { url: 'https://example.test/' } })!;
+    const aborted = AbortSignal.abort();
+    await expect(authorizeExternalTool(context, tool, 1, 'cancelled-url', aborted, display)).rejects.toBeDefined();
+    const restricted = { ...context, binding: { ...context.binding, toolOverride: { tools: ['FetchURL'] } } };
+    for (const name of ['unknown_url_tool', 'execute_url', 'Bash']) expect(await authorizeExternalTool(restricted,
+      { name, input: { url: 'https://example.test/' } }, 1, 'not-url-read', signal, display)).toBe('deny');
+  });
+
+  it('carries native URL reads from the adapter into the real host gate and only grants read_url', async () => {
+    mode = 'manual';
+    const { AgyBridge } = await import(new URL('../../../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url).href);
+    const bridge = new AgyBridge({ cliPath: process.execPath });
+    const cwd = process.cwd();
+    const { sessionId } = await bridge.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': {
+      version: 1, hostGate: true, override: { mode: 'manual', source: 'runtime' }, policyIdentity: 'fixture-url', workspace: { cwd, additionalDirectories: [] } } } });
+    const session = bridge.session(sessionId);
+    session.init = { conversation_id: 'fixture-url' };
+    const base = externalContext();
+    const context = { ...base, binding: { ...base.binding, toolOverride: { tools: ['FetchURL'] } } };
+    let decisionContext = context;
+    session.active = { client: { request: async (_method: string, raw: unknown) => {
+      const request = JSON.parse(JSON.stringify(raw));
+      const tool = externalToolPermission(request._meta['kiki.tool'])!;
+      expect(tool).toMatchObject({ name: 'FetchURL', nativeName: 'read_url_content', input: { url: 'https://docs.example.test/reference' } });
+      expect(request.toolCall.rawInput).toEqual({ Url: 'https://docs.example.test/reference' });
+      const decision = await authorizeExternalTool(decisionContext, tool, 1, request.toolCall.toolCallId, signal,
+        { kind: 'external_permission', summary: request.toolCall.title, options: [], detail: request });
+      return { outcome: decision === 'cancelled' ? { outcome: 'cancelled' } : { outcome: 'selected', optionId: decision === 'allow' ? 'allow_once' : 'reject_once' } };
+    } } };
+    const input = { conversationId: 'fixture-url', stepIdx: 1, toolCall: { name: 'read_url_content', args: { Url: 'https://docs.example.test/reference' } } };
+    try {
+      expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'allow', permissionOverrides: ['read_url(docs.example.test)'] });
+      expect(externalToolPermission({ name: 'read_url_content', input: input.toolCall.args })).toEqual({ name: 'FetchURL', nativeName: 'read_url_content', input: { url: input.toolCall.args.Url } });
+      for (const name of ['FetchURL', 'read_url_content']) {
+        rules = [{ decision: 'deny', scope: 'user', pattern: `${name}(https://docs.example.test/*)` }];
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        rules = [{ decision: 'ask', scope: 'turn-override', pattern: `${name}(https://docs.example.test/*)` }];
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        rules = [];
+        decisionContext = { ...context, binding: { ...context.binding, disallowedTools: [name] } };
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        decisionContext = context;
+      }
+      expect(session.child).toBeUndefined();
+    } finally { session.active = undefined; await bridge.close(); }
+  });
+
   it.each(['Read', 'Write'] as const)('applies real external %s path deny to any member of a file batch under yolo', async (name) => {
     mode = 'yolo';
     const context = externalContext();
@@ -201,6 +300,164 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(await authorizeExternalTool(context, tool, 1, 'batch', signal, display)).toBe('cancelled');
     rules.push({ decision: 'allow', scope: 'user', pattern: 'Write(/workspace/**)' });
     expect(await authorizeExternalTool(context, tool, 1, 'batch', signal, display)).toBe('allow');
+  });
+
+  it.each([
+    [{ Action: 'list' }, 'TaskList'],
+    [{ Action: 'status', TaskId: 'fixture-task' }, 'TaskOutput'],
+  ] as const)('admits native task read %j with the real manual gate and preserves both rule identities', async (input, name) => {
+    mode = 'manual';
+    const tool = externalToolPermission({ name: 'manage_task', input })!;
+    expect(tool).toMatchObject({ name, nativeName: 'manage_task', input });
+    expect(externalToolPermission({ name, nativeName: 'manage_task', input })).toEqual(tool);
+    const context = externalContext();
+    const display = { kind: 'external_permission' as const, options: [], summary: 'manage_task', detail: input };
+    expect(await authorizeExternalTool(context, tool, 1, 'native-task-read', signal, display)).toBe('allow');
+    for (const pattern of ['manage_task', name]) {
+      rules = [{ decision: 'deny', scope: 'user', pattern }];
+      expect(await authorizeExternalTool(context, tool, 1, 'native-task-deny', signal, display)).toBe('deny');
+      rules = [{ decision: 'ask', scope: 'user', pattern }];
+      expect(await authorizeExternalTool(context, tool, 1, 'native-task-ask', signal, display)).toBe('cancelled');
+      rules = [];
+      const restricted = { ...context, binding: { ...context.binding, disallowedTools: [pattern] } };
+      expect(await authorizeExternalTool(restricted, tool, 1, 'native-task-excluded', signal, display)).toBe('deny');
+      const allowed = { ...context, binding: { ...context.binding, toolOverride: { tools: [pattern] } } };
+      expect(await authorizeExternalTool(allowed, tool, 1, 'native-task-allowlist', signal, display)).toBe('allow');
+    }
+    const excluded = { ...context, binding: { ...context.binding, toolOverride: { tools: ['Read'] } } };
+    expect(await authorizeExternalTool(excluded, tool, 1, 'read-only-not-task', signal, display)).toBe('deny');
+    rules = [{ decision: 'allow', scope: 'user', pattern: 'manage_task' }, { decision: 'deny', scope: 'user', pattern: name }];
+    expect(await authorizeExternalTool(context, tool, 1, 'canonical-deny-wins', signal, display)).toBe('deny');
+    rules = [{ decision: 'deny', scope: 'user', pattern: 'manage_task' }, { decision: 'allow', scope: 'user', pattern: name }];
+    expect(await authorizeExternalTool(context, tool, 1, 'native-deny-wins', signal, display)).toBe('deny');
+    const inherited = externalContext(true);
+    rules = [];
+    expect(await authorizeExternalTool(inherited, tool, 1, 'native-inherit', signal, display)).toBe('inherit');
+    for (const pattern of ['manage_task', name]) {
+      rules = [{ decision: 'allow', scope: 'user', pattern }];
+      expect(await authorizeExternalTool(inherited, tool, 1, 'explicit-inherited-allow', signal, display)).toBe('allow');
+    }
+  });
+
+  it('keeps task mutations and invalid schemas on native approval and rejects forged native projections', async () => {
+    mode = 'manual';
+    const context = externalContext();
+    const display = { kind: 'external_permission' as const, options: [], summary: 'manage_task', detail: {} };
+    for (const input of [{ Action: 'kill', TaskId: 'fixture-task' }, { Action: 'send_input', TaskId: 'fixture-task', Input: 'stop' },
+      { Action: 'status' }, { Action: 'status', TaskId: '' }, { Action: 'list', TaskId: 3 }, { Action: 'list', Unknown: true }, { Action: 'unknown' }]) {
+      const tool = externalToolPermission({ name: 'manage_task', input })!;
+      expect(tool.name).toBe('manage_task');
+      expect(tool.nativeName).toBeUndefined();
+      expect(await authorizeExternalTool(context, tool, 1, 'native-task-not-read', signal, display)).toBe('cancelled');
+      const forged = { name: 'TaskList', nativeName: 'manage_task', input };
+      expect(externalToolPermission(forged)).toBeUndefined();
+      expect(await authorizeExternalTool(context, forged, 1, 'forged-task-read', signal, display)).toBe('deny');
+    }
+    for (const forged of [{ name: 'TaskList', nativeName: 'run_command', input: { command: 'example' } },
+      { name: 'TaskList', nativeName: 'manage_task', input: { Action: 'status', TaskId: 'fixture-task' } },
+      { name: 'Write', nativeName: 'manage_task', input: { Action: 'list' } }]) {
+      expect(externalToolPermission(forged)).toBeUndefined();
+      expect(await authorizeExternalTool(context, forged, 1, 'forged-native-name', signal, display)).toBe('deny');
+    }
+  });
+
+  it('round-trips AGY session/request_permission through the real gate for task reads and explicit denies', async () => {
+    mode = 'manual';
+    const adapterUrl = new URL('../../../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url).href;
+    const { AgyBridge } = await import(adapterUrl);
+    const bridge = new AgyBridge({ cliPath: process.execPath });
+    const context = externalContext();
+    const cwd = process.cwd();
+    const permission = { version: 1, hostGate: true, override: { mode: 'manual', source: 'profile' },
+      policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } };
+    const { sessionId } = await bridge.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': permission } });
+    const session = bridge.session(sessionId);
+    session.init = { conversation_id: 'fixture-conversation' };
+    session.active = { client: { request: async (method: string, rawRequest: unknown) => {
+      expect(method).toBe('session/request_permission');
+      const request = JSON.parse(JSON.stringify(rawRequest));
+      expect(request.toolCall.title).toBe('manage_task');
+      expect(request.toolCall.kind).toBe('read');
+      const tool = externalToolPermission(request._meta['kiki.tool'])!;
+      expect(tool.nativeName).toBe('manage_task');
+      expect(tool.input).toEqual(request.toolCall.rawInput);
+      const decision = await authorizeExternalTool(context, tool, 1, request.toolCall.toolCallId, signal,
+        { kind: 'external_permission', summary: request.toolCall.title, options: [], detail: request });
+      return { outcome: decision === 'cancelled' ? { outcome: 'cancelled' }
+        : { outcome: 'selected', optionId: decision === 'allow' ? 'allow_once' : decision === 'inherit' ? 'kiki.vendor_default' : 'reject_once' } };
+    } } };
+    try {
+      for (const [args, name] of [[{ Action: 'list' }, 'TaskList'], [{ Action: 'status', TaskId: 'fixture-task' }, 'TaskOutput']] as const) {
+        const input = { conversationId: 'fixture-conversation', stepIdx: 1, toolCall: { name: 'manage_task', args } };
+        rules = [];
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'allow' });
+        for (const pattern of ['manage_task', name]) {
+          rules = [{ decision: 'deny', scope: 'user', pattern }];
+          expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        }
+      }
+    } finally { session.active = undefined; await bridge.close(); }
+  });
+
+  it('consumes native task reads under a frozen external caller ceiling without widening either deny identity', async () => {
+    mode = 'yolo';
+    const fileDefinition = parseAgentFileText({ path: '/workspace/example-agent.md', source: 'explicit',
+      text: '---\nname: example-agent\ndescription: Neutral task owner\nexecutor: example-acp\n---\nNeutral task owner.' });
+    const boundProfile = { ...freezeBoundProfile(normalizeAgentProfile({ name: 'example-agent', executor: 'example-acp', systemPrompt: () => '' })),
+      fileDefinition, fileSources: { root: fileDefinition, scopedBindings: {}, sourceDefinitions: {}, dependencyIndex: {}, diagnostics: [],
+        callerCeiling: { activeToolNames: ['Read', 'Bash', 'TaskList', 'TaskOutput'],
+          externalToolAllowPolicies: [['Read', 'Bash', 'TaskList', 'TaskOutput']], disallowedTools: [] } } };
+    const base = externalContext(true);
+    const context = { ...base, binding: { ...base.binding, boundProfile } };
+    expect(boundProfile.fileDefinition.tools).toBeUndefined();
+    const policy = declaredExternalToolPolicy(context.binding);
+    expect(isToolActive(policy, 'manage_task')).toBe(false);
+    expect(isToolActive(policy, 'TaskList')).toBe(true);
+    const adapterUrl = new URL('../../../../../scripts/external-harness/agy-cli-acp.mjs', import.meta.url).href;
+    const { AgyBridge } = await import(adapterUrl);
+    const bridge = new AgyBridge({ cliPath: process.execPath });
+    const cwd = process.cwd();
+    const { sessionId } = await bridge.newSession({ cwd, mcpServers: [], _meta: { 'kiki.permission': {
+      version: 1, hostGate: true, policyIdentity: 'fixture-policy', workspace: { cwd, additionalDirectories: [] } } } });
+    const session = bridge.session(sessionId);
+    session.init = { conversation_id: 'fixture-conversation' };
+    let legacyProjection = false;
+    let decisionContext = context;
+    let lastDecision: string | undefined;
+    session.active = { client: { request: async (_method: string, rawRequest: unknown) => {
+      const request = JSON.parse(JSON.stringify(rawRequest));
+      const metadata = request._meta['kiki.tool'];
+      const tool = legacyProjection ? { name: 'manage_task', input: request.toolCall.rawInput }
+        : externalToolPermission(metadata)!;
+      expect(request.toolCall.kind).toBe('read');
+      if (!legacyProjection) expect(metadata.nativeName).toBe('manage_task');
+      lastDecision = await authorizeExternalTool(decisionContext, tool, 1, request.toolCall.toolCallId, signal,
+        { kind: 'external_permission', summary: request.toolCall.title, options: [], detail: request });
+      return { outcome: lastDecision === 'cancelled' ? { outcome: 'cancelled' } : { outcome: 'selected',
+        optionId: lastDecision === 'inherit' ? 'kiki.vendor_default' : lastDecision === 'allow' ? 'allow_once' : 'reject_once' } };
+    } } };
+    const input = { conversationId: 'fixture-conversation', stepIdx: 1, toolCall: { name: 'manage_task', args: { Action: 'list' } } };
+    try {
+      legacyProjection = true;
+      expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+      expect(lastDecision).toBe('deny');
+      legacyProjection = false;
+      expect(await bridge.requestPermission(session, input)).toEqual({ decision: 'ask' });
+      expect(lastDecision).toBe('inherit');
+      for (const name of ['manage_task', 'TaskList']) {
+        rules = [{ decision: 'deny', scope: 'user', pattern: name }];
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        expect(lastDecision).toBe('deny');
+        rules = [{ decision: 'ask', scope: 'user', pattern: name }];
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        expect(lastDecision).toBe('cancelled');
+        rules = [];
+        decisionContext = { ...context, binding: { ...context.binding, disallowedTools: [name] } };
+        expect(await bridge.requestPermission(session, input)).toMatchObject({ decision: 'deny' });
+        expect(lastDecision).toBe('deny');
+        decisionContext = context;
+      }
+    } finally { session.active = undefined; await bridge.close(); }
   });
 
   it.each(['manual', 'auto', 'review', 'yolo'] as const)('keeps an external unknown tool on the existing %s policy path', async (permissionMode) => {
@@ -288,7 +545,8 @@ describe('AgentPermissionPolicyService chain', () => {
     expect(meta).toMatchObject({ override: undefined, hostGate: true });
     expect(meta.policyIdentity).not.toBe(externalPermissionMeta(unrestricted, '/workspace').policyIdentity);
     expect(await authorizeExternalTool(isolated, writeSource, 1, 'protected-write', signal, display)).toBe('deny');
-    expect(await authorizeExternalTool(isolated, { name: 'Bash', input: { command: 'git -C /source status' } }, 1, 'protected-command', signal, display)).toBe('deny');
+    expect(await authorizeExternalTool(isolated, { name: 'Bash', input: { command: 'git -C /source status' } }, 1, 'source-inspection', signal, display)).toBe('inherit');
+    expect(await authorizeExternalTool(isolated, { name: 'Bash', input: { command: 'git -C /source commit -m bad' } }, 1, 'protected-command', signal, display)).toBe('deny');
     expect(await authorizeExternalTool(isolated, { name: 'Write', input: { path: '/workspace/file.ts' } }, 1, 'own-write', signal, display)).toBe('inherit');
     expect(await authorizeExternalTool(isolated, { name: 'Read', input: { path: '/source/file.ts' } }, 1, 'source-read', signal, display)).toBe('inherit');
   });
@@ -380,6 +638,18 @@ describe('AgentPermissionPolicyService chain', () => {
     })).resolves.toMatchObject({ policyName: 'worktree-isolation-deny', result: { kind: 'deny' } });
   });
 
+  it.each(['git -C /source log -5', 'git -C /source status --short', 'cd /source && git status', 'git status'])('allows isolated checkout inspection: %s', async (command) => {
+    mode = 'yolo';
+    worktreeMeta = { worktreeId: 'wt_test', branch: 'kiki/test', sourceRoot: '/source', baseRef: 'HEAD' };
+    await expect(evaluate({ toolName: 'Bash', args: { command, cwd: '/source' } })).resolves.toMatchObject({ result: { kind: 'approve' } });
+  });
+
+  it.each(['printf x > /source/out', 'git -C /source log >> /source/out', 'cd /source && printf x > out', 'printf x > /source/out; cd /workspace'])('denies identifiable isolated checkout redirection: %s', async (command) => {
+    mode = 'yolo';
+    worktreeMeta = { worktreeId: 'wt_test', branch: 'kiki/test', sourceRoot: '/source', baseRef: 'HEAD' };
+    await expect(evaluate({ toolName: 'Bash', args: { command } })).resolves.toMatchObject({ policyName: 'worktree-isolation-deny', result: { kind: 'deny' } });
+  });
+
   it('gives a Bash deny rule priority over a matching allow rule', async () => {
     rules.push(
       { decision: 'allow', scope: 'user', pattern: 'Bash(arena *)' },
@@ -462,9 +732,22 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
+  it('matches session approvals by host, cwd and complete command', async () => {
+    sessionApprovalRulePatterns.push(JSON.stringify(['Bash', 'ssh:example', '/srv/project', 'printf first; printf second']));
+    const args = { host: 'example', cwd: '/srv/project', command: 'printf first; printf second' };
+    await expect(evaluate({ toolName: 'Bash', args })).resolves.toMatchObject({ policyName: 'session-approval-history', result: { kind: 'approve' } });
+    for (const changed of [{ ...args, host: 'other' }, { ...args, cwd: '/srv/other' }, { ...args, command: 'printf first' }]) {
+      await expect(evaluate({ toolName: 'Bash', args: changed })).resolves.toMatchObject({ policyName: 'fallback-ask', result: { kind: 'ask' } });
+    }
+  });
+
+  it.each(['HEAD', 'refs/heads/main', 'objects/pack/example.idx'])('allows ordinary git metadata reads: %s', async (target) => {
+    await expect(evaluate({ toolName: 'Read', args: { path: `/workspace/.git/${target}` } })).resolves.toMatchObject({ result: { kind: 'approve' } });
+  });
+
   it('applies exact session approval before configured ask, but never before explicit deny', async () => {
     rules.push({ decision: 'ask', scope: 'user', pattern: 'Bash' });
-    sessionApprovalRulePatterns.push('Bash(printf first)');
+    sessionApprovalRulePatterns.push(JSON.stringify(['Bash', 'local', '/workspace', 'printf first']));
     const input = { toolName: 'Bash', args: { command: 'printf first', timeout: 60 } };
     await expect(evaluate(input)).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
@@ -610,13 +893,51 @@ describe('AgentPermissionPolicyService chain', () => {
     });
   });
 
-  it('keeps auto policy asks and ordinary approvals in review mode', async () => {
+  it.each(['routine', 'dangerous', 'sensitive', 'explicit-ask', 'external'] as const)(
+    'routes review-mode %s actions through the real policy and approval chain', async (kind) => {
+      mode = 'review';
+      ix.stub(IConfigService, { get: (() => ({ reviewer: {
+        backend: 'model', model: 'review-model', allowThreshold: 0.9, denyThreshold: 0.9,
+      } })) as IConfigService['get'] });
+      ix.stub(ISessionContext, { sessionId: 'review-session' });
+      ix.stub(IEventDispatcher, { dispatch: async () => {} });
+      ix.stub(ILogService, { debug: () => {} });
+      ix.stub(IAgentContextMemoryService, { get: () => [] });
+      const review = vi.fn(async function* () {
+        yield { type: 'finish', message: { content: [{ type: 'text', text: '{"outcome":"deny","confidence":0.99}' }] } };
+      });
+      ix.stub(IModelCatalog, { getRequester: () => ({ request: review }) as never });
+      const userApproval = vi.fn(async () => ({ decision: 'rejected' as const }));
+      ix.stub(ISessionApprovalService, { request: userApproval, enqueue: (request) => ({ ...request, id: request.id! }), decide: () => {} });
+      ix.set(IAgentToolApprovalService, new SyncDescriptor(AgentToolApprovalService));
+      if (kind === 'explicit-ask' || kind === 'external') rules.push({ decision: 'ask', scope: 'user', pattern: 'Bash' });
+      const baseContext = policyContext(kind === 'sensitive'
+        ? { toolName: 'Read', args: { path: '/workspace/.env' }, accesses: ToolAccesses.readFile('/workspace/.env') }
+        : { toolName: 'Bash', args: { command: kind === 'dangerous' ? 'shutdown -h now' : 'printf hi' } });
+      const context: ResolvedToolExecutionHookContext = {
+        ...baseContext,
+        execution: { ...baseContext.execution, display: kind === 'external' ? {
+          kind: 'external_permission', summary: 'Provider permission', options: [{ id: 'reject', label: 'Reject', kind: 'reject_once' }],
+        } : undefined },
+      };
+      const decision = await ix.get(IAgentPermissionGate).authorize(context);
+      if (kind === 'routine') expect(decision).toBeUndefined();
+      else expect(decision?.veto?.isError).toBe(true);
+      expect(review).toHaveBeenCalledTimes(kind === 'dangerous' || kind === 'sensitive' ? 1 : 0);
+      expect(userApproval).toHaveBeenCalledTimes(kind === 'explicit-ask' || kind === 'external' ? 1 : 0);
+    },
+  );
+
+  it('keeps protected actions on review while approving routine actions', async () => {
     mode = 'review';
     await expect(evaluate({ toolName: 'Read', args: { path: '/workspace/.env' }, accesses: ToolAccesses.readFile('/workspace/.env') })).resolves.toMatchObject({
       policyName: 'sensitive-file-access-ask', result: { kind: 'ask' },
     });
     await expect(evaluate({ toolName: 'Bash', args: { command: 'printf hi' } })).resolves.toMatchObject({
       policyName: 'auto-mode-approve', result: { kind: 'approve' },
+    });
+    await expect(evaluate({ toolName: 'Bash', args: { command: 'shutdown -h now' } })).resolves.toMatchObject({
+      policyName: 'dangerous-bash', result: { kind: 'ask' },
     });
     rules.push({ decision: 'deny', scope: 'user', pattern: 'Bash' });
     await expect(evaluate({ toolName: 'Bash', args: { command: 'printf hi' } })).resolves.toMatchObject({
@@ -746,7 +1067,7 @@ describe('AgentPermissionPolicyService chain', () => {
   });
 
   it('exempts dangerous Bash only for the exact previously approved command', async () => {
-    sessionApprovalRulePatterns.push('Bash', 'Bash(rm -rf /tmp/*)', 'Bash(rm -rf /tmp/build)');
+    sessionApprovalRulePatterns.push('Bash', 'Bash(rm -rf /tmp/*)', JSON.stringify(['Bash', 'local', '/workspace', 'rm -rf /tmp/build']));
     await expect(evaluate({ toolName: 'Bash', args: { command: 'rm -rf /tmp/build', timeout: 60 } })).resolves.toMatchObject({
       policyName: 'session-approval-history', result: { kind: 'approve' },
     });
@@ -779,10 +1100,12 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
   let workspace: ReturnType<typeof workspaceStub>;
   let workspaceDir: string;
   let cleanupDirs: string[];
+  let pathClass: HostEnvironmentService['pathClass'];
 
   beforeEach(async () => {
     disposables = new DisposableStore();
     mode = 'manual';
+    pathClass = 'posix';
     workspaceDir = await mkdtemp(join(tmpdir(), 'kimi-permission-git-'));
     cleanupDirs = [workspaceDir];
     await mkdir(join(workspaceDir, '.git'), { recursive: true });
@@ -814,7 +1137,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
               status: 'ready',
               onDidChangeStatus: () => ({ dispose: () => {} }),
               dispose: () => {},
-              environment: { pathClass: 'posix', homeDir: '/home/example', osKind: 'linux', shellName: 'bash', shellPath: '/bin/bash' } as never,
+              environment: { pathClass, homeDir: '/home/example', osKind: 'linux', shellName: 'bash', shellPath: '/bin/bash' } as never,
               fs: { realpath: async (path: string) => path } as never,
               path: {
                 separator: '/',
@@ -844,7 +1167,7 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
     await Promise.all(cleanupDirs.map((dir) => rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 })));
   });
 
@@ -874,6 +1197,20 @@ describe('AgentPermissionPolicyService git cwd write approval', () => {
       policyName: 'git-cwd-write-approve',
       result: { kind: 'approve' },
     });
+  });
+
+  it('approves Windows git cwd writes using the runtime path class', async () => {
+    pathClass = 'win32';
+    await expect(evaluate({
+      toolName: 'Write',
+      args: { path: 'src/a.ts', content: 'x' },
+      accesses: ToolAccesses.writeFile(join(workspaceDir, 'src/a.ts')),
+    })).resolves.toMatchObject({
+      policyName: 'git-cwd-write-approve', result: { kind: 'approve' },
+    });
+    for (const target of [join(`${workspaceDir}-other`, 'a.ts'), 'Z:\\other\\a.ts']) {
+      await expect(evaluate({ toolName: 'Write', args: { path: target, content: 'x' }, accesses: ToolAccesses.writeFile(target) })).resolves.toMatchObject({ policyName: 'fallback-ask', result: { kind: 'ask' } });
+    }
   });
 
   it('approves Edit on an additionalDir path in manual mode', async () => {
@@ -1036,6 +1373,8 @@ function policyContext(input: PolicyContextInput): ResolvedToolExecutionHookCont
       description: description(input.toolName),
       display: display(input.toolName, input.args),
       accesses: input.accesses ?? accesses(input.toolName, input.args),
+      shellContext: input.toolName === 'Bash' ? { runtimeId: typeof input.args['host'] === 'string' ? `ssh:${input.args['host']}` : 'local', cwd: stringArg(input.args, 'cwd', '/workspace'), pathClass: 'posix' } : undefined,
+      sessionApprovalRule: input.toolName === 'Bash' ? JSON.stringify(['Bash', typeof input.args['host'] === 'string' ? `ssh:${input.args['host']}` : 'local', stringArg(input.args, 'cwd', '/workspace'), subject]) : undefined,
       approvalRule:
         subject === undefined ? input.toolName : literalRulePattern(input.toolName, subject),
       matchesRule:

@@ -2,7 +2,13 @@ import { createDecorator, type ServiceIdentifier } from '#/_base/di/instantiatio
 import type { IDisposable } from '#/_base/di/lifecycle';
 import type { Event } from '#/_base/event';
 
-import type { RuntimeCallOptions, RuntimeHostStatus, RuntimeMethodContext, RuntimeRole } from './messages';
+import type {
+  RuntimeCallOptions,
+  RuntimeHostStatus,
+  RuntimeMethodContext,
+  RuntimeReceipt,
+  RuntimeRole,
+} from './messages';
 
 export interface RuntimeMethodHandler {
   (payload: unknown, ctx: RuntimeMethodContext): unknown;
@@ -17,6 +23,7 @@ export interface RuntimeRoleStatus {
 export interface IHomeRuntimeService {
   readonly _serviceBrand: undefined;
   readonly onDidChangeRoleStatus: Event<RuntimeRoleStatus>;
+  readonly onDidReceipt: Event<RuntimeReceipt>;
 
   ready(): Promise<void>;
   status(): RuntimeHostStatus;

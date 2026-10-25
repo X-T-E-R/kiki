@@ -114,6 +114,7 @@ export function OAuthDeviceCard({
         </button>
         <button
           type="button"
+          data-oauth-open-page
           className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`}
           onClick={() => void openVerificationPage()}
         >

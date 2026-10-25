@@ -167,6 +167,30 @@ describe('McpConnectionManager', () => {
     }
   });
 
+  it('refreshes the current client explicitly without reconnecting or replacing it', async () => {
+    const tools = [{ name: 'initial', description: '', inputSchema: { type: 'object', properties: {} } }];
+    const connect = vi.spyOn(StdioMcpClient.prototype, 'connect').mockResolvedValue();
+    const listTools = vi.spyOn(StdioMcpClient.prototype, 'listTools').mockImplementation(async () => [...tools]);
+    const cm = createManager();
+    try {
+      await cm.connectAll({ current: stdioConfig(), disabled: { ...stdioConfig(), enabled: false } });
+      const client = cm.resolved('current')?.client;
+      tools.push({ name: 'added', description: '', inputSchema: { type: 'object', properties: {} } });
+      await cm.refreshToolList('current');
+      expect(cm.resolved('current')?.rawTools.map((tool) => tool.name)).toEqual(['initial', 'added']);
+      expect(cm.resolved('current')?.client).toBe(client);
+      expect(connect).toHaveBeenCalledOnce();
+      const calls = listTools.mock.calls.length;
+      await cm.refreshToolList('disabled');
+      await cm.refreshToolList('missing');
+      expect(listTools).toHaveBeenCalledTimes(calls);
+    } finally {
+      await cm.shutdown();
+      listTools.mockRestore();
+      connect.mockRestore();
+    }
+  });
+
   it('isolates failures: a bad server is marked failed without blocking the rest', async () => {
     const cm = createManager();
     try {
@@ -196,6 +220,51 @@ describe('McpConnectionManager', () => {
     } finally {
       await cm.shutdown();
     }
+  }, 20000);
+
+  it('drains an admitted call while rejecting delayed calls from a removed generation', async () => {
+    const cm = createManager();
+    try {
+      await cm.connect('alpha', { ...stdioConfig([slowToolStdioFixture]), env: { KIKI_TEST_MCP_TOOL_DELAY_MS: '100' } });
+      const resolved = cm.resolved('alpha')!;
+      const lease = await resolved.admitCall!();
+      expect(lease).toBeDefined();
+      const call = resolved.client.callTool('slow_echo', { text: 'complete original call' }, new AbortController().signal);
+      let retired = false;
+      const removal = cm.markRemoved('alpha').then(() => { retired = true; });
+      expect(cm.get('alpha')?.status).toBe('removed');
+      expect(await resolved.admitCall!()).toBeUndefined();
+      expect(retired).toBe(false);
+      const result = await call;
+      expect(result.content).toEqual([{ type: 'text', text: 'complete original call' }]);
+      lease!.release();
+      await removal;
+      expect(retired).toBe(true);
+      await cm.connect('alpha', stdioConfig());
+      expect(await resolved.admitCall!()).toBeUndefined();
+      const current = await cm.resolved('alpha')!.admitCall!();
+      expect(current).toBeDefined();
+      current!.release();
+    } finally { await cm.shutdown(); }
+  }, 20000);
+
+  it('checks workspace admission at execution without touching another manager', async () => {
+    let enabled = true;
+    const a = createManager({ allowsCall: async () => enabled });
+    const b = createManager();
+    try {
+      await Promise.all([a.connect('alpha', stdioConfig()), b.connect('alpha', stdioConfig())]);
+      const stale = a.resolved('alpha')!;
+      enabled = false;
+      expect(await stale.admitCall!()).toBeUndefined();
+      const other = await b.resolved('alpha')!.admitCall!();
+      expect(other).toBeDefined();
+      other!.release();
+      enabled = true;
+      const restored = await stale.admitCall!();
+      expect(restored).toBeDefined();
+      restored!.release();
+    } finally { await Promise.all([a.shutdown(), b.shutdown()]); }
   }, 20000);
 
   it('markRemoved tombstones the entry: client closed, entry kept, reconnect rejected, re-connect revives', async () => {
@@ -241,7 +310,7 @@ describe('McpConnectionManager', () => {
 
       await cm.connect('alpha', { ...stdioConfig(), startupTimeoutMs: 5_000 });
       expect(cm.get('alpha')?.status).toBe('connected');
-      expect(statuses).toEqual(['alpha:pending', 'alpha:connected']);
+      expect(statuses).toEqual(['alpha:removed', 'alpha:pending', 'alpha:connected']);
     } finally {
       await cm.shutdown();
     }
@@ -500,6 +569,23 @@ describe('McpConnectionManager', () => {
     } finally {
       await cm.shutdown();
     }
+  });
+
+  it('reports failed shutdown, retains its owner for retry and joins concurrent shutdowns', async () => {
+    const cm = createManager();
+    await cm.connectAll({ alpha: stdioConfig() });
+    const client = cm.resolved('alpha')!.client as StdioMcpClient;
+    const close = vi.spyOn(client, 'close').mockRejectedValueOnce(new Error('fixture cleanup failure'));
+    try {
+      const first = cm.shutdown();
+      expect(cm.shutdown()).toBe(first);
+      await expect(first).rejects.toThrow('MCP process cleanup failed');
+      expect(cm.get('alpha')?.status).toBe('failed');
+      await expect(cm.connect('late', stdioConfig())).rejects.toMatchObject({ code: 'mcp.server_disabled' });
+      close.mockRestore();
+      await cm.shutdown();
+      expect(cm.list()).toEqual([]);
+    } finally { close.mockRestore(); await cm.shutdown(); }
   });
 
   it('shutdown clears entries and is idempotent', async () => {

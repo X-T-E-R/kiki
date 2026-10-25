@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { defineConfig } from 'tsdown';
 
 import { rawTextPlugin } from '../../build/raw-text-plugin.mjs';
+import { buildWindowsProcessHelper } from '../agent-core-v2/scripts/build-windows-process-helper.mjs';
 
 export default defineConfig({
   entry: ['./src/index.ts'],
@@ -16,6 +17,7 @@ export default defineConfig({
   onSuccess: async ({ outDir }) => {
     await cp(resolve(import.meta.dirname, '../agent-core-v2/src/app/pluginImport/builtin'), resolve(outDir, 'builtin'), { recursive: true });
     await cp(resolve(import.meta.dirname, '../agent-core-v2/src/app/plugin/hostRunner.mjs'), resolve(outDir, 'hostRunner.mjs'));
+    await buildWindowsProcessHelper({ outputDir: outDir });
   },
   banner: {
     js: [

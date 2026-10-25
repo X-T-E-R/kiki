@@ -1,4 +1,5 @@
 import { createDecorator } from '#/_base/di/instantiation';
+import type { AnthropicResponseCaptureInput, AnthropicResponseCaptureStatus } from './anthropicResponseCapture';
 import type { FinishReason, ThinkingEffort } from '#/kosong/contract/provider';
 import type { Message, StreamedMessagePart } from '#/kosong/contract/message';
 import type { Tool } from '#/kosong/contract/tool';
@@ -28,6 +29,7 @@ export interface AgentLLMRequestFinish {
   usage: TokenUsage;
   model?: string | undefined;
   providerFinishReason?: FinishReason;
+  completionAuthority?: 'normal';
   rawFinishReason?: string;
   providerMessageId?: string;
   timing?: ModelRequestTiming;
@@ -42,6 +44,7 @@ export interface AgentLLMRequestOverrides {
   systemPrompt?: string;
   source?: AgentLLMRequestSource;
   maxOutputSize?: number;
+  retry?: 'never';
   onAttemptRetry?: () => void;
 }
 
@@ -58,7 +61,14 @@ export interface IAgentLLMRequesterService {
   readonly _serviceBrand: undefined;
 
   prepareTurnConfig(turnId: number): PreparedTurnRequestConfig | undefined;
+  supportsAssistantPrefill?(): boolean;
   invalidatePromptSnapshots(): number;
+  /** Arms an in-memory, default-off diagnostic lease for this exact session/agent and provider/model/effort. Captures future Anthropic SSE bytes in a separate logs append-log, never request/auth headers or canonical history. Expiry is within two hours; 1–100 attempts, 8 MiB per response and 64 MiB per lease are ceilings, not coverage claims. */
+  armAnthropicResponseCapture(input: AnthropicResponseCaptureInput): AnthropicResponseCaptureStatus;
+  /** Flushes diagnostic records and returns their scope/key and capture health without returning payloads. Null means never armed; process or agent recreation does not restore a lease. */
+  anthropicResponseCaptureStatus(): Promise<AnthropicResponseCaptureStatus | null>;
+  /** Stops only the matching lease, including capture on active responses, without cancelling model requests; flushes retained records. */
+  stopAnthropicResponseCapture(captureId: string): Promise<AnthropicResponseCaptureStatus>;
 
   request(
     overrides?: AgentLLMRequestOverrides,

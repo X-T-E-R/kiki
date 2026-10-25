@@ -1,4 +1,5 @@
 import { readApiErrorMessage } from './api-error';
+import { resolveConfiguredProviderApiKey } from './provider-api-key';
 import {
   fetchCustomRegistry,
   resolveCustomRegistryMaxContextSize,
@@ -117,6 +118,7 @@ interface ProviderView {
   readonly type?: string;
   readonly baseUrl?: string;
   readonly apiKey?: string;
+  readonly apiKeyEnv?: string;
   readonly oauth?: ManagedKimiOAuthRef;
   readonly source?: unknown;
   readonly env?: unknown;
@@ -135,16 +137,13 @@ function nonEmptyString(value: unknown): string | undefined {
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
-/**
- * Mirrors agent-core's provider credential resolution: the inline `apiKey`
- * wins, followed by the provider type's declared key in its config `env` bag.
- */
 function resolveProviderApiKey(provider: ProviderView): string | undefined {
-  const inline = nonEmptyString(provider.apiKey);
-  if (inline !== undefined) return inline;
-  if (!isRecord(provider.env) || provider.type === undefined) return undefined;
-  const envName = PROVIDER_API_KEY_ENV_NAMES[provider.type];
-  return envName === undefined ? undefined : nonEmptyString(provider.env[envName]);
+  const env = providerEnvBag(provider);
+  const envName = provider.type === undefined ? undefined : PROVIDER_API_KEY_ENV_NAMES[provider.type];
+  return resolveConfiguredProviderApiKey(
+    { apiKey: provider.apiKey, apiKeyEnv: provider.apiKeyEnv, env },
+    { apiKey: envName === undefined ? undefined : nonEmptyString(env?.[envName]), envName },
+  ).apiKey;
 }
 
 /** Credential-shaped values from a provider's config `env` bag, for redaction. */
@@ -254,7 +253,7 @@ type ProviderSourceStatus = 'missing' | 'missing-credentials' | 'ready';
 
 function providerSourceStatus(providerId: string, provider: ProviderView): ProviderSourceStatus {
   if (isOpenPlatformId(providerId)) {
-    return nonEmptyString(provider.apiKey) === undefined ? 'missing-credentials' : 'ready';
+    return resolveProviderApiKey(provider) === undefined ? 'missing-credentials' : 'ready';
   }
   if (
     providerId === KIMI_CODE_PROVIDER_NAME
@@ -649,8 +648,8 @@ export async function refreshProviderModels(
 
     const providerConfig = readProvider(config, providerId);
     if (providerConfig === undefined) continue;
-    const apiKey = providerConfig.apiKey;
-    if (typeof apiKey !== 'string' || apiKey.length === 0) continue;
+    const apiKey = resolveProviderApiKey(providerConfig);
+    if (apiKey === undefined) continue;
 
     try {
       const models = filterModelsByPrefix(await fetchOpenPlatformModels(platform, apiKey), platform);

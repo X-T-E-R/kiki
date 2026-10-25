@@ -24,7 +24,7 @@ import { MEMORY_SECTION } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { CapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshotService';
 import { ISessionIndex, type SessionSummary } from '#/app/sessionIndex/sessionIndex';
-import { ISessionManager } from '#/app/sessionManager/sessionManager';
+import { ISessionManager, type ISessionManager as SessionManager } from '#/app/sessionManager/sessionManager';
 import {
   IThreadCommunicationService,
   type ThreadRef,
@@ -59,6 +59,11 @@ import type {
 } from '#/workspace/sessionLifecycle/sessionLifecycle';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { IQueryStore } from '#/persistence/interface/queryStore';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { MiniDbQueryStore, drainQueryStoreDisposals } from '#/persistence/backends/minidb/miniDbQueryStore';
+import { IThreadTurnStore, ThreadTurnStore } from '#/app/threadCommunication/threadTurnStore';
 import type { WireRecord } from '#/wire/record';
 import { stubLog } from '../../_base/log/stubs';
 import { Error2, ErrorCodes } from '#/errors';
@@ -130,9 +135,9 @@ describe('ThreadCommunicationService', () => {
   let promptEnqueue: Mock<IAgentPromptService['enqueue']>;
   let promptInject: ReturnType<typeof vi.fn>;
   let promptAbort: ReturnType<typeof vi.fn>;
-  let promptSteer: ReturnType<typeof vi.fn>;
+  let promptSteer: Mock<(promptIds: readonly string[]) => Promise<unknown>>;
   let steerBehavior: 'success' | 'prompt-not-found';
-  let resume: ReturnType<typeof vi.fn>;
+  let resume: Mock<SessionManager['resume']>;
   let activityEvents: Array<{
     seq: number;
     epoch: string;
@@ -166,7 +171,7 @@ describe('ThreadCommunicationService', () => {
     promptState = 'running';
     steerBehavior = 'success';
     promptInject = vi.fn();
-    promptSteer = vi.fn(async (promptIds: readonly string[]) => {
+    promptSteer = vi.fn<(promptIds: readonly string[]) => Promise<unknown>>(async (promptIds) => {
       events.push(`steer:${promptIds.join(',')}`);
       if (steerBehavior === 'success') return promptIds.map((id) => ({ id, state: 'steered' }));
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'no active turn to steer into');
@@ -206,7 +211,7 @@ describe('ThreadCommunicationService', () => {
       accessor: accessor([[IAgentLifecycleService, agents]]),
       dispose: () => {},
     };
-    resume = vi.fn(async () => {
+    resume = vi.fn<SessionManager['resume']>(async () => {
       events.push('resume');
       return session;
     });
@@ -214,6 +219,7 @@ describe('ThreadCommunicationService', () => {
     ix.stub(IBootstrapService, {
       homeDir,
       storeDir: join(homeDir, 'store'),
+      cacheDir: join(homeDir, 'cache'),
       scope: (name: string) => name,
     });
     ix.stub(IConfigService, {
@@ -236,11 +242,18 @@ describe('ThreadCommunicationService', () => {
       onDidArchiveSession: Event.None,
       onDidCloseSession: Event.None,
     } as unknown as ISessionManager);
+    const wireStorage = new InMemoryStorageService();
+    ix.stub(IFileSystemStorageService, wireStorage);
+    ix.set(IQueryStore, new SyncDescriptor(MiniDbQueryStore));
+    ix.set(IThreadTurnStore, new SyncDescriptor(ThreadTurnStore));
     ix.stub(IAppendLogStore, {
-      read: <R>() =>
-        (async function* (): AsyncGenerator<R> {
-          for (const record of wireRecords) yield record as R;
-        })(),
+      generation: async () => 'legacy',
+      flush: async (scope?: string, key?: string) => {
+        if (scope === undefined || key === undefined) return;
+        const bytes = Buffer.from(wireRecords.map((record) => JSON.stringify(record)).join('\n') + '\n');
+        const previous = await wireStorage.read(scope, key);
+        if (previous === undefined || !Buffer.from(previous).equals(bytes)) await wireStorage.write(scope, key, bytes);
+      },
     });
     const receiptDocs = new Map<string, unknown>();
     ix.stub(IAtomicDocumentStore, {
@@ -317,7 +330,8 @@ describe('ThreadCommunicationService', () => {
   });
 
   afterEach(async () => {
-    disposables.dispose();
+    await disposables.dispose();
+    await drainQueryStoreDisposals();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -384,7 +398,7 @@ describe('ThreadCommunicationService', () => {
     let release!: () => void;
     const held = new Promise<void>((resolve) => { release = resolve; });
     const hook = loop.hooks.onWillBeginStep.register('hold-room-test-turn', async (_event, next) => {
-      hook.dispose();
+      await hook.dispose();
       await held;
       await next();
     }, { before: 'context-injector' });
@@ -407,25 +421,37 @@ describe('ThreadCommunicationService', () => {
       await active.launched;
       const receipt = await service.sendRoomMessage({ target, roomId: 'room-example', content: 'Review the room contract', idempotencyKey: 'room-test', targeted: true, queueWhenBusy, requireCommunication: true });
       expect(resume).toHaveBeenCalledWith('target');
+      expect(receipt.delivery).toBe('pending');
+      expect(prompts.list().active?.id).toBe('original-task');
+      expect(prompts.list().pending.map((item) => item.id)).toContain(receipt.messageId);
+      expect(ctx.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'room_message')).toBe(false);
       if (queueWhenBusy) {
-        expect(receipt.delivery).toBe('pending');
-        expect(prompts.list().active?.id).toBe('original-task');
-        expect(prompts.list().pending.map((item) => item.id)).toContain(receipt.messageId);
         expect(steer).not.toHaveBeenCalled();
-        expect(ctx.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'room_message')).toBe(false);
       } else {
-        expect(receipt.delivery).toBe('delivered');
-        expect(steer).toHaveBeenCalledWith([receipt.messageId]);
+        expect(steer).toHaveBeenCalledExactlyOnceWith([receipt.messageId]);
       }
       release();
       expect((await active.completion).state).toBe('completed');
       await service.waitRoomDelivery({ target, messageId: receipt.messageId });
       await loop.settled();
       const history = ctx.get(IAgentContextMemoryService).get();
-      expect(history.filter((message) => message.origin?.kind === 'room_message')).toHaveLength(1);
+      expect(history.filter((message) => message.origin?.kind === 'room_message')).toMatchObject([
+        { origin: { kind: 'room_message', messageId: receipt.messageId } },
+      ]);
       const projected = await service.listMessages({ sessionId: 'target' });
       expect(projected.items).toMatchObject([{ messageId: receipt.messageId, source: { kind: 'room', roomId: 'room-example' }, delivery: 'delivered' }]);
-      if (queueWhenBusy) expect(ctx.llmCalls).toHaveLength(2);
+      const originalTurnId = (await active.launched)?.id;
+      if (queueWhenBusy) {
+        expect(steer).not.toHaveBeenCalled();
+        expect(ctx.llmCalls).toHaveLength(2);
+        const queuedTurnId = prompts.lookup(receipt.messageId)?.turnId;
+        expect(queuedTurnId).toEqual(expect.any(Number));
+        expect(queuedTurnId).not.toBe(originalTurnId);
+      } else {
+        expect(steer).toHaveBeenCalledExactlyOnceWith([receipt.messageId]);
+        const [steered] = await steer.mock.results[0]!.value;
+        expect((await steered!.launched)?.id).toBe(originalTurnId);
+      }
       await ctx.expectResumeMatches();
     } finally {
       release();
@@ -435,6 +461,46 @@ describe('ThreadCommunicationService', () => {
       await ctx.dispose();
     }
   }, 60_000);
+
+  it('recovers a timed-out committed claim with the same request identity before its lease expires', async () => {
+    ix.stub(IBootstrapService, { homeDir, storeDir: join(homeDir, 'store'), platform: process.platform,
+      getEnv: () => undefined, scope: (name: string) => name });
+    ix.set(IHomeRuntimeService, new SyncDescriptor(HomeRuntimeHostService));
+    ix.set(IHostFileSystem, new HostFileSystem());
+    ix.set(IThreadMailboxStore, new SyncDescriptor(RuntimeThreadMailboxStore));
+    const mailbox = ix.get(IThreadMailboxStore);
+    const runtime = ix.get(IHomeRuntimeService);
+    const service = ix.get(IThreadCommunicationService);
+    const source = ref(service.hostId, 'workspace-a', 'source');
+    const target = ref(service.hostId, 'workspace-b', 'target');
+    const claimNext = mailbox.claimNext.bind(mailbox);
+    const claims = vi.spyOn(mailbox, 'claimNext');
+    claims.mockImplementationOnce(async (input, options) => {
+      expect(await claimNext(input, options)).toBeDefined();
+      throw new HomeRuntimeError('runtime.timeout', 'claim reply lost after commit');
+    });
+    const input = { source, target, content: 'consume exactly once', idempotencyKey: 'claim-recovery' };
+    try {
+      await expect(peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE](input)).rejects.toMatchObject({ code: 'runtime.timeout' });
+      expect((await service.listMessages({ sessionId: 'source' })).items).toMatchObject([
+        { delivery: 'pending', content: input.content },
+      ]);
+      expect(promptEnqueue).not.toHaveBeenCalled();
+      const recovered = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE](input);
+      expect(recovered).toMatchObject({ deduplicated: true, delivery: 'delivered' });
+      expect(claims.mock.calls[0]?.[1]?.requestId).toEqual(expect.any(String));
+      expect(claims.mock.calls[1]?.[1]?.requestId).toBe(claims.mock.calls[0]?.[1]?.requestId);
+      expect(claims.mock.calls[2]?.[1]?.requestId).not.toBe(claims.mock.calls[1]?.[1]?.requestId);
+      expect(promptEnqueue).toHaveBeenCalledOnce();
+      expect((await service.listMessages({ sessionId: 'source' })).items).toMatchObject([
+        { messageId: recovered.messageId, delivery: 'delivered' },
+      ]);
+    } finally {
+      await service.shutdown();
+      await mailbox.close();
+      await runtime.close();
+    }
+  }, 30_000);
 
   it('projects real durable peer sends, failures, pair pages, archive and deletion without cross-workspace leakage', async () => {
     ix.stub(IBootstrapService, { homeDir, storeDir: join(homeDir, 'store'), platform: process.platform,
@@ -653,6 +719,24 @@ describe('ThreadCommunicationService', () => {
     await service.shutdown();
   });
 
+  it('retries disabled recovery once after enabling and shares concurrent recovery', async () => {
+    globalEnabled = false;
+    const service = ix.get(IThreadCommunicationService);
+    await service.listThreads();
+    expect(listPendingTargets).not.toHaveBeenCalled();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    listPendingTargets.mockImplementation(async () => { await gate; return []; });
+    globalEnabled = true;
+    const requests = [service.listThreads(), service.listThreads(), service.listThreads()];
+    await vi.waitFor(() => expect(listPendingTargets).toHaveBeenCalledOnce());
+    release();
+    await Promise.all(requests);
+    await service.listThreads();
+    expect(listPendingTargets).toHaveBeenCalledOnce();
+    await service.shutdown();
+  });
+
   it('retries transient startup recovery without poisoning public readiness', async () => {
     listPendingTargets
       .mockRejectedValueOnce(new HomeRuntimeError('runtime.timeout', 'startup timeout'))
@@ -726,7 +810,7 @@ describe('ThreadCommunicationService', () => {
       id: 'message-1',
       message: expect.objectContaining({
         role: 'user',
-        content: [{ type: 'text', text: 'Message from thread "Design review" (source):\n\nhello' }],
+        content: [expect.objectContaining({ type: 'text', text: 'Message from thread "Design review" (source):\n\nhello' })],
         origin: {
           kind: 'peer_thread',
           source,
@@ -775,6 +859,85 @@ describe('ThreadCommunicationService', () => {
     expect(promptInject).not.toHaveBeenCalled();
     await expect(service.shutdown()).resolves.toBeUndefined();
     expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1']);
+  });
+
+  it('returns delivery pending within bounded window when resume takes long, completing in background', async () => {
+    promptState = 'pending';
+    let unblockResume!: () => void;
+    resume.mockImplementationOnce(() => new Promise((resolve) => {
+      unblockResume = () => {
+        events.push('resume');
+        resolve({
+          id: 'target',
+          kind: LifecycleScope.Session,
+          accessor: accessor([[IAgentLifecycleService, {
+            create: async () => ({
+              id: 'main',
+              kind: LifecycleScope.Agent,
+              accessor: accessor([[IAgentPromptService, {
+                lookup: () => undefined,
+                enqueue: promptEnqueue,
+                inject: promptInject,
+                steer: promptSteer,
+                abort: promptAbort,
+              }]]),
+              dispose: () => {},
+            }),
+            get: () => undefined,
+            list: () => [],
+          } as unknown as IAgentLifecycleService]]),
+          dispose: () => {},
+        } as ISessionScopeHandle);
+      };
+    }));
+
+    const service = ix.get(IThreadCommunicationService);
+    const result = await peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: ref(service.hostId, 'workspace-a', 'source'),
+      target: ref(service.hostId, 'workspace-b', 'target'),
+      content: 'slow-resume',
+      idempotencyKey: 'slow-resume-key',
+      deliveryTimeoutMs: 20,
+    });
+
+    expect(result.delivery).toBe('pending');
+    expect(events).toEqual(['persist']);
+    expect(result.deduplicated).toBe(false);
+
+    unblockResume();
+    await vi.waitFor(() => expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']));
+    await expect(service.shutdown()).resolves.toBeUndefined();
+  });
+
+  it('returns delivery pending immediately on caller signal abort without deleting accepted message', async () => {
+    promptState = 'pending';
+    let unblockSteer!: () => void;
+    promptSteer.mockImplementationOnce(() => new Promise((resolve) => {
+      unblockSteer = () => {
+        events.push('steer:message-1');
+        resolve([]);
+      };
+    }));
+
+    const ac = new AbortController();
+    const service = ix.get(IThreadCommunicationService);
+    const sendPromise = peerSendCapability(service)[SEND_PEER_THREAD_MESSAGE]({
+      source: ref(service.hostId, 'workspace-a', 'source'),
+      target: ref(service.hostId, 'workspace-b', 'target'),
+      content: 'aborted-call',
+      idempotencyKey: 'aborted-key',
+      signal: ac.signal,
+    });
+
+    await vi.waitFor(() => expect(events).toContain('enqueue'));
+    ac.abort();
+    const result = await sendPromise;
+    expect(result.delivery).toBe('pending');
+    expect(events).toEqual(['persist', 'resume', 'enqueue']);
+
+    unblockSteer();
+    await vi.waitFor(() => expect(events).toEqual(['persist', 'resume', 'enqueue', 'steer:message-1', 'ack']));
+    await expect(service.shutdown()).resolves.toBeUndefined();
   });
 
   it('treats a raw external source claim as data outside the accepted authority shape', async () => {
@@ -842,6 +1005,19 @@ describe('ThreadCommunicationService', () => {
     ix.get(ICapabilitySnapshotService).refresh(caller.workspaceId, caller.sessionId);
     expect(await service.isWorkspaceEnabled('workspace-b', caller)).toBe(false);
     expect(await service.listThreads()).toEqual({ threads: [] });
+  });
+
+  it('keeps ThreadCreate available independently of communication tools', async () => {
+    const snapshots = ix.get(ICapabilitySnapshotService);
+    await snapshots.ready;
+    const names = ['ThreadList', 'ThreadRead', 'ThreadSend', 'ThreadWait'];
+    const sessionId = 'tools-snapshot';
+    for (const name of names) expect(snapshots.toolAvailable(name, 'workspace-a', sessionId)).toBe(true);
+    globalEnabled = false;
+    for (const name of names) expect(snapshots.toolAvailable(name, 'workspace-a', sessionId)).toBe(true);
+    snapshots.refresh('workspace-a', sessionId);
+    for (const name of names) expect(snapshots.toolAvailable(name, 'workspace-a', sessionId)).toBe(false);
+    expect(snapshots.toolAvailable('ThreadCreate', 'workspace-a', sessionId)).toBe(true);
   });
 
   it('uses the caller session snapshot for App-scoped Thread APIs', async () => {
@@ -990,6 +1166,52 @@ describe('ThreadCommunicationService', () => {
       { turnId: 4, input: 'four' },
       { turnId: 6, input: 'six' },
     ]);
+  });
+
+  it('preserves a legacy older-turn boundary through preparation and an append-pinned cursor', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const thread = ref(service.hostId, 'workspace-b', 'target');
+    wireRecords = [
+      ...Array.from({ length: 10_001 }, () => ({ type: 'fixture.padding' })),
+      ...[0, 1, 2].flatMap((turnId) => [
+        { type: 'turn.prompt', input: [{ type: 'text', text: `Input ${turnId}` }], origin: { kind: 'user' } },
+        { type: 'turn.ended', turnId, reason: 'completed' },
+      ]),
+    ];
+    const legacy = Buffer.from(JSON.stringify({ v: 1, kind: 'read', beforeTurnId: 2, thread: [service.hostId, 'workspace-b', 'target'].join('\u0000') })).toString('base64url');
+    const preparing = await service.readThread({ thread, limit: 1, cursor: legacy });
+    expect(preparing).toMatchObject({ turns: [], incomplete: 'history_preparing', nextCursor: expect.any(String) });
+    const first = await service.readThread({ thread, limit: 1, cursor: preparing.nextCursor });
+    expect(first.incomplete).toBeUndefined();
+    expect(first.turns.map((turn) => turn.turnId)).toEqual([1]);
+    wireRecords.push(
+      { type: 'turn.prompt', input: [{ type: 'text', text: 'new input' }], origin: { kind: 'user' } },
+      { type: 'turn.ended', turnId: 3, reason: 'completed' },
+    );
+    const next = await service.readThread({ thread, limit: 1, cursor: first.nextCursor });
+    expect(next.turns.map((turn) => turn.turnId)).toEqual([0]);
+    expect(next.nextCursor).toBeUndefined();
+    expect((await service.readThread({ thread, limit: 1 })).turns.map((turn) => turn.turnId)).toEqual([3]);
+  });
+
+  it('serves local content refs without resuming the thread or dropping the bounded continuation', async () => {
+    const service = ix.get(IThreadCommunicationService);
+    const thread = ref(service.hostId, 'workspace-b', 'target');
+    const output = 'z'.repeat(20_000);
+    wireRecords = [
+      { type: 'turn.prompt', input: [{ type: 'text', text: 'input' }], origin: { kind: 'user' } },
+      { type: 'context.append_loop_event', event: { type: 'content.part', turnId: '0', part: { type: 'text', text: output } } },
+      { type: 'turn.ended', turnId: 0, reason: 'completed' },
+    ];
+    const page = await service.readThread({ thread, limit: 1 });
+    const turn = page.turns[0]!;
+    const first = await service.readThread({ thread, contentRef: turn.contentRefs![0] });
+    expect(first.turns).toEqual([]);
+    expect(first.view?.segment?.value).toBe(output.slice(512, 512 + 16_384));
+    const last = await service.readThread({ thread, contentRef: first.view!.segment!.next });
+    expect(last.view?.segment?.next).toBeUndefined();
+    expect([turn.output, first.view!.segment!.value, last.view!.segment!.value].join('')).toBe(output);
+    expect(resume).not.toHaveBeenCalled();
   });
 
   it('baselines a missing activity cursor and suppresses repeated terminal output', async () => {

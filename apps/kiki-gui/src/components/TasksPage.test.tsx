@@ -226,6 +226,7 @@ describe('RightRail tasks view-all entry', () => {
       session: {
         id: 'sess-1',
         metadata: { cwd: 'C:/work/example' },
+        agent_config: {},
         message_count: 3,
         updated_at: '2026-01-01T00:00:00.000Z',
       },
@@ -277,6 +278,7 @@ function railStateWith(tasks: Task[]) {
     session: {
       id: 'sess-1',
       metadata: { cwd: 'C:/work/example' },
+      agent_config: {},
       message_count: 1,
       updated_at: '2026-01-01T00:00:00.000Z',
     },

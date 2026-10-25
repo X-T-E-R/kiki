@@ -50,6 +50,7 @@ export interface ProfileModelState {
   readonly executorOptions?: Readonly<Record<string, string | number | boolean>>;
   readonly executorPrompt?: import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt;
   readonly allowKikiSubagents?: boolean;
+  readonly injectKikiMcp?: boolean;
   readonly kikiContext?: import('@kiki/agent-profiles/agentProfile').AgentProfile['kikiContext'];
   readonly executorDescriptorRevision?: string;
   readonly thinkingLevel: string;
@@ -107,6 +108,7 @@ const profileBindSchema = z.object({
   executorOptions: ExecutorOptionsSchema.readonly().optional(),
   executorPrompt: z.custom<import('@kiki/agent-profiles/executorPrompt').ExecutorPrompt>().optional(),
   allowKikiSubagents: z.boolean().optional(),
+  injectKikiMcp: z.boolean().optional(),
   kikiContext: z.array(z.enum(['memory', 'board', 'cron', 'threads', 'history', 'hooks'])).readonly().optional(),
   executorDescriptorRevision: z.string().optional(),
   thinkingEffort: z.custom<ThinkingEffort>(),
@@ -182,6 +184,23 @@ export class ToolsSetActiveTools extends Event2<z.infer<typeof toolsSetActiveToo
 }
 export interface ToolsSetActiveTools extends z.infer<typeof toolsSetActiveToolsSchema> {}
 
+const toolsPolicyRefreshedSchema = z.object({
+  definitionId: z.string().min(1),
+  revision: z.string().min(1),
+  names: z.array(z.string()).readonly().optional(),
+  source: z.enum(['declared', 'inherited-default', 'builtin-default']),
+  disallowedTools: z.array(z.string()).readonly(),
+  toolAllowPolicies: z.array(z.array(z.string()).readonly()).readonly(),
+  disabledToolGroups: z.array(TOOL_GROUP_ID_SCHEMA).readonly(),
+});
+
+export class ToolsPolicyRefreshed extends Event2<z.infer<typeof toolsPolicyRefreshedSchema>> {
+  static override readonly type = 'tools.policy_refreshed';
+  static override readonly durable = true;
+  static override readonly schema = toolsPolicyRefreshedSchema;
+}
+export interface ToolsPolicyRefreshed extends z.infer<typeof toolsPolicyRefreshedSchema> {}
+
 const toolsResetActiveToolsSchema = z.object({});
 
 export class ToolsResetActiveTools extends Event2<z.infer<typeof toolsResetActiveToolsSchema>> {
@@ -236,6 +255,7 @@ export const profileKey = defineState(
     executorOptions: e.executorOptions,
     executorPrompt: e.executorPrompt,
     allowKikiSubagents: e.allowKikiSubagents,
+    injectKikiMcp: e.injectKikiMcp,
     kikiContext: e.kikiContext,
     executorDescriptorRevision: e.executorDescriptorRevision,
     thinkingLevel: e.thinkingEffort,
@@ -261,6 +281,21 @@ export const profileKey = defineState(
     toolAllowPolicies: e.toolAllowPolicies,
   }))
   .on(ConfigUpdate, applyConfigUpdate)
+  .on(ToolsSetActiveTools, (s, e) => {
+    if (s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, tools: castDraft(e.names), toolsSource: 'declared' };
+  })
+  .on(ToolsResetActiveTools, (s) => {
+    if (s.boundProfile !== undefined) s.boundProfile = { ...s.boundProfile, tools: undefined, toolsSource: 'declared' };
+  })
+  .on(ToolsPolicyRefreshed, (s, e) => {
+    if (s.profileDefinitionId !== e.definitionId || s.boundProfile === undefined) return;
+    s.disallowedTools = castDraft(e.disallowedTools);
+    s.toolAllowPolicies = castDraft(e.toolAllowPolicies);
+    s.disabledToolGroups = castDraft(e.disabledToolGroups);
+    s.boundProfile = { ...s.boundProfile, tools: castDraft(e.names), toolsSource: e.source,
+      disallowedTools: castDraft(e.disallowedTools), toolAllowPolicies: castDraft(e.toolAllowPolicies),
+      disabledToolGroups: castDraft(e.disabledToolGroups) };
+  })
   .on(AgentModelSwitch, (s, e) => applyConfigUpdate(s, e.config));
 
 function applyConfigUpdate(s: import('immer').Draft<ProfileModelState>, e: ConfigUpdatePayload): void {
@@ -359,6 +394,7 @@ export const profileActiveToolsKey = defineState(
     if (s === undefined) return;
     return nothing as unknown as ActiveToolsState;
   })
+  .on(ToolsPolicyRefreshed, (_s, e) => e.names === undefined ? nothing as unknown as ActiveToolsState : e.names)
   .on(ProfileBind, (s, e) =>
     e.activeToolNames === undefined && s !== undefined
       ? (nothing as unknown as ActiveToolsState)

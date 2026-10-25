@@ -12,6 +12,7 @@ import {
 } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import { dirname, isAbsolute, join, relative, resolve, win32 as pathWin32 } from 'node:path';
 import { join as joinPosix } from 'pathe';
 
@@ -20,11 +21,17 @@ import {
   KAP_MODEL_PRICES_ASSET,
   KAP_SEARCH_WORKER_ASSET,
   KAP_SQLITE_QUERY_WORKER_ASSET,
+  KAP_USAGE_PARSER_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
+  WINDOWS_PROCESS_HELPER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION as MANIFEST_VERSION,
   buildManifestKey,
 } from '../../scripts/native/manifest.mjs';
+import {
+  SOURCE_OWNED_ADAPTER_ENTRY,
+  SOURCE_OWNED_ADAPTER_FILES,
+} from '../../../../scripts/external-harness/production-manifest.mjs';
 
 export const NATIVE_ASSET_MANIFEST_VERSION = MANIFEST_VERSION;
 
@@ -439,6 +446,10 @@ export function getKapSearchWorkerFile(options: NativeAssetOptions = {}): string
   return getNativeRuntimeFile(KAP_SEARCH_WORKER_ASSET.key, options);
 }
 
+export function getKapUsageWorkerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(KAP_USAGE_PARSER_WORKER_ASSET.key, options);
+}
+
 export function getKapSqliteQueryWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(KAP_SQLITE_QUERY_WORKER_ASSET.key, options);
 }
@@ -460,8 +471,40 @@ export function getBrowserDriverFile(options: NativeAssetOptions = {}): string |
   return binary;
 }
 
+export function getWindowsProcessHelperFile(options: NativeAssetOptions = {}): string | null {
+  const embedded = getNativeRuntimeFile(WINDOWS_PROCESS_HELPER_ASSET.key, options);
+  if (embedded !== null) return embedded;
+  if (options.source !== undefined || options.manifest !== undefined) return null;
+  const packaged = new URL('./native/windows-process-helper.exe', import.meta.url);
+  return existsSync(packaged) ? fileURLToPath(packaged) : null;
+}
+
 export function getPluginHostRunnerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(PLUGIN_HOST_RUNNER_ASSET.key, options);
+}
+
+export function getSourceOwnedAdapterRoot(options: NativeAssetOptions = {}): string | null {
+  const embedded = getNativeRuntimeFile(`external-harness/${SOURCE_OWNED_ADAPTER_ENTRY}`, options);
+  if (embedded !== null) {
+    const root = dirname(embedded);
+    if (sourceOwnedAdapterRootComplete(root)) return root;
+  }
+  if (options.source !== undefined || options.manifest !== undefined) return null;
+  for (const relativeUrl of [
+    `./external-harness/${SOURCE_OWNED_ADAPTER_ENTRY}`,
+    `../external-harness/${SOURCE_OWNED_ADAPTER_ENTRY}`,
+    `../../dist/external-harness/${SOURCE_OWNED_ADAPTER_ENTRY}`,
+  ]) {
+    const entry = new URL(relativeUrl, import.meta.url);
+    if (!existsSync(entry)) continue;
+    const root = dirname(fileURLToPath(entry));
+    if (sourceOwnedAdapterRootComplete(root)) return root;
+  }
+  return null;
+}
+
+function sourceOwnedAdapterRootComplete(root: string): boolean {
+  return SOURCE_OWNED_ADAPTER_FILES.every((name) => existsSync(join(root, name)));
 }
 
 export function getHistoryImportEntryFile(options: NativeAssetOptions = {}): string | null {

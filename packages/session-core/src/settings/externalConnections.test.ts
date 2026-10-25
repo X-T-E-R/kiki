@@ -11,7 +11,7 @@ const status: CloudflareStatus = {
 
 function fixture() {
   const info = {
-    id: 'kiki-cloudflare', displayName: 'Cloudflare Tunnel', enabled: true, state: 'ok' as const,
+    id: 'kiki-cloudflare', displayName: 'Cloudflare Tunnel', enabled: true, globalEnabled: true, state: 'ok' as const,
     skillCount: 0, mcpServerCount: 0, enabledMcpServerCount: 0, hookCount: 0, commandCount: 0,
     hasErrors: false, source: 'local-path' as const, originalSource: '/fixture/source', root: '/fixture/managed',
     installedAt: '', mcpServers: [], diagnostics: [],
@@ -20,7 +20,7 @@ function fixture() {
   const panelBridge = vi.fn(async () => ({ result: status }));
   const plugins = {
     marketplace: vi.fn(async () => ({ configured: true, entries: [] })),
-    preview: vi.fn(async () => plan), install: vi.fn(async () => info), info: vi.fn(async () => info),
+    preview: vi.fn(async (_input: { source: string; sha256?: string }) => plan), install: vi.fn(async () => info), info: vi.fn(async () => info),
     setEnabled: vi.fn(async () => ({ ok: true as const })),
     installPrerequisite: vi.fn(async () => ({ ok: true as const })), panelBridge,
   };
@@ -63,10 +63,44 @@ describe('Cloudflare external connection', () => {
     expect(f.plugins.installPrerequisite).not.toHaveBeenCalled();
     const plan = await f.api.previewInstall('/fixture/source');
     await f.api.install({ source: '/fixture/source', plan, consent: true });
+    expect(f.plugins.preview).toHaveBeenCalledWith({ source: '/fixture/source' });
     expect(f.plugins.install).toHaveBeenCalledWith({ source: '/fixture/source', fingerprint: plan.fingerprint, consent: true });
     expect(f.plugins.setEnabled).toHaveBeenCalledWith('kiki-cloudflare', true);
     await f.api.installDependency(true);
     expect(f.plugins.installPrerequisite).toHaveBeenCalledWith('kiki-cloudflare', { id: 'cloudflared', consent: true });
+  });
+
+  it('accepts the original string preview and leaves checksum binding to the server', async () => {
+    const f = fixture();
+    const plan = await f.api.previewInstall('/fixture/source');
+    expect(plan).toBe(f.plan);
+    expect(f.plugins.preview).toHaveBeenCalledOnce();
+    expect(f.plugins.preview).toHaveBeenCalledWith({ source: '/fixture/source' });
+    expect(f.plugins.preview.mock.calls[0]?.[0]).not.toHaveProperty('sha256');
+  });
+
+  it('forwards the marketplace checksum and does not invent one', async () => {
+    const f = fixture();
+    const sha256 = 'b'.repeat(64);
+    await f.api.previewInstall({ source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip', sha256 });
+    await f.api.install({
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip',
+      sha256,
+      plan: f.plan,
+      consent: true,
+    });
+    expect(f.plugins.preview).toHaveBeenCalledWith({
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip',
+      sha256,
+    });
+    expect(f.plugins.install).toHaveBeenCalledWith({
+      source: 'https://github.com/X-T-E-R/kiki-plugins/releases/download/plugins-cloudflare-20261010.1/kiki-cloudflare-0.1.1.zip',
+      sha256,
+      fingerprint: f.plan.fingerprint,
+      consent: true,
+    });
+    await f.api.previewInstall({ source: '/fixture/source', sha256: '   ' });
+    expect(f.plugins.preview).toHaveBeenLastCalledWith({ source: '/fixture/source' });
   });
 
   it('does not turn an unavailable catalog or disabled plugin into an online connection', async () => {

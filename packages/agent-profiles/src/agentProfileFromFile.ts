@@ -30,6 +30,7 @@ export function agentProfileFromFile(
     permissionMode: definition.permissionMode,
     main: definition.main,
     tools: definition.tools,
+    toolsSource: 'declared',
     disallowedTools: definition.disallowedTools,
     disabledToolGroups: definition.disabledToolGroups,
     canSpawnSubagents: definition.canSpawnSubagents,
@@ -43,6 +44,7 @@ export function agentProfileFromFile(
     executorPrompt: definition.executorPrompt,
     allowKikiSubagents: definition.allowKikiSubagents,
     kikiContext: definition.kikiContext,
+    injectKikiMcp: definition.injectKikiMcp,
     recipe: definition.recipe,
     modelAlias: definition.modelAlias,
     restrictModelsToMenu: definition.restrictModelsToMenu ?? false,
@@ -179,6 +181,8 @@ export function profilesFromDiscovery(
         path: definition.path,
         reason: validated.error,
         code: validated.code ?? 'agent_executor.invalid_profile',
+        profileName: definition.name,
+        executor: definition.executor,
       });
     }
   }

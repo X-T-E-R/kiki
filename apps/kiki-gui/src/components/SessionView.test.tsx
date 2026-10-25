@@ -7,7 +7,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 
-import type { Session } from '@kiki/protocol';
+import type { PromptItem, Session } from '@kiki/protocol';
 import { resolveComposerModelOverrides, type ComposerModelBindingChange, type PersistedComposerScalars } from '@kiki/session-core/composer';
 
 import {
@@ -17,6 +17,7 @@ import {
   projectAgentTranscriptView,
   sessionAgentForestFromAgentSnapshots,
   type SubagentBlock,
+  type Block,
 } from '@kiki/session-core/session';
 import {
   capabilityMatrixSnapshot,
@@ -36,6 +37,11 @@ import { ContextMeter } from './ContextMeter';
 import { RightRail } from './RightRail';
 import { resolveRunningSubagentTask } from './agent-workspace';
 
+/** JSON body a stubbed fetch was handed; these fixtures always post serialized strings. */
+function sentJson(init: RequestInit | undefined): unknown {
+  return typeof init?.body === 'string' ? JSON.parse(init.body) : init?.body;
+}
+
 // The profile head and capability block read the agent panel over the
 // connection; these fixtures have none, so they render as plain stand-ins.
 vi.mock('./rail-variants/DefaultSections', async (importOriginal) => ({
@@ -54,6 +60,8 @@ import { toolErrorFullText, toolErrorSummary } from './ToolCard';
 import { projectUserText } from './Transcript';
 import {
   NOT_FOUND_FALLBACK_MS,
+  sessionAbsenceShouldLeaveRoute,
+  sessionRouteOwnsSession,
 
   activateSkillWithConditionalClear,
   captureSkillRequest,
@@ -91,15 +99,20 @@ import {
   fileMentionFromPathMedia,
   resolveSessionCreateSubmission,
   resolveSessionSeatPhase,
+  resolveSessionSendReady,
+  sessionIdForSendReadyRead,
+  initialBindingStillPending,
   sessionAgentProfileWorkspaceId,
   SessionRouteView,
   shouldClearModeOverride,
   shouldClearPendingProfileOnSendError,
+  sendNowOwnTurnNotice,
   shouldCloseSessionChromeOnEscape,
   shouldHandleGlobalAbortOnEscape,
   shouldHandleApprovalShortcut,
   isTerminalShortcut,
 } from './SessionView';
+import { nowReceiptDecision, sendNowNotice, sendNowQueuedNotice } from './agent-workspace';
 import { API_CODES, ApiError, KikiClient } from '../lib/client';
 
 vi.mock('./TerminalPanel', () => ({ TerminalPanel: () => null }));
@@ -154,7 +167,7 @@ describe('QueueStrip', () => {
     expect(html).toMatch(/>2<\/span>/);
     expect(html).toContain('first parked prompt');
     expect(html).toContain('second parked prompt');
-    expect(html).toContain('Send into this turn');
+    expect(html).toContain('Send now');
     expect(html).toContain('Remove');
     // The strip is the queue drawer body: its header carries Clear all.
     expect(html).toContain('Clear all');
@@ -172,7 +185,7 @@ describe('QueueStrip', () => {
         />
       </I18nProvider>,
     );
-    expect(html).toContain('aria-label="Send into this turn"');
+    expect(html).toContain('aria-label="Send now"');
     expect(html).toMatch(/disabled="" title="Sending is paused until the session is in sync."/);
     expect(html).toContain('Sending is paused until the session is in sync.');
     expect(html).toContain('aria-label="Remove"');
@@ -514,6 +527,43 @@ describe('conversation shell phase (session side)', () => {
   });
 });
 
+describe('session send readiness', () => {
+  const shellReady = {
+    controllerAvailable: true,
+    leaseReady: true,
+    loaded: true,
+    loadError: undefined,
+    resyncing: false,
+    resyncFailed: false,
+  };
+
+  it('allows durable send as soon as a controller exists, before transcript seed or WS readiness', () => {
+    expect(resolveSessionSendReady(shellReady)).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, leaseReady: false, loaded: false, resyncing: true })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, controllerAvailable: false })).toBe(false);
+  });
+
+  it('keeps send available when history loading failed, while still requiring a controller', () => {
+    expect(resolveSessionSendReady({ ...shellReady, loadError: 'snapshot failed' })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, resyncing: true })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, resyncFailed: true })).toBe(true);
+    expect(resolveSessionSendReady({ ...shellReady, controllerAvailable: false, loadError: 'snapshot failed' })).toBe(false);
+  });
+
+  it('does not start session-operation reads before the snapshot lease is settled', () => {
+    expect(sessionIdForSendReadyRead('session-a', false)).toBeUndefined();
+    expect(sessionIdForSendReadyRead('session-a', true)).toBe('session-a');
+  });
+
+  it('keeps an explicit new-session model through a stale binding snapshot, but honors clear or a newer pick', () => {
+    const base = { expectedModel: 'picked/model', modelOverride: 'picked/model', boundModel: 'default/model' };
+    expect(initialBindingStillPending(base)).toBe(true);
+    expect(initialBindingStillPending({ ...base, boundModel: 'picked/model' })).toBe(false);
+    expect(initialBindingStillPending({ ...base, modelOverride: undefined })).toBe(false);
+    expect(initialBindingStillPending({ ...base, modelOverride: 'newer/model' })).toBe(false);
+  });
+});
+
 describe('parseSessionCreateHandoff', () => {
   it('reads a skill activation from the /new navigation state', () => {
     const attachments = [{ kind: 'file' as const, path: 'note.md', name: 'note.md', isDir: false }];
@@ -531,6 +581,7 @@ describe('parseSessionCreateHandoff', () => {
       permissionMode: 'auto',
       planMode: undefined,
       goalObjective: undefined,
+      ephemeral: undefined,
     });
   });
 
@@ -539,6 +590,8 @@ describe('parseSessionCreateHandoff', () => {
     expect(handoff.personaGreetingReply).toBe(true);
     expect(resolveSessionCreateSubmission(handoff)).toMatchObject({ kind: 'prompt', text: 'hi', personaGreetingReply: true });
     expect(parseSessionCreateHandoff({ initialPrompt: 'hi', personaGreetingReply: 'yes' }).personaGreetingReply).toBeUndefined();
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hi', ephemeral: true }).ephemeral).toBe(true);
+    expect(parseSessionCreateHandoff({ initialPrompt: 'hi', ephemeral: false }).ephemeral).toBe(false);
     expect(resolveSessionCreateSubmission({ initialPrompt: 'hi' })).not.toHaveProperty('personaGreetingReply');
   });
 
@@ -793,7 +846,7 @@ describe('activateSkillWithConditionalClear', () => {
     const accepted = new Set<string>();
     let executions = 0;
     vi.stubGlobal('fetch', vi.fn(async (_url: string | URL, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body));
+      const body = sentJson(init) as { procedure?: { method?: string }; prompt_id?: string; content?: unknown };
       if (body.procedure?.method === 'resume') {
         return Response.json({ code: 0, msg: 'ok', data: { id: 'session_test', kind: 'session' } });
       }
@@ -836,7 +889,7 @@ describe('activateSkillWithConditionalClear', () => {
       attachments: [{ type: 'image' as const, source: { kind: 'url' as const, url: 'https://example.test/legacy.png' } }] });
     const requests: unknown[] = [];
     const fetch = vi.fn(async (_url: string | URL, init?: RequestInit) => {
-      requests.push(JSON.parse(String(init?.body)));
+      requests.push(sentJson(init));
       if (requests.length === 1) throw new TypeError('activation response unavailable');
       return Response.json({ code: 0, msg: 'ok', data: { activated: true, skill_name: 'review' } });
     });
@@ -935,7 +988,7 @@ describe('store-controlled mode pills', () => {
 });
 
 describe('resolveProfileSwitchSubmission', () => {
-  it('passes model/thinking through untouched when no switch is pending', () => {
+  it('inherits displayed model/thinking when no control was chosen', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -945,7 +998,7 @@ describe('resolveProfileSwitchSubmission', () => {
         model: 'provider/model',
         thinking: 'high',
       }),
-    ).toEqual({ model: 'provider/model', thinking: 'high' });
+    ).toEqual({ model: undefined, thinking: undefined });
   });
 
   it('treats a pending pick equal to the live binding as no switch', () => {
@@ -958,7 +1011,7 @@ describe('resolveProfileSwitchSubmission', () => {
         model: 'provider/model',
         thinking: undefined,
       }),
-    ).toEqual({ model: 'provider/model', thinking: undefined });
+    ).toEqual({ model: undefined, thinking: undefined });
   });
 
   it('withholds model/thinking on a switch so the new profile pins apply', () => {
@@ -1095,7 +1148,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: { ...bound },
         boundExecution: { ...bound },
       }),
-    ).toEqual({ model: 'provider/model', thinking: undefined });
+    ).toEqual({ model: undefined, thinking: undefined });
   });
 
   it('keeps the user model when they re-picked it after confirming an engine switch', () => {
@@ -1156,7 +1209,7 @@ describe('resolveProfileSwitchSubmission', () => {
     ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
   });
 
-  it('keeps sending model and effort on a plain message of a native session', () => {
+  it('does not promote a native binding into message overrides', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -1169,7 +1222,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: undefined,
         boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
       }),
-    ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'manual' });
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: 'manual' });
   });
 
   it('sends a model or effort the user picked on a plain message of a bare session', () => {
@@ -1228,6 +1281,112 @@ describe('resolveProfileSwitchSubmission', () => {
     ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
   });
 
+  it('sends a new effort on an external binding that already names thinking, without an execution or model', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'vendor/sonnet',
+        thinking: 'high',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: {
+          executor: 'example-acp',
+          profile: undefined,
+          overrides: { model: 'vendor-model', thinking: 'medium' },
+        },
+      }),
+    ).toEqual({ model: undefined, thinking: 'high', permissionMode: undefined });
+  });
+
+  it('sends a native effort pick as thinking and keeps the existing permission rule', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'fixture/live-model',
+        thinking: 'high',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ model: undefined, thinking: 'high', permissionMode: 'manual' });
+  });
+
+  it('sends null when Default clears a native effort, without an execution selection', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'fixture/live-model',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
+      }),
+    ).toEqual({ model: undefined, thinking: null, permissionMode: 'manual' });
+  });
+
+  it('sends null when Default clears a native execution thinking override, without a new execution', () => {
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'fixture/live-model',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution: {
+          executor: 'native',
+          profile: 'agent',
+          overrides: { model: 'fixture/live-model', thinking: 'high' },
+        },
+      }),
+    ).toEqual({ model: undefined, thinking: null, permissionMode: 'manual' });
+  });
+
+  it('sends null when Default clears an external thinking override, and omits thinking when effort was not touched', () => {
+    const boundExecution = {
+      executor: 'example-acp',
+      profile: undefined,
+      overrides: { model: 'vendor/sonnet', thinking: 'medium' as const },
+    };
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: true,
+        model: 'vendor/sonnet',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution,
+      }),
+    ).toEqual({ model: undefined, thinking: null, permissionMode: undefined });
+    expect(
+      resolveProfileSwitchSubmission({
+        pendingProfile: undefined,
+        boundProfile: 'agent',
+        modelTouched: false,
+        effortTouched: false,
+        model: 'vendor/sonnet',
+        thinking: '',
+        permissionMode: 'manual',
+        pendingExecution: undefined,
+        boundExecution,
+      }),
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: undefined });
+  });
+
   it('sends the effort alone when only the effort was moved, and not the displayed model', () => {
     // One shared flag made an effort pick promote the model id the user never
     // chose. On a bare engine that model is a session override the harness then
@@ -1266,9 +1425,7 @@ describe('resolveProfileSwitchSubmission', () => {
     ).toEqual({ model: 'provider/other', thinking: undefined, permissionMode: undefined });
   });
 
-  it('keeps a native session sending both after only the model was moved', () => {
-    // Per-control tracking is about what may be withheld, not about dropping a
-    // control the session would have sent anyway. Native behaviour is unchanged.
+  it('sends only the chosen model on a native session', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -1281,7 +1438,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: undefined,
         boundExecution: { executor: 'native', profile: 'agent', overrides: undefined },
       }),
-    ).toEqual({ model: 'provider/other', thinking: 'high', permissionMode: 'manual' });
+    ).toEqual({ model: 'provider/other', thinking: undefined, permissionMode: 'manual' });
   });
 
   it('does not let a stale touched flag re-send a control the incoming execution owns', () => {
@@ -1363,8 +1520,7 @@ describe('resolveProfileSwitchSubmission', () => {
     ).toEqual({ profile: 'reviewer', model: 'provider/other', thinking: undefined });
   });
 
-  it('keeps model and effort on a plain message of an external engine that has a profile', () => {
-    // A profile is what supplies the configuration, so the session's values go.
+  it('inherits the external profile binding without message model overrides', () => {
     expect(
       resolveProfileSwitchSubmission({
         pendingProfile: undefined,
@@ -1377,7 +1533,7 @@ describe('resolveProfileSwitchSubmission', () => {
         pendingExecution: undefined,
         boundExecution: { executor: 'claude-acp', profile: 'reviewer', overrides: undefined },
       }),
-    ).toEqual({ model: 'provider/model', thinking: 'high', permissionMode: 'auto' });
+    ).toEqual({ model: undefined, thinking: undefined, permissionMode: 'auto' });
   });
 });
 
@@ -1394,22 +1550,105 @@ describe('executionSwitchName', () => {
 });
 
 describe('shouldClearPendingProfileOnSendError', () => {
-  it('keeps the pending pick (and draft) on network failure and timeout', () => {
+  it('keeps the pending pick (and draft) for transport-source failures and timeout', () => {
     expect(
-      shouldClearPendingProfileOnSendError(new ApiError({ code: -1, msg: 'network down', data: null })),
+      shouldClearPendingProfileOnSendError(new ApiError({
+        code: -1, msg: 'network down', data: null, source: 'transport', reason: 'transport.network',
+      })),
     ).toBe(false);
     expect(
       shouldClearPendingProfileOnSendError(
-        new ApiError({ code: API_CODES.TIMEOUT, msg: 'timed out', data: null }),
+        new ApiError({ code: API_CODES.TIMEOUT, msg: 'timed out', data: null, source: 'transport', reason: 'transport.timeout' }),
       ),
     ).toBe(false);
     expect(shouldClearPendingProfileOnSendError(new Error('boom'))).toBe(false);
+  });
+
+  it('does not reinterpret a server-origin negative code as transport failure', () => {
+    expect(
+      shouldClearPendingProfileOnSendError(new ApiError({ code: -1, msg: 'server rejected', data: null, source: 'server' })),
+    ).toBe(true);
   });
 
   it('clears the pick only on a definitive server-side business rejection', () => {
     expect(
       shouldClearPendingProfileOnSendError(new ApiError({ code: 40001, msg: 'route locked', data: null })),
     ).toBe(true);
+  });
+});
+
+describe('sendNowNotice', () => {
+  it('does not toast for a healthy durable restoring acknowledgement', () => {
+    expect(sendNowNotice('restoring', undefined)).toBeUndefined();
+    expect(sendNowNotice('started', undefined)).toBeUndefined();
+    expect(sendNowNotice('steered', undefined)).toBeUndefined();
+  });
+
+  it('keeps the held recovery notice', () => {
+    expect(sendNowNotice('held', undefined)).toEqual({ tone: 'info', key: 'sv.submissionRecovery.server' });
+  });
+
+  it('names the reason the server kept the message queued', () => {
+    expect(sendNowNotice('queued', 'target_changed')?.key).toBe('sv.steerQueuedTargetChanged');
+    expect(sendNowNotice('queued', 'prompt_no_longer_pending')?.key).toBe('sv.steerQueuedNotPending');
+    expect(sendNowNotice('queued', 'steer_rejected')?.key).toBe('sv.steerQueuedRejected');
+    expect(sendNowNotice('queued', 'external_retry')?.key).toBe('sv.steerQueuedExternal');
+    expect(sendNowNotice('queued', 'executor_deferred')?.key).toBe('sv.steerQueuedExternal');
+    expect(sendNowNotice('queued', 'model_switch_boundary')?.key).toBe('sv.steerQueuedModelBoundary');
+    expect(sendNowNotice('queued', 'no_active_turn')?.key).toBe('sv.steerQueuedNoActiveTurn');
+  });
+
+  it('does not claim the turn ended when the receipt carries no reason', () => {
+    expect(sendNowNotice('queued', undefined)?.key).toBe('sv.steerQueued');
+    expect(sendNowQueuedNotice(undefined)).toBe('sv.steerQueued');
+  });
+
+  it('explains a Send now that has to open its own turn', () => {
+    expect(sendNowOwnTurnNotice('binding')).toBe('sv.sendNowOwnTurnBinding');
+    expect(sendNowOwnTurnNotice('model')).toBe('sv.sendNowOwnTurnModel');
+  });
+});
+
+describe('nowReceiptDecision', () => {
+  const entry = (overrides: Partial<PromptItem> = {}): PromptItem => ({
+    prompt_id: 'p', user_message_id: 'u', status: 'queued',
+    content: [{ type: 'text', text: 'body' }], created_at: '2026-10-20T00:00:00.000Z',
+    ...overrides,
+  });
+  const decide = (input: { ingress?: readonly PromptItem[]; reported?: string | null; settled?: boolean }) =>
+    nowReceiptDecision({ promptId: 'p', reported: input.reported ?? null, ingress: input.ingress ?? [], settled: input.settled ?? false });
+
+  it('waits while the durable read has not landed yet', () => {
+    expect(decide({})).toEqual({ kind: 'wait' });
+    expect(decide({ ingress: [entry({ admission: 'restoring' })] })).toEqual({ kind: 'wait' });
+  });
+
+  it('never treats an unadmitted receipt or a stale delivery field as final', () => {
+    expect(decide({ ingress: [entry({ admission: 'restoring', delivery_state: 'queued', delivery_reason: 'target_changed' })] }))
+      .toEqual({ kind: 'wait' });
+    expect(decide({ ingress: [entry({ admission: 'held', delivery_state: 'queued', delivery_reason: 'steer_rejected' })] }))
+      .toEqual({ kind: 'wait' });
+  });
+
+  it('lets a started prompt win over a stale queued record still in the ingress', () => {
+    expect(decide({
+      settled: true,
+      ingress: [entry({ admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' })],
+    })).toEqual({ kind: 'drop' });
+  });
+
+  it('reports the final reason once', () => {
+    expect(decide({ ingress: [entry({ admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' })] }))
+      .toEqual({ kind: 'report', reason: 'target_changed' });
+    expect(decide({ reported: 'target_changed', ingress: [entry({ admission: 'admitted', delivery_state: 'queued', delivery_reason: 'target_changed' })] }))
+      .toEqual({ kind: 'drop' });
+  });
+
+  it('hands the prompt to the transcript once it runs, steers or reaches a row', () => {
+    expect(decide({ ingress: [entry({ admission: 'admitted', status: 'running' })] })).toEqual({ kind: 'drop' });
+    expect(decide({ ingress: [entry({ admission: 'admitted', delivery_state: 'steered' })] })).toEqual({ kind: 'drop' });
+    expect(decide({ ingress: [entry({ admission: 'failed' })] })).toEqual({ kind: 'drop' });
+    expect(decide({ settled: true })).toEqual({ kind: 'drop' });
   });
 });
 
@@ -1429,9 +1668,9 @@ describe('sessionHasStartedConversation', () => {
 });
 
 describe('optimistic submission', () => {
-  it('shows a sending bubble immediately, changes to a still-sending status, and removes it on settle', () => {
+  it('shows a compact sending status and keeps its slow state in the tooltip', () => {
     const state = createViewState('session');
-    const pending = { id: 'local-1', text: 'New message', createdAt: '2026-08-23T00:00:00.000Z', slow: false };
+    const pending = { id: 'local-1', text: 'New message', createdAt: '2026-08-23T00:00:00.000Z', slow: false, preserved: true, retryable: false, status: 'sending' as const };
     const render = (slow: boolean) => renderToStaticMarkup(<MemoryRouter><I18nProvider>
       <Transcript
         state={{ ...state, loaded: true, transcriptReady: true, blocks: withOptimisticUserBlock(state.blocks, { ...pending, slow }) }}
@@ -1443,8 +1682,44 @@ describe('optimistic submission', () => {
     </I18nProvider></MemoryRouter>);
     expect(render(false)).toContain('data-optimistic-status="sending"');
     expect(render(false)).toContain('New message');
-    expect(render(true)).toContain('data-optimistic-status="slow"');
+    expect(render(true)).toContain('data-optimistic-slow=""');
     expect(withOptimisticUserBlock(state.blocks, undefined)).toBe(state.blocks);
+  });
+
+  it('keeps unknown delivery and held recovery on the message object with an action only when held', () => {
+    const state = createViewState('session');
+    const render = (status: 'offline' | 'server', retryable: boolean) => renderToStaticMarkup(<MemoryRouter><I18nProvider>
+      <Transcript
+        state={{ ...state, loaded: true, transcriptReady: true, blocks: withOptimisticUserBlock(state.blocks, {
+          id: 'pending-message', text: 'Needs retry', createdAt: '2026-08-23T00:00:00Z', slow: true,
+          preserved: true, retryable, status,
+        }) }}
+        onLoadOlder={async () => false}
+        onResolveApproval={async () => {}}
+        onAnswerQuestion={async () => {}}
+        onDismissQuestion={async () => {}}
+        onRetryPending={() => {}}
+      />
+    </I18nProvider></MemoryRouter>);
+    const offline = render('offline', true);
+    expect(offline).toContain('data-optimistic-status="offline"');
+    expect(offline).toContain('data-pending-retry');
+    expect(offline).not.toContain('stillSending');
+    const held = render('server', true);
+    expect(held).toContain('data-optimistic-status="server"');
+    expect(held).toContain('data-pending-retry');
+    const syncing = render('server', false);
+    expect(syncing).toContain('data-optimistic-status="server"');
+    expect(syncing).not.toContain('data-pending-retry');
+  });
+
+  it.each(['queued', 'running', undefined] as const)('replaces the pending echo on a canonical %s event before the REST receipt', (promptStatus) => {
+    const pending = { id: 'prompt-new', text: 'Repeated text', createdAt: '2026-08-23T00:00:00Z', slow: true, preserved: true, retryable: false, status: 'sending' as const };
+    const blocks: readonly Block[] = [{ kind: 'user', id: 'message-new', promptId: pending.id,
+      text: pending.text, createdAt: pending.createdAt, promptStatus }];
+    expect(withOptimisticUserBlock(blocks, pending)).toBe(blocks);
+    const unrelated = [{ ...blocks[0]!, promptId: 'another-prompt' }] as readonly Block[];
+    expect(withOptimisticUserBlock(unrelated, pending)).toHaveLength(2);
   });
 
   it('restores a failed send only when the composer is still empty', () => {
@@ -1660,6 +1935,20 @@ describe('shouldHandleGlobalAbortOnEscape', () => {
     expect(abortActive).not.toHaveBeenCalled();
     attemptAbort(false); // Without preview chrome, Escape still aborts main.
     expect(abortActive).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not abort a running main turn when Escape was consumed by mobile sidebar drawer', () => {
+    const running = { ...createViewState('session-test'), busy: true, abortablePromptId: 'p-main' };
+    const abortActive = vi.fn();
+    // Case 1: mobile drawer registered in uiBusy overlayOpen
+    if (canAbortActiveTurn(running) && shouldHandleGlobalAbortOnEscape({ ...ready, overlayOpen: true })) {
+      abortActive();
+    }
+    // Case 2: mobile drawer consumed Escape via defaultPrevented
+    if (canAbortActiveTurn(running) && shouldHandleGlobalAbortOnEscape({ ...ready, defaultPrevented: true })) {
+      abortActive();
+    }
+    expect(abortActive).not.toHaveBeenCalled();
   });
 
   it('uses an in-flight engine id rather than requiring a visible user prompt', () => {
@@ -1925,6 +2214,23 @@ describe('ContextMeter', () => {
 describe('session-not-found fallback', () => {
   it('waits three seconds before falling back home', () => {
     expect(NOT_FOUND_FALLBACK_MS).toBe(3000);
+  });
+
+  it('leaves only a definite absence while this session still owns the route', () => {
+    const gone = 'session sess-a does not exist (code 40401)';
+    expect(sessionRouteOwnsSession('/s/sess-a', 'sess-a')).toBe(true);
+    expect(sessionRouteOwnsSession('/s/sess-a/agent/main', 'sess-a')).toBe(true);
+    expect(sessionRouteOwnsSession('/s/sess-ab', 'sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a')).toBe(true);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a/agent/main')).toBe(true);
+    expect(sessionAbsenceShouldLeaveRoute('session not found: sess-a (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute('session sess-a not found (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute('content unavailable (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute('session sess-a has no recoverable cwd (code 40401)', 'sess-a', '/s/sess-a')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-b')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/new')).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a', true)).toBe(false);
+    expect(sessionAbsenceShouldLeaveRoute(gone, 'sess-a', '/s/sess-a', false)).toBe(true);
   });
 });
 

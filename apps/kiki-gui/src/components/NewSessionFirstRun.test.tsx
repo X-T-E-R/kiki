@@ -8,13 +8,13 @@
  * list or the composer's agent picker.
  */
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { AuthSummary } from '@kiki/protocol';
+import type { AuthSummary, Workspace } from '@kiki/protocol';
 import { resolveSettingsRoute, SETTINGS_SEARCH_SPEC } from '@kiki/session-core/settings';
 
 import { I18nProvider } from '../i18n';
@@ -31,6 +31,12 @@ const firstRun = vi.hoisted(() => ({
   selectionReady: true,
   creationPending: false,
   seat: undefined as import('./ConversationShell').ConversationSeat | undefined,
+  workspacesFailed: false,
+  workspacesError: null as string | null,
+  retryWorkspaces: (() => {}) as () => void,
+  workspaceId: '',
+  effectiveWorkspace: undefined as any,
+  execution: { executor: 'native', profile: 'agent', overrides: undefined } as any,
   client: {
     startOAuthLogin: vi.fn(),
     cancelOAuthLogin: vi.fn(),
@@ -65,8 +71,10 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./NewSessionDraft')>();
   return {
     ...actual,
-    useNewSessionDraft: () => ({
-      draft: '',
+    useNewSessionDraft: () => {
+      const [execution, setExecution] = useState(firstRun.execution);
+      return {
+        draft: '',
       attachments: [],
       busy: false,
       creationPending: firstRun.creationPending,
@@ -75,11 +83,12 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       openCreatedSession: () => {},
       selectionReady: firstRun.selectionReady,
       targetReady: true,
-      workspacesError: null,
-      retryWorkspaces: () => {},
+      workspacesFailed: firstRun.workspacesFailed,
+      workspacesError: firstRun.workspacesError,
+      retryWorkspaces: firstRun.retryWorkspaces,
       cancelCreation: () => {},
       error: null,
-      workspaceId: '',
+      workspaceId: firstRun.workspaceId,
       cwd: '',
       permissionMode: 'manual',
       planMode: false,
@@ -88,7 +97,7 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       agentProfile: '',
       workspaces: [],
       workspacesLoading: false,
-      effectiveWorkspace: undefined,
+      effectiveWorkspace: firstRun.effectiveWorkspace,
       autoWorkspace: true,
       agentProfileCatalogMode: { mode: 'unscoped' },
       agentProfileCatalogPending: false,
@@ -109,10 +118,15 @@ vi.mock('./NewSessionDraft', async (importOriginal) => {
       setGoalObjective: () => {},
       setModelOverride: () => {},
       setAgentProfile: () => {},
-      setEffortOverride: () => {},
+      execution,
+      setExecution: (next: any) => {
+        firstRun.execution = next;
+        setExecution(next);
+      },
       send: () => {},
       activateSkill: () => {},
-    }),
+    };
+  },
   };
 });
 
@@ -132,6 +146,11 @@ beforeEach(() => {
   firstRun.selectionReady = true;
   firstRun.creationPending = false;
   firstRun.seat = undefined;
+  firstRun.execution = { executor: 'native', profile: 'agent', overrides: undefined };
+  firstRun.workspacesFailed = false;
+  firstRun.workspacesError = null;
+  firstRun.workspaceId = '';
+  firstRun.effectiveWorkspace = undefined;
   localStorage.setItem('kiki.locale', 'en');
   vi.clearAllMocks();
 });
@@ -206,14 +225,19 @@ describe('WorkspacePickerFields first-run affordances', () => {
     expect(browser.querySelector('input[type="text"]')).not.toBeNull();
   });
 
-  it('routes the browse button to the native picker', async () => {
+  it('routes the browse button to the native picker with localized aria-label', async () => {
     const browseForWorkspace = vi.fn(async () => {});
     const container = await mount(
       draftState({ canBrowseForWorkspace: true, browseForWorkspace }),
     );
 
+    const browseBtn = container.querySelector<HTMLButtonElement>('[data-new-browse]');
+    expect(browseBtn).not.toBeNull();
+    expect(browseBtn?.getAttribute('aria-label')).toBe('Browse folder…');
+    expect(browseBtn?.getAttribute('title')).toBe('Browse folder…');
+
     await act(async () => {
-      container.querySelector<HTMLButtonElement>('[data-new-browse]')?.click();
+      browseBtn?.click();
     });
     expect(browseForWorkspace).toHaveBeenCalledTimes(1);
   });
@@ -221,7 +245,7 @@ describe('WorkspacePickerFields first-run affordances', () => {
   it('explains the first-run automatic workspace only while the catalog is empty', async () => {
     const empty = await mount(draftState());
     expect(empty.textContent).toContain('Choose a project folder, or send now');
-    expect(empty.textContent).toContain('create a new folder in Kiki Home');
+    expect(empty.textContent).toContain('create a workspace in Kiki Home');
     expect(empty.querySelector<HTMLButtonElement>('#new-workspace-select')?.disabled).toBe(false);
 
     const loading = await mount(draftState({ workspacesLoading: true }));
@@ -237,14 +261,33 @@ describe('WorkspacePickerFields first-run affordances', () => {
             name: 'proj',
             created_at: '2026-01-01T00:00:00.000Z',
             last_opened_at: '2026-01-01T00:00:00.000Z',
-            session_count: 0,
             pinned: false,
-            isGit: false,
           },
         ],
       }),
     );
     expect(populated.textContent).not.toContain('Choose a project folder, or send now');
+  });
+
+  it('states a failed workspace read instead of borrowing the empty-catalog story', async () => {
+    const retryWorkspaces = vi.fn();
+    const failed = await mount(draftState({
+      workspacesFailed: true,
+      workspacesError: 'session index is building',
+      autoWorkspace: false,
+      retryWorkspaces,
+    }));
+    expect(failed.querySelector('[data-new-workspace-failure]')?.textContent).toContain('session index is building');
+    expect(failed.textContent).not.toContain('Choose a project folder, or send now');
+    // Every option survives the failure, including automatic allocation.
+    expect(failed.querySelector<HTMLButtonElement>('#new-workspace-select')?.disabled).toBe(false);
+    await act(async () => {
+      failed.querySelector<HTMLButtonElement>('[data-new-workspace-retry]')?.click();
+    });
+    expect(retryWorkspaces).toHaveBeenCalledTimes(1);
+
+    const unnamed = await mount(draftState({ workspacesFailed: true, autoWorkspace: false }));
+    expect(unnamed.querySelector('[data-new-workspace-failure]')?.textContent).toContain('could not list your workspaces');
   });
 
   it('offers explicit automatic allocation even when workspaces already exist', async () => {
@@ -256,18 +299,18 @@ describe('WorkspacePickerFields first-run affordances', () => {
         id: 'wd_a', root: 'C:/proj', name: 'proj',
         created_at: '2026-01-01T00:00:00.000Z',
         last_opened_at: '2026-01-01T00:00:00.000Z',
-        session_count: 0, pinned: false, isGit: false,
+        pinned: false,
       },
       workspaces: [{
         id: 'wd_a', root: 'C:/proj', name: 'proj',
         created_at: '2026-01-01T00:00:00.000Z',
         last_opened_at: '2026-01-01T00:00:00.000Z',
-        session_count: 0, pinned: false, isGit: false,
+        pinned: false,
       }],
       selectWorkspace,
     }));
     await act(async () => { container.querySelector<HTMLButtonElement>('#new-workspace-select')?.click(); });
-    const option = [...container.querySelectorAll<HTMLButtonElement>('[role="option"]')]
+    const option = [...document.querySelectorAll<HTMLButtonElement>('#new-workspace-select-list [role="option"]')]
       .find((button) => button.textContent?.includes('Automatically create a workspace'));
     expect(option?.textContent).toContain('create a new folder in Kiki Home');
     await act(async () => { option?.click(); });
@@ -346,6 +389,117 @@ describe('the /new page', () => {
     const container = await mountNewSessionPage();
     expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('Automatically create a workspace');
     expect(container.textContent).not.toContain('Choose another workspace');
+  });
+
+  it('passes a changed execution choice through the memoized composer seat', async () => {
+    await mountNewSessionPage();
+    const composer = () => (firstRun.seat as { composer: { props: { children: { props: {
+      execution: { readonly profile_file?: string };
+      onChangeExecution: (next: unknown) => void;
+    } } } } }).composer.props.children;
+    expect(composer().props.execution.profile_file).toBeUndefined();
+    await act(async () => {
+      composer().props.onChangeExecution({
+        executor: 'native', profile: undefined, profile_file: 'C:/fixture/workshop/profiles/selected.md', overrides: undefined,
+      });
+    });
+    expect(composer().props.execution.profile_file).toBe('C:/fixture/workshop/profiles/selected.md');
+  });
+
+  it('states a failed workspace read in the hero instead of asking for another target', async () => {
+    const retryWorkspaces = vi.fn();
+    firstRun.workspacesFailed = true;
+    firstRun.workspacesError = 'workspace list unavailable';
+    firstRun.retryWorkspaces = retryWorkspaces;
+    try {
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-workspace-failure]')?.textContent).toContain('workspace list unavailable');
+      expect(container.textContent).not.toContain('Choose another workspace');
+      await act(async () => {
+        container.querySelector<HTMLButtonElement>('[data-hero-workspace-retry]')?.click();
+      });
+      expect(retryWorkspaces).toHaveBeenCalledTimes(1);
+    } finally {
+      firstRun.workspacesFailed = false;
+      firstRun.workspacesError = null;
+      firstRun.retryWorkspaces = () => {};
+    }
+  });
+
+  it('does not call a chosen workspace unavailable from a list that never loaded', async () => {
+    firstRun.workspaceId = 'wd-chosen';
+    firstRun.workspacesFailed = true;
+    firstRun.workspacesError = 'workspace list unavailable';
+    try {
+      // A failed read cannot tell an unknown id from one it never got to check,
+      // so the failure is stated once with its retry and the choice is kept.
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-workspace-failure]')?.textContent).toContain('workspace list unavailable');
+      expect(container.textContent).not.toContain('is unavailable. Choose a workspace');
+    } finally {
+      firstRun.workspaceId = '';
+      firstRun.workspacesFailed = false;
+      firstRun.workspacesError = null;
+    }
+  });
+
+  it('still reports a chosen workspace the loaded list does not contain', async () => {
+    firstRun.workspaceId = 'wd-chosen';
+    try {
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-workspace-failure]')).toBeNull();
+      expect(container.textContent).toContain('Workspace “wd-chosen” is unavailable.');
+    } finally {
+      firstRun.workspaceId = '';
+    }
+  });
+
+  it.each([
+    ['en', 'Automatically create a workspace'],
+    ['zh', '自动创建工作区'],
+  ] as const)('names the automatic workspace in %s, not as an untitled one', async (locale, expected) => {
+    localStorage.setItem('kiki.locale', locale);
+    firstRun.effectiveWorkspace = {
+      id: 'wd_auto',
+      root: 'C:/Users/me/.kiki/workspaces/2026-10-07-a1b2c3d4',
+      // Exactly what the server files an auto-allocated workspace under.
+      name: 'Untitled workspace 2026-10-07 a1b2c3d4',
+      created_at: '2026-10-07T00:00:00.000Z',
+      last_opened_at: '2026-10-07T00:00:00.000Z',
+      session_count: 1,
+      pinned: false,
+      isGit: false,
+    };
+    try {
+      const container = await mountNewSessionPage();
+      const chip = container.querySelector('[data-hero-target] [data-hero-workspace]');
+      expect(chip?.textContent).toContain(expected);
+      // The internal name must not surface anywhere the user reads.
+      expect(container.textContent).not.toContain('Untitled workspace');
+      expect(document.querySelector('#first-run-hero-footer')!.textContent).not.toContain('Untitled workspace');
+    } finally {
+      firstRun.effectiveWorkspace = undefined;
+    }
+  });
+
+  it('keeps the name of a workspace the user chose', async () => {
+    firstRun.effectiveWorkspace = {
+      id: 'wd_named',
+      root: 'C:/proj',
+      name: 'proj',
+      created_at: '2026-10-07T00:00:00.000Z',
+      last_opened_at: '2026-10-07T00:00:00.000Z',
+      session_count: 1,
+      pinned: false,
+      isGit: false,
+    };
+    try {
+      const container = await mountNewSessionPage();
+      expect(container.querySelector('[data-hero-target] [data-hero-workspace]')?.textContent).toContain('proj');
+      expect(document.querySelector('#first-run-hero-footer')!.textContent).toContain('proj');
+    } finally {
+      firstRun.effectiveWorkspace = undefined;
+    }
   });
 
   it('states what kiki is instead of asking an empty question', async () => {

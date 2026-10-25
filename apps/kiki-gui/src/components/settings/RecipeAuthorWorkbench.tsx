@@ -263,7 +263,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
         // published, but through the plain install: the save it replaced would
         // have been accepted as-is.
         if (recipePreviewNeedsConsent(previewed)) setConsentPreview(previewed);
-        else void installWithConsent.mutate({ preview: previewed });
+        else installWithConsent.mutate({ preview: previewed });
       },
       onError: (error) => {
         setUnreadSave(null);
@@ -544,7 +544,7 @@ export function RecipeAuthorWorkbench({ detail, onApplied, onBack, onDirtyChange
             disabled={readSaved.isPending}
             className="rounded-md border border-hairline bg-paper px-3 py-1.5 text-[12px] text-ink-soft transition-colors hover:border-hairline-strong hover:text-ink disabled:cursor-not-allowed disabled:opacity-50"
             data-recipe-reload-saved
-            onClick={() => { void readSaved.mutate(unreadSave); }}>
+            onClick={() => { readSaved.mutate(unreadSave); }}>
             {t('st.recipeHook.retryLoadSaved')}
           </button>
         </div>

@@ -21,6 +21,7 @@ export const ModelIssueCodes = {
   CONTEXT_MISSING: 'model.max_context_size_missing',
   PROTOCOL_UNRESOLVED: 'model.protocol_unresolved',
   REQUEST_IDENTITY_INVALID: 'model.request_identity_invalid',
+  OVERRIDE_ROUTING_REJECTED: 'model.override_routing_rejected',
 } as const;
 
 /** A provider projection plus the compare-and-swap token of its stored entity. */

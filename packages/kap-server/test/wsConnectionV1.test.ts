@@ -1150,3 +1150,282 @@ describe('WsConnectionV1 global target registration', () => {
   });
 
 });
+
+describe('WsConnectionV1 cursor replay ordering', () => {
+  function wireBytes(value: unknown): number {
+    return Buffer.byteLength(JSON.stringify(value));
+  }
+
+  function sessionFrames(socket: FakeSocket): Array<{ type: string; seq?: number; volatile?: boolean }> {
+    return socket.frames().flatMap((frame) => {
+      if (typeof frame !== 'object' || frame === null) return [];
+      const record = frame as { type?: string; session_id?: string; seq?: number; volatile?: boolean };
+      if (record.session_id !== 's1' || record.type === undefined) return [];
+      return [{ type: record.type, seq: record.seq, volatile: record.volatile }];
+    });
+  }
+
+  function replayBooks(conn: WsConnectionV1): { heldBytes: number; heldDuringReplay: Map<string, unknown[]>; outbound: unknown[] } {
+    return conn as unknown as { heldBytes: number; heldDuringReplay: Map<string, unknown[]>; outbound: unknown[] };
+  }
+
+  function gatedBroadcaster(): {
+    broadcaster: SessionEventBroadcaster;
+    entered: Promise<void>;
+    release: (result: {
+      events: ReadonlyArray<{ seq: number; envelope: ReturnType<typeof durable> | ReturnType<typeof delta> }>;
+      resyncRequired: false | 'epoch_changed';
+      currentSeq: number;
+      epoch: string;
+    }) => void;
+    unsubscribe: ReturnType<typeof vi.fn>;
+  } {
+    let resolveEntered: () => void = () => {};
+    const entered = new Promise<void>((resolve) => {
+      resolveEntered = resolve;
+    });
+    let resolveBuffered: (result: {
+      events: ReadonlyArray<{ seq: number; envelope: ReturnType<typeof durable> | ReturnType<typeof delta> }>;
+      resyncRequired: false | 'epoch_changed';
+      currentSeq: number;
+      epoch: string;
+    }) => void = () => {};
+    const buffered = new Promise<{
+      events: ReadonlyArray<{ seq: number; envelope: ReturnType<typeof durable> | ReturnType<typeof delta> }>;
+      resyncRequired: false | 'epoch_changed';
+      currentSeq: number;
+      epoch: string;
+    }>((resolve) => {
+      resolveBuffered = resolve;
+    });
+    const unsubscribe = vi.fn();
+    const broadcaster = {
+      subscribe: async () => true,
+      unsubscribe,
+      flushTranscriptSeed: async () => {},
+      addGlobalTarget: () => {},
+      removeGlobalTarget: () => {},
+      getCursor: async () => ({ seq: 0, epoch: 'e1' }),
+      getBufferedSince: async () => {
+        resolveEntered();
+        return buffered;
+      },
+    } as unknown as SessionEventBroadcaster;
+    return { broadcaster, entered, release: resolveBuffered, unsubscribe };
+  }
+
+  function subscribeWithCursor(socket: FakeSocket): void {
+    socket.emit('message', JSON.stringify({
+      type: 'subscribe',
+      id: 'replay',
+      payload: { session_ids: ['s1'], cursors: { s1: { seq: 3, epoch: 'e1' } } },
+    }));
+  }
+
+  it('replays the backlog before later live frames and emits an overlapping seq once', async () => {
+    const socket = new FakeSocket();
+    const gate = gatedBroadcaster();
+    const conn = makeConn(socket, { broadcaster: gate.broadcaster, flushIntervalMs: 60_000, maxBatchSize: 100 });
+    const overlap = durable('turn.ended', 's1', 4);
+    const backlogTail = durable('turn.started', 's1', 5);
+    const later = durable('event.session.work_changed', 's1', 6);
+    const liveVolatile = delta('s1', 'main', 1, 'live', 0);
+    const immediate = durable('public.notice', 's1', 9);
+
+    subscribeWithCursor(socket);
+    await gate.entered;
+    conn.send(overlap);
+    conn.send(later);
+    conn.send(liveVolatile);
+    conn.send(immediate, 'immediate');
+    expect(sessionFrames(socket)).toEqual([{ type: 'public.notice', seq: 9, volatile: undefined }]);
+
+    gate.release({
+      events: [
+        { seq: overlap.seq, envelope: overlap },
+        { seq: backlogTail.seq, envelope: backlogTail },
+      ],
+      resyncRequired: false,
+      currentSeq: 5,
+      epoch: 'e1',
+    });
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'replay')).toBe(true);
+    });
+
+    expect(sessionFrames(socket)).toEqual([
+      { type: 'public.notice', seq: 9, volatile: undefined },
+      { type: 'turn.ended', seq: 4, volatile: undefined },
+      { type: 'turn.started', seq: 5, volatile: undefined },
+      { type: 'event.session.work_changed', seq: 6, volatile: undefined },
+      { type: 'assistant.delta', seq: 1, volatile: true },
+    ]);
+    const replayAck = socket.frames().find((frame) => (frame as { id?: string }).id === 'replay') as {
+      payload: { cursors: { s1: { seq: number } } };
+    };
+    expect(replayAck.payload.cursors.s1.seq).toBe(6);
+    expect(socket.terminateCalls).toBe(0);
+    expect(replayBooks(conn).heldBytes).toBe(0);
+    expect(replayBooks(conn).heldDuringReplay.size).toBe(0);
+    conn.close();
+  });
+
+  it('emits a global immediate frame before the cursor backlog and keeps that backlog exact', async () => {
+    const socket = new FakeSocket();
+    const gate = gatedBroadcaster();
+    const conn = makeConn(socket, { broadcaster: gate.broadcaster, flushIntervalMs: 60_000, maxBatchSize: 100 });
+    const backlog = [4, 5, 6, 7, 8, 9].map((seq) => durable('turn.step.completed', 's1', seq));
+    const tail = durable('event.session.work_changed', 's1', 10);
+    const overlap = durable('turn.ended', 's1', 4);
+
+    subscribeWithCursor(socket);
+    await gate.entered;
+    conn.send(tail, 'immediate');
+    conn.send(overlap);
+    expect(sessionFrames(socket)).toEqual([{ type: 'event.session.work_changed', seq: 10, volatile: undefined }]);
+
+    gate.release({
+      events: [...backlog.map((envelope) => ({ seq: envelope.seq, envelope })), { seq: tail.seq, envelope: tail }],
+      resyncRequired: false,
+      currentSeq: 10,
+      epoch: 'e1',
+    });
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'replay')).toBe(true);
+    });
+
+    expect(sessionFrames(socket)).toEqual([
+      { type: 'event.session.work_changed', seq: 10, volatile: undefined },
+      ...backlog.map((envelope) => ({ type: envelope.type, seq: envelope.seq, volatile: undefined })),
+      { type: 'event.session.work_changed', seq: 10, volatile: undefined },
+    ]);
+    conn.close();
+  });
+
+  it('drops replay-held frames when resync is required and clears their bytes', async () => {
+    const socket = new FakeSocket();
+    const gate = gatedBroadcaster();
+    const conn = makeConn(socket, { broadcaster: gate.broadcaster, flushIntervalMs: 60_000, maxBatchSize: 100 });
+    subscribeWithCursor(socket);
+    await gate.entered;
+    conn.send(durable('turn.ended', 's1', 4));
+    conn.send(delta('s1', 'main', 1, 'stale', 0));
+    expect(replayBooks(conn).heldBytes).toBeGreaterThan(0);
+
+    gate.release({
+      events: [{ seq: 4, envelope: durable('turn.ended', 's1', 4) }],
+      resyncRequired: 'epoch_changed',
+      currentSeq: 4,
+      epoch: 'e2',
+    });
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { type?: string }).type === 'resync_required')).toBe(true);
+    });
+
+    expect(sessionFrames(socket)).toEqual([]);
+    const resync = socket.frames().find((frame) => (frame as { type?: string }).type === 'resync_required') as {
+      payload: { session_id: string; reason: string; current_seq: number; epoch?: string };
+    };
+    expect(resync.payload).toEqual({ session_id: 's1', reason: 'epoch_changed', current_seq: 4, epoch: 'e2' });
+    expect(socket.terminateCalls).toBe(0);
+    expect(replayBooks(conn).heldBytes).toBe(0);
+    expect(replayBooks(conn).heldDuringReplay.size).toBe(0);
+    conn.close();
+  });
+
+  it('drops replay-held frames when attach fails and clears their bytes', async () => {
+    const socket = new FakeSocket();
+    let markSubscribed: () => void = () => {};
+    const subscribed = new Promise<void>((resolve) => {
+      markSubscribed = resolve;
+    });
+    let acceptAttach: (ok: boolean) => void = () => {};
+    const attachDecision = new Promise<boolean>((resolve) => {
+      acceptAttach = resolve;
+    });
+    const unsubscribe = vi.fn();
+    let bufferedCalls = 0;
+    const broadcaster = {
+      subscribe: async () => {
+        markSubscribed();
+        return attachDecision;
+      },
+      unsubscribe,
+      flushTranscriptSeed: async () => {},
+      addGlobalTarget: () => {},
+      removeGlobalTarget: () => {},
+      getCursor: async () => ({ seq: 0, epoch: 'e1' }),
+      getBufferedSince: async () => {
+        bufferedCalls += 1;
+        return { events: [], resyncRequired: false, currentSeq: 0, epoch: 'e1' };
+      },
+    } as unknown as SessionEventBroadcaster;
+    const conn = makeConn(socket, { broadcaster, flushIntervalMs: 60_000, maxBatchSize: 100 });
+    subscribeWithCursor(socket);
+    await subscribed;
+    conn.send(durable('turn.ended', 's1', 4));
+    conn.send(delta('s1', 'main', 1, 'orphan', 0));
+    expect(replayBooks(conn).heldBytes).toBeGreaterThan(0);
+    acceptAttach(false);
+    await vi.waitFor(() => {
+      expect(socket.frames().some((frame) => (frame as { id?: string }).id === 'replay')).toBe(true);
+    });
+
+    expect(bufferedCalls).toBe(0);
+    expect(sessionFrames(socket)).toEqual([]);
+    const ack = socket.frames().find((frame) => (frame as { id?: string }).id === 'replay') as {
+      payload: { accepted: string[]; not_found: string[] };
+    };
+    expect(ack.payload).toMatchObject({ accepted: [], not_found: ['s1'] });
+    expect(unsubscribe).toHaveBeenCalledWith('s1', conn);
+    expect(replayBooks(conn).heldBytes).toBe(0);
+    expect(replayBooks(conn).heldDuringReplay.size).toBe(0);
+    expect(socket.terminateCalls).toBe(0);
+    conn.close();
+  });
+
+  it('counts replay-held bytes with queued outbound bytes and clears both when the cap is crossed', async () => {
+    const queued = delta('s0', 'main', 1, 'q'.repeat(180), 0);
+    const heldFrame = delta('s1', 'main', 1, 'h'.repeat(180), 0);
+    const queuedBytes = wireBytes(queued);
+    const heldWire = wireBytes(heldFrame);
+    const cap = queuedBytes + heldWire - 1;
+    expect(queuedBytes).toBeLessThan(cap);
+    expect(heldWire).toBeLessThan(cap);
+    expect(queuedBytes + heldWire).toBeGreaterThan(cap);
+
+    const socket = new FakeSocket();
+    const warn = vi.fn();
+    const gate = gatedBroadcaster();
+    const conn = makeConn(socket, {
+      broadcaster: gate.broadcaster,
+      flushIntervalMs: 60_000,
+      maxBatchSize: 100,
+      maxOutboundBufferBytes: cap,
+      logger: { warn },
+    });
+    conn.send(queued);
+    expect(socket.terminateCalls).toBe(0);
+    expect(replayBooks(conn).outbound).toHaveLength(1);
+
+    subscribeWithCursor(socket);
+    await gate.entered;
+    conn.send(heldFrame);
+
+    expect(socket.terminateCalls).toBe(1);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reason: 'slow_consumer',
+        cause: 'queued_bytes',
+        queuedBytes: queuedBytes + heldWire,
+        limitBytes: cap,
+      }),
+      'terminating unhealthy websocket connection',
+    );
+    expect(replayBooks(conn).heldBytes).toBe(0);
+    expect(replayBooks(conn).heldDuringReplay.size).toBe(0);
+    expect(replayBooks(conn).outbound).toEqual([]);
+    expect(gate.unsubscribe).toHaveBeenCalledWith('s1', conn);
+    gate.release({ events: [], resyncRequired: false, currentSeq: 0, epoch: 'e1' });
+  });
+});
