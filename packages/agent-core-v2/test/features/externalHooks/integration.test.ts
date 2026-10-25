@@ -779,9 +779,12 @@ describe('IExternalHooksRunnerService integration', () => {
 
   it.each(['complete', 'cancel'] as const)('R1 keeps a post-tool process on the caller lifecycle after batch done (%s)', async (ending) => {
     const disposables = new DisposableStore();
-    const spawned = Promise.withResolvers<void>();
-    const exited = Promise.withResolvers<number>();
-    const disposed = Promise.withResolvers<void>();
+    let resolveSpawned!: () => void;
+    const spawned = new Promise<void>((resolve) => { resolveSpawned = resolve; });
+    let resolveExited!: (code: number) => void;
+    const exited = new Promise<number>((resolve) => { resolveExited = resolve; });
+    let resolveDisposed!: () => void;
+    const disposed = new Promise<void>((resolve) => { resolveDisposed = resolve; });
     const stdout = new PassThrough();
     const stderr = new PassThrough();
     const kills: Array<NodeJS.Signals | undefined> = [];
@@ -793,7 +796,7 @@ describe('IExternalHooksRunnerService integration', () => {
       processCompleted = true;
       stdout.end('hook completed');
       stderr.end();
-      exited.resolve(0);
+      resolveExited(0);
     };
     try {
       const ix = createServices(disposables, {
@@ -813,20 +816,20 @@ describe('IExternalHooksRunnerService integration', () => {
             get: <T = unknown>(section: string): T => (section === HOOKS_SECTION
               ? [{ event: 'PostToolUse', command: 'post-hook-fixture', timeout: 5 }] : undefined) as T,
           });
-          reg.definePartialInstance(IPluginService, { enabledHooks: async () => [], onDidReload: Event.None });
+          reg.definePartialInstance(IPluginService, { enabledHooks: async () => [], onDidReload: () => ({ dispose() {} }) });
           reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
           reg.definePartialInstance(ISessionIndex, {});
           reg.defineInstance(IBootstrapService, stubBootstrap('/tmp/post-hook-unused-home'));
           reg.definePartialInstance(IHostProcessService, {
             spawn: async () => {
-              spawned.resolve();
+              resolveSpawned();
               return {
                 _serviceBrand: undefined, pid: 12345, exitCode: null,
                 stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
                 stdout, stderr,
-                wait: () => exited.promise,
+                wait: () => exited,
                 kill: async (signal) => { kills.push(signal); completeProcess(); },
-                dispose: () => { processDisposed = true; disposed.resolve(); },
+                dispose: () => { processDisposed = true; resolveDisposed(); },
               };
             },
           });
@@ -846,14 +849,14 @@ describe('IExternalHooksRunnerService integration', () => {
       ix.get(IAgentExternalHooksService);
       ix.get(IAgentToolRegistryService).register({
         name: 'ReadFixture', description: 'No IO', parameters: { type: 'object' },
-        resolveExecution: () => ({ accesses: ToolAccesses.none(), execute: async () => ({ output: 'read completed' }) }),
+        resolveExecution: () => ({ approvalRule: 'ReadFixture', accesses: ToolAccesses.none(), execute: async () => ({ output: 'read completed' }) }),
       });
       const caller = new AbortController();
       const stream = executor.execute([{ id: 'read-call', name: 'ReadFixture', type: 'function', arguments: '{}' }], {
         turnId: 0, signal: caller.signal,
       })[Symbol.asyncIterator]();
       expect(await stream.next()).toMatchObject({ value: { toolCallId: 'read-call', result: { output: 'read completed' } } });
-      await spawned.promise;
+      await spawned;
       const triggered = trigger.mock.results[0]!;
       expect(triggered.type).toBe('return');
       postHook = triggered.value;
@@ -869,7 +872,7 @@ describe('IExternalHooksRunnerService integration', () => {
       expect(processDisposed).toBe(false);
       if (ending === 'cancel') caller.abort();
       else completeProcess();
-      await disposed.promise;
+      await disposed;
       const results = await postHook;
       expect(results).toEqual([expect.objectContaining(ending === 'cancel'
         ? { action: 'block', timedOut: undefined }
