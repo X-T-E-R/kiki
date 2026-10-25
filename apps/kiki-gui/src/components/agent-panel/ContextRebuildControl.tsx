@@ -27,7 +27,8 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
   const [seen, setSeen] = useState(identity);
   const [actionError, setActionError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
-  if (seen !== identity) {
+  const switched = seen !== identity;
+  if (switched) {
     setSeen(identity);
     setActionError(undefined);
     setBusy(false);
@@ -41,9 +42,9 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
   });
 
   if (!readable || klient === undefined) return null;
-  const control = query.data;
-  const loadError = query.error === null || query.error === undefined ? undefined : messageOf(query.error);
-  const error = actionError ?? control?.error ?? loadError;
+  const control = switched ? undefined : query.data;
+  const loadError = switched || query.error === null || query.error === undefined ? undefined : messageOf(query.error);
+  const error = switched ? undefined : actionError ?? control?.error ?? loadError;
   const failed = error !== undefined || control?.outcome === 'failed';
   const main = agentId === MAIN_AGENT_ID;
   const agent = () => klient.session(sessionId).agent(agentId);
@@ -57,7 +58,7 @@ export function ContextRebuildControl({ sessionId, agentId }: { sessionId: strin
       setBusy(false);
     });
   };
-  const loading = busy || (control === undefined && error === undefined);
+  const loading = (!switched && busy) || (control === undefined && error === undefined);
 
   return <section className="min-w-0 border-t border-ink/10 pt-4" data-context-rebuild>
     <div className="flex min-w-0 items-center gap-2" data-context-rebuild-switch>
@@ -102,7 +103,11 @@ function SourceReport({ control }: { control: ContextRebuildSnapshot }) {
         const unsupported = control.unsupported.find((item) => item.surface === surface);
         const finished = control.rebuilt.includes(surface);
         const change = control.changes?.[CHANGE_KEY[surface]];
-        const status = unsupported !== undefined ? 'unsupported' : !finished ? 'unfinished' : change === true ? 'updated' : change === false ? 'unchanged' : 'unknown';
+        const status = unsupported !== undefined ? 'unsupported'
+          : !finished ? 'unfinished'
+            : change === true ? 'updated'
+              : change === false ? 'unchanged'
+                : 'unknown';
         return <li key={surface} className="flex flex-wrap items-baseline gap-x-2 text-[12px] leading-5" data-context-rebuild-surface={surface} data-context-rebuild-status={status}>
           <span className="text-ink-soft">{t(`agentPanel.rebuild.surface.${surface}`)}</span>
           {status === 'unknown' ? null : <span className={status === 'unsupported' || status === 'unfinished' ? 'text-amber-ink' : 'text-ink-faint'}>{t(`agentPanel.rebuild.${status}`)}</span>}

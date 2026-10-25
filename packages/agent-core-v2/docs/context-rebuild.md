@@ -2,7 +2,7 @@
 
 A live conversation keeps the Recipe, prompts, skills, AGENTS instructions, enabled plugin tools, MCP catalog, and context injections it started with. Rebuilding re-reads those sources into the same agent. It does not start a new conversation, replay tool calls, or enable every installed plugin.
 
-The switch is off by default and belongs to one agent. Turning it on does not rebuild immediately, and it does not change child agents. Each agent keeps its own switch.
+The switch is labeled “Auto-update context”. It is off by default and belongs to one agent. Turning it on does not rebuild immediately, and it does not change child agents. Each agent keeps its own switch.
 
 ## When it runs
 
@@ -37,6 +37,6 @@ If profile preparation throws before the new binding commits, the previous bindi
 
 If the profile binding commits and a later stage throws, the report is partial. The next request uses the profile that committed. Unfinished sources, including an MCP refresh that failed after that commit, are not listed as rebuilt. That partial result is still usable. It is not a report that the old binding was kept.
 
-A difference that cannot be read is left off the report. The log keeps the original diff error. That absence is not a report that every source is unchanged. The selected model, effort, explicit tool denies, and permission mode stay.
+A difference that cannot be read is left off the report. The log keeps the original diff error. The diagnostic does not label that source unchanged. The selected model, effort, explicit tool denies, and permission mode stay.
 
 The prompt drawer shows one switch. A running rebuild and a finished rebuild use a short status or a small icon on that row. A failure shows one error line. Retry is on that line, and only for the main agent. A child agent has no manual rebuild action. The source-by-source range stays inside an existing channel of the prompt diagnostic and opens with that channel. It is not a separate panel. The full system prompt is not part of the notice.

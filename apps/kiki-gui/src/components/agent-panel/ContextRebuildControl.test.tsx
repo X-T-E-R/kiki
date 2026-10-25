@@ -157,6 +157,7 @@ describe('ContextRebuildControl', () => {
     await render({ agentId: 'child' });
     expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Auto-update context');
     expect(container.querySelector('[data-context-rebuild-error]')?.textContent).toBe('disk down');
+    expect(container.querySelector('[data-context-rebuild] button')).toBeNull();
     expect(container.querySelector('[data-context-rebuild-retry]')).toBeNull();
     expect(rebuild).not.toHaveBeenCalled();
   });
@@ -185,6 +186,28 @@ describe('ContextRebuildControl', () => {
     releaseB({ enabled: false, rebuilt: [], unsupported: [] });
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(container.textContent).not.toContain('disk down');
+  });
+
+  it('clears the previous result before the next agent control arrives', async () => {
+    let release: (value: { enabled: boolean; rebuilt: []; unsupported: [] }) => void = () => {};
+    const gate = new Promise<{ enabled: boolean; rebuilt: []; unsupported: [] }>((resolve) => { release = resolve; });
+    control.mockImplementation((sessionId: string, agentId: string) => {
+      if (sessionId === 'session-b' || agentId === 'child') return gate;
+      return Promise.resolve(applied);
+    });
+    await render({ sessionId: 'session-a', agentId: 'main' });
+    expect(container.querySelector('[data-context-rebuild-mark="applied"]')).not.toBeNull();
+    await render({ sessionId: 'session-b', agentId: 'main' });
+    expect(container.querySelector('[data-context-rebuild-mark="applied"]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild-error]')).toBeNull();
+    expect(container.textContent).not.toContain('After compaction');
+    await render({ sessionId: 'session-a', agentId: 'child' });
+    expect(container.querySelector('[data-context-rebuild-mark="applied"]')).toBeNull();
+    expect(container.querySelector('[data-context-rebuild] button')).toBeNull();
+    expect(container.textContent).not.toContain('After compaction');
+    release({ enabled: false, rebuilt: [], unsupported: [] });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('[data-context-rebuild-mark="applied"]')).toBeNull();
   });
 
   it('does not start another read while the previous one is still running', async () => {
@@ -264,7 +287,7 @@ describe('ContextRebuildControl', () => {
       ],
     });
     await renderDiagnostic();
-    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Auto-update context');
     expect(container.querySelector('[data-context-rebuild-surface]')).toBeNull();
     expect(container.querySelector('[data-context-rebuild-retry]')).toBeNull();
     expect(container.textContent).not.toContain('codex');
@@ -276,5 +299,25 @@ describe('ContextRebuildControl', () => {
     expect(container.querySelector('[data-context-rebuild-surface="plugins"]')?.getAttribute('data-context-rebuild-status')).toBe('unsupported');
     expect(container.querySelector('[data-context-rebuild-surface="executor_session"]')?.textContent).toContain('codex');
     expect(container.querySelector('[data-prompt-channel="system.shared"]')?.textContent).not.toContain('Last rebuild');
+  });
+
+  it('leaves an uncompared source unlabeled instead of calling it unchanged', async () => {
+    control.mockResolvedValue({
+      enabled: true,
+      outcome: 'partial',
+      trigger: 'manual',
+      at: '2026-10-25T01:02:03.000Z',
+      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins'],
+      unsupported: [],
+    });
+    await renderDiagnostic();
+    await openSystemChannel();
+    const profile = container.querySelector('[data-context-rebuild-surface="profile"]');
+    const mcp = container.querySelector('[data-context-rebuild-surface="mcp"]');
+    expect(profile?.getAttribute('data-context-rebuild-status')).toBe('unknown');
+    expect(profile?.textContent).not.toContain('Unchanged');
+    expect(profile?.textContent).not.toContain('Updated');
+    expect(mcp?.getAttribute('data-context-rebuild-status')).toBe('unfinished');
+    expect(container.textContent).not.toContain('Unchanged');
   });
 });
