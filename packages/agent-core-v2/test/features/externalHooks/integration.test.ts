@@ -1,6 +1,7 @@
 import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PassThrough, Writable } from 'node:stream';
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -43,6 +44,11 @@ import {
   PermissionApprovalResolved,
 } from '#/agent/toolApproval/toolApprovalService';
 import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
+import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
+import { ToolAccesses } from '#/tool/toolContract';
 import { IExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunner';
 import { ExternalHooksRunnerService } from '#/features/externalHooks/app/externalHooksRunnerService';
 import { makeHookRunner } from './runner-stub';
@@ -769,6 +775,112 @@ describe('IExternalHooksRunnerService integration', () => {
 
     expect(results).toHaveLength(1);
     expect(results[0]?.stdout?.trim()).toBe('notified');
+  });
+
+  it.each(['complete', 'cancel'] as const)('R1 keeps a post-tool process on the caller lifecycle after batch done (%s)', async (ending) => {
+    const disposables = new DisposableStore();
+    const spawned = Promise.withResolvers<void>();
+    const exited = Promise.withResolvers<number>();
+    const disposed = Promise.withResolvers<void>();
+    const stdout = new PassThrough();
+    const stderr = new PassThrough();
+    const kills: Array<NodeJS.Signals | undefined> = [];
+    let processDisposed = false;
+    let processCompleted = false;
+    let postHook: ReturnType<IExternalHooksRunnerService['fireAndForgetTrigger']> | undefined;
+    const completeProcess = (): void => {
+      if (processCompleted) return;
+      processCompleted = true;
+      stdout.end('hook completed');
+      stderr.end();
+      exited.resolve(0);
+    };
+    try {
+      const ix = createServices(disposables, {
+        strict: true,
+        additionalServices: (reg) => {
+          registerStateServices(reg);
+          registerTestAgentWireServices(reg, 'wire/post-hook-lifetime');
+          reg.define(IAgentToolExecutorService, AgentToolExecutorService);
+          reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+          reg.definePartialInstance(IAgentToolResultTruncationService, {
+            truncateForModel: async (input) => input.result,
+          });
+          reg.define(IExternalHooksRunnerService, ExternalHooksRunnerService);
+          reg.define(IAgentExternalHooksService, AgentExternalHooksService);
+          reg.definePartialInstance(IConfigService, {
+            ready: Promise.resolve(),
+            get: <T = unknown>(section: string): T => (section === HOOKS_SECTION
+              ? [{ event: 'PostToolUse', command: 'post-hook-fixture', timeout: 5 }] : undefined) as T,
+          });
+          reg.definePartialInstance(IPluginService, { enabledHooks: async () => [], onDidReload: Event.None });
+          reg.definePartialInstance(IPluginUsageService, { enabled: () => false });
+          reg.definePartialInstance(ISessionIndex, {});
+          reg.defineInstance(IBootstrapService, stubBootstrap('/tmp/post-hook-unused-home'));
+          reg.definePartialInstance(IHostProcessService, {
+            spawn: async () => {
+              spawned.resolve();
+              return {
+                _serviceBrand: undefined, pid: 12345, exitCode: null,
+                stdin: new Writable({ write(_chunk, _encoding, done) { done(); } }),
+                stdout, stderr,
+                wait: () => exited.promise,
+                kill: async (signal) => { kills.push(signal); completeProcess(); },
+                dispose: () => { processDisposed = true; disposed.resolve(); },
+              };
+            },
+          });
+          reg.defineInstance(IAgentLoopService, stubLoopWithHooks());
+          reg.definePartialInstance(IAgentPromptService, { hooks: createHooks(['onBeforeSubmitPrompt']) });
+          reg.definePartialInstance(IAgentFullCompactionService, { hooks: createHooks(['onWillCompact']) });
+          reg.definePartialInstance(IAgentTaskService, {});
+          reg.defineInstance(IAgentContextMemoryService, stubContextMemory());
+          reg.definePartialInstance(IAgentProfileService, { getRecipeScriptHooks: async () => [] });
+          reg.defineInstance(ISessionContext, stubSessionContext());
+          reg.defineInstance(ISessionMetadata, stubSessionMetadata());
+        },
+      });
+      const executor = ix.get(IAgentToolExecutorService);
+      const runner = ix.get(IExternalHooksRunnerService);
+      const trigger = vi.spyOn(runner, 'fireAndForgetTrigger');
+      ix.get(IAgentExternalHooksService);
+      ix.get(IAgentToolRegistryService).register({
+        name: 'ReadFixture', description: 'No IO', parameters: { type: 'object' },
+        resolveExecution: () => ({ accesses: ToolAccesses.none(), execute: async () => ({ output: 'read completed' }) }),
+      });
+      const caller = new AbortController();
+      const stream = executor.execute([{ id: 'read-call', name: 'ReadFixture', type: 'function', arguments: '{}' }], {
+        turnId: 0, signal: caller.signal,
+      })[Symbol.asyncIterator]();
+      expect(await stream.next()).toMatchObject({ value: { toolCallId: 'read-call', result: { output: 'read completed' } } });
+      await spawned.promise;
+      const triggered = trigger.mock.results[0]!;
+      expect(triggered.type).toBe('return');
+      postHook = triggered.value;
+      const hookSignal = trigger.mock.calls[0]?.[1]?.signal;
+      expect(hookSignal?.aborted).toBe(false);
+      expect(processDisposed).toBe(false);
+      expect((await stream.next()).done).toBe(true);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(caller.signal.aborted).toBe(false);
+      expect(hookSignal?.aborted).toBe(false);
+      expect(hookSignal).toBe(caller.signal);
+      expect(kills).toEqual([]);
+      expect(processDisposed).toBe(false);
+      if (ending === 'cancel') caller.abort();
+      else completeProcess();
+      await disposed.promise;
+      const results = await postHook;
+      expect(results).toEqual([expect.objectContaining(ending === 'cancel'
+        ? { action: 'block', timedOut: undefined }
+        : { action: 'allow', exitCode: 0, stdout: 'hook completed' })]);
+      expect(hookSignal?.aborted).toBe(ending === 'cancel');
+      expect(kills).toEqual(ending === 'cancel' ? ['SIGTERM', 'SIGKILL'] : []);
+    } finally {
+      completeProcess();
+      await postHook;
+      await disposables.dispose();
+    }
   });
 
   it('runs multiple hooks for the same event in parallel and collects every result', async () => {

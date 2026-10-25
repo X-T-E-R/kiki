@@ -224,7 +224,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     let executionFailure: { reason: unknown } | undefined;
     const finalizations = new Set<ToolExecutionResultPromise>();
     const finalize = (timed: TimedToolResult): void => {
-      finalizations.add(this.finalizeTimedResult(timed.prepared, timed, batchOptions).then(
+      finalizations.add(this.finalizeTimedResult(timed.prepared, timed, options).then(
         (value): SettledToolExecutionResult => ({ status: 'fulfilled', value }),
         (error): SettledToolExecutionResult => ({ status: 'rejected', reason: error }),
       ));
