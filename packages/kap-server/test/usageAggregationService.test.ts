@@ -2185,10 +2185,30 @@ describe('shared agent and history usage projection', () => {
     };
     const generation = vi.spyOn(saved.logs, 'generation');
     const size = vi.spyOn(saved.storage, 'size');
+    const [fingerprint] = await saved.store.listKeys('usage-range-routing-v1');
+    const collection = `usage-range-v1:${fingerprint!}`;
+    const originalHead = await saved.store.get(collection, 'head');
     await removeProjection();
-    const replayed = await new UsageAggregationService(saved.core, () => now).query(input);
-    expect(replayed.summary).toEqual(built.summary);
-    expect(replayed.reliability.complete).toBe(true);
+    const put = vi.spyOn(saved.store, 'put');
+    const stringify = vi.spyOn(JSON, 'stringify');
+    const pages = vi.spyOn(UsageRangeFold.prototype, 'recordPage');
+    const buckets = vi.spyOn(UsageRangeFold.prototype, 'buckets');
+    let replayed: UsageResponse;
+    try {
+      replayed = await new UsageAggregationService(saved.core, () => now).query(input);
+      const writes = put.mock.calls.filter(([target, key]) => target === collection && key === 'head').length;
+      const encodes = stringify.mock.calls.filter(([value]) => value !== null && typeof value === 'object' && 'inventoryComplete' in value && 'invalidated' in value && 'sessions' in value).length;
+      expect({ writes, encodes }).toEqual({ writes: 0, encodes: 0 });
+      expect({ pages: pages.mock.calls.length, buckets: buckets.mock.calls.length }).toEqual({ pages: 1, buckets: 1 });
+    } finally { put.mockRestore(); stringify.mockRestore(); pages.mockRestore(); buckets.mockRestore(); }
+    expect(replayed!.summary).toEqual(built.summary);
+    expect(replayed!.reliability.complete).toBe(true);
+    expect(await saved.store.get(collection, 'head')).toEqual(originalHead);
+    await removeProjection();
+    await saved.store.recover?.();
+    const restarted = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(restarted.summary).toEqual(built.summary);
+    expect(restarted.reliability.complete).toBe(true);
     expect(generation.mock.calls.some(([source]) => source === old)).toBe(false);
     expect(size.mock.calls.some(([source]) => source === old)).toBe(false);
     expect(generation.mock.calls.some(([source]) => source === current)).toBe(true);
@@ -2198,6 +2218,7 @@ describe('shared agent and history usage projection', () => {
     const boundary = await new UsageAggregationService(saved.core, () => now).query(input);
     expect(boundary.reliability.complete).toBe(true);
     expect(boundary.summary).toEqual(built.summary);
+    expect(await saved.store.get(collection, 'head')).not.toEqual(originalHead);
     expect(generation.mock.calls.some(([source]) => source === old)).toBe(true);
     oldMtime = start + 1;
     await saved.logs.rewrite(old, 'wire.jsonl', [usageRecord(start, 3)]);
@@ -2206,6 +2227,11 @@ describe('shared agent and history usage projection', () => {
     expect(rewritten.reliability.complete).toBe(true);
     expect(rewritten.summary.tokens.output).toBe(3);
     expect(rewritten.reliability.usage_coverage?.known_records).toBe(3);
+    await removeProjection();
+    await saved.store.recover?.();
+    const rewrittenRestart = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(rewrittenRestart.summary).toEqual(rewritten.summary);
+    expect(rewrittenRestart.reliability.complete).toBe(true);
   });
 
   it('keeps every bucket and drilldown when a stored projection appends across sessions, agents and turns', async () => {

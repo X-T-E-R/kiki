@@ -196,6 +196,11 @@ interface UsageFoldView {
   buckets(keys: readonly string[]): Promise<{ values(): Iterable<FoldBucketView> }>;
 }
 
+interface FoldProjectionData {
+  readonly rows: { readonly sessionId: string; readonly record: FoldedUsageRecord }[];
+  readonly buckets: Map<string, FoldBucketView>;
+}
+
 interface RangeFoldSource {
   readonly agentId: string;
   readonly scope: string;
@@ -265,7 +270,7 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
-/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. A bounded range does not read a source whose filesystem mtime is an epoch millisecond older than the range start: usage record time is assigned before that write, and a later append moves mtime. A complete bounded query stores an unpriced folded projection; the next process reads it back when every in-range watermark still matches, and a pure append folds only its tail. A default-budget fold replays fact journals from a byte cursor and pages those facts before opening further sources. Export replays whole-source fact journals without materializing range indexes, while retaining source verification and canonical recovery. A bounded source-local value pool shares equal journal facts without collapsing their ordinals. */
+/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. A bounded range does not read a source whose filesystem mtime is an epoch millisecond older than the range start: usage record time is assigned before that write, and a later append moves mtime. A complete bounded query stores an unpriced folded projection; the next process reads it back when every in-range watermark still matches, and a pure append folds only its tail. A default-budget fold replays fact journals from a byte cursor and pages those facts before opening further sources. A verified, unchanged complete fold reuses its durable head. Export replays whole-source fact journals without materializing range indexes, while retaining source verification and canonical recovery. A bounded source-local value pool shares equal journal facts without collapsing their ordinals. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly pendingWireLines = new Map<string, WireLineContinuation>();
@@ -659,6 +664,7 @@ export class UsageAggregationService {
       const sameInventory = budget.incompleteReason === null && head !== undefined && (!head.complete || head.sessions.length === listed.items.length) && head.sessions.every((session) => inventory.has(sessionKey(session.summary)));
       const current = head !== undefined && sameInventory ? await waitForSource(this.rangeSourcesCurrent(head, query.range, budget.factSignal), budget.factSignal) : false;
       const aligned = head !== undefined && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory && current;
+      const reuseCompleteHead = aligned && head?.complete === true;
       if (!aligned) {
         const advanced = head !== undefined && head.complete && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory
           ? await this.advanceCompleteFold(head, fold, query, budget)
@@ -770,7 +776,7 @@ export class UsageAggregationService {
       }
       await pageOpened();
       head.complete = head.sessions.every((session) => session.prepared && session.sources?.every((source) => source.done));
-      await fold.saveHead(head);
+      if (!reuseCompleteHead) await fold.saveHead(head);
       budget.sourcesComplete = head.complete && head.inventoryComplete && !head.invalidated;
       if (head.complete && budget.incompleteReason === null) {
         retained.push(...await this.readRetainedSessions(query, budget, listed.activeKeys, head.sessions.filter((session) => !this.fullScanKeys?.has(sessionKey(session.summary))).length));
@@ -799,9 +805,22 @@ export class UsageAggregationService {
     try {
       const summaries = new Map(listed?.items.map((summary) => [sessionKey(summary), summary]));
       const sessions: SessionRecords[] = (head?.sessions ?? []).map((session) => ({ summary: summaries.get(sessionKey(session.summary)) ?? session.summary, records: [], complete: session.prepared && session.sources?.every((source) => source.done) === true && !session.invalid, deleted: false }));
-      const response = await this.aggregate(query, [...sessions, ...retained], fingerprint, cursor, budget, ephemeral, fold);
-      if (persistProjection && response.reliability.complete && head?.complete === true && listed !== undefined) {
-        const corrections = await this.saveFoldProjection(query, fingerprint, listed.items, head, fold);
+      const projectionData: FoldProjectionData | undefined = persistProjection && head?.complete === true && listed !== undefined ? { rows: [], buckets: new Map() } : undefined;
+      const view: UsageFoldView = projectionData === undefined ? fold : {
+        recordPage: async (pageCursor) => {
+          const page = await fold.recordPage(pageCursor);
+          for (const row of page.items) projectionData.rows.push(row);
+          return page;
+        },
+        buckets: async (keys) => {
+          const values = await fold.buckets(keys);
+          for (const value of values.values()) projectionData.buckets.set(value.key, value);
+          return values;
+        },
+      };
+      const response = await this.aggregate(query, [...sessions, ...retained], fingerprint, cursor, budget, ephemeral, view);
+      if (projectionData !== undefined && response.reliability.complete && head?.complete === true && listed !== undefined) {
+        const corrections = await this.saveFoldProjection(query, fingerprint, listed.items, head, fold, projectionData);
         if (corrections !== undefined) {
           for (const bucket of response.trend) {
             const delta = corrections.get(bucket.key);
@@ -1882,7 +1901,7 @@ export class UsageAggregationService {
     return sources;
   }
 
-  private async saveFoldProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], head: RangeFoldHead, fold: UsageRangeFold): Promise<ReadonlyMap<string, number> | undefined> {
+  private async saveFoldProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], head: RangeFoldHead, fold: UsageRangeFold, data: FoldProjectionData): Promise<ReadonlyMap<string, number> | undefined> {
     try {
       const storage = this.core.accessor.get(IFileSystemStorageService);
       const logs = this.core.accessor.get(IAppendLogStore);
@@ -1906,22 +1925,19 @@ export class UsageAggregationService {
           agents.push({ scope: source.scope, sessionId: session.summary.id, watermark: { size: source.checkpoint.size, mtimeMs: source.checkpoint.mtimeMs, generation: source.checkpoint.generation ?? 'legacy', boundaryHash: source.checkpoint.boundaryHash }, rows: [], turns: [] });
         }
       }
-      const rows: { sessionId: string; record: FoldedUsageRecord }[] = [];
+      const rows = data.rows;
       const keys = new Set<string>();
       const listedById = new Map(listed.map((summary) => [summary.id, summary]));
-      let cursor: string | undefined;
-      do {
-        const page = await fold.recordPage(cursor);
-        for (const row of page.items) {
-          rows.push(row);
-          const summary = listedById.get(row.sessionId) ?? { id: row.sessionId, workspaceId: '', createdAt: row.record.time, updatedAt: row.record.time, archived: false };
-          keys.add(resolveBucket(row.record.time, summary, query).key);
-        }
-        cursor = page.nextCursor;
-      } while (cursor !== undefined);
-      const stored = keys.size === 0 ? new Map<string, FoldBucketView>() : await fold.buckets([...keys]);
-      const proved = [...stored.values()].filter((bucket): bucket is FoldBucketView => bucket !== undefined && typeof bucket.key === 'string');
-      if (proved.length !== keys.size || proved.some((bucket) => bucket.turnAgents !== true || bucket.sessions.some((session) => !Array.isArray(session.agents)))) return;
+      for (const row of rows) {
+        const summary = listedById.get(row.sessionId) ?? { id: row.sessionId, workspaceId: '', createdAt: row.record.time, updatedAt: row.record.time, archived: false };
+        keys.add(resolveBucket(row.record.time, summary, query).key);
+      }
+      const proved: FoldBucketView[] = [];
+      for (const key of keys) {
+        const bucket = data.buckets.get(key);
+        if (bucket === undefined || bucket.turnAgents !== true || bucket.sessions.some((session) => !Array.isArray(session.agents))) return;
+        proved.push(bucket);
+      }
       const corrections = new Map<string, number>();
       for (const bucket of proved) {
         const previous = bucket.turnCount;
