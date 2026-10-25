@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextRebuildService } from '#/agent/contextRebuild/contextRebuild';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
@@ -162,6 +163,48 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(ctx.get(IAgentContextRebuildService).control()).toMatchObject({ trigger: 'context_clear', outcome: 'applied' });
     expect(profile.getModel()).toBe(model);
     expect(profile.data().thinkingLevel).toBe(thinking);
+  }, 30_000);
+
+  it('matches the next request to a partial report after the profile commits and MCP refresh fails', async () => {
+    const reload = vi.fn(async () => ({ instructionsChanged: false, pluginsChanged: false }));
+    const ctx = openAgent(reload);
+    const profile = ctx.get(IAgentProfileService);
+    profile.update({ thinkingLevel: 'low', disallowedTools: ['shell'], systemPrompt: 'before rebuild' });
+    const mode = ctx.get(IAgentPermissionModeService).mode;
+    const model = profile.getModel();
+    const service = ctx.get(IAgentFullCompactionService);
+    expect(service.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    await expect(service.compacting!.promise).resolves.toMatchObject({ strategy: 'relay' });
+    const compacted = ctx.compactHistory();
+    const rebuildPrompt = profile.rebuildPromptContext.bind(profile);
+    vi.spyOn(profile, 'rebuildPromptContext').mockImplementation(async () => {
+      await rebuildPrompt();
+      profile.update({ systemPrompt: `${profile.data().systemPrompt}\nREBUILT_MARKER` });
+    });
+    vi.spyOn(ctx.get(IAgentMcpService), 'refreshCapabilities').mockRejectedValue(new Error('mcp catalog failed'));
+    await expect(ctx.get(IAgentContextRebuildService).rebuild()).rejects.toThrow('mcp catalog failed');
+    const report = ctx.get(IAgentContextRebuildService).control();
+    expect(report.outcome).toBe('partial');
+    expect(report.rebuilt).toContain('profile');
+    expect(report.rebuilt).not.toContain('mcp');
+    expect(report.rebuilt).not.toContain('injections');
+    expect(report.changes?.profile).toBe(true);
+    expect(report.error).toBe('mcp catalog failed');
+    expect(profile.data().systemPrompt).toContain('REBUILT_MARKER');
+    expect(profile.getModel()).toBe(model);
+    expect(profile.data().thinkingLevel).toBe('low');
+    expect(profile.data().disallowedTools).toEqual(['shell']);
+    expect(ctx.get(IAgentPermissionModeService).mode).toBe(mode);
+    const afterCompaction = ctx.compactHistory();
+    expect(afterCompaction.slice(0, compacted.length)).toEqual(compacted);
+    expect(afterCompaction.length).toBe(compacted.length + 1);
+    const callsBefore = ctx.llmCalls.length;
+    ctx.mockNextResponse({ type: 'text', text: 'next binding' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Use the current binding.' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls.length).toBe(callsBefore + 1);
+    expect(ctx.llmCalls.at(-1)?.systemPrompt).toBe(profile.data().systemPrompt);
+    expect(ctx.llmCalls.at(-1)?.systemPrompt).toContain('REBUILT_MARKER');
   }, 30_000);
 
   it('does not re-read sources when the switch stays off', async () => {

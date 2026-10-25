@@ -75,7 +75,7 @@ describe('AgentContextRebuildService', () => {
     expect(result.appliesOn).toBe('next_request');
     expect(result.unsupported).toEqual([]);
     expect(result.changed).toBe(true);
-    expect(result.changes.mcp).toBe(true);
+    expect(result.changes?.mcp).toBe(true);
     expect(current[0]?.override).toBe('off');
     expect(host.service.control()).toMatchObject({ trigger: 'manual', outcome: 'applied', enabled: false });
   });
@@ -164,6 +164,52 @@ describe('AgentContextRebuildService', () => {
     expect(host.plugins).not.toHaveBeenCalled();
   });
 
+  it('keeps a committed profile in the report when MCP refresh fails afterwards', async () => {
+    const host = createHost(disposables, {
+      rebuildPromptContext: async () => {
+        host.prompt.systemPrompt = 'rebuilt';
+      },
+      mcp: { refreshCapabilities: async () => { throw new Error('mcp down'); } },
+    });
+    await expect(host.service.rebuild()).rejects.toThrow('mcp down');
+    expect(host.service.control()).toMatchObject({
+      outcome: 'partial',
+      error: 'mcp down',
+      rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins'],
+      changes: { profile: true, mcp: false, injections: false },
+    });
+    expect(host.service.control().rebuilt).not.toContain('mcp');
+    expect(host.service.control().rebuilt).not.toContain('injections');
+    expect(host.prompt.systemPrompt).toBe('rebuilt');
+    expect(host.prompt.modelAlias).toBe('kept-model');
+    expect(host.prompt.thinkingLevel).toBe('low');
+    expect(host.setModel).not.toHaveBeenCalled();
+  });
+
+  it('does not record an unreadable diff as no change after the profile commits', async () => {
+    let skillReads = 0;
+    const host = createHost(disposables, {
+      rebuildPromptContext: async () => {
+        host.prompt.systemPrompt = 'rebuilt';
+      },
+      mcp: { refreshCapabilities: async () => { throw new Error('mcp down'); } },
+      listSkills: () => {
+        skillReads += 1;
+        if (skillReads > 1) throw new Error('skills unreadable');
+        return [];
+      },
+    });
+    await expect(host.service.rebuild()).rejects.toThrow('mcp down');
+    const control = host.service.control();
+    expect(control.outcome).toBe('partial');
+    expect(control.changes).toBeUndefined();
+    expect(control.rebuilt).toContain('profile');
+    expect(control.error).toBe('mcp down');
+    expect(host.prompt.systemPrompt).toBe('rebuilt');
+    expect(host.prompt.modelAlias).toBe('kept-model');
+    expect(host.prompt.thinkingLevel).toBe('low');
+  });
+
   it('records cancellation without applying a rebuild', async () => {
     const host = createHost(disposables);
     await host.service.setEnabled(true);
@@ -220,8 +266,8 @@ describe('AgentContextRebuildService', () => {
     expect(result.rebuilt).not.toContain('injections');
     expect(result.unsupported.map((item) => item.surface)).toEqual(['executor_session', 'plugins', 'injections']);
     expect(result.unsupported[0]?.reason).toContain('codex');
-    expect(result.changes.plugins).toBe(false);
-    expect(result.changes.injections).toBe(false);
+    expect(result.changes?.plugins).toBe(false);
+    expect(result.changes?.injections).toBe(false);
     expect(host.plugins).not.toHaveBeenCalled();
     expect(host.injector).not.toHaveBeenCalled();
   });
@@ -317,6 +363,7 @@ interface HostOptions {
     listMcpSessionCapabilities?: () => Promise<readonly McpSessionCapability[]>;
     refreshCapabilities?: () => Promise<void>;
   };
+  readonly listSkills?: () => readonly unknown[];
 }
 
 function createHost(disposables: DisposableStore, options: HostOptions = {}) {
@@ -385,7 +432,7 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
       reg.definePartialInstance(ISessionAgentProfileCatalog, { reload: profilesReload });
       reg.definePartialInstance(ISessionSkillCatalog, {
         ready: Promise.resolve(),
-        catalog: { listSkills: () => [] } as unknown as ISessionSkillCatalog['catalog'],
+        catalog: { listSkills: options.listSkills ?? (() => []) } as unknown as ISessionSkillCatalog['catalog'],
         reload: async () => undefined,
       });
       reg.definePartialInstance(ISessionContextSourceReloader, { reload });

@@ -44,7 +44,8 @@ export interface ContextRebuildUnsupported {
 export interface ContextRebuildResult {
   readonly rebuilt: readonly ContextRebuildSurface[];
   readonly changed: boolean;
-  readonly changes: ContextRebuildChanges;
+  /** Absent when a finished stage could not be compared. That is not a report of no change. */
+  readonly changes?: ContextRebuildChanges;
   readonly outcome: ContextRebuildOutcome;
   readonly unsupported: readonly ContextRebuildUnsupported[];
   /** The reported binding is what the next model request reads. A failed refresh does not replace it. */

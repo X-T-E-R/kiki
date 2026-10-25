@@ -182,7 +182,7 @@ const contextRebuildUnsupportedSchema = z.object({
 export const contextRebuildResultSchema = z.object({
   rebuilt: z.array(contextRebuildSurfaceSchema),
   changed: z.boolean(),
-  changes: contextRebuildChangesSchema,
+  changes: contextRebuildChangesSchema.optional(),
   outcome: z.enum(['applied', 'partial', 'failed']),
   unsupported: z.array(contextRebuildUnsupportedSchema),
   appliesOn: z.literal('next_request'),

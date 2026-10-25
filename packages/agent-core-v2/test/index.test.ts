@@ -121,6 +121,7 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'executor.session.updated',
   'executor.prompt.delivery',
   'executor.plan.update',
+  'executor.auth.observed',
   'executor.plan.remove',
   'executor.runtime.update',
   'context_strategy.override_changed',

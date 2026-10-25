@@ -37,16 +37,6 @@ import {
   contextRebuildControlKey,
 } from './contextRebuildOps';
 
-const EMPTY_CHANGES: ContextRebuildChanges = {
-  profile: false,
-  promptFields: false,
-  skills: false,
-  instructions: false,
-  plugins: false,
-  mcp: false,
-  injections: false,
-};
-
 export class AgentContextRebuildService extends Disposable implements IAgentContextRebuildService {
   declare readonly _serviceBrand: undefined;
   private pending: Promise<unknown> = Promise.resolve();
@@ -270,8 +260,8 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
             completed, skipped, sourceChanges, beforeProfile, beforeContext, beforeFields, beforeSkills, beforeMcp, afterMcp,
           });
         } catch (diffError) {
-          void diffError;
-          observed = EMPTY_CHANGES;
+          this.log.error('failed to read context rebuild changes', { error: diffError, committed: true });
+          observed = undefined;
         }
       }
       const result = this.result(outcome, completed, unsupported, observed, readiness);
@@ -345,11 +335,10 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     changes: ContextRebuildChanges | undefined,
     readiness: ContextRebuildResult['readiness'] | undefined,
   ): ContextRebuildResult {
-    const reportedChanges = changes ?? EMPTY_CHANGES;
     return {
       rebuilt: CONTEXT_REBUILD_SURFACES.filter((surface) => completed.includes(surface)),
-      changed: Object.values(reportedChanges).some(Boolean),
-      changes: reportedChanges,
+      changed: changes === undefined ? completed.length > 0 : Object.values(changes).some(Boolean),
+      ...(changes === undefined ? {} : { changes }),
       outcome,
       unsupported: unsupported.map((item) => ({ ...item })),
       appliesOn: 'next_request',
@@ -370,7 +359,7 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       trigger,
       at: new Date().toISOString(),
       ...(error === undefined ? {} : { error: error.slice(0, 500) }),
-      ...(result.outcome === 'failed' && result.rebuilt.length === 0 ? {} : { changes: result.changes }),
+      ...(result.changes === undefined ? {} : { changes: result.changes }),
       rebuilt: [...result.rebuilt],
       unsupported: result.unsupported.map((item) => ({ surface: item.surface, reason: item.reason.slice(0, 300) })),
     }));
