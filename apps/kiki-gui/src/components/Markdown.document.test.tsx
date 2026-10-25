@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, expect, it, vi } from 'vitest';
 import { I18nProvider } from '../i18n';
 import { Markdown } from './Markdown';
 import { MarkdownFileImage } from './markdown/MarkdownFileImage';
+import { splitStaticDocument } from './markdown/staticDocument';
 import { MediaPreviewContext, type MediaPreviewApi } from './mediaPreviewContext';
 
 const readHostMediaPreviewBytes = vi.fn(async (_path: string, _options?: unknown) => ({
@@ -361,4 +362,166 @@ it('parses static documents once without unused streaming lexing or navigation r
   expect(parseCounts.documents).toBe(3);
   expect(container.querySelector('h2')).not.toBe(originalHeading);
   expect(container.textContent).toContain('Changed final content.');
+});
+
+
+function longDocument(): string {
+  return Array.from({ length: 700 }, (_, index) => {
+    const n = index + 1;
+    return `${index === 0 ? '# Beginning of complete document' : `## Section ${n}`}\n\n` +
+      `Paragraph ${n}: read the complete document.${'x'.repeat(112)}\n\n` +
+      `\`\`\`ts\nconst value${n} = ${n};\n\`\`\`\n\n` +
+      `| Key | Value |\n| --- | --- |\n| ${n} | complete |\n\n` +
+      `- [x] Complete item\n- [ ] Next item\n\n` +
+      (n === 700 ? 'Final paragraph: all 11200 lines remain readable.' : `Section ${n} ends here.`);
+  }).join('\n');
+}
+
+function controlledTasks() {
+  let next = 0;
+  const pending = new Map<unknown, () => void>();
+  const request = vi.spyOn(globalThis, 'requestAnimationFrame').mockImplementation((callback) => {
+    pending.set(++next, () => { callback(performance.now()); });
+    return next;
+  });
+  const cancel = vi.spyOn(globalThis, 'cancelAnimationFrame').mockImplementation((id) => { pending.delete(id); });
+  const schedule = vi.spyOn(window, 'setTimeout').mockImplementation((callback) => {
+    pending.set(++next, () => { if (typeof callback === 'function') callback(); });
+    return next as unknown as ReturnType<typeof window.setTimeout>;
+  });
+  const clear = vi.spyOn(window, 'clearTimeout').mockImplementation((id) => { if (id !== undefined) pending.delete(id); });
+  return {
+    pending,
+    async step() {
+      const callbacks = [...pending.values()];
+      pending.clear();
+      await act(async () => { for (const callback of callbacks) callback(); });
+    },
+    restore() { request.mockRestore(); cancel.mockRestore(); schedule.mockRestore(); clear.mockRestore(); },
+  };
+}
+
+it('renders all 700 sections across separate commits without reparsing the resident prefix', async () => {
+  const tasks = controlledTasks();
+  try {
+    const text = longDocument();
+    const segments = splitStaticDocument(text);
+    expect(segments.length).toBeGreaterThan(100);
+    expect(segments.join('')).toBe(text);
+    parseCounts.documents = 0;
+    parseCounts.blockLexes = 0;
+    const container = await render(text, '/work/docs');
+    expect(parseCounts.documents).toBe(1);
+    expect(tasks.pending.size).toBe(1);
+    const first = container.querySelector('h1');
+    expect(first?.textContent).toBe('Beginning of complete document');
+    expect(container.textContent).not.toContain('Final paragraph:');
+    for (let index = 1; index < segments.length; index += 1) {
+      const before = parseCounts.documents;
+      await tasks.step();
+      expect(parseCounts.documents - before).toBe(1);
+      expect(container.querySelector('h1')).toBe(first);
+    }
+    expect(tasks.pending.size).toBe(0);
+    expect(parseCounts.documents).toBe(segments.length);
+    expect(parseCounts.blockLexes).toBe(0);
+    expect(container.querySelectorAll('h1,h2')).toHaveLength(700);
+    expect(container.querySelectorAll('table')).toHaveLength(700);
+    expect(container.querySelectorAll('pre')).toHaveLength(700);
+    expect(container.querySelectorAll('[data-streamdown="code-block-body"] span[style]')).toHaveLength(5600);
+    expect(container.querySelector('[aria-busy="true"]')).toBeNull();
+    expect(container.querySelectorAll('input[type="checkbox"]')).toHaveLength(1400);
+    expect(container.textContent).toContain('Final paragraph: all 11200 lines remain readable.');
+  } finally {
+    tasks.restore();
+  }
+}, 30_000);
+
+it('cancels a pending segment when closed and restarts from the current text after replacement', async () => {
+  const tasks = controlledTasks();
+  try {
+    const text = longDocument();
+    const container = await render(text);
+    const root = roots.at(-1)!;
+    await tasks.step();
+    const before = parseCounts.documents;
+    await act(async () => {
+      root.render(<MemoryRouter><I18nProvider><Markdown mode="static" text={text.replace('Beginning of complete document', 'Edited beginning')} /></I18nProvider></MemoryRouter>);
+    });
+    expect(container.querySelector('h1')?.textContent).toBe('Edited beginning');
+    expect(container.textContent).not.toContain('Final paragraph:');
+    expect(parseCounts.documents - before).toBe(1);
+    expect(tasks.pending.size).toBe(1);
+    parseCounts.documents = 0;
+    await act(async () => { root.render(null); });
+    expect(tasks.pending.size).toBe(0);
+    await tasks.step();
+    expect(parseCounts.documents).toBe(0);
+    expect(container.textContent).toBe('');
+  } finally {
+    tasks.restore();
+  }
+});
+
+it('preserves cross-block definitions and multiline math on the document-scoped parser', () => {
+  const padding = '# Padding\n\nParagraph.\n\n'.repeat(800);
+  for (const suffix of [
+    '[reference][target]\n\n[target]: ./other.md',
+    '[^note]\n\n[^note]: A footnote',
+    '> [target]: ./other.md',
+    '$$\nx + y\n\n= z\n$$',
+    '\\[x + y\n\n= z\\]',
+  ]) {
+    const text = padding + suffix;
+    expect(splitStaticDocument(text)).toEqual([text]);
+  }
+});
+
+it('never cuts a fenced block, loose list, blockquote or table at the segment target', () => {
+  const padding = '# Padding\n\nParagraph.\n\n'.repeat(800);
+  for (const block of [
+    `\`\`\`ts\n${'const x = 1;\n\n'.repeat(300)}\`\`\`\n\n`,
+    `- first\n\n${'  continued paragraph.\n\n'.repeat(300)}- second\n\n`,
+    `> first\n>\n${'> next\n>\n'.repeat(300)}\n`,
+    `| A | B |\n| - | - |\n${'| one | two |\n'.repeat(300)}\n`,
+  ]) {
+    const text = padding + block + '# Tail\n';
+    const segments = splitStaticDocument(text);
+    expect(segments.join('')).toBe(text);
+    expect(segments.some((segment) => segment.includes(block.trim()))).toBe(true);
+  }
+});
+
+
+it('waits for pending sections before reporting a missing heading and navigates to a late heading', async () => {
+  const tasks = controlledTasks();
+  const scrollIntoView = vi.fn();
+  const original = HTMLElement.prototype.scrollIntoView;
+  HTMLElement.prototype.scrollIntoView = scrollIntoView;
+  try {
+    const text = '# Beginning\n\n' + 'Paragraph.\n\n'.repeat(1600) + '## Tail\n';
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const onHeadingResult = vi.fn();
+    const draw = (heading: string) => <MemoryRouter><I18nProvider>
+      <Markdown mode="static" text={text} documentPath="/work/readme.md" headingNavigation={{ path: '/work/readme.md', heading }} onHeadingResult={onHeadingResult} />
+    </I18nProvider></MemoryRouter>;
+    await act(async () => { root.render(draw('tail')); });
+    expect(onHeadingResult).not.toHaveBeenCalled();
+    expect(container.querySelector('[aria-busy="true"]')).not.toBeNull();
+    for (let index = 1; index < splitStaticDocument(text).length; index += 1) await tasks.step();
+    expect(onHeadingResult).toHaveBeenLastCalledWith(true);
+    expect(onHeadingResult).not.toHaveBeenCalledWith(false);
+    await tasks.step();
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'start' });
+    expect(container.querySelector('[data-markdown-heading="tail"]')?.textContent).toBe('Tail');
+    await act(async () => { root.render(draw('absent')); });
+    expect(onHeadingResult).toHaveBeenLastCalledWith(false);
+  } finally {
+    HTMLElement.prototype.scrollIntoView = original;
+    tasks.restore();
+  }
 });

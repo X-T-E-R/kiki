@@ -29,6 +29,7 @@ import { MarkdownFileImage } from './markdown/MarkdownFileImage';
 import { indexMarkdownHeadings } from './markdown/headingNavigation';
 import { projectTextWithAnnotationMarks, rehypeAnnotationMarks } from './markdown/annotationMarks';
 import { useStreamdownPlugins } from './markdown/streamdown-plugins';
+import { StaticDocument } from './markdown/staticDocument';
 import { useMediaPreview } from './mediaPreviewContext';
 import { Icon, type IconName } from './icons';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
@@ -498,6 +499,7 @@ export const Markdown = memo(function Markdown({
       const headings = indexMarkdownHeadings(root);
       if (headingNavigation?.heading === undefined || applied) return;
       const target = headings.get(headingNavigation.heading);
+      if (target === undefined && root.querySelector('[aria-busy="true"]') !== null) return;
       headingResultRef.current?.(target !== undefined);
       if (target !== undefined) {
         applied = true;
@@ -545,9 +547,12 @@ export const Markdown = memo(function Markdown({
       </div>
     );
   }
+  // Annotation offsets and ambiguity checks are document-wide; keep that
+  // path intact rather than matching a quote independently in each segment.
+  const Renderer = mode === 'static' && !annotationTargets?.length ? StaticDocument : Streamdown;
   return (
     <div ref={rootRef} className={className} data-source-block-id={sourceBlockId} data-source-version={sourceBlockId === undefined ? undefined : sourceTextVersion(text)}>
-      <Streamdown
+      <Renderer
         key={renderKey}
         mode={annotationTargets?.length ? 'static' : mode}
         parseIncompleteMarkdown={mode === 'streaming' && !annotationTargets?.length}
@@ -574,7 +579,7 @@ export const Markdown = memo(function Markdown({
         controls={CONTROLS}
       >
         {text}
-      </Streamdown>
+      </Renderer>
     </div>
   );
 });
