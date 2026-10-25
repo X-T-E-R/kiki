@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
+  builtinImProviderKindSchema,
   imSessionAdmitted,
   type ImBinding,
   type ImBindingPatch,
@@ -1619,12 +1620,14 @@ function bindingTargetChoices(catalog: ImCatalog | undefined, binding: ImBinding
 }
 
 function providerDisplayName(kind: ImProviderKind, t: Translator): string {
-  return t(`st.im.provider.${kind}`);
+  const builtin = builtinImProviderKindSchema.safeParse(kind);
+  return builtin.success ? t(`st.im.provider.${builtin.data}`) : kind;
 }
 
 function instanceDisplayName(item: ImInstanceStatus, t: Translator): string {
   const platform = providerDisplayName(item.provider_kind, t);
-  return item.label !== undefined && item.label.trim() !== '' && item.label !== item.provider_kind ? `${item.label} (${platform})` : platform;
+  if (item.label === undefined || item.label.trim() === '' || item.label === item.provider_kind) return platform;
+  return item.provider_kind.startsWith('plugin:') ? item.label : `${item.label} (${platform})`;
 }
 
 function instanceStateInfo(item: ImInstanceStatus, t: Translator): { state: 'listening' | 'starting' | 'reconnecting' | 'auth_expired' | 'stopped'; label: string; dotClass: string } {

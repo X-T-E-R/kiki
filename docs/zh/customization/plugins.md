@@ -456,7 +456,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 `start({ signal, settings, instanceId, offset, emit })` 返回 `{ accountId, listenerAccountId?, targets? }`，启动完成后才能调用 `emit`。仅出站 adapter 可以返回 `targets` 供用户确认目标，不需要伪造入站事件。关闭、重载或删除插件只关闭它自己的连接，并保留用户的监听偏好和绑定，供重新启用时恢复。用户逐个确认目标；群绑定默认限于原发送人，也可显式设置 `binding_scope: "topic"` 或 `"chat"`。共享群会话保留每条消息的真实发送人，其他成员不能因此处理原发送人的待审批或待回答交互。
 
-`eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds` 和 `replyToMessageId` 会进入会话消息元数据。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
+`eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds` 和 `replyToMessageId` 会进入会话消息元数据。模型会在对应正文旁看到真实聊天、话题、发送人、消息 ID、提及和引用 ID；这些信息标记为不可信外部来源数据，不作为指令或授权。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
 
 插件工具中的 `context.messages.send()` 与 `SendMessage` 共用 main agent、能力、工具禁用和审批检查，再通过当前线程已启用的绑定信道发送。例如：
 

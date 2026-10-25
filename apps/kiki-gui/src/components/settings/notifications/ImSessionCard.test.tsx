@@ -71,6 +71,17 @@ function binding(container: ParentNode, id: string) { return container.querySele
 const platforms: ImProviderKind[] = ['wechat_bridge', 'feishu_app', 'onebot_v11', 'telegram'];
 
 describe('ImSessionCard channel management', () => {
+  it('shows plugin labels and uses the namespaced kind when a label is unavailable', async () => {
+    const state = imChannelSnapshot('plugin:fixture-qq/account');
+    state.instances[0] = { ...state.instances[0]!, label: 'Study QQ' };
+    state.instances.push({ ...state.instances[0]!, id: 'unnamed-account', provider_kind: 'plugin:fixture-qq/other', label: undefined });
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    expect(container.querySelector('[data-im-account="account-a"] h3')?.textContent).toBe('Study QQ');
+    expect(container.querySelector('[data-im-account="unnamed-account"] h3')?.textContent).toBe('plugin:fixture-qq/other');
+    expect(container.textContent).not.toContain('st.im.provider.plugin:');
+  });
+
   it.each(platforms)('groups two %s channels under one account and edits only the chosen target, options and off override', async (kind) => {
     fixture = createImSettingsFixture(imChannelSnapshot(kind));
     const container = await render();
