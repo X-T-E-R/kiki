@@ -61,6 +61,46 @@ describe('persistent IM history journal', () => {
     expect(await journal.find(room, 'source-1')).toMatchObject({ text: '', operation: 'retract', isSelf: true });
   });
 
+  it('delivers archived edits and retractions after consumption using a separate change watermark', async () => {
+    const memory = documents();
+    const journal = new ImHistoryJournal(memory.store);
+    const original = await journal.record(room, entry('consumed-message'));
+    const firstTrigger = await journal.record(room, entry('first-trigger'));
+    const first = await journal.background(room, 'binding-1', firstTrigger);
+    expect(first.entries.map((row) => row.metadata.source_message_id)).toEqual(['consumed-message']);
+    await journal.consume(room, 'binding-1', first.snapshot);
+    for (let index = 0; index < 70; index++) await journal.record(room, entry(`later-${index}`));
+    const catchUp = await journal.record(room, entry('catch-up-trigger'));
+    await journal.consume(room, 'binding-1', (await journal.background(room, 'binding-1', catchUp)).snapshot);
+    const page = await journal.read(room, { limit: 20 });
+    const edit = { ...entry('consumed-message'), eventId: 'edit-consumed', operation: 'edit' as const, text: 'corrected after consumption' };
+    await journal.record(room, edit);
+    await expect(journal.read(room, { limit: 20, cursor: page.nextCursor })).rejects.toThrow('history_changed');
+    const editedTrigger = await journal.record(room, entry('edited-trigger'));
+    const edited = await journal.background(room, 'binding-1', editedTrigger);
+    expect(edited.entries).toMatchObject([{ sequence: original.sequence, metadata: { source_message_id: 'consumed-message' }, operation: 'edit', text: 'corrected after consumption' }]);
+    const retract = { ...entry('consumed-message'), eventId: 'retract-consumed', operation: 'retract' as const, text: 'remove this' };
+    await journal.record(room, retract);
+    await journal.consume(room, 'binding-1', edited.snapshot);
+    const restarted = new ImHistoryJournal(memory.store);
+    const retractTrigger = await restarted.record(room, entry('retract-trigger'));
+    const retracted = await restarted.background(room, 'binding-1', retractTrigger);
+    expect(retracted.entries).toMatchObject([{ sequence: original.sequence, metadata: { source_message_id: 'consumed-message' }, operation: 'retract', text: '' }]);
+    await restarted.consume(room, 'binding-1', retracted.snapshot);
+    await restarted.record(room, retract);
+    const next = await restarted.record(room, entry('after-consumed-retraction'));
+    expect((await restarted.background(room, 'binding-1', next)).entries).toEqual([]);
+    expect((await restarted.read(room, { keyword: 'corrected after consumption' })).messages).toEqual([]);
+    expect(await restarted.find(room, 'edit-consumed')).toBeUndefined();
+    expect(await restarted.find(room, 'retract-consumed')).toBeUndefined();
+    expect(await restarted.find(room, 'consumed-message')).toMatchObject({ sequence: original.sequence, operation: 'retract', text: '' });
+    expect((await restarted.read(room, { limit: 50 })).messages.map((row) => row.metadata.source_message_id)).not.toContain('consumed-message');
+    for (let index = 0; index < 730; index++) await restarted.record(room, entry(`retention-${index}`));
+    expect(await restarted.find(room, 'consumed-message')).toBeUndefined();
+    const retainedHead = [...memory.values.entries()].find(([key]) => key.endsWith('/head'))?.[1] as { changes: Record<string, number> };
+    expect(retainedHead.changes).toEqual({});
+  });
+
   it('uses typed self, a snapshot watermark and bounded cycle-safe reference ancestry', async () => {
     const journal = new ImHistoryJournal(documents().store);
     await journal.record(room, { ...entry('ancestor'), metadata: { ...entry('ancestor').metadata, reply_to_message_id: 'older' } });

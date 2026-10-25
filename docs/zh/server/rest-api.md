@@ -712,6 +712,8 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 群聊确认支持 `binding_scope: "sender" | "topic" | "chat"`；省略时保留仅匹配原发送者的方式。话题或群级绑定让成员共用一个会话，但保留逐条真实发送者 ID，也不允许成员处理别人的待办交互。新建的显式话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention_or_reply" | "manual", prefixes?: string[] }`：`always` 逐条唤醒；`mention_or_reply` 在真实 @、回复已知自身消息或命中配置的字面前缀时唤醒；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。@ 和回复识别依赖适配器提供真实元数据；未提供这些字段的内置传输可使用前缀或 `always`。
 
+群策略目前通过 REST 确认接口或 `PATCH /api/im/sessions/bindings/{id}` 配置，GUI 尚无群策略控件。对未提供 @／回复元数据的内置传输，可 PATCH `{ "group_policy": { "wake": "mention_or_reply", "prefixes": ["Kiki:"] } }` 启用该前缀，或用 `{ "group_policy": { "wake": "always" } }` 逐条唤醒。
+
 已启用的群入站绑定按账号、群和话题保留有界持久时间线。静默消息不启动模型轮次。触发时，提示词会附带近期尚未消费的背景和最多四层引用祖先，并标记为不可信外部数据；提交获准后只推进本次捕获的背景水位，不删除时间线，也不丢失处理期间的新到消息。主 Agent 可用 [ReadMessageHistory](../reference/tools.md#im-聊天历史) 主动搜索本地记录，或显式读取可选的平台历史。关闭输入后，该绑定停止收集，也不再允许读取。
 
 同一输入身份同时只归属一个会话。跨会话转绑未带 `rebind: true` 时，返回业务码 `40949`、`msg: "im_identity_already_bound"`，`details` 包含 `existing_binding_id`、`previous_session_id`、`target_session_id` 和 `variant_key`。显示这些身份供用户二次确认，再携带 `rebind: true` 重发请求；取消时不发修改请求。旧交互票据不会作用于新会话，旧回复监听在转绑时过期。手机端 `:target` 可列出目标，但转绑必须在 Kiki 中确认。缺少有效会话的旧绑定保留原身份与角色来源，显示 `pending_reanchor: true`，显式确认归属前暂停路由。

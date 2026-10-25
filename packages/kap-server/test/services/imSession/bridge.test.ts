@@ -1161,6 +1161,12 @@ describe('IM group context vertical flow', () => {
       ] } });
       const page = await harness.bridge.readMessageHistory('sess', { channel: `im:${binding.id}`, keyword: 'discussion', senderId: 'owner' });
       expect(page.status === 'ok' && page.messages).toHaveLength(1);
+      await harness.adapter.emit({ eventId: 'edit-consumed', sourceMessageId: 'one', operation: 'edit', identity: group, kind: 'text', text: 'revision after consumption' });
+      await harness.adapter.emit({ eventId: 'wake-after-edit', sourceMessageId: 'wake-after-edit', identity: peer, kind: 'text', text: 'latest changes?', mentioned: true });
+      expect(received[1]?.im?.context?.messages).toMatchObject([{ source_message_id: 'one', operation: 'edit', text: 'revision after consumption' }]);
+      await harness.adapter.emit({ eventId: 'retract-consumed', sourceMessageId: 'one', operation: 'retract', identity: group, kind: 'text' });
+      await harness.adapter.emit({ eventId: 'wake-after-retract', sourceMessageId: 'wake-after-retract', identity: peer, kind: 'text', text: 'latest changes?', mentioned: true });
+      expect(received[2]?.im?.context?.messages).toMatchObject([{ source_message_id: 'one', operation: 'retract', text: '' }]);
       await expect(harness.bridge.readMessageHistory('home', { channel: `im:${binding.id}` })).rejects.toThrow('history_channel_not_admitted');
       await expect(harness.bridge.readMessageHistory('sess', { topicId: 'other-topic' })).rejects.toThrow('history_topic_not_admitted');
       expect(await harness.bridge.readMessageHistory('sess', { source: 'platform' })).toEqual({ status: 'unsupported' });

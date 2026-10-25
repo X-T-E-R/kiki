@@ -25,6 +25,7 @@ interface Head {
   archives: number[];
   rows: JournalEntry[];
   locations: Record<string, number>;
+  changes?: Record<string, number>;
   seen: string[];
   watermarks: Record<string, number>;
   sentIds?: string[];
@@ -115,11 +116,13 @@ export class ImHistoryJournal {
       head.sequence += 1;
       if (existing !== undefined && targetRows !== undefined) {
         head.revision += 1;
+        (head.changes ??= {})[key] = head.sequence;
         targetRows[targetRows.indexOf(existing)] = row;
         while (targetRows.reduce((sum, item) => sum + chars(item), 0) > PAGE_CHARS && targetRows.length > 1) {
           const victim = targetRows.find((item) => item !== row)!;
           targetRows.splice(targetRows.indexOf(victim), 1);
           delete head.locations[rowKey(victim)];
+          if (head.changes !== undefined) delete head.changes[rowKey(victim)];
           if (victim.admission !== undefined) retiredAdmissions.push(victim.admission);
           head.truncated = true;
         }
@@ -141,7 +144,10 @@ export class ImHistoryJournal {
       const retired = head.archives.splice(0, Math.max(0, head.archives.length - ARCHIVES));
       if (retired.length > 0) {
         head.truncated = true;
-        for (const [key, page] of Object.entries(head.locations)) if (retired.includes(page)) delete head.locations[key];
+        for (const [key, page] of Object.entries(head.locations)) if (retired.includes(page)) {
+          delete head.locations[key];
+          if (head.changes !== undefined) delete head.changes[key];
+        }
       }
       await this.documents.set(this.key(room), head);
       for (const key of retiredAdmissions) await this.documents.delete(key);
@@ -266,7 +272,18 @@ export class ImHistoryJournal {
     const page = await this.readPage(room, { limit: 50 }, senderId);
     const watermark = head.watermarks[owner] ?? 0;
     const selected = new Map<number, ImHistoryEntry>();
-    for (const row of page.messages) if (row.isSelf !== true && row.sequence > watermark && row.sequence <= snapshot && row.sequence !== current.sequence) selected.set(row.sequence, row);
+    const changedAt = (row: ImHistoryEntry) => head.changes?.[rowKey(row)] ?? row.sequence;
+    for (const row of page.messages) if (row.isSelf !== true && changedAt(row) > watermark && changedAt(row) <= snapshot && row.sequence !== current.sequence) selected.set(row.sequence, row);
+    const changes = Object.entries(head.changes ?? {}).filter(([, sequence]) => sequence > watermark && sequence <= snapshot).sort((a, b) => b[1] - a[1]);
+    const pages = new Map<number, JournalEntry[]>();
+    for (const [key] of changes.slice(0, SCAN_ROWS)) {
+      const location = head.locations[key];
+      if (location === undefined) continue;
+      let rows = pages.get(location);
+      if (rows === undefined) { rows = await this.page(room, head, location); pages.set(location, rows); }
+      const row = rows.find((row) => rowKey(row) === key);
+      if (row !== undefined && row.isSelf !== true && row.sequence !== current.sequence && (senderId === undefined || row.metadata.identity.sender_id === senderId)) selected.set(row.sequence, row);
+    }
     const visited = new Set<string>();
     let reply = current.metadata.reply_to_message_id;
     for (let depth = 0; reply !== undefined && depth < 4 && !visited.has(reply); depth++) {
@@ -278,8 +295,8 @@ export class ImHistoryJournal {
     }
     const entries: ImHistoryEntry[] = [];
     let size = 0;
-    let truncated = page.end === 'more' && (page.messages.at(-1)?.sequence ?? 0) > watermark || head.truncated;
-    for (const row of [...selected.values()].sort((a, b) => Number(visited.has(b.metadata.source_message_id ?? '')) - Number(visited.has(a.metadata.source_message_id ?? '')) || b.sequence - a.sequence)) {
+    let truncated = page.end === 'more' && (page.messages.at(-1)?.sequence ?? 0) > watermark || changes.length > SCAN_ROWS || head.truncated;
+    for (const row of [...selected.values()].sort((a, b) => Number(visited.has(b.metadata.source_message_id ?? '')) - Number(visited.has(a.metadata.source_message_id ?? '')) || changedAt(b) - changedAt(a))) {
       const next = chars(row);
       if (size + next > 24 * 1024 || entries.length >= 50) { truncated = true; continue; }
       size += next;
