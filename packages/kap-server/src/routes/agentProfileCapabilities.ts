@@ -44,6 +44,7 @@ import {
 import { readAgentPanelMetrics, readPersistedAgentPanelMetrics } from './agentPanelMetrics';
 import { PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET, readPersistedAgentProfileSnapshot, type PersistedAgentProfileSnapshot } from './agentProfileSnapshot';
 import { projectAgentModelMenu } from './agentModelMenu';
+import { readExecutorAuth } from './executorAuth';
 import { IModelPricingService } from '../pricing/modelPricingService';
 import { getAgentToolContributions } from '@kiki/agent-core-v2/agent/toolRegistry/toolContribution';
 import { toolGroupForName } from '@kiki/agent-core-v2/agent/toolRegistry/toolGroups';
@@ -235,6 +236,16 @@ export function persistedPanelMetricAgentIds(query: {
 }
 
 export async function agentCapabilities(
+  core: Scope,
+  query: AgentCapabilitiesQuery,
+  signal?: AbortSignal,
+): Promise<AgentCapabilitiesProducerResponse | 'workspace-not-found' | 'profile-not-found'> {
+  const result = await readAgentCapabilities(core, query, signal);
+  if (typeof result === 'string' || !('session_id' in query) || query.metrics_only === true) return result;
+  return { ...result, executor_auth: await readExecutorAuth(core, query.session_id, query.agent_id) };
+}
+
+async function readAgentCapabilities(
   core: Scope,
   query: AgentCapabilitiesQuery,
   signal?: AbortSignal,

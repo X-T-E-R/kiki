@@ -1618,7 +1618,10 @@ class FixtureServer {
     if (partial.type === 'event.session.work_changed') {
       Object.assign(session.record, {
         busy: partial.payload.busy ?? session.record.busy,
+        executing: partial.payload.executing,
+        main_turn_active: partial.payload.main_turn_active,
         pending_interaction: partial.payload.pending_interaction ?? session.record.pending_interaction,
+        last_turn_reason: partial.payload.last_turn_reason,
         updated_at: now(),
       });
     }

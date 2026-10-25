@@ -21,6 +21,56 @@ test('fixture preflight permits the client request correlation header', async ()
   }
 });
 
+test('work_changed fixture preserves execution facts through REST and clears them for an old host', async () => {
+  const server = await startFixtureServer({ port: 0, scenario: 'basic-stream' });
+  const origin = `http://127.0.0.1:${server.http.address().port}`;
+  const sessionId = 'session_fixture_basic';
+  const headers = { authorization: 'Bearer kiki-fixture-token', 'content-type': 'application/json' };
+  const facts = (record) => ({
+    busy: record.busy,
+    executing: record.executing,
+    main_turn_active: record.main_turn_active,
+    pending_interaction: record.pending_interaction,
+    last_turn_reason: record.last_turn_reason,
+  });
+  const emit = async (payload) => {
+    const response = await fetch(`${origin}/__control`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        action: 'emit_event',
+        session_id: sessionId,
+        frame: { type: 'event.session.work_changed', payload },
+      }),
+    });
+    const body = await response.json();
+    assert.equal(body.code, 0);
+    assert.equal(body.data.emitted, 'event.session.work_changed');
+  };
+  const read = async () => {
+    const response = await fetch(`${origin}/api/sessions/${sessionId}`, { headers });
+    const body = await response.json();
+    assert.equal(body.code, 0);
+    return body.data;
+  };
+  const assertFacts = async (expected) => {
+    assert.deepEqual(facts(server.sessions.get(sessionId).record), expected);
+    assert.deepEqual(facts(await read()), expected);
+  };
+  try {
+    await emit({ busy: true, executing: true, main_turn_active: true, pending_interaction: 'none' });
+    await assertFacts({ busy: true, executing: true, main_turn_active: true, pending_interaction: 'none', last_turn_reason: undefined });
+
+    await emit({ busy: true, executing: false, main_turn_active: false, pending_interaction: 'none', last_turn_reason: 'completed' });
+    await assertFacts({ busy: true, executing: false, main_turn_active: false, pending_interaction: 'none', last_turn_reason: 'completed' });
+
+    await emit({ busy: true });
+    await assertFacts({ busy: true, executing: undefined, main_turn_active: undefined, pending_interaction: 'none', last_turn_reason: undefined });
+  } finally {
+    await server.stop();
+  }
+});
+
 const WORKSPACE = 'wd_fixture_000000000000';
 const CARD = 'board_tools_flaky';
 

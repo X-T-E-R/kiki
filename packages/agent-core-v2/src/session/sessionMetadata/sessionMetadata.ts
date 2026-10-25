@@ -24,6 +24,7 @@ export interface AgentMeta {
   readonly executor?: string;
   readonly executorProtocol?: string;
   readonly negotiated?: NegotiatedExecutorCapabilities;
+  readonly executorAuth?: import('@kiki/protocol').ExecutorAuthObservation;
   readonly allowKikiSubagents?: boolean;
   readonly status?: 'completed' | 'failed' | 'cancelled';
   readonly completedAt?: number;

@@ -1013,6 +1013,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       thinkingEffortExplicit: binding.thinkingEffortExplicit,
       executor, executorProtocol: binding.executorProtocol,
       negotiated: (current.executor ?? 'native') === executor ? current.negotiated : undefined,
+      executorAuth: current.executorAuth?.binding_fingerprint === agentExecutorBindingFingerprint(binding) ? current.executorAuth : undefined,
       allowKikiSubagents: binding.allowKikiSubagents,
     }));
   }

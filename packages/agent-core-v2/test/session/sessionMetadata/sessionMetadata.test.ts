@@ -172,6 +172,25 @@ describe('SessionMetadata', () => {
     expect(mirror.recorded.at(-1)?.personaId).toBeUndefined();
   });
 
+  it('persists authentication-only and execution-generation-only agent changes and announces them', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.registerAgent('main', { executor: 'example-acp' });
+    const changed = vi.fn();
+    disposables.add(meta.onDidChangeMetadata(changed));
+    const auth = { status: 'required' as const, source: 'acp.authentication_required' as const, scope: 'session' as const,
+      executor_id: 'example-acp', descriptor_revision: 'r1', binding_fingerprint: 'a'.repeat(64), cwd: '/fixture/work', observed_at: 1000 };
+    await meta.updateAgent('main', (current) => ({ ...current, executorAuth: auth }));
+    expect(changed).toHaveBeenLastCalledWith({ changed: ['agents'] });
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.executorAuth).toEqual(auth);
+    const execution = { version: 1 as const, generation: 1, selection: { executor: 'example-acp' },
+      effective: { allow_kiki_subagents: false, kiki_context: [] }, sources: {} };
+    await meta.updateAgent('main', (current) => ({ ...current, execution }));
+    await meta.updateAgent('main', (current) => ({ ...current, execution: { ...execution, generation: 2 } }));
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.execution?.generation).toBe(2);
+    await meta.updateAgent('main', (current) => ({ ...current, executorAuth: undefined }));
+    expect((await createFreshMetadata(ix).read()).agents?.['main']?.executorAuth).toBeUndefined();
+  });
+
   it('persists per-session handshake snapshots and restores them without a catalog lookup', async () => {
     const meta = ix.get(ISessionMetadata);
     const negotiated = { agentVersion: '1.2.3', image: false, audio: true, fork: true,

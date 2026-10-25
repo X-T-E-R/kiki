@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import type { AcpElicitationRequest } from '@kiki/acp-client';
+import { AcpClientError, AcpClientErrorCode, type AcpElicitationRequest } from '@kiki/acp-client';
 import type { AgentProfile } from '@kiki/agent-profiles/agentProfile';
 import type { HostProcessServiceLike } from '@kiki/codex-client';
 import { describe, expect, it, vi } from 'vitest';
@@ -14,6 +14,10 @@ import { externalAcpForkRecords } from '#/workspace/sessionLifecycle/internal/ex
 import { antigravityRelease } from '#/app/agentExecutor/antigravityDistribution';
 import { agentExecutorBindingFingerprint, type AgentExecutorContext } from '#/app/agentExecutor/agentExecutor';
 import type { ProfileBindingSnapshot } from '#/agent/profile/profile';
+import { acpAuthObservation, codexAuthObservation, recordExecutorAuth } from '#/agent/execution/executorAuth';
+import { ExecutorAuthObserved } from '#/agent/execution/externalExecutorOps';
+import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 
 const form: AcpElicitationRequest = {
   mode: 'form', sessionId: 'remote', message: 'Choose configuration', requestedSchema: {
@@ -27,6 +31,43 @@ const form: AcpElicitationRequest = {
 };
 
 describe('external native harness adapters', () => {
+  it('observes only explicit protocol authentication facts and leaves unsupported modes unknown', () => {
+    expect(acpAuthObservation(new AcpClientError(AcpClientErrorCode.AuthenticationRequired, 'Sign in'))).toEqual({
+      status: 'required', source: 'acp.authentication_required', scope: 'session',
+    });
+    expect(acpAuthObservation(new AcpClientError(AcpClientErrorCode.Disconnected, 'Authentication required'))).toBeUndefined();
+    expect(acpAuthObservation(new Error('Not logged in'))).toBeUndefined();
+    const account = (params: unknown) => codexAuthObservation({ method: 'account/updated', params });
+    expect(account({ authMode: null })).toMatchObject({ status: 'logged_out', scope: 'vendor_account' });
+    expect(account({ authMode: 'apikey', token: 'PRIVATE_FIXTURE_TOKEN' })).toEqual({ status: 'logged_in', source: 'codex.account.updated', scope: 'vendor_account' });
+    expect(account({ authMode: 'chatgpt' })).toMatchObject({ status: 'logged_in' });
+    expect(account({ authMode: 'future-mode' })).toMatchObject({ status: 'unknown' });
+    expect(account({})).toBeUndefined();
+    expect(codexAuthObservation({ method: 'account/login/completed', params: { success: false } })).toBeUndefined();
+  });
+
+  it('records runtime auth on the exact launch binding and cwd without changing a global preflight', async () => {
+    const dispatch = vi.fn(async (_event: ExecutorAuthObserved) => {});
+    let saved: unknown;
+    const context = { agent: { id: 'child', accessor: { get: (id: unknown) => {
+      if (id === IEventDispatcher) return { dispatch };
+      if (id === ISessionMetadata) return { updateAgent: async (agentId: string, update: (current: object) => object) => {
+        expect(agentId).toBe('child'); saved = update({ executor: 'fixture-acp' });
+      } };
+      throw new Error(`Unexpected service ${String(id)}`);
+    } } }, binding: { systemPrompt: 'Frozen', execution: resolveExecutionBinding({ executor: 'fixture-acp' }, undefined, undefined, undefined) },
+      descriptor: { id: 'fixture-acp', revision: 'r1', selectedSource: 'configured', homeDir: '/fixture/config' } } as unknown as AgentExecutorContext;
+    await recordExecutorAuth(context, '/fixture/work', acpAuthObservation(new AcpClientError(AcpClientErrorCode.AuthenticationRequired, 'Sign in'))!);
+    const observed = dispatch.mock.calls[0]![0] as unknown as ExecutorAuthObserved;
+    expect(observed).toBeInstanceOf(ExecutorAuthObserved);
+    expect(saved).toMatchObject({ executor: 'fixture-acp', executorAuth: {
+      status: 'required', executor_id: 'fixture-acp', descriptor_revision: 'r1', cwd: '/fixture/work',
+      home_dir: '/fixture/config', selected_source: 'configured', binding_fingerprint: agentExecutorBindingFingerprint(context.binding),
+      execution_generation: context.binding.execution!.generation,
+    } });
+    expect(ExecutorAuthObserved.schema.parse(observed)).toMatchObject({ status: 'required' });
+  });
+
   it('injects Codex MCP at process startup and keeps delegation credentials out of argv', async () => {
     let lease: HarnessMcpLease | undefined;
     const spawn = vi.fn(async (..._args: Parameters<HostProcessServiceLike['spawn']>) => { throw new Error('fixture-child'); });
@@ -293,7 +334,8 @@ describe('Kiki MCP injection switch', () => {
   it('reports builtin bridge support from descriptor facts and does not treat an undeclared vendor as available', () => {
     const supportOf = (id: keyof typeof BUILTIN_AGENT_EXECUTORS) => kikiMcpSupport({ id, ...BUILTIN_AGENT_EXECUTORS[id]! });
     const supported = Object.keys(BUILTIN_AGENT_EXECUTORS).filter((id) => supportOf(id as keyof typeof BUILTIN_AGENT_EXECUTORS).state === 'supported').sort();
-    expect(supported).toEqual(['agy-cli', 'antigravity-acp', 'claude-acp', 'codex-app-server', 'grok-acp', 'kimi-acp']);
+    expect(supported).toEqual(['agy-cli', 'antigravity-acp', 'claude-acp', 'cline-acp', 'codebuddy-acp', 'codex-acp',
+      'codex-app-server', 'cursor-acp', 'deepseek-acp', 'gemini-acp', 'grok-acp', 'kimi-acp', 'opencode-acp', 'qoder-acp']);
     expect(supportOf('agy-cli').fact).toContain('supports_mcp is true');
     expect(supportOf('agy-cli').fact).toContain('stdio');
     expect(supportOf('codex-app-server').fact).toContain('process flags');
@@ -301,8 +343,9 @@ describe('Kiki MCP injection switch', () => {
     expect(supportOf('openclaw-acp').fact).toContain('mcpServers');
     expect(supportOf('pi-acp').fact).toContain('does not forward Kiki MCP servers');
     expect(supportOf('claude-acp').state).toBe('supported');
-    expect(supportOf('gemini-acp').state).toBe('undeclared');
-    expect(supportOf('deepseek-acp').state).toBe('undeclared');
+    expect(supportOf('gemini-acp').state).toBe('supported');
+    expect(supportOf('deepseek-acp').state).toBe('supported');
+    expect(kikiMcpSupport({ id: 'undeclared', protocol: 'acp-v1' }).state).toBe('undeclared');
     expect(kikiMcpSupport({ id: 'http-only', protocol: 'acp-v1', supportsMcp: true, mcpTransports: ['http'] })).toEqual({
       state: 'unsupported', fact: 'http-only mcp_transports is http; the Kiki bridge needs stdio.',
     });

@@ -81,6 +81,8 @@ ACP 客户端在 `session/new`、`session/load` 或 `session/resume` 中提供 `
 
 上面的转发是入站连接：IDE 向 `kiki acp` 提供 MCP 服务器。Kiki 运行外部 harness 时，可以提供绑定到该 Kiki 会话和 Agent 的会话级工具桥。Adapter 必须接受 stdio MCP；OpenClaw 和 Pi 无法接收这个工具桥。模型设置、厂商登录和权限仍沿用 harness 自身配置，无需把受管工具桥的临时凭证复制到厂商配置中。
 
+会话的能力清单会显示运行中 adapter 报告的认证状态。ACP 明确返回认证要求时，显示本会话**需要认证**；Codex 的账号更新按执行器报告显示，无法识别的认证模式保留为**登录状态未知**。悬停可查看协议来源、工作目录和观察时间。已保存的观察在会话关闭后仍可读取，执行绑定改变时清除；它们与设置中的连接检查分别显示。
+
 在 `[agent_executor_overrides.<executor-id>.defaults]` 下设置 `inject_kiki_mcp`，作为引擎默认值。Profile 的 `inject_kiki_mcp` 优先于引擎默认，会话的 `execution.overrides.inject_kiki_mcp` 再覆盖 Profile。将会话值设为 `null` 即恢复继承。这些选择在下一次绑定生效，也适用于具名外部子 Agent；冷恢复保留已保存的选择。Agent 绑定 `false` 后，现有工具桥凭证也不能继续列出或调用其工具。
 
 各层均未设置时，保留原有行为：兼容的子 Agent 获得其获准的原生工具，原样 main agent 只有请求上下文或委派能力时才获得桥。开启注入不会额外开放工具组；明确的 `kiki_context: []` 和 `allow_kiki_subagents: false` 仍保持这些组关闭。

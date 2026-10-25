@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { executorPromptSchema } from '../executorPrompt';
 import { modelPromptOverridesSchema } from '../modelCatalog';
 import { recipeModelBindingSchema } from '../recipe';
+import { executorAuthObservationSchema } from '../executor-auth';
 
 const modelAliasSchema = z.string().min(1).regex(/^\S+$/, 'model alias must not contain whitespace');
 const optionalProfileStringSchema = z.string().trim().min(1).nullable().optional();
@@ -538,6 +539,7 @@ export const agentCapabilitiesResponseSchema = z.object({
   unavailable_reason_code: agentCapabilityReasonCodeWireSchema.optional(),
   targets: z.array(agentCapabilityTargetSchema),
   profile: agentPanelProfileSchema.optional(),
+  executor_auth: executorAuthObservationSchema.optional(),
   tools: z.array(agentPanelToolSchema).optional(),
   skills: z.array(agentPanelSkillSchema).optional(),
   metrics: z.record(z.string(), agentPanelMetricsSchema).optional(),

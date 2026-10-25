@@ -264,7 +264,10 @@ describe('named agent profile REST protocol', () => {
     expect(parsed.targets[0]?.launch_unavailable_reason_code).toBe('strict_subagent_policy_blocked');
     expect(parsed.tools?.[0]?.unavailable_reason_code).toBe('tool_policy_disabled');
     expect(parsed.skills?.[0]?.unavailable_reason_code).toBe('skill_tool_inactive');
-    expect(agentCapabilityReasonCodeSchema.options).toHaveLength(25);
+    expect(agentCapabilityReasonCodeSchema.options).toHaveLength(29);
+    expect(agentCapabilityReasonCodeSchema.options).toEqual(expect.arrayContaining([
+      'tool_not_registered', 'plugin_catalog_failed', 'plugin_usage_disabled', 'plugin_usage_unavailable',
+    ]));
 
     const futurePayload = {
       context: 'live' as const,
@@ -291,6 +294,15 @@ describe('named agent profile REST protocol', () => {
     expect(futureParsed.skills?.[0]?.unavailable_reason_code).toBe('future_skill_reason');
     expect(agentCapabilitiesProducerResponseSchema.safeParse(futurePayload).success).toBe(false);
     expect(agentCapabilityReasonCodeSchema.safeParse('future_tool_reason').success).toBe(false);
+  });
+
+  it('carries scoped runtime authentication observations without replacing executor preflight status', () => {
+    const auth = { status: 'unknown', source: 'codex.account.updated', scope: 'vendor_account', executor_id: 'codex-app-server',
+      descriptor_revision: 'r1', binding_fingerprint: 'a'.repeat(64), execution_generation: 1, cwd: '/fixture/work', observed_at: 1000 };
+    const payload = { context: 'live', live: false, owner: { agent_id: 'main' }, available: false, targets: [], executor_auth: auth };
+    expect(agentCapabilitiesResponseSchema.parse(payload).executor_auth).toEqual(auth);
+    expect(agentCapabilitiesProducerResponseSchema.parse(payload).executor_auth).toEqual(auth);
+    expect(agentCapabilitiesResponseSchema.safeParse({ ...payload, executor_auth: { ...auth, status: 'success' } }).success).toBe(false);
   });
 
   it('accepts executor login state and explicitly configured prompt delivery', () => {

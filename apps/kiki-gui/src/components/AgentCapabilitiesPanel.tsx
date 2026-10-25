@@ -13,6 +13,7 @@ import {
 import { ProfileDetailSections } from './agent-panel/ProfileDetailSections';
 import { ToolChipList, toolCategoryLabel } from './agent-panel/ToolChipList';
 import { DisclosureChevron } from './icons';
+import { ExecutorAuthStatus } from './harness/ExecutorAuthStatus';
 
 export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuery }) {
   const { klient } = useConnection();
@@ -76,6 +77,7 @@ export function AgentCapabilitiesPanel({ query }: { query: AgentCapabilitiesQuer
         </div> : null}
         {!capabilities.isError && data !== undefined ? <>
           {data.owner.profile !== undefined ? <p className="break-all text-ink-soft">{t('agentPanel.profileDetail')} · {data.owner.profile}</p> : null}
+          <ExecutorAuthStatus observation={data.executor_auth} />
           {data.profile !== undefined ? <details data-profile-details className="rounded border border-hairline bg-panel p-2">
             <summary className="cursor-pointer font-medium text-ink hover:text-ink-soft">{t('agentPanel.profileDetail')} · {t('diagnostics.source')}</summary>
             <div className="mt-2">

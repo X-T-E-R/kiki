@@ -55,6 +55,20 @@ async function settle() {
   for (let i = 0; i < 5; i++) await act(async () => { await new Promise((done) => setTimeout(done, 0)); });
 }
 describe('AgentCapabilitiesPanel', () => {
+  it.each([
+    ['unknown', '登录状态未知'], ['required', '需要认证'], ['logged_out', '已退出登录'], ['logged_in', '已登录'],
+  ] as const)('renders the scoped %s auth observation without inventing another status', async (status, label) => {
+    getAgentCapabilities.mockResolvedValue({ ...data('live'), executor_auth: {
+      status, scope: 'session', source: 'acp.authentication_required', executor_id: 'example-acp',
+      descriptor_revision: 'r1', binding_fingerprint: 'a'.repeat(64), cwd: 'C:/fixture/workspace', observed_at: 1000,
+    } });
+    await render({ session_id: 'session-1', agent_id: 'child-2' });
+    await settle();
+    const observation = container.querySelector('[data-executor-auth]');
+    expect(observation?.textContent).toBe(`本会话认证 · ${label}`);
+    expect(observation?.getAttribute('title')).toContain('acp.authentication_required · C:/fixture/workspace');
+    if (status !== 'logged_out') expect(observation?.textContent).not.toContain('已退出登录');
+  });
   it('uses the selected live session/agent and separates defaults from Plan admission without guessing missing fields', async () => {
     getAgentCapabilities.mockResolvedValue(data('live'));
     await render({ session_id: 'session-1', agent_id: 'child-2' });

@@ -1,5 +1,6 @@
 /* oxlint-disable typescript-eslint/no-unsafe-declaration-merging, eslint-plugin-import/namespace -- Event2 class+payload-interface declaration merging is the sanctioned event-declaration idiom. */
 import { z } from 'zod';
+import { executorAuthObservationSchema, type ExecutorAuthObservation } from '@kiki/protocol';
 
 import { Event2 } from '#/app/event/event2';
 import { defineState } from '#/state/state';
@@ -182,7 +183,16 @@ export class ExecutorToolDisplay extends Event2<z.infer<typeof executorToolDispl
 }
 export interface ExecutorToolDisplay extends z.infer<typeof executorToolDisplaySchema> {}
 
+export class ExecutorAuthObserved extends Event2<ExecutorAuthObservation> {
+  static override readonly type = 'executor.auth.observed';
+  static override readonly durable = true;
+  static override readonly observable = true;
+  static override readonly schema = executorAuthObservationSchema;
+}
+export interface ExecutorAuthObserved extends ExecutorAuthObservation {}
+
 export interface ExternalExecutorState {
+  readonly auth?: ExecutorAuthObservation;
   readonly executionGeneration?: number;
   readonly executorId?: string;
   readonly descriptorRevision?: string;
@@ -216,7 +226,11 @@ export const externalExecutorKey = defineState(
     profileDeliveredSessionId: event.profileDeliveredSessionId,
     profileDelivery: event.profileDelivery,
     lastCumulativeUsage: event.lastCumulativeUsage ?? (event.sessionEpoch === state.sessionEpoch ? state.lastCumulativeUsage : undefined),
+    auth: state.auth?.executor_id === event.executorId && state.auth.descriptor_revision === event.descriptorRevision &&
+      state.auth.binding_fingerprint === event.bindingFingerprint && state.auth.execution_generation === event.executionGeneration
+      ? state.auth : undefined,
   }))
+  .on(ExecutorAuthObserved, (state, event) => ({ ...state, auth: executorAuthObservationSchema.parse(event) }))
   .on(ExecutorTurnMetadata, () => {})
   .on(ExecutorHintDelivery, () => {})
   .on(ExecutorPlanUpdate, () => {})

@@ -5,7 +5,7 @@
  * inspector parts (agent-panel/*).
  */
 
-import { memo, useCallback, useMemo, useState, useSyncExternalStore } from 'react';
+import { memo, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import { useQuery } from '@tanstack/react-query';
 
 import { MAIN_AGENT_ID, type AgentForest, type Block, type NoticeBlock, type SessionViewState } from '@kiki/session-core/session';
@@ -24,6 +24,7 @@ import { availableCount } from '../capabilities/pluginUsage';
 import { SessionPluginsPanel } from '../capabilities/SessionPluginsPanel';
 import { PLUGIN_QUERY_KEYS } from '../capabilities/usePlugins';
 import { Icon } from '../icons';
+import { ExecutorAuthStatus } from '../harness/ExecutorAuthStatus';
 import { age, decidable, pendingId, pendingSubject, useNow, type PendingItem } from './model';
 import { FOCUS_RING, StateMark, useDecide } from './shell';
 
@@ -497,6 +498,16 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
     staleTime: 5_000,
     retry: false,
   });
+  const liveCapabilities = read.data?.live === true;
+  useEffect(() => {
+    if (!liveCapabilities) return;
+    let disposed = false;
+    const subscription = klient.session(sessionId).events.on('metadata.changed', (event) => {
+      if (event.changed.includes('agents')) void read.refetch();
+    });
+    void subscription.ready.then(() => { if (!disposed) void read.refetch(); }).catch(() => undefined);
+    return () => { disposed = true; subscription.dispose(); };
+  }, [klient, sessionId, liveCapabilities, read.refetch]);
   const pluginRead = useQuery({
     queryKey: PLUGIN_QUERY_KEYS.usage(sessionId),
     queryFn: () => client.getPluginUsage({ session_id: sessionId }),
@@ -534,6 +545,7 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
           />
           {observationOpen ? (
             <div className="pt-1">
+              <ExecutorAuthStatus observation={data?.executor_auth} />
               <AgentCapabilitiesSection
                 tools={tools}
                 skills={skills}

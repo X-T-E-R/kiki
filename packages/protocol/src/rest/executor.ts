@@ -1,6 +1,7 @@
 import { z } from 'zod';
 
 import { executorCapabilityDimensionSchema, executorCapabilityStateSchema } from './agentProfile';
+export { executorAuthObservationSchema, type ExecutorAuthObservation } from '../executor-auth';
 
 export const executorCapabilitiesSchema = z.object({
   prompt_deliveries: z.array(z.enum(['append', 'replace', 'preamble'])),

@@ -35,6 +35,35 @@ const expires = new Date(Date.now() + 23 * 3600_000).toISOString();
 const CLAUDE = 'session_fixture_external_claude';
 const GROK = 'session_fixture_external_grok';
 const CODEX = 'session_fixture_external_codex';
+const EXTERNAL_CWD = 'C:/fixture/workspace';
+
+const executorAuth = ({ status, scope, source, executor_id, fingerprint, observedAt }) => ({
+  status, scope, source, executor_id, descriptor_revision: 'r1', binding_fingerprint: fingerprint.repeat(64),
+  cwd: EXTERNAL_CWD, observed_at: Date.parse(at(observedAt)),
+});
+const externalPanel = ({ profileName, description, model, executor, executor_auth, thinking_effort }) => ({
+  context: 'live', live: true, owner: { profile: profileName, agent_id: 'main' }, available: false,
+  unavailable_reason: 'External executor owns capability policy.',
+  profile: {
+    name: profileName, description, source: 'user', source_file: `${HOME}/${profileName}.md`, model, executor,
+    profile_source: 'registered', thinking_effort,
+  },
+  executor_auth, targets: [], tools: [], skills: [],
+});
+const agentPanels = {
+  [CLAUDE]: {
+    main: externalPanel({
+      profileName: 'lead-claude', description: 'Workspace lead on Claude Code.', model: 'claude-sonnet-4.5', executor: 'claude-acp',
+      executor_auth: executorAuth({ status: 'required', scope: 'session', source: 'acp.authentication_required', executor_id: 'claude-acp', fingerprint: 'c', observedAt: 92 }),
+    }),
+  },
+  [CODEX]: {
+    main: externalPanel({
+      profileName: 'lead-codex', description: 'Workspace lead on Codex.', model: 'gpt-5.5-codex', executor: 'codex-app-server', thinking_effort: 'high',
+      executor_auth: executorAuth({ status: 'unknown', scope: 'vendor_account', source: 'codex.account.updated', executor_id: 'codex-app-server', fingerprint: 'd', observedAt: 11 }),
+    }),
+  },
+};
 
 const LEAD_PROMPT = [
   'You lead this workspace from Claude Code. Frame the problem, delegate bounded work, accept the result.',
@@ -257,6 +286,7 @@ export default {
   executors,
   executorChecks,
   agentProfiles,
+  agentPanels,
   antigravity: { versions: [], signed_in: false, install_delay_ms: 700, expires_in_secs: 300 },
   sessions: [
     sessionRecord(CLAUDE, { title: 'Fixture: Claude main', agent_config: { model: 'claude-sonnet-4.5', profile: 'lead-claude', permission_mode: 'manual' },

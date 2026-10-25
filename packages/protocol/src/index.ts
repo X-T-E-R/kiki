@@ -8,6 +8,7 @@ export * from './time';
 export * from './request-id';
 export * from './events';
 export * from './executor-events';
+export * from './executor-auth';
 export * from './executorPrompt';
 export * from './execution';
 export * from './display';

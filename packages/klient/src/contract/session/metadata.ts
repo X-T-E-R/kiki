@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod';
+import { executorAuthObservationSchema } from '@kiki/protocol';
 import { executionBindingWireSchema as executionBindingSchema } from '../execution.js';
 
 import { tokenUsageSchema } from '../agent/schemas.js';
@@ -37,6 +38,7 @@ export const agentMetaSchema = z.object({
   executor: z.string().optional(),
   executorProtocol: z.string().optional(),
   negotiated: negotiatedExecutorSchema.optional(),
+  executorAuth: executorAuthObservationSchema.optional(),
   allowKikiSubagents: z.boolean().optional(),
   status: z.enum(['completed', 'failed', 'cancelled']).optional(),
   completedAt: z.number().optional(),

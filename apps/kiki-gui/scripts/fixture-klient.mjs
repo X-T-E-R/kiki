@@ -921,7 +921,8 @@ export class FixtureKlient {
         const [query] = args;
         const session = query.session_id === undefined ? undefined : server.sessions.get(query.session_id);
         if (query.session_id !== undefined && session === undefined) throw invalid('session not found', 40401);
-        const seeded = server.scenario?.data.agentPanel;
+        const scoped = server.scenario?.data.agentPanels?.[query.session_id]?.[query.agent_id ?? 'main'];
+        const seeded = scoped ?? server.scenario?.data.agentPanel;
         if (seeded !== undefined) return seeded;
         if (server.scenario?.name === 'goal') return GOAL_AGENT_PANEL;
         return {

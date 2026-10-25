@@ -399,6 +399,8 @@ function agentMetaEquals(a: AgentMeta, b: AgentMeta): boolean {
     a.thinkingEffortExplicit === b.thinkingEffortExplicit &&
     a.executor === b.executor &&
     a.executorProtocol === b.executorProtocol &&
+    JSON.stringify(a.execution) === JSON.stringify(b.execution) &&
+    JSON.stringify(a.executorAuth) === JSON.stringify(b.executorAuth) &&
     JSON.stringify(a.negotiated) === JSON.stringify(b.negotiated) &&
     a.allowKikiSubagents === b.allowKikiSubagents &&
     a.status === b.status &&

@@ -640,6 +640,19 @@ export interface SessionStateSnapshot {
         readonly load?: boolean;
         readonly permissionModes?: readonly string[];
       };
+      readonly executorAuth?: {
+        status: 'unknown' | 'logged_in' | 'logged_out' | 'required';
+        source: 'codex.account.updated' | 'acp.authentication_required';
+        scope: 'session' | 'vendor_account';
+        executor_id: string;
+        descriptor_revision: string;
+        binding_fingerprint: string;
+        cwd: string;
+        observed_at: number;
+        execution_generation?: number;
+        home_dir?: string;
+        selected_source?: string;
+      };
       readonly allowKikiSubagents?: boolean;
       readonly status?: 'completed' | 'cancelled' | 'failed';
       readonly completedAt?: number;
@@ -1060,6 +1073,24 @@ export interface AgentStateSnapshot {
             };
           };
         })[];
+        readonly im?: {
+          provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+          provider_instance_id: string;
+          account_id: string;
+          identity: {
+            chat_id: string;
+            sender_id: string;
+            topic_id: string;
+            chat_kind?: 'private' | 'group';
+            chat_title?: string;
+            sender_name?: string;
+            topic_title?: string;
+          };
+          source_message_id?: string;
+          mentioned?: boolean;
+          mention_ids?: string[];
+          reply_to_message_id?: string;
+        };
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
         readonly activationId: string;
@@ -1341,6 +1372,24 @@ export interface AgentStateSnapshot {
           };
         };
       })[];
+      readonly im?: {
+        provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+        provider_instance_id: string;
+        account_id: string;
+        identity: {
+          chat_id: string;
+          sender_id: string;
+          topic_id: string;
+          chat_kind?: 'private' | 'group';
+          chat_title?: string;
+          sender_name?: string;
+          topic_title?: string;
+        };
+        source_message_id?: string;
+        mentioned?: boolean;
+        mention_ids?: string[];
+        reply_to_message_id?: string;
+      };
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
       readonly activationId: string;
@@ -1554,6 +1603,24 @@ export interface AgentStateSnapshot {
             };
           };
         })[];
+        readonly im?: {
+          provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+          provider_instance_id: string;
+          account_id: string;
+          identity: {
+            chat_id: string;
+            sender_id: string;
+            topic_id: string;
+            chat_kind?: 'private' | 'group';
+            chat_title?: string;
+            sender_name?: string;
+            topic_title?: string;
+          };
+          source_message_id?: string;
+          mentioned?: boolean;
+          mention_ids?: string[];
+          reply_to_message_id?: string;
+        };
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
         readonly activationId: string;
@@ -1891,6 +1958,24 @@ export interface AgentStateSnapshot {
           };
         };
       })[];
+      readonly im?: {
+        provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+        provider_instance_id: string;
+        account_id: string;
+        identity: {
+          chat_id: string;
+          sender_id: string;
+          topic_id: string;
+          chat_kind?: 'private' | 'group';
+          chat_title?: string;
+          sender_name?: string;
+          topic_title?: string;
+        };
+        source_message_id?: string;
+        mentioned?: boolean;
+        mention_ids?: string[];
+        reply_to_message_id?: string;
+      };
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
       readonly activationId: string;
@@ -2078,8 +2163,21 @@ export interface AgentStateSnapshot {
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
   // src/agent/execution/externalExecutorOps.ts
-  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay
+  // replayable · durable — folds: ExecutorSessionUpdated, ExecutorAuthObserved, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay
   'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
+    readonly auth?: {
+      status: 'unknown' | 'logged_in' | 'logged_out' | 'required';
+      source: 'codex.account.updated' | 'acp.authentication_required';
+      scope: 'session' | 'vendor_account';
+      executor_id: string;
+      descriptor_revision: string;
+      binding_fingerprint: string;
+      cwd: string;
+      observed_at: number;
+      execution_generation?: number;
+      home_dir?: string;
+      selected_source?: string;
+    };
     readonly executionGeneration?: number;
     readonly executorId?: string;
     readonly descriptorRevision?: string;
@@ -7068,6 +7166,24 @@ export interface AgentStateSnapshot {
               };
             };
           })[];
+          readonly im?: {
+            provider_kind: 'telegram' | 'feishu_app' | 'onebot_v11' | 'wechat_bridge' | 'discord' | 'slack' | 'matrix' | `plugin:${string}/${string}`;
+            provider_instance_id: string;
+            account_id: string;
+            identity: {
+              chat_id: string;
+              sender_id: string;
+              topic_id: string;
+              chat_kind?: 'private' | 'group';
+              chat_title?: string;
+              sender_name?: string;
+              topic_title?: string;
+            };
+            source_message_id?: string;
+            mentioned?: boolean;
+            mention_ids?: string[];
+            reply_to_message_id?: string;
+          };
         } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'skill_activation';
           readonly activationId: string;

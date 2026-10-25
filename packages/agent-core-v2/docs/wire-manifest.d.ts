@@ -24,7 +24,7 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (89 record types)
+// Index (90 record types)
 //   agent_message.delivered            agentCollaboration.messageReceipts                                                                                                                                                   src/session/agentCollaboration/messageEvents.ts
 //   agent.model_switch                 contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                           src/agent/modelSwitch/modelSwitchEvent.ts
 //   auto_compact.override_changed      autoCompactOverride                                                                                                                                                                  src/agent/fullCompaction/autoCompactOps.ts
@@ -35,6 +35,7 @@
 //   context.apply_compaction           contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                       src/agent/contextMemory/contextEvents.ts
 //   context.clear                      contextMemory, contextMemory.revision, modelSwitch.continuity, plan, task.notificationDelivery, todo, turn                                                                           src/agent/contextMemory/contextEvents.ts
 //   context.undo                       contextMemory, contextMemory.revision, modelSwitch.continuity, plan, prompt.identity, promptAdmission, promptRetryReceipt, task.notificationDelivery, todo, turn                     src/agent/contextMemory/contextEvents.ts
+//   executor.auth.observed             externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.plan.remove               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.plan.update               externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
 //   executor.prompt.delivery           externalExecutor                                                                                                                                                                     src/agent/execution/externalExecutorOps.ts
@@ -293,6 +294,25 @@ interface ContextUndoPayload {
   _name: 'context.undo';
   count: number;
   replacementPrompt?: import('#/agent/prompt/promptService').PromptEnqueuedPayload;
+}
+
+/**
+ * states: externalExecutor
+ * owner: src/agent/execution/externalExecutorOps.ts
+ */
+interface ExecutorAuthObservedPayload {
+  _name: 'executor.auth.observed';
+  status: 'logged_in' | 'logged_out' | 'required' | 'unknown';
+  source: 'codex.account.updated' | 'acp.authentication_required';
+  scope: 'vendor_account' | 'session';
+  executor_id: string;
+  descriptor_revision: string;
+  binding_fingerprint: string;
+  execution_generation?: number;
+  cwd: string;
+  home_dir?: string;
+  selected_source?: string;
+  observed_at: number;
 }
 
 /**
@@ -1666,6 +1686,7 @@ interface WirePayloadMap {
   "context.apply_compaction": ContextApplyCompactionPayload;
   "context.clear": ContextClearPayload;
   "context.undo": ContextUndoPayload;
+  "executor.auth.observed": ExecutorAuthObservedPayload;
   "executor.plan.remove": ExecutorPlanRemovePayload;
   "executor.plan.update": ExecutorPlanUpdatePayload;
   "executor.prompt.delivery": ExecutorPromptDeliveryPayload;

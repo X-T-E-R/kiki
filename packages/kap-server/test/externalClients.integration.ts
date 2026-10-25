@@ -70,6 +70,45 @@ describe('native external clients',()=>{
     await expect(client.listTools()).rejects.toThrow();
   });
 
+  it('resumes the same external identity after a real MCP disconnect and isolates concurrent clients', async () => {
+    const { connection } = await owner('', { name: 'Reconnect client', workspace, mode: 'manual' });
+    const first = await connect(connection.id);
+    const external = await call(first.client, 'kiki_session', { action: 'new', _kiki: { idempotency_key: 'new-reconnect' } });
+    const session = server.core.accessor.get(ISessionManager).get(external.sessionId)!;
+    const interaction = session.accessor.get(ISessionInteractionService);
+    interaction.acquireConsumer('local-fixture');
+    const args = { path: join(workspace, 'reconnect.txt'), content: 'exactly once',
+      _kiki: { session_ref: external.session_ref, idempotency_key: 'reconnect-write' } };
+    const pending = await waiting(first.client, await call(first.client, 'Write', args));
+    expect(pending.state).toBe('waiting_approval');
+    const approval = interaction.listPending('approval')[0]!;
+    await first.client.close();
+    const second = await connect(connection.id);
+    const resumed = await call(second.client, 'kiki_session', { action: 'resume', session_ref: external.session_ref });
+    expect(resumed).toMatchObject({ sessionId: external.sessionId, session_ref: external.session_ref });
+    expect((await call(second.client, 'kiki_operation', { operation_id: pending.operation_id })).state).toBe('waiting_approval');
+    session.accessor.get(ISessionApprovalService).decide(approval.id, { decision: 'approved' });
+    expect((await terminal(second.client, await call(second.client, 'kiki_operation', { operation_id: pending.operation_id }))).state).toBe('completed');
+    expect(await readFile(join(workspace, 'reconnect.txt'), 'utf8')).toBe('exactly once');
+    const third = await connect(connection.id);
+    const saved = { text: 'Concurrent shared material', kind: 'note',
+      _kiki: { session_ref: external.session_ref, idempotency_key: 'concurrent-save' } };
+    const [left, right] = await Promise.all([
+      call(second.client, 'kiki_save_text', saved), call(third.client, 'kiki_save_text', saved),
+    ]);
+    expect(left.operation_id).toBe(right.operation_id);
+    expect([left.duplicate, right.duplicate].filter(Boolean)).toHaveLength(1);
+    expect((await terminal(second.client, left)).state).toBe('completed');
+    const other = await owner('', { name: 'Isolated client', workspace, mode: 'yolo' });
+    const isolated = await connect(other.connection.id);
+    const crossResume = await isolated.client.callTool({ name: 'kiki_session', arguments: { action: 'resume', session_ref: external.session_ref } });
+    expect(crossResume.isError).toBe(true);
+    expect((await isolated.client.callTool({ name: 'kiki_operation', arguments: { operation_id: left.operation_id } })).isError).toBe(true);
+    const materials = await owner(`/sessions/${external.sessionId}/materials`);
+    expect(materials.items.filter((item: any) => item.kind === 'saved_text' && item.excerpt === saved.text)).toHaveLength(1);
+    expect((await owner(`/${connection.id}/sessions`)).sessions).toHaveLength(1);
+  }, 90_000);
+
   it('runs model-free native tools, splits conversations, persists records and retries without duplicate side effects',async()=>{
     const {connection}=await owner('',{name:'Example client',workspace,mode:'yolo'});
     const {client,mcpUrl,token}=await connect(connection.id);

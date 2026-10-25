@@ -711,6 +711,18 @@ const mappingEvents: NormalizedExecutorEvent[] = [
 ];
 
 describe('ACP external executor', () => {
+  it.each(['openSession', 'configureSession', 'startTurn'] as const)('records a typed authentication requirement from %s without marking sign-out', async (method) => {
+    const harness = createHarness();
+    const error = new AcpClientError('executor.authentication_required', 'Sign in');
+    vi.spyOn(harness.client, method).mockRejectedValue(error);
+    await expect(harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal })).rejects.toBe(error);
+    expect(harness.events.find((event) => event.type === 'executor.auth.observed')).toMatchObject({
+      status: 'required', scope: 'session', source: 'acp.authentication_required', executor_id: 'example-acp', cwd: 'C:\\workspace',
+    });
+    expect(harness.starts).toHaveLength(0);
+    await harness.session.shutdown();
+  });
+
   it('cancels the active remote prompt when recording fails instead of leaving execution running', async () => {
     const harness = createHarness({
       deferTurnCompletion: true,

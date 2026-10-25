@@ -32,6 +32,7 @@ import { harnessContextProcess } from './harnessContextProcess';
 import { acpAttachments, externalAttachments } from './externalAttachments';
 import { resolvePromptDelivery, type NegotiatedExecutorCapabilities } from '#/app/agentExecutor/capabilities';
 import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
+import { acpAuthObservation, recordExecutorAuth } from './executorAuth';
 import { executorLaunchArgs, executorProcessEnv } from '#/app/agentExecutor/executorOverrides';
 import { IAgentExecutorRegistry } from '#/app/agentExecutor/agentExecutor';
 import { wrapWindowsNodeShims } from '#/app/agentExecutor/windowsNodeShim';
@@ -239,7 +240,9 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         profileDelivery: prior.profileDelivery,
       }));
       await this.#dispatcher.flush();
-    } }).catch((error: unknown) => {
+    } }).catch(async (error: unknown) => {
+      const auth = acpAuthObservation(error);
+      if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
       if (error instanceof AcpClientError && typeof error.details?.['resumeSupported'] === 'boolean' &&
           typeof error.details['loadSupported'] === 'boolean') {
         this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
@@ -259,7 +262,11 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('additional_directories_dropped');
     }
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
-    const configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']);
+    const configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']).catch(async (error: unknown) => {
+      const auth = acpAuthObservation(error);
+      if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
+      throw error;
+    });
     const negotiated: NegotiatedExecutorCapabilities = {
       models: advertisedSelectValues(configured.configOptions, 'model'),
       thinkingLevels: advertisedSelectValues(configured.configOptions, 'thought_level'),
@@ -401,6 +408,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       ready.resolve();
       options.onReady?.();
     } catch (error) {
+      const auth = acpAuthObservation(error);
+      if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
       turn.state = 'failed';
       ready.reject(error instanceof Error ? error : new Error(String(error)));
       await recorder.fail(error);
@@ -602,6 +611,8 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       throw toError(turnResult.error, 'External ACP turn failed');
     } catch (error) {
       await pump.catch(() => undefined);
+      const auth = acpAuthObservation(error);
+      if (auth !== undefined) await recordExecutorAuth(this.context, this.#runtimeLease.runtime.workspace.mapRoots(this.#workspace).workDir, auth);
       if (controller.signal.aborted) {
         const reason = controller.signal.reason ?? error;
         turn.state = 'cancelled';

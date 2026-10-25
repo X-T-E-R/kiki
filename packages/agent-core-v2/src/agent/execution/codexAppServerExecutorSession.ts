@@ -15,6 +15,7 @@ import {
 
 import { resolvePromptDelivery } from '#/app/agentExecutor/capabilities';
 import { recordNegotiatedSnapshot } from './negotiatedSnapshot';
+import { codexAuthObservation, recordExecutorAuth } from './executorAuth';
 import type { HarnessMcpLease } from '#/app/agentExecutor/harnessMcp';
 import { acquireHarnessMcp, codexHarnessMcpProcess } from './harnessMcpLease';
 import { codexAttachments, externalAttachments } from './externalAttachments';
@@ -133,6 +134,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
   #active: ActiveCodexTurn | undefined;
   #permissionContext: PermissionContext | undefined;
   #settled: Promise<void> = Promise.resolve();
+  #authUpdates: Promise<void> = Promise.resolve();
   #nextReservedTurnId: number | undefined;
   #shutdown = false;
   #harnessMcp: HarnessMcpLease | undefined;
@@ -183,9 +185,19 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     this.#interaction = context.agent.accessor.get(ISessionInteractionService);
     const processes = codexHarnessMcpProcess(wrapWindowsNodeShims(processService, this.#runtimeLease.runtime.fs,
       () => context.agent.accessor.get(IBootstrapService)), () => this.#harnessMcp, () => this.#kikiToolsApproved);
-    this.#createClient = () => clientFactory(processes,
-      (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
-      (notification) => this.#observeFileChange(notification));
+    this.#createClient = () => {
+      const launchedContext = this.context;
+      const cwd = this.#roots().workDir;
+      return clientFactory(processes,
+        (request, responder, signal) => this.#handleServerRequest(request, responder, signal),
+        (notification) => {
+          this.#observeFileChange(notification);
+          const auth = codexAuthObservation(notification);
+          if (auth === undefined) return;
+          this.#authUpdates = this.#authUpdates.then(() => recordExecutorAuth(launchedContext, cwd, auth));
+          void this.#authUpdates.catch(() => undefined);
+        });
+    };
     this.#client = this.#createClient();
   }
 
@@ -231,7 +243,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const roots = this.#roots();
     this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
     await this.#alignKikiToolApproval();
-    await this.#client.connect(controller.signal);
+    await this.#client.connect(controller.signal).finally(() => this.#authUpdates);
     await recordNegotiatedSnapshot(this.context, {
       agentVersion: this.#client.status().agentVersion,
     });
@@ -355,18 +367,19 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
       ready.resolve();
       options.onReady?.();
     } catch (error) {
+      const failure = await this.#authUpdates.then(() => error, (authError: unknown) => authError);
       turn.state = controller.signal.aborted ? 'cancelled' : 'failed';
-      ready.reject(toError(error, 'Codex turn failed to start'));
+      ready.reject(toError(failure, 'Codex turn failed to start'));
       if (controller.signal.aborted) {
-        await recorder.cancel(controller.signal.reason ?? error);
-        result.resolve({ type: 'cancelled', steps: 1, reason: controller.signal.reason ?? error });
+        await recorder.cancel(controller.signal.reason ?? failure);
+        result.resolve({ type: 'cancelled', steps: 1, reason: controller.signal.reason ?? failure });
       } else {
-        await recorder.fail(error);
-        result.resolve({ type: 'failed', steps: 1, error });
+        await recorder.fail(failure);
+        result.resolve({ type: 'failed', steps: 1, error: failure });
       }
       this.#permissionContext = undefined;
       options.signal.removeEventListener('abort', relayAbort);
-      throw error;
+      throw failure;
     }
 
     const completion = this.#completeTurn(
@@ -435,6 +448,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
 
   async settled(): Promise<void> {
     await this.#settled;
+    await this.#authUpdates;
   }
 
   async shutdown(reason?: unknown): Promise<void> {
@@ -461,7 +475,7 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     cleanup: () => void,
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
     try {
-      const completed = await handle.completion;
+      const completed = await handle.completion.finally(() => this.#authUpdates);
       const turnResult = turnResultFromCodex(completed);
       if (turnResult.type === 'completed') {
         const usage = usageFromCodex(completed);

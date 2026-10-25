@@ -36,6 +36,7 @@ import {
   type ResolvedAgentExecutor,
 } from '@kiki/agent-core-v2';
 import { IAgentPlanService } from '@kiki/agent-core-v2/features/plan/plan';
+import { recordExecutorAuth } from '@kiki/agent-core-v2/agent/execution/executorAuth';
 import { ISessionDispatchService } from '@kiki/agent-core-v2/session/dispatch/dispatch';
 import { evaluateDispatchAdmission } from '@kiki/agent-core-v2/session/dispatch/launchPolicy';
 import { SHIPPED_AGENT_PROFILE_TEMPLATES } from '@kiki/agent-core-v2/app/shippedAgentProfiles/shippedAgentProfiles';
@@ -1027,6 +1028,43 @@ describe('GET /api/agents', () => {
     const lifecycle = server.core.accessor.get(ISessionManager).get(created.data.id)!.accessor.get(IAgentLifecycleService);
     expect(lifecycle.get('main')!.accessor.get(IAgentProfileService).data().systemPrompt).toContain(text.split('\n').at(-1));
     expect(lifecycle.list()).toHaveLength(1);
+  });
+
+  it('projects scoped runtime auth through the real live and cold capability API without starting a vendor', async () => {
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    base = `http://127.0.0.1:${server.port}`;
+    const created = await (await authedFetch(server, base, '/api/sessions', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ metadata: { cwd: home }, agent_config: { execution: { executor: 'codex-app-server' } } }),
+    })).json() as Envelope<{ id: string }>;
+    expect(created.code, created.msg).toBe(0);
+    const manager = server.core.accessor.get(ISessionManager);
+    const session = manager.get(created.data.id)!;
+    const agent = session.accessor.get(IAgentLifecycleService).get('main')!;
+    const binding = agent.accessor.get(IAgentProfileService).data();
+    expect(binding.executorId).toBe('codex-app-server');
+    await recordExecutorAuth({ agent, binding, descriptor: server.core.accessor.get(IAgentExecutorRegistry).get('codex-app-server')! }, home!, {
+      status: 'unknown', source: 'codex.account.updated', scope: 'vendor_account',
+    });
+    expect((await session.accessor.get(ISessionMetadata).read()).agents?.['main']).toMatchObject({
+      executor: 'codex-app-server', execution: { generation: binding.execution!.generation }, executorAuth: { status: 'unknown' },
+    });
+    const read = async () => {
+      const body = await (await authedFetch(server!, base, `/api/agents/capabilities?session_id=${created.data.id}&agent_id=main`)).json() as Envelope<unknown>;
+      expect(body.code, body.msg).toBe(0);
+      return agentCapabilitiesResponseSchema.parse(body.data);
+    };
+    const live = await read();
+    expect(live.executor_auth).toMatchObject({ status: 'unknown', executor_id: 'codex-app-server', cwd: home });
+    const metadata = session.accessor.get(ISessionMetadata);
+    await metadata.updateAgent('main', (current) => ({ ...current, executorAuth: { ...live.executor_auth!, binding_fingerprint: '0'.repeat(64) } }));
+    expect((await read()).executor_auth).toBeUndefined();
+    await metadata.updateAgent('main', (current) => ({ ...current, executorAuth: { ...live.executor_auth!, execution_generation: binding.execution!.generation + 1 } }));
+    expect((await read()).executor_auth).toBeUndefined();
+    await metadata.updateAgent('main', (current) => ({ ...current, executorAuth: live.executor_auth }));
+    await manager.close(created.data.id);
+    expect((await read()).executor_auth).toEqual(live.executor_auth);
+    expect(manager.get(created.data.id)).toBeUndefined();
   });
 
   it('answers capabilities for a cold session without resuming it', async () => {

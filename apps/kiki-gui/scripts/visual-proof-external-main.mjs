@@ -22,12 +22,22 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await page.waitForTimeout(300);
   };
   const optional = async (selector) => (await page.locator(selector).count()) > 0;
+  const openCapabilitiesObservation = async (status) => {
+    await openRail();
+    const section = page.locator('[data-rail-capabilities="observation"]');
+    await section.waitFor({ timeout: 10_000 });
+    const toggle = section.locator('button[aria-expanded]').first();
+    if (await toggle.getAttribute('aria-expanded') !== 'true') await toggle.click();
+    await page.locator(`[data-executor-auth="${status}"]`).waitFor({ timeout: 10_000 });
+  };
 
   async function sessions() {
     await openSession('session_fixture_external_claude');
     await shot(name('claude'));
     await openRail();
     await shot(name('claude-rail'));
+    await openCapabilitiesObservation('required');
+    await shot(name('claude-auth'));
     if (await optional('[data-harness-caps]')) {
       await page.locator('[data-harness-caps] button').first().click();
       await page.waitForTimeout(300);
@@ -54,6 +64,8 @@ export function createExternalMainWalker({ page, shot, view, webUrl, fixtureUrl,
     await shot(name('grok-plan'));
 
     await openSession('session_fixture_external_codex');
+    await openCapabilitiesObservation('unknown');
+    await shot(name('codex-auth'));
     if (await optional('[data-codex-mcp-note]')) throw new Error('codex YOLO still shows the Kiki-tools refusal note');
     await shot(name('codex-yolo'));
     // Kiki's own tool ran under Full access; another MCP server's refusal reads by its code.

@@ -524,6 +524,22 @@ function createExecutionHarness(options: HarnessOptions = {}) {
 }
 
 describe('Codex app-server external executor', () => {
+  it('persists ordered account observations from its running adapter before completing the turn', async () => {
+    const harness = createHarness({ notifications: [
+      { method: 'account/updated', params: { authMode: 'chatgpt' } },
+      { method: 'account/updated', params: { authMode: null } },
+      { method: 'account/updated', params: { authMode: 'future-mode', accessToken: 'PRIVATE_FIXTURE_TOKEN' } },
+    ] });
+    const handle = await harness.session.run({ kind: 'prompt', prompt: 'neutral fixture' }, { signal: new AbortController().signal });
+    await handle.completion;
+    const observations = harness.metadataUpdates.flatMap((update) => update.executorAuth ?? []);
+    expect(observations.map((auth) => auth.status)).toEqual(['logged_in', 'logged_out', 'unknown']);
+    expect(observations[0]).toMatchObject({ executor_id: 'codex-app-server', source: 'codex.account.updated',
+      scope: 'vendor_account', cwd: 'C:/workspace', descriptor_revision: 'r1' });
+    expect(JSON.stringify(observations)).not.toContain('PRIVATE_FIXTURE_TOKEN');
+    await harness.session.shutdown();
+  });
+
   it('starts a selected script before the host-owned app-server subcommand', async () => {
     const harness = createHarness();
     const spawn = vi.fn(async () => { throw new Error('fixture launch captured'); });
