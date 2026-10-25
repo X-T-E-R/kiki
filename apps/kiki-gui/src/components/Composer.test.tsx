@@ -1255,22 +1255,18 @@ describe('Composer execution control', () => {
   });
 
   it('refreshes the workspace profile catalog in the background when opening the selector', async () => {
+    const refreshGate = deferred<{ items: NamedAgentProfile[] }>();
     let callCount = 0;
-    listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => {
+    listNamedAgentProfiles.mockImplementation((workspaceId?: string) => {
       callCount += 1;
       if (callCount === 1) {
-        return {
+        return Promise.resolve({
           items: [
             { name: 'initial-main', source: 'workspace', main: true, disabled: false, routes: [] },
           ] satisfies NamedAgentProfile[],
-        };
+        });
       }
-      return {
-        items: [
-          { name: 'initial-main', source: 'workspace', main: true, disabled: false, routes: [] },
-          { name: 'added-main', source: 'workspace', main: true, disabled: false, routes: [] },
-        ] satisfies NamedAgentProfile[],
-      };
+      return refreshGate.promise;
     });
     const rendered = await renderComposer({
       workspaceId: 'wd_live',
@@ -1288,14 +1284,80 @@ describe('Composer execution control', () => {
     await click(trigger);
     expect(listNamedAgentProfiles).toHaveBeenCalledTimes(2);
 
-    // Initial item was immediately available from cache
+    // While refresh is pending: existing cached profile is immediately visible and selectable, added-main not yet present
     let options = [...rendered.container.querySelectorAll('[role="option"]')].map((row) => row.textContent ?? '');
     expect(options.some((text) => text.includes('initial-main'))).toBe(true);
+    expect(options.some((text) => text.includes('added-main'))).toBe(false);
 
-    // Wait for the refreshed list to settle and verify newly added profile is visible
-    await settle();
+    const initialOption = rendered.container.querySelector<HTMLElement>('[role="option"][data-execution-profile="initial-main"]');
+    expect(initialOption).not.toBeNull();
+
+    // Resolve background refresh with added item
+    refreshGate.resolve({
+      items: [
+        { name: 'initial-main', source: 'workspace', main: true, disabled: false, routes: [] },
+        { name: 'added-main', source: 'workspace', main: true, disabled: false, routes: [] },
+      ] satisfies NamedAgentProfile[],
+    });
+    for (let index = 0; index < 3; index += 1) await settle();
+
+    // Verify newly added profile becomes visible after refresh completes
     options = [...rendered.container.querySelectorAll('[role="option"]')].map((row) => row.textContent ?? '');
     expect(options.some((text) => text.includes('added-main'))).toBe(true);
+  });
+
+  it('keeps cached profiles selectable and draft execution intact if background refresh fails', async () => {
+    let callCount = 0;
+    const selectedExecution: ExecutionChoice = { executor: 'native', profile: 'initial-main', profile_file: undefined, overrides: undefined };
+    const onChangeExecution = vi.fn();
+    listNamedAgentProfiles.mockImplementation((workspaceId?: string) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return Promise.resolve({
+          items: [
+            { name: 'initial-main', source: 'workspace', main: true, disabled: false, routes: [] },
+            { name: 'backup-main', source: 'workspace', main: true, disabled: false, routes: [] },
+          ] satisfies NamedAgentProfile[],
+        });
+      }
+      return Promise.reject(new Error('network error during background refresh'));
+    });
+
+    const rendered = await renderComposer({
+      workspaceId: 'wd_live',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_live' },
+      agentProfile: 'initial-main',
+      onChangeAgentProfile: () => {},
+      execution: selectedExecution,
+      onChangeExecution,
+    });
+
+    const trigger = await waitForProfileTrigger(rendered.container);
+    expect(listNamedAgentProfiles).toHaveBeenCalledTimes(1);
+
+    // Open menu - triggers background refresh which will reject
+    await click(trigger);
+    expect(listNamedAgentProfiles).toHaveBeenCalledTimes(2);
+    await settle();
+
+    // Draft / bound execution is untouched
+    expect(trigger.textContent).toContain('initial-main');
+
+    // Cached items remain visible and selectable in menu
+    const options = [...rendered.container.querySelectorAll('[role="option"]')].map((row) => row.textContent ?? '');
+    expect(options.some((text) => text.includes('initial-main'))).toBe(true);
+    expect(options.some((text) => text.includes('backup-main'))).toBe(true);
+
+    // Selecting a cached item works normally
+    const backupOption = rendered.container.querySelector<HTMLElement>('[role="option"][data-execution-profile="backup-main"]');
+    expect(backupOption).not.toBeNull();
+    await click(backupOption!);
+    expect(onChangeExecution).toHaveBeenCalledWith({
+      executor: 'native',
+      profile: 'backup-main',
+      profile_file: undefined,
+      overrides: undefined,
+    });
   });
 
   it('accents the pill while a switch is pending', async () => {
