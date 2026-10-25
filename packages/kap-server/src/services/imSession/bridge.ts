@@ -398,17 +398,21 @@ export class ImSessionBridge {
   private async sendToIm(binding: BindingRecord, adapter: ImSessionAdapter, input: UserMessageInput, skipped: readonly string[]): Promise<Omit<MessageChannelReceipt, 'channelId'>> {
     const messageIds: string[] = [];
     const unsupported = [...skipped];
-    let deliveredMedia = 0;
+    let delivered = false;
     let failure: 'failed' | 'unknown' | 'partial' | undefined;
     let detail: string | undefined;
     const text = [input.text, skipped.length > 0 ? COPY[this.locale()].mediaUnsupported(skipped.join(', ')) : ''].filter((part) => part.length > 0).join('\n\n');
     if (text.length > 0) {
       try {
         const sent = await adapter.sendTextParts({ identity: binding.identity, parts: adapter.splitText(text), code: 'send_message' });
+        delivered = input.text.length > 0;
         messageIds.push(...sent.messageIds.filter((id) => id.length > 0));
       } catch (error) {
         failure = error instanceof ImSendError ? error.outcome : 'unknown';
-        if (error instanceof ImSendError) messageIds.push(...error.acceptedIds);
+        if (error instanceof ImSendError) {
+          messageIds.push(...error.acceptedIds);
+          delivered = input.text.length > 0 && error.acceptedIds.some((id) => id.length > 0);
+        }
         detail = error instanceof ImSendError ? error.message : 'Send outcome is unknown; do not resend automatically.';
       }
     }
@@ -432,7 +436,8 @@ export class ImSessionBridge {
           ? { status: 'unsupported' as const, unsupported: [kind] }
           : await adapter.sendMedia({ identity: binding.identity, name: attachment.title ?? (basename(attachment.path) || read.name), mediaType: attachment.mimeType ?? read.mediaType ?? 'application/octet-stream', bytes: read.bytes, kind });
         if (receipt.messageIds !== undefined) messageIds.push(...receipt.messageIds.filter((id) => id.length > 0));
-        if (receipt.status === 'delivered') deliveredMedia += 1;
+        delivered ||= receipt.messageIds?.some((id) => id.length > 0) === true;
+        if (receipt.status === 'delivered') delivered = true;
         else if (receipt.status === 'unsupported') unsupported.push(...(receipt.unsupported ?? [kind]));
         else {
           if (failure !== 'unknown') failure = receipt.status;
@@ -453,8 +458,8 @@ export class ImSessionBridge {
         detail = 'Unsupported attachments were not sent; the channel notice could not be confirmed.';
       }
     }
-    const status = failure === 'failed' && messageIds.length > 0 ? 'partial' : failure ??
-      (unsupported.length > 0 ? input.text.length > 0 || deliveredMedia > 0 ? 'partial' : 'unsupported' : 'delivered');
+    const status = failure === 'failed' && delivered ? 'partial' : failure ??
+      (unsupported.length > 0 ? delivered ? 'partial' : 'unsupported' : 'delivered');
     return { status, messageIds, unsupported: unsupported.length > 0 ? [...new Set(unsupported)] : undefined, detail };
   }
 

@@ -229,6 +229,47 @@ it('returns a partial receipt when the IM target skips one attachment that inter
   } finally { await bridge.close(); }
 });
 
+it.each(['text', 'media'] as const)('keeps accepted %s with empty message IDs in a partial receipt after a later media failure', async (accepted) => {
+  const sessionPorts = ports();
+  sessionPorts.saved.push(image.blobId, voice.blobId);
+  const { bridge, adapter } = await boundBridge(new FakeImAdapter('telegram', '42'), sessionPorts);
+  const attempts: string[] = [];
+  adapter.sendTextParts = async () => { attempts.push('text'); return { messageId: '', messageIds: [] }; };
+  adapter.sendMedia = async ({ kind }) => {
+    attempts.push(kind);
+    return accepted === 'media' && kind === 'image'
+      ? { status: 'delivered', messageIds: [] }
+      : { status: 'failed', messageIds: [], detail: 'media_rejected' };
+  };
+  try {
+    const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
+    const input = { sessionId: 'sess', toolCallId: `empty-ids-${accepted}`, channel: im.id,
+      text: accepted === 'text' ? 'accepted text' : '', attachments: accepted === 'text' ? [image] : [image, voice] };
+    const receipt = await bridge.sendUserMessage(input);
+    expect(receipt.delivery).toBe('delivered');
+    expect(receipt.channels).toEqual([{ channelId: im.id, status: 'partial', messageIds: [], detail: 'media_rejected' }]);
+    expect(attempts).toEqual(accepted === 'text' ? ['text', 'image'] : ['image', 'voice']);
+    expect(await bridge.sendUserMessage(input)).toEqual(receipt);
+    expect(attempts).toHaveLength(2);
+  } finally { await bridge.close(); }
+});
+
+it('does not count an unsupported-media notice as delivery of failed message content', async () => {
+  const sessionPorts = ports();
+  sessionPorts.saved.push(image.blobId, voice.blobId);
+  const { bridge, adapter } = await boundBridge(new FakeImAdapter('telegram', '42'), sessionPorts);
+  adapter.sendMedia = async ({ kind }) => kind === 'image'
+    ? { status: 'unsupported', unsupported: ['image'] }
+    : { status: 'failed', detail: 'media_rejected' };
+  try {
+    const im = (await bridge.channelViews('sess')).find((channel) => channel.kind === 'im')!;
+    const receipt = await bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'notice-only', channel: im.id, text: '', attachments: [image, voice] });
+    expect(receipt.delivery).toBe('undeliverable');
+    expect(receipt.channels).toEqual([expect.objectContaining({ channelId: im.id, status: 'failed', messageIds: [expect.any(String)], unsupported: ['image'], detail: 'media_rejected' })]);
+    expect(adapter.sent).toEqual([expect.objectContaining({ code: 'media_unsupported' })]);
+  } finally { await bridge.close(); }
+});
+
 it('tests only an enabled confirmed binding and preserves an uncertain outcome without retry', async () => {
   const { bridge, adapter } = await boundBridge();
   try {

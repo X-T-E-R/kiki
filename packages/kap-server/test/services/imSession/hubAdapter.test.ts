@@ -216,6 +216,29 @@ describe('strict session media', () => {
     expect(await hub.sendMedia(media)).toMatchObject({ status: 'unsupported', unsupported: ['file'] });
   });
 
+  it('preserves an unknown WeChat reply outcome without retrying or dropping its context', async () => {
+    const raw = session();
+    const hub = new HubSessionAdapter(raw);
+    const identity = { chatId: 'c', senderId: 'u', topicId: '0' };
+    await hub.start(async () => undefined);
+    await raw.sink?.admit({
+      event_key: 'wx:unknown', platform_event_id: 'unknown', cursor: 'next',
+      identity: { platform: 'personal_wechat', account_id: 'wx', chat_id: 'c', sender_id: 'u', topic_id: '0' },
+      payload: { type: 'text', text: 'hi' }, reply_context: 'reply-context',
+    });
+    raw.send = async (message) => {
+      raw.sent.push(message);
+      return { status: 'unknown', message_ids: [], diagnostic_code: 'wechat_rejected' };
+    };
+    await expect(hub.sendText({ identity, text: 'once', code: 'reply' })).rejects.toMatchObject({ outcome: 'unknown' });
+    expect(raw.sent).toHaveLength(1);
+    expect(raw.sent[0]).toMatchObject({ target: { reply_context: 'reply-context' } });
+    raw.send = async (message) => { raw.sent.push(message); return { status: 'accepted', message_ids: [] }; };
+    await hub.sendText({ identity, text: 'next', code: 'reply' });
+    expect(raw.sent).toHaveLength(2);
+    expect(raw.sent[1]).toMatchObject({ target: { reply_context: 'reply-context' } });
+  });
+
   it('maps all new platform credentials without changing their identity or topic contract', () => {
     expect(sessionSpec('discord', 'd', 'bot')).toMatchObject({ platform: 'discord', bot_token: 'bot' });
     expect(sessionSpec('slack', 's', 'xoxb-test\nxapp-test')).toMatchObject({ platform: 'slack', bot_token: 'xoxb-test', app_token: 'xapp-test' });

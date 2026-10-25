@@ -380,7 +380,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
     const had = 'target' in message && typeof message.target.reply_context === 'string' && message.target.reply_context.length > 0;
     const sent = await this.session.send(message);
     if (sent.diagnostic_code === 'wechat_auth') throw new Error('wechat_auth');
-    if (sent.diagnostic_code === 'wechat_rejected' && had) {
+    if (sent.status === 'failed' && sent.diagnostic_code === 'wechat_rejected' && had) {
       await this.forgetReply(identity);
       const retried = await this.session.send(withoutReply(message));
       if (retried.diagnostic_code === 'wechat_auth') throw new Error('wechat_auth');
