@@ -1,5 +1,6 @@
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
+import { channel } from 'node:diagnostics_channel';
 import { WIRE_TRANSCRIPT_RECEIPT_KEY } from '../../agent-core-v2/src/wire/transcriptReceipt';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -3010,7 +3011,213 @@ describe('SessionEventBroadcaster', () => {
     ).toEqual([{ offset: 0, delta: 'abc' }]);
   });
 
+  it.each(['succeeded', 'failed', 'cancelled'] as const)('session loading timing retains acquisition %s before attachment', async (outcome) => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    let release!: () => void;
+    let enter!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const dispose = vi.fn();
+    const logger = { warn: vi.fn() };
+    const core = makeCore(sessions, eventBus, {}, lifecycleEvents, async (sessionId, _reason, getHandle) => {
+      enter();
+      await blocked;
+      if (outcome === 'failed') throw new Error('private-source-content');
+      return { handle: getHandle(sessionId)!, dispose };
+    });
+    bc = new SessionEventBroadcaster({ eventsDir: dir, core, logger });
+    await bc.getCursor('s1');
+    const frames: unknown[] = [];
+    let finish!: () => void;
+    const finished = new Promise<void>((resolve) => { finish = resolve; });
+    const connection = new SessionViewHttpConnection(bc, (frame) => { frames.push(frame); finish(); }, finish, { core, logger });
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    try {
+      connection.receive({ type: 'view_attach', id: 'timed-view', sessionId: 's1', data: { generation: 17,
+        input: { sessionCursor: { seq: 0 }, transcriptGrades: { '*': 'off' } } } });
+      await entered;
+      if (outcome === 'cancelled') connection.receive({ type: 'view_detach', id: 'timed-view' });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'subscription_acquire', outcome: 'pending',
+        signalAborted: outcome === 'cancelled', sessionId: 's1', generation: 17, viewId: 'timed-view', durationMs: 1_000 }), 'session view phase');
+      expect(frames).toEqual([]);
+      expect(dispose).not.toHaveBeenCalled();
+      expect(logger.warn.mock.calls.some(([record]) => record.stage === 'subscription_acquire' &&
+        ['succeeded', 'failed', 'cancelled'].includes(record.outcome))).toBe(false);
+      release();
+      if (outcome !== 'cancelled') await finished;
+      else await vi.advanceTimersByTimeAsync(0);
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'subscription_acquire',
+        outcome: outcome === 'cancelled' ? 'succeeded' : outcome, signalAborted: outcome === 'cancelled',
+        sessionId: 's1', generation: 17, viewId: 'timed-view', durationMs: 1_000 }), 'session view phase');
+      if (outcome === 'cancelled') {
+        expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'subscription_acquire', outcome: 'abort_requested', durationMs: 0 }), 'session view phase');
+        expect(frames).toEqual([]);
+      }
+      expect(vi.getTimerCount()).toBe(0);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('private-source-content');
+    } finally {
+      release();
+      connection.dispose();
+      vi.useRealTimers();
+      await bc.getCursor('s1');
+    }
+    if (outcome !== 'failed') expect(dispose).toHaveBeenCalledOnce();
+  });
+
+  it('session loading timing separates a snapshot capture from the next request queue', async () => {
+    const lifecycle = new FakeLifecycle();
+    lifecycle.addAgent('main');
+    sessions.set('s1', lifecycle);
+    const logger = { warn: vi.fn() };
+    bc = new SessionEventBroadcaster({ eventsDir: dir, core: makeCore(sessions, eventBus), logger });
+    const cursor = await bc.getCursor('s1');
+    let release!: () => void;
+    let enter!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const cancelled = new AbortController();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const first = bc.getSnapshotState('s1', { captureMessages: false,
+      timing: { signal: cancelled.signal, requestId: 'first-snapshot' },
+      capture: async () => { enter(); await blocked; return 'captured'; } });
+    try {
+      await entered;
+      const second = bc.getSnapshotState('s1', { captureMessages: false, timing: { requestId: 'second-snapshot' } });
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_capture', outcome: 'pending',
+        requestId: 'first-snapshot', durationMs: 1_000 }), 'session view phase');
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_queue', outcome: 'pending',
+        requestId: 'second-snapshot', durationMs: 1_000 }), 'session view phase');
+      cancelled.abort();
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_capture', outcome: 'abort_requested',
+        requestId: 'first-snapshot', durationMs: 1_000 }), 'session view phase');
+      expect(logger.warn.mock.calls.some(([record]) => record.stage === 'snapshot_capture' && record.outcome === 'cancelled')).toBe(false);
+      release();
+      const [captured, queued] = await Promise.all([first, second]);
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_capture', outcome: 'succeeded',
+        signalAborted: true, requestId: 'first-snapshot', durationMs: 1_000 }), 'session view phase');
+      expect(captured.captured).toBe('captured');
+      expect(captured.seq).toBe(cursor.seq);
+      expect(queued.seq).toBe(cursor.seq);
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_queue', outcome: 'succeeded',
+        requestId: 'second-snapshot', durationMs: 1_000 }), 'session view phase');
+    } finally {
+      release();
+      await first;
+      vi.useRealTimers();
+    }
+  });
+
   describe('transcript streaming', () => {
+    it.each((['main_ready', 'agent_backfill', 'agent_verify'] as const).flatMap((stage) =>
+      (['succeeded', 'failed', 'cancelled'] as const).map((outcome) => ({ stage, outcome }))))(
+      'session loading timing retains $stage / $outcome through the production seed path', async ({ stage, outcome }) => {
+        const lifecycle = new FakeLifecycle();
+        lifecycle.addAgent('main');
+        sessions.set('s1', lifecycle);
+        const core = makeCore(sessions, eventBus);
+        const service = new TranscriptService({ homeDir: dir, core });
+        service.forSessionLive('s1');
+        await service.whenReady('s1');
+        const logger = { warn: vi.fn() };
+        bc = new SessionEventBroadcaster({ eventsDir: dir, core, transcriptService: service, logger });
+        await bc.getCursor('s1');
+        let release!: () => void;
+        let enter!: () => void;
+        const blocked = new Promise<void>((resolve) => { release = resolve; });
+        const entered = new Promise<void>((resolve) => { enter = resolve; });
+        const gate = async (): Promise<void> => {
+          enter();
+          await blocked;
+          if (outcome === 'failed' || (outcome === 'cancelled' && stage === 'agent_backfill')) throw new Error('private-source-content');
+          if (outcome === 'cancelled' && stage === 'agent_verify') throw new DOMException('private-abort-content', 'AbortError');
+        };
+        if (stage === 'main_ready') {
+          const original = service.whenReady.bind(service);
+          vi.spyOn(service, 'whenReady').mockImplementation(async (...args) => { await gate(); return original(...args); });
+        } else if (stage === 'agent_backfill') {
+          const original = service.ensureAgentHistory.bind(service);
+          vi.spyOn(service, 'ensureAgentHistory').mockImplementation(async (...args) => { await gate(); return original(...args); });
+        } else {
+          const original = service.verifyTranscriptLiveCoverage.bind(service);
+          vi.spyOn(service, 'verifyTranscriptLiveCoverage').mockImplementation(async (...args) => { await gate(); return original(...args); });
+        }
+        const diagnostics = channel('kiki.session-view.timing');
+        const records: Array<Record<string, unknown>> = [];
+        const collect = (record: unknown): void => { records.push(record as Record<string, unknown>); };
+        diagnostics.subscribe(collect);
+        let finish!: () => void;
+        const finished = new Promise<void>((resolve) => { finish = resolve; });
+        const frames: Array<Record<string, unknown>> = [];
+        const errors = vi.fn(() => finish());
+        const connection = new SessionViewHttpConnection(bc, (frame) => {
+          const data = frame.data as Record<string, unknown>;
+          frames.push(data);
+          if (data['type'] === 'ready') finish();
+        }, errors, { core, service, logger });
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+        const addListener = vi.spyOn(AbortSignal.prototype, 'addEventListener');
+        const removeListener = vi.spyOn(AbortSignal.prototype, 'removeEventListener');
+        try {
+          connection.receive({ type: 'view_attach', id: 'timed-main', sessionId: 's1', data: { generation: 23,
+            transcript_coverage_version: 2,
+            input: { sessionCursor: { seq: 0 }, transcriptGrades: { '*': 'off', main: 'delta' } } } });
+          await entered;
+          const identity = { stage, sessionId: 's1', agentId: 'main', generation: 23, transcriptGeneration: 1, viewId: 'timed-main' };
+          if (outcome === 'cancelled') {
+            connection.receive({ type: 'view_detach', id: 'timed-main' });
+            expect(records).toContainEqual(expect.objectContaining({ ...identity, outcome: 'abort_requested', durationMs: 0 }));
+          }
+          await vi.advanceTimersByTimeAsync(1_000);
+          expect(records).toContainEqual(expect.objectContaining({ ...identity, outcome: 'pending',
+            signalAborted: outcome === 'cancelled', durationMs: 1_000 }));
+          expect(records.some((record) => record['stage'] === stage &&
+            ['succeeded', 'failed', 'cancelled'].includes(String(record['outcome'])))).toBe(false);
+          expect(frames).toEqual([]);
+          release();
+          if (outcome !== 'cancelled') await finished;
+          else await vi.advanceTimersByTimeAsync(0);
+          const actualOutcome = outcome !== 'cancelled' ? outcome :
+            stage === 'main_ready' ? 'succeeded' : stage === 'agent_backfill' ? 'failed' : 'cancelled';
+          expect(records).toContainEqual(expect.objectContaining({ ...identity, outcome: actualOutcome,
+            signalAborted: outcome === 'cancelled', durationMs: 1_000 }));
+          expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ ...identity, outcome: actualOutcome }), 'session view phase');
+          if (outcome === 'succeeded') {
+            expect(records).toContainEqual(expect.objectContaining({ stage: 'first_detail_reset', generation: 23, durationMs: 1_000 }));
+            expect(frames.map((frame) => frame['type'])).toEqual(['transcript', 'ready']);
+            expect(errors).not.toHaveBeenCalled();
+          } else {
+            expect(records.some((record) => record['stage'] === 'first_detail_reset')).toBe(false);
+            expect(frames).toEqual([]);
+          }
+          expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('private-source-content');
+          expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('private-abort-content');
+          const terminal = records.filter((record) => record['stage'] === stage &&
+            ['succeeded', 'failed', 'cancelled'].includes(String(record['outcome'])));
+          expect(terminal).toHaveLength(1);
+          expect(vi.getTimerCount()).toBe(0);
+          const listeners = addListener.mock.calls.filter(([event, listener]) => event === 'abort' &&
+            typeof listener === 'function' && listener.name === 'onAbort');
+          expect(listeners.length).toBeGreaterThan(0);
+          for (const [, listener] of listeners) {
+            expect(removeListener.mock.calls.some(([event, removed]) => event === 'abort' && removed === listener)).toBe(true);
+          }
+          const count = records.length;
+          await vi.advanceTimersByTimeAsync(2_000);
+          expect(records).toHaveLength(count);
+        } finally {
+          release();
+          connection.dispose();
+          addListener.mockRestore();
+          removeListener.mockRestore();
+          vi.useRealTimers();
+          diagnostics.unsubscribe(collect);
+        }
+      });
+
     function makeBroadcasterWithTranscript(
       metaAgents?: Record<string, { type?: string; parentAgentId?: string }>,
     ): SessionEventBroadcaster {

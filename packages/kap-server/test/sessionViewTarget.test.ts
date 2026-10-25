@@ -234,7 +234,8 @@ describe('SessionViewTarget', () => {
     if (outcome === 'upgrade') {
       await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'resyncRequired' }) })));
       expect(broadcaster.subscribe).toHaveBeenCalledExactlyOnceWith('s1', expect.any(SessionViewTarget), undefined,
-        { main: 'delta' }, { deferTranscriptReset: true, transcriptSince: undefined });
+        { main: 'delta' }, { deferTranscriptReset: true, transcriptSince: undefined,
+          timing: { logger: undefined, signal: expect.any(AbortSignal), generation: 1, viewId: 'v1' } });
       expect(broadcaster.flushTranscriptSeed).toHaveBeenCalledOnce();
     } else {
       await new Promise((resolve) => setTimeout(resolve, 0));
@@ -532,13 +533,15 @@ describe('SessionViewTarget', () => {
         input: { sessionCursor: { seq: 7 }, transcriptGrades: { child: 'delta' } },
       } });
       await vi.waitFor(() => expect(records.map((record) => record['stage'])).toEqual([
-        'attach_queue', 'cold_agent_read', 'first_detail_reset', 'attach_ready',
+        'attach_queue', 'cold_roster', 'cold_agent_read', 'first_detail_reset', 'attach_cursor', 'attach_ready',
       ]));
       for (const record of records) {
         expect(record['durationMs']).toEqual(expect.any(Number));
         expect(Number(record['durationMs'])).toBeGreaterThanOrEqual(0);
-        expect(Object.keys(record).every((key) => ['stage', 'durationMs', 'sessionId', 'agentId', 'generation'].includes(key))).toBe(true);
+        expect(record).toMatchObject({ sessionId: 's1', generation: 1, viewId: 'v1' });
+        expect(Object.keys(record).every((key) => ['stage', 'outcome', 'signalAborted', 'durationMs', 'sessionId', 'agentId', 'generation', 'viewId'].includes(key))).toBe(true);
       }
+      expect(records.filter((record) => record['outcome'] !== undefined).every((record) => record['outcome'] === 'succeeded')).toBe(true);
     } finally {
       connection.dispose();
       timing.unsubscribe(collect);

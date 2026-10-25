@@ -40,7 +40,7 @@ import { sessionSnapshotResponseSchema } from '../src/protocol/rest-snapshot';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IModelPricingService } from '../src/pricing/modelPricingService';
-import { assembleBrowseSnapshotSource, assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
+import { assembleBrowseSnapshot, assembleBrowseSnapshotSource, assembleSnapshot, registerSnapshotRoutes } from '../src/routes/snapshot';
 import { readColdMainWireProjection } from '../src/services/snapshot/coldSnapshotSource';
 import { applyContentSegment, jsonBytes, type ContentSegment } from '@kiki/transcript';
 import { readContentSegment } from '../src/transport/klient/boundedContent';
@@ -74,6 +74,41 @@ function deferred(): { readonly promise: Promise<void>; resolve(): void } {
 }
 
 describe('server-v2 snapshot route enrichment', () => {
+  it.each(['failed', 'cancelled'] as const)('session loading timing records live snapshot acquisition %s', async (outcome) => {
+    const gate = deferred();
+    const entered = deferred();
+    const expected = new Error('private-source-content');
+    const logger = { warn: vi.fn() };
+    const cancellation = new AbortController();
+    const acquire = vi.fn(async () => { entered.resolve(); await gate.promise; throw expected; });
+    const core = { accessor: fakeAccessor([
+      [ISessionManager, { get: () => ({}), acquire }],
+      [ITelemetryService, { withContext: () => ({ track2: vi.fn() }) }],
+    ]) };
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'performance'] });
+    const pending = assembleBrowseSnapshot(core as never, {} as never, 's1', {
+      logger, signal: cancellation.signal, requestId: 'snapshot-request',
+    }).catch((error: unknown) => error);
+    try {
+      await entered.promise;
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_acquire', outcome: 'pending',
+        sessionId: 's1', requestId: 'snapshot-request', durationMs: 1_000 }), 'session view phase');
+      if (outcome === 'cancelled') cancellation.abort();
+      gate.resolve();
+      expect(await pending).toBe(expected);
+      expect(logger.warn).toHaveBeenCalledWith(expect.objectContaining({ stage: 'snapshot_acquire', outcome: 'failed',
+        signalAborted: outcome === 'cancelled', sessionId: 's1', requestId: 'snapshot-request', durationMs: 1_000 }), 'session view phase');
+      expect(logger.warn.mock.calls.filter(([record]) => record.stage === 'snapshot_acquire' &&
+        ['succeeded', 'failed', 'cancelled'].includes(record.outcome))).toHaveLength(1);
+      expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('private-source-content');
+    } finally {
+      gate.resolve();
+      await pending;
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps legacy parity while transcript mode uses materialized display fields', async () => {
     const sessionId = 'sess_snapshot';
     const promptId = 'msg_snapshot_prompt';

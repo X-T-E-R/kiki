@@ -62,7 +62,7 @@ import { cachedMessageCount, captureContextMessageHistory } from '../../../servi
 import { projectPromptContentParts } from '../../../services/messages/messageProjection';
 import { readLegacyStatus, toLegacyPhase } from '../../../services/legacyStatus/legacyStatus';
 import type { TranscriptService } from '../../../services/transcript/transcriptService';
-import { recordSessionViewTiming } from '../../klient/sessionViewTiming';
+import { recordSessionViewTiming, timeSessionViewPhase, type SessionViewTimingContext } from '../../klient/sessionViewTiming';
 import { boundedTranscriptOps, boundedTranscriptSnapshot, TRANSCRIPT_WINDOW_BYTES } from '../../klient/boundedTranscript';
 import { InFlightTurnTracker } from './inFlightTurnTracker';
 import { SubagentRosterTracker } from './subagentRosterTracker';
@@ -153,6 +153,8 @@ interface PendingTranscriptSeed {
   readonly store: TranscriptStore;
   readonly deferred: boolean;
   readonly delivered: Map<string, TranscriptCursor>;
+  readonly diagnostics: AbortController;
+  readonly timing: SessionViewTimingContext;
 }
 
 interface SessionState {
@@ -188,6 +190,7 @@ async function disposeSessionState(state: SessionState): Promise<void> {
     state.interactionService?.releaseConsumer(id);
   }
   state.interactionConsumers.clear();
+  for (const seed of state.pendingTranscriptSeeds.values()) seed.diagnostics.abort();
   for (const subscription of state.targets.values()) await subscription.residencyLease?.dispose();
   state.targets.clear();
   for (const d of state.lifecycleDisposables) await d.dispose();
@@ -318,7 +321,7 @@ export class SessionEventBroadcaster {
     target: BroadcastTarget,
     filter?: AgentFilter,
     transcriptGrades?: TranscriptGradeSpec,
-    opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince },
+    opts?: { deferTranscriptReset?: boolean; transcriptSince?: TranscriptSince; timing?: SessionViewTimingContext },
   ): Promise<boolean> {
     if (this.closed) return false;
     const pending = this.pendingSubscriptions.get(sessionId) ?? new Map<BroadcastTarget, AbortController>();
@@ -326,6 +329,9 @@ export class SessionEventBroadcaster {
     pending.get(target)?.abort();
     const token = new AbortController();
     pending.set(target, token);
+    const timing = { ...opts?.timing, logger: opts?.timing?.logger ?? this.opts.logger,
+      signal: opts?.timing?.signal === undefined ? token.signal : AbortSignal.any([token.signal, opts.timing.signal]) };
+    const fields = { sessionId, generation: timing.generation, viewId: timing.viewId };
     let acquiredLease: SessionLease | undefined;
     let attached: { state: SessionState; generation: number } | undefined;
     try {
@@ -333,11 +339,12 @@ export class SessionEventBroadcaster {
       const existingLease = pinnedState?.targets.get(target)?.residencyLease;
       const manager = this.opts.core.accessor.get(ISessionManager);
       if (existingLease === undefined) {
-        acquiredLease = await manager.acquire?.(sessionId, 'ws-subscription', undefined, token.signal);
+        acquiredLease = await timeSessionViewPhase('subscription_acquire', fields,
+          async () => manager.acquire?.(sessionId, 'ws-subscription', undefined, token.signal), timing);
         if (manager.acquire !== undefined && acquiredLease === undefined) return false;
       }
       if (this.closed || pending.get(target) !== token) return false;
-      const state = await this.ensureState(sessionId);
+      const state = await timeSessionViewPhase('subscription_state', fields, () => this.ensureState(sessionId), timing);
       if (state === undefined || this.closed || pending.get(target) !== token ||
           this.sessions.get(sessionId) !== state ||
           (existingLease !== undefined && state !== pinnedState)) return false;
@@ -378,6 +385,7 @@ export class SessionEventBroadcaster {
       const hadBaseline = state.transcriptSeeded.has(target);
       state.transcriptSeeded.delete(target);
       if (liveStore === undefined) return true;
+      const diagnostics = new AbortController();
       const seed: PendingTranscriptSeed = {
         generation,
         spec: transcriptGrades,
@@ -386,6 +394,8 @@ export class SessionEventBroadcaster {
         store: liveStore,
         deferred,
         delivered: new Map(),
+        diagnostics,
+        timing: { ...timing, signal: AbortSignal.any([timing.signal, diagnostics.signal]) },
       };
       state.pendingTranscriptSeeds.set(target, seed);
       if (!deferred) await this.runTranscriptSeed(state, target, seed);
@@ -408,6 +418,7 @@ export class SessionEventBroadcaster {
   }
 
   private nextTranscriptGeneration(state: SessionState, target: BroadcastTarget): number {
+    state.pendingTranscriptSeeds.get(target)?.diagnostics.abort();
     state.pendingTranscriptSeeds.delete(target);
     const generation = (state.transcriptGenerations.get(target) ?? 0) + 1;
     state.transcriptGenerations.set(target, generation);
@@ -535,7 +546,9 @@ export class SessionEventBroadcaster {
     const admitted = admittedForHistory(seed);
     const priority = new Set(Object.keys(seed.spec).filter((agentId) => agentId !== '*' &&
       (gradeFor(seed.spec, agentId) === 'block' || gradeFor(seed.spec, agentId) === 'delta')));
-    const fields = { sessionId: state.sessionId, generation: seed.generation,
+    const timing = seed.timing;
+    const fields = { sessionId: state.sessionId, generation: timing.generation,
+      transcriptGeneration: seed.generation, viewId: timing.viewId,
       admittedAgents: admitted.size, priorityAgents: priority.size };
     let firstDetail = false;
     let stopped = false;
@@ -547,16 +560,13 @@ export class SessionEventBroadcaster {
       let mainReady = false;
       const ensureHistory = async (agentId: string): Promise<AgentTranscript | undefined> => {
         if (agentId === MAIN_AGENT_ID && !mainReady) {
-          const readyAt = performance.now();
-          await service.whenReady(state.sessionId);
-          recordSessionViewTiming('main_ready', readyAt, fields);
+          await timeSessionViewPhase('main_ready', { ...fields, agentId }, () => service.whenReady(state.sessionId), timing);
           mainReady = true;
           if (!current()) return;
         }
         if (!admitted.has(agentId)) return seed.store.getAgent(agentId);
-        const backfillAt = performance.now();
-        const transcript = await service.ensureAgentHistory(state.sessionId, agentId);
-        recordSessionViewTiming('agent_backfill', backfillAt, { ...fields, agentId });
+        const transcript = await timeSessionViewPhase('agent_backfill', { ...fields, agentId },
+          () => service.ensureAgentHistory(state.sessionId, agentId), timing);
         admitted.delete(agentId);
         return transcript;
       };
@@ -606,22 +616,21 @@ export class SessionEventBroadcaster {
             sent = { seq: catchup.throughSeq, epoch: catchup.epoch };
           } else {
             if (since !== undefined || needsReset) {
-              const verifyAt = performance.now();
-              await service.verifyTranscriptLiveCoverage(state.sessionId, agentId);
-              recordSessionViewTiming('agent_verify', verifyAt, { ...fields, agentId });
+              await timeSessionViewPhase('agent_verify', { ...fields, agentId },
+                () => service.verifyTranscriptLiveCoverage(state.sessionId, agentId), timing);
               if (!current()) return false;
               if (!this.sendTranscriptReset(state, target, transcript, grade, cursor, seed.generation)) return false;
-              await target.drain?.();
+              await timeSessionViewPhase('agent_drain', { ...fields, agentId }, async () => target.drain?.(), timing);
               if (!firstDetail && priority.has(agentId)) {
                 firstDetail = true;
-                recordSessionViewTiming('first_detail_reset', startedAt, { ...fields, agentId });
+                recordSessionViewTiming('first_detail_reset', startedAt, { ...fields, agentId }, timing);
               }
             }
             sent = cursor;
           }
         }
       };
-      await target.drain?.();
+      await timeSessionViewPhase('seed_drain', fields, async () => target.drain?.(), timing);
       await Promise.all([...priority].map(async (agentId) => {
         if (!await deliverAgent(agentId)) {
           stopped = true;
@@ -646,12 +655,13 @@ export class SessionEventBroadcaster {
         });
         if (caughtUp) {
           state.transcriptSeeded.add(target);
-          recordSessionViewTiming('seed_ready', startedAt, fields);
+          recordSessionViewTiming('seed_ready', startedAt, fields, timing);
           break;
         }
       }
     } finally {
       stopped = true;
+      seed.diagnostics.abort();
       seed.delivered.clear();
       if (state.pendingTranscriptSeeds.get(target) === seed) {
         state.pendingTranscriptSeeds.delete(target);
@@ -1020,9 +1030,11 @@ export class SessionEventBroadcaster {
 
   async getSnapshotState<T = undefined>(
     sessionId: string,
-    options: { captureMessages?: boolean; capture?: () => Promise<T> } = {},
+    options: { captureMessages?: boolean; capture?: () => Promise<T>; timing?: SessionViewTimingContext } = {},
   ): Promise<SessionSnapshotState & { captured?: T }> {
-    const state = await this.ensureState(sessionId);
+    const timing = { ...options.timing, logger: options.timing?.logger ?? this.opts.logger };
+    const fields = { sessionId, requestId: timing.requestId };
+    const state = await timeSessionViewPhase('snapshot_state', fields, () => this.ensureState(sessionId), timing);
     if (state === undefined) {
       const cold = await this.readColdWatermark(sessionId);
       return {
@@ -1038,10 +1050,11 @@ export class SessionEventBroadcaster {
       };
     }
     const captureMessages = options.captureMessages !== false;
-    const barrier = state.queue.then(async () => {
+    const queued = state.queue;
+    const barrier = timeSessionViewPhase('snapshot_queue', fields, () => queued, timing).then(async () => {
       const contextMessages = captureMessages ? [...state.contextMessages] : [];
       const mainAgent = state.mainAgent;
-      const captured = await options.capture?.();
+      const captured = await timeSessionViewPhase('snapshot_capture', fields, async () => options.capture?.(), timing);
       return {
         seq: state.journal.seq,
         epoch: state.journal.epoch,

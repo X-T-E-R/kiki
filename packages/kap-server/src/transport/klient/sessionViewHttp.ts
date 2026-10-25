@@ -29,7 +29,7 @@ import {
 import { ContentChangedError, readContentSegment } from './boundedContent';
 import { CanonicalEntityPreparingError } from '../../services/history/historyCanonicalReader';
 import { SessionViewTarget } from './sessionViewTarget';
-import { recordSessionViewTiming } from './sessionViewTiming';
+import { recordSessionViewTiming, timeSessionViewPhase, type SessionViewTimingContext } from './sessionViewTiming';
 
 export const KLIENT_SESSION_VIEW_PATH = '/api/klient/session-view';
 
@@ -66,9 +66,8 @@ export function registerSessionViewHttp(app: FastifyInstance, scope: Scope, opts
     if (broadcaster === undefined) throw new RPCError(50001, 'session view unavailable');
     try {
       const { sessionId } = req.params as { sessionId: string };
-      const startedAt = performance.now();
-      const snapshot = await assembleBrowseSnapshot(scope, broadcaster, sessionId);
-      recordSessionViewTiming('snapshot', startedAt, { sessionId });
+      const snapshot = await withReplyCloseSignal(reply, (signal) => assembleBrowseSnapshot(scope, broadcaster, sessionId,
+        { logger: req.log, signal, requestId: req.id }), req);
       return await reply.send(okEnvelope(snapshot, req.id));
     } catch (error) {
       if (error instanceof SnapshotNotFoundError) return reply.send({ code: 40401, msg: error.message, data: null, request_id: req.id });
@@ -127,6 +126,7 @@ interface AttachedView {
   readonly target: SessionViewTarget;
   readonly coverage: boolean;
   readonly cold?: AbortController;
+  readonly diagnostics: AbortController;
 }
 
 export class SessionViewHttpConnection {
@@ -142,7 +142,7 @@ export class SessionViewHttpConnection {
     private readonly broadcaster: SessionEventBroadcaster | undefined,
     private readonly send: (frame: KlientFrame) => void,
     private readonly sendError: (id: string, error: unknown) => void,
-    private readonly browse?: { readonly core: Scope; readonly service?: TranscriptService },
+    private readonly browse?: { readonly core: Scope; readonly service?: TranscriptService; readonly logger?: SessionViewTimingContext['logger'] },
   ) {
     const manager = browse?.core.accessor.get(ISessionManager);
     this.activationListener = manager?.onDidCreateSession?.(({ sessionId }) => {
@@ -174,6 +174,7 @@ export class SessionViewHttpConnection {
     this.detached.delete(id);
     this.frames.set(id, frame);
     const replacedCold = this.views.get(id)?.cold !== undefined;
+    this.views.get(id)?.diagnostics.abort();
     if (this.tasks.has(id)) this.detach(id);
     else this.views.get(id)?.cold?.abort();
     const queuedAt = performance.now();
@@ -196,8 +197,8 @@ export class SessionViewHttpConnection {
     const parsed = sessionViewSubscribeInputSchema.safeParse(data.input);
     if (!parsed.success || typeof data.generation !== 'number' || !Number.isInteger(data.generation) || data.generation < 0) throw new RPCError(40001, 'invalid session view attach');
     const input = parsed.data;
-    const fields = { sessionId: frame.sessionId, generation: data.generation };
-    recordSessionViewTiming('attach_queue', queuedAt, fields);
+    const fields = { sessionId: frame.sessionId, generation: data.generation, viewId: id };
+    recordSessionViewTiming('attach_queue', queuedAt, fields, { logger: this.browse?.logger });
     const attachedAt = performance.now();
     const coverage = requestsTranscript(input.transcriptGrades);
     if (coverage && !acceptsTranscriptCoverage(data.transcript_coverage_version)) {
@@ -216,13 +217,16 @@ export class SessionViewHttpConnection {
     target.begin(data.generation);
     const cold = this.browse !== undefined && this.browse.core.accessor.get(ISessionManager).get(frame.sessionId) === undefined
       ? new AbortController() : undefined;
+    const diagnostics = new AbortController();
+    const timing: SessionViewTimingContext = { logger: this.browse?.logger, signal: diagnostics.signal,
+      generation: data.generation, viewId: id };
     const upgrading = (replacedCold || previous?.cold !== undefined) && cold === undefined;
-    const view: AttachedView = { frame, sessionId: frame.sessionId, target, coverage, cold };
+    const view: AttachedView = { frame, sessionId: frame.sessionId, target, coverage, cold, diagnostics };
     this.views.set(id, view);
     if (cold !== undefined) {
       const service = this.browse?.service;
       if (service === undefined) throw new RPCError(50001, 'session view unavailable');
-      const roster = await service.readColdRoster(frame.sessionId);
+      const roster = await timeSessionViewPhase('cold_roster', fields, () => service.readColdRoster(fields.sessionId), timing);
       cold.signal.throwIfAborted();
       if (roster === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
       const agents = new Set(Object.keys(input.transcriptGrades).filter((agentId) => agentId !== '*'));
@@ -240,9 +244,8 @@ export class SessionViewHttpConnection {
           const agentId = ordered[nextAgent++]!;
           const grade = gradeFor(input.transcriptGrades, agentId);
           if (grade === 'off') continue;
-          const readAt = performance.now();
-          const event = await readColdSessionViewBaseline(service, fields.sessionId, agentId, grade, cold.signal);
-          recordSessionViewTiming('cold_agent_read', readAt, { ...fields, agentId });
+          const event = await timeSessionViewPhase('cold_agent_read', { ...fields, agentId },
+            () => readColdSessionViewBaseline(service, fields.sessionId, agentId, grade, cold.signal), timing);
           if (event === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
           cold.signal.throwIfAborted();
           if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
@@ -250,21 +253,21 @@ export class SessionViewHttpConnection {
             generation: data.generation, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION } });
           if (!firstDetail && priority(agentId)) {
             firstDetail = true;
-            recordSessionViewTiming('first_detail_reset', attachedAt, { ...fields, agentId });
+            recordSessionViewTiming('first_detail_reset', attachedAt, { ...fields, agentId }, timing);
           }
         }
       };
       await Promise.all(Array.from({ length: Math.min(2, ordered.length) }, () => readAgents()));
-      const cursor = await broadcaster.getCursor(frame.sessionId);
+      const cursor = await timeSessionViewPhase('attach_cursor', fields, () => broadcaster.getCursor(fields.sessionId), timing);
       cold.signal.throwIfAborted();
       if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
       target.finish({ seq: cursor.seq, epoch: cursor.epoch || `cold:${frame.sessionId}` }, data.reconnected === true);
-      recordSessionViewTiming('attach_ready', attachedAt, fields);
+      recordSessionViewTiming('attach_ready', attachedAt, fields, timing);
       return;
     }
-    const attached = await broadcaster.subscribe(frame.sessionId, target, undefined, input.transcriptGrades, {
-      deferTranscriptReset: true, transcriptSince: upgrading ? undefined : input.transcriptSince,
-    });
+    const attached = await timeSessionViewPhase('attach_subscribe', fields, () => broadcaster.subscribe(fields.sessionId, target, undefined, input.transcriptGrades, {
+      deferTranscriptReset: true, transcriptSince: upgrading ? undefined : input.transcriptSince, timing,
+    }), timing);
     if (this.closed || this.detached.has(id) || this.frames.get(id) !== frame) {
       broadcaster.unsubscribe(frame.sessionId, target);
       if (this.views.get(id) === view) this.views.delete(id);
@@ -276,27 +279,29 @@ export class SessionViewHttpConnection {
       this.detach(id);
       return;
     }
-    const replay = await broadcaster.getBufferedSince(frame.sessionId, input.sessionCursor, undefined, input.transcriptGrades);
+    const replay = await timeSessionViewPhase('attach_replay', fields,
+      () => broadcaster.getBufferedSince(fields.sessionId, input.sessionCursor, undefined, input.transcriptGrades), timing);
     if (upgrading || replay.resyncRequired !== false) {
       target.sendControl({ type: 'resync_required', payload: { reason: upgrading ? 'epoch_changed' : replay.resyncRequired, current_seq: replay.currentSeq, epoch: replay.epoch } });
     } else {
       for (const { envelope } of replay.events) target.replay(envelope);
     }
-    await target.drain();
-    await broadcaster.flushTranscriptSeed(frame.sessionId, target);
+    await timeSessionViewPhase('attach_drain', fields, () => target.drain(), timing);
+    await timeSessionViewPhase('attach_seed', fields, () => broadcaster.flushTranscriptSeed(fields.sessionId, target), timing);
     if (this.closed || this.detached.has(id) || this.frames.get(id) !== frame) {
       broadcaster.unsubscribe(frame.sessionId, target);
       if (this.views.get(id) === view) this.views.delete(id);
       return;
     }
     target.finish({ seq: replay.currentSeq, epoch: replay.epoch }, data.reconnected === true);
-    recordSessionViewTiming('attach_ready', attachedAt, fields);
+    recordSessionViewTiming('attach_ready', attachedAt, fields, timing);
   }
 
   private detach(id: string): void {
     const view = this.views.get(id);
     if (view === undefined) return;
     this.views.delete(id);
+    view.diagnostics.abort();
     view.cold?.abort();
     this.broadcaster?.unsubscribe(view.sessionId, view.target);
   }

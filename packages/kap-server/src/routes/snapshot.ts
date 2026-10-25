@@ -47,6 +47,7 @@ import { type SessionEventBroadcaster } from '../transport/ws/v1/sessionEventBro
 import { readAgentRuntimeControls } from './sessionAgentConfig';
 import { resolveSessionBindingFacts, resolveSessionFacts, toWireSession } from './sessions';
 import { boundedEntity } from '../transport/klient/boundedContent';
+import { timeSessionViewPhase, type SessionViewTimingContext } from '../transport/klient/sessionViewTiming';
 import { sessionAgentCounts } from './sessionAgentCounts';
 import { sessionAgentRoster } from './sessionAgentRoster';
 
@@ -68,6 +69,7 @@ const snapshotQuerySchema = z.object({
 });
 
 interface SnapshotRouteHost {
+  readonly log?: SessionViewTimingContext['logger'];
   get(
     path: string,
     options: { preHandler: unknown[]; schema?: Record<string, unknown> } | undefined,
@@ -108,7 +110,7 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
     async (req, reply) => withReplyCloseSignal(reply as unknown as Parameters<typeof withReplyCloseSignal>[0], async (signal) => {
       const { session_id } = req.params;
       try {
-        const data = await assembleSnapshot(core, broadcaster, session_id, req.query.mode, signal);
+        const data = await assembleSnapshot(core, broadcaster, session_id, req.query.mode, signal, { logger: app.log, requestId: req.id });
         if (signal.aborted) return;
         reply.send(okEnvelope(data, req.id));
       } catch (err) {
@@ -124,8 +126,14 @@ export function registerSnapshotRoutes(app: SnapshotRouteHost, deps: SnapshotRou
   app.get(route.path, route.options, route.handler as Parameters<SnapshotRouteHost['get']>[2]);
 }
 
-export async function assembleBrowseSnapshot(core: Scope, broadcaster: SessionEventBroadcaster, sessionId: string): Promise<SessionSnapshotResponse> {
-  return boundedSessionSnapshot(await assembleBrowseSnapshotSource(core, broadcaster, sessionId), '');
+export async function assembleBrowseSnapshot(
+  core: Scope,
+  broadcaster: SessionEventBroadcaster,
+  sessionId: string,
+  timing: SessionViewTimingContext = {},
+): Promise<SessionSnapshotResponse> {
+  return timeSessionViewPhase('snapshot', { sessionId, requestId: timing.requestId }, async () =>
+    boundedSessionSnapshot(await assembleBrowseSnapshotSource(core, broadcaster, sessionId, undefined, timing), ''), timing);
 }
 
 export async function assembleBrowseSnapshotSource(
@@ -133,19 +141,22 @@ export async function assembleBrowseSnapshotSource(
   broadcaster: SessionEventBroadcaster,
   sessionId: string,
   mode?: 'legacy',
+  timing: SessionViewTimingContext = {},
 ): Promise<SessionSnapshotResponse> {
-  if (mode === 'legacy') return assembleSnapshotSource(core, broadcaster, sessionId, undefined);
+  if (mode === 'legacy') return assembleSnapshotSource(core, broadcaster, sessionId, undefined, undefined, timing);
   if (core.accessor.get(ISessionManager).get(sessionId) !== undefined) {
-    return assembleSnapshotSource(core, broadcaster, sessionId, 'transcript');
+    return assembleSnapshotSource(core, broadcaster, sessionId, 'transcript', undefined, timing);
   }
-  const summary = await core.accessor.get(ISessionIndex).get(sessionId);
+  const fields = { sessionId, requestId: timing.requestId };
+  const summary = await timeSessionViewPhase('snapshot_index', fields, () => core.accessor.get(ISessionIndex).get(sessionId), timing);
   if (summary === undefined) throw new SnapshotNotFoundError(sessionId);
-  const meta = await core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
+  const meta = await timeSessionViewPhase('snapshot_metadata', fields, () => core.accessor.get(IAtomicDocumentStore).get<SessionMeta>(
     `sessions/${summary.workspaceId}/${sessionId}`, 'state.json',
-  );
+  ), timing);
   if (meta === undefined) throw new SnapshotNotFoundError(sessionId);
-  const cursor = await broadcaster.getCursor(sessionId);
-  const workspace = await core.accessor.get(IWorkspaceService).get(summary.workspaceId);
+  const cursor = await timeSessionViewPhase('snapshot_cursor', fields, () => broadcaster.getCursor(sessionId), timing);
+  const workspace = await timeSessionViewPhase('snapshot_workspace', fields,
+    () => core.accessor.get(IWorkspaceService).get(summary.workspaceId), timing);
   const subagents = sessionAgentRoster(sessionId, meta);
   return {
     as_of_seq: cursor.seq, epoch: cursor.epoch || `cold:${sessionId}`,
@@ -163,11 +174,13 @@ export async function assembleSnapshot(
   sessionId: string,
   mode?: 'transcript',
   signal?: AbortSignal,
+  timing: SessionViewTimingContext = {},
 ): Promise<SessionSnapshotResponse> {
-  return boundedSessionSnapshot(
-    await assembleSnapshotSource(core, broadcaster, sessionId, mode, signal),
+  const context = { ...timing, signal: timing.signal ?? signal };
+  return timeSessionViewPhase('snapshot', { sessionId, requestId: context.requestId }, async () => boundedSessionSnapshot(
+    await assembleSnapshotSource(core, broadcaster, sessionId, mode, signal, context),
     mode === 'transcript' ? '' : 'legacy',
-  );
+  ), context);
 }
 
 export function boundedSessionSnapshot(snapshot: SessionSnapshotResponse, id: string): SessionSnapshotResponse {
@@ -180,16 +193,19 @@ async function assembleSnapshotSource(
   sessionId: string,
   mode: 'transcript' | undefined,
   signal?: AbortSignal,
+  timing: SessionViewTimingContext = {},
 ): Promise<SessionSnapshotResponse> {
   signal?.throwIfAborted();
   if (core.accessor.get(ISessionManager).get(sessionId) === undefined) {
     return assembleColdSnapshot(core, broadcaster, sessionId, mode, signal);
   }
-  const lease = await acquireSessionOperation(core, sessionId, 'operation');
+  const fields = { sessionId, requestId: timing.requestId };
+  const lease = await timeSessionViewPhase('snapshot_acquire', fields,
+    () => acquireSessionOperation(core, sessionId, 'operation'), timing);
   try {
-    return await assembleSnapshotFromLease(core, broadcaster, sessionId, mode, lease);
+    return await assembleSnapshotFromLease(core, broadcaster, sessionId, mode, lease, timing);
   } finally {
-    await lease.dispose();
+    await timeSessionViewPhase('snapshot_release', fields, async () => lease.dispose(), timing);
   }
 }
 
@@ -268,20 +284,24 @@ async function assembleSnapshotFromLease(
   sessionId: string,
   mode: 'transcript' | undefined,
   lease: SessionOperationLease,
+  timing: SessionViewTimingContext,
 ): Promise<SessionSnapshotResponse> {
   const compact = mode === 'transcript';
   const handle = lease.handle;
   if (handle === undefined) {
     throw new SnapshotNotFoundError(sessionId);
   }
-
-  const main = await ensureMainAgent(handle);
+  const fields = { sessionId, requestId: timing.requestId };
+  const main = await timeSessionViewPhase('snapshot_ensure_main', { ...fields, agentId: 'main' }, () => ensureMainAgent(handle), timing);
   const snapState = await broadcaster.getSnapshotState(sessionId, {
     captureMessages: !compact,
+    timing,
     capture: async () => {
       const workspaceId = handle.accessor.get(ISessionContext).workspaceId;
-      const workspace = await core.accessor.get(IWorkspaceService).get(workspaceId);
-      const meta = await handle.accessor.get(ISessionMetadata).read();
+      const workspace = await timeSessionViewPhase('snapshot_workspace', fields,
+        () => core.accessor.get(IWorkspaceService).get(workspaceId), timing);
+      const meta = await timeSessionViewPhase('snapshot_metadata', fields,
+        () => handle.accessor.get(ISessionMetadata).read(), timing);
       const projected = toWireSession({ ...meta, workspaceId }, workspace?.root ?? '', resolveSessionFacts(core, sessionId));
       const model = readBoundModel(main);
       return {
@@ -293,7 +313,7 @@ async function assembleSnapshotFromLease(
           agent_config: {
             ...projected.agent_config,
             model: model ?? projected.agent_config?.model,
-            ...(await readAgentRuntimeControls(main)),
+            ...(await timeSessionViewPhase('snapshot_controls', { ...fields, agentId: 'main' }, () => readAgentRuntimeControls(main), timing)),
           },
         },
       };
