@@ -330,11 +330,14 @@ export class QueryEngine<V> {
 
   /** Async twin of query() (stage 6, additive): identical results and
    *  ordering; the disk-mode value reads (and the text branch's postings
-   *  reads) run off the event loop. The candidate-collection logic mirrors
-   *  query() exactly — keep both in sync when the query planner changes. */
+   *  reads) run off the event loop. Unfiltered empty projections without
+   *  sorting or text use key metadata and TTL without reading values. The
+   *  candidate-collection logic otherwise mirrors query(); keep both in
+   *  sync when the query planner changes. */
   async queryAsync(q: QueryOptions = {}): Promise<ScanEntry<V>[]> {
     this.deps.ensureOpen();
-    const fast = await this.tryDtOrderedLimitAsync(q);
+    const keysOnly = q.project?.length === 0 && q.filter === undefined && q.sort === undefined && q.text === undefined;
+    const fast = keysOnly ? null : await this.tryDtOrderedLimitAsync(q);
     if (fast !== null) return fast;
 
     let keys: Iterable<string> | null = null;
@@ -385,11 +388,17 @@ export class QueryEngine<V> {
     let seen = 0;
     for (const k of keys) {
       stats.queryCandidates++;
-      const buf = await this.deps.readValueAsync(k);
-      if (buf === undefined) continue;
+      let value: V;
+      if (keysOnly) {
+        if (!this.deps.store().has(k)) continue;
+        value = {} as V;
+      } else {
+        const buf = await this.deps.readValueAsync(k);
+        if (buf === undefined) continue;
+        stats.queryDecoded++;
+        value = this.deps.decode(buf)!;
+      }
       const r = this.deps.store().map.get(k);
-      stats.queryDecoded++;
-      const value = this.deps.decode(buf)!;
       if (q.filter && !match(value, q.filter)) continue;
       if (early) {
         if (seen++ < skip) continue;

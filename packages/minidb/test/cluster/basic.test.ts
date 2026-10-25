@@ -3,11 +3,12 @@
 // Single-process ClusterDb behavior: topology creation/validation, basic KV
 // across shards, multi-key ops, merged scans, hash distribution, stats.
 
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { MiniDb } from '../../src/index.js';
+import { ValueReader } from '../../src/value-reader.js';
 import { ClusterDb, shardDirName } from '../../src/cluster/index.js';
 import { shardFor } from '../../src/cluster/utils.js';
 import { tmpDir, rmrf } from '../e2e/helpers/tmp.js';
@@ -320,4 +321,151 @@ test('compound ranges merge shard pages in order with exclusive continuation and
     await db.close();
     await rmrf(dir);
   }
+});
+
+
+test('disk-backed get, mget and query use async values without changing order, TTL or errors', async () => {
+  const dir = await tmpDir('minidb-cluster-async-');
+  const writer = await ClusterDb.open<QueryDoc>({ dir, shardCount: 2, valueCodec: 'json', valueMode: 'disk' });
+  const first = keyOnShard('async-first', 0, 2);
+  const second = keyOnShard('async-second', 1, 2);
+  await writer.set(first, { g: 'x', n: 1 });
+  await writer.set(second, { g: 'x', n: 2 });
+  await writer.set('expired', { g: 'x', n: 3 }, { ttl: 1 });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await writer.close();
+  const db = await ClusterDb.open<QueryDoc>({ dir, readOnly: true, valueCodec: 'json', valueMode: 'disk' });
+  try {
+    await db.get(first);
+    await db.get(second);
+    const sync = vi.spyOn(ValueReader.prototype, 'read');
+    const async = vi.spyOn(ValueReader.prototype, 'readAsync');
+    try {
+      assert.deepEqual(await db.get(first), { g: 'x', n: 1 });
+      assert.deepEqual(await db.mget([second, 'missing', first, second, 'expired']), [{ g: 'x', n: 2 }, undefined, { g: 'x', n: 1 }, { g: 'x', n: 2 }, undefined]);
+      assert.deepEqual((await db.query({ filter: { g: 'x' }, sort: { n: -1 }, skip: 1, limit: 1 })).map((row) => row.value.n), [1]);
+      assert.equal(sync.mock.calls.length, 0);
+      assert.ok(async.mock.calls.length >= 6);
+      const failure = new Error('disk-read-failed');
+      for (const run of [() => db.get(first), () => db.mget([first, second]), () => db.query({ key: first }), () => db.query({ key: first, limit: 1 })]) {
+        async.mockRejectedValueOnce(failure);
+        await assert.rejects(run(), (error) => error === failure);
+      }
+      assert.deepEqual(await db.get(first), { g: 'x', n: 1 });
+    } finally { sync.mockRestore(); async.mockRestore(); }
+  } finally { await db.close(); await rmrf(dir); }
+});
+
+test('close waits for an asynchronous get, mget or query reader lease', async () => {
+  const dir = await tmpDir('minidb-cluster-async-close-');
+  const writer = await ClusterDb.open<QueryDoc>({ dir, shardCount: 1, valueCodec: 'json', valueMode: 'disk' });
+  await writer.set('item', { g: 'x', n: 1 });
+  await writer.close();
+  try {
+    for (const operation of ['get', 'mget', 'query', 'paged-query'] as const) {
+      const db = await ClusterDb.open<QueryDoc>({ dir, readOnly: true, valueCodec: 'json', valueMode: 'disk' });
+      await db.get('item');
+      let enter!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => { enter = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const read = ValueReader.prototype.readAsync;
+      const spy = vi.spyOn(ValueReader.prototype, 'readAsync').mockImplementation(async function (this: ValueReader, loc) {
+        enter();
+        await gate;
+        return read.call(this, loc);
+      });
+      let closing: Promise<void> | undefined;
+      try {
+        const running = operation === 'get' ? db.get('item') : operation === 'mget' ? db.mget(['item', 'item']) : db.query({ key: 'item', limit: operation === 'paged-query' ? 1 : undefined });
+        await entered;
+        let closed = false;
+        closing = db.close().then(() => { closed = true; });
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        assert.equal(closed, false);
+        release();
+        const result = await running;
+        if (operation === 'get') assert.deepEqual(result, { g: 'x', n: 1 });
+        else if (operation === 'mget') assert.deepEqual(result, [{ g: 'x', n: 1 }, { g: 'x', n: 1 }]);
+        else assert.equal((result as unknown[]).length, 1);
+        await closing;
+        await assert.rejects(db.get('item'), /closed/);
+      } finally { release(); spy.mockRestore(); await closing; await db.close(); }
+    }
+  } finally { await rmrf(dir); }
+});
+
+
+test('empty async projections retain DT metadata and TTL without decoding, including the DT fast-path shape', async () => {
+  const dir = await tmpDir('minidb-query-metadata-');
+  const writer = await MiniDb.open<QueryDoc>({ dir, valueCodec: 'json', valueMode: 'disk' });
+  for (const [index, key] of ['a', 'b', 'c'].entries()) await writer.set(key, { g: index < 2 ? 'matchword' : 'other', n: index }, { dt: { view: 1 } });
+  await writer.set('expired', { g: 'matchword', n: 4 }, { dt: { view: 1 }, ttl: 1 });
+  await writer.createTextIndex('by-g', { fields: ['g'] });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  await writer.close();
+  const db = await MiniDb.open<QueryDoc>({ dir, readOnly: true, valueCodec: 'json', valueMode: 'disk' });
+  const sync = vi.spyOn(ValueReader.prototype, 'read');
+  const async = vi.spyOn(ValueReader.prototype, 'readAsync');
+  try {
+    const before = db.stats.queryDecoded;
+    for (const key of [undefined, { prefix: '' }]) {
+      assert.deepEqual(await db.queryAsync({ key, dt: { view: { gte: 1, lte: 1 } }, skip: 1, limit: 2, project: [] }), [
+        { key: 'b', value: {}, dt: { view: 1 } }, { key: 'c', value: {}, dt: { view: 1 } },
+      ]);
+    }
+    assert.equal(sync.mock.calls.length, 0);
+    assert.equal(async.mock.calls.length, 0);
+    assert.equal(db.stats.queryDecoded, before);
+    for (const run of [
+      () => db.queryAsync({ filter: { g: 'matchword' }, project: [], limit: 1 }),
+      () => db.queryAsync({ sort: { n: -1 }, project: [], limit: 1 }),
+      () => db.queryAsync({ text: { index: 'by-g', q: 'matchword' }, project: [], limit: 1 }),
+      () => db.queryAsync({ project: ['g'], limit: 1 }),
+    ]) {
+      async.mockClear();
+      assert.equal((await run()).length, 1);
+      assert.ok(async.mock.calls.length > 0);
+    }
+  } finally { sync.mockRestore(); async.mockRestore(); await db.close(); await rmrf(dir); }
+});
+
+test('bounded key-ordered cluster pages decode only selected values with unchanged offsets and UTF-8 order', async () => {
+  const dir = await tmpDir('minidb-cluster-page-');
+  const writer = await ClusterDb.open<QueryDoc>({ dir, shardCount: 4, valueCodec: 'json', valueMode: 'disk' });
+  const entries = Array.from({ length: 64 }, (_, n) => ({ key: `group:${['a', 'é', '中', '😀'][n % 4]}:${String(n).padStart(3, '0')}`, value: { g: 'x', n }, dt: { view: 1 } }));
+  for (const entry of entries) await writer.set(entry.key, entry.value, { dt: entry.dt });
+  await writer.set('group:wrong-view', { g: 'x', n: 100 }, { dt: { view: 2 } });
+  await writer.close();
+  const db = await ClusterDb.open<QueryDoc>({ dir, readOnly: true, valueCodec: 'json', valueMode: 'disk' });
+  await db.mget(entries.map((row) => row.key));
+  const sync = vi.spyOn(ValueReader.prototype, 'read');
+  const async = vi.spyOn(ValueReader.prototype, 'readAsync');
+  try {
+    const expected = entries.toSorted((a, b) => Buffer.compare(Buffer.from(a.key), Buffer.from(b.key)));
+    for (const skip of [0, 8, 61, 64]) {
+      async.mockClear();
+      const page = await db.query({ key: { prefix: 'group:' }, dt: { view: { gte: 1, lte: 1 } }, skip, limit: 5 });
+      assert.deepEqual(page, expected.slice(skip, skip + 5));
+      assert.equal(async.mock.calls.length, page.length);
+    }
+    assert.equal(sync.mock.calls.length, 0);
+  } finally { sync.mockRestore(); async.mockRestore(); await db.close(); await rmrf(dir); }
+});
+
+test('a selected-key TTL race refills the page using the original live-key offset', async () => {
+  const dir = await tmpDir('minidb-cluster-page-expiry-');
+  const db = await ClusterDb.open<QueryDoc>({ dir, shardCount: 2, valueCodec: 'json', valueMode: 'disk', activeExpireIntervalMs: 0 });
+  try {
+    for (const [n, key] of ['a', 'b', 'c', 'd', 'e'].entries()) await db.set(key, { g: 'x', n }, { ttl: n < 2 ? 60000 : undefined });
+    const mget = db.mget.bind(db);
+    let clock: { mockRestore(): void } | undefined;
+    const selected = vi.spyOn(db, 'mget').mockImplementationOnce(async (keys) => {
+      assert.deepEqual(keys, ['b', 'c']);
+      clock = vi.spyOn(Date, 'now').mockReturnValue(Date.now() + 120000);
+      return mget(keys);
+    });
+    try { assert.deepEqual((await db.query({ skip: 1, limit: 2 })).map((row) => row.key), ['d', 'e']); }
+    finally { clock?.mockRestore(); selected.mockRestore(); }
+  } finally { await db.close(); await rmrf(dir); }
 });
