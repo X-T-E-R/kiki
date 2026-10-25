@@ -56,8 +56,10 @@ export interface UsageWireSlice {
   readonly stop: UsageReadStop;
 }
 
-/** Pure source-local framing. Callers own byte acquisition, shared allowances, cooperative yields and durable prefix commits. State retains parsed usage fields, nesting and at most three undecoded UTF-8 bytes, never an unrelated body. */
+/** Pure source-local framing. Callers own byte acquisition, shared allowances, cooperative yields and durable prefix commits. Transferable state retains only usage fields, nesting and at most three undecoded UTF-8 bytes. A source-local 64 KiB text cache reuses normalized short usage records without removing their separate fact visits. */
 export class UsageWireFramer {
+  private readonly parsed = new Map<string, UsageFact>();
+  private parsedBytes = 0;
   private offset: number;
   private cursor: number;
   private valid: boolean;
@@ -112,12 +114,20 @@ export class UsageWireFramer {
         if (stop !== null || newline < 0) break;
       }
       let raw: ReturnType<typeof parseUsageJson>;
+      let text: string | undefined;
+      let cached: UsageFact | undefined;
       try {
         if (this.parser !== undefined) {
           if (!this.invalid) { this.parser.write(Buffer.from(this.utf8).toString('utf8')); raw = this.parser.finish(); }
-        } else if (end > start) raw = parseUsageJson(bytes.subarray(start, end));
+        } else if (end > start) {
+          if (end - start <= 2048) {
+            text = bytes.toString('utf8', start, end);
+            cached = this.parsed.get(text);
+            if (cached === undefined) raw = parseUsageJson(text);
+          } else raw = parseUsageJson(bytes.subarray(start, end));
+        }
       } catch { this.invalid = true; }
-      const fact = this.invalid || raw !== undefined;
+      const fact = this.invalid || raw !== undefined || cached !== undefined;
       if (!allowance.takeRecord(fact)) {
         this.parser = undefined;
         this.utf8 = new Uint8Array(0);
@@ -130,9 +140,20 @@ export class UsageWireFramer {
         factCount++;
         if (this.invalid) this.valid = false;
         else {
-          const record = normalizeUsageFact(raw!, this.sourceAgentId);
+          const record = cached ?? normalizeUsageFact(raw!, this.sourceAgentId);
           if (record === undefined) this.valid = false;
-          else records.push(record);
+          else {
+            records.push(record);
+            if (text !== undefined && cached === undefined) {
+              while (this.parsedBytes + text.length * 2 > 64 * 1024) {
+                const oldest = this.parsed.keys().next().value!;
+                this.parsed.delete(oldest);
+                this.parsedBytes -= oldest.length * 2;
+              }
+              this.parsed.set(text, record);
+              this.parsedBytes += text.length * 2;
+            }
+          }
         }
       }
       this.cursor += end - start + 1;

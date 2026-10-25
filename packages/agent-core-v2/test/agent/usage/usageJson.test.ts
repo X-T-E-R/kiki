@@ -160,6 +160,42 @@ describe('usage wire framing', () => {
     expect(facts).toEqual([normalizeUsageFact(value, 'example'), normalizeUsageFact(usage, 'example')]);
   });
 
+  it('reuses short usage parsing without collapsing duplicate, unknown or zero fact visits', () => {
+    const zero = { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
+    const values = [usage, { ...usage, usage: zero, usageKnown: false }, { ...usage, usage: zero, usageKnown: true }, { ...usage, usage: zero }];
+    const bytes = Buffer.from([...values, ...values].map((value) => JSON.stringify({ ...value, body: 'private' })).join('\n') + '\n');
+    const native = JSON.parse;
+    const parse = vi.spyOn(JSON, 'parse').mockImplementation((text: string) => native(text) as unknown);
+    try {
+      const allowance = new UsageReadAllowance(Infinity, 7);
+      const framed = new UsageWireFramer(0, 'source').consume(bytes, allowance, Infinity);
+      expect(framed).toMatchObject({ rawCount: 7, factCount: 7, stop: 'record_budget' });
+      expect(framed.records).toEqual([...values, ...values.slice(0, 3)].map((value) => normalizeUsageFact(value, 'source')));
+      expect(parse).toHaveBeenCalledTimes(4);
+      expect(allowance.counts()).toEqual({ raw: 7, facts: 7 });
+      expect(JSON.stringify(framed.state)).not.toContain('private');
+      const remaining = new UsageWireFramer(framed.state.offset, 'source', framed.state).consume(bytes.subarray(framed.consumed), new UsageReadAllowance(Infinity), Infinity);
+      expect(remaining.records).toEqual([normalizeUsageFact(values[3]!, 'source')]);
+    } finally { parse.mockRestore(); }
+  });
+
+  it('evicts bounded short-row parsing entries and never reuses changed records or another source', () => {
+    const framer = new UsageWireFramer(0, 'first');
+    const values = Array.from({ length: 400 }, (_, time) => ({ ...usage, time, body: 'x'.repeat(1000) }));
+    const native = JSON.parse;
+    const parse = vi.spyOn(JSON, 'parse').mockImplementation((text: string) => native(text) as unknown);
+    try {
+      const first = framer.consume(Buffer.from(JSON.stringify(values[0]) + '\n'), new UsageReadAllowance(Infinity), Infinity);
+      expect(first.records).toEqual([normalizeUsageFact(values[0]!, 'first')]);
+      for (const value of values.slice(1)) framer.consume(Buffer.from(JSON.stringify(value) + '\n'), new UsageReadAllowance(Infinity), Infinity);
+      const reread = framer.consume(Buffer.from(JSON.stringify(values[0]) + '\n'), new UsageReadAllowance(Infinity), Infinity);
+      expect(reread.records).toEqual(first.records);
+      expect(parse).toHaveBeenCalledTimes(401);
+      const other = new UsageWireFramer(0, 'second').consume(Buffer.from(JSON.stringify(values[0]) + '\n'), new UsageReadAllowance(Infinity), Infinity);
+      expect(other.records[0]?.sourceAgentId).toBe('second');
+    } finally { parse.mockRestore(); }
+  });
+
   it('shares raw and fact visits between lane views and does not publish an over-budget record', () => {
     const allowance = new UsageReadAllowance(3, 1);
     const other = new UsageReadAllowance(allowance.buffer);

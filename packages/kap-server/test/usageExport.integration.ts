@@ -222,13 +222,23 @@ describe('usage export real source → SQLite outbox → loopback receiver → d
     const f = await fixture({ cacheMaxRecords: 0 }); const s = f.add('journal');
     const zero = { output: 0, inputCacheRead: 0, inputCacheCreation: 0 };
     const known = record(T + 1, 2, zero);
-    await f.write(s.id, 'main', [known, known, record(T + 2, 0, zero), { ...record(T + 3, 0, zero), usageKnown: false }, { ...record(T + 4, 0, zero), usageKnown: undefined }]);
+    await f.write(s.id, 'main', [known, known, record(T + 2, 0, zero), { ...record(T + 2, 0, zero), usageKnown: false }, { ...record(T + 2, 0, zero), usageKnown: undefined }]);
     const read = vi.spyOn(f.core.accessor.get(IUsageFactStore), 'read');
     const batch = vi.spyOn(f.core.accessor.get(IQueryStore), 'batch');
     try {
       const d = await destination(f.service); await f.service.scan();
       const original = f.store.preview(d.id).items;
       expect(original[0]!.bucket).toMatchObject({ tokens: { input_other: 4 }, quality: { known_records: 3, missing_records: 1, legacy_zero_records: 1 } });
+      let visits = 0;
+      await f.reader.readExportSources(async (source) => {
+        if (source.kind !== 'session') return;
+        visits += source.records.length;
+        expect(source.records).toHaveLength(5);
+        expect(source.records[0]).toBe(source.records[1]);
+        expect(new Set(source.records).size).toBe(4);
+        expect(source.records.map((value) => value.usageKnown)).toEqual([true, true, true, false, undefined]);
+      });
+      expect(visits).toBe(5);
       await f.restart(); await f.service.scan();
       expect(f.store.preview(d.id).items).toEqual(original);
       await f.storage.append('sessions/work/journal/agents/main', AGENT_WIRE_RECORD_KEY, Buffer.from(JSON.stringify(known) + '\n'));

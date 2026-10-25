@@ -191,6 +191,7 @@ function fixture(
   let agentIds = ['main'];
   const storage = {
     _serviceBrand: undefined,
+    pathFor: () => undefined,
     list: async () => { await beforeMetadataRead(); return agentIds; },
     size: async (wireScope: string) => { await beforeMetadataRead(); return wires.get(wireScope)?.length; },
     mtime: async (wireScope: string) => { await beforeMetadataRead(); return wireMtimes.get(wireScope); },
@@ -799,7 +800,7 @@ describe('UsageAggregationService cache budgets', () => {
     f.setWire(scope('w', 's'), [usageRecord(day - 9 * 86_400_000), usageRecord(day), usageRecord(day + 1)]);
     listener('w\0s');
     expect((await query(f.service, input)).summary.tokens.output).toBe(3);
-    expect(metadataReads - baseline).toBe(7);
+    expect(metadataReads - baseline).toBe(10);
     const afterAppend = metadataReads;
     await query(f.service, input);
     expect(metadataReads).toBe(afterAppend);
@@ -1632,11 +1633,12 @@ describe('UsageAggregationService full rescan', () => {
 describe('UsageSourceTracker', () => {
   it('uses committed append/rewrite events and lazy targeted filesystem invalidation, pruning unrelated trees', async () => {
     const root = join(process.cwd(), '.tmp', 'usage-tracker', 'sessions');
-    const storage = {
-      pathFor: () => root,
-      append: async () => {},
-      write: async () => {},
-    } as unknown as IFileSystemStorageService;
+    const memory = new InMemoryStorageService();
+    const storage = new Proxy(memory, { get: (target, key, receiver) => {
+      if (key === 'pathFor') return () => root;
+      const value = Reflect.get(target, key, receiver);
+      return typeof value === 'function' ? value.bind(target) : value;
+    } });
     const logs = new AppendLogStore(storage);
     let signal: (filename: string | null) => void = () => {};
     let failed: (error: unknown) => void = () => {};
@@ -2157,6 +2159,53 @@ describe('shared agent and history usage projection', () => {
     expect(appended.summary.tokens.output).toBe(3);
     expect(appended.reliability.usage_coverage?.known_records).toBe(3);
     expect(get).not.toHaveBeenCalled();
+  });
+
+  it('verifies excluded fold sources by mtime and rechecks boundary changes and rewrites', async () => {
+    const start = Date.UTC(2026, 9, 1);
+    const now = start + 86_400_000;
+    const old = scope('w', 'old');
+    const current = scope('w', 'current');
+    const saved = await openRange([summary('old', 'w'), summary('current', 'w')], { [old]: [], [current]: [] });
+    let oldMtime = start - 1;
+    const mtime = saved.storage.mtime.bind(saved.storage);
+    vi.spyOn(saved.storage, 'mtime').mockImplementation((source, key) => source === old && key === 'wire.jsonl' ? Promise.resolve(oldMtime) : mtime(source, key));
+    saved.logs.append(old, 'wire.jsonl', usageRecord(start - 1, 1));
+    saved.logs.append(current, 'wire.jsonl', usageRecord(start, 2));
+    saved.logs.append(current, 'wire.jsonl', usageRecord(start + 1, 2));
+    await saved.logs.flush();
+    const input = { range: 'custom', start_at: start, end_at: now, dimension: 'model' } as const;
+    expect((await new UsageAggregationService(saved.core, () => now, { usageFactBudget: 1 }).query(input)).reliability.complete).toBe(false);
+    let built = await new UsageAggregationService(saved.core, () => now).query(input);
+    for (let attempt = 0; attempt < 4 && !built.reliability.complete; attempt++) built = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(built.reliability.complete).toBe(true);
+    expect(built.summary.tokens.output).toBe(2);
+    const removeProjection = async () => {
+      for (const key of await saved.storage.list('cache/usage-aggregation-v1')) if (key.startsWith('range-projection-')) await saved.storage.delete('cache/usage-aggregation-v1', key);
+    };
+    const generation = vi.spyOn(saved.logs, 'generation');
+    const size = vi.spyOn(saved.storage, 'size');
+    await removeProjection();
+    const replayed = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(replayed.summary).toEqual(built.summary);
+    expect(replayed.reliability.complete).toBe(true);
+    expect(generation.mock.calls.some(([source]) => source === old)).toBe(false);
+    expect(size.mock.calls.some(([source]) => source === old)).toBe(false);
+    expect(generation.mock.calls.some(([source]) => source === current)).toBe(true);
+    generation.mockClear();
+    oldMtime = start;
+    await removeProjection();
+    const boundary = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(boundary.reliability.complete).toBe(true);
+    expect(boundary.summary).toEqual(built.summary);
+    expect(generation.mock.calls.some(([source]) => source === old)).toBe(true);
+    oldMtime = start + 1;
+    await saved.logs.rewrite(old, 'wire.jsonl', [usageRecord(start, 3)]);
+    await removeProjection();
+    const rewritten = await new UsageAggregationService(saved.core, () => now).query(input);
+    expect(rewritten.reliability.complete).toBe(true);
+    expect(rewritten.summary.tokens.output).toBe(3);
+    expect(rewritten.reliability.usage_coverage?.known_records).toBe(3);
   });
 
   it('keeps every bucket and drilldown when a stored projection appends across sessions, agents and turns', async () => {

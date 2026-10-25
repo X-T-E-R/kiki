@@ -265,7 +265,7 @@ interface SessionAccumulator extends AggregateAccumulator {
 
 export class UsagePageTokenMismatchError extends Error {}
 
-/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. A bounded range does not read a source whose filesystem mtime is an epoch millisecond older than the range start: usage record time is assigned before that write, and a later append moves mtime. A complete bounded query stores an unpriced folded projection; the next process reads it back when every in-range watermark still matches, and a pure append folds only its tail. A default-budget fold replays fact journals from a byte cursor and pages those facts before opening further sources. Export replays whole-source fact journals without materializing range indexes, while retaining source verification and canonical recovery. */
+/** Incremental usage projection for managed append/rewrite stores. Tracked sources reuse complete verified checkpoints until an event or a ten-minute safety recheck; untracked sources, export and rescan validate inventories, sizes and mtimes. Bounded views never replace full checkpoints. External rewrites preserving size and mtime remain outside the consistency contract. A bounded range does not read a source whose filesystem mtime is an epoch millisecond older than the range start: usage record time is assigned before that write, and a later append moves mtime. A complete bounded query stores an unpriced folded projection; the next process reads it back when every in-range watermark still matches, and a pure append folds only its tail. A default-budget fold replays fact journals from a byte cursor and pages those facts before opening further sources. Export replays whole-source fact journals without materializing range indexes, while retaining source verification and canonical recovery. A bounded source-local value pool shares equal journal facts without collapsing their ordinals. */
 export class UsageAggregationService {
   private readonly cache = new Map<string, SessionCacheEntry>();
   private readonly pendingWireLines = new Map<string, WireLineContinuation>();
@@ -657,7 +657,7 @@ export class UsageAggregationService {
       head = await waitForSource(fold.head<RangeFoldHead>(), budget.factSignal);
       const inventory = new Set(listed.items.map(sessionKey));
       const sameInventory = budget.incompleteReason === null && head !== undefined && (!head.complete || head.sessions.length === listed.items.length) && head.sessions.every((session) => inventory.has(sessionKey(session.summary)));
-      const current = head !== undefined && sameInventory ? await waitForSource(this.rangeSourcesCurrent(head, budget.factSignal), budget.factSignal) : false;
+      const current = head !== undefined && sameInventory ? await waitForSource(this.rangeSourcesCurrent(head, query.range, budget.factSignal), budget.factSignal) : false;
       const aligned = head !== undefined && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory && current;
       if (!aligned) {
         const advanced = head !== undefined && head.complete && head.version === 1 && head.fingerprint === fingerprint && !head.invalidated && sameInventory
@@ -814,26 +814,31 @@ export class UsageAggregationService {
     } finally { clearTimeout(timer); }
   }
 
-  private async rangeSourcesCurrent(head: RangeFoldHead, signal?: AbortSignal): Promise<boolean> {
+  private async rangeSourcesCurrent(head: RangeFoldHead, range: RangeBounds, signal?: AbortSignal): Promise<boolean> {
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const logs = this.core.accessor.get(IAppendLogStore);
-    for (const session of head.sessions) {
-      if (session.prepared) {
-        signal?.throwIfAborted();
+    for (let offset = 0; offset < head.sessions.length; offset += PROJECTION_STAT_CONCURRENCY) {
+      signal?.throwIfAborted();
+      const inventories = await Promise.all(head.sessions.slice(offset, offset + PROJECTION_STAT_CONCURRENCY).map(async (session) => {
+        if (!session.prepared) return true;
         const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
         const agents = await waitForSource(storage.list(`${scope}/agents`), signal);
-        if (session.sources?.some((source) => !agents.includes(source.agentId)) || (head.complete && agents.length !== session.sources?.length)) return false;
-      }
+        return !session.sources?.some((source) => !agents.includes(source.agentId)) && (!head.complete || agents.length === session.sources?.length);
+      }));
+      if (inventories.some((current) => !current)) return false;
     }
     const sources = head.sessions.flatMap((session) => session.sources ?? []);
     for (let offset = 0; offset < sources.length; offset += PROJECTION_STAT_CONCURRENCY) {
       signal?.throwIfAborted();
       const slice = sources.slice(offset, offset + PROJECTION_STAT_CONCURRENCY);
       const stats = await Promise.all(slice.map(async (source) => {
-        const [size, mtime, generation] = await Promise.all([storage.size(source.scope, AGENT_WIRE_RECORD_KEY), storage.mtime(source.scope, AGENT_WIRE_RECORD_KEY), logs.generation(source.scope, AGENT_WIRE_RECORD_KEY)]);
+        const mtime = await storage.mtime(source.scope, AGENT_WIRE_RECORD_KEY);
+        if (head.complete && source.done && mtimeExcludesRange(source.checkpoint.mtimeMs, range.startAt) && mtimeExcludesRange(mtime ?? 0, range.startAt)) return undefined;
+        const [size, generation] = await Promise.all([storage.size(source.scope, AGENT_WIRE_RECORD_KEY), logs.generation(source.scope, AGENT_WIRE_RECORD_KEY)]);
         return { source, size, mtime, generation };
       }));
       for (const stat of stats) {
+        if (stat === undefined) continue;
         const checkpoint = stat.source.checkpoint;
         if (stat.generation !== (checkpoint.generation ?? 'legacy') || (stat.size ?? 0) < checkpoint.offset) return false;
         if (head.complete && (stat.size !== checkpoint.size || stat.mtime !== checkpoint.mtimeMs)) return false;
@@ -1355,6 +1360,22 @@ export class UsageAggregationService {
 
   private async readExportFactSnapshot(wireScope: string, signal?: AbortSignal): Promise<UsageFactSnapshot> {
     const records: NormalizedUsageRecord[] = [];
+    const values = new Map<number, NormalizedUsageRecord[]>();
+    let valueCount = 0;
+    const retain = (record: NormalizedUsageRecord): NormalizedUsageRecord => {
+      const existing = values.get(record.time)?.find((value) => sameFactValue(value, record));
+      if (existing !== undefined) return existing;
+      if (valueCount >= 256) {
+        const oldest = values.keys().next().value!;
+        valueCount -= values.get(oldest)!.length;
+        values.delete(oldest);
+      }
+      const group = values.get(record.time) ?? [];
+      group.push(record);
+      values.set(record.time, group);
+      valueCount++;
+      return record;
+    };
     let checkpoint: UsageFactSnapshot['checkpoint'];
     try {
       const directory = factJournalDirectory(wireScope);
@@ -1370,10 +1391,12 @@ export class UsageAggregationService {
           batch.checkpoint.offset < batch.start || !Array.isArray(batch.records) || !batch.records.every(isNormalizedUsageRecord)) throw new Error('Invalid usage fact batch');
         if (batch.start === 0 || (checkpoint !== undefined && checkpoint.generation !== batch.checkpoint.generation)) {
           records.length = 0;
+          values.clear();
+          valueCount = 0;
           checkpoint = undefined;
         }
         if (batch.start === (checkpoint?.offset ?? 0)) {
-          for (const record of batch.records) records.push(record);
+          for (const record of batch.records) records.push(retain(record));
           checkpoint = { ...batch.checkpoint, valid: (checkpoint?.valid ?? true) && batch.checkpoint.valid };
         }
       };
@@ -2411,6 +2434,15 @@ function parsePersistentSession(
   const agents = raw['agents'] as Record<string, unknown>;
   if (!Object.values(agents).every(isWireCheckpoint)) return undefined;
   return value as PersistentSessionRecords;
+}
+
+function sameFactValue(left: NormalizedUsageRecord, right: NormalizedUsageRecord): boolean {
+  return Object.is(left.time, right.time) && left.model === right.model && left.usageKnown === right.usageKnown &&
+    left.invalid === right.invalid && Object.is(left.turnId, right.turnId) && left.sourceAgentId === right.sourceAgentId &&
+    left.agentId === right.agentId && left.parentAgentId === right.parentAgentId && left.provider === right.provider &&
+    left.modelAlias === right.modelAlias && left.profileName === right.profileName && left.upstreamModelId === right.upstreamModelId && left.folded === right.folded &&
+    Object.is(left.usage.inputOther, right.usage.inputOther) && Object.is(left.usage.output, right.usage.output) &&
+    Object.is(left.usage.inputCacheRead, right.usage.inputCacheRead) && Object.is(left.usage.inputCacheCreation, right.usage.inputCacheCreation);
 }
 
 function isNormalizedUsageRecord(value: unknown): value is NormalizedUsageRecord {
