@@ -195,6 +195,47 @@ describe('ModelPriceCatalog', () => {
 });
 
 describe('catalog validation and refresh fallback', () => {
+  it.each(['network', 'invalid'] as const)('waits for the refresh interval after a scheduled %s failure', async (failure) => {
+    const dir = tempDir();
+    const vendoredPath = join(dir, 'vendored.json');
+    const cachePath = join(dir, 'cache.json');
+    const previous = fixture({ saved: price() });
+    writeFileSync(vendoredPath, previous);
+    writeFileSync(cachePath, previous);
+    vi.useFakeTimers();
+    vi.setSystemTime(Date.now() + 24 * 60 * 60 * 1000);
+    const fetcher = vi.fn(async () => {
+      if (failure === 'network') throw new Error('offline');
+      return new Response('{bad json');
+    }) as typeof fetch;
+    const interval = 60_000;
+    const { service } = createService({
+      vendoredPath, cachePath, fetcher, scheduleRefresh: true, refreshIntervalMs: interval,
+      refreshUrls: ['https://primary.example/prices', 'https://mirror.example/prices'],
+    });
+    try {
+      await service.ready;
+      await vi.advanceTimersByTimeAsync(0);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(interval - 1);
+      expect(fetcher).toHaveBeenCalledTimes(2);
+      expect(readFileSync(cachePath, 'utf8')).toBe(previous);
+      expect(service.resolve('saved')).toBeDefined();
+      expect(service.status()).toMatchObject({ source: 'cache', lastRefreshError: expect.any(String) });
+      expect(service.status().lastRefreshAt).toBeUndefined();
+      await expect(service.refreshNow()).resolves.toBe(false);
+      expect(fetcher).toHaveBeenCalledTimes(4);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(fetcher).toHaveBeenCalledTimes(6);
+      service.dispose();
+      await vi.advanceTimersByTimeAsync(interval);
+      expect(fetcher).toHaveBeenCalledTimes(6);
+    } finally {
+      service.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('rejects invalid samples and sudden key/byte shrinkage', () => {
     expect(() => validatePriceCatalogText('{}', { minimumKeys: 2 })).toThrow(/only 0 keys/);
     const baseline = validatePriceCatalogText(fixture({}, 8), { minimumKeys: 2 }).stats;

@@ -637,14 +637,14 @@ export class ModelPricingService implements IModelPricingService {
     }
   }
 
-  private scheduleNextRefresh(): void {
+  private scheduleNextRefresh(delayMs?: number): void {
     if (this.disposed) return;
     const age = this.active === null ? this.refreshIntervalMs : this.now() - this.active.mtimeMs;
-    const delay = Math.max(0, this.refreshIntervalMs - Math.max(0, age));
+    const delay = delayMs ?? Math.max(0, this.refreshIntervalMs - Math.max(0, age));
     this.refreshTimer = setTimeout(() => {
       this.refreshTimer = null;
       void this.refreshNow().finally(() => {
-        this.scheduleNextRefresh();
+        this.scheduleNextRefresh(this.refreshIntervalMs);
       });
     }, delay);
     this.refreshTimer.unref();
