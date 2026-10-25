@@ -22,10 +22,25 @@ export interface ContextRebuildChanges {
   readonly injections: boolean;
 }
 
+export type ContextRebuildOutcome = 'applied' | 'partial' | 'failed';
+
+export type ContextRebuildTrigger = 'manual' | 'compaction' | 'restore';
+
+export type ContextRebuildUnsupportedSurface = ContextRebuildSurface | 'executor_session';
+
+export interface ContextRebuildUnsupported {
+  readonly surface: ContextRebuildUnsupportedSurface;
+  readonly reason: string;
+}
+
 export interface ContextRebuildResult {
   readonly rebuilt: readonly ContextRebuildSurface[];
   readonly changed: boolean;
   readonly changes: ContextRebuildChanges;
+  readonly outcome: ContextRebuildOutcome;
+  readonly unsupported: readonly ContextRebuildUnsupported[];
+  /** The reported binding is what the next model request reads. A failed refresh does not replace it. */
+  readonly appliesOn: 'next_request';
   readonly readiness: {
     readonly mcp: readonly {
       readonly runtimeName: string;
@@ -39,9 +54,28 @@ export interface ContextRebuildResult {
   };
 }
 
+export interface ContextRebuildControl {
+  readonly enabled: boolean;
+  readonly outcome?: ContextRebuildOutcome;
+  readonly trigger?: ContextRebuildTrigger;
+  readonly at?: string;
+  readonly error?: string;
+  readonly changes?: ContextRebuildChanges;
+  readonly rebuilt: readonly ContextRebuildSurface[];
+  readonly unsupported: readonly ContextRebuildUnsupported[];
+}
+
 export interface IAgentContextRebuildService {
   readonly _serviceBrand: undefined;
+  /** Re-reads this main agent's frozen sources while the loop is idle. */
   rebuild(): Promise<ContextRebuildResult>;
+  /** This agent's switch and the latest rebuild report. Other agents keep their own. */
+  control(): ContextRebuildControl;
+  /**
+   * Persists this agent's switch. Enabling does not rebuild immediately and does not
+   * walk child agents. The default is off.
+   */
+  setEnabled(enabled: boolean): Promise<void>;
 }
 
 export const IAgentContextRebuildService =

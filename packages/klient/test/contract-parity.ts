@@ -213,6 +213,7 @@ import {
   cancelPayloadSchema,
   cancelPlanPayloadSchema,
   cancelShellCommandPayloadSchema,
+  contextRebuildControlSchema,
   contextRebuildResultSchema,
   contextStrategyStatusSchema,
   emptyPayloadSchema,
@@ -860,6 +861,8 @@ const _setModelResult: AssertWire<typeof setModelResultSchema, SetModelResult> =
 const _setEffortPayload: AssertWire<typeof setEffortPayloadSchema, SetEffortPayload> = true;
 const _setEffortResult: AssertWire<typeof setEffortResultSchema, SetEffortResult> = true;
 const _contextRebuildResult: AssertWire<typeof contextRebuildResultSchema, ContextRebuildResult> = true;
+type ContextRebuildControl = ReturnType<IAgentContextRebuildService['control']>;
+const _contextRebuildControl: AssertWire<typeof contextRebuildControlSchema, ContextRebuildControl> = true;
 const _setPermissionPayload: AssertWire<typeof setPermissionPayloadSchema, SetPermissionPayload> =
   true;
 const _tokenUsage: AssertWire<typeof tokenUsageSchema, TokenUsage> = true;

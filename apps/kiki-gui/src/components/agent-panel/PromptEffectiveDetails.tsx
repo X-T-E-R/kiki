@@ -1,6 +1,7 @@
 import type { AgentCapabilitiesQuery, AgentPromptDiagnostics, RecipeModelBinding } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { FilePathLink } from '../mediaParts';
+import { ContextRebuildControl } from './ContextRebuildControl';
 import { PromptFileCheck } from './PromptFileCheck';
 
 type PromptEffectiveData = AgentPromptDiagnostics;
@@ -82,6 +83,7 @@ export function PromptEffectiveDetails({ value, query, unavailable = false, load
         </div>}
       </section>
     </div>}
+    {query !== undefined && 'session_id' in query ? <ContextRebuildControl sessionId={query.session_id} agentId={query.agent_id} /> : null}
     {query !== undefined && 'session_id' in query ? <PromptFileCheck key={`${query.session_id}:${query.agent_id}`}
       sessionId={query.session_id} agentId={query.agent_id} initialChecks={value?.file_checks} /> : null}
   </details>;

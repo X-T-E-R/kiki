@@ -37,6 +37,8 @@ export interface IAgentFullCompactionService {
 
   readonly hooks: Hooks<{
     onWillCompact: FullCompactionTask;
+    /** Runs after the compaction result is durable and before the next model request. */
+    onDidCommit: FullCompactionTask;
   }>;
 
   readonly onDidFinishCompaction: Event<FullCompactionTask>;

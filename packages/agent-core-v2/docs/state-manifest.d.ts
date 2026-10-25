@@ -29,7 +29,7 @@
 // references become '(circular)', and class instances collapse to a '(ClassName)'
 // marker — the wire shape of an entry is the JSON projection of the type here.
 //
-// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 119 keys)
+// Index (App: 0 keys · Workspace: 6 keys · Session: 19 keys · Agent: 120 keys)
 //   App
 //   Workspace
 //     workspaceDirs.ephemeralDirs          src/workspace/workspaceDirs/workspaceDirsService.ts
@@ -74,6 +74,7 @@
 //     contextMemory                                   src/agent/contextMemory/contextOps.ts
 //     contextMemory.revision                          src/agent/contextMemory/contextOps.ts
 //     contextProjector.lastRepairSignature            src/agent/contextProjector/contextProjectorService.ts
+//     contextRebuild.control                          src/agent/contextRebuild/contextRebuildOps.ts
 //     contextStrategyOverride                         src/agent/fullCompaction/contextStrategyOps.ts
 //     contextWindowEpoch                              src/agent/fullCompaction/windowEpoch.ts
 //     cron                                            src/session/cron/cronOps.ts
@@ -2162,6 +2163,29 @@ export interface AgentStateSnapshot {
   'contextMemory.revision': number;
   // src/agent/contextProjector/contextProjectorService.ts
   'contextProjector.lastRepairSignature': string | null;
+  // src/agent/contextRebuild/contextRebuildOps.ts
+  // replayable · durable — folds: ContextRebuildPreferenceChanged, ContextRebuildReported
+  'contextRebuild.control': /* ContextRebuildControl — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ {
+    readonly enabled: boolean;
+    readonly outcome?: 'failed' | 'partial' | 'applied';
+    readonly trigger?: 'manual' | 'compaction' | 'restore';
+    readonly at?: string;
+    readonly error?: string;
+    readonly changes?: /* ContextRebuildChanges — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ {
+      readonly profile: boolean;
+      readonly promptFields: boolean;
+      readonly skills: boolean;
+      readonly instructions: boolean;
+      readonly plugins: boolean;
+      readonly mcp: boolean;
+      readonly injections: boolean;
+    };
+    readonly rebuilt: readonly ('profile' | 'skills' | 'instructions' | 'plugins' | 'mcp' | 'injections' | 'prompt_fields')[];
+    readonly unsupported: readonly /* ContextRebuildUnsupported — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ {
+      readonly surface: /* ContextRebuildUnsupportedSurface — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ 'profile' | 'skills' | 'instructions' | 'plugins' | 'mcp' | 'injections' | 'prompt_fields' | 'executor_session';
+      readonly reason: string;
+    }[];
+  };
   // src/agent/execution/externalExecutorOps.ts
   // replayable · durable — folds: ExecutorSessionUpdated, ExecutorAuthObserved, ExecutorTurnMetadata, ExecutorHintDelivery, ExecutorPlanUpdate, ExecutorPlanRemove, ExecutorRuntimeUpdate, ExecutorToolDisplay
   'externalExecutor': /* ExternalExecutorState — packages/agent-core-v2/src/agent/execution/externalExecutorOps.ts */ {
@@ -2400,7 +2424,7 @@ export interface AgentStateSnapshot {
       readonly fields: readonly /* ResolvedPromptFieldOverride — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
         readonly id: string;
         readonly value: string;
-        readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'shadowed' | 'inactive' | 'unsupported';
+        readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'unsupported' | 'shadowed' | 'inactive';
         readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
           readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
           readonly kind: 'file' | 'inline';
@@ -6090,7 +6114,7 @@ export interface AgentStateSnapshot {
           channels: readonly {
             id: string;
             channel: 'system' | 'tool' | 'delegation' | 'model_profile' | 'cognition_overlay' | 'cognition_steering' | 'cognition_anchor';
-            state: 'effective' | 'shadowed' | 'inactive' | 'unsupported';
+            state: 'effective' | 'unsupported' | 'shadowed' | 'inactive';
             sources: readonly {
               surface: string;
               kind: 'file' | 'inline';
@@ -6166,7 +6190,7 @@ export interface AgentStateSnapshot {
             readonly fields: readonly /* ResolvedPromptFieldOverride — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ {
               readonly id: string;
               readonly value: string;
-              readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'shadowed' | 'inactive' | 'unsupported';
+              readonly status: /* PromptFieldResolutionStatus — packages/agent-core-v2/src/app/promptField/promptFieldRegistry.ts */ 'effective' | 'deferred' | 'unsupported' | 'shadowed' | 'inactive';
               readonly sources: readonly /* PromptOverrideSource — packages/agent-profiles/src/promptOverrides.ts */ {
                 readonly surface: /* PromptOverrideSurface — packages/agent-profiles/src/promptOverrides.ts */ 'profile' | 'model' | 'system' | 'global' | 'profile-model' | 'caller-lease-model' | 'recipe';
                 readonly kind: 'file' | 'inline';

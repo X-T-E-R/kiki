@@ -105,6 +105,7 @@ interface ActiveCompaction extends FullCompactionTask {
   appliedResult?: CompactionResult;
   appliedInput?: ContextCompactionInput;
   completeDispatched?: boolean;
+  committedBoundaryRan?: boolean;
   persistBlocked?: boolean;
   phase: 'preparing' | 'committing' | 'finalizing';
   blockedByTurn: boolean;
@@ -156,6 +157,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   declare readonly _serviceBrand: undefined;
   readonly hooks: IAgentFullCompactionService['hooks'] = {
     onWillCompact: new OrderedHookSlot<FullCompactionTask>(),
+    onDidCommit: new OrderedHookSlot<FullCompactionTask>(),
   };
   private readonly _onDidFinishCompaction = this._register(new Emitter<FullCompactionTask>());
   readonly onDidFinishCompaction: Event<FullCompactionTask> = this._onDidFinishCompaction.event;
@@ -640,6 +642,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       const input = active.appliedInput;
       if (input === undefined) throw new Error2(ErrorCodes.COMPACTION_UNABLE, 'Compaction recovery has no prepared result.');
       const result = await this.publishCompactionSuccess(active, await this.commitCompaction(active, input));
+      await this.runCommittedBoundary(active);
       return result;
     } catch (error) {
       if (active.persistBlocked) active.phase = 'preparing';
@@ -663,6 +666,16 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     void _contextSummary;
     void this.dispatcher.dispatch(new CompactionCompleted({ trigger: active.trigger, result: eventResult }));
     return result;
+  }
+
+  private async runCommittedBoundary(active: ActiveCompaction): Promise<void> {
+    if (active.committedResult === undefined || active.committedBoundaryRan === true) return;
+    active.committedBoundaryRan = true;
+    try {
+      await this.hooks.onDidCommit.run(active);
+    } catch (error) {
+      this.log.error('failed to run the committed compaction boundary', { error, committed: true });
+    }
   }
 
   private async releaseCompaction(active: ActiveCompaction): Promise<void> {
@@ -838,7 +851,9 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
   ): Promise<CompactionResult> {
     try {
       const result = await this.compactionRound(active, data);
-      return await this.publishCompactionSuccess(active, result);
+      const published = await this.publishCompactionSuccess(active, result);
+      await this.runCommittedBoundary(active);
+      return published;
     } catch (error) {
       if (active.persistBlocked && this._compacting === active) {
         active.phase = 'preparing';

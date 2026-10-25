@@ -41,7 +41,7 @@ const peerProcedureMethods: ReadonlyMap<string, ReadonlySet<string>> = new Map([
   ['agentLoopService', new Set(['cancelFromUser', 'status'])],
   ['agentContextInjectorService', new Set(['reconcileWhenIdle'])],
   ['agentContextMutationService', new Set(['appendImported'])],
-  ['agentContextRebuildService', new Set(['rebuild'])],
+  ['agentContextRebuildService', new Set(['rebuild', 'control', 'setEnabled'])],
   ['agentConversationUndoService', new Set(['undo'])],
   ['agentCommandService', new Set(['list'])],
   ['agentRuntimeBindingService', new Set(['get', 'switch'])],

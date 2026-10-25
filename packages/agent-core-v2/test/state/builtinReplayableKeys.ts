@@ -1,6 +1,7 @@
 import type { ReplayableStateKey } from '#/state/state';
 
 import { contextMemoryKey, contextRevisionKey } from '#/agent/contextMemory/contextOps';
+import { contextRebuildControlKey } from '#/agent/contextRebuild/contextRebuildOps';
 import { modelSwitchCompletionsKey, modelSwitchContinuityKey } from '#/agent/modelSwitch/modelSwitchOps';
 import { staleGuardKey } from '#/features/staleGuard/staleGuardOps';
 import { fullCompactionKey } from '#/agent/fullCompaction/compactionOps';
@@ -44,6 +45,7 @@ import { hookStateKey } from '#/features/externalHooks/agent/hookState';
 export const BUILTIN_REPLAYABLE_STATE_KEYS: readonly ReplayableStateKey<any>[] = [
   contextMemoryKey,
   contextRevisionKey,
+  contextRebuildControlKey,
   modelSwitchCompletionsKey,
   modelSwitchContinuityKey,
   staleGuardKey,

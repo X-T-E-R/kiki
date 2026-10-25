@@ -162,18 +162,30 @@ export const setEffortResultSchema = z.object({
   effort: z.string(),
 });
 
+const contextRebuildSurfaceSchema = z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections']);
+
+const contextRebuildChangesSchema = z.object({
+  profile: z.boolean(),
+  promptFields: z.boolean(),
+  skills: z.boolean(),
+  instructions: z.boolean(),
+  plugins: z.boolean(),
+  mcp: z.boolean(),
+  injections: z.boolean(),
+});
+
+const contextRebuildUnsupportedSchema = z.object({
+  surface: z.union([contextRebuildSurfaceSchema, z.literal('executor_session')]),
+  reason: z.string(),
+});
+
 export const contextRebuildResultSchema = z.object({
-  rebuilt: z.array(z.enum(['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'])),
+  rebuilt: z.array(contextRebuildSurfaceSchema),
   changed: z.boolean(),
-  changes: z.object({
-    profile: z.boolean(),
-    promptFields: z.boolean(),
-    skills: z.boolean(),
-    instructions: z.boolean(),
-    plugins: z.boolean(),
-    mcp: z.boolean(),
-    injections: z.boolean(),
-  }),
+  changes: contextRebuildChangesSchema,
+  outcome: z.enum(['applied', 'partial', 'failed']),
+  unsupported: z.array(contextRebuildUnsupportedSchema),
+  appliesOn: z.literal('next_request'),
   readiness: z.object({
     mcp: z.array(z.object({
       runtimeName: z.string(),
@@ -185,6 +197,17 @@ export const contextRebuildResultSchema = z.object({
       errors: z.array(z.string()),
     }),
   }),
+});
+
+export const contextRebuildControlSchema = z.object({
+  enabled: z.boolean(),
+  outcome: z.enum(['applied', 'partial', 'failed']).optional(),
+  trigger: z.enum(['manual', 'compaction', 'restore']).optional(),
+  at: z.string().optional(),
+  error: z.string().optional(),
+  changes: contextRebuildChangesSchema.optional(),
+  rebuilt: z.array(contextRebuildSurfaceSchema),
+  unsupported: z.array(contextRebuildUnsupportedSchema),
 });
 
 export const contextStrategySchema = z.enum(['summarize', 'auto', 'fresh']);

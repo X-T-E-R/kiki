@@ -124,6 +124,8 @@ const V2_RECORD_TYPES: ReadonlySet<string> = new Set([
   'executor.plan.remove',
   'executor.runtime.update',
   'context_strategy.override_changed',
+  'context_rebuild.preference',
+  'context_rebuild.reported',
   'auto_compact.override_changed',
   'agent.model_switch',
   'prompt.model_switch_queued',

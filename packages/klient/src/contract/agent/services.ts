@@ -24,6 +24,7 @@ import {
   activateSkillPayloadSchema,
   agentCommandInfoSchema,
   agentLoopStatusSchema,
+  contextRebuildControlSchema,
   contextRebuildResultSchema,
   contextStrategySchema,
   contextStrategyStatusSchema,
@@ -121,6 +122,8 @@ export const agentContextInjectorContract = {
 
 export const agentContextRebuildContract = {
   rebuild: { input: z.tuple([]), output: contextRebuildResultSchema },
+  control: { input: z.tuple([]), output: contextRebuildControlSchema },
+  setEnabled: { input: z.tuple([z.boolean()]), output: noResult },
 } satisfies ServiceContract;
 
 export const agentConversationUndoContract = {

@@ -58,6 +58,7 @@ export type AgentContextData = {
   tokenCount: ReturnType<IAgentTokenCountingService['statusSize']>;
 };
 export type ContextRebuildResult = Awaited<ReturnType<IAgentContextRebuildService['rebuild']>>;
+export type ContextRebuildControl = ReturnType<IAgentContextRebuildService['control']>;
 export type AgentCommandInfo = Awaited<ReturnType<IAgentCommandService['list']>>[number];
 export type RuntimeBinding = ReturnType<IAgentRuntimeBindingService['get']>;
 export type PlanData = Awaited<ReturnType<IAgentPlanService['status']>>;
@@ -139,6 +140,9 @@ export interface AgentFacade {
   appendImportedContext(message: ContextMessage): Promise<void>;
   clearContext(): Promise<void>;
   rebuildContext(): Promise<ContextRebuildResult>;
+  contextRebuildControl(): Promise<ContextRebuildControl>;
+  /** Persists this agent's switch. Enabling does not rebuild immediately. */
+  setContextRebuildEnabled(enabled: boolean): Promise<void>;
   undo(count: Parameters<IAgentConversationUndoService['undo']>[0]): Promise<number>;
   listCommands(): Promise<readonly AgentCommandInfo[]>;
   runCommand(input: { name: string; args?: string }): Promise<void>;
@@ -284,6 +288,10 @@ export function createAgentFacade(call: ScopedCaller, scope: ScopeRef): AgentFac
       call(scope, 'agentContextMemoryService', 'clear', []) as Promise<void>,
     rebuildContext: () =>
       call(scope, 'agentContextRebuildService', 'rebuild', []) as Promise<ContextRebuildResult>,
+    contextRebuildControl: () =>
+      call(scope, 'agentContextRebuildService', 'control', []) as Promise<ContextRebuildControl>,
+    setContextRebuildEnabled: (enabled) =>
+      call(scope, 'agentContextRebuildService', 'setEnabled', [enabled]) as Promise<void>,
     undo: (count) =>
       call(scope, 'agentConversationUndoService', 'undo', [count]) as Promise<number>,
     listCommands: () =>

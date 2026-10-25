@@ -114,6 +114,7 @@ export type {
 export type {
   AgentCommandInfo,
   AgentContextData,
+  ContextRebuildControl,
   ContextRebuildResult,
   ContextStrategy,
   ContextStrategyStatus,

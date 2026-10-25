@@ -24,11 +24,13 @@
 // cross-reducers), blobs (the folding states whose blob codec offloads inline
 // media to blob storage), owner (the source file declaring the class).
 
-// Index (90 record types)
+// Index (92 record types)
 //   agent_message.delivered            agentCollaboration.messageReceipts                                                                                                                                                   src/session/agentCollaboration/messageEvents.ts
 //   agent.model_switch                 contextMemory, contextMemory.revision, contextWindowEpoch, modelSwitch.completions, profile, tokenCounting                                                                           src/agent/modelSwitch/modelSwitchEvent.ts
 //   auto_compact.override_changed      autoCompactOverride                                                                                                                                                                  src/agent/fullCompaction/autoCompactOps.ts
 //   config.update                      profile                                                                                                                                                                              src/agent/profile/profileOps.ts
+//   context_rebuild.preference         contextRebuild.control                                                                                                                                                               src/agent/contextRebuild/contextRebuildOps.ts
+//   context_rebuild.reported           contextRebuild.control                                                                                                                                                               src/agent/contextRebuild/contextRebuildOps.ts
 //   context_strategy.override_changed  contextStrategyOverride                                                                                                                                                              src/agent/fullCompaction/contextStrategyOps.ts
 //   context.append_loop_event          contextMemory, contextMemory.revision, todo.continuityClock, turn                                                                                                                    src/agent/contextMemory/contextEvents.ts
 //   context.append_message             agentCollaboration.materializedMessages, contextMemory, contextMemory.revision, goalForkNotice, modelSwitch.continuity, plan, task.notificationDelivery, todo, todo.continuityClock  src/agent/contextMemory/contextEvents.ts
@@ -201,6 +203,41 @@ interface ConfigUpdatePayload {
   agentsMdPaths?: string[];
   disallowedTools?: string[];
   disabledToolGroups?: import('@kiki/agent-profiles/toolGroups').TOOL_GROUP_ID_SCHEMA[];
+}
+
+/**
+ * states: contextRebuild.control
+ * owner: src/agent/contextRebuild/contextRebuildOps.ts
+ */
+interface ContextRebuildPreferencePayload {
+  _name: 'context_rebuild.preference';
+  enabled: boolean;
+}
+
+/**
+ * states: contextRebuild.control
+ * owner: src/agent/contextRebuild/contextRebuildOps.ts
+ */
+interface ContextRebuildReportedPayload {
+  _name: 'context_rebuild.reported';
+  outcome: 'applied' | 'partial' | 'failed';
+  trigger: 'manual' | 'compaction' | 'restore';
+  at: string;
+  error?: string;
+  changes?: {
+    profile: boolean;
+    promptFields: boolean;
+    skills: boolean;
+    instructions: boolean;
+    plugins: boolean;
+    mcp: boolean;
+    injections: boolean;
+  };
+  rebuilt: 'profile' | 'prompt_fields' | 'skills' | 'instructions' | 'plugins' | 'mcp' | 'injections'[];
+  unsupported: {
+    surface: 'profile' | 'prompt_fields' | 'skills' | 'instructions' | 'plugins' | 'mcp' | 'injections' | 'executor_session';
+    reason: string;
+  }[];
 }
 
 /**
@@ -1680,6 +1717,8 @@ interface WirePayloadMap {
   "agent.model_switch": AgentModelSwitchPayload;
   "auto_compact.override_changed": AutoCompactOverrideChangedPayload;
   "config.update": ConfigUpdatePayload;
+  "context_rebuild.preference": ContextRebuildPreferencePayload;
+  "context_rebuild.reported": ContextRebuildReportedPayload;
   "context_strategy.override_changed": ContextStrategyOverrideChangedPayload;
   "context.append_loop_event": ContextAppendLoopEventPayload;
   "context.append_message": ContextAppendMessagePayload;

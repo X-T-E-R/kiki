@@ -784,6 +784,7 @@ export * from '#/agent/plugin/agentPlugin';
 export * from '#/agent/plugin/agentPluginOps';
 export * from '#/agent/plugin/agentPluginService';
 export * from '#/agent/contextRebuild/contextRebuild';
+export * from '#/agent/contextRebuild/contextRebuildOps';
 import '#/agent/contextRebuild/contextRebuildService';
 export { AgentContextRebuildService } from '#/agent/contextRebuild/contextRebuildService';
 export * from '#/session/contextRebuild/contextSourceReloader';

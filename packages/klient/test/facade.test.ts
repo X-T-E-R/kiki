@@ -836,6 +836,9 @@ describe('agent domain routing', () => {
       rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
       changed: true,
       changes: { profile: true, promptFields: false, skills: false, instructions: true, plugins: false, mcp: false, injections: false },
+      outcome: 'applied',
+      unsupported: [],
+      appliesOn: 'next_request',
       readiness: { mcp: [], plugins: { state: 'ready', errors: [] } },
     });
 
@@ -890,6 +893,24 @@ describe('agent domain routing', () => {
     expect(channel.calls).toEqual([
       { scope: { sessionId: 's1', agentId: 'main' }, service: 'agentTaskService', method: 'stopByUser', args: ['user-task'] },
       { scope: { sessionId: 's1', agentId: 'main' }, service: 'agentTaskService', method: 'stop', args: ['rpc-task'] },
+    ]);
+  });
+
+  it('routes this agent\'s context rebuild switch without starting a rebuild', async () => {
+    const channel = new FakeChannel();
+    const klient = createKlientFromChannel(channel);
+    const agent = klient.session('s1').agent('main');
+    channel.results.set('agentContextRebuildService.control', {
+      enabled: false,
+      rebuilt: [],
+      unsupported: [],
+    });
+    channel.results.set('agentContextRebuildService.setEnabled', undefined);
+    await expect(agent.contextRebuildControl()).resolves.toMatchObject({ enabled: false, rebuilt: [] });
+    await agent.setContextRebuildEnabled(true);
+    expect(channel.calls).toEqual([
+      { scope: { sessionId: 's1', agentId: 'main' }, service: 'agentContextRebuildService', method: 'control', args: [] },
+      { scope: { sessionId: 's1', agentId: 'main' }, service: 'agentContextRebuildService', method: 'setEnabled', args: [true] },
     ]);
   });
 });
