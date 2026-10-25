@@ -314,6 +314,151 @@ it('enables running fullscreen composer send, model switch, and stop', async () 
   expect(harness.stopAgentTask).toHaveBeenCalledWith('session', 'main', 'task-1');
 });
 
+it('tracks child agent working line and last response dynamically', async () => {
+  const now = Date.now();
+  const child1Time = now - 15_000;
+  const child1Iso = new Date(child1Time).toISOString();
+  const forest = {
+    roots: [{ agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false, toolCallCount: 0, childIds: ['child-1', 'child-2'] }],
+    byId: {
+      main: { agentId: 'main', name: 'main', label: 'Main', status: 'completed', busy: false, toolCallCount: 0, childIds: ['child-1', 'child-2'] },
+      'child-1': { agentId: 'child-1', parentAgentId: 'main', name: 'worker1', label: 'Worker 1', model: 'fixture/kiki-pro', status: 'running', busy: true, toolCallCount: 0, childIds: [] },
+      'child-2': { agentId: 'child-2', parentAgentId: 'main', name: 'worker2', label: 'Worker 2', model: 'fixture/kiki-pro', status: 'running', busy: true, toolCallCount: 0, childIds: [] },
+    },
+  } as AgentForest;
+
+  const agentStates: Record<string, ReturnType<typeof createViewState>> = {
+    'child-1': {
+      ...createViewState('session'),
+      loaded: true,
+      busy: true,
+      turnStartedAt: child1Time - 50_000,
+      blocks: [
+        { id: 'u1', kind: 'user', text: 'start child 1' },
+        { id: 'a1', kind: 'assistant', text: 'working on it', createdAt: child1Iso, streaming: false },
+      ] as never,
+    },
+    'child-2': {
+      ...createViewState('session'),
+      loaded: true,
+      busy: true,
+      turnStartedAt: child1Time - 100_000,
+      blocks: [
+        { id: 'u2', kind: 'user', text: 'start child 2' },
+      ] as never,
+    },
+  };
+
+  const listeners = new Map<string, Set<() => void>>();
+  const notifyAgent = (agentId: string) => {
+    listeners.get(agentId)?.forEach((cb) => cb());
+  };
+
+  const controller = {
+    subscribeAgent: (agentId: string, cb: () => void) => {
+      if (!listeners.has(agentId)) listeners.set(agentId, new Set());
+      listeners.get(agentId)!.add(cb);
+      return () => { listeners.get(agentId)?.delete(cb); };
+    },
+    getAgentState: (agentId: string) => agentStates[agentId] ?? EMPTY_AGENT_STATE,
+    getForest: () => forest,
+    retainHistoryRead: () => () => {},
+    retainHistoryPreview: () => () => {},
+    historyPreviewPending: () => false,
+  } as unknown as SessionController;
+
+  // 1. Cold busy child-1 mounts: seeds lastResponseAt from its own block timestamp
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'child-1' },
+    controller,
+    forest,
+  });
+  await settle();
+
+  const workingLine = dock.querySelector('[data-composer-working]');
+  expect(workingLine).not.toBeNull();
+  expect(workingLine?.getAttribute('data-last-response-at')).toBe(String(child1Time));
+  expect(workingLine?.textContent).toContain('Working · last response 15s ago');
+
+  // 2. Main or other child output does not update child-1 lastResponseAt
+  const dateNowSpy = vi.spyOn(Date, 'now');
+  dateNowSpy.mockReturnValue(now + 30_000);
+  agentStates['child-2'] = {
+    ...agentStates['child-2']!,
+    blocks: [
+      { id: 'u2', kind: 'user', text: 'start child 2' },
+      { id: 'a2', kind: 'assistant', text: 'child 2 speaks', createdAt: new Date(now + 20_000).toISOString(), streaming: false },
+    ] as never,
+  };
+  await act(async () => { notifyAgent('child-2'); });
+  await settle();
+  expect(dock.querySelector('[data-composer-working]')?.getAttribute('data-last-response-at')).toBe(String(child1Time));
+
+  // 3. Child-1 produces new output: signature changes and refreshes lastResponseAt
+  const updatedTime = now + 30_000;
+  agentStates['child-1'] = {
+    ...agentStates['child-1']!,
+    blocks: [
+      { id: 'u1', kind: 'user', text: 'start child 1' },
+      { id: 'a1', kind: 'assistant', text: 'working on it - step 2', createdAt: child1Iso, streaming: true },
+    ] as never,
+  };
+  await act(async () => { notifyAgent('child-1'); });
+  await settle();
+  expect(dock.querySelector('[data-composer-working]')?.getAttribute('data-last-response-at')).toBe(String(updatedTime));
+
+  // 4. Switch to child-3 (no outputs yet): does not inherit child-1 or child-2 timestamp
+  agentStates['child-3'] = {
+    ...createViewState('session'),
+    loaded: true,
+    busy: true,
+    turnStartedAt: now - 100_000,
+    blocks: [
+      { id: 'u3', kind: 'user', text: 'start child 3' },
+    ] as never,
+  };
+  const threeForest = {
+    ...forest,
+    byId: {
+      ...forest.byId,
+      'child-3': { agentId: 'child-3', parentAgentId: 'main', name: 'worker3', label: 'Worker 3', model: 'fixture/kiki-pro', status: 'running', busy: true, toolCallCount: 0, childIds: [] },
+    },
+  } as AgentForest;
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'child-3' },
+    controller,
+    forest: threeForest,
+  });
+  await settle();
+  const child3Working = dock.querySelector('[data-composer-working]');
+  expect(child3Working).not.toBeNull();
+  expect(child3Working?.getAttribute('data-last-response-at')).toBeNull();
+  expect(child3Working?.textContent).toContain('Working');
+  expect(child3Working?.textContent).not.toContain('last response');
+
+  // 5. Idle child (busy=false): working line completely unmounts
+  agentStates['child-3'] = {
+    ...agentStates['child-3']!,
+    busy: false,
+  };
+  const idleForest = {
+    ...threeForest,
+    byId: {
+      ...threeForest.byId,
+      'child-3': { ...threeForest.byId['child-3']!, status: 'completed', busy: false },
+    },
+  } as AgentForest;
+  await renderWorkspace({
+    target: { sessionId: 'session', agentId: 'child-3' },
+    controller,
+    forest: idleForest,
+  });
+  await settle();
+  expect(dock.querySelector('[data-composer-working]')).toBeNull();
+
+  dateNowSpy.mockRestore();
+});
+
 async function sendNowToBusyChild(
   sendPromptNow: ReturnType<typeof vi.fn>,
 ): Promise<HTMLTextAreaElement> {
