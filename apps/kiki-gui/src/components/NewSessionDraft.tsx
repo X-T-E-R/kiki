@@ -25,7 +25,6 @@ import {
 
 import {
   buildPromptContent,
-  clearNewSessionDraft,
   flushDrafts,
   readDraft,
   readNewSessionDraft,
@@ -70,7 +69,7 @@ import {
 } from '../lib/agentProfileCatalog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { runNewSessionHandoff } from '../lib/newSessionHandoff';
-import { spaceStorage } from '../lib/spaceStorage';
+import { spaceStorage, type SpaceStorage } from '../lib/spaceStorage';
 import { SearchableSelect, type SearchableSelectOption } from './SearchableSelect';
 import { useI18n } from '../i18n';
 import { errorText } from '@kiki/session-core/i18n';
@@ -158,16 +157,17 @@ export interface PersistedCreationIntent {
   readonly status: 'pending' | 'accepted' | 'unknown' | 'conflict';
   readonly evidence?: string;
   readonly reason?: string;
+  readonly error?: string;
 }
 
 function creationIntentStorageKey(scopeKey: string): string {
   return `kiki.draft.new.intent.${scopeKey}`;
 }
 
-export function readPersistedCreationIntent(scopeKey: string): PersistedCreationIntent | undefined {
+export function readPersistedCreationIntent(scopeKey: string, storage: SpaceStorage = spaceStorage): PersistedCreationIntent | undefined {
   if (!readSettings().draftPersistence) return undefined;
   try {
-    const raw = spaceStorage.getItem(creationIntentStorageKey(scopeKey));
+    const raw = storage.getItem(creationIntentStorageKey(scopeKey));
     if (raw === null) return undefined;
     const parsed = JSON.parse(raw) as unknown;
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
@@ -175,7 +175,8 @@ export function readPersistedCreationIntent(scopeKey: string): PersistedCreation
     const creationId = typeof record['creationId'] === 'string' ? record['creationId'] : undefined;
     const sessionId = typeof record['sessionId'] === 'string' ? record['sessionId'] : undefined;
     const bodyKey = typeof record['bodyKey'] === 'string' ? record['bodyKey'] : undefined;
-    const status = record['status'] === 'pending' || record['status'] === 'accepted' || record['status'] === 'unknown' || record['status'] === 'conflict'
+    const status = record['status'] === 'pending' ? 'unknown'
+      : record['status'] === 'accepted' || record['status'] === 'unknown' || record['status'] === 'conflict'
       ? record['status'] : undefined;
     if (!creationId || !sessionId || !bodyKey || !status) return undefined;
     return {
@@ -185,24 +186,25 @@ export function readPersistedCreationIntent(scopeKey: string): PersistedCreation
       status,
       evidence: typeof record['evidence'] === 'string' ? record['evidence'] : undefined,
       reason: typeof record['reason'] === 'string' ? record['reason'] : undefined,
+      error: typeof record['error'] === 'string' ? record['error'] : undefined,
     };
   } catch {
     return undefined;
   }
 }
 
-export function writePersistedCreationIntent(scopeKey: string, intent: PersistedCreationIntent): void {
+export function writePersistedCreationIntent(scopeKey: string, intent: PersistedCreationIntent, storage: SpaceStorage = spaceStorage): void {
   if (!readSettings().draftPersistence) return;
   try {
-    spaceStorage.setItem(creationIntentStorageKey(scopeKey), JSON.stringify(intent));
+    storage.setItem(creationIntentStorageKey(scopeKey), JSON.stringify(intent));
   } catch {
     return;
   }
 }
 
-export function clearPersistedCreationIntent(scopeKey: string): void {
+export function clearPersistedCreationIntent(scopeKey: string, storage: SpaceStorage = spaceStorage): void {
   try {
-    spaceStorage.removeItem(creationIntentStorageKey(scopeKey));
+    storage.removeItem(creationIntentStorageKey(scopeKey));
   } catch {
     return;
   }
@@ -229,9 +231,9 @@ function isConflictCreationError(cause: unknown): boolean {
   return false;
 }
 
-function clearScopedNewSessionDraft(scopeId: string): void {
-  if (scopeId === 'local') return clearNewSessionDraft();
-  try { spaceStorage.removeItem(remoteDraftStorageKey(scopeId)); } catch { return; }
+function clearScopedNewSessionDraft(scopeId: string, storage: SpaceStorage): void {
+  const key = scopeId === 'local' ? 'kiki.newSessionDraft' : remoteDraftStorageKey(scopeId);
+  try { storage.removeItem(key); } catch { return; }
 }
 
 export const AUTO_WORKSPACE_ID = '__auto__';
@@ -439,7 +441,7 @@ export function useNewSessionDraft({
   const host = useHost();
   const queryClient = useQueryClient();
   const { client, scopeId, spaceKey, connectionId, sshLabel } = useConnection();
-  const draftScopeId = sshLabel === null ? 'local' : scopeId;
+  const draftScopeId = scopeId;
   /**
    * A daily draft is the persona's, not the shared `/new` scratch pad: its own
    * text and its own target, keyed by connection scope and persona so two
@@ -837,56 +839,40 @@ export function useNewSessionDraft({
   };
 
   const scopeIntentKey = dailySettingsKey ?? draftScopeId;
-  const initialIntent = useMemo(() => readPersistedCreationIntent(scopeIntentKey), [scopeIntentKey]);
+  const intentScope = useMemo(() => ({ storage: spaceStorage.capture(), active: true }), [scopeIntentKey, spaceKey, connectionId]);
+  const initialIntent = useMemo(() => readPersistedCreationIntent(scopeIntentKey, intentScope.storage), [scopeIntentKey, intentScope]);
 
   const selectionReady = !selectionBlocked && !personaPending && !unresolvedPersona;
-  const createdForRetry = useRef<{
-    body: string;
-    sessionId: string;
-    creationId: string;
-    status: 'accepted' | 'unknown' | 'conflict';
-  } | undefined>(
-    initialIntent !== undefined && (initialIntent.status === 'accepted' || initialIntent.status === 'unknown' || initialIntent.status === 'conflict')
-      ? { body: initialIntent.bodyKey, sessionId: initialIntent.sessionId, creationId: initialIntent.creationId, status: initialIntent.status }
-      : undefined,
-  );
+  const createdForRetry = useRef<PersistedCreationIntent | undefined>(initialIntent);
   const [createdSessionId, setCreatedSessionId] = useState<string | undefined>(
     initialIntent?.status === 'accepted' || initialIntent?.status === 'unknown' ? initialIntent.sessionId : undefined,
   );
-  const [creationNotice, setCreationNotice] = useState<string | null>(
-    initialIntent?.status === 'accepted'
-      ? t('new.creationAccepted')
-      : initialIntent?.status === 'unknown' || initialIntent?.status === 'pending'
-      ? t('new.creationUnknown')
-      : null,
-  );
+  const noticeForIntent = useCallback((intent: PersistedCreationIntent | undefined) =>
+    intent?.status === 'accepted' ? t('new.creationAccepted')
+      : intent?.status === 'unknown' ? t('new.creationUnknown') : null, [t]);
+  const [creationNotice, setCreationNotice] = useState<string | null>(() => noticeForIntent(initialIntent));
   const creationIntent = useRef<{ cancelled: boolean } | undefined>(undefined);
   const draftRef = useRef(draft);
   draftRef.current = draft;
 
   useEffect(() => {
-    const saved = readPersistedCreationIntent(scopeIntentKey);
-    if (saved !== undefined && (saved.status === 'accepted' || saved.status === 'unknown' || saved.status === 'conflict')) {
-      createdForRetry.current = {
-        body: saved.bodyKey,
-        sessionId: saved.sessionId,
-        creationId: saved.creationId,
-        status: saved.status,
-      };
-      setCreatedSessionId(saved.status === 'accepted' || saved.status === 'unknown' ? saved.sessionId : undefined);
-      setCreationNotice(
-        saved.status === 'accepted'
-          ? t('new.creationAccepted')
-          : saved.status === 'unknown' || saved.status === 'pending'
-          ? t('new.creationUnknown')
-          : null,
-      );
-    } else {
-      createdForRetry.current = undefined;
-      setCreatedSessionId(undefined);
-      setCreationNotice(null);
-    }
-  }, [scopeIntentKey, t]);
+    intentScope.active = true;
+    creationIntent.current = undefined;
+    setBusy(false);
+    setCreationPending(false);
+    return () => {
+      intentScope.active = false;
+      if (creationIntent.current !== undefined) creationIntent.current.cancelled = true;
+    };
+  }, [intentScope]);
+  useEffect(() => {
+    if (creationIntent.current !== undefined) return;
+    const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+    createdForRetry.current = saved;
+    setCreatedSessionId(saved?.status === 'accepted' || saved?.status === 'unknown' ? saved.sessionId : undefined);
+    setCreationNotice(noticeForIntent(saved));
+    setError(saved?.error ?? null);
+  }, [scopeIntentKey, intentScope, noticeForIntent]);
 
   const cancelCreation = useCallback(() => {
     if (creationIntent.current === undefined) return;
@@ -896,13 +882,10 @@ export function useNewSessionDraft({
   }, [t]);
   const openCreatedSession = useCallback(() => {
     const accepted = createdForRetry.current;
-    if (accepted === undefined || creationIntent.current !== undefined) return;
-    queryClient.setQueryData(['space-view-target', scopeId, 'session', accepted.sessionId], true);
+    if (accepted === undefined || accepted.status === 'conflict' || creationIntent.current !== undefined) return;
+    if (accepted.status === 'accepted') queryClient.setQueryData(['space-view-target', scopeId, 'session', accepted.sessionId], true);
     void navigate(`/s/${accepted.sessionId}`);
   }, [navigate, queryClient, scopeId]);
-  useEffect(() => () => {
-    if (creationIntent.current !== undefined) creationIntent.current.cancelled = true;
-  }, [scopeId]);
   const createThenNavigate = useCallback((handoff: {
     initialPrompt?: string;
     initialPresentation?: import('@kiki/transcript').TextPresentation;
@@ -954,8 +937,8 @@ export function useNewSessionDraft({
     // releases the latch for retry.
     const bodyKey = JSON.stringify([draftScopeId, bodyWithoutCreation]);
     const retry = createdForRetry.current;
-    if (retry !== undefined && retry.body !== bodyKey) {
-      setCreationNotice(retry.status === 'unknown' ? t('new.creationUnknown') : t('new.creationAccepted'));
+    if (retry !== undefined && retry.bodyKey !== bodyKey) {
+      setCreationNotice(noticeForIntent(retry));
       return;
     }
 
@@ -969,6 +952,7 @@ export function useNewSessionDraft({
     const intent = { cancelled: false };
     creationIntent.current = intent;
     const submittedDraft = draftRef.current;
+    let draftCleared = false;
     if (trimmedCwd === '') {
       const explicitId = (context.workspaceId !== '' && context.workspaceId !== AUTO_WORKSPACE_ID) ? context.workspaceId : undefined;
       setWorkspaceId(explicitId ?? context.effectiveWorkspace?.id ?? AUTO_WORKSPACE_ID);
@@ -977,30 +961,38 @@ export function useNewSessionDraft({
     setCreationPending(true);
     setCreationNotice(null);
     setError(null);
+    let outcome: PersistedCreationIntent | undefined = retry?.status === 'accepted' ? retry : {
+      creationId, sessionId: targetSessionId, bodyKey, status: 'unknown',
+    };
+    const saveOutcome = () => {
+      if (!intentScope.active) {
+        const saved = readPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+        if (saved?.creationId !== creationId || (saved.status === 'accepted' && outcome?.status !== 'accepted')) return;
+      }
+      if (outcome === undefined) clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+      else writePersistedCreationIntent(scopeIntentKey, outcome, intentScope.storage);
+      if (intentScope.active) createdForRetry.current = outcome;
+    };
+    createdForRetry.current = outcome;
+    flushDrafts();
     writePersistedCreationIntent(scopeIntentKey, {
-      creationId,
-      sessionId: targetSessionId,
-      bodyKey,
-      status: 'pending',
-    });
+      ...outcome,
+      status: outcome.status === 'accepted' ? 'accepted' : 'pending',
+    }, intentScope.storage);
 
     const creation = (retry !== undefined && retry.status === 'accepted')
       ? Promise.resolve({ id: retry.sessionId })
       : client.createSession(body);
     return creation
       .then(async (session) => {
+        outcome = { bodyKey, sessionId: session.id, creationId, status: 'accepted' };
+        saveOutcome();
         void queryClient.invalidateQueries({ queryKey: ['workspaces'] });
         void queryClient.invalidateQueries({ queryKey: ['sessions'] });
-        createdForRetry.current = { body: bodyKey, sessionId: session.id, creationId, status: 'accepted' };
+        if (!intentScope.active) return;
         setCreatedSessionId(session.id);
-        writePersistedCreationIntent(scopeIntentKey, {
-          creationId,
-          sessionId: session.id,
-          bodyKey,
-          status: 'accepted',
-        });
         if (intent.cancelled) {
-          setCreationNotice(t('new.creationAccepted'));
+          setCreationNotice(noticeForIntent(outcome));
           return;
         }
         // Hosts preselected on /new become session resources before anything
@@ -1022,8 +1014,6 @@ export function useNewSessionDraft({
         if (intent.cancelled) return;
         await applyPendingNewSessionCapabilities(client, session.id, { scopeId, spaceKey, connectionId, draftKey });
         if (intent.cancelled) return;
-        createdForRetry.current = undefined;
-        clearPersistedCreationIntent(scopeIntentKey);
 
         // Persist the first prompt or skill into the new session's own draft before clearing /new,
         // so that if activation, navigation, or target mounting stalls and the user refreshes,
@@ -1049,94 +1039,82 @@ export function useNewSessionDraft({
           execution: context.execution,
         });
 
-        if (readDraft(draftKey) === submittedDraft) writeDraft(draftKey, '');
-        clearScopedNewSessionDraft(draftScopeId);
+        if (readDraft(draftKey) === submittedDraft) {
+          writeDraft(draftKey, '');
+          draftCleared = true;
+        }
         // Creation already confirmed this target in this connection scope.
         // Let the route mount immediately while its guard revalidates it.
         queryClient.setQueryData(['space-view-target', scopeId, 'session', session.id], true);
-        // react-router's navigate returns a promise in data routers; the
-        // navigation is fire-and-forget here (the catch below covers createSession).
-        // The hand-off motion rides along with it and never delays the send.
-        runNewSessionHandoff({
-          text: handoff.initialPrompt,
-          navigate: () => { void navigate(`/s/${session.id}`, {
-            state: {
-              createdSession: { id: session.id, scopeId },
-              initialPrompt: handoff.initialPrompt,
-              initialPresentation: handoff.initialPresentation,
-              initialAttachments: handoff.initialAttachments,
-              initialSkill: handoff.initialSkill,
-              // The first message of a bare external engine must reach the
-              // session with the same emptiness as the create did: these ride
-              // the handoff into SessionView's own send path, so a displayed
-              // default re-sent here would re-introduce the very override the
-              // create body just declined to send.
-              model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
-              thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
-                ? context.effectiveEffort : undefined,
-              permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
-              planMode: context.planMode,
-              goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
-              ephemeral: context.ephemeral,
-              // The greeting was the last thing on screen and this is the first
-              // message: the engine materializes it as history from the frozen
-              // persona (the client never sends the greeting text itself).
-              personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
-            },
-            replace: false,
-          }); },
+        const navigateToSession = () => navigate(`/s/${session.id}`, {
+          state: {
+            createdSession: { id: session.id, scopeId },
+            initialPrompt: handoff.initialPrompt,
+            initialPresentation: handoff.initialPresentation,
+            initialAttachments: handoff.initialAttachments,
+            initialSkill: handoff.initialSkill,
+            // The first message of a bare external engine must reach the
+            // session with the same emptiness as the create did: these ride
+            // the handoff into SessionView's own send path, so a displayed
+            // default re-sent here would re-introduce the very override the
+            // create body just declined to send.
+            model: sendsLegacyControl(context.execution, 'model', modelTouched.current) ? context.modelOverride : undefined,
+            thinking: sendsLegacyControl(context.execution, 'thinking', effortTouched.current) && context.effectiveEffort !== ''
+              ? context.effectiveEffort : undefined,
+            permissionMode: sendsLegacyControl(context.execution, 'permission_mode', permissionTouched.current) ? context.permissionMode : undefined,
+            planMode: context.planMode,
+            goalObjective: handoff.goalObjectiveOverride ?? context.goalObjective,
+            ephemeral: context.ephemeral,
+            // The greeting was the last thing on screen and this is the first
+            // message: the engine materializes it as history from the frozen
+            // persona (the client never sends the greeting text itself).
+            personaGreetingReply: handoff.initialPrompt !== undefined && hasGreeting(context.persona) ? true : undefined,
+          },
+          replace: false,
         });
+        await new Promise<void>((resolve, reject) => {
+          runNewSessionHandoff({
+            text: handoff.initialPrompt,
+            navigate: () => { void Promise.resolve().then(navigateToSession).then(() => { resolve(); }, reject); },
+          });
+        });
+        clearPersistedCreationIntent(scopeIntentKey, intentScope.storage);
+        clearScopedNewSessionDraft(draftScopeId, intentScope.storage);
+        if (intentScope.active) createdForRetry.current = undefined;
       })
       .catch((cause: unknown) => {
-        setBusy(false);
-        setError(errorText(locale, cause));
-        if (isConflictCreationError(cause)) {
-          const details = cause instanceof ApiError ? (cause.details as { creation_id?: string; reason?: string } | undefined) : undefined;
-          createdForRetry.current = {
-            body: bodyKey,
-            sessionId: targetSessionId,
-            creationId,
-            status: 'conflict',
-          };
-          writePersistedCreationIntent(scopeIntentKey, {
-            creationId,
-            sessionId: targetSessionId,
-            bodyKey,
-            status: 'conflict',
-            reason: details?.reason,
-          });
-          setCreationNotice(null);
+        const message = errorText(locale, cause);
+        if (outcome?.status === 'accepted') {
+          // A later SSH, capability or navigation failure cannot undo creation.
+          outcome = { ...outcome, error: message };
+        } else if (isConflictCreationError(cause)) {
+          const details = cause instanceof ApiError ? (cause.details as { reason?: string } | undefined) : undefined;
+          outcome = { creationId, sessionId: targetSessionId, bodyKey, status: 'conflict', reason: details?.reason, error: message };
         } else if (isUnknownCreationError(cause)) {
-          const details = cause instanceof ApiError ? (cause.details as { creation_id?: string; session_id?: string; evidence?: string } | undefined) : undefined;
-          const unknownSessionId = details?.session_id ?? targetSessionId;
-          createdForRetry.current = {
-            body: bodyKey,
-            sessionId: unknownSessionId,
-            creationId,
-            status: 'unknown',
+          const details = cause instanceof ApiError ? (cause.details as { session_id?: string; evidence?: string } | undefined) : undefined;
+          outcome = {
+            creationId, sessionId: details?.session_id ?? targetSessionId, bodyKey,
+            status: 'unknown', evidence: details?.evidence, error: message,
           };
-          setCreatedSessionId(unknownSessionId);
-          setCreationNotice(t('new.creationUnknown'));
-          writePersistedCreationIntent(scopeIntentKey, {
-            creationId,
-            sessionId: unknownSessionId,
-            bodyKey,
-            status: 'unknown',
-            evidence: details?.evidence,
-          });
         } else {
-          setCreationNotice(createdForRetry.current !== undefined
-            ? t('new.creationAccepted')
-            : null);
+          // A failed replay does not resolve the earlier unconfirmed outcome.
+          outcome = retry === undefined ? undefined : { ...retry, error: message };
         }
+        saveOutcome();
+        if (!intentScope.active) return;
+        if (draftCleared && readDraft(draftKey) === '') writeDraft(draftKey, submittedDraft);
+        setBusy(false);
+        setError(message);
+        setCreatedSessionId(outcome?.status === 'accepted' || outcome?.status === 'unknown' ? outcome.sessionId : undefined);
+        setCreationNotice(noticeForIntent(outcome));
       })
       .finally(() => {
-        if (creationIntent.current !== intent) return;
+        if (!intentScope.active || creationIntent.current !== intent) return;
         creationIntent.current = undefined;
         setCreationPending(false);
-        if (intent.cancelled && createdForRetry.current !== undefined) setCreationNotice(t('new.creationAccepted'));
+        if (intent.cancelled) setCreationNotice(noticeForIntent(createdForRetry.current));
       });
-  }, [client, connectionId, draftKey, draftScopeId, locale, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, queryClient, t]);
+  }, [client, connectionId, draftKey, draftScopeId, intentScope, locale, scopeId, scopeIntentKey, spaceKey, sshLabel, navigate, noticeForIntent, queryClient, t]);
 
   const send = useCallback((
     text: string,

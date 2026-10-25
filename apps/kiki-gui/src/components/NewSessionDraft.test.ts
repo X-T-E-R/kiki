@@ -18,7 +18,9 @@ import {
   type NewSessionDraftState,
 } from './NewSessionDraft';
 import { clearPendingNewSessionCapabilities, pendingNewSessionCapabilities, setPendingOptionalChoice, setPendingPluginChoice, type PendingCapabilityScope } from './capabilities/newSessionCapabilities';
-import { readDraft, readComposerState } from '@kiki/session-core/composer';
+import { readDraft, readComposerState, resetDraftMemoryForTests, resetComposerMemoryForTests, writeDraft, flushDrafts } from '@kiki/session-core/composer';
+import { configureSpaceStorage } from '../lib/spaceStorage';
+import { personaDailyDraftKey, personaDailySettingsKey } from './persona/personaNavigation';
 
 const { client, navigate, scope } = vi.hoisted(() => ({
   scope: { id: 'local', spaceKey: 'local-space', connectionId: null as string | null, label: null as string | null },
@@ -68,6 +70,9 @@ beforeEach(() => {
   scope.connectionId = null;
   scope.label = null;
   latestDraftState = undefined;
+  configureSpaceStorage(null);
+  resetDraftMemoryForTests();
+  resetComposerMemoryForTests();
   localStorage.clear();
   navigate.mockReset();
   client.listWorkspaceCatalog.mockReset().mockResolvedValue({ items: [] });
@@ -93,13 +98,13 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; prefillNavigationKey?: string }) {
+function DraftHarness(props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string }) {
   latestDraftState = useNewSessionDraft(props);
   return null;
 }
 
 async function renderDraft(
-  props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; prefillNavigationKey?: string } = {},
+  props: { initialWorkspaceId?: string; initialProfile?: string; initialPersona?: string; isDailyDraft?: boolean; prefillNavigationKey?: string } = {},
 ): Promise<QueryClient> {
   const container = document.createElement('div');
   document.body.append(container);
@@ -2709,3 +2714,294 @@ describe('new-session idempotent creation_id intent and error recovery', () => {
   });
 });
 
+
+describe('new-session creation recovery at the component boundary', () => {
+  beforeEach(() => {
+    client.listNamedAgentProfiles.mockResolvedValue({ items: [{ name: 'agent', source: 'builtin', main: true, disabled: false, routes: [] }] });
+    client.klient.rest.ssh.addSessionHost.mockReset().mockResolvedValue({});
+  });
+
+  const ready = () => settleDraft((value) => value.selectionReady && !value.agentProfileCatalogPending);
+  const storedIntent = (key = 'local') => JSON.parse(localStorage.getItem(`kiki.draft.new.intent.${key}`) ?? 'null') as {
+    creationId: string; sessionId: string; bodyKey: string; status: string; evidence?: string; reason?: string;
+  } | null;
+
+  it('remounts while POST is still held, restores the exact pending identity and body, and only replays on an explicit send', async () => {
+    const gate = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(gate.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.setCwd('/workspace/original'); state.updateDraft('Keep the in-flight draft'); });
+    state = await ready();
+    let original: Promise<void> | undefined;
+    await act(async () => { original = state.send(state.draft, []); });
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    const sessionId = `session_${firstBody.creation_id}`;
+    expect(storedIntent()).toMatchObject({ creationId: firstBody.creation_id, sessionId, status: 'pending' });
+    expect(JSON.parse(storedIntent()!.bodyKey)).toEqual(['local', { ...firstBody, creation_id: undefined }]);
+    // The request has not resolved or rejected, and the draft is already durable.
+    expect(JSON.parse(localStorage.getItem('kiki.drafts') ?? '{}').new).toBe('Keep the in-flight draft');
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.createdSessionId).toBe(sessionId);
+    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(state.creationPending).toBe(false);
+    expect(state.draft).toBe('Keep the in-flight draft');
+    expect(state.cwd).toBe('/workspace/original');
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).not.toHaveBeenCalled();
+    client.createSession.mockResolvedValueOnce({ id: sessionId });
+    await act(async () => { await state.send(state.draft, []); });
+    expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+    expect(navigate).toHaveBeenCalledTimes(1);
+    await act(async () => { gate.resolve({ id: sessionId }); await original; });
+    expect(navigate).toHaveBeenCalledTimes(1);
+    expect(storedIntent()).toBeNull();
+  });
+
+  it.each([
+    undefined,
+    'session_absent',
+    'session_present_without_completion',
+    'completion_receipt_write_failed',
+    'session_read_error',
+    'receipt_read_error',
+    'future_diagnostic_evidence',
+  ])('keeps timeout/50006 evidence %s unknown and replays exactly the same create body', async (evidence) => {
+    client.createSession.mockRejectedValueOnce(new ApiError({
+      code: evidence === undefined ? -2 : ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN,
+      msg: 'Unconfirmed creation', data: null, details: { evidence },
+    }));
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Retry this same request'); });
+    state = latestDraftState!;
+    await act(async () => { await state.send(state.draft, []); });
+    state = latestDraftState!;
+    const firstBody = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(state.creationNotice).toContain('Creation could not be confirmed');
+    expect(storedIntent()?.status).toBe('unknown');
+    expect(storedIntent()?.evidence).toBe(evidence);
+    expect(navigate).not.toHaveBeenCalled();
+    client.createSession.mockResolvedValueOnce({ id: `session_${firstBody.creation_id}` });
+    await act(async () => { await state.send(state.draft, []); });
+    expect(client.createSession.mock.calls[1]![0]).toEqual(firstBody);
+  });
+
+  it.each(['unknown', 'body_mismatch', 'session_id_exists'])('does not turn a cancelled %s result or a later body change into acceptance', async (result) => {
+    const gate = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(gate.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Keep the cancelled draft'); });
+    state = latestDraftState!;
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = state.send(state.draft, []); });
+    await act(async () => { latestDraftState!.cancelCreation(); });
+    await act(async () => {
+      gate.reject(new ApiError({
+        code: result === 'unknown' ? ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN : ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT,
+        msg: 'Creation did not confirm acceptance', data: null,
+        details: result === 'unknown' ? { evidence: 'receipt_read_error' } : { reason: result },
+      }));
+      await sending;
+    });
+    state = latestDraftState!;
+    if (result === 'unknown') expect(state.creationNotice).toContain('Creation could not be confirmed');
+    else expect(state.creationNotice).toBeNull();
+    expect(state.creationNotice ?? '').not.toContain('The session was created');
+    expect(storedIntent()).toMatchObject({ status: result === 'unknown' ? 'unknown' : 'conflict' });
+    if (result !== 'unknown') expect(storedIntent()?.reason).toBe(result);
+    await act(async () => { state.setCwd('/workspace/changed'); state.updateDraft('Keep the edited draft'); });
+    state = await ready();
+    await act(async () => { await state.send(state.draft, []); });
+    state = latestDraftState!;
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(state.creationNotice ?? '').not.toContain('The session was created');
+    expect(state.draft).toBe('Keep the edited draft');
+    expect(navigate).not.toHaveBeenCalled();
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.creationNotice ?? '').not.toContain('The session was created');
+    if (result !== 'unknown') {
+      expect(state.error).toContain('40948');
+      expect(state.createdSessionId).toBeUndefined();
+      await act(async () => { state.openCreatedSession(); });
+      expect(navigate).not.toHaveBeenCalled();
+    }
+  });
+
+  it('clears a definite create failure instead of recovering it as an unknown pending request on reload', async () => {
+    client.createSession.mockRejectedValueOnce(new ApiError({ code: 40001, msg: 'Invalid creation', data: null }));
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Correct the request'); });
+    await act(async () => { await latestDraftState!.send('Correct the request', []); });
+    expect(storedIntent()).toBeNull();
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.creationNotice).toBeNull();
+    expect(state.createdSessionId).toBeUndefined();
+    expect(state.draft).toBe('Correct the request');
+  });
+
+  it('isolates connection identities in one home without importing the legacy local draft', async () => {
+    writeDraft('new', 'Legacy local draft');
+    flushDrafts();
+    const gate = deferred<{ id: string }>();
+    scope.id = 'direct:https://one.example.test';
+    client.createSession.mockReturnValueOnce(gate.promise);
+    await renderDraft();
+    let state = await ready();
+    expect(state.draft).toBe('');
+    await act(async () => { state.setCwd('/workspace/one'); state.updateDraft('Connection one draft'); });
+    state = await ready();
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = state.send(state.draft, []); });
+    const first = client.createSession.mock.calls[0]![0] as SessionCreate;
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    scope.id = 'direct:https://two.example.test';
+    await renderDraft();
+    state = await ready();
+    expect(state.creationNotice).toBeNull();
+    expect(state.createdSessionId).toBeUndefined();
+    expect(state.draft).toBe('');
+    expect(state.cwd).toBe('');
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    scope.id = 'direct:https://one.example.test';
+    await renderDraft();
+    state = await ready();
+    expect(state.createdSessionId).toBe(`session_${first.creation_id}`);
+    expect(state.draft).toBe('Connection one draft');
+    expect(state.cwd).toBe('/workspace/one');
+    await act(async () => { gate.resolve({ id: `session_${first.creation_id}` }); await sending; });
+    expect(navigate).not.toHaveBeenCalled();
+    expect(readDraft('new')).toBe('Legacy local draft');
+  });
+
+  it('keeps a late creation result in its captured home rather than the newly active home', async () => {
+    const gate = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(gate.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Main home draft'); });
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = latestDraftState!.send('Main home draft', []); });
+    await unmountDraft();
+    configureSpaceStorage({ homeId: 'other-home' });
+    scope.spaceKey = 'other-home';
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.createdSessionId).toBeUndefined();
+    expect(state.draft).toBe('');
+    await act(async () => { gate.resolve({ id: 'session-main-home' }); await sending; });
+    expect(localStorage.getItem('kiki.space.other-home.kiki.draft.new.intent.local')).toBeNull();
+    expect(storedIntent()).toMatchObject({ status: 'accepted', sessionId: 'session-main-home' });
+    expect(latestDraftState!.createdSessionId).toBeUndefined();
+    expect(navigate).not.toHaveBeenCalled();
+    await unmountDraft();
+    configureSpaceStorage(null);
+    scope.spaceKey = 'local-space';
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.createdSessionId).toBe('session-main-home');
+    expect(state.draft).toBe('Main home draft');
+  });
+
+  it('retains existing local and persona daily draft keys and keeps their pending identities separate', async () => {
+    const dailyKey = personaDailyDraftKey('local', 'example-persona');
+    writeDraft('new', 'Local draft');
+    writeDraft(dailyKey, 'Daily draft');
+    flushDrafts();
+    localStorage.setItem(personaDailySettingsKey('local', 'example-persona'), JSON.stringify({ cwd: '/workspace/daily' }));
+    client.getPersona.mockResolvedValue({ definition: { id: 'example-persona', name: 'Example persona' } });
+    const gate = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(gate.promise);
+    await renderDraft({ initialPersona: 'example-persona', isDailyDraft: true });
+    let state = await ready();
+    expect(state.draft).toBe('Daily draft');
+    expect(state.cwd).toBe('/workspace/daily');
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = state.send(state.draft, []); });
+    const first = client.createSession.mock.calls[0]![0] as SessionCreate;
+    expect(first).toMatchObject({ persona: 'example-persona', persona_home: true });
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.draft).toBe('Local draft');
+    expect(state.createdSessionId).toBeUndefined();
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft({ initialPersona: 'example-persona', isDailyDraft: true });
+    state = await ready();
+    expect(state.createdSessionId).toBe(`session_${first.creation_id}`);
+    expect(state.draft).toBe('Daily draft');
+    await act(async () => { gate.resolve({ id: `session_${first.creation_id}` }); await sending; });
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['ssh', ErrorCode.SESSION_CREATE_OUTCOME_UNKNOWN],
+    ['optional', -2],
+    ['navigation', ErrorCode.SESSION_CREATE_IDEMPOTENCY_CONFLICT],
+  ] as const)('retains accepted identity after %s error %s, including remount and retry', async (phase, code) => {
+    const failure = new ApiError({ code, msg: `${phase} failed after creation`, data: null });
+    const hosts = [{ kind: 'ssh' as const, id: 'example-host', name: 'Example host' }];
+    if (phase === 'ssh') client.klient.rest.ssh.addSessionHost.mockRejectedValueOnce(failure);
+    if (phase === 'optional') {
+      setPendingOptionalChoice('memory', 'on', { scopeId: scope.id, spaceKey: scope.spaceKey, connectionId: scope.connectionId, draftKey: 'new' });
+      client.setSessionOptionalCapability.mockRejectedValueOnce(failure);
+    }
+    if (phase === 'navigation') navigate.mockRejectedValueOnce(failure);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Keep the accepted session'); });
+    await act(async () => { await latestDraftState!.send('Keep the accepted session', phase === 'ssh' ? hosts : []); });
+    state = latestDraftState!;
+    expect(state.creationNotice).toContain('The session was created');
+    expect(state.createdSessionId).toBe('session-new');
+    expect(state.draft).toBe('Keep the accepted session');
+    expect(storedIntent()).toMatchObject({ status: 'accepted', sessionId: 'session-new' });
+    await unmountDraft();
+    resetDraftMemoryForTests();
+    await renderDraft();
+    state = await ready();
+    expect(state.createdSessionId).toBe('session-new');
+    expect(state.creationNotice).toContain('The session was created');
+    navigate.mockResolvedValue(undefined);
+    await act(async () => { await state.send(state.draft, phase === 'ssh' ? hosts : []); });
+    expect(client.createSession).toHaveBeenCalledTimes(1);
+    expect(navigate).toHaveBeenLastCalledWith('/s/session-new', expect.objectContaining({ state: expect.objectContaining({ initialPrompt: 'Keep the accepted session' }) }));
+  });
+
+  it('keeps persistence explicitly off through a held create and the first-message handoff', async () => {
+    localStorage.setItem('kiki.settings', JSON.stringify({ draftPersistence: false }));
+    const gate = deferred<{ id: string }>();
+    client.createSession.mockReturnValueOnce(gate.promise);
+    await renderDraft();
+    let state = await ready();
+    await act(async () => { state.updateDraft('Memory-only first message'); });
+    state = latestDraftState!;
+    let sending: Promise<void> | undefined;
+    await act(async () => { sending = state.send(state.draft, [{ kind: 'file', path: '/workspace/input.txt', name: 'input.txt', isDir: false }]); });
+    expect(storedIntent()).toBeNull();
+    expect(localStorage.getItem('kiki.drafts')).toBeNull();
+    await act(async () => { gate.resolve({ id: 'session-memory-only' }); await sending; });
+    expect(readDraft('session-memory-only')).toBe('Memory-only first message');
+    expect(localStorage.getItem('kiki.drafts')).toBeNull();
+    expect(localStorage.getItem('kiki.composerStates') ?? '').not.toContain('input.txt');
+    expect(storedIntent()).toBeNull();
+  });
+});
