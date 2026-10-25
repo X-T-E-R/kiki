@@ -1964,18 +1964,22 @@ export class UsageAggregationService {
         if (changed) await fold.putBucket(bucket);
       }
       const rowsByScope = new Map<string, FoldedUsageRecord[]>();
-      const agentsBySession = new Map<string, UsageProjectionAgent[]>();
+      const agentsBySession = new Map<string, { first: UsageProjectionAgent; byIdentity: Map<string, UsageProjectionAgent | null> }>();
       for (const agent of agents) {
-        const group = agentsBySession.get(agent.sessionId) ?? [];
-        group.push(agent);
-        agentsBySession.set(agent.sessionId, group);
+        let group = agentsBySession.get(agent.sessionId);
+        if (group === undefined) {
+          group = { first: agent, byIdentity: new Map() };
+          agentsBySession.set(agent.sessionId, group);
+        }
+        const identity = agent.scope.slice(agent.scope.lastIndexOf('/') + 1);
+        group.byIdentity.set(identity, group.byIdentity.has(identity) ? null : agent);
       }
       for (const row of rows) {
         if (!listedById.has(row.sessionId)) return;
         const identity = row.record.sourceAgentId ?? row.record.agentId;
-        const inSession = agentsBySession.get(row.sessionId) ?? [];
-        const matches = identity === undefined ? [] : inSession.filter((agent) => agent.scope.slice(agent.scope.lastIndexOf('/') + 1) === identity);
-        const agent = matches.length === 1 ? matches[0] : matches.length === 0 ? inSession[0] : undefined;
+        const group = agentsBySession.get(row.sessionId);
+        const matched = identity === undefined ? undefined : group?.byIdentity.get(identity);
+        const agent = matched === null ? undefined : matched ?? group?.first;
         if (agent === undefined) return;
         const bucket = rowsByScope.get(agent.scope) ?? [];
         bucket.push(row.record);
@@ -1985,10 +1989,8 @@ export class UsageAggregationService {
       for (const value of proved) {
         for (const session of value.sessions) {
           for (const entry of session.agents ?? []) {
-            const inSession = agentsBySession.get(session.sessionId) ?? [];
-            const matched = inSession.filter((agent) => agent.scope.slice(agent.scope.lastIndexOf('/') + 1) === entry.agentId);
-            const agent = matched.length === 1 ? matched[0] : undefined;
-            if (agent === undefined) continue;
+            const agent = agentsBySession.get(session.sessionId)?.byIdentity.get(entry.agentId);
+            if (agent == null) continue;
             const turns = turnsByScope.get(agent.scope) ?? [];
             turns.push({ bucket: value.key, turnIds: [...entry.turnIds], unknownTurnRecords: entry.unknownTurnRecords });
             turnsByScope.set(agent.scope, turns);
