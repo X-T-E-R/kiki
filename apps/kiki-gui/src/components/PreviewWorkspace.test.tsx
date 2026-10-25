@@ -666,7 +666,7 @@ describe('PreviewWorkspace', () => {
     expect(writeMock).not.toHaveBeenCalled();
   });
 
-  it('markdown source toggle shows the editor', async () => {
+  it('retains rendered Markdown across source switches and applies edits only when shown again', async () => {
     const probe = makeRoot();
     await renderSettled(
       probe.root,
@@ -675,13 +675,28 @@ describe('PreviewWorkspace', () => {
       </MediaPreviewProvider>,
     );
     await openFile(probe.container, '/work/docs/design.md');
-    await act(async () => {
-      workspace()
-        .querySelector('[data-md-mode="source"]')!
-        .dispatchEvent(new MouseEvent('click', { bubbles: true }));
-    });
+    const heading = workspace().querySelector('h1')!;
+    const switchMode = async (mode: 'source' | 'rendered') => {
+      await act(async () => { workspace().querySelector<HTMLButtonElement>(`[data-md-mode="${mode}"]`)!.click(); });
+    };
+    await switchMode('source');
     const editor = workspace().querySelector('[data-testid="editor"]') as HTMLTextAreaElement;
     expect(editor.value).toContain('# Design');
+    expect(heading.closest('[hidden]')).not.toBeNull();
+    await switchMode('rendered');
+    expect(workspace().querySelector('h1')).toBe(heading);
+    expect(heading.closest('[hidden]')).toBeNull();
+    await switchMode('source');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')!.set!.call(editor, '# Edited design\n\nComplete final paragraph.');
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(workspace().querySelector('h1')).toBe(heading);
+    expect(heading.textContent).toBe('Design');
+    await switchMode('rendered');
+    expect(workspace().querySelector('h1')?.textContent).toBe('Edited design');
+    expect(workspace().textContent).toContain('Complete final paragraph.');
+    expect(workspace().querySelector('[data-testid="editor"]')).toBe(editor);
   });
 
   it('edits mark the tab dirty; the save button writes and clears the dot', async () => {

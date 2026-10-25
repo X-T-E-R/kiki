@@ -3,7 +3,8 @@
  * codeg's Apache-2.0 `src/components/ai-elements/streamdown-plugins.ts`.
  * CJK syntax is lightweight; the three heavy engines load only when their
  * syntax appears, keeping the first paint independent of Shiki and Mermaid.
- * Mounted consumers re-render when an engine resolves.
+ * Math and Mermaid refresh their consumers when ready; code updates just its
+ * fences through the highlighter's async callback.
  */
 
 import { useEffect, useMemo, useSyncExternalStore } from 'react';
@@ -19,6 +20,7 @@ type HeavyKind = 'code' | 'math' | 'mermaid';
 
 const loaded: { code?: CodePlugin; math?: MathPlugin; mermaid?: MermaidPlugin } = {};
 const inflight = new Set<HeavyKind>();
+let codeFlight: Promise<CodePlugin | undefined> | undefined;
 const listeners = new Set<() => void>();
 let version = 0;
 
@@ -61,14 +63,15 @@ function ensure(kind: HeavyKind): void {
   inflight.add(kind);
   const settle = () => {
     inflight.delete(kind);
-    emit();
+    if (kind !== 'code') emit();
   };
   if (kind === 'code') {
-    import('@streamdown/code')
+    codeFlight = import('@streamdown/code')
       .then((mod) => {
         loaded.code = makeSafeCode(
           mod.createCodePlugin({ themes: ['github-light', 'github-dark'] }) as CodePlugin,
         );
+        return loaded.code;
       })
       .catch(() => undefined)
       .finally(settle);
@@ -90,7 +93,28 @@ export function needsCodeEngine(text: string): boolean {
   return text.includes('```') || text.includes('~~~') || / {4}|\t/.test(text);
 }
 
+// Code highlighting already has an async callback contract. Keep its plugin
+// identity stable so loading Shiki updates the fences, not the document parser.
+const LAZY_CODE: CodePlugin = {
+  name: 'shiki',
+  type: 'code-highlighter',
+  getThemes: () => ['github-light', 'github-dark'],
+  getSupportedLanguages: () => loaded.code?.getSupportedLanguages() ?? [],
+  supportsLanguage: (language) => loaded.code?.supportsLanguage(language) ?? true,
+  highlight(options, callback) {
+    if (loaded.code !== undefined) return loaded.code.highlight(options, callback);
+    ensure('code');
+    void codeFlight?.then((plugin) => {
+      const result = plugin?.highlight(options, callback);
+      // The maintained highlighter can return cached tokens synchronously.
+      // eslint-disable-next-line promise/no-callback-in-promise
+      if (result !== null && result !== undefined) callback?.(result);
+    });
+    return null;
+  },
+};
 const CJK_PLUGINS: PluginConfig = { cjk };
+const CODE_PLUGINS: PluginConfig = { cjk, code: LAZY_CODE };
 
 export function useMermaidEngine(): MermaidPlugin | null {
   useSyncExternalStore(subscribe, getVersion, getVersion);
@@ -117,9 +141,9 @@ export function useStreamdownPlugins(text: string | null | undefined): PluginCon
   }, [code, math, mermaid]);
 
   return useMemo(() => {
-    if (!code && !math && !mermaid) return CJK_PLUGINS;
+    if (!math && !mermaid) return code ? CODE_PLUGINS : CJK_PLUGINS;
     const plugins: PluginConfig = { cjk };
-    if (code && loaded.code !== undefined) plugins.code = loaded.code;
+    if (code) plugins.code = LAZY_CODE;
     if (math && loaded.math !== undefined) plugins.math = loaded.math;
     if (mermaid && loaded.mermaid !== undefined) plugins.mermaid = loaded.mermaid;
     return plugins;

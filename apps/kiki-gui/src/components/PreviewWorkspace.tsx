@@ -1990,6 +1990,13 @@ function TextTabView({
   const fullText = fullMarkdown?.controller === controller && fullMarkdown.client === client &&
     fullMarkdown.path === path && fullMarkdown.generation === snap.generation
     ? fullMarkdown.text : undefined;
+  const renderedMarkdown = useRef<{ controller: HostFileEditorController | null; text: string } | null>(null);
+  if (renderedMarkdown.current?.controller !== controller) renderedMarkdown.current = null;
+  // Keep the resident document while editing source, without parsing each edit
+  // in the hidden view. The next rendered visit consumes the current draft.
+  if (markdown && !showEditor && snap.status === 'ready') {
+    renderedMarkdown.current = { controller, text: fullText ?? snap.draft };
+  }
   const referenceOutside = useMemo(() => {
     if (navigation?.line === undefined) return false;
     const lines = (fullText ?? snap.draft).split(/\r\n|\r|\n/);
@@ -2261,9 +2268,9 @@ function TextTabView({
                   )}
               </div>
             ) : null}
-            {markdown && !showEditor ? (
-              <div data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
-                <Markdown mode="static" text={fullText ?? snap.draft} documentDirectory={documentDirectory} documentPath={path} headingNavigation={navigation} onHeadingResult={setHeadingFound} />
+            {markdown && renderedMarkdown.current !== null ? (
+              <div hidden={showEditor} data-preview-scroll className="min-h-0 flex-1 overflow-auto p-4">
+                <Markdown mode="static" text={renderedMarkdown.current.text} documentDirectory={documentDirectory} documentPath={path} headingNavigation={navigation} onHeadingResult={setHeadingFound} />
               </div>
             ) : null}
             {html ? (

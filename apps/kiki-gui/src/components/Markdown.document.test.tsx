@@ -73,8 +73,11 @@ afterEach(() => {
   renderMermaid.mockClear();
 });
 
-it('renders a complete GFM document without streaming repair of an unfinished fence', async () => {
+it('renders complete GFM once while the code engine loads without repairing an unfinished fence', async () => {
+  parseCounts.documents = 0;
   const container = await render('# Notes\n\n- [x] done\n\n| a | b |\n| - | - |\n| one | two |\n\n```ts\nconst x = 1');
+  await act(async () => { await import('@streamdown/code'); });
+  expect(parseCounts.documents).toBe(1);
   expect(container.querySelector('h1')?.textContent).toBe('Notes');
   expect(container.querySelector('input[type="checkbox"]')).not.toBeNull();
   expect(container.querySelector('table')?.textContent).toContain('one');
