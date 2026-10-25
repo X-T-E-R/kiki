@@ -100,6 +100,7 @@ export function useOAuthFlow(onChanged?: () => Promise<void> | void): OAuthFlowC
       const result = await client.startOAuthLogin({ provider: method.id });
       setActive(method.provider);
       if (result.status === 'authenticated') {
+        setDismissed((flows) => flows.includes(result.flow_id) ? flows : [...flows, result.flow_id]);
         setFeedback({ provider: method.provider, value: { tone: 'success', text: t('st.auth.already') } });
         await refresh();
       } else {

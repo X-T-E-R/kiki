@@ -1,6 +1,6 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useMemo, useState, type ReactNode } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ExecutorCatalogItem, ProviderCatalogItem } from '@kiki/protocol';
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { useI18n } from '../../i18n';
@@ -327,7 +327,14 @@ function AttentionQuotaRow({ source, status, signedOut, settingsHref, localUsage
   const { t, locale } = useI18n();
   const { client } = useConnection();
   const navigate = useNavigate();
-  const flow = useOAuthFlow();
+  const queryClient = useQueryClient();
+  const onSignedIn = useCallback(async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ['providers'] }),
+      queryClient.invalidateQueries({ queryKey: ['provider-quotas'] }),
+    ]);
+  }, [queryClient]);
+  const flow = useOAuthFlow(onSignedIn);
   const [authBusy, setAuthBusy] = useState(false);
   const [localFeedback, setLocalFeedback] = useState<Feedback>(null);
   const feedback = localFeedback ?? externalFeedback ?? null;

@@ -9,15 +9,17 @@ import { I18nProvider } from '../../i18n';
 import { ProviderQuotaPanel } from './ProviderQuotaPanel';
 
 const mockUseProviderQuotas = vi.fn();
-vi.mock('../../lib/providerQuota', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('../../lib/providerQuota')>()),
-  useProviderQuotas: () => mockUseProviderQuotas(),
-}));
+let realQuotas = false;
+vi.mock('../../lib/providerQuota', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../lib/providerQuota')>();
+  return { ...actual, useProviderQuotas: () => realQuotas ? actual.useProviderQuotas() : mockUseProviderQuotas() };
+});
 const client = {
   listOAuthMethods: vi.fn(), startOAuthLogin: vi.fn(), getOAuthStatus: vi.fn(), cancelOAuthLogin: vi.fn(),
   listProviders: vi.fn(), getConfig: vi.fn(), listExecutors: vi.fn(),
+  getProviderQuotas: vi.fn(), refreshProviderQuota: vi.fn(), setProviderQuotaEnabled: vi.fn(),
 };
-vi.mock('../../state/connection', () => ({ useConnection: () => ({ client }) }));
+vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, scopeId: 'local', wsStatus: 'open' }) }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 const refreshSource = vi.fn();
 const setSourceEnabled = vi.fn();
@@ -60,6 +62,7 @@ async function click(container: Element, selector: string) {
 }
 beforeEach(() => {
   vi.resetAllMocks(); localStorage.setItem('kiki.locale', 'en');
+  realQuotas = false;
   refreshSource.mockResolvedValue(undefined); setSourceEnabled.mockResolvedValue(undefined);
   client.listProviders.mockResolvedValue({ items: [] });
   client.getConfig.mockResolvedValue({ raw: {} });
@@ -162,6 +165,34 @@ describe('ProviderQuotaPanel', () => {
     await click(container, '[data-oauth-cancel]');
     expect(client.cancelOAuthLogin).toHaveBeenCalledExactlyOnceWith({ provider: 'managed:openai-codex' });
     expect(container.querySelector('[data-oauth-terminal="cancelled"]')).not.toBeNull();
+  });
+  it.each(['polled', 'already authenticated'] as const)('re-reads account and cached quota after %s sign-in without querying the vendor', async (completion) => {
+    realQuotas = true;
+    const account = source({ provider_id: pending.provider, auth: { action: 'oauth_login', provider: pending.provider } });
+    const off = source({ id: 'off', enabled: false, status: 'off' });
+    const snapshot = (status: ProviderQuotaSource['status']) => providerQuotaSnapshotSchema.parse({
+      schema_version: '1', generated_at: '2026-10-10T12:00:00Z', sources: [{ ...account, status }, off],
+    });
+    client.getProviderQuotas.mockResolvedValueOnce(snapshot('auth_required')).mockResolvedValue(snapshot('unknown'));
+    client.listProviders.mockResolvedValueOnce({ items: [{ id: pending.provider, oauth: { signed_in: false } }] })
+      .mockResolvedValue({ items: [{ id: pending.provider, oauth: { signed_in: true } }] });
+    const authenticated: OAuthFlowSnapshot = { ...pending, status: 'authenticated' };
+    client.getOAuthStatus.mockResolvedValue(authenticated);
+    if (completion === 'already authenticated') client.startOAuthLogin.mockResolvedValue({ flow_id: pending.flow_id, provider: pending.provider, status: 'authenticated' });
+    const container = await mount();
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(container.querySelector('[data-quota-status="auth_required"]')).not.toBeNull();
+    await click(container, '[data-quota-auth-action]');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 10)); });
+    expect(client.listProviders).toHaveBeenCalledTimes(2);
+    expect(client.getProviderQuotas).toHaveBeenCalledTimes(2);
+    expect(container.querySelector('[data-quota-auth-action]')).toBeNull();
+    expect(container.querySelector('[data-quota-not-queried="account-1"]')).not.toBeNull();
+    expect(container.querySelector('[data-quota-item="account-1"]')?.textContent).toContain('person@example.test');
+    expect(container.querySelector<HTMLInputElement>('[data-quota-off-item="off"] input')?.checked).toBe(false);
+    expect(container.querySelector('[data-location]')?.textContent).toBe('/usage');
+    expect(client.refreshProviderQuota).not.toHaveBeenCalled();
+    expect(client.setProviderQuotaEnabled).not.toHaveBeenCalled();
   });
   it('keeps a failed login visible and retryable without navigation or quota refresh', async () => {
     show([source({ status: 'auth_required', auth: { action: 'oauth_login', provider: 'openai-codex' } })]);
