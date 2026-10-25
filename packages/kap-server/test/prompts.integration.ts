@@ -1477,6 +1477,82 @@ describe('server-v2 /api prompts', () => {
     }
   });
 
+  it('a dispatched native child consumes Send now once at its next safe step while its ordinary queue stays parked', async () => {
+    const entered = promiseGate<void>();
+    const release = promiseGate<void>();
+    const requests: Array<{ messages: Array<{ role: string; content: unknown }> }> = [];
+    let firstResponseClosed = false;
+    const provider = createHttpServer((request, response) => {
+      let body = '';
+      request.setEncoding('utf8');
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        requests.push(JSON.parse(body));
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        const finish = () => response.end(`data: ${JSON.stringify({ id: 'child-response',
+          choices: [{ index: 0, delta: { content: 'Received.' }, finish_reason: 'stop' }],
+          usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+        })}\n\ndata: [DONE]\n\n`);
+        if (requests.length !== 1) { finish(); return; }
+        response.on('close', () => { firstResponseClosed = true; });
+        response.write(`data: ${JSON.stringify({ id: 'child-stream', choices: [{ index: 0, delta: { content: 'Starting.' }, finish_reason: null }] })}\n\n`);
+        entered.resolve();
+        void release.promise.then(finish);
+      });
+    });
+    await new Promise<void>(resolve => provider.listen(0, '127.0.0.1', resolve));
+    const address = provider.address();
+    if (address === null || typeof address === 'string') throw new Error('provider did not bind');
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    let controller: SessionController | undefined;
+    let child: Awaited<ReturnType<IAgentLifecycleService['create']>> | undefined;
+    try {
+      await server!.core.accessor.get(IModelCatalogMutationService).updateProvider('stub', { base_url: `http://127.0.0.1:${address.port}/v1` });
+      await server!.core.accessor.get(IModelCatalogMutationService).updateModel('stub', { max_context_size: 100000 });
+      const id = await createSession(home!);
+      await createMainAgent(id);
+      const session = getLiveSessionById(server!.core.accessor, id)!;
+      child = await session.accessor.get(IAgentLifecycleService).create({ binding: { profile: 'agent', model: 'stub', thinking: 'high' } });
+      const prompt = child.accessor.get(IAgentPromptService);
+      const loop = child.accessor.get(IAgentLoopService);
+      const run = await child.accessor.get(IAgentExecutionService).run({ kind: 'prompt', prompt: 'Start the child turn.' }, { signal: new AbortController().signal });
+      await entered.promise;
+      const turnId = loop.status().activeTurnId;
+      await client.sendAgentMessage(id, child.id, 'Ordinary queued child note.', undefined, 'child-ordinary');
+      expect(prompt.list().pending.map(item => item.id)).toEqual(['child-ordinary']);
+      controller = new SessionController(client.sessions, client.klient.session(id).view, id);
+      controller.setFocusedAgent(child.id);
+      controller.setEphemeralHint(false);
+      await controller.open();
+      const text = 'Immediate child note once.';
+      const sent = await controller.sendPromptNow({ agentId: child.id, promptId: 'child-immediate', text });
+      expect(sent.outcome).toBe('restoring');
+      await vi.waitFor(() => expect(prompt.list().pending.map(item => item.id)).toEqual(['child-ordinary', sent.promptId]));
+      expect(loop.status().activeTurnId).toBe(turnId);
+      expect(firstResponseClosed).toBe(false);
+      expect(child.accessor.get(IAgentContextMemoryService).get().some(message => message.id === sent.promptId)).toBe(false);
+      prompt.abort('child-ordinary');
+      release.resolve();
+      await vi.waitFor(async () => expect(await client.sessions.getDurableIngress!(id, sent.promptId, child!.id)).toMatchObject({ admission: 'admitted', delivery_state: 'steered' }));
+      const retry = await client.submitPrompt(id, { admission: 'durable', delivery_mode: 'steer', agent_id: child.id, prompt_id: sent.promptId, content: [{ type: 'text', text }] });
+      expect(retry.delivery_state).toBe('steered');
+      await run.completion;
+      await loop.settled();
+      expect(requests).toHaveLength(2);
+      expect(JSON.stringify(requests[0]!.messages)).not.toContain(text);
+      expect(requests[1]!.messages.filter(message => message.role === 'user' && JSON.stringify(message.content).includes(text))).toHaveLength(1);
+      expect(child.accessor.get(IAgentContextMemoryService).get().filter(message => message.id === sent.promptId)).toHaveLength(1);
+      expect(session.accessor.get(IAgentLifecycleService).get('main')!.accessor.get(IAgentContextMemoryService).get().some(message => message.id === sent.promptId)).toBe(false);
+      const transcript = await client.klient.session(id).view.transcript.page({ agentId: child.id });
+      expect(agentTranscriptToBlocks(transcript).filter(block => block.kind === 'user' && block.text === text)).toHaveLength(1);
+      expect(transcript.items.filter(item => item.kind === 'turn')).toHaveLength(1);
+    } finally {
+      release.resolve(); controller?.close(); child?.accessor.get(IAgentExecutionService).cancel();
+      await client.klient.close();
+      await new Promise<void>((resolve, reject) => provider.close(error => error ? reject(error) : resolve()));
+    }
+  }, 30_000);
+
   it.each(['model-stream', 'tool-flight'] as const)('durable send-now preserves the in-flight %s and nonempty queue, then consumes once across reopen and retry', async (phase) => {
     const entered = promiseGate<void>();
     const release = promiseGate<void>();

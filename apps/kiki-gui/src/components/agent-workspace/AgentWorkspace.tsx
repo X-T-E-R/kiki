@@ -957,10 +957,8 @@ function ChildAgentWorkspace({
     setAttachments([]);
     setSendNotice(null);
   };
-  // "Send now" into this child's running turn — the controller's steer path,
-  // shared with the main session, so the echo, the insertion point (next
-  // step boundary) and the failure fallback are identical. Only a native
-  // child can be steered; an external executor keeps its mailbox path.
+  // The core chooses native safe-boundary steering or the external executor's
+  // steer capability and reports an explicit queued reason when it defers.
   const handleComposerSendNow = async (
     text: string,
     composerAttachments: readonly ComposerAttachment[],
@@ -969,15 +967,7 @@ function ChildAgentWorkspace({
     if (!agentKnown) return;
     const content = buildPromptContent(text, composerAttachments, presentation);
     if (content === null) return;
-    if (!(await client.isNativeAgent(sessionId, agentId))) {
-      // External Send now is still the same durable mailbox submission/retry.
-      await handleComposerSend(text, composerAttachments, { presentation });
-      return;
-    }
-    if (controller === null) {
-      await handleComposerSend(text, composerAttachments, { presentation }, false);
-      return;
-    }
+    if (controller === null) throw new Error(t('subagent.composerUnavailable'));
     draftRef.current = '';
     setSendNotice(null);
     setDraft('');
@@ -1027,11 +1017,6 @@ function ChildAgentWorkspace({
       pushToast({ tone: 'info', text: t(sendNowQueuedNotice(decision.reason)) });
     }
   }, [agentLiveState.blocks, sessionState.durableIngress, nowReceiptTick, t]);
-  const handleComposerSendBusy = async (
-    text: string,
-    composerAttachments: readonly ComposerAttachment[],
-    options?: Parameters<ComponentProps<typeof Composer>['onSend']>[2],
-  ) => handleComposerSendNow(text, composerAttachments, options?.presentation);
   // Stop is a server-side cancel that can fail; duplicate requests during the
   // round trip are guarded by a synchronous ref (a state-only guard can be
   // crossed by two events in the same batch), mirrored to state for the
@@ -1401,10 +1386,9 @@ function ChildAgentWorkspace({
           onChangeModel={handleChangeAgentModel} onChangePermissionMode={() => {}}
           onChangePlanMode={() => {}}
           onChangeEffort={(effort) => { void handleChangeAgentEffort(effort); }}
-          onSend={headerBusy ? handleComposerSendBusy : handleComposerSend}
+          onSend={handleComposerSend}
           onActivateSkill={handleActivateSkill}
-          onSendNow={handleComposerSendNow}
-          busySendsNow
+          onSendNow={controller === null ? undefined : handleComposerSendNow}
           working={composerWorkingInfo}
           onAbort={runningAgentTask !== undefined ? () => { void handleTerminateAgent(); } : undefined}
           abortPending={stoppingTaskId !== null}
