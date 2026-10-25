@@ -26,6 +26,8 @@ import { FeedbackLine, Hint, Toggle, type Feedback } from '../../controls';
 import { DisclosureChevron, Icon } from '../../icons';
 import { SidePanel } from '../../SidePanel';
 import { DANGER_GHOST_BUTTON, INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
+import { ConfirmDialog } from '../../ConfirmDialog';
+import { extractConflictDetails, isIdentityAlreadyBoundError } from '../../im/channelTypes';
 import { AdvancedDetails, SettingField } from '../fields';
 import { SectionCard } from '../SectionCard';
 import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
@@ -66,7 +68,15 @@ function useImAction() {
       return true;
     } catch (caught) {
       const message = caught instanceof Error ? caught.message : '';
-      setError(message.includes('unsupported_wechat_group') ? t('st.im.wechatDirectOnly') : message || t('st.im.error'));
+      if (isIdentityAlreadyBoundError(caught)) {
+        const details = extractConflictDetails(caught);
+        const conflictMsg = details?.previous_session_id
+          ? `${t('st.im.rebind.title')}: ${t('st.im.occupiedBy')} ${details.previous_session_title ?? details.previous_session_id}`
+          : t('st.im.error');
+        setError(conflictMsg);
+      } else {
+        setError(message.includes('unsupported_wechat_group') ? t('st.im.wechatDirectOnly') : message || t('st.im.error'));
+      }
       return false;
     } finally {
       setSaving(false);
@@ -1209,7 +1219,6 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
-  const queryClient = useQueryClient();
   const action = useImAction();
   const [expanded, setExpanded] = useState(false);
   const [removing, setRemoving] = useState(false);
@@ -1229,18 +1238,38 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
   });
   const targetCatalog = catalog === undefined ? undefined : { ...catalog, sessions: [...new Map([...catalog.sessions, ...(sessions.data ?? []).map((item) => ({ id: item.id, title: item.title?.trim() || item.id }))].map((item) => [item.id, item])).values()] };
   const identity = identityLabel(binding.identity, t);
-  const on = binding.enabled && imSessionAdmitted({ allowed: policy.allowed, defaultEnabled: policy.default_enabled, sessionEnabled: binding.session_enabled });
-  const blocked = !policy.allowed || !binding.enabled;
+  const on = binding.enabled && !binding.pending_reanchor && imSessionAdmitted({ allowed: policy.allowed, defaultEnabled: policy.default_enabled, sessionEnabled: binding.session_enabled });
+  const blocked = !policy.allowed || !binding.enabled || binding.pending_reanchor;
+  const [rebindTargetValue, setRebindTargetValue] = useState<string | null>(null);
+
   const update = (patch: ImBindingPatch) => {
     setTestFeedback(null);
     void action.run(() => client.imSessions.updateBinding(binding.id, patch));
   };
-  const targetValue = binding.persona_id !== undefined
-    ? `persona:${binding.persona_id}`
-    : binding.session_id !== undefined
-      ? `session:${binding.session_id}`
-      : 'unassigned';
+  const targetValue = binding.pending_reanchor
+    ? 'unassigned'
+    : binding.persona_id !== undefined
+      ? `persona:${binding.persona_id}`
+      : binding.session_id !== undefined
+        ? `session:${binding.session_id}`
+        : 'unassigned';
   const boundChannelView = targetChannelsQuery.data?.channels.find((ch) => ch.id === `im:${binding.id}`);
+
+  const onSelectTarget = (value: string) => {
+    if (value === targetValue) return;
+    setRebindTargetValue(value);
+  };
+
+  const handleConfirmRebind = () => {
+    if (!rebindTargetValue) return;
+    const nextTarget = parseTarget(rebindTargetValue);
+    setRebindTargetValue(null);
+    update({ target: nextTarget, rebind: true });
+  };
+
+  const handleCancelRebind = () => {
+    setRebindTargetValue(null);
+  };
 
   const runTestBinding = async () => {
     if (testing || typeof client.imSessions.testBinding !== 'function') return;
@@ -1280,7 +1309,7 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
       <div className="min-w-0">
         <SettingsSelect id={`im-binding-target-${binding.id}`} variant="form" ariaLabel={`${identity}: ${t('st.im.target')}`} value={targetValue}
           choices={bindingTargetChoices(targetCatalog, binding, t)} emptyText={binding.session_id} disabled={action.saving}
-          onChange={(value) => { update({ target: parseTarget(value) }); }} dataAttr="data-im-binding-target" />
+          onChange={onSelectTarget} dataAttr="data-im-binding-target" />
       </div>
       <div className="flex flex-wrap items-center gap-2">
         <button type="button" role="switch" aria-checked={on} aria-label={`${identity}: ${t('st.im.sessionSwitch')}`}
@@ -1319,7 +1348,11 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
         </button>
       </div>
     </div>
-    {blocked ? <p className="text-[13px] text-ink-soft" data-im-binding-blocked>{t(!policy.allowed ? 'st.im.railOffAllowed' : 'st.im.railOffBinding')}</p> : null}
+    {blocked ? (
+      <p className="text-[13px] text-ink-soft" data-im-binding-blocked>
+        {t(binding.pending_reanchor ? 'st.im.pendingReanchor' : !policy.allowed ? 'st.im.railOffAllowed' : 'st.im.railOffBinding')}
+      </p>
+    ) : null}
     {testFeedback !== null ? (
       <div data-im-test-binding-result={binding.id}>
         <FeedbackLine feedback={testFeedback} />
@@ -1334,7 +1367,7 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
       {sessions.isError ? <p role="alert" className="text-[13px] text-danger">{t('st.im.searchError')}</p> : null}
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-[13px] text-ink-soft">{t('st.im.sessionSwitch')}</span>
-        <SettingsSegmented ariaLabel={`${identity}: ${t('st.im.sessionSwitch')}`} value={binding.session_enabled === undefined ? 'default' : binding.session_enabled ? 'on' : 'off'} disabled={action.saving}
+        <SettingsSegmented ariaLabel={`${identity}: ${t('st.im.sessionSwitch')}`} value={binding.session_enabled === undefined ? 'default' : binding.session_enabled ? 'on' : 'off'} disabled={action.saving || binding.pending_reanchor}
           dataAttr="data-im-binding-policy" choices={[{ value: 'default', label: t('st.im.followDefault') }, { value: 'on', label: t('st.im.on') }, { value: 'off', label: t('st.im.off') }]}
           onChange={(value) => { update({ session_enabled: value === 'default' ? null : value === 'on' }); }} />
       </div>
@@ -1365,6 +1398,50 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
       </div>
     </div> : null}
     <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
+    <ConfirmDialog
+      open={rebindTargetValue !== null}
+      title={t('st.im.rebind.title')}
+      confirmLabel={t('st.im.rebind.confirm')}
+      cancelLabel={t('st.im.rebind.cancel')}
+      busy={action.saving}
+      tone="danger"
+      onConfirm={handleConfirmRebind}
+      onCancel={handleCancelRebind}
+    >
+      <div className="space-y-3 py-1 text-[13px] text-ink-soft">
+        <p className="leading-relaxed">
+          {t('st.im.rebind.description')}
+        </p>
+        <div className="rounded-lg border border-hairline bg-panel p-2.5 space-y-1.5 text-[12px]">
+          <div className="flex items-start justify-between gap-2">
+            <span className="text-ink-faint shrink-0">{t('st.im.rebind.variant')}</span>
+            <span className="font-medium text-ink truncate text-right">{identity}</span>
+          </div>
+          <div className="flex items-start justify-between gap-2">
+            <span className="text-ink-faint shrink-0">{t('st.im.rebind.currentOwner')}</span>
+            <span className="text-ink-soft truncate text-right">
+              {binding.pending_reanchor
+                ? t('st.im.pendingReanchor')
+                : binding.persona_id !== undefined
+                  ? `${t('st.im.kindPersona')} · ${targetCatalog?.personas.find((p) => p.id === binding.persona_id)?.name ?? binding.persona_id}`
+                  : binding.session_id !== undefined
+                    ? `${t('st.im.kindSession')} · ${targetCatalog?.sessions.find((s) => s.id === binding.session_id)?.title ?? binding.session_id}`
+                    : t('st.im.pendingReanchor')}
+            </span>
+          </div>
+          <div className="flex items-start justify-between gap-2">
+            <span className="text-ink-faint shrink-0">{t('st.im.rebind.targetOwner')}</span>
+            <span className="font-medium text-selected-ink truncate text-right">
+              {rebindTargetValue
+                ? rebindTargetValue.startsWith('persona:')
+                  ? `${t('st.im.kindPersona')} · ${targetCatalog?.personas.find((p) => p.id === rebindTargetValue.slice(8))?.name ?? rebindTargetValue.slice(8)}`
+                  : `${t('st.im.kindSession')} · ${targetCatalog?.sessions.find((s) => s.id === rebindTargetValue.slice(8))?.title ?? rebindTargetValue.slice(8)}`
+                : ''}
+            </span>
+          </div>
+        </div>
+      </div>
+    </ConfirmDialog>
   </div>;
 }
 

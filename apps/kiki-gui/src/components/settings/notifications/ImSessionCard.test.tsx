@@ -85,7 +85,8 @@ describe('ImSessionCard channel management', () => {
     expect(group.querySelector('[data-im-session-switch]')?.getAttribute('aria-checked')).toBe('false');
     expect(group.querySelector('[data-im-binding-target="session:release-notes"]')).not.toBeNull();
     await choose(group, '#im-binding-target-binding-group', 'persona:mei');
-    expect(fixture.calls.at(-1)).toEqual({ operation: 'updateBinding', id: 'binding-group', body: { target: { kind: 'persona', persona_id: 'mei' } } });
+    await click(document.body, '[data-confirm-action="confirm"]');
+    expect(fixture.calls.at(-1)).toEqual({ operation: 'updateBinding', id: 'binding-group', body: { target: { kind: 'persona', persona_id: 'mei' }, rebind: true } });
     expect(fixture.read().bindings[1]?.session_enabled).toBe(false);
     await click(group, '[data-im-binding-options-toggle]');
     await click(group, '[data-im-binding-busy="queue"]');
@@ -168,6 +169,7 @@ describe('ImSessionCard channel management', () => {
     expect(binding(container, 'binding-topic').textContent).toContain('42');
     expect(binding(container, 'binding-contact').querySelector('[data-im-binding-target="session:lin-daily"]')).not.toBeNull();
     await choose(binding(container, 'binding-contact'), '#im-binding-target-binding-contact', 'persona:lin');
+    await click(document.body, '[data-confirm-action="confirm"]');
     expect(fixture.read().bindings[0]?.persona_id).toBe('lin');
   });
 
@@ -330,6 +332,7 @@ describe('ImSessionCard channel management', () => {
     await input(group, '[data-im-binding-target-search]', 'Older');
     await act(settle);
     await choose(group, '#im-binding-target-binding-group', 'session:older-thread');
+    await click(document.body, '[data-confirm-action="confirm"]');
     expect(fixture.read().bindings[1]).toMatchObject({ session_id: 'older-thread', session_enabled: false });
     expect(fixture.read().bindings[0]?.session_id).toBe('lin-daily');
   });
@@ -768,5 +771,111 @@ describe('ImSessionCard channel management', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 3_200)); });
     expect(poll).toHaveBeenCalled();
     expect(fixture.calls.filter((item) => item.operation === 'listen')).toEqual([{ operation: 'listen', id: 'wx-bg', body: true }]);
+  });
+
+  it('requires confirmation modal when changing target in settings, cancels with zero mutation, confirms with rebind: true, and handles 40949 conflict details', async () => {
+    fixture = createImSettingsFixture(imChannelSnapshot('telegram'));
+    const container = await render();
+    const group = binding(container, 'binding-group');
+    const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
+
+    // 1. Select new target -> opens confirmation modal, 0 mutation fired
+    await choose(group, '#im-binding-target-binding-group', 'persona:mei');
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('Transfer this channel?');
+    expect(document.body.textContent).toContain('Release team · Mei');
+
+    // 2. Click Cancel -> closes modal, 0 mutation fired
+    const cancelBtn = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Cancel');
+    expect(cancelBtn).not.toBeUndefined();
+    await act(async () => { cancelBtn!.click(); await settle(); });
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
+
+    // 3. Select target again and Confirm -> single updateBinding with rebind: true
+    await choose(group, '#im-binding-target-binding-group', 'persona:mei');
+    await click(document.body, '[data-confirm-action="confirm"]');
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      target: { kind: 'persona', persona_id: 'mei' },
+      rebind: true,
+    });
+
+    // 4. Handles 40949 conflict details gracefully
+    const conflictError = Object.assign(new Error('im_identity_already_bound'), {
+      code: 40949,
+      msg: 'im_identity_already_bound',
+      details: {
+        previous_session_id: 'sess-prev-123',
+        previous_session_title: 'Previous Workspace Incident',
+      },
+    });
+    updateSpy.mockRejectedValueOnce(conflictError);
+    await choose(group, '#im-binding-target-binding-group', 'session:release-notes');
+    await click(document.body, '[data-confirm-action="confirm"]');
+    expect(updateSpy).toHaveBeenCalledTimes(2);
+    expect(group.textContent).toContain('Previous Workspace Incident');
+  });
+
+  it('renders pending_reanchor correctly in settings without false active or persona display, keeps switch disabled with 0 mutation, and resolves pending via target confirmation', async () => {
+    const state = imChannelSnapshot('telegram');
+    state.bindings[0] = {
+      ...state.bindings[0]!,
+      pending_reanchor: true,
+      persona_id: 'lin', // old historical persona
+      session_id: 'sess-old-456',
+      enabled: true,
+      session_enabled: true,
+    };
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    const contact = binding(container, 'binding-contact');
+    const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
+
+    // Should NOT display as active session switch
+    const switchBtn = contact.querySelector<HTMLButtonElement>('[data-im-session-switch]');
+    expect(switchBtn?.getAttribute('aria-checked')).toBe('false');
+    expect(switchBtn?.disabled).toBe(true);
+    expect(contact.querySelector('[data-im-binding-blocked]')?.textContent).toContain('Confirm ownership');
+
+    // Clicking disabled switch triggers 0 mutation
+    await click(contact, '[data-im-session-switch]');
+    expect(updateSpy).not.toHaveBeenCalled();
+
+    // In expanded details, policy segment control is also disabled
+    await click(contact, '[data-im-binding-options-toggle]');
+    const policySegment = contact.querySelector('[data-im-binding-policy="on"]');
+    expect(policySegment?.getAttribute('disabled')).not.toBeNull();
+
+    // Target select should display unassigned / pending reanchor label, NOT Lin
+    const targetSelect = contact.querySelector('#im-binding-target-binding-contact');
+    expect(targetSelect).not.toBeNull();
+    expect(contact.querySelector('[data-im-binding-target="unassigned"]')).not.toBeNull();
+    expect(contact.textContent).toContain('Confirm ownership');
+
+    // Selecting target and confirming fires single updateBinding with rebind: true
+    await choose(contact, '#im-binding-target-binding-contact', 'session:reading-list');
+    await click(document.body, '[data-confirm-action="confirm"]');
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-contact', {
+      target: { kind: 'session', session_id: 'reading-list' },
+      rebind: true,
+    });
+  });
+
+  it('displays searched session title in rebind confirmation modal instead of raw ID', async () => {
+    vi.spyOn(fixture.client, 'listSessions').mockResolvedValue({ items: [{ id: 'sess-remote-search', title: 'Remote Incident Thread' }] });
+    const container = await render();
+    const group = binding(container, 'binding-group');
+
+    await click(group, '[data-im-binding-options-toggle]');
+    await input(group, '[data-im-binding-target-search]', 'Remote');
+    await act(settle);
+    await choose(group, '#im-binding-target-binding-group', 'session:sess-remote-search');
+
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('Remote Incident Thread');
+    expect(document.body.textContent).not.toContain('Move to · sess-remote-search');
   });
 });
