@@ -460,7 +460,7 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 从 `start()` 收到的只读 `context.messageLimits` 获取预算，托管插件无需为了读取它而运行时导入 SDK。字段固定为 `parts: 256`、`mediaBytes: 33554432`、`textChars: 1048576`、`serializedChars: 67108864`、`chunkChars: 4194304`。一条完整消息包含 1–256 个片段，解码后媒体总量最多 32 MiB，全部片段文本合计最多 1,048,576 个 UTF-16 代码单元。`definition.maxInboundBytes` 仍约束**每个附件**，最高 8 MiB，因此两张各 8 MiB 的图可以同条投递。序列化后的完整消息（包含 base64、转义文本和元数据）最多 67,108,864 个 UTF-16 代码单元。Runner 自动按 4,194,304 个代码单元分帧，普通 RPC 行仍限 16,777,216 个代码单元；插件不自行实现分帧。
 
-已确定附件没有可用下载 URL 时，保留其非文本 `kind`，把名称、原因及已有 ASR 转写放在非空 `text` 中，不填写 `media`。Kiki 在原位置显示明确标记为不可用的外部文本，不伪造媒体字节。真正的下载失败或取消须对该源消息零 `emit`，重试整条源消息时沿用同一根 `eventId`。超过消息预算会整条拒绝 `emit()`。任一片段标为 `tooLarge: true` 时，Kiki 显示拒收提示，不提交或保存前面的残缺部分。停止或卸载会丢弃未完整收齐的传输帧，并拒绝已退出连接的排队投递。
+已确定附件没有可用下载 URL 时，保留其非文本 `kind`，把名称、原因及已有 ASR 转写放在非空 `text` 中，不填写 `media`。Kiki 在原位置显示明确标记为不可用的外部文本，不伪造媒体字节。真正的下载失败或取消须对该源消息零 `emit`，重试整条源消息时沿用同一根 `eventId`。超过消息预算会整条拒绝 `emit()`。任一片段标为 `tooLarge: true` 时，同样整条拒绝 `emit()`，不提交或保存前面的残缺部分。停止或卸载会丢弃未完整收齐的传输帧，并拒绝已退出连接的排队投递。
 
 `eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds`、`replyToMessageId`、可选的 `isSelf` 与毫秒时间戳 `timestamp` 会进入会话消息元数据。编辑、撤回分别发送 `operation: "edit"` 或 `"retract"`，并提供真实目标 `sourceMessageId`；它们更新接收记录，不另开模型回合。不要从显示名猜测 self 身份。模型会在当前正文旁看到真实发送人和选中的群背景，这些信息标记为不可信外部数据，不作为指令或授权。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
 

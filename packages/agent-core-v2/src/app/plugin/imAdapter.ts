@@ -45,6 +45,7 @@ export function parsePluginImEvent(input: unknown, definition: PluginImAdapterDe
   if (event.operation !== undefined && event.operation !== 'create' && event.sourceMessageId === undefined) throw new Error('IM edit/retract needs its real target sourceMessageId');
   const hydrate = (media: z.infer<typeof wireMedia> | undefined) => media === undefined ? undefined : { name: media.name, mediaType: media.mediaType, bytes: new Uint8Array(Buffer.from(media.base64, 'base64')) };
   if (event.kind === 'message') {
+    if (event.parts.some((part) => part.tooLarge === true)) throw new Error('IM complete input contains a tooLarge part');
     const parts = event.parts.map((part) => ({ ...part, media: hydrate(part.media) }));
     if (parts.some((part) => (part.media?.bytes.byteLength ?? 0) > definition.maxInboundBytes)) throw new Error('IM input attachment exceeds the declared byte limit');
     if (parts.reduce((sum, part) => sum + (part.media?.bytes.byteLength ?? 0), 0) > PLUGIN_IM_COMPLETE_LIMITS.mediaBytes) throw new Error('IM complete input exceeds the total media byte limit');

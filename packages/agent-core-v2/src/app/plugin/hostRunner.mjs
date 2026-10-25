@@ -34,6 +34,7 @@ function transmitImEvent(id, event, connection) {
   const wireMedia = (media) => media === undefined ? undefined : { name: media.name, mediaType: media.mediaType, base64: Buffer.from(media.bytes).toString('base64') };
   if (event.kind === 'message') {
     if (!Array.isArray(event.parts) || event.parts.length < 1 || event.parts.length > imCompleteLimits.parts) throw new Error('IM complete input has an invalid part count');
+    if (event.parts.some((part) => part.tooLarge === true)) throw new Error('IM complete input contains a tooLarge part');
     const bytes = event.parts.map((part) => part.media?.bytes?.byteLength ?? 0);
     if (bytes.some((size) => size > connection.definition.maxInboundBytes) || bytes.reduce((sum, size) => sum + size, 0) > imCompleteLimits.mediaBytes) throw new Error('IM complete input exceeds the media byte limit');
     if (event.parts.reduce((sum, part) => sum + (part.text?.length ?? 0), 0) > imCompleteLimits.textChars) throw new Error('IM complete input exceeds the text limit');

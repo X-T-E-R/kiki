@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginHost } from '@kiki/agent-core-v2/app/plugin/host';
+import { parsePluginImEvent } from '@kiki/agent-core-v2/app/plugin/imAdapter';
 import type { IPluginHostService, PluginImAdapterRegistration, PluginImAdapterSink } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { PLUGIN_IM_COMPLETE_LIMITS, pluginImAdapterDefinitionSchema } from '@kiki/protocol';
 import type { PluginImEvent } from '@kiki/protocol';
@@ -164,14 +165,22 @@ describe('plugin IM adapter contribution', () => {
 
   it('rejects whole over-budget messages, preserves the escaped-text boundary, and never submits a tooLarge prefix', async () => {
     const plugin = await fixture('fixture-budgets', undefined, 8 * 1024 * 1024);
-    const { bridge, submitted } = await hostBridge([plugin.registration]);
+    const saveMedia = vi.fn(async () => []);
+    const { bridge, submitted } = await hostBridge([plugin.registration], undefined, undefined, { sessions: { saveMedia } });
     await bind(bridge, plugin, privateChat);
     const event: PluginImEvent = { eventId: 'budget', sourceMessageId: 'budget-message', identity: privateChat, kind: 'message', parts: [{ kind: 'image', media: { name: 'fixture.png', mediaType: 'image/png', bytes: new Uint8Array() } }] };
     await expect(plugin.generated(event, { generateBytes: 8 * 1024 * 1024 + 1 })).rejects.toThrow('media byte limit');
     await expect(plugin.generated({ ...event, parts: Array.from({ length: 5 }, () => event.parts[0]!) }, { generateBytes: 8 * 1024 * 1024 })).rejects.toThrow('media byte limit');
     await expect(plugin.generated(event, { generateText: { character: 'x', length: PLUGIN_IM_COMPLETE_LIMITS.textChars + 1 } })).rejects.toThrow('text limit');
     await expect(plugin.emit({ ...event, parts: Array.from({ length: PLUGIN_IM_COMPLETE_LIMITS.parts + 1 }, () => ({ kind: 'text', text: 'x' })) })).rejects.toThrow('part count');
-    await expect(plugin.emit({ ...event, parts: [{ kind: 'text', text: 'must not submit this prefix' }, { kind: 'image', tooLarge: true }] })).resolves.toBeDefined();
+    const tooLarge = { ...event, parts: [{ kind: 'text' as const, text: 'must not submit this prefix' }, { kind: 'image' as const, tooLarge: true }] };
+    expect(() => parsePluginImEvent(tooLarge, plugin.registration.definition)).toThrow('tooLarge part');
+    await expect(plugin.emit({ ...tooLarge, parts: [tooLarge.parts[0]!, event.parts[0]!, tooLarge.parts[1]!] })).rejects.toThrow('tooLarge part');
+    expect(saveMedia).not.toHaveBeenCalled();
+    expect(submitted).toHaveLength(0);
+    const legacy = { eventId: 'legacy-tooLarge', identity: privateChat, kind: 'image' as const, tooLarge: true };
+    expect(parsePluginImEvent(legacy, plugin.registration.definition)).toMatchObject({ tooLarge: true });
+    await expect(plugin.emit(legacy)).resolves.toBeDefined();
     expect(submitted).toHaveLength(0);
     await plugin.generated({ ...event, eventId: 'text-boundary', sourceMessageId: 'text-boundary' }, { generateText: { character: '\u0000', length: PLUGIN_IM_COMPLETE_LIMITS.textChars } });
     expect(submitted).toHaveLength(1);
