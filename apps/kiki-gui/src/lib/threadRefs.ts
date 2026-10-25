@@ -12,7 +12,7 @@
  */
 
 import { useCallback, useContext, useEffect, useMemo, useSyncExternalStore } from 'react';
-import { QueryClientContext, type QueryClient } from '@tanstack/react-query';
+import { QueryClientContext, type Query, type QueryClient, type QueryKey } from '@tanstack/react-query';
 
 import type { Session, Workspace } from '@kiki/protocol';
 
@@ -72,6 +72,29 @@ function snapshotOf(client: QueryClient | undefined): { sessions: Map<string, Se
 
 const noopSubscribe = () => () => {};
 
+function isThreadRefQuery(key: QueryKey): boolean {
+  return key[0] === 'sessions' || key[0] === 'thread-ref'
+    || (key.length === 2 && key[0] === 'workspaces' && key[1] === 'catalog')
+    || (key.length === 1 && key[0] === 'thread-host-id');
+}
+
+function threadCacheVersionReader(client: QueryClient | undefined): () => number {
+  let previous: readonly (readonly [Query, number])[] = [];
+  let version = 0;
+  return () => {
+    const current = client?.getQueryCache().getAll()
+      .filter((query) => isThreadRefQuery(query.queryKey))
+      .map((query) => [query, query.state.dataUpdateCount] as const) ?? [];
+    // Identity also detects removal/replacement when update counts are equal.
+    if (current.length !== previous.length || current.some(([query, count], index) =>
+      query !== previous[index]?.[0] || count !== previous[index]?.[1])) {
+      previous = current;
+      version += 1;
+    }
+    return version;
+  };
+}
+
 /**
  * The directory for the linked ids in view. `ids` drives the one-shot fetch
  * for records no cached list carries; lookups for other ids still read the cache.
@@ -83,16 +106,14 @@ export function useThreadRefDirectory(
   sourceHostId?: string,
 ): ThreadRefDirectory {
   const client = useContext(QueryClientContext);
-  // Re-render on cache changes; the version counter keeps the snapshot stable.
   const subscribe = useCallback(
-    (listener: () => void) => (client === undefined ? noopSubscribe() : client.getQueryCache().subscribe(listener)),
+    (listener: () => void) => (client === undefined ? noopSubscribe() : client.getQueryCache().subscribe((event) => {
+      if (isThreadRefQuery(event.query.queryKey)) listener();
+    })),
     [client],
   );
-  const version = useSyncExternalStore(
-    subscribe,
-    () => (client === undefined ? 0 : client.getQueryCache().getAll().reduce((sum, query) => sum + query.state.dataUpdateCount, 0)),
-    () => 0,
-  );
+  const readVersion = useMemo(() => threadCacheVersionReader(client), [client]);
+  const version = useSyncExternalStore(subscribe, readVersion, () => 0);
   const snapshot = useMemo(() => snapshotOf(client), [client, version]);
   const knownHostId = client?.getQueryData<string>(['thread-host-id']);
   const sourceMatches = sourceHostId === undefined || sourceHostId === knownHostId;

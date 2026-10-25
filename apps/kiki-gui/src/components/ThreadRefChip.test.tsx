@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import type { Session, WorkspaceCatalogEntry } from '@kiki/protocol';
 
 import { I18nProvider } from '../i18n';
+import { useThreadRefDirectory } from '../lib/threadRefs';
 import { ThreadRefText } from './ThreadRefChip';
 
 const getSession = vi.fn<(id: string) => Promise<Session>>();
@@ -89,6 +90,95 @@ async function render(text: string, sessions: Session[]) {
   });
   return container;
 }
+
+describe('thread-reference directory cache', () => {
+  async function directory(options: {
+    fetchSession?: (id: string) => Promise<Session>;
+    fetchHostId?: () => Promise<string>;
+    sourceHostId?: string;
+  } = {}) {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const rendered = vi.fn();
+    function Probe() {
+      const refs = useThreadRefDirectory([ID], options.fetchSession, options.fetchHostId, options.sourceHostId);
+      rendered();
+      const entry = refs.lookup(ID);
+      return <output>{entry.session?.title ?? 'unknown'} · {entry.workspace?.name ?? 'unknown'} · {refs.hostId ?? 'unknown'}</output>;
+    }
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    await act(async () => { root.render(<QueryClientProvider client={client}><Probe /></QueryClientProvider>); });
+    return { client, container, rendered };
+  }
+
+  it('does not update a mounted reader for unrelated persona, avatar or workspace queries', async () => {
+    const { client, rendered } = await directory();
+    const before = rendered.mock.calls.length;
+    await act(async () => {
+      client.setQueryData(['personas'], [{ id: 'example-persona' }]);
+      client.setQueryData(['persona-avatar', 'example-persona'], new Blob(['avatar']));
+      client.setQueryData(['workspaces'], { items: [workspace] });
+      client.setQueryData(['workspaces', 'catalog', 'other'], { items: [workspace] });
+    });
+    expect(rendered).toHaveBeenCalledTimes(before);
+    await act(async () => { client.removeQueries({ queryKey: ['personas'] }); });
+    expect(rendered).toHaveBeenCalledTimes(before);
+  });
+
+  it('tracks late lists, catalog renames, individual records, host IDs and cache removal', async () => {
+    const { client, container } = await directory();
+    await act(async () => {
+      client.setQueryData(['sessions', false, undefined], { pages: [{ items: [record()] }] });
+      client.setQueryData(['workspaces', 'catalog'], { items: [workspace] });
+      client.setQueryData(['thread-host-id'], 'host-example');
+    });
+    expect(container.textContent).toBe('Fix the flaky upload test · kiki · host-example');
+    await act(async () => {
+      client.setQueryData(['workspaces', 'catalog'], { items: [{ ...workspace, name: 'Renamed workspace' }] });
+      client.setQueryData(['sessions', false, undefined], { pages: [{ items: [record({ title: 'Renamed thread' })] }] });
+    });
+    expect(container.textContent).toBe('Renamed thread · Renamed workspace · host-example');
+    await act(async () => { client.removeQueries({ queryKey: ['sessions'] }); });
+    expect(container.textContent).toBe('unknown · unknown · host-example');
+    await act(async () => { client.setQueryData(['thread-ref', ID], record({ title: 'Fetched thread' })); });
+    expect(container.textContent).toBe('Fetched thread · Renamed workspace · host-example');
+    await act(async () => {
+      client.removeQueries({ queryKey: ['thread-ref'] });
+      client.removeQueries({ queryKey: ['thread-host-id'] });
+    });
+    expect(container.textContent).toBe('unknown · unknown · unknown');
+  });
+
+  it('refreshes a removed and recreated query even when its update count is unchanged', async () => {
+    const { client, container } = await directory();
+    await act(async () => { client.setQueryData(['thread-ref', ID], record()); });
+    expect(container.textContent).toContain('Fix the flaky upload test');
+    await act(async () => {
+      client.removeQueries({ queryKey: ['thread-ref', ID], exact: true });
+      client.setQueryData(['thread-ref', ID], record({ title: 'Replacement thread' }));
+    });
+    expect(container.textContent).toContain('Replacement thread');
+  });
+
+  it('waits for a matching late host ID before fetching a source record', async () => {
+    let resolveHost!: (host: string) => void;
+    const host = new Promise<string>((resolve) => { resolveHost = resolve; });
+    const fetchHostId = vi.fn(() => host);
+    const fetchSession = vi.fn(async () => record());
+    const { client, container } = await directory({ fetchHostId, fetchSession, sourceHostId: 'host-example' });
+    expect(fetchSession).not.toHaveBeenCalled();
+    await act(async () => { resolveHost('host-other'); await host; });
+    expect(container.textContent).toContain('host-other');
+    expect(fetchSession).not.toHaveBeenCalled();
+    await act(async () => { client.setQueryData(['thread-host-id'], 'host-example'); });
+    await settle();
+    expect(fetchSession).toHaveBeenCalledExactlyOnceWith(ID);
+    expect(container.textContent).toContain('Fix the flaky upload test');
+  });
+});
 
 describe('ThreadRefText', () => {
   it('renders a resolved link as a chip with title, workspace and status, and opens the thread', async () => {
