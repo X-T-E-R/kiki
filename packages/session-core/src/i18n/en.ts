@@ -10438,7 +10438,7 @@ export const en = {
   'st.usagePolicy.inheritSharedPoint': 'Uses the shared value',
   'st.usagePolicy.capsHelp': 'Context budget and max generated tokens stay capped by the lower of this model and any profile, so a main-agent value can only tighten them.',
   'agentPanel.prompt.title': 'Effective prompts',
-  'agentPanel.rebuild.switch': 'Rebuild context',
+  'agentPanel.rebuild.switch': 'Auto-update context',
   'agentPanel.rebuild.sources': 'Sources',
   'agentPanel.rebuild.when': 'Last rebuild {when}',
   'agentPanel.rebuild.trigger.manual': 'Manual refresh',

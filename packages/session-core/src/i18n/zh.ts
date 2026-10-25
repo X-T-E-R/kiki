@@ -10342,7 +10342,7 @@ export const zh = {
   'st.usagePolicy.inheritSharedPoint': '使用共用值',
   'st.usagePolicy.capsHelp': '上下文使用预算与最大生成 token 仍受模型的硬上限约束（跨层取最小值），主智能体只能收紧，不能放宽。',
   'agentPanel.prompt.title': '提示词生效详情',
-  'agentPanel.rebuild.switch': '重建上下文',
+  'agentPanel.rebuild.switch': '自动更新上下文',
   'agentPanel.rebuild.sources': '来源',
   'agentPanel.rebuild.when': '最近一次重建 {when}',
   'agentPanel.rebuild.trigger.manual': '手动刷新',

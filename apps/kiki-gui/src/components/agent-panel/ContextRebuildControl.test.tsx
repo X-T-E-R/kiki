@@ -79,7 +79,7 @@ describe('ContextRebuildControl', () => {
   it('keeps the default face to the switch and leaves the source list out of the DOM', async () => {
     control.mockResolvedValue(applied);
     await render();
-    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Auto-update context');
     expect(container.querySelector('h4')).toBeNull();
     expect(container.querySelector('[data-context-rebuild-surface]')).toBeNull();
     expect(container.querySelector('[data-context-rebuild-outcome]')).toBeNull();
@@ -133,7 +133,7 @@ describe('ContextRebuildControl', () => {
       unsupported: [],
     });
     await render({ agentId: 'child' });
-    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+    expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Auto-update context');
     expect(container.querySelector('[data-context-rebuild-error]')?.textContent).toBe('disk down');
     expect(container.querySelector('[data-context-rebuild-retry]')).toBeNull();
     expect(rebuild).not.toHaveBeenCalled();
@@ -202,7 +202,7 @@ describe('ContextRebuildControl', () => {
         changes: { profile: false, promptFields: false, skills: false, instructions: false, plugins: false, mcp: false, injections: false },
       });
       await render({ sessionId: trigger });
-      expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Rebuild context');
+      expect(container.querySelector('[data-context-rebuild-switch]')?.textContent).toBe('Auto-update context');
       expect(container.querySelector('[data-context-rebuild-surface]')).toBeNull();
       expect(container.querySelector('[data-context-rebuild-mark="applied"]')?.getAttribute('aria-label')).toBe(label);
       expect(container.textContent).not.toContain(`agentPanel.rebuild.trigger.${trigger}`);
