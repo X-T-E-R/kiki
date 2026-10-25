@@ -724,13 +724,15 @@ describe('OptionalCapabilityRows', () => {
 });
 
 describe('ProfileHead inherited external effort', () => {
-  it.each(['live', 'cold'] as const)('names the engine default without inventing off in %s context', async (context) => {
+  it.each([
+    { label: 'inherited config', effortSource: 'config' },
+    { label: 'saved profile without effort provenance', effortSource: undefined },
+  ] as const)('names the engine default without inventing off for $label', async ({ effortSource }) => {
     readCapabilities.mockResolvedValue({
       ...full,
-      context,
       profile: {
         name: 'example-profile', model: 'example-model', executor: 'codex-app-server',
-        thinking_effort: 'off', thinking_effort_explicit: false, effort_source: 'config',
+        thinking_effort: 'off', thinking_effort_explicit: false, effort_source: effortSource,
       },
     } satisfies AgentCapabilitiesResponse);
     queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
