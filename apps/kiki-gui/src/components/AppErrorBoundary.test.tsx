@@ -13,7 +13,11 @@ function Bomb(): React.ReactElement {
 }
 
 describe('AppErrorBoundary', () => {
-  it('records componentStack and route path into sessionStorage on React 185 failure', async () => {
+  it('records componentStack and exact route with query and hash on React 185 failure', async () => {
+    const originalHref = window.location.href;
+    const targetRoute = '/s/session-test?filter=active#details';
+    window.history.replaceState(null, '', targetRoute);
+
     const setItemSpy = vi.spyOn(Storage.prototype, 'setItem');
     const consoleErrorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
 
@@ -31,25 +35,24 @@ describe('AppErrorBoundary', () => {
           </I18nProvider>,
         );
       });
-    } catch {
-      // ignore
+
+      expect(setItemSpy).toHaveBeenCalledWith(
+        'kiki.lastRenderFailure',
+        expect.stringContaining('185'),
+      );
+
+      const callArg = setItemSpy.mock.calls.find((call) => call[0] === 'kiki.lastRenderFailure')?.[1];
+      expect(callArg).toBeDefined();
+      const parsed = JSON.parse(callArg!);
+      expect(parsed.path).toBe(targetRoute);
+      expect(parsed.componentStack).toContain('Bomb');
+      expect(parsed.message).toContain('185');
+    } finally {
+      window.history.replaceState(null, '', originalHref);
+      consoleErrorSpy.mockRestore();
+      setItemSpy.mockRestore();
+      root.unmount();
+      container.remove();
     }
-
-    expect(setItemSpy).toHaveBeenCalledWith(
-      'kiki.lastRenderFailure',
-      expect.stringContaining('185'),
-    );
-
-    const callArg = setItemSpy.mock.calls.find((call) => call[0] === 'kiki.lastRenderFailure')?.[1];
-    expect(callArg).toBeDefined();
-    const parsed = JSON.parse(callArg!);
-    expect(parsed.path).toBeDefined();
-    expect(parsed.componentStack).toContain('Bomb');
-    expect(parsed.message).toContain('185');
-
-    consoleErrorSpy.mockRestore();
-    setItemSpy.mockRestore();
-    root.unmount();
-    container.remove();
   });
 });
