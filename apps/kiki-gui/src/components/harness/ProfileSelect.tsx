@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
 import type { ExecutorCatalogItem, NamedAgentProfile } from '@kiki/protocol';
@@ -13,7 +13,7 @@ import { errorText } from '@kiki/session-core/i18n';
 
 import { useHost } from '../../host';
 import { useI18n } from '../../i18n';
-import type { AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
+import { agentProfileCatalogQueryKey, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
 import { useConnection } from '../../state/connection';
 import {
   MENU_ROW_CLASS,
@@ -94,6 +94,7 @@ export function ProfileSelect({
 }: ProfileSelectProps) {
   const { t, locale } = useI18n();
   const host = useHost();
+  const queryClient = useQueryClient();
   const { client, meta, connectionSource } = useConnection();
   const rootRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -483,8 +484,16 @@ export function ProfileSelect({
             ? t('composer.execution.busyTitle')
             : triggerText}
         onClick={() => {
-          if (open) close();
-          else setOpen(true);
+          if (open) {
+            close();
+          } else {
+            if (catalogMode.mode !== 'disabled') {
+              void queryClient.invalidateQueries({
+                queryKey: agentProfileCatalogQueryKey(catalogMode),
+              });
+            }
+            setOpen(true);
+          }
         }}
         className={showPersona === true
           ? 'flex h-7 min-w-0 max-w-44 items-center gap-1.5 rounded-full pr-1.5 pl-1.5 text-[13px] font-medium text-ink outline-none transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 disabled:opacity-60 pointer-coarse:h-10'

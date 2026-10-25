@@ -1254,6 +1254,50 @@ describe('Composer execution control', () => {
     expect(selected?.closest('[data-execution-engine]')?.getAttribute('data-execution-engine')).toBe('native');
   });
 
+  it('refreshes the workspace profile catalog in the background when opening the selector', async () => {
+    let callCount = 0;
+    listNamedAgentProfiles.mockImplementation(async (workspaceId?: string) => {
+      callCount += 1;
+      if (callCount === 1) {
+        return {
+          items: [
+            { name: 'initial-main', source: 'workspace', main: true, disabled: false, routes: [] },
+          ] satisfies NamedAgentProfile[],
+        };
+      }
+      return {
+        items: [
+          { name: 'initial-main', source: 'workspace', main: true, disabled: false, routes: [] },
+          { name: 'added-main', source: 'workspace', main: true, disabled: false, routes: [] },
+        ] satisfies NamedAgentProfile[],
+      };
+    });
+    const rendered = await renderComposer({
+      workspaceId: 'wd_live',
+      agentProfileCatalogMode: { mode: 'workspace', workspaceId: 'wd_live' },
+      agentProfile: 'initial-main',
+      onChangeAgentProfile: () => {},
+      execution: { executor: 'native', profile: 'initial-main', profile_file: undefined, overrides: undefined },
+      onChangeExecution: () => {},
+    });
+    const trigger = await waitForProfileTrigger(rendered.container);
+    expect(listNamedAgentProfiles).toHaveBeenCalledTimes(1);
+    expect(listNamedAgentProfiles).toHaveBeenCalledWith('wd_live');
+
+    // Opening the menu triggers a background catalog refresh without waiting 60s staleTime.
+    await click(trigger);
+    expect(listNamedAgentProfiles).toHaveBeenCalledTimes(2);
+
+    // Initial item was immediately available from cache
+    let options = [...rendered.container.querySelectorAll('[role="option"]')].map((row) => row.textContent ?? '');
+    expect(options.some((text) => text.includes('initial-main'))).toBe(true);
+
+    // Wait for the refreshed list to settle and verify newly added profile is visible
+    await settle();
+    options = [...rendered.container.querySelectorAll('[role="option"]')].map((row) => row.textContent ?? '');
+    expect(options.some((text) => text.includes('added-main'))).toBe(true);
+  });
+
   it('accents the pill while a switch is pending', async () => {
     const { container } = await renderComposer({
       agentProfile: 'reviewer',
