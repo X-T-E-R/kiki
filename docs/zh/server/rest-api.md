@@ -710,6 +710,10 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 `target` 使用 `{ kind: "session", session_id }`；也保留 `{ kind: "persona", persona_id }`，作为绑定到该角色日常会话的快捷方式。PATCH 仍接受旧的 `session_id`，但它与 `target` 互斥；`also_home` 仅用于确认绑定。重新确认保留已有 `enabled`、`session_enabled`、`input_enabled` 和 `output_enabled`，除非请求明确修改。`session_enabled: null` 跟随 `policy.default_enabled`；方向设为 `null` 则删除该方向覆盖。入站、出站仍受绑定总开关与会话准入限制。
 
+群聊确认支持 `binding_scope: "sender" | "topic" | "chat"`；省略时保留仅匹配原发送者的方式。话题或群级绑定让成员共用一个会话，但保留逐条真实发送者 ID，也不允许成员处理别人的待办交互。新建的显式话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention_or_reply" | "manual", prefixes?: string[] }`：`always` 逐条唤醒；`mention_or_reply` 在真实 @、回复已知自身消息或命中配置的字面前缀时唤醒；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。@ 和回复识别依赖适配器提供真实元数据；未提供这些字段的内置传输可使用前缀或 `always`。
+
+已启用的群入站绑定按账号、群和话题保留有界持久时间线。静默消息不启动模型轮次。触发时，提示词会附带近期尚未消费的背景和最多四层引用祖先，并标记为不可信外部数据；提交获准后只推进本次捕获的背景水位，不删除时间线，也不丢失处理期间的新到消息。主 Agent 可用 [ReadMessageHistory](../reference/tools.md#im-聊天历史) 主动搜索本地记录，或显式读取可选的平台历史。关闭输入后，该绑定停止收集，也不再允许读取。
+
 同一输入身份同时只归属一个会话。跨会话转绑未带 `rebind: true` 时，返回业务码 `40949`、`msg: "im_identity_already_bound"`，`details` 包含 `existing_binding_id`、`previous_session_id`、`target_session_id` 和 `variant_key`。显示这些身份供用户二次确认，再携带 `rebind: true` 重发请求；取消时不发修改请求。旧交互票据不会作用于新会话，旧回复监听在转绑时过期。手机端 `:target` 可列出目标，但转绑必须在 Kiki 中确认。缺少有效会话的旧绑定保留原身份与角色来源，显示 `pending_reanchor: true`，显式确认归属前暂停路由。
 
 输出响应包含 `internal_enabled: true` 和 `channels`。每个信道含 `id`、`kind`（`internal`、`im`、`notify`）、`enabled`、`capabilities` 和可选 `bound`；`bound: false` 是候选，不是当前会话绑定。`internal` 常驻开启，旧内部信道开关接口拒绝 `{ enabled: false }`。Klient 方法为 `rest.imSessions.channelViews`、`setNotificationChannel` 和 `removeNotificationChannel`。

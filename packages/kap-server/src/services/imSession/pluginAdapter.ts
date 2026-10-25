@@ -104,6 +104,11 @@ function createAdapter(entry: PluginImAdapterRegistration): ImSessionAdapter {
       connection = undefined;
       await current?.stop();
     },
+    async readHistory(input) {
+      if (stopped || connection === undefined) throw new Error('Plugin IM adapter is not connected');
+      if (!definition.inbound || definition.supportsHistory !== true || connection.readHistory === undefined) return { status: 'unsupported' };
+      return connection.readHistory(input);
+    },
     sendText,
     async sendTextParts(message) {
       const ids: string[] = [];

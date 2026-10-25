@@ -69,6 +69,7 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
     return bridge.updateBinding(routeId(req), {
       enabled: patch.enabled,
       sessionEnabled: patch.session_enabled,
+      groupPolicy: patch.group_policy,
       inputEnabled: patch.input_enabled,
       outputEnabled: patch.output_enabled,
       rebind: patch.rebind,

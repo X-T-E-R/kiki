@@ -1091,6 +1091,38 @@ export interface AgentStateSnapshot {
           mentioned?: boolean;
           mention_ids?: string[];
           reply_to_message_id?: string;
+          is_self?: boolean;
+          timestamp?: number;
+          context?: {
+            order: 'chronological';
+            coverage: 'received_only' | 'retention_limited';
+            truncated: boolean;
+            messages: {
+              sequence: number;
+              identity: {
+                chat_id: string;
+                sender_id: string;
+                topic_id: string;
+                chat_kind?: 'private' | 'group';
+                chat_title?: string;
+                sender_name?: string;
+                topic_title?: string;
+              };
+              text: string;
+              operation: 'create' | 'edit' | 'retract';
+              source_message_id?: string;
+              is_self?: boolean;
+              timestamp?: number;
+              mention_ids?: string[];
+              reply_to_message_id?: string;
+              media?: {
+                kind: string;
+                name: string;
+                media_type: string;
+                available: boolean;
+              }[];
+            }[];
+          };
         };
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
@@ -1390,6 +1422,38 @@ export interface AgentStateSnapshot {
         mentioned?: boolean;
         mention_ids?: string[];
         reply_to_message_id?: string;
+        is_self?: boolean;
+        timestamp?: number;
+        context?: {
+          order: 'chronological';
+          coverage: 'received_only' | 'retention_limited';
+          truncated: boolean;
+          messages: {
+            sequence: number;
+            identity: {
+              chat_id: string;
+              sender_id: string;
+              topic_id: string;
+              chat_kind?: 'private' | 'group';
+              chat_title?: string;
+              sender_name?: string;
+              topic_title?: string;
+            };
+            text: string;
+            operation: 'create' | 'edit' | 'retract';
+            source_message_id?: string;
+            is_self?: boolean;
+            timestamp?: number;
+            mention_ids?: string[];
+            reply_to_message_id?: string;
+            media?: {
+              kind: string;
+              name: string;
+              media_type: string;
+              available: boolean;
+            }[];
+          }[];
+        };
       };
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
@@ -1621,6 +1685,38 @@ export interface AgentStateSnapshot {
           mentioned?: boolean;
           mention_ids?: string[];
           reply_to_message_id?: string;
+          is_self?: boolean;
+          timestamp?: number;
+          context?: {
+            order: 'chronological';
+            coverage: 'received_only' | 'retention_limited';
+            truncated: boolean;
+            messages: {
+              sequence: number;
+              identity: {
+                chat_id: string;
+                sender_id: string;
+                topic_id: string;
+                chat_kind?: 'private' | 'group';
+                chat_title?: string;
+                sender_name?: string;
+                topic_title?: string;
+              };
+              text: string;
+              operation: 'create' | 'edit' | 'retract';
+              source_message_id?: string;
+              is_self?: boolean;
+              timestamp?: number;
+              mention_ids?: string[];
+              reply_to_message_id?: string;
+              media?: {
+                kind: string;
+                name: string;
+                media_type: string;
+                available: boolean;
+              }[];
+            }[];
+          };
         };
       } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
         readonly kind: 'skill_activation';
@@ -1976,6 +2072,38 @@ export interface AgentStateSnapshot {
         mentioned?: boolean;
         mention_ids?: string[];
         reply_to_message_id?: string;
+        is_self?: boolean;
+        timestamp?: number;
+        context?: {
+          order: 'chronological';
+          coverage: 'received_only' | 'retention_limited';
+          truncated: boolean;
+          messages: {
+            sequence: number;
+            identity: {
+              chat_id: string;
+              sender_id: string;
+              topic_id: string;
+              chat_kind?: 'private' | 'group';
+              chat_title?: string;
+              sender_name?: string;
+              topic_title?: string;
+            };
+            text: string;
+            operation: 'create' | 'edit' | 'retract';
+            source_message_id?: string;
+            is_self?: boolean;
+            timestamp?: number;
+            mention_ids?: string[];
+            reply_to_message_id?: string;
+            media?: {
+              kind: string;
+              name: string;
+              media_type: string;
+              available: boolean;
+            }[];
+          }[];
+        };
       };
     } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
       readonly kind: 'skill_activation';
@@ -7207,6 +7335,38 @@ export interface AgentStateSnapshot {
             mentioned?: boolean;
             mention_ids?: string[];
             reply_to_message_id?: string;
+            is_self?: boolean;
+            timestamp?: number;
+            context?: {
+              order: 'chronological';
+              coverage: 'received_only' | 'retention_limited';
+              truncated: boolean;
+              messages: {
+                sequence: number;
+                identity: {
+                  chat_id: string;
+                  sender_id: string;
+                  topic_id: string;
+                  chat_kind?: 'private' | 'group';
+                  chat_title?: string;
+                  sender_name?: string;
+                  topic_title?: string;
+                };
+                text: string;
+                operation: 'create' | 'edit' | 'retract';
+                source_message_id?: string;
+                is_self?: boolean;
+                timestamp?: number;
+                mention_ids?: string[];
+                reply_to_message_id?: string;
+                media?: {
+                  kind: string;
+                  name: string;
+                  media_type: string;
+                  available: boolean;
+                }[];
+              }[];
+            };
           };
         } | /* SkillActivationOrigin — packages/agent-core-v2/src/agent/contextMemory/types.ts */ {
           readonly kind: 'skill_activation';
@@ -7568,11 +7728,9 @@ export interface AgentStateSnapshot {
       readonly sourceTurnId?: number;
     };
     readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
-  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
-    readonly kind: 'process';
-    readonly command: string;
-    readonly pid: number;
-    readonly exitCode: number | null;
+  } | /* MediaTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
+    readonly kind: 'media';
+    readonly jobId: string;
     readonly taskId: string;
     readonly description: string;
     readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
@@ -7597,9 +7755,11 @@ export interface AgentStateSnapshot {
       readonly sourceTurnId?: number;
     };
     readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
-  } | /* MediaTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
-    readonly kind: 'media';
-    readonly jobId: string;
+  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
+    readonly kind: 'process';
+    readonly command: string;
+    readonly pid: number;
+    readonly exitCode: number | null;
     readonly taskId: string;
     readonly description: string;
     readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
@@ -7692,11 +7852,9 @@ export interface AgentStateSnapshot {
       readonly sourceTurnId?: number;
     };
     readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
-  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
-    readonly kind: 'process';
-    readonly command: string;
-    readonly pid: number;
-    readonly exitCode: number | null;
+  } | /* MediaTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
+    readonly kind: 'media';
+    readonly jobId: string;
     readonly taskId: string;
     readonly description: string;
     readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';
@@ -7721,9 +7879,11 @@ export interface AgentStateSnapshot {
       readonly sourceTurnId?: number;
     };
     readonly receiptVerification?: 'verified' | 'legacy_unverified' | 'invalid';
-  } | /* MediaTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
-    readonly kind: 'media';
-    readonly jobId: string;
+  } | /* ProcessTaskInfo — packages/agent-core-v2/src/agent/task/types.ts */ {
+    readonly kind: 'process';
+    readonly command: string;
+    readonly pid: number;
+    readonly exitCode: number | null;
     readonly taskId: string;
     readonly description: string;
     readonly status: /* AgentTaskStatus — packages/agent-core-v2/src/agent/task/types.ts */ 'completed' | 'failed' | 'running' | 'timed_out' | 'killed' | 'lost';

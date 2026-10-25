@@ -456,7 +456,11 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 `start({ signal, settings, instanceId, offset, emit })` 返回 `{ accountId, listenerAccountId?, targets? }`，启动完成后才能调用 `emit`。仅出站 adapter 可以返回 `targets` 供用户确认目标，不需要伪造入站事件。关闭、重载或删除插件只关闭它自己的连接，并保留用户的监听偏好和绑定，供重新启用时恢复。用户逐个确认目标；群绑定默认限于原发送人，也可显式设置 `binding_scope: "topic"` 或 `"chat"`。共享群会话保留每条消息的真实发送人，其他成员不能因此处理原发送人的待审批或待回答交互。
 
-`eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds` 和 `replyToMessageId` 会进入会话消息元数据。模型会在对应正文旁看到真实聊天、话题、发送人、消息 ID、提及和引用 ID；这些信息标记为不可信外部来源数据，不作为指令或授权。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
+`eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds`、`replyToMessageId`、可选的 `isSelf` 与毫秒时间戳 `timestamp` 会进入会话消息元数据。编辑、撤回分别发送 `operation: "edit"` 或 `"retract"`，并提供真实目标 `sourceMessageId`；它们更新接收记录，不另开模型回合。不要从显示名猜测 self 身份。模型会在当前正文旁看到真实发送人和选中的群背景，这些信息标记为不可信外部数据，不作为指令或授权。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
+
+新建的显式 topic/chat 群绑定会静默保存普通消息，在收到真实提及或回复已知 self 消息时唤醒。用户可通过 [`group_policy`](../server/rest-api.md#im-账号与信道绑定) 配置指定文字前缀、每条唤醒或只记录。旧的 sender 范围绑定保留每条消息触发的用法。提及、引用触发需要 adapter 提供真实元数据；未暴露这些字段的内置传输可使用配置前缀或 `wake: "always"`。[ReadMessageHistory](../reference/tools.md#im-聊天历史) 通过当前会话已准入的绑定读取仍保留的接收记录。
+
+需要平台历史回补时，声明 `supportsHistory: true`，并实现 `readHistory({ chatId, topicId, cursor?, limit }, context)`。`limit` 为 1–50，cursor 是由 adapter 解释的不透明令牌。返回 `{ status: "unsupported", detail? }`，或 `{ status: "ok", messages, order, nextCursor?, coverage, end }`。每条记录须有真实 `sourceMessageId`、`identity` 和媒体或文本 `kind`，可带 `text`、`operation`、`isSelf`、`timestamp`、提及与引用字段，以及最多四个不含路径的媒体描述 `{ kind, name, mediaType }`。`order` 为 `chronological` 或 `reverse_chronological`，`coverage` 为 `complete`、`partial` 或 `unknown`，`end` 为 `reached`、`more` 或 `unknown`。短页或空页不能证明历史已经读完。Kiki 校验每条记录的 chat/topic 与请求条数上限。平台读取要求入站连接启用，且绑定明确采用 chat/topic 范围；不实现历史方法的 adapter 保持原有用法。
 
 插件工具中的 `context.messages.send()` 与 `SendMessage` 共用 main agent、能力、工具禁用和审批检查，再通过当前线程已启用的绑定信道发送。例如：
 

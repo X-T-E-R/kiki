@@ -600,6 +600,8 @@ export * from '#/agent/tools/thread-communication/threadCommunicationTools';
 export * from '#/agent/tools/thread-communication/threadCreateTool';
 export * from '#/agent/tools/message/sendMessageTool';
 import '#/agent/tools/message/sendMessageTool';
+export * from '#/agent/tools/message/readMessageHistoryTool';
+export * from '#/app/bot/imMessageHistory';
 export * from '#/agent/tools/history/historyTools';
 export * from '#/agent/tools/history/historyListTool';
 export * from '#/app/sessionManager/sessionLookup';

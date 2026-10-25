@@ -1113,3 +1113,145 @@ describe('credential changes in a shared listener group', () => {
     } finally { await held.bridge.close(); }
   });
 });
+
+function historyHarness(overrides: Partial<ImSessionPorts['sessions']> = {}) {
+  const documents = new Map<string, unknown>();
+  const base = ports(overrides);
+  base.ports = { ...base.ports, history: {
+    get: async <T>(key: string) => structuredClone(documents.get(key)) as T | undefined,
+    set: async (key, value) => { documents.set(key, structuredClone(value)); },
+    delete: async (key) => { documents.delete(key); },
+  } };
+  const adapter = new FakeImAdapter('telegram', '42');
+  const harness = bridgeFor(adapter, base);
+  return { ...harness, adapter, documents };
+}
+
+const group = { chatId: 'group-1', topicId: 'topic-1', senderId: 'owner', senderName: 'Same name', chatKind: 'group' as const };
+
+async function bindHistoryGroup(harness: ReturnType<typeof historyHarness>, scope: 'chat' | 'topic' | 'sender' = 'topic') {
+  await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+  await harness.bridge.setListening('inst', true);
+  await harness.adapter.emit({ eventId: 'discover', sourceMessageId: 'discover-message', identity: group, kind: 'text', text: 'bind group' });
+  const discovery = (await harness.bridge.snapshot()).discoveries[0]!;
+  await harness.bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'sess' }, binding_scope: scope });
+  return (await harness.bridge.snapshot()).bindings[0]!;
+}
+
+describe('IM group context vertical flow', () => {
+  it('quietly retains members, injects chronological context on mention, and preserves edits/retractions and scope', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    const harness = historyHarness({ submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; } });
+    try {
+      const binding = await bindHistoryGroup(harness);
+      const peer = { ...group, senderId: 'peer', senderName: 'Same name' };
+      await harness.adapter.emit({ eventId: 'one-event', sourceMessageId: 'one', identity: group, kind: 'text', text: 'first discussion' });
+      await harness.adapter.emit({ eventId: 'two-event', sourceMessageId: 'two', identity: peer, kind: 'text', text: 'second discussion' });
+      await harness.adapter.emit({ eventId: 'two-redelivery', sourceMessageId: 'two', identity: peer, kind: 'text', text: 'second discussion' });
+      expect(received).toHaveLength(0);
+      expect(harness.adapter.sent).toHaveLength(0);
+      await harness.adapter.emit({ eventId: 'edit-event', sourceMessageId: 'one', operation: 'edit', identity: group, kind: 'text', text: 'revised discussion' });
+      await harness.adapter.emit({ eventId: 'retract-event', sourceMessageId: 'two', operation: 'retract', identity: peer, kind: 'text' });
+      await harness.adapter.emit({ eventId: 'trigger', sourceMessageId: 'three', identity: peer, kind: 'text', text: 'what happened?', mentioned: true, mentionIds: ['bot-real'], replyToMessageId: 'one' });
+      expect(received).toHaveLength(1);
+      expect(received[0]?.content).toEqual([{ type: 'text', text: 'what happened?' }]);
+      expect(received[0]?.im).toMatchObject({ identity: { sender_id: 'peer', sender_name: 'Same name' }, source_message_id: 'three', mentioned: true, context: { order: 'chronological', messages: [
+        { source_message_id: 'one', text: 'revised discussion', operation: 'edit', identity: { sender_id: 'owner' } },
+        { source_message_id: 'two', text: '', operation: 'retract', identity: { sender_id: 'peer' } },
+      ] } });
+      const page = await harness.bridge.readMessageHistory('sess', { channel: `im:${binding.id}`, keyword: 'discussion', senderId: 'owner' });
+      expect(page.status === 'ok' && page.messages).toHaveLength(1);
+      await expect(harness.bridge.readMessageHistory('home', { channel: `im:${binding.id}` })).rejects.toThrow('history_channel_not_admitted');
+      await expect(harness.bridge.readMessageHistory('sess', { topicId: 'other-topic' })).rejects.toThrow('history_topic_not_admitted');
+      expect(await harness.bridge.readMessageHistory('sess', { source: 'platform' })).toEqual({ status: 'unsupported' });
+      await harness.bridge.updateBinding(binding.id, { inputEnabled: false });
+      await expect(harness.bridge.readMessageHistory('sess', {})).rejects.toThrow('history_channel_not_admitted');
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('retains arrivals during admission and freezes an uncertain retry body across new arrivals', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    let fail = true;
+    let entered!: () => void;
+    let release!: () => void;
+    const enteredPromise = new Promise<void>((resolve) => { entered = resolve; });
+    const releasePromise = new Promise<void>((resolve) => { release = resolve; });
+    const harness = historyHarness({ submit: async (input) => {
+      received.push(structuredClone(input));
+      if (input.promptId === 'im:inst:trigger' && fail) { entered(); await releasePromise; fail = false; throw new Error('admission-outcome-unknown'); }
+      return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' };
+    } });
+    try {
+      await bindHistoryGroup(harness);
+      await harness.adapter.emit({ eventId: 'before', sourceMessageId: 'before', identity: group, kind: 'text', text: 'before wake' });
+      const trigger = { eventId: 'trigger', sourceMessageId: 'trigger-message', identity: group, kind: 'text' as const, text: 'wake', mentioned: true };
+      const pending = harness.adapter.emit(trigger);
+      const failure = expect(pending).rejects.toThrow('admission-outcome-unknown');
+      await enteredPromise;
+      await harness.adapter.emit({ eventId: 'during', sourceMessageId: 'during', identity: { ...group, senderId: 'peer' }, kind: 'text', text: 'arrived during processing' });
+      release();
+      await failure;
+      await harness.adapter.emit(trigger);
+      expect(received[1]).toEqual(received[0]);
+      await harness.adapter.emit({ eventId: 'next', sourceMessageId: 'next', identity: group, kind: 'text', text: 'next wake', mentioned: true });
+      expect(received[2]?.im?.context?.messages.map((row) => row.source_message_id)).toEqual(['during']);
+      const history = await harness.bridge.readMessageHistory('sess', {});
+      expect(history.status === 'ok' && history.messages.length).toBe(4);
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('reuses only canonical same-session background images and leaves missing media explicit', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    let mediaIndex = 0;
+    const harness = historyHarness({
+      saveMedia: async () => [{ type: 'image', source: { kind: 'session_media', file_id: `canonical-image-${++mediaIndex}` } }],
+      historyMedia: async (_sessionId, content) => content.filter((part) => part.type === 'image' && part.source.kind === 'session_media' && part.source.file_id === 'canonical-image-1'),
+      submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
+    });
+    try {
+      await bindHistoryGroup(harness);
+      await harness.adapter.emit({ eventId: 'image', sourceMessageId: 'image-message', identity: group, kind: 'image', media: { name: 'photo.png', mediaType: 'image/png', bytes: new Uint8Array([1, 2, 3]) } });
+      await harness.adapter.emit({ eventId: 'expired-image', sourceMessageId: 'expired-message', identity: group, kind: 'image', media: { name: 'expired.png', mediaType: 'image/png', bytes: new Uint8Array([4, 5]) } });
+      expect(received).toHaveLength(0);
+      await harness.adapter.emit({ eventId: 'wake-image', sourceMessageId: 'wake-image', identity: group, kind: 'text', text: 'describe previous image', mentioned: true });
+      expect(received[0]?.content).toEqual(expect.arrayContaining([{ type: 'image', source: { kind: 'session_media', file_id: 'canonical-image-1' } }]));
+      expect(received[0]?.im?.context?.messages[0]?.media).toEqual([{ kind: 'image', name: 'photo.png', media_type: 'image/png', available: true }]);
+      expect(received[0]?.im?.context?.messages[1]?.media).toEqual([{ kind: 'image', name: 'expired.png', media_type: 'image/png', available: false }]);
+      expect(received[0]?.content).not.toEqual(expect.arrayContaining([{ type: 'image', source: { kind: 'session_media', file_id: 'canonical-image-2' } }]));
+    } finally { await harness.bridge.close(); }
+  });
+});
+
+describe('IM group wake and reply routing', () => {
+  it('keeps chat-scoped topics separate, recognizes real sent IDs and never grants a peer command authority', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    let aborts = 0;
+    const harness = historyHarness({
+      submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
+      abort: async () => { aborts += 1; return true; },
+    });
+    try {
+      const binding = await bindHistoryGroup(harness, 'chat');
+      await harness.adapter.emit({ eventId: 'topic-one', sourceMessageId: 'topic-one', identity: group, kind: 'text', text: 'private to topic one background' });
+      const peer = { ...group, topicId: 'topic-2', senderId: 'peer' };
+      await harness.adapter.emit({ eventId: 'topic-two', sourceMessageId: 'topic-two', identity: peer, kind: 'text', text: 'topic two discussion' });
+      await harness.bridge.updateBinding(binding.id, { groupPolicy: { wake: 'mention_or_reply', prefixes: ['Kiki:'] } });
+      await harness.adapter.emit({ eventId: 'prefix', sourceMessageId: 'prefix', identity: peer, kind: 'text', text: 'Kiki: please summarize' });
+      expect(received[0]?.im?.context?.messages.map((row) => row.source_message_id)).toEqual(['topic-two']);
+      const topicTwo = await harness.bridge.readMessageHistory('sess', { topicId: 'topic-2' });
+      expect(topicTwo.status === 'ok' && topicTwo.messages.length).toBe(2);
+      await harness.bridge.updateBinding(binding.id, { groupPolicy: { wake: 'manual' } });
+      await harness.adapter.emit({ eventId: 'peer-command', sourceMessageId: 'peer-command', identity: peer, kind: 'text', text: ':abort', mentioned: true });
+      await harness.adapter.emit({ eventId: 'self', sourceMessageId: 'self', identity: peer, kind: 'text', text: 'self message', isSelf: true, mentioned: true });
+      expect(aborts).toBe(0);
+      expect(received).toHaveLength(1);
+      await harness.bridge.updateBinding(binding.id, { groupPolicy: { wake: 'mention_or_reply' } });
+      const sent = await harness.bridge.sendUserMessage({ sessionId: 'sess', toolCallId: 'group-sent', channel: `im:${binding.id}`, text: 'sent by this host', attachments: [] });
+      const sentId = sent.channels?.find((channel) => channel.channelId === `im:${binding.id}`)?.messageIds?.[0];
+      expect(sentId).toBeTruthy();
+      await harness.adapter.emit({ eventId: 'reply-to-host', sourceMessageId: 'reply-to-host', identity: group, kind: 'text', text: 'follow up', replyToMessageId: sentId });
+      expect(received).toHaveLength(2);
+    } finally { await harness.bridge.close(); }
+    expect(harness.adapter.sent.some((message) => message.code === 'reply' && message.identity.topicId === 'topic-2' && message.identity.senderId === 'peer')).toBe(true);
+  });
+});

@@ -44,6 +44,9 @@ export interface ImInboundEvent {
   readonly eventId: string;
   readonly cursor?: number;
   readonly sourceMessageId?: string;
+  readonly operation?: 'create' | 'edit' | 'retract';
+  readonly isSelf?: boolean;
+  readonly timestamp?: number;
   readonly mentioned?: boolean;
   readonly mentionIds?: readonly string[];
   readonly replyToMessageId?: string;
@@ -93,6 +96,7 @@ export interface ImSessionAdapter {
   readonly targets?: readonly ImInboundIdentity[];
   readonly mediaCapabilities?: readonly MessageMediaCapability[];
   sendMedia?(message: ImOutboundMedia): Promise<ImMediaReceipt>;
+  readHistory?(request: import('@kiki/protocol').PluginImHistoryRequest): Promise<import('@kiki/protocol').PluginImHistoryPage>;
   describeConflict(): Promise<'webhook' | 'none'>;
   connectionPhase?(): 'idle' | 'starting' | 'running' | 'reconnecting' | 'conflict' | 'auth_expired' | 'stopped';
   connectionDetail?(): ImConnectionDetail | undefined;

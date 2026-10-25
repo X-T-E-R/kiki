@@ -48,9 +48,33 @@ export const imMessageMetadataSchema = z.object({
   mentioned: z.boolean().optional(),
   mention_ids: z.array(z.string().min(1)).optional(),
   reply_to_message_id: z.string().min(1).optional(),
+  is_self: z.boolean().optional(),
+  timestamp: z.number().int().nonnegative().optional(),
+  context: z.object({
+    order: z.literal('chronological'),
+    coverage: z.enum(['received_only', 'retention_limited']),
+    truncated: z.boolean(),
+    messages: z.array(z.object({
+      sequence: z.number().int().positive(),
+      source_message_id: z.string().optional(),
+      identity: imIdentitySchema,
+      text: z.string().max(16_384),
+      operation: z.enum(['create', 'edit', 'retract']),
+      is_self: z.boolean().optional(),
+      timestamp: z.number().int().nonnegative().optional(),
+      mention_ids: z.array(z.string()).optional(),
+      reply_to_message_id: z.string().optional(),
+      media: z.array(z.object({ kind: z.string(), name: z.string(), media_type: z.string(), available: z.boolean() }).strict()).max(4).optional(),
+    }).strict()).max(50),
+  }).strict().optional(),
 }).strict();
 export type ImMessageMetadata = z.infer<typeof imMessageMetadataSchema>;
 export const imBindingScopeSchema = z.enum(['sender', 'topic', 'chat']);
+export const imGroupPolicySchema = z.object({
+  wake: z.enum(['always', 'mention_or_reply', 'manual']),
+  prefixes: z.array(z.string().min(1).max(128)).max(16).optional(),
+}).strict();
+export type ImGroupPolicy = z.infer<typeof imGroupPolicySchema>;
 
 export const imDiscoverySchema = z.object({
   id: z.string().min(1),
@@ -73,6 +97,7 @@ export const imBindingSchema = z.object({
   persona_id: z.string().min(1).optional(),
   pending_reanchor: z.boolean().optional(),
   binding_scope: imBindingScopeSchema.optional(),
+  group_policy: imGroupPolicySchema.optional(),
   enabled: z.boolean(),
   session_enabled: z.boolean().optional(),
   input_enabled: z.boolean().optional(),
@@ -167,6 +192,7 @@ export const imConfirmRequestSchema = z.object({
   mobile_interactions: z.boolean().optional(),
   also_home: z.boolean().optional(),
   binding_scope: imBindingScopeSchema.optional(),
+  group_policy: imGroupPolicySchema.optional(),
   rebind: z.boolean().optional(),
   input_enabled: z.boolean().optional(),
   output_enabled: z.boolean().optional(),
@@ -176,6 +202,7 @@ export type ImConfirmRequest = z.infer<typeof imConfirmRequestSchema>;
 export const imBindingPatchSchema = z.object({
   enabled: z.boolean().optional(),
   session_enabled: z.boolean().nullable().optional(),
+  group_policy: imGroupPolicySchema.optional(),
   input_enabled: z.boolean().nullable().optional(),
   output_enabled: z.boolean().nullable().optional(),
   rebind: z.boolean().optional(),

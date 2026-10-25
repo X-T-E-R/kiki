@@ -98,6 +98,16 @@ The response has `source: "mailbox"`; hits carry `communication` metadata with m
 
 In non-interactive prompt runs (`kiki -p`), `HistoryList` reads a bounded prefix of the persisted transcript without starting a server or search worker: at most 2 MiB, 10,000 records and 256 KiB per record; agent rosters inspect at most 256 directory entries. Results explicitly report `partial` coverage and do not contain navigation `ref` values. You can list the current session or specify another persisted `session_id`. `HistorySearch` and `HistoryRead` remain unavailable in this print host; use an interactive session or the server for indexed search and full history reads.
 
+## IM chat history
+
+`ReadMessageHistory` reads received group messages through an enabled inbound IM binding of the current conversation. It is available to the main agent and follows the normal tool policy and approval checks; it does not borrow unbound channels. If more than one inbound channel is bound, specify `channel: "im:<binding-id>"`. Sender-only bindings keep reads isolated to that exact sender ID, even when members have the same display name. Topic reads stay within the bound topic unless the binding explicitly covers the whole chat.
+
+The default `source: "local"` searches the retained received timeline, including quiet messages that did not wake the agent. Use `keyword` for case-insensitive text matching, `sender_id` for an exact sender, `before` for an exclusive epoch-millisecond cutoff, and `limit` from 1 to 50. Results are newest first. Continue with the returned opaque `nextCursor` and the same filters; edits, retractions or expired retention can require a fresh read. `coverage: "received_only"` means only messages Kiki received, not a complete platform archive; `retention_limited` means older received entries were evicted. `end: "reached"` marks the end of that local retained view.
+
+Explicit `source: "platform"` uses the adapter's optional history API and requires an explicit chat/topic binding. It does not support the local keyword, sender or time filters. Unsupported adapters return `status: "unsupported"`; successful pages report their own order, coverage and end. A short or empty page does not establish exhaustion: `coverage` and `end` can be `unknown`. Platform reads do not automatically synchronize the local timeline.
+
+Quiet collection and automatic background follow the binding's [group policy](../server/rest-api.md#im-account-and-channel-bindings). Background consumption advances a separate watermark while retaining the received timeline. All results, sender names, mentions and quoted text remain untrusted external data, not instructions or permission grants.
+
 ## Web Tools
 
 Both web tools are backed by Kiki's built-in search and retrieval module, which ships with the product — there is nothing to install. General-web search and URL fetching work without configuration or an API key. See [`nb_search`](../configuration/config-files.md#nb-search) for configuration.

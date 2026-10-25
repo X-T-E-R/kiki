@@ -33,6 +33,8 @@ import type { ImProviderKind, MessageContent } from '@kiki/protocol';
 import { createSafeHttpTransport } from '@nb-im/core';
 
 import { IUserMessageRouter } from '@kiki/agent-core-v2/app/bot/messageRouting';
+import { IImMessageHistoryReader } from '@kiki/agent-core-v2/app/bot/imMessageHistory';
+import { IAtomicDocumentStore } from '@kiki/agent-core-v2/persistence/interface/atomicDocumentStore';
 import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { PluginImAdapterBridge } from './pluginAdapter';
 import { parseMediaBlobRef } from '@kiki/transcript';
@@ -77,6 +79,10 @@ export async function createImSessionHost(input: {
     _serviceBrand: undefined,
     sendMessage: (message) => bridge.sendUserMessage(message),
   });
+  input.core.instantiation.provide(IImMessageHistoryReader, {
+    _serviceBrand: undefined,
+    read: (sessionId, query) => bridge.readMessageHistory(sessionId, query),
+  });
   return bridge;
 }
 
@@ -114,6 +120,12 @@ class NotificationSessionPorts implements ImSessionPorts {
     readonly logger: HostLogger,
     private readonly plugins: PluginImAdapterBridge,
   ) {}
+
+  readonly history = {
+    get: <T>(key: string) => this.core.accessor.get(IAtomicDocumentStore).get<T>(this.core.accessor.get(IBootstrapService).scope('store'), key),
+    set: <T>(key: string, value: T) => this.core.accessor.get(IAtomicDocumentStore).set(this.core.accessor.get(IBootstrapService).scope('store'), key, value),
+    delete: (key: string) => this.core.accessor.get(IAtomicDocumentStore).delete(this.core.accessor.get(IBootstrapService).scope('store'), key),
+  };
 
   readonly notifications = {
     channels: (sessionId: string) => this.notificationService.messageChannels(sessionId),
@@ -204,6 +216,17 @@ class NotificationSessionPorts implements ImSessionPorts {
       return aborted;
     }),
     saveMedia: (input) => this.saveMedia(input),
+    historyMedia: (sessionId, content) => this.inSession(sessionId, async (session) => {
+      const store = session.accessor.get(ISessionMediaStore);
+      const available: MessageContent[] = [];
+      for (const part of content.slice(0, 4)) {
+        if (part.type !== 'image' || part.source.kind !== 'session_media') continue;
+        const media = await store.open(part.source.file_id);
+        if (media === undefined || media.size > 5 * 1024 * 1024 || !media.mediaType.startsWith('image/')) continue;
+        available.push(part);
+      }
+      return available;
+    }),
     readAttachment: async ({ sessionId, blobId }) => {
       const ref = parseMediaBlobRef(blobId);
       if (ref?.kind !== 'agent') return undefined;
@@ -315,11 +338,10 @@ class NotificationSessionPorts implements ImSessionPorts {
       const safe = input.name.replace(/[^\w.-]+/gu, '_').replace(/^\.+/u, '').slice(0, 80) || 'file';
       await writeFile(join(dir, `${randomUUID()}-${safe}`), input.bytes);
       const text = input.text === undefined ? [] : [{ type: 'text' as const, text: input.text }];
-      if (input.kind === 'file') {
-        const saved = await this.core.accessor.get(IFileService).save(Readable.from(Buffer.from(input.bytes)), safe, { mimeType: input.mediaType });
-        return [...text, { type: 'file', file_id: saved.id, name: saved.name, media_type: saved.media_type, size: saved.size }];
-      }
-      return [...text, { type: input.kind, name: safe, source: { kind: 'base64', media_type: input.mediaType, data: Buffer.from(input.bytes).toString('base64') } }];
+      const saved = await this.core.accessor.get(IFileService).save(Readable.from(Buffer.from(input.bytes)), safe, { mimeType: input.mediaType });
+      await session.accessor.get(ISessionMediaStore).materialize({ fileId: saved.id, size: saved.size, name: saved.name, mimeType: input.mediaType, stream: () => Readable.from(Buffer.from(input.bytes)) });
+      if (input.kind === 'file') return [...text, { type: 'file', file_id: saved.id, name: saved.name, media_type: saved.media_type, size: saved.size }];
+      return [...text, { type: input.kind, name: safe, source: { kind: 'session_media', file_id: saved.id } }];
     });
   }
 
