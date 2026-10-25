@@ -276,11 +276,16 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
   const model = profile?.model ?? fallbackModel;
   const effortText = profileEffortDisplay(profile, t);
+  const externalDefault = effortText === undefined && profile?.executor !== undefined
+    && profile.executor !== '' && profile.executor !== 'native';
+  const effortLabel = externalDefault
+    ? t('subagent.effort', { effort: t('st.engines.defaults.inheritPlaceholder') })
+    : effortText;
   // A driven main has no model of its own. A sub agent under it still does, and
   // keeps its real model and effort, because that model did run.
   const modelLine = externalDriver !== undefined
     ? t('rail.external.driver', { client: externalDriver })
-    : [model, effortText]
+    : [model, effortLabel]
       .filter((part): part is string => part !== undefined && part !== '')
       .join(' · ');
   const source = capabilitySourceLabel(t, { source: profile?.source, sourceFile: profile?.source_file });

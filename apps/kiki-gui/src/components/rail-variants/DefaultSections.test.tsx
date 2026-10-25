@@ -23,7 +23,7 @@ import { buildAgentForest, type NoticeBlock } from '@kiki/session-core/session';
 import { translate, type I18nKey } from '@kiki/session-core/i18n';
 import { OptionalCapabilityRows } from '../capabilities/optionalCapabilityUi';
 import { clearPendingNewSessionCapabilities } from '../capabilities/newSessionCapabilities';
-import { ActivityFeed, CapabilitiesBlock, profileEffortDisplay } from './DefaultSections';
+import { ActivityFeed, CapabilitiesBlock, ProfileHead, profileEffortDisplay } from './DefaultSections';
 
 const { readCapabilities, getUsage, getConfig, getSessionCaps, setSessionCap } = vi.hoisted(() => ({
   readCapabilities: vi.fn(),
@@ -720,6 +720,36 @@ describe('OptionalCapabilityRows', () => {
     expect(container.querySelector('[data-optional-capability="memory"]')?.getAttribute('data-optional-effective')).toBe('true');
     expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-choice')).toBe('off');
     expect(container.querySelector('[data-optional-capability="web"]')?.getAttribute('data-optional-effective')).toBe('false');
+  });
+});
+
+describe('ProfileHead inherited external effort', () => {
+  it.each(['live', 'cold'] as const)('names the engine default without inventing off in %s context', async (context) => {
+    readCapabilities.mockResolvedValue({
+      ...full,
+      context,
+      profile: {
+        name: 'example-profile', model: 'example-model', executor: 'codex-app-server',
+        thinking_effort: 'off', thinking_effort_explicit: false, effort_source: 'config',
+      },
+    } satisfies AgentCapabilitiesResponse);
+    queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(
+        <MemoryRouter>
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <ProfileHead sessionId="sess-1" agentId="main" label="Example" />
+            </I18nProvider>
+          </QueryClientProvider>
+        </MemoryRouter>,
+      );
+    });
+    await settle();
+    const line = container.querySelector('[data-rail-profile-model]');
+    expect(line?.textContent).toContain('example-model');
+    expect(line?.textContent).toContain(translate('zh', 'st.engines.defaults.inheritPlaceholder'));
+    expect(line?.textContent).not.toContain('off');
   });
 });
 
