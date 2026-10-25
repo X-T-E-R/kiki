@@ -126,7 +126,9 @@ Two paths when adding:
 
 ### Fetching model suggestions
 
-In GUI **Settings → Models & providers**, click **Get models** to fetch suggestions from configured providers. API-key providers and custom registries are fetched only on request, not at startup or on a timer. Fetching does not change your providers, configured models, or default model. Choose a suggestion and save it separately to add a model; an upstream removal does not delete an existing model.
+In GUI **Settings → Models & providers**, click **Get models** to fetch suggestions from configured providers. API-key providers and custom registries are fetched only on request, not at startup or on a timer. Fetching these suggestions does not change your providers, configured models, or default model. Choose a suggestion and save it separately to add a model; an upstream removal does not delete an existing model.
+
+Kimi Code account sign-in maintains its managed catalog separately. When that catalog refreshes and no global default is set, Kiki selects a managed model even if the catalog itself has not changed. An unchanged catalog preserves explicit defaults, including a choice made while the refresh was in progress.
 
 Suggestions are kept in server memory and disappear when the server restarts. Changing or deleting a provider connection discards its cached suggestions. A failed fetch shows an error while retaining the last successful suggestions; a successful empty response clears them. Models already configured for that provider are excluded even if their local aliases differ from the upstream model IDs.
 
@@ -148,7 +150,11 @@ For connecting to Moonshot AI's OpenAI-compatible interface, including the Kimi 
 
 - Default `base_url`: `https://api.moonshot.ai/v1`
 - Credential key names: `KIMI_API_KEY`, `KIMI_BASE_URL` — these are entries of the `[providers.<name>.env]` sub-table, not shell environment variables
-- Additional capability: supports video upload
+- Additional capabilities: video upload and stored image attachment references
+
+For `type = "kimi"` models using Chat Completions or Messages on the official endpoints listed in this section, Kiki uploads stored image attachments with the current provider credentials and sends a file reference. Local originals remain unchanged. Remote copies follow the provider's retention policy; closing or deleting the local session does not delete them. Each cached reference is checked with the current credentials before reuse, and a deleted or expired file is uploaded again. Cache entries are isolated by endpoint, protocol, provider, and credentials. Other endpoints and inline image inputs keep their existing inline transport. A temporary upload failure uses the image inline; authentication failures use the existing sign-in recovery.
+
+Kiki keeps the attachment size limits enforced by the composer and does not discard older media to meet an additional 20 MiB provider request budget.
 
 Kimi Code subscription keys pair with the managed base URL `https://api.kimi.com/coding/v1` (configured automatically by `/login`). Open-platform keys pair with the endpoint of the portal that issued the key: `https://api.moonshot.cn/v1` for keys from [platform.kimi.com](https://platform.kimi.com), or the default `https://api.moonshot.ai/v1` for keys from [platform.kimi.ai](https://platform.kimi.ai).
 

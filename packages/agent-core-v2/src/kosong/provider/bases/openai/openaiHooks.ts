@@ -80,6 +80,9 @@ export function composeOpenAIChatHooks(
     if (trait.reasoningKey !== undefined) {
       hooks.reasoningKey = () => trait.reasoningKey!(context);
     }
+    if (trait.uploadImage !== undefined) {
+      hooks.uploadImage = (input, options) => trait.uploadImage!(input, options, context);
+    }
     if (trait.uploadVideo !== undefined) {
       hooks.uploadVideo = (input: string | VideoUploadInput, options?: GenerateOptions) =>
         trait.uploadVideo!(input, options, context);

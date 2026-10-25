@@ -2321,15 +2321,19 @@ describe('AgentLLMRequesterService trace id', () => {
 describe('AgentLLMRequesterService media resolver wiring', () => {
   it('resolves the projected messages through the DI-injected media resolver', async () => {
     const requester = createRequester({ value: 0 }, null);
-    const resolve = vi.fn(async (messages: readonly Message[], _requester: ModelRequester) => messages);
+    const captured = captureRequestParams(requester);
+    const resolve = vi.fn<IAgentMediaResolverService['resolve']>(async (messages) => messages);
     const { service } = createService(requester, undefined, {
       mediaResolver: { resolve },
+      providers: { p: { requestIdentity: { preset: 'none' } } },
     });
 
     await service.request();
 
     expect(resolve).toHaveBeenCalledTimes(1);
     expect(resolve.mock.calls[0]?.[1]).toBe(requester);
+    expect(resolve.mock.calls[0]?.[3]).toEqual({ 'x-kiki-internal-suppress-request-identity': '1' });
+    expect(resolve.mock.calls[0]?.[3]).toBe(captured[0]?.headers);
   });
 });
 

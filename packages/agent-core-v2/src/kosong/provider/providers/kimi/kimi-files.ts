@@ -3,16 +3,18 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type OpenAI from 'openai';
-import OpenAIClient from 'openai';
+import OpenAIClient, { APIError as OpenAIAPIError } from 'openai';
 
 import { ChatProviderError } from '#/kosong/contract/errors';
-import type { VideoURLPart } from '#/kosong/contract/message';
-import type { ProviderRequestAuth, VideoUploadInput } from '#/kosong/contract/provider';
+import type { ImageURLPart, VideoURLPart } from '#/kosong/contract/message';
+import type { ImageUploadInput, ImageUploadOptions, ProviderRequestAuth, VideoUploadInput } from '#/kosong/contract/provider';
 
 import { convertOpenAIError } from '../../bases/openai/openai-common';
 import {
+  mergeProviderRequestAuth,
   mergeRequestHeaders,
   requestIdentityFetch,
+  requestIdentityFetchForAuth,
   requireProviderApiKey,
   resolveAuthBackedClient,
 } from '../../bases/request-auth';
@@ -49,7 +51,42 @@ export class KimiFiles {
             apiKey: options.apiKey,
             baseURL: options.baseUrl,
             defaultHeaders: options.defaultHeaders,
+            fetch: requestIdentityFetch,
           });
+  }
+
+  async uploadImage(input: ImageUploadInput, options?: ImageUploadOptions): Promise<ImageURLPart> {
+    if (!input.mimeType.startsWith('image/')) {
+      throw new ChatProviderError(`Expected an image mime type, got ${input.mimeType}`);
+    }
+    options?.signal?.throwIfAborted();
+    const client = this._createClient(mergeProviderRequestAuth(options?.auth, options?.headers));
+    const requestOptions = { signal: options?.signal };
+    try {
+      const cachedId = options?.cachedFileId;
+      if (cachedId !== undefined && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(cachedId)) {
+        try {
+          const cached: { id: string; purpose: string; status?: string; expires_at?: number | null } = await client.files.retrieve(cachedId, requestOptions);
+          if (cached.id === cachedId && cached.purpose === 'image' &&
+            cached.status !== 'error' &&
+            (cached.expires_at === undefined || cached.expires_at === null || cached.expires_at * 1000 > Date.now())) {
+            return { type: 'image_url', imageUrl: { url: `ms://${cachedId}`, id: cachedId } };
+          }
+        } catch (error) {
+          if (!(error instanceof OpenAIAPIError) || (error.status !== 404 && error.status !== 410)) throw error;
+        }
+      }
+      options?.signal?.throwIfAborted();
+      const file = new File([new Uint8Array(input.data)], input.filename ?? 'upload.image', { type: input.mimeType });
+      const uploaded = await client.files.create({ file, purpose: 'image' as never }, requestOptions);
+      if (typeof uploaded.id !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(uploaded.id)) {
+        throw new ChatProviderError('The image upload returned an invalid file reference. Retry with the original image.');
+      }
+      return { type: 'image_url', imageUrl: { url: `ms://${uploaded.id}`, id: uploaded.id } };
+    } catch (error) {
+      options?.signal?.throwIfAborted();
+      throw convertOpenAIError(error, classifyKimiQuotaError);
+    }
   }
 
   async uploadVideo(
@@ -110,12 +147,12 @@ export class KimiFiles {
       { cachedClient: this._client, clientFactory: this._clientFactory },
       auth,
       (a) => {
-        const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, a?.headers);
+        const defaultHeaders = mergeRequestHeaders(this._defaultHeaders, undefined, a?.headers);
         return new OpenAIClient({
           apiKey: requireProviderApiKey('KimiFiles.uploadVideo', a, this._apiKey),
           baseURL: this._baseUrl,
           defaultHeaders,
-          fetch: requestIdentityFetch,
+          fetch: requestIdentityFetchForAuth(a),
         });
       },
     );

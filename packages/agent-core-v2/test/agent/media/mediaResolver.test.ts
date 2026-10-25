@@ -173,6 +173,11 @@ function requester(opts: {
   protocol?: Protocol;
   providerType?: string;
   imagePolicy?: ResolvedImagePolicy;
+  baseUrl?: string;
+  providerName?: string;
+  headers?: Record<string, string>;
+  authProvider?: ModelRequester['model']['authProvider'];
+  uploadImage?: ModelRequester['uploadImage'];
   uploadVideo?: ModelRequester['uploadVideo'];
 }): ModelRequester {
   return {
@@ -181,24 +186,26 @@ function requester(opts: {
       name: 'stub',
       aliases: [],
       protocol: opts.protocol ?? 'openai',
-      headers: {},
+      headers: opts.headers ?? {},
+      baseUrl: opts.baseUrl,
       capabilities: {
         video_in: opts.videoIn ?? true,
         image_in: opts.imageIn ?? true,
       } as unknown as ModelCapability,
       maxContextSize: 1000,
       alwaysThinking: false,
-      providerName: 'p',
+      providerName: opts.providerName ?? 'p',
       providerType: opts.providerType ?? 'kimi',
       imagePolicy: opts.imagePolicy ?? {
         acceptedTypes: providerImagePolicy(opts.providerType ?? 'kimi').acceptedMimes,
         convertUnsupported: 'off',
       },
-      authProvider: {} as never,
+      authProvider: opts.authProvider ?? {} as never,
     },
     request: () => {
       throw new Error('unused');
     },
+    uploadImage: opts.uploadImage,
     uploadVideo: opts.uploadVideo,
   };
 }
@@ -223,12 +230,13 @@ function resolver(
   files: Map<string, { name: string; bytes: Buffer }>,
   sessionDir?: string,
   mediaStore: ISessionMediaStore = stubMediaStore(sessionDir),
+  blobs: IBlobStore = blobStore(),
 ): IAgentMediaResolverService {
   const ix = createServices(disposables, {
     base: [registerStateServices],
     additionalServices: (reg) => {
       reg.defineInstance(IFileService, fileService(files));
-      reg.defineInstance(IBlobStore, blobStore());
+      reg.defineInstance(IBlobStore, blobs);
       reg.defineInstance(ITelemetryService, telemetry);
       reg.defineInstance(IFlagService, { enabled: () => true } as never);
       reg.defineInstance(ISessionMediaStore, mediaStore);
@@ -446,6 +454,76 @@ describe('AgentMediaResolverService canonical session bytes', () => {
   );
 });
 
+describe('AgentMediaResolverService image upload references', () => {
+  const imagePart = { type: 'image_url', imageUrl: { url: 'ms://image-fixture', id: 'image-fixture' } } as const;
+
+  it('persists only the remote id and revalidates it across resolver instances with the same auth', async () => {
+    const files = new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]);
+    const blobs = blobStore();
+    const put = vi.spyOn(blobs, 'put');
+    const uploadImage = vi.fn<NonNullable<ModelRequester['uploadImage']>>().mockResolvedValue(imagePart);
+    const req = requester({ baseUrl: 'https://api.kimi.com/coding/v1', authProvider: { getAuth: async () => ({ apiKey: 'fixture-token' }) }, uploadImage });
+    const messages = [imageMessage(buildKimiFileUrl(FILE_ID))];
+    const original = structuredClone(messages);
+    const headers = { 'x-kiki-internal-suppress-request-identity': '1' };
+    expect(firstPart(await resolver(files, undefined, stubMediaStore(), blobs).resolve(messages, req, undefined, headers))).toEqual(imagePart);
+    expect(firstPart(await resolver(files, undefined, stubMediaStore(), blobs).resolve(messages, req, undefined, { 'User-Agent': 'another-fixture' }))).toEqual(imagePart);
+    expect(uploadImage.mock.calls[0]?.[1]?.headers).toEqual(headers);
+    expect(uploadImage).toHaveBeenCalledTimes(2);
+    expect(uploadImage.mock.calls[0]?.[1]?.cachedFileId).toBeUndefined();
+    expect(uploadImage.mock.calls[1]?.[1]?.cachedFileId).toBe('image-fixture');
+    expect(uploadImage.mock.calls[0]?.[0]).toEqual({ data: PNG_BYTES, mimeType: 'image/png', filename: 'pic.png' });
+    expect(put.mock.calls.every(([scope, key, value]) => scope === 'image-upload-cache' && !key.includes('fixture-token') && new TextDecoder().decode(value) === 'image-fixture')).toBe(true);
+    expect(files.get(FILE_ID)?.bytes).toEqual(PNG_BYTES);
+    expect(messages).toEqual(original);
+  });
+
+  it('isolates image references by endpoint, protocol, provider and current credentials', async () => {
+    let apiKey = 'fixture-first';
+    const authProvider = { getAuth: async () => ({ apiKey }) };
+    const uploadImage = vi.fn<NonNullable<ModelRequester['uploadImage']>>().mockResolvedValue(imagePart);
+    const opts = { baseUrl: 'https://api.kimi.com/coding/v1', authProvider, uploadImage };
+    const res = resolver(new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]));
+    const messages = [imageMessage(buildKimiFileUrl(FILE_ID))];
+    await res.resolve(messages, requester(opts));
+    await res.resolve(messages, requester({ ...opts, baseUrl: 'https://api.moonshot.ai/v1' }));
+    await res.resolve(messages, requester({ ...opts, protocol: 'anthropic' }));
+    await res.resolve(messages, requester({ ...opts, providerName: 'other-provider' }));
+    await res.resolve(messages, requester({ ...opts, headers: { authorization: 'Bearer explicit-fixture' } }));
+    apiKey = 'fixture-second';
+    await res.resolve(messages, requester(opts));
+    expect(uploadImage.mock.calls.every(([, options]) => options?.cachedFileId === undefined)).toBe(true);
+    await res.resolve(messages, requester(opts));
+    expect(uploadImage.mock.lastCall?.[1]?.cachedFileId).toBe('image-fixture');
+  });
+
+  it('retries a transient image upload without dropping bytes or freezing the inline fallback', async () => {
+    const uploadImage = vi.fn<NonNullable<ModelRequester['uploadImage']>>()
+      .mockRejectedValueOnce(new Error('temporary files failure')).mockResolvedValue(imagePart);
+    const req = requester({ uploadImage });
+    const res = resolver(new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]));
+    const messages = [imageMessage(buildKimiFileUrl(FILE_ID))];
+    expect(firstPart(await res.resolve(messages, req))).toEqual({ type: 'image_url', imageUrl: { url: PNG_DATA_URL } });
+    expect(firstPart(await res.resolve(messages, req))).toEqual(imagePart);
+    expect(uploadImage).toHaveBeenCalledTimes(2);
+  });
+
+  it('surfaces auth and cancellation failures without replacing the canonical attachment', async () => {
+    const controller = new AbortController();
+    const uploadImage = vi.fn<NonNullable<ModelRequester['uploadImage']>>()
+      .mockRejectedValueOnce(Object.assign(new Error('unauthorized'), { statusCode: 401 }))
+      .mockImplementationOnce(async () => { controller.abort(); throw new Error('cancelled upload'); })
+      .mockResolvedValue(imagePart);
+    const req = requester({ uploadImage });
+    const res = resolver(new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]));
+    const messages = [imageMessage(buildKimiFileUrl(FILE_ID))];
+    await expect(res.resolve(messages, req)).rejects.toThrow('unauthorized');
+    await expect(res.resolve(messages, req, controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
+    expect(firstPart(await res.resolve(messages, req))).toEqual(imagePart);
+    expect(messages[0]?.content[0]).toEqual({ type: 'image_url', imageUrl: { url: buildKimiFileUrl(FILE_ID) } });
+  });
+});
+
 describe('AgentMediaResolverService image strategy', () => {
   it('inlines a daemon-ref image as a canonical base64 data url, leaving other parts untouched', async () => {
     const res = resolver(new Map([[FILE_ID, { name: 'pic.png', bytes: PNG_BYTES }]]));
@@ -463,6 +541,21 @@ describe('AgentMediaResolverService image strategy', () => {
       remotePart,
       { type: 'image_url', imageUrl: { url: PNG_DATA_URL } },
     ]);
+  });
+
+  it('keeps every attachment when accumulated inline media exceeds 20 MiB', async () => {
+    const bytes = Buffer.concat([PNG_BYTES, Buffer.alloc(11 * 1024 * 1024)]);
+    const files = new Map(['first', 'second'].map((id) => [id, { name: 'original.png', bytes }]));
+    const messages = ['first', 'second'].map((id) => imageMessage(buildKimiFileUrl(id)));
+    const out = await resolver(files).resolve(messages, requester({ providerType: 'openai' }));
+    expect(out).toHaveLength(2);
+    for (const message of out) {
+      expect(message.content).toHaveLength(1);
+      const part = message.content[0]!;
+      expect(part.type).toBe('image_url');
+      if (part.type === 'image_url') expect(Buffer.compare(Buffer.from(part.imageUrl.url.split(',')[1]!, 'base64'), bytes)).toBe(0);
+    }
+    expect(messages.map((message) => message.content[0])).toEqual(['first', 'second'].map((id) => ({ type: 'image_url', imageUrl: { url: buildKimiFileUrl(id) } })));
   });
 
   it('converts an unsupported BMP to the configured PNG target before the request', async () => {

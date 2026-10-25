@@ -123,6 +123,7 @@ interface AnthropicContextManagement {
 }
 
 export interface AnthropicHooks {
+  uploadImage?: ChatProvider['uploadImage'];
   withThinking?(
     effort: ThinkingEffort,
     options: { readonly keep?: string },
@@ -962,6 +963,7 @@ export class AnthropicChatProvider implements ChatProvider {
   private readonly _thinkingEffort: ThinkingEffort | undefined;
   private readonly _hooks: AnthropicHooks | undefined;
   private readonly _acceptedImageMimes: ReadonlySet<string>;
+  readonly uploadImage: ChatProvider['uploadImage'];
 
   constructor(options: AnthropicOptions) {
     this._model = options.model;
@@ -972,6 +974,7 @@ export class AnthropicChatProvider implements ChatProvider {
     this._betaApi = options.betaApi ?? false;
     this._thinkingEffort = options.thinkingEffort;
     this._hooks = options.hooks;
+    this.uploadImage = this._hooks?.uploadImage;
     this._acceptedImageMimes =
       options.acceptedImageMimes ?? providerImagePolicy().acceptedMimes;
     this._apiKey =

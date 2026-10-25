@@ -14,6 +14,7 @@ import { generate, type GenerateResult } from '#/kosong/contract/generate';
 import type {
   ChatProvider,
   GenerateOptions,
+  ImageUploadInput,
   ProviderRequestAuth,
   StreamDecodeStats,
   VideoUploadInput,
@@ -111,6 +112,18 @@ export class ModelRequesterImpl implements ModelRequester {
         };
       },
     };
+  }
+
+  async uploadImage(
+    input: ImageUploadInput,
+    options?: { readonly signal?: AbortSignal; readonly cachedFileId?: string; readonly headers?: Readonly<Record<string, string>> },
+  ) {
+    const provider = this.resolveChatProvider();
+    if (provider.uploadImage === undefined) return undefined;
+    return this.runWithAuthRefresh(
+      (auth, signal) => provider.uploadImage!(input, { signal, auth, cachedFileId: options?.cachedFileId, headers: options?.headers }),
+      options?.signal,
+    );
   }
 
   async uploadVideo(

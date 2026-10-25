@@ -85,9 +85,10 @@ function firstEnv(...names: readonly string[]): string | undefined {
 function resolveFiles(ctx: TraitContext): KimiFiles {
   let files = filesByContext.get(ctx);
   if (files === undefined) {
+    const baseUrl = ctx.config.baseUrl ?? firstEnv(KIMI_BASE_URL_ENV) ?? KIMI_DEFAULT_BASE_URL;
     files = new KimiFiles({
       apiKey: ctx.config.apiKey ?? firstEnv(KIMI_API_KEY_ENV),
-      baseUrl: ctx.config.baseUrl ?? firstEnv(KIMI_BASE_URL_ENV) ?? KIMI_DEFAULT_BASE_URL,
+      baseUrl: kimiImageFilesBaseUrl(baseUrl) ?? baseUrl,
       defaultHeaders:
         ctx.config.defaultHeaders === undefined ? undefined : { ...ctx.config.defaultHeaders },
     });
@@ -96,7 +97,27 @@ function resolveFiles(ctx: TraitContext): KimiFiles {
   return files;
 }
 
+export function kimiImageFilesBaseUrl(baseUrl: string): string | undefined {
+  try {
+    const url = new URL(baseUrl);
+    if (url.protocol !== 'https:' || url.port || url.username || url.password || url.search || url.hash) return undefined;
+    const path = url.pathname.replace(/\/$/u, '');
+    if ((url.hostname === 'api.moonshot.cn' || url.hostname === 'api.moonshot.ai') && path === '/v1') return `${url.origin}/v1`;
+    if (url.hostname === 'api.kimi.com' && (path === '/coding' || path === '/coding/v1')) return `${url.origin}/coding/v1`;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+const uploadKimiImage: NonNullable<ProtocolTrait['uploadImage']> = async (input, options, ctx) => {
+  const baseUrl = ctx.config.baseUrl ?? firstEnv(KIMI_BASE_URL_ENV) ?? KIMI_DEFAULT_BASE_URL;
+  if (kimiImageFilesBaseUrl(baseUrl) === undefined) return undefined;
+  return resolveFiles(ctx).uploadImage(input, options);
+};
+
 export const kimiOpenAITrait: ProtocolTrait = {
+  uploadImage: uploadKimiImage,
   strictThinkingValidation: true,
 
   endpoint: () => ({
@@ -211,6 +232,7 @@ export const kimiOpenAITrait: ProtocolTrait = {
 };
 
 export const kimiAnthropicTrait: ProtocolTrait = {
+  uploadImage: uploadKimiImage,
   convertError: (error) => classifyKimiQuotaError(error),
 
   withThinking: (effort, _options, generationKwargs) => {

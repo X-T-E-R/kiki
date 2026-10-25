@@ -11,6 +11,8 @@ import { IFlagService } from '#/app/flag/flag';
 import type { ContentPart, Message } from '#/kosong/contract/message';
 import type { ModelRequester } from '#/kosong/model/modelRequester';
 import type { ResolvedImagePolicy } from '#/kosong/provider/providerImagePolicy';
+import { mergeProviderRequestAuth } from '#/kosong/provider/bases/request-auth';
+import { REQUEST_IDENTITY_RESERVED_HEADERS } from '#/kosong/requestIdentity/requestIdentityPolicy';
 import { IBlobStore } from '#/persistence/interface/blobStore';
 
 import './flag';
@@ -86,11 +88,13 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     { part: ContentPart; bytes: number; mimeType: string }
   >();
   private imageMemoBytes = 0;
+  private readonly imageUploadUnsupported = new WeakSet<ModelRequester>();
 
   async resolve(
     messages: readonly Message[],
     requester: ModelRequester,
     signal?: AbortSignal,
+    headers?: Readonly<Record<string, string>>,
   ): Promise<readonly Message[]> {
     if (!messages.some(hasResolvableMediaPart)) return messages;
 
@@ -108,7 +112,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
           daemonPart?.kind === 'video'
             ? await this.resolveVideoPart(daemonPart.ref, requester, signal)
             : daemonPart?.kind === 'image'
-              ? await this.resolveImagePart(daemonPart.ref, requester, signal)
+              ? await this.resolveImagePart(daemonPart.ref, requester, signal, headers)
               : part.type === 'image_url'
                 ? await this.resolveInlineImagePart(part, requester, signal)
                 : part;
@@ -130,6 +134,7 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     ref: DaemonFileRef,
     requester: ModelRequester,
     signal: AbortSignal | undefined,
+    headers: Readonly<Record<string, string>> | undefined,
   ): Promise<ContentPart> {
     if (!requester.model.capabilities.image_in) {
       return degradedImage(await this.displayPath(ref));
@@ -139,7 +144,8 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       this.flags.enabled('image_format_conversion'),
     );
     const cacheKey = `image\0${ref.fileId}\0${policy.convertUnsupported}`;
-    const memoed = this.memoedImage(cacheKey, policy);
+    const uploader = this.imageUploadUnsupported.has(requester) ? undefined : requester.uploadImage?.bind(requester);
+    const memoed = uploader === undefined ? this.memoedImage(cacheKey, policy) : undefined;
     if (memoed !== undefined) return memoed;
     const path = await this.displayPath(ref);
 
@@ -165,6 +171,33 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
       signal,
     );
     if (resolved === undefined) return degradedImage(path);
+    if (uploader !== undefined) {
+      const variant = `${cacheKey}\0${resolved.mimeType}`;
+      const uploadKey = await imageUploadCacheKey(requester, variant, headers);
+      const cachedFileId = uploadKey === undefined ? undefined : await this.readCachedUpload(uploadKey, 'image-upload-cache');
+      try {
+        const uploaded = await uploader({
+          data: resolved.bytes,
+          mimeType: resolved.mimeType,
+          filename: source.filename,
+        }, { signal, cachedFileId, headers });
+        signal?.throwIfAborted();
+        if (uploaded !== undefined) {
+          const id = msFileIdFromUrl(uploaded.imageUrl.url);
+          if (id !== undefined && PROVIDER_ID_RE.test(id)) {
+            if (uploadKey !== undefined && uploadKey === await imageUploadCacheKey(requester, variant, headers)) {
+              await this.writeCachedUpload(uploadKey, id, 'image-upload-cache');
+            }
+            return uploaded;
+          }
+        } else {
+          this.imageUploadUnsupported.add(requester);
+        }
+      } catch (error) {
+        signal?.throwIfAborted();
+        if (isVideoUploadAuthError(error)) throw error;
+      }
+    }
 
     const part: ContentPart = {
       type: 'image_url',
@@ -262,6 +295,9 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     bytes: number,
     mimeType: string,
   ): void {
+    const previous = this.imageMemo.get(cacheKey);
+    if (previous !== undefined) this.imageMemoBytes -= previous.bytes;
+    this.imageMemo.delete(cacheKey);
     this.imageMemo.set(cacheKey, { part, bytes, mimeType });
     this.imageMemoBytes += bytes;
     for (const [key, entry] of this.imageMemo) {
@@ -379,16 +415,16 @@ export class AgentMediaResolverService implements IAgentMediaResolverService {
     }
   }
 
-  private async readCachedUpload(cacheKey: string): Promise<string | undefined> {
-    const data = await this.blobs.get(CACHE_SCOPE, blobKey(cacheKey)).catch(() => undefined);
+  private async readCachedUpload(cacheKey: string, scope = CACHE_SCOPE): Promise<string | undefined> {
+    const data = await this.blobs.get(scope, blobKey(cacheKey)).catch(() => undefined);
     if (data === undefined) return undefined;
     const llmFileId = textDecoder.decode(data);
     return PROVIDER_ID_RE.test(llmFileId) ? llmFileId : undefined;
   }
 
-  private async writeCachedUpload(cacheKey: string, llmFileId: string): Promise<void> {
+  private async writeCachedUpload(cacheKey: string, llmFileId: string, scope = CACHE_SCOPE): Promise<void> {
     if (!PROVIDER_ID_RE.test(llmFileId)) return;
-    await this.blobs.put(CACHE_SCOPE, blobKey(cacheKey), textEncoder.encode(llmFileId)).catch(
+    await this.blobs.put(scope, blobKey(cacheKey), textEncoder.encode(llmFileId)).catch(
       () => undefined,
     );
   }
@@ -467,6 +503,22 @@ function msFileIdFromUrl(url: string): string | undefined {
   if (!url.startsWith('ms://')) return undefined;
   const id = url.slice('ms://'.length);
   return id.length > 0 ? id : undefined;
+}
+
+async function imageUploadCacheKey(
+  requester: ModelRequester,
+  variant: string,
+  requestHeaders: Readonly<Record<string, string>> | undefined,
+): Promise<string | undefined> {
+  const model = requester.model;
+  if (!model.baseUrl) return undefined;
+  const auth = mergeProviderRequestAuth(await model.authProvider.getAuth?.(), requestHeaders);
+  const headers = new Headers(model.headers);
+  new Headers(auth?.headers).forEach((value, key) => { headers.set(key, value); });
+  if (!auth?.apiKey && !headers.has('authorization') && !headers.has('x-api-key')) return undefined;
+  const credentials = [...headers].filter(([key]) => !REQUEST_IDENTITY_RESERVED_HEADERS.has(key) && !key.startsWith('x-kiki-'));
+  const identity = createHash('sha256').update(JSON.stringify({ apiKey: auth?.apiKey, headers: credentials.toSorted(([a], [b]) => a.localeCompare(b)) })).digest('hex');
+  return JSON.stringify([variant, model.providerName, model.providerType, model.protocol, model.baseUrl, identity]);
 }
 
 function blobKey(cacheKey: string): string {

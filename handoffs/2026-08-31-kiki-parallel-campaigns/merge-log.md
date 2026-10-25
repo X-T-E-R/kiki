@@ -80,3 +80,11 @@
 | 日期 | 上游提交 | 判定 | 本地 HEAD（接续基线） | 备注 |
 | --- | --- | --- | --- | --- |
 | 2026-10-25 | [c5ad17f06aa12702d2b30dff63acba9ed08f688d](https://github.com/MoonshotAI/kimi-code/commit/c5ad17f06aa12702d2b30dff63acba9ed08f688d) `api_key_env` | adapt | `070832863` | 显式变量名接入 config/schema、SDK、模型鉴权、readiness、模型发现与 provider create/patch/clear。保留模型凭证、provider inline 优先级及未声明时原 env bag 合同；同名 bag 空值不回落，不隐式读取 vendor shell key，不复制运行时值进凭证存储。共享 resolver、fake-env 请求/冷读/失败脱敏回归及双语配置参考随实现交付；无 GUI、默认模型选择或协议路由变更。 |
+
+## 2026-10-25 provider 媒体与托管选择接续
+
+| 日期 | 上游提交 | 判定 | 本地 HEAD（接续基线） | 备注 |
+| --- | --- | --- | --- | --- |
+| 2026-10-25 | [5653c739b9c0dbafd1e4b3d36edeb0fe44ec71f4](https://github.com/MoonshotAI/kimi-code/commit/5653c739b9c0dbafd1e4b3d36edeb0fe44ec71f4) 图片 file ref | adapt | `5ebfddcc7` | 复用 Kimi Files 与现有 media resolver，只对已确认的 Kimi 官方 HTTPS 端点、Chat Completions / Messages 上传已保存图片。上传及缓存校验均使用当前鉴权与显式请求身份；缓存按端点、协议、provider、凭据和图片变体隔离，只存远端 ID。每次复用先 retrieve，404/410/到期重新上传；暂时失败保原件并走 inline，鉴权与取消不吞。远端副本遵循 provider 留存策略，本地关闭/删除不触发远端删除；双语 providers 页说明。 |
+| 2026-10-25 | `5653c739b9c0dbafd1e4b3d36edeb0fe44ec71f4` 固定 20MB/drop | reject（该部分） | `5ebfddcc7` | 保留 composer 现有 20 MiB 附件准入及原 canonical 字节，不增加请求累计预算、不静默丢较早媒体，也不移植失败 retry 丢附件。定向回归覆盖累计超过 20 MiB 仍保两张原图。 |
+| 2026-10-25 | #3293 unchanged-catalog 默认选择 | adapt | `2b83f458d` | 目录不变时仅恢复真正缺失的 managed 默认模型/thinking 选择；保明确选择及 fetch 期间新选择。API-key/manual discovery 仍只给 suggestions，不自动写入配置。OAuth 21 项回归及包 typecheck 通过。 |

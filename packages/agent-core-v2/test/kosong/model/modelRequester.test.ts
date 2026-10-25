@@ -40,6 +40,7 @@ class FakeChatProvider implements ChatProvider {
   readonly modelName = 'fake-model';
   readonly thinkingEffort = null;
 
+  uploadImage?: ChatProvider['uploadImage'];
   uploadVideo?: ChatProvider['uploadVideo'];
 
   readonly calls: Array<{
@@ -475,31 +476,25 @@ describe('ModelRequesterImpl request execution', () => {
     expect(traceIds).toEqual(['trace-1']);
   });
 
-  it('assigns one response instance per actual attempt including forced auth refresh', async () => {
+  it('assigns distinct response instances to a pre-output auth rejection and its replay', async () => {
     const provider = new FakeChatProvider();
-    provider.handler = (index) => Promise.resolve(index === 0 ? {
-      ...streamOf([]),
-      async *[Symbol.asyncIterator]() {
-        yield { type: 'think' as const, think: 'first attempt' };
-        throw new APIStatusError(401, 'fixture unauthorized');
-      },
-    } : streamOf([
-      { type: 'think', think: 'second attempt item' },
-      { type: 'think', think: 'second attempt summary' },
-      { type: 'text', text: 'fixture final' },
-    ]));
+    provider.handler = (index) => index === 0
+      ? Promise.reject(new APIStatusError(401, 'fixture unauthorized'))
+      : Promise.resolve(streamOf([
+        { type: 'think', think: 'second attempt item' },
+        { type: 'think', think: 'second attempt summary' },
+        { type: 'text', text: 'fixture final' },
+      ]));
     const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth: () => Promise.resolve({ apiKey: 'fixture-token' }) }), registryReturning(provider));
     const events = await collect(requester.request(INPUT));
     const parts = events.filter((event) => event.type === 'part');
-    expect(parts).toHaveLength(4);
-    expect(parts[0]!.responseInstanceId).toEqual(expect.any(String));
-    expect(parts[1]!.responseInstanceId).toEqual(expect.any(String));
-    expect(parts[0]!.responseInstanceId).not.toBe(parts[1]!.responseInstanceId);
     const discarded = events.filter((event) => event.type === 'attempt.discarded');
-    expect(discarded).toEqual([{ type: 'attempt.discarded', responseInstanceId: parts[0]!.responseInstanceId }]);
-    expect(events.indexOf(discarded[0]!)).toBeGreaterThan(events.indexOf(parts[0]!));
-    expect(events.indexOf(discarded[0]!)).toBeLessThan(events.indexOf(parts[1]!));
-    expect(new Set(parts.slice(1).map((part) => part.responseInstanceId)).size).toBe(1);
+    expect(parts).toHaveLength(3);
+    expect(discarded).toEqual([{ type: 'attempt.discarded', responseInstanceId: expect.any(String) }]);
+    expect(parts[0]!.responseInstanceId).toEqual(expect.any(String));
+    expect(discarded[0]!.responseInstanceId).not.toBe(parts[0]!.responseInstanceId);
+    expect(events.indexOf(discarded[0]!)).toBeLessThan(events.indexOf(parts[0]!));
+    expect(new Set(parts.map((part) => part.responseInstanceId)).size).toBe(1);
     expect(provider.calls).toHaveLength(2);
     expect(provider.calls[0]!.history).toEqual(INPUT.messages);
     expect(provider.calls[1]!.history).toEqual(INPUT.messages);
@@ -585,6 +580,26 @@ describe('ModelRequesterImpl request execution', () => {
     provider.handler = () => Promise.reject(abort);
     const aborted = await collect(requester.request(INPUT)).catch((error: unknown) => error);
     expect(aborted).toBe(abort);
+  });
+
+  it('uploads images through the existing single OAuth refresh and keeps old providers inline', async () => {
+    const provider = new FakeChatProvider();
+    const getAuth = vi.fn(async (options?: { force?: boolean }) => ({ apiKey: options?.force ? 'fresh-token' : 'old-token' }));
+    const requester = new ModelRequesterImpl(modelWith({ canRefresh: true, getAuth }), registryReturning(provider));
+    const input = { data: new Uint8Array([1, 2, 3]), mimeType: 'image/png' };
+    expect(await requester.uploadImage(input)).toBeUndefined();
+    provider.uploadImage = vi.fn<NonNullable<ChatProvider['uploadImage']>>(async (_input, options) => {
+      if (options?.auth?.apiKey === 'old-token') throw new APIStatusError(401, 'expired token');
+      return { type: 'image_url', imageUrl: { url: 'ms://file-fixture', id: 'file-fixture' } };
+    });
+    const signal = new AbortController().signal;
+    const headers = { 'x-kiki-internal-suppress-request-identity': '1' };
+    expect(await requester.uploadImage(input, { signal, cachedFileId: 'file-cached', headers })).toEqual({
+      type: 'image_url', imageUrl: { url: 'ms://file-fixture', id: 'file-fixture' },
+    });
+    expect(getAuth.mock.calls).toEqual([[], [{ force: true }]]);
+    expect(provider.uploadImage).toHaveBeenCalledTimes(2);
+    expect(provider.uploadImage).toHaveBeenLastCalledWith(input, { signal, auth: { apiKey: 'fresh-token' }, cachedFileId: 'file-cached', headers });
   });
 
   it('uploadVideo presence is the capability declaration', async () => {

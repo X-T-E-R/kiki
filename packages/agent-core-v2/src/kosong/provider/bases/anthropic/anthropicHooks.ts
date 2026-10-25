@@ -14,6 +14,12 @@ export function composeAnthropicHooks(
       trait.withThinking!(effort, options, { ...kwargs }, context);
   }
 
+  for (const { trait, context } of traits) {
+    if (trait.uploadImage !== undefined) {
+      hooks.uploadImage = (input, options) => trait.uploadImage!(input, options, context);
+    }
+  }
+
   const convertError = traitConvertError(traits);
   if (convertError !== undefined) {
     hooks.convertError = convertError;

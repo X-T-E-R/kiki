@@ -1,4 +1,4 @@
-import type { Message, StreamedMessagePart, VideoURLPart } from './message';
+import type { ImageURLPart, Message, StreamedMessagePart, VideoURLPart } from './message';
 import type { Tool } from './tool';
 import type { TokenUsage } from './usage';
 import type { StreamDiagnostics } from './streamDiagnostics';
@@ -90,6 +90,16 @@ export interface VideoUploadInput {
   readonly filename?: string | undefined;
 }
 
+export interface ImageUploadInput {
+  readonly data: Uint8Array;
+  readonly mimeType: string;
+  readonly filename?: string;
+}
+
+export interface ImageUploadOptions extends GenerateOptions {
+  readonly cachedFileId?: string;
+}
+
 export interface RawResponseObserver {
   start(response: { status: number; contentType: string | null; requestId: string | null; alternateRequestId: string | null; traceId: string | null }): void;
   chunk(bytes: Uint8Array): void;
@@ -136,5 +146,6 @@ export interface ChatProvider {
     history: Message[],
     options?: GenerateOptions,
   ): Promise<StreamedMessage>;
+  uploadImage?(input: ImageUploadInput, options?: ImageUploadOptions): Promise<ImageURLPart | undefined>;
   uploadVideo?(input: string | VideoUploadInput, options?: GenerateOptions): Promise<VideoURLPart>;
 }

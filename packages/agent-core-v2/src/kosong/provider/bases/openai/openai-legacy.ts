@@ -94,6 +94,7 @@ export interface OpenAIChatCompletionsHooks {
   cacheKey?: (key: string) => Record<string, unknown> | undefined;
   extractUsage?: (chunk: Record<string, unknown>) => Record<string, unknown> | null | undefined;
   reasoningKey?: () => string | undefined;
+  uploadImage?: ChatProvider['uploadImage'];
   uploadVideo?: (
     input: string | VideoUploadInput,
     options?: GenerateOptions,
@@ -536,6 +537,8 @@ export class OpenAILegacyChatProvider implements ChatProvider {
   private readonly _clientFactory: ((auth: ProviderRequestAuth) => OpenAI) | undefined;
   private readonly _hooks: OpenAIChatCompletionsHooks | undefined;
 
+  readonly uploadImage: ChatProvider['uploadImage'];
+
   readonly uploadVideo?: (
     input: string | VideoUploadInput,
     options?: GenerateOptions,
@@ -570,6 +573,7 @@ export class OpenAILegacyChatProvider implements ChatProvider {
 
     this._client = this._apiKey === undefined ? undefined : this._buildClient(this._apiKey);
 
+    this.uploadImage = this._hooks?.uploadImage;
     const uploadVideo = this._hooks?.uploadVideo;
     if (uploadVideo !== undefined) {
       this.uploadVideo = (input, generateOptions) => uploadVideo(input, generateOptions);

@@ -577,6 +577,7 @@ export class AgentLLMRequesterService extends Disposable implements IAgentLLMReq
             this.projector.project(shaped, policy),
             request.requester,
             signal,
+            params.headers,
           ),
           request.model.protocol,
           usesKimiToolSchema(request.model.providerType),

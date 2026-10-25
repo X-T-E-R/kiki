@@ -1,8 +1,10 @@
 import type { ModelCapability } from '#/kosong/contract/capability';
 import type { ChatProviderError } from '#/kosong/contract/errors';
-import type { Message, VideoURLPart } from '#/kosong/contract/message';
+import type { ImageURLPart, Message, VideoURLPart } from '#/kosong/contract/message';
 import type {
   GenerateOptions,
+  ImageUploadInput,
+  ImageUploadOptions,
   RequestParams,
   ThinkingEffort,
   ToolCallIdPolicy,
@@ -99,6 +101,12 @@ export interface ProtocolTrait {
   reasoningKey?(ctx: TraitContext): string | undefined;
 
   capability?(modelName: string, ctx: TraitContext): ModelCapability | undefined;
+
+  uploadImage?(
+    input: ImageUploadInput,
+    options: ImageUploadOptions | undefined,
+    ctx: TraitContext,
+  ): Promise<ImageURLPart | undefined>;
 
   uploadVideo?(
     input: string | VideoUploadInput,

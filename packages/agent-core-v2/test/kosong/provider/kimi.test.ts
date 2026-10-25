@@ -1,6 +1,9 @@
 import { APIError as OpenAIAPIError } from 'openai';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import '#/kosong/provider/bases/openai/index';
+import '#/kosong/provider/bases/anthropic/index';
+import { ProtocolAdapterRegistry } from '#/kosong/provider/protocolAdapterRegistry';
 import {
   APIProviderQuotaExhaustedError,
   isRetryableGenerateError,
@@ -12,8 +15,11 @@ import { KimiFiles } from '#/kosong/provider/providers/kimi/kimi-files';
 import {
   convertKimiTool,
   kimiAnthropicTrait,
+  kimiImageFilesBaseUrl,
   kimiOpenAITrait,
 } from '#/kosong/provider/providers/kimi/kimi.contrib';
+
+afterEach(() => vi.unstubAllGlobals());
 
 const context: TraitContext = {
   config: { protocol: 'openai', providerType: 'kimi', modelName: 'kimi-k2' },
@@ -273,17 +279,100 @@ describe('trait objects are plain declarations', () => {
       'extractUsage',
       'preserveThinking',
       'strictThinkingValidation',
+      'uploadImage',
       'uploadVideo',
       'withMaxCompletionTokens',
       'withRequestParams',
       'withThinking',
     ]);
-    expect(hookNames(kimiAnthropicTrait).toSorted()).toEqual(['convertError', 'withThinking']);
+    expect(hookNames(kimiAnthropicTrait).toSorted()).toEqual(['convertError', 'uploadImage', 'withThinking']);
   });
 
   it('marks only the native-transport thinking trait as strict-validation (v1 parity)', () => {
     expect(kimiOpenAITrait.strictThinkingValidation).toBe(true);
     expect(kimiAnthropicTrait.strictThinkingValidation).toBeUndefined();
+  });
+});
+
+describe('Kimi image files', () => {
+  it.each(['openai', 'anthropic'] as const)('uploads and encodes a file reference through the production %s provider', async (protocol) => {
+    const requests: Request[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      if (request.url === 'data:,') return new Response('');
+      requests.push(request);
+      if (new URL(request.url).pathname === '/coding/v1/files') {
+        return new Response(JSON.stringify({ id: 'file-fixture', purpose: 'image' }), { headers: { 'content-type': 'application/json' } });
+      }
+      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+    }));
+    const provider = new ProtocolAdapterRegistry().createChatProvider({
+      protocol, providerType: 'kimi', modelName: 'kimi-for-coding',
+      baseUrl: protocol === 'anthropic' ? 'https://api.kimi.com/coding/' : 'https://api.kimi.com/coding/v1',
+      apiKey: '', defaultHeaders: { 'X-Request-Identity': 'fixture-identity' },
+    });
+    const auth = { apiKey: 'fixture-current-token' };
+    const headers = { 'x-kiki-internal-suppress-request-identity': '1', 'User-Agent': 'stale-fixture', 'X-Msh-Device-Id': 'stale-device' };
+    const part = await provider.uploadImage!({ data: new Uint8Array([1, 2, 3]), mimeType: 'image/png', filename: 'original.png' }, { auth, headers });
+    expect(part).toEqual({ type: 'image_url', imageUrl: { url: 'ms://file-fixture', id: 'file-fixture' } });
+    const stream = await provider.generate('', [], [{ role: 'user', content: [part!], toolCalls: [] }], { auth });
+    for await (const _part of stream) {}
+    expect(requests.map((request) => `${request.method} ${request.url}`)).toEqual([
+      'POST https://api.kimi.com/coding/v1/files',
+      `POST https://api.kimi.com/coding/${protocol === 'openai' ? 'v1/chat/completions' : 'v1/messages'}`,
+    ]);
+    expect(requests[0]?.url).toBe('https://api.kimi.com/coding/v1/files');
+    expect(requests[0]?.headers.get('authorization')).toBe('Bearer fixture-current-token');
+    expect(requests[0]?.headers.get('x-request-identity')).toBe('fixture-identity');
+    expect(requests[0]?.headers.has('user-agent')).toBe(false);
+    expect(requests[0]?.headers.has('x-msh-device-id')).toBe(false);
+    expect(requests[0]?.headers.has('x-kiki-internal-suppress-request-identity')).toBe(false);
+    const upload = await requests[0]!.formData();
+    expect(upload.get('purpose')).toBe('image');
+    expect(new Uint8Array(await (upload.get('file') as File).arrayBuffer())).toEqual(new Uint8Array([1, 2, 3]));
+    const body = await requests[1]!.json() as { messages: { content: unknown }[] };
+    expect(JSON.stringify(body.messages)).toContain('ms://file-fixture');
+  });
+
+  it('limits automatic image uploads to known Kimi endpoints and restores the Anthropic files route', async () => {
+    expect(kimiImageFilesBaseUrl('https://api.kimi.com/coding/')).toBe('https://api.kimi.com/coding/v1');
+    expect(kimiImageFilesBaseUrl('https://api.moonshot.cn/v1/')).toBe('https://api.moonshot.cn/v1');
+    for (const endpoint of ['https://gateway.example.test/v1', 'https://api.kimi.com.example.test/coding/v1', 'http://api.kimi.com/coding/v1', 'https://api.kimi.com/coding/v1?token=fixture']) {
+      expect(kimiImageFilesBaseUrl(endpoint)).toBeUndefined();
+      expect(await kimiOpenAITrait.uploadImage!({ data: new Uint8Array([1]), mimeType: 'image/png' }, undefined, { ...context, config: { ...context.config, baseUrl: endpoint } })).toBeUndefined();
+    }
+  });
+
+  it.each(['valid', 'expired', 'deleted'] as const)('validates a %s cached image with current auth before reuse', async (state) => {
+    const retrieve = vi.fn(async () => {
+      if (state === 'deleted') throw new OpenAIAPIError(404, {}, 'missing', new Headers());
+      return { id: 'file-cached', purpose: 'image', status: 'processed', expires_at: state === 'expired' ? 1 : Math.floor(Date.now() / 1000) + 60 };
+    });
+    const create = vi.fn(async (_input: { file: File; purpose: string }, _options: { signal?: AbortSignal }) => ({ id: 'file-new' }));
+    const factory = vi.fn(() => ({ files: { create, retrieve } }) as never);
+    const files = new KimiFiles({ baseUrl: 'https://example.test/v1', clientFactory: factory });
+    const data = new Uint8Array([1, 2, 3]);
+    const signal = new AbortController().signal;
+    const auth = { apiKey: 'fixture-token', headers: { 'X-Request-Identity': 'fixture-identity' } };
+    const result = await files.uploadImage({ data, mimeType: 'image/png', filename: 'original.png' }, { auth, signal, cachedFileId: 'file-cached' });
+    const id = state === 'valid' ? 'file-cached' : 'file-new';
+    expect(result).toEqual({ type: 'image_url', imageUrl: { url: `ms://${id}`, id } });
+    expect(factory).toHaveBeenCalledWith(auth);
+    expect(retrieve).toHaveBeenCalledWith('file-cached', { signal });
+    if (state === 'valid') expect(create).not.toHaveBeenCalled();
+    else {
+      expect(create).toHaveBeenCalledWith({ file: expect.any(File), purpose: 'image' }, { signal });
+      const uploaded = create.mock.calls[0]?.[0] as unknown as { file: File };
+      expect(new Uint8Array(await uploaded.file.arrayBuffer())).toEqual(data);
+      expect(uploaded.file.name).toBe('original.png');
+    }
+  });
+
+  it('keeps an authorization rejection out of the stale-file reupload path', async () => {
+    const create = vi.fn();
+    const files = new KimiFiles({ baseUrl: 'https://example.test/v1', clientFactory: () => ({ files: { create, retrieve: vi.fn().mockRejectedValue(new OpenAIAPIError(401, {}, 'unauthorized', new Headers())) } }) as never });
+    await expect(files.uploadImage({ data: new Uint8Array([1]), mimeType: 'image/png' }, { cachedFileId: 'file-cached' })).rejects.toMatchObject({ statusCode: 401 });
+    expect(create).not.toHaveBeenCalled();
   });
 });
 

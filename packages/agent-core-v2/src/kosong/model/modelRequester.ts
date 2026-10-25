@@ -1,4 +1,4 @@
-import type { Message, StreamedMessagePart, VideoURLPart } from '#/kosong/contract/message';
+import type { ImageURLPart, Message, StreamedMessagePart, VideoURLPart } from '#/kosong/contract/message';
 import type {
   FinishReason,
   ResponseFormat,
@@ -8,6 +8,7 @@ import type {
   ThinkingEffort,
   RequestIdentityWireOptions,
   RawResponseObserver,
+  ImageUploadInput,
   VideoUploadInput,
 } from '#/kosong/contract/provider';
 import type { ResponsesRequestTransport } from '#/kosong/contract/responsesTransport';
@@ -85,6 +86,11 @@ export interface ModelRequester {
     signal: AbortSignal | undefined,
     params: ModelRequestParams & { readonly attribution: RequestAttribution },
   ): AsyncIterable<ModelRequestEvent>;
+
+  uploadImage?(
+    input: ImageUploadInput,
+    options?: { readonly signal?: AbortSignal; readonly cachedFileId?: string; readonly headers?: Readonly<Record<string, string>> },
+  ): Promise<ImageURLPart | undefined>;
 
   uploadVideo?(
     input: string | VideoUploadInput,

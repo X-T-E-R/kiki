@@ -9,6 +9,7 @@ export interface IAgentMediaResolverService {
     messages: readonly Message[],
     requester: ModelRequester,
     signal?: AbortSignal,
+    headers?: Readonly<Record<string, string>>,
   ): Promise<readonly Message[]>;
 }
 
