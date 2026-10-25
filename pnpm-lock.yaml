@@ -663,8 +663,8 @@ importers:
         specifier: 1.32.0
         version: 1.32.0(zod@4.3.6)
       '@nb-im/core':
-        specifier: file:../../vendor/nb-im-core-0.3.0.tgz
-        version: file:vendor/nb-im-core-0.3.0.tgz
+        specifier: file:../../vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz
+        version: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz
       bcryptjs:
         specifier: ^2.4.3
         version: 2.4.3
@@ -2550,8 +2550,8 @@ packages:
       playwright:
         optional: true
 
-  '@nb-im/core@file:vendor/nb-im-core-0.3.0.tgz':
-    resolution: {integrity: sha512-w/bB/hEZsVmu/ugFyKS0tuIPRc9vOgibVAyaWvLe4UCO/p01ZC9PLRgHWEA3SkVmgo0qVwzrlS68k4na3WLnyQ==, tarball: file:vendor/nb-im-core-0.3.0.tgz}
+  '@nb-im/core@file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz':
+    resolution: {integrity: sha512-vj9It6bl7k3jJgS2JgZd0n4/tq5tKquKUE9jREaRuaxVgTuTK+lNnFH3wqymEJEraSpM7nZIyyP9L9GioQj7zg==, tarball: file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz}
     version: 0.3.0
     engines: {node: '>=24.15.0'}
 
@@ -10678,7 +10678,7 @@ snapshots:
       - canvas
       - supports-color
 
-  '@nb-im/core@file:vendor/nb-im-core-0.3.0.tgz':
+  '@nb-im/core@file:vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz':
     dependencies:
       '@larksuiteoapi/node-sdk': 1.76.0
       '@slack/socket-mode': 3.1.0(undici@7.30.1)

@@ -367,16 +367,29 @@ export class HubSessionAdapter implements ImSessionAdapter {
       chatId: event.identity.chat_id,
       senderId: event.identity.sender_id,
       topicId: event.identity.topic_id,
+      chatTitle: event.identity.chat_title,
+      senderName: event.identity.sender_name,
+      topicTitle: event.identity.topic_title,
     };
     const chatKind = event.identity.chat_kind ?? this.contexts.get(contextKey(identity))?.chat_kind;
-    const visible: ImInboundIdentity = chatKind === undefined ? identity : { ...identity, chatKind };
+    const base = {
+      eventId: event.event_key,
+      sourceMessageId: event.source_message_id ?? (event.identity.platform === 'telegram' ? undefined : event.platform_event_id),
+      identity: { ...identity, chatKind },
+      operation: event.operation,
+      timestamp: event.timestamp,
+      mentioned: event.mentioned,
+      mentionIds: event.mention_ids,
+      replyToMessageId: event.reply_to_message_id,
+      isSelf: event.is_self,
+    };
     const payload = event.payload;
-    if (payload.type === 'text') return { eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind: 'text', text: payload.text, preview: payload.text.slice(0, 80) };
-    if (payload.type === 'callback') return { eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind: 'callback', callbackData: payload.data, callbackQueryId: payload.callback_id };
-    if (payload.type === 'media_unavailable') return { eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind: payload.kind === 'voice' ? 'audio' : payload.kind, tooLarge: true, text: '' };
+    if (payload.type === 'text') return { ...base, kind: 'text', text: payload.text, preview: payload.text.slice(0, 80) };
+    if (payload.type === 'callback') return { ...base, kind: 'callback', callbackData: payload.data, callbackQueryId: payload.callback_id };
+    if (payload.type === 'media_unavailable') return { ...base, kind: payload.kind === 'voice' ? 'audio' : payload.kind, tooLarge: true, text: '' };
     const kind = payload.media.kind === 'voice' ? 'audio' as const : payload.media.kind;
     return {
-      eventId: event.event_key, sourceMessageId: event.platform_event_id, identity: visible, kind, text: payload.caption ?? '', ...(payload.caption === undefined ? {} : { preview: payload.caption.slice(0, 80) }),
+      ...base, kind, text: payload.caption ?? '', preview: payload.caption?.slice(0, 80),
       media: { name: payload.media.filename, mediaType: payload.media.mime, bytes: payload.media.bytes },
     };
   }

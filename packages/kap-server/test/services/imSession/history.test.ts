@@ -61,6 +61,60 @@ describe('persistent IM history journal', () => {
     expect(await journal.find(room, 'source-1')).toMatchObject({ text: '', operation: 'retract', isSelf: true });
   });
 
+  it('aggregates distinct parts of one source message and deduplicates each event across restart', async () => {
+    const memory = documents();
+    const journal = new ImHistoryJournal(memory.store);
+    const body = { ...entry('multipart'), timestamp: 700, metadata: { ...entry('multipart').metadata, mentioned: true, mention_ids: ['42'], reply_to_message_id: 'quoted' }, text: 'two photos attached' };
+    await journal.record(room, body);
+    for (let index = 0; index < 2; index++) await journal.record(room, { ...entry('multipart'), eventId: `photo-${index}`, text: '', content: [{ type: 'image', source: { kind: 'session_media', file_id: `photo-${index}` } }], media: [{ kind: 'image', name: `photo-${index}.png`, mediaType: 'image/png' }] });
+    const restarted = new ImHistoryJournal(memory.store);
+    await restarted.record(room, body);
+    const original = await restarted.find(room, 'multipart');
+    expect(original?.text).toBe('two photos attached');
+    expect(original?.content).toHaveLength(2);
+    expect(original?.media).toHaveLength(2);
+    expect(original).toMatchObject({ timestamp: 700, metadata: { mentioned: true, mention_ids: ['42'], reply_to_message_id: 'quoted' } });
+    expect((await restarted.read(room, {})).messages).toHaveLength(1);
+    await restarted.record(room, { ...body, eventId: 'edit-multipart', operation: 'edit', text: 'edited caption' });
+    expect(await restarted.find(room, 'multipart')).toMatchObject({ text: 'edited caption', operation: 'edit' });
+    await restarted.record(room, { ...body, eventId: 'retract-multipart', operation: 'retract' });
+    expect(await restarted.find(room, 'multipart')).toMatchObject({ text: '', operation: 'retract', content: undefined });
+  });
+
+  it('retains admitted originals beyond prompt budget and supports tail search and exact bounded reads', async () => {
+    const memory = documents();
+    const journal = new ImHistoryJournal(memory.store);
+    const text = 'a'.repeat(16_384) + 'END_OF_ACCEPTED_MESSAGE';
+    await journal.record(room, { ...entry('long-message'), text });
+    const restarted = new ImHistoryJournal(memory.store);
+    expect((await restarted.find(room, 'long-message'))?.text).toBe(text);
+    const hits = await restarted.read(room, { keyword: 'END_OF_ACCEPTED_MESSAGE' });
+    expect(hits.messages).toHaveLength(1);
+    expect(hits.messages[0]?.original).toEqual({ message_id: 'long-message', text_length: text.length });
+    const first = await restarted.read(room, { messageId: 'long-message', textLimit: 16_384 });
+    expect(first.messages[0]?.text_range).toEqual({ offset: 0, length: 16_384, total: text.length, next_offset: 16_384 });
+    const last = await restarted.read(room, { messageId: 'long-message', textOffset: 16_384, textLimit: 16_384 });
+    expect(last.messages[0]?.text).toBe('END_OF_ACCEPTED_MESSAGE');
+    expect(last.messages[0]?.text_range?.next_offset).toBeUndefined();
+    expect((await restarted.read(room, { messageId: 'missing-message' })).messages).toEqual([]);
+    expect((await restarted.read(room, { messageId: 'long-message' }, 'another-sender')).messages).toEqual([]);
+    expect((await restarted.read(room, { messageId: 'long-message', senderId: 'another-sender' })).messages).toEqual([]);
+    expect(JSON.stringify(last).length).toBeLessThan(64 * 1024);
+    expect(last.messages[0]).not.toHaveProperty('originalKey');
+    await expect(restarted.read(room, { messageId: 'long-message', textOffset: text.length + 1 })).rejects.toThrow('history_text_offset_out_of_range');
+    expect((await restarted.read(room, { messageId: 'long-message', textOffset: text.length })).messages[0]?.text_range).toEqual({ offset: text.length, length: 0, total: text.length });
+    const escaped = '\u0000'.repeat(20_000);
+    await restarted.record(room, { ...entry('escaped'), text: escaped });
+    const escapedPage = await restarted.read(room, { messageId: 'escaped', textLimit: 16_384 });
+    expect(JSON.stringify(escapedPage).length).toBeLessThan(64 * 1024);
+    expect(escapedPage.messages[0]?.text_range?.next_offset).toBe(escapedPage.messages[0]?.text.length);
+    const escapedPreview = await restarted.read(room, { keyword: '\u0000' });
+    expect(JSON.stringify(escapedPreview).length).toBeLessThan(64 * 1024);
+    expect(escapedPreview.messages[0]?.text_range?.length).toBe(escapedPreview.messages[0]?.text.length);
+    expect(escapedPreview.messages[0]?.text_range?.next_offset).toBe(escapedPreview.messages[0]?.text.length);
+    expect((await restarted.find(room, 'escaped'))?.text).toBe(escaped);
+  });
+
   it('delivers archived edits and retractions after consumption using a separate change watermark', async () => {
     const memory = documents();
     const journal = new ImHistoryJournal(memory.store);
@@ -123,7 +177,10 @@ describe('persistent IM history journal', () => {
     const first = await journal.read(room, { limit: 50 });
     expect(first.coverage).toBe('retention_limited');
     expect(await journal.find(room, '0')).toBeUndefined();
-    expect(memory.values.size).toBeLessThanOrEqual(11);
+    const retainedKeys = [...memory.values.keys()];
+    expect(retainedKeys.filter((key) => /\/(?:head|page-\d+)$/.test(key)).length).toBeLessThanOrEqual(11);
+    expect(retainedKeys.filter((key) => key.includes('/original-')).length).toBeLessThanOrEqual(704);
+    expect(retainedKeys.some((key) => key.includes('/original-'))).toBe(true);
     const current = await journal.record(room, { ...entry('trigger'), text: 'x'.repeat(50_000) });
     expect(current).toMatchObject({ text: 'x'.repeat(16_384), truncated: true });
     const selected = await journal.background(room, 'binding-1', current);

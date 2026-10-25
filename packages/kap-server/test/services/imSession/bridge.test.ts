@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import type { ImInboundIdentity } from '../../../src/services/imSession/adapter';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { FakeImAdapter, fakeAdapterFactory } from '../../../src/services/imSession/fakeAdapter';
+import { HubSessionAdapter } from '../../../src/services/imSession/hubAdapter';
 import { parseImPaste } from '../../../src/services/imSession/paste';
 import type { ImPendingApproval, ImPendingQuestion, ImSessionPorts, ImSubmitResult, ImVisibleReply } from '../../../src/services/imSession/ports';
 
@@ -1139,6 +1140,61 @@ async function bindHistoryGroup(harness: ReturnType<typeof historyHarness>, scop
 }
 
 describe('IM group context vertical flow', () => {
+  it('uses real packaged Telegram mentions and message IDs to wake the default group policy', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    const base = ports({ submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; } });
+    const documents = new Map<string, unknown>();
+    base.ports = { ...base.ports, history: {
+      get: async <T>(key: string) => structuredClone(documents.get(key)) as T | undefined,
+      set: async (key, value) => { documents.set(key, structuredClone(value)); },
+      delete: async (key) => { documents.delete(key); },
+    } };
+    const updates: unknown[] = [];
+    let notify: (() => void) | undefined;
+    const accepted = new Map<string, () => void>();
+    base.ports.logger.info = (fields) => { const id = (fields as { event_id?: string }).event_id; if (id !== undefined) accepted.get(id)?.(); };
+    const raw = createTelegramSessionAdapter({ platform: 'telegram', instance_id: 'inst', token: '314159:abcdefghijklmnopqrstuvwxyz', retry_ms: 0, transport: {
+      async call(request, signal) {
+        if (request.method === 'getMe') return { http_status: 200, body: { ok: true, result: { id: 42, username: 'ExampleBot' } } };
+        if (request.method === 'getWebhookInfo') return { http_status: 200, body: { ok: true, result: { url: '' } } };
+        if (request.method === 'sendMessage') return { http_status: 200, body: { ok: true, result: { message_id: 9000 } } };
+        if (request.method !== 'getUpdates') throw new Error('unexpected_transport_call');
+        if (updates.length === 0) await new Promise<void>((resolve) => {
+          const done = () => { signal.removeEventListener('abort', done); notify = undefined; resolve(); };
+          notify = done;
+          if (signal.aborted) done(); else signal.addEventListener('abort', done, { once: true });
+        });
+        return { http_status: 200, body: { ok: true, result: updates.splice(0) } };
+      },
+      async download() { throw new Error('unexpected_download'); },
+    } }, { async load() { return undefined; }, async save() {} });
+    const bridge = new ImSessionBridge({ ports: base.ports, factories: [{ providerKind: 'telegram', create: () => new HubSessionAdapter(raw) }], wait: async () => undefined });
+    const emit = async (updateId: number, messageId: number, text: string, extra: Record<string, unknown> = {}, edit = false) => {
+      const done = new Promise<void>((resolve) => { accepted.set(`tg:42:${updateId}`, resolve); });
+      updates.push({ update_id: updateId, [edit ? 'edited_message' : 'message']: { message_id: messageId, date: 1_700_000_100, text, chat: { id: -100, type: 'supergroup', title: 'Study room' }, from: { id: 8, first_name: 'Alice', last_name: 'Member' }, message_thread_id: 12, ...extra } });
+      notify?.();
+      await done;
+    };
+    try {
+      await bridge.paste({ text: '314159:abcdefghijklmnopqrstuvwxyz' });
+      await bridge.setListening('inst', true);
+      await emit(100, 1100, 'bind');
+      await bridge.confirm((await bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' }, binding_scope: 'topic' });
+      await emit(101, 1101, 'quiet discussion');
+      await emit(102, 1101, 'corrected discussion', {}, true);
+      await emit(103, 1102, 'self', { from: { id: 42, first_name: 'Example Bot' } });
+      expect(received).toHaveLength(0);
+      const text = 'Hi 😀 @eXaMpLeBoT summarize';
+      await emit(138, 1138, text, { entities: [{ type: 'mention', offset: text.indexOf('@'), length: '@eXaMpLeBoT'.length }], reply_to_message: { message_id: 1101, forum_topic_created: { name: 'Plans' } } });
+      expect(received).toHaveLength(1);
+      expect(received[0]?.im).toMatchObject({ source_message_id: '1138', timestamp: 1_700_000_100_000, mentioned: true, mention_ids: ['42'], reply_to_message_id: '1101', is_self: false, identity: { chat_id: '-100', sender_id: '8', sender_name: 'Alice Member', chat_title: 'Study room', topic_title: 'Plans' }, context: { messages: [{ source_message_id: '1101', text: 'corrected discussion', operation: 'edit' }] } });
+      const exact = await bridge.readMessageHistory('sess', { messageId: '1138' });
+      expect(exact.status === 'ok' && exact.messages[0]?.text).toBe(text);
+      const wrongId = await bridge.readMessageHistory('sess', { messageId: '138' });
+      expect(wrongId.status === 'ok' && wrongId.messages).toEqual([]);
+    } finally { await bridge.close(); }
+  });
+
   it('quietly retains members, injects chronological context on mention, and preserves edits/retractions and scope', async () => {
     const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
     const harness = historyHarness({ submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; } });
@@ -1203,6 +1259,57 @@ describe('IM group context vertical flow', () => {
       expect(received[2]?.im?.context?.messages.map((row) => row.source_message_id)).toEqual(['during']);
       const history = await harness.bridge.readMessageHistory('sess', {});
       expect(history.status === 'ok' && history.messages.length).toBe(4);
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('retains one multipart original with full text and canonical media and enforces exact-read scope', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    let mediaIndex = 0;
+    const harness = historyHarness({
+      saveMedia: async () => [{ type: 'image', source: { kind: 'session_media', file_id: `part-${++mediaIndex}` } }],
+      submit: async (input) => { received.push(structuredClone(input)); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
+    });
+    try {
+      const binding = await bindHistoryGroup(harness);
+      const text = 'a'.repeat(16_384) + 'SOURCE_TAIL';
+      const body = { eventId: 'multipart-text', sourceMessageId: 'multipart-source', identity: group, kind: 'text' as const, text };
+      await harness.adapter.emit(body);
+      for (let index = 0; index < 2; index++) await harness.adapter.emit({ eventId: `multipart-image-${index}`, sourceMessageId: 'multipart-source', identity: group, kind: 'image', media: { name: `part-${index}.png`, mediaType: 'image/png', bytes: new Uint8Array([index]) } });
+      await harness.adapter.emit(body);
+      expect(received).toHaveLength(0);
+      const tail = await harness.bridge.readMessageHistory('sess', { messageId: 'multipart-source', textOffset: 16_384 });
+      expect(tail.status === 'ok' && tail.messages[0]).toMatchObject({ text: 'SOURCE_TAIL', original: { message_id: 'multipart-source', text_length: text.length }, media: [{ name: 'part-0.png' }, { name: 'part-1.png' }] });
+      expect((await harness.bridge.readMessageHistory('sess', { keyword: 'SOURCE_TAIL' })).status).toBe('ok');
+      await harness.adapter.emit({ eventId: 'multipart-trigger', sourceMessageId: 'multipart-source', identity: group, kind: 'text', text: 'summarize', mentioned: true });
+      expect(received[0]?.content).toEqual([{ type: 'text', text: `${text}\nsummarize` }, { type: 'image', source: { kind: 'session_media', file_id: 'part-1' } }, { type: 'image', source: { kind: 'session_media', file_id: 'part-2' } }]);
+      expect(received[0]?.im?.source_message_id).toBe('multipart-source');
+      expect(await harness.bridge.readMessageHistory('sess', { messageId: 'multipart-source', source: 'platform' })).toMatchObject({ status: 'unsupported' });
+      await expect(harness.bridge.readMessageHistory('home', { channel: `im:${binding.id}`, messageId: 'multipart-source' })).rejects.toThrow('history_channel_not_admitted');
+      await expect(harness.bridge.readMessageHistory('sess', { topicId: 'another-topic', messageId: 'multipart-source' })).rejects.toThrow('history_topic_not_admitted');
+      await harness.bridge.updateBinding(binding.id, { bindingScope: 'sender' });
+      await expect(harness.bridge.readMessageHistory('sess', { messageId: 'multipart-source', senderId: 'peer' })).rejects.toThrow('history_sender_not_admitted');
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('migrates an old sender binding explicitly and restores scope and input owners on persistence failure', async () => {
+    const harness = historyHarness();
+    try {
+      const binding = await bindHistoryGroup(harness, 'sender');
+      const secondGroup = { ...group, topicId: 'topic-2' };
+      await harness.adapter.emit({ eventId: 'other-topic-discover', identity: secondGroup, kind: 'text', text: 'bind other topic' });
+      const discovery = (await harness.bridge.snapshot()).discoveries[0]!;
+      await harness.bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'home' } });
+      const before = (await harness.bridge.snapshot()).bindings;
+      await expect(harness.bridge.updateBinding(binding.id, { bindingScope: 'chat' })).rejects.toThrow();
+      expect((await harness.bridge.snapshot()).bindings).toEqual(before);
+      const save = harness.ports.save;
+      harness.ports.save = async () => { throw new Error('scope-save-failed'); };
+      await expect(harness.bridge.updateBinding(binding.id, { bindingScope: 'chat', rebind: true })).rejects.toThrow('scope-save-failed');
+      expect((await harness.bridge.snapshot()).bindings).toEqual(before);
+      harness.ports.save = save;
+      const migrated = await harness.bridge.updateBinding(binding.id, { bindingScope: 'chat', rebind: true });
+      expect(migrated.bindings.find((row) => row.id === binding.id)).toMatchObject({ binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } });
+      expect(migrated.bindings.find((row) => row.id !== binding.id)?.input_enabled).toBe(false);
     } finally { await harness.bridge.close(); }
   });
 

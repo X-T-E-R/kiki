@@ -1,0 +1,214 @@
+diff --git a/src/session/contract.ts b/src/session/contract.ts
+index d9e9fa123..e7f4346d1 100644
+--- a/src/session/contract.ts
++++ b/src/session/contract.ts
+@@ -41,0 +42,3 @@ export interface SessionPeer {
++  chat_title?: string;
++  sender_name?: string;
++  topic_title?: string;
+@@ -59,0 +63,7 @@ export interface SessionInbound {
++  source_message_id?: string;
++  operation?: 'create' | 'edit' | 'retract';
++  timestamp?: number;
++  mentioned?: boolean;
++  mention_ids?: readonly string[];
++  reply_to_message_id?: string;
++  is_self?: boolean;
+diff --git a/src/session/telegram.ts b/src/session/telegram.ts
+index 649465efc..e5af89e31 100644
+--- a/src/session/telegram.ts
++++ b/src/session/telegram.ts
+@@ -33,0 +34,52 @@ function textId(value: unknown): string | undefined {
++function nameOf(value: Record<string, unknown> | undefined): string | undefined {
++  if (!value) return undefined;
++  const parts = [value.first_name, value.last_name].filter((part): part is string =>
++    typeof part === 'string' && part.length > 0);
++  if (parts.length > 0) return parts.join(' ');
++  return typeof value.username === 'string' && value.username.length > 0 ? value.username : undefined;
++}
++function topicName(value: unknown): string | undefined {
++  const topic = record(value);
++  return typeof topic?.name === 'string' && topic.name.length > 0 ? topic.name : undefined;
++}
++function timestampOf(message: Record<string, unknown>): number | undefined {
++  if (typeof message.date !== 'number' || !Number.isSafeInteger(message.date) || message.date < 0) return undefined;
++  const timestamp = message.date * 1000;
++  return Number.isSafeInteger(timestamp) ? timestamp : undefined;
++}
++function mentionInfo(message: Record<string, unknown>, selfUsername: string, accountId: string):
++  { mentioned: boolean; mention_ids: readonly string[] } {
++  const mentionIds = new Set<string>();
++  let mentioned = false;
++  const sources: { text: string | undefined; entities: unknown }[] = [
++    { text: typeof message.text === 'string' ? message.text : undefined, entities: message.entities },
++    { text: typeof message.caption === 'string' ? message.caption : undefined, entities: message.caption_entities },
++  ];
++  for (const source of sources) {
++    if (source.text === undefined || !Array.isArray(source.entities)) continue;
++    for (const value of source.entities) {
++      const entity = record(value);
++      if (!entity) continue;
++      if (entity.type === 'text_mention') {
++        const id = textId(record(entity.user)?.id);
++        if (id) {
++          mentionIds.add(id);
++          if (id === accountId) mentioned = true;
++        }
++        continue;
++      }
++      if (entity.type !== 'mention' || selfUsername.length === 0) continue;
++      const offset = entity.offset;
++      const length = entity.length;
++      if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0 ||
++          typeof length !== 'number' || !Number.isSafeInteger(length) || length < 1 ||
++          !Number.isSafeInteger(offset + length)) continue;
++      const valueAtEntity = source.text.slice(offset, offset + length);
++      if (valueAtEntity.toLowerCase() === `@${selfUsername}`.toLowerCase()) {
++        mentionIds.add(accountId);
++        mentioned = true;
++      }
++    }
++  }
++  return { mentioned, mention_ids: [...mentionIds] };
++}
+@@ -95,0 +148 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
++  let selfUsername = '';
+@@ -131 +184,3 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    accountId = textId(record(me.result)?.id) ?? '';
++    const meRecord = record(me.result);
++    accountId = textId(meRecord?.id) ?? '';
++    selfUsername = typeof meRecord?.username === 'string' ? meRecord.username : '';
+@@ -156 +211 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-          allowed_updates: ['message', 'callback_query'],
++          allowed_updates: ['message', 'edited_message', 'callback_query'],
+@@ -226,2 +281,3 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    if (update.edited_message || update.channel_post || update.edited_channel_post) return 'drop';
+-    const message = record(update.message);
++    if (update.channel_post || update.edited_channel_post) return 'drop';
++    const edited = record(update.edited_message);
++    const message = edited ?? record(update.message);
+@@ -229,0 +286 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
++    const operation = edited ? 'edit' as const : 'create' as const;
+@@ -231,0 +289,5 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
++    const sourceMessageId = textId(message.message_id);
++    const timestamp = timestampOf(message);
++    const reply = record(message.reply_to_message);
++    const replyToMessageId = textId(reply?.message_id);
++    const mentions = mentionInfo(message, selfUsername, accountId);
+@@ -233 +295,6 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-    const base = { event_key: eventKey, platform_event_id: platformId, identity, cursor };
++    const base = { event_key: eventKey, platform_event_id: platformId, identity,
++      ...(sourceMessageId === undefined ? {} : { source_message_id: sourceMessageId }), operation,
++      ...(timestamp === undefined ? {} : { timestamp }), mentioned: mentions.mentioned,
++      mention_ids: mentions.mention_ids,
++      ...(replyToMessageId === undefined ? {} : { reply_to_message_id: replyToMessageId }),
++      is_self: identity.sender_id === accountId, cursor };
+@@ -282,0 +350,5 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
++    const chatTitle = typeof chat?.title === 'string' && chat.title.length > 0 ? chat.title : undefined;
++    const senderName = nameOf(sender);
++    const reply = record(message?.reply_to_message);
++    const topicTitle = topicName(message?.forum_topic_created) ??
++      topicName(message?.forum_topic_edited) ?? topicName(reply?.forum_topic_created);
+@@ -284 +356,4 @@ function buildTelegram(spec: TelegramSpec, store: SessionCursorStore, key: strin
+-      sender_id: senderId, topic_id: thread, ...(kind ? { chat_kind: kind } : {}) };
++      sender_id: senderId, topic_id: thread, ...(kind ? { chat_kind: kind } : {}),
++      ...(chatTitle === undefined ? {} : { chat_title: chatTitle }),
++      ...(senderName === undefined ? {} : { sender_name: senderName }),
++      ...(topicTitle === undefined ? {} : { topic_title: topicTitle }) };
+diff --git a/test/session-telegram.test.ts b/test/session-telegram.test.ts
+index 76e746406..320e1512b 100644
+--- a/test/session-telegram.test.ts
++++ b/test/session-telegram.test.ts
+@@ -4,3 +4,3 @@ import { test } from 'node:test';
+-import { createTelegramSessionAdapter, splitSessionText, TELEGRAM_TEXT_CHARACTERS } from '../src/index.ts';
+-import type { SessionCursorStore, SessionInbound, TelegramBotTransport, TelegramCall } from '../src/index.ts';
+-import { abortError } from '../src/session/contract.ts';
++import { createTelegramSessionAdapter } from '../src/session/telegram.ts';
++import { splitSessionText, TELEGRAM_TEXT_CHARACTERS, abortError } from '../src/session/contract.ts';
++import type { SessionCursorStore, SessionInbound, TelegramBotTransport, TelegramCall } from '../src/session/contract.ts';
+@@ -135,0 +136,85 @@ test('Telegram receive, cursor, duplicate, send, edit, callback, media, cancel,
++test('Telegram normal and edited messages preserve source metadata without extra transport calls', async () => {
++  const calls: TelegramCall[] = [];
++  let pages = 0;
++  const text = 'Hi 😀 @sElFbOt @other';
++  const selfOffset = text.indexOf('@sElFbOt');
++  const otherOffset = text.indexOf('@other');
++  const transport: TelegramBotTransport = {
++    async call(request, signal) {
++      calls.push(request);
++      if (request.method === 'getMe') {
++        return { http_status: 200, body: { ok: true, result: { id: 42, username: 'SelfBot' } } };
++      }
++      if (request.method === 'getWebhookInfo') {
++        return { http_status: 200, body: { ok: true, result: { url: '' } } };
++      }
++      if (request.method === 'getUpdates') {
++        pages += 1;
++        if (pages === 1) {
++          return { http_status: 200, body: { ok: true, result: [
++            update(41, { message: {
++              message_id: 9001, date: 1_700_000_000, text,
++              entities: [
++                { type: 'text_mention', offset: 0, length: 2, user: { id: 77 } },
++                { type: 'mention', offset: selfOffset, length: '@sElFbOt'.length },
++                { type: 'mention', offset: otherOffset, length: '@other'.length },
++              ],
++              chat: { id: -100, type: 'supergroup', title: 'Real room' },
++              from: { id: 8, first_name: 'Alice', last_name: 'Sender' }, message_thread_id: 12,
++              reply_to_message: { message_id: 8999, forum_topic_created: { name: 'Original' } },
++            } }),
++            update(42, { edited_message: {
++              message_id: 9001, date: 1_700_000_010, text: 'edited',
++              chat: { id: -100, type: 'supergroup', title: 'Real room' },
++              from: { id: 42, first_name: 'Self', last_name: 'Bot', username: 'selfbot' }, message_thread_id: 12,
++              reply_to_message: { message_id: 9000 },
++            } }),
++          ] } };
++        }
++        return hang(signal);
++      }
++      throw new Error(`unexpected telegram method: ${request.method}`);
++    },
++    async download() { throw new Error('unexpected telegram download'); },
++  };
++  const events: SessionInbound[] = [];
++  const adapter = createTelegramSessionAdapter({ platform: 'telegram', instance_id: 'tg.metadata',
++    token: '555555:EEEEEEEEEEEEEEEEEEEE', transport, retry_ms: 0 }, memory());
++  await adapter.start({ async admit(event) { events.push(event); return { decision: 'accepted' }; } });
++  for (let i = 0; i < 20 && events.length < 2; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
++  assert.equal(events.length, 2);
++  const normal = events[0]!;
++  assert.equal(normal.event_key, 'tg:42:41');
++  assert.equal(normal.platform_event_id, '41');
++  assert.equal(normal.source_message_id, '9001');
++  assert.equal(normal.operation, 'create');
++  assert.equal(normal.timestamp, 1_700_000_000_000);
++  assert.equal(normal.mentioned, true);
++  assert.deepEqual(normal.mention_ids, ['77', '42']);
++  assert.equal(normal.reply_to_message_id, '8999');
++  assert.equal(normal.is_self, false);
++  assert.deepEqual(normal.identity, {
++    platform: 'telegram', account_id: '42', chat_id: '-100', sender_id: '8', topic_id: '12',
++    chat_kind: 'group', chat_title: 'Real room', sender_name: 'Alice Sender', topic_title: 'Original',
++  });
++  assert.equal(normal.payload.type === 'text' && normal.payload.text, text);
++  const edited = events[1]!;
++  assert.equal(edited.event_key, 'tg:42:42');
++  assert.equal(edited.platform_event_id, '42');
++  assert.equal(edited.source_message_id, '9001');
++  assert.equal(edited.operation, 'edit');
++  assert.equal(edited.timestamp, 1_700_000_010_000);
++  assert.equal(edited.mentioned, false);
++  assert.deepEqual(edited.mention_ids, []);
++  assert.equal(edited.reply_to_message_id, '9000');
++  assert.equal(edited.is_self, true);
++  assert.deepEqual(edited.identity, {
++    platform: 'telegram', account_id: '42', chat_id: '-100', sender_id: '42', topic_id: '12',
++    chat_kind: 'group', chat_title: 'Real room', sender_name: 'Self Bot',
++  });
++  const poll = calls.find((call) => call.method === 'getUpdates');
++  assert.deepEqual(poll?.json?.allowed_updates, ['message', 'edited_message', 'callback_query']);
++  await adapter.stop();
++  assert.deepEqual(calls.slice(0, 3).map((call) => call.method), ['getMe', 'getWebhookInfo', 'getUpdates']);
++  assert.ok(calls.slice(3).every((call) => call.method === 'getUpdates'));
++});

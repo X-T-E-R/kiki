@@ -11,6 +11,16 @@ export interface ImHistoryEntry {
   readonly sessionId: string;
   readonly timestamp?: number;
   readonly text: string;
+  readonly original?: {
+    readonly message_id: string;
+    readonly text_length: number;
+  };
+  readonly text_range?: {
+    readonly offset: number;
+    readonly length: number;
+    readonly total: number;
+    readonly next_offset?: number;
+  };
   readonly truncated?: boolean;
   readonly content?: readonly MessageContent[];
   readonly media?: readonly { readonly kind: string; readonly name: string; readonly mediaType: string }[];
@@ -20,6 +30,9 @@ export interface ImHistoryQuery {
   readonly channel?: string;
   readonly topicId?: string;
   readonly cursor?: string;
+  readonly messageId?: string;
+  readonly textOffset?: number;
+  readonly textLimit?: number;
   readonly keyword?: string;
   readonly senderId?: string;
   readonly before?: number;

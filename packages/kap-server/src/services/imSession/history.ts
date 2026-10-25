@@ -16,6 +16,12 @@ export interface ImPreparedHistoryPrompt {
 
 interface JournalEntry extends ImHistoryEntry {
   readonly admission?: string;
+  readonly originalKey?: string;
+}
+
+interface OriginalMessage {
+  readonly entry: ImHistoryEntry;
+  readonly eventIds: readonly string[];
 }
 
 interface Head {
@@ -45,7 +51,7 @@ const PAGE_ROWS = 64;
 const PAGE_CHARS = 128 * 1024;
 const ARCHIVES = 10;
 const SCAN_ROWS = 256;
-const RESULT_CHARS = 64 * 1024;
+const RESULT_CHARS = 60 * 1024;
 
 function digest(value: string): string {
   return createHash('sha256').update(value).digest('hex');
@@ -91,6 +97,37 @@ export class ImHistoryJournal {
     return await this.documents.get<Head>(this.key(room)) ?? empty();
   }
 
+  private async original(row: JournalEntry): Promise<OriginalMessage> {
+    if (row.originalKey !== undefined) {
+      const original = await this.documents.get<OriginalMessage>(row.originalKey);
+      if (original === undefined) throw new Error('history_original_missing');
+      return original;
+    }
+    const { admission: _, originalKey: __, ...entry } = row;
+    return { entry, eventIds: [row.eventId] };
+  }
+
+  private preview(entry: ImHistoryEntry): ImHistoryEntry {
+    const text = entry.text.slice(0, 16_384);
+    return { ...entry, text, content: entry.content?.slice(0, 4), media: entry.media?.slice(0, 4),
+      metadata: { ...entry.metadata, mention_ids: entry.metadata.mention_ids?.slice(0, 64) },
+      original: entry.metadata.source_message_id === undefined ? undefined : { message_id: entry.metadata.source_message_id, text_length: entry.text.length },
+      text_range: { offset: 0, length: text.length, total: entry.text.length, next_offset: text.length < entry.text.length ? text.length : undefined },
+      truncated: entry.truncated || text.length < entry.text.length || (entry.content?.length ?? 0) > 4 || (entry.media?.length ?? 0) > 4 || (entry.metadata.mention_ids?.length ?? 0) > 64 ? true : undefined };
+  }
+
+  private bounded(entry: ImHistoryEntry): ImHistoryEntry {
+    let result = entry;
+    while (chars(result) > RESULT_CHARS && result.text.length > 0) {
+      const text = result.text.slice(0, Math.floor(result.text.length / 2));
+      const offset = result.text_range?.offset ?? 0;
+      const total = result.text_range?.total ?? result.original?.text_length ?? entry.text.length;
+      result = { ...result, text, truncated: true, text_range: { offset, length: text.length, total, next_offset: offset + text.length < total ? offset + text.length : undefined } };
+    }
+    if (chars(result) > RESULT_CHARS) throw new Error('history_metadata_exceeds_result_budget');
+    return result;
+  }
+
   private async page(room: string, head: Head, id: number): Promise<JournalEntry[]> {
     if (id === head.page) return head.rows;
     if (!head.archives.includes(id)) throw new Error('history_cursor_expired: retained history changed; start a new read');
@@ -107,12 +144,26 @@ export class ImHistoryJournal {
       const location = head.locations[key];
       const targetRows = location === undefined ? undefined : await this.page(room, head, location);
       const existing = targetRows?.find((row) => rowKey(row) === key);
-      if (existing !== undefined && (head.seen.includes(eventKey) || input.operation === 'create')) return existing;
-      const retiredAdmissions: string[] = [];
-      const text = input.operation === 'retract' ? '' : input.text.slice(0, 16_384);
-      const content = input.operation === 'retract' ? undefined : (input.content ?? existing?.content)?.filter((part) => part.type === 'file' || (part.type === 'image' || part.type === 'audio' || part.type === 'video') && part.source.kind === 'session_media').slice(0, 4);
-      const metadata = { ...input.metadata, context: undefined, mention_ids: input.metadata.mention_ids?.slice(0, 64) };
-      const row: JournalEntry = { ...input, metadata, text, content, admission: existing?.admission, media: input.media ?? existing?.media, isSelf: input.isSelf ?? existing?.isSelf, truncated: input.text.length > text.length || (input.metadata.mention_ids?.length ?? 0) > 64 || input.truncated ? true : undefined, sequence: existing?.sequence ?? head.sequence + 1 };
+      const previous = existing === undefined ? undefined : await this.original(existing);
+      if (existing !== undefined && previous !== undefined && (head.seen.includes(eventKey) || previous.eventIds.includes(input.eventId) || input.operation === 'create' && previous.entry.operation === 'retract')) return { ...existing, ...previous.entry };
+      const retiredDocuments: string[] = [];
+      const append = input.operation === 'create' && previous !== undefined;
+      const originalText = input.operation === 'retract' ? '' : append ? [previous.entry.text, input.text].filter((text) => text.length > 0).join('\n') : input.text;
+      const incoming = input.content?.filter((part) => part.type === 'file' || (part.type === 'image' || part.type === 'audio' || part.type === 'video') && part.source.kind === 'session_media');
+      const originalContent = input.operation === 'retract' ? undefined : append ? [...previous.entry.content ?? [], ...incoming ?? []] : incoming ?? previous?.entry.content;
+      const originalMedia = input.operation === 'retract' ? undefined : append ? [...previous.entry.media ?? [], ...input.media ?? []] : input.media ?? previous?.entry.media;
+      const prior = append ? previous.entry.metadata : undefined;
+      const metadata = { ...input.metadata, context: undefined,
+        mentioned: input.metadata.mentioned ?? prior?.mentioned, mention_ids: input.metadata.mention_ids ?? prior?.mention_ids,
+        reply_to_message_id: input.metadata.reply_to_message_id ?? prior?.reply_to_message_id,
+        is_self: input.metadata.is_self ?? prior?.is_self, timestamp: input.metadata.timestamp ?? prior?.timestamp,
+        identity: { ...input.metadata.identity, sender_name: input.metadata.identity.sender_name ?? prior?.identity.sender_name,
+          chat_title: input.metadata.identity.chat_title ?? prior?.identity.chat_title, topic_title: input.metadata.identity.topic_title ?? prior?.identity.topic_title } };
+      const full: ImHistoryEntry = { ...input, sessionId: previous?.entry.sessionId ?? input.sessionId, metadata, timestamp: input.timestamp ?? (append ? previous.entry.timestamp : undefined), text: originalText, content: originalContent, media: originalMedia, isSelf: input.isSelf ?? previous?.entry.isSelf, sequence: existing?.sequence ?? head.sequence + 1 };
+      const originalKey = `im-history-v1/${room}/original-${key}-${eventKey}`;
+      await this.documents.set<OriginalMessage>(originalKey, { entry: full, eventIds: [...previous?.eventIds ?? [], input.eventId] });
+      if (existing?.originalKey !== undefined && existing.originalKey !== originalKey) retiredDocuments.push(existing.originalKey);
+      const row: JournalEntry = { ...this.preview(full), admission: existing?.admission, originalKey };
       head.sequence += 1;
       if (existing !== undefined && targetRows !== undefined) {
         head.revision += 1;
@@ -123,7 +174,8 @@ export class ImHistoryJournal {
           targetRows.splice(targetRows.indexOf(victim), 1);
           delete head.locations[rowKey(victim)];
           if (head.changes !== undefined) delete head.changes[rowKey(victim)];
-          if (victim.admission !== undefined) retiredAdmissions.push(victim.admission);
+          if (victim.admission !== undefined) retiredDocuments.push(victim.admission);
+          if (victim.originalKey !== undefined) retiredDocuments.push(victim.originalKey);
           head.truncated = true;
         }
         if (location !== head.page) {
@@ -150,9 +202,12 @@ export class ImHistoryJournal {
         }
       }
       await this.documents.set(this.key(room), head);
-      for (const key of retiredAdmissions) await this.documents.delete(key);
+      for (const key of retiredDocuments) await this.documents.delete(key);
       for (const page of retired) {
-        for (const entry of await this.documents.get<JournalEntry[]>(this.key(room, page)) ?? []) if (entry.admission !== undefined) await this.documents.delete(entry.admission);
+        for (const entry of await this.documents.get<JournalEntry[]>(this.key(room, page)) ?? []) {
+          if (entry.admission !== undefined) await this.documents.delete(entry.admission);
+          if (entry.originalKey !== undefined) await this.documents.delete(entry.originalKey);
+        }
         await this.documents.delete(this.key(room, page));
       }
       return row;
@@ -183,6 +238,11 @@ export class ImHistoryJournal {
   }
 
   async find(room: string, sourceMessageId: string): Promise<ImHistoryEntry | undefined> {
+    const row = await this.findPreview(room, sourceMessageId);
+    return row === undefined ? undefined : (await this.original(row)).entry;
+  }
+
+  private async findPreview(room: string, sourceMessageId: string): Promise<JournalEntry | undefined> {
     const head = await this.head(room);
     const key = digest(sourceMessageId);
     const page = head.locations[key];
@@ -214,8 +274,22 @@ export class ImHistoryJournal {
 
   read(room: string, query: ImHistoryQuery, senderId?: string): Promise<ImLocalHistoryPage> {
     return this.lock(room, async () => {
-      const page = await this.readPage(room, query, senderId);
-      return { ...page, messages: page.messages.map((row) => { const { content: _, sessionId: __, ...visible } = row; return visible; }) };
+      let page: Awaited<ReturnType<ImHistoryJournal['readPage']>>;
+      if (query.messageId !== undefined) {
+        query.signal?.throwIfAborted();
+        const row = await this.findPreview(room, query.messageId);
+        const visible = row !== undefined && (senderId === undefined || row.metadata.identity.sender_id === senderId) && (query.senderId === undefined || row.metadata.identity.sender_id === query.senderId);
+        let messages: ImHistoryEntry[] = [];
+        if (visible) {
+          const full = (await this.original(row)).entry;
+          const offset = query.textOffset ?? 0;
+          if (!Number.isSafeInteger(offset) || offset < 0 || offset > full.text.length) throw new Error('history_text_offset_out_of_range');
+          const text = full.text.slice(offset, offset + Math.min(16_384, query.textLimit ?? 8192));
+          messages = [{ ...this.preview(full), text, text_range: { offset, length: text.length, total: full.text.length, next_offset: offset + text.length < full.text.length ? offset + text.length : undefined }, truncated: offset > 0 || text.length < full.text.length || full.truncated ? true : undefined }];
+        }
+        page = { status: 'ok', source: 'local', messages, coverage: (await this.head(room)).truncated ? 'retention_limited' : 'received_only', end: 'reached' };
+      } else page = await this.readPage(room, query, senderId);
+      return { ...page, messages: page.messages.map((row) => { const { content: _, sessionId: __, ...visible } = this.bounded(row); return visible; }) };
     });
   }
 
@@ -235,18 +309,23 @@ export class ImHistoryJournal {
     const limit = Math.min(50, Math.max(1, query.limit ?? 20));
     let scanned = 0;
     let size = 0;
+    let originalChars = 0;
     let end = false;
-    while (rows.length < limit && scanned < SCAN_ROWS && size < RESULT_CHARS) {
+    while (rows.length < limit && scanned < SCAN_ROWS && size < RESULT_CHARS && originalChars < 4 * 1024 * 1024) {
       query.signal?.throwIfAborted();
       const page = await this.page(room, head, cursor.page);
-      while (cursor.offset >= 0 && rows.length < limit && scanned < SCAN_ROWS && size < RESULT_CHARS) {
+      while (cursor.offset >= 0 && rows.length < limit && scanned < SCAN_ROWS && size < RESULT_CHARS && originalChars < 4 * 1024 * 1024) {
         const row = page[cursor.offset--];
         if (row === undefined) throw new Error('history_cursor_expired');
         scanned += 1;
-        if (row.sequence > cursor.snapshot || (senderId !== undefined && row.metadata.identity.sender_id !== senderId) || (query.senderId !== undefined && row.metadata.identity.sender_id !== query.senderId) || (query.before !== undefined && (row.timestamp ?? row.receivedAt) >= query.before) || (query.keyword !== undefined && !row.text.toLocaleLowerCase().includes(query.keyword.toLocaleLowerCase()))) continue;
-        const { admission: _, ...visible } = row;
-        let result: ImHistoryEntry = visible;
-        if (chars(result) > RESULT_CHARS) result = { ...visible, metadata: { ...visible.metadata, mention_ids: undefined }, text: visible.text.slice(0, 8192), truncated: true };
+        if (row.sequence > cursor.snapshot || (senderId !== undefined && row.metadata.identity.sender_id !== senderId) || (query.senderId !== undefined && row.metadata.identity.sender_id !== query.senderId) || (query.before !== undefined && (row.timestamp ?? row.receivedAt) >= query.before)) continue;
+        if (query.keyword !== undefined) {
+          const full = (await this.original(row)).entry;
+          originalChars += full.text.length;
+          if (!full.text.toLocaleLowerCase().includes(query.keyword.toLocaleLowerCase())) continue;
+        }
+        const { admission: _, originalKey: __, ...visible } = row;
+        const result = this.bounded(visible);
         const next = chars(result);
         if (rows.length > 0 && size + next > RESULT_CHARS) { cursor.offset += 1; size = RESULT_CHARS; break; }
         rows.push(result);
@@ -288,7 +367,7 @@ export class ImHistoryJournal {
     let reply = current.metadata.reply_to_message_id;
     for (let depth = 0; reply !== undefined && depth < 4 && !visited.has(reply); depth++) {
       visited.add(reply);
-      const row = await this.find(room, reply);
+      const row = await this.findPreview(room, reply);
       if (row === undefined || (senderId !== undefined && row.metadata.identity.sender_id !== senderId)) break;
       if (row.sequence <= snapshot && row.sequence !== current.sequence) selected.set(row.sequence, row);
       reply = row.metadata.reply_to_message_id;

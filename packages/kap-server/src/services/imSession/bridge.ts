@@ -330,7 +330,7 @@ export class ImSessionBridge {
 
   async channelViews(sessionId: string): Promise<readonly MessageChannelBinding[]> {
     await this.ready;
-    return this.outputChannels(sessionId).map(({ send: _send, ...channel }) => channel);
+    return this.outputChannels(sessionId).map(({ id, kind, bound, enabled, capabilities }) => ({ id, kind, bound, enabled, capabilities }));
   }
 
   private outputChannels(sessionId: string): UserMessageChannel[] {
@@ -371,6 +371,7 @@ export class ImSessionBridge {
     if (binding.bindingScope !== 'chat' && topicId !== binding.identity.topicId) throw new Error('history_topic_not_admitted');
     if (senderScoped && query.senderId !== undefined && query.senderId !== binding.identity.senderId) throw new Error('history_sender_not_admitted');
     if (query.source === 'platform') {
+      if (query.messageId !== undefined) return { status: 'unsupported' as const, detail: 'The platform history API does not provide an exact-message lookup; use the local received original.' };
       if (senderScoped) return { status: 'unsupported' as const, detail: 'Platform history requires an explicit chat/topic binding; sender-only bindings retain local sender-isolated reads.' };
       if (adapter.readHistory === undefined) return { status: 'unsupported' as const };
       if (query.keyword !== undefined || query.senderId !== undefined || query.before !== undefined) throw new Error('platform_history_filters_unsupported: use the local journal for filtered reads');
@@ -726,7 +727,7 @@ export class ImSessionBridge {
     return this.snapshot();
   }
 
-  updateBinding(id: string, patch: { groupPolicy?: ImGroupPolicy; enabled?: boolean; sessionEnabled?: boolean | null; inputEnabled?: boolean | null; outputEnabled?: boolean | null; rebind?: boolean; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string; target?: ImConfirmRequest['target'] }): Promise<ImSessionSnapshot> {
+  updateBinding(id: string, patch: { bindingScope?: 'sender' | 'topic' | 'chat'; groupPolicy?: ImGroupPolicy; enabled?: boolean; sessionEnabled?: boolean | null; inputEnabled?: boolean | null; outputEnabled?: boolean | null; rebind?: boolean; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string; target?: ImConfirmRequest['target'] }): Promise<ImSessionSnapshot> {
     return this.mutateBindings(async () => {
       const binding = this.only(this.state.bindings, id);
       if (binding === undefined) throw new Error('unknown_binding');
@@ -734,6 +735,14 @@ export class ImSessionBridge {
       const resolved = target === undefined ? undefined : await this.resolveTarget(target);
       if (resolved !== undefined && binding.sessionId !== resolved.sessionId && !patch.rebind) throw this.identityConflict(binding, resolved.sessionId);
       const next = { ...binding };
+      if (patch.bindingScope !== undefined) {
+        if (patch.bindingScope !== 'sender' && binding.identity.chatKind !== 'group') throw new Error('group_binding_scope_required');
+        next.bindingScope = patch.bindingScope;
+        if (patch.bindingScope !== 'sender') next.groupPolicy ??= { wake: 'mention_or_reply' };
+      }
+      const factory = this.factories.find((item) => item.providerKind === binding.providerKind);
+      if (factory?.inbound === false && patch.inputEnabled === true) throw new Error('input_unsupported');
+      if (factory?.outbound === false && patch.outputEnabled === true) throw new Error('output_unsupported');
       if (patch.groupPolicy !== undefined) next.groupPolicy = patch.groupPolicy;
       if (patch.enabled !== undefined) next.enabled = patch.enabled;
       if (patch.sessionEnabled === null) delete next.sessionEnabled;
@@ -750,11 +759,21 @@ export class ImSessionBridge {
         next.personaId = resolved.personaId;
         next.pendingReanchor = false;
       }
-      this.claimInput(next, patch.rebind === true);
-      const index = this.state.bindings.indexOf(binding);
-      if (binding.sessionId !== next.sessionId) this.expireReplies(binding.id);
-      this.state.bindings[index] = next;
-      await this.persist();
+      const previousBindings = [...this.state.bindings];
+      const previousInputs = previousBindings.map((item) => [item, item.inputEnabled] as const);
+      const previousReplies = this.state.replies.map((item) => [item, item.open] as const);
+      try {
+        this.claimInput(next, patch.rebind === true);
+        const index = this.state.bindings.indexOf(binding);
+        if (binding.sessionId !== next.sessionId || binding.bindingScope !== next.bindingScope) this.expireReplies(binding.id);
+        this.state.bindings[index] = next;
+        await this.persist();
+      } catch (error) {
+        this.state.bindings = previousBindings;
+        for (const [item, enabled] of previousInputs) item.inputEnabled = enabled;
+        for (const [item, open] of previousReplies) item.open = open;
+        throw error;
+      }
       await this.resumeReplies(next.providerInstanceId);
       return this.snapshot();
     });
@@ -1047,7 +1066,8 @@ export class ImSessionBridge {
         if (!this.published(poller)) throw new Error('im_not_ready');
         if (poller.listenerKey !== undefined && adapter.listenerAccountId !== undefined && poller.listenerKey !== JSON.stringify([adapter.listenerRealm ?? adapter.providerKind, adapter.listenerAccountId])) {
           void this.enqueueLifecycle(async () => {
-            for (const id of [...poller.instances]) {
+            const instances = [...poller.instances];
+            for (const id of instances) {
               await this.releaseOne(id);
               this.failures.set(id, { phase: 'stopped' });
             }
@@ -1330,11 +1350,18 @@ export class ImSessionBridge {
     } else if (text !== '') content.push({ type: 'text', text });
     if (content.length === 0) return;
     let background: Awaited<ReturnType<ImHistoryJournal['background']>> | undefined;
-    const currentParts = content.length;
+    let currentParts = content.length;
     if (room !== undefined) {
       const row = await this.history!.record(room, { eventId: event.eventId, receivedAt: this.now(), metadata: im, operation: 'create', isSelf: event.isSelf, timestamp: event.timestamp, text: event.text ?? '', sessionId: binding.sessionId,
         content: content.filter((part) => part.type !== 'text'), media: event.media === undefined ? undefined : [{ kind: event.kind, name: event.media.name, mediaType: event.media.mediaType }] });
       if (row.eventId !== event.eventId) return;
+      const original = event.sourceMessageId === undefined ? undefined : await this.history!.find(room, event.sourceMessageId);
+      if (original?.sessionId === binding.sessionId) {
+        content.splice(0);
+        if (original.text.length > 0) content.push({ type: 'text', text: original.text });
+        content.push(...original.content ?? []);
+        currentParts = content.length;
+      }
       const policy = binding.groupPolicy ?? { wake: 'always' as const };
       const reply = event.replyToMessageId === undefined ? undefined : await this.history!.find(room, event.replyToMessageId);
       const ownReply = event.replyToMessageId !== undefined && await this.history!.isSent(room, event.replyToMessageId);

@@ -710,7 +710,9 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 `target` 使用 `{ kind: "session", session_id }`；也保留 `{ kind: "persona", persona_id }`，作为绑定到该角色日常会话的快捷方式。PATCH 仍接受旧的 `session_id`，但它与 `target` 互斥；`also_home` 仅用于确认绑定。重新确认保留已有 `enabled`、`session_enabled`、`input_enabled` 和 `output_enabled`，除非请求明确修改。`session_enabled: null` 跟随 `policy.default_enabled`；方向设为 `null` 则删除该方向覆盖。入站、出站仍受绑定总开关与会话准入限制。
 
-群聊确认支持 `binding_scope: "sender" | "topic" | "chat"`；省略时保留仅匹配原发送者的方式。话题或群级绑定让成员共用一个会话，但保留逐条真实发送者 ID，也不允许成员处理别人的待办交互。新建的显式话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention_or_reply" | "manual", prefixes?: string[] }`：`always` 逐条唤醒；`mention_or_reply` 在真实 @、回复已知自身消息或命中配置的字面前缀时唤醒；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。@ 和回复识别依赖适配器提供真实元数据；未提供这些字段的内置传输可使用前缀或 `always`。
+群聊确认和 PATCH 支持 `binding_scope: "sender" | "topic" | "chat"`；省略时保留仅匹配原发送者的方式。PATCH 原位修改已有绑定。扩大范围与其他已启用入站绑定重叠时，须带 `rebind: true`；被拒绝或保存失败的修改保留原范围和入站归属。话题或群级绑定让成员共用一个会话，但保留逐条真实发送者 ID，也不允许成员处理别人的待办交互。新建的显式话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention_or_reply" | "manual", prefixes?: string[] }`：`always` 逐条唤醒；`mention_or_reply` 在真实 @、回复已知自身消息或命中配置的字面前缀时唤醒；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。
+
+@ 和回复识别依赖适配器提供真实元数据。内置 Telegram 提供真实消息 ID、时间戳、发送者和群名称、基于实体的 @ 与回复 ID；update ID 单独用于事件去重。未提供这些字段的其他传输可使用前缀或 `always`。
 
 群策略目前通过 REST 确认接口或 `PATCH /api/im/sessions/bindings/{id}` 配置，GUI 尚无群策略控件。对未提供 @／回复元数据的内置传输，可 PATCH `{ "group_policy": { "wake": "mention_or_reply", "prefixes": ["Kiki:"] } }` 启用该前缀，或用 `{ "group_policy": { "wake": "always" } }` 逐条唤醒。
 

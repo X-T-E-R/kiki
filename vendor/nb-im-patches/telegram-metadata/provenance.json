@@ -1,0 +1,17 @@
+{
+  "package": "@nb-im/core",
+  "source_version": "0.3.0",
+  "source_archive": "vendor/nb-im-core-0.3.0.tgz",
+  "patch": "source.patch",
+  "lineage": "Kiki-only typed Telegram normalization repair over the existing nb-im-session/1 adapter",
+  "scope": "Keep update IDs for event deduplication and the legacy platform_event_id field; add source_message_id from the real Telegram message ID, edit operations, epoch-millisecond dates, real entities/replies, typed self detection and available sender/chat/topic names. No transport, credentials, listener or cursor policy changes.",
+  "source_paths": ["src/session/contract.ts", "src/session/telegram.ts", "test/session-telegram.test.ts"],
+  "generated_paths": ["dist/session/contract.d.ts", "dist/session/telegram.js", "dist/session/telegram.d.ts"],
+  "runtime": "Node.js 24.22.1; existing TypeScript 5.9.3",
+  "rebuild": "node vendor/nb-im-patches/telegram-metadata/rebuild.mjs (prints a new scratch tarball; does not replace the installed vendor)",
+  "test": "node --test --experimental-strip-types test/session-telegram.test.ts (6 tests)",
+  "host_test": "node node_modules/vitest/vitest.mjs run packages/kap-server/test/services/imSession/bridge.test.ts -t 'real packaged Telegram'",
+  "vendor_tarball": "vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz",
+  "integrity": "sha512-vj9It6bl7k3jJgS2JgZd0n4/tq5tKquKUE9jREaRuaxVgTuTK+lNnFH3wqymEJEraSpM7nZIyyP9L9GioQj7zg==",
+  "licenses": "Original NOTICE and LICENSES are retained unchanged in the archive."
+}

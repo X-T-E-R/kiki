@@ -69,7 +69,7 @@
     "@kiki/transcript": "workspace:^",
     "@kiki/transcript-live": "workspace:^",
     "@modelcontextprotocol/sdk": "1.32.0",
-    "@nb-im/core": "file:../../vendor/nb-im-core-0.3.0.tgz",
+    "@nb-im/core": "file:../../vendor/nb-im-core-0.3.0-kiki-im-metadata.tgz",
     "bcryptjs": "^2.4.3",
     "fastify": "^5.12.5",
     "own-work": "file:../../vendor/own-work-0.1.1-kiki-7a5fb754.tgz",

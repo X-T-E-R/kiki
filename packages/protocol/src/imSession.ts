@@ -200,6 +200,7 @@ export const imConfirmRequestSchema = z.object({
 export type ImConfirmRequest = z.infer<typeof imConfirmRequestSchema>;
 
 export const imBindingPatchSchema = z.object({
+  binding_scope: imBindingScopeSchema.optional(),
   enabled: z.boolean().optional(),
   session_enabled: z.boolean().nullable().optional(),
   group_policy: imGroupPolicySchema.optional(),

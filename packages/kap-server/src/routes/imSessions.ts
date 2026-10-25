@@ -67,6 +67,7 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
   app.patch('/im/sessions/bindings/:id', (req, reply) => respond(req, reply, () => {
     const patch = imBindingPatchSchema.parse(req.body);
     return bridge.updateBinding(routeId(req), {
+      bindingScope: patch.binding_scope,
       enabled: patch.enabled,
       sessionEnabled: patch.session_enabled,
       groupPolicy: patch.group_policy,

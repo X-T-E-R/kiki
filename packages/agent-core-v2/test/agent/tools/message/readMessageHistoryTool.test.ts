@@ -4,9 +4,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { createServices } from '#/_base/di/test';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
-import { IReadMessageHistoryTool, ReadMessageHistoryTool } from '#/agent/tools/message/readMessageHistoryTool';
-import { IImMessageHistoryReader, type ImHistoryQuery, type ImLocalHistoryPage } from '#/app/bot/imMessageHistory';
-import type { IImMessageHistoryReader as ImMessageHistoryReader } from '#/app/bot/imMessageHistory';
+import { IReadMessageHistoryTool, ReadMessageHistoryInputSchema, ReadMessageHistoryTool } from '#/agent/tools/message/readMessageHistoryTool';
+import { IImMessageHistoryReader, type IImMessageHistoryReader as ImMessageHistoryReader, type ImHistoryQuery, type ImLocalHistoryPage } from '#/app/bot/imMessageHistory';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import type { ExecutableToolContext, ExecutableToolResult } from '#/tool/toolContract';
 
@@ -34,7 +33,9 @@ function reader(read: ImMessageHistoryReader['read']): ImMessageHistoryReader {
 }
 
 async function messageHistoryAgent(history?: ImMessageHistoryReader): Promise<IReadMessageHistoryTool> {
-  ctx = createTestAgent(history === undefined ? [] : appServices((reg) => reg.defineInstance(IImMessageHistoryReader, history)));
+  ctx = createTestAgent(history === undefined ? [] : appServices((reg) => {
+    reg.defineInstance(IImMessageHistoryReader, history);
+  }));
   await ctx.ready;
   return ctx.get(IReadMessageHistoryTool);
 }
@@ -63,7 +64,17 @@ describe('ReadMessageHistoryTool', () => {
     expect(validate({ limit: 51 })).toBe(false);
     expect(validate({ cursor: '' })).toBe(false);
     expect(validate({ cursor: 'x'.repeat(8193) })).toBe(false);
+    expect(validate({ message_id: 'source-7', text_offset: 0, text_limit: 16_384 })).toBe(true);
+    expect(validate({ source: 'platform', message_id: 'source-7', text_offset: 4, text_limit: 1 })).toBe(true);
+    expect(validate({ message_id: 'source-7', sender_id: 'sender-7' })).toBe(true);
+    expect(validate({ text_offset: 0 })).toBe(false);
+    expect(validate({ text_limit: 1 })).toBe(false);
+    expect(validate({ message_id: 'source-7', cursor: 'opaque' })).toBe(false);
+    expect(validate({ message_id: 'source-7', keyword: 'needle' })).toBe(false);
+    expect(validate({ message_id: 'source-7', before: 1_700_000_000_000 })).toBe(false);
     expect(validate({ unexpected: true })).toBe(false);
+    expect(ReadMessageHistoryInputSchema.safeParse({ message_id: 'source-7', text_offset: 0, text_limit: 16_384 }).success).toBe(true);
+    expect(ReadMessageHistoryInputSchema.safeParse({ text_offset: 0 }).success).toBe(false);
   });
 
   it('allows only the main agent and keeps the reader absent from child execution', async () => {
@@ -110,6 +121,55 @@ describe('ReadMessageHistoryTool', () => {
       signal,
     });
     expect(JSON.parse(result.output as string)).toEqual({ untrusted: true, ...localPage() });
+  });
+
+  it('forwards exact text selectors in camelCase while retaining sender constraints and external output', async () => {
+    const read = vi.fn<ImMessageHistoryReader['read']>(async () => ({
+      status: 'ok',
+      source: 'local',
+      messages: [{
+        sequence: 7,
+        eventId: 'event-7',
+        receivedAt: 1_700_000_000_000,
+        metadata: {
+          provider_kind: 'telegram',
+          provider_instance_id: 'instance-1',
+          account_id: 'account-1',
+          identity: { chat_id: 'chat-1', sender_id: 'sender-7', topic_id: 'topic-1' },
+        },
+        operation: 'create',
+        sessionId: 'test-session',
+        timestamp: 1_700_000_000_001,
+        text: 'original slice',
+        original: { message_id: 'source-7', text_length: 42 },
+        text_range: { offset: 5, length: 14, total: 42, next_offset: 19 },
+      }],
+      coverage: 'received_only',
+      end: 'reached',
+    }));
+    const tool = await messageHistoryAgent(reader(read));
+    const signal = new AbortController().signal;
+    const result = await execute(tool, {
+      source: 'local',
+      message_id: 'source-7',
+      text_offset: 5,
+      text_limit: 14,
+      sender_id: 'sender-7',
+      limit: 20,
+    }, executionContext(signal));
+    expect(read).toHaveBeenCalledExactlyOnceWith('test-session', {
+      source: 'local',
+      messageId: 'source-7',
+      textOffset: 5,
+      textLimit: 14,
+      senderId: 'sender-7',
+      limit: 20,
+      signal,
+    });
+    expect(JSON.parse(result.output as string)).toMatchObject({
+      untrusted: true,
+      messages: [{ original: { message_id: 'source-7', text_length: 42 }, text_range: { next_offset: 19 } }],
+    });
   });
 
   it('marks local JSON as untrusted and preserves a typed platform unsupported page without exhaustion', async () => {
