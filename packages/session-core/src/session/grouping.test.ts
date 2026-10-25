@@ -113,6 +113,29 @@ describe('groupBlocks', () => {
     expect(groupBlocks([a, b])).toEqual([a, b]);
   });
 
+  it('keeps read groups inside their owning turn without moving old work into the live group', () => {
+    const old = [tool('MemoryRead', 'done', { turnId: 't1' }), tool('MemorySearch', 'done', { turnId: '1' })];
+    const current = [read(), read(), read('/w/live', 'running')].map((block) => ({ ...block, turnId: 't2' }));
+    const nodes = groupBlocks([...old, ...current]);
+    expect(nodes.map((node) => node.kind)).toEqual(['tool', 'tool', 'tool-group']);
+    expect(nodes.slice(0, 2)).toEqual(old);
+    expect(nodes[2]).toMatchObject({ members: current, count: 3 });
+    const folded = foldHistory(nodes, 't2');
+    expect(folded.map((node) => node.kind)).toEqual(['history-fold', 'tool-group']);
+    expect(folded[0]).toMatchObject({ turnId: 't1', members: old });
+    expect(folded[1]).toBe(nodes[2]);
+    expect(groupHasRunning(folded[1] as ToolGroup)).toBe(true);
+  });
+
+  it('normalizes a known turn for grouping and keeps unowned reads separate', () => {
+    const known = [read(), read(), read()].map((block, index) => ({ ...block, turnId: index === 1 ? '3' : 't3' }));
+    const unowned = read();
+    const nodes = groupBlocks([...known, unowned]);
+    expect(nodes.map((node) => node.kind)).toEqual(['tool-group', 'tool']);
+    expect(nodes[0]).toMatchObject({ members: known, count: 3 });
+    expect(nodes[1]).toBe(unowned);
+  });
+
   it('never folds edits, writes, commands, shells or thinking — they break the run', () => {
     const r1 = read();
     const r2 = read('/w/b.ts');

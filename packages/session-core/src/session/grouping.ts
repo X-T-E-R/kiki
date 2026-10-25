@@ -583,6 +583,7 @@ export function groupBlocks(blocks: readonly Block[]): DisplayNode[] {
 
   for (const block of blocks) {
     if (isReadStep(block)) {
+      if (run.length > 0 && normTurn(run[0]?.turnId) !== normTurn(block.turnId)) flush();
       run.push(block);
     } else {
       flush();

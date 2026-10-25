@@ -7250,6 +7250,28 @@ describe('read-run folding (fold-steps)', () => {
     });
   });
 
+  it('keeps completed memory calls in the old turn while a later read group is working', async () => {
+    await withFold(true, async () => {
+      const old = [
+        stepTool('memory-old', { name: 'MemoryRead', turnId: 't1' }),
+        stepTool('search-old', { name: 'MemorySearch', turnId: '1', args: { query: 'saved notes' } }),
+      ];
+      const current = [stepTool('plan', { turnId: 't2' }), stepTool('notes', { turnId: 't2' }), stepTool('grep', { turnId: 't2', status: 'running' })];
+      const container = await renderTranscript([...old, ...current]);
+      const fold = container.querySelector('[data-history-fold]')!;
+      const run = container.querySelector('[data-read-run]')!;
+      expect(fold).not.toBeNull();
+      expect(run.getAttribute('data-read-run')).toBe('3');
+      expect(run.querySelector('.spinner')).not.toBeNull();
+      expect(fold.querySelector('.spinner')).toBeNull();
+      await act(async () => { click(fold.querySelector('button')!); });
+      expect(fold.querySelector('[data-tool-id="memory-old"]')).not.toBeNull();
+      expect(fold.querySelector('[data-tool-id="search-old"]')).not.toBeNull();
+      expect(fold.querySelector('[data-tool-id="plan"]')).toBeNull();
+      expect(run.querySelector('[data-tool-id="memory-old"]')).toBeNull();
+    });
+  });
+
   it('when on, never folds edits, shells, or runs shorter than three', async () => {
     await withFold(true, async () => {
       const container = await renderTranscript([
