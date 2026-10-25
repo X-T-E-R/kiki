@@ -81,6 +81,24 @@ function findDialogButton(dialog: Element | null, label: string): HTMLButtonElem
     .find((button) => button.textContent === label);
 }
 
+function makeToolBlock(overrides: Partial<ToolBlock> & { id: string; name: string }): ToolBlock {
+  return {
+    kind: 'tool',
+    id: overrides.id,
+    toolCallId: overrides.toolCallId ?? `call_${overrides.id}`,
+    name: overrides.name,
+    argsText: overrides.argsText ?? '{}',
+    args: overrides.args ?? {},
+    status: overrides.status ?? 'done',
+    output: overrides.output ?? '',
+    display: overrides.display ?? undefined,
+    description: overrides.description ?? undefined,
+    isError: overrides.isError ?? false,
+    durationMs: overrides.durationMs ?? 1000,
+    progressText: overrides.progressText ?? undefined,
+  };
+}
+
 beforeAll(() => {
   (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   originalCreateObjectUrl = URL.createObjectURL;
@@ -689,6 +707,12 @@ describe('session Range playback', () => {
 });
 
 describe('ToolCard real Voice plugin result and canonical audio playback', () => {
+  beforeEach(() => {
+    mocks.remote = false;
+    mocks.openMediaPlayback.mockReset();
+    mocks.closeMediaPlayback.mockReset().mockResolvedValue(undefined);
+  });
+
   it('parses real Voice plugin JSON string with separate job and delivery, rendering delivery details', async () => {
     const rawVoiceOutput = JSON.stringify({
       type: 'media_generation',
@@ -721,16 +745,13 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     });
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-voice-1',
-      toolCallId: 'call-voice-1',
       name: 'plugin__kiki_voice__speak',
       argsText: '{"text":"hello"}',
       args: { text: 'hello' },
-      status: 'done',
       output: rawVoiceOutput,
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -789,16 +810,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     });
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-voice-mixed',
-      toolCallId: 'call-voice-mixed',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: rawVoiceOutput,
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -848,16 +864,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     };
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-voice-play',
-      toolCallId: 'call-voice-play',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: JSON.stringify(voiceOutput),
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -918,16 +929,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     };
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-voice-fb',
-      toolCallId: 'call-voice-fb',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: JSON.stringify(voiceOutput),
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -958,16 +964,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
 
   it('safely degrades malformed JSON output to ReadableToolText without crashing', async () => {
     const malformed = '{ "type": "media_generation", "job": { incomplete: true';
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-malformed',
-      toolCallId: 'call-malformed',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: malformed,
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1020,16 +1021,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     };
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-remote-retry',
-      toolCallId: 'call-remote-retry',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: JSON.stringify(voiceOutput),
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1096,16 +1092,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     };
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-decode-fail',
-      toolCallId: 'call-decode-fail',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: JSON.stringify(voiceOutput),
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1175,16 +1166,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     };
 
-    const block1: ToolBlock = {
-      kind: 'tool',
+    const block1 = makeToolBlock({
       id: 'tool-src-1',
-      toolCallId: 'call-src-1',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: JSON.stringify(voiceOutput1),
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1225,16 +1211,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     };
 
-    const block2: ToolBlock = {
-      kind: 'tool',
+    const block2 = makeToolBlock({
       id: 'tool-src-2',
-      toolCallId: 'call-src-2',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: JSON.stringify(voiceOutput2),
-    };
+    });
 
     await renderSettled(
       root,
@@ -1282,16 +1263,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     };
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-cs',
-      toolCallId: 'call-cs',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: JSON.stringify(voiceOutput),
-    };
+    });
 
     const clientA = {
       readingOptions: () => ({ timeoutMs: 0 }),
@@ -1387,16 +1363,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       text: JSON.stringify(voiceOutput),
     };
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-parts-multi',
-      toolCallId: 'call-parts-multi',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: [unrelatedJsonPart, mediaGenerationPart],
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1459,16 +1430,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     });
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-voice-batch-multi',
-      toolCallId: 'call-voice-batch-multi',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: rawVoiceBatchOutput,
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1536,16 +1502,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     });
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-b-missing',
-      toolCallId: 'call-b-missing',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: rawOutput,
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(
@@ -1603,16 +1564,11 @@ describe('ToolCard real Voice plugin result and canonical audio playback', () =>
       },
     });
 
-    const block: ToolBlock = {
-      kind: 'tool',
+    const block = makeToolBlock({
       id: 'tool-b-pending',
-      toolCallId: 'call-b-pending',
       name: 'plugin__kiki_voice__speak',
-      argsText: '{}',
-      args: {},
-      status: 'done',
       output: rawOutput,
-    };
+    });
 
     const { root, container } = makeRoot();
     await renderSettled(

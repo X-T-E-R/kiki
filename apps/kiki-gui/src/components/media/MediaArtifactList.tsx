@@ -296,15 +296,17 @@ function AudioOriginal({ artifact, sessionId }: { readonly artifact: MediaArtifa
   });
   const decodeFailed = decodeFailureState.source === sourceIdentity && decodeFailureState.failed;
 
+  type ByteLoadState = { status: 'idle' | 'loading' | 'ready'; url?: string; failed: boolean };
+
   const [byteState, setByteState] = useState<{
     source: typeof sourceIdentity;
-    load: { status: 'idle' | 'loading' | 'ready'; url?: string; failed: boolean };
+    load: ByteLoadState;
   }>({
     source: sourceIdentity,
     load: { status: 'idle', failed: false },
   });
 
-  const byteLoad = byteState.source === sourceIdentity ? byteState.load : { status: 'idle', failed: false };
+  const byteLoad: ByteLoadState = byteState.source === sourceIdentity ? byteState.load : { status: 'idle', failed: false };
   const objectUrlRef = useRef<string | undefined>(undefined);
 
   // Revoke previous object URL on source change or unmount
