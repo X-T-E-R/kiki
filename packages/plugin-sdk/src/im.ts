@@ -21,6 +21,7 @@ export const pluginImAdapterDefinitionSchema = z.object({
   supportsButtons: z.boolean().optional(),
   supportsMentions: z.boolean().optional(),
   supportsReply: z.boolean().optional(),
+  supportsHistory: z.boolean().optional(),
   mediaCapabilities: z.array(pluginImMediaCapabilitySchema).max(100),
 }).strict().refine((value) => value.inbound || value.outbound, { message: 'An IM adapter needs an input or output direction' })
   .refine((value) => !value.inbound || value.listenerRealm !== undefined, { message: 'Inbound IM adapters must declare the real protocol/message-source listenerRealm', path: ['listenerRealm'] });
@@ -45,10 +46,45 @@ export interface PluginImMedia {
   readonly bytes: Uint8Array;
 }
 
+export const pluginImHistoryRequestSchema = z.object({
+  chatId: z.string().min(1).max(1024),
+  topicId: z.string().min(1).max(1024),
+  cursor: z.string().min(1).max(8192).optional(),
+  limit: z.number().int().min(1).max(50),
+}).strict();
+
+export const pluginImHistoryMessageSchema = z.object({
+  sourceMessageId: z.string().min(1).max(1024),
+  identity: z.object({ chatId: z.string().min(1).max(1024), senderId: z.string().min(1).max(1024), topicId: z.string().min(1).max(1024), chatKind: z.enum(['private', 'group']).optional(), chatTitle: z.string().max(4096).optional(), senderName: z.string().max(4096).optional(), topicTitle: z.string().max(4096).optional() }).strict(),
+  kind: z.enum(['text', 'image', 'file', 'audio', 'video']),
+  operation: z.enum(['create', 'edit', 'retract']).optional(),
+  isSelf: z.boolean().optional(),
+  timestamp: z.number().int().nonnegative().optional(),
+  text: z.string().max(16_384).optional(),
+  mentioned: z.boolean().optional(),
+  mentionIds: z.array(z.string().min(1).max(1024)).max(1000).optional(),
+  replyToMessageId: z.string().min(1).max(1024).optional(),
+  media: z.array(z.object({ kind: z.string().min(1).max(128), name: z.string().max(1024), mediaType: z.string().max(128) }).strict()).max(4).optional(),
+}).strict();
+
+export const pluginImHistoryPageSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('ok'), messages: z.array(pluginImHistoryMessageSchema).max(50), order: z.enum(['chronological', 'reverse_chronological']), nextCursor: z.string().min(1).max(8192).optional(), coverage: z.enum(['complete', 'partial', 'unknown']), end: z.enum(['reached', 'more', 'unknown']) }).strict(),
+  z.object({ status: z.literal('unsupported'), detail: z.string().max(4096).optional() }).strict(),
+]);
+
+/** Cursors belong to the adapter. Host never interprets them as platform sequence numbers. */
+export type PluginImHistoryRequest = z.infer<typeof pluginImHistoryRequestSchema>;
+export type PluginImHistoryMessage = z.infer<typeof pluginImHistoryMessageSchema>;
+/** Unknown coverage or end remains unknown even when a page is short or empty. */
+export type PluginImHistoryPage = z.infer<typeof pluginImHistoryPageSchema>;
+
 export interface PluginImEvent {
   readonly eventId: string;
   readonly cursor?: number;
   readonly sourceMessageId?: string;
+  readonly operation?: 'create' | 'edit' | 'retract';
+  readonly isSelf?: boolean;
+  readonly timestamp?: number;
   readonly mentioned?: boolean;
   readonly mentionIds?: readonly string[];
   readonly replyToMessageId?: string;
@@ -107,4 +143,5 @@ export interface PluginImAdapter {
   sendMedia?(message: PluginImOutboundMedia, context: PluginImAdapterContext): Promise<PluginImDeliveryReceipt>;
   editText?(message: PluginImText & { readonly messageId: string }, context: PluginImAdapterContext): Promise<PluginImDeliveryReceipt>;
   answerCallback?(callbackQueryId: string, context: PluginImAdapterContext): Promise<void>;
+  readHistory?(request: PluginImHistoryRequest, context: PluginImAdapterContext): Promise<PluginImHistoryPage>;
 }

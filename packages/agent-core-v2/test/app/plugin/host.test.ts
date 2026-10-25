@@ -1,11 +1,12 @@
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join } from 'node:path';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { createHash } from 'node:crypto';
 import type { Readable } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { Jimp } from 'jimp';
+import type { PluginImAdapterDefinition } from '@kiki/protocol';
 
 import { PluginHost } from '#/app/plugin/host';
 import { parseManifest } from '#/app/plugin/manifest';
@@ -26,6 +27,124 @@ function readyHost(): Promise<PluginHost> {
     expect(manifest.diagnostics.filter((item) => item.severity === 'error')).toEqual([]);
     return new PluginHost('fixture-tool', join(fixture, 'entry.mjs'), manifest.manifest!.kiki!.tools!);
   });
+}
+
+async function historyHost() {
+  const root = await mkdtemp(join(tmpdir(), 'plugin-host-history-'));
+  const entry = join(root, 'entry.mjs');
+  const historyDefinition: PluginImAdapterDefinition = {
+    schemaVersion: 1,
+    id: 'history',
+    label: 'History fixture',
+    inbound: true,
+    outbound: true,
+    listenerRealm: 'history-fixture',
+    maxInboundBytes: 1024,
+    supportsHistory: true,
+    mediaCapabilities: [],
+  };
+  const legacyDefinition: PluginImAdapterDefinition = {
+    schemaVersion: 1,
+    id: 'legacy',
+    label: 'Legacy fixture',
+    inbound: true,
+    outbound: true,
+    listenerRealm: 'legacy-fixture',
+    maxInboundBytes: 1024,
+    supportsHistory: true,
+    mediaCapabilities: [],
+  };
+  const undeclaredDefinition: PluginImAdapterDefinition = {
+    schemaVersion: 1,
+    id: 'undeclared',
+    label: 'Undeclared fixture',
+    inbound: true,
+    outbound: true,
+    listenerRealm: 'undeclared-fixture',
+    maxInboundBytes: 1024,
+    mediaCapabilities: [],
+  };
+  const outboundDefinition: PluginImAdapterDefinition = {
+    schemaVersion: 1,
+    id: 'outbound',
+    label: 'Outbound fixture',
+    inbound: false,
+    outbound: true,
+    maxInboundBytes: 1024,
+    supportsHistory: true,
+    mediaCapabilities: [],
+  };
+  const emitTool = {
+    schemaVersion: 1 as const,
+    name: 'fixture_emit',
+    description: 'Emit an IM event',
+    parameters: { type: 'object' },
+    accesses: [{ kind: 'all' as const }],
+    disclosure: 'deferred' as const,
+  };
+  const historyMessage = {
+    sourceMessageId: 'history-source-1',
+    identity: { chatId: 'chat-1', senderId: 'sender-1', topicId: 'topic-1', chatKind: 'group', senderName: 'Sender One', topicTitle: 'Topic One' },
+    kind: 'text',
+    operation: 'create',
+    isSelf: true,
+    timestamp: 1_700_000_000_000,
+    text: 'history message',
+    mentioned: true,
+    mentionIds: ['sender-1'],
+    replyToMessageId: 'history-source-0',
+    media: [{ kind: 'file', name: 'fixture.txt', mediaType: 'text/plain' }],
+  } as const;
+  await writeFile(entry, `
+import { register as registerEcho } from ${JSON.stringify(pathToFileURL(join(fixture, 'entry.mjs')).href)};
+const historyDefinition = ${JSON.stringify(historyDefinition)};
+const legacyDefinition = ${JSON.stringify(legacyDefinition)};
+const undeclaredDefinition = ${JSON.stringify(undeclaredDefinition)};
+const outboundDefinition = ${JSON.stringify(outboundDefinition)};
+const historyMessage = ${JSON.stringify(historyMessage)};
+const contexts = new Map();
+export function register(api) {
+  registerEcho(api);
+  api.registerTool(${JSON.stringify(emitTool)}, async (args) => {
+    await contexts.get(args.adapterId).emit(args.event);
+    return { output: 'emitted' };
+  });
+  api.registerImAdapter(historyDefinition, {
+    async start(context) { contexts.set('history', context); return { accountId: 'history-account' }; },
+    async stop() { contexts.delete('history'); },
+    async sendText() { return { status: 'delivered', messageIds: ['history-sent-1'] }; },
+    async readHistory(request) {
+      if (request.cursor === undefined) return { status: 'ok', messages: [historyMessage], order: 'chronological', nextCursor: 'opaque/cursor.v1', coverage: 'unknown', end: 'unknown' };
+      if (request.cursor === 'opaque/cursor.v1') return { status: 'ok', messages: [], order: 'reverse_chronological', coverage: 'unknown', end: 'unknown' };
+      if (request.cursor === 'out-of-scope') return { status: 'ok', messages: [{ ...historyMessage, identity: { ...historyMessage.identity, chatId: 'foreign-chat' } }], order: 'chronological', coverage: 'partial', end: 'more' };
+      if (request.cursor === 'out-of-topic') return { status: 'ok', messages: [{ ...historyMessage, identity: { ...historyMessage.identity, topicId: 'foreign-topic' } }], order: 'chronological', coverage: 'partial', end: 'more' };
+      if (request.cursor === 'over-limit') return { status: 'ok', messages: [historyMessage, { ...historyMessage, sourceMessageId: 'history-source-2' }], order: 'chronological', coverage: 'partial', end: 'more' };
+      throw new Error('unexpected opaque cursor');
+    },
+  });
+  api.registerImAdapter(legacyDefinition, {
+    async start() { return { accountId: 'legacy-account' }; },
+    async stop() {},
+    async sendText() { return { status: 'delivered', messageIds: [] }; },
+  });
+  api.registerImAdapter(undeclaredDefinition, {
+    async start() { return { accountId: 'undeclared-account' }; },
+    async stop() {},
+    async sendText() { return { status: 'delivered', messageIds: [] }; },
+    async readHistory() { throw new Error('undeclared history runner called'); },
+  });
+  api.registerImAdapter(outboundDefinition, {
+    async start() { return { accountId: 'outbound-account' }; },
+    async stop() {},
+    async sendText() { return { status: 'delivered', messageIds: [] }; },
+    async readHistory() { throw new Error('outbound history runner called'); },
+  });
+}
+`);
+  const tools = (await parseManifest(fixture)).manifest!.kiki!.tools!;
+  const host = new PluginHost('fixture-im-history', entry, [...tools, emitTool], [], [], undefined, undefined,
+    [historyDefinition, legacyDefinition, undeclaredDefinition, outboundDefinition]);
+  return { host, root, historyMessage };
 }
 
 async function attachmentStore() {
@@ -59,6 +178,64 @@ function deferred() {
 }
 
 describe('plugin host lifecycle', () => {
+  it('routes IM history through the real child, preserves opaque cursors and typed unknown end', async () => {
+    const { host, root, historyMessage } = await historyHost();
+    const events: unknown[] = [];
+    const identity = { chatId: 'chat-1', senderId: 'sender-1', topicId: 'topic-1', chatKind: 'group' as const, senderName: 'Sender One', topicTitle: 'Topic One' };
+    type Connection = Awaited<ReturnType<PluginHost['connectImAdapter']>>;
+    let history: Connection | undefined;
+    let legacy: Connection | undefined;
+    let undeclared: Connection | undefined;
+    let outbound: Connection | undefined;
+    try {
+      history = await host.connectImAdapter('history', { token: 'fixture' }, 'history-instance', async (event) => { events.push(event); });
+      legacy = await host.connectImAdapter('legacy', {}, 'legacy-instance', async () => undefined);
+      undeclared = await host.connectImAdapter('undeclared', {}, 'undeclared-instance', async () => undefined);
+      outbound = await host.connectImAdapter('outbound', {}, 'outbound-instance', async () => undefined);
+
+      await expect(history.request('sendText', { identity, text: 'sent', code: 'fixture' })).resolves.toEqual({ status: 'delivered', messageIds: ['history-sent-1'] });
+      await expect(host.execute('fixture_emit', {
+        adapterId: 'history',
+        event: { eventId: 'event-42', sourceMessageId: 'source-99', operation: 'edit', isSelf: true, timestamp: 1_700_000_000_001, identity, kind: 'text', text: 'edited' },
+      }, new AbortController().signal)).resolves.toEqual({ output: 'emitted' });
+      expect(events).toEqual([expect.objectContaining({ eventId: 'event-42', sourceMessageId: 'source-99', operation: 'edit', isSelf: true, timestamp: 1_700_000_000_001 })]);
+      expect((events[0] as { eventId: string; sourceMessageId: string }).eventId).not.toBe((events[0] as { eventId: string; sourceMessageId: string }).sourceMessageId);
+      for (const operation of ['edit', 'retract'] as const) {
+        await expect(host.execute('fixture_emit', {
+          adapterId: 'history',
+          event: { eventId: `missing-target-${operation}`, operation, identity, kind: 'text', text: 'invalid' },
+        }, new AbortController().signal)).rejects.toThrow('IM event was not admitted');
+      }
+
+      const request = { chatId: 'chat-1', topicId: 'topic-1', limit: 10 };
+      await expect(history.readHistory!(request)).resolves.toEqual({
+        status: 'ok',
+        messages: [historyMessage],
+        order: 'chronological',
+        nextCursor: 'opaque/cursor.v1',
+        coverage: 'unknown',
+        end: 'unknown',
+      });
+      await expect(history.readHistory!({ ...request, cursor: 'opaque/cursor.v1' })).resolves.toEqual({
+        status: 'ok', messages: [], order: 'reverse_chronological', coverage: 'unknown', end: 'unknown',
+      });
+      await expect(history.readHistory!({ ...request, cursor: 'out-of-scope' })).rejects.toThrow('outside the requested chat/topic or limit');
+      await expect(history.readHistory!({ ...request, cursor: 'out-of-topic' })).rejects.toThrow('outside the requested chat/topic or limit');
+      await expect(history.readHistory!({ ...request, limit: 1, cursor: 'over-limit' })).rejects.toThrow('outside the requested chat/topic or limit');
+      await expect(history.readHistory!({ ...request, limit: 0 } as never)).rejects.toThrow();
+      await expect(history.readHistory!({ ...request, limit: 51 } as never)).rejects.toThrow();
+      await expect(legacy.readHistory!(request)).resolves.toEqual({ status: 'unsupported' });
+      await expect(undeclared.readHistory!(request)).resolves.toEqual({ status: 'unsupported' });
+      await expect(outbound.readHistory!(request)).resolves.toEqual({ status: 'unsupported' });
+      await history.stop();
+      await expect(history.readHistory!(request)).rejects.toThrow('IM adapter was withdrawn');
+    } finally {
+      await Promise.all([history?.stop(), legacy?.stop(), undeclared?.stop(), outbound?.stop()]);
+      await host.stopAndWait();
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it('starts only on execute, forwards progress, and stops immediately', async () => {
     const host = await readyHost();
     const progress: unknown[] = [];
