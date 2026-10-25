@@ -175,6 +175,8 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/catalog/providers` | 浏览 models.dev 目录（服务端代理） |
 | `GET /api/catalog/providers/{catalog_id}` | 读取目录中单个条目 |
 
+目录读取会立即返回最近获取的目录或内置快照，同时合并为一次后台更新。成功获取的目录在十分钟内有效；后台更新失败时，本地目录仍可读取，下一次自动尝试至少间隔十分钟。没有本地目录时，读取等待上游获取，失败则返回错误。显式 `import_catalog` 会等待必要的目录更新，再校验并保存所选条目；上游不可用时，可使用同一份缓存或内置条目。浏览目录不会向你已配置的供应商获取模型列表；这类请求需要显式执行 `refresh`。
+
 创建模型时可选填 `protocol`：`openai`、`openai_responses`、`anthropic` 或 `google-genai`。PATCH 接受相同值；省略 `protocol` 保持原值，`"protocol": null` 清除本地覆盖。带上模型读取结果中的 `base_revision`，可在并发修改时拒绝写入。非法协议值返回 `config.invalid`（业务错误码 `40001`），不改变配置。
 
 模型读取分别返回已保存的 `protocol` 和求解后的 `effective_protocol`。已存值缺省表示继承供应商默认格式；列表中生效值缺省表示未能构建可用 requester。修改模型协议不会写供应商连接、凭据、请求身份或默认指针。配置示例和端点兼容要求见[模型请求格式覆盖](../configuration/providers.md#模型请求格式覆盖)。

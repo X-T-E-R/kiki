@@ -1649,6 +1649,70 @@ describe('wire projection (pure)', () => {
 });
 
 describe('ModelCatalog enumeration', () => {
+  it('reads 44 models and 12 connections without serializing cached credential probes', async () => {
+    const providers: ProvidersSection = Object.fromEntries(Array.from({ length: 12 }, (_, index) => [
+      `connection-${index}`, { type: 'openai', baseUrl: 'https://example.test/v1', oauth: { storage: 'file', key: `oauth/${index}` } },
+    ]));
+    const models: ModelsSection = Object.fromEntries(Array.from({ length: 44 }, (_, index) => [
+      `model-${index}`, { provider: `connection-${index % 12}`, model: `remote-${index}`, maxContextSize: 8192 },
+    ]));
+    const getAccessToken = vi.fn();
+    const hasCachedAccessToken = vi.fn(async (id: string) => {
+      await new Promise((resolve) => setTimeout(resolve, 120));
+      return id !== 'connection-5';
+    });
+    const { host, catalog } = createHost({ providers, models, defaultModel: 'model-0' }, {
+      _serviceBrand: undefined, getAccessToken, hasCachedAccessToken,
+    });
+    try {
+      const modelStart = performance.now();
+      expect(await catalog.listModels()).toHaveLength(44);
+      const modelsMs = performance.now() - modelStart;
+      const providersStart = performance.now();
+      const items = await catalog.listProviders();
+      const providersMs = performance.now() - providersStart;
+      process.stdout.write(`${JSON.stringify({ stage: 'configured-catalog-cold', models: 44, providers: items.length, modelsMs, providersMs })}\n`);
+      expect(items.map((item) => item.id)).toEqual(Object.keys(providers));
+      expect(items[5]).toMatchObject({ id: 'connection-5', status: 'unconfigured', oauth: { signed_in: false } });
+      expect(items[6]).toMatchObject({ status: 'connected', oauth: { signed_in: true } });
+      expect(getAccessToken).not.toHaveBeenCalled();
+      expect(providersMs).toBeLessThan(1000);
+      const warmStart = performance.now();
+      expect(await catalog.listProviders()).toEqual(items);
+      const warmMs = performance.now() - warmStart;
+      process.stdout.write(`${JSON.stringify({ stage: 'configured-catalog-warm', models: 44, providers: 12, providersMs: warmMs })}\n`);
+      expect(warmMs).toBeLessThan(1000);
+      hasCachedAccessToken.mockRejectedValueOnce(new Error('fixture credential read failed'));
+      await expect(catalog.listProviders()).rejects.toThrow('fixture credential read failed');
+      expect(await catalog.listProviders()).toHaveLength(12);
+    } finally { await host.dispose(); }
+  });
+
+  it('does not publish empty configured catalogs before local hydration completes', async () => {
+    const host = createScopedTestHost([
+      [IConfigService, new StubConfigService()],
+      [IModelOAuthTokens, stubModelOAuthTokens()],
+      [IHostRequestHeaders, hostHeadersPort({ headers: HOST_HEADERS })],
+    ]);
+    try {
+      const catalog = host.app.accessor.get(IModelCatalog);
+      let modelsSettled = false;
+      let providersSettled = false;
+      const models = catalog.listModels().then((items) => { modelsSettled = true; return items; });
+      const providers = catalog.listProviders().then((items) => { providersSettled = true; return items; });
+      await Promise.resolve();
+      expect(modelsSettled).toBe(false);
+      expect(providersSettled).toBe(false);
+      host.app.accessor.get(IProviderService).loadAll({ example: { type: 'openai' } }, 'example');
+      await Promise.resolve();
+      expect(modelsSettled).toBe(false);
+      expect(providersSettled).toBe(false);
+      host.app.accessor.get(IModelService).loadAll({ model: { provider: 'example', model: 'remote', maxContextSize: 8192 } }, 'model');
+      expect(await models).toHaveLength(1);
+      expect(await providers).toHaveLength(1);
+    } finally { await host.dispose(); }
+  });
+
   it('lists configured models as selectable aliases', async () => {
     const { host, catalog } = createHost(catalogSections);
     try {

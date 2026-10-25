@@ -225,6 +225,7 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   async listModels(): Promise<readonly ModelCatalogItem[]> {
+    await Promise.all([this.models.ready, this.providers.ready]);
     const models = this.models.list();
     const items: ModelCatalogItem[] = [];
     const managedOptions = new Map<
@@ -276,14 +277,12 @@ export class ModelCatalog extends Disposable implements IModelCatalog {
   }
 
   async listProviders(): Promise<readonly ProviderCatalogItem[]> {
+    await Promise.all([this.models.ready, this.providers.ready]);
     const providers = this.providers.list();
     const models = this.models.list();
     const globalDefaultModel = this.models.getDefaultModel();
-    const out: ProviderCatalogItem[] = [];
-    for (const [providerId, provider] of Object.entries(providers)) {
-      out.push(await this.toCatalogProvider(providerId, provider, models, globalDefaultModel));
-    }
-    return out;
+    return Promise.all(Object.entries(providers).map(([providerId, provider]) =>
+      this.toCatalogProvider(providerId, provider, models, globalDefaultModel)));
   }
 
   async getProvider(providerId: string): Promise<ProviderCatalogItem> {

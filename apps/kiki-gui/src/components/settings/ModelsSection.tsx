@@ -276,8 +276,8 @@ export function ModelCatalogCard() {
   const attention = useCallback((item: ModelCatalogItem) => {
     // No connection, or one that is not working: either way the model cannot run.
     const status = providers.get(item.provider_id)?.status;
-    return status !== 'connected';
-  }, [providers]);
+    return providersQuery.data !== undefined && status !== 'connected';
+  }, [providers, providersQuery.data]);
   const accountLabels = useMemo(
     () => new Map((methodsQuery.data ?? []).map((method) => [method.provider, method.label])),
     [methodsQuery.data],
@@ -391,8 +391,14 @@ export function ModelCatalogCard() {
               </button>
             )} />
         ) : null}
-        {modelsQuery.isLoading ? <Hint>{t('st.models.loading')}</Hint> : null}
-        {modelsQuery.isError ? <InlineError error={modelsQuery.error} /> : null}
+        {modelsQuery.isLoading ? <div role="status"><Hint>{t('st.models.loading')}</Hint></div> : null}
+        {[modelsQuery, providersQuery].filter((query) => query.isError).map((query, index) => (
+          <div key={index} className="flex flex-wrap items-center gap-3">
+            <InlineError error={query.error} />
+            <button type="button" className={SECONDARY_BUTTON} disabled={query.isFetching}
+              onClick={() => void query.refetch()}>{t('common.retry')}</button>
+          </div>
+        ))}
         <FeedbackLine feedback={feedback} />
       </div>
       {editingItem !== undefined ? (

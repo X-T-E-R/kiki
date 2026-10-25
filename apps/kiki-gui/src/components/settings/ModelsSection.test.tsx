@@ -133,13 +133,15 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderCard(reportDirty = (_id: string, _dirty: boolean) => {}): Promise<HTMLElement> {
+async function renderCard(
+  reportDirty = (_id: string, _dirty: boolean) => {},
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+): Promise<HTMLElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
   roots.push(root);
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   await act(async () => {
     root.render(
       <MemoryRouter>
@@ -182,6 +184,75 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string): void {
 }
 
 describe('ModelCatalogCard row editor', () => {
+  it('makes configured models selectable while the connection status read is still pending', async () => {
+    listProviders.mockReturnValue(new Promise(() => {}));
+    const started = performance.now();
+    const container = await renderCard();
+    expect(container.textContent).not.toContain('Loading model catalog');
+    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(container.querySelector('#st-default-model')?.hasAttribute('disabled')).toBe(false);
+    expect(container.querySelector('[data-group-attention]')).toBeNull();
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(refreshAllProviders).not.toHaveBeenCalled();
+  });
+
+  it('retries a failed local catalog read without fetching remote suggestions or losing the saved default', async () => {
+    listModels.mockRejectedValueOnce(new Error('fixture local read failed'));
+    const container = await renderCard();
+    expect(container.textContent).toContain('fixture local read failed');
+    const retry = [...container.querySelectorAll<HTMLButtonElement>('#st-card-models button')].find((button) => button.textContent === 'Retry')!;
+    expect(retry).toBeDefined();
+    await act(async () => { retry.click(); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).not.toContain('fixture local read failed');
+    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(refreshAllProviders).not.toHaveBeenCalled();
+    expect(setDefaultModel).not.toHaveBeenCalled();
+    expect(patchConfig).not.toHaveBeenCalled();
+  });
+
+  it('keeps cached models and the selected default readable when revalidation fails', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await renderCard(undefined, queryClient);
+    listModels.mockRejectedValueOnce(new Error('fixture revalidation failed'));
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['models'] }); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.textContent).toContain('fixture revalidation failed');
+    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(container.querySelector('#st-default-model')?.hasAttribute('disabled')).toBe(false);
+    expect(queryClient.getQueryData(['models'])).toEqual({ items: MODELS });
+  });
+
+  it('retains cached models and the selected default when a revalidation is cancelled', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = await renderCard(undefined, queryClient);
+    let resolve!: (value: { items: ModelCatalogItem[] }) => void;
+    listModels.mockReturnValueOnce(new Promise((done) => { resolve = done; }));
+    let revalidation!: Promise<void>;
+    await act(async () => { revalidation = queryClient.invalidateQueries({ queryKey: ['models'] }); });
+    await act(async () => { await queryClient.cancelQueries({ queryKey: ['models'] }); });
+    await act(async () => { resolve({ items: [] }); await revalidation; });
+    expect(queryClient.getQueryData(['models'])).toEqual({ items: MODELS });
+    expect(container.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+    expect(container.textContent).not.toContain('Loading model catalog');
+  });
+
+  it('isolates late catalog responses after switching connection query scopes', async () => {
+    let resolveOld!: (value: { items: ModelCatalogItem[] }) => void;
+    listModels.mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }));
+    const oldQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const old = await renderCard(undefined, oldQueryClient);
+    expect(old.textContent).toContain('Loading model catalog');
+    await act(async () => { roots.shift()!.unmount(); });
+    const nextQueryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const current = await renderCard(undefined, nextQueryClient);
+    await act(async () => { resolveOld({ items: [{ ...MODELS[0]!, id: 'old/model', display_name: 'Old connection model' }] }); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(current.textContent).not.toContain('Old connection model');
+    expect(nextQueryClient.getQueryData(['models'])).toEqual({ items: MODELS });
+    expect(current.querySelector('#st-default-model')?.textContent).toContain('Kimi K2');
+  });
+
   it('fetches suggestions only on click and saves the selected suggestion as a model', async () => {
     const items = [{ provider_id: 'gateway', fetched_at: 100, attempted_at: 100, models: [{ remote_id: 'remote-suggested' }] }];
     refreshAllProviders.mockImplementation(async () => {

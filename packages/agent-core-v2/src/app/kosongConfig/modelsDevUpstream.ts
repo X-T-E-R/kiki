@@ -34,6 +34,7 @@ interface ModelsDevCacheEntry {
 
 let cache: ModelsDevCacheEntry | undefined;
 let inFlight: Promise<ModelsDevCatalog> | undefined;
+let retryAt = 0;
 let builtInMemo: ModelsDevCatalog | undefined | null = null;
 let fetchImpl: typeof fetch = fetch;
 let nowImpl: () => number = Date.now;
@@ -41,14 +42,17 @@ let nowImpl: () => number = Date.now;
 export function setModelsDevUpstreamForTest(options: {
   fetchImpl?: typeof fetch;
   now?: () => number;
+  builtInCatalog?: ModelsDevCatalog;
 }): void {
   if (options.fetchImpl !== undefined) fetchImpl = options.fetchImpl;
   if (options.now !== undefined) nowImpl = options.now;
+  if (options.builtInCatalog !== undefined) builtInMemo = options.builtInCatalog;
 }
 
 export function resetModelsDevUpstreamForTest(): void {
   cache = undefined;
   inFlight = undefined;
+  retryAt = 0;
   builtInMemo = null;
   fetchImpl = fetch;
   nowImpl = Date.now;
@@ -58,17 +62,32 @@ export function upstreamFetch(): typeof fetch {
   return fetchImpl;
 }
 
-export async function getModelsDevCatalog(userAgent: string): Promise<ModelsDevCatalog> {
+export async function getModelsDevCatalog(
+  userAgent: string | (() => Promise<string>),
+  options: { preferLocal?: boolean } = {},
+): Promise<ModelsDevCatalog> {
   const now = nowImpl();
   if (cache !== undefined && now - cache.fetchedAt < CACHE_TTL_MS) return cache.catalog;
-  inFlight ??= fetchAndCache(userAgent).finally(() => {
-    inFlight = undefined;
-  });
+  const local = cache?.catalog ?? builtInCatalog();
+  if (options.preferLocal === true && local !== undefined) {
+    if (now >= retryAt) void refreshCatalog(userAgent).catch(() => {});
+    return local;
+  }
+  return refreshCatalog(userAgent);
+}
+
+function refreshCatalog(userAgent: string | (() => Promise<string>)): Promise<ModelsDevCatalog> {
+  inFlight ??= Promise.resolve()
+    .then(() => typeof userAgent === 'string' ? userAgent : userAgent())
+    .then(fetchAndCache)
+    .finally(() => {
+      retryAt = nowImpl() + CACHE_TTL_MS;
+      inFlight = undefined;
+    });
   return inFlight;
 }
 
 async function fetchAndCache(userAgent: string): Promise<ModelsDevCatalog> {
-  const now = nowImpl();
   try {
     const res = await fetchImpl(MODELS_DEV_URL, {
       headers: { Accept: 'application/json', 'User-Agent': userAgent },
@@ -83,15 +102,12 @@ async function fetchAndCache(userAgent: string): Promise<ModelsDevCatalog> {
     if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
       throw new Error2(CoreErrors.codes.INTERNAL, 'unexpected catalog payload shape');
     }
-    cache = { catalog: payload as ModelsDevCatalog, fetchedAt: now };
+    cache = { catalog: payload as ModelsDevCatalog, fetchedAt: nowImpl() };
     return cache.catalog;
   } catch (err) {
     if (cache !== undefined) return cache.catalog;
     const builtIn = builtInCatalog();
-    if (builtIn !== undefined) {
-      cache = { catalog: builtIn, fetchedAt: now };
-      return builtIn;
-    }
+    if (builtIn !== undefined) return builtIn;
     throw new Error2(
       ModelsDevImportErrors.codes.CATALOG_UNAVAILABLE,
       `models.dev catalog unavailable: ${err instanceof Error ? err.message : String(err)}`,

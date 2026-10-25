@@ -56,12 +56,12 @@ export class ModelsDevImportService implements IModelsDevImportService {
   }
 
   async listModelsDevProviders(): Promise<ModelsDevProviderItem[]> {
-    const catalog = await getModelsDevCatalog(await this.outboundUserAgent());
+    const catalog = await getModelsDevCatalog(() => this.outboundUserAgent(), { preferLocal: true });
     return Object.entries(catalog).map(([id, entry]) => toModelsDevProviderItem(id, entry));
   }
 
   async getModelsDevProvider(catalogId: string): Promise<ModelsDevProviderItem> {
-    const catalog = await getModelsDevCatalog(await this.outboundUserAgent());
+    const catalog = await getModelsDevCatalog(() => this.outboundUserAgent(), { preferLocal: true });
     const entry = modelsDevEntry(catalog, catalogId);
     if (entry === undefined) {
       throw new Error2(

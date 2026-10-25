@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { createScopedTestHost } from '#/_base/di/test';
 import { Error2, isError2 } from '#/_base/errors/errors';
@@ -6,6 +6,7 @@ import { DEFAULT_IDENTITY_SLUG, IAgentIdentity } from '#/app/agentIdentity/agent
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IConfigService } from '#/app/config/config';
 import {
+  getModelsDevCatalog,
   resetModelsDevUpstreamForTest,
   setModelsDevUpstreamForTest,
 } from '#/app/kosongConfig/modelsDevUpstream';
@@ -165,6 +166,88 @@ async function expectError2(promise: Promise<unknown>, code: string): Promise<Er
 describe('IModelsDevImportService', () => {
   afterEach(() => {
     resetModelsDevUpstreamForTest();
+  });
+
+  it('serves a cold local snapshot before a slow directory refresh completes', async () => {
+    const refresh = (async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1500));
+      return new Response(JSON.stringify(CATALOG));
+    }) as typeof fetch;
+    setModelsDevUpstreamForTest({ fetchImpl: refresh, builtInCatalog: CATALOG });
+    const { imports } = createHost();
+    const started = performance.now();
+    const items = await imports.listModelsDevProviders();
+    const elapsedMs = performance.now() - started;
+    process.stdout.write(`${JSON.stringify({ stage: 'directory-cold-snapshot', providers: items.length, models: items.reduce((sum, item) => sum + item.models.length, 0), elapsedMs })}\n`);
+    try {
+      expect(items.find((item) => item.id === 'openai')?.models[0]?.id).toBe('gpt-4.1');
+      expect(elapsedMs).toBeLessThan(1000);
+    } finally { await getModelsDevCatalog('fixture'); }
+  });
+
+  it('keeps stale directory reads available during one failed refresh and retries after its cooldown', async () => {
+    let now = 0;
+    const fetchImpl = vi.fn(fetchJson(CATALOG));
+    setModelsDevUpstreamForTest({ fetchImpl, now: () => now });
+    const { imports } = createHost();
+    const first = await imports.listModelsDevProviders();
+    now = 11 * 60_000;
+    let reject!: (error: Error) => void;
+    fetchImpl.mockImplementationOnce(() => new Promise<Response>((_resolve, fail) => { reject = fail; }));
+    const stale = await Promise.all(Array.from({ length: 8 }, () => imports.listModelsDevProviders()));
+    expect(stale.every((items) => JSON.stringify(items) === JSON.stringify(first))).toBe(true);
+    await vi.waitFor(() => { expect(fetchImpl).toHaveBeenCalledTimes(2); });
+    const update = getModelsDevCatalog('fixture');
+    reject(new Error('fixture offline'));
+    await update;
+    for (let count = 0; count < 8; count += 1) await imports.listModelsDevProviders();
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    now += 10 * 60_000;
+    await imports.listModelsDevProviders();
+    await getModelsDevCatalog('fixture');
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+  });
+
+  it('starts directory freshness at successful completion rather than the fetch start', async () => {
+    let now = 0;
+    let resolve!: (response: Response) => void;
+    const fetchImpl = vi.fn(() => new Promise<Response>((done) => { resolve = done; }));
+    setModelsDevUpstreamForTest({ fetchImpl, now: () => now });
+    const { imports } = createHost();
+    const first = imports.listModelsDevProviders();
+    await vi.waitFor(() => { expect(resolve).toBeTypeOf('function'); });
+    now = 11 * 60_000;
+    resolve(new Response(JSON.stringify(CATALOG)));
+    await first;
+    await imports.listModelsDevProviders();
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    now += 10 * 60_000;
+    await imports.listModelsDevProviders();
+    await vi.waitFor(() => { expect(fetchImpl).toHaveBeenCalledTimes(2); });
+    const updating = getModelsDevCatalog('fixture');
+    resolve(new Response(JSON.stringify(CATALOG)));
+    await updating;
+  });
+
+  it('keeps imports waiting for the refreshed entry instead of importing a stale browse snapshot', async () => {
+    let now = 0;
+    setModelsDevUpstreamForTest({ fetchImpl: fetchJson(CATALOG), now: () => now });
+    const { config, imports } = createHost({ defaultModel: 'keep-selected' });
+    await imports.listModelsDevProviders();
+    now = 11 * 60_000;
+    let resolve!: (response: Response) => void;
+    setModelsDevUpstreamForTest({ fetchImpl: (() => new Promise<Response>((done) => { resolve = done; })) as typeof fetch });
+    expect((await imports.listModelsDevProviders()).find((item) => item.id === 'openai')?.models).toHaveLength(1);
+    let settled = false;
+    const importing = imports.importModelsDevProvider({ catalogId: 'openai' }).finally(() => { settled = true; });
+    await vi.waitFor(() => { expect(resolve).toBeTypeOf('function'); });
+    expect(settled).toBe(false);
+    const revised = { ...CATALOG, openai: { ...CATALOG.openai, models: { replacement: { id: 'replacement', limit: { context: 4096 } } } } };
+    resolve(new Response(JSON.stringify(revised)));
+    await importing;
+    expect(config.get<ModelsSection>(MODELS_SECTION)['openai/replacement']?.maxContextSize).toBe(4096);
+    expect(config.get<ModelsSection>(MODELS_SECTION)['openai/gpt-4.1']).toBeUndefined();
+    expect(config.get('defaultModel')).toBe('keep-selected');
   });
 
   it('lists pruned directory entries with import eligibility resolved', async () => {

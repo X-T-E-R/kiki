@@ -672,7 +672,7 @@ export function registerModelCatalogRoutes(app: ModelCatalogRouteHost, core: Sco
       success: { data: listCatalogProvidersResponseSchema },
       errors: { [ErrorCode.CATALOG_UNAVAILABLE]: {} },
       description:
-        'Browse the models.dev directory (server-proxied, 10-minute in-memory cache, built-in snapshot fallback). Entries the server cannot import carry `rejected: true` with a machine-readable `reject_code` plus the upstream `reject_reason` for clients that only render text; entries with `needs_base_url: true` require a base URL at import time. Items keep the upstream directory order.',
+        'Browse the models.dev directory. Returns the last fetched catalog or bundled snapshot immediately while a single background update runs; successful fetches stay fresh for 10 minutes, and failed background updates wait 10 minutes before a read can retry. Without either local source, waits for the upstream fetch and reports unavailability on failure. Entries the server cannot import carry `rejected: true` with a machine-readable `reject_code` plus the upstream `reject_reason` for clients that only render text; entries with `needs_base_url: true` require a base URL at import time. Items keep the upstream directory order.',
       tags: ['providers'],
       operationId: 'listCatalogProviders',
     },
