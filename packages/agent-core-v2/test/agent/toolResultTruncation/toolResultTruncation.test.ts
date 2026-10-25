@@ -3,6 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'pathe';
 
 import { DisposableStore } from '#/_base/di/lifecycle';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { ILogService, type LogEntry } from '#/_base/log/log';
+import { BoundLogger } from '#/_base/log/logService';
+import { abortError } from '#/_base/utils/abort';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { ExecutableToolResult } from '#/tool/toolContract';
@@ -12,9 +16,10 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import type { ContentPart } from '#/kosong/contract/message';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { stubBootstrap } from '../../app/bootstrap/stubs';
+import { stubLog } from '../../_base/log/stubs';
 
 const PARALLEL_WORKER_CONTENTION_TIMEOUT_MS = 30_000;
 
@@ -22,6 +27,7 @@ describe('ToolResultTruncationService', () => {
   let disposables: DisposableStore;
   let homeDir: string;
   let truncation: IAgentToolResultTruncationService;
+  let logEntries: LogEntry[];
 
   beforeEach(async () => {
     homeDir = await mkdtemp(join(tmpdir(), 'tool-result-truncation-'));
@@ -36,10 +42,15 @@ describe('ToolResultTruncationService', () => {
       }),
     );
     ix.stub(IFileSystemStorageService, new FileStorageService(homeDir));
-    truncation = ix.createInstance(ToolResultTruncationService);
+    logEntries = [];
+    const logger = new BoundLogger({ write: (entry) => logEntries.push(entry) }, { level: 'error' });
+    ix.stub(ILogService, { ...stubLog(), error: logger.error.bind(logger) });
+    ix.set(IAgentToolResultTruncationService, new SyncDescriptor(ToolResultTruncationService));
+    truncation = ix.get(IAgentToolResultTruncationService);
   });
 
   afterEach(async () => {
+    vi.restoreAllMocks();
     await disposables.dispose();
     await rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
@@ -218,6 +229,69 @@ describe('ToolResultTruncationService', () => {
     expect(rendered).toContain('[Per-line truncation occurred; the complete output was saved to a file.');
     expect(rendered).toContain('next_step: Use Read with output_path');
     await expect(readFile(renderedOutputPath(rendered), 'utf8')).resolves.toBe(full);
+  });
+
+  it('preserves a multi-megabyte Grep line and returns a bounded spill pointer', async () => {
+    const full = `example.txt:1:revision:${'x'.repeat(9_000_000)}`;
+    const result = await truncation.truncateForModel<ExecutableToolResult>({
+      toolName: 'Grep',
+      toolCallId: 'call_grep_large_line',
+      result: { output: full },
+    });
+
+    expect(result.truncated).toBe(true);
+    expect(result.output.length).toBeLessThan(5_000);
+    await expect(readFile(renderedOutputPath(result.output), 'utf8')).resolves.toBe(full);
+  });
+
+  it('recovers a shaping RangeError with the saved text, media and original diagnostic stack', async () => {
+    const full = 'example output\n'.repeat(4_000);
+    const error = new RangeError('Maximum call stack size exceeded');
+    const image = { type: 'image_url', imageUrl: { url: 'data:image/png;base64,AAAA' } } as const;
+    const match = String.prototype.match;
+    vi.spyOn(String.prototype, 'match').mockImplementation(function (this: string, regexp) {
+      if (this === full) throw error;
+      return match.call(this, regexp);
+    });
+
+    const result = await truncation.truncateForModel<ExecutableToolResult>({
+      toolName: 'Grep', toolCallId: 'call_shape_error',
+      result: { output: [{ type: 'text', text: full }, image], spill: { suffix: 'search complete' } },
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.truncated).toBe(true);
+    expect(result).not.toHaveProperty('spill');
+    expect(Array.isArray(result.output)).toBe(true);
+    if (!Array.isArray(result.output) || result.output[0]?.type !== 'text') throw new Error('expected text and media');
+    const rendered = result.output[0].text;
+    expect(rendered).toContain('Tool output formatting failed after execution');
+    expect(rendered).toContain('Inspect output_path before rerunning the tool');
+    expect(rendered).toContain('search complete');
+    expect(rendered.length).toBeLessThan(10_000);
+    expect(result.output.slice(1)).toEqual([image]);
+    await expect(readFile(renderedOutputPath(rendered), 'utf8')).resolves.toBe(full);
+    expect(logEntries).toEqual([expect.objectContaining({
+      level: 'error', msg: 'tool result shaping failed',
+      ctx: { toolName: 'Grep', toolCallId: 'call_shape_error', outputChars: full.length },
+      error: { message: error.message, stack: error.stack },
+    })]);
+    const next = { output: 'next tool result' };
+    await expect(truncation.truncateForModel({ toolName: 'Read', toolCallId: 'next', result: next })).resolves.toBe(next);
+  });
+
+  it('propagates shaping cancellation instead of converting it to a formatting failure', async () => {
+    const error = abortError();
+    const full = 'x'.repeat(50_001);
+    const match = String.prototype.match;
+    vi.spyOn(String.prototype, 'match').mockImplementation(function (this: string, regexp) {
+      if (this === full) throw error;
+      return match.call(this, regexp);
+    });
+    await expect(truncation.truncateForModel({
+      toolName: 'Grep', toolCallId: 'shape_cancelled', result: { output: full },
+    })).rejects.toBe(error);
+    expect(logEntries).toEqual([]);
   });
 
   it('does not repeat suffix lines already present in the shaped output', async () => {
@@ -407,7 +481,9 @@ describe('ToolResultTruncationService', () => {
         throw new Error('disk full');
       },
     } as unknown as IFileSystemStorageService);
-    const failing = ix.createInstance(ToolResultTruncationService);
+    ix.stub(ILogService, stubLog());
+    ix.set(IAgentToolResultTruncationService, new SyncDescriptor(ToolResultTruncationService));
+    const failing = ix.get(IAgentToolResultTruncationService);
 
     const longLine = await failing.truncateForModel<ExecutableToolResult>({
       toolName: 'Lookup',

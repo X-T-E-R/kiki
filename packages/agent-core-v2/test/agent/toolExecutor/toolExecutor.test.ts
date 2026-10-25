@@ -1550,6 +1550,7 @@ describe('truncation pipeline', () => {
       }),
     );
     truncationContainer.stub(IFileSystemStorageService, new FileStorageService(homeDir));
+    truncationContainer.stub(ILogService, ix.get(ILogService));
     truncationContainer.set(
       IAgentToolResultTruncationService,
       new SyncDescriptor(ToolResultTruncationService),
@@ -1691,6 +1692,36 @@ describe('truncation pipeline', () => {
       'Per-line truncation occurred; the complete output was saved to a file.',
     );
     expect(readFileSync(renderedOutputPath(rendered), 'utf8')).toBe(fullOutput);
+  });
+
+  it('returns a recoverable shaping error and continues the tool batch and next step', async () => {
+    const full = 'shape failure output\n'.repeat(3_000);
+    const error = new RangeError('Maximum call stack size exceeded');
+    const match = String.prototype.match;
+    const shaping = vi.spyOn(String.prototype, 'match').mockImplementation(function (this: string, regexp) {
+      if (this === full) throw error;
+      return match.call(this, regexp);
+    });
+    const tool = new TestTool('large', { result: { output: full } });
+    const next = new TestTool('next');
+    registry.register(tool);
+    registry.register(next);
+    try {
+      const results = await execute([toolCall('large-call', 'large', {}), toolCall('next-call', 'next', {})]);
+      expect(results).toHaveLength(2);
+      const failed = results.find((result) => result.isError);
+      expect(failed).toMatchObject({ isError: true, truncated: true });
+      if (typeof failed?.output !== 'string') throw new Error('expected recoverable error text');
+      expect(failed.output).toContain('Tool output formatting failed after execution');
+      expect(readFileSync(renderedOutputPath(failed.output), 'utf8')).toBe(full);
+      expect(results).toContainEqual(expect.objectContaining({ output: 'next result' }));
+      expect(pairedToolCallIds().results).toEqual(expect.arrayContaining(['large-call', 'next-call']));
+      const later = await execute([toolCall('later-call', 'next', {})]);
+      expect(later).toEqual([expect.objectContaining({ output: 'next result' })]);
+      expect(tool.calls).toHaveLength(1);
+    } finally {
+      shaping.mockRestore();
+    }
   });
 
   it('passes spill-exempt results through the truncation pipeline unchanged', async () => {

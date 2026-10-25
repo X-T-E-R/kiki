@@ -4,6 +4,8 @@ Built-in tools are the tool set provided by Kiki alongside its core engine — n
 
 Compared to MCP tools, built-in tools are managed directly by the runtime, their lifecycle is bound to the session, and no external process is required. Both follow the same unified approval mechanism: **read-only tools** (such as `Read`, `Grep`, `Glob`) are automatically allowed by default, while **execution tools** (such as `Bash`) require user approval by default. File writes follow the workspace trust model: in a trusted working directory, `Write` / `Edit` inside that directory run without per-file approval; external targets require approval. Sensitive targets are checked at their resolved location: manual and Auto modes ask for approval, while YOLO mode skips the prompt unless an explicit deny rule applies. Plan mode exit approval is not affected.
 
+When a result reports `Tool output formatting failed after execution`, use `Read` or `Grep` on its `output_path` before rerunning the tool. Execution has already happened; the saved text and attached media remain available. The result states whether it saved the complete text or only a retention-limited prefix.
+
 ## File Tools
 
 File tools handle reading, writing, and searching the local filesystem — the foundation for code analysis and modification tasks.

@@ -35,6 +35,7 @@ import {
 import { IHostEnvironment } from '#/os/interface/hostEnvironment';
 import { IHostFileSystem, type HostFileStat } from '#/os/interface/hostFileSystem';
 import { IHostProcessService, type IHostProcess } from '#/os/interface/hostProcess';
+import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
 import { ISessionToolPolicyGate } from '#/session/sessionToolPolicyGate/sessionToolPolicyGate';
 import { Event } from '#/_base/event';
@@ -55,6 +56,15 @@ import { stubBootstrap } from '../../../../app/bootstrap/stubs';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IShippedAgentProfileManager } from '#/app/shippedAgentProfiles/shippedAgentProfileManager';
 import { ISessionDeliveryService } from '#/session/delivery/delivery';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { AgentToolExecutorService } from '#/agent/toolExecutor/toolExecutorService';
+import { IAgentToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncation';
+import { ToolResultTruncationService } from '#/agent/toolResultTruncation/toolResultTruncationService';
+import { IAgentScopeContext, makeAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { InMemoryStorageService } from '#/persistence/backends/memory/inMemoryStorageService';
+import { registerLogServices } from '../../../../_base/log/stubs';
+import { registerTestAgentWireServices } from '../../../../wire/stubs';
 
 vi.mock('#/os/backends/node-local/tools/rgLocator', () => ({
   ensureRgPath: vi.fn(async () => ({ path: '/mock/rg', source: 'system-path' })),
@@ -786,6 +796,54 @@ describe('GrepTool', () => {
       'hit',
       '/workspace',
     );
+  });
+
+  it('delivers a multi-megabyte matching line through the execution and spill pipeline', async () => {
+    const payload = `revision:${'x'.repeat(9_000_000)}`;
+    const processService = new HostProcessService();
+    const exec = () => processService.spawn(process.execPath, [
+      '-e',
+      'process.stdout.write("/workspace/example.txt\\0" + "1:revision:" + "x".repeat(9_000_000) + "\\n")',
+    ]);
+    const tool = new GrepTool(createFakeKaos({ exec }), workspace);
+    const disposables = new DisposableStore();
+    const storage = new InMemoryStorageService();
+    try {
+      const ix = createServices(disposables, {
+        base: [registerStateServices, registerLogServices],
+        additionalServices: (reg) => {
+          registerTestAgentWireServices(reg, 'wire/grep-large-line');
+          reg.define(IAgentToolRegistryService, AgentToolRegistryService);
+          reg.define(IAgentToolExecutorService, AgentToolExecutorService);
+          reg.define(IAgentToolResultTruncationService, ToolResultTruncationService);
+          reg.defineInstance(IAgentScopeContext, makeAgentScopeContext({ agentId: 'main', agentScope: 'agents/main' }));
+          reg.defineInstance(IBootstrapService, stubBootstrap('/example-home'));
+          reg.defineInstance(IFileSystemStorageService, storage);
+          reg.defineInstance(ITelemetryService, noopTelemetryService);
+          reg.defineInstance(IEventBus, { publish: () => {}, subscribe: () => toDisposable(() => {}) } as unknown as IEventBus);
+        },
+        strict: true,
+      });
+      ix.get(IAgentToolRegistryService).register(tool);
+      const results = [];
+      for await (const result of ix.get(IAgentToolExecutorService).execute([{
+        type: 'function', id: 'grep-large-line', name: 'Grep', arguments: JSON.stringify({
+          pattern: 'recipe|revision|binding|profile|model_alias', output_mode: 'content', head_limit: 12,
+        }),
+      }], { turnId: 0, signal })) results.push(result);
+      expect(results).toHaveLength(1);
+      const result = results[0]!.result;
+      if (result.isError) throw new Error(toolContentString(result));
+      expect(result.isError).not.toBe(true);
+      expect(result.truncated).toBe(true);
+      expect(toolContentString(result).length).toBeLessThan(5_000);
+      const files = await storage.list('agents/main/tool-results');
+      expect(files).toHaveLength(1);
+      expect(new TextDecoder().decode(await storage.read('agents/main/tool-results', files[0]!))).toBe(`example.txt:1:${payload}`);
+    } finally {
+      await disposables.dispose();
+      await processService.dispose();
+    }
   });
 
   describe('column cap by output mode', () => {

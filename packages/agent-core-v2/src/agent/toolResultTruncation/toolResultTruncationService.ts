@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { ILogService } from '#/_base/log/log';
+import { isAbortError } from '#/_base/utils/abort';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import {
   DEFAULT_TOOL_RESULT_MAX_CHARS,
@@ -38,6 +40,7 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
     @IBootstrapService private readonly bootstrap: IBootstrapService,
     @IAgentScopeContext agent: IAgentScopeContext,
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
+    @ILogService private readonly log: ILogService,
   ) {
     this.storageScope = agent.scope('tool-results');
   }
@@ -56,7 +59,6 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
       rawText.length <= DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS
         ? rawText
         : rawText.slice(0, DEFAULT_TOOL_RESULT_MAX_RETAINED_CHARS);
-    const shaped = shapeOutput(result.output, TOOL_RESULT_MAX_LINE_CHARS);
     const totalChars = spill?.totalChars ?? rawText.length;
     const suffix = spill?.suffix ?? '';
 
@@ -73,7 +75,39 @@ export class ToolResultTruncationService implements IAgentToolResultTruncationSe
         DEFAULT_TOOL_RESULT_MAX_CHARS,
         suffix,
       );
-      return { ...rest, output: mergeSpillPointer(shaped.output, fallback), truncated: true } as T;
+      return { ...rest, output: mergeSpillPointer(result.output, fallback), truncated: true } as T;
+    }
+
+    let shaped: ShapedOutput;
+    try {
+      shaped = shapeOutput(result.output, TOOL_RESULT_MAX_LINE_CHARS);
+    } catch (error) {
+      if (!(error instanceof Error) || isAbortError(error)) throw error;
+      this.log.error('tool result shaping failed', {
+        toolName: input.toolName,
+        toolCallId: input.toolCallId,
+        outputChars: rawText.length,
+        error,
+      });
+      const failure = [
+        'Tool output formatting failed after execution. Inspect output_path before rerunning the tool.',
+        suffix,
+      ].filter((line) => line !== '').join('\n');
+      const hasMedia = Array.isArray(result.output) && result.output.some(
+        (part) => part.type !== 'text' && part.type !== 'think',
+      );
+      const pointer = renderPersistedToolResult(
+        input.toolName,
+        input.toolCallId,
+        retainedText,
+        saved.outputPath,
+        saved.preservedChars,
+        totalChars,
+        DEFAULT_TOOL_RESULT_MAX_CHARS,
+        failure,
+        hasMedia,
+      );
+      return { ...rest, output: mergeSpillPointer(result.output, pointer), isError: true, truncated: true } as T;
     }
 
     if (shaped.textChars <= DEFAULT_TOOL_RESULT_MAX_CHARS) {
