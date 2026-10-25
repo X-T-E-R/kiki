@@ -279,6 +279,40 @@ describe('SessionViewTarget', () => {
     connection.dispose();
   });
 
+  it('starts a visible cold child without waiting for another visible agent history', async () => {
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const service = {
+      reconcileQuestionSnapshot: (_sessionId: string, snapshot: unknown) => snapshot,
+      readColdRoster: vi.fn(async () => []),
+      readColdPageSnapshot: coldPageReader(async (_sessionId, agentId) => {
+        if (agentId === 'slow-child') await blocked;
+        return { ...new AgentTranscript(agentId).snapshot(), toolCallCountKnown: true };
+      }),
+    };
+    const send = vi.fn();
+    const errors = vi.fn();
+    const broadcaster = { getCursor: vi.fn(async () => ({ seq: 7, epoch: 'session-epoch' })), unsubscribe: vi.fn() };
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
+      { core: { accessor: { get: () => ({ get: () => undefined }) } } as never, service: service as never });
+    try {
+      connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: {
+        generation: 1, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+        input: { sessionCursor: { seq: 7 }, transcriptGrades: { 'slow-child': 'delta', 'visible-child': 'delta' } },
+      } });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({
+        type: 'transcript', event: expect.objectContaining({ agent_id: 'visible-child' }),
+      }) })));
+      expect(send.mock.calls.some(([frame]) => frame.data.type === 'ready')).toBe(false);
+      release();
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'ready' }) })));
+      expect(errors).not.toHaveBeenCalled();
+    } finally {
+      release();
+      connection.dispose();
+    }
+  });
+
   it('prioritizes cold explicit detail over earlier summary keys without acknowledging unfinished reads', async () => {
     let release!: () => void;
     const blocked = new Promise<void>((resolve) => { release = resolve; });

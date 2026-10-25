@@ -233,22 +233,28 @@ export class SessionViewHttpConnection {
         (gradeFor(input.transcriptGrades, agentId) === 'block' || gradeFor(input.transcriptGrades, agentId) === 'delta');
       const ordered = [...agents].toSorted((left, right) => Number(priority(right)) - Number(priority(left)));
       let firstDetail = false;
-      for (const agentId of ordered) {
-        const grade = gradeFor(input.transcriptGrades, agentId);
-        if (grade === 'off') continue;
-        const readAt = performance.now();
-        const event = await readColdSessionViewBaseline(service, frame.sessionId, agentId, grade, cold.signal);
-        recordSessionViewTiming('cold_agent_read', readAt, { ...fields, agentId });
-        if (event === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
-        cold.signal.throwIfAborted();
-        if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
-        this.send({ type: 'view_signal', id, data: { type: 'transcript', event,
-          generation: data.generation, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION } });
-        if (!firstDetail && priority(agentId)) {
-          firstDetail = true;
-          recordSessionViewTiming('first_detail_reset', attachedAt, { ...fields, agentId });
+      let nextAgent = 0;
+      const readAgents = async (): Promise<void> => {
+        while (nextAgent < ordered.length) {
+          cold.signal.throwIfAborted();
+          const agentId = ordered[nextAgent++]!;
+          const grade = gradeFor(input.transcriptGrades, agentId);
+          if (grade === 'off') continue;
+          const readAt = performance.now();
+          const event = await readColdSessionViewBaseline(service, fields.sessionId, agentId, grade, cold.signal);
+          recordSessionViewTiming('cold_agent_read', readAt, { ...fields, agentId });
+          if (event === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
+          cold.signal.throwIfAborted();
+          if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
+          this.send({ type: 'view_signal', id, data: { type: 'transcript', event,
+            generation: data.generation, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION } });
+          if (!firstDetail && priority(agentId)) {
+            firstDetail = true;
+            recordSessionViewTiming('first_detail_reset', attachedAt, { ...fields, agentId });
+          }
         }
-      }
+      };
+      await Promise.all(Array.from({ length: Math.min(2, ordered.length) }, () => readAgents()));
       const cursor = await broadcaster.getCursor(frame.sessionId);
       cold.signal.throwIfAborted();
       if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;

@@ -2934,6 +2934,8 @@ export class SessionController {
     for (const [controller, owner] of this.rangeControllers) if (owner === agentId) controller.abort();
     this.contentRanges.clear(); this.contentRangeBytes = 0;
     this.cancelHistoryRead(agentId);
+    this.catchupControllers.get(agentId)?.abort();
+    this.catchupControllers.delete(agentId);
     this.catchupByAgent.delete(agentId);
     this.toolCountSpans.delete(agentId);
     this.toolCountObservations.delete(agentId);

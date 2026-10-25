@@ -1929,14 +1929,15 @@ describe('SessionController transcript authority', () => {
       clearTranscriptSince: vi.fn(),
     };
     const { scheduler, flushAll } = manualScheduler();
+    const view = fakeView(client, socket);
     const controller = new SessionController(
       client as unknown as KikiClient,
-      fakeView(client, socket),
+      view,
       'session_test',
       { scheduler, rewriteResetTimeoutMs: options.rewriteResetTimeoutMs, historyPreviewBytes: options.historyPreviewBytes },
     );
     await controller.open();
-    return { controller, client, socket, flushAll };
+    return { controller, client, socket, view, flushAll };
   }
 
   it('waits for a pending resync before starting an older read', async () => {
@@ -5250,7 +5251,13 @@ describe('SessionController transcript authority', () => {
   it.each(['same-epoch', 'new-epoch', 'resync', 'rewrite', 'focus', 'view-grade', 'close'])(
     'discards catchup responses after %s invalidates their history',
     async (boundary) => {
-      const { controller, client, socket, flushAll } = await openTranscriptController();
+      const { controller, client, socket, view: facade, flushAll } = await openTranscriptController();
+      const signals: AbortSignal[] = [];
+      const catchUp = facade.transcript.catchUp;
+      vi.spyOn(facade.transcript, 'catchUp').mockImplementation((input, options) => {
+        if (options?.signal !== undefined) signals.push(options.signal);
+        return catchUp(input, options);
+      });
       const agentId = boundary === 'focus' || boundary === 'view-grade' ? 'child-1' : 'main';
       const held = deferred<Awaited<ReturnType<SessionViewFacade['transcript']['catchUp']>>>();
       client.getTranscriptOps.mockImplementationOnce((async () => held.promise) as never);
@@ -5279,6 +5286,8 @@ describe('SessionController transcript authority', () => {
         snapshot: textTurnSnapshot('f1', 'NEW'),
       }));
       if (boundary === 'close') controller.close();
+      expect(signals).toHaveLength(1);
+      expect(signals[0]?.aborted).toBe(true);
       const calls = socket.updateTranscriptSince.mock.calls.length;
       held.resolve({
         session_id: 'session_test', agent_id: agentId, epoch: 'epoch-1', through_seq: 99, complete: true,
