@@ -288,6 +288,7 @@ function createAgentLifecycleStub(options: AgentLifecycleStubOptions = {}): Agen
         if (serviceId === IAgentModelSwitchService) {
           return {
             _serviceBrand: undefined, onDidChange: Event.None as KimiEvent<ModelSwitchReceipt>,
+            hooks: { onDidCommitContextWindow: { register: () => ({ dispose() {} }), delete: () => false, run: async () => {} } },
             get: (operationId: string) => switches.get(`${agentId}:${operationId}`),
             execute: async (input, options) => {
               const saved = switches.get(`${agentId}:${input.operationId}`);

@@ -9,9 +9,11 @@ import { IAgentContextRebuildService } from '#/agent/contextRebuild/contextRebui
 import { contextRebuildControlKey } from '#/agent/contextRebuild/contextRebuildOps';
 import { AgentContextRebuildService } from '#/agent/contextRebuild/contextRebuildService';
 import type { FullCompactionTask } from '#/agent/fullCompaction/fullCompaction';
+import { ILogService } from '#/_base/log/log';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentModelSwitchService, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -258,12 +260,55 @@ describe('AgentContextRebuildService', () => {
     expect(host.reload).toHaveBeenCalledTimes(2);
     expect(host.service.control().outcome).toBe('applied');
   });
+
+  it('names a committed fresh start and a summary separately from an unspecified compaction', async () => {
+    const host = createHost(disposables);
+    await host.service.setEnabled(true);
+    await host.commit.run({ ...compactionTask(), committedStrategy: 'relay' });
+    expect(host.service.control().trigger).toBe('fresh_start');
+    await host.commit.run({ ...compactionTask(), committedStrategy: 'summarize' });
+    expect(host.reload).toHaveBeenCalledTimes(2);
+    expect(host.service.control().trigger).toBe('summary');
+    expect(host.setModel).not.toHaveBeenCalled();
+  });
+
+  it('re-reads after a fresh or compacted context window and ignores a direct switch', async () => {
+    const host = createHost(disposables);
+    await host.service.setEnabled(true);
+    await host.modelWindow.run(windowReceipt('direct'));
+    expect(host.reload).not.toHaveBeenCalled();
+    await host.modelWindow.run(windowReceipt('fresh'));
+    expect(host.service.control().trigger).toBe('model_switch_fresh');
+    await host.modelWindow.run(windowReceipt('compact'));
+    expect(host.reload).toHaveBeenCalledTimes(2);
+    expect(host.service.control().trigger).toBe('model_switch_compact');
+    expect(host.setModel).not.toHaveBeenCalled();
+    expect(host.prompt.modelAlias).toBe('kept-model');
+  });
+
+  it('re-reads after an idle context clear and skips a clear while the loop is running', async () => {
+    const host = createHost(disposables);
+    await host.service.setEnabled(true);
+    await host.cleared.run({ deleteCount: 2 });
+    expect(host.reload).toHaveBeenCalledTimes(1);
+    expect(host.service.control().trigger).toBe('context_clear');
+    const busy = createHost(disposables, { loopState: 'running' });
+    await busy.service.setEnabled(true);
+    await busy.cleared.run({ deleteCount: 2 });
+    expect(busy.reload).not.toHaveBeenCalled();
+    const compacting = createHost(disposables, { compacting: true });
+    await compacting.service.setEnabled(true);
+    await compacting.cleared.run({ deleteCount: 2 });
+    expect(compacting.reload).not.toHaveBeenCalled();
+  });
 });
 
 interface HostOptions {
   readonly agentId?: string;
   readonly executorId?: string;
   readonly busy?: boolean;
+  readonly loopState?: 'idle' | 'running';
+  readonly compacting?: boolean;
   readonly sources?: () => Promise<{ instructionsChanged: boolean; pluginsChanged: boolean }>;
   readonly profilesReload?: () => Promise<void>;
   readonly plugins?: () => Promise<void>;
@@ -278,6 +323,8 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
   const states = disposables.add(new AgentStateService());
   const commit = new OrderedHookSlot<FullCompactionTask>();
   const restore = new OrderedHookSlot<Record<string, never>>();
+  const modelWindow = new OrderedHookSlot<ModelSwitchReceipt>();
+  const cleared = new OrderedHookSlot<{ readonly deleteCount: number }>();
   const reload = vi.fn(options.sources ?? (async () => ({ instructionsChanged: false, pluginsChanged: false })));
   const plugins = vi.fn(options.plugins ?? (async () => undefined));
   const injector = vi.fn(async () => undefined);
@@ -304,13 +351,26 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
       });
       reg.definePartialInstance(IAgentFullCompactionService, {
         hooks: { onWillCompact: new OrderedHookSlot<FullCompactionTask>(), onDidCommit: commit },
+        isCompacting: () => options.compacting === true,
       });
+      reg.definePartialInstance(IAgentModelSwitchService, {
+        hooks: { onDidCommitContextWindow: modelWindow },
+      });
+      reg.definePartialInstance(ILogService, { error: () => undefined });
       reg.definePartialInstance(IAgentScopeContext, { agentId: options.agentId ?? 'main' });
       reg.definePartialInstance(IAgentLoopService, {
         tryAcquireQuiescence: () => options.busy === true ? undefined : toDisposable(() => {}),
+        status: () => ({
+          state: options.loopState ?? 'idle',
+          pendingTurnIds: [],
+          hasPendingRequests: false,
+        }),
       });
       reg.definePartialInstance(IAgentContextInjectorService, { reconcileAllAtSafeBoundary: injector });
-      reg.definePartialInstance(IAgentContextMemoryService, { get: () => history as never });
+      reg.definePartialInstance(IAgentContextMemoryService, {
+        get: () => history as never,
+        hooks: { onDidClear: cleared },
+      });
       reg.definePartialInstance(IAgentProfileService, {
         data: () => prompt as unknown as ReturnType<IAgentProfileService['data']>,
         getPromptFieldSnapshot: () => ({ field: 'same' } as unknown as ReturnType<IAgentProfileService['getPromptFieldSnapshot']>),
@@ -343,6 +403,8 @@ function createHost(disposables: DisposableStore, options: HostOptions = {}) {
     states,
     commit,
     restore,
+    modelWindow,
+    cleared,
     reload,
     plugins,
     injector,
@@ -368,6 +430,17 @@ function compactionTask(): FullCompactionTask {
     promise: Promise.resolve({} as FullCompactionTask['promise'] extends Promise<infer T> ? T : never),
     trigger: 'manual',
     tokenCount: 1,
+  };
+}
+
+function windowReceipt(mode: ModelSwitchReceipt['mode']): ModelSwitchReceipt {
+  return {
+    operationId: mode,
+    agentId: 'main',
+    state: 'completed',
+    fromModel: 'kept-model',
+    toModel: 'kept-model',
+    mode,
   };
 }
 

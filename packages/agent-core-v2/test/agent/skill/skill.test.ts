@@ -97,7 +97,7 @@ describe('AgentSkillService', () => {
           enqueue: ({ message }: { message: ContextMessage }) => { prompted.push(message); return Promise.resolve({ launched: Promise.resolve(fakeTurn()) } as never); },
           inject: (message: ContextMessage) => { prompted.push(message); return Promise.resolve(fakeTurn()); },
           retry: () => Promise.resolve(undefined),
-          clear: () => {},
+          clear: async () => {},
         });
         reg.definePartialInstance(IAgentLoopService, {
           status: () => ({ state: 'idle', activeTurnId: undefined, pendingTurnIds: [], hasPendingRequests: false, activeTraceId: undefined }),
@@ -241,7 +241,7 @@ describe('SkillTool', () => {
           enqueue: ({ message }: { message: ContextMessage }) => { prompted.push(message); return Promise.resolve({ launched: Promise.resolve(fakeTurn()) } as never); },
           inject: (message: ContextMessage) => { prompted.push(message); return Promise.resolve(fakeTurn()); },
           retry: () => Promise.resolve(undefined),
-          clear: () => {},
+          clear: async () => {},
         });
         reg.definePartialInstance(IAgentLoopService, {
           status: () => ({ state: 'idle', activeTurnId: undefined, pendingTurnIds: [], hasPendingRequests: false, activeTraceId: undefined }),

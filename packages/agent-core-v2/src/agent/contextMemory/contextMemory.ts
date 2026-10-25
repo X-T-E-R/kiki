@@ -1,4 +1,5 @@
 import { createDecorator } from "#/_base/di/instantiation";
+import type { Hooks } from '#/hooks';
 
 import type { UndoCut } from './contextOps';
 import type { LoopRecordedEvent } from './loopEventFold';
@@ -59,7 +60,15 @@ export interface IAgentContextMemoryService {
 
   publishTrailingRemoval(previous: readonly ContextMessage[]): boolean;
 
-  clear(): void;
+  /**
+   * Runs after a non-empty clear is applied and before clear resolves.
+   * Replaying a stored clear during session restore does not run this.
+   */
+  readonly hooks: Hooks<{
+    onDidClear: { readonly deleteCount: number };
+  }>;
+
+  clear(): Promise<void>;
 
   undo(count: number): UndoCut;
 

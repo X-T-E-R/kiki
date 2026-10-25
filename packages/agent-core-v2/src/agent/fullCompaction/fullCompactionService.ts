@@ -672,7 +672,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     if (active.committedResult === undefined || active.committedBoundaryRan === true) return;
     active.committedBoundaryRan = true;
     try {
-      await this.hooks.onDidCommit.run(active);
+      await this.hooks.onDidCommit.run({ ...active, committedStrategy: active.committedResult.strategy });
     } catch (error) {
       this.log.error('failed to run the committed compaction boundary', { error, committed: true });
     }

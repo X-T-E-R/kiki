@@ -299,9 +299,14 @@ class FakeContextMemory implements IAgentContextMemoryService {
     return false;
   }
 
-  clear(): void {
+  readonly hooks: IAgentContextMemoryService['hooks'] = {
+    onDidClear: { register: () => ({ dispose() {} }), delete: () => false, run: async () => {} },
+  };
+
+  clear(): Promise<void> {
     this.history.length = 0;
     this.appended.length = 0;
+    return Promise.resolve();
   }
 
   undo(): UndoCut {

@@ -1,6 +1,7 @@
 import { createDecorator } from '#/_base/di/instantiation';
 import type { Event } from '#/_base/event';
 import type { PreparedModelSwitchBinding } from '#/agent/profile/profile';
+import type { Hooks } from '#/hooks';
 
 export type ModelSwitchMode = 'direct' | 'compact' | 'fresh';
 
@@ -36,6 +37,14 @@ export interface ModelSwitchExecuteOptions {
 export interface IAgentModelSwitchService {
   readonly _serviceBrand: undefined;
   readonly onDidChange: Event<ModelSwitchReceipt>;
+  /**
+   * Runs after a fresh or compacted context window is durable and before the switch
+   * releases the loop. A direct switch keeps the current context and does not run this.
+   * Replaying an old switch during session restore does not run this.
+   */
+  readonly hooks: Hooks<{
+    onDidCommitContextWindow: ModelSwitchReceipt;
+  }>;
   execute(input: ModelSwitchInput, options?: ModelSwitchExecuteOptions): Promise<ModelSwitchReceipt>;
   get(operationId: string): ModelSwitchReceipt | undefined;
 }

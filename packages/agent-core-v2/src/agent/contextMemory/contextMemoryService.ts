@@ -15,6 +15,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { BugIndicatingError } from '#/_base/errors/errors';
 import { ErrorCodes, Error2 } from '#/errors';
 import { IEventDispatcher } from '#/state/eventDispatcher';
+import { OrderedHookSlot } from '#/hooks';
 
 import {
   IAgentContextMemoryService,
@@ -49,6 +50,9 @@ import type { ContextMessage, ContextMessageSource } from './types';
 
 export class AgentContextMemoryService extends Disposable implements IAgentContextMemoryService {
   declare readonly _serviceBrand: undefined;
+  readonly hooks: IAgentContextMemoryService['hooks'] = {
+    onDidClear: new OrderedHookSlot(),
+  };
 
   constructor(
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
@@ -125,7 +129,7 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
     return true;
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     const deleteCount = this.get().length;
     if (deleteCount === 0) return;
     void this.dispatcher.dispatch(new ContextClear({}));
@@ -133,6 +137,7 @@ export class AgentContextMemoryService extends Disposable implements IAgentConte
       new TokenCountingRebased({ length: 0, tokens: 0, measured: true }),
     );
     this.publishSplice({ start: 0, deleteCount, messages: [] });
+    await this.hooks.onDidClear.run({ deleteCount });
   }
 
   undo(count: number): UndoCut {

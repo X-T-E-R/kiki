@@ -2336,11 +2336,11 @@ export class AgentPromptService implements IAgentPromptService {
 
   async retry(): Promise<Turn | undefined> { return (await this.loop.enqueue(new RetryStepRequest()).assigned).turn; }
 
-  clear(): void {
+  async clear(): Promise<void> {
     for (const item of this.pending.slice()) this.abort(item.id);
     if (this.launchingPrompt !== undefined) this.abort(this.launchingPrompt.record.id);
     if (this.active !== undefined) this.abort(this.active.id);
-    this.context.clear();
+    await this.context.clear();
   }
 
   private compatiblePendingBatch(first: Record): Record[] {

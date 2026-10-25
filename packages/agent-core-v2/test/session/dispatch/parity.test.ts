@@ -569,6 +569,7 @@ function createLane(
         if (serviceId === ISessionSubagentService) return subagents;
         if (serviceId === IAgentModelSwitchService) {
           return { _serviceBrand: undefined, onDidChange: Event.None as Event<ModelSwitchReceipt>,
+            hooks: { onDidCommitContextWindow: { register: () => ({ dispose() {} }), delete: () => false, run: async () => {} } },
             get: (id) => modelSwitchReceipts.get(`${agentId}:${id}`),
             execute: async (input, execution) => {
               const data = profileByAgent.get(agentId)!;

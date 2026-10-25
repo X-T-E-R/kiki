@@ -98,7 +98,7 @@ describe('RestGateway', () => {
       drain: () => Promise.resolve(),
       inject: () => Promise.resolve(undefined),
       retry: () => Promise.resolve(undefined),
-      clear: () => {},
+      clear: async () => {},
       hooks: createHooks(['onBeforeSubmitPrompt']) as IAgentPromptService['hooks'],
     };
 

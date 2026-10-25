@@ -10,7 +10,16 @@ import {
 } from './contextRebuild';
 
 const surfaceSchema = z.enum(CONTEXT_REBUILD_SURFACES);
-const triggerSchema = z.enum(['manual', 'compaction', 'restore']);
+const triggerSchema = z.enum([
+  'manual',
+  'compaction',
+  'fresh_start',
+  'summary',
+  'restore',
+  'model_switch_fresh',
+  'model_switch_compact',
+  'context_clear',
+]);
 const outcomeSchema = z.enum(['applied', 'partial', 'failed']);
 const changesSchema = z.object({
   profile: z.boolean(),

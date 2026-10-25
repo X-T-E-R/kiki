@@ -202,7 +202,16 @@ export const contextRebuildResultSchema = z.object({
 export const contextRebuildControlSchema = z.object({
   enabled: z.boolean(),
   outcome: z.enum(['applied', 'partial', 'failed']).optional(),
-  trigger: z.enum(['manual', 'compaction', 'restore']).optional(),
+  trigger: z.enum([
+    'manual',
+    'compaction',
+    'fresh_start',
+    'summary',
+    'restore',
+    'model_switch_fresh',
+    'model_switch_compact',
+    'context_clear',
+  ]).optional(),
   at: z.string().optional(),
   error: z.string().optional(),
   changes: contextRebuildChangesSchema.optional(),

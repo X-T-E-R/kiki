@@ -89,6 +89,30 @@ describe('ContextRebuildControl', () => {
     expect(container.querySelector('[data-context-rebuild-error]')?.textContent).toBe('still down');
   });
 
+  it('names each context boundary instead of a generic restart', async () => {
+    const triggers = [
+      ['fresh_start', 'After a fresh start'],
+      ['summary', 'After a summary'],
+      ['model_switch_fresh', 'After a fresh context window'],
+      ['model_switch_compact', 'After a compacted context window'],
+      ['context_clear', 'After clearing the context'],
+      ['restore', 'After session recovery'],
+    ] as const;
+    for (const [trigger, label] of triggers) {
+      control.mockResolvedValue({
+        enabled: true, outcome: 'applied', trigger, at: '2026-10-25T01:02:03.000Z',
+        changes: { profile: false, promptFields: false, skills: false, instructions: false, plugins: false, mcp: false, injections: false },
+        rebuilt: ['profile', 'prompt_fields', 'skills', 'instructions', 'plugins', 'mcp', 'injections'],
+        unsupported: [],
+      });
+      await render();
+      expect(container.querySelector('[data-context-rebuild-outcome="applied"]')?.textContent).toContain(label);
+      expect(container.textContent).not.toContain(`agentPanel.rebuild.trigger.${trigger}`);
+    }
+    expect(container.textContent).toContain('model switch that keeps the current context');
+    expect(container.textContent).not.toMatch(/\brestart\b/i);
+  });
+
   it('shows an unsupported executor boundary instead of calling it refreshed', async () => {
     control.mockResolvedValue({
       enabled: false,

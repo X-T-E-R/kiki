@@ -139,7 +139,8 @@ function stubContextMemory(): IAgentContextMemoryService & {
     },
     appendLoopEvent: () => {},
     publishTrailingRemoval: () => false,
-    clear: () => {
+    hooks: { onDidClear: { register: () => ({ dispose() {} }), delete: () => false, run: async () => {} } },
+    clear: async () => {
       messages.splice(0);
     },
     undo: (count) => {

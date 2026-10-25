@@ -24,7 +24,15 @@ export interface ContextRebuildChanges {
 
 export type ContextRebuildOutcome = 'applied' | 'partial' | 'failed';
 
-export type ContextRebuildTrigger = 'manual' | 'compaction' | 'restore';
+export type ContextRebuildTrigger =
+  | 'manual'
+  | 'compaction'
+  | 'fresh_start'
+  | 'summary'
+  | 'restore'
+  | 'model_switch_fresh'
+  | 'model_switch_compact'
+  | 'context_clear';
 
 export type ContextRebuildUnsupportedSurface = ContextRebuildSurface | 'executor_session';
 

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextRebuildService } from '#/agent/contextRebuild/contextRebuild';
 import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMode';
@@ -52,7 +53,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(ctx.get(IAgentContextRebuildService).control()).toMatchObject({
       enabled: true,
       outcome: 'applied',
-      trigger: 'compaction',
+      trigger: 'fresh_start',
     });
     expect(profile.data().modelAlias).toBe(before.modelAlias);
     expect(profile.data().thinkingLevel).toBe(before.thinkingLevel);
@@ -79,7 +80,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(ctx.get(IAgentContextRebuildService).control()).toMatchObject({
       enabled: true,
       outcome: 'failed',
-      trigger: 'compaction',
+      trigger: 'fresh_start',
       error: 'sources unavailable',
       rebuilt: [],
     });
@@ -134,6 +135,33 @@ describe('context rebuild at the committed compaction boundary', () => {
     } finally {
       await hook.dispose();
     }
+  }, 30_000);
+
+  it('re-reads after an idle context clear and ignores strategy reset, undo, and another message', async () => {
+    const reload = vi.fn(async () => ({ instructionsChanged: false, pluginsChanged: false }));
+    const ctx = openAgent(reload);
+    const profile = ctx.get(IAgentProfileService);
+    const memory = ctx.get(IAgentContextMemoryService);
+    const model = profile.getModel();
+    const thinking = profile.data().thinkingLevel;
+    await memory.clear();
+    await ctx.get(IAgentContextRebuildService).setEnabled(true);
+    await memory.clear();
+    ctx.get(IAgentFullCompactionService).setContextStrategyOverride('fresh');
+    ctx.get(IAgentFullCompactionService).setContextStrategyOverride(null);
+    memory.append({
+      role: 'user', content: [{ type: 'text', text: 'ordinary next message' }], toolCalls: [], id: 'ordinary',
+    });
+    memory.append({
+      role: 'user', content: [{ type: 'text', text: 'still not a restart' }], toolCalls: [], id: 'ordinary-2',
+    });
+    memory.undo(1);
+    expect(reload).not.toHaveBeenCalled();
+    await memory.clear();
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(ctx.get(IAgentContextRebuildService).control()).toMatchObject({ trigger: 'context_clear', outcome: 'applied' });
+    expect(profile.getModel()).toBe(model);
+    expect(profile.data().thinkingLevel).toBe(thinking);
   }, 30_000);
 
   it('does not re-read sources when the switch stays off', async () => {

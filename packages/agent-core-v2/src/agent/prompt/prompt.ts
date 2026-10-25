@@ -278,7 +278,7 @@ export interface IAgentPromptService {
   drain(reason: Error, mode?: 'cancel' | 'preserve-pending'): Promise<void>;
   inject(message: ContextMessage, options?: PromptInjectOptions): Promise<Turn | undefined>;
   retry(): Promise<Turn | undefined>;
-  clear(): void;
+  clear(): Promise<void>;
   readonly hooks: Hooks<{ onBeforeSubmitPrompt: PromptSubmitContext }>;
 }
 

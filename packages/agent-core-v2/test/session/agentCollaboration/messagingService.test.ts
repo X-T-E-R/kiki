@@ -3585,7 +3585,8 @@ function agentHandle(
     appendManaged: (message, _delivery) => { operations.push('appendObservable'); messages.push(message); },
     appendLoopEvent: () => {},
     publishTrailingRemoval: () => false,
-    clear: () => {},
+    hooks: { onDidClear: { register: () => ({ dispose() {} }), delete: () => false, run: async () => {} } },
+    clear: async () => {},
     undo: () => { throw new Error('unexpected undo'); },
     undoAndReplace: async (count, replacementPrompt) => {
       const cut = computeUndoCut(messages, count);

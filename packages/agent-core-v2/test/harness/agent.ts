@@ -1675,8 +1675,8 @@ export class AgentTestContext {
     });
   }
 
-  clearContext(): void {
-    this.get(IAgentPromptService).clear();
+  clearContext(): Promise<void> {
+    return this.get(IAgentPromptService).clear();
   }
 
   async undoHistory(count: number): Promise<number> {

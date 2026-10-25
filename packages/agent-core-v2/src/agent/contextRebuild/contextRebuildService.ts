@@ -2,7 +2,9 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { Error2, ErrorCodes } from '#/errors';
+import { ILogService } from '#/_base/log/log';
 import { IAgentLoopService } from '#/agent/loop/loop';
+import { IAgentModelSwitchService, type ModelSwitchReceipt } from '#/agent/modelSwitch/modelSwitch';
 import { IAgentContextInjectorService } from '#/agent/contextInjector/contextInjector';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentProfileService } from '#/agent/profile/profile';
@@ -11,7 +13,7 @@ import { IAgentPluginService } from '#/agent/plugin/agentPlugin';
 import { IAgentMcpService } from '#/agent/mcp/mcp';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentStateService } from '#/agent/state/agentState';
-import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
+import { IAgentFullCompactionService, type FullCompactionTask } from '#/agent/fullCompaction/fullCompaction';
 import { MAIN_AGENT_ID } from '#/session/agentLifecycle/agentLifecycle';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
 import { ISessionSkillCatalog } from '#/session/sessionSkillCatalog/skillCatalog';
@@ -64,13 +66,32 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     @IAgentStateService private readonly states: IAgentStateService,
     @IEventDispatcher private readonly dispatcher: IEventDispatcher,
     @IAgentFullCompactionService private readonly compaction: IAgentFullCompactionService,
+    @IAgentModelSwitchService private readonly modelSwitch: IAgentModelSwitchService,
+    @ILogService private readonly log: ILogService,
     @ISessionPluginUsageService private readonly pluginUsage?: ISessionPluginUsageService,
   ) {
     super();
     this._register(this.states.contributeState(contextRebuildControlKey));
     this._register(this.compaction.hooks.onDidCommit.register('context-rebuild', async (task, next) => {
       try {
-        await this.rebuildAfterBoundary('compaction', task.abortController.signal);
+        await this.rebuildAfterBoundary(compactionTrigger(task), task.abortController.signal);
+      } finally {
+        await next();
+      }
+    }));
+    this._register(this.modelSwitch.hooks.onDidCommitContextWindow.register('context-rebuild', async (receipt, next) => {
+      try {
+        const trigger = contextWindowTrigger(receipt);
+        if (trigger !== undefined) await this.rebuildAfterBoundary(trigger);
+      } finally {
+        await next();
+      }
+    }));
+    this._register(this.context.hooks.onDidClear.register('context-rebuild', async (_cleared, next) => {
+      try {
+        if (this.canRebuildAfterClear()) await this.rebuildAfterBoundary('context_clear');
+      } catch (error) {
+        this.log.error('failed to rebuild after clearing context', { error, committed: true });
       } finally {
         await next();
       }
@@ -110,7 +131,12 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
     return this.exclusive(() => this.execute('quiescence', 'manual', undefined, true));
   }
 
-  private rebuildAfterBoundary(trigger: 'compaction' | 'restore', signal?: AbortSignal): Promise<void> {
+  private canRebuildAfterClear(): boolean {
+    const status = this.loop.status();
+    return status.state === 'idle' && status.hasPendingRequests !== true && !this.compaction.isCompacting();
+  }
+
+  private rebuildAfterBoundary(trigger: Exclude<ContextRebuildTrigger, 'manual'>, signal?: AbortSignal): Promise<void> {
     if (this.control().enabled !== true) return Promise.resolve();
     return this.exclusive(async () => {
       if (this.control().enabled !== true) return;
@@ -358,6 +384,19 @@ export class AgentContextRebuildService extends Disposable implements IAgentCont
       : 'Context rebuild was cancelled.';
     throw new Error2(ErrorCodes.REQUEST_INVALID, message);
   }
+}
+
+function compactionTrigger(task: FullCompactionTask): Exclude<ContextRebuildTrigger, 'manual'> {
+  if (task.committedStrategy === 'relay') return 'fresh_start';
+  if (task.committedStrategy === 'summarize') return 'summary';
+  return 'compaction';
+}
+
+function contextWindowTrigger(receipt: ModelSwitchReceipt): 'model_switch_fresh' | 'model_switch_compact' | undefined {
+  if (receipt.state !== 'completed') return undefined;
+  if (receipt.mode === 'fresh') return 'model_switch_fresh';
+  if (receipt.mode === 'compact') return 'model_switch_compact';
+  return undefined;
 }
 
 function messageOf(error: unknown): string {

@@ -12,6 +12,7 @@ import type { MessageDelivery } from '#/agent/contextMemory/messageDelivery';
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IEventBus } from '#/app/event/eventBus';
 import { EventBusService } from '#/app/event/eventBusService';
+import { OrderedHookSlot } from '#/hooks';
 import { IWireService } from '#/wire/wire';
 
 import { stubAgentWire } from '../../wire/stubs';
@@ -34,8 +35,10 @@ function publishSplice(
 
 export function stubContextMemory(eventBus?: IEventBus): StubContextMemory {
   const messages: ContextMessage[] = [];
+  const onDidClear = new OrderedHookSlot<{ readonly deleteCount: number }>();
   return {
     _serviceBrand: undefined,
+    hooks: { onDidClear },
     get messages() {
       return messages;
     },
@@ -57,11 +60,12 @@ export function stubContextMemory(eventBus?: IEventBus): StubContextMemory {
     },
     appendLoopEvent: () => {},
     publishTrailingRemoval: () => false,
-    clear: () => {
+    clear: async () => {
       const deleteCount = messages.length;
       if (deleteCount === 0) return;
       messages.splice(0, deleteCount);
       publishSplice(eventBus, { start: 0, deleteCount, messages: [] });
+      await onDidClear.run({ deleteCount });
     },
     undo: (count) => {
       const cut = computeUndoCut(messages, count);
@@ -104,6 +108,9 @@ class StubContextMemoryService implements IAgentContextMemoryService {
   constructor(@IEventBus eventBus: IEventBus) {
     this.impl = stubContextMemory(eventBus);
   }
+  get hooks(): IAgentContextMemoryService['hooks'] {
+    return this.impl.hooks;
+  }
   get messages(): readonly ContextMessage[] {
     return this.impl.messages;
   }
@@ -119,8 +126,8 @@ class StubContextMemoryService implements IAgentContextMemoryService {
   appendManaged(message: ContextMessage, delivery: MessageDelivery): void {
     this.impl.appendManaged(message, delivery);
   }
-  clear(): void {
-    this.impl.clear();
+  clear(): Promise<void> {
+    return this.impl.clear();
   }
   appendLoopEvent(event: LoopRecordedEvent): void {
     this.impl.appendLoopEvent(event);

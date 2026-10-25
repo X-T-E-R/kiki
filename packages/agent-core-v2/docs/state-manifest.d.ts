@@ -2168,7 +2168,7 @@ export interface AgentStateSnapshot {
   'contextRebuild.control': /* ContextRebuildControl — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ {
     readonly enabled: boolean;
     readonly outcome?: 'failed' | 'partial' | 'applied';
-    readonly trigger?: 'manual' | 'compaction' | 'restore';
+    readonly trigger?: 'manual' | 'summary' | 'compaction' | 'fresh_start' | 'restore' | 'model_switch_fresh' | 'model_switch_compact' | 'context_clear';
     readonly at?: string;
     readonly error?: string;
     readonly changes?: /* ContextRebuildChanges — packages/agent-core-v2/src/agent/contextRebuild/contextRebuild.ts */ {

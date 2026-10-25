@@ -221,7 +221,7 @@ interface ContextRebuildPreferencePayload {
 interface ContextRebuildReportedPayload {
   _name: 'context_rebuild.reported';
   outcome: 'applied' | 'partial' | 'failed';
-  trigger: 'manual' | 'compaction' | 'restore';
+  trigger: 'manual' | 'compaction' | 'fresh_start' | 'summary' | 'restore' | 'model_switch_fresh' | 'model_switch_compact' | 'context_clear';
   at: string;
   error?: string;
   changes?: {

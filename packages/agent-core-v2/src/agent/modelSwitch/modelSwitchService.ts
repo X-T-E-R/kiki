@@ -2,6 +2,8 @@ import { Disposable } from '#/_base/di/lifecycle';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { Emitter } from '#/_base/event';
+import { ILogService } from '#/_base/log/log';
+import { OrderedHookSlot } from '#/hooks';
 import { LifecycleScope } from '#/app/scopes';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -46,6 +48,9 @@ interface ActiveSwitch {
 
 export class AgentModelSwitchService extends Disposable implements IAgentModelSwitchService {
   declare readonly _serviceBrand: undefined;
+  readonly hooks: IAgentModelSwitchService['hooks'] = {
+    onDidCommitContextWindow: new OrderedHookSlot(),
+  };
   private readonly changes = this._register(new Emitter<ModelSwitchReceipt>());
   readonly onDidChange = this.changes.event;
   private active?: ActiveSwitch;
@@ -67,6 +72,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
     @IAgentMemorySnapshot private readonly memory: IAgentMemorySnapshot,
     @ISessionContext private readonly session: ISessionContext,
     @ISessionMetadata private readonly metadata: ISessionMetadata,
+    @ILogService private readonly log: ILogService,
   ) {
     super();
     this.states.contributeState(modelSwitchCompletionsKey);
@@ -209,10 +215,22 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
       this.confirmedCompletions.set(active.input.operationId, completed.receipt);
       this.active = undefined;
       this.changes.fire(active.receipt);
+      await this.runContextWindowBoundary(active);
       await active.quiescence.dispose();
       return active.receipt;
     } catch (error) {
       return this.recovering(active, error);
+    }
+  }
+
+  private async runContextWindowBoundary(active: ActiveSwitch): Promise<void> {
+    const mode = active.receipt.mode;
+    if (active.receipt.state !== 'completed' || active.event?.context === undefined) return;
+    if (mode !== 'fresh' && mode !== 'compact') return;
+    try {
+      await this.hooks.onDidCommitContextWindow.run(active.receipt);
+    } catch (error) {
+      this.log.error('failed to run the committed context-window boundary', { error, committed: true });
     }
   }
 
