@@ -460,6 +460,40 @@ describe('refreshProviderModels managed Kimi Code (OAuth)', () => {
   });
 });
 
+describe('unchanged managed catalog selection', () => {
+  it.each([undefined, 'example/model', 'explicit-missing-alias'])('restores only an absent default (%s)', async (defaultModel) => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(MANAGED_MODELS_RESPONSE)));
+    const first = createHost({
+      providers: { 'managed:kimi-code': { type: 'kimi', oauth: { storage: 'file', key: 'oauth/example' } } },
+      models: {},
+    }, { oauthToken: 'example-token' });
+    await refreshProviderModels(first.host, { scope: 'oauth' });
+    const persisted = first.config();
+    persisted.providers['example'] = { type: 'openai', baseUrl: 'https://example.test/v1', apiKey: 'fixture-key' };
+    persisted.models!['example/model'] = { provider: 'example', model: 'model', maxContextSize: 64000 };
+    persisted.defaultModel = defaultModel;
+    persisted.thinking = { enabled: false };
+    const second = createHost(persisted, { oauthToken: 'example-token' });
+
+    const result = await refreshProviderModels(second.host, { scope: 'oauth' });
+
+    expect(second.removeProvider).not.toHaveBeenCalled();
+    expect(second.config().providers).toEqual(persisted.providers);
+    expect(second.config().models).toEqual(persisted.models);
+    if (defaultModel === undefined) {
+      expect(result.changed).toEqual([{ providerId: 'managed:kimi-code', providerName: 'Kimi Code', added: 0, removed: 0 }]);
+      expect(second.config().defaultModel).toBe('kimi-code/kimi-k2');
+      expect(second.setConfig).toHaveBeenCalledOnce();
+      expect(result.unchanged).toEqual([]);
+    } else {
+      expect(result.changed).toEqual([]);
+      expect(result.unchanged).toEqual(['managed:kimi-code']);
+      expect(second.config()).toEqual(persisted);
+      expect(second.setConfig).not.toHaveBeenCalled();
+    }
+  });
+});
+
 describe('refreshProviderModels credential safety', () => {
   it('rejects a credential with an internal newline before any request or header exists', async () => {
     const fetchMock = vi.fn();

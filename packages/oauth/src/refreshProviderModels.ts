@@ -81,14 +81,14 @@ export interface DiscoveredProviderModels {
 
 export interface RefreshResult {
   /**
-   * Providers whose model list was actually persisted. Managed Kimi Code
-   * (OAuth) is the only provider this refresh writes back; every other
-   * provider is reported through `discovered` instead.
+   * Providers whose catalog or missing default selection was persisted.
+   * Managed Kimi Code (OAuth) is the only provider this refresh writes back;
+   * every other provider is reported through `discovered` instead.
    */
   readonly changed: readonly ProviderChange[];
   /**
    * Providers that were refreshed successfully without a persisted change:
-   * managed providers whose model list stayed identical, and every non-managed
+   * managed providers whose catalog and selection stayed unchanged, and every non-managed
    * provider that produced a `discovered` entry.
    */
   readonly unchanged: readonly string[];
@@ -595,17 +595,19 @@ export async function refreshProviderModels(
         clampDanglingDefault(next);
         clearDefaultThinkingWhenDefaultRemoved(next, config.defaultModel);
 
-        if (providerModelsEqual(config, next, KIMI_CODE_PROVIDER_NAME, refreshedAliasKeys)) {
+        const sameCatalog = providerModelsEqual(config, next, KIMI_CODE_PROVIDER_NAME, refreshedAliasKeys);
+        const missingDefault = config.defaultModel === undefined && next.defaultModel !== undefined;
+        if (sameCatalog && !missingDefault) {
           unchanged.push(KIMI_CODE_PROVIDER_NAME);
         } else {
           const { added, removed } = computeChanges(
             collectModelIdsForAliases(config, refreshedAliasKeys),
             collectModelIdsForAliases(next, refreshedAliasKeys),
           );
-          await host.removeProvider(KIMI_CODE_PROVIDER_NAME);
+          if (!sameCatalog) await host.removeProvider(KIMI_CODE_PROVIDER_NAME);
           config = await host.setConfig({
-            providers: next.providers,
-            models: next.models,
+            providers: sameCatalog ? config.providers : next.providers,
+            models: sameCatalog ? config.models : next.models,
             defaultModel: next.defaultModel,
             thinking: next.thinking,
           });
