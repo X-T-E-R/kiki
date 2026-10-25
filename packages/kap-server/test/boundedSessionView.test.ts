@@ -39,6 +39,125 @@ describe('bounded session-view canonical reads', () => {
     expect(page?.has_more).toBe(true);
     expect(extended).toBe(false);
   });
+  it.each(['turn', 'marker', 'orphan'] as const)('extends a consumed leading %s before seeking a replacement turn window', async (kind) => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const marker = { kind: 'marker' as const, markerId: 'delivery-before-next-turn', marker: 'message.delivery', payload: { text: 'recorded delivery' } };
+    const boundary = kind === 'marker' ? [marker, turn(8)] : [{ ...turn(8), origin: { kind: kind === 'orphan' ? 'other' as const : 'user' as const } }];
+    const tail = { ...empty(), items: boundary, hasMoreOlder: true };
+    const older = { ...empty(), items: [turn(6), turn(7), ...boundary], hasMoreOlder: false };
+    const seeks: string[] = [];
+    let extensions = 0;
+    const service = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, _project: unknown, _signal: unknown, extend: boolean) => {
+        if (extend) extensions += 1;
+        return extend ? older : tail;
+      },
+      readAnchoredColdSnapshot: async (_sessionId: string, _agentId: string, beforeTurn: string) => { seeks.push(beforeTurn); return { ...empty(), items: [turn(7), turn(8)], hasMoreOlder: true }; },
+      anchorReadState: () => 'continues', coldHistoryTruncated: async () => false, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: kind === 'marker' ? `marker:${marker.markerId}` : 'turn:t8', seekTurn: 't8' })).toString('base64url');
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(page?.items).toEqual([turn(6), turn(7)]);
+    expect(extensions).toBe(1);
+    expect(seeks).toEqual([]);
+  });
+
+  it('continues a leading marker across byte progress without replacing it with a neighbouring turn seek', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const marker = { kind: 'marker' as const, markerId: 'delivery-boundary', marker: 'message.delivery', payload: { text: 'recorded delivery' } };
+    const tail = { ...empty(), items: [marker, turn(8)], hasMoreOlder: true };
+    const older = { ...empty(), items: [turn(7), marker, turn(8)], hasMoreOlder: false };
+    let extensions = 0;
+    let seeks = 0;
+    const service = {
+      forSessionLive: () => undefined,
+      coldWindowBoundary: async () => ({ fingerprint: 'source', start: 100 - extensions, end: 200 }),
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, _project: unknown, _signal: unknown, extend: boolean) => {
+        if (extend) extensions += 1;
+        return extensions >= 5 ? older : tail;
+      },
+      readAnchoredColdSnapshot: async () => { seeks += 1; return { ...empty(), items: [turn(7), turn(8)], hasMoreOlder: true }; },
+      coldHistoryTruncated: async () => extensions < 5, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: `marker:${marker.markerId}`, seekTurn: 't8' })).toString('base64url');
+    const preparing = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(preparing).toMatchObject({ items: [], has_more: true, read: { reason: 'budget' } });
+    expect(extensions).toBe(4);
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: preparing!.next_cursor });
+    expect(page?.items).toEqual([turn(7)]);
+    expect(page?.has_more).toBe(false);
+    expect(extensions).toBe(5);
+    expect(seeks).toBe(0);
+  });
+
+  it.each([
+    ['marker', 7, 't8'], ['marker', 8, 't7'], ['taskref', 7, 't7'], ['taskref', 8, 't8'],
+  ] as const)('preserves delivered turns when a %s moves into turn %s with boundary %s', async (kind, ownerOrdinal, beforeTurn) => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const messageId = 'recorded-delivery';
+    const boundaryItem = kind === 'marker'
+      ? { kind: 'marker' as const, markerId: `message-delivery:${messageId}`, marker: 'message.delivery', payload: { text: 'recorded delivery' } }
+      : { kind: 'taskref' as const, refId: 'recorded-task', taskId: 'example-task' };
+    const anchor = kind === 'marker' ? `marker:message-delivery:${messageId}` : 'taskref:recorded-task';
+    const tail = { ...empty(), items: [boundaryItem, turn(8)], hasMoreOlder: true };
+    const owner: TranscriptTurn = { ...turn(ownerOrdinal), steps: [{ kind: 'step', stepId: 's-delivery', turnId: `t${ownerOrdinal}`, ordinal: 0, state: 'completed', frames: [{ kind: 'text', frameId: messageId, role: 'user', text: 'recorded delivery' }] }] };
+    const older = { ...empty(), items: [turn(6), ownerOrdinal === 7 ? owner : turn(7), ownerOrdinal === 8 ? owner : turn(8)], hasMoreOlder: false };
+    let extended = false;
+    let seeks = 0;
+    const service = {
+      forSessionLive: () => undefined,
+      coldWindowBoundary: async () => ({ fingerprint: 'unchanged-source', start: extended ? 50 : 100, end: 200 }),
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, _project: unknown, _signal: unknown, extend: boolean) => { if (extend) extended = true; return extended ? older : tail; },
+      readAnchoredColdSnapshot: async () => { seeks += 1; return tail; },
+      coldHistoryTruncated: async () => false, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor, seekTurn: 't8', beforeTurn })).toString('base64url');
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(page?.items).toEqual(older.items.slice(0, beforeTurn === 't7' ? 1 : 2));
+    expect(page?.has_more).toBe(false);
+    expect(seeks).toBe(0);
+  });
+
+  it('retains a resolved turn boundary when prefix materialization needs another empty preparation page', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, promptId: `p${ordinal}`, steps: [] });
+    const marker = { kind: 'marker' as const, markerId: 'materialized-boundary', marker: 'message.delivery' };
+    let extensions = 0;
+    const service = {
+      forSessionLive: () => undefined,
+      coldWindowBoundary: async () => ({ fingerprint: 'same-source', start: 100 - extensions, end: 200 }),
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, _project: unknown, _signal: unknown, extend: boolean) => {
+        if (extend) extensions += 1;
+        return { ...empty(), items: extensions === 0 ? [marker, turn(8)] : extensions < 5 ? [turn(8)] : [turn(7), turn(8)], hasMoreOlder: extensions < 5 };
+      },
+      coldHistoryTruncated: async () => extensions < 5, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'marker:materialized-boundary', seekTurn: 't8', beforeTurn: 't8' })).toString('base64url');
+    const preparing = (await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor }))!;
+    expect(preparing).toMatchObject({ items: [], has_more: true, read: { reason: 'budget' } });
+    expect(JSON.parse(Buffer.from(preparing.next_cursor!, 'base64url').toString())).toMatchObject({ anchor: 'turn:t8', beforeTurn: 't8' });
+    const page = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: preparing.next_cursor });
+    expect(page?.items).toEqual([turn(7)]);
+    expect(page?.has_more).toBe(false);
+  });
+
+  it.each(['unrelated', 'assistant', 'ambiguous'] as const)('does not resolve a delivery cursor from %s message identities', async (kind) => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [{
+      kind: 'step', stepId: `s${ordinal}`, turnId: `t${ordinal}`, ordinal: 0, state: 'completed',
+      frames: [{ kind: 'text', frameId: kind === 'unrelated' ? 'other-message' : 'recorded-delivery', role: kind === 'assistant' ? 'assistant' : 'user', text: 'same visible text' }],
+    }] });
+    const snapshot = { ...empty(), items: kind === 'ambiguous' ? [turn(7), turn(8)] : [turn(7)], hasMoreOlder: false };
+    const service = { forSessionLive: () => undefined, readColdPageSnapshot: async () => snapshot } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'marker:message-delivery:recorded-delivery', seekTurn: 't8' })).toString('base64url');
+    const stale = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(stale).toMatchObject({ items: [], has_more: true, read: { reason: 'stale_cursor', stale: { retry: 'authoritative' } } });
+    expect(stale?.next_cursor).toBeUndefined();
+  });
+
   it('keeps a pending item-anchor seek preparing even when turn headers cover its neighbourhood', async () => {
     const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
     const ref = { kind: 'taskref' as const, refId: 'leading-ref', taskId: 'example-task' };
@@ -164,6 +283,11 @@ describe('bounded session-view canonical reads', () => {
     const last = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: second!.next_cursor, pageSize: 1 });
     expect(last?.items).toMatchObject([{ turnId: 't0' }]);
     expect(last?.has_more).toBe(false);
+    const legacy = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'derived', anchor: 'marker:old-boundary', seekTurn: 't2' })).toString('base64url');
+    const stale = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: legacy });
+    expect(stale).toMatchObject({ items: [], has_more: true, read: { source: 'derived', reason: 'stale_cursor', stale: { retry: 'authoritative' } } });
+    const recovered = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeTurn: 't2' });
+    expect(recovered?.items).toMatchObject([{ turnId: 't0' }, { turnId: 't1' }]);
   });
 
   it('continues a canonical older frame from cold history when the live tail has evicted it', async () => {
@@ -187,6 +311,31 @@ describe('bounded session-view canonical reads', () => {
     }
     expect(preview.text).toBe(frame.text);
   });
+  it('advances beforeTurn only from the final bounded page and inherits it through marker-only pages', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
+    const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [turn(0), turn(1),
+      ...Array.from({ length: 90 }, (_, index) => ({ kind: 'marker' as const, markerId: `older-${index}`, marker: 'skill' as const, payload: { text: 'recorded body'.repeat(200) } })), turn(2)] };
+    const service = { forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, project: (source: AgentTranscriptSnapshot) => AgentTranscriptSnapshot) => project(snapshot),
+      readColdRoster: async () => [], reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value } as unknown as TranscriptService;
+    let beforeItem: string | undefined;
+    let boundary: string | undefined;
+    const seen: string[] = [];
+    let markerOnly = 0;
+    do {
+      const page = (await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem, pageSize: 20 }))!;
+      expect(page.items.length).toBeGreaterThan(0);
+      const delivered = page.items.filter(item => item.kind === 'turn');
+      if (delivered.length === 0) markerOnly += 1;
+      for (const item of delivered) if (boundary === undefined || item.ordinal < Number(boundary.slice(1))) boundary = item.turnId;
+      seen.push(...page.items.map(item => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId));
+      beforeItem = page.next_cursor;
+      if (beforeItem !== undefined) expect(JSON.parse(Buffer.from(beforeItem, 'base64url').toString()).beforeTurn).toBe(boundary);
+    } while (beforeItem !== undefined);
+    expect(markerOnly).toBeGreaterThan(1);
+    expect([...seen].sort()).toEqual(snapshot.items.map(item => item.kind === 'turn' ? item.turnId : item.kind === 'marker' ? item.markerId : item.refId).sort());
+  });
+
   it('keeps forward windows contiguous through decoded-budget cuts and marker-only pages', async () => {
     const snapshot: AgentTranscriptSnapshot = { ...empty(), toolCallCountKnown: true, items: [
       { kind: 'turn', turnId: 't0', ordinal: 0, origin: { kind: 'user' }, steps: [], state: 'completed' },

@@ -2339,11 +2339,11 @@ export class SessionController {
   }
 
   private isTurnStructureRef(ref: ContentRef): boolean {
-    return ref.source.kind === 'turn' && ref.kind === 'array' && ref.direction === 'backward' && ref.path[0] === 'steps' &&
+    return ref.source.kind === 'turn' && ref.kind === 'array' && ref.path[0] === 'steps' &&
       (ref.path.length === 1 || ref.path.length === 3 && ref.path[2] === 'frames');
   }
 
-  /** One bounded preview of this turn. The same revision and window is a real conflict; a moved window is continued. */
+  /** Rebind one canonical structure revision without discarding already loaded children. */
   private async refreshTurnStructurePreview(agentId: string, ref: ContentRef, signal: AbortSignal): Promise<ContentRef | undefined> {
     if (ref.source.kind !== 'turn' || signal.aborted || this.closed) return undefined;
     const turnId = ref.source.id;
@@ -2351,32 +2351,39 @@ export class SessionController {
     const index = items.findIndex((item) => item.kind === 'turn' && item.turnId === turnId);
     if (index < 0) return undefined;
     const nextTurn = items.slice(index + 1).find((item) => item.kind === 'turn');
-    const page = await this.readPreparedContent(() => this.view.transcript.page(
-      nextTurn?.kind === 'turn' ? { agentId, beforeTurn: nextTurn.turnId, pageSize: 1 } : { agentId, pageSize: 1 },
-      { signal },
-    ), signal);
-    if (this.closed || signal.aborted || page.agent_id !== agentId) return undefined;
-    const preview = page.items.find((item) => item.kind === 'turn' && item.turnId === turnId);
-    if (preview?.kind !== 'turn') return undefined;
-    const fresh = preview.contentRefs?.find((candidate) => candidate.kind === 'array' && candidate.direction === 'backward' &&
-      candidate.path.length === ref.path.length && candidate.path.every((part, partIndex) => part === ref.path[partIndex]) &&
-      candidate.source.kind === ref.source.kind && candidate.source.id === ref.source.id);
-    const sameWindow = (candidate: ContentRef | undefined): boolean => candidate !== undefined &&
-      candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total;
-    if (fresh === undefined || sameWindow(fresh) || signal.aborted) return undefined;
-    if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
-    const installed = this.contentEntity(agentId, ref.source)?.contentRefs?.find((candidate) => candidate.kind === fresh.kind &&
-      candidate.direction === 'backward' && candidate.revision === fresh.revision && candidate.offset === fresh.offset &&
-      candidate.total === fresh.total && candidate.path.every((part, partIndex) => part === fresh.path[partIndex]));
-    return sameWindow(installed) ? undefined : installed;
+    let beforeItem: string | undefined;
+    const cursors = new Set<string>();
+    for (;;) {
+      const page = await this.readPreparedContent(() => this.view.transcript.page(
+        { agentId, beforeTurn: nextTurn?.kind === 'turn' ? nextTurn.turnId : undefined, beforeItem, pageSize: 1 },
+        { signal },
+      ), signal);
+      if (this.closed || signal.aborted || page.agent_id !== agentId || page.read?.stale !== undefined) return undefined;
+      const preview = page.items.find((item) => item.kind === 'turn' && item.turnId === turnId);
+      if (preview?.kind === 'turn') {
+        const candidate = preview.contentRefs?.find((current) => current.kind === 'array' &&
+          current.path.length === ref.path.length && current.path.every((part, partIndex) => part === ref.path[partIndex]) &&
+          current.source.kind === ref.source.kind && current.source.id === ref.source.id);
+        if (candidate === undefined || candidate.revision === ref.revision && candidate.offset === ref.offset && candidate.total === ref.total) return undefined;
+        const fresh = ref.direction === 'backward' ? candidate : { ...candidate, direction: 'forward' as const, offset: 0 };
+        if (!this.installTurnStructureRef(agentId, ref, fresh) || signal.aborted) return undefined;
+        return this.contentEntity(agentId, ref.source)?.contentRefs?.find((current) => sameContentRef(current, fresh));
+      }
+      if (page.items.some((item) => item.kind === 'turn' && item.ordinal < (items[index] as TranscriptTurn).ordinal) ||
+        !page.has_more || page.next_cursor === undefined || cursors.has(page.next_cursor)) return undefined;
+      cursors.add(page.next_cursor);
+      beforeItem = page.next_cursor;
+    }
   }
 
   private installTurnStructureRef(agentId: string, ref: ContentRef, fresh: ContentRef): boolean {
     if (ref.source.kind !== 'turn') return false;
     const turnId = ref.source.id;
-    const contentRefsOf = (turn: TranscriptTurn): TranscriptTurn['contentRefs'] => (turn.contentRefs ?? []).map((current) =>
-      current.direction === 'backward' && current.path.length === ref.path.length &&
-      current.path.every((part, partIndex) => part === ref.path[partIndex]) ? fresh : current);
+    const contentRefsOf = (turn: TranscriptTurn): TranscriptTurn['contentRefs'] => (turn.contentRefs ?? []).flatMap((current) => {
+      const under = ref.path.every((part, partIndex) => current.path[partIndex] === part);
+      if (sameContentRef(current, ref)) return [fresh];
+      return ref.direction !== 'backward' && under ? [] : [current];
+    });
     const store = this.ensureAgentTranscript(agentId);
     const live = store.getTurn(turnId);
     if (live !== undefined) {

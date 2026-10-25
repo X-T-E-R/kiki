@@ -1980,6 +1980,59 @@ describe('hidden prefix turn preview', () => {
     } finally { controller.close(); }
   });
 
+  it('recovers a forward orphan preview across a marker page without losing loaded children', async () => {
+    const canonical = transcriptTurnSchema.parse({
+      kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' },
+      steps: Array.from({ length: 18 }, (_, ordinal) => ({
+        kind: 'step', stepId: `s${ordinal}`, turnId: 't1', ordinal, state: 'completed',
+        frames: [{ kind: 'text', frameId: `f${ordinal}`, role: ordinal === 0 ? 'user' : 'assistant', text: ordinal === 0 ? 'ORIGINAL-DELIVERY' : `saved ${ordinal}` }],
+      })),
+    });
+    const orphan = { ...canonical, origin: { kind: 'other' as const }, steps: canonical.steps.slice(7) };
+    const preview = rebindTurnContentRefs(boundedEntity(orphan, { kind: 'turn', id: 't1' }));
+    const stale = preview.contentRefs?.find((candidate) => candidate.path.length === 1);
+    if (stale === undefined) throw new Error('missing forward steps ref');
+    const content = vi.fn(segmentRead(canonical));
+    const { controller, deliver, view } = harness(undefined, content);
+    const canonicalPage = await previewPage(canonical, 128 * 1024)({ agentId: 'main' });
+    vi.mocked(view.transcript.page)
+      .mockResolvedValueOnce({ ...canonicalPage, items: [{ kind: 'marker', markerId: 'boundary', marker: 'clear', at: FIXED_AT }], has_more: true, next_cursor: 'marker-boundary' })
+      .mockResolvedValue(canonicalPage);
+    await controller.open();
+    const sibling: TranscriptTurn = {
+      kind: 'turn', turnId: 't2', ordinal: 2, state: 'completed', origin: { kind: 'user' }, prompt: 'SIBLING-PAGE', steps: [],
+    };
+    deliver(resetEvent('main', emptySnapshot({ items: [preview, sibling] }), 2));
+    try {
+      expect(blockText(controller, 'saved 7')).toBe(true);
+      expect(await controller.loadContentSegment('main', stale)).toBe(true);
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+      expect(vi.mocked(view.transcript.page).mock.calls[1]?.[0]).toEqual({ agentId: 'main', beforeTurn: 't2', beforeItem: 'marker-boundary', pageSize: 1 });
+      expect(content.mock.calls[1]?.[0].ref).toMatchObject({ offset: 0, total: 18, direction: 'forward' });
+      expect(blockText(controller, 'ORIGINAL-DELIVERY')).toBe(true);
+      expect(blockText(controller, 'saved 7')).toBe(true);
+      expect(blockText(controller, 'SIBLING-PAGE')).toBe(true);
+      expect(view.snapshot).toHaveBeenCalledTimes(1);
+      expect(view.transcript.catchUp).not.toHaveBeenCalled();
+      expect(Object.values(controller.getState().detailLoads).some((detail) => detail.status === 'error')).toBe(false);
+    } finally { controller.close(); }
+  });
+
+  it('stops a structural refresh when the page cursor does not advance', async () => {
+    const fixture = hiddenPrefixFixture();
+    const { controller, deliver, view } = harness(undefined, segmentRead(fixture.inserted));
+    const page = await previewPage(fixture.inserted, fixture.maxBytes)({ agentId: 'main' });
+    vi.mocked(view.transcript.page).mockResolvedValue({ ...page, items: [], has_more: true, next_cursor: 'unchanged' });
+    await controller.open();
+    deliver(resetEvent('main', emptySnapshot({ items: [fixture.client] }), 2));
+    try {
+      expect(await controller.loadOlderMessages()).toBe(false);
+      expect(view.transcript.page).toHaveBeenCalledTimes(2);
+      expect(controller.getState().olderError).toMatch(/Content changed/);
+      expect(blockText(controller, 'LOADED-LATER')).toBe(true);
+    } finally { controller.close(); }
+  });
+
   it('drops a late turn preview after a same-agent epoch reset', async () => {
     const fixture = hiddenPrefixFixture();
     const content = vi.fn(segmentRead(fixture.inserted));

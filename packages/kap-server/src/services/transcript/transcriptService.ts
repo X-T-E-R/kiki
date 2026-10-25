@@ -1838,6 +1838,12 @@ export class TranscriptService {
     return window !== undefined && window.start > 0;
   }
 
+  async coldWindowBoundary(sessionId: string, agentId: string): Promise<{ fingerprint: string; start: number; end: number } | undefined> {
+    const location = await this.historyWireLocation(sessionId, agentId);
+    const window = location === undefined ? undefined : this.coldWireWindows.get(location.wirePath);
+    return window === undefined ? undefined : { fingerprint: window.fingerprint, start: window.start, end: window.end };
+  }
+
   async coldWindowReachedStart(sessionId: string, agentId: string): Promise<boolean> {
     const location = await this.historyWireLocation(sessionId, agentId);
     if (location === undefined) return false;

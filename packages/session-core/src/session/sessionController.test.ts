@@ -2622,17 +2622,19 @@ describe('SessionController transcript authority', () => {
     } finally { controller.close(); }
   });
 
-  it('recovers a structured stale page once without discarding history or merging its payload', async () => {
+  it.each(['source_changed', 'stale_cursor'] as const)('recovers a structured %s page once without discarding readable history', async (reason) => {
     const { controller, client } = await openTranscriptController();
-    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: 'live-bound' }), 1, true));
+    const legacyCursor = 'eyJ2IjoyLCJhZ2VudElkIjoibWFpbiIsInNvdXJjZSI6ImNvbGQiLCJhbmNob3IiOiJtYXJrZXI6bGVnYWN5Iiwic2Vla1R1cm4iOiJ0MiJ9';
+    controller.handleTranscript(resetEvent('main', emptySnapshot({ items: [historyTurn(2)], olderCursor: legacyCursor }), 1, true));
     const held = deferred<AgentTranscriptResponse>();
     client.getAgentTranscript.mockResolvedValueOnce({ agent_id: 'main', items: [historyTurn(99)], has_more: true,
-      read: { source: 'cold', readiness: 'partial', reason: 'source_changed', stale: { reason: 'source_changed', retry: 'authoritative' } } });
+      read: { source: 'cold', readiness: 'partial', reason, stale: { reason, retry: 'authoritative' } } });
     client.getAgentTranscript.mockImplementationOnce(() => held.promise);
     const loading = controller.loadOlderMessages();
     try {
       await waitFor(() => client.getAgentTranscript.mock.calls.length === 2);
       expect(historyTexts(controller)).toEqual(['History 2']);
+      expect(client.getAgentTranscript.mock.calls[0]?.[2]).toMatchObject({ beforeItem: legacyCursor });
       expect(client.getAgentTranscript.mock.calls[1]?.[2]).toMatchObject({ beforeTurn: 'history-2', beforeItem: undefined });
       held.resolve({ agent_id: 'main', items: [historyTurn(1)], has_more: false, coverage: { kind: 'unknown', hasMoreOlder: true }, read: { source: 'cold', readiness: 'partial' } });
       await expect(loading).resolves.toBe(true);

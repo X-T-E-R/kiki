@@ -102,7 +102,7 @@ rather than reporting the session as idle.
 ## Ordered session views
 
 The HTTP transport additionally provides `klient.session(id).view`: `snapshot()`,
-`transcript.page({ agentId, beforeTurn?, afterTurn?, pageSize? })`,
+`transcript.page({ agentId, beforeTurn?, beforeItem?, afterTurn?, afterItem?, pageSize? })`,
 `transcript.catchUp({ agentId, since, grade? })`, and `subscribe(input, onSignal)`.
 This capability requires the current kap-server host and is not implemented by
 memory or IPC; those transports reject view calls rather than substituting
@@ -149,15 +149,33 @@ summaries; `ready` still waits for all admitted agents.
 replay. Paged responses preserve `coverage`, cursor, and authoritative
 `tool_call_count`; an absent count means unknown, not zero. The optional `read`
 field identifies the source and its readiness; `partial` is not complete history.
-Page `next_cursor` and entity-list cursors bind their source. If that source changes,
-the next read succeeds with an empty continuation, `has_more: true`, and
-`read.stale: { reason: 'source_changed', retry: 'authoritative' }`, not a validation
-error. Keep the displayed history, discard that continuation token, and retry once
-using a logical `beforeTurn` anchor for older turns or no cursor for entities.
-Do not merge stale payloads or treat their empty items as completion. A second
-stale response remains retryable; it must not start an automatic retry loop.
-Legacy logical item anchors and v1 entity cursors remain accepted; malformed or
-wrong-agent cursors still fail validation.
+Pass page `next_cursor` back unchanged as `beforeItem` when loading older history.
+Opaque v2 page cursors may carry `beforeTurn`, the oldest turn actually delivered
+after page bounding and alignment. Marker-only and preparation pages inherit that
+boundary; `seekTurn` is only a location hint. When extending an unchanged source
+prefix absorbs an item anchor into a turn, the server uses the delivered boundary
+to continue without repeating delivered turns or skipping their older neighbour.
+Forward pagination keeps its existing `afterItem` and `afterTurn` behavior.
+
+Page and entity-list cursors bind their source. A source change returns an empty
+continuation with `has_more: true` and
+`read.stale: { reason: 'source_changed', retry: 'authoritative' }`. An older opaque
+page cursor whose item anchor disappeared without a provable delivered boundary
+returns `stale_cursor` with the same recovery action. Keep the displayed history,
+discard the stale token, and retry once using the oldest displayed turn as the
+logical `beforeTurn` anchor, or no cursor for entities. Do not merge stale payloads
+or treat empty stale items as completion. A second stale response remains
+retryable; it must not start an automatic retry loop. Legacy logical item anchors,
+opaque cursors with an existing anchor, and v1 entity cursors remain accepted;
+malformed or wrong-agent cursors still fail validation.
+
+A structural content read can return `40922` when an earlier source prefix changes
+its step or frame layout. Reload the turn preview once; a single-item page may
+contain a marker, so follow advancing `next_cursor` values until the turn appears.
+Rebind backward reads to the new window. Restart forward structure reads at offset
+zero under the refreshed revision, merging children by identity to preserve loaded
+content. An unchanged page cursor or a second structure conflict stops recovery
+and leaves the displayed content available for an explicit retry.
 
 Close the subscription when leaving the view. `restart()` reconnects the shared
 socket and therefore also invalidates ordinary-event observations and in-flight
