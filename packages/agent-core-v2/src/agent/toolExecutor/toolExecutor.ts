@@ -24,6 +24,7 @@ export interface ToolExecutorExecuteOptions {
   readonly steerSignal?: AbortSignal;
   readonly turnId: number;
   readonly step?: number;
+  readonly deduplicationKey?: string;
   readonly trace?: LLMRequestTrace;
   readonly onToolCall?: (payload: ToolCallStartedPayload) => void;
 }

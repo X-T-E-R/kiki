@@ -162,6 +162,30 @@ it('enforces job session/agent ownership and passes only admitted generation par
   await expect(bridge.api('tool-fixture', request).generate({ request: { ...request, prompt: 'changed' } })).rejects.toThrow('changed after tool/path admission');
   expect(start).not.toHaveBeenCalled();
 });
+it('allows a normal admitted plugin tool to compose pure TTS while keeping declared requests exact', async () => {
+  const media = ctx.get(IPluginMediaService);
+  const bridge = ctx.get(IAgentPluginMediaService);
+  const request = { kind: 'tts' as const, text: 'Speak this whole line.', voice: 'fixture' };
+  const job = { state: 'succeeded' } as MediaJob;
+  const start = vi.spyOn(media, 'start').mockResolvedValue(job);
+  expect(await bridge.api('flat-speak').generate({ provider: 'fixture/speech', request })).toBe(job);
+  expect(start).toHaveBeenCalledWith({ provider: 'fixture/speech', execution: 'auto', request_id: 'flat-speak', request }, expect.objectContaining({ sessionId: ctx.get(ISessionContext).sessionId, agentId: ctx.get(IAgentScopeContext).agentId }));
+  expect(await bridge.api('declared-speech', request).generate({ request })).toBe(job);
+  await expect(bridge.api('declared-speech', request).generate({ request: { ...request, text: 'Changed after admission' } })).rejects.toThrow('changed after tool/path admission');
+  await expect(bridge.api('declared-image', { kind: 'image', prompt: 'admitted' }).generate({ request })).rejects.toThrow('changed after tool/path admission');
+  expect(start).toHaveBeenCalledTimes(2);
+});
+it('does not let ordinary TTS orchestration introduce image/video inputs or session file IDs without admission', async () => {
+  const bridge = ctx.get(IAgentPluginMediaService);
+  const start = vi.spyOn(ctx.get(IPluginMediaService), 'start');
+  const api = bridge.api('flat-tool');
+  await expect(api.generate({ request: { kind: 'image', prompt: 'unadmitted', images: [{ path: path.join(root, 'outside.png') }] } })).rejects.toThrow('changed after tool/path admission');
+  await expect(api.generate({ request: { kind: 'image', prompt: 'unadmitted', images: [{ file_id: 'f_session_input' }] } })).rejects.toThrow('changed after tool/path admission');
+  await expect(api.generate({ request: { kind: 'video', prompt: 'unadmitted', inputs: [{ ref: { url: 'https://example.test/frame.png' }, role: 'first_frame' }] } })).rejects.toThrow('changed after tool/path admission');
+  const raw = { kind: 'tts' as const, text: 'line', voice: 'fixture', images: [{ path: path.join(root, 'outside.png') }] };
+  await expect(api.generate({ request: raw })).rejects.toThrow();
+  expect(start).not.toHaveBeenCalled();
+});
 it('settles automatic foreground generation through the existing Task release and suppresses duplicate terminal notification', async () => {
   const media = ctx.get(IPluginMediaService);
   const job: MediaJob = { schemaVersion: 1, job_id: 'media-0123456789abcdef0123456789abcdef', request_id: 'foreground-fixture', owner_session_id: ctx.get(ISessionContext).sessionId, owner_agent_id: ctx.get(IAgentScopeContext).agentId, provider: 'fixture/synthetic', state: 'running', phase: 'submit', can_resume: false, artifacts: [], created_at: 1, updated_at: 1 };

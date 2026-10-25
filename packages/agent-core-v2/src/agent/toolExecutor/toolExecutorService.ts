@@ -427,6 +427,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
         const reason = await awaitToolPreparation(() => handler({
           turnId: options.turnId,
           signal: options.signal,
+          deduplicationKey: options.deduplicationKey,
           trace: options.trace,
           toolCall: call.toolCall,
           toolCalls: allCalls,
@@ -716,6 +717,7 @@ export class AgentToolExecutorService implements IAgentToolExecutorService {
     const didCtx: ToolDidExecuteContext = {
       turnId: options.turnId,
       signal: options.signal,
+      deduplicationKey: options.deduplicationKey,
       trace: options.trace,
       toolCall: call.toolCall,
       toolCalls: [call.toolCall],
@@ -804,6 +806,7 @@ function buildBeforeExecuteContext(
   return {
     turnId: options.turnId,
     signal: options.signal,
+    deduplicationKey: options.deduplicationKey,
     trace: options.trace,
     toolCall: call.toolCall,
     toolCalls: allCalls,

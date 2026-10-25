@@ -23,6 +23,7 @@ export function denyToolExecution(reason: string): ExecutableToolResult {
 export class BeforeToolExecuteEventImpl implements BeforeToolExecuteEvent {
   readonly turnId: number;
   readonly signal: AbortSignal;
+  readonly deduplicationKey?: string;
   readonly trace?: LLMRequestTrace;
   readonly toolCall: ToolCall;
   readonly toolCalls: readonly ToolCall[];
@@ -39,6 +40,7 @@ export class BeforeToolExecuteEventImpl implements BeforeToolExecuteEvent {
   constructor(context: ResolvedToolExecutionHookContext) {
     this.turnId = context.turnId;
     this.signal = context.signal;
+    this.deduplicationKey = context.deduplicationKey;
     this.trace = context.trace;
     this.toolCall = context.toolCall;
     this.toolCalls = context.toolCalls;

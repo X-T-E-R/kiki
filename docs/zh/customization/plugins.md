@@ -470,7 +470,7 @@ const receipt = await context.messages.send({
 });
 ```
 
-发送已保存到本会话的生成结果时，使用已完成的 `context.media.generate()` 产物的 `file_id`。声明 `mediaInputs: true` 的工具必须保留 `args.request` 中已准入的请求。普通附件 `path` 仍须位于工作区、附加目录或 Bot 目录；产物在 home 下其他位置，不代表插件可以任意读取整个 home。
+发送已保存到本会话的生成结果时，使用已完成的 `context.media.generate()` 产物的 `file_id`。已准入的工具可以从自身的文本、音色参数构造纯 TTS 请求，无须声明 `mediaInputs`。声明 `mediaInputs: true` 的工具必须精确保留 `args.request` 中已准入的请求；图像和视频请求仍须经过这一步准入。普通附件 `path` 仍须位于工作区、附加目录或 Bot 目录；产物在 home 下其他位置，不代表插件可以任意读取整个 home。
 
 单条入口 `text`/`attachments`/`reply_to`/`mention_ids` 与显式 `messages` 数组互斥。换行仍属于同一条消息。外层 `to`、`channel` 和 `channels` 为所有条目选择目标。批次返回有序 `messages` receipt，每项保留稳定的 `index`、`message_id`、信道结果和附件引用；取消会停止尚未发出的条目。显式 `request_id` 在插件、会话和 Agent 范围内跨工具调用及重启有效：相同内容复用 receipt，改动内容会冲突。已经准入但中断的请求保留未知状态，不重新外发；检查投递结果后再决定是否使用新 ID。未提供 ID 时，去重只针对本次工具调用内的发送序号。
 

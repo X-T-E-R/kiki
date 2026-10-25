@@ -278,6 +278,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
         signal: context.signal,
         turnId: context.turnId,
         step: context.step,
+        deduplicationKey: toolCallId,
         trace: context.trace,
       })) {
         result = item;

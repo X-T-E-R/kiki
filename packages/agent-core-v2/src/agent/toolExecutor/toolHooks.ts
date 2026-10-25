@@ -12,6 +12,7 @@ import type {
 export interface ToolExecutionHookContext {
   readonly turnId: number;
   readonly signal: AbortSignal;
+  readonly deduplicationKey?: string;
   readonly trace?: LLMRequestTrace;
   readonly toolCall: ToolCall;
   readonly toolCalls: readonly ToolCall[];

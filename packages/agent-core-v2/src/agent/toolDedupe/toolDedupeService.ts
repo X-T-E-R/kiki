@@ -71,8 +71,8 @@ function makeDeferred<T>(): Deferred<T> {
   return { promise, resolve };
 }
 
-function makeKey(toolName: string, args: unknown): string {
-  return `${toolName} ${canonicalTelemetryArgs(args)}`;
+function makeKey(toolName: string, args: unknown, deduplicationKey?: string): string {
+  return deduplicationKey === undefined ? `${toolName} ${canonicalTelemetryArgs(args)}` : `${toolName} request:${canonicalTelemetryArgs([deduplicationKey, args])}`;
 }
 
 function argsHash(args: unknown): string {
@@ -196,6 +196,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
         event.toolCall.name,
         event.args,
         event.trace,
+        event.deduplicationKey,
       );
       if (checked.syntheticResult !== null) {
         event.veto(checked.syntheticResult);
@@ -208,6 +209,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
         ctx.args,
         ctx.toolCall.arguments,
         ctx.trace,
+        ctx.deduplicationKey,
       );
       ctx.result = await this.finalizeResult(
         ctx.toolCall.id,
@@ -363,8 +365,9 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
     toolName: string,
     args: unknown,
     trace: LLMRequestTrace | undefined,
+    deduplicationKey?: string,
   ): CheckedToolCall {
-    const key = makeKey(toolName, args);
+    const key = makeKey(toolName, args, deduplicationKey);
     const index = this.stepCalls.length;
     this.stepCalls.push(key);
     this.callKeyByCallId.set(toolCallId, key);
@@ -391,6 +394,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
     args: unknown,
     rawArguments: unknown,
     trace: LLMRequestTrace | undefined,
+    deduplicationKey?: string,
   ): void {
     if (this.callKeyByCallId.has(toolCallId)) return;
     const keyArgs =
@@ -399,7 +403,7 @@ export class AgentToolDedupeService extends Service implements IAgentToolDedupeS
       parseToolCallArguments(rawArguments).parseFailed
         ? rawArguments
         : args;
-    this.checkToolCall(toolCallId, toolName, keyArgs, trace);
+    this.checkToolCall(toolCallId, toolName, keyArgs, trace, deduplicationKey);
   }
 
   private recordDupType(

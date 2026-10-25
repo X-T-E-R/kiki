@@ -260,6 +260,26 @@ function didCtx(
 }
 
 describe('AgentToolDedupeService', () => {
+  it('uses explicit request keys to distinguish equal payloads while preserving ordinary argument dedupe', async () => {
+    const h = createHarness();
+    const tool = new EchoTool();
+    h.registry.register(tool);
+    await beforeStep(h, 1, 1);
+    const call = async (id: string, deduplicationKey?: string) => {
+      const results: ToolExecutionResult[] = [];
+      for await (const result of h.executor.execute([toolCall(id, 'Echo', { text: 'same payload' })], { turnId: 1, signal: new AbortController().signal, deduplicationKey })) results.push(result);
+      return results[0]!.result;
+    };
+    const first = await call('first', 'request-1');
+    expect(await call('replayed', 'request-1')).toEqual({ ...first, approvalRule: undefined });
+    expect(tool.calls).toHaveLength(1);
+    expect(await call('distinct', 'request-2')).toEqual(first);
+    expect(tool.calls).toHaveLength(2);
+    const ordinary = await call('ordinary-first');
+    expect(await call('ordinary-repeat')).toEqual({ ...ordinary, approvalRule: undefined });
+    expect(tool.calls).toHaveLength(3);
+    await afterStep(h, 1, 1);
+  });
   describe('same-step dedupe', () => {
     it('returns a placeholder synchronously and resolves to the real result on finalize', async () => {
       const h = createHarness(undefined, { executorEvents: true });
