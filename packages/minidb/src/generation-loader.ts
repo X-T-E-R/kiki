@@ -30,7 +30,7 @@ import {
   STORE_VERSION,
   readGenerationFileCheckedAsync,
   readStoreImage,
-  readDtIndexImage,
+  readDtIndexImageAsync,
   readSecondaryIndexImageAsync,
   readCompoundIndexImageAsync,
   readTextDictionaryImageAsync,
@@ -61,7 +61,7 @@ import type { GenerationStats } from './generation-builder.js';
 
 /** Store-image parse/filter records per event-loop slice on the open path
  *  (the bulk load's own slicing lives in Store.bulkLoadRefsAsync). */
-const STORE_IMAGE_RECORDS_PER_SLICE = 8192;
+const STORE_IMAGE_RECORDS_PER_SLICE = 512;
 
 /** The owner-injected surface the load path needs (a structural subset of
  *  GenerationBuilderDeps — the builder passes its own deps through). */
@@ -180,11 +180,11 @@ export class GenerationLoader<V> {
     const storePayload = await readGenerationFileCheckedAsync(path.join(genDir, STORE_IMAGE_FILE), 'MDGS', STORE_VERSION, storeInfo);
     const now = Date.now();
     const droppedExpired: string[] = [];
+    const expiring: StoreImageRecord[] = [];
     const records: StoreImageRecord[] = [];
     let imageCount = 0;
-    let parsed = 0;
     for (const rec of readStoreImage(storePayload)) {
-      imageCount++;
+      if (++imageCount % STORE_IMAGE_RECORDS_PER_SLICE === 0) await yieldToLoop();
       if (rec.expireAt && rec.expireAt <= now) {
         droppedExpired.push(rec.kstr);
         continue;
@@ -193,9 +193,11 @@ export class GenerationLoader<V> {
         throw new GenerationCorruptError('store image carries disk refs for a memory-mode open');
       }
       records.push(rec);
-      if (++parsed % STORE_IMAGE_RECORDS_PER_SLICE === 0) await yieldToLoop();
+      if (rec.expireAt) expiring.push(rec);
     }
-    await this.deps.store().bulkLoadRefsAsync(records);
+    await yieldToLoop();
+    await this.deps.store().bulkLoadRefsAsync(records, { sliceEvery: STORE_IMAGE_RECORDS_PER_SLICE });
+    await yieldToLoop();
     if (manifest.counts && typeof manifest.counts.records === 'number' && manifest.counts.records !== imageCount) {
       throw new GenerationCorruptError(`store image record count mismatch (${imageCount} != ${manifest.counts.records})`);
     }
@@ -211,11 +213,20 @@ export class GenerationLoader<V> {
     await this.loadTextImages(genDir, manifest);
 
     // Reconcile the expired-at-load drops out of the loaded index states.
+    let reconciled = 0;
+    for (const record of expiring) {
+      if (record.expireAt <= Date.now()) {
+        this.deps.store().getRecord(record.kstr);
+        droppedExpired.push(record.kstr);
+      }
+      if (++reconciled % STORE_IMAGE_RECORDS_PER_SLICE === 0) await yieldToLoop();
+    }
     for (const k of droppedExpired) {
       this.deps.dt.del(k);
       this.deps.indexes.remove(k, undefined);
       this.deps.compound.remove(k);
       for (const ti of this.deps.textRegistry.text.values()) ti.remove(k);
+      if (++reconciled % STORE_IMAGE_RECORDS_PER_SLICE === 0) await yieldToLoop();
     }
 
     // Replay the WAL delta past the checkpoint with the exact same per-frame
@@ -317,7 +328,10 @@ export class GenerationLoader<V> {
     if (info) {
       try {
         const payload = await readGenerationFileCheckedAsync(path.join(genDir, DT_INDEX_FILE), 'MDGD', 1, info);
-        this.deps.dt.loadImage(readDtIndexImage(payload));
+        const columns = await readDtIndexImageAsync(payload, STORE_IMAGE_RECORDS_PER_SLICE);
+        await yieldToLoop();
+        await this.deps.dt.loadImageAsync(columns, { sliceEvery: STORE_IMAGE_RECORDS_PER_SLICE });
+        await yieldToLoop();
         return;
       } catch (e) {
         if (!(e instanceof GenerationCorruptError)) throw e;

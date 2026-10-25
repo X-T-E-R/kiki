@@ -820,7 +820,7 @@ export class UsageAggregationService {
       };
       const response = await this.aggregate(query, [...sessions, ...retained], fingerprint, cursor, budget, ephemeral, view);
       if (projectionData !== undefined && response.reliability.complete && head?.complete === true && listed !== undefined) {
-        const corrections = await this.saveFoldProjection(query, fingerprint, listed.items, head, fold, projectionData);
+        const corrections = await this.saveFoldProjection(query, fingerprint, listed.items, head, fold, projectionData, signal);
         if (corrections !== undefined) {
           for (const bucket of response.trend) {
             const delta = corrections.get(bucket.key);
@@ -1901,17 +1901,19 @@ export class UsageAggregationService {
     return sources;
   }
 
-  private async saveFoldProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], head: RangeFoldHead, fold: UsageRangeFold, data: FoldProjectionData): Promise<ReadonlyMap<string, number> | undefined> {
+  private async saveFoldProjection(query: NormalizedQuery, fingerprint: string, listed: readonly SessionSummary[], head: RangeFoldHead, fold: UsageRangeFold, data: FoldProjectionData, signal?: AbortSignal): Promise<ReadonlyMap<string, number> | undefined> {
     try {
       const storage = this.core.accessor.get(IFileSystemStorageService);
       const logs = this.core.accessor.get(IAppendLogStore);
+      let visited = 0;
       const pending: { session: RangeFoldSession; source: RangeFoldSource }[] = [];
       for (const session of head.sessions) {
         for (const source of session.sources ?? []) {
+          if (++visited % 256 === 0) await yieldToEventLoop(undefined, { signal });
           if (!mtimeExcludesRange(source.checkpoint.mtimeMs, query.range.startAt)) pending.push({ session, source });
         }
       }
-      const agents: UsageProjectionAgent[] = [];
+      const agents: (Omit<UsageProjectionAgent, 'rows' | 'turns'> & { rows: FoldedUsageRecord[]; turns: UsageProjectionAgent['turns'][number][] })[] = [];
       for (let offset = 0; offset < pending.length; offset += AGENT_STAT_CONCURRENCY) {
         const slice = pending.slice(offset, offset + AGENT_STAT_CONCURRENCY);
         const stats = await Promise.all(slice.map(async ({ source }) => {
@@ -1929,6 +1931,7 @@ export class UsageAggregationService {
       const keys = new Set<string>();
       const listedById = new Map(listed.map((summary) => [summary.id, summary]));
       for (const row of rows) {
+        if (++visited % 256 === 0) await yieldToEventLoop(undefined, { signal });
         const summary = listedById.get(row.sessionId) ?? { id: row.sessionId, workspaceId: '', createdAt: row.record.time, updatedAt: row.record.time, archived: false };
         keys.add(resolveBucket(row.record.time, summary, query).key);
       }
@@ -1946,14 +1949,16 @@ export class UsageAggregationService {
         for (const session of bucket.sessions) {
           for (const entry of session.agents ?? []) {
             const seen = new Set<number>();
-            const unique: number[] = [];
-            for (const id of entry.turnIds) if (!seen.has(id)) { seen.add(id); unique.push(id); }
-            if (unique.length !== entry.turnIds.length) {
+            for (const id of entry.turnIds) {
+              if (++visited % 256 === 0) await yieldToEventLoop(undefined, { signal });
+              seen.add(id);
+            }
+            if (seen.size !== entry.turnIds.length) {
               entry.turnIds.length = 0;
-              for (const id of unique) entry.turnIds.push(id);
+              for (const id of seen) entry.turnIds.push(id);
               changed = true;
             }
-            uniqueTurns += unique.length;
+            uniqueTurns += seen.size;
           }
         }
         if (bucket.sessionsTruncated !== true && uniqueTurns !== bucket.turnCount) {
@@ -1963,9 +1968,10 @@ export class UsageAggregationService {
         if (bucket.turnCount !== previous) corrections.set(bucket.key, bucket.turnCount - previous);
         if (changed) await fold.putBucket(bucket);
       }
-      const rowsByScope = new Map<string, FoldedUsageRecord[]>();
-      const agentsBySession = new Map<string, { first: UsageProjectionAgent; byIdentity: Map<string, UsageProjectionAgent | null> }>();
+      type ProjectionAgent = typeof agents[number];
+      const agentsBySession = new Map<string, { first: ProjectionAgent; byIdentity: Map<string, ProjectionAgent | null> }>();
       for (const agent of agents) {
+        if (++visited % 256 === 0) await yieldToEventLoop(undefined, { signal });
         let group = agentsBySession.get(agent.sessionId);
         if (group === undefined) {
           group = { first: agent, byIdentity: new Map() };
@@ -1975,27 +1981,29 @@ export class UsageAggregationService {
         group.byIdentity.set(identity, group.byIdentity.has(identity) ? null : agent);
       }
       for (const row of rows) {
+        if (++visited % 256 === 0) await yieldToEventLoop(undefined, { signal });
         if (!listedById.has(row.sessionId)) return;
         const identity = row.record.sourceAgentId ?? row.record.agentId;
         const group = agentsBySession.get(row.sessionId);
         const matched = identity === undefined ? undefined : group?.byIdentity.get(identity);
         const agent = matched === null ? undefined : matched ?? group?.first;
         if (agent === undefined) return;
-        const bucket = rowsByScope.get(agent.scope) ?? [];
-        bucket.push(row.record);
-        rowsByScope.set(agent.scope, bucket);
+        agent.rows.push(row.record);
       }
-      const turnsByScope = new Map<string, { bucket: string; turnIds: number[]; unknownTurnRecords: number }[]>();
+      const buckets: FoldBucketView[] = [];
       for (const value of proved) {
+        const sessions: FoldBucketView['sessions'][number][] = [];
         for (const session of value.sessions) {
+          if (++visited % 256 === 0) await yieldToEventLoop(undefined, { signal });
+          sessions.push({ sessionId: session.sessionId, turnIds: session.turnIds, turnCount: session.turnCount, unknownTurnRecords: session.unknownTurnRecords });
           for (const entry of session.agents ?? []) {
+            if (++visited % 256 === 0) await yieldToEventLoop(undefined, { signal });
             const agent = agentsBySession.get(session.sessionId)?.byIdentity.get(entry.agentId);
-            if (agent == null) continue;
-            const turns = turnsByScope.get(agent.scope) ?? [];
-            turns.push({ bucket: value.key, turnIds: [...entry.turnIds], unknownTurnRecords: entry.unknownTurnRecords });
-            turnsByScope.set(agent.scope, turns);
+            if (agent === null || agent === undefined) continue;
+            agent.turns.push({ bucket: value.key, turnIds: entry.turnIds, unknownTurnRecords: entry.unknownTurnRecords });
           }
         }
+        buckets.push({ key: value.key, turnCount: value.turnCount, sessionsTruncated: value.sessionsTruncated, sessions });
       }
       const projection: UsageRangeProjection = {
         version: 2,
@@ -2003,22 +2011,13 @@ export class UsageAggregationService {
         folded: true,
         storedBuckets: true,
         sessions: listed.map(projectionSessionOf),
-        buckets: proved.map((bucket) => ({
-          key: bucket.key,
-          turnCount: bucket.turnCount,
-          sessionsTruncated: bucket.sessionsTruncated,
-          sessions: bucket.sessions.map((session) => ({
-            sessionId: session.sessionId,
-            turnIds: [...session.turnIds],
-            turnCount: session.turnCount,
-            unknownTurnRecords: session.unknownTurnRecords,
-          })),
-        })),
-        agents: agents.map((agent) => ({ ...agent, rows: rowsByScope.get(agent.scope) ?? [], turns: turnsByScope.get(agent.scope) ?? [] })),
+        buckets,
+        agents,
       };
+      await yieldToEventLoop(undefined, { signal });
       await this.writeProjection(fingerprint, projection);
       return corrections;
-    } catch {}
+    } catch { signal?.throwIfAborted(); }
   }
 
   private async advanceCompleteFold(head: RangeFoldHead, fold: UsageRangeFold, query: NormalizedQuery, budget: ScanBudget): Promise<boolean> {

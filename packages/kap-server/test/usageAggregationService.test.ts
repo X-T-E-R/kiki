@@ -2394,6 +2394,19 @@ describe('shared agent and history usage projection', () => {
     expect(limited.reliability.incomplete_reason).toBe('record_budget');
   });
 
+  it('yields and cancels while preparing a recovered fold projection before publishing it', async () => {
+    const source = fixture([], {}, () => 100);
+    const controller = new AbortController();
+    const reason = new DOMException('cancelled during projection recovery', 'AbortError');
+    const rows = Array.from({ length: 1024 }, () => ({ sessionId: 'session-example', record: usageRecord(10) }));
+    const tick = setImmediate(() => { controller.abort(reason); });
+    try {
+      const pending = Reflect.apply(Reflect.get(source.service, 'saveFoldProjection'), source.service, [{ range: {}, granularity: 'session' }, 'example', [], { sessions: [] }, {}, { rows, buckets: new Map() }, controller.signal]);
+      await expect(pending).rejects.toBe(reason);
+      expect(source.persistedRecordCounts()).toEqual([]);
+    } finally { clearImmediate(tick); source.service.dispose(); }
+  });
+
   it('drops a repeated stored turn on save and does not count that turn again on append', async () => {
     const day0 = Date.UTC(2026, 9, 1);
     const now = day0 + 86_400_000;

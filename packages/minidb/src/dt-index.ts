@@ -136,6 +136,30 @@ export class DtIndex {
     this.byKey = nextByKey;
   }
 
+  async loadImageAsync(cols: DtImageColumn[], opts: { sliceEvery?: number } = {}): Promise<void> {
+    const sliceEvery = opts.sliceEvery ?? 512;
+    const nextCols = new Map<string, DtColumn>();
+    const nextByKey = new Map<string, Record<string, number>>();
+    let visited = 0;
+    for (const { name, entries } of cols) {
+      const ordered: RangeEntry<number, string>[] = [];
+      const byKey = new Map<string, number>();
+      for (const entry of entries) {
+        ordered.push({ key: entry.ms, val: entry.key });
+        byKey.set(entry.key, entry.ms);
+        const record = nextByKey.get(entry.key) ?? {};
+        record[name] = entry.ms;
+        nextByKey.set(entry.key, record);
+        if (++visited % sliceEvery === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      const list = await SkipList.bulkLoadAsync(ordered, { compareKey: cmpNumber, compareVal: cmpString }, { sliceEvery });
+      nextCols.set(name, { list, byKey });
+      if (++visited % sliceEvery === 0) await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    this.cols = nextCols;
+    this.byKey = nextByKey;
+  }
+
   /** Stage a rebuild in fresh state and swap it in on commit(), so a rebuild
    *  that fails midway leaves the previous index fully intact. Rebuild keys
    *  are unique (one store record each), so add() is a pure insert — the

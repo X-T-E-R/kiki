@@ -23,6 +23,8 @@ import {
   parseGenerationBuffer,
   readStoreImage,
   readDtIndexImage,
+  readDtIndexImageAsync,
+  ByteReader,
   readSecondaryIndexImage,
   readCompoundIndexImage,
   readTextDocsImage,
@@ -40,6 +42,7 @@ import {
 import type { StoreImageRecord } from '../src/gen-codec.js';
 import { crc32 } from '../src/crc32.js';
 import { Store } from '../src/store.js';
+import { DtIndex } from '../src/dt-index.js';
 import { IndexManager } from '../src/index-manager.js';
 import { CompoundIndexManager } from '../src/compound-index.js';
 import { readManifest, listGenerations } from '../src/generation-files.js';
@@ -357,6 +360,14 @@ describe('sliced open-path variants', () => {
 
   test('async image parsers match the sync parsers entry-for-entry', async () => {
     const dir = await openTmp('parse-async');
+    await writeDtIndexImage(path.join(dir, 'dt'), [
+      { name: 'empty', entries: [] },
+      { name: 'time', entries: Array.from({ length: 1024 }, (_, index) => ({ ms: index >> 1, key: Buffer.from(`key-${String(index).padStart(4, '0')}-用量`).toString('binary') })) },
+    ]);
+    const dtPayload = parseGenerationBuffer(await fs.readFile(path.join(dir, 'dt')), 'MDGD', 1).payload.buf;
+    expect(await readDtIndexImageAsync(new ByteReader(dtPayload), 1)).toEqual(readDtIndexImage(new ByteReader(dtPayload)));
+    await expect(readDtIndexImageAsync(new ByteReader(dtPayload.subarray(0, dtPayload.length - 1)), 1)).rejects.toBeInstanceOf(GenerationCorruptError);
+    await expect(readDtIndexImageAsync(new ByteReader(Buffer.concat([dtPayload, Buffer.from([0])])), 1)).rejects.toThrow('dt index image: trailing bytes');
     const secImage = [
       {
         name: 'byKind',
@@ -463,6 +474,29 @@ describe('sliced open-path variants', () => {
       syncStore.close();
       asyncStore.close();
     }
+  });
+
+  test('DT loadImageAsync keeps the old index visible until an equivalent complete state is ready', async () => {
+    const source = new DtIndex();
+    for (let index = 0; index < 1024; index++) source.set(`key-${String(index).padStart(4, '0')}`, { time: index >> 1, view: index % 3 });
+    const target = new DtIndex();
+    target.set('previous', { time: -1 });
+    const pending = target.loadImageAsync(source.exportImage(), { sliceEvery: 1 });
+    expect(target.range('time')).toEqual([{ key: 'previous', value: -1 }]);
+    await pending;
+    expect(target.exportImage()).toEqual(source.exportImage());
+    target.set('key-0001', { time: 2000 });
+    source.set('key-0001', { time: 2000 });
+    target.del('key-0002');
+    source.del('key-0002');
+    expect(target.range('time', { gt: 2, lte: 10, reverse: true, offset: 1, count: 4 })).toEqual(source.range('time', { gt: 2, lte: 10, reverse: true, offset: 1, count: 4 }));
+    expect(target.exportImage()).toEqual(source.exportImage());
+    const failure = new Error('failed staged DT load');
+    const bulk = vi.spyOn(SkipList, 'bulkLoadAsync').mockRejectedValueOnce(failure);
+    try {
+      await expect(target.loadImageAsync([{ name: 'replacement', entries: [{ ms: 1, key: 'new' }] }])).rejects.toBe(failure);
+      expect(target.exportImage()).toEqual(source.exportImage());
+    } finally { bulk.mockRestore(); }
   });
 
   test('loadImageAsync (secondary + compound) builds the same queryable state', async () => {
@@ -673,6 +707,35 @@ describe('generation build + load', () => {
     expect(db.findEq('byKind', 'a').map((r) => r.key)).toEqual(['stay']);
     expect(db.search('ft', 'hello').map((h) => h.key)).toEqual(['stay']);
     await db.close();
+  });
+
+  test('TTL expiry during sliced DT loading is reconciled before the generation becomes visible', async () => {
+    const dir = await openTmp('ttl-during-dt');
+    const writer = await MiniDb.open({ dir, valueCodec: 'json' });
+    await writer.set('stay', { kind: 'usage' }, { dt: { time: 1 } });
+    await writer.set('gone', { kind: 'usage' }, { dt: { time: 2 }, ttl: 60_000 });
+    await writer.rebuildGeneration();
+    await writer.close();
+    let now = Date.now();
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const original = DtIndex.prototype.loadImageAsync;
+    const loading = vi.spyOn(DtIndex.prototype, 'loadImageAsync').mockImplementation(async function (cols, options) {
+      now += 120_000;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return original.call(this, cols, options);
+    });
+    let reader: MiniDb | undefined;
+    try {
+      reader = await MiniDb.open({ dir, valueCodec: 'json', readOnly: true, activeExpireIntervalMs: 1 });
+      expect(reader.stats.generationLoads).toBe(1);
+      expect(reader.get('gone')).toBeUndefined();
+      expect(reader.get('stay')).toEqual({ kind: 'usage' });
+      expect((Reflect.get(reader, 'dt') as DtIndex).range('time')).toEqual([{ key: 'stay', value: 1 }]);
+    } finally {
+      loading.mockRestore();
+      clock.mockRestore();
+      await reader?.close();
+    }
   });
 
   test('a definition change rebuilds only the affected index', async () => {

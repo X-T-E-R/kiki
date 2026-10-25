@@ -355,13 +355,20 @@ export class QueryEngine<V> {
       }
     }
 
-    if (q.dt) {
+    const boundedKey = typeof q.key === 'string' || q.key !== undefined &&
+      (Boolean(q.key.prefix) || q.key.gte !== undefined || q.key.gt !== undefined || q.key.lte !== undefined || q.key.lt !== undefined);
+    const keyedDt = boundedKey && q.dt !== undefined && Object.values(q.dt).every((cond) =>
+      cond.offset === undefined && cond.count === undefined &&
+      !(cond.gte !== undefined && cond.gt !== undefined) && !(cond.lte !== undefined && cond.lt !== undefined))
+      ? Object.entries(q.dt) : undefined;
+    if (q.dt && keyedDt === undefined) {
       for (const [col, cond] of Object.entries(q.dt)) {
         const set = new Set(this.deps.dt.range(col, cond).map((r) => r.key));
         keys = keys === null ? set : filterKeys(keys, (k) => set.has(k));
       }
     }
 
+    const keyedFilters: Set<string>[] = [];
     let textOrder: { key: string; score: number }[] | null = null;
     if (q.text) {
       const ti = this.deps.text.get(q.text.index);
@@ -369,13 +376,15 @@ export class QueryEngine<V> {
       const hits = await ti.searchAsync(q.text.q, { op: q.text.op, limit: q.text.limit ?? 1_000_000 });
       textOrder = hits;
       const set = new Set(hits.map((h) => h.key));
-      keys = keys === null ? hits.map((h) => h.key) : filterKeys(keys, (k) => set.has(k));
+      if (keyedDt !== undefined) keyedFilters.push(set);
+      else keys = keys === null ? hits.map((h) => h.key) : filterKeys(keys, (k) => set.has(k));
     }
 
     const indexed = this.indexedCandidateKeys(q.filter);
     if (indexed) {
       const set = new Set(indexed);
-      keys = keys === null ? indexed : filterKeys(keys, (k) => set.has(k));
+      if (keyedDt !== undefined) keyedFilters.push(set);
+      else keys = keys === null ? indexed : filterKeys(keys, (k) => set.has(k));
     }
 
     if (keys === null) keys = this.deps.store().rawKeys({});
@@ -386,7 +395,23 @@ export class QueryEngine<V> {
     const early = !q.sort && !textOrder;
     const docs: ScanEntry<V>[] = [];
     let seen = 0;
-    for (const k of keys) {
+    let visited = 0;
+    let sliceStarted = performance.now();
+    candidates: for (const k of keys) {
+      if (keyedDt !== undefined) {
+        if (++visited % 256 === 0 && performance.now() - sliceStarted >= 8) {
+          await new Promise<void>((resolve) => setImmediate(resolve));
+          sliceStarted = performance.now();
+        }
+        for (const filter of keyedFilters) if (!filter.has(k)) continue candidates;
+        const dt = this.deps.store().map.get(k)?.dt;
+        for (const [col, cond] of keyedDt) {
+          const value = dt?.[col];
+          if (typeof value !== 'number' ||
+            (cond.gte !== undefined && value < cond.gte) || (cond.gt !== undefined && value <= cond.gt) ||
+            (cond.lte !== undefined && value > cond.lte) || (cond.lt !== undefined && value >= cond.lt)) continue candidates;
+        }
+      }
       stats.queryCandidates++;
       let value: V;
       if (keysOnly) {

@@ -610,6 +610,25 @@ export function readDtIndexImage(r: ByteReader): DtImageColumn[] {
   return cols;
 }
 
+export async function readDtIndexImageAsync(r: ByteReader, yieldEvery = 512): Promise<DtImageColumn[]> {
+  const colCount = r.u32();
+  const cols: DtImageColumn[] = [];
+  let visited = 0;
+  for (let i = 0; i < colCount; i++) {
+    const name = r.text();
+    const n = r.u64();
+    const entries: DtImageColumn['entries'] = [];
+    for (let j = 0; j < n; j++) {
+      entries.push({ ms: r.f64(), key: r.key() });
+      if (++visited % yieldEvery === 0) await yieldToLoop();
+    }
+    cols.push({ name, entries });
+    if (++visited % yieldEvery === 0) await yieldToLoop();
+  }
+  if (!r.done) throw new GenerationCorruptError('dt index image: trailing bytes');
+  return cols;
+}
+
 // ---- secondary index image --------------------------------------------------
 
 const SECONDARY_MAGIC = 'MDSI';

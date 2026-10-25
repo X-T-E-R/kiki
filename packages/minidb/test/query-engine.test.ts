@@ -1,6 +1,7 @@
 // Drives the query engine through the real db.query() path to cover the
 // operators and path handling that the higher-level tests do not exercise.
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
+import { DtIndex } from '../src/dt-index.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -187,6 +188,71 @@ test('sort ascending/descending, skip and limit', async () => {
     assert.equal(db.query().length, 4);
     await db.close();
   } finally {
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('keyed async DT filters preserve bounds, intersections, pages, missing columns and TTL without full-column ranges', async () => {
+  const dir = await tmpDir();
+  const db = await MiniDb.open({ dir, valueCodec: 'json', activeExpireIntervalMs: 0 });
+  try {
+    await db.createIndex('bySelected', { field: 'selected' });
+    for (let index = 0; index < 12; index++) {
+      await db.set(`usage:${String(index).padStart(2, '0')}`, { rank: 12 - index, selected: index % 2 === 0 }, { dt: { time: index, view: index % 3 } });
+      await db.set(`other:${index}`, { rank: index, selected: true }, { dt: { time: index, view: index % 3 } });
+    }
+    await db.set('usage:missing', { rank: 1, selected: true });
+    await db.set('usage:expired', { rank: 0, selected: true }, { ttl: 1, dt: { time: 5, view: 1 } });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const queries: import('../src/types.js').QueryOptions[] = [
+      { key: { prefix: 'usage:' }, dt: { time: { gte: 3, lte: 8 } } },
+      { key: { prefix: 'usage:' }, dt: { time: { gt: 3, lt: 8 }, view: { gte: 1, lte: 1 } } },
+      { key: { gt: 'usage:02', lte: 'usage:10' }, dt: { time: { gte: 3, lt: 10 } }, skip: 2, limit: 2 },
+      { key: 'usage:04', dt: { time: { gte: 4, lte: 4 } }, project: ['rank'] },
+      { key: { prefix: 'usage:' }, dt: { time: { gt: 3, lte: 9 } }, filter: { selected: true }, sort: { rank: -1 }, skip: 1, limit: 2 },
+      { key: { prefix: 'usage:' }, dt: { absent: {} } },
+      { key: { prefix: 'usage:' }, dt: { view: { gte: 1, lte: 1 } }, project: [], skip: 1, limit: 3 },
+      { key: { prefix: 'usage:' }, dt: { time: { gte: 4, lt: 9, reverse: true } } },
+    ];
+    const expected = queries.map((query) => db.query(query).map((row) => query.project?.length === 0 ? { ...row, value: {} } : row));
+    const ranges = vi.spyOn(DtIndex.prototype, 'range');
+    try {
+      for (let index = 0; index < queries.length; index++) {
+        const actual = await db.queryAsync(queries[index]);
+        assert.deepEqual(actual, expected[index]);
+      }
+      assert.equal(ranges.mock.calls.length, 0);
+      const ranked = { key: { prefix: 'usage:' }, dt: { time: { gte: 1, offset: 2, count: 4, reverse: true } } };
+      assert.deepEqual(await db.queryAsync(ranked), db.query(ranked));
+      assert.ok(ranges.mock.calls.length > 0);
+      ranges.mockClear();
+      assert.deepEqual(await db.queryAsync({ dt: { time: { gte: 9 } } }), db.query({ dt: { time: { gte: 9 } } }));
+      assert.ok(ranges.mock.calls.length > 0);
+      ranges.mockClear();
+      assert.deepEqual(await db.queryAsync({ key: {}, dt: { time: { gte: 9 } } }), db.query({ key: {}, dt: { time: { gte: 9 } } }));
+      assert.ok(ranges.mock.calls.length > 0);
+    } finally { ranges.mockRestore(); }
+  } finally {
+    await db.close();
+    await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+  }
+});
+
+test('keyed async DT filtering yields on scanned candidates even when none match', async () => {
+  const dir = await tmpDir();
+  const db = await MiniDb.open({ dir, valueCodec: 'json' });
+  try {
+    await db.batch(Array.from({ length: 2048 }, (_, index) => ({ op: 'set' as const, key: `usage:${String(index).padStart(4, '0')}`, value: index, dt: { view: 0 } })));
+    let progressed = false;
+    const tick = setImmediate(() => { progressed = true; });
+    let time = 0;
+    const clock = vi.spyOn(performance, 'now').mockImplementation(() => time += 8);
+    try {
+      assert.deepEqual(await db.queryAsync({ key: { prefix: 'usage:' }, dt: { view: { gte: 1 } }, project: [], limit: 1 }), []);
+      assert.equal(progressed, true);
+    } finally { clearImmediate(tick); clock.mockRestore(); }
+  } finally {
+    await db.close();
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });
