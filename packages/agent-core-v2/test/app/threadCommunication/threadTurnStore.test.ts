@@ -64,19 +64,19 @@ describe('ThreadTurnStore', () => {
     await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
-  async function seed(records: readonly unknown[]): Promise<void> {
-    for (const record of records) logs.append(SCOPE, KEY, record);
-    await logs.flush(SCOPE, KEY);
+  async function seed(records: readonly unknown[], scope = SCOPE): Promise<void> {
+    for (const record of records) logs.append(scope, KEY, record);
+    await logs.flush(scope, KEY);
   }
 
-  async function ready(before = Number.MAX_SAFE_INTEGER, limit = 20): Promise<ThreadTurnPage> {
-    let page = await turns.read(SCOPE, before, limit);
+  async function ready(before = Number.MAX_SAFE_INTEGER, limit = 20, scope = SCOPE): Promise<ThreadTurnPage> {
+    let page = await turns.read(scope, before, limit);
     let steps = 0;
     while (page.preparing) {
       expect(page.turns).toEqual([]);
       expect(page.hasMore).toBe(true);
       expect(++steps).toBeLessThan(100);
-      page = await turns.read(SCOPE, before, limit, page.source);
+      page = await turns.read(scope, before, limit, page.source);
     }
     return page;
   }
@@ -94,6 +94,34 @@ describe('ThreadTurnStore', () => {
     expect(ranges.every((range) => range !== undefined && range.end - range.start < 1024)).toBe(true);
     expect(ranges.some((range) => range?.start === 0)).toBe(false);
     read.mockRestore();
+  });
+
+  it('isolates latest and earlier turn pages across scopes with overlapping turn ids', async () => {
+    const other = 'sessions/example/session/agents/other';
+    await seed(Array.from({ length: 4 }, (_, id) => [prompt(`other input-${id}`), part(id, `other output-${id}`), ended(id)]).flat(), other);
+    const otherFirst = await ready(Number.MAX_SAFE_INTEGER, 2, other);
+    expect(otherFirst.turns.map((turn) => turn.turnId)).toEqual([2, 3]);
+
+    await seed(Array.from({ length: 4 }, (_, id) => [prompt(`target input-${id}`), part(id, `target output-${id}`), ended(id)]).flat());
+    const first = await ready(Number.MAX_SAFE_INTEGER, 2);
+    expect(first.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([
+      [2, 'target input-2', 'target output-2'],
+      [3, 'target input-3', 'target output-3'],
+    ]);
+    expect(first.hasMore).toBe(true);
+    const second = await turns.read(SCOPE, 2, 2, first.source);
+    expect(second.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([
+      [0, 'target input-0', 'target output-0'],
+      [1, 'target input-1', 'target output-1'],
+    ]);
+    expect(second.hasMore).toBe(false);
+    const otherSecond = await turns.read(other, 2, 2, otherFirst.source);
+    expect(otherSecond.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([
+      [0, 'other input-0', 'other output-0'],
+      [1, 'other input-1', 'other output-1'],
+    ]);
+    expect(otherSecond.hasMore).toBe(false);
+    expect((await turns.read(other, Number.MAX_SAFE_INTEGER, 2, otherFirst.source)).turns).toEqual(otherFirst.turns);
   });
 
   it('resumes bounded preparation after cold reopen, pins append watermarks and invalidates rewrite cursors', async () => {

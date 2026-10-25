@@ -340,6 +340,49 @@ describe('MiniDbQueryStore', () => {
     expect(asc.items.map((i) => i.updatedAt)).toEqual([45, 46, 47, 48, 49]);
   });
 
+  it.each(['asc', 'desc'] as const)('pageByColumn isolates collections before %s limits and keyset bounds', async (dir) => {
+    const store = build();
+    const target = 'turns';
+    const neighbor = 'turns-neighbor';
+    const values = [0, 10, 20, 30, 40, 50, 60];
+    const rows = values.map((turnId) => ({ id: `turn:${turnId}`, kind: turnId === 30 ? 'text' : 'turn', turnId, text: `target-${turnId}` }));
+    const foreign = [-10, ...values, 70].map((turnId) => ({ id: `turn:${turnId}`, kind: 'turn', turnId, text: `neighbor-${turnId}` }));
+    await store.batch([{ collection: target, rows }, { collection: neighbor, rows: foreign }].flatMap(({ collection, rows }) => rows.map((value) => ({
+      kind: 'put' as const,
+      collection,
+      key: value.id,
+      value,
+      columns: { turnId: value.turnId },
+    }))));
+    const ordered = rows.filter((row) => row.kind === 'turn').toSorted((left, right) => dir === 'asc' ? left.turnId - right.turnId : right.turnId - left.turnId);
+    const first = await store.pageByColumn<(typeof rows)[number]>(target, {
+      column: 'turnId', dir, filter: { kind: 'turn' }, limit: 2,
+    });
+    expect(first.items).toEqual(ordered.slice(0, 2));
+
+    const bounded = ordered.filter((row) => row.turnId >= 10 && row.turnId <= 50);
+    const page1 = await store.pageByColumn<(typeof rows)[number]>(target, {
+      column: 'turnId', dir, bounds: { gte: 10, lte: 50 }, filter: { kind: 'turn' }, limit: 2,
+    });
+    expect(page1.items).toEqual(bounded.slice(0, 2));
+    const page2 = await store.pageByColumn<(typeof rows)[number]>(target, {
+      column: 'turnId', dir,
+      bounds: dir === 'asc' ? { gt: page1.items.at(-1)!.turnId, lte: 50 } : { gte: 10, lt: page1.items.at(-1)!.turnId },
+      filter: { kind: 'turn' }, limit: 2,
+    });
+    expect(page2.items).toEqual(bounded.slice(2));
+    const exhausted = await store.pageByColumn(target, {
+      column: 'turnId', dir,
+      bounds: dir === 'asc' ? { gt: page2.items.at(-1)!.turnId, lte: 50 } : { gte: 10, lt: page2.items.at(-1)!.turnId },
+      filter: { kind: 'turn' }, limit: 2,
+    });
+    expect(exhausted.items).toEqual([]);
+    expect((await store.pageByColumn('missing', { column: 'turnId', dir, limit: 2 })).items).toEqual([]);
+    expect((await store.pageByColumn(neighbor, { column: 'turnId', dir, limit: 1 })).items).toEqual([
+      dir === 'asc' ? foreign[0] : foreign.at(-1),
+    ]);
+  });
+
   it('pageByColumn stays cheap as the collection grows', async () => {
     const store = build();
     const seed = async (from: number, to: number): Promise<void> => {

@@ -219,6 +219,7 @@ export class MiniDbQueryStore extends Disposable implements IQueryStore {
     const dir = query.dir ?? 'asc';
     const rows = (await this.withDb((db) =>
       db.query({
+        key: { prefix: physicalKey(collection, '') },
         dt: { [query.column]: query.bounds ?? {} },
         filter: query.filter as Record<string, unknown> | undefined,
         sort: { [query.column]: dir === 'desc' ? -1 : 1 },
