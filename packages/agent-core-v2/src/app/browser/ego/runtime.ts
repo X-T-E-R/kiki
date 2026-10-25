@@ -10,6 +10,7 @@ import type { BrowserResolvedConnection } from '#/app/browser/browserConfig';
 import { BrowserError } from '#/app/browser/errors';
 
 import { egoChildNames, egoFileExists, egoPathDelimiter, egoPathHits, readEgoUninstallRecords, readRegisteredEgoPath } from './hints';
+import { runEgoDetectionCommand } from './process';
 import {
   EGO_NAME_IN_USE, EGO_READY_MARKER, EGO_SDK_ENV, EGO_SPACE_FILE, EGO_USER_IN_CONTROL,
   classifyEgoCheck, egoSpaceName, resolveEgoCli, type EgoCliResolution,
@@ -202,14 +203,26 @@ export class EgoBrowserRuntime {
     return current.signal;
   }
 
-  async resolve(connection: BrowserResolvedConnection | undefined): Promise<EgoCliResolution> {
-    const exists = async (file: string): Promise<boolean> => egoFileExists(this.files, file);
+  async resolve(connection: BrowserResolvedConnection | undefined, signal?: AbortSignal): Promise<EgoCliResolution> {
+    const exists = async (file: string): Promise<boolean> => {
+      signal?.throwIfAborted();
+      const found = await egoFileExists(this.files, file);
+      signal?.throwIfAborted();
+      return found;
+    };
     const cliPath = connection?.type === 'ego-lite' ? connection.cliPath?.trim() : undefined;
     if (cliPath !== undefined && cliPath !== '' && isAbsolute(cliPath) && await exists(cliPath)) {
       return { kind: 'found', path: cliPath };
     }
-    const records = await readEgoUninstallRecords(this.processes, this.platform);
-    const registered = await readRegisteredEgoPath(this.processes, this.env, this.platform);
+    const [recordsResult, registeredResult] = await Promise.allSettled([
+      readEgoUninstallRecords(this.processes, this.platform, signal),
+      readRegisteredEgoPath(this.processes, this.env, this.platform, signal),
+    ]);
+    if (recordsResult.status === 'rejected') throw recordsResult.reason;
+    if (registeredResult.status === 'rejected') throw registeredResult.reason;
+    const records = recordsResult.value;
+    const registered = registeredResult.value;
+    signal?.throwIfAborted();
     const pathEnv = [registered, this.env['PATH']].filter((part): part is string => part !== undefined && part.trim() !== '').join(egoPathDelimiter(this.platform));
     const pathHits = await egoPathHits(pathEnv === '' ? undefined : pathEnv, exists, this.platform);
     const syncExists = new Map<string, boolean>();
@@ -316,26 +329,38 @@ export class EgoBrowserRuntime {
     return file;
   }
 
-  async run(cli: string, connection: BrowserResolvedConnection, directory: string, source: string, signal?: AbortSignal): Promise<EgoRunResult> {
+  async run(cli: string, connection: BrowserResolvedConnection, directory: string, source: string, signal?: AbortSignal, detection = false): Promise<EgoRunResult> {
     const scriptPath = await this.writeProgram(directory, source);
-    const sdk = await this.sdkPath();
-    const serverName = connection.type === 'ego-lite' ? connection.serverName : undefined;
-    let argv = egoArgv(serverName, scriptPath, sdk);
-    let outcome = await this.spawn(cli, argv, signal);
-    const first = `${outcome.stdout}\n${outcome.stderr}`;
-    const flags = egoOutputFlags(first);
-    if (!outcome.aborted && sdk !== undefined && outcome.code !== 0 && flags.sdkRejected && !flags.nameInUse && !flags.userInControl && parseMarker(first, PRELUDE) === undefined) {
-      argv = egoArgv(serverName, scriptPath);
-      outcome = await this.spawn(cli, argv, signal);
+    let cleanupConfirmed = false;
+    try {
+      const sdk = await this.sdkPath();
+      const serverName = connection.type === 'ego-lite' ? connection.serverName : undefined;
+      const execute = async (args: readonly string[]) => detection
+        ? { ...await runEgoDetectionCommand(this.processes, cli, args, signal), aborted: false }
+        : this.spawn(cli, args, signal);
+      let argv = egoArgv(serverName, scriptPath, sdk);
+      let outcome = await execute(argv);
+      const first = `${outcome.stdout}\n${outcome.stderr}`;
+      const flags = egoOutputFlags(first);
+      if (!outcome.aborted && sdk !== undefined && outcome.code !== 0 && flags.sdkRejected && !flags.nameInUse && !flags.userInControl && parseMarker(first, PRELUDE) === undefined) {
+        argv = egoArgv(serverName, scriptPath);
+        outcome = await execute(argv);
+      }
+      cleanupConfirmed = true;
+      return { ...outcome, scriptPath, argv };
+    } catch (error) {
+      cleanupConfirmed = signal?.aborted === true && error === signal.reason;
+      throw error;
+    } finally {
+      if (detection && cleanupConfirmed) await this.files.remove(scriptPath);
     }
-    return { ...outcome, scriptPath, argv };
   }
 
   async probe(connection: BrowserResolvedConnection, signal?: AbortSignal): Promise<{ readonly resolution: EgoCliResolution; readonly output: string; readonly kind: 'ready' | 'onboarding' | 'not_ready' | 'missing' | 'choose' }> {
-    const resolution = await this.resolve(connection);
+    const resolution = await this.resolve(connection, signal);
     if (resolution.kind !== 'found') return { resolution, output: '', kind: resolution.kind };
     const directory = join(tmpdir(), 'kiki-ego');
-    const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal);
+    const result = await this.run(resolution.path, connection, directory, egoReadyScript(), signal, signal !== undefined);
     const output = `${result.stdout}\n${result.stderr}`;
     if (result.aborted) throw signal?.reason ?? new BrowserError('browser.execution_failed', 'Ego Lite check was cancelled');
     return { resolution, output, kind: classifyEgoCheck(output) };

@@ -2,7 +2,8 @@ import { posix, win32 } from 'node:path';
 import { join } from 'pathe';
 
 import type { IHostFileSystem } from '#/os/interface/hostFileSystem';
-import type { IHostProcess, IHostProcessService } from '#/os/interface/hostProcess';
+import type { IHostProcessService } from '#/os/interface/hostProcess';
+import { runEgoDetectionCommand } from './process';
 
 import { EGO_BROWSER_EXE, EGO_LITE_DISPLAY_NAME, EGO_PUBLISHER_MARK, type EgoUninstallRecord } from './resolveCli';
 
@@ -71,12 +72,6 @@ export function parseEgoUninstallExport(text: string): EgoUninstallRecord[] {
   return records.filter((record) => record.displayName === EGO_LITE_DISPLAY_NAME && record.publisher.includes(EGO_PUBLISHER_MARK));
 }
 
-async function readStream(stream: NodeJS.ReadableStream): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of stream) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  return Buffer.concat(chunks).toString('utf8');
-}
-
 export function expandRegistryPath(value: string, env: NodeJS.ProcessEnv): string {
   return value.replace(/%([^%]+)%/g, (whole, name: string) => {
     if (Object.prototype.hasOwnProperty.call(env, name)) return env[name] ?? whole;
@@ -95,28 +90,33 @@ export function parseRegistryPathValue(text: string): string | undefined {
   return undefined;
 }
 
-async function readRegistryPath(processes: IHostProcessService, key: string): Promise<string | undefined> {
-  let child: IHostProcess | undefined;
+function registryExecutable(signal?: AbortSignal): string {
+  if (signal === undefined) return 'reg.exe';
+  const root = process.env['SystemRoot'] ?? 'C:\\Windows';
+  return win32.join(win32.isAbsolute(root) ? root : 'C:\\Windows', 'System32', 'reg.exe');
+}
+
+async function readRegistryPath(processes: IHostProcessService, key: string, signal?: AbortSignal): Promise<string | undefined> {
   try {
-    child = await processes.spawn('reg.exe', ['query', key, '/v', 'Path'], { shell: false, windowsHide: true });
-    (child.stdin as { end?: () => void } | undefined)?.end?.();
-    const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
-    if (code !== 0) return undefined;
-    return parseRegistryPathValue(stdout);
-  } catch {
+    const result = await runEgoDetectionCommand(processes, registryExecutable(signal), ['query', key, '/v', 'Path'], signal);
+    return result.code === 0 ? parseRegistryPathValue(result.stdout) : undefined;
+  } catch (error) {
+    if (signal !== undefined) throw error;
     return undefined;
-  } finally {
-    await child?.dispose();
   }
 }
 
-export async function readRegisteredEgoPath(processes: IHostProcessService, env: NodeJS.ProcessEnv, platform = process.platform): Promise<string | undefined> {
+export async function readRegisteredEgoPath(processes: IHostProcessService, env: NodeJS.ProcessEnv, platform = process.platform, signal?: AbortSignal): Promise<string | undefined> {
   if (platform !== 'win32') return undefined;
-  const [user, system] = await Promise.all([
-    readRegistryPath(processes, 'HKCU\\Environment'),
-    readRegistryPath(processes, 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment'),
+  const results = await Promise.allSettled([
+    readRegistryPath(processes, 'HKCU\\Environment', signal),
+    readRegistryPath(processes, 'HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment', signal),
   ]);
-  const parts = [user, system].filter((part): part is string => part !== undefined).map((part) => expandRegistryPath(part, env));
+  const values = results.map((result) => {
+    if (result.status === 'rejected') throw result.reason;
+    return result.value;
+  });
+  const parts = values.filter((part): part is string => part !== undefined).map((part) => expandRegistryPath(part, env));
   return parts.length === 0 ? undefined : parts.join(egoPathDelimiter(platform));
 }
 
@@ -126,26 +126,23 @@ const EGO_UNINSTALL_KEYS = [
   'HKLM\\Software\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\Uninstall',
 ] as const;
 
-async function readUninstallHive(processes: IHostProcessService, key: string): Promise<readonly EgoUninstallRecord[]> {
-  let child: IHostProcess | undefined;
+async function readUninstallHive(processes: IHostProcessService, key: string, signal?: AbortSignal): Promise<readonly EgoUninstallRecord[]> {
   try {
-    child = await processes.spawn('reg.exe', ['query', key, '/s'], { shell: false, windowsHide: true });
-    (child.stdin as { end?: () => void } | undefined)?.end?.();
-    const [code, stdout] = await Promise.all([child.wait(), readStream(child.stdout)]);
-    if (code !== 0) return [];
-    return parseEgoUninstallExport(stdout);
-  } catch {
+    const result = await runEgoDetectionCommand(processes, registryExecutable(signal), ['query', key, '/s'], signal);
+    return result.code === 0 ? parseEgoUninstallExport(result.stdout) : [];
+  } catch (error) {
+    if (signal !== undefined) throw error;
     return [];
-  } finally {
-    await child?.dispose();
   }
 }
 
-export async function readEgoUninstallRecords(processes: IHostProcessService, platform = process.platform): Promise<readonly EgoUninstallRecord[]> {
+export async function readEgoUninstallRecords(processes: IHostProcessService, platform = process.platform, signal?: AbortSignal): Promise<readonly EgoUninstallRecord[]> {
   if (platform !== 'win32') return [];
   const records: EgoUninstallRecord[] = [];
-  for (const key of EGO_UNINSTALL_KEYS) {
-    for (const record of await readUninstallHive(processes, key)) {
+  const hives = await Promise.allSettled(EGO_UNINSTALL_KEYS.map((key) => readUninstallHive(processes, key, signal)));
+  for (const hive of hives) {
+    if (hive.status === 'rejected') throw hive.reason;
+    for (const record of hive.value) {
       const known = records.some((item) => item.displayName === record.displayName && item.installLocation === record.installLocation && item.displayVersion === record.displayVersion);
       if (!known) records.push(record);
     }

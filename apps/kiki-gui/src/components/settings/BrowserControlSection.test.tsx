@@ -397,6 +397,22 @@ describe('BrowserControlSection', () => {
       expect(query<HTMLAnchorElement>('[data-browser-route="ego-lite"] [data-browser-route-instructions]')?.getAttribute('href')).toBe('https://lite.ego.app/download?auto=1');
     });
 
+    it.each(['ready', 'failed'] as const)('polls a pending Ego check to %s without reporting an uninstalled app', async (state) => {
+      const checking = preset({ preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app', state: 'preparing', reason: 'ego_detecting', steps: [{ id: 'detect', state: 'running' }], actions: [{ id: 'cancel' }] });
+      const settled = { ...checking, state, reason: state === 'ready' ? 'ego_ready' : 'ego_detection_failed', steps: [], actions: [], error: state === 'failed' ? 'Ego Lite detection timed out after 5000ms' : undefined };
+      setupPresets.mockResolvedValueOnce({ presets: [MANAGED_READY, checking] }).mockResolvedValue({ presets: [MANAGED_READY, settled] });
+      await render();
+      await settleUntil('[data-browser-route="ego-lite"][data-browser-route-state="preparing"]');
+      expect(query('[data-browser-route-ego-next]')?.textContent).toBe('Checking which browsers are ready…');
+      expect(query('[data-browser-route="ego-lite"]')?.textContent).not.toContain('Download Ego Lite yourself');
+      expect(query('[data-browser-route="independent-browser"][data-browser-route-state="ready"]')).not.toBeNull();
+      await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 1_650); }); });
+      await settleUntil(`[data-browser-route="ego-lite"][data-browser-route-state="${state}"]`);
+      expect(setupPresets).toHaveBeenCalledTimes(2);
+      expect(query('[data-browser-route-ego-next]')?.textContent).not.toContain('Detecting');
+      expect(connectPreset).not.toHaveBeenCalled();
+    });
+
     it('shows the Ego Lite route in Chinese without an install button', async () => {
       setupPresets.mockResolvedValue({ presets: [preset({
         preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app',

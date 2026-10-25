@@ -490,7 +490,11 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 
 ### 浏览器引导预设
 
-预设为 `kimi-webbridge`、`independent-browser`、`codex-browser` 和 `ego-lite`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 将匹配的端点名称列为尚未验证的候选项（`candidates`，最多 20 项），并保存明确选定的管道。桌面应用工具也使用同一名称前缀，因此发现名称不代表扩展连接已验证；仅凭空列表也不能判断扩展未启用。Kiki 不安装外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。扩展探测成功后，若 id 空闲，会新建不带 endpoint 的 `webbridge-command` 连接，返回 `connectionId: "webbridge-command"` 及 `connection` 运行状态。若该 id 已被另一类型占用，会返回 `reason: "connection_conflict"`，不替换该条目，也不覆盖既有 `kimi-webbridge` 连接。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。`ego-lite` 的 `controlSurface` 为 `"external-app"`，`sourceUrl` 为 `https://lite.ego.app/download?auto=1`。它的状态查询不会启动 `nodejs`。只有检查输出包含 `kiki-ego-ready` 时才是 `ready`。其余原因是 `ego_installed`、`ego_onboarding` 和 `ego_choose_cli`。该预设的 `:prepare` 会被拒绝。`:connect` 执行检查；成功且尚无该 id 时，保存连接 id `ego-lite`，不改允许列表，也不改默认浏览器。
+预设为 `kimi-webbridge`、`independent-browser`、`codex-browser` 和 `ego-lite`。`kimi-webbridge` 与 `independent-browser` 管理本地组件，而 `codex-browser` 将匹配的端点名称列为尚未验证的候选项（`candidates`，最多 20 项），并保存明确选定的管道。桌面应用工具也使用同一名称前缀，因此发现名称不代表扩展连接已验证；仅凭空列表也不能判断扩展未启用。Kiki 不安装外部应用。`kimi-webbridge` 的连接与打开都指向一条固定的本地桥，不接受候选列表。扩展探测成功后，若 id 空闲，会新建不带 endpoint 的 `webbridge-command` 连接，返回 `connectionId: "webbridge-command"` 及 `connection` 运行状态。若该 id 已被另一类型占用，会返回 `reason: "connection_conflict"`，不替换该条目，也不覆盖既有 `kimi-webbridge` 连接。Codex 管道和独立浏览器 profile 是另外的接法，不会因此多出 Kimi WebBridge 实例。
+
+`ego-lite` 的 `controlSurface` 为 `"external-app"`，`sourceUrl` 为 `https://lite.ego.app/download?auto=1`。状态查询共享一次后台检测。检测中，GET 返回 `state: "preparing"`、`reason: "ego_detecting"`，以及状态为 `running` 的 `detect` 步骤；其他预设仍可读取。再次轮询即可取得结果。发现过程与自动 CLI 检查共用五秒期限；超时返回 `failed`、`reason: "ego_detection_failed"` 和具体错误。结果从完成时起保鲜 30 秒。`:cancel` 停止当前检测；关闭该来源也会停止检测，不改浏览器权限。
+
+已保存的 Ego 连接或可识别的 Citro 安装路径可以通过 `nodejs` 自动检查；仅从 PATH 找到的其他可执行文件需要显式检查。只有检查输出包含 `kiki-ego-ready` 时才是 `ready`。其余原因是 `ego_installed`、`ego_onboarding` 和 `ego_choose_cli`。该预设的 `:prepare` 会被拒绝。`:connect` 执行检查；成功且尚无该 id 时，保存连接 id `ego-lite`，不改允许列表，也不改默认浏览器。
 
 | 方法与路径 | 说明 |
 | --- | --- |

@@ -119,6 +119,7 @@ const REASON_KEYS: Readonly<Record<string, I18nKey>> = {
 };
 
 function egoNextKey(preset: BrowserSetupStatus): I18nKey {
+  if (preset.state === 'preparing') return 'st.browser.setup.detecting';
   if (preset.state === 'connected') return 'st.browser.reason.egoAdmitted';
   if (preset.reason === 'ego_onboarding') return 'st.browser.reason.egoOnboarding';
   if (preset.reason === 'ego_installed') return 'st.browser.reason.egoInstalled';

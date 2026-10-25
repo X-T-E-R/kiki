@@ -1031,3 +1031,91 @@ async function readShortcut(host: HostProcessService, shortcutPath: string): Pro
   const [target = '', ...rest] = output.split(/\r?\n/);
   return { target, arguments: rest.join('\n') };
 }
+
+function pendingEgoFixture() {
+  let mode: 'hang' | 'ready' = 'hang';
+  const kills: ReturnType<typeof vi.fn>[] = [];
+  const disposals: ReturnType<typeof vi.fn>[] = [];
+  const spawn = vi.fn(async (_command: string, args: readonly string[] = [], _options?: { ownedProcessTree?: boolean }) => {
+    let finish: (code: number) => void = () => {};
+    const node = args.includes('nodejs');
+    const wait = node && mode === 'hang' ? new Promise<number>((resolve) => { finish = resolve; }) : Promise.resolve(0);
+    const kill = vi.fn(async () => { finish(1); });
+    const dispose = vi.fn(async () => {});
+    if (node) { kills.push(kill); disposals.push(dispose); }
+    return { stdin: { end: vi.fn() }, stdout: Readable.from([node && mode === 'ready' ? 'kiki-ego-ready\n' : '']), stderr: Readable.from(['']), wait: () => wait, kill, dispose };
+  });
+  const f = fixture({ hostProcess: { spawn } as never, hostFs: {
+    stat: async (file: string) => ({ isFile: file === 'C:/fixture/ego-browser.exe', isDirectory: false, size: 0 }),
+    mkdir: async () => {}, writeText: async () => {}, remove: async () => {}, readText: async () => '', readdir: async () => [],
+  } as never });
+  f.rows.push({ id: 'ego-lite', name: 'Ego Lite', type: 'ego-lite', enabled: true, cliPath: 'C:/fixture/ego-browser.exe' });
+  return { ...f, detectionSpawn: spawn, kills, disposals, ready: () => { mode = 'ready'; } };
+}
+
+it('returns the other presets while one Ego check is still running', async () => {
+  const f = pendingEgoFixture();
+  const started = performance.now();
+  const result = await f.setup.list();
+  expect(performance.now() - started).toBeLessThan(1_000);
+  expect(result.presets.find((item) => item.preset === 'independent-browser')?.state).toBe('ready');
+  expect(result.presets.find((item) => item.preset === 'ego-lite')).toMatchObject({ state: 'preparing', reason: 'ego_detecting', steps: [{ id: 'detect', state: 'running' }], actions: [{ id: 'cancel' }] });
+  await f.setup.cancel('ego-lite');
+  expect(f.kills[0]).toHaveBeenCalledOnce();
+  expect(f.disposals[0]).toHaveBeenCalledOnce();
+  expect(f.upsert).not.toHaveBeenCalled();
+  expect(f.connect).not.toHaveBeenCalled();
+});
+
+it('keeps an Ego cleanup failure visible when cancellation is requested', async () => {
+  const f = pendingEgoFixture();
+  expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'preparing' });
+  f.kills[0]?.mockRejectedValueOnce(new Error('fixture cleanup unconfirmed'));
+  expect(await f.setup.cancel('ego-lite')).toMatchObject({ state: 'failed', reason: 'ego_detection_failed', error: 'fixture cleanup unconfirmed' });
+  expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'failed', error: 'fixture cleanup unconfirmed' });
+  expect(f.disposals[0]).not.toHaveBeenCalled();
+});
+
+it('shares and bounds Ego checks, keeps a timeout visible, and refreshes after the completion freshness window', async () => {
+  vi.useFakeTimers();
+  const f = pendingEgoFixture();
+  try {
+    const requests = Promise.all([f.setup.status('ego-lite'), f.setup.status('ego-lite')]);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await requests).toEqual([expect.objectContaining({ state: 'preparing' }), expect.objectContaining({ state: 'preparing' })]);
+    expect(f.kills).toHaveLength(1);
+    expect(f.detectionSpawn.mock.calls[0]?.[2]).toMatchObject({ ownedProcessTree: true });
+    await vi.advanceTimersByTimeAsync(5_000);
+    expect(f.kills[0]).toHaveBeenCalledOnce();
+    expect(f.disposals[0]).toHaveBeenCalledOnce();
+    expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'failed', reason: 'ego_detection_failed', error: 'Ego Lite detection timed out after 5000ms' });
+    expect(f.kills).toHaveLength(1);
+    f.ready();
+    await vi.advanceTimersByTimeAsync(30_001);
+    const refreshed = f.setup.status('ego-lite');
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await refreshed).toMatchObject({ state: 'ready', reason: 'ego_ready', checkedAt: expect.any(String) });
+    expect(f.kills).toHaveLength(2);
+    expect(f.kills[1]).not.toHaveBeenCalled();
+  } finally { vi.useRealTimers(); }
+});
+
+it('cancels an Ego check on source-off and App disposal without changing browser permissions', async () => {
+  const f = pendingEgoFixture();
+  expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'preparing' });
+  await f.setDisabledSources(['ego-lite']);
+  expect(await f.setup.status('ego-lite')).toMatchObject({ reason: 'source_disabled', actions: [] });
+  await vi.waitFor(() => { expect(f.disposals[0]).toHaveBeenCalledOnce(); });
+  expect(f.kills[0]).toHaveBeenCalledOnce();
+  await f.setDisabledSources([]);
+  await vi.waitFor(async () => {
+    expect(await f.setup.status('ego-lite')).toMatchObject({ state: 'preparing' });
+    expect(f.kills).toHaveLength(2);
+  });
+  await fixtures.at(-1)?.dispose();
+  expect(f.kills[1]).toHaveBeenCalledOnce();
+  expect(f.disposals[1]).toHaveBeenCalledOnce();
+  expect(f.setAllowed).not.toHaveBeenCalled();
+  expect(f.upsert).not.toHaveBeenCalled();
+  expect(f.connect).not.toHaveBeenCalled();
+});

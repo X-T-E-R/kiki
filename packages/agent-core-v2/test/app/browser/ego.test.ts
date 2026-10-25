@@ -1,4 +1,4 @@
-import { Readable } from 'node:stream';
+import { PassThrough, Readable } from 'node:stream';
 import { join } from 'pathe';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -22,6 +22,7 @@ import {
   classifyEgoCheck, egoSpaceName, resolveEgoCli, type EgoUninstallRecord,
 } from '#/app/browser/ego/resolveCli';
 import { EgoBrowserRuntime, egoArgv, egoPrelude, egoProgram, egoReadyScript, egoTabBody } from '#/app/browser/ego/runtime';
+import { runEgoDetectionCommand } from '#/app/browser/ego/process';
 
 const EXE = 'ego-browser.exe';
 const root = 'C:/EgoLite';
@@ -611,4 +612,73 @@ describe('browser__ego_run approval', () => {
     expect(first.display).toEqual({ kind: 'command', command: 'console.log(1)', language: 'bash' });
     expect(first).not.toHaveProperty('accesses');
   });
+});
+
+it('enumerates uninstall hives and registered PATH in parallel under one discovery deadline', async () => {
+  vi.useFakeTimers();
+  const calls: string[][] = [];
+  const started = Date.now();
+  const spawn = vi.fn(async (command: string, args: readonly string[] = []) => {
+    expect(command).toMatch(/^[A-Za-z]:\\.*\\reg\.exe$/i);
+    calls.push([...args]);
+    return { stdout: Readable.from(['']), stderr: Readable.from(['']), wait: () => new Promise<number>((resolve) => { setTimeout(() => { resolve(0); }, 300); }), dispose: async () => {}, kill: async () => {} };
+  });
+  const { fs } = memoryFs([]);
+  const runtime = new EgoBrowserRuntime({ spawn } as never, fs, { PATH: '' }, 'win32');
+  try {
+    const result = runtime.resolve(undefined, new AbortController().signal);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(calls).toHaveLength(5);
+    await vi.advanceTimersByTimeAsync(300);
+    await expect(result).resolves.toEqual({ kind: 'missing' });
+    expect(Date.now() - started).toBe(300);
+  } finally { vi.useRealTimers(); }
+});
+
+it('waits for owned detection cleanup after an abort, including abort during spawn', async () => {
+  const controller = new AbortController();
+  let spawned: (() => void) | undefined;
+  let cleaned: (() => void) | undefined;
+  const dispose = vi.fn(async () => {});
+  const kill = vi.fn(() => new Promise<void>((resolve) => { cleaned = resolve; }));
+  const spawn = vi.fn(() => new Promise((resolve) => { spawned = () => { resolve({ stdout: Readable.from(['']), stderr: Readable.from(['']), wait: () => new Promise(() => {}), kill, dispose }); }; }));
+  const pending = runEgoDetectionCommand({ spawn } as never, 'fixture-cli', [], controller.signal);
+  const observed = pending.catch((error: unknown) => error);
+  controller.abort(new Error('fixture cancellation'));
+  spawned?.();
+  await vi.waitFor(() => { expect(kill).toHaveBeenCalledOnce(); });
+  expect(dispose).not.toHaveBeenCalled();
+  cleaned?.();
+  expect(await observed).toBe(controller.signal.reason);
+  expect(dispose).toHaveBeenCalledOnce();
+});
+
+it('reports the detection deadline instead of a stream error caused by confirmed cancellation', async () => {
+  const controller = new AbortController();
+  const stdout = new PassThrough();
+  const stderr = new PassThrough();
+  const dispose = vi.fn(async () => { stdout.destroy(); stderr.destroy(); });
+  const kill = vi.fn(async () => { stdout.destroy(); stderr.destroy(); });
+  const spawn = vi.fn(async () => ({ stdout, stderr, wait: () => new Promise(() => {}), kill, dispose }));
+  const pending = runEgoDetectionCommand({ spawn } as never, 'fixture-cli', [], controller.signal);
+  const observed = pending.catch((error: unknown) => error);
+  await vi.waitFor(() => { expect(spawn).toHaveBeenCalledOnce(); });
+  const deadline = new Error('fixture detection deadline');
+  controller.abort(deadline);
+  expect(await observed).toBe(deadline);
+  expect(dispose).toHaveBeenCalledOnce();
+});
+
+it('keeps detection cleanup failures visible instead of reporting cancellation success', async () => {
+  const controller = new AbortController();
+  const failure = new Error('fixture cleanup unconfirmed');
+  const dispose = vi.fn();
+  const kill = vi.fn(async () => { throw failure; });
+  const spawn = vi.fn(async () => ({ stdout: Readable.from(['']), stderr: Readable.from(['']), wait: () => new Promise(() => {}), kill, dispose }));
+  const pending = runEgoDetectionCommand({ spawn } as never, 'fixture-cli', [], controller.signal);
+  const observed = pending.catch((error: unknown) => error);
+  await vi.waitFor(() => { expect(spawn).toHaveBeenCalledOnce(); });
+  controller.abort();
+  expect(await observed).toBe(failure);
+  expect(dispose).not.toHaveBeenCalled();
 });

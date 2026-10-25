@@ -1,3 +1,4 @@
+import { Disposable } from '#/_base/di/lifecycle';
 import { randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import path from 'node:path';
@@ -21,7 +22,7 @@ import { IHostProcessService } from '#/os/interface/hostProcess';
 import { IBrowserControlService, type BrowserStatus } from './browser';
 import { browserResponse } from './browserControlService';
 import { IBrowserConnectionStore } from './browserConnectionStore';
-import { BrowserIdSchema } from './browserConfig';
+import { BrowserIdSchema, type BrowserResolvedConnection } from './browserConfig';
 import { BrowserError } from './errors';
 import { IBrowserSetupService, type BrowserPresetId, type BrowserSetupConnectInput, type BrowserSetupOpenInput, type BrowserSetupUpdateInput, type BrowserSetupShortcutInput, type BrowserSetupStatus, type BrowserSetupStep } from './browserSetup';
 import { readWebbridgeStatus, probeWebbridgeConnection, WEBBRIDGE_COMMAND_ID } from './browserWebbridge';
@@ -105,13 +106,18 @@ function diskUpdateFact(note: string | undefined): { reason: string; detail: str
   return undefined;
 }
 
-export class BrowserSetupService implements IBrowserSetupService {
+const EGO_DETECTION_TIMEOUT_MS = 5_000;
+const EGO_DETECTION_FRESH_MS = 30_000;
+
+export class BrowserSetupService extends Disposable implements IBrowserSetupService {
   declare readonly _serviceBrand: undefined;
   private readonly preparing = new Map<BrowserPresetId, Promise<void>>();
   private readonly errors = new Map<BrowserPresetId, string>();
   private readonly checked = new Map<BrowserPresetId, string>();
   private readonly egoRuntime: EgoBrowserRuntime;
   private egoLast: { kind: 'ready' | 'onboarding' | 'not_ready'; cliPath: string; checkedAt: string } | undefined;
+  private egoFlight: { key: string; controller: AbortController; work: Promise<void> } | undefined;
+  private egoSnapshot: { key: string; status: BrowserSetupStatus; completedAt: number } | undefined;
   private independentConnectionId = INDEPENDENT_ID;
 
   constructor(
@@ -126,7 +132,13 @@ export class BrowserSetupService implements IBrowserSetupService {
     @IHostProcessService private readonly hostProcess: IHostProcessService,
     @IHostFileSystem private readonly hostFs: IHostFileSystem,
   ) {
+    super();
     this.egoRuntime = new EgoBrowserRuntime(hostProcess, hostFs);
+    this._register({ dispose: async () => {
+      const flight = this.egoFlight;
+      flight?.controller.abort(new BrowserError('browser.execution_failed', 'Ego Lite detection cancelled'));
+      await flight?.work;
+    } });
   }
 
   private disabledSourceStatus(preset: 'kimi-webbridge' | 'independent-browser'): BrowserSetupStatus {
@@ -307,6 +319,16 @@ export class BrowserSetupService implements IBrowserSetupService {
   }
 
   async cancel(preset: BrowserPresetId): Promise<BrowserSetupStatus> {
+    if (preset === 'ego-lite') {
+      const flight = this.egoFlight;
+      const previousSnapshot = this.egoSnapshot;
+      flight?.controller.abort(new DOMException('Ego Lite detection cancelled', 'AbortError'));
+      await flight?.work;
+      if (this.egoSnapshot !== previousSnapshot && this.egoSnapshot?.key === flight?.key && this.egoSnapshot?.status.state === 'failed') return this.egoSnapshot.status;
+      const status = { ...this.egoDetectionStatus('failed', 'Ego Lite detection cancelled'), reason: 'cancelled' };
+      if (flight !== undefined) this.egoSnapshot = { key: flight.key, status, completedAt: Date.now() };
+      return status;
+    }
     if (preset !== 'independent-browser') throw new BrowserError('browser.invalid', 'This preset has no cancellable component installation');
     await this.preparing.get(preset);
     await this.capabilities.cancelCapability('kiki-browser');
@@ -424,45 +446,92 @@ export class BrowserSetupService implements IBrowserSetupService {
     return this.status(preset);
   }
 
+  private egoDetectionStatus(state: 'preparing' | 'failed' | 'needs_user_action', error?: string): BrowserSetupStatus {
+    return {
+      preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app', state, supported: true,
+      executionHost: hostname(), sourceUrl: EGO_LITE_DOWNLOAD_URL,
+      reason: state === 'preparing' ? 'ego_detecting' : state === 'failed' ? 'ego_detection_failed' : 'source_disabled',
+      steps: state === 'needs_user_action' ? [] : [{ id: 'detect', state: state === 'preparing' ? 'running' : 'failed', detail: error }],
+      actions: state === 'preparing' ? [{ id: 'cancel' }] : state === 'failed' ? [{ id: 'connect' }] : [], error,
+    };
+  }
+
   private async egoStatus(): Promise<BrowserSetupStatus> {
     const listed = await this.connections.list();
-    const sourceDisabled = listed.disabledSources?.includes('ego-lite') === true;
+    if (listed.disabledSources?.includes('ego-lite') === true) {
+      this.egoFlight?.controller.abort(new DOMException('Ego Lite detection cancelled', 'AbortError'));
+      this.egoSnapshot = undefined;
+      return this.egoDetectionStatus('needs_user_action');
+    }
     const saved = listed.connections.find((item) => item.id === EGO_LITE_CONNECTION_ID && item.type === 'ego-lite');
     const resolved = saved === undefined ? undefined : await this.connections.resolve(saved.id);
-    const resolution = await this.egoRuntime.resolve(resolved);
-    if (
-      !sourceDisabled
-      && this.egoLast === undefined
-      && resolution.kind === 'found'
-      && (saved !== undefined || /citro|active_version_dir/i.test(resolution.path))
-    ) {
-      const target = resolved?.type === 'ego-lite'
-        ? resolved
-        : { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: saved?.name ?? 'Ego Lite', enabled: saved?.enabled ?? true, cliPath: resolution.path };
+    const recent = this.egoLast !== undefined && Date.now() - Date.parse(this.egoLast.checkedAt) < EGO_DETECTION_FRESH_MS ? this.egoLast : undefined;
+    const key = JSON.stringify([resolved, recent]);
+    const snapshot = this.egoSnapshot;
+    if (snapshot?.key !== key || Date.now() - snapshot.completedAt >= EGO_DETECTION_FRESH_MS) {
+      if (this.egoFlight?.key !== key) {
+        const previous = this.egoFlight;
+        previous?.controller.abort(new DOMException('Ego Lite detection superseded', 'AbortError'));
+        const controller = new AbortController();
+        const flight = { key, controller, work: Promise.resolve() };
+        this.egoFlight = flight;
+        flight.work = (async () => {
+          const timer = setTimeout(() => {
+            const error = new BrowserError('browser.execution_failed', 'Ego Lite detection timed out after 5000ms');
+            if (this.egoFlight === flight) this.egoSnapshot = { key, status: this.egoDetectionStatus('failed', error.message), completedAt: Date.now() };
+            controller.abort(error);
+          }, EGO_DETECTION_TIMEOUT_MS);
+          timer.unref?.();
+          try {
+            await previous?.work;
+            controller.signal.throwIfAborted();
+            const status = await this.detectEgo(resolved, controller.signal, recent);
+            controller.signal.throwIfAborted();
+            if (this.egoFlight === flight) this.egoSnapshot = { key, status, completedAt: Date.now() };
+          } catch (error) {
+            if (this.egoFlight === flight && !this._store.isDisposed && !(error instanceof Error && error.name === 'AbortError')) {
+              const message = error instanceof Error ? error.message : 'Ego Lite detection failed';
+              this.egoSnapshot = { key, status: this.egoDetectionStatus('failed', message), completedAt: Date.now() };
+              this.log.warn('Ego Lite setup detection failed', { error_type: error instanceof Error ? error.name : 'unknown' });
+            }
+          } finally {
+            clearTimeout(timer);
+            if (this.egoFlight === flight) this.egoFlight = undefined;
+          }
+        })();
+      }
+      let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        const probed = await this.egoRuntime.probe(target);
-        if (probed.resolution.kind === 'found') {
-          const kind = probed.kind === 'ready' || probed.kind === 'onboarding' ? probed.kind : 'not_ready';
-          this.egoLast = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString() };
-        }
-      } catch {
-        this.egoLast = undefined;
+        await Promise.race([this.egoFlight?.work, new Promise<void>((resolve) => { timer = setTimeout(resolve, 50); })]);
+      } finally { clearTimeout(timer); }
+    }
+    const result = this.egoSnapshot?.key === key && Date.now() - this.egoSnapshot.completedAt < EGO_DETECTION_FRESH_MS
+      ? this.egoSnapshot.status : this.egoDetectionStatus('preparing');
+    if (result.state !== 'ready' || saved === undefined) return result;
+    const admission = await this.control.status(saved.id);
+    return admission.state === 'ready' ? { ...result, state: 'connected', reason: undefined } : result;
+  }
+
+  private async detectEgo(resolved: BrowserResolvedConnection | undefined, signal: AbortSignal, recent: typeof this.egoLast): Promise<BrowserSetupStatus> {
+    const resolution = await this.egoRuntime.resolve(resolved, signal);
+    let probe = recent !== undefined && resolution.kind === 'found' && recent.cliPath === resolution.path ? recent : undefined;
+    if (probe === undefined && resolution.kind === 'found' && (resolved !== undefined || /citro|active_version_dir/i.test(resolution.path))) {
+      const target = resolved?.type === 'ego-lite' ? { ...resolved, cliPath: resolution.path }
+        : { id: EGO_LITE_CONNECTION_ID, type: 'ego-lite' as const, name: 'Ego Lite', enabled: true, cliPath: resolution.path };
+      const probed = await this.egoRuntime.probe(target, signal);
+      if (probed.resolution.kind === 'found') {
+        const kind = probed.kind === 'ready' || probed.kind === 'onboarding' ? probed.kind : 'not_ready';
+        probe = { kind, cliPath: probed.resolution.path, checkedAt: new Date().toISOString() };
       }
     }
     const download = { id: 'open_instructions' as const, url: EGO_LITE_DOWNLOAD_URL, target: 'documentation' as const };
     const connect = { id: 'connect' as const };
-    const probe = this.egoLast !== undefined && resolution.kind === 'found' && this.egoLast.cliPath === resolution.path ? this.egoLast : undefined;
-    const admission = saved === undefined ? undefined : await this.control.status(saved.id);
-    const open = admission?.state === 'ready';
     let state: BrowserSetupStatus['state'] = 'not_prepared';
     let reason: string | undefined;
     let error: string | undefined;
     let steps: BrowserSetupStatus['steps'] = [];
     let actions: BrowserSetupStatus['actions'] = [download];
-    if (sourceDisabled) {
-      state = 'needs_user_action';
-      reason = 'source_disabled';
-    } else if (resolution.kind === 'missing') {
+    if (resolution.kind === 'missing') {
       state = 'not_prepared';
     } else if (resolution.kind === 'choose') {
       state = 'needs_user_action';
@@ -474,8 +543,8 @@ export class BrowserSetupService implements IBrowserSetupService {
       steps = [{ id: 'detect', state: 'user_action', detail: EGO_ONBOARDING_SENTENCE }];
       actions = [connect, download];
     } else if (probe?.kind === 'ready') {
-      state = open ? 'connected' : 'ready';
-      if (!open) reason = 'ego_ready';
+      state = 'ready';
+      reason = 'ego_ready';
       actions = [connect, download];
     } else if (probe?.kind === 'not_ready') {
       state = 'failed';
@@ -489,11 +558,9 @@ export class BrowserSetupService implements IBrowserSetupService {
     return {
       preset: 'ego-lite', displayName: 'Ego Lite', controlSurface: 'external-app', state, supported: true,
       executionHost: hostname(), steps, actions, sourceUrl: EGO_LITE_DOWNLOAD_URL,
-      ...(saved !== undefined ? { connectionId: saved.id } : {}),
-      ...(reason !== undefined ? { reason } : {}),
-      ...(error !== undefined ? { error } : {}),
-      ...(resolution.kind === 'choose' ? { cliPaths: resolution.paths.slice(0, 32) } : {}),
-      ...(probe?.kind === 'ready' ? { checkedAt: probe.checkedAt } : {}),
+      connectionId: resolved?.id, reason, error,
+      cliPaths: resolution.kind === 'choose' ? resolution.paths.slice(0, 32) : undefined,
+      checkedAt: probe?.kind === 'ready' ? probe.checkedAt : undefined,
     };
   }
 
