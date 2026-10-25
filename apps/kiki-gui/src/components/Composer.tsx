@@ -2430,9 +2430,9 @@ export function Composer({
     onChangeGoalObjective,
   };
 
-  // A picked persona still rides the chip (personaPick.value) on /new: the
-  // panel behind it stays the execution list, and the persona's own manager is
-  // reached from its chip menu.
+  // A picked persona rides the chip (personaPick.value) on /new; the panel
+  // behind it offers both execution profiles and direct persona selection,
+  // while the persona's own manager is reached from its dedicated surface.
   const pickedPersona = personaPick?.value;
 
   // The status line under the input: ordered segments, each a quiet trigger

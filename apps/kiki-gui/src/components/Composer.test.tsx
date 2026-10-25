@@ -806,9 +806,63 @@ describe('Composer execution control', () => {
     const niaOption = container.querySelector<HTMLButtonElement>('[data-composer-persona-option="nia"] button')!;
     expect(niaOption.textContent).toContain('妮娅');
     expect(niaOption.textContent).toContain('个人管家');
+
+    onSelectPersona.mockClear();
+    onChangeExecution.mockClear();
+
     await click(niaOption);
-    expect(onSelectPersona).toHaveBeenCalledWith('nia');
-    expect(onChangeExecution).toHaveBeenCalledWith(expect.objectContaining({ executor: 'native', profile: undefined }));
+    expect(onSelectPersona).toHaveBeenCalledExactlyOnceWith('nia');
+    expect(onChangeExecution).not.toHaveBeenCalled();
+  });
+
+  it('omits the persona group when personaPick is omitted', async () => {
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+    });
+    const trigger = await waitForProfileTrigger(container);
+    await click(trigger);
+    expect(container.querySelector('[data-composer-persona-option]')).toBeNull();
+  });
+
+  it('filters personas by search query in the profile select menu', async () => {
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+      personaPick: { value: undefined, onChange: vi.fn() },
+    });
+    const trigger = await waitForProfileTrigger(container);
+    await click(trigger);
+    const filterInput = container.querySelector<HTMLInputElement>('[data-execution-filter]')!;
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!;
+    await act(async () => {
+      setter.call(filterInput, '妮娅');
+      filterInput.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    await settle();
+    expect(container.querySelector('[data-composer-persona-option="nia"]')).not.toBeNull();
+    expect(container.querySelector('[data-composer-persona-option="lin-lan"]')).toBeNull();
+  });
+
+  it('renders persona failure and retry when persona catalog fails', async () => {
+    listPersonas.mockRejectedValueOnce(new Error('Network error'));
+    const { container } = await renderComposer({
+      agentProfile: 'agent',
+      onChangeAgentProfile: () => {},
+      execution: NATIVE_AGENT,
+      onChangeExecution: () => {},
+      personaPick: { value: undefined, onChange: vi.fn() },
+    });
+    const trigger = await waitForProfileTrigger(container);
+    await click(trigger);
+    await settle();
+    expect(container.textContent).toContain('Could not load personas');
+    const retryBtn = [...container.querySelectorAll('button')].find((btn) => btn.textContent?.includes('Retry'));
+    expect(retryBtn).toBeDefined();
   });
 
   it('keeps the persona-branch control openable while a turn runs', async () => {

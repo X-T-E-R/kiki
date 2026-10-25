@@ -875,52 +875,78 @@ export function ProfileSelect({
                 </div>
 
                 {/* Group 3: 角色 (Personas) */}
-                {onSelectPersona !== undefined && (filteredPersonas.length > 0 || query.trim() === '') ? (
+                {onSelectPersona !== undefined ? (
                   <div className="border-t border-hairline pt-1">
                     <div className="px-3 pt-1 pb-1 text-[11px] font-medium uppercase tracking-wider text-ink-faint">
-                      {locale === 'zh' ? '角色' : 'Personas'}
+                      {t('persona.title')}
                     </div>
-                    <ul className="space-y-0.5">
-                      {filteredPersonas.map((item) => {
-                        const isSelected = persona?.id === item.id;
-                        const subline = [item.title, item.job].filter(Boolean).join(' · ');
-                        return (
-                          <li key={item.id} data-composer-persona-option={item.id}>
-                            <button
-                              type="button"
-                              role="option"
-                              aria-selected={isSelected ? 'true' : 'false'}
-                              data-menu-row
-                              data-persona-id={item.id}
-                              data-option-value={item.id}
-                              onClick={() => {
-                                onSelectPersona(item.id);
-                                close(true);
-                              }}
-                              className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
-                            >
-                              <Check on={isSelected} />
-                              <PersonaAvatar
-                                persona={personaAvatarOf(item)}
-                                size={20}
-                                decorative
-                                className="!rounded-full shrink-0 mt-0.5"
-                              />
-                              <span className="min-w-0 flex-1">
-                                <span className="block min-w-0 truncate font-medium text-ink">
-                                  {item.name}
-                                </span>
-                                {subline ? (
-                                  <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-ink-faint">
-                                    {subline}
+                    {personasQuery.isPending && personasQuery.data === undefined ? (
+                      <p className="px-3 py-2 text-[12px] text-ink-faint">
+                        {t('persona.loading')}
+                      </p>
+                    ) : personasQuery.isError && (personasQuery.data === undefined || personasQuery.data.length === 0) ? (
+                      <div className="px-3 py-2 space-y-1">
+                        <p className="text-[12px] text-danger">{t('persona.loadFailed')}</p>
+                        <button
+                          type="button"
+                          onClick={() => { void personasQuery.refetch(); }}
+                          className="text-[11.5px] font-medium text-ink underline decoration-dotted underline-offset-2"
+                        >
+                          {t('common.retry')}
+                        </button>
+                      </div>
+                    ) : allPersonas.length === 0 ? (
+                      <p className="px-3 py-2 text-[12px] text-ink-faint">
+                        {t('persona.empty')}
+                      </p>
+                    ) : (
+                      <ul className="space-y-0.5">
+                        {filteredPersonas.map((item) => {
+                          const isSelected = persona?.id === item.id;
+                          const subline = [item.title, item.job].filter(Boolean).join(' · ');
+                          return (
+                            <li key={item.id} data-composer-persona-option={item.id}>
+                              <button
+                                type="button"
+                                role="option"
+                                aria-selected={isSelected ? 'true' : 'false'}
+                                data-menu-row
+                                data-persona-id={item.id}
+                                data-option-value={item.id}
+                                onClick={() => {
+                                  onSelectPersona(item.id);
+                                  close(true);
+                                }}
+                                className={`${MENU_ROW_CLASS} items-start ${isSelected ? MENU_ROW_SELECTED_CLASS : ''}`}
+                              >
+                                <Check on={isSelected} />
+                                <PersonaAvatar
+                                  persona={personaAvatarOf(item)}
+                                  size={20}
+                                  decorative
+                                  className="!rounded-full shrink-0 mt-0.5"
+                                />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block min-w-0 truncate font-medium text-ink">
+                                    {item.name}
                                   </span>
-                                ) : null}
-                              </span>
-                            </button>
+                                  {subline ? (
+                                    <span className="mt-0.5 block truncate text-[11.5px] leading-snug text-ink-faint">
+                                      {subline}
+                                    </span>
+                                  ) : null}
+                                </span>
+                              </button>
+                            </li>
+                          );
+                        })}
+                        {filteredPersonas.length === 0 && query.trim() !== '' ? (
+                          <li className="px-3 py-1.5 text-[12px] text-ink-faint">
+                            {t('composer.execution.noMatch', { query: query.trim() })}
                           </li>
-                        );
-                      })}
-                    </ul>
+                        ) : null}
+                      </ul>
+                    )}
                   </div>
                 ) : null}
               </div>
