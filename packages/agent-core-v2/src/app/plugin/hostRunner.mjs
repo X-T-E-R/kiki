@@ -315,6 +315,10 @@ for await (const line of createInterface({ input: process.stdin })) {
       }
       const connection = imConnections.get(adapterId);
       if (connection?.started !== true || connection.controller.signal.aborted) throw new Error('IM adapter is not connected');
+      if (action === 'readHistory') {
+        if (!connection.definition.inbound || connection.definition.supportsHistory !== true || typeof connection.adapter.readHistory !== 'function') return { status: 'unsupported' };
+        return connection.adapter.readHistory(input, connection.context);
+      }
       if (!connection.definition.outbound || !['sendText', 'sendMedia', 'editText', 'answerCallback'].includes(action) || typeof connection.adapter[action] !== 'function') throw new Error('IM action unsupported');
       const value = action === 'sendMedia' ? { ...input, bytes: new Uint8Array(Buffer.from(input.base64, 'base64')), base64: undefined } : input;
       return connection.adapter[action](value, connection.context);

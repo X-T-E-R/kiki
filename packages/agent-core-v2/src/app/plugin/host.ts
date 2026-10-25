@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, pluginImHistoryRequestSchema, pluginImHistoryPageSchema, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
@@ -85,6 +85,15 @@ export class PluginHost {
           if (this.stopped || !this.imListeners.has(adapterId)) throw new Error('IM adapter was withdrawn');
           const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action, input });
           return action === 'answerCallback' ? undefined : pluginImDeliverySchema.parse(result);
+        },
+        readHistory: async (raw) => {
+          if (this.stopped || !this.imListeners.has(adapterId)) throw new Error('IM adapter was withdrawn');
+          const definition = this.imAdapters.find((entry) => entry.id === adapterId);
+          if (definition?.inbound !== true || definition.supportsHistory !== true) return { status: 'unsupported' };
+          const input = pluginImHistoryRequestSchema.parse(raw);
+          const page = pluginImHistoryPageSchema.parse(await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'readHistory', input }));
+          if (page.status === 'ok' && (page.messages.length > input.limit || page.messages.some((row) => row.identity.chatId !== input.chatId || row.identity.topicId !== input.topicId))) throw new Error('IM history returned messages outside the requested chat/topic or limit');
+          return page;
         },
         stop: async () => {
           this.imListeners.delete(adapterId);
