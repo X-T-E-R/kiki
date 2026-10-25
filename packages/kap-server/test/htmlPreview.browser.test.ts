@@ -85,11 +85,13 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
   const output = process.env['KIKI_HTML_ORIGIN_PROOF']!;
   const root = join(output, 'fixture'); const source = join(root, 'slides/index.html');
   await mkdir(join(root, 'slides'), { recursive: true });
-  const html = '<!doctype html><title>Document origin capabilities</title><h1>Document origin capabilities</h1><script>localStorage.setItem("visits",String(Number(localStorage.getItem("visits")||0)+1));window.result=Promise.allSettled([import("../app.mjs").then(m=>m.value),fetch("../data.json").then(r=>r.json())]).then(([module,fetch])=>({module,fetch,visits:localStorage.getItem("visits")}))</script>';
+  const html = '<!doctype html><title>Document origin capabilities</title><h1>Document origin capabilities</h1><output id="slide"></output><img alt="Relative diagram" src="../diagram.svg"><iframe title="Nested document" src="../nested.html?slide=3#nested"></iframe><script>localStorage.setItem("visits",String(Number(localStorage.getItem("visits")||0)+1));window.result=Promise.allSettled([import("../app.mjs").then(m=>m.value),fetch("../data.json").then(r=>r.json())]).then(([module,fetch])=>({module,fetch,visits:localStorage.getItem("visits")}));let slide=Number(new URLSearchParams(location.search).get("slide")||location.hash.slice(1)||0);const paint=()=>document.querySelector("output").value=String(slide);paint();addEventListener("keydown",e=>{if(e.key==="ArrowRight"){slide++;paint()}})</script>';
   await writeFile(source, html);
   await writeFile(join(root, 'app.mjs'), 'import { value } from "./dep.js"; export { value };');
   await writeFile(join(root, 'dep.js'), 'export const value = "module-relative-ok";');
   await writeFile(join(root, 'data.json'), '{"message":"relative-fetch-ok"}');
+  await writeFile(join(root, 'diagram.svg'), '<svg xmlns="http://www.w3.org/2000/svg" width="96" height="48"><rect width="96" height="48" fill="#175e54"/></svg>');
+  await writeFile(join(root, 'nested.html'), '<!doctype html><h2>Nested document</h2><output></output><script>document.querySelector("output").value=location.search+location.hash</script>');
   const hostFs = { realpath, stat: async (path: string) => { const s = await stat(path); return { isFile: s.isFile(), isDirectory: s.isDirectory(), size: s.size, mtimeMs: s.mtimeMs, ino: s.ino }; } };
   const app = Fastify();
   app.addHook('onRequest', createOriginHook({}));
@@ -98,11 +100,11 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
   const appSecurity = createSecurityHeadersHook({ tls: false });
   app.addHook('onSend', async (req, reply, payload) => req.url === '/parent' ? appSecurity(req, reply, payload) : payload);
   app.get('/parent.js', async (_req, reply) => reply.type('text/javascript').send('window.__TAURI_INTERNALS__={secret:true};localStorage.setItem("owner-secret","private")'));
-  app.get('/parent', async (_req, reply) => reply.type('text/html').send('<!doctype html><script src="/parent.js"></script><iframe></iframe>'));
+  app.get('/parent', async (_req, reply) => reply.type('text/html').send('<!doctype html><style>html,body,iframe{margin:0;width:100%;height:100%;border:0;display:block;overflow:hidden}</style><script src="/parent.js"></script><iframe></iframe>'));
   app.get('/baseline/*', async (req, reply) => {
     const path = (req.params as { '*': string })['*'];
-    if (!['slides/index.html', 'app.mjs', 'dep.js', 'data.json'].includes(path)) return reply.code(404).send();
-    return reply.type(path.endsWith('.html') ? 'text/html' : path.endsWith('.json') ? 'application/json' : 'text/javascript').send(await readFile(join(root, path)));
+    if (!['slides/index.html', 'app.mjs', 'dep.js', 'data.json', 'diagram.svg', 'nested.html'].includes(path)) return reply.code(404).send();
+    return reply.type(path.endsWith('.html') ? 'text/html' : path.endsWith('.json') ? 'application/json' : path.endsWith('.svg') ? 'image/svg+xml' : 'text/javascript').send(await readFile(join(root, path)));
   });
   registerHtmlPreviewRoutes(app, { accessor: { get: () => hostFs } } as unknown as Scope, {} as RemoteConnectionManager);
   const endpoint = await app.listen({ host: '127.0.0.1', port: 0 });
@@ -122,7 +124,7 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
     const parentFixture = await embedded.evaluate(() => ({ bridge: Reflect.get(window, '__TAURI_INTERNALS__'), storage: localStorage.getItem('owner-secret') }));
     expect(parentFixture).toEqual({ bridge: { secret: true }, storage: 'private' });
     expect(parentResponse?.headers()['content-security-policy']).toContain("frame-src 'self' http://*.kiki-document.localhost:*");
-    await embedded.locator('iframe').evaluate((element, preview) => { const frame = element as HTMLIFrameElement; frame.sandbox.value = preview.sandbox; frame.src = preview.url + '?mode=origin#ready'; }, preview);
+    await embedded.locator('iframe').evaluate((element, preview) => { const frame = element as HTMLIFrameElement; frame.sandbox.value = preview.sandbox; frame.src = preview.url + '?mode=origin&slide=0#2'; }, preview);
     await embedded.frameLocator('iframe').locator('h1').waitFor();
     const frame = embedded.frames().find((frame) => frame.url().startsWith(preview.url))!;
     await frame.waitForFunction(() => Reflect.get(window, 'result') !== undefined);
@@ -130,6 +132,22 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
     expect(documentProof).toEqual(baselineProof);
     expect(documentProof.module).toEqual({ status: 'fulfilled', value: 'module-relative-ok' });
     expect(documentProof.fetch).toEqual({ status: 'fulfilled', value: { message: 'relative-fetch-ok' } });
+    const layout = () => ({ width: innerWidth, height: innerHeight, image: { width: document.images[0]?.naturalWidth, height: document.images[0]?.naturalHeight }, slide: document.querySelector('output')?.value });
+    await baseline.waitForFunction(() => document.images[0]?.naturalWidth === 96);
+    await frame.waitForFunction(() => document.images[0]?.naturalWidth === 96);
+    const baselineLayout = await baseline.evaluate(layout);
+    const previewLayout = await frame.evaluate(layout);
+    expect(previewLayout).toEqual(baselineLayout);
+    await baseline.keyboard.press('ArrowRight');
+    await frame.locator('h1').click(); await embedded.keyboard.press('ArrowRight');
+    const keyboard = { baseline: await baseline.locator('output').textContent(), preview: await frame.locator('output').textContent() };
+    expect(keyboard).toEqual({ baseline: '1', preview: '1' });
+    const nested = frame.childFrames()[0]!;
+    await nested.waitForFunction(() => document.querySelector('output')?.value === '?slide=3#nested');
+    const nestedProof = await nested.evaluate(() => ({ query: location.search, hash: location.hash, value: document.querySelector('output')?.value }));
+    expect(nestedProof).toEqual({ query: '?slide=3', hash: '#nested', value: '?slide=3#nested' });
+    await baseline.screenshot({ path: join(output, 'baseline.png') });
+    await embedded.screenshot({ path: join(output, 'preview.png') });
     const isolation = await frame.evaluate(async (endpoint) => {
       let parentReadable = false; let parentBridge = false;
       try { parentReadable = parent.document !== undefined; } catch {}
@@ -138,7 +156,7 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
       try { api = String((await fetch(endpoint + '/api/private', { credentials: 'include' })).status); } catch {}
       return { parentReadable, parentBridge, ownerStorage: localStorage.getItem('owner-secret'), ownBridge: Reflect.get(window, '__TAURI_INTERNALS__') !== undefined, api, origin: location.origin, query: location.search, hash: location.hash };
     }, endpoint);
-    expect(isolation).toMatchObject({ parentReadable: false, parentBridge: false, ownerStorage: null, ownBridge: false, api: 'blocked', query: '?mode=origin', hash: '#ready' });
+    expect(isolation).toMatchObject({ parentReadable: false, parentBridge: false, ownerStorage: null, ownBridge: false, api: 'blocked', query: '?mode=origin&slide=0', hash: '#2' });
     await frame.goto(preview.url);
     await frame.waitForFunction(() => Reflect.get(window, 'result') !== undefined);
     const afterReload = await frame.evaluate(async () => await Reflect.get(window, 'result'));
@@ -147,6 +165,6 @@ it.skipIf(process.env['KIKI_HTML_ORIGIN_PROOF'] === undefined)('preserves browse
     const afterClose = await frame.evaluate(async () => { try { await fetch(location.href); return 'loaded'; } catch { return 'revoked'; } });
     expect(afterClose).toBe('revoked');
     expect(await readFile(source, 'utf8')).toBe(html);
-    await writeFile(join(output, 'proof.json'), JSON.stringify({ fileProof, baselineProof, documentProof, afterReload, parentFixture, parentCsp: parentResponse?.headers()['content-security-policy'], isolation, afterClose, sandbox: preview.sandbox }, null, 2));
+    await writeFile(join(output, 'proof.json'), JSON.stringify({ fileProof, baselineProof, documentProof, baselineLayout, previewLayout, keyboard, nestedProof, afterReload, parentFixture, parentCsp: parentResponse?.headers()['content-security-policy'], isolation, afterClose, sandbox: preview.sandbox }, null, 2));
   } finally { await context.close(); await app.close(); }
 }, 60_000);
