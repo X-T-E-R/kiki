@@ -7,7 +7,7 @@
 
 import { execFile, execFileSync } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
-import { readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
 
 import { parseRustHost, sidecarFileName } from './prepare-sidecar.mjs';
@@ -237,6 +237,18 @@ function stagedSidecarPath(buildTree) {
     throw new Error(`Cannot resolve the host target for the staged sidecar check: ${reason}`);
   }
   return join(buildTree, 'apps', 'kiki-gui', 'src-tauri', 'binaries', sidecarFileName(target));
+}
+
+export function stageServerArtifact(buildTree, candidateRoot) {
+  const seaPath = nativeSeaOutputPath(buildTree);
+  const stagedPath = stagedSidecarPath(buildTree);
+  const sea = readArtifact(seaPath);
+  const staged = readArtifact(stagedPath);
+  if (sea.sha256 !== staged.sha256) {
+    throw new Error(`Staged sidecar ${stagedPath} is not the SEA output ${seaPath}; no receipt written.`);
+  }
+  readArtifact(join(candidateRoot, DESKTOP_EXE));
+  copyFileSync(stagedPath, join(candidateRoot, SERVER_EXE));
 }
 
 /**

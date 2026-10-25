@@ -20,6 +20,7 @@ import {
   localBuildSteps,
   readBuildTreeSnapshot,
   receiptPathFor,
+  stageServerArtifact,
   writeReceiptAtomic,
 } from './desktop-build-source.mjs';
 
@@ -108,6 +109,7 @@ export async function runLocalDesktopBuild({
   assertSameSnapshot(started, finished);
   assertBuildSnapshot(finished, commit);
   const candidateRoot = defaultCandidateRoot(tree);
+  stageServerArtifact(tree, candidateRoot);
   const receipt = createReceiptForCandidate({
     buildTree: tree,
     candidateRoot,

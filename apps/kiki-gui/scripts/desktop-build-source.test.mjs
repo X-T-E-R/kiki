@@ -21,6 +21,7 @@ import { parseLocalBuildArgs, runLocalDesktopBuild, runPnpmStep } from './deskto
 import {
   assertReadonlyGitArgs,
   createBuildReceipt,
+  createReceiptForCandidate,
   defaultCandidateRoot,
   execGitReadonly,
   pnpmCommand,
@@ -470,11 +471,11 @@ async function runMirroredBuild({ buildTree, env, corrupt } = {}) {
       const targetDir = step.env.CARGO_TARGET_DIR ? resolve(step.env.CARGO_TARGET_DIR) : releaseDir;
       mkdirSync(targetDir, { recursive: true });
       writeFileSync(join(targetDir, 'kiki-desktop.exe'), 'desktop-bytes');
-      if (corrupt === 'server') {
-        writeFileSync(join(targetDir, 'kiki-server.exe'), 'foreign-server-bytes');
-      } else {
-        copyFileSync(stagedSidecar, join(targetDir, 'kiki-server.exe'));
-      }
+      const sidecarOutputDir = step.env.CARGO_BUILD_BUILD_DIR
+        ? join(step.env.CARGO_BUILD_BUILD_DIR, 'release')
+        : targetDir;
+      mkdirSync(sidecarOutputDir, { recursive: true });
+      copyFileSync(stagedSidecar, join(sidecarOutputDir, 'kiki-server.exe'));
     },
   });
   return { result, steps, seaBytes, seaPath, binaries, releaseDir, stagedSidecar, manifest };
@@ -578,7 +579,6 @@ test('writes no receipt when a step does not produce this build bytes', async ()
   const mismatches = [
     ['sea', /Build artifact is missing/],
     ['sidecar', /Staged sidecar .* is not the SEA output/],
-    ['server', /Server artifact .* is not the staged sidecar/],
   ];
   for (const [corrupt, pattern] of mismatches) {
     const root = makeTemp();
@@ -593,6 +593,32 @@ test('writes no receipt when a step does not produce this build bytes', async ()
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test('assembles the server beside the desktop when Cargo separates intermediate outputs', async () => {
+  const root = makeTemp();
+  try {
+    const { buildTree, candidate } = layout(root);
+    const buildDirectory = join(root, 'cargo-intermediates');
+    writeFileSync(join(candidate, 'kiki-server.exe'), 'previous-build-server');
+    const { result, seaPath } = await runMirroredBuild({
+      buildTree,
+      env: { CARGO_BUILD_BUILD_DIR: buildDirectory },
+    });
+    assert.equal(readFileSync(join(buildDirectory, 'release', 'kiki-server.exe'), 'utf8'), 'this-build-sea-bytes');
+    assert.equal(sha256(join(candidate, 'kiki-server.exe')), sha256(seaPath));
+    assert.equal(result.receipt.files['kiki-server.exe'].sha256, sha256(seaPath));
+    writeFileSync(join(candidate, 'kiki-server.exe'), 'foreign-server-bytes');
+    assert.throws(() => createReceiptForCandidate({
+      buildTree,
+      candidateRoot: candidate,
+      sourceCommit: COMMIT,
+      acceptanceRef: ACCEPTANCE,
+      checkRef: CHECK,
+    }), /Server artifact .* is not the staged sidecar/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 
