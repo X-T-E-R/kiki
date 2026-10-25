@@ -51,7 +51,8 @@ export interface ImInboundEvent {
   readonly mentionIds?: readonly string[];
   readonly replyToMessageId?: string;
   readonly identity: ImInboundIdentity;
-  readonly kind: 'text' | 'image' | 'file' | 'audio' | 'video' | 'callback';
+  readonly kind: 'text' | 'image' | 'file' | 'audio' | 'video' | 'callback' | 'message';
+  readonly parts?: readonly import('@kiki/protocol').PluginImMessagePart[];
   readonly text?: string;
   readonly callbackData?: string;
   readonly callbackQueryId?: string;

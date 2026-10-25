@@ -1,5 +1,8 @@
 import { z } from 'zod';
 
+/** Complete-message budgets: decoded media bytes and UTF-16 text/serialized/framing code units; maxInboundBytes remains per attachment. */
+export const PLUGIN_IM_COMPLETE_LIMITS = Object.freeze({ parts: 256, mediaBytes: 32 * 1024 * 1024, textChars: 1024 * 1024, serializedChars: 64 * 1024 * 1024, chunkChars: 4 * 1024 * 1024 });
+
 export const pluginImMediaCapabilitySchema = z.object({
   kind: z.string().min(1).max(128),
   mimeTypes: z.array(z.string().min(1).max(128)).max(100).optional(),
@@ -78,7 +81,15 @@ export type PluginImHistoryMessage = z.infer<typeof pluginImHistoryMessageSchema
 /** Unknown coverage or end remains unknown even when a page is short or empty. */
 export type PluginImHistoryPage = z.infer<typeof pluginImHistoryPageSchema>;
 
-export interface PluginImEvent {
+/** A non-text part without media needs a nonempty text description of its known unavailability, or tooLarge to reject the whole message. */
+export interface PluginImMessagePart {
+  readonly kind: 'text' | 'image' | 'file' | 'audio' | 'video';
+  readonly text?: string;
+  readonly media?: PluginImMedia;
+  readonly tooLarge?: boolean;
+}
+
+interface PluginImEventIdentity {
   readonly eventId: string;
   readonly cursor?: number;
   readonly sourceMessageId?: string;
@@ -89,14 +100,27 @@ export interface PluginImEvent {
   readonly mentionIds?: readonly string[];
   readonly replyToMessageId?: string;
   readonly identity: PluginImIdentity;
+  readonly preview?: string;
+}
+
+export interface PluginImSingleEvent extends PluginImEventIdentity {
   readonly kind: 'text' | 'image' | 'file' | 'audio' | 'video' | 'callback';
   readonly text?: string;
   readonly callbackData?: string;
   readonly callbackQueryId?: string;
   readonly media?: PluginImMedia;
   readonly tooLarge?: boolean;
-  readonly preview?: string;
 }
+
+/** Emit once after every part of one real source message has finished normalization and hydration. */
+export interface PluginImCompleteMessage extends PluginImEventIdentity {
+  readonly kind: 'message';
+  readonly sourceMessageId: string;
+  readonly operation?: 'create';
+  readonly parts: readonly PluginImMessagePart[];
+}
+
+export type PluginImEvent = PluginImSingleEvent | PluginImCompleteMessage;
 
 export interface PluginImText {
   readonly identity: PluginImIdentity;
@@ -132,6 +156,7 @@ export interface PluginImAdapterContext {
 
 export interface PluginImStartContext extends PluginImAdapterContext {
   readonly offset?: number;
+  readonly messageLimits: typeof PLUGIN_IM_COMPLETE_LIMITS;
   /** Resolves after the Host has processed this event. Emits before start resolves are rejected. */
   emit(event: PluginImEvent): Promise<void>;
 }

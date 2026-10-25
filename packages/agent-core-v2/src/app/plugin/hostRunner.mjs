@@ -15,17 +15,38 @@ async function stopImAdapter(id) {
   if (connection === undefined) return;
   imConnections.delete(id);
   connection.controller.abort();
+  for (const [callId, call] of imEventCalls) if (call.adapterId === id) { imEventCalls.delete(callId); call.reject(new Error('IM adapter stopped')); }
   await connection.adapter.stop();
 }
-function emitImEvent(id, event) {
+function emitImEvent(id, event, owner) {
   const connection = imConnections.get(id);
-  if (connection?.started !== true || !connection.definition.inbound || connection.controller.signal.aborted) return Promise.reject(new Error('IM connection is not receiving'));
-  const media = event.media === undefined ? undefined : { name: event.media.name, mediaType: event.media.mediaType, base64: Buffer.from(event.media.bytes).toString('base64') };
+  if (connection !== owner || connection?.started !== true || !connection.definition.inbound || connection.controller.signal.aborted) return Promise.reject(new Error('IM connection is not receiving'));
+  if (event.kind === 'message') {
+    const work = (connection.inputQueue ?? Promise.resolve()).catch(() => undefined).then(() => transmitImEvent(id, event, owner));
+    connection.inputQueue = work;
+    return work;
+  }
+  return transmitImEvent(id, event, owner);
+}
+function transmitImEvent(id, event, connection) {
+  if (imConnections.get(id) !== connection || connection.controller.signal.aborted) throw new Error('IM connection is not receiving');
+  const imCompleteLimits = connection.context.messageLimits;
+  const wireMedia = (media) => media === undefined ? undefined : { name: media.name, mediaType: media.mediaType, base64: Buffer.from(media.bytes).toString('base64') };
+  if (event.kind === 'message') {
+    if (!Array.isArray(event.parts) || event.parts.length < 1 || event.parts.length > imCompleteLimits.parts) throw new Error('IM complete input has an invalid part count');
+    const bytes = event.parts.map((part) => part.media?.bytes?.byteLength ?? 0);
+    if (bytes.some((size) => size > connection.definition.maxInboundBytes) || bytes.reduce((sum, size) => sum + size, 0) > imCompleteLimits.mediaBytes) throw new Error('IM complete input exceeds the media byte limit');
+    if (event.parts.reduce((sum, part) => sum + (part.text?.length ?? 0), 0) > imCompleteLimits.textChars) throw new Error('IM complete input exceeds the text limit');
+  }
+  const wireEvent = event.kind === 'message' ? { ...event, parts: event.parts.map((part) => ({ ...part, media: wireMedia(part.media) })) } : { ...event, media: wireMedia(event.media) };
+  const serialized = event.kind === 'message' ? JSON.stringify(wireEvent) : undefined;
+  if (serialized !== undefined && serialized.length > imCompleteLimits.serializedChars) throw new Error('IM complete input exceeds the serialized message limit');
   const callId = ++nextImEvent;
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => { imEventCalls.delete(callId); reject(new Error('IM input acknowledgement timed out')); }, 30_000);
-    imEventCalls.set(callId, { resolve: () => { clearTimeout(timer); resolve(); }, reject: (error) => { clearTimeout(timer); reject(error); } });
-    send({ method: 'im-adapter-event', params: { adapterId: id, callId, event: { ...event, media } } });
+    imEventCalls.set(callId, { adapterId: id, resolve: () => { clearTimeout(timer); resolve(); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+    if (serialized === undefined) send({ method: 'im-adapter-event', params: { adapterId: id, callId, event: wireEvent } });
+    else for (let offset = 0, index = 0; offset < serialized.length; offset += imCompleteLimits.chunkChars, index++) send({ method: 'im-adapter-message-chunk', params: { adapterId: id, callId, index, characters: serialized.length, data: serialized.slice(offset, offset + imCompleteLimits.chunkChars) } });
   });
 }
 const mediaCalls = new Map();
@@ -297,7 +318,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     continue;
   }
   if (message.method === 'im-adapter-request') {
-    const { adapterId, action, input, settings, instanceId, offset } = message.params ?? {};
+    const { adapterId, action, input, settings, instanceId, offset, messageLimits } = message.params ?? {};
     Promise.resolve().then(async () => {
       const registered = imAdapters.get(adapterId);
       if (registered === undefined) throw new Error('Unknown IM adapter');
@@ -305,10 +326,10 @@ for await (const line of createInterface({ input: process.stdin })) {
       if (action === 'start') {
         if (imConnections.has(adapterId)) throw new Error('IM adapter already connected');
         const controller = new AbortController();
-        const connection = { ...registered, controller, started: false, context: { signal: controller.signal, settings: settings ?? {}, instanceId } };
+        const connection = { ...registered, controller, started: false, context: { signal: controller.signal, settings: settings ?? {}, instanceId, messageLimits: Object.freeze({ ...messageLimits }) } };
         imConnections.set(adapterId, connection);
         try {
-          const result = await registered.adapter.start({ ...connection.context, offset, emit: (event) => emitImEvent(adapterId, event) });
+          const result = await registered.adapter.start({ ...connection.context, offset, emit: (event) => emitImEvent(adapterId, event, connection) });
           connection.started = true;
           return result;
         } catch (error) { await stopImAdapter(adapterId); throw error; }

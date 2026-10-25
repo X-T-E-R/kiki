@@ -3,7 +3,7 @@ import { resolve, join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { PluginHost } from '@kiki/agent-core-v2/app/plugin/host';
 import type { IPluginHostService, PluginImAdapterRegistration, PluginImAdapterSink } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
-import { pluginImAdapterDefinitionSchema } from '@kiki/protocol';
+import { PLUGIN_IM_COMPLETE_LIMITS, pluginImAdapterDefinitionSchema } from '@kiki/protocol';
 import type { PluginImEvent } from '@kiki/protocol';
 import { ImSessionBridge } from '../../../src/services/imSession/bridge';
 import { PluginImAdapterBridge } from '../../../src/services/imSession/pluginAdapter';
@@ -22,27 +22,34 @@ afterEach(async () => {
 const group = { chatId: 'group-1', senderId: 'member-1', topicId: 'topic-1', chatKind: 'group' as const, senderName: 'Member One' };
 const privateChat = { chatId: 'private-1', senderId: 'member-1', topicId: '0', chatKind: 'private' as const };
 
-async function fixture(pluginId: string, direction = { inbound: true, outbound: true }) {
+async function fixture(pluginId: string, direction = { inbound: true, outbound: true }, maxInboundBytes = 1024) {
   await mkdir(resolve('.tmp/plugin-im-adapter'), { recursive: true });
   const root = await mkdtemp(resolve('.tmp/plugin-im-adapter/run-'));
   roots.push(root);
-  const definition = pluginImAdapterDefinitionSchema.parse({ schemaVersion: 1, id: 'account', label: 'Fixture account', ...direction, listenerRealm: pluginId, maxInboundBytes: 1024, supportsReply: true, supportsMentions: true,
+  const definition = pluginImAdapterDefinitionSchema.parse({ schemaVersion: 1, id: 'account', label: 'Fixture account', ...direction, listenerRealm: pluginId, maxInboundBytes, supportsReply: true, supportsMentions: true,
     mediaCapabilities: direction.outbound ? ['image', 'voice', 'video'].map((kind) => ({ kind, mimeTypes: [kind === 'voice' ? 'audio/*' : `${kind}/*`] })) : [] });
   const tools = ['event', 'state'].map((name) => ({ schemaVersion: 1 as const, name, description: name, accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const }));
   await writeFile(join(root, 'entry.mjs'), `
     const definition = ${JSON.stringify(definition)};
     const tools = ${JSON.stringify(tools)};
+    const contexts = [];
     let context;
     const state = { started: 0, stopped: 0, text: [], media: [] };
     export function register(api) {
       api.registerImAdapter(definition, {
-        async start(value) { context = value; state.started++; return { accountId: 'account-42', targets: definition.inbound ? undefined : [${JSON.stringify(privateChat)}] }; },
+        async start(value) { context = value; contexts.push(value); state.messageLimits = value.messageLimits; state.limitsFrozen = Object.isFrozen(value.messageLimits); state.started++; return { accountId: 'account-42', targets: definition.inbound ? undefined : [${JSON.stringify(privateChat)}] }; },
         async stop() { state.stopped++; },
         async sendText(message) { state.text.push(message); return message.text === 'uncertain' ? { status: 'unknown', messageIds: ['accepted-part'] } : { status: 'delivered', messageIds: [] }; },
         async sendMedia(message) { state.media.push({ ...message, bytes: [...message.bytes] }); return { status: 'delivered', messageIds: ['media-' + state.media.length] }; }
       });
       for (const tool of tools) api.registerTool(tool, async (args) => {
-        if (tool.name === 'event') await context.emit(args);
+        if (tool.name === 'event') {
+          const event = args.event ?? args;
+          if (args.generateBytes !== undefined) for (const [index, part] of event.parts.entries()) if (part.media !== undefined) part.media.bytes = new Uint8Array(args.generateBytes).fill(index);
+          if (args.generateText !== undefined) event.parts = [{ kind: 'text', text: args.generateText.character.repeat(args.generateText.length) }];
+          if (args.incomplete) process.stdout.write(JSON.stringify({ method: 'im-adapter-message-chunk', params: { adapterId: definition.id, callId: 999999, index: 0, characters: context.messageLimits.chunkChars + 1, data: ' '.repeat(context.messageLimits.chunkChars) } }) + '\\n');
+          else await (args.previous ? contexts.at(-2) : context).emit(event);
+        }
         return { output: JSON.stringify(state) };
       });
     }
@@ -50,11 +57,15 @@ async function fixture(pluginId: string, direction = { inbound: true, outbound: 
   const host = new PluginHost(pluginId, join(root, 'entry.mjs'), tools, [], [], undefined, undefined, [definition]);
   hosts.push(host);
   const registration: PluginImAdapterRegistration = { pluginId, definition, providerKind: `plugin:${pluginId}/account`, instanceId: `plugin:${pluginId}/account`, revision: 'fixture-1', connect: (listener, offset) => host.connectImAdapter('account', {}, `plugin:${pluginId}/account`, listener, offset) };
-  const call = async (name: string, args?: unknown) => JSON.parse(String((await host.execute(name, args, new AbortController().signal)).output));
-  return { host, registration, emit: (event: PluginImEvent) => call('event', event), state: () => call('state') };
+  const call = async (name: string, args?: unknown) => {
+    const result = await host.execute(name, args, new AbortController().signal);
+    if (typeof result.output !== 'string') throw new Error('Fixture returned non-text state');
+    return JSON.parse(result.output);
+  };
+  return { host, registration, emit: (event: PluginImEvent) => call('event', event), generated: (event: PluginImEvent, generation: { generateBytes?: number; generateText?: { character: string; length: number }; previous?: boolean; incomplete?: boolean }) => call('event', { event, ...generation }), state: () => call('state') };
 }
 
-async function hostBridge(registrations: readonly PluginImAdapterRegistration[], builtin?: { adapter: FakeImAdapter; minSendIntervalMs?: number }, clock?: { now: () => number; wait: (ms: number) => Promise<void> }) {
+async function hostBridge(registrations: readonly PluginImAdapterRegistration[], builtin?: { adapter: FakeImAdapter; minSendIntervalMs?: number }, clock?: { now: () => number; wait: (ms: number) => Promise<void> }, overrides: { sessions?: Partial<ImSessionPorts['sessions']>; history?: ImSessionPorts['history'] } = {}) {
   const factories: ImAdapterFactory[] = builtin === undefined ? [] : [{ ...fakeAdapterFactory(builtin.adapter), minSendIntervalMs: builtin.minSendIntervalMs }];
   const registry = new PluginImAdapterBridge(factories);
   let sink: PluginImAdapterSink | undefined;
@@ -67,7 +78,8 @@ async function hostBridge(registrations: readonly PluginImAdapterRegistration[],
       submit: async (input) => { submitted.push(input); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
       steer: async () => 'queued', abort, saveMedia: async () => [], readAttachment: async () => ({ bytes: new Uint8Array([1, 2, 3]), name: 'fixture' }),
       readVisible: async () => ({ text: '', done: true, media: [] }), listInteractions: async () => ({ approvals: [], questions: [] }),
-      decideApproval: async () => 'decided', decideHostKey: async () => 'decided', answerQuestion: async () => 'answered' },
+      decideApproval: async () => 'decided', decideHostKey: async () => 'decided', answerQuestion: async () => 'answered', ...overrides.sessions },
+    history: overrides.history,
     logger: { info() {} }, load: async () => undefined, save: async () => undefined,
   };
   const bridge = new ImSessionBridge({ ports, factories, editIntervalMs: 0, now: clock?.now, wait: clock?.wait });
@@ -80,6 +92,7 @@ async function hostBridge(registrations: readonly PluginImAdapterRegistration[],
 }
 
 async function bind(bridge: ImSessionBridge, plugin: Awaited<ReturnType<typeof fixture>>, identity: PluginImEvent['identity'] = group, scope: 'sender' | 'topic' | 'chat' = 'sender') {
+  await vi.waitFor(async () => expect((await bridge.snapshot()).instances.find((item) => item.id === plugin.registration.instanceId)?.adapter).toBe('running'));
   await plugin.emit({ eventId: `discover-${identity.chatId}-${identity.senderId}`, identity, kind: 'text', text: 'bind me' });
   const discovery = (await bridge.snapshot()).discoveries.find((item) => item.provider_instance_id === plugin.registration.instanceId)!;
   await bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'session-1' }, binding_scope: scope });
@@ -95,6 +108,76 @@ function memoryRegistration(id: string, realm: string, accountId = '42', inbound
 }
 
 describe('plugin IM adapter contribution', () => {
+  it('admits one complete source message with two 8 MiB images through the real child and replies once', async () => {
+    const plugin = await fixture('fixture-complete', undefined, 8 * 1024 * 1024);
+    const saved: { name: string; size: number; first: number | undefined }[] = [];
+    const documents = new Map<string, unknown>();
+    const { bridge, registry, submitted } = await hostBridge([plugin.registration], undefined, undefined, {
+      history: {
+        get: async <T>(key: string) => structuredClone(documents.get(key)) as T | undefined,
+        set: async (key, value) => { documents.set(key, structuredClone(value)); },
+        delete: async (key) => { documents.delete(key); },
+      },
+      sessions: {
+        saveMedia: async (input) => {
+          saved.push({ name: input.name, size: input.bytes.byteLength, first: input.bytes[0] });
+          return [{ type: 'image', source: { kind: 'session_media', file_id: input.name } }];
+        },
+        readVisible: async () => ({ text: 'one complete answer', done: true, media: [] }),
+      },
+    });
+    await bind(bridge, plugin, group, 'topic');
+    const event: PluginImEvent = { eventId: 'root-event', sourceMessageId: 'platform-message-27', kind: 'message', identity: { ...group, senderId: 'member-2', senderName: 'Member Two' }, mentioned: true, mentionIds: ['account-42'], replyToMessageId: 'quote-26', parts: [
+      { kind: 'text', text: 'Compare both pictures\nwithout splitting this line.' },
+      { kind: 'image', media: { name: 'first.png', mediaType: 'image/png', bytes: new Uint8Array() } },
+      { kind: 'audio', text: 'voice.ogg unavailable: platform path has no download URL; ASR: hello' },
+      { kind: 'image', media: { name: 'second.png', mediaType: 'image/png', bytes: new Uint8Array() } },
+    ] };
+    const state = await plugin.generated(event, { generateBytes: 8 * 1024 * 1024 });
+    expect(state.messageLimits).toEqual(PLUGIN_IM_COMPLETE_LIMITS);
+    expect(state.limitsFrozen).toBe(true);
+    expect(saved).toEqual([{ name: 'first.png', size: 8 * 1024 * 1024, first: 1 }, { name: 'second.png', size: 8 * 1024 * 1024, first: 3 }]);
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.content).toEqual([
+      { type: 'text', text: 'Compare both pictures\nwithout splitting this line.' },
+      { type: 'image', source: { kind: 'session_media', file_id: 'first.png' } },
+      { type: 'text', text: '[Unavailable external audio: voice.ogg unavailable: platform path has no download URL; ASR: hello]' },
+      { type: 'image', source: { kind: 'session_media', file_id: 'second.png' } },
+    ]);
+    expect(submitted[0]?.im).toMatchObject({ source_message_id: 'platform-message-27', mentioned: true, mention_ids: ['account-42'], reply_to_message_id: 'quote-26', identity: { sender_id: 'member-2', sender_name: 'Member Two' } });
+    await plugin.generated(event, { generateBytes: 8 * 1024 * 1024 });
+    expect(saved).toHaveLength(2);
+    expect(submitted).toHaveLength(1);
+    const original = await bridge.readMessageHistory('session-1', { messageId: 'platform-message-27' });
+    expect(original.status === 'ok' && original.messages[0]).toMatchObject({ media: [{ name: 'first.png' }, { name: 'second.png' }] });
+    await vi.waitFor(async () => expect((await plugin.state()).text.filter((item: { code: string }) => item.code === 'reply')).toHaveLength(1));
+    await plugin.generated({ ...event, eventId: 'incomplete' }, { incomplete: true });
+    expect(submitted).toHaveLength(1);
+    await registry.withdraw(['fixture-complete']);
+    await registry.replace([plugin.registration]);
+    await expect(plugin.generated({ ...event, eventId: 'stale-owner' }, { previous: true })).rejects.toThrow('IM connection is not receiving');
+    expect(submitted).toHaveLength(1);
+    await plugin.emit({ eventId: 'after-reconnect', sourceMessageId: 'after-reconnect', kind: 'message', identity: group, mentioned: true, parts: [{ kind: 'text', text: 'fresh complete message' }] });
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]?.content).toEqual([{ type: 'text', text: 'fresh complete message' }]);
+  });
+
+  it('rejects whole over-budget messages, preserves the escaped-text boundary, and never submits a tooLarge prefix', async () => {
+    const plugin = await fixture('fixture-budgets', undefined, 8 * 1024 * 1024);
+    const { bridge, submitted } = await hostBridge([plugin.registration]);
+    await bind(bridge, plugin, privateChat);
+    const event: PluginImEvent = { eventId: 'budget', sourceMessageId: 'budget-message', identity: privateChat, kind: 'message', parts: [{ kind: 'image', media: { name: 'fixture.png', mediaType: 'image/png', bytes: new Uint8Array() } }] };
+    await expect(plugin.generated(event, { generateBytes: 8 * 1024 * 1024 + 1 })).rejects.toThrow('media byte limit');
+    await expect(plugin.generated({ ...event, parts: Array.from({ length: 5 }, () => event.parts[0]!) }, { generateBytes: 8 * 1024 * 1024 })).rejects.toThrow('media byte limit');
+    await expect(plugin.generated(event, { generateText: { character: 'x', length: PLUGIN_IM_COMPLETE_LIMITS.textChars + 1 } })).rejects.toThrow('text limit');
+    await expect(plugin.emit({ ...event, parts: Array.from({ length: PLUGIN_IM_COMPLETE_LIMITS.parts + 1 }, () => ({ kind: 'text', text: 'x' })) })).rejects.toThrow('part count');
+    await expect(plugin.emit({ ...event, parts: [{ kind: 'text', text: 'must not submit this prefix' }, { kind: 'image', tooLarge: true }] })).resolves.toBeDefined();
+    expect(submitted).toHaveLength(0);
+    await plugin.generated({ ...event, eventId: 'text-boundary', sourceMessageId: 'text-boundary' }, { generateText: { character: '\u0000', length: PLUGIN_IM_COMPLETE_LIMITS.textChars } });
+    expect(submitted).toHaveLength(1);
+    expect(submitted[0]?.content).toEqual([{ type: 'text', text: '\u0000'.repeat(PLUGIN_IM_COMPLETE_LIMITS.textChars) }]);
+  });
+
   it('keeps the first same-source account listener and frees its claim after unload, while other realms and output-only connections coexist', async () => {
     const builtin = new FakeImAdapter('telegram', '42');
     const duplicate = memoryRegistration('same-source', 'telegram');

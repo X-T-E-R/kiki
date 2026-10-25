@@ -1301,19 +1301,25 @@ export class ImSessionBridge {
       mention_ids: event.mentionIds === undefined ? undefined : [...event.mentionIds], reply_to_message_id: event.replyToMessageId,
       is_self: event.isSelf, timestamp: event.timestamp };
     const room = event.identity.chatKind === 'group' && this.history !== undefined ? ImHistoryJournal.room(meta.providerKind, accountId, event.identity.chatId, event.identity.topicId) : undefined;
+    const parts = event.kind === 'message' ? event.parts : [{ kind: event.kind, text: event.text, media: event.media, tooLarge: event.tooLarge }];
+    if (parts === undefined || parts.length === 0) throw new Error('IM complete message needs its admitted parts');
+    const partText = (part: (typeof parts)[number]) => event.kind === 'message' && part.kind !== 'text' && part.media === undefined && part.tooLarge !== true && (part.text?.trim().length ?? 0) > 0
+      ? `[Unavailable external ${part.kind}: ${part.text}]` : part.text ?? '';
+    const originalText = parts.map(partText).filter((value) => value.length > 0).join('\n');
     if ((event.operation !== undefined && event.operation !== 'create') || event.isSelf === true) {
       if (event.operation !== undefined && event.operation !== 'create' && event.sourceMessageId === undefined) throw new Error('IM edit/retract needs its real sourceMessageId');
-      if (room !== undefined) await this.history!.record(room, { eventId: event.eventId, receivedAt: this.now(), metadata: im, operation: event.operation ?? 'create', isSelf: event.isSelf, timestamp: event.timestamp, text: event.text ?? '', sessionId: binding.sessionId });
+      if (room !== undefined) await this.history!.record(room, { eventId: event.eventId, receivedAt: this.now(), metadata: im, operation: event.operation ?? 'create', isSelf: event.isSelf, timestamp: event.timestamp, text: originalText, sessionId: binding.sessionId });
       return;
     }
-    const text = event.text?.trim() ?? '';
+    const text = originalText.trim();
+    const textOnly = event.kind === 'text' || (event.kind === 'message' && parts.every((part) => part.kind === 'text'));
     const interactionOwner = event.identity.senderId === binding.identity.senderId;
-    if (interactionOwner && event.kind === 'text' && text.startsWith(':')) {
+    if (interactionOwner && textOnly && text.startsWith(':')) {
       await this.onCommand(binding, text, adapter);
       return;
     }
     const waiting = this.state.awaiting[senderKey(instanceId, event.identity)];
-    if (waiting !== undefined && event.kind === 'text') {
+    if (waiting !== undefined && textOnly) {
       if (this.now() > waiting.expiresAt || waiting.sessionId !== binding.sessionId) {
         delete this.state.awaiting[senderKey(instanceId, event.identity)];
         if (adapter !== undefined) await this.send(adapter, event.identity, this.copy('expired'), 'expired');
@@ -1324,39 +1330,40 @@ export class ImSessionBridge {
       delete this.state.awaiting[senderKey(instanceId, event.identity)];
       return;
     }
-    if (interactionOwner && event.kind === 'text' && await this.answerNumbers(binding, text)) return;
-    if (event.tooLarge === true) {
+    if (interactionOwner && textOnly && await this.answerNumbers(binding, text)) return;
+    if (parts.some((part) => part.tooLarge === true || (adapter !== undefined && part.media !== undefined && part.media.bytes.byteLength > adapter.maxInboundBytes))) {
       if (adapter !== undefined) await this.send(adapter, event.identity, this.copy('rejected'), 'rejected');
       return;
     }
-    const content: MessageContent[] = [];
-    if (event.media !== undefined && adapter !== undefined) {
-      if (event.media.bytes.byteLength > adapter.maxInboundBytes) {
-        await this.send(adapter, event.identity, this.copy('rejected'), 'rejected');
-        return;
-      }
-      const audio = event.kind === 'audio';
-      const asAudio = audio && (adapter.providerKind === 'discord' || adapter.providerKind === 'slack' || adapter.providerKind === 'matrix' || adapter.acceptsVoice(event.media.mediaType));
-      if (audio && !asAudio) this.state.voiceFallbacks += 1;
-      const saved = await this.ports.sessions.saveMedia({
-        sessionId: binding.sessionId,
-        kind: asAudio ? 'audio' : event.kind === 'image' ? 'image' : event.kind === 'video' ? 'video' : 'file',
-        name: event.media.name,
-        mediaType: event.media.mediaType,
-        bytes: event.media.bytes,
-        text: text === '' ? undefined : text,
-      });
-      content.push(...saved);
-    } else if (text !== '') content.push({ type: 'text', text });
+    const preparedInput = room === undefined || event.kind !== 'message' ? undefined : await this.history!.readPrepared(room, event.eventId, binding.sessionId);
+    const content: MessageContent[] = [...preparedInput?.current ?? []];
+    for (const part of preparedInput?.current === undefined ? parts : []) {
+      const partBody = event.kind === 'message' ? partText(part) : text;
+      if (part.media !== undefined && adapter !== undefined) {
+        const audio = part.kind === 'audio';
+        const asAudio = audio && (adapter.providerKind === 'discord' || adapter.providerKind === 'slack' || adapter.providerKind === 'matrix' || adapter.acceptsVoice(part.media.mediaType));
+        if (audio && !asAudio) this.state.voiceFallbacks += 1;
+        const saved = await this.ports.sessions.saveMedia({
+          sessionId: binding.sessionId,
+          kind: asAudio ? 'audio' : part.kind === 'image' ? 'image' : part.kind === 'video' ? 'video' : 'file',
+          name: part.media.name,
+          mediaType: part.media.mediaType,
+          bytes: part.media.bytes,
+          text: partBody === '' ? undefined : partBody,
+        });
+        if (!this.admittedInbound(binding) || !this.state.bindings.includes(binding) || this.adapterFor(instanceId) !== adapter) throw new Error('IM adapter was withdrawn while preparing input');
+        content.push(...saved);
+      } else if (partBody !== '') content.push({ type: 'text', text: partBody });
+    }
     if (content.length === 0) return;
     let background: Awaited<ReturnType<ImHistoryJournal['background']>> | undefined;
     let currentParts = content.length;
     if (room !== undefined) {
-      const row = await this.history!.record(room, { eventId: event.eventId, receivedAt: this.now(), metadata: im, operation: 'create', isSelf: event.isSelf, timestamp: event.timestamp, text: event.text ?? '', sessionId: binding.sessionId,
-        content: content.filter((part) => part.type !== 'text'), media: event.media === undefined ? undefined : [{ kind: event.kind, name: event.media.name, mediaType: event.media.mediaType }] });
+      const row = await this.history!.record(room, { eventId: event.eventId, receivedAt: this.now(), metadata: im, operation: 'create', isSelf: event.isSelf, timestamp: event.timestamp, text: originalText, sessionId: binding.sessionId,
+        content: content.filter((part) => part.type !== 'text'), media: parts.flatMap((part) => part.media === undefined ? [] : [{ kind: part.kind, name: part.media.name, mediaType: part.media.mediaType }]) });
       if (row.eventId !== event.eventId) return;
       const original = event.sourceMessageId === undefined ? undefined : await this.history!.find(room, event.sourceMessageId);
-      if (original?.sessionId === binding.sessionId) {
+      if (event.kind !== 'message' && original?.sessionId === binding.sessionId) {
         content.splice(0);
         if (original.text.length > 0) content.push({ type: 'text', text: original.text });
         content.push(...original.content ?? []);
@@ -1382,9 +1389,9 @@ export class ImSessionBridge {
         const context = im.context.messages.find((item) => item.sequence === row.sequence);
         for (const media of context?.media ?? []) if (media.kind === 'image') media.available = true;
       }
-      const prepared = await this.history!.prepare(room, row, { sessionId: binding.sessionId, images: content.slice(currentParts), context: im.context, snapshot: background.snapshot });
+      const prepared = await this.history!.prepare(room, row, { sessionId: binding.sessionId, current: event.kind === 'message' ? content.slice(0, currentParts) : undefined, images: content.slice(currentParts), context: im.context, snapshot: background.snapshot });
       im.context = prepared.context;
-      content.splice(currentParts, content.length - currentParts, ...prepared.images);
+      content.splice(0, content.length, ...prepared.current ?? content.slice(0, currentParts), ...prepared.images);
       background = { ...background, snapshot: prepared.snapshot };
     }
     if (!this.admittedInbound(binding) || !this.state.bindings.includes(binding) || this.adapterFor(instanceId) !== adapter) return;

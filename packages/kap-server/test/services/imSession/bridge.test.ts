@@ -1262,6 +1262,72 @@ describe('IM group context vertical flow', () => {
     } finally { await harness.bridge.close(); }
   });
 
+  it('reuses exact ordered current parts and file IDs after an unknown complete-message submission without saving again', async () => {
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    let saved = 0;
+    const harness = historyHarness({
+      saveMedia: async () => [{ type: 'image', source: { kind: 'session_media', file_id: `generated-${++saved}` } }],
+      submit: async (input) => {
+        received.push(structuredClone(input));
+        if (received.length === 1) throw new Error('complete-submission-unknown');
+        return { duplicate: true, promptId: input.promptId, deliveryState: 'pending' };
+      },
+    });
+    try {
+      await bindHistoryGroup(harness);
+      const event = { eventId: 'complete-retry', sourceMessageId: 'complete-source', identity: group, kind: 'message' as const, mentioned: true, parts: [
+        { kind: 'text' as const, text: 'first' },
+        { kind: 'image' as const, media: { name: 'first.png', mediaType: 'image/png', bytes: new Uint8Array([1]) } },
+        { kind: 'audio' as const, text: 'unavailable audio; ASR: hello' },
+        { kind: 'image' as const, media: { name: 'second.png', mediaType: 'image/png', bytes: new Uint8Array([2]) } },
+      ] };
+      await expect(harness.adapter.emit(event)).rejects.toThrow('complete-submission-unknown');
+      expect(saved).toBe(2);
+      const get = harness.ports.history!.get;
+      harness.ports.history!.get = async (key) => { if (key.includes('/admission-')) throw new Error('snapshot-read-failed'); return get(key); };
+      await expect(harness.adapter.emit(event)).rejects.toThrow('snapshot-read-failed');
+      expect(saved).toBe(2);
+      harness.ports.history!.get = get;
+      await harness.adapter.emit(event);
+      expect(saved).toBe(2);
+      expect(received).toHaveLength(2);
+      expect(received[1]).toEqual(received[0]);
+      expect(received[1]?.content.map((part) => part.type)).toEqual(['text', 'image', 'text', 'image']);
+      await harness.adapter.emit(event);
+      expect(received).toHaveLength(2);
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('stops complete-message admission if the listener is withdrawn while saving media', async () => {
+    let entered!: () => void;
+    let release!: () => void;
+    const saving = new Promise<void>((resolve) => { entered = resolve; });
+    const resume = new Promise<void>((resolve) => { release = resolve; });
+    let saved = 0;
+    const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
+    const harness = historyHarness({
+      saveMedia: async () => { saved++; entered(); await resume; return [{ type: 'image', source: { kind: 'session_media', file_id: 'interrupted' } }]; },
+      submit: async (input) => { received.push(input); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; },
+    });
+    try {
+      await bindHistoryGroup(harness);
+      const pending = harness.adapter.emit({ eventId: 'complete-interrupted', sourceMessageId: 'interrupted', identity: group, kind: 'message', mentioned: true, parts: [
+        { kind: 'text', text: 'do not submit an incomplete message' },
+        ...['first', 'second'].map((name) => ({ kind: 'image' as const, media: { name, mediaType: 'image/png', bytes: new Uint8Array([1]) } })),
+      ] });
+      const failure = expect(pending).rejects.toThrow('IM adapter was withdrawn while preparing input');
+      await saving;
+      await harness.bridge.setListening('inst', false);
+      release();
+      await failure;
+      expect(saved).toBe(1);
+      expect(received).toHaveLength(0);
+      await harness.bridge.setListening('inst', true);
+      const history = await harness.bridge.readMessageHistory('sess', { messageId: 'interrupted' });
+      expect(history.status === 'ok' && history.messages).toEqual([]);
+    } finally { release(); await harness.bridge.close(); }
+  });
+
   it('retains one multipart original with full text and canonical media and enforces exact-read scope', async () => {
     const received: Parameters<ImSessionPorts['sessions']['submit']>[0][] = [];
     let mediaIndex = 0;

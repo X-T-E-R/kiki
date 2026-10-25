@@ -9,6 +9,7 @@ export interface ImHistoryDocuments {
 
 export interface ImPreparedHistoryPrompt {
   readonly sessionId: string;
+  readonly current?: readonly import('@kiki/protocol').MessageContent[];
   readonly images: readonly import('@kiki/protocol').MessageContent[];
   readonly context: import('@kiki/protocol').ImMessageMetadata['context'];
   readonly snapshot: number;
@@ -248,6 +249,12 @@ export class ImHistoryJournal {
     const page = head.locations[key];
     if (page === undefined) return undefined;
     return (await this.page(room, head, page)).find((row) => row.metadata.source_message_id === sourceMessageId);
+  }
+
+  async readPrepared(room: string, eventId: string, sessionId: string): Promise<ImPreparedHistoryPrompt | undefined> {
+    const prepared = await this.documents.get<ImPreparedHistoryPrompt>(`im-history-v1/${room}/admission-${digest(eventId)}`);
+    if (prepared !== undefined && prepared.sessionId !== sessionId) throw new Error('history_admission_owner_changed');
+    return prepared;
   }
 
   prepare(room: string, entry: ImHistoryEntry, prompt: ImPreparedHistoryPrompt): Promise<ImPreparedHistoryPrompt> {

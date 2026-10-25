@@ -454,7 +454,13 @@ Plugin 是一个带 manifest 的目录或 zip 文件，manifest 放在以下任�
 
 聊天连接在 `x-kiki.imAdapters` 中声明，并通过 `api.registerImAdapter(definition, adapter)` 注册。每项代表一个已配置账号，包含 `schemaVersion: 1`、局部 `id`、`label`、独立的 `inbound` 和 `outbound` 布尔值、`maxInboundBytes` 与 `mediaCapabilities` 数组。Kiki 将 `plugin:<pluginId>/<adapterId>` 用作 provider 和 instance ID。入站定义还必须声明真实协议或消息源的 `listenerRealm`：OneBot 使用 `qq-onebot`，并以真实 QQ self ID 作为 `start()` 返回的 `listenerAccountId`；QQ 官方 API 使用 `qq-official` 和 app ID。`accountId` 仍是插件稳定的绑定身份，可保留已有前缀；省略 `listenerAccountId` 时，Kiki 用 `accountId` 判断监听占用。已运行的监听保留同源账号占用，后来冲突的监听停止并显示 `account_in_use`。仅出站连接不占入站监听。
 
-`start({ signal, settings, instanceId, offset, emit })` 返回 `{ accountId, listenerAccountId?, targets? }`，启动完成后才能调用 `emit`。仅出站 adapter 可以返回 `targets` 供用户确认目标，不需要伪造入站事件。关闭、重载或删除插件只关闭它自己的连接，并保留用户的监听偏好和绑定，供重新启用时恢复。用户逐个确认目标；群绑定默认限于原发送人，也可显式设置 `binding_scope: "topic"` 或 `"chat"`。共享群会话保留每条消息的真实发送人，其他成员不能因此处理原发送人的待审批或待回答交互。
+`start({ signal, settings, instanceId, offset, messageLimits, emit })` 返回 `{ accountId, listenerAccountId?, targets? }`，启动完成后才能调用 `emit`。仅出站 adapter 可以返回 `targets` 供用户确认目标，不需要伪造入站事件。关闭、重载或删除插件只关闭它自己的连接，并保留用户的监听偏好和绑定，供重新启用时恢复。用户逐个确认目标；群绑定默认限于原发送人，也可显式设置 `binding_scope: "topic"` 或 `"chat"`。共享群会话保留每条消息的真实发送人，其他成员不能因此处理原发送人的待审批或待回答交互。
+
+同一条平台消息包含正文和多个附件时，先完成全部归一化与媒体下载，再只调用一次 `await emit({ kind: "message", eventId, sourceMessageId, identity, parts, ...metadata })`。真实提及、引用和发送人元数据放在外层。`parts` 按原顺序排列，每项包含 `kind: "text" | "image" | "file" | "audio" | "video"`、可选 `text`，以及可用时已下载的 `media: { name, mediaType, bytes }`。必须提供 `sourceMessageId`，`operation` 省略或为 `"create"`；编辑和撤回沿用单事件格式。Kiki 准入全部片段后才提交一个提示词，并保留片段顺序。旧单 `kind` 事件继续逐事件处理，Kiki 不猜测一组事件何时到齐。
+
+从 `start()` 收到的只读 `context.messageLimits` 获取预算，托管插件无需为了读取它而运行时导入 SDK。字段固定为 `parts: 256`、`mediaBytes: 33554432`、`textChars: 1048576`、`serializedChars: 67108864`、`chunkChars: 4194304`。一条完整消息包含 1–256 个片段，解码后媒体总量最多 32 MiB，全部片段文本合计最多 1,048,576 个 UTF-16 代码单元。`definition.maxInboundBytes` 仍约束**每个附件**，最高 8 MiB，因此两张各 8 MiB 的图可以同条投递。序列化后的完整消息（包含 base64、转义文本和元数据）最多 67,108,864 个 UTF-16 代码单元。Runner 自动按 4,194,304 个代码单元分帧，普通 RPC 行仍限 16,777,216 个代码单元；插件不自行实现分帧。
+
+已确定附件没有可用下载 URL 时，保留其非文本 `kind`，把名称、原因及已有 ASR 转写放在非空 `text` 中，不填写 `media`。Kiki 在原位置显示明确标记为不可用的外部文本，不伪造媒体字节。真正的下载失败或取消须对该源消息零 `emit`，重试整条源消息时沿用同一根 `eventId`。超过消息预算会整条拒绝 `emit()`。任一片段标为 `tooLarge: true` 时，Kiki 显示拒收提示，不提交或保存前面的残缺部分。停止或卸载会丢弃未完整收齐的传输帧，并拒绝已退出连接的排队投递。
 
 `eventId` 只用于事件去重，平台的真实消息 ID 单独填入 `sourceMessageId`。入站 `mentioned`、`mentionIds`、`replyToMessageId`、可选的 `isSelf` 与毫秒时间戳 `timestamp` 会进入会话消息元数据。编辑、撤回分别发送 `operation: "edit"` 或 `"retract"`，并提供真实目标 `sourceMessageId`；它们更新接收记录，不另开模型回合。不要从显示名猜测 self 身份。模型会在当前正文旁看到真实发送人和选中的群背景，这些信息标记为不可信外部数据，不作为指令或授权。出站文本以 `replyToMessageId` 表示引用，以 `messageId` 表示编辑目标，以 `mentionIds` 表示平台提及。仅在实现相应功能时声明 `supportsReply`、`supportsEdit` 和 `supportsMentions`；不支持的请求返回信道 receipt，不静默丢字段。平台被动回复 token 留在 adapter 内部。
 

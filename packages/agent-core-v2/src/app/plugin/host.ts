@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, pluginImHistoryRequestSchema, pluginImHistoryPageSchema, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import { PLUGIN_IM_COMPLETE_LIMITS, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, pluginImHistoryRequestSchema, pluginImHistoryPageSchema, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
@@ -51,6 +51,7 @@ export class PluginHost {
   private readonly registeredProviders = new Set<string>();
   private readonly registeredImAdapters = new Set<string>();
   private readonly imListeners = new Map<string, (event: PluginImEvent) => Promise<void>>();
+  private readonly imAssemblies = new Map<string, { callId: number; characters: number; received: number; chunks: string[]; listener: (event: PluginImEvent) => Promise<void>; timer: ReturnType<typeof setTimeout> }>();
   private nextId = 0;
   private ready?: Promise<void>;
   private exited: Promise<void> = Promise.resolve();
@@ -76,7 +77,7 @@ export class PluginHost {
     if (!this.registeredImAdapters.has(adapterId) || this.imListeners.has(adapterId)) throw new Error('IM adapter unavailable or already connected');
     this.imListeners.set(adapterId, listener);
     try {
-      const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'start', settings, instanceId, offset }) as { accountId?: unknown; listenerAccountId?: unknown; targets?: unknown };
+      const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'start', settings, instanceId, offset, messageLimits: PLUGIN_IM_COMPLETE_LIMITS }) as { accountId?: unknown; listenerAccountId?: unknown; targets?: unknown };
       if (typeof result?.accountId !== 'string' || result.accountId.length === 0) throw new Error('IM adapter returned no account identity');
       if (result.listenerAccountId !== undefined && (typeof result.listenerAccountId !== 'string' || result.listenerAccountId.length === 0 || result.listenerAccountId.length > 1024)) throw new Error('IM adapter returned an invalid listener account identity');
       const targets = result.targets === undefined ? undefined : pluginImIdentitySchema.array().max(1000).parse(result.targets);
@@ -96,6 +97,7 @@ export class PluginHost {
           return page;
         },
         stop: async () => {
+          this.clearImAssembly(adapterId);
           this.imListeners.delete(adapterId);
           if (this.child !== undefined) await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'stop' });
           this.scheduleIdle();
@@ -274,6 +276,48 @@ export class PluginHost {
     this.terminate(new Error(`Plugin ${this.id} unloaded`));
   }
 
+  private clearImAssembly(adapterId: string): void {
+    const assembly = this.imAssemblies.get(adapterId);
+    if (assembly === undefined) return;
+    clearTimeout(assembly.timer);
+    this.imAssemblies.delete(adapterId);
+    this.send({ method: 'im-adapter-event-result', params: { callId: assembly.callId, error: 'IM complete message was not admitted' } });
+  }
+
+  private receiveImChunk(params: { adapterId?: unknown; callId?: unknown; index?: unknown; characters?: unknown; data?: unknown }): void {
+    const { adapterId, callId, index, characters, data } = params;
+    try {
+      if (typeof adapterId !== 'string' || typeof callId !== 'number' || !Number.isSafeInteger(callId) || typeof index !== 'number' || !Number.isSafeInteger(index) || index < 0 || typeof characters !== 'number' || !Number.isSafeInteger(characters) || characters < 1 || characters > PLUGIN_IM_COMPLETE_LIMITS.serializedChars || typeof data !== 'string' || data.length < 1 || data.length > PLUGIN_IM_COMPLETE_LIMITS.chunkChars) throw new Error('Invalid IM message frame');
+      const listener = this.imListeners.get(adapterId);
+      const definition = this.imAdapters.find((item) => item.id === adapterId);
+      if (this.stopped || listener === undefined || definition?.inbound !== true) throw new Error('IM adapter is not receiving');
+      let assembly = this.imAssemblies.get(adapterId);
+      if (assembly === undefined) {
+        if (index !== 0) throw new Error('Incomplete IM message');
+        const timer = setTimeout(() => { this.clearImAssembly(adapterId); }, 30_000);
+        timer.unref();
+        assembly = { callId, characters, received: 0, chunks: [], listener, timer };
+        this.imAssemblies.set(adapterId, assembly);
+      }
+      if (assembly.callId !== callId || assembly.listener !== listener || assembly.characters !== characters || assembly.chunks.length !== index || data.length !== Math.min(PLUGIN_IM_COMPLETE_LIMITS.chunkChars, characters - assembly.received)) throw new Error('Inconsistent IM message frame');
+      assembly.chunks.push(data);
+      assembly.received += data.length;
+      if (assembly.received !== characters) return;
+      clearTimeout(assembly.timer);
+      this.imAssemblies.delete(adapterId);
+      const event = parsePluginImEvent(JSON.parse(assembly.chunks.join('')), definition);
+      if (event.kind !== 'message') throw new Error('IM framed input must be a complete message');
+      void Promise.resolve().then(async () => {
+        if (this.stopped || this.imListeners.get(adapterId) !== listener) throw new Error('IM adapter was withdrawn');
+        await listener(event);
+      }).then(() => this.send({ method: 'im-adapter-event-result', params: { callId, result: true } }),
+        () => this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM complete message was not admitted' } }));
+    } catch {
+      if (typeof adapterId === 'string') this.clearImAssembly(adapterId);
+      this.send({ method: 'im-adapter-event-result', params: { callId, error: 'IM complete message was not admitted' } });
+    }
+  }
+
   private async start(): Promise<void> {
     if (this.ready !== undefined) return this.ready;
     this.ready = new Promise<void>((resolve, reject) => {
@@ -338,6 +382,8 @@ export class PluginHost {
             const expected = this.imAdapters.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredImAdapters.has(definition.id)) throw new Error('Plugin IM adapter definition mismatch');
             this.registeredImAdapters.add(definition.id);
+          } else if (message.method === 'im-adapter-message-chunk') {
+            this.receiveImChunk(message.params ?? {});
           } else if (message.method === 'im-adapter-event') {
             const { adapterId, callId, event } = message.params ?? {};
             void Promise.resolve().then(async () => {
@@ -484,6 +530,7 @@ export class PluginHost {
     this.registeredSources.clear();
     this.registeredProviders.clear();
     this.registeredImAdapters.clear();
+    for (const adapterId of this.imAssemblies.keys()) this.clearImAssembly(adapterId);
     this.imListeners.clear();
     for (const call of this.pending.values()) call.reject(reason);
     this.pending.clear();
