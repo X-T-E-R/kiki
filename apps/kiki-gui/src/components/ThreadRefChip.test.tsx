@@ -128,6 +128,20 @@ describe('thread-reference directory cache', () => {
     expect(rendered).toHaveBeenCalledTimes(before);
   });
 
+  it('waits for data before updating a reader for a newly created query', async () => {
+    const { client, container, rendered } = await directory();
+    const before = rendered.mock.calls.length;
+    let resolveSession!: (session: Session) => void;
+    const session = new Promise<Session>((resolve) => { resolveSession = resolve; });
+    let fetched!: Promise<void>;
+    await act(async () => {
+      fetched = client.prefetchQuery({ queryKey: ['thread-ref', ID], queryFn: () => session });
+    });
+    expect(rendered).toHaveBeenCalledTimes(before);
+    await act(async () => { resolveSession(record()); await fetched; });
+    expect(container.textContent).toContain('Fix the flaky upload test');
+  });
+
   it('tracks late lists, catalog renames, individual records, host IDs and cache removal', async () => {
     const { client, container } = await directory();
     await act(async () => {

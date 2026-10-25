@@ -83,7 +83,7 @@ function threadCacheVersionReader(client: QueryClient | undefined): () => number
   let version = 0;
   return () => {
     const current = client?.getQueryCache().getAll()
-      .filter((query) => isThreadRefQuery(query.queryKey))
+      .filter((query) => isThreadRefQuery(query.queryKey) && query.state.data !== undefined)
       .map((query) => [query, query.state.dataUpdateCount] as const) ?? [];
     // Identity also detects removal/replacement when update counts are equal.
     if (current.length !== previous.length || current.some(([query, count], index) =>
