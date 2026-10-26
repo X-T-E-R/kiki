@@ -54,6 +54,8 @@ $KIKI_HOME  (default: ~/.kiki)
 │       └── <key>-<suffix>.json
 ├── sessions/               # Session data (see below)
 │   └── <workDirKey>/<sessionId>/
+├── store/
+│   └── thread-mailbox-sqlite-v1/ # Canonical mailbox and upgrade recovery copies
 ├── server/
 │   └── events/             # Bounded client event replay journals
 ├── bin/
@@ -104,11 +106,25 @@ Older journals shrink when the new writer first appends to them. Browsing a cold
 
 This retention does not remove `sessions/`, agent `wire.jsonl` files, or saved media. Clients whose cursor is no longer covered recover through a snapshot/reset rather than replaying the old event sequence; see [Reconnect and recovery](../server/rest-api.md#reconnect-and-recovery). If you need to clear old journals manually, first stop every Kiki server using this data root, then clear only `server/events/` and restart. Never delete or truncate these journals while a writer is running.
 
+## Canonical mailbox
+
+`store/thread-mailbox-sqlite-v1/` contains durable peer messages, delivery state, idempotency receipts, activity cursors, and workspace overrides. Unlike the search and query caches, these records are authoritative and must not be deleted to trigger a rebuild. `authority.json` selects `mailbox-<migrationId>.sqlite`; keep the adjacent `-wal` and `-shm` files while it is open. Use [`kiki storage backup`](../reference/command.md#kiki-storage) for a consistent SQLite copy instead of copying only a live `.sqlite` file.
+
+The 0.5.x upgrade retains its checkpoint in `migration.json`, its source backup under `recovery/<migrationId>/sources/`, and moved originals under `recovery/<migrationId>/originals/`. The former `store/thread-mailbox-v3`, `store/thread-mailbox-v1`, and `store/agent-collaboration-mailbox-v2` directory names become fence files. Keep these files: they stop older versions from reopening those locations as writable mailboxes. Do not point an old binary at the recovery copies. Run `kiki storage status` to inspect recovery state and `kiki storage migrate` to resume; follow the [storage command's rollback rules](../reference/command.md#kiki-storage) rather than moving original directories back by hand.
+
 ## Session and usage query cache
 
 `cache/query-store-sqlite-v1/index.sqlite` holds the SQLite query cache for session lists, usage facts, and thread-turn lookups. Kiki rebuilds these views from session metadata, usage-fact journals, and conversation history when needed. The database may have adjacent `-wal` and `-shm` files while it is open.
 
 If this cache is damaged, stop every Kiki process using the data root, back up and remove only `cache/query-store-sqlite-v1/`, then restart. Rebuilding a large history can take several requests; Usage reports incomplete coverage until preparation finishes. Keep `cache/usage-facts-v1/`, `sessions/`, and `store/`: they contain the journals and records needed for recovery. The older `cache/query-store-v*/` directories are separate from the SQLite cache and are not imported by this backend.
+
+## Content search index
+
+Content search uses SQLite at `search-index-v2/index.sqlite`. Kiki reuses a compatible index or rebuilds an older recognized search schema from session metadata and conversation history; results may be incomplete while rebuilding. This cache rebuild does not change the source history. The older MiniDb `search-index/` directory is left intact and is neither imported nor used as a fallback. Keep `sessions/` and `store/`: rebuilding a search cache does not replace the separate mailbox storage upgrade.
+
+In the 0.5 migration series, an explicit `search_backend = "minidb"` in `config.toml` or `KIKI_SEARCH_BACKEND=minidb` is a deprecated alias for SQLite and produces a migration warning. Remove the old setting, or change it to `sqlite`, before upgrading to 0.6, which retires that value. Environment selection takes precedence over `search_backend`; Kiki does not rewrite either setting. The old `search_worker` experimental switch has been removed because SQLite always isolates database work in its writer process and query worker.
+
+Search is available by default. `[search] enabled = false`, `KIKI_SEARCH_DISABLED=1`, or an explicit desktop `desktop_search = false` keeps it off; the migration alias does not start a worker or rebuild the cache when search is disabled. Set `[search] index_subagents = true` to include subagent content; it is off by default. These settings take effect after restarting Kiki. Search matches user and assistant text and session titles by default; tool-result output is included only when explicitly requested. Thinking, tool names, and tool-call arguments stay excluded.
 
 ## Built-in tool cache
 

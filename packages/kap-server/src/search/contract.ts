@@ -134,7 +134,7 @@ export interface GlobalSearchIndexState {
 
 /**
  * Which backend served the page:
- *   - 'index' — the minidb full-text index (the default; always used when the
+ *   - 'index' — the SQLite full-text index (the default; always used when the
  *     container session is not live in this process);
  *   - 'live' — an in-memory scan of the live session's `TranscriptStore`
  *     (container-scoped queries on a session resumed in this process).

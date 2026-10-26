@@ -119,7 +119,7 @@ describe('real document preview REST proof', () => {
         host: '127.0.0.1',
         port: 0,
         homeDir: home,
-        env: { ...process.env, KIKI_SEARCH_BACKEND: 'minidb', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' },
+        env: { ...process.env, KIKI_SEARCH_DISABLED: '1' },
         logLevel: 'silent',
       });
       const app = appOf(server);
@@ -157,23 +157,21 @@ describe('real document preview REST proof', () => {
     const home = await mkdtemp(join(tmpdir(), 'kiki-document-preview-rest-'));
     let server: RunningServer | undefined;
     const oldPath = process.env['PATH'];
-    const oldSearchBackend = process.env['KIKI_SEARCH_BACKEND'];
-    const oldSearchWorker = process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'];
+    const oldSearchDisabled = process.env['KIKI_SEARCH_DISABLED'];
     const emptyPath = await mkdtemp(join(tmpdir(), 'kiki-document-preview-no-poppler-'));
     try {
       const pdfBytes = await readFile(pdfPath);
       const docxBytes = await readFile(docxPath);
       await copyFile(pdfPath, join(home, basename(pdfPath)));
       await copyFile(docxPath, join(home, basename(docxPath)));
-      process.env['KIKI_SEARCH_BACKEND'] = 'minidb';
-      process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'] = 'false';
+      process.env['KIKI_SEARCH_DISABLED'] = '1';
 
       server = await startServer({
         hostIdentity: TEST_HOST_IDENTITY,
         host: '127.0.0.1',
         port: 0,
         homeDir: home,
-        env: { ...process.env, KIKI_SEARCH_BACKEND: 'minidb', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' },
+        env: { ...process.env, KIKI_SEARCH_DISABLED: '1' },
         logLevel: 'silent',
       });
       const app = appOf(server);
@@ -336,10 +334,8 @@ describe('real document preview REST proof', () => {
       if (proofPath !== undefined && proofPath !== '') await writeFile(proofPath, `${proof}\n`);
     } finally {
       process.env['PATH'] = oldPath;
-      if (oldSearchBackend === undefined) delete process.env['KIKI_SEARCH_BACKEND'];
-      else process.env['KIKI_SEARCH_BACKEND'] = oldSearchBackend;
-      if (oldSearchWorker === undefined) delete process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'];
-      else process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'] = oldSearchWorker;
+      if (oldSearchDisabled === undefined) delete process.env['KIKI_SEARCH_DISABLED'];
+      else process.env['KIKI_SEARCH_DISABLED'] = oldSearchDisabled;
       await server?.close();
       await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
       await rm(emptyPath, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });

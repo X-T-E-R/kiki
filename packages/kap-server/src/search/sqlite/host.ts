@@ -71,8 +71,9 @@ export class SqliteSearchHost {
   private readonly readerLoads = [0];
   private readonly bootSalt = randomUUID();
   private readonly pending = new Map<string, SqliteSessionInput>();
-  private readonly sent = new Set<string>();
-  private readonly resend = new Set<string>();
+  private inventoryRevision = 0;
+  private inventoryToSend = false;
+  private inventoryInFlight = false;
   private readonly known = new Map<string, SqliteSessionInput>();
   private reindexRequest?: { id: number; resolve: (value: { sessions: number; documents: number }) => void;
     reject: (error: Error) => void; timer: NodeJS.Timeout };
@@ -108,8 +109,8 @@ export class SqliteSearchHost {
     const indexedSessions = this.status?.indexedSessions ?? 0;
     const totalSessions = Math.max(indexedSessions, this.known.size);
     return { state: this.reason ? 'unavailable' : this.readonlyWriter ? 'readonly' :
-      this.ready && !this.rebuilding && this.pending.size === 0 && indexedSessions >= totalSessions ? 'ready' : 'building',
-      reason: this.reason, stale: !!this.reason || this.rebuilding || this.pending.size > 0,
+      this.ready && !this.rebuilding && !this.inventoryInFlight && this.pending.size === 0 && indexedSessions >= totalSessions ? 'ready' : 'building',
+      reason: this.reason, stale: !!this.reason || this.rebuilding || this.inventoryInFlight || this.pending.size > 0,
       indexedSessions, totalSessions, documents: this.status?.documents ?? 0,
       retryAfterMs: this.retryAt > Date.now() ? this.retryAt - Date.now() : undefined,
       indexerTerminal: this.terminal, indexerPid: this.child?.pid, indexerRss: this.rss, indexerHeapLimit: this.heapLimit, indexerStatus: this.status,
@@ -134,36 +135,66 @@ export class SqliteSearchHost {
     this.startIndexer();
   }
 
+  private setInventory(sessions: readonly SqliteSessionInput[]): void {
+    this.inventoryRevision++;
+    this.known.clear();
+    this.pending.clear();
+    for (const session of sessions) {
+      this.known.set(session.id, session);
+      if (!this.readonlyWriter) this.pending.set(session.id, session);
+    }
+    this.inventoryInFlight = !this.readonlyWriter;
+  }
+
   sync(sessions: readonly SqliteSessionInput[]): void {
     if (this.stopped) return;
-    for (const session of sessions) {
-      if (this.sent.has(session.id)) this.resend.add(session.id);
-      if (!this.readonlyWriter) this.pending.set(session.id, session);
-      this.known.set(session.id, session);
-    }
+    this.setInventory(sessions);
+    this.inventoryToSend = true;
     this.startIndexer();
     this.flushPending();
     this.options.onStateChange?.(this.snapshot());
   }
 
   async reindex(sessions: readonly SqliteSessionInput[]): Promise<{ sessions: number; documents: number }> {
+    await this.open();
+    const starting = this.child;
+    if (!this.ready && starting) {
+      await new Promise<void>((resolve, reject) => {
+        const finish = (error?: Error): void => {
+          clearTimeout(timer);
+          starting.off('message', message);
+          starting.off('exit', exited);
+          starting.off('error', failed);
+          if (error) reject(error);
+          else resolve();
+        };
+        const message = (event: IndexerEvent): void => {
+          if (event.type === 'ready') finish();
+          else if (event.type === 'error') finish(new GlobalSearchError('index_unavailable', event.message));
+        };
+        const exited = (): void => finish(new GlobalSearchError('index_unavailable', 'search indexer exited while opening'));
+        const failed = (error: Error): void => finish(error);
+        const timer = setTimeout(() => finish(new GlobalSearchError('index_unavailable', 'search indexer opening timed out')), this.options.queryTimeoutMs ?? 10_000);
+        starting.on('message', message);
+        starting.once('exit', exited);
+        starting.once('error', failed);
+      });
+    }
     if (this.stopped || !this.child || !this.ready) throw new GlobalSearchError('index_unavailable', 'search indexer is unavailable');
     if (this.readonlyWriter) throw new GlobalSearchError('readonly_index', 'another process owns the search index');
     if (this.reindexRequest) throw new GlobalSearchError('index_unavailable', 'search reindex is already running');
     const child = this.child;
     const id = ++this.id;
     this.rebuilding = true;
-    for (const session of sessions) {
-      this.known.set(session.id, session);
-      this.pending.set(session.id, session);
-      this.sent.add(session.id);
-    }
+    this.setInventory(sessions);
+    this.inventoryToSend = false;
+    const revision = this.inventoryRevision;
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.finishReindex(new Error('search reindex timed out'));
       }, 30 * 60_000);
       this.reindexRequest = { id, resolve, reject, timer };
-      child.send({ type: 'reindex', id, sessions: [...sessions] } satisfies IndexerRequest, (error) => {
+      child.send({ type: 'reindex', id, revision, sessions: [...sessions] } satisfies IndexerRequest, (error) => {
         if (error) this.finishReindex(error);
       });
     });
@@ -210,7 +241,8 @@ export class SqliteSearchHost {
         void this.failReader(new Error('query worker watchdog timed out'));
       }, this.options.queryTimeoutMs ?? 10_000);
       this.queries.set(id, { resolve: (value) => resolve({ ...value, stale: this.snapshot().stale }), reject, timer, release });
-      const request: QueryRequest = { id, type: 'search', query, pageToken, budgets };
+      const request: QueryRequest = { id, type: 'search', query, pageToken, budgets,
+        deadlineAt: Date.now() + (budgets?.queryDeadlineMs ?? 500) };
       try { reader.postMessage(request); }
       catch (error) { clearTimeout(timer); this.queries.delete(id); release(); reject(error); }
     });
@@ -271,16 +303,20 @@ export class SqliteSearchHost {
         const promoted = this.readonlyWriter && message.writer !== false;
         this.ready = true;
         this.readonlyWriter = message.writer === false;
-        if (this.readonlyWriter) this.pending.clear();
-        else if (promoted) for (const [id, session] of this.known) this.pending.set(id, session);
+        if (this.readonlyWriter) { this.pending.clear(); this.inventoryInFlight = false; }
+        else if (promoted) {
+          for (const [id, session] of this.known) this.pending.set(id, session);
+          this.inventoryToSend = this.inventoryRevision > 0;
+          this.inventoryInFlight = this.inventoryToSend;
+        }
         if (this.failures === 0) this.reason = undefined;
         this.retryAt = 0;
         this.flushPending();
       } else if (message.type === 'heartbeat') this.lastPong = Date.now();
       else if (message.type === 'release_reader') {
         this.reason = 'corrupt_rebuilding';
-        this.sent.clear();
-        this.resend.clear();
+        this.inventoryToSend = this.inventoryRevision > 0;
+        this.inventoryInFlight = this.inventoryToSend;
         for (const [id, session] of this.known) this.pending.set(id, session);
         const released = this.failReader(new Error('search database is rebuilding'));
         void (released ?? Promise.resolve()).then(() => {
@@ -304,12 +340,14 @@ export class SqliteSearchHost {
           this.memoryFailures = 0;
         }
       } else if (message.type === 'synced') {
+        if (message.revision !== this.inventoryRevision) return;
         if (this.reason === 'disk_low' || this.reason === 'indexer_backoff' ||
           this.reason === 'memory_budget') this.reason = undefined;
-        this.sent.delete(message.sessionId);
-        if (this.resend.delete(message.sessionId)) this.flushPending();
-        else this.pending.delete(message.sessionId);
+        this.pending.delete(message.sessionId);
+        if (message.missing) this.known.delete(message.sessionId);
         if (!this.pending.size) { this.failures = 0; this.memoryFailures = 0; }
+      } else if (message.type === 'inventory_synced') {
+        if (message.revision === this.inventoryRevision) this.inventoryInFlight = false;
       } else if (message.type === 'reindexed') {
         if (this.reindexRequest?.id === message.id) this.finishReindex(
           message.error ? new Error(message.error) : undefined,
@@ -325,8 +363,8 @@ export class SqliteSearchHost {
       this.child = undefined;
       this.finishReindex(new Error('search indexer exited during reindex'));
       if (this.stopped) return;
-      this.sent.clear();
-      this.resend.clear();
+      this.inventoryToSend = this.inventoryRevision > 0;
+      this.inventoryInFlight = this.inventoryToSend;
       if (this.inflight) {
         const path = resolve(this.inflight);
         for (const session of this.known.values()) {
@@ -374,12 +412,12 @@ export class SqliteSearchHost {
   }
 
   private flushPending(): void {
-    if (!this.ready || this.readonlyWriter || !this.child || this.rebuilding) return;
-    const sessions = [...this.pending.values()].filter((session) => !this.sent.has(session.id));
-    for (let i = 0; i < sessions.length; i += 1000) {
-      const batch = sessions.slice(i, i + 1000);
-      for (const session of batch) this.sent.add(session.id);
-      this.child.send({ type: 'sync', sessions: batch } satisfies IndexerRequest);
+    if (!this.ready || this.readonlyWriter || !this.child || this.rebuilding || !this.inventoryToSend) return;
+    this.inventoryToSend = false;
+    const sessions = [...this.known.values()];
+    for (let i = 0; i < Math.max(1, sessions.length); i += 1000) {
+      this.child.send({ type: 'sync', revision: this.inventoryRevision, first: i === 0,
+        last: i + 1000 >= sessions.length, sessions: sessions.slice(i, i + 1000) } satisfies IndexerRequest);
     }
   }
 
@@ -420,7 +458,7 @@ export class SqliteSearchHost {
           this.queries.delete(event.id);
           request.release();
           if (event.type === 'result') request.resolve(event.value);
-          else request.reject(new Error(event.message));
+          else request.reject(event.reason === undefined ? new Error(event.message) : new GlobalSearchError(event.reason, event.message));
         }
       });
       worker.on('error', (error) => {

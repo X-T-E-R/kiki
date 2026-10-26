@@ -18,6 +18,7 @@ import type { Klient } from '@kiki/klient';
 
 import { IHistoryDirectory } from '@kiki/agent-core-v2/agent/tools/history/historyListTool';
 import { createPrintHistoryDirectory } from './print-history-directory';
+import { assertMailboxStartupReady } from './storage-migration';
 
 export { PRINT_MAX_TURNS_DEFAULT, PRINT_WAIT_CEILING_S_DEFAULT, setClampedTimeout } from '@kiki/agent-core-v2';
 export type { AgentTaskConfig, PrintBackgroundMode } from '@kiki/agent-core-v2';
@@ -64,6 +65,7 @@ export async function flushPrintWires(app: Scope): Promise<void> {
 export async function createPrintClient(
   input: BootstrapInput & { homeDir: string; interactive?: boolean },
 ): Promise<PrintClientHost> {
+  await assertMailboxStartupReady(input.homeDir);
   let app: Scope | undefined;
   const result = bootstrap(input, [
     ...logSeed(resolveLoggingConfig({ homeDir: input.homeDir, env: process.env })),

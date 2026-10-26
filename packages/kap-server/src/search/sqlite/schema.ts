@@ -4,7 +4,7 @@ import { DatabaseSync } from 'node:sqlite';
 
 /** Schema guard adapted from dsh-core/packages/session-query/session-query-sqlite/src/schema.ts (MIT). */
 export const APPLICATION_ID = 0x4b534958;
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 
 const DERIVED_TABLES = new Set([
   'sessions', 'files', 'turn_openers', 'docs', 'docs_terms', 'docs_terms_data',

@@ -1,8 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { LockError, MiniDb, type BatchInputOp } from '@kiki/minidb';
-import { ClusterDb } from '@kiki/minidb/cluster';
-import { join } from 'pathe';
+import type { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
+import { openRuntimeMailbox } from '#/persistence/backends/sqliteMailbox/authority';
+import type { MailboxWrite } from '#/persistence/backends/sqliteMailbox/protocol';
 
 import type { IDisposable } from '#/_base/di/lifecycle';
 import { LifecycleScope } from '#/app/scopes';
@@ -11,12 +11,10 @@ import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeError } from '#/app/runtimeHost/errors';
 import { IHomeRuntimeService } from '#/app/runtimeHost/runtimeHost';
 import type { RuntimeMethodContext, RuntimeRole } from '#/app/runtimeHost/messages';
-import { IHostFileSystem } from '#/os/interface/hostFileSystem';
 
 import {
   ThreadActivityCursorExpiredError,
   ThreadMailboxBacklogError,
-  ThreadMailboxLegacyWriterActiveError,
 } from './mailboxErrors';
 import { THREAD_DELIVERY_REASON_CODES, type ThreadActivityKind, type ThreadDeliveryReasonCode, type ThreadRef } from './threadCommunication';
 import {
@@ -33,8 +31,6 @@ import {
   type ThreadMessageProducer,
 } from './threadMailboxStore';
 
-const STORE_DIR = 'thread-mailbox-v3';
-const SHARD_COUNT = 16;
 const MESSAGE_RETAINED_LIMIT = 512;
 const PENDING_HARD_LIMIT = 100_000;
 const ACTIVITY_RETAINED_LIMIT = 256;
@@ -47,10 +43,7 @@ const THREAD_MAILBOX_TIMEOUT_ENV = 'KIKI_THREAD_MAILBOX_TIMEOUT_MS';
 const MAX_CONFIGURED_TIMEOUT_MS = 10 * 60_000;
 const CALL_RETRY_BACKOFF_MS = 25;
 const CALL_TOTAL_TIMEOUT_MULTIPLIER = 2;
-const LEGACY_THREAD_DIR = 'thread-mailbox-v1';
-const LEGACY_AGENT_DIR = 'agent-collaboration-mailbox-v2';
 const SYSTEM_PARTITION = 's/thread-mailbox-v3';
-const MIGRATION_MARKER_KEY = `${SYSTEM_PARTITION}/migration`;
 const ACTIVE_BACKEND_KEY = `${SYSTEM_PARTITION}/active-backend`;
 const METHOD_PREFIX = 'threadMailbox.v3';
 const ACCEPT_MICROBATCH_LIMIT = 32;
@@ -114,6 +107,7 @@ interface IdempotencyDoc {
   readonly idempotencyKey: string;
   readonly payloadHash: string;
   readonly messageKey: string;
+  readonly messageId?: string;
 }
 
 interface ActivityDoc {
@@ -233,26 +227,6 @@ interface WorkspaceOverridePayload {
   readonly enabled?: boolean;
 }
 
-interface LegacyDelivery {
-  readonly message: AcceptedThreadMessage;
-  readonly state: DeliveryState;
-  readonly attempt: number;
-}
-
-interface LegacyActivityMeta {
-  readonly target: ThreadRef;
-  readonly epoch: string;
-  readonly nextSeq: number;
-  readonly minSeq: number;
-}
-
-interface LegacySnapshot {
-  readonly deliveries: readonly LegacyDelivery[];
-  readonly activityMeta: readonly LegacyActivityMeta[];
-  readonly activities: readonly { readonly target: ThreadRef; readonly activity: StoredThreadActivity }[];
-  readonly overrides: readonly WorkspaceOverrideDoc[];
-}
-
 type AcceptRpcResult =
   | { readonly ok: true; readonly value: ThreadMessageAcceptance }
   | { readonly ok: false; readonly error: 'backlog'; readonly limit: number };
@@ -292,7 +266,7 @@ interface PartitionQueue {
 
 interface AcceptPlan {
   readonly result: ThreadMessageAcceptance;
-  readonly ops: readonly BatchInputOp<StoredDoc>[];
+  readonly ops: readonly MailboxWrite<StoredDoc>[];
 }
 
 interface OwnerInitialization {
@@ -304,18 +278,16 @@ interface OwnerInitialization {
 export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   declare readonly _serviceBrand: undefined;
 
-  private readonly storeDir: string;
-  private readonly legacyDirs: readonly string[];
+  private readonly homeDir: string;
   private readonly registrations: IDisposable[];
   private readonly partitionQueues = new Map<string, PartitionQueue>();
   private readonly partitionAbortListeners = new WeakMap<PartitionQueueOperation, () => void>();
   private readonly ownerOperations = new Map<Promise<unknown>, number>();
   private readonly ownerProgress = new WeakMap<AbortSignal, { phase: string; since: number; partition?: string }>();
-  private readonly quarantine: MiniDb<Record<string, unknown>>[] = [];
   private readonly closeController = new AbortController();
   private readonly callTimeoutMs: number;
   private readonly startupCallTimeoutMs: number;
-  private db: ClusterDb<StoredDoc> | undefined;
+  private db: CanonicalMailboxDatabase<StoredDoc> | undefined;
   private ownerEpoch = 0;
   private observedRuntimeRole: RuntimeRole = 'idle';
   private observedRuntimeEpoch = 0;
@@ -333,15 +305,10 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   constructor(
     @IBootstrapService bootstrap: IBootstrapService,
     @IHomeRuntimeService private readonly runtime: IHomeRuntimeService,
-    @IHostFileSystem private readonly fs: IHostFileSystem,
   ) {
+    this.homeDir = bootstrap.homeDir;
     this.callTimeoutMs = resolveTimeoutMs(bootstrap.getEnv(THREAD_MAILBOX_TIMEOUT_ENV), CALL_TIMEOUT_MS);
     this.startupCallTimeoutMs = resolveTimeoutMs(bootstrap.getEnv(THREAD_MAILBOX_TIMEOUT_ENV), STARTUP_CALL_TIMEOUT_MS);
-    this.storeDir = join(bootstrap.storeDir, STORE_DIR);
-    this.legacyDirs = [
-      join(bootstrap.storeDir, LEGACY_THREAD_DIR),
-      join(bootstrap.storeDir, LEGACY_AGENT_DIR),
-    ];
     this.registrations = [
       this.register(THREAD_MAILBOX_RUNTIME_METHODS.readMessages, (payload, ctx) => {
         const input = payload as ReadMailboxMessagesInput;
@@ -674,7 +641,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     this.ownerProgress.set(ctx.signal, { phase, since: Date.now(), partition: partition ?? prior?.partition });
   }
 
-  private async readyOwner(ctx: RuntimeMethodContext): Promise<ClusterDb<StoredDoc>> {
+  private async readyOwner(ctx: RuntimeMethodContext): Promise<CanonicalMailboxDatabase<StoredDoc>> {
     throwIfAborted(ctx.signal);
     for (;;) {
       this.setOwnerPhase(ctx, 'owner_release');
@@ -718,85 +685,33 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     this.assertOwnerContext(ctx);
     const epoch = ctx.epoch;
     if (this.db === undefined) {
-      const openedQuarantine: MiniDb<Record<string, unknown>>[] = [];
-      let openedDb: ClusterDb<StoredDoc> | undefined;
+      const openedDb = await openRuntimeMailbox<StoredDoc>(this.homeDir, { epoch, hostId: this.runtime.status().hostId });
       try {
-        const existingTopology = await this.hasPersistedTopology();
-        openedDb = await ClusterDb.open<StoredDoc>({
-          dir: this.storeDir,
-          shardCount: existingTopology ? undefined : SHARD_COUNT,
-          valueCodec: 'json',
-          valueMode: 'disk',
-          fsyncPolicy: 'always',
-          recovery: 'strict',
-          activeExpireIntervalMs: 0,
-          lockHoldMs: 0,
-          lockPoolMaxShards: SHARD_COUNT,
-          crossShard: 'none',
-        });
-        for (const dir of this.legacyDirs) {
-          const legacy = await this.openLegacyQuarantine(dir, ctx);
-          if (legacy !== undefined) openedQuarantine.push(legacy);
-        }
-        const marker = asMigrationMarker(await openedDb.partitionGet(SYSTEM_PARTITION, MIGRATION_MARKER_KEY));
-        if (marker === undefined) {
-          const snapshots = openedQuarantine.map((legacy) => readLegacySnapshot(legacy));
-          await this.migrate(openedDb, snapshots);
-          await openedDb.partitionBatch(SYSTEM_PARTITION, [
-            {
-              op: 'set',
-              key: MIGRATION_MARKER_KEY,
-              value: { kind: 'migration_marker', version: 3, migratedAt: Date.now() },
-            },
-            {
-              op: 'set',
-              key: ACTIVE_BACKEND_KEY,
-              value: { kind: 'active_backend', version: 3, ownerEpoch: epoch, readyAt: Date.now() },
-            },
-          ]);
-        } else {
-          await openedDb.partitionBatch(SYSTEM_PARTITION, [{
-            op: 'set',
-            key: ACTIVE_BACKEND_KEY,
-            value: { kind: 'active_backend', version: 3, ownerEpoch: epoch, readyAt: Date.now() },
-          }]);
-        }
-        await this.ensurePeerIndex(openedDb);
-        await this.loadPeerCoverage(openedDb, !existingTopology);
+        const fresh = await openedDb.partitionGet(SYSTEM_PARTITION, ACTIVE_BACKEND_KEY) === undefined;
+        await this.loadPeerCoverage(openedDb, fresh);
         throwIfAborted(ctx.signal);
         this.assertOwnerContext(ctx);
         this.db = openedDb;
-        this.quarantine.push(...openedQuarantine);
       } catch (error) {
-        await Promise.allSettled(openedQuarantine.map((legacy) => legacy.close()));
-        await openedDb?.close().catch(() => {});
+        await openedDb.close();
         throw error;
       }
     } else {
-      await this.db.partitionBatch(SYSTEM_PARTITION, [{
-        op: 'set',
-        key: ACTIVE_BACKEND_KEY,
-        value: { kind: 'active_backend', version: 3, ownerEpoch: epoch, readyAt: Date.now() },
-      }]);
+      await this.db.claimOwner({ epoch, hostId: this.runtime.status().hostId });
     }
     this.ownerEpoch = epoch;
   }
 
-  private async ensurePeerIndex(db: ClusterDb<StoredDoc>): Promise<void> {
-    if (!(await db.listCompoundIndexes()).some((index) => index.name === PEER_INDEX_NAME)) {
-      await db.createCompoundIndex(PEER_INDEX_NAME, { groupBy: 'peerGroup', orderBy: 'peerOrder', orderType: 'string' });
-    }
-  }
-
-  private async loadPeerCoverage(db: ClusterDb<StoredDoc>, fresh: boolean): Promise<void> {
+  private async loadPeerCoverage(db: CanonicalMailboxDatabase<StoredDoc>, fresh: boolean): Promise<void> {
     const v2 = await db.partitionGet(SYSTEM_PARTITION, PEER_INDEX_MARKER);
     const v1 = await db.partitionGet(SYSTEM_PARTITION, PEER_INDEX_V1_MARKER);
     const marker = v2?.kind === 'peer_index_marker' ? v2 : undefined;
     const prior = v1?.kind === 'peer_index_marker' ? v1 : undefined;
+    const imported = await db.metadata('peerHistoryComplete') === true;
     this.peerIndexError = undefined;
     this.peerCoverage = {
       kind: 'peer_index_marker', after: marker?.after ?? 't/',
-      complete: fresh || marker?.complete === true,
+      complete: imported || fresh || marker?.complete === true,
       generation: marker?.complete ? marker.generation ?? 'peer-index-v2-complete' : randomUUID(),
       shard: marker?.shard ?? 0, shardAfter: marker?.shardAfter,
       processedMessages: marker?.processedMessages ?? 0,
@@ -808,7 +723,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     }
   }
 
-  private historyCoverage(db: ClusterDb<StoredDoc>, peerOnly = false): NonNullable<MailboxMessagesPage['history']> {
+  private historyCoverage(db: CanonicalMailboxDatabase<StoredDoc>, peerOnly = false): NonNullable<MailboxMessagesPage['history']> {
     const coverage = this.peerCoverage!;
     const complete = coverage.complete || peerOnly && coverage.peerComplete === true;
     return {
@@ -822,7 +737,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     };
   }
 
-  private startPeerRepair(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): void {
+  private startPeerRepair(db: CanonicalMailboxDatabase<StoredDoc>, ctx: RuntimeMethodContext): void {
     if (this.peerCoverage?.complete || this.peerIndexInitialization !== undefined || this.peerIndexError !== undefined) return;
     const controller = new AbortController();
     const signal = combineAbortSignals(this.closeController.signal, controller.signal);
@@ -835,7 +750,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     this.peerIndexInitialization = current;
   }
 
-  private async preparePeerIndex(db: ClusterDb<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
+  private async preparePeerIndex(db: CanonicalMailboxDatabase<StoredDoc>, ctx: RuntimeMethodContext): Promise<void> {
     let checkpoint = this.peerCoverage!;
     let processedMessages = checkpoint.processedMessages ?? 0;
     let sinceCheckpoint = 0;
@@ -868,7 +783,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         }
         for (const [partition, messageKeys] of messages) {
           await this.withPartition(partition, ctx, async () => {
-            const ops: BatchInputOp<StoredDoc>[] = [];
+            const ops: MailboxWrite<StoredDoc>[] = [];
             const values = await db.partitionMget(partition, messageKeys);
             for (const [i, key] of messageKeys.entries()) {
               if (Date.now() - sliceAt >= 8) { await delay(0); sliceAt = Date.now(); }
@@ -909,47 +824,6 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       await publish(shard + 1);
     }
     await publish(db.shardCount, undefined, true);
-  }
-
-  private async hasPersistedTopology(): Promise<boolean> {
-    try {
-      const stat = await this.fs.stat(join(this.storeDir, 'cluster.meta.json'));
-      return !stat.isDirectory;
-    } catch (error) {
-      const code = (error as { readonly code?: unknown }).code;
-      if (code === 'ENOENT' || code === 'os.fs.not_found') return false;
-      throw error;
-    }
-  }
-
-  private async openLegacyQuarantine(
-    dir: string,
-    ctx: RuntimeMethodContext,
-  ): Promise<MiniDb<Record<string, unknown>> | undefined> {
-    try {
-      const stat = await this.fs.stat(dir);
-      if (!stat.isDirectory) return undefined;
-    } catch (error) {
-      const code = (error as { readonly code?: unknown }).code;
-      if (code === 'ENOENT' || code === 'os.fs.not_found') return undefined;
-      throw error;
-    }
-    throwIfAborted(ctx.signal);
-    this.assertOwnerContext(ctx);
-    try {
-      return await MiniDb.open<Record<string, unknown>>({
-        dir,
-        valueCodec: 'json',
-        valueMode: 'memory',
-        fsyncPolicy: 'always',
-        recovery: 'strict',
-        indexGenerations: false,
-        activeExpireIntervalMs: 0,
-      });
-    } catch (error) {
-      if (error instanceof LockError) throw new ThreadMailboxLegacyWriterActiveError();
-      throw error;
-    }
   }
 
   private acceptOwner(input: AcceptPayload, ctx: RuntimeMethodContext): Promise<ThreadMessageAcceptance> {
@@ -997,7 +871,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           head.message.claim.leaseUntil > now
         )
       ) {
-        const ops: BatchInputOp<StoredDoc>[] = [this.receiptOp(receiptKey, method, ctx, input, null)];
+        const ops: MailboxWrite<StoredDoc>[] = [this.receiptOp(receiptKey, method, ctx, input, null)];
         if (metaChanged) ops.unshift({ op: 'set', key: metaKey, value: { ...meta, nextDeliverableSeq: head.seq } });
         throwIfAborted(ctx.signal);
         this.assertOwnerContext(ctx);
@@ -1012,7 +886,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         leaseUntil: now + input.leaseMs,
         hostEpoch: ctx.epoch,
       };
-      const ops: BatchInputOp<StoredDoc>[] = [
+      const ops: MailboxWrite<StoredDoc>[] = [
         {
           op: 'set',
           key: head.key!,
@@ -1066,7 +940,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
           changed = true;
         }
       }
-      const ops: BatchInputOp<StoredDoc>[] = [this.receiptOp(receiptKey, method, ctx, input, changed)];
+      const ops: MailboxWrite<StoredDoc>[] = [this.receiptOp(receiptKey, method, ctx, input, changed)];
       if (changed && next !== delivery && delivery !== undefined) {
         const metaKey = targetMetaKey(partition);
         const meta = asTargetMeta(await db.partitionGet(partition, metaKey));
@@ -1111,7 +985,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   }
 
   private async resolveDeliveryHead(
-    db: ClusterDb<StoredDoc>,
+    db: CanonicalMailboxDatabase<StoredDoc>,
     partition: string,
     target: ThreadRef,
     meta: TargetMetaDoc,
@@ -1138,7 +1012,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   }
 
   private async scanDeliveryHead(
-    db: ClusterDb<StoredDoc>,
+    db: CanonicalMailboxDatabase<StoredDoc>,
     partition: string,
     target: ThreadRef,
     nextMessageSeq: number,
@@ -1203,7 +1077,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         if (matching.length === 0) return;
         const currentMeta = asTargetMeta(await db.partitionGet(partition, targetMetaKey(partition)));
         if (currentMeta === undefined) return;
-        const ops: BatchInputOp<StoredDoc>[] = matching.map(({ key, message }) => ({
+        const ops: MailboxWrite<StoredDoc>[] = matching.map(({ key, message }) => ({
           op: 'set',
           key,
           value: { ...message, state: 'undeliverable', reason: 'room delivery cancelled' },
@@ -1242,7 +1116,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
         messageId: input.messageId,
       };
       const nextSeq = meta.nextActivitySeq + 1;
-      const ops: BatchInputOp<StoredDoc>[] = [
+      const ops: MailboxWrite<StoredDoc>[] = [
         {
           op: 'set',
           key: metaKey,
@@ -1435,7 +1309,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       operation.reject(operation.ctx.signal.reason);
       return false;
     });
-    let db: ClusterDb<StoredDoc> | undefined;
+    let db: CanonicalMailboxDatabase<StoredDoc> | undefined;
     while (active.length > 0 && db === undefined) {
       const operation = active[0]!;
       try {
@@ -1451,7 +1325,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     }
     if (db === undefined) return;
     const staged = new Map<string, StoredDoc | undefined>();
-    const ops: BatchInputOp<StoredDoc>[] = [];
+    const ops: MailboxWrite<StoredDoc>[] = [];
     const completed: Array<{
       readonly operation: AcceptPartitionOperation;
       readonly result: ThreadMessageAcceptance;
@@ -1482,7 +1356,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
   }
 
   private async planAccept(
-    db: ClusterDb<StoredDoc>,
+    db: CanonicalMailboxDatabase<StoredDoc>,
     partition: string,
     input: AcceptPayload,
     ctx: RuntimeMethodContext,
@@ -1504,7 +1378,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       const delivery = asMessage(await read(prior.messageKey));
       const result: ThreadMessageAcceptance = delivery === undefined
         ? {
-            message: missingDeliveryMessage(input, prior.messageKey),
+            message: missingDeliveryMessage(input, prior.messageId ?? prior.messageKey),
             deduplicated: true,
             delivery: 'undeliverable',
             payloadConflict: prior.payloadHash !== payloadHash(input.content, input.producer),
@@ -1545,7 +1419,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       delivery: 'pending',
       payloadConflict: false,
     };
-    const ops: BatchInputOp<StoredDoc>[] = [
+    const ops: MailboxWrite<StoredDoc>[] = [
       {
         op: 'set',
         key: metaKey,
@@ -1581,145 +1455,13 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const pruneKey = targetMessageKey(partition, message.targetSeq - MESSAGE_RETAINED_LIMIT);
     const prune = asMessage(await read(pruneKey));
     if (prune !== undefined && prune.message.producer.kind === 'external_client' && isTerminalState(prune.state)) {
-      ops.push({ op: 'del', key: pruneKey }, { op: 'del', key: prune.idempotencyStorageKey });
+      ops.push({ op: 'del', key: pruneKey });
+      const pruneIdempotency = asIdempotency(await read(prune.idempotencyStorageKey));
+      if (prune.idempotencyStorageKey !== idemKey && pruneIdempotency?.messageKey === pruneKey) {
+        ops.push({ op: 'del', key: prune.idempotencyStorageKey });
+      }
     }
     return { result, ops };
-  }
-
-  private async migrate(db: ClusterDb<StoredDoc>, snapshots: readonly LegacySnapshot[]): Promise<void> {
-    const deliveries = snapshots.flatMap((snapshot) => snapshot.deliveries);
-    const activities = snapshots.flatMap((snapshot) => snapshot.activities);
-    const activityMeta = snapshots.flatMap((snapshot) => snapshot.activityMeta);
-    const targets = new Map<string, ThreadRef>();
-    for (const delivery of deliveries) targets.set(threadIdentity(delivery.message.target), delivery.message.target);
-    for (const activity of activities) targets.set(threadIdentity(activity.target), activity.target);
-    for (const meta of activityMeta) targets.set(threadIdentity(meta.target), meta.target);
-    for (const target of targets.values()) {
-      const partition = targetPartition(target);
-      const existingMessages = (await db.partitionPrefix(partition, targetMessagePrefix(partition)))
-        .map((entry) => ({ key: entry.key, value: asMessage(entry.value) }))
-        .filter((entry): entry is { readonly key: string; readonly value: MessageDoc } => entry.value !== undefined);
-      const existingActivities = (await db.partitionPrefix(partition, targetActivityPrefix(partition)))
-        .map((entry) => ({ key: entry.key, value: asActivity(entry.value) }))
-        .filter((entry): entry is { readonly key: string; readonly value: ActivityDoc } => entry.value !== undefined);
-      const metaKey = targetMetaKey(partition);
-      const storedMeta = asTargetMeta(await db.partitionGet(partition, metaKey));
-      const legacyDeliveries = deliveries
-        .filter((delivery) => sameThread(delivery.message.target, target))
-        .toSorted((left, right) => left.message.targetSeq - right.message.targetSeq);
-      const legacyActivities = activities
-        .filter((activity) => sameThread(activity.target, target))
-        .toSorted((left, right) => left.activity.seq - right.activity.seq);
-      const knownMessageIds = new Set(existingMessages.map((entry) => entry.value.message.messageId));
-      const usedMessageSeq = new Set(existingMessages.map((entry) => entry.value.message.targetSeq));
-      const usedActivitySeq = new Set(existingActivities.map((entry) => entry.value.activity.seq));
-      let nextMessageSeq = Math.max(storedMeta?.nextMessageSeq ?? 1, ...[...usedMessageSeq].map((seq) => seq + 1));
-      let nextActivitySeq = Math.max(storedMeta?.nextActivitySeq ?? 1, ...[...usedActivitySeq].map((seq) => seq + 1));
-      const ops: BatchInputOp<StoredDoc>[] = [];
-      for (const entry of existingMessages) {
-        for (const op of peerIndexOps(partition, entry.value.message)) {
-          if (op.op !== 'set') continue;
-          const expected = op.value as PeerIndexDoc;
-          const current = await db.partitionGet(partition, op.key);
-          if (current?.kind !== 'peer_index' || current.peerGroup !== expected.peerGroup ||
-              current.peerOrder !== expected.peerOrder || current.partition !== expected.partition ||
-              current.messageKey !== expected.messageKey) ops.push(op);
-        }
-      }
-      const migratedMessages = existingMessages.map((entry) => entry.value);
-      for (const legacy of legacyDeliveries) {
-        if (knownMessageIds.has(legacy.message.messageId)) continue;
-        let seq = legacy.message.targetSeq;
-        if (!Number.isSafeInteger(seq) || seq < 1 || usedMessageSeq.has(seq)) seq = nextMessageSeq;
-        while (usedMessageSeq.has(seq)) seq++;
-        usedMessageSeq.add(seq);
-        nextMessageSeq = Math.max(nextMessageSeq, seq + 1);
-        const message = { ...legacy.message, targetSeq: seq };
-        const idemKey = idempotencyKey(partition, message);
-        const state = legacy.state === 'delivering' ? 'pending' : legacy.state;
-        const migrated: MessageDoc = {
-          kind: 'message',
-          message,
-          idempotencyStorageKey: idemKey,
-          payloadHash: payloadHash(message.content),
-          state,
-          fence: Math.max(0, legacy.attempt) + (legacy.state === 'delivering' ? 1 : 0),
-        };
-        const messageKey = targetMessageKey(partition, seq);
-        ops.push(
-          { op: 'set', key: messageKey, value: migrated },
-          {
-            op: 'set',
-            key: idemKey,
-            value: {
-              kind: 'idempotency',
-              producer: message.producer,
-              target: message.target,
-              idempotencyKey: message.idempotencyKey,
-              payloadHash: migrated.payloadHash,
-              messageKey,
-            },
-          },
-        );
-        ops.push(...peerIndexOps(partition, message));
-        migratedMessages.push(migrated);
-        knownMessageIds.add(message.messageId);
-      }
-      const migratedActivities = existingActivities.map((entry) => entry.value);
-      const knownActivityIds = new Set(existingActivities.map((entry) =>
-        entry.value.legacyIdentity ?? hashJson({ target: entry.value.target, activity: entry.value.activity }),
-      ));
-      for (const legacy of legacyActivities) {
-        const legacyIdentity = hashJson({ target: legacy.target, activity: legacy.activity });
-        if (knownActivityIds.has(legacyIdentity)) continue;
-        let seq = legacy.activity.seq;
-        if (!Number.isSafeInteger(seq) || seq < 1 || usedActivitySeq.has(seq)) seq = nextActivitySeq;
-        while (usedActivitySeq.has(seq)) seq++;
-        usedActivitySeq.add(seq);
-        nextActivitySeq = Math.max(nextActivitySeq, seq + 1);
-        const activity = { ...legacy.activity, seq };
-        const migrated: ActivityDoc = { kind: 'activity', target, activity, legacyIdentity };
-        ops.push({ op: 'set', key: targetActivityKey(partition, seq), value: migrated });
-        migratedActivities.push(migrated);
-        knownActivityIds.add(legacyIdentity);
-      }
-      const legacyMeta = activityMeta.find((item) => sameThread(item.target, target));
-      const activityEpoch = storedMeta?.activityEpoch ?? legacyMeta?.epoch ?? migratedActivities[0]?.activity.epoch ?? randomUUID();
-      const minActivitySeq = migratedActivities.length === 0
-        ? storedMeta?.minActivitySeq ?? legacyMeta?.minSeq ?? 1
-        : Math.min(...migratedActivities.map((entry) => entry.activity.seq));
-      const pendingMessages = migratedMessages.filter((message) => !isTerminalState(message.state));
-      const meta: TargetMetaDoc = {
-        kind: 'target_meta',
-        target,
-        nextMessageSeq,
-        nextDeliverableSeq: pendingMessages.reduce(
-          (seq, message) => Math.min(seq, message.message.targetSeq),
-          nextMessageSeq,
-        ),
-        pendingCount: pendingMessages.length,
-        activityEpoch,
-        nextActivitySeq,
-        minActivitySeq,
-      };
-      ops.push({ op: 'set', key: metaKey, value: meta });
-      await db.partitionBatch(partition, ops);
-    }
-    const overrides = new Map<string, WorkspaceOverrideDoc>();
-    for (const snapshot of snapshots) {
-      for (const override of snapshot.overrides) {
-        const existing = overrides.get(override.workspaceId);
-        if (existing === undefined || existing.updatedAt <= override.updatedAt) overrides.set(override.workspaceId, override);
-      }
-    }
-    for (const override of overrides.values()) {
-      const partition = workspacePartition(override.workspaceId);
-      const key = workspaceOverrideKey(partition);
-      const existing = asWorkspaceOverride(await db.partitionGet(partition, key));
-      if (existing === undefined || existing.updatedAt <= override.updatedAt) {
-        await db.partitionBatch(partition, [{ op: 'set', key, value: override }]);
-      }
-    }
   }
 
   private receiptOp(
@@ -1728,7 +1470,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     ctx: RuntimeMethodContext,
     payload: unknown,
     result: unknown,
-  ): BatchInputOp<StoredDoc> {
+  ): MailboxWrite<StoredDoc> {
     return buildReceiptOp(
       key,
       method,
@@ -1768,10 +1510,8 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     if (epoch === undefined || this.ownerEpoch === epoch) this.ownerEpoch = 0;
     const db = this.db;
     this.db = undefined;
-    const legacy = this.quarantine.splice(0);
     const closeResults = await Promise.allSettled([
       ...(db === undefined ? [] : [db.close()]),
-      ...legacy.map((store) => store.close()),
     ]);
     for (const result of closeResults) {
       if (result.status === 'rejected') this.ownerReleaseErrors.push(result.reason);
@@ -1803,7 +1543,7 @@ function buildReceiptOp(
   payload: unknown,
   result: unknown,
   ttlMs: number,
-): BatchInputOp<StoredDoc> {
+): MailboxWrite<StoredDoc> {
   return {
     op: 'set',
     key,
@@ -1818,57 +1558,6 @@ function buildReceiptOp(
     },
     ttl: ttlMs,
   };
-}
-
-function readLegacySnapshot(db: MiniDb<Record<string, unknown>>): LegacySnapshot {
-  const deliveries: LegacyDelivery[] = [];
-  const activityMeta: LegacyActivityMeta[] = [];
-  const activities: Array<{ readonly target: ThreadRef; readonly activity: StoredThreadActivity }> = [];
-  const overrides: WorkspaceOverrideDoc[] = [];
-  for (const entry of db.prefix('', Number.POSITIVE_INFINITY)) {
-    const value = entry.value;
-    if (value['kind'] === 'delivery') {
-      const message = normalizeLegacyMessage(value['message']);
-      const state = normalizeDeliveryState(value['state']);
-      if (message !== undefined && state !== undefined) {
-        deliveries.push({
-          message,
-          state,
-          attempt: finiteNonNegativeInteger(value['attempt']) ?? 0,
-        });
-      }
-      continue;
-    }
-    if (value['kind'] === 'activity_meta') {
-      const target = asThreadRef(value['target']);
-      const epoch = value['epoch'];
-      const nextSeq = finitePositiveInteger(value['nextSeq']);
-      const minSeq = finitePositiveInteger(value['minSeq']);
-      if (target !== undefined && typeof epoch === 'string' && nextSeq !== undefined && minSeq !== undefined) {
-        activityMeta.push({ target, epoch, nextSeq, minSeq });
-      }
-      continue;
-    }
-    if (value['kind'] === 'activity_event') {
-      const target = asThreadRef(value['target']);
-      const activity = asStoredActivity(value['activity']);
-      if (target !== undefined && activity !== undefined) activities.push({ target, activity });
-      continue;
-    }
-    if (value['kind'] === 'workspace_override') {
-      const workspaceId = value['workspaceId'];
-      const enabled = value['enabled'];
-      if (typeof workspaceId === 'string' && typeof enabled === 'boolean') {
-        overrides.push({
-          kind: 'workspace_override',
-          workspaceId,
-          enabled,
-          updatedAt: finiteNonNegativeInteger(value['updatedAt']) ?? 0,
-        });
-      }
-    }
-  }
-  return { deliveries, activityMeta, activities, overrides };
 }
 
 function normalizeLegacyMessage(value: unknown): AcceptedThreadMessage | undefined {
@@ -1892,32 +1581,6 @@ function normalizeLegacyMessage(value: unknown): AcceptedThreadMessage | undefin
     idempotencyKey: raw['idempotencyKey'],
     acceptedAt: finiteNonNegativeInteger(raw['acceptedAt']) ?? 0,
     targetSeq: finitePositiveInteger(raw['targetSeq']) ?? 1,
-  };
-}
-
-function asStoredActivity(value: unknown): StoredThreadActivity | undefined {
-  if (value === null || typeof value !== 'object') return undefined;
-  const raw = value as Record<string, unknown>;
-  const seq = finitePositiveInteger(raw['seq']);
-  const epoch = raw['epoch'];
-  const kind = raw['kind'];
-  const at = finiteNonNegativeInteger(raw['at']);
-  const reason = raw['reason'];
-  if (
-    seq === undefined ||
-    typeof epoch !== 'string' ||
-    !isActivityKind(kind) ||
-    at === undefined ||
-    typeof reason !== 'string'
-  ) return undefined;
-  return {
-    seq,
-    epoch,
-    kind,
-    at,
-    reason,
-    turnId: finiteNonNegativeInteger(raw['turnId']),
-    messageId: typeof raw['messageId'] === 'string' ? raw['messageId'] : undefined,
   };
 }
 
@@ -2092,10 +1755,6 @@ function readReceipt(
   return value;
 }
 
-function asMigrationMarker(value: StoredDoc | undefined): MigrationMarkerDoc | undefined {
-  return value?.kind === 'migration_marker' && value.version === 3 ? value : undefined;
-}
-
 function assertAcceptPayload(value: unknown): AcceptPayload {
   const input = assertRecord(value);
   const producer = asProducer(input['producer']);
@@ -2259,12 +1918,6 @@ function asSender(value: unknown): { readonly sessionId: string; readonly person
   };
 }
 
-function normalizeDeliveryState(value: unknown): DeliveryState | undefined {
-  return value === 'pending' || value === 'delivering' || value === 'delivered' || value === 'undeliverable'
-    ? value
-    : undefined;
-}
-
 function isActivityKind(value: unknown): value is ThreadActivityKind {
   return value === 'terminal' || value === 'attention' || value === 'lifecycle' || value === 'message_undeliverable';
 }
@@ -2331,7 +1984,7 @@ registerScopedService(
   'threadCommunication',
 );
 
-function peerIndexOps(partition: string, message: AcceptedThreadMessage): BatchInputOp<StoredDoc>[] {
+function peerIndexOps(partition: string, message: AcceptedThreadMessage): MailboxWrite<StoredDoc>[] {
   if (message.producer.kind === 'external_client') return [];
   const groups = new Set(['all', `session:${message.target.sessionId}`, `workspace:${message.target.workspaceId}`]);
   if (message.producer.kind === 'peer_thread') {

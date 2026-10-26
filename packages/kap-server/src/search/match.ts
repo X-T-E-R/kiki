@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-import { normalizeLiteral } from '@kiki/minidb';
+import { normalizeLiteral } from '@kiki/lexical';
 
 import {
   GlobalSearchError,

@@ -62,7 +62,7 @@ const client = {
     experimental_flags: {
       'tool-select': true,
       task_wait: true,
-      search_worker: true,
+      desktop_search: true,
       persistence_minidb_readmodel: true,
       auto_session_title: true,
       subagent_release_idle: true,
@@ -801,7 +801,7 @@ describe('SettingsPage batch-3 leaves', () => {
       ['/settings/subagents', ['agent-profile-routes', 'subagent_release_idle']],
       ['/settings/mcp', ['tool-select', 'external_delegation_mcp']],
       ['/settings/tasks', ['session_idle_eviction', 'task_wait']],
-      ['/settings/search?tab=advanced', ['search_worker']],
+      ['/settings/search?tab=advanced', ['desktop_search']],
       ['/settings/developer', ['persistence_minidb_readmodel']],
     ];
     for (const [path, flags] of homes) {
@@ -827,14 +827,14 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(link('agent-profile-routes')).toBe('/settings/agents#st-card-exp-agents');
     expect(link('external_delegation_mcp')).toBe('/settings/extensions#st-card-exp-extensions');
     expect(link('subagent_release_idle')).toBe('/settings/agents#st-card-exp-agents');
-    expect(link('search_worker')).toBe('/settings/search#st-card-exp-search');
+    expect(link('desktop_search')).toBe('/settings/search#st-card-exp-search');
     expect(link('auto_session_title')).toBe('/settings/sessions#st-card-session-title');
     // Every flag the server reports is listed, including ones switched by a feature card.
     expect(card.querySelectorAll('[data-labs-entry]').length).toBe(11);
   });
 
   it('saves an experimental row on change with a narrow experimental patch', async () => {
-    client.getConfig.mockResolvedValue({ experimental: { search_worker: false } });
+    client.getConfig.mockResolvedValue({ experimental: { desktop_search: false } });
     client.patchConfig.mockClear();
     const mcp = await renderSettings('/settings/mcp');
     await flush();
@@ -842,7 +842,7 @@ describe('SettingsPage batch-3 leaves', () => {
     await click(on);
     await flush();
     expect(client.patchConfig).toHaveBeenCalledWith({
-      experimental: { search_worker: false, 'tool-select': true },
+      experimental: { desktop_search: false, 'tool-select': true },
       replace_domains: ['experimental'],
     });
     client.getConfig.mockResolvedValue({});

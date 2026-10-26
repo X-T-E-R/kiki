@@ -17,12 +17,6 @@ export const MINIDB_TEXT_BUILD_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
-export const KAP_SEARCH_WORKER_ASSET = Object.freeze({
-  key: 'kap-search-worker',
-  relativePath: 'runtime/kap-server/search-worker.mjs',
-  mode: 0o644,
-});
-
 export const KAP_USAGE_PARSER_WORKER_ASSET = Object.freeze({
   key: 'kap-usage-parser-worker',
   relativePath: 'runtime/kap-server/usage-parser-worker.mjs',
@@ -32,6 +26,12 @@ export const KAP_USAGE_PARSER_WORKER_ASSET = Object.freeze({
 export const QUERY_STORE_WORKER_ASSET = Object.freeze({
   key: 'query-store-worker',
   relativePath: 'runtime/query-store/query-store-worker.mjs',
+  mode: 0o644,
+});
+
+export const MAILBOX_WORKER_ASSET = Object.freeze({
+  key: 'mailbox-worker',
+  relativePath: 'runtime/mailbox/mailbox-worker.mjs',
   mode: 0o644,
 });
 

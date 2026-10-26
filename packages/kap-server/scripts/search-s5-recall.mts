@@ -1,6 +1,6 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { SqliteSearchIndex } from '../src/search/sqlite/index';
-import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import { normalizeLiteral, tokenize } from '@kiki/lexical';
 
 interface Query { id: string; query: string; mode: 'terms' | 'literal'; language: 'zh' | 'other' }
 interface Run { source: string; queries: Array<Query & { keys: string[]; incomplete: string[] }> }

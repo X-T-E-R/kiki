@@ -112,6 +112,7 @@
 import { existsSync } from 'node:fs';
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { assertMailboxStartupReadySync } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/authority';
 
 import type { AgentContextData, ExperimentalFeatureState } from '@kiki/agent-core-v2';
 import { autoCompactWriteSchema, type AutoCompactStatus, type AutoCompactWrite, type AutoCompactWriteResult } from '@kiki/protocol';
@@ -417,6 +418,7 @@ export class SDKRpcClient extends SDKRpcClientBase {
     this.identity =
       options.identity === undefined ? undefined : assertKimiHostIdentity(options.identity);
     this.homeDir = resolveKikiHome(options.homeDir);
+    assertMailboxStartupReadySync(this.homeDir);
     this.configPath = resolveConfigPath({
       homeDir: this.homeDir,
       configPath: options.configPath,

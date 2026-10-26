@@ -21,7 +21,7 @@ import { ExternalClientStore } from '../src/externalClients/store';
 import { previewExternalClientMaterials } from '../src/externalClients/materials';
 import { workspacePersistenceScope, sessionScopeOf, agentScopeOf } from '@kiki/agent-core-v2/workspace/sessionLifecycle/internal/addressing';
 let home:string;let workspace:string;let server:RunningServer;const clients:Client[]=[];
-beforeEach(async()=>{vi.stubEnv('KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS','true');vi.stubEnv('KIKI_SEARCH_BACKEND','minidb');vi.stubEnv('KIKI_EXPERIMENTAL_SEARCH_WORKER','false');home=await mkdtemp(join(tmpdir(),'kiki-client-home-'));workspace=await mkdtemp(join(tmpdir(),'kiki-client-work-'));
+beforeEach(async()=>{vi.stubEnv('KIKI_EXPERIMENTAL_EXTERNAL_CLIENTS','true');vi.stubEnv('KIKI_SEARCH_DISABLED','1');home=await mkdtemp(join(tmpdir(),'kiki-client-home-'));workspace=await mkdtemp(join(tmpdir(),'kiki-client-work-'));
   await writeFile(join(workspace,'source.txt'),'native source');server=await startServer({hostIdentity:TEST_HOST_IDENTITY,host:'127.0.0.1',port:0,homeDir:home,logLevel:'silent'});});
 afterEach(async()=>{await Promise.all(clients.splice(0).map(c=>c.close()));await server?.close();vi.unstubAllEnvs();await rm(home,{recursive:true,force:true,maxRetries:5,retryDelay:100});await rm(workspace,{recursive:true,force:true,maxRetries:5,retryDelay:100});});
 async function owner(path:string,body?:unknown,method?:string){const response=await authedFetch(server,`http://127.0.0.1:${server.port}`,`/api/external-clients${path}`,

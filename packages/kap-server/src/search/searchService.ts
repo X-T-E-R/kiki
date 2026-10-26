@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { stat } from 'node:fs/promises';
 import { watch, type FSWatcher } from 'node:fs';
@@ -20,29 +19,19 @@ import {
   type IDisposable,
   type SessionSummary,
 } from '@kiki/agent-core-v2';
-import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import { normalizeLiteral, tokenize } from '@kiki/lexical';
 import type { SearchMessagesResponse } from '../protocol/rest-search';
 import { projectTranscriptUserOrigin, type TranscriptStore } from '@kiki/transcript';
 
 import {
   GlobalSearchError,
   type GlobalSearchHit,
-  type GlobalSearchIndexState,
   type GlobalSearchPage,
   type GlobalSearchUnavailableReason,
   type GlobalSearchQuery,
 } from './contract';
 import { MAX_DOC_TEXT_CHARS, type MessageDoc, type TitleDoc } from './docs';
-import {
-  SearchIndexCore,
-  type CoreIndexView,
-  type CoreLifecycleReport,
-  type CoreSearchParams,
-  type CoreSearchResult,
-  type CoreStatus,
-  type CoreSyncOutcome,
-  type SyncSessionInput,
-} from './indexCore';
+import type { SqliteSessionInput } from './sqlite/index';
 import {
   boundaryOf,
   decodePageToken,
@@ -58,12 +47,10 @@ import { SearchIndexStateChanged } from './events';
 import { planHistoryQuery } from '../services/history/historyQuery';
 import { SEARCH_BACKEND_SECTION, type SearchConfig } from './searchConfig';
 import { SqliteSearchHost } from './sqlite/host';
-import { SearchWorkerError, SearchWorkerHost, dropLiveLockToken, noteLiveLockToken } from './worker/host';
 
 export { GlobalSearchError } from './contract';
 export type { GlobalSearchErrorReason } from './contract';
 
-const INDEX_DIR_NAME = 'search-index';
 const SESSION_PAGE_SIZE = 500;
 const CHANGED_SESSION_PAGE_SIZE = 100;
 const SESSION_MTIME_CONCURRENCY = 16;
@@ -81,33 +68,6 @@ const LITERAL_CANDIDATE_CAP = 10_000;
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-
-async function pathExists(path: string): Promise<boolean> {
-  try {
-    await stat(path);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * `search_worker` — run the global search index in a dedicated worker
- * thread (default ON). Disable via `KIKI_EXPERIMENTAL_SEARCH_WORKER=false`
- * or the `[experimental]` config section to fall back to the in-process
- * (inline) host. Read once at service construction.
- */
-export const SEARCH_WORKER_FLAG_ID = 'search_worker';
-
-registerFlagDefinition({
-  id: SEARCH_WORKER_FLAG_ID,
-  title: 'search worker isolation',
-  description:
-    'Run the global search-index MiniDB (open, WAL replay, sync, queries) in a dedicated worker thread instead of the server main thread.',
-  env: 'KIKI_EXPERIMENTAL_SEARCH_WORKER',
-  default: true,
-  surface: 'core',
-});
 
 registerFlagDefinition({
   id: 'desktop_search',
@@ -150,7 +110,7 @@ export interface IGlobalSearchService {
     generation: number;
     /** Last background refresh/sync/reindex failure, if serving stale. */
     degraded?: string;
-    lifecycle: CoreLifecycleReport;
+    lifecycle: SearchLifecycleReport;
     indexer?: ReturnType<SqliteSearchHost['snapshot']>;
   }>;
   /**
@@ -158,7 +118,7 @@ export interface IGlobalSearchService {
    * spawns the worker, never awaits. Answers the transitional states
    * (stopped/opening/degraded-backoff/closing) that status() would block on.
    */
-  lifecycleReport(): CoreLifecycleReport;
+  lifecycleReport(): SearchLifecycleReport;
   /**
    * Wire the live-transcript source for the in-memory search route. Called
    * once from the composition root (start.ts) after `TranscriptService` is
@@ -226,78 +186,9 @@ function normalizeQuery(input: GlobalSearchQuery, maxQueryTerms: number): Normal
   };
 }
 
-/** The service's view of an execution host for the search-index core. */
-export interface SearchBackend {
-  /**
-   * Synchronously stop accepting new background work (called from the
-   * service's synchronous dispose() before any awaiting): in-flight passes
-   * skip their remaining writes at the next gate check.
-   */
-  beginClose(): void;
-  /**
-   * Local, round-trip-free aggregate lifecycle (stage 5): the states a wedged
-   * or not-yet-started backend must be able to report without being asked
-   * (stopped/opening/degraded/closing). The full status() round trip refines
-   * the up states (ready/building) with exact stats.
-   */
-  lifecycleSnapshot(): CoreLifecycleReport;
-  ensureOpen(): Promise<unknown>;
-  search(params: CoreSearchParams): Promise<CoreSearchResult>;
-  sync(sessions: readonly SyncSessionInput[]): Promise<CoreSyncOutcome>;
-  refresh(): Promise<unknown>;
-  reindex(): Promise<unknown>;
-  status(): Promise<CoreStatus>;
-  dispose(): Promise<void>;
-}
-
-/** Rollback host: the search-index core running on the main thread. */
-export class InlineSearchBackend implements SearchBackend {
-  readonly core: SearchIndexCore;
-
-  constructor(options: { indexDir: string; log: ILogService }) {
-    this.core = new SearchIndexCore({
-      ...options,
-      bootSalt: randomUUID(),
-      onLockToken: noteLiveLockToken,
-    });
-  }
-
-  beginClose(): void {
-    this.core.beginClose();
-  }
-
-  lifecycleSnapshot(): CoreLifecycleReport {
-    return this.core.lifecycleState();
-  }
-
-  ensureOpen(): Promise<void> {
-    return this.core.ensureOpen();
-  }
-
-  search(params: CoreSearchParams): Promise<CoreSearchResult> {
-    return this.core.search(params);
-  }
-
-  sync(sessions: readonly SyncSessionInput[]): Promise<CoreSyncOutcome> {
-    return this.core.sync(sessions);
-  }
-
-  refresh(): Promise<void> {
-    return this.core.refresh();
-  }
-
-  reindex(): Promise<void> {
-    return this.core.reindex();
-  }
-
-  status(): Promise<CoreStatus> {
-    return this.core.status();
-  }
-
-  dispose(): Promise<void> {
-    dropLiveLockToken(this.core.lockTokenView);
-    return this.core.close();
-  }
+export interface SearchLifecycleReport {
+  readonly state: 'stopped' | 'opening' | 'building' | 'ready' | 'degraded' | 'closing';
+  readonly detail?: string;
 }
 
 export class GlobalSearchService implements IGlobalSearchService {
@@ -327,11 +218,9 @@ export class GlobalSearchService implements IGlobalSearchService {
   maxQueryTerms = MAX_QUERY_TERMS;
 
   private lastEmittedIndexState = '';
-  private readonly backend: SearchBackend;
-  private readonly sqliteHost?: SqliteSearchHost;
+  private readonly sqliteHost: SqliteSearchHost;
   private readonly sqliteDisabled: boolean;
   private syncPromise: Promise<void> | null = null;
-  private refreshPromise: Promise<void> | null = null;
   private lastSyncStartedAt = 0;
   private lastFullSessionScanAt = 0;
   private lastSourceScanAt = 0;
@@ -370,21 +259,20 @@ export class GlobalSearchService implements IGlobalSearchService {
     @IConfigService private readonly config?: IConfigService,
     @IEventService private readonly events?: IEventService,
   ) {
-    const indexDir = join(this.bootstrap.homeDir, INDEX_DIR_NAME);
     const search = this.config?.get<SearchConfig>('search');
-    const backend = process.env['KIKI_SEARCH_BACKEND'] ?? this.config?.get<string>(SEARCH_BACKEND_SECTION) ??
-      (this.config === undefined ? 'minidb' : 'sqlite');
+    const backend = process.env['KIKI_SEARCH_BACKEND'] ?? this.config?.get<string>(SEARCH_BACKEND_SECTION) ?? 'sqlite';
     this.sqliteDisabled = search?.enabled === false || process.env['KIKI_SEARCH_DISABLED'] === '1' ||
-      (process.env['KIKI_DESKTOP_BUNDLED'] === '1' && search?.enabled !== true &&
-        !this.flags.enabled('desktop_search'));
-    if (backend === 'sqlite') this.sqliteHost = new SqliteSearchHost({
+      (process.env['KIKI_DESKTOP_BUNDLED'] === '1' && !this.flags.enabled('desktop_search'));
+    if (backend === 'minidb') {
+      this.log.warn('global search: minidb is a deprecated alias for sqlite; remove search_backend or set it to sqlite, and unset KIKI_SEARCH_BACKEND=minidb before 0.6. The old search-index directory is preserved; SQLite uses search-index-v2 or rebuilds from canonical sessions. Explicit search disable settings remain in effect.');
+    }
+    this.sqliteHost = new SqliteSearchHost({
       database: join(this.bootstrap.homeDir, 'search-index-v2', 'index.sqlite'),
       indexSubagents: search?.index_subagents === true,
       onStateChange: (snapshot) => {
         if (this.disposed) return;
         const state: SearchMessagesResponse['index_state'] = {
-          state: this.sqliteDisabled ? 'unavailable' : snapshot.state,
-          reason: this.sqliteDisabled ? 'disabled' : snapshot.reason,
+          state: snapshot.state, reason: snapshot.reason,
           indexed_sessions: snapshot.indexedSessions, total_sessions: snapshot.totalSessions,
           documents: snapshot.documents, stale: snapshot.stale,
         };
@@ -394,23 +282,11 @@ export class GlobalSearchService implements IGlobalSearchService {
         this.events?.publish(new SearchIndexStateChanged({ payload: state }));
       },
     });
-    this.backend = this.flags.enabled(SEARCH_WORKER_FLAG_ID)
-      ? new SearchWorkerHost({ dir: indexDir, log: this.log })
-      : new InlineSearchBackend({ indexDir, log: this.log });
-  }
-
-  private workerRuntimeDisabled(): boolean {
-    return this.sqliteHost !== undefined ? this.sqliteDisabled :
-      this.backend instanceof SearchWorkerHost && process.env['KIKI_DESKTOP_BUNDLED'] === '1';
   }
 
   setLiveTranscriptSource(source: LiveTranscriptSource): void {
     this.liveSource = source;
     this.requestSync();
-  }
-
-  private get indexDir(): string {
-    return join(this.bootstrap.homeDir, INDEX_DIR_NAME);
   }
 
   private ensureSourceWatcher(): void {
@@ -446,14 +322,12 @@ export class GlobalSearchService implements IGlobalSearchService {
     }
   }
 
-  private toSyncInput(summary: SessionSummary): SyncSessionInput {
+  private toSyncInput(summary: SessionSummary): SqliteSessionInput {
     return {
       id: summary.id,
       workspaceId: summary.workspaceId,
       title: summary.title,
       updatedAt: summary.updatedAt,
-      sourceMtimeMs: this.sessionSourceMtimes.get(summary.id),
-      forceSync: this.forceSessionSyncs.has(summary.id),
       dir: sessionDirOf(
         this.bootstrap.homeDir,
         workspacePersistenceScope(this.bootstrap.scope('sessions'), summary.workspaceId),
@@ -472,11 +346,10 @@ export class GlobalSearchService implements IGlobalSearchService {
       clearTimeout(this.syncTimer);
       this.syncTimer = null;
     }
-    this.backend.beginClose();
+    const closing = this.sqliteHost.close();
     const pending = (async () => {
       await this.syncPromise?.catch(() => {});
-      await this.refreshPromise?.catch(() => {});
-      await Promise.all([this.backend.dispose(), this.sqliteHost?.close()]);
+      await closing;
       this.drainSettled = true;
     })();
     pendingDisposals.add(pending);
@@ -484,7 +357,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   private requestSync(): void {
-    if (this.disposed || this.reindexing || this.workerRuntimeDisabled()) return;
+    if (this.disposed || this.reindexing || this.sqliteDisabled) return;
     if (this.syncPromise !== null) {
       this.syncQueued = true;
       return;
@@ -542,8 +415,7 @@ export class GlobalSearchService implements IGlobalSearchService {
         }
       },
       (error: unknown) => {
-        if (this.workerRuntimeDisabled() ||
-            (error instanceof SearchWorkerError && error.code === 'runtime-unavailable')) return;
+        if (this.sqliteDisabled || this.disposed) return;
         this.lastRefreshError = { at: Date.now(), message: errorMessage(error) };
         this.log.warn('global search: background sync failed', { error: errorMessage(error) });
       },
@@ -562,7 +434,7 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   private async runSync(): Promise<void> {
-    if (this.disposed || this.reindexing || this.workerRuntimeDisabled()) return;
+    if (this.disposed || this.reindexing || this.sqliteDisabled) return;
     const indexStatus = await Promise.race([this.sessionIndex.prepare(), this.syncStop]);
     if (indexStatus === undefined || this.disposed || this.reindexing) return;
     if (!this.sessionIndexUsable(indexStatus)) {
@@ -574,28 +446,16 @@ export class GlobalSearchService implements IGlobalSearchService {
     const dirtyAtStart = new Map(this.dirtySessions);
     const sessions = await this.listSessionsForSync();
     if (this.disposed) return;
-    if (this.sqliteHost === undefined && sessions.length === 0 && !(await pathExists(this.indexDir))) {
-      this.summaries = new Map();
-      this.sessionSourceMtimes = new Map();
-      this.lastSyncStartedAt = Date.now();
-      return;
-    }
     this.summaries = new Map(sessions.map((s) => [s.id, s]));
     this.lastSyncStartedAt = Date.now();
-    const outcome = this.sqliteHost === undefined
-      ? await this.backend.sync(sessions.map((s) => this.toSyncInput(s)))
-      : (this.sqliteHost.sync(sessions.map((s) => this.toSyncInput(s))),
-        { truncated: false, failures: 0 });
+    this.sqliteHost.sync(sessions.map((s) => this.toSyncInput(s)));
     this.ensureSourceWatcher();
-    if (!outcome.truncated && outcome.failures === 0) {
-      for (const [id, revision] of dirtyAtStart) {
-        if (this.dirtySessions.get(id) === revision) {
-          this.dirtySessions.delete(id);
-          this.forceSessionSyncs.delete(id);
-        }
+    for (const [id, revision] of dirtyAtStart) {
+      if (this.dirtySessions.get(id) === revision) {
+        this.dirtySessions.delete(id);
+        this.forceSessionSyncs.delete(id);
       }
     }
-    if (outcome.truncated || outcome.failures > 0) this.requestSync();
   }
 
   private async listSessionsForSync(): Promise<SessionSummary[]> {
@@ -677,35 +537,6 @@ export class GlobalSearchService implements IGlobalSearchService {
   }
 
   /**
-   * Drive a read-only refresh of the backend (single-flight facade).
-   * Production note: request-path searches no longer call this — the core
-   * kicks read-only refreshes internally and reports freshness via
-   * `CoreIndexView.freshnessStale`. The facade remains as the deterministic
-   * refresh drive for tests (`refreshNow`) and its promise feeds the
-   * read-only-side `stale` bit while an explicit refresh is in flight. The
-   * core records refresh failures itself (surfaced as `degraded`); only
-   * worker-availability failures land in the rejection branch here — a
-   * failed refresh must never fail the search that kicked it.
-   */
-  private refreshReadonly(): Promise<void> {
-    if (this.refreshPromise === null) {
-      this.refreshPromise = this.backend.refresh().then(
-        () => {},
-        (error: unknown) => {
-          this.lastRefreshError = { at: Date.now(), message: errorMessage(error) };
-          this.log.warn('global search: read-only refresh failed; serving the stale view', {
-            error: errorMessage(error),
-          });
-        },
-      );
-      void this.refreshPromise.finally(() => {
-        this.refreshPromise = null;
-      });
-    }
-    return this.refreshPromise;
-  }
-
-  /**
    * Route: a container-scoped query on a session that is live in this process
    * scans the in-memory transcript store unless indexOnly is set, in both terms
    * and literal mode. Anything else takes the index route. The live route
@@ -714,14 +545,13 @@ export class GlobalSearchService implements IGlobalSearchService {
    */
   async search(input: GlobalSearchQuery): Promise<GlobalSearchPage> {
     const q = normalizeQuery(input, this.maxQueryTerms);
+    if (this.disposed) throw new GlobalSearchError('index_unavailable', 'search service is disposed');
+    if (this.sqliteDisabled) return this.unavailablePage('disabled');
     const sessionId = q.container?.sessionId;
     const liveStore = sessionId !== undefined && input.indexOnly !== true
       ? this.liveSource?.forSessionLive(sessionId) : undefined;
     if (liveStore !== undefined && sessionId !== undefined) {
       return this.searchLive(q, sessionId, liveStore, input.pageToken);
-    }
-    if (q.historyPlan !== undefined && this.sqliteHost === undefined) {
-      return this.unavailablePage('runtime_disabled', 'history phrase index requires the SQLite search route');
     }
     return this.searchIndex(q, input.pageToken);
   }
@@ -886,19 +716,6 @@ export class GlobalSearchService implements IGlobalSearchService {
     };
   }
 
-  private workerUnavailableReason(code: SearchWorkerError['code']): GlobalSearchUnavailableReason {
-    switch (code) {
-      case 'backoff':
-      case 'spawn-failed':
-      case 'crashed':
-        return 'indexer_backoff';
-      case 'runtime-unavailable':
-        return 'runtime_disabled';
-      case 'disposed':
-        return 'disabled';
-    }
-  }
-
   private async searchIndex(
     q: NormalizedQuery,
     pageToken: string | undefined,
@@ -919,52 +736,7 @@ export class GlobalSearchService implements IGlobalSearchService {
       }
     }
 
-    if (this.sqliteHost !== undefined) return this.searchSqlite(q, pageToken);
-    let result: CoreSearchResult;
-    try {
-      result = await this.backend.search({ q, pageToken, budgets: this.budgets() });
-    } catch (error) {
-      if (error instanceof GlobalSearchError) {
-        if (error.reason === 'index_unavailable') this.requestSync();
-        throw error;
-      }
-      if (error instanceof SearchWorkerError) {
-        if (error.code === 'disposed') {
-          throw new GlobalSearchError('index_unavailable', 'search service is disposed');
-        }
-        if (error.code === 'runtime-unavailable') {
-          return this.unavailablePage('runtime_disabled', error.message);
-        }
-        this.lastRefreshError = { at: Date.now(), message: error.message };
-        this.log.warn('global search: search worker unavailable; serving an unavailable page', {
-          error: error.message,
-          code: error.code,
-        });
-        this.requestSync();
-        return this.unavailablePage(this.workerUnavailableReason(error.code), error.message);
-      }
-      throw error;
-    }
-
-    if (!result.index.readOnly) this.requestSync();
-
-    if (result.kind === 'building') return this.buildingPage(result.index);
-
-    return {
-      items: result.rows.map((row) => this.projectHit(q, row)),
-      hasMore: result.hasMore,
-      pageToken: result.hasMore
-        ? encodePageToken(
-            q,
-            'index',
-            boundaryOf(q, result.rows[result.rows.length - 1]!),
-            result.generation,
-          )
-        : undefined,
-      incomplete: result.incomplete,
-      indexState: this.composeIndexState(result.index),
-      source: 'index',
-    };
+    return this.searchSqlite(q, pageToken);
   }
 
   private async searchSqlite(q: NormalizedQuery, pageToken?: string): Promise<GlobalSearchPage> {
@@ -1027,28 +799,6 @@ export class GlobalSearchService implements IGlobalSearchService {
     };
   }
 
-  /**
-   * Merge the backend's index view with the coordinator's writer-side state:
-   * a page is stale when the backend knows its view is behind (read-only
-   * freshness) OR a sync pass is in flight/queued/pending behind the
-   * debounce window.
-   */
-  private composeIndexState(view: CoreIndexView): GlobalSearchIndexState {
-    const coordinatorStale = view.readOnly
-      ? this.refreshPromise !== null
-      : this.syncPromise !== null || this.syncQueued || this.syncTimer !== null;
-    return {
-      state: view.state,
-      indexedSessions: view.indexedSessions,
-      totalSessions: view.readOnly
-        ? view.indexedSessions
-        : Math.max(view.indexedSessions, this.summaries.size),
-      documents: view.documents,
-      stale: view.freshnessStale || coordinatorStale || undefined,
-      degraded: this.lastRefreshError?.message ?? view.degraded,
-    };
-  }
-
   private unavailablePage(
     reason: GlobalSearchUnavailableReason,
     detail?: string,
@@ -1072,67 +822,28 @@ export class GlobalSearchService implements IGlobalSearchService {
     };
   }
 
-  private buildingPage(view: CoreIndexView | null): GlobalSearchPage {
-    const indexed = view?.indexedSessions ?? 0;
-    const readOnly = view?.readOnly === true;
-    return {
-      items: [],
-      hasMore: false,
-      pageToken: undefined,
-      incomplete: undefined,
-      indexState: {
-        state: 'building',
-        indexedSessions: indexed,
-        totalSessions: readOnly ? indexed : Math.max(indexed, this.summaries.size),
-        documents: view?.documents ?? 0,
-        stale: true,
-        degraded: this.lastRefreshError?.message ?? view?.degraded,
-      },
-      source: 'index',
-    };
-  }
-
   retryIndexer(): void {
-    if (this.workerRuntimeDisabled() || this.disposed) return;
-    if (this.sqliteHost !== undefined) this.sqliteHost.retryIndexer();
-    else if (this.backend instanceof SearchWorkerHost) this.backend.retryIndexer();
-    else return;
+    if (this.sqliteDisabled || this.disposed) return;
+    this.sqliteHost.retryIndexer();
     this.requestSync();
   }
 
   async reindex(): Promise<{ sessions: number; documents: number }> {
-    if (this.sqliteHost !== undefined) {
-      if (this.sqliteDisabled) throw new GlobalSearchError('index_unavailable', 'SQLite search is disabled');
-      this.reindexing = true;
-      try {
-        await this.syncPromise?.catch(() => {});
-        const sessions = await this.listAllSessions();
-        const stats = await this.sqliteHost.reindex(sessions.map((summary) => this.toSyncInput(summary)));
-        this.lastRefreshError = null;
-        return stats;
-      } catch (error) {
-        this.lastRefreshError = { at: Date.now(), message: errorMessage(error) };
-        throw error;
-      } finally {
-        this.reindexing = false;
-        this.requestSync();
-      }
-    }
+    if (this.sqliteDisabled || this.disposed) throw new GlobalSearchError('index_unavailable', 'SQLite search is disabled or closed');
+    this.reindexing = true;
     try {
-      this.reindexing = true;
-      await this.backend.ensureOpen();
       await this.syncPromise?.catch(() => {});
-      await this.backend.reindex();
-      this.reindexing = false;
-      await this.ensureSyncStarted();
+      const sessions = await this.listAllSessions();
+      const stats = await this.sqliteHost.reindex(sessions.map((summary) => this.toSyncInput(summary)));
       this.lastRefreshError = null;
+      return stats;
     } catch (error) {
-      this.reindexing = false;
       this.lastRefreshError = { at: Date.now(), message: errorMessage(error) };
       throw error;
+    } finally {
+      this.reindexing = false;
+      this.requestSync();
     }
-    const stats = await this.backend.status();
-    return { sessions: stats.sessions, documents: stats.documents };
   }
 
   async status(): Promise<{
@@ -1141,60 +852,24 @@ export class GlobalSearchService implements IGlobalSearchService {
     lastIndexedAt: number | null;
     generation: number;
     degraded?: string;
-    lifecycle: CoreLifecycleReport;
+    lifecycle: SearchLifecycleReport;
     indexer?: ReturnType<SqliteSearchHost['snapshot']>;
   }> {
-    const empty = { sessions: 0, documents: 0, lastIndexedAt: null, generation: 0 };
-    if (this.disposed) {
-      return {
-        ...empty,
-        lifecycle: { state: this.drainSettled ? 'stopped' : 'closing' },
-      };
-    }
-    if (this.sqliteHost !== undefined) {
-      if (!this.sqliteDisabled) this.requestSync();
-      const indexer = this.sqliteHost.snapshot();
-      const state = this.sqliteDisabled ? 'degraded' : indexer.state === 'ready' || indexer.state === 'readonly'
-        ? 'ready' : indexer.state === 'unavailable' ? 'degraded' : 'building';
-      return { sessions: indexer.indexedSessions, documents: indexer.documents,
-        lastIndexedAt: null, generation: 0, indexer,
-        lifecycle: { state, detail: this.sqliteDisabled ? 'disabled' : indexer.reason } };
-    }
-    try {
-      const status = await this.backend.status();
-      if (!status.readOnly) this.requestSync();
-      return {
-        sessions: status.sessions,
-        documents: status.documents,
-        lastIndexedAt: status.lastIndexedAt,
-        generation: status.generation,
-        degraded: this.lastRefreshError?.message ?? status.degraded,
-        lifecycle: status.lifecycle,
-      };
-    } catch (error) {
-      const message = errorMessage(error);
-      return { ...empty, degraded: message, lifecycle: { state: 'degraded', detail: message } };
-    }
+    if (this.disposed) return { sessions: 0, documents: 0, lastIndexedAt: null, generation: 0,
+      lifecycle: this.lifecycleReport() };
+    this.requestSync();
+    const indexer = this.sqliteHost.snapshot();
+    return { sessions: indexer.indexedSessions, documents: indexer.documents,
+      lastIndexedAt: null, generation: 0, indexer, degraded: this.lastRefreshError?.message,
+      lifecycle: this.lifecycleReport() };
   }
 
-  /**
-   * Synchronous LOCAL lifecycle report (stage 5): never kicks an open, never
-   * spawns the worker, never awaits — the view that still answers DURING a
-   * minutes-long first open (or while the worker backs off), where status()
-   * would block. The up states (ready/building) come from the backend's
-   * cached last response and may lag one RPC; status() is the exact,
-   * round-trip variant. Reflected on the `/api/debug` surface like every
-   * Service method.
-   */
-  lifecycleReport(): CoreLifecycleReport {
+  lifecycleReport(): SearchLifecycleReport {
     if (this.disposed) return { state: this.drainSettled ? 'stopped' : 'closing' };
-    if (this.sqliteHost !== undefined) {
-      const snapshot = this.sqliteHost.snapshot();
-      return this.sqliteDisabled ? { state: 'degraded', detail: 'disabled' } :
-        { state: snapshot.state === 'ready' || snapshot.state === 'readonly' ? 'ready' :
-          snapshot.state === 'unavailable' ? 'degraded' : 'building', detail: snapshot.reason };
-    }
-    return this.backend.lifecycleSnapshot();
+    const snapshot = this.sqliteHost.snapshot();
+    return this.sqliteDisabled ? { state: 'degraded', detail: 'disabled' } :
+      { state: snapshot.state === 'ready' || snapshot.state === 'readonly' ? 'ready' :
+        snapshot.state === 'unavailable' ? 'degraded' : 'building', detail: snapshot.reason };
   }
 }
 

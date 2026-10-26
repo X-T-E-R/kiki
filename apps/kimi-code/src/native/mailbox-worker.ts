@@ -1,19 +1,16 @@
 import { basename } from 'node:path';
 
-import {
-  configureSearchWorkerRuntime,
-  getSearchWorkerRuntimeState,
-} from '@kiki/kap-server/search-worker-runtime';
+import { configureMailboxWorkerRuntime } from '@kiki/node-sdk';
 
-import { KAP_SEARCH_WORKER_ASSET } from '../../scripts/native/manifest.mjs';
+import { MAILBOX_WORKER_ASSET } from '../../scripts/native/manifest.mjs';
 import {
   getEmbeddedNativeAssetManifest,
-  getKapSearchWorkerFile,
+  getMailboxWorkerFile,
   getSeaAssetSource,
   type NativeAssetOptions,
 } from './native-assets';
 
-export type KapSearchWorkerInstallStatus =
+export type MailboxWorkerInstallStatus =
   | { readonly status: 'not-sea' }
   | { readonly status: 'asset-missing' }
   | {
@@ -33,30 +30,22 @@ function errorCode(error: unknown): string {
   return error instanceof Error ? error.name : 'UNKNOWN';
 }
 
-/**
- * Install the SEA-bundled global-search worker without making optional
- * extraction fatal. Without it the search service resolves no worker entry
- * inside the single-file binary and reports the index as degraded; the
- * `search_worker` experimental flag restores the in-process host.
- */
-export function installKapSearchWorker(
+export function installMailboxWorker(
   options: NativeAssetOptions = {},
-): KapSearchWorkerInstallStatus {
+): MailboxWorkerInstallStatus {
   const source = options.source ?? getSeaAssetSource();
   if (source === null) return { status: 'not-sea' };
 
   let assetSha256: string | undefined;
   try {
     const manifest = options.manifest ?? getEmbeddedNativeAssetManifest(source);
-    const file = manifest?.runtimeFiles.find((entry) => entry.key === KAP_SEARCH_WORKER_ASSET.key);
+    const file = manifest?.runtimeFiles.find((entry) => entry.key === MAILBOX_WORKER_ASSET.key);
     if (manifest === null || file === undefined) return { status: 'asset-missing' };
     assetSha256 = file.sha256;
 
-    const workerPath = getKapSearchWorkerFile({ ...options, source, manifest });
+    const workerPath = getMailboxWorkerFile({ ...options, source, manifest });
     if (workerPath === null) return { status: 'asset-missing' };
-    configureSearchWorkerRuntime(workerPath);
-    const runtime = getSearchWorkerRuntimeState();
-    if (!runtime.configured) throw new Error('search worker runtime was not configured');
+    configureMailboxWorkerRuntime(workerPath);
     return {
       status: 'installed',
       assetSha256,

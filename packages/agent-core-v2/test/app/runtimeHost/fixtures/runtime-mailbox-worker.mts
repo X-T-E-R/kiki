@@ -7,7 +7,6 @@ import type { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
 import { RuntimeThreadMailboxStore } from '#/app/threadCommunication/runtimeThreadMailboxStore';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 const [homeDir = '', writer = '0', countText = '1'] = process.argv.slice(2);
 const count = Number.parseInt(countText, 10);
@@ -37,7 +36,7 @@ const bootstrap: IBootstrapService = {
   scope: (name) => name,
 };
 const runtime = new HomeRuntimeHostService(bootstrap);
-const store = new RuntimeThreadMailboxStore(bootstrap, runtime, new HostFileSystem());
+const store = new RuntimeThreadMailboxStore(bootstrap, runtime);
 const seqs: number[] = [];
 let lockErrors = 0;
 try {

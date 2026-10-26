@@ -7,7 +7,12 @@ import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 
 import { LockError, MiniDb } from '@kiki/minidb';
-import { ClusterDb, shardDirName, shardFor } from '@kiki/minidb/cluster';
+import { DatabaseSync } from 'node:sqlite';
+
+import { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
+import { mailboxDirectory, openRuntimeMailbox, readMailboxAuthority } from '#/persistence/backends/sqliteMailbox/authority';
+import { createMailboxMigrationService } from '#/persistence/backends/sqliteMailbox/migration';
+import type { MailboxOwner } from '#/persistence/backends/sqliteMailbox/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { InstantiationService } from '#/_base/di/instantiationService';
@@ -23,10 +28,7 @@ import {
   THREAD_MAILBOX_RUNTIME_METHODS,
   RuntimeThreadMailboxStore,
 } from '#/app/threadCommunication/runtimeThreadMailboxStore';
-import {
-  ThreadMailboxBacklogError,
-  ThreadMailboxLegacyWriterActiveError,
-} from '#/app/threadCommunication/mailboxErrors';
+import { ThreadMailboxBacklogError } from '#/app/threadCommunication/mailboxErrors';
 import type { ThreadRef } from '#/app/threadCommunication/threadCommunication';
 import type {
   AcceptedThreadMessage,
@@ -135,18 +137,21 @@ function mailboxMessageKey(partition: string, seq: number): string {
   return `${partition}/message/${seq.toString().padStart(16, '0')}`;
 }
 
-function openMailboxDb(homeDir: string): Promise<ClusterDb<Record<string, unknown>>> {
-  return ClusterDb.open<Record<string, unknown>>({
-    dir: join(homeDir, 'store', 'thread-mailbox-v3'),
-    valueCodec: 'json',
-    valueMode: 'memory',
-    fsyncPolicy: 'always',
-    recovery: 'strict',
-    activeExpireIntervalMs: 0,
-    lockHoldMs: 0,
-    lockPoolMaxShards: 16,
-    crossShard: 'none',
-  });
+async function openMailboxDb(homeDir: string, incompleteHistory = false): Promise<CanonicalMailboxDatabase<Record<string, unknown>>> {
+  const authority = await readMailboxAuthority(homeDir);
+  const db = authority === undefined
+    ? await openRuntimeMailbox<Record<string, unknown>>(homeDir, { epoch: 0, hostId: 'example-fixture' })
+    : new CanonicalMailboxDatabase<Record<string, unknown>>(join(mailboxDirectory(homeDir), authority.database));
+  try {
+    const owner = await db.metadata<MailboxOwner>('owner');
+    await db.claimOwner(owner ?? { epoch: 0, hostId: 'example-fixture' });
+    if (incompleteHistory) {
+      await db.metadata('peerHistoryComplete', false);
+      await db.partitionBatch('s/thread-mailbox-v3', [{ op: 'set', key: 's/thread-mailbox-v3/active-backend',
+        value: { kind: 'active_backend', version: 3, ownerEpoch: owner?.epoch ?? 0, readyAt: 1 } }]);
+    }
+    return db;
+  } catch (error) { await db.close(); throw error; }
 }
 
 async function seedLegacyMailbox(homeDir: string): Promise<AcceptedThreadMessage> {
@@ -208,7 +213,7 @@ function blockFirstTargetBatch(): {
   readonly restore: () => void;
   readonly count: () => number;
 } {
-  const original = ClusterDb.prototype.partitionBatch;
+  const original = CanonicalMailboxDatabase.prototype.partitionBatch;
   let markEntered!: () => void;
   let releaseBatch!: () => void;
   const entered = new Promise<void>((resolve) => {
@@ -218,7 +223,7 @@ function blockFirstTargetBatch(): {
     releaseBatch = resolve;
   });
   let count = 0;
-  ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
+  CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
     const [partition] = args;
     if (partition.startsWith('t/')) {
       count++;
@@ -234,30 +239,30 @@ function blockFirstTargetBatch(): {
     release: releaseBatch,
     restore: () => {
       releaseBatch();
-      ClusterDb.prototype.partitionBatch = original;
+      CanonicalMailboxDatabase.prototype.partitionBatch = original;
     },
     count: () => count,
   };
 }
 
 function blockMailboxOpen() {
-  const original = ClusterDb.open;
+  const original = CanonicalMailboxDatabase.prototype.claimOwner;
   let markEntered!: () => void;
   let release!: () => void;
   const entered = new Promise<void>((resolve) => { markEntered = resolve; });
   const blocked = new Promise<void>((resolve) => { release = resolve; });
   let count = 0;
-  ClusterDb.open = async function<V>(options: Parameters<typeof original>[0]): Promise<ClusterDb<V>> {
+  CanonicalMailboxDatabase.prototype.claimOwner = async function (...args: Parameters<typeof original>) {
     count++;
     markEntered();
     await blocked;
-    return original<V>(options);
+    return original.apply(this, args);
   };
   return {
     entered,
     release,
     count: () => count,
-    restore: () => { release(); ClusterDb.open = original; },
+    restore: () => { release(); CanonicalMailboxDatabase.prototype.claimOwner = original; },
   };
 }
 
@@ -287,7 +292,7 @@ describe('runtime thread mailbox', () => {
     if (room) await item.store.acceptMessage({ producer: { kind: 'room', roomId: 'example-room' },
       target, content: 'old room', idempotencyKey: 'old-room' });
     await closeHarness(item, open);
-    const db = await openMailboxDb(homeDir);
+    const db = await openMailboxDb(homeDir, true);
     const partition = mailboxPartition(target);
     const pointers = (await db.partitionPrefix(partition, `${partition}/peer/`));
     return { db, partition, pointers };
@@ -304,12 +309,12 @@ describe('runtime thread mailbox', () => {
     await db.partitionBatch('s/thread-mailbox-v3', [{ op: 'set', key: 's/thread-mailbox-v3/peer-index-v2',
       value: { kind: 'peer_index_marker', complete: true, after: 't0' } }]);
     await db.close();
-    const originalScan = ClusterDb.prototype.shardScanKeys;
-    const originalBatch = ClusterDb.prototype.partitionBatch;
+    const originalScan = CanonicalMailboxDatabase.prototype.shardScanKeys;
+    const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     let scans = 0;
     let pointerWrites = 0;
-    ClusterDb.prototype.shardScanKeys = async function (...args) { scans++; return originalScan.apply(this, args); };
-    ClusterDb.prototype.partitionBatch = async function (...args) {
+    CanonicalMailboxDatabase.prototype.shardScanKeys = async function (...args) { scans++; return originalScan.apply(this, args); };
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args) {
       pointerWrites += args[1].filter((op) => op.key.includes('/peer/')).length;
       return originalBatch.apply(this, args);
     };
@@ -319,7 +324,7 @@ describe('runtime thread mailbox', () => {
         items: [{ message: { idempotencyKey: 'old-peer' } }], history: { state: 'complete' } });
       await finishRepair(item);
       expect(scans).toBe(0); expect(pointerWrites).toBe(0);
-    } finally { ClusterDb.prototype.shardScanKeys = originalScan; ClusterDb.prototype.partitionBatch = originalBatch; }
+    } finally { CanonicalMailboxDatabase.prototype.shardScanKeys = originalScan; CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch; }
   });
 
   it.each([false, true])('inherits v1 peer coverage and repairs only room gaps (room=%s)', async (room) => {
@@ -331,9 +336,9 @@ describe('runtime thread mailbox', () => {
     const roomPointers = pointers.filter((entry) => entry.value['messageKey'] === roomKey);
     await db.partitionBatch(partition, roomPointers.map((entry) => ({ op: 'del', key: entry.key })));
     await db.close();
-    const original = ClusterDb.prototype.partitionBatch;
+    const original = CanonicalMailboxDatabase.prototype.partitionBatch;
     const written: string[] = [];
-    ClusterDb.prototype.partitionBatch = async function (...args) {
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args) {
       written.push(...args[1].filter((op) => op.key.includes('/peer/')).map((op) => op.key));
       return original.apply(this, args);
     };
@@ -348,7 +353,7 @@ describe('runtime thread mailbox', () => {
       expect(written.toSorted()).toEqual(roomPointers.map((entry) => entry.key).toSorted());
       expect(completed.history?.generation).not.toBe(first.history?.generation);
       expect(await item.store.readMessages({ group: 'all', limit: 100, generation: first.history?.generation })).toMatchObject({ cursorExpired: true });
-    } finally { ClusterDb.prototype.partitionBatch = original; }
+    } finally { CanonicalMailboxDatabase.prototype.partitionBatch = original; }
   });
 
   it.each(['none', 'v1-partial', 'v2-partial', 'shard-partial'] as const)('repairs missing/mismatched pointers from %s without decoding receipts', async (mode) => {
@@ -359,7 +364,7 @@ describe('runtime thread mailbox', () => {
     if (mode !== 'none') await db.partitionBatch(system, [{ op: 'set',
       key: `${system}/peer-index-${mode === 'v1-partial' ? 'v1' : 'v2'}`,
       value: { kind: 'peer_index_marker', complete: false, after: mailboxMessageKey(partition, 1),
-        shard: mode === 'shard-partial' ? db.shardOf(partition) : undefined,
+        shard: mode === 'shard-partial' ? 0 : undefined,
         shardAfter: mode === 'shard-partial' ? mailboxMessageKey(partition, 1) : undefined } }]);
     const missing = pointers.filter((entry) => entry.value['messageKey'] === roomKey);
     await db.partitionBatch(partition, missing.map((entry, index) => index === 0
@@ -368,21 +373,21 @@ describe('runtime thread mailbox', () => {
     await db.partitionBatch(partition, Array.from({ length: 10_000 }, (_, i) => ({ op: 'set', key: `${partition}/receipt/${i}`,
       value: { kind: 'receipt', body: 'not a message' } })));
     await db.close();
-    const originalGet = ClusterDb.prototype.partitionGet;
-    const originalBatch = ClusterDb.prototype.partitionBatch;
-    const originalMget = ClusterDb.prototype.partitionMget;
+    const originalGet = CanonicalMailboxDatabase.prototype.partitionGet;
+    const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
+    const originalMget = CanonicalMailboxDatabase.prototype.partitionMget;
     let messageReads = 0; let unrelatedReads = 0; let pointerWrites = 0;
-    ClusterDb.prototype.partitionMget = async function (...args) {
+    CanonicalMailboxDatabase.prototype.partitionMget = async function (...args) {
       messageReads += args[1].filter((key) => key.includes('/message/')).length;
       unrelatedReads += args[1].filter((key) => /\/receipt\/\d+$/.test(key)).length;
       return originalMget.apply(this, args);
     };
-    ClusterDb.prototype.partitionGet = async function (...args) {
+    CanonicalMailboxDatabase.prototype.partitionGet = async function (...args) {
       if (args[1].includes('/message/')) messageReads++;
       if (/\/receipt\/\d+$/.test(args[1])) unrelatedReads++;
       return originalGet.apply(this, args);
     };
-    ClusterDb.prototype.partitionBatch = async function (...args) {
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args) {
       pointerWrites += args[1].filter((op) => op.key.includes('/peer/')).length;
       return originalBatch.apply(this, args);
     };
@@ -400,9 +405,9 @@ describe('runtime thread mailbox', () => {
       expect(messageReads).toBeLessThan(30);
       expect(pointerWrites).toBe(missing.length + 5);
     } finally {
-      ClusterDb.prototype.partitionGet = originalGet;
-      ClusterDb.prototype.partitionMget = originalMget;
-      ClusterDb.prototype.partitionBatch = originalBatch;
+      CanonicalMailboxDatabase.prototype.partitionGet = originalGet;
+      CanonicalMailboxDatabase.prototype.partitionMget = originalMget;
+      CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   }, 15_000);
 
@@ -412,9 +417,9 @@ describe('runtime thread mailbox', () => {
     await db.partitionBatch(system, [{ op: 'del', key: `${system}/peer-index-v2` }]);
     await db.partitionBatch(partition, [{ op: 'del', key: pointers[0]!.key }]);
     await db.close();
-    const original = ClusterDb.prototype.partitionBatch;
+    const original = CanonicalMailboxDatabase.prototype.partitionBatch;
     let armed = false;
-    ClusterDb.prototype.partitionBatch = async function (...args) {
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args) {
       if (armed && args[1].some((op) => failure === 'pointer' ? op.key.includes('/peer/') : op.key.endsWith('/peer-index-v2'))) {
         throw new Error('example repair failure');
       }
@@ -430,7 +435,7 @@ describe('runtime thread mailbox', () => {
       const failed = await finishRepair(item);
       expect(failed.history).toMatchObject({ state: 'error', error: 'example repair failure' });
       await closeHarness(item, open);
-    } finally { ClusterDb.prototype.partitionBatch = original; }
+    } finally { CanonicalMailboxDatabase.prototype.partitionBatch = original; }
     const reopened = harness(homeDir); open.push(reopened);
     expect(await reopened.store.readMessages({ group: 'all', limit: 100, generation })).toMatchObject({ cursorExpired: true });
     const complete = await finishRepair(reopened);
@@ -535,7 +540,7 @@ describe('runtime thread mailbox', () => {
   });
 
   it('serves existing history without waiting for repair and keeps repair alive after caller cancellation', async () => {
-    await (await openMailboxDb(homeDir)).close();
+    await (await openMailboxDb(homeDir, true)).close();
     const item = harness(homeDir);
     open.push(item);
     await item.store.acceptMessage(acceptInput('backfill-message'));
@@ -544,7 +549,7 @@ describe('runtime thread mailbox', () => {
     const started = new Promise<void>((resolve) => { entered = resolve; });
     const gate = new Promise<void>((resolve) => { release = resolve; });
     const internals = item.store as unknown as {
-      preparePeerIndex(db: ClusterDb<Record<string, unknown>>, ctx: { signal: AbortSignal }): Promise<void>;
+      preparePeerIndex(db: CanonicalMailboxDatabase<Record<string, unknown>>, ctx: { signal: AbortSignal }): Promise<void>;
     };
     const original = internals.preparePeerIndex.bind(item.store);
     let count = 0;
@@ -578,7 +583,7 @@ describe('runtime thread mailbox', () => {
   });
 
   it('cancels peer-history backfill before releasing a departed owner database', async () => {
-    await (await openMailboxDb(homeDir)).close();
+    await (await openMailboxDb(homeDir, true)).close();
     const item = harness(homeDir);
     open.push(item);
     await item.store.getWorkspaceOverride('example-workspace');
@@ -703,6 +708,55 @@ describe('runtime thread mailbox', () => {
     }
   });
 
+  it('keeps reused legacy TTL identity valid through backup, restore and old external-message pruning', async () => {
+    const input = { ...acceptInput('legacy-reused'), producer: { kind: 'external_client' as const } };
+    const legacy = { ...input, content: 'previous payload', messageId: 'legacy-expiring-message', targetSeq: 1, acceptedAt: 1 };
+    const old = await MiniDb.open<Record<string, unknown>>({ dir: join(homeDir, 'store/thread-mailbox-v1'),
+      valueCodec: 'json', fsyncPolicy: 'always', indexGenerations: false, activeExpireIntervalMs: 0 });
+    const expiry = Date.now() + 5_000;
+    await old.batch([
+      { op: 'set', key: 'delivery/legacy-expiring-message', value: { kind: 'delivery', message: legacy, state: 'delivered', attempt: 1, idempotencyStorageKey: 'idem/reused' } },
+      { op: 'set', key: 'idem/reused', value: { kind: 'idempotency', ...input, messageId: legacy.messageId,
+        payloadHash: createHash('sha256').update(JSON.stringify({ content: legacy.content })).digest('base64url') }, ttl: expiry - Date.now() },
+    ]);
+    const absoluteExpiry = old.store.getRecord('idem/reused')!.expireAt;
+    await old.close();
+    const migration = createMailboxMigrationService(homeDir);
+    try {
+      const migrated = await migration.migrate();
+      expect(migrated).toMatchObject({ state: 'complete', authority: 'sqlite' });
+      const before = await openMailboxDb(homeDir);
+      const partition = mailboxPartition(target);
+      const idem = (await before.prefix(`${partition}/idempotency/`))[0]!;
+      expect(idem.expireAt).toBe(absoluteExpiry);
+      await before.close();
+      await new Promise<void>((resolve) => setTimeout(resolve, Math.max(0, absoluteExpiry - Date.now() + 20)));
+      const item = harness(homeDir); open.push(item);
+      const accepted = await item.store.acceptMessage(input, { requestId: 'reuse-after-expiry' });
+      expect(accepted).toMatchObject({ deduplicated: false, message: { targetSeq: 2 } });
+      expect(accepted.message.messageId).not.toBe(legacy.messageId);
+      const backup = join(homeDir, 'ttl-reuse-backup.sqlite');
+      await expect(migration.backup(backup)).resolves.toMatchObject({ destination: backup });
+      const restored = new CanonicalMailboxDatabase<Record<string, unknown>>(backup);
+      try {
+        expect((await restored.prefix(`${partition}/message/`)).map((row) => (row.value['message'] as AcceptedThreadMessage).messageId).toSorted()).toEqual([legacy.messageId, accepted.message.messageId].toSorted());
+        expect(await restored.partitionGet(partition, idem.key)).toMatchObject({ messageKey: mailboxMessageKey(partition, 2) });
+        await expect(restored.verify()).resolves.toMatchObject({ counts: { message: 2 } });
+      } finally { await restored.close(); }
+      const db = (item.store as unknown as { db: CanonicalMailboxDatabase<Record<string, unknown>> }).db;
+      const valid = (await db.prefix(`${partition}/idempotency/`)).find((row) => row.key === idem.key)!;
+      expect(valid.expireAt).toBe(0);
+      await db.partitionBatch(partition, [{ op: 'set', key: idem.key, value: { ...valid.value, messageKey: mailboxMessageKey(partition, 1) } }]);
+      await expect(db.verify()).rejects.toThrow('Idempotency reference does not match');
+      await db.partitionBatch(partition, [{ op: 'set', key: idem.key, value: valid.value }]);
+      await Promise.all(Array.from({ length: 511 }, (_, index) => item.store.acceptMessage({ ...input, idempotencyKey: `retained-${index}` })));
+      expect(await db.partitionGet(partition, mailboxMessageKey(partition, 1))).toBeUndefined();
+      expect(await db.partitionGet(partition, idem.key)).toMatchObject({ messageKey: mailboxMessageKey(partition, 2) });
+      expect(await item.store.acceptMessage(input, { requestId: 'retry-after-prune' })).toMatchObject({ deduplicated: true, message: { messageId: accepted.message.messageId } });
+      await expect(db.verify()).resolves.toMatchObject({ counts: { message: 512 } });
+    } finally { await migration.close(); }
+  }, 15_000);
+
   it('honors an explicit pending limit without restoring the legacy default cap', async () => {
     const item = harness(homeDir);
     open.push(item);
@@ -747,16 +801,16 @@ describe('runtime thread mailbox', () => {
     const item = harness(homeDir);
     open.push(item);
     await Promise.all(Array.from({ length: 40 }, (_, index) => item.store.acceptMessage(acceptInput(`fifo-${index}`))));
-    const originalPrefix = ClusterDb.prototype.partitionPrefix;
-    const originalBatch = ClusterDb.prototype.partitionBatch;
+    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
+    const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     const claimed: number[] = [];
     const heads: number[] = [];
     let messageScans = 0;
-    ClusterDb.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
+    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
       if (args[1].endsWith('/message/')) messageScans++;
       return originalPrefix.apply(this, args);
     };
-    ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
       for (const operation of args[1]) {
         if (operation.op !== 'set' || !operation.key.endsWith('/meta')) continue;
         const value = operation.value as Record<string, unknown>;
@@ -777,8 +831,8 @@ describe('runtime thread mailbox', () => {
       expect(heads.at(-1)).toBe(41);
       expect(messageScans).toBe(0);
     } finally {
-      ClusterDb.prototype.partitionPrefix = originalPrefix;
-      ClusterDb.prototype.partitionBatch = originalBatch;
+      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   });
 
@@ -808,9 +862,9 @@ describe('runtime thread mailbox', () => {
     }
     const reopened = harness(homeDir);
     open.push(reopened);
-    const originalPrefix = ClusterDb.prototype.partitionPrefix;
+    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
     let messageScans = 0;
-    ClusterDb.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
+    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
       if (args[1].endsWith('/message/')) messageScans++;
       return originalPrefix.apply(this, args);
     };
@@ -822,7 +876,7 @@ describe('runtime thread mailbox', () => {
       expect(third?.message.targetSeq).toBe(3);
       expect(messageScans).toBe(0);
     } finally {
-      ClusterDb.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
     }
   });
 
@@ -848,15 +902,15 @@ describe('runtime thread mailbox', () => {
     }
     const reopened = harness(homeDir);
     open.push(reopened);
-    const originalPrefix = ClusterDb.prototype.partitionPrefix;
-    const originalBatch = ClusterDb.prototype.partitionBatch;
+    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
+    const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     let repairedHead: number | undefined;
     let messageScans = 0;
-    ClusterDb.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
+    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
       if (args[1].endsWith('/message/')) messageScans++;
       return originalPrefix.apply(this, args);
     };
-    ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
       for (const operation of args[1]) {
         if (operation.op !== 'set' || !operation.key.endsWith('/meta')) continue;
         const value = operation.value as Record<string, unknown>;
@@ -870,8 +924,8 @@ describe('runtime thread mailbox', () => {
       expect(repairedHead).toBe(2);
       expect(messageScans).toBe(0);
     } finally {
-      ClusterDb.prototype.partitionPrefix = originalPrefix;
-      ClusterDb.prototype.partitionBatch = originalBatch;
+      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   });
 
@@ -900,15 +954,15 @@ describe('runtime thread mailbox', () => {
     }
     const reopened = harness(homeDir);
     open.push(reopened);
-    const originalPrefix = ClusterDb.prototype.partitionPrefix;
-    const originalBatch = ClusterDb.prototype.partitionBatch;
+    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
+    const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     let repairedHead: number | undefined;
     let messageScans = 0;
-    ClusterDb.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
+    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
       if (args[1].endsWith('/message/')) messageScans++;
       return originalPrefix.apply(this, args);
     };
-    ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
       for (const operation of args[1]) {
         if (operation.op !== 'set' || !operation.key.endsWith('/meta')) continue;
         const value = operation.value as Record<string, unknown>;
@@ -922,8 +976,8 @@ describe('runtime thread mailbox', () => {
       expect(repairedHead).toBe(34);
       expect(messageScans).toBe(1);
     } finally {
-      ClusterDb.prototype.partitionPrefix = originalPrefix;
-      ClusterDb.prototype.partitionBatch = originalBatch;
+      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   });
 
@@ -949,15 +1003,15 @@ describe('runtime thread mailbox', () => {
     }
     const reopened = harness(homeDir);
     open.push(reopened);
-    const originalPrefix = ClusterDb.prototype.partitionPrefix;
-    const originalBatch = ClusterDb.prototype.partitionBatch;
+    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
+    const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     let persistedHead: number | undefined;
     let messageScans = 0;
-    ClusterDb.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
+    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
       if (args[1].endsWith('/message/')) messageScans++;
       return originalPrefix.apply(this, args);
     };
-    ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
       for (const operation of args[1]) {
         if (operation.op !== 'set' || !operation.key.endsWith('/meta')) continue;
         const value = operation.value as Record<string, unknown>;
@@ -972,8 +1026,8 @@ describe('runtime thread mailbox', () => {
       expect(persistedHead).toBe(1);
       expect(messageScans).toBe(1);
     } finally {
-      ClusterDb.prototype.partitionPrefix = originalPrefix;
-      ClusterDb.prototype.partitionBatch = originalBatch;
+      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   });
 
@@ -1124,64 +1178,20 @@ describe('runtime thread mailbox', () => {
       { requestId: 'initializing-claim' })).resolves.toBeUndefined();
   });
 
-  it('reports actual shard lock contention separately and recovers the same claim receipt', async () => {
+  it('bounds SQLite writer contention and recovers the same claim receipt after release', async () => {
     const item = harness(homeDir); open.push(item);
     const accepted = await item.store.acceptMessage(acceptInput('locked-claim-message'));
-    const db = (item.store as unknown as { db: ClusterDb }).db;
-    await db.close();
-    (item.store as unknown as { db: undefined }).db = undefined;
-    const partition = mailboxPartition(target);
-    const lockDir = join(homeDir, 'store', 'thread-mailbox-v3', shardDirName(shardFor(partition, 16), 16));
-    const lock = await MiniDb.open({ dir: lockDir,
-      valueCodec: 'json', fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
-    let markContended!: () => void;
-    const contended = new Promise<void>((resolve) => { markContended = resolve; });
-    const originalOpen = MiniDb.open;
-    MiniDb.open = async function<V>(options: Parameters<typeof originalOpen>[0]): Promise<MiniDb<V>> {
-      try { return await originalOpen<V>(options); } catch (error) {
-        if (options.dir === lockDir && error instanceof LockError) markContended();
-        throw error;
-      }
-    };
-    const originalBatch = ClusterDb.prototype.partitionBatch;
-    let commit: Promise<void> | undefined;
-    let commitSettled = false;
-    ClusterDb.prototype.partitionBatch = function (...args: Parameters<typeof originalBatch>) {
-      const operation = originalBatch.apply(this, args);
-      if (args[0] === partition) {
-        commit = operation;
-        void operation.then(() => { commitSettled = true; }, () => { commitSettled = true; });
-      }
-      return operation;
-    };
-    const caller = item.store as unknown as RuntimeMailboxCaller;
-    vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
-    try {
-      const result = caller.call(THREAD_MAILBOX_RUNTIME_METHODS.claim,
-        { target, consumerId: 'consumer', leaseMs: 10_000 }, { requestId: 'locked-claim' }, 100)
-        .catch((error: unknown) => error);
-      await contended;
-      await vi.advanceTimersByTimeAsync(0);
-      expect(commit).toBeDefined();
-      expect((item.store as unknown as { db: ClusterDb }).db.stats().lockWaits).toBeGreaterThan(0);
-      await vi.advanceTimersByTimeAsync(200);
-      const error = await result;
-      expect(error).toMatchObject({ code: 'runtime.timeout' });
-      expect((error as Error).message).toMatch(/firstTimeout=.*ownerPhase=claim_commit.*lockWaits=[1-9]/);
-    } finally {
-      try {
-        await lock.close();
-        if (commit !== undefined) {
-          await vi.waitFor(() => { expect(commitSettled).toBe(true); });
-          await commit;
-        }
-      } finally {
-        vi.useRealTimers();
-        MiniDb.open = originalOpen;
-        ClusterDb.prototype.partitionBatch = originalBatch;
-      }
-    }
+    const db = (item.store as unknown as { db: CanonicalMailboxDatabase<unknown> }).db;
+    const lock = new DatabaseSync(db.database);
+    lock.exec('BEGIN IMMEDIATE');
     const input = { target, consumerId: 'consumer', leaseMs: 10_000 };
+    try {
+      const started = Date.now();
+      await expect(item.store.claimNext(input, { requestId: 'locked-claim' })).rejects.toMatchObject({
+        code: 'ERR_SQLITE_ERROR', message: expect.stringMatching(/locked|busy/),
+      });
+      expect(Date.now() - started).toBeLessThan(2_000);
+    } finally { lock.exec('ROLLBACK'); lock.close(); }
     const claim = await item.store.claimNext(input, { requestId: 'locked-claim' });
     expect(claim).toMatchObject({ message: { messageId: accepted.message.messageId }, consumerId: 'consumer', fence: 1 });
     expect(await item.store.claimNext(input, { requestId: 'locked-claim' })).toEqual(claim);
@@ -1339,61 +1349,46 @@ describe('runtime thread mailbox', () => {
     expect(retry).toMatchObject({ deduplicated: true, delivery: 'delivered', message: { messageId: first.message.messageId } });
   }, 30_000);
 
-  it('returns a stable path-free legacy-writer error immediately and retries initialization', async () => {
-    const legacyDir = join(homeDir, 'store', 'thread-mailbox-v1');
+  it('requires explicit migration and waits for the legacy writer without creating a mailbox', async () => {
     const lock = await MiniDb.open<Record<string, unknown>>({
-      dir: legacyDir,
-      valueCodec: 'json',
-      valueMode: 'memory',
-      fsyncPolicy: 'always',
-      recovery: 'strict',
-      indexGenerations: false,
-      activeExpireIntervalMs: 0,
+      dir: join(homeDir, 'store', 'thread-mailbox-v1'),
+      valueCodec: 'json', valueMode: 'memory', fsyncPolicy: 'always', recovery: 'strict',
+      indexGenerations: false, activeExpireIntervalMs: 0,
     });
-    const item = harness(homeDir);
-    open.push(item);
-    const startedAt = Date.now();
-    const failure = await item.store.acceptMessage(acceptInput('locked')).catch((error: unknown) => error);
-    expect(Date.now() - startedAt).toBeLessThan(500);
-    expect(failure).toBeInstanceOf(ThreadMailboxLegacyWriterActiveError);
-    expect(failure).toMatchObject({ code: 'mailbox.legacy_writer_active' });
-    expect(String((failure as Error).message)).not.toContain(homeDir);
-    await lock.close();
-    await expect(item.store.acceptMessage(acceptInput('locked'))).resolves.toMatchObject({ deduplicated: false });
+    const item = harness(homeDir); open.push(item);
+    const migration = createMailboxMigrationService(homeDir);
+    try {
+      const startedAt = Date.now();
+      await expect(item.store.acceptMessage(acceptInput('locked'))).rejects.toMatchObject({ code: 'mailbox.migration_required' });
+      expect(Date.now() - startedAt).toBeLessThan(500);
+      expect(await readMailboxAuthority(homeDir)).toBeUndefined();
+      await closeHarness(item, open);
+      expect(await migration.migrate()).toMatchObject({ state: 'waiting', phase: 'waiting_for_writers' });
+    } finally { await lock.close(); await migration.close(); }
+    const resumed = createMailboxMigrationService(homeDir);
+    try { expect(await resumed.migrate()).toMatchObject({ state: 'complete', authority: 'sqlite' }); }
+    finally { await resumed.close(); }
+    const reopened = harness(homeDir); open.push(reopened);
+    await expect(reopened.store.acceptMessage(acceptInput('locked'))).resolves.toMatchObject({ deduplicated: false });
   });
 
-  it('reopens an interrupted one-time legacy migration without duplicating records', async () => {
+  it('resumes explicit legacy migration without duplicating messages, history or activity', async () => {
     const accepted = await seedLegacyMailbox(homeDir);
-    const original = ClusterDb.prototype.partitionBatch;
-    let interrupted = false;
-    ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
-      const [partition, operations] = args;
-      if (operations.some((operation) => operation.op === 'set' && operation.key.includes('/message/'))) {
-        expect(operations.filter((operation) => operation.key.includes('/peer/'))).toHaveLength(5);
-      }
-      if (
-        !interrupted &&
-        partition === 's/thread-mailbox-v3' &&
-        operations.some((operation) => operation.op === 'set' && operation.key.endsWith('/migration'))
-      ) {
-        interrupted = true;
-        throw new Error('migration interrupted');
-      }
-      return original.apply(this, args);
-    };
-    const first = harness(homeDir);
-    open.push(first);
-    await expect(first.store.acceptMessage(acceptInput('legacy'))).rejects.toThrow('migration interrupted');
-    ClusterDb.prototype.partitionBatch = original;
-    await first.store.close();
-    await first.runtime.close();
-    open.splice(open.indexOf(first), 1);
-    const interruptedDb = await openMailboxDb(homeDir);
-    const partition = mailboxPartition(target);
-    const missing = await interruptedDb.partitionPrefix(partition, `${partition}/peer/`);
-    expect(missing).toHaveLength(5);
-    await interruptedDb.partitionBatch(partition, missing.map((entry) => ({ op: 'del', key: entry.key })));
-    await interruptedDb.close();
+    const migration = createMailboxMigrationService(homeDir);
+    const controller = new AbortController();
+    try {
+      const stopped = await migration.migrate({ signal: controller.signal, onProgress: (status) => {
+        if (status.phase === 'importing' && status.progress.items > 0) controller.abort();
+      } });
+      expect(stopped.state).toBe('cancelled');
+      expect(stopped.progress.items).toBeGreaterThan(0);
+      expect(await readMailboxAuthority(homeDir)).toBeUndefined();
+      const resumed = await migration.migrate();
+      expect(resumed).toMatchObject({ state: 'complete', authority: 'sqlite', migrationId: stopped.migrationId });
+      const db = await openMailboxDb(homeDir);
+      try { expect(await db.partitionPrefix(mailboxPartition(target), `${mailboxPartition(target)}/peer/`)).toHaveLength(5); }
+      finally { await db.close(); }
+    } finally { await migration.close(); }
 
     const reopened = harness(homeDir);
     open.push(reopened);

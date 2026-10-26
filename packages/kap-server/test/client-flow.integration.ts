@@ -13,9 +13,8 @@ import {
   type ServiceIdentifier,
 } from '@kiki/agent-core-v2';
 import { InstantiationService } from '@kiki/agent-core-v2/_base/di/instantiationService';
-import { IGlobalSearchService, InlineSearchBackend } from '../src/search/searchService';
+import { IGlobalSearchService } from '../src/search/searchService';
 import { SqliteSearchHost } from '../src/search/sqlite/host';
-import { SearchWorkerHost } from '../src/search/worker/host';
 import { SessionController } from '../../session-core/src/session/sessionController';
 import { applyTranscriptShell, projectAgentTranscriptView } from '../../session-core/src/session/transcript/project';
 import { KikiClient } from '../../../apps/kiki-gui/src/lib/client';
@@ -182,8 +181,6 @@ function watchHostClose(host: CloseWatchTarget): ClosePhaseWatch {
     watch.watch(host.app, 'close', 'app.close');
     watch.watch(host.core, 'dispose', 'core.dispose');
     watch.watch(SqliteSearchHost.prototype, 'close', 'sqliteHost.close');
-    watch.watch(InlineSearchBackend.prototype, 'dispose', 'inlineSearch.dispose');
-    watch.watch(SearchWorkerHost.prototype, 'dispose', 'searchWorker.dispose');
     return watch;
   } catch (error) {
     watch.restore();
@@ -295,8 +292,6 @@ describe('close phase watch', () => {
   it('restores prototype wrappers when close rejects', async () => {
     const originals = {
       sqlite: SqliteSearchHost.prototype.close,
-      inline: InlineSearchBackend.prototype.dispose,
-      worker: SearchWorkerHost.prototype.dispose,
     };
     let gets = 0;
     const get = <T,>(_id: ServiceIdentifier<T>): T => {
@@ -314,9 +309,7 @@ describe('close phase watch', () => {
     try {
       await expect(awaitNaturalClose({
         close: () => {
-          wrappedDuringClose = SqliteSearchHost.prototype.close !== originals.sqlite
-            && InlineSearchBackend.prototype.dispose !== originals.inline
-            && SearchWorkerHost.prototype.dispose !== originals.worker;
+          wrappedDuringClose = SqliteSearchHost.prototype.close !== originals.sqlite;
           return Promise.reject(new Error('close failed'));
         },
         install: () => watchHostClose(host),
@@ -327,14 +320,10 @@ describe('close phase watch', () => {
       expect(wrappedDuringClose).toBe(true);
       expect(gets).toBe(0);
       expect(SqliteSearchHost.prototype.close).toBe(originals.sqlite);
-      expect(InlineSearchBackend.prototype.dispose).toBe(originals.inline);
-      expect(SearchWorkerHost.prototype.dispose).toBe(originals.worker);
       expect(server.close).toBe(originalServerClose);
       expect(server.closeAllConnections).not.toHaveBeenCalled();
     } finally {
       if (SqliteSearchHost.prototype.close !== originals.sqlite) SqliteSearchHost.prototype.close = originals.sqlite;
-      if (InlineSearchBackend.prototype.dispose !== originals.inline) InlineSearchBackend.prototype.dispose = originals.inline;
-      if (SearchWorkerHost.prototype.dispose !== originals.worker) SearchWorkerHost.prototype.dispose = originals.worker;
       if (server.close !== originalServerClose) spy.mockRestore();
     }
   });

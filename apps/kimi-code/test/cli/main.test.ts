@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { ErrorCodes, KimiError } from '@kiki/node-sdk';
-import { CommanderError } from 'commander';
+import { Command, CommanderError } from 'commander';
 
 import { validateOptions } from '#/cli/options';
 import type { CLIOptions } from '#/cli/options';
@@ -11,6 +11,7 @@ import type * as OptionsModule from '#/cli/options';
 import { runPrompt } from '#/cli/run-prompt';
 import { runShell } from '#/cli/run-shell';
 import { formatStartupError } from '#/cli/startup-error';
+import { registerStorageCommand } from '#/cli/sub/storage';
 import { handleMainCommand, main } from '#/main';
 
 const mocks = vi.hoisted(() => {
@@ -166,12 +167,16 @@ async function runHandleMainCommand(opts: CLIOptions): Promise<number | null> {
 }
 
 describe('main entry command handling', () => {
-  afterEach(() => {
+  let homeDir: string;
+  afterEach(async () => {
     vi.clearAllMocks();
     vi.unstubAllEnvs();
+    await rm(homeDir, { recursive: true, force: true });
   });
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    homeDir = await mkdtemp(join(tmpdir(), 'kiki-main-storage-gate-'));
+    vi.stubEnv('KIKI_HOME', homeDir);
     vi.clearAllMocks();
     mocks.harness.ensureConfigFile.mockResolvedValue(undefined);
     mocks.harness.getConfig.mockResolvedValue({
@@ -179,6 +184,31 @@ describe('main entry command handling', () => {
     });
     mocks.harness.close.mockResolvedValue(undefined);
     mocks.flushDiagnosticLogs.mockResolvedValue(undefined);
+  });
+
+  it.each(['print', 'shell'])('stops %s startup before prompt or daemon work when the home requires migration', async (uiMode) => {
+    await mkdir(join(homeDir, 'store/thread-mailbox-v1'), { recursive: true });
+    const opts = defaultOpts();
+    mocks.validateOptions.mockReturnValue({ options: opts, uiMode });
+    await expect(handleMainCommand(opts, '0.5.0')).rejects.toMatchObject({ code: 'mailbox.migration_required' });
+    expect(mocks.runPrompt).not.toHaveBeenCalled();
+    expect(mocks.runShell).not.toHaveBeenCalled();
+    expect(await readdir(homeDir)).toEqual(['store']);
+  });
+
+  it('keeps explicit storage status available on a gated home without starting migration or the daemon', async () => {
+    await mkdir(join(homeDir, 'store/thread-mailbox-v1'), { recursive: true });
+    const program = new Command('kiki');
+    registerStorageCommand(program);
+    const output = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      await program.parseAsync(['node', 'kiki', 'storage', 'status', '--home', homeDir, '--json']);
+      const status = JSON.parse(String(output.mock.calls.at(-1)?.[0]));
+      expect(status).toMatchObject({ schemaVersion: 1, homeDir, authority: 'legacy', state: 'ready', phase: 'detecting', canCancel: false });
+      expect(mocks.runShell).not.toHaveBeenCalled();
+      expect(mocks.runPrompt).not.toHaveBeenCalled();
+      expect(await readdir(join(homeDir, 'store'))).toEqual(['thread-mailbox-v1']);
+    } finally { output.mockRestore(); }
   });
 
   it('clears inherited SEA indexer mode before parsing Node CLI arguments', async () => {

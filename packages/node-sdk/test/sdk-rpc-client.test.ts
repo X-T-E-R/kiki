@@ -19,10 +19,13 @@ import {
   resolveKimiTokenStorageName,
 } from '@kiki/oauth';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as engine from '@kiki/agent-core-v2';
 
 import {
   buildDaemonFileUrl,
   createKimiHarness,
+  createPrintClient,
+  createMailboxMigrationService,
   ErrorCodes,
   isDaemonFileUrl,
   isKimiError,
@@ -137,6 +140,45 @@ async function sessionDirExists(homeDir: string, sessionId: string): Promise<boo
 }
 
 describe('SDKRpcClient (agent-core-v2 wiring)', () => {
+  it('refuses legacy homes before the SDK constructor or print client creates engine files', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-sdk-storage-gate-'));
+    tempDirs.push(homeDir);
+    await mkdir(join(homeDir, 'store/thread-mailbox-v1'), { recursive: true });
+    await writeFile(join(homeDir, 'store/thread-mailbox-v1/example'), 'canonical legacy source');
+    expect(() => new SDKRpcClient({ homeDir, identity: TEST_IDENTITY })).toThrow('kiki storage migrate');
+    await expect(createPrintClient({ homeDir, clientIdentity: TEST_IDENTITY })).rejects.toMatchObject({ code: 'mailbox.migration_required' });
+    expect(await readdir(homeDir)).toEqual(['store']);
+    expect(await readFile(join(homeDir, 'store/thread-mailbox-v1/example'), 'utf8')).toBe('canonical legacy source');
+  });
+
+  it('refuses a real rollback-commit crash before SDK or print ordinary bootstrap', async () => {
+    const homeDir = await mkdtemp(join(tmpdir(), 'kiki-sdk-rollback-gate-')); tempDirs.push(homeDir);
+    const migration = createMailboxMigrationService(homeDir);
+    try { expect((await migration.migrate()).state).toBe('complete'); }
+    finally { await migration.close(); }
+    const { spawn } = await import('node:child_process');
+    const { fileURLToPath } = await import('node:url');
+    const crash = await new Promise<{ code: number | null; stdout: string; stderr: string }>((done, reject) => {
+      const child = spawn(process.execPath, ['--import', 'tsx', '--import', new URL('../../../build/register-raw-text-loader.mjs', import.meta.url).href,
+        fileURLToPath(new URL('../../agent-core-v2/test/app/threadCommunication/fixtures/mailbox-migration-crash.mts', import.meta.url)), homeDir, 'rollback-authority'],
+        { cwd: fileURLToPath(new URL('../../agent-core-v2', import.meta.url)), timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = ''; let stderr = '';
+      child.stdout.on('data', (part) => { stdout += part.toString(); }); child.stderr.on('data', (part) => { stderr += part.toString(); });
+      child.once('error', reject); child.once('close', (code) => done({ code, stdout, stderr }));
+    });
+    expect(crash.stdout, crash.stderr).toContain('"boundary":"rollback-authority"');
+    expect(crash.code).not.toBe(0);
+    const bootstrap = vi.spyOn(engine, 'bootstrap');
+    try {
+      expect(() => new SDKRpcClient({ homeDir, identity: TEST_IDENTITY })).toThrow('rollback is incomplete');
+      await expect(createPrintClient({ homeDir, clientIdentity: TEST_IDENTITY })).rejects.toMatchObject({ code: 'mailbox.migration_required' });
+      expect(bootstrap).not.toHaveBeenCalled();
+    } finally { bootstrap.mockRestore(); }
+    const recovery = createMailboxMigrationService(homeDir);
+    try { expect((await recovery.status()).phase).toBe('rolling_back'); expect((await recovery.rollback()).authority).toBe('legacy'); }
+    finally { await recovery.close(); }
+  });
+
   it('exposes the validated runtime binding through Session', async () => {
     const { harness } = await makeHarness();
     const workDir = await mkdtemp(join(tmpdir(), 'kimi-sdk-v2-work-'));

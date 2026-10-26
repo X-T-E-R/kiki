@@ -3,11 +3,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'] = '1';
-
 import { IEventService, ISessionIndex, type SessionSummary } from '@kiki/agent-core-v2';
 import { createKlient } from '@kiki/klient/http';
 import { SearchIndexStateChanged } from '../../src/search/events';
+import { IGlobalSearchService } from '../../src/search/searchService';
 import { Event } from '@kiki/agent-core-v2/_base/event';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -148,6 +147,21 @@ describe('server-v2 /api/search', () => {
     });
     return (await res.json()) as Envelope<SearchPageWire>;
   }
+
+  it('SQ2-R2 preserves invalid_page_token through the real SQLite worker, service and REST envelope', async () => {
+    const search = server!.core.accessor.get(IGlobalSearchService);
+    await search.reindex();
+    const query = { query: '苹果', page_size: 1 };
+    const first = await postSearch(query);
+    expect(first.code).toBe(0);
+    expect(first.data.page_token).toBeDefined();
+    await search.reindex();
+    await expect(search.search({ query: '苹果', pageSize: 1, pageToken: first.data.page_token }))
+      .rejects.toMatchObject({ reason: 'invalid_page_token' });
+    const stale = await postSearch({ ...query, page_token: first.data.page_token });
+    expect(stale.code).toBe(40001);
+    expect(stale.msg).toBe('pageToken was issued by an older index generation (the index was rebuilt, reopened or rescanned); restart the search');
+  });
 
   it('delivers index snapshots on the shared authenticated WebSocket without a session subscription', async () => {
     const client = createKlient({ endpoint: base, token: server!.localOwnerToken });

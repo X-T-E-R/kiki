@@ -2,12 +2,10 @@
 // self-contained ESM files so they can ride the SEA blob as assets
 // (02-sea-blob.mjs) and be spawned from disk at runtime:
 //   - text-build-worker.mjs: the minidb text-build worker
-//     (packages/minidb/src/worker/text-build-worker.ts);
-//   - search-worker.mjs: the kap-server global-search worker
-//     (packages/kap-server/src/search/worker/entry.ts).
-// Without them the bundled binary lacks the worker entry files on disk and
-// heavy index work degrades to the inline main-thread cores, stalling the
-// event loop on large corpora. Runs after the main bundle with clean:false
+//     (packages/minidb/src/worker/text-build-worker.ts).
+// Without it the bundled binary lacks the worker entry file on disk and heavy
+// text-index work degrades to the inline main-thread core, stalling the event
+// loop on large corpora. Runs after the main bundle with clean:false
 // so all verified files remain.
 //
 // One config per entry: rolldown forbids `codeSplitting: false` with
@@ -47,8 +45,8 @@ function workerConfig(name: string, entry: string) {
 
 export default [
   workerConfig('text-build-worker', '../../packages/minidb/src/worker/text-build-worker.ts'),
-  workerConfig('search-worker', '../../packages/kap-server/src/search/worker/entry.ts'),
   workerConfig('sqlite-query-worker', '../../packages/kap-server/src/search/sqlite/queryEntry.ts'),
   workerConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),
   workerConfig('query-store-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/entry.ts'),
+  workerConfig('mailbox-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMailbox/entry.ts'),
 ];

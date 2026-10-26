@@ -69,7 +69,11 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     if (!elected) { releaseLease(); return; }
   }
   let index: SqliteSearchIndex | undefined;
-  let pending = new Map<string, SqliteSessionInput>();
+  let pending = new Map<string, { session: SqliteSessionInput; revision: number }>();
+  let staging: { revision: number; sessions: Map<string, SqliteSessionInput> } | undefined;
+  let inventory: { revision: number; ids: ReadonlySet<string> } | undefined;
+  let activeRevision = 0;
+  let completedRevision = 0;
   let syncing = false;
   let rebuilding = false;
   let lastDrainError: string | undefined;
@@ -108,23 +112,34 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
     syncing = true;
     lastDrainError = undefined;
     try {
-      while (pending.size && !stopped) {
+      while ((pending.size || inventory) && !stopped) {
+        if (inventory) {
+          const current = inventory;
+          if (!await index.reconcileSessions(current.ids)) break;
+          if (inventory === current) inventory = undefined;
+          status();
+          continue;
+        }
         const entry = pending.entries().next().value;
         if (!entry) break;
-        const [id, session] = entry;
-        pending.delete(id);
+        const [id, work] = entry;
         const free = await statfs(path).then((value) => value.bavail * value.bsize).catch(() => Infinity);
         if (free < 2 * 1024 * MiB) {
           report({ type: 'error', message: 'disk_low' });
-          pending.set(id, session);
           break;
         }
         const started = Date.now();
-        await index.syncSession(session);
+        await index.syncSession(work.session);
+        if (pending.get(id) === work) pending.delete(id);
         lastBatchMs = Date.now() - started;
-        report({ type: 'synced', sessionId: id });
+        const missing = !index.db.prepare('SELECT 1 FROM sessions WHERE id=?').get(id);
+        report({ type: 'synced', sessionId: id, revision: work.revision, missing });
         status();
         if (pending.size) await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      if (!pending.size && !inventory && activeRevision > completedRevision) {
+        completedRevision = activeRevision;
+        report({ type: 'inventory_synced', revision: completedRevision });
       }
     } catch (error) {
       lastDrainError = error instanceof Error ? error.message : String(error);
@@ -239,7 +254,7 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       process.exit(87);
     }
     status();
-    if (pending.size && !syncing && !rebuilding) void drain();
+    if ((pending.size || inventory) && !syncing && !rebuilding) void drain();
   }, 1000);
   process.on('disconnect', () => process.exit(0));
   await new Promise<void>((resolve) => {
@@ -250,7 +265,14 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
       } else if (message.type === 'reader_released') {
         releaseReader?.();
       } else if (message.type === 'sync') {
-        for (const session of message.sessions.slice(0, 1000)) pending.set(session.id, session);
+        if (message.first) staging = { revision: message.revision, sessions: new Map() };
+        if (staging?.revision !== message.revision || message.sessions.length > 1000) return;
+        for (const session of message.sessions) staging.sessions.set(session.id, session);
+        if (!message.last) return;
+        activeRevision = message.revision;
+        inventory = { revision: activeRevision, ids: new Set(staging.sessions.keys()) };
+        pending = new Map([...staging.sessions].map(([id, session]) => [id, { session, revision: activeRevision }]));
+        staging = undefined;
         if (!rebuilding) void drain();
       } else if (message.type === 'reindex') {
         if (rebuilding) {
@@ -261,14 +283,20 @@ export async function runSqliteIndexerCommand(path: string): Promise<void> {
             while (syncing) await new Promise((done) => setTimeout(done, 25));
             if (!index || stopped) throw new Error('indexer stopped during reindex');
             await index.reindex();
-            pending = new Map([...message.sessions.map((session) => [session.id, session] as const), ...pending]);
-            while (pending.size && !stopped) {
+            if (activeRevision <= message.revision) {
+              activeRevision = message.revision;
+              inventory = undefined;
+              pending = new Map(message.sessions.map((session) => [session.id, { session, revision: message.revision }]));
+            }
+            while ((pending.size || inventory) && !stopped) {
               await drain();
               if (lastDrainError || index.syncStatus.state === 'wal_stuck')
                 throw new Error(lastDrainError ?? 'reindex paused at WAL checkpoint');
               if (pending.size) await new Promise((done) => setTimeout(done, 100));
             }
             if (stopped) throw new Error('indexer stopped during reindex');
+            completedRevision = activeRevision;
+            report({ type: 'inventory_synced', revision: completedRevision });
             const result = index.syncStatus;
             report({ type: 'reindexed', id: message.id, sessions: result.indexedSessions ?? 0,
               documents: result.documents ?? 0 });

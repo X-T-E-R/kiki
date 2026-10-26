@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { CommanderError } from 'commander';
 
 import {
+  assertMailboxStartupReady,
   flushDiagnosticLogs,
   installGlobalProxyDispatcher,
   log,
@@ -37,9 +38,9 @@ import { cleanupStaleNativeCacheForCurrent, getPluginHostRunnerFile, getHistoryI
 import { installMinidbTextBuildWorker } from './native/minidb-worker';
 import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
-import { installKapSearchWorker } from './native/search-worker';
 import { installKapUsageWorker } from './native/usage-worker';
 import { installQueryStoreWorker } from './native/query-store-worker';
+import { installMailboxWorker } from './native/mailbox-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
 
@@ -63,6 +64,7 @@ export async function handleMainCommand(
   startupTrace('main:enter');
   try {
     validated = validateOptions(opts);
+    await assertMailboxStartupReady(resolveKikiHome());
     if (validated.uiMode === 'print') {
       await runPrompt(validated.options, version);
       return { headlessCompleted: true };
@@ -120,17 +122,6 @@ function bootstrap(): void {
         ? `minidb-worker:failed code=${workerInstall.errorCode} sha256=${workerInstall.assetSha256 ?? 'unknown'}`
         : `minidb-worker:${workerInstall.status}`,
   );
-  // Same pattern for the global-search worker: extracted from the SEA blob so
-  // the search index runs off the main thread; a failure leaves the search
-  // surface degraded (the `search_worker` flag restores the inline host).
-  const searchWorkerInstall = installKapSearchWorker();
-  startupTrace(
-    searchWorkerInstall.status === 'installed'
-      ? `search-worker:installed basename=${searchWorkerInstall.basename} sha256=${searchWorkerInstall.assetSha256}`
-      : searchWorkerInstall.status === 'failed'
-        ? `search-worker:failed code=${searchWorkerInstall.errorCode} sha256=${searchWorkerInstall.assetSha256 ?? 'unknown'}`
-        : `search-worker:${searchWorkerInstall.status}`,
-  );
   const usageWorkerInstall = installKapUsageWorker();
   startupTrace(usageWorkerInstall.status === 'failed'
     ? `usage-worker:failed code=${usageWorkerInstall.errorCode}`
@@ -142,6 +133,14 @@ function bootstrap(): void {
       : queryStoreWorkerInstall.status === 'failed'
         ? `query-store-worker:failed code=${queryStoreWorkerInstall.errorCode} sha256=${queryStoreWorkerInstall.assetSha256 ?? 'unknown'}`
         : `query-store-worker:${queryStoreWorkerInstall.status}`,
+  );
+  const mailboxWorkerInstall = installMailboxWorker();
+  startupTrace(
+    mailboxWorkerInstall.status === 'installed'
+      ? `mailbox-worker:installed basename=${mailboxWorkerInstall.basename} sha256=${mailboxWorkerInstall.assetSha256}`
+      : mailboxWorkerInstall.status === 'failed'
+        ? `mailbox-worker:failed code=${mailboxWorkerInstall.errorCode} sha256=${mailboxWorkerInstall.assetSha256 ?? 'unknown'}`
+        : `mailbox-worker:${mailboxWorkerInstall.status}`,
   );
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();

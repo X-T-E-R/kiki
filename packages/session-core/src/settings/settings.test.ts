@@ -406,7 +406,7 @@ describe('settings persistence and validation', () => {
     expect(validateProviderDraft(providerDraft({ baseUrl: 'file:///secret' }))?.key).toBe('val.baseUrlHttp');
     expect(validateProviderDraft(providerDraft({ apiKey: 'bad\nkey' }))?.key).toBe('val.apiKeyLineBreaks');
     expect(() => parseExperimentalFlags('{"flag":"yes"}')).toThrow('true or false');
-    expect(parseExperimentalFlags('{"search_worker":true}')).toEqual({ search_worker: true });
+    expect(parseExperimentalFlags('{"desktop_search":true}')).toEqual({ desktop_search: true });
     expect(() => parseAdvancedServerConfig('{"hooks":{}}')).toThrow('Unsupported');
     expect(() => parseAdvancedServerConfig('{"services":{}}')).toThrow('Unsupported');
     expect(() => parseAdvancedServerConfig('{"unknown":true}')).toThrow('Unsupported');
@@ -1283,7 +1283,7 @@ describe('settings search index', () => {
     expect(searchSettings(chinese, '接续本机外部会话').some((hit) => hit.section === 'sessions' && hit.cardId === 'st-card-exp-sessions')).toBe(true);
     expect(searchSettings(index, 'usage_export')).toEqual([]);
     expect(searchSettings(index, 'release idle subagents').some((hit) => hit.section === 'agents' && hit.cardId === 'st-card-exp-agents')).toBe(true);
-    expect(searchSettings(index, 'search_worker').find((hit) => hit.cardId === 'st-card-exp-search')?.tab).toBe('advanced');
+    expect(searchSettings(index, 'desktop_search').find((hit) => hit.cardId === 'st-card-exp-search')?.tab).toBe('advanced');
     expect(searchSettings(index, 'AgentNotify')[0]?.cardId).toBe('st-card-agent-messaging');
     expect(searchSettings(index, 'denied subagent models').some((hit) => hit.cardId === 'st-card-subagents')).toBe(true);
     expect(searchSettings(index, 'pinned model alias').some((hit) => hit.cardId === 'st-card-main-agents')).toBe(true);

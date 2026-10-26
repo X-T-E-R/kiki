@@ -1,4 +1,4 @@
-import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import { normalizeLiteral, tokenize } from '@kiki/lexical';
 
 export type HistoryMode = 'auto' | 'all' | 'any' | 'literal' | 'terms';
 

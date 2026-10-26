@@ -450,6 +450,9 @@ importers:
       '@kiki/kaos':
         specifier: workspace:^
         version: link:../kaos
+      '@kiki/lexical':
+        specifier: workspace:^
+        version: link:../lexical
       '@kiki/minidb':
         specifier: workspace:^
         version: link:../minidb
@@ -644,9 +647,9 @@ importers:
       '@kiki/klient':
         specifier: workspace:^
         version: link:../klient
-      '@kiki/minidb':
-        specifier: workspace:*
-        version: link:../minidb
+      '@kiki/lexical':
+        specifier: workspace:^
+        version: link:../lexical
       '@kiki/oauth':
         specifier: workspace:^
         version: link:../oauth
@@ -734,7 +737,13 @@ importers:
         specifier: ^8.22.0
         version: 8.22.0
 
-  packages/minidb: {}
+  packages/lexical: {}
+
+  packages/minidb:
+    dependencies:
+      '@kiki/lexical':
+        specifier: workspace:^
+        version: link:../lexical
 
   packages/node-sdk:
     dependencies:

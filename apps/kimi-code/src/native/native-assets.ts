@@ -19,9 +19,9 @@ import { join as joinPosix } from 'pathe';
 import { KIMI_BUILD_INFO } from '#/cli/build-info';
 import {
   KAP_MODEL_PRICES_ASSET,
-  KAP_SEARCH_WORKER_ASSET,
   KAP_SQLITE_QUERY_WORKER_ASSET,
   KAP_USAGE_PARSER_WORKER_ASSET,
+  MAILBOX_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
@@ -443,16 +443,16 @@ export function getMinidbTextBuildWorkerFile(
   return getNativeRuntimeFile(MINIDB_TEXT_BUILD_WORKER_ASSET.key, options);
 }
 
-export function getKapSearchWorkerFile(options: NativeAssetOptions = {}): string | null {
-  return getNativeRuntimeFile(KAP_SEARCH_WORKER_ASSET.key, options);
-}
-
 export function getKapUsageWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(KAP_USAGE_PARSER_WORKER_ASSET.key, options);
 }
 
 export function getQueryStoreWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(QUERY_STORE_WORKER_ASSET.key, options);
+}
+
+export function getMailboxWorkerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(MAILBOX_WORKER_ASSET.key, options);
 }
 
 export function getKapSqliteQueryWorkerFile(options: NativeAssetOptions = {}): string | null {

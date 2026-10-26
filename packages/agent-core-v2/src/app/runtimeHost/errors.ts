@@ -18,7 +18,8 @@ export type HomeRuntimeErrorCode =
   | 'runtime.io_failed'
   | 'runtime.aborted'
   | 'runtime.duplicate_request'
-  | 'mailbox.legacy_writer_active';
+  | 'mailbox.legacy_writer_active'
+  | 'mailbox.migration_required';
 
 export class HomeRuntimeError extends Error {
   readonly code: HomeRuntimeErrorCode;
@@ -62,6 +63,7 @@ const RUNTIME_ERROR_CODES = new Set<string>([
   'runtime.aborted',
   'runtime.duplicate_request',
   'mailbox.legacy_writer_active',
+  'mailbox.migration_required',
 ]);
 
 export function fromErrorPayloadCode(code: string): HomeRuntimeErrorCode {

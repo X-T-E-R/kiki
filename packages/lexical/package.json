@@ -1,0 +1,38 @@
+{
+  "name": "@kiki/lexical",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Zero-dependency lexical tokenization utilities for Kiki",
+  "license": "MIT",
+  "author": "Moonshot AI",
+  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/X-T-E-R/kiki.git",
+    "directory": "packages/lexical"
+  },
+  "bugs": {
+    "url": "https://github.com/X-T-E-R/kiki/issues"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "imports": {
+    "#/*": "./src/*.ts"
+  },
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:fast": "vitest run --exclude \"**/*.integration.ts\" --exclude \"**/*.e2e.ts\"",
+    "test:integration": "vitest run .integration.",
+    "clean": "rm -rf dist"
+  }
+}

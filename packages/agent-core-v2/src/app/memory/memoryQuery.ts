@@ -1,6 +1,6 @@
 import { createHash, createHmac } from 'node:crypto';
 import { z } from 'zod';
-import { tokenize } from '@kiki/minidb';
+import { tokenize } from '@kiki/lexical';
 import { MemoryDomainError } from './memoryMetadata';
 import type { MemoryScope } from './memoryScopes';
 import type { MemoryEntry, MemoryQuery, MemoryQueryPage, MemoryType } from './memoryStore';

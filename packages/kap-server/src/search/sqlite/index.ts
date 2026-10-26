@@ -5,13 +5,15 @@ import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 import { matchSingleMediaPathTag } from '@kiki/agent-core-v2/agent/media/mediaRef';
-import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import { normalizeLiteral, tokenize } from '@kiki/lexical';
 
 import type { GlobalSearchIncomplete } from '../contract';
 import { MAX_DOC_TEXT_CHARS, type MessageDoc, type StepTrackerState, type TitleDoc } from '../docs';
 import { decodePageToken, encodePageToken, boundaryOf, matchDocs, paginateRows, type MatchedRow, type NormalizedQuery, type SearchBudgets } from '../match';
 import { analyzeWireLine, type ExtractedWireMessage } from '../wireExtract';
 import { openSearchDatabase } from './schema';
+import { beforeDeadline, DEFAULT_SEARCH_BUDGETS, queryBudget, type SqliteQueryBudget } from './queryBudget';
+import { encodeTerm, encodeTerms } from './terms';
 
 const CHUNK = 1 << 20;
 const MAX_LINE = 8 << 20;
@@ -66,6 +68,7 @@ export interface SqliteIndexOptions {
   readonly batchMaxDocs?: () => number;
   readonly batchMaxChars?: () => number;
   readonly isStopped?: () => boolean;
+  readonly sourceIdentity?: (dir: string) => Promise<string | undefined>;
 }
 
 export interface SqliteSyncStatus {
@@ -131,7 +134,7 @@ async function wireFiles(dir: string): Promise<{ path: string; agentId: string }
 
 export class SqliteSearchIndex {
   private readonly pendingSessions = new Map<string, SqliteSessionInput>();
-  private syncQueue: Promise<void> = Promise.resolve();
+  private syncQueue: Promise<unknown> = Promise.resolve();
   private retryTimer?: NodeJS.Timeout;
   private idleTimer?: NodeJS.Timeout;
   private closed = false;
@@ -164,11 +167,11 @@ export class SqliteSearchIndex {
     catch (error) { db.close(); throw error; }
   }
 
-  static openReader(path: string, bootSalt?: string): SqliteSearchIndex {
+  static openReader(path: string, bootSalt?: string, options: SqliteIndexOptions = {}): SqliteSearchIndex {
     const db = new DatabaseSync(path, { readOnly: true });
     try {
       db.exec('PRAGMA query_only=ON; PRAGMA cache_size=-16384; PRAGMA mmap_size=0; PRAGMA busy_timeout=1000');
-      return new SqliteSearchIndex(db, false, path, {}, true, bootSalt);
+      return new SqliteSearchIndex(db, false, path, options, true, bootSalt);
     } catch (error) { db.close(); throw error; }
   }
 
@@ -279,7 +282,7 @@ export class SqliteSearchIndex {
     const info = db.prepare('INSERT INTO docs(file_id,session_id,line_offset,ord,role,time,turn,step_id,text) VALUES(?,?,?,?,?,?,?,?,?)')
       .run(fileId, sessionId, lineOffset, ord, role, time, turn ?? null, stepId ?? null, text);
     const id = Number(info.lastInsertRowid);
-    db.prepare('INSERT INTO docs_terms(rowid,terms) VALUES(?,?)').run(id, tokenize(text).join(' '));
+    db.prepare('INSERT INTO docs_terms(rowid,terms) VALUES(?,?)').run(id, encodeTerms(text));
     db.prepare('INSERT INTO docs_tri(rowid,text) VALUES(?,?)').run(id, normalizeLiteral(text));
   }
 
@@ -288,7 +291,7 @@ export class SqliteSearchIndex {
     const rows = db.prepare(`SELECT id,text FROM docs WHERE ${where}=?`).iterate(key) as Iterable<{ id: number; text: string }>;
     for (const row of rows) {
       db.prepare("INSERT INTO docs_terms(docs_terms,rowid,terms) VALUES('delete',?,?)")
-        .run(row.id, tokenize(row.text).join(' '));
+        .run(row.id, encodeTerms(row.text));
       db.prepare("INSERT INTO docs_tri(docs_tri,rowid,text) VALUES('delete',?,?)")
         .run(row.id, normalizeLiteral(row.text));
       db.prepare('DELETE FROM docs WHERE id=?').run(row.id);
@@ -307,6 +310,54 @@ export class SqliteSearchIndex {
     } finally { await fd.close(); }
   }
 
+  reconcileSessions(current: ReadonlySet<string>): Promise<boolean> {
+    const task = this.syncQueue.catch(() => {}).then(async () => {
+      for (const id of this.pendingSessions.keys()) if (!current.has(id)) this.pendingSessions.delete(id);
+      let after = '';
+      while (!this.closed && !this.options.isStopped?.()) {
+        const batch = this.db.prepare('SELECT id FROM sessions WHERE id>? ORDER BY id LIMIT 100')
+          .all(after) as { id: string }[];
+        if (!batch.length) return true;
+        for (const { id } of batch) {
+          if (!current.has(id) && !await this.removeSession(id)) return false;
+          after = id;
+        }
+        await new Promise<void>((resolve) => setImmediate(resolve));
+      }
+      return false;
+    });
+    this.syncQueue = task;
+    return task;
+  }
+
+  private async removeSession(id: string): Promise<boolean> {
+    const db = this.db;
+    while (!this.closed && !this.options.isStopped?.()) {
+      if (this.walStuck) return false;
+      const docs = db.prepare('SELECT id FROM docs WHERE session_id=? LIMIT 128').all(id) as { id: number }[];
+      const file = docs.length ? undefined : db.prepare('SELECT id,path FROM files WHERE session_id=? LIMIT 1')
+        .get(id) as { id: number; path: string } | undefined;
+      db.exec('BEGIN');
+      try {
+        for (const doc of docs) this.deleteDocs('id', doc.id);
+        if (file) {
+          db.prepare('DELETE FROM turn_openers WHERE file_id=? AND idx IN (SELECT idx FROM turn_openers WHERE file_id=? LIMIT 256)')
+            .run(file.id, file.id);
+          if (!db.prepare('SELECT 1 FROM turn_openers WHERE file_id=? LIMIT 1').get(file.id)) {
+            db.prepare('DELETE FROM file_failures WHERE path=?').run(file.path);
+            db.prepare('DELETE FROM files WHERE id=?').run(file.id);
+          }
+        } else if (!docs.length) db.prepare('DELETE FROM sessions WHERE id=?').run(id);
+        this.bumpGeneration();
+        db.exec('COMMIT');
+      } catch (error) { db.exec('ROLLBACK'); throw error; }
+      this.afterCommit();
+      if (!docs.length && !file) { this.pendingSessions.delete(id); return true; }
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    return false;
+  }
+
   syncSession(session: SqliteSessionInput): Promise<void> {
     const task = this.syncQueue.catch(() => {}).then(() => this.syncSessionInner(session));
     this.syncQueue = task;
@@ -318,7 +369,7 @@ export class SqliteSearchIndex {
     if (this.options.isStopped?.()) return;
     if (this.walStuck) { this.pendingSessions.set(session.id, session); return; }
     const id = await identity(session.dir);
-    if (id === undefined) return;
+    if (id === undefined) { await this.removeSession(session.id); return; }
     const db = this.db;
     const title = await titleAt(session.dir);
     const existing = db.prepare('SELECT title,identity,dir FROM sessions WHERE id=?').get(session.id) as
@@ -401,7 +452,8 @@ export class SqliteSearchIndex {
     if (file?.policy === 'quarantined') return;
     const changed = file && (st.size !== file.size || st.mtimeMs !== file.mtime_ms || file.ino !== String(st.ino));
     const replace = file && (st.size < file.offset || file.policy !== policy || (changed && file.offset > 0 &&
-      (file.ino !== String(st.ino) || file.tail_hash !== await this.tailHash(path, file.offset))));
+      (file.ino !== String(st.ino) || (st.size === file.size && st.mtimeMs !== file.mtime_ms) ||
+        file.tail_hash !== await this.tailHash(path, file.offset))));
     if (!replace && file?.offset === st.size) {
       if (changed) db.prepare('UPDATE files SET size=?,mtime_ms=? WHERE id=?').run(st.size, st.mtimeMs, file.id);
       return;
@@ -538,14 +590,15 @@ export class SqliteSearchIndex {
     } finally { await fd.close(); }
   }
 
-  async search(q: NormalizedQuery, pageToken?: string, budgets: SearchBudgets = {
-    literalCandidateCap: 10_000, maxTextHits: 100_000, postingsVisitBudget: 250_000,
-    queryDeadlineMs: 500, queryTextBudgetChars: 16_000_000,
-  }): Promise<SqliteSearchResult> {
+  async search(q: NormalizedQuery, pageToken?: string, budgets: SearchBudgets = DEFAULT_SEARCH_BUDGETS,
+    budget: SqliteQueryBudget = queryBudget(budgets)): Promise<SqliteSearchResult> {
     const db = this.db;
     const generation = this.generation;
     const page = decodePageToken(q, 'index', pageToken, generation);
-    const deadlineAt = Date.now() + budgets.queryDeadlineMs;
+    const { deadlineAt } = budget;
+    if (Date.now() >= deadlineAt || budget.textCharsLeft < 0) return { rows: [], hasMore: false, incomplete: 'deadline' };
+    budgets = { ...budgets, maxTextHits: Math.min(budgets.maxTextHits, budget.candidatesLeft),
+      literalCandidateCap: Math.min(budgets.literalCandidateCap, budget.candidatesLeft) };
     let incomplete: GlobalSearchIncomplete | undefined;
     const terms = q.termsQuery ?? [...new Set(tokenize(q.query))];
     const literal = q.literalQuery ?? normalizeLiteral(q.query);
@@ -569,7 +622,7 @@ export class SqliteSearchIndex {
     if (q.mode === 'terms') {
       if (!terms.length) matchedIds = [];
       else {
-        const expression = terms.map(quoteTerm).join(q.op === 'OR' ? ' OR ' : ' AND ');
+        const expression = terms.map((term) => quoteTerm(encodeTerm(term))).join(q.op === 'OR' ? ' OR ' : ' AND ');
         if (ranked) {
           matchedIds = db.prepare(`SELECT docs_terms.rowid, docs_terms.rank FROM docs_terms
             ${scopedWhere ? "JOIN docs d ON d.id=docs_terms.rowid" : ''}
@@ -599,7 +652,7 @@ export class SqliteSearchIndex {
       matchedIds = cjk
         ? db.prepare(`SELECT docs_terms.rowid FROM docs_terms ${joins('docs_terms')}
           WHERE docs_terms MATCH ?${scopedWhere} LIMIT ?`)
-          .all(quoteTerm(literal), ...filterValues, budgets.literalCandidateCap + 1) as { rowid: number }[]
+          .all(quoteTerm(encodeTerm(literal)), ...filterValues, budgets.literalCandidateCap + 1) as { rowid: number }[]
         : db.prepare(`SELECT d.id AS rowid FROM docs d JOIN sessions s ON s.id=d.session_id
           LEFT JOIN files f ON f.id=d.file_id WHERE 1=1${scopedWhere} LIMIT ?`)
           .all(...filterValues, budgets.literalCandidateCap + 1) as { rowid: number }[];
@@ -607,6 +660,7 @@ export class SqliteSearchIndex {
     const cap = ranked ? Math.min(budgets.maxTextHits, 64) :
       q.mode === 'terms' ? budgets.maxTextHits : budgets.literalCandidateCap;
     if (matchedIds.length > cap) { matchedIds.length = cap; incomplete = 'candidate_cap'; }
+    budget.candidatesLeft -= matchedIds.length;
     const rows: { key: string; value: MessageDoc | TitleDoc; score: number }[] = [];
     const N = q.mode === 'terms' && !ranked ? (db.prepare(`SELECT count(*) AS n FROM docs d
       JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id
@@ -615,7 +669,7 @@ export class SqliteSearchIndex {
     if (q.mode === 'terms' && !ranked) for (const term of terms) {
       dfs.set(term, (db.prepare(`SELECT count(*) AS n FROM docs_terms ${joins('docs_terms')}
         WHERE docs_terms MATCH ?${scopedWhere}`)
-        .get(quoteTerm(term), ...filterValues) as { n: number }).n);
+        .get(quoteTerm(encodeTerm(term)), ...filterValues) as { n: number }).n);
     }
     const candidate = db.prepare('SELECT d.*,s.workspace_id,s.title,s.identity,s.dir,f.agent_id,f.path FROM docs d JOIN sessions s ON s.id=d.session_id LEFT JOIN files f ON f.id=d.file_id WHERE d.id=?');
     for (const { rowid, rank } of matchedIds) {
@@ -641,37 +695,45 @@ export class SqliteSearchIndex {
         `${hit.session_id}/${hit.agent_id}/${hit.path === join(hit.dir, 'wire.jsonl') ? 'root' : 'agents'}:${hit.line_offset}:${hit.ord}`,
       value, score });
     }
-    const budget = { deadlineAt, textCharsLeft: budgets.queryTextBudgetChars };
     const matched = matchDocs(q, rows, page.kind === 'keyset' ? page.boundary : undefined, budget);
     incomplete ??= matched.incomplete;
     const valid: MatchedRow[] = [];
     const identities = new Map<string, Promise<string | undefined>>();
-    const sourceQuery = db.prepare('SELECT dir,identity FROM sessions WHERE id=?');
-    const sources = new Map<string, { dir: string; identity: string } | undefined>();
     for (let offset = 0; offset < matched.rows.length; offset += 16) {
-      if (Date.now() > deadlineAt) { incomplete ??= 'deadline'; break; }
-      const batch = matched.rows.slice(offset, offset + 16).map((row) => {
-        if (!sources.has(row.value.sessionId)) sources.set(row.value.sessionId,
-          sourceQuery.get(row.value.sessionId) as { dir: string; identity: string } | undefined);
-        return { row, source: sources.get(row.value.sessionId) };
-      });
-      const verified = await Promise.all(batch.map(async ({ row, source }) => {
-        if (!source || source.identity !== row.value.sessionIdentity) return false;
-        let check = identities.get(source.dir);
-        if (!check) {
-          check = identity(source.dir);
-          identities.set(source.dir, check);
-        }
-        return await check === source.identity;
-      }));
-      for (let i = 0; i < batch.length; i++) {
-        if (Date.now() > deadlineAt) { incomplete ??= 'deadline'; break; }
-        if (verified[i]) valid.push(batch[i]!.row);
-      }
-      if (incomplete === 'deadline') break;
+      const batch = matched.rows.slice(offset, offset + 16);
+      const verified = await this.verifySources(batch, budget, identities);
+      if (verified === undefined) { incomplete = 'deadline'; break; }
+      for (let i = 0; i < batch.length; i++) if (verified[i]) valid.push(batch[i]!);
     }
     const { pageRows, hasMore } = paginateRows(q, page, valid);
     return { rows: pageRows, hasMore, incomplete,
       pageToken: hasMore ? encodePageToken(q, 'index', boundaryOf(q, pageRows[pageRows.length - 1]!), generation) : undefined };
+  }
+
+  private async verifySources(rows: readonly MatchedRow[], budget: SqliteQueryBudget,
+    identities: Map<string, Promise<string | undefined>>): Promise<boolean[] | undefined> {
+    if (Date.now() >= budget.deadlineAt) return undefined;
+    const sources = this.db.prepare('SELECT dir,identity FROM sessions WHERE id=?');
+    const checks = rows.map((row) => {
+      const source = sources.get(row.value.sessionId) as { dir: string; identity: string } | undefined;
+      if (!source || source.identity !== row.value.sessionIdentity) return Promise.resolve(false);
+      let check = identities.get(source.dir);
+      if (!check) {
+        check = (this.options.sourceIdentity ?? identity)(source.dir);
+        identities.set(source.dir, check);
+      }
+      return check.then((current) => current === source.identity);
+    });
+    return beforeDeadline(Promise.all(checks), budget.deadlineAt);
+  }
+
+  async sourcesCurrent(rows: readonly MatchedRow[], budget: SqliteQueryBudget): Promise<boolean | undefined> {
+    const identities = new Map<string, Promise<string | undefined>>();
+    for (let offset = 0; offset < rows.length; offset += 16) {
+      const verified = await this.verifySources(rows.slice(offset, offset + 16), budget, identities);
+      if (verified === undefined) return undefined;
+      if (!verified.every(Boolean)) return false;
+    }
+    return true;
   }
 }

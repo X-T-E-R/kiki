@@ -54,6 +54,8 @@ $KIKI_HOME  （默认 ~/.kiki）
 │       └── <key>-<suffix>.json
 ├── sessions/               # 会话数据（详见下文）
 │   └── <workDirKey>/<sessionId>/
+├── store/
+│   └── thread-mailbox-sqlite-v1/ # 持久消息邮箱与升级恢复副本
 ├── server/
 │   └── events/             # 有界的客户端事件重放日志
 ├── bin/
@@ -104,11 +106,25 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 这项保留策略不会删除 `sessions/`、Agent 的 `wire.jsonl` 或媒体原件。游标超出保留窗口的客户端会通过快照/reset 恢复，而不是补播旧事件序列，见 [断线恢复](../server/rest-api.md#断线恢复)。如需手动清理旧日志，先停止所有使用该数据根目录的 Kiki 服务，再仅清理 `server/events/` 并重启。不要在 writer 运行时删除或截断这些日志。
 
+## 持久消息邮箱
+
+`store/thread-mailbox-sqlite-v1/` 保存线程间消息、投递状态、幂等回执、活动游标和工作区覆盖设置。这些记录是持久原件，不像搜索和查询缓存，不能靠删除后重建来恢复。`authority.json` 指定当前使用的 `mailbox-<migrationId>.sqlite`；数据库打开时，旁边的 `-wal` 和 `-shm` 文件也要保留。请用 [`kiki storage backup`](../reference/command.md#kiki-storage) 创建一致的 SQLite 副本，不要只复制正在使用的 `.sqlite` 文件。
+
+0.5.x 升级将检查点保存在 `migration.json`，源数据备份放在 `recovery/<migrationId>/sources/`，移走的原目录放在 `recovery/<migrationId>/originals/`。原来的 `store/thread-mailbox-v3`、`store/thread-mailbox-v1` 和 `store/agent-collaboration-mailbox-v2` 目录名会变成阻止旧版本写入的占位文件。请保留这些文件，也不要让旧二进制程序使用恢复副本作为可写邮箱。用 `kiki storage status` 查看恢复状态，用 `kiki storage migrate` 续接；需要回退时，遵循 [storage 命令的回退规则](../reference/command.md#kiki-storage)，不要手动移回原目录。
+
 ## 会话与用量查询缓存
 
 `cache/query-store-sqlite-v1/index.sqlite` 保存会话列表、用量事实和线程轮次查询使用的 SQLite 缓存。Kiki 会按需从会话元数据、用量事实日志和对话历史重建这些视图。数据库打开时，旁边可能还有 `-wal` 和 `-shm` 文件。
 
 如果缓存损坏，先停止所有使用该数据根目录的 Kiki 进程，备份后仅移除 `cache/query-store-sqlite-v1/`，再重新启动。历史较多时，重建可能需要多次请求；准备完成前，Usage 会显示覆盖不完整。请保留 `cache/usage-facts-v1/`、`sessions/` 和 `store/`，恢复所需的日志与记录存放在这些目录中。旧的 `cache/query-store-v*/` 目录与 SQLite 缓存分开，新后端不会导入它们。
+
+## 全文搜索索引
+
+全文搜索使用 `search-index-v2/index.sqlite` 中的 SQLite 索引。Kiki 会复用兼容的索引，或从会话元数据与对话历史重建已识别的旧版搜索索引；重建期间，结果可能不完整。缓存重建不会改动历史原件。旧 MiniDb `search-index/` 目录保持原样，既不导入，也不作为故障回退。请保留 `sessions/` 和 `store/`：搜索缓存重建与 mailbox 消息存储升级各有自己的流程。
+
+在 0.5 迁移系列中，`config.toml` 里显式设置的 `search_backend = "minidb"` 或 `KIKI_SEARCH_BACKEND=minidb` 是 SQLite 的已弃用别名，并会产生迁移警告。请在升级到退役该值的 0.6 前删除旧设置，或改为 `sqlite`。环境变量优先于 `search_backend`；Kiki 不会改写这两处设置。旧 `search_worker` 实验开关已移除，SQLite 始终通过写入子进程与查询工作线程隔离数据库工作。
+
+搜索默认可用。`[search] enabled = false`、`KIKI_SEARCH_DISABLED=1` 或桌面端显式设置的 `desktop_search = false` 会保持关闭；搜索关闭时，迁移别名不会启动工作线程或重建缓存。`[search] index_subagents = true` 可将 subagent 内容纳入索引，默认关闭。这些设置在重启 Kiki 后生效。搜索默认匹配用户、助手正文与会话标题；只有显式请求时才包含工具结果输出。思考内容、工具名和工具调用参数不参与搜索。
 
 ## 内置工具缓存
 

@@ -137,6 +137,7 @@
         ./packages/kap-server
         ./packages/kaos
         ./packages/klient
+        ./packages/lexical
         ./packages/minidb
         ./packages/node-sdk
         ./packages/oauth
@@ -166,6 +167,7 @@
         "@kiki/node-sdk"
         "@kiki/oauth"
         "@kiki/klient"
+        "@kiki/lexical"
         "@kiki/pi-tui"
         "@kiki/plugin-sdk"
         "@kiki/protocol"

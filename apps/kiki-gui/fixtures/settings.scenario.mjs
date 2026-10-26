@@ -81,7 +81,7 @@ export default {
       model: 'fixture/kiki-lite',
       triggers: ['first_user_message', 'first_turn_completed'],
     },
-    experimental: { search_worker: true, auto_session_title: true },
+    experimental: { desktop_search: true, auto_session_title: true },
     // nb_search: one configured service (Exa, with a two-key credential) out of
     // the whole engine catalogue. This is the S1 acceptance shape: the page must
     // open on the service in use, not on every instance the engine ships.

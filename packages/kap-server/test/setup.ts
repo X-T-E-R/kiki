@@ -6,6 +6,7 @@ for (const key of Object.keys(process.env)) {
   }
 }
 
-process.env['KIKI_EXPERIMENTAL_SEARCH_WORKER'] = 'false';
+delete process.env['KIKI_SQLITE_QUERY_WORKER_PATH'];
+delete process.env['KIKI_SQLITE_INDEXER_PATH'];
 
 process.env['KIKI_EXPERIMENTAL_PERSISTENCE_MINIDB_READMODEL'] = 'false';

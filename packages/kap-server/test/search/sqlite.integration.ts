@@ -3,11 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import { normalizeLiteral, tokenize } from '@kiki/lexical';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SqliteSearchIndex } from '../../src/search/sqlite/index';
 import { openSearchDatabase } from '../../src/search/sqlite/schema';
+import { SqliteSearchQueries } from '../../src/search/sqlite/queries';
+import { encodeTerm, encodeTerms } from '../../src/search/sqlite/terms';
 import type { NormalizedQuery } from '../../src/search/match';
 import { planHistoryQuery } from '../../src/services/history/historyQuery';
 
@@ -281,6 +283,104 @@ describe('SQLite derived search index', () => {
     await appendFile(path, user('followup', T + 5) + '\n');
     await index.syncSession(session());
     expect((await hits('followup'))[0]?.role).toBe('user');
+  });
+
+  it('SQ2-R4 bounds slow cached source verification by the request deadline', async () => {
+    await wire([user('needle first'), user('needle second', T + 1)]);
+    await index.syncSession(session());
+    const identity = (index.db.prepare('SELECT identity FROM sessions WHERE id=?').get('s1') as { identity: string }).identity;
+    index.close();
+    let slow = false;
+    index = await SqliteSearchIndex.open(join(home, 'index.sqlite'), { sourceIdentity: async () => {
+      if (slow) await new Promise(() => {});
+      return identity;
+    } });
+    const queries = new SqliteSearchQueries(index);
+    const budgets = { literalCandidateCap: 100, maxTextHits: 100, postingsVisitBudget: 100,
+      queryDeadlineMs: 120, queryTextBudgetChars: 1000 };
+    const query = q('needle', 'literal', 'time_desc', 1);
+    const first = await queries.search(query, undefined, budgets);
+    expect(first.rows).toHaveLength(1);
+    expect(first.pageToken).toBeDefined();
+    expect(await queries.search(query, undefined, budgets)).toEqual(first);
+    slow = true;
+    const started = performance.now();
+    const page = await queries.search(query, undefined, budgets);
+    expect(performance.now() - started).toBeLessThan(500);
+    expect(page).toEqual({ rows: [], hasMore: false, incomplete: 'deadline' });
+  });
+
+  it('SQ2-R4 shares the absolute deadline and confirmation allowance with one invalid-cache requery', async () => {
+    await wire([user('needle live', T), user('needle latest', T + 1)]);
+    await index.syncSession(session());
+    const identity = (index.db.prepare('SELECT identity FROM sessions WHERE id=?').get('s1') as { identity: string }).identity;
+    index.close();
+    let checks = 0;
+    let invalidate = false;
+    index = await SqliteSearchIndex.open(join(home, 'index.sqlite'), { sourceIdentity: async () => {
+      checks++;
+      if (invalidate) {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        return undefined;
+      }
+      return identity;
+    } });
+    const queries = new SqliteSearchQueries(index);
+    const budgets = { literalCandidateCap: 100, maxTextHits: 100, postingsVisitBudget: 100,
+      queryDeadlineMs: 160, queryTextBudgetChars: 1000 };
+    const query = q('needle', 'literal', 'time_desc', 1);
+    expect((await queries.search(query, undefined, budgets)).rows).toHaveLength(1);
+    const search = vi.spyOn(index, 'search');
+    invalidate = true;
+    checks = 0;
+    const started = performance.now();
+    const deadlineAt = Date.now() + budgets.queryDeadlineMs;
+    const page = await queries.search(query, undefined, budgets, deadlineAt);
+    expect(performance.now() - started).toBeLessThan(350);
+    expect(page).toMatchObject({ rows: [], hasMore: false, incomplete: 'deadline' });
+    expect(page.pageToken).toBeUndefined();
+    expect(search).toHaveBeenCalledTimes(1);
+    const shared = search.mock.calls[0]![3]!;
+    expect(shared.deadlineAt).toBe(deadlineAt);
+    expect(shared.textCharsLeft).toBe(1000 - 'needle live'.length - 'needle latest'.length);
+    expect(shared.candidatesLeft).toBe(98);
+    expect(checks).toBe(2);
+    search.mockRestore();
+  });
+
+  it('SQ2-R5 encodes exact token boundaries, punctuation and 65535-character terms without FTS truncation aliases', () => {
+    const db = new DatabaseSync(':memory:');
+    try {
+      db.exec("CREATE VIRTUAL TABLE encoded USING fts5(terms, tokenize='unicode61 remove_diacritics 0')");
+      const longest = 'a'.repeat(65535);
+      const texts = ['你好，世界', '你好世界', 'foo bar', 'foobar', 'a', '，', 'ＦＯＯ', 'foo', longest, longest.slice(0, -1) + 'b'];
+      for (const text of texts) db.prepare('INSERT INTO encoded(terms) VALUES(?)').run(encodeTerms(text));
+      for (const query of ['你好，世界', 'foobar', 'a', '，', 'ＦＯＯ', 'foo', longest]) {
+        const terms = [...new Set(tokenize(query))];
+        const expression = terms.map((term) => `"${encodeTerm(term)}"`).join(' AND ');
+        const actual = (db.prepare('SELECT rowid FROM encoded WHERE encoded MATCH ? ORDER BY rowid').all(expression) as { rowid: number }[])
+          .map((row) => row.rowid);
+        const expected = texts.flatMap((text, i) => terms.every((term) => tokenize(text).includes(term)) ? [i + 1] : []);
+        expect(actual).toEqual(expected);
+      }
+    } finally { db.close(); }
+  });
+
+  it('SQ2-R5 rebuilds an owned schema-1 terms representation from unchanged canonical sources', async () => {
+    const path = await wire([user('你好，世界'), user('你好世界', T + 1)]);
+    await index.syncSession(session());
+    const canonical = await readFile(path, 'utf8');
+    index.db.exec("DROP TABLE docs_terms; CREATE VIRTUAL TABLE docs_terms USING fts5(terms,content='',tokenize='unicode61 remove_diacritics 0')");
+    const docs = index.db.prepare('SELECT id,text FROM docs').all() as { id: number; text: string }[];
+    for (const doc of docs) index.db.prepare('INSERT INTO docs_terms(rowid,terms) VALUES(?,?)').run(doc.id, tokenize(doc.text).join(' '));
+    index.db.exec('PRAGMA user_version=1');
+    index.close();
+    index = await SqliteSearchIndex.open(join(home, 'index.sqlite'));
+    expect((index.db.prepare('PRAGMA user_version').get() as { user_version: number }).user_version).toBe(2);
+    expect(index.syncStatus.indexedSessions).toBe(0);
+    await index.syncSession(session());
+    expect((await hits('你好，世界')).map((hit) => hit.text)).toEqual(['你好，世界']);
+    expect(await readFile(path, 'utf8')).toBe(canonical);
   });
 
   it('hides hits immediately after a session directory identity changes', async () => {

@@ -30,7 +30,6 @@ import type {
   ThreadMailboxMutationOptions,
 } from '#/app/threadCommunication/threadMailboxStore';
 import type { SessionArchivedEvent, SessionDeletedEvent } from '#/workspace/sessionLifecycle/sessionLifecycle';
-import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 import { createHooks } from '#/hooks';
 import { IAgentContextMemoryService, type IAgentContextMemoryService as AgentContextMemory } from '#/agent/contextMemory/contextMemory';
 import { computeUndoCut } from '#/agent/contextMemory/contextOps';
@@ -2739,7 +2738,7 @@ describe('agent collaboration safe-boundary delivery', () => {
     const homeDir = tempDir();
     const seed = bootstrap(homeDir);
     const runtime = new HomeRuntimeHostService(seed);
-    const threadStore = new RuntimeThreadMailboxStore(seed, runtime, new HostFileSystem());
+    const threadStore = new RuntimeThreadMailboxStore(seed, runtime);
     runtimeMailboxes.push({ runtime, store: threadStore });
     const store = new AgentCollaborationMessageStoreAdapter(threadStore);
     const accepted = await store.accept(messageInput('resume delivery', 'resume-delivery'));
@@ -3305,7 +3304,7 @@ function rawMailbox(homeDir: string): {
 } {
   const seed = bootstrap(homeDir);
   const runtime = new HomeRuntimeHostService(seed);
-  const thread = new RuntimeThreadMailboxStore(seed, runtime, new HostFileSystem());
+  const thread = new RuntimeThreadMailboxStore(seed, runtime);
   runtimeMailboxes.push({ runtime, store: thread });
   return { adapter: new AgentCollaborationMessageStoreAdapter(thread), thread };
 }

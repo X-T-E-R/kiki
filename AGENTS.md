@@ -24,7 +24,8 @@ This is a TypeScript monorepo built for agent-assisted development. Keep the roo
 - `packages/kap-server`: the Kiki server, backed by `@kiki/agent-core-v2`; exposes sessions over REST + WebSocket (`/api` + `/api/ws`), plus the `/api/debug/*` reflection RPC surface (`--debug-endpoints`, loopback bind + bearer auth). See `packages/kap-server/AGENTS.md`.
 - `packages/klient`: the client SDK — a contract-driven facade over agent-core-v2 (`global.*` / `session(id).*` / `agent(id).*`, zod-validated); transport via subpath entry (`@kiki/klient/http|ipc|memory`, all return the same `Klient`); also hosts the e2e suites. See `packages/klient/AGENTS.md`.
 - `packages/tree-sitter-bash`: a pure-TypeScript bash parser (no runtime deps, no wasm); `parse(source, { timeoutMs, maxNodes })` runs under a deterministic budget and returns a discriminated `ParseResult` — callers must treat aborted/hasError trees as "cannot analyze" and degrade. Parser only, no safety judgments; see the package README's "Known differences" section.
-- `packages/minidb`: the embedded JSON document store (`MiniDb`) behind kap-server's search index — snapshot + WAL persistence with an exclusive write lock, a larger-than-RAM full-text layer, and persistent index generations. See `packages/minidb/AGENTS.md`.
+- `packages/lexical`: dependency-free ASCII/CJK tokenization and Unicode literal normalization shared by Memory, history, search and legacy MiniDb APIs.
+- `packages/minidb`: the legacy embedded document store retained during the storage migration; global search uses SQLite instead. See `packages/minidb/AGENTS.md`.
 
 ## Environment Requirements
 

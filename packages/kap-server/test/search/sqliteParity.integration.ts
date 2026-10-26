@@ -4,18 +4,18 @@ import { join } from 'node:path';
 
 import type { IBootstrapService, IFlagService, ILogService, ISessionIndex, SessionSummary } from '@kiki/agent-core-v2';
 import { Event } from '@kiki/agent-core-v2/_base/event';
-import { normalizeLiteral, tokenize } from '@kiki/minidb';
+import { normalizeLiteral, tokenize } from '@kiki/lexical';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 
 import type { GlobalSearchQuery } from '../../src/search/contract';
 import type { NormalizedQuery } from '../../src/search/match';
-import { GlobalSearchService, SEARCH_WORKER_FLAG_ID, drainGlobalSearchDisposals } from '../../src/search/searchService';
+import { GlobalSearchService, drainGlobalSearchDisposals } from '../../src/search/searchService';
 import { SqliteSearchIndex } from '../../src/search/sqlite/index';
 
 const T = 1_700_000_000_000;
 const WS = 'ws_test';
 let home: string;
-let legacy: GlobalSearchService | undefined;
+let service: GlobalSearchService | undefined;
 let sqlite: SqliteSearchIndex | undefined;
 const summary = (id: string, time: number): SessionSummary => ({ id, workspaceId: WS, title: id,
   createdAt: time, updatedAt: time, archived: false });
@@ -43,17 +43,17 @@ beforeEach(async () => {
   await writeFile(join(home, 'sessions', WS, 's2', 'agents', 'main', 'wire.jsonl'), user('苹果 second C++', T + 100) + '\n');
 });
 afterEach(async () => {
-  legacy?.dispose();
+  service?.dispose();
   await drainGlobalSearchDisposals();
   sqlite?.close();
   await rm(home, { recursive: true, force: true });
-  legacy = undefined;
+  service = undefined;
   sqlite = undefined;
 });
 
-it.each(['minidb', 'sqlite'] as const)('preserves searchService integration cases (%s)', async (backend) => {
+it.each(['service', 'sqlite'] as const)('preserves searchService integration cases (%s)', async (backend) => {
   const sessions = [summary('s1', T), summary('s2', T + 100)];
-  if (backend === 'minidb') {
+  if (backend === 'service') {
     const sessionIndex = {
       _serviceBrand: undefined,
       prepare: async () => ({ source: 'read-model', state: 'ready', generation: 1, degradedCount: 0 }),
@@ -63,19 +63,19 @@ it.each(['minidb', 'sqlite'] as const)('preserves searchService integration case
       count: async () => sessions.length,
     } as unknown as ISessionIndex;
     const bootstrap = { homeDir: home, scope: (name: string) => name } as IBootstrapService;
-    const flags = { enabled: (id: string) => id === SEARCH_WORKER_FLAG_ID } as unknown as IFlagService;
+    const flags = { enabled: () => true } as unknown as IFlagService;
     const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as ILogService;
-    legacy = new GlobalSearchService(sessionIndex, bootstrap, log, flags);
-    legacy.syncDebounceMs = 0;
-    legacy.setLiveTranscriptSource({ forSessionLive: () => undefined, whenReady: async () => {}, ensureAgentHistory: async () => undefined });
-    await legacy.reindex();
+    service = new GlobalSearchService(sessionIndex, bootstrap, log, flags);
+    service.syncDebounceMs = 0;
+    service.setLiveTranscriptSource({ forSessionLive: () => undefined, whenReady: async () => {}, ensureAgentHistory: async () => undefined });
+    await expect.poll(async () => (await service!.search({ query: '苹果' })).indexState.state, { timeout: 15_000 }).toBe('ready');
   } else {
     sqlite = await SqliteSearchIndex.open(join(home, 'sqlite', 'search.db'));
     for (const id of ['s1', 's2']) await sqlite.syncSession(source(id));
   }
   const search = async (input: GlobalSearchQuery) => {
-    if (legacy) {
-      const page = await legacy.search(input);
+    if (service) {
+      const page = await service.search(input);
       return { items: page.items.map((r) => ({ sessionId: r.sessionId, role: r.role, time: r.time,
         turn: r.turn, stepId: r.stepId })), hasMore: page.hasMore, pageToken: page.pageToken };
     }

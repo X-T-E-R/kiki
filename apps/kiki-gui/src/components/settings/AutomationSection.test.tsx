@@ -17,7 +17,7 @@ let config: FixtureConfig;
 const client = {
   getConfig: vi.fn(async () => structuredClone(config)),
   listTools: vi.fn(async () => ({ tools: ['Read', 'Write', 'ThreadCreate', 'ThreadList'].map((name) => ({ name, description: name, active: true })) })),
-  meta: vi.fn(async () => ({ experimental_flags: { 'tool-select': false, task_wait: true, search_worker: true } })),
+  meta: vi.fn(async () => ({ experimental_flags: { 'tool-select': false, task_wait: true, desktop_search: true } })),
   patchConfig: vi.fn(async (patch: Record<string, any>) => {
     const { replace_domains: _, ...values } = patch;
     config = { ...config, ...values };
@@ -81,19 +81,19 @@ describe('safe automation drafts', () => {
     await mount('rows');
     const rows = container.querySelector('#st-card-exp-extensions')!;
     expect(rows.querySelector('[data-experimental-row="tool-select"]')).not.toBeNull();
-    expect(rows.querySelector('[data-experimental-row="search_worker"]')).toBeNull();
+    expect(rows.querySelector('[data-experimental-row="desktop_search"]')).toBeNull();
     const choose = async (flag: string, value: string) => {
       const button = rows.querySelector<HTMLButtonElement>(`[data-experimental-row="${flag}"] [data-experimental-choice="${value}"]`)!;
       await act(async () => { button.click(); });
       await flush();
     };
-    config.experimental = { search_worker: false };
+    config.experimental = { desktop_search: false };
     await choose('tool-select', 'on');
-    expect(config.experimental).toEqual({ search_worker: false, 'tool-select': true });
+    expect(config.experimental).toEqual({ desktop_search: false, 'tool-select': true });
     // The server still reports it off: an env var outranks the saved choice.
     expect(rows.querySelector('[data-experimental-row="tool-select"] [data-flag-effective]')?.textContent).toBe('Currently off');
     expect(rows.querySelector('[data-experimental-row="tool-select"] [data-experimental-env]')).not.toBeNull();
     await choose('tool-select', 'default');
-    expect(config.experimental).toEqual({ search_worker: false });
+    expect(config.experimental).toEqual({ desktop_search: false });
   });
 });

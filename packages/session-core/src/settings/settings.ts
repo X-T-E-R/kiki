@@ -2389,7 +2389,6 @@ export const EXPERIMENTAL_FLAG_HOMES: readonly ExperimentalFlagHome[] = [
   { id: 'task_wait', section: 'sessions', labelKey: 'st.exp.taskWait.name', descriptionKey: 'st.exp.taskWait.desc', effect: 'now' },
   { id: 'tool-select', section: 'extensions', labelKey: 'st.exp.toolSelect.name', descriptionKey: 'st.exp.toolSelect.desc', effect: 'now' },
   { id: 'external_delegation_mcp', section: 'extensions', labelKey: 'st.exp.delegation.name', descriptionKey: 'st.exp.delegation.desc', effect: 'restart' },
-  { id: 'search_worker', section: 'search', labelKey: 'st.exp.searchWorker.name', descriptionKey: 'st.exp.searchWorker.desc', effect: 'restart' },
   { id: 'desktop_search', section: 'search', labelKey: 'st.exp.desktopSearch.name', descriptionKey: 'st.exp.desktopSearch.desc', effect: 'restart' },
   { id: 'image_format_conversion', section: 'ai', labelKey: 'st.exp.imageConversion.name', descriptionKey: 'st.exp.imageConversion.desc', effect: 'now' },
   { id: 'native_ssh', section: 'ssh', labelKey: 'st.exp.nativeSsh.name', descriptionKey: 'st.exp.nativeSsh.desc', effect: 'restart' },

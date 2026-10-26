@@ -311,7 +311,10 @@ async function acquireReaderGate(lockPath: string): Promise<IStorageLock> {
 }
 
 export async function isSessionLockActive(homeDir: string, scope: string): Promise<boolean> {
-  const path = join(homeDir, SESSION_LOCK_SCOPE, sessionLockKey(scope));
+  return isFileLockActive(join(homeDir, SESSION_LOCK_SCOPE, sessionLockKey(scope)));
+}
+
+export async function isFileLockActive(path: string): Promise<boolean> {
   try {
     return await new FileLock(path, {}, {}).isActive();
   } catch (error) {

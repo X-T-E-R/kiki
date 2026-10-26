@@ -104,3 +104,4 @@ export * from './rest/ssh-remote';
 export * from './rest/web-access';
 export * from './modelSteering';
 export * from './rest/cloudflare';
+export * from './storageMigration';

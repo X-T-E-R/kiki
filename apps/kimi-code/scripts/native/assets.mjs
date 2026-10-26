@@ -7,10 +7,10 @@ import { pathToFileURL } from 'node:url';
 
 import {
   KAP_MODEL_PRICES_ASSET,
-  KAP_SEARCH_WORKER_ASSET,
   KAP_SQLITE_QUERY_WORKER_ASSET,
   KAP_USAGE_PARSER_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
+  MAILBOX_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION,
@@ -373,10 +373,6 @@ export async function collectNativeAssets({ appRoot, target }) {
       MINIDB_TEXT_BUILD_WORKER_ASSET,
     ],
     [
-      resolve(appRoot, 'dist-native', 'intermediates', 'search-worker.mjs'),
-      KAP_SEARCH_WORKER_ASSET,
-    ],
-    [
       resolve(appRoot, 'dist-native', 'intermediates', 'sqlite-query-worker.mjs'),
       KAP_SQLITE_QUERY_WORKER_ASSET,
     ],
@@ -387,6 +383,10 @@ export async function collectNativeAssets({ appRoot, target }) {
     [
       resolve(appRoot, 'dist-native', 'intermediates', 'query-store-worker.mjs'),
       QUERY_STORE_WORKER_ASSET,
+    ],
+    [
+      resolve(appRoot, 'dist-native', 'intermediates', 'mailbox-worker.mjs'),
+      MAILBOX_WORKER_ASSET,
     ],
     [
       resolve(appRoot, '..', '..', 'packages', 'agent-core-v2', 'src', 'app', 'plugin', 'hostRunner.mjs'),

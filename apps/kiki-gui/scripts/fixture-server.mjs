@@ -2629,7 +2629,7 @@ class FixtureServer {
           auto_session_title: true,
           'tool-select': false,
           task_wait: true,
-          search_worker: true,
+          desktop_search: true,
           local_session_resume: true,
           // The import routes only exist when the flag is on.
           plugin_import: this.importEnabled === true,

@@ -1,5 +1,8 @@
 export { installNbSearchWorkerHost, runNbSearchWorkerCommand, NB_SEARCH_WORKER_COMMAND } from '#/nb-search-worker';
 export { configureQueryStoreWorkerRuntime } from '#/query-store-worker';
+export { configureMailboxWorkerRuntime } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/protocol';
+export { assertMailboxStartupReady, createMailboxMigrationService } from '#/storage-migration';
+export type { MailboxMigrationOptions, MailboxMigrationPhase, MailboxMigrationProgress, MailboxMigrationService, MailboxMigrationSource, MailboxMigrationStatus } from '#/storage-migration';
 export { KimiHarness } from '#/kimi-harness';
 export type { KimiHarnessExitReceipt, KimiHarnessRuntimeOptions } from '#/kimi-harness';
 export { Session } from '#/session';

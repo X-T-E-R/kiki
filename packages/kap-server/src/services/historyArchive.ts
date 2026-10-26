@@ -17,7 +17,6 @@ import {
 } from '@kiki/transcript';
 
 import { GlobalSearchError, IGlobalSearchService } from '../search/searchService';
-import { SearchWorkerError } from '../search/worker/host';
 import { makeSnippet } from '../search/snippet';
 import { matchHistoryText, planHistoryQuery } from './history/historyQuery';
 import type { HistoryLocatorStore } from './history/historyLocatorStore';
@@ -387,8 +386,7 @@ export function historyArchiveSeed(getCore: () => Scope, getTranscript: () => Tr
           } : page;
           unavailablePage = page;
         } catch (error) {
-          if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable') &&
-              !(error instanceof SearchWorkerError)) throw error;
+          if (!(error instanceof GlobalSearchError && error.reason === 'index_unavailable')) throw error;
         }
       }
       if (sessionId === undefined || agentId === undefined || includeSubagents === true ||

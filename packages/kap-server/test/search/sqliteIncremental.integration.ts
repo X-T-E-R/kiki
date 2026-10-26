@@ -2,7 +2,7 @@ import { appendFile, mkdir, mkdtemp, rm, stat, writeFile } from 'node:fs/promise
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
-import { normalizeLiteral } from '@kiki/minidb';
+import { normalizeLiteral } from '@kiki/lexical';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 
 import { SqliteSearchIndex } from '../../src/search/sqlite/index';

@@ -78,10 +78,10 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const bundles = [
     { path: nativeJsBundlePath(), worker: false },
     { path: resolve(nativeIntermediatesDir(), 'text-build-worker.mjs'), worker: true },
-    { path: resolve(nativeIntermediatesDir(), 'search-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'sqlite-query-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'usage-parser-worker.mjs'), worker: true },
     { path: resolve(nativeIntermediatesDir(), 'query-store-worker.mjs'), worker: true },
+    { path: resolve(nativeIntermediatesDir(), 'mailbox-worker.mjs'), worker: true },
   ];
   let failed = false;
   for (const bundle of bundles) {

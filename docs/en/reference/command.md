@@ -149,7 +149,7 @@ Thread communication is allowed and off by default. A user setting of `[thread_c
 
 ## Subcommands
 
-`kiki` provides the following subcommands: `session` (inspect saved timelines), `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
+`kiki` provides the following subcommands: `session` (inspect saved timelines), `storage` (upgrade and back up canonical mailboxes), `serve` (start, reuse, or stop the shared daemon), `seat` (manage external-caller seats), `mcp` (run the stdio MCP edge), `doctor` (diagnose the daemon connection), `prompt-fields` (discover and validate prompt fields), `login` (non-interactive OAuth login), `acp` (ACP IDE mode), `web` (the compatible foreground REST/WebSocket/web service), `export` (export a session), and `provider` (manage providers).
 
 ### `kiki session`
 
@@ -186,6 +186,27 @@ Both commands accept the same session reference forms and `--workspace <workspac
 If a sealed journal is already being read, `seal` and `unseal` wait until that read finishes or the reading process exits before removing its sealed segments. A damaged seal fails the read with `Cold journal cannot be read` (`storage.corrupted`), rather than silently reading the original file. Run `unseal` to remove that seal and return to the retained file.
 
 On success, text output reports how many journals were sealed or unsealed. `--json` returns `schemaVersion`, `action` (`seal` or `unseal`), `sessionId`, `workspaceId`, `wires`, and `originalRetained: true`.
+
+### `kiki storage`
+
+Upgrade the canonical peer-message mailbox before opening an older home in Kiki 0.5.x. Interactive and print startup report `mailbox.migration_required` rather than creating an empty mailbox. `status` reads the upgrade state without starting the engine or changing mailbox authority:
+
+```sh
+kiki storage status --home /path/to/home --json
+kiki storage migrate --home /path/to/home
+```
+
+Close every other Kiki writer using that home before `migrate`. If a writer still owns it, the command reports `waiting` and exits with code `2`; it does not take the writer's lock. After the writer exits, repeat `migrate`. The upgrade backs up the source, imports and verifies records, then switches to SQLite. Interrupting a cancellable phase preserves the source and committed import pages; repeat `migrate` to resume. Legacy imports belong to the 0.5.x upgrade series: complete this step with the latest 0.5.x tool before moving to 0.6.
+
+Every storage subcommand accepts `--home` and `--json`. JSON status and progress are newline-delimited objects, including `authority`, `phase`, `state`, `progress`, `failure`, `canCancel`, and `canRollback`. A failed operation exits `1`; a cancelled upgrade exits `130`. The recovery commands are:
+
+```sh
+kiki storage cancel --home /path/to/home
+kiki storage rollback --home /path/to/home
+kiki storage backup /path/to/mailbox-backup.sqlite --home /path/to/home
+```
+
+`cancel` requests cancellation at a committed batch boundary; authority switching finishes once it has begun. `rollback` restores the retained original only before SQLite has accepted new canonical writes. After new writes, keep SQLite authority and retain its backups. `backup` creates and verifies a consistent SQLite copy without overwriting an existing destination; it requires a completed upgrade. Keep the [canonical mailbox directory and its recovery copies](../configuration/data-locations.md#canonical-mailbox), not only the search or query caches.
 
 ### `kiki serve`
 

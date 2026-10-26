@@ -24,7 +24,7 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const { IPluginService } = await import('@kiki/agent-core-v2');
     const { browserSetupStatusSchema } = await import('@kiki/protocol');
     home = await mkdtemp(join(tmpdir(), 'kiki-browser-guided-rest-'));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     const codex = browserSetupStatusSchema.parse((await request('GET', '/browser/setup/codex-browser')).data);
     expect(codex).toMatchObject({ state: 'not_prepared', supported: true, controlSurface: 'browser-connection', reason: 'artifact_missing' });
     expect(Array.isArray(codex.candidates)).toBe(true);
@@ -47,7 +47,7 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const paths = codexBridgeResourcePaths(home);
     await mkdir(paths.directory, { recursive: true });
     for (const name of CODEX_BRIDGE_FILE_NAMES) await cp(join(vendor, name), join(paths.directory, name));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     const read = async (method: string, path: string, body?: unknown) => {
       const envelope = await request(method, path, body);
       expect(envelope.code, envelope.msg).toBe(0);
@@ -94,7 +94,7 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const { ICapabilityService, IConfigService, IFlagService } = await import('@kiki/agent-core-v2');
     const { browserSetupStatusSchema } = await import('@kiki/protocol');
     home = await mkdtemp(join(tmpdir(), 'kiki-browser-enable-rest-'));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: forced, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: forced, KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     const config = server.core.accessor.get(IConfigService);
     await config.set('experimental', { native_browser: false, fixture_other: false });
     const capability = server.core.accessor.get(ICapabilityService);
@@ -169,7 +169,7 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const { browserCatalogResponseSchema, browserConnectionResponseSchema } = await import('@kiki/protocol');
     home = await mkdtemp(join(tmpdir(), 'kiki-webbridge-public-rest-'));
     const start = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!,
-      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     server = await start();
     const saved = await request('PUT', '/browser/connections/http-bridge', { type: 'kimi-webbridge', name: 'Local bridge', enabled: true });
     expect(saved.code).toBe(0);
@@ -198,7 +198,7 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const { browserCatalogResponseSchema } = await import('@kiki/protocol');
     home = await mkdtemp(join(tmpdir(), 'kiki-command-rest-'));
     const start = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!,
-      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     server = await start();
     expect((await request('PUT', '/browser/connections/legacy', { type: 'kimi-webbridge', name: 'Existing Kimi', enabled: true })).code).toBe(0);
     expect((await request('PUT', '/browser/connections/webbridge-command', { type: 'webbridge-command', name: 'Command bridge', enabled: true })).code).toBe(0);
@@ -220,7 +220,7 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const { IBrowserSetupService } = await import('@kiki/agent-core-v2');
     const { browserSetupStatusSchema } = await import('@kiki/protocol');
     home = await mkdtemp(join(tmpdir(), 'kiki-browser-actions-rest-'));
-    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+    server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, env: { ...process.env, KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     const setupService = server.core.accessor.get(IBrowserSetupService);
     const mockStatus = {
       preset: 'independent-browser' as const,
@@ -279,7 +279,7 @@ describe.skipIf(process.env['KIKI_BROWSER_TEST_DRIVER'] === undefined || process
     if (pageAddress === null || typeof pageAddress === 'string') throw new Error('No local fixture address');
     const url = `http://127.0.0.1:${pageAddress.port}`;
     const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home,
-      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' }, logLevel: 'silent' });
+      env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'true', KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     const control = server.core.accessor.get(IBrowserControlService);
     const caller = { sessionId: 'isolated-proof', agentId: 'main' };
     let borrowed: ReturnType<typeof spawn> | undefined;
@@ -406,7 +406,7 @@ describe.skipIf(process.env['KIKI_WEBBRIDGE_SETUP_PROOF'] !== 'true')('guided Ki
     await new Promise<void>((done) => page.listen(0, '127.0.0.1', done));
     const address = page.address();
     if (address === null || typeof address === 'string') throw new Error('Missing proof page port');
-    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', env: { ...process.env, KIKI_EXPERIMENTAL_SEARCH_WORKER: 'false' } });
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent', env: { ...process.env, KIKI_SEARCH_DISABLED: '1' } });
     const receipts: unknown[] = [];
     const request = async (method: string, path: string, body?: unknown) => {
       const response = await fetch(`http://127.0.0.1:${server.port}/api${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });

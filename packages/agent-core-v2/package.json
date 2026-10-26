@@ -67,6 +67,7 @@
     "@kiki/agent-profiles": "workspace:^",
     "@kiki/codex-client": "workspace:^",
     "@kiki/kaos": "workspace:^",
+    "@kiki/lexical": "workspace:^",
     "@kiki/minidb": "workspace:^",
     "@kiki/oauth": "workspace:^",
     "@kiki/protocol": "workspace:^",

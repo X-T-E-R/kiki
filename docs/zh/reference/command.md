@@ -149,7 +149,7 @@ Thread communication 允许使用，并且默认关闭。用户把 `[thread_comm
 
 ## 子命令
 
-`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
+`kiki` 提供以下子命令：`session`（查看已保存的时间线）、`storage`（升级和备份持久消息邮箱）、`serve`（启动、复用或停止共享 daemon）、`seat`（管理外部调用方席位）、`mcp`（运行 stdio MCP 边）、`doctor`（诊断 daemon 连接）、`prompt-fields`（发现与校验提示词字段）、`login`（非交互式 OAuth 登录）、`acp`（ACP IDE 模式）、`web`（兼容的前台 REST/WebSocket/web 服务）、`export`（导出会话）和 `provider`（管理供应商）。
 
 ### `kiki session`
 
@@ -186,6 +186,27 @@ kiki session unseal <session_id> --json
 如果封存后的 journal 已经在被读取，`seal` 和 `unseal` 会等到这次读取结束，或读取它的进程退出，再移除对应的封存分段。封存损坏时，读取失败并报告 `Cold journal cannot be read`（`storage.corrupted`），不会悄悄改读原文件。运行 `unseal` 可去掉该封存，重新读取保留的原文件。
 
 成功时，文本输出报告封存或解除了几个 journal。`--json` 返回 `schemaVersion`、`action`（`seal` 或 `unseal`）、`sessionId`、`workspaceId`、`wires`，以及 `originalRetained: true`。
+
+### `kiki storage`
+
+在 Kiki 0.5.x 中打开旧 home 前，先升级线程间消息的持久邮箱。交互式和 print 启动会报告 `mailbox.migration_required`，不会另建一个空邮箱。`status` 只读取升级状态，不启动引擎，也不切换消息存储：
+
+```sh
+kiki storage status --home /path/to/home --json
+kiki storage migrate --home /path/to/home
+```
+
+运行 `migrate` 前，关闭所有使用这个 home 写入数据的其他 Kiki 进程。仍有进程持有写锁时，命令报告 `waiting` 并以退出码 `2` 结束，不抢占写锁；原进程退出后，重复运行 `migrate`。升级依次备份原件、导入并核对记录，再切换到 SQLite。在可取消阶段中断时，原件与已提交的导入页都会保留；重复运行 `migrate` 即可续接。旧格式导入属于 0.5.x 升级流程，请先用最新的 0.5.x 工具完成迁移，再升级到 0.6。
+
+每个 storage 子命令都接受 `--home` 和 `--json`。JSON 状态和进度按行输出，包含 `authority`、`phase`、`state`、`progress`、`failure`、`canCancel` 和 `canRollback`。操作失败时退出码为 `1`，升级取消时为 `130`。恢复相关命令如下：
+
+```sh
+kiki storage cancel --home /path/to/home
+kiki storage rollback --home /path/to/home
+kiki storage backup /path/to/mailbox-backup.sqlite --home /path/to/home
+```
+
+`cancel` 请求在已提交的批次边界停止；一旦开始切换存储，这一步会继续完成。`rollback` 仅在 SQLite 尚未接受新的持久写入前恢复保留的原件。已有新写入后，应继续使用 SQLite 并保留其备份。`backup` 创建并核对一份一致的 SQLite 副本，不覆盖已有目标；运行前须先完成升级。请保留[消息邮箱目录与恢复副本](../configuration/data-locations.md#持久消息邮箱)，不能只备份搜索或查询缓存。
 
 ### `kiki serve`
 

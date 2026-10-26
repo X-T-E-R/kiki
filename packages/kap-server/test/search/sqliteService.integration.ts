@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { afterEach, expect, it } from 'vitest';
@@ -12,7 +12,8 @@ afterEach(async () => {
   for (const home of homes.splice(0)) await rm(home, { recursive: true, force: true });
 });
 
-function service(home: string, enabled?: boolean, backend = 'sqlite', events?: IEventService): GlobalSearchService {
+function service(home: string, enabled?: boolean, backend = 'sqlite', events?: IEventService,
+  desktopSearch = true, warn: ILogService['warn'] = () => {}): GlobalSearchService {
   const index = {
     prepare: async () => ({ source: 'authoritative', state: 'ready' }),
     status: () => ({ source: 'authoritative', state: 'ready' }),
@@ -23,8 +24,8 @@ function service(home: string, enabled?: boolean, backend = 'sqlite', events?: I
   } as unknown as ISessionIndex;
   const config = { get: (section: string) => section === 'search' ? { enabled } :
     section === 'search_backend' ? backend : undefined } as unknown as IConfigService;
-  const flags = { enabled: () => false } as unknown as IFlagService;
-  const log = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} } as unknown as ILogService;
+  const flags = { enabled: () => desktopSearch } as unknown as IFlagService;
+  const log = { info: () => {}, warn, error: () => {}, debug: () => {} } as unknown as ILogService;
   const bootstrap = { homeDir: home, scope: (scope: string) => scope } as unknown as IBootstrapService;
   const search = new GlobalSearchService(index, bootstrap, log, flags, config, events);
   search.syncDebounceMs = 0;
@@ -63,37 +64,59 @@ it('serves partial building progress then locatable SQLite hits while indexing i
   } finally { search.dispose(); }
 });
 
-it('keeps desktop default disabled and allows explicit opt-in after restart', async () => {
-  const home = await mkdtemp(join(process.cwd(), '.tmp-search-s4-gate-'));
+it.each(['config', 'desktop', 'env'] as const)('preserves explicit %s disable with the old backend alias and retry', async (kind) => {
+  const home = await mkdtemp(join(process.cwd(), '.tmp-search-disabled-'));
   homes.push(home);
-  const previous = process.env['KIKI_DESKTOP_BUNDLED'];
+  const previousDesktop = process.env['KIKI_DESKTOP_BUNDLED'];
+  const previousDisabled = process.env['KIKI_SEARCH_DISABLED'];
   process.env['KIKI_DESKTOP_BUNDLED'] = '1';
+  if (kind === 'env') process.env['KIKI_SEARCH_DISABLED'] = '1';
+  const search = service(home, kind === 'config' ? false : true, 'minidb', undefined, kind !== 'desktop');
   try {
-    const off = service(home);
-    expect((await off.search({ query: 'needle', indexOnly: true })).indexState).toMatchObject({
-      state: 'unavailable', reason: 'disabled',
-    });
-    expect((await off.status()).indexer?.indexerPid).toBeUndefined();
-    off.dispose();
-    await drainGlobalSearchDisposals();
-    const on = service(home, true);
-    expect((await on.search({ query: 'needle', indexOnly: true })).indexState.state).not.toBe('unavailable');
-    on.dispose();
+    expect((await search.search({ query: 'needle', indexOnly: true })).indexState).toMatchObject({ state: 'unavailable', reason: 'disabled' });
+    search.retryIndexer();
+    await expect(search.reindex()).rejects.toMatchObject({ reason: 'index_unavailable' });
+    expect((await search.status()).indexer).toMatchObject({ queryWorkers: 0 });
+    expect((await search.status()).indexer?.indexerPid).toBeUndefined();
+    await expect(stat(join(home, 'search-index-v2'))).rejects.toMatchObject({ code: 'ENOENT' });
   } finally {
-    if (previous === undefined) delete process.env['KIKI_DESKTOP_BUNDLED'];
-    else process.env['KIKI_DESKTOP_BUNDLED'] = previous;
+    search.dispose();
+    if (previousDesktop === undefined) delete process.env['KIKI_DESKTOP_BUNDLED'];
+    else process.env['KIKI_DESKTOP_BUNDLED'] = previousDesktop;
+    if (previousDisabled === undefined) delete process.env['KIKI_SEARCH_DISABLED'];
+    else process.env['KIKI_SEARCH_DISABLED'] = previousDisabled;
   }
 });
 
-it('selects the MiniDb rollback without creating a SQLite indexer', async () => {
-  const home = await mkdtemp(join(process.cwd(), '.tmp-search-s4-minidb-'));
+it.each(['config', 'env'] as const)('migrates the explicit %s minidb alias to SQLite and preserves the old directory', async (kind) => {
+  const home = await mkdtemp(join(process.cwd(), '.tmp-search-alias-'));
   homes.push(home);
-  const search = service(home, undefined, 'minidb');
+  await mkdir(join(home, 'search-index'), { recursive: true });
+  await writeFile(join(home, 'search-index', 'preserved.txt'), 'old derived cache');
+  const dir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, 'wire.jsonl'), JSON.stringify({ type: 'context.append_message', time: 1_700_000_000_000,
+    message: { role: 'user', origin: { kind: 'user' }, content: [{ type: 'text', text: '苹果 ＡＢ alias needle' }] } }) + '\n');
+  const previous = process.env['KIKI_SEARCH_BACKEND'];
+  if (kind === 'env') process.env['KIKI_SEARCH_BACKEND'] = 'minidb';
+  const warnings: string[] = [];
+  const search = service(home, true, kind === 'config' ? 'minidb' : 'sqlite', undefined, true,
+    (message) => { warnings.push(message); });
   try {
-    const status = await search.status();
-    expect(status.indexer).toBeUndefined();
-    expect(status.lifecycle.state).not.toBe('degraded');
-  } finally { search.dispose(); }
+    expect(await search.reindex()).toMatchObject({ sessions: 1 });
+    expect((await search.search({ query: '苹果', mode: 'literal' })).items[0]).toMatchObject({ sessionId: 's1', role: 'user' });
+    expect((await search.search({ query: 'ab', mode: 'literal' })).items[0]?.snippet).toContain('ＡＢ');
+    expect((await search.status()).indexer?.indexerPid).toBeTypeOf('number');
+    expect(await readFile(join(home, 'search-index', 'preserved.txt'), 'utf8')).toBe('old derived cache');
+    expect(await readdir(join(home, 'search-index'))).toEqual(['preserved.txt']);
+    expect((await stat(join(home, 'search-index-v2', 'index.sqlite'))).isFile()).toBe(true);
+    expect(warnings.filter((text) => text.includes('deprecated alias'))).toHaveLength(1);
+    expect(warnings[0]).toContain('0.6');
+  } finally {
+    search.dispose();
+    if (previous === undefined) delete process.env['KIKI_SEARCH_BACKEND'];
+    else process.env['KIKI_SEARCH_BACKEND'] = previous;
+  }
 });
 
 it('pushes cold-build progress without a search or status polling loop', async () => {

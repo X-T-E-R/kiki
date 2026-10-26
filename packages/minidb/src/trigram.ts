@@ -18,7 +18,10 @@
 //     deps); 2-grams and 3-grams carry distinct tag prefixes so their buckets
 //     never alias.
 
+import { normalizeLiteral } from '@kiki/lexical';
 import { crc32 } from './crc32.ts';
+
+export { normalizeLiteral };
 
 /** Tokenizer kinds that can be persisted in a text index definition
  *  (`db.textindexes.json`). A definition without the field (written before
@@ -29,13 +32,6 @@ export type TextIndexTokenizerName = 'default' | 'ngram';
  *  confirmation work downstream; they never affect correctness. */
 const HASH_BITS = 22;
 const HASH_MASK = (1 << HASH_BITS) - 1;
-
-/** Normalize text for literal matching: Unicode NFKC (fullwidth `＄` -> `$`,
- *  compatibility glyphs folded) + lowercase. The search layer's confirmation
- *  step must use this exact function so index and comparison agree. */
-export function normalizeLiteral(text: string): string {
-  return text.normalize('NFKC').toLowerCase();
-}
 
 function termFor(gram: string, width: number): string {
   const hash = crc32(Buffer.from(gram, 'utf8')) & HASH_MASK;

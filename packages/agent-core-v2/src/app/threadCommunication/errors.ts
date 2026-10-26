@@ -12,6 +12,7 @@ export const ThreadCommunicationErrors = {
     THREAD_LIMIT_EXCEEDED: 'thread.limit_exceeded',
     THREAD_DELIVERY_FAILED: 'thread.delivery_failed',
     MAILBOX_LEGACY_WRITER_ACTIVE: 'mailbox.legacy_writer_active',
+    MAILBOX_MIGRATION_REQUIRED: 'mailbox.migration_required',
   },
   retryable: ['thread.delivery_failed', 'mailbox.legacy_writer_active'],
 } as const satisfies ErrorDomain;

@@ -29,10 +29,6 @@
       "types": "./src/mcp/stdioRuntime.ts",
       "default": "./src/mcp/stdioRuntime.ts"
     },
-    "./search-worker-runtime": {
-      "types": "./src/search/worker/runtime.ts",
-      "default": "./src/search/worker/runtime.ts"
-    },
     "./usage-worker-runtime": {
       "types": "./src/usage/worker/runtime.ts",
       "default": "./src/usage/worker/runtime.ts"
@@ -63,7 +59,7 @@
     "@fastify/swagger": "^9.7.0",
     "@kiki/agent-core-v2": "workspace:^",
     "@kiki/klient": "workspace:^",
-    "@kiki/minidb": "workspace:*",
+    "@kiki/lexical": "workspace:^",
     "@kiki/oauth": "workspace:^",
     "@kiki/protocol": "workspace:^",
     "@kiki/transcript": "workspace:^",

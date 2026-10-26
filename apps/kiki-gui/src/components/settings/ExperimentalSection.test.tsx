@@ -48,7 +48,7 @@ beforeEach(() => {
   client.meta.mockReset().mockResolvedValue({
     experimental_flags: {
       task_wait: true,
-      search_worker: true,
+      desktop_search: true,
       auto_session_title: false,
       vendor_extension: true,
     },
@@ -157,21 +157,21 @@ describe('ExperimentalRows', () => {
 
   it('marks a restart when a restart-only flag is turned on', async () => {
     await render('search');
-    const on = container.querySelector<HTMLButtonElement>('[data-experimental-row="search_worker"] [data-experimental-choice="off"]')!;
-    expect(container.querySelector('[data-experimental-row="search_worker"] [data-experimental-effect]')?.textContent)
+    const on = container.querySelector<HTMLButtonElement>('[data-experimental-row="desktop_search"] [data-experimental-choice="off"]')!;
+    expect(container.querySelector('[data-experimental-row="desktop_search"] [data-experimental-effect]')?.textContent)
       .toBe('Turning it on needs a server restart.');
     await act(async () => { on.click(); });
     await flush();
     expect(client.patchConfig).toHaveBeenCalledWith({
-      experimental: { task_wait: true, search_worker: false },
+      experimental: { task_wait: true, desktop_search: false },
       replace_domains: ['experimental'],
     });
     // Turning a restart-only flag off applies on the next check; no restart prompt.
     expect(restartRequirementSnapshot().required).toBe(false);
-    const again = container.querySelector<HTMLButtonElement>('[data-experimental-row="search_worker"] [data-experimental-choice="on"]')!;
+    const again = container.querySelector<HTMLButtonElement>('[data-experimental-row="desktop_search"] [data-experimental-choice="on"]')!;
     await act(async () => { again.click(); });
     await flush();
-    expect(restartRequirementSnapshot().fields).toContain('search_worker');
+    expect(restartRequirementSnapshot().fields).toContain('desktop_search');
   });
 
   it.each([true, false])('marks a restart only when restoring Default resolves on (%s)', async (enabled) => {

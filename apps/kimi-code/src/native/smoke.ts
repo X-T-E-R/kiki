@@ -5,10 +5,10 @@ import { dirname, join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 
 import { MiniDb } from '@kiki/minidb';
-import { getSearchWorkerRuntimeState } from '@kiki/kap-server/search-worker-runtime';
 
 import {
   getEmbeddedNativeAssetManifest,
+  getMailboxWorkerFile,
   getNativeCacheBase,
   getNativePackageRoot,
   getQueryStoreWorkerFile,
@@ -155,48 +155,20 @@ async function smokeMinidbWorker(): Promise<void> {
   }
 }
 
-async function smokeSearchWorker(): Promise<void> {
-  // The SEA-extracted global-search worker entry must boot from disk and
-  // complete the versioned ready handshake.
-  const runtime = getSearchWorkerRuntimeState();
-  if (!runtime.configured) {
-    throw new Error('search worker runtime was not configured');
-  }
-  const cacheBase = getNativeCacheBase();
-  mkdirSync(cacheBase, { recursive: true });
-  const dir = mkdtempSync(join(cacheBase, 'sea-search-worker-'));
-  const worker = new Worker(runtime.path, {
-    workerData: { dir, bootSalt: 'sea-smoke' },
-  });
-  try {
-    const ready = once(worker, 'message', {
-      signal: AbortSignal.timeout(15_000),
-    }) as Promise<unknown[]>;
-    const [event] = await ready;
-    const v = (event as { type?: string; v?: number }).v;
-    if ((event as { type?: string }).type !== 'ready' || typeof v !== 'number') {
-      throw new Error(`search worker handshake is unexpected: ${JSON.stringify(event)}`);
-    }
-  } finally {
-    await worker.terminate().catch(() => {});
-    rmSync(dir, { recursive: true, force: true });
-  }
-}
-
-type QueryStoreWorkerResponse = {
+type NativeWorkerResponse = {
   readonly id: number;
   readonly result?: unknown;
   readonly error?: { readonly message: string };
 };
 
-async function queryStoreWorkerRequest(
+async function nativeWorkerRequest(
   worker: Worker,
   id: number,
   operation: unknown,
 ): Promise<unknown> {
   const responsePromise = once(worker, 'message', {
     signal: AbortSignal.timeout(15_000),
-  }) as Promise<[QueryStoreWorkerResponse]>;
+  }) as Promise<[NativeWorkerResponse]>;
   worker.postMessage({ id, operation });
   const [response] = await responsePromise;
   if (response.error !== undefined) throw new Error(response.error.message);
@@ -216,7 +188,7 @@ async function smokeQueryStoreWorker(): Promise<void> {
     signal: AbortSignal.timeout(15_000),
   }) as Promise<[number]>;
   try {
-    await queryStoreWorkerRequest(worker, 1, {
+    await nativeWorkerRequest(worker, 1, {
       type: 'batch',
       ops: [{
         kind: 'put',
@@ -225,7 +197,7 @@ async function smokeQueryStoreWorker(): Promise<void> {
         value: { value: 'worker' },
       }],
     });
-    const result = await queryStoreWorkerRequest(worker, 2, {
+    const result = await nativeWorkerRequest(worker, 2, {
       type: 'get',
       collection: 'smoke',
       keys: ['row-1'],
@@ -234,9 +206,44 @@ async function smokeQueryStoreWorker(): Promise<void> {
     if (!Array.isArray(row) || row[0] !== 'row-1' || (row[1] as { value?: unknown }).value !== 'worker') {
       throw new Error(`query-store worker returned an unexpected row: ${JSON.stringify(result)}`);
     }
-    await queryStoreWorkerRequest(worker, 3, { type: 'close' });
+    await nativeWorkerRequest(worker, 3, { type: 'close' });
     const [exitCode] = await exited;
     if (exitCode !== 0) throw new Error(`query-store worker exited with code ${exitCode}`);
+  } finally {
+    await worker.terminate().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
+async function smokeMailboxWorker(): Promise<void> {
+  const runtime = getMailboxWorkerFile();
+  if (runtime === null) throw new Error('mailbox worker runtime was not installed');
+  const cacheBase = getNativeCacheBase();
+  mkdirSync(cacheBase, { recursive: true });
+  const dir = mkdtempSync(join(cacheBase, 'sea-mailbox-worker-'));
+  const worker = new Worker(runtime, {
+    workerData: { database: join(dir, 'mailbox.sqlite'), create: true },
+  });
+  const exited = once(worker, 'exit', {
+    signal: AbortSignal.timeout(15_000),
+  }) as Promise<[number]>;
+  try {
+    await nativeWorkerRequest(worker, 1, {
+      type: 'batch',
+      ops: [{ op: 'set', key: 'smoke', value: { kind: 'receipt', value: 'worker' } }],
+    });
+    const result = await nativeWorkerRequest(worker, 2, {
+      type: 'get',
+      keys: ['smoke'],
+    });
+    const value = (result as unknown[])[0] as { kind?: unknown; value?: unknown } | undefined;
+    if (value?.kind !== 'receipt' || value.value !== 'worker') {
+      throw new Error(`mailbox worker returned an unexpected value: ${JSON.stringify(result)}`);
+    }
+    await nativeWorkerRequest(worker, 3, { type: 'verify' });
+    await nativeWorkerRequest(worker, 4, { type: 'close' });
+    const [exitCode] = await exited;
+    if (exitCode !== 0) throw new Error(`mailbox worker exited with code ${exitCode}`);
   } finally {
     await worker.terminate().catch(() => {});
     rmSync(dir, { recursive: true, force: true });
@@ -295,12 +302,12 @@ async function runSmoke(): Promise<void> {
   smokePiTuiNativeLoad();
   smokeKeyringNativeLoad();
   await smokeMinidbWorker();
-  await smokeSearchWorker();
   await smokeQueryStoreWorker();
+  await smokeMailboxWorker();
   await smokeNativePty();
   await smokeAuthNative();
   process.stdout.write(
-    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; search worker ready; query-store worker ready; PTY input/resize/exit/kill passed\n`,
+    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; query-store worker ready; mailbox worker ready; PTY input/resize/exit/kill passed\n`,
   );
 }
 

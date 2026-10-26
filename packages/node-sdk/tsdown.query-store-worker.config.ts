@@ -6,25 +6,37 @@ const workerEntry = resolve(
   import.meta.dirname,
   '../agent-core-v2/src/persistence/backends/sqlite/entry.ts',
 );
+const mailboxWorkerEntry = resolve(
+  import.meta.dirname,
+  '../agent-core-v2/src/persistence/backends/sqliteMailbox/entry.ts',
+);
 
-export default defineConfig({
-  entry: { 'query-store-worker': workerEntry },
-  format: ['esm'],
-  outDir: 'dist',
-  clean: false,
-  dts: false,
-  hash: false,
-  platform: 'node',
-  target: 'node24',
-  sourcemap: false,
-  minify: false,
-  silent: true,
-  deps: {
-    alwaysBundle: [/^@kiki\//],
-    onlyBundle: false,
-  },
-  outputOptions: {
-    codeSplitting: false,
-    entryFileNames: '[name].mjs',
-  },
-});
+function workerConfig(name: string, entry: string) {
+  return defineConfig({
+    name,
+    entry: { [name]: entry },
+    format: ['esm'],
+    outDir: 'dist',
+    clean: false,
+    dts: false,
+    hash: false,
+    platform: 'node',
+    target: 'node24',
+    sourcemap: false,
+    minify: false,
+    silent: true,
+    deps: {
+      alwaysBundle: [/^@kiki\//],
+      onlyBundle: false,
+    },
+    outputOptions: {
+      codeSplitting: false,
+      entryFileNames: '[name].mjs',
+    },
+  });
+}
+
+export default [
+  workerConfig('query-store-worker', workerEntry),
+  workerConfig('mailbox-worker', mailboxWorkerEntry),
+];
