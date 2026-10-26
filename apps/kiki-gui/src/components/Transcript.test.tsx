@@ -6068,6 +6068,12 @@ describe('subagent timeline dual form (G-4)', () => {
     expect(card?.textContent).toContain('Mapped the whole protocol surface.');
     expect(card?.textContent).toContain('1m 30s');
     expect(card?.textContent).toContain('3 tool');
+    const toggle = card?.querySelector('[data-activity-toggle]');
+    const label = card?.querySelector('[data-activity-label]');
+    expect(toggle?.className).toContain('flex-1');
+    expect(label?.className).toContain('min-w-0');
+    expect(label?.className).toContain('shrink');
+    expect(label?.className).toContain('truncate');
     // The compact row jumps; the full body (description line) stays folded.
     await act(async () => {
       flushSync(() => { click(card!.querySelector('[data-agent-open]')!); });

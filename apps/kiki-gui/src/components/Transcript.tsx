@@ -1612,6 +1612,7 @@ function SubagentCompactCard({
   return (
     <ActivityRow
       nested={depth > 0}
+      shrinkLabel
       className={`@container${block.orphaned === true && depth > 0 ? ' opacity-60' : ''}`}
       attrs={{
         'data-subagent-id': block.subagentId,
@@ -1623,7 +1624,7 @@ function SubagentCompactCard({
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
       glyph={<span className={`inline-block h-2 w-2 rounded-full align-middle ${subagentStatusTone(status)}`} />}
       tone={error !== undefined ? 'danger' : 'plain'}
-      label={<span className="block max-w-[10rem] truncate @sm:max-w-none">{block.name}</span>}
+      label={block.name}
       detail={detail}
       title={error ?? t('subagent.openAgent', { name: block.name })}
       onOpen={() => { onOpenAgent?.(block.subagentId); }}

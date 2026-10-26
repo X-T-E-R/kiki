@@ -118,6 +118,8 @@ export interface ActivityRowProps {
   readonly layout?: 'question';
   /** Rendered inside a read-run's spine: the hover wash stops at the spine. */
   readonly nested?: boolean;
+  /** Allow a long subject label (such as a subagent name) to shrink and truncate on narrow viewports. */
+  readonly shrinkLabel?: boolean;
 }
 
 /**
@@ -148,9 +150,17 @@ export function ActivityRow({
   className = '',
   layout,
   nested = false,
+  shrinkLabel = false,
 }: ActivityRowProps) {
   const interactive = onToggle ?? onOpen;
-  const heading = <span className={`shrink-0 font-sans text-[13px] font-medium ${LABEL_TONE[tone]}`}>{label}</span>;
+  const heading = (
+    <span
+      data-activity-label
+      className={`${shrinkLabel ? 'min-w-0 shrink truncate' : 'shrink-0'} font-sans text-[13px] font-medium ${LABEL_TONE[tone]}`}
+    >
+      {label}
+    </span>
+  );
   const excerpt = <span data-activity-detail className={`min-w-0 flex-1 truncate font-sans text-[12px] ${DETAIL_TONE[tone]}`}>{detail}</span>;
   const inner = (
     <>
@@ -191,9 +201,9 @@ export function ActivityRow({
   // a row with trailing controls keeps them inside the column instead.
   // A nested row sits on the read-run spine instead: its wash starts one
   // pixel right of the spine and never crosses it.
-  const bleed = `${nested
-    ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]'
-    : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
+  const bleed = shrinkLabel && aside !== undefined
+    ? `${nested ? '-ml-[17px] pl-[17px]' : '-ml-[34px] pl-[34px]'} flex-1`
+    : `${nested ? '-ml-[17px] w-[calc(100%+25px)] pl-[17px]' : '-ml-[34px] w-[calc(100%+42px)] pl-[34px]'}${aside === undefined ? ' -mr-2' : ''}`;
   const shell = `group/act flex min-h-[26px] min-w-0 items-center gap-2 rounded-md py-0.5 text-left transition-colors duration-[var(--kiki-motion-quick)] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink ${ROW_TONE[tone]} ${bleed} pr-2`;
   return (
     <div data-activity-row data-activity-layout={layout} title={title} className={`anim-enter ${className}`} {...attrs}>
