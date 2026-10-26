@@ -33,7 +33,7 @@ export function registerImSessionRoutes(app: FastifyInstance, bridge: ImSessionB
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
-      const validation = /^(?:paste_unrecognized|unknown_|unsupported_|home_session_missing|instance_required|setup_|matrix_|discord_|slack_|oauth_)/u.test(message);
+      const validation = /^(?:paste_unrecognized|unknown_|unsupported_|home_session_missing|instance_required|group_binding_scope_required|topic_scope_unavailable|input_unsupported|output_unsupported|setup_|matrix_|discord_|slack_|oauth_)/u.test(message);
       reply.send(errEnvelope(validation ? ErrorCode.VALIDATION_FAILED : ErrorCode.INTERNAL_ERROR, message, req.id));
     }
   };

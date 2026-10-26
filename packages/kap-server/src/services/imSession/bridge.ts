@@ -218,9 +218,16 @@ function kindOf(providerId: string): ImProviderKind | undefined {
 }
 
 function matchesBinding(binding: BindingRecord, identity: ImInboundIdentity): boolean {
-  if (binding.bindingScope === undefined || binding.bindingScope === 'sender') return sameIdentity(binding.identity, identity);
+  if (binding.bindingScope === undefined || binding.bindingScope === 'sender' || (binding.bindingScope === 'topic' && binding.identity.topicId === '0')) return sameIdentity(binding.identity, identity);
   if (binding.identity.chatKind !== 'group' || identity.chatKind !== 'group' || binding.identity.chatId !== identity.chatId) return false;
-  return binding.bindingScope === 'chat' || binding.identity.topicId === identity.topicId;
+  if (binding.bindingScope === 'chat') return true;
+  return binding.identity.topicId === identity.topicId;
+}
+
+function assertGroupScope(scope: 'sender' | 'topic' | 'chat', identity: ImInboundIdentity): void {
+  if (scope === 'sender') return;
+  if (identity.chatKind !== 'group') throw new Error('group_binding_scope_required');
+  if (scope === 'topic' && identity.topicId === '0') throw new Error('topic_scope_unavailable');
 }
 
 function overlapsBinding(left: BindingRecord, right: BindingRecord): boolean {
@@ -652,7 +659,7 @@ export class ImSessionBridge {
       const meta = this.requireMeta(discovery.providerInstanceId);
       const resolved = await this.resolveTarget(request.target);
       const scope = request.binding_scope ?? 'sender';
-      if (scope !== 'sender' && discovery.identity.chatKind !== 'group') throw new Error('group_binding_scope_required');
+      assertGroupScope(scope, discovery.identity);
       const factory = this.factories.find((item) => item.providerKind === discovery.providerKind);
       if (factory?.inbound === false && request.input_enabled === true) throw new Error('input_unsupported');
       if (factory?.outbound === false && request.output_enabled === true) throw new Error('output_unsupported');
@@ -672,14 +679,26 @@ export class ImSessionBridge {
       binding.groupPolicy = request.group_policy ?? binding.groupPolicy ?? (scope === 'sender' ? undefined : { wake: 'mention_or_reply' });
       binding.inputEnabled = factory?.inbound === false ? false : request.input_enabled ?? binding.inputEnabled;
       binding.outputEnabled = factory?.outbound === false ? false : request.output_enabled ?? binding.outputEnabled;
-      this.claimInput(binding, request.rebind === true);
-      if (existing === undefined) this.state.bindings.push(binding);
-      else {
-        if (existing.sessionId !== binding.sessionId) this.expireReplies(existing.id);
-        this.state.bindings[this.state.bindings.indexOf(existing)] = binding;
+      const previousBindings = [...this.state.bindings];
+      const previousInputs = previousBindings.map((item) => [item, item.inputEnabled] as const);
+      const previousDiscoveries = this.state.discoveries;
+      const previousReplies = this.state.replies.map((item) => [item, item.open] as const);
+      try {
+        this.claimInput(binding, request.rebind === true);
+        if (existing === undefined) this.state.bindings.push(binding);
+        else {
+          if (existing.sessionId !== binding.sessionId) this.expireReplies(existing.id);
+          this.state.bindings[this.state.bindings.indexOf(existing)] = binding;
+        }
+        this.state.discoveries = this.state.discoveries.filter((item) => item.id !== discoveryId);
+        await this.persist();
+      } catch (error) {
+        this.state.bindings = previousBindings;
+        for (const [item, enabled] of previousInputs) item.inputEnabled = enabled;
+        this.state.discoveries = previousDiscoveries;
+        for (const [item, open] of previousReplies) item.open = open;
+        throw error;
       }
-      this.state.discoveries = this.state.discoveries.filter((item) => item.id !== discoveryId);
-      await this.persist();
       if (request.also_home && resolved.personaId !== undefined) await this.ports.sessions.setHome?.(resolved.personaId, resolved.sessionId);
       return this.snapshot();
     });
@@ -736,7 +755,7 @@ export class ImSessionBridge {
       if (resolved !== undefined && binding.sessionId !== resolved.sessionId && !patch.rebind) throw this.identityConflict(binding, resolved.sessionId);
       const next = { ...binding };
       if (patch.bindingScope !== undefined) {
-        if (patch.bindingScope !== 'sender' && binding.identity.chatKind !== 'group') throw new Error('group_binding_scope_required');
+        assertGroupScope(patch.bindingScope, binding.identity);
         next.bindingScope = patch.bindingScope;
         if (patch.bindingScope !== 'sender') next.groupPolicy ??= { wake: 'mention_or_reply' };
       }

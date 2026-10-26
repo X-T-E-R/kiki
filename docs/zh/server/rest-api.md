@@ -727,7 +727,11 @@ Klient 提供 `rest.rooms.listItems()` 和 `global.rooms.listItems()`。`klient.
 
 `target` 使用 `{ kind: "session", session_id }`；也保留 `{ kind: "persona", persona_id }`，作为绑定到该角色日常会话的快捷方式。PATCH 仍接受旧的 `session_id`，但它与 `target` 互斥；`also_home` 仅用于确认绑定。重新确认保留已有 `enabled`、`session_enabled`、`input_enabled` 和 `output_enabled`，除非请求明确修改。`session_enabled: null` 跟随 `policy.default_enabled`；方向设为 `null` 则删除该方向覆盖。入站、出站仍受绑定总开关与会话准入限制。
 
-群聊确认和 PATCH 支持 `binding_scope: "sender" | "topic" | "chat"`；省略时保留仅匹配原发送者的方式。PATCH 原位修改已有绑定。扩大范围与其他已启用入站绑定重叠时，须带 `rebind: true`；被拒绝或保存失败的修改保留原范围和入站归属。话题或群级绑定让成员共用一个会话，但保留逐条真实发送者 ID，也不允许成员处理别人的待办交互。新建的显式话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention_or_reply" | "manual", prefixes?: string[] }`：`always` 逐条唤醒；`mention_or_reply` 在真实 @、回复已知自身消息或命中配置的字面前缀时唤醒；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。
+群聊确认和 PATCH 支持 `binding_scope: "sender" | "topic" | "chat"`；省略时只匹配原发送者。`topic_id: "0"` 表示没有话题：选 `"chat"` 绑定整群，选 `"sender"` 绑定原发送者；选 `"topic"` 返回业务码 `40001` / `topic_scope_unavailable`。非群聊选 `"topic"` 或 `"chat"` 返回 `40001` / `group_binding_scope_required`。已保存的无话题 `"topic"` 绑定仍只匹配原发送者，不会自动扩到整群。
+
+PATCH 原位修改绑定。扩大范围与其他已启用入站绑定重叠时，须带 `rebind: true`；被拒绝或保存失败后，原绑定和待处理回复保持不变。显式打开连接不支持的方向返回 `40001` / `input_unsupported` 或 `output_unsupported`。这些错误在 HTTP 200 的 envelope 内；身份冲突使用业务码 `40949`。话题或群级绑定让成员共用会话，但保留真实发送者 ID，也不允许成员处理别人的待办交互。
+
+新建的话题或群级绑定默认使用 `group_policy: { wake: "mention_or_reply" }`。确认和 PATCH 都接受 `group_policy: { wake: "always" | "mention_or_reply" | "manual", prefixes?: string[] }`：`always` 逐条唤醒；`mention_or_reply` 在真实 @、回复已知自身消息或命中配置的字面前缀时唤醒；`manual` 只记录、不唤醒。没有策略的旧发送者级绑定仍逐条唤醒。
 
 @ 和回复识别依赖适配器提供真实元数据。内置 Telegram 提供真实消息 ID、时间戳、发送者和群名称、基于实体的 @ 与回复 ID；update ID 单独用于事件去重。未提供这些字段的其他传输可使用前缀或 `always`。
 

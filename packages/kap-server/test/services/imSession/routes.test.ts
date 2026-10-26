@@ -11,7 +11,8 @@ import { NotificationService } from '../../../src/services/notifications/notific
 import { ImSessionSetup } from '../../../src/services/imSession/setup';
 
 import { registerImSessionRoutes } from '../../../src/routes/imSessions';
-import { ImIdentityAlreadyBoundError, type ImSessionBridge } from '../../../src/services/imSession/bridge';
+import { ImIdentityAlreadyBoundError, ImSessionBridge } from '../../../src/services/imSession/bridge';
+import type { ImSessionPorts } from '../../../src/services/imSession/ports';
 
 const snapshot = { policy: { allowed: true, default_enabled: true }, instances: [], discoveries: [], bindings: [], strangers: [], voice_fallbacks: 0 };
 
@@ -81,6 +82,7 @@ it('returns structured identity rebind conflicts without hiding the target detai
   registerImSessionRoutes(app, bridge);
   try {
     const response = await app.inject({ method: 'PATCH', url: '/im/sessions/bindings/b1', payload: { session_id: 'new' } });
+    expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({ code: 40949, msg: 'im_identity_already_bound', details: { previous_session_id: 'old', target_session_id: 'new', variant_key: { provider_instance_id: 'inst', account_id: 'account', chat_id: 'chat', topic_id: 'topic', sender_id: 'sender' } } });
   } finally { await app.close(); }
 });
@@ -257,4 +259,155 @@ it('binds an existing indexed session through native routes and reopens the save
     expect(invalid.code).toBe(40001);
     expect(reopenedAdapter.sent).toHaveLength(1);
   } finally { await close(); await rm(home, { recursive: true, force: true }); }
+});
+
+it('serves group confirm and PATCH on the envelope, including scope conflicts and failed saves', async () => {
+  const topic = { chatId: 'g1', senderId: 'owner', topicId: '12', chatKind: 'group' as const };
+  const peer = { chatId: 'g1', senderId: 'peer', topicId: '12', chatKind: 'group' as const };
+  const noTopic = { chatId: 'g2', senderId: 'owner', topicId: '0', chatKind: 'group' as const };
+  const isolated = { chatId: 'g9', senderId: 'member', topicId: '12', chatKind: 'group' as const };
+  const otherAccount = { chatId: 'g9', senderId: 'outsider', topicId: '12', chatKind: 'group' as const };
+  const privateChat = { chatId: 'p1', senderId: 'owner', topicId: '0', chatKind: 'private' as const };
+  const binding = (id: string, identity: { chatId: string; senderId: string; topicId: string; chatKind: 'private' | 'group' }, accountId: string, sessionId: string) => ({
+    id, providerInstanceId: 'inst', providerKind: 'telegram' as const, accountId, identity, sessionId,
+    enabled: true, busy: 'queue' as const, reply: 'final' as const, mobileInteractions: true, bindingScope: 'sender' as const,
+  });
+  const discovery = (id: string, identity: { chatId: string; senderId: string; topicId: string; chatKind: 'private' | 'group' }, accountId = '42') => ({
+    id, providerInstanceId: 'inst', providerKind: 'telegram' as const, accountId, identity, preview: id, at: 1,
+  });
+  const initial = JSON.stringify({
+    policy: { allowed: true, defaultEnabled: true },
+    instances: [{ id: 'inst', providerKind: 'telegram', listening: false, virtual: true }],
+    discoveries: [discovery('d-same', topic), discovery('d-peer', peer), discovery('d-zero', noTopic), discovery('d-private', privateChat), discovery('d-iso', isolated)],
+    bindings: [binding('b1', topic, '42', 'sess'), binding('b2', { ...topic, topicId: '13', senderId: 'other' }, '42', 'home'), binding('b-iso', otherAccount, '99', 'home')],
+    replies: [{ bindingId: 'b1', promptId: 'p1', messageIds: ['m1'], lastText: 'partial', fileSent: false, open: true }],
+  });
+  let saved = '';
+  let failSave = false;
+  const ports: ImSessionPorts = {
+    credentials: { list: () => [{ id: 'inst', providerId: 'telegram', configured: true }], read: () => 'credential', write: async () => undefined, check: async () => ({ ok: true, accountId: '42' }) },
+    sessions: {
+      listPersonas: async () => [], listSessions: async () => [{ id: 'sess', title: 'Notes' }, { id: 'home', title: 'Home' }],
+      owns: async (id) => id === 'sess' || id === 'home', ensureHome: async () => ({ homeSessionId: 'home' }),
+      activity: async () => ({ busy: false, pending: 'none', queueLength: 0 }),
+      submit: async (input) => ({ duplicate: false, promptId: input.promptId, deliveryState: 'pending' }),
+      steer: async () => 'steered', abort: async () => false, saveMedia: async () => [],
+      readVisible: async () => ({ text: '', done: true, media: [] }), listInteractions: async () => ({ approvals: [], questions: [] }),
+      decideApproval: async () => 'decided', decideHostKey: async () => 'decided', answerQuestion: async () => 'answered',
+    },
+    logger: { info() {} }, load: async () => initial, save: async (value) => { if (failSave) throw new Error('scope-save-failed'); saved = value; },
+  };
+  const bridge = new ImSessionBridge({ ports, factories: [fakeAdapterFactory(new FakeImAdapter('telegram', '42'))], editIntervalMs: 0, now: () => 1_700_000_000_000, wait: async () => undefined });
+  const app = Fastify();
+  registerImSessionRoutes(app, bridge);
+  const send = (method: 'POST' | 'PATCH', url: string, payload: Record<string, unknown>) => app.inject({ method, url, payload });
+  try {
+    const forum = await send('POST', '/im/sessions/discoveries/d-zero/confirm', { target: { kind: 'session', session_id: 'sess' }, binding_scope: 'forum' });
+    expect(forum.statusCode).toBe(200);
+    expect(forum.json().code).toBe(40001);
+    const topicRejected = await send('POST', '/im/sessions/discoveries/d-zero/confirm', { target: { kind: 'session', session_id: 'sess' }, binding_scope: 'topic' });
+    expect(topicRejected.statusCode).toBe(200);
+    expect(topicRejected.json()).toMatchObject({ code: 40001, msg: 'topic_scope_unavailable', data: null });
+    const privateScope = await send('POST', '/im/sessions/discoveries/d-private/confirm', { target: { kind: 'session', session_id: 'sess' }, binding_scope: 'chat' });
+    expect(privateScope.statusCode).toBe(200);
+    expect(privateScope.json()).toMatchObject({ code: 40001, msg: 'group_binding_scope_required', data: null });
+    const overlap = await send('POST', '/im/sessions/discoveries/d-peer/confirm', { target: { kind: 'session', session_id: 'home' }, binding_scope: 'topic' });
+    expect(overlap.statusCode).toBe(200);
+    expect(overlap.json()).toMatchObject({ code: 40949, msg: 'im_identity_already_bound', data: null, details: { existing_binding_id: 'b1', previous_session_id: 'sess', target_session_id: 'home', variant_key: { provider_instance_id: 'inst', account_id: '42', chat_id: 'g1', topic_id: '12', sender_id: 'owner' } } });
+    const transfer = await send('POST', '/im/sessions/discoveries/d-same/confirm', { target: { kind: 'session', session_id: 'home' } });
+    expect(transfer.statusCode).toBe(200);
+    expect(transfer.json()).toMatchObject({ code: 40949, msg: 'im_identity_already_bound', details: { existing_binding_id: 'b1', previous_session_id: 'sess', target_session_id: 'home' } });
+    failSave = true;
+    const failedConfirm = await send('POST', '/im/sessions/discoveries/d-peer/confirm', { target: { kind: 'session', session_id: 'home' }, binding_scope: 'topic', rebind: true });
+    expect(failedConfirm.statusCode).toBe(200);
+    expect(failedConfirm.json()).toMatchObject({ code: 50001, msg: 'scope-save-failed', data: null });
+    const failedPatch = await send('PATCH', '/im/sessions/bindings/b1', { binding_scope: 'chat', rebind: true });
+    expect(failedPatch.statusCode).toBe(200);
+    expect(failedPatch.json()).toMatchObject({ code: 50001, msg: 'scope-save-failed', data: null });
+    const afterFailure = (await app.inject({ method: 'GET', url: '/im/sessions' })).json();
+    expect(afterFailure.data.discoveries.map((item: { id: string }) => item.id)).toEqual(expect.arrayContaining(['d-same', 'd-peer', 'd-zero', 'd-private', 'd-iso']));
+    expect(afterFailure.data.bindings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: 'b1', session_id: 'sess', binding_scope: 'sender' }),
+      expect.objectContaining({ id: 'b2', session_id: 'home', binding_scope: 'sender' }),
+      expect.objectContaining({ id: 'b-iso', account_id: '99', binding_scope: 'sender' }),
+    ]));
+    expect(afterFailure.data.bindings.find((item: { id: string }) => item.id === 'b1').input_enabled).toBeUndefined();
+    expect(afterFailure.data.bindings.find((item: { id: string }) => item.id === 'b2').input_enabled).toBeUndefined();
+    failSave = false;
+    const kept = await send('PATCH', '/im/sessions/bindings/b1', { busy: 'steer' });
+    expect(kept.statusCode).toBe(200);
+    expect(kept.json().code).toBe(0);
+    const persisted = JSON.parse(saved) as { replies: { open: boolean }[]; bindings: { id: string; sessionId: string; bindingScope?: string; inputEnabled?: boolean }[] };
+    expect(persisted.replies).toEqual([expect.objectContaining({ bindingId: 'b1', open: true })]);
+    expect(persisted.bindings.find((item) => item.id === 'b1')).toMatchObject({ sessionId: 'sess', bindingScope: 'sender' });
+    expect(persisted.bindings.find((item) => item.id === 'b2')?.inputEnabled).toBeUndefined();
+    const chat = await send('POST', '/im/sessions/discoveries/d-zero/confirm', { target: { kind: 'session', session_id: 'sess' }, binding_scope: 'chat' });
+    expect(chat.statusCode).toBe(200);
+    expect(chat.json().code).toBe(0);
+    const chatBinding = chat.json().data.bindings.find((item: { identity: { topic_id: string } }) => item.identity.topic_id === '0');
+    expect(chatBinding).toMatchObject({ session_id: 'sess', binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } });
+    expect(chatBinding.persona_id).toBeUndefined();
+    const stillNoTopic = await send('PATCH', `/im/sessions/bindings/${chatBinding.id}`, { binding_scope: 'topic' });
+    expect(stillNoTopic.statusCode).toBe(200);
+    expect(stillNoTopic.json()).toMatchObject({ code: 40001, msg: 'topic_scope_unavailable', data: null });
+    const promoted = await send('PATCH', '/im/sessions/bindings/b1', { binding_scope: 'topic' });
+    expect(promoted.statusCode).toBe(200);
+    expect(promoted.json().code).toBe(0);
+    expect(promoted.json().data.bindings.find((item: { id: string }) => item.id === 'b1')).toMatchObject({ binding_scope: 'topic', group_policy: { wake: 'mention_or_reply' }, session_id: 'sess' });
+    expect(promoted.json().data.bindings.find((item: { id: string }) => item.id === 'b2').input_enabled).toBeUndefined();
+    const separateAccount = await send('POST', '/im/sessions/discoveries/d-iso/confirm', { target: { kind: 'session', session_id: 'sess' }, binding_scope: 'topic' });
+    expect(separateAccount.statusCode).toBe(200);
+    expect(separateAccount.json().code).toBe(0);
+    const isolatedBinding = separateAccount.json().data.bindings.find((item: { id: string }) => item.id === 'b-iso');
+    expect(isolatedBinding).toMatchObject({ account_id: '99', binding_scope: 'sender' });
+    expect(isolatedBinding.input_enabled).toBeUndefined();
+    expect(separateAccount.json().data.bindings.find((item: { identity: { sender_id: string } }) => item.identity.sender_id === 'member')).toMatchObject({ binding_scope: 'topic', account_id: '42' });
+  } finally { await app.close(); await bridge.close(); }
+});
+
+it('returns unsupported directions as validation envelopes and does not take input', async () => {
+  const identity = { chatId: 'p1', senderId: 'owner', topicId: '0', chatKind: 'private' as const };
+  const initial = JSON.stringify({
+    policy: { allowed: true, defaultEnabled: true },
+    instances: [{ id: 'inst', providerKind: 'telegram', listening: false, virtual: true }],
+    discoveries: [{ id: 'd1', providerInstanceId: 'inst', providerKind: 'telegram', accountId: '42', identity, preview: 'hello', at: 1 }],
+    bindings: [],
+  });
+  const ports: ImSessionPorts = {
+    credentials: { list: () => [{ id: 'inst', providerId: 'telegram', configured: true }], read: () => 'credential', write: async () => undefined, check: async () => ({ ok: true, accountId: '42' }) },
+    sessions: {
+      listPersonas: async () => [], listSessions: async () => [{ id: 'sess', title: 'Notes' }],
+      owns: async (id) => id === 'sess', ensureHome: async () => ({ homeSessionId: 'home' }),
+      activity: async () => ({ busy: false, pending: 'none', queueLength: 0 }),
+      submit: async (input) => ({ duplicate: false, promptId: input.promptId, deliveryState: 'pending' }),
+      steer: async () => 'steered', abort: async () => false, saveMedia: async () => [],
+      readVisible: async () => ({ text: '', done: true, media: [] }), listInteractions: async () => ({ approvals: [], questions: [] }),
+      decideApproval: async () => 'decided', decideHostKey: async () => 'decided', answerQuestion: async () => 'answered',
+    },
+    logger: { info() {} }, load: async () => initial, save: async () => undefined,
+  };
+  const bridge = new ImSessionBridge({ ports, factories: [{ ...fakeAdapterFactory(new FakeImAdapter('telegram', '42')), inbound: false, outbound: false }], now: () => 1_700_000_000_000, wait: async () => undefined });
+  const app = Fastify();
+  registerImSessionRoutes(app, bridge);
+  try {
+    const input = await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/confirm', payload: { target: { kind: 'session', session_id: 'sess' }, input_enabled: true } });
+    expect(input.statusCode).toBe(200);
+    expect(input.json()).toMatchObject({ code: 40001, msg: 'input_unsupported', data: null });
+    const output = await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/confirm', payload: { target: { kind: 'session', session_id: 'sess' }, output_enabled: true } });
+    expect(output.statusCode).toBe(200);
+    expect(output.json()).toMatchObject({ code: 40001, msg: 'output_unsupported', data: null });
+    expect((await app.inject({ method: 'GET', url: '/im/sessions' })).json().data.bindings).toEqual([]);
+    const confirmed = await app.inject({ method: 'POST', url: '/im/sessions/discoveries/d1/confirm', payload: { target: { kind: 'session', session_id: 'sess' } } });
+    expect(confirmed.statusCode).toBe(200);
+    expect(confirmed.json().code).toBe(0);
+    const created = confirmed.json().data.bindings[0];
+    expect(created).toMatchObject({ input_enabled: false, output_enabled: false, session_id: 'sess' });
+    expect(created.persona_id).toBeUndefined();
+    const patchInput = await app.inject({ method: 'PATCH', url: `/im/sessions/bindings/${created.id}`, payload: { input_enabled: true } });
+    expect(patchInput.json()).toMatchObject({ code: 40001, msg: 'input_unsupported' });
+    const patchOutput = await app.inject({ method: 'PATCH', url: `/im/sessions/bindings/${created.id}`, payload: { output_enabled: true } });
+    expect(patchOutput.json()).toMatchObject({ code: 40001, msg: 'output_unsupported' });
+    const after = (await app.inject({ method: 'GET', url: '/im/sessions' })).json().data.bindings[0];
+    expect(after).toMatchObject({ input_enabled: false, output_enabled: false });
+  } finally { await app.close(); await bridge.close(); }
 });

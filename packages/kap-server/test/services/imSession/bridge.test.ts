@@ -1466,4 +1466,61 @@ describe('IM group wake and reply routing', () => {
     } finally { await harness.bridge.close(); }
     expect(harness.adapter.sent.some((message) => message.code === 'reply' && message.identity.topicId === 'topic-2' && message.identity.senderId === 'peer')).toBe(true);
   });
+
+  it('rejects a topic scope when the group has no topic and keeps sender bindings on every message', async () => {
+    const received: string[] = [];
+    const harness = historyHarness({ submit: async (input) => { received.push(input.promptId); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; } });
+    try {
+      const binding = await bindHistoryGroup(harness, 'sender');
+      expect(binding.binding_scope).toBe('sender');
+      expect(binding.group_policy).toBeUndefined();
+      expect(binding.persona_id).toBeUndefined();
+      await harness.adapter.emit({ eventId: 'plain', identity: group, kind: 'text', text: 'ordinary group message' });
+      expect(received).toEqual(['im:inst:plain']);
+      const noTopic = { ...group, chatId: 'group-2', topicId: '0' };
+      await harness.adapter.emit({ eventId: 'no-topic', identity: noTopic, kind: 'text', text: 'bind the group' });
+      const discovery = (await harness.bridge.snapshot()).discoveries[0]!;
+      await expect(harness.bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'home' }, binding_scope: 'topic' })).rejects.toThrow('topic_scope_unavailable');
+      expect((await harness.bridge.snapshot()).discoveries.map((item) => item.id)).toContain(discovery.id);
+      expect((await harness.bridge.snapshot()).bindings).toHaveLength(1);
+      const bound = await harness.bridge.confirm(discovery.id, { target: { kind: 'session', session_id: 'home' }, binding_scope: 'chat' });
+      const chat = bound.bindings.find((row) => row.identity.topic_id === '0')!;
+      expect(chat).toMatchObject({ session_id: 'home', binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } });
+      expect(chat.persona_id).toBeUndefined();
+      await expect(harness.bridge.updateBinding(chat.id, { bindingScope: 'topic' })).rejects.toThrow('topic_scope_unavailable');
+      expect((await harness.bridge.snapshot()).bindings.find((row) => row.id === chat.id)?.binding_scope).toBe('chat');
+      const before = received.length;
+      await harness.adapter.emit({ eventId: 'quiet', identity: { ...noTopic, senderId: 'peer' }, kind: 'text', text: 'quiet member message' });
+      expect(received).toHaveLength(before);
+      await harness.adapter.emit({ eventId: 'wake', identity: { ...noTopic, senderId: 'peer' }, kind: 'text', text: 'please look', mentioned: true });
+      expect(received).toEqual(['im:inst:plain', 'im:inst:wake']);
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('does not widen a stored no-topic topic binding beyond its sender', async () => {
+    const storedIdentity = { chatId: 'g', senderId: 'owner', topicId: '0', chatKind: 'group' as const };
+    const raw = JSON.stringify({
+      policy: { allowed: true, defaultEnabled: true },
+      instances: [{ id: 'inst', providerKind: 'telegram', listening: false, virtual: true, accountId: '42' }],
+      discoveries: [],
+      bindings: [{ id: 'legacy', providerInstanceId: 'inst', providerKind: 'telegram', accountId: '42', identity: storedIdentity, sessionId: 'sess', enabled: true, busy: 'queue', reply: 'final', mobileInteractions: true, bindingScope: 'topic' }],
+      strangers: [], seen: [], tickets: [], selections: {}, awaiting: {}, voiceFallbacks: 0, cursors: {}, notices: [], questionAnswers: {}, answeredQuestions: {}, replies: [], outbox: [],
+    });
+    const seen: string[] = [];
+    const sessionPorts = ports({ submit: async (input) => { seen.push(input.promptId); return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' }; } }, raw);
+    sessionPorts.ports.credentials.list = () => [{ id: 'inst', providerId: 'telegram', configured: true }];
+    sessionPorts.ports.credentials.read = () => 'credential';
+    const adapter = new FakeImAdapter('telegram', '42');
+    const bridge = new ImSessionBridge({ ports: sessionPorts.ports, factories: [fakeAdapterFactory(adapter)], now: () => 1_700_000_000_000, wait: async () => undefined });
+    try {
+      await bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'owner', identity: storedIdentity, kind: 'text', text: 'owner' });
+      await adapter.emit({ eventId: 'peer', identity: { ...storedIdentity, senderId: 'peer' }, kind: 'text', text: 'peer' });
+      expect(seen).toEqual(['im:inst:owner']);
+      const snap = await bridge.snapshot();
+      expect(snap.bindings).toHaveLength(1);
+      expect(snap.discoveries).toEqual([]);
+      expect(snap.strangers.some((item) => item.identity.sender_id === 'peer')).toBe(true);
+    } finally { await bridge.close(); }
+  });
 });
