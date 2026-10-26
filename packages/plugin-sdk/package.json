@@ -19,6 +19,14 @@
       "types": "./dist/media.d.ts",
       "default": "./dist/media.js"
     },
+    "./im": {
+      "types": "./dist/im.d.ts",
+      "default": "./dist/im.js"
+    },
+    "./messages": {
+      "types": "./dist/messages.d.ts",
+      "default": "./dist/messages.js"
+    },
     "./session-import": {
       "types": "./dist/session-import.d.ts",
       "default": "./dist/session-import.js"

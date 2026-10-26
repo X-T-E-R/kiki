@@ -6,6 +6,50 @@ const [entry] = process.argv.slice(2);
 const tools = new Map();
 const sources = new Map();
 const providers = new Map();
+const imAdapters = new Map();
+const imConnections = new Map();
+const imEventCalls = new Map();
+let nextImEvent = 0;
+async function stopImAdapter(id) {
+  const connection = imConnections.get(id);
+  if (connection === undefined) return;
+  imConnections.delete(id);
+  connection.controller.abort();
+  for (const [callId, call] of imEventCalls) if (call.adapterId === id) { imEventCalls.delete(callId); call.reject(new Error('IM adapter stopped')); }
+  await connection.adapter.stop();
+}
+function emitImEvent(id, event, owner) {
+  const connection = imConnections.get(id);
+  if (connection !== owner || connection?.started !== true || !connection.definition.inbound || connection.controller.signal.aborted) return Promise.reject(new Error('IM connection is not receiving'));
+  if (event.kind === 'message') {
+    const work = (connection.inputQueue ?? Promise.resolve()).catch(() => undefined).then(() => transmitImEvent(id, event, owner));
+    connection.inputQueue = work;
+    return work;
+  }
+  return transmitImEvent(id, event, owner);
+}
+function transmitImEvent(id, event, connection) {
+  if (imConnections.get(id) !== connection || connection.controller.signal.aborted) throw new Error('IM connection is not receiving');
+  const imCompleteLimits = connection.context.messageLimits;
+  const wireMedia = (media) => media === undefined ? undefined : { name: media.name, mediaType: media.mediaType, base64: Buffer.from(media.bytes).toString('base64') };
+  if (event.kind === 'message') {
+    if (!Array.isArray(event.parts) || event.parts.length < 1 || event.parts.length > imCompleteLimits.parts) throw new Error('IM complete input has an invalid part count');
+    if (event.parts.some((part) => part.tooLarge === true)) throw new Error('IM complete input contains a tooLarge part');
+    const bytes = event.parts.map((part) => part.media?.bytes?.byteLength ?? 0);
+    if (bytes.some((size) => size > connection.definition.maxInboundBytes) || bytes.reduce((sum, size) => sum + size, 0) > imCompleteLimits.mediaBytes) throw new Error('IM complete input exceeds the media byte limit');
+    if (event.parts.reduce((sum, part) => sum + (part.text?.length ?? 0), 0) > imCompleteLimits.textChars) throw new Error('IM complete input exceeds the text limit');
+  }
+  const wireEvent = event.kind === 'message' ? { ...event, parts: event.parts.map((part) => ({ ...part, media: wireMedia(part.media) })) } : { ...event, media: wireMedia(event.media) };
+  const serialized = event.kind === 'message' ? JSON.stringify(wireEvent) : undefined;
+  if (serialized !== undefined && serialized.length > imCompleteLimits.serializedChars) throw new Error('IM complete input exceeds the serialized message limit');
+  const callId = ++nextImEvent;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { imEventCalls.delete(callId); reject(new Error('IM input acknowledgement timed out')); }, 30_000);
+    imEventCalls.set(callId, { adapterId: id, resolve: () => { clearTimeout(timer); resolve(); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+    if (serialized === undefined) send({ method: 'im-adapter-event', params: { adapterId: id, callId, event: wireEvent } });
+    else for (let offset = 0, index = 0; offset < serialized.length; offset += imCompleteLimits.chunkChars, index++) send({ method: 'im-adapter-message-chunk', params: { adapterId: id, callId, index, characters: serialized.length, data: serialized.slice(offset, offset + imCompleteLimits.chunkChars) } });
+  });
+}
 const mediaCalls = new Map();
 let nextMediaCall = 0;
 const outputCalls = new Map();
@@ -147,7 +191,12 @@ function shutdown() {
   if (shuttingDown !== undefined) return shuttingDown;
   lifetime.abort();
   for (const controller of pending.values()) controller.abort();
-  shuttingDown = Promise.resolve().then(() => deactivate?.());
+  shuttingDown = Promise.resolve().then(async () => {
+    await Promise.allSettled([...imConnections.keys()].map(stopImAdapter));
+    for (const call of imEventCalls.values()) call.reject(new Error('IM adapter stopped'));
+    imEventCalls.clear();
+    await deactivate?.();
+  });
   return shuttingDown;
 }
 for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => { void shutdown().finally(() => process.exit()); });
@@ -189,6 +238,11 @@ for await (const line of createInterface({ input: process.stdin })) {
             typeof adapter?.describe !== 'function' || typeof adapter?.submit !== 'function') throw new Error('Invalid or duplicate media provider');
           providers.set(definition.id, adapter);
           send({ method: 'register-media-provider', params: { version: 1, definition } });
+        },
+        registerImAdapter(definition, adapter) {
+          if (typeof definition?.id !== 'string' || imAdapters.has(definition.id) || typeof adapter?.start !== 'function' || typeof adapter?.stop !== 'function' || (definition.outbound && typeof adapter?.sendText !== 'function') || (definition.supportsEdit && typeof adapter?.editText !== 'function') || (definition.mediaCapabilities?.length && typeof adapter?.sendMedia !== 'function')) throw new Error('Invalid or duplicate IM adapter');
+          imAdapters.set(definition.id, { adapter, definition });
+          send({ method: 'register-im-adapter', params: { version: 1, definition } });
         },
       });
     } catch (error) {
@@ -255,6 +309,42 @@ for await (const line of createInterface({ input: process.stdin })) {
     mediaCalls.delete(message.params?.callId);
     if (message.params?.error !== undefined) call?.reject(new Error(message.params.error));
     else call?.resolve(message.params?.result);
+    continue;
+  }
+  if (message.method === 'im-adapter-event-result') {
+    const call = imEventCalls.get(message.params?.callId);
+    imEventCalls.delete(message.params?.callId);
+    if (message.params?.error !== undefined) call?.reject(new Error(message.params.error));
+    else call?.resolve();
+    continue;
+  }
+  if (message.method === 'im-adapter-request') {
+    const { adapterId, action, input, settings, instanceId, offset, messageLimits } = message.params ?? {};
+    Promise.resolve().then(async () => {
+      const registered = imAdapters.get(adapterId);
+      if (registered === undefined) throw new Error('Unknown IM adapter');
+      if (action === 'stop') return stopImAdapter(adapterId);
+      if (action === 'start') {
+        if (imConnections.has(adapterId)) throw new Error('IM adapter already connected');
+        const controller = new AbortController();
+        const connection = { ...registered, controller, started: false, context: { signal: controller.signal, settings: settings ?? {}, instanceId, messageLimits: Object.freeze({ ...messageLimits }) } };
+        imConnections.set(adapterId, connection);
+        try {
+          const result = await registered.adapter.start({ ...connection.context, offset, emit: (event) => emitImEvent(adapterId, event, connection) });
+          connection.started = true;
+          return result;
+        } catch (error) { await stopImAdapter(adapterId); throw error; }
+      }
+      const connection = imConnections.get(adapterId);
+      if (connection?.started !== true || connection.controller.signal.aborted) throw new Error('IM adapter is not connected');
+      if (action === 'readHistory') {
+        if (!connection.definition.inbound || connection.definition.supportsHistory !== true || typeof connection.adapter.readHistory !== 'function') return { status: 'unsupported' };
+        return connection.adapter.readHistory(input, connection.context);
+      }
+      if (!connection.definition.outbound || !['sendText', 'sendMedia', 'editText', 'answerCallback'].includes(action) || typeof connection.adapter[action] !== 'function') throw new Error('IM action unsupported');
+      const value = action === 'sendMedia' ? { ...input, bytes: new Uint8Array(Buffer.from(input.base64, 'base64')), base64: undefined } : input;
+      return connection.adapter[action](value, connection.context);
+    }).then((result) => send({ id: message.id, result }), (error) => send({ id: message.id, error: { code: -32000, message: String(error) } }));
     continue;
   }
   if (message.method === 'media-provider-request') {
@@ -332,6 +422,7 @@ for await (const line of createInterface({ input: process.stdin })) {
           generate(input) { return callMedia(message.id, 'generate', input); },
           media(input) { return callMedia(message.id, 'media', input); },
         },
+        messages: { send(input) { return callMedia(message.id, 'message-send', input); } },
       });
     }).then((result) => prepareToolResult(message.id, result, controller.signal)).then(
       (result) => send({ id: message.id, result }),
