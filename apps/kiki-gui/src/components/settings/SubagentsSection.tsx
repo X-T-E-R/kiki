@@ -14,7 +14,7 @@ import {
   type SubagentPanelOpenMode,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import { loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
+import { agentProfileCatalogRefetchInterval, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, SaveStatus } from '../controls';
@@ -57,6 +57,7 @@ export function SubagentDefaultTargetCard() {
     queryKey: ['named-agent-profiles', 'global'],
     queryFn: () => loadAgentProfileCatalog(client, { mode: 'global' }),
     staleTime: 15_000,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
 
   const current: SubagentDefaultTarget | undefined = configQuery.data === undefined

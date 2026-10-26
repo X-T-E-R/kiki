@@ -1,9 +1,10 @@
 import { QueryClient } from '@tanstack/react-query';
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import type { KikiClient } from './client';
 import {
   agentProfileCatalogQueryKey,
+  agentProfileCatalogRefetchInterval,
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from './agentProfileCatalog';
@@ -13,10 +14,6 @@ const mode: AgentProfileCatalogMode = {
   cwd: 'C:/workspace',
   effective: true,
 };
-
-afterEach(() => {
-  vi.useRealTimers();
-});
 
 describe('loadAgentProfileCatalog', () => {
   it('requests a workspace-free effective preview instead of filtering the loaded global registrations', async () => {
@@ -38,50 +35,26 @@ describe('loadAgentProfileCatalog', () => {
     expect(agentProfileCatalogQueryKey({ mode: 'unscoped' })).not.toEqual(agentProfileCatalogQueryKey({ mode: 'global' }));
   });
 
-  it('refetches an incomplete catalog once and only caches the complete response', async () => {
-    vi.useFakeTimers();
-    const listNamedAgentProfiles = vi.fn()
-      .mockResolvedValueOnce({ items: [], complete: false })
-      .mockResolvedValueOnce({ items: [], complete: true });
+  it('caches an incomplete catalog immediately with its loaded profiles available', async () => {
+    const response = { items: [{ name: 'lead', source: 'user', main: true, disabled: false, routes: [] }], complete: false };
+    const listNamedAgentProfiles = vi.fn().mockResolvedValue(response);
     const client = { listNamedAgentProfiles } as unknown as Pick<KikiClient, 'listNamedAgentProfiles'>;
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const request = queryClient.fetchQuery({
+    await expect(queryClient.fetchQuery({
       queryKey: agentProfileCatalogQueryKey(mode),
       queryFn: () => loadAgentProfileCatalog(client, mode),
       staleTime: 60_000,
-    });
+    })).resolves.toEqual(response);
 
-    await Promise.resolve();
-    expect(queryClient.getQueryData(agentProfileCatalogQueryKey(mode))).toBeUndefined();
-    await vi.advanceTimersByTimeAsync(250);
-    await expect(request).resolves.toEqual({ items: [], complete: true });
-
-    expect(listNamedAgentProfiles).toHaveBeenCalledTimes(2);
-    expect(queryClient.getQueryData(agentProfileCatalogQueryKey(mode))).toEqual({
-      items: [],
-      complete: true,
-    });
+    expect(listNamedAgentProfiles).toHaveBeenCalledOnce();
+    expect(queryClient.getQueryData(agentProfileCatalogQueryKey(mode))).toEqual(response);
     queryClient.clear();
   });
 
-  it('rejects after one bounded retry when the catalog stays incomplete', async () => {
-    vi.useFakeTimers();
-    const listNamedAgentProfiles = vi.fn().mockResolvedValue({ items: [], complete: false });
-    const client = { listNamedAgentProfiles } as unknown as Pick<KikiClient, 'listNamedAgentProfiles'>;
-    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-    const request = queryClient.fetchQuery({
-      queryKey: agentProfileCatalogQueryKey(mode),
-      queryFn: () => loadAgentProfileCatalog(client, mode),
-      staleTime: 60_000,
-    });
-
-    const rejection = expect(request).rejects.toThrow('Agent profile catalog is still loading');
-    await Promise.resolve();
-    await vi.advanceTimersByTimeAsync(250);
-    await rejection;
-
-    expect(listNamedAgentProfiles).toHaveBeenCalledTimes(2);
-    expect(queryClient.getQueryData(agentProfileCatalogQueryKey(mode))).toBeUndefined();
-    queryClient.clear();
+  it('continues incomplete responses and stops after completion or a read failure', () => {
+    expect(agentProfileCatalogRefetchInterval({ state: { data: { items: [], complete: false }, error: null } })).toBe(250);
+    expect(agentProfileCatalogRefetchInterval({ state: { data: { items: [], complete: true }, error: null } })).toBe(false);
+    expect(agentProfileCatalogRefetchInterval({ state: { data: undefined, error: null } })).toBe(false);
+    expect(agentProfileCatalogRefetchInterval({ state: { data: { items: [], complete: false }, error: new Error('offline') } })).toBe(false);
   });
 });

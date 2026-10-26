@@ -999,6 +999,30 @@ describe('useNewSessionDraft agent profile scope', () => {
     expect(body.agent_config?.profile).toBe('auto-lead');
   });
 
+  it('keeps a missing profile sendable in an incomplete catalog and continues past two responses', async () => {
+    client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
+    client.listModels.mockResolvedValue({ items: [model('provider/alpha', 'high')] });
+    client.listNamedAgentProfiles
+      .mockResolvedValueOnce({ items: [profile('agent')], complete: false })
+      .mockResolvedValueOnce({ items: [profile('agent')], complete: false })
+      .mockResolvedValue({ items: [profile('agent'), profile('workspace-main', 'provider/alpha', 'high')], complete: true });
+    await renderDraft({ initialWorkspaceId: 'wd_alpha', initialProfile: 'workspace-main' });
+    let state = await settleDraft((value) => value.selectionReady && value.agentProfileCatalogPending);
+    client.createSession.mockRejectedValueOnce(new Error('Binding rejected by server'));
+    await act(async () => { await state.send('Send the saved choice', []); });
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({
+      agent_config: expect.objectContaining({ profile: 'workspace-main' }),
+    }));
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 270)); });
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledTimes(2);
+    expect(latestDraftState!.selectionReady).toBe(true);
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 270)); });
+    state = await settleDraft((value) => !value.agentProfileCatalogPending && value.modelOverride === 'provider/alpha');
+    expect(client.listNamedAgentProfiles).toHaveBeenCalledTimes(3);
+    expect(state.agentProfile).toBe('workspace-main');
+    expect(state.effectiveEffort).toBe('high');
+  });
+
   it('sends the preserved initial agent before catalog completion and enriches its workspace pins later', async () => {
     const catalog = deferred<{ items: NamedAgentProfile[] }>();
     client.listWorkspaceCatalog.mockResolvedValue({ items: [workspace('wd_alpha', 'Alpha')] });
@@ -2473,25 +2497,44 @@ describe('explicit profile file drafts', () => {
     expect(client.createSession.mock.calls[0]![0].agent_config.profile).toBeUndefined();
   });
 
-  it('preserves failed file previews and manual choices without sending or falling back to the catalog', async () => {
-    client.klient.rest.agents.previewFile.mockRejectedValue(new ApiError({ msg: 'Profile could not be loaded', code: 40001, data: null }));
+  it.each(['pending', 'failed'])('submits the saved file and manual choices while its preview is %s, retaining the draft on binding failure', async (preview) => {
+    if (preview === 'pending') client.klient.rest.agents.previewFile.mockReturnValue(new Promise(() => {}));
+    else client.klient.rest.agents.previewFile.mockRejectedValue(new ApiError({ msg: 'Profile could not be loaded', code: 40001, data: null }));
+    client.createSession.mockRejectedValueOnce(new Error('Profile binding rejected by server'));
     localStorage.setItem('kiki.newSessionDraft', JSON.stringify({
       workspaceId: AUTO_WORKSPACE_ID,
       execution: { executor: 'native', profile_file: '/workspace/profiles/helper.md' },
       modelOverride: 'fixture/model', effortOverride: 'high', modelFromProfile: false, effortFromProfile: false,
     }));
-    const queryClient = await renderDraft();
-    let state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await renderDraft();
+    const state = await settleDraft((value) => value.selectionReady);
     await act(async () => { state.updateDraft('Keep this draft'); await state.send('Keep this draft', []); });
-    expect(client.createSession).not.toHaveBeenCalled();
-    expect(latestDraftState!.selectionReady).toBe(false);
+    expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ agent_config: expect.objectContaining({
+      execution: expect.objectContaining({ executor: 'native', profile_file: profile.source_file }),
+      model: 'fixture/model', thinking: 'high',
+    }) }));
+    expect(navigate).not.toHaveBeenCalled();
+    expect(latestDraftState!.error).toContain('Profile binding rejected by server');
+    expect(latestDraftState!.selectionReady).toBe(true);
     expect(readStoredDraft()).toMatchObject({ execution: { profile_file: profile.source_file }, modelOverride: 'fixture/model' });
-    client.klient.rest.agents.previewFile.mockResolvedValue({ profile });
+    expect(latestDraftState!.draft).toBe('Keep this draft');
+    expect(latestDraftState!.effectiveEffort).toBe('high');
+  });
+
+  it('keeps an explicitly disabled file blocked after preview succeeds', async () => {
+    client.klient.rest.agents.previewFile.mockResolvedValue({ profile: { ...profile, disabled: true } });
+    localStorage.setItem('kiki.newSessionDraft', JSON.stringify({
+      workspaceId: AUTO_WORKSPACE_ID, execution: { executor: 'native', profile_file: profile.source_file },
+    }));
+    const queryClient = await renderDraft();
+    const state = await settleDraft((value) => !value.agentProfileCatalogPending);
+    await act(async () => { await state.send('Hello', []); });
+    expect(state.selectionReady).toBe(false);
+    client.klient.rest.agents.previewFile.mockRejectedValue(new Error('preview offline'));
     await act(async () => { await queryClient.refetchQueries({ queryKey: ['profile-file-preview'] }); });
-    state = await settleDraft((value) => value.selectionReady);
-    expect(state.draft).toBe('Keep this draft');
-    expect(state.modelOverride).toBe('fixture/model');
-    expect(state.effectiveEffort).toBe('high');
+    await settleDraft((value) => !value.selectionReady);
+    await act(async () => { await latestDraftState!.send('Hello', []); });
+    expect(client.createSession).not.toHaveBeenCalled();
   });
 });
 

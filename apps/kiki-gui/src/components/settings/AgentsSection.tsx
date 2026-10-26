@@ -24,7 +24,7 @@ import {
 } from '@kiki/session-core/settings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
-import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
+import { agentProfileCatalogQueryKey, agentProfileCatalogRefetchInterval, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import { AgentCapabilitiesPanel } from '../AgentCapabilitiesPanel';
 import { DiskDefinitionSummary } from '../agent-panel/DiskDefinitionSummary';
 import { SubagentLeaseList } from '../agent-panel/LeaseList';
@@ -506,6 +506,7 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
       ? { mode: 'global' } : { mode: 'workspace', workspaceId: selectedWorkspaceId }),
     enabled: !workspacesQuery.isPending,
     staleTime: 15_000,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
   const effectiveMode = selectedWorkspaceId === undefined ? { mode: 'disabled' as const }
     : { mode: 'workspace' as const, workspaceId: selectedWorkspaceId, effective: true };
@@ -514,6 +515,7 @@ export function NamedAgentProfilesCard({ bucket }: { bucket: 'main' | 'sub' }) {
     queryFn: () => loadAgentProfileCatalog(client, effectiveMode),
     enabled: selectedWorkspaceId !== undefined,
     staleTime: 15_000,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
   const configQuery = useQuery({
     queryKey: ['config'],

@@ -14,6 +14,7 @@ import type { AutoCompactWriteResult, ModelCatalogItem } from '@kiki/protocol';
 import type { KikiConfigResponse, NamedAgentProfile } from '../lib/client';
 import {
   agentProfileCatalogQueryKey,
+  agentProfileCatalogRefetchInterval,
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
@@ -62,6 +63,7 @@ export function useContextMeterAutoCompact(input: {
     enabled: input.profileName !== undefined && catalog.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
   const boundProfile = input.profileName === undefined
     ? undefined

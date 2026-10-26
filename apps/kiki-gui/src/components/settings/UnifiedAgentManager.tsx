@@ -8,7 +8,7 @@ import {
 } from '@kiki/session-core/settings';
 import { sortWorkspacesByRecency } from '@kiki/session-core/sessions';
 import { useI18n } from '../../i18n';
-import { agentProfileCatalogQueryKey, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
+import { agentProfileCatalogQueryKey, agentProfileCatalogRefetchInterval, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../lib/agentProfileCatalog';
 import type { NamedAgentProfile } from '../../lib/client';
 import { useConnection } from '../../state/connection';
 import { useAskKiki, useAskKikiWorkspace, AskKikiButton } from '../askKiki';
@@ -65,11 +65,13 @@ export function UnifiedAgentManager() {
     queryFn: () => loadAgentProfileCatalog(client, selectedWorkspaceId
       ? { mode: 'workspace', workspaceId: selectedWorkspaceId } : { mode: 'global' }),
     enabled: !workspacesQuery.isPending, staleTime: 15_000,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
   const effectiveMode = selectedWorkspaceId === undefined ? { mode: 'disabled' as const }
     : { mode: 'workspace' as const, workspaceId: selectedWorkspaceId, effective: true };
   const effectiveQuery = useQuery({ queryKey: agentProfileCatalogQueryKey(effectiveMode),
-    queryFn: () => loadAgentProfileCatalog(client, effectiveMode), enabled: selectedWorkspaceId !== undefined, staleTime: 15_000 });
+    queryFn: () => loadAgentProfileCatalog(client, effectiveMode), enabled: selectedWorkspaceId !== undefined,
+    staleTime: 15_000, refetchInterval: agentProfileCatalogRefetchInterval });
   const shippedQuery = useQuery({ queryKey: ['shipped-agent-profiles'],
     queryFn: () => client.listShippedAgentProfiles(), staleTime: 15_000, retry: false });
   const configQuery = useQuery({ queryKey: ['config'], queryFn: () => client.getConfig(), staleTime: 60_000 });

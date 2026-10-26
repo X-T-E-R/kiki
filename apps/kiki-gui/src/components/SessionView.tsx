@@ -161,6 +161,7 @@ import { useHost } from '../host';
 import { useI18n } from '../i18n';
 import {
   agentProfileCatalogQueryKey,
+  agentProfileCatalogRefetchInterval,
   invalidateAgentProfileCatalogs,
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
@@ -2537,6 +2538,7 @@ export function SessionView({
     enabled: agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
 
   const boundProfile = state.profile ?? DEFAULT_AGENT_PROFILE;

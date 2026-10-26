@@ -65,6 +65,7 @@ import { useHost } from '../host';
 import { retryRootReadModelDelay, retryRootReadModelQuery } from '../lib/readModelRetry';
 import {
   agentProfileCatalogQueryKey,
+  agentProfileCatalogRefetchInterval,
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
@@ -614,6 +615,7 @@ export function useNewSessionDraft({
     enabled: agentProfileCatalogMode.mode !== 'disabled',
     staleTime: 60_000,
     retry: false,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
   // First-run readiness: a fresh install has no provider and no model, so the
   // first send would fail deep in the turn. Shares the settings page's query
@@ -794,11 +796,16 @@ export function useNewSessionDraft({
   const validateProfile = !fromFile && !bareExternal && agentProfileCatalogMode.mode !== 'disabled';
   const agentProfileCatalogPending = profileCatalogTransitionPending
     || (cwd.trim() === '' && workspaceId !== AUTO_WORKSPACE_ID && workspacesQuery.isPending)
-    || (agentProfileCatalogMode.mode !== 'disabled' && (fromFile ? filePreviewQuery.isPending : agentProfilesQuery.isPending));
-  const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
-    && !agentProfilesQuery.data.items.some((item) => item.name === (execution.profile ?? agentProfile) && item.main === true && !item.disabled);
+    || (agentProfileCatalogMode.mode !== 'disabled' && (fromFile ? filePreviewQuery.isPending
+      : agentProfilesQuery.isPending || agentProfilesQuery.data?.complete === false));
+  const namedProfile = agentProfilesQuery.data?.items.find((item) => item.name === (execution.profile ?? agentProfile));
+  const invalidProfile = validateProfile && (namedProfile === undefined
+    ? agentProfilesQuery.isSuccess && agentProfilesQuery.data.complete !== false
+    : namedProfile.main !== true || namedProfile.disabled);
+  const invalidFile = fromFile && fileProfile !== undefined
+    && (fileProfile.source_file === undefined || fileProfile.disabled);
   const selectionBlocked = !targetReady || agentProfileCatalogMode.mode === 'disabled'
-    || (fromFile ? !filePreviewQuery.isSuccess || fileProfile?.source_file === undefined : invalidProfile)
+    || invalidFile || invalidProfile
     || (nativeExecution && !(fromFile && execution.executor !== NATIVE_EXECUTOR) && (
       modelProjectionState === 'blocked'
       || (modelsQuery.isSuccess && effectiveModel !== undefined && catalogItem === undefined)

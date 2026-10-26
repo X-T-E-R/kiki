@@ -31,7 +31,7 @@ import type { KikiConfigPatch } from '../../../lib/client';
 
 import { DefaultOnSwitch, optionalCapabilityState } from '../../capabilities/optionalCapabilityUi';
 import { useI18n } from '../../../i18n';
-import { invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../../lib/agentProfileCatalog';
+import { agentProfileCatalogRefetchInterval, invalidateAgentProfileCatalogs, loadAgentProfileCatalog } from '../../../lib/agentProfileCatalog';
 import { toolDisplayName } from '../../../lib/pluginCatalog';
 import { useConnection } from '../../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../../controls';
@@ -130,6 +130,7 @@ export function SubagentToolSettingsCard() {
     queryKey: ['named-agent-profiles', 'global'],
     queryFn: () => loadAgentProfileCatalog(client, { mode: 'global' }),
     staleTime: 15_000,
+    refetchInterval: agentProfileCatalogRefetchInterval,
   });
   const toolsQuery = useQuery({
     queryKey: ['tools', 'global'],

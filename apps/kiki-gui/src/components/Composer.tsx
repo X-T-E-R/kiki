@@ -84,6 +84,7 @@ import { isVscodeWebview, vscodeHost } from '../host/vscode';
 import { useI18n } from '../i18n';
 import {
   agentProfileCatalogQueryKey,
+  agentProfileCatalogRefetchInterval,
   loadAgentProfileCatalog,
   type AgentProfileCatalogMode,
 } from '../lib/agentProfileCatalog';
@@ -950,19 +951,12 @@ export function Composer({
     staleTime: 60_000,
     retry: retryCatalog,
     retryDelay: catalogRetryDelay,
-    refetchInterval: catalogRefetchInterval,
+    refetchInterval: (query) => catalogRefetchInterval(query) || agentProfileCatalogRefetchInterval(query),
   });
   // The engine catalog behind the execution panel. Empty while loading or on a
   // server without the route; the native engine is always offered regardless.
   const executorCatalog = useExecutorCatalog();
-  const agentProfileOptions: readonly SearchableSelectOption[] = useMemo(
-    () => buildAgentProfileOptions(
-      agentProfilesQuery.data?.items ?? [],
-      t,
-      engineLabel(NATIVE_EXECUTOR, t('composer.agentDefaultName'), executorCatalog),
-    ),
-    [agentProfilesQuery.data, executorCatalog, t],
-  );
+
   const frozenMenuQuery = useQuery({
     queryKey: ['agentCapabilities', { session_id: sessionId, agent_id: agentId }],
     queryFn: () => client.getAgentCapabilities({ session_id: sessionId!, agent_id: agentId }),
@@ -1000,7 +994,7 @@ export function Composer({
     const reason = state === 'unknown' ? t('st.profiles.menuPreviewUnavailable')
       : t(state === 'warning' ? 'selection.modelMenuWarning' : 'selection.modelMenuBlocked', { source });
     return state === 'allowed' ? row : {
-      ...row, disabled: state !== 'warning', hint: state === 'unknown' ? reason : source,
+      ...row, disabled: state === 'blocked', hint: state === 'unknown' ? reason : source,
       description: reason, title: [row.title ?? row.label, reason].join('\n'),
     };
   }), [catalogModelOptions, modelProjection, models, selectionDefaultModel, serverDefaultModel, selectedProfileName, modelSelectionPosition, validateFile, providerGroupLabel, t]);
@@ -1093,10 +1087,11 @@ export function Composer({
   const selectionCatalogError = (validateFile ? filePreviewQuery.error : null) ??
     [externalExecution ? null : modelsQuery.error, validateProfile ? agentProfilesQuery.error : null]
       .find((error) => error !== null && !isTransientCatalogError(error)) ?? null;
-  const invalidFile = validateFile && (filePreviewQuery.isError ||
-    (filePreviewQuery.isSuccess && filePreviewQuery.data?.profile.source_file === undefined));
-  const invalidProfile = validateProfile && agentProfilesQuery.isSuccess
-    && !agentProfileOptions.some((item) => item.value === agentProfile);
+  const invalidFile = validateFile && filePreviewQuery.data !== undefined
+    && (filePreviewQuery.data.profile.source_file === undefined || filePreviewQuery.data.profile.disabled);
+  const invalidProfile = validateProfile && (catalogProfile === undefined
+    ? agentProfilesQuery.isSuccess && agentProfilesQuery.data.complete !== false
+    : !isConversationProfile(catalogProfile));
   const invalidModel = !externalExecution && engine === undefined && modelsQuery.isSuccess && validatingModel !== undefined && selectedModel === undefined;
   const invalidEffort = !externalExecution && engine === undefined && modelsQuery.isSuccess && selectedModel !== undefined
     && effort !== undefined && !catalogModelSupportsEffort(selectedModel, effort);
@@ -2513,7 +2508,7 @@ export function Composer({
             onChangeModel={(next) => {
               if (externalExecution) return writeExecutorModel(next);
               const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
-              if (state === 'blocked' || state === 'unknown') return;
+              if (state === 'blocked') return;
               return onChangeModel(next);
             }}
             onChangeEffort={onChangeEffort}
@@ -2559,7 +2554,7 @@ export function Composer({
           onChangeModel={(next) => {
             if (externalExecution) return writeExecutorModel(next);
             const state = projectedProfileModelState(modelProjection, models, next ?? selectionDefaultModel ?? serverDefaultModel, modelSelectionPosition);
-            if (state === 'blocked' || state === 'unknown') return;
+            if (state === 'blocked') return;
             return onChangeModel(next);
           }}
           efforts={externalExecution ? executorEfforts : efforts}

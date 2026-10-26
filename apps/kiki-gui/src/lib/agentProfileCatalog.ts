@@ -1,7 +1,6 @@
 import type { ListNamedAgentProfilesResponse } from '@kiki/protocol';
 import type { QueryClient } from '@tanstack/react-query';
 
-import { translate } from '@kiki/session-core/i18n';
 import type { KikiClient } from './client';
 
 export async function invalidateAgentProfileCatalogs(client: QueryClient): Promise<void> {
@@ -35,8 +34,10 @@ export function agentProfileCatalogQueryKey(
 
 const INCOMPLETE_CATALOG_RETRY_DELAY_MS = 250;
 
-function isComplete(response: ListNamedAgentProfilesResponse): boolean {
-  return (response as { readonly complete?: boolean }).complete !== false;
+export function agentProfileCatalogRefetchInterval(query: {
+  readonly state: { readonly data: ListNamedAgentProfilesResponse | undefined; readonly error: Error | null };
+}): number | false {
+  return query.state.error === null && query.state.data?.complete === false ? INCOMPLETE_CATALOG_RETRY_DELAY_MS : false;
 }
 
 export async function loadAgentProfileCatalog(
@@ -67,12 +68,5 @@ export async function loadAgentProfileCatalog(
           item.workspace_id === undefined && (item.workspace_ids?.length ?? 0) === 0
         ) }
       : response;
-  const initial = await load();
-  if (isComplete(initial)) return unscoped(initial);
-  await new Promise<void>((resolve) => {
-    setTimeout(resolve, INCOMPLETE_CATALOG_RETRY_DELAY_MS);
-  });
-  const retried = await load();
-  if (isComplete(retried)) return unscoped(retried);
-  throw new Error(translate('en', 'agentProfileCatalog.loading'));
+  return unscoped(await load());
 }

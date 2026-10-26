@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import type { AgentCapabilitiesQuery, AgentPanelProfile, NamedAgentProfile, AgentCapabilityTarget, AgentPromptDiagnostics } from '@kiki/protocol';
 import { PromptEffectiveDetails } from './PromptEffectiveDetails';
 import {
@@ -7,7 +7,7 @@ import {
   NAMED_AGENT_LEASE_DETAIL_LABEL_KEYS,
 } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
-import { loadAgentProfileCatalog, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
+import { agentProfileCatalogQueryKey, agentProfileCatalogRefetchInterval, loadAgentProfileCatalog, type AgentProfileCatalogMode } from '../../lib/agentProfileCatalog';
 import { useOptionalConnection } from '../../state/connection';
 import { FilePathLink } from '../mediaParts';
 import { DispatchPolicyBadges } from './DispatchPolicyBadges';
@@ -88,29 +88,21 @@ export function ProfileDetailSections({
   const workspaceId = query !== undefined && 'workspace_id' in query ? query.workspace_id : undefined;
   const cwd = query !== undefined && 'cwd' in query ? query.cwd : undefined;
 
-  const [catalogItems, setCatalogItems] = useState<readonly NamedAgentProfile[]>([]);
+  const mode: AgentProfileCatalogMode = workspaceId !== undefined
+    ? { mode: 'workspace', workspaceId }
+    : cwd !== undefined
+      ? { mode: 'cwd', cwd }
+      : { mode: 'global' };
+  const catalogQuery = useQuery({
+    queryKey: agentProfileCatalogQueryKey(mode),
+    queryFn: () => loadAgentProfileCatalog(client!, mode),
+    enabled: client !== undefined && profileName !== undefined,
+    staleTime: 60_000,
+    retry: false,
+    refetchInterval: agentProfileCatalogRefetchInterval,
+  });
 
-  useEffect(() => {
-    if (!client || profileName === undefined) return;
-    const mode: AgentProfileCatalogMode = workspaceId !== undefined
-      ? { mode: 'workspace', workspaceId }
-      : cwd !== undefined
-        ? { mode: 'cwd', cwd }
-        : { mode: 'global' };
-    let cancelled = false;
-    loadAgentProfileCatalog(client, mode)
-      .then((result) => {
-        if (!cancelled) setCatalogItems(result.items);
-      })
-      .catch(() => {
-        if (!cancelled) setCatalogItems([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [client, profileName, workspaceId, cwd]);
-
-  const definition = lookupDefinition(catalogItems, profileName, sourceFile);
+  const definition = lookupDefinition(catalogQuery.data?.items ?? [], profileName, sourceFile);
   const bound = definition.bound;
   const other = definition.other;
 

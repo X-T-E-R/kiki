@@ -3714,6 +3714,27 @@ describe('Composer restored selection diagnostics', () => {
     expect(onSend).toHaveBeenCalledWith('ready now', []);
   });
 
+  it('keeps an absent profile sendable while a partial catalog exposes its loaded choices', async () => {
+    listNamedAgentProfiles.mockResolvedValue({ items: [{ name: 'loaded-main', source: 'user', main: true, disabled: false, routes: [] }], complete: false });
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ execution: { ...NATIVE_AGENT, profile: 'saved-main' }, agentProfile: 'saved-main', value: 'ready now', onSend, onChangeExecution: vi.fn() });
+    expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+    await click(await waitForProfileTrigger(container));
+    expect(container.querySelector('[data-execution-profile="loaded-main"]')).not.toBeNull();
+    await click(container.querySelector('button[aria-label="Send message"]')!);
+    expect(onSend).toHaveBeenCalledWith('ready now', []);
+  });
+
+  it('keeps an explicitly disabled profile blocked even in a partial catalog', async () => {
+    listNamedAgentProfiles.mockResolvedValue({ items: [{ name: 'saved-main', source: 'user', main: true, disabled: true, routes: [] }], complete: false });
+    const { container, queryClient } = await renderComposer({ agentProfile: 'saved-main', value: 'ready now' });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.disabled).toBe(true);
+    listNamedAgentProfiles.mockRejectedValue(new Error('catalog offline'));
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['agentProfiles'] }); });
+    await settle();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.disabled).toBe(true);
+  });
+
   it('keeps a bare external engine sendable without a native model or profile catalog', async () => {
     listModels.mockResolvedValue({ items: [] });
     listNamedAgentProfiles.mockReturnValue(new Promise(() => {}));
@@ -4574,6 +4595,17 @@ describe('Composer projected profile model menu', () => {
     await act(async () => container.querySelector<HTMLTextAreaElement>('textarea')!.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })));
     expect(onSend).toHaveBeenCalledWith('hello', []);
   });
+  it.each(['pending', 'failed'])('keeps subagent model choices usable when bound capabilities are %s', async (status) => {
+    getAgentCapabilities.mockImplementation(() => status === 'pending' ? new Promise(() => {}) : Promise.reject(new Error('Unavailable')));
+    const onChangeModel = vi.fn();
+    const { container } = await renderComposer({ sessionId: 'saved-session', agentId: 'child', variant: 'subagent', agentProfile: 'agent', model: 'fixture/kiki-pro', onChangeModel });
+    await click(container.querySelector('#composer-model-select')!);
+    const outside = container.querySelector<HTMLElement>('[data-option-value="fixture/outside"]')!;
+    expect(outside.getAttribute('aria-disabled')).not.toBe('true');
+    await click(outside);
+    expect(onChangeModel).toHaveBeenCalledWith('fixture/outside');
+  });
+
   it('uses the frozen session domain instead of a newer disk declaration', async () => {
     getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'main' }, available: true, targets: [],
       profile: { name: 'agent', restrict_models_to_menu: true, effective_model_aliases: ['fixture/outside'] },
@@ -4948,7 +4980,7 @@ describe('session SSH stays resident and rides no message', () => {
     await openAddMenu(container);
     expect(container.querySelector('[data-add-menu-ssh]')).not.toBeNull();
     await click(container.querySelector('[data-add-menu-ssh]')!);
-    await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
+    await click(container.querySelector('[data-composer-ssh-host="example-host"] button')!);
     expect(sshAdd).not.toHaveBeenCalled();
     expect(sshSessionHosts).not.toHaveBeenCalled();
     // The draft strip and the session strip say the same word: both are this
@@ -4972,7 +5004,7 @@ describe('session SSH stays resident and rides no message', () => {
     const { container } = await renderComposer({ value: '/review --fix', onActivateSkill });
     await openAddMenu(container);
     await click(container.querySelector('[data-add-menu-ssh]')!);
-    await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
+    await click(container.querySelector('[data-composer-ssh-host="example-host"] button')!);
     await click(container.querySelector('[data-add-menu-trigger]')!);
     await click(container.querySelector('button[aria-label="Send message"]')!);
     expect(onActivateSkill).toHaveBeenCalledExactlyOnceWith('review', '--fix',
@@ -5100,7 +5132,7 @@ describe('session SSH stays resident and rides no message', () => {
     const { container, rerender } = await renderComposer();
     await openAddMenu(container);
     await click(container.querySelector('[data-add-menu-ssh]')!);
-    await click(container.querySelector('[data-composer-ssh-host="example-host"]')!);
+    await click(container.querySelector('[data-composer-ssh-host="example-host"] button')!);
     expect(container.querySelector('[data-composer-ssh-chip="example-host"]')).not.toBeNull();
     await rerender({ sessionId: 'session-example' });
     await rerender({});
@@ -5225,16 +5257,41 @@ describe('Composer explicit profile file recovery', () => {
     expect(onChangeExecution).toHaveBeenCalledWith({ executor: 'native', profile: undefined, profile_file: undefined, overrides: undefined });
   });
 
-  it('blocks a failed file preview with the original error and explicit retry', async () => {
+  it('keeps a failed file preview local, sends the saved choice and offers retry', async () => {
     previewAgentProfileFile.mockRejectedValue(new ApiError({ msg: 'Profile file is unavailable', code: 40001, data: null }));
-    const { container } = await renderComposer({ value: 'Hello', execution, onChangeExecution: vi.fn(), agentProfile: 'helper' });
-    const diagnostic = container.querySelector('[data-selection-diagnostic]')!;
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'Hello', execution, onChangeExecution: vi.fn(), agentProfile: 'helper', onSend });
+    const diagnostic = container.querySelector('[data-selection-diagnostic][role="status"]')!;
     expect(diagnostic.textContent).toContain('Profile file is unavailable');
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    expect(button.disabled).toBe(false);
+    await click(button);
+    expect(onSend).toHaveBeenCalledWith('Hello', []);
     previewAgentProfileFile.mockResolvedValue({ profile });
     await click(diagnostic.querySelector('button')!);
     await settle();
     await settle();
     expect(container.querySelector('[data-selection-diagnostic]')).toBeNull();
+  });
+
+  it('sends a saved file while the preview is pending', async () => {
+    previewAgentProfileFile.mockReturnValue(new Promise(() => {}));
+    const onSend = vi.fn();
+    const { container } = await renderComposer({ value: 'Hello', execution, onChangeExecution: vi.fn(), agentProfile: 'helper', onSend });
+    const button = container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!;
+    expect(button.disabled).toBe(false);
+    await click(button);
+    expect(onSend).toHaveBeenCalledWith('Hello', []);
+  });
+
+  it('preserves a successful file preview’s explicit off choice', async () => {
+    previewAgentProfileFile.mockResolvedValue({ profile: { ...profile, disabled: true } });
+    const { container, queryClient } = await renderComposer({ value: 'Hello', execution, onChangeExecution: vi.fn(), agentProfile: 'helper' });
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.disabled).toBe(true);
+    previewAgentProfileFile.mockRejectedValue(new Error('preview offline'));
+    await act(async () => { await queryClient.refetchQueries({ queryKey: ['profile-file-preview'] }); });
+    await settle();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="Send message"]')!.disabled).toBe(true);
   });
 
   it('clears external_connection_id and external_connection_name when picking default from external client', async () => {
