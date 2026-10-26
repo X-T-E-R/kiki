@@ -29,9 +29,9 @@ interface MediaItem {
   readonly name: string;
 }
 
-function mediaItems(run: MediaRun): MediaItem[] {
+function mediaItems(run: MediaRun, agentId: string): MediaItem[] {
   return run.members.flatMap((tool) => {
-    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media);
+    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId);
     const argPath = (tool.args as { path?: unknown } | undefined)?.path;
     return media
       .filter((item) => item.kind === 'image')
@@ -62,7 +62,7 @@ function mediaItems(run: MediaRun): MediaItem[] {
  */
 export const MediaRunRow = memo(function MediaRunRow({ run, agentId, blockOrder }: { run: MediaRun; agentId: string; blockOrder?: ReadonlyMap<string, number> }) {
   const { t, tp } = useI18n();
-  const items = mediaItems(run);
+  const items = mediaItems(run, agentId);
   const latest = run.latest;
   const shown = latest ? items : items.slice(0, MEDIA_STRIP_MAX);
   const more = items.length - shown.length;

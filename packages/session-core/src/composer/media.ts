@@ -127,15 +127,26 @@ export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef
 export function toolResultMedia(
   references: readonly MediaRef[] | undefined,
   parts: readonly MediaRef[] | undefined,
+  agentId?: string,
 ): readonly MediaRef[] {
   const merged: MediaRef[] = [];
   const positions = new Map<string, number>();
   for (const item of [...(references ?? []), ...(parts ?? [])]) {
-    const key = item.fileId ?? item.detail?.attachmentId ?? item.blobHash ?? item.url ?? item.path
-      ?? `${item.kind}:${item.name ?? ''}`;
-    const at = positions.get(key);
+    const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
+    const owner = blob?.kind === 'agent' ? blob.agentId : item.detail?.agentId ?? agentId;
+    const hash = item.blobHash ?? blob?.hash;
+    // One ref can name both a canonical file and its original bytes. Paths and
+    // labels describe media, but cannot identify crops or individual frames.
+    const identities = [
+      item.fileId === undefined ? undefined : ['file', item.fileId],
+      hash === undefined ? undefined : ['blob', hash],
+      item.url === undefined ? undefined : ['url', item.url],
+      item.detail === undefined ? undefined : ['detail', item.detail.attachmentId],
+    ].filter((identity) => identity !== undefined).map((identity) => JSON.stringify([item.kind, owner, ...identity]));
+    const at = identities.map((key) => positions.get(key)).find((position) => position !== undefined);
+    const index = at ?? merged.length;
+    for (const key of identities) positions.set(key, index);
     if (at === undefined) {
-      positions.set(key, merged.length);
       merged.push(item);
       continue;
     }

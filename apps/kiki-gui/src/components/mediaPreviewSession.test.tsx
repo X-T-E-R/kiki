@@ -12,6 +12,7 @@ import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { previewThumbnail } from './imageThumbnail';
 import { imagePreviewDownloadName, imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { ToolCard } from './ToolCard';
+import { MediaRunRow } from './timeline/FoldRows';
 import { TranscriptDetailProvider } from './transcriptDetail';
 import type { MediaRef } from '@kiki/session-core/composer/media';
 import type { KikiClient } from '../lib/client';
@@ -320,9 +321,9 @@ function readMediaBlock(path: string, url: string, kind: 'image' | 'video' = 'im
 }
 
 /** Opens the real tool card; media needs no second loading action. */
-async function renderReadMedia(block: ToolBlock): Promise<HTMLDivElement> {
+async function renderReadMedia(block: ToolBlock, agentId = 'main'): Promise<HTMLDivElement> {
   const { root, container } = makeRoot();
-  await renderSettled(root, <MediaPreviewProvider sessionId="session_test"><ToolCard block={block} agentId="main" /></MediaPreviewProvider>);
+  await renderSettled(root, <MediaPreviewProvider sessionId="session_test"><ToolCard block={block} agentId={agentId} /></MediaPreviewProvider>);
   await act(async () => {
     container.querySelector('[data-tool] [data-activity-toggle]')?.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     await Promise.resolve();
@@ -334,6 +335,70 @@ async function renderReadMedia(block: ToolBlock): Promise<HTMLDivElement> {
 }
 
 describe('ReadMediaFile tool result preview', () => {
+  it('shows one image for the canonical agent blob and raw MIME blob and opens one original', async () => {
+    const hash = 'a'.repeat(64);
+    const fileId = `blobref:agent-a:${hash}`;
+    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3, 4]), mime: 'image/png' });
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    const container = await renderReadMedia({
+      ...readMediaBlock('/fixtures/saved.png', `blobref:image/png;${hash}`),
+      media: [{ kind: 'image', fileId, blobHash: hash, mime: 'image/png', name: 'saved.png' }],
+    }, 'agent-a');
+
+    expect(container.querySelectorAll('img')).toHaveLength(1);
+    expect(mocks.readSessionMediaPreviewBytes).toHaveBeenCalledExactlyOnceWith('session_test', fileId, expect.anything());
+    await act(async () => { container.querySelector('img')?.closest('button')?.click(); });
+    expect(document.body.querySelectorAll('[role="dialog"]')).toHaveLength(1);
+    expect(document.body.querySelectorAll('[role="dialog"] img')).toHaveLength(1);
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledExactlyOnceWith('session_test', fileId, expect.anything());
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
+  });
+
+  it('folds the same scoped blob in the viewed-images row without folding separate tool calls', async () => {
+    const hash = 'a'.repeat(64);
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    const block = {
+      ...readMediaBlock('/fixtures/saved.png', `blobref:image/png;${hash}`),
+      media: [{ kind: 'image' as const, fileId: `blobref:agent-a:${hash}`, blobHash: hash, mime: 'image/png' }],
+    };
+    const { root, container } = makeRoot();
+    const render = (members: ToolBlock[]) => renderSettled(root, <MediaPreviewProvider sessionId="session_test">
+      <MediaRunRow agentId="agent-a" run={{ kind: 'media-run', id: 'media-run', turnId: 't1', members, latest: true }} />
+    </MediaPreviewProvider>);
+    await render([block]);
+    expect(container.querySelectorAll('[data-media-thumb] img')).toHaveLength(1);
+    await render([block, { ...block, id: 'second-read', toolCallId: 'second-read' }]);
+    expect(container.querySelectorAll('[data-media-thumb] img')).toHaveLength(2);
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
+  });
+
+  it('preserves two saved crops in one result alongside their canonical references', async () => {
+    const hashes = ['a'.repeat(64), 'b'.repeat(64)];
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    const container = await renderReadMedia({
+      ...readMediaBlock('/fixtures/original.png', ''),
+      output: hashes.flatMap((hash) => readMediaBlock('/fixtures/original.png', `blobref:image/png;${hash}`).output as unknown[]),
+      media: hashes.map((hash) => ({ kind: 'image', fileId: `blobref:main:${hash}`, blobHash: hash, mime: 'image/png' })),
+    });
+    expect(container.querySelectorAll('img')).toHaveLength(2);
+    expect(mocks.readSessionMediaPreviewBytes.mock.calls.map(([, fileId]) => fileId)).toEqual(hashes.map((hash) => `blobref:main:${hash}`));
+    expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
+  });
+
+  it('folds live duplicates but preserves different images within a result and across calls', async () => {
+    const first = readMediaBlock('/fixtures/first.png', 'data:image/png;base64,AAA');
+    const second = readMediaBlock('/fixtures/second.png', 'data:image/png;base64,BBB');
+    const container = await renderReadMedia({
+      ...first,
+      output: [...first.output as unknown[], ...second.output as unknown[]],
+      media: [{ kind: 'image', url: 'data:image/png;base64,AAA' }, { kind: 'image', url: 'data:image/png;base64,BBB' }],
+    });
+    expect([...container.querySelectorAll('img')].map((image) => image.getAttribute('src'))).toEqual(['data:image/png;base64,AAA', 'data:image/png;base64,BBB']);
+    const anotherCall = await renderReadMedia({ ...first, id: 'another-call', toolCallId: 'another-call' });
+    expect(anotherCall.querySelectorAll('img')).toHaveLength(1);
+    expect(container.querySelectorAll('img')).toHaveLength(2);
+  });
+
   it('reads the saved image bytes, not the current absolute Windows path', async () => {
     const path = 'C:\\work\\shots\\home.png';
     // The preview carries the image's own MIME; the generic download MIME the

@@ -426,7 +426,7 @@ function OutputView({ output, media, agentId, island = false, external = false }
   const mediaOutput = output === undefined || output === null ? undefined : extractToolOutputMedia(output);
   // A result that carries both the reference and the part reports one file
   // twice; `toolResultMedia` folds them so the well draws each image once.
-  const resultMedia = toolResultMedia(media, mediaOutput?.media);
+  const resultMedia = toolResultMedia(media, mediaOutput?.media, agentId);
   const resultList = resultMedia.length > 0 ? <MediaPartList media={resultMedia} agentId={agentId} /> : null;
   if (mediaOutput !== undefined) {
     return (

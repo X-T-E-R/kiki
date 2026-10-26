@@ -15,6 +15,7 @@ import {
   previewKindOf,
   resolveFileHref,
   resolveFileReference,
+  toolResultMedia,
   unwrapFileLinkTarget,
   wrapFileLinkTarget,
 } from './media';
@@ -206,6 +207,47 @@ describe('extractToolOutputMedia', () => {
     expect(extractToolOutputMedia({ kind: 'text', text: 'x' })).toBeUndefined();
     expect(extractToolOutputMedia([{ type: 'text', text: 'only text' }])).toBeUndefined();
     expect(extractToolOutputMedia([{ a: 1 }, { b: 2 }])).toBeUndefined();
+  });
+});
+
+describe('toolResultMedia', () => {
+  const hash = 'a'.repeat(64);
+  const canonical = { kind: 'image' as const, fileId: `blobref:agent-a:${hash}`, blobHash: hash, mime: 'image/png', name: 'saved.png' };
+  const part = { kind: 'image' as const, blobHash: hash, mime: 'image/png', path: '/fixtures/saved.png' };
+
+  it('folds the canonical agent-scoped blob and raw MIME blob into one saved original', () => {
+    expect(toolResultMedia([canonical], [part], 'agent-a')).toEqual([{ ...canonical, path: part.path }]);
+    expect(toolResultMedia([{ ...canonical, blobHash: undefined }], [part], 'agent-a')).toEqual([{ ...canonical, path: part.path }]);
+  });
+
+  it('keeps identical hashes from different agents separate and matches only the producing agent', () => {
+    const other = { ...canonical, fileId: `blobref:agent-b:${hash}` };
+    expect(toolResultMedia([other, canonical], [part], 'agent-a')).toEqual([other, { ...canonical, path: part.path }]);
+    expect(toolResultMedia([other], [part], 'agent-a')).toHaveLength(2);
+  });
+
+  it('keeps different crops and video frames at one host path distinct', () => {
+    const otherHash = 'b'.repeat(64);
+    const frames = [part, { ...part, blobHash: otherHash }];
+    expect(toolResultMedia([canonical, { ...canonical, fileId: `blobref:agent-a:${otherHash}`, blobHash: otherHash }], frames, 'agent-a'))
+      .toEqual([{ ...canonical, path: part.path }, { ...canonical, fileId: `blobref:agent-a:${otherHash}`, blobHash: otherHash, path: part.path }]);
+    expect(toolResultMedia(undefined, frames, 'agent-a')).toHaveLength(2);
+    expect(toolResultMedia([{ ...canonical, kind: 'video' }], [part], 'agent-a')).toHaveLength(2);
+  });
+
+  it('folds live URLs and managed file ids while retaining genuinely different images', () => {
+    const first = { kind: 'image' as const, url: 'data:image/png;base64,AAA', path: part.path };
+    const second = { ...first, url: 'data:image/png;base64,BBB' };
+    expect(toolResultMedia([first], [first, second], 'agent-a')).toEqual([first, second]);
+    expect(toolResultMedia([{ kind: 'image', fileId: 'saved-file', name: 'saved.png' }], [{ kind: 'image', fileId: 'saved-file' }], 'agent-a'))
+      .toEqual([{ kind: 'image', fileId: 'saved-file', name: 'saved.png' }]);
+  });
+
+  it('does not guess identity from paths, names or unscoped attachment ids', () => {
+    const pathOnly = { kind: 'image' as const, path: part.path, name: 'saved.png' };
+    expect(toolResultMedia([pathOnly], [pathOnly], 'agent-a')).toHaveLength(2);
+    expect(toolResultMedia([{ kind: 'image', name: 'same.png' }], [{ kind: 'image', name: 'same.png' }], 'agent-a')).toHaveLength(2);
+    expect(toolResultMedia([{ kind: 'image', detail: { agentId: 'agent-a', attachmentId: 'att1' } }], [{ kind: 'image', detail: { agentId: 'agent-b', attachmentId: 'att1' } }], 'agent-a')).toHaveLength(2);
   });
 });
 
