@@ -206,10 +206,15 @@ describe('canonical mailbox SQLite migration', () => {
       status: { ...manifest.status, progress: null, backupPath: 'unavailable-historical-backup' } }));
     await expect(assertMailboxStartupReady(home)).resolves.toBeUndefined();
     expect(() => assertMailboxStartupReadySync(home)).not.toThrow();
-    expect(await migration.status()).toMatchObject({ state: 'failed' });
+    const status = await migration.status();
+    expect(status).toMatchObject({ authority: 'sqlite', phase: 'complete', state: 'complete', canRollback: false,
+      migrationId: manifest.status.migrationId, warning: { code: 'mailbox.checkpoint_warning' } });
+    expect(status.failure).toBeUndefined();
+    expect(await migration.migrate()).toMatchObject({ authority: 'sqlite', state: 'complete', warning: { code: 'mailbox.checkpoint_warning' } });
     await writeFile(path, JSON.stringify({ ...manifest, rollbackAuthority: await readMailboxAuthority(home) }));
     await expect(assertMailboxStartupReady(home)).rejects.toMatchObject({ code: 'mailbox.migration_required' });
     expect(() => assertMailboxStartupReadySync(home)).toThrow('rollback is incomplete');
+    expect(await migration.status()).toMatchObject({ phase: 'rolling_back', canRollback: true });
   });
 
   describe('rollback authority commit crash', () => {

@@ -1018,17 +1018,20 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     nextMessageSeq: number,
     minSeq: number,
   ): Promise<{ readonly seq: number; readonly key?: string; readonly message?: MessageDoc }> {
-    let selected: { readonly seq: number; readonly key: string; readonly message: MessageDoc } | undefined;
-    const entries = await db.partitionPrefix(partition, targetMessagePrefix(partition));
-    for (const entry of entries) {
-      const message = asMessage(entry.value);
-      if (message === undefined || isTerminalState(message.state)) continue;
-      assertThreadIdentity(message.message.target, target, entry.key);
-      const seq = message.message.targetSeq;
-      if (seq < minSeq || seq >= nextMessageSeq || selected !== undefined && selected.seq <= seq) continue;
-      selected = { seq, key: entry.key, message };
+    const prefix = targetMessagePrefix(partition);
+    let after = targetMessageKey(partition, Math.max(0, minSeq - 1));
+    for (;;) {
+      const entries = await db.page(prefix, after, 128, 'message');
+      for (const entry of entries) {
+        const message = asMessage(entry.value);
+        if (message === undefined || isTerminalState(message.state)) continue;
+        assertThreadIdentity(message.message.target, target, entry.key);
+        const seq = message.message.targetSeq;
+        if (seq >= minSeq && seq < nextMessageSeq) return { seq, key: entry.key, message };
+      }
+      if (entries.length < 128) return { seq: nextMessageSeq };
+      after = entries.at(-1)!.key;
     }
-    return selected ?? { seq: nextMessageSeq };
   }
 
   private async pendingTargetsOwner(ctx: RuntimeMethodContext, selected?: readonly ThreadRef[]): Promise<readonly ThreadRef[]> {
@@ -1042,14 +1045,18 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
       }
       return pending;
     }
-    const entries = await db.prefix('t/');
     const targets = new Map<string, ThreadRef>();
-    for (const entry of entries) {
-      const meta = asTargetMeta(entry.value);
-      if (meta === undefined || meta.pendingCount === 0) continue;
-      targets.set(threadIdentity(meta.target), meta.target);
+    let after: string | undefined;
+    for (;;) {
+      const entries = await db.page('t/', after, 128, 'target_meta', ctx.signal);
+      for (const entry of entries) {
+        const meta = asTargetMeta(entry.value);
+        if (meta === undefined || meta.pendingCount === 0) continue;
+        targets.set(threadIdentity(meta.target), meta.target);
+      }
+      if (entries.length < 128) return [...targets.values()];
+      after = entries.at(-1)!.key;
     }
-    return [...targets.values()];
   }
 
   private async cancelProducerOwner(
@@ -1062,35 +1069,62 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     const receipt = readReceipt(await db.partitionGet(SYSTEM_PARTITION, receiptKey), receiptKey, method, ctx, input);
     if (receipt !== undefined) return receipt.result as number;
     let cancelled = 0;
-    const metas = (await db.prefix('t/'))
-      .map((entry) => asTargetMeta(entry.value))
-      .filter((meta): meta is TargetMetaDoc => meta !== undefined);
-    for (const meta of metas) {
-      const partition = targetPartition(meta.target);
-      await this.withPartition(partition, ctx, async () => {
-        const messages = (await db.partitionPrefix(partition, targetMessagePrefix(partition)))
-          .map((entry) => ({ key: entry.key, message: asMessage(entry.value) }))
-          .filter((entry): entry is { readonly key: string; readonly message: MessageDoc } => entry.message !== undefined);
-        const matching = messages.filter((entry) =>
-          entry.message.state === 'pending' && sameProducer(entry.message.message.producer, input.producer),
-        );
-        if (matching.length === 0) return;
-        const currentMeta = asTargetMeta(await db.partitionGet(partition, targetMetaKey(partition)));
-        if (currentMeta === undefined) return;
-        const ops: MailboxWrite<StoredDoc>[] = matching.map(({ key, message }) => ({
-          op: 'set',
-          key,
-          value: { ...message, state: 'undeliverable', reason: 'room delivery cancelled' },
-        }));
-        ops.push({
-          op: 'set',
-          key: targetMetaKey(partition),
-          value: { ...currentMeta, pendingCount: Math.max(0, currentMeta.pendingCount - matching.length) },
+    let metaAfter: string | undefined;
+    for (;;) {
+      const metas = await db.page('t/', metaAfter, 128, 'target_meta', ctx.signal);
+      for (const entry of metas) {
+        const meta = asTargetMeta(entry.value);
+        if (meta === undefined) continue;
+        const partition = targetPartition(meta.target);
+        cancelled += await this.withPartition(partition, ctx, async () => {
+          const checkpointKey = requestReceiptKey(partition, method, ctx);
+          const checkpoint = readReceipt(await db.partitionGet(partition, checkpointKey), checkpointKey, method, ctx, input)?.result as
+            { readonly after?: string; readonly cancelled: number; readonly complete: boolean } | undefined;
+          if (checkpoint?.complete === true) return checkpoint.cancelled;
+          let after = checkpoint?.after;
+          let partitionCancelled = checkpoint?.cancelled ?? 0;
+          const prefix = targetMessagePrefix(partition);
+          const upper = targetMessageKey(partition, meta.nextMessageSeq);
+          for (;;) {
+            throwIfAborted(ctx.signal);
+            this.assertOwnerContext(ctx);
+            const page = await db.page(prefix, after, 128, 'message', ctx.signal);
+            const inRange = page.filter((row) => row.key < upper);
+            const nextAfter = inRange.at(-1)?.key ?? after;
+            const complete = inRange.length < 128 || inRange.length !== page.length;
+            const matching = inRange.flatMap(({ key, value }) => {
+              const message = asMessage(value);
+              return message?.state === 'pending' && sameProducer(message.message.producer, input.producer)
+                ? [{ key, message }] : [];
+            });
+            if (matching.length === 0 && (complete || partitionCancelled === 0 && page.length === 0)) return partitionCancelled;
+            if (matching.length > 0 || complete) {
+              const ops: MailboxWrite<StoredDoc>[] = matching.map(({ key, message }) => ({
+                op: 'set', key, value: { ...message, state: 'undeliverable', reason: 'room delivery cancelled' },
+              }));
+              if (matching.length > 0) {
+                const currentMeta = asTargetMeta(await db.partitionGet(partition, targetMetaKey(partition)));
+                if (currentMeta === undefined) return partitionCancelled;
+                ops.push({ op: 'set', key: targetMetaKey(partition),
+                  value: { ...currentMeta, pendingCount: Math.max(0, currentMeta.pendingCount - matching.length) } });
+              }
+              ops.push(buildReceiptOp(checkpointKey, method, ctx, input,
+                { after: nextAfter, cancelled: partitionCancelled + matching.length, complete }, RECEIPT_TTL_MS));
+              throwIfAborted(ctx.signal);
+              this.assertOwnerContext(ctx);
+              await db.partitionBatch(partition, ops);
+              partitionCancelled += matching.length;
+            }
+            if (complete) return partitionCancelled;
+            after = nextAfter;
+          }
         });
-        await db.partitionBatch(partition, ops);
-        cancelled += matching.length;
-      });
+      }
+      if (metas.length < 128) break;
+      metaAfter = metas.at(-1)!.key;
     }
+    throwIfAborted(ctx.signal);
+    this.assertOwnerContext(ctx);
     await db.partitionBatch(SYSTEM_PARTITION, [buildReceiptOp(receiptKey, method, ctx, input, cancelled, RECEIPT_TTL_MS)]);
     return cancelled;
   }

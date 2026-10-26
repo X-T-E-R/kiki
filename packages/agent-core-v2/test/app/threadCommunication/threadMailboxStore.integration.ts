@@ -902,13 +902,13 @@ describe('runtime thread mailbox', () => {
     }
     const reopened = harness(homeDir);
     open.push(reopened);
-    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
+    const originalPage = CanonicalMailboxDatabase.prototype.page;
     const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     let repairedHead: number | undefined;
     let messageScans = 0;
-    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
-      if (args[1].endsWith('/message/')) messageScans++;
-      return originalPrefix.apply(this, args);
+    CanonicalMailboxDatabase.prototype.page = async function (...args: Parameters<typeof originalPage>) {
+      if (args[0].endsWith('/message/')) { expect(args[2]).toBeLessThanOrEqual(128); expect(args[3]).toBe('message'); messageScans++; }
+      return originalPage.apply(this, args);
     };
     CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
       for (const operation of args[1]) {
@@ -924,7 +924,7 @@ describe('runtime thread mailbox', () => {
       expect(repairedHead).toBe(2);
       expect(messageScans).toBe(0);
     } finally {
-      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.page = originalPage;
       CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   });
@@ -954,13 +954,13 @@ describe('runtime thread mailbox', () => {
     }
     const reopened = harness(homeDir);
     open.push(reopened);
-    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
+    const originalPage = CanonicalMailboxDatabase.prototype.page;
     const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     let repairedHead: number | undefined;
     let messageScans = 0;
-    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
-      if (args[1].endsWith('/message/')) messageScans++;
-      return originalPrefix.apply(this, args);
+    CanonicalMailboxDatabase.prototype.page = async function (...args: Parameters<typeof originalPage>) {
+      if (args[0].endsWith('/message/')) { expect(args[2]).toBeLessThanOrEqual(128); expect(args[3]).toBe('message'); messageScans++; }
+      return originalPage.apply(this, args);
     };
     CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
       for (const operation of args[1]) {
@@ -976,7 +976,7 @@ describe('runtime thread mailbox', () => {
       expect(repairedHead).toBe(34);
       expect(messageScans).toBe(1);
     } finally {
-      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.page = originalPage;
       CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   });
@@ -1003,13 +1003,13 @@ describe('runtime thread mailbox', () => {
     }
     const reopened = harness(homeDir);
     open.push(reopened);
-    const originalPrefix = CanonicalMailboxDatabase.prototype.partitionPrefix;
+    const originalPage = CanonicalMailboxDatabase.prototype.page;
     const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
     let persistedHead: number | undefined;
     let messageScans = 0;
-    CanonicalMailboxDatabase.prototype.partitionPrefix = async function (...args: Parameters<typeof originalPrefix>) {
-      if (args[1].endsWith('/message/')) messageScans++;
-      return originalPrefix.apply(this, args);
+    CanonicalMailboxDatabase.prototype.page = async function (...args: Parameters<typeof originalPage>) {
+      if (args[0].endsWith('/message/')) { expect(args[2]).toBeLessThanOrEqual(128); expect(args[3]).toBe('message'); messageScans++; }
+      return originalPage.apply(this, args);
     };
     CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
       for (const operation of args[1]) {
@@ -1026,7 +1026,7 @@ describe('runtime thread mailbox', () => {
       expect(persistedHead).toBe(1);
       expect(messageScans).toBe(1);
     } finally {
-      CanonicalMailboxDatabase.prototype.partitionPrefix = originalPrefix;
+      CanonicalMailboxDatabase.prototype.page = originalPage;
       CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
     }
   });
@@ -1404,6 +1404,69 @@ describe('runtime thread mailbox', () => {
     expect((await reopened.store.readMessages({ group: 'all', limit: 100 })).items).toMatchObject([
       { message: { messageId: accepted.messageId, content: accepted.content }, delivery: 'pending' },
     ]);
+  });
+
+  it('scans mailbox kinds in bounded pages and resumes a cancelled room after a committed page', async () => {
+    const item = harness(homeDir);
+    open.push(item);
+    const producer = { kind: 'room' as const, roomId: 'example-room' };
+    await Promise.all(Array.from({ length: 270 }, (_, index) => item.store.acceptMessage({ producer, target,
+      content: `room-${index}`, idempotencyKey: `room-${index}` })));
+    const other = { ...target, sessionId: 'second-target' };
+    await item.store.acceptMessage({ producer, target: other, content: 'second', idempotencyKey: 'second' });
+    const originalPage = CanonicalMailboxDatabase.prototype.page;
+    const originalBatch = CanonicalMailboxDatabase.prototype.partitionBatch;
+    const scanned: Array<{ prefix: string; limit: number; kind?: string }> = [];
+    const controller = new AbortController();
+    let stopped = false;
+    CanonicalMailboxDatabase.prototype.page = async function (...args: Parameters<typeof originalPage>) {
+      if (args[0] === 't/' || args[0].endsWith('/message/')) scanned.push({ prefix: args[0], limit: args[2] ?? 256, kind: args[3] });
+      return originalPage.apply(this, args);
+    };
+    CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof originalBatch>) {
+      const result = await originalBatch.apply(this, args);
+      if (!stopped && args[1].some((op) => {
+        const checkpoint = op.op === 'set' && op.value.kind === 'receipt' ? op.value.result : undefined;
+        return typeof checkpoint === 'object' && checkpoint !== null && 'after' in checkpoint &&
+          'cancelled' in checkpoint && typeof checkpoint.cancelled === 'number' && checkpoint.cancelled > 0;
+      })) { stopped = true; controller.abort(); }
+      return result;
+    };
+    try {
+      await expect(item.store.cancelProducer(producer, { requestId: 'paged-room-cancel', signal: controller.signal })).rejects.toBeDefined();
+      expect(stopped).toBe(true);
+      expect(await item.store.cancelProducer(producer, { requestId: 'paged-room-cancel' })).toBe(271);
+      expect(await item.store.cancelProducer(producer, { requestId: 'paged-room-cancel' })).toBe(271);
+      expect(await item.store.listPendingTargets()).toEqual([]);
+      expect(scanned.filter((entry) => entry.kind === 'message').length).toBeGreaterThan(2);
+      expect(scanned.some((entry) => entry.kind === 'target_meta')).toBe(true);
+      expect(scanned.every((entry) => entry.limit <= 128 && (entry.kind === 'target_meta' || entry.kind === 'message'))).toBe(true);
+      const db = await openMailboxDb(homeDir);
+      try {
+        expect((await db.verify()).counts['message']).toBe(271);
+        expect((await db.partitionGet(mailboxPartition(target), `${mailboxPartition(target)}/meta`))?.['pendingCount']).toBe(0);
+      } finally { await db.close(); }
+    } finally {
+      CanonicalMailboxDatabase.prototype.page = originalPage;
+      CanonicalMailboxDatabase.prototype.partitionBatch = originalBatch;
+    }
+  }, 30_000);
+
+  it('preserves full prefix enumeration for a caller with more than 512 rows', async () => {
+    const db = await openMailboxDb(homeDir);
+    try {
+      const prefix = 'fixture/prefix/';
+      await db.partitionBatch('fixture', Array.from({ length: 513 }, (_, index) => ({
+        op: 'set' as const,
+        key: `${prefix}${index.toString().padStart(4, '0')}`,
+        value: { kind: 'fixture', index },
+      })));
+      const rows = await db.prefix(prefix);
+      expect(rows).toHaveLength(513);
+      expect(rows[0]?.key).toBe(`${prefix}0000`);
+      expect(rows.at(-1)?.key).toBe(`${prefix}0512`);
+      expect(await db.partitionPrefix('fixture', prefix)).toHaveLength(513);
+    } finally { await db.close(); }
   });
 
   it('never exposes MiniDb lock failures through the broker', async () => {

@@ -10,7 +10,7 @@ export const mailboxMigrationStatusSchema = z.object({
   sources: z.array(mailboxMigrationSourceSchema).readonly(), progress: mailboxMigrationProgressSchema,
   currentSource: z.string().optional(), currentKey: z.string().optional(), backupPath: z.string().optional(), databasePath: z.string().optional(),
   writer: z.object({ hostId: z.string().optional(), epoch: z.number().optional(), lockPath: z.string().optional() }).optional(),
-  failure: mailboxMigrationFailureSchema.optional(), canCancel: z.boolean(), canRollback: z.boolean(),
+  failure: mailboxMigrationFailureSchema.optional(), warning: z.object({ code: z.string(), message: z.string() }).optional(), canCancel: z.boolean(), canRollback: z.boolean(),
   minimumReaderVersion: z.literal('0.5.0'), legacyImportRemovedVersion: z.literal('0.6.0'),
 });
 export const storageMigrationActionSchema = z.object({ action: z.enum(['migrate', 'cancel', 'rollback', 'start', 'retry_cleanup']) }).strict();

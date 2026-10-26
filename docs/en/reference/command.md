@@ -198,7 +198,7 @@ kiki storage migrate --home /path/to/home
 
 Close every other Kiki writer using that home before `migrate`. If a writer still owns it, the command reports `waiting` and exits with code `2`; it does not take the writer's lock. After the writer exits, repeat `migrate`. The upgrade backs up the source, imports and verifies records, then switches to SQLite. Interrupting a cancellable phase preserves the source and committed import pages; repeat `migrate` to resume. Legacy imports belong to the 0.5.x upgrade series: complete this step with the latest 0.5.x tool before moving to 0.6.
 
-Every storage subcommand accepts `--home` and `--json`. JSON status and progress are newline-delimited objects, including `authority`, `phase`, `state`, `progress`, `failure`, `canCancel`, and `canRollback`. A failed operation exits `1`; a cancelled upgrade exits `130`. The recovery commands are:
+Every storage subcommand accepts `--home` and `--json`. JSON status and progress are newline-delimited objects, including `authority`, `phase`, `state`, `progress`, optional `failure` or `warning`, `canCancel`, and `canRollback`. If `mailbox.checkpoint_warning` appears with `authority: "sqlite"` and `state: "complete"`, the mailbox remains usable; the old migration record needs repair before rollback, so `canRollback` is `false`. A failed operation exits `1`; a cancelled upgrade exits `130`. The recovery commands are:
 
 ```sh
 kiki storage cancel --home /path/to/home

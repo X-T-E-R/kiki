@@ -198,7 +198,7 @@ kiki storage migrate --home /path/to/home
 
 运行 `migrate` 前，关闭所有使用这个 home 写入数据的其他 Kiki 进程。仍有进程持有写锁时，命令报告 `waiting` 并以退出码 `2` 结束，不抢占写锁；原进程退出后，重复运行 `migrate`。升级依次备份原件、导入并核对记录，再切换到 SQLite。在可取消阶段中断时，原件与已提交的导入页都会保留；重复运行 `migrate` 即可续接。旧格式导入属于 0.5.x 升级流程，请先用最新的 0.5.x 工具完成迁移，再升级到 0.6。
 
-每个 storage 子命令都接受 `--home` 和 `--json`。JSON 状态和进度按行输出，包含 `authority`、`phase`、`state`、`progress`、`failure`、`canCancel` 和 `canRollback`。操作失败时退出码为 `1`，升级取消时为 `130`。恢复相关命令如下：
+每个 storage 子命令都接受 `--home` 和 `--json`。JSON 状态和进度按行输出，包含 `authority`、`phase`、`state`、`progress`、可选的 `failure` 或 `warning`，以及 `canCancel` 和 `canRollback`。若 `mailbox.checkpoint_warning` 与 `authority: "sqlite"`、`state: "complete"` 同时出现，邮箱仍可使用；旧迁移记录需修复后才能回滚，因此 `canRollback` 为 `false`。操作失败时退出码为 `1`，升级取消时为 `130`。恢复相关命令如下：
 
 ```sh
 kiki storage cancel --home /path/to/home

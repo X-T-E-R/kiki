@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdtemp, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import * as engine from '@kiki/agent-core-v2';
 import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { createMailboxMigrationService } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/migration';
+import { migrationPath } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/authority';
 import { ClusterDb } from '../../minidb/src/cluster/index';
 import { storageMigrationViewSchema, type StorageMigrationView } from '@kiki/protocol';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -379,8 +380,22 @@ describe('pre-core storage maintenance', () => {
     expect(bootstrap).not.toHaveBeenCalled();
   });
 
-  it('reports startup timeout immediately and withholds retry until the cancelled attempt settles', async () => {
-    home = await mkdtemp(join(tmpdir(), 'kiki-storage-start-deadline-'));
+  it('offers start instead of migrate when only historical progress is damaged', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-storage-checkpoint-warning-'));
+    const service = createMailboxMigrationService(home);
+    owned.push(service);
+    expect((await service.migrate()).state).toBe('complete');
+    const path = migrationPath(home);
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    await writeFile(path, JSON.stringify({ ...manifest, copiedFiles: -1 }));
+    const controller = new StorageMigrationController(service, 'maintenance');
+    owned.push(controller);
+    expect(await controller.view()).toMatchObject({ status: { authority: 'sqlite', state: 'complete', canRollback: false,
+      warning: { code: 'mailbox.checkpoint_warning' } }, actions: ['start'] });
+  });
+
+  it('keeps normal startup available while preparation takes longer than 30 seconds', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-storage-start-slow-'));
     const service = createMailboxMigrationService(home);
     owned.push(service);
     expect((await service.migrate()).state).toBe('complete');
@@ -392,13 +407,38 @@ describe('pre-core storage maintenance', () => {
     try {
       expect(await controller.action('start')).toBe(true);
       controller.activateRequested();
-      await vi.advanceTimersByTimeAsync(30_000);
-      expect((await controller.view()).transition).toMatchObject({ state: 'failed', failure: { code: 'mailbox.start_timeout' }, cleanupPending: true });
-      expect((await controller.view()).actions).toEqual([]);
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect((await controller.view()).transition).toMatchObject({ state: 'starting' });
+      expect((await controller.view()).actions).toEqual(['cancel']);
       expect(await controller.action('start')).toBe(false);
     } finally { vi.useRealTimers(); release(); }
+    const settled = await until(() => controller.view(), (value) => value.transition.state === 'starting' && value.actions.length === 0);
+    expect(settled.transition.failure).toBeUndefined();
+  });
+
+  it('waits for a cancelled startup attempt before allowing another start', async () => {
+    home = await mkdtemp(join(tmpdir(), 'kiki-storage-start-cancel-'));
+    const service = createMailboxMigrationService(home);
+    owned.push(service);
+    expect((await service.migrate()).state).toBe('complete');
+    let release!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    let attempts = 0;
+    const controller = new StorageMigrationController(service, 'maintenance', async (signal) => { attempts++; await blocked; signal.throwIfAborted(); });
+    owned.push(controller);
+    vi.useFakeTimers();
+    try {
+      expect(await controller.action('start')).toBe(true);
+      controller.activateRequested();
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(await controller.action('cancel')).toBe(true);
+      expect((await controller.view()).transition).toMatchObject({ state: 'failed', failure: { code: 'mailbox.start_cancelled' }, cleanupPending: true });
+      expect((await controller.view()).actions).toEqual([]);
+      expect(await controller.action('start')).toBe(false);
+      expect(attempts).toBe(1);
+    } finally { vi.useRealTimers(); release(); }
     const settled = await until(() => controller.view(), (value) => value.actions.includes('start'));
-    expect(settled.transition.cleanupPending).toBe(false);
-    expect(settled.status.authority).toBe('sqlite');
+    expect(settled.transition).toMatchObject({ cleanupPending: false, failure: { code: 'mailbox.start_cancelled' } });
+    expect(attempts).toBe(1);
   });
 });

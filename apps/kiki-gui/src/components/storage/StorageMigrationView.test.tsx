@@ -155,9 +155,34 @@ describe('StorageMigrationViewComponent', () => {
     expect(container.querySelector('[data-action="rollback"]')).not.toBeNull();
   });
 
+  it('shows a damaged historical checkpoint as a warning without blocking normal startup', async () => {
+    const warningView: StorageMigrationView = {
+      ...mockBaseView,
+      status: {
+        ...mockBaseView.status,
+        authority: 'sqlite',
+        state: 'complete',
+        phase: 'complete',
+        canRollback: false,
+        warning: { code: 'mailbox.checkpoint_warning', message: 'Unlocalized historical checkpoint diagnostic' },
+      },
+      actions: ['start'],
+    };
+
+    await renderComponent(warningView);
+
+    expect(container.querySelector('[data-testid="migration-state-tag"]')?.textContent).toBe('Data migrated');
+    expect(container.querySelector('[data-testid="migration-warning"]')?.textContent).toContain('Mailbox data is available');
+    expect(container.querySelector('[data-testid="migration-failure-banner"]')).toBeNull();
+    expect(container.querySelector('[data-action="start"]')).not.toBeNull();
+    expect(container.querySelector('[data-action="migrate"]')).toBeNull();
+    expect(container.querySelector('[data-action="rollback"]')).toBeNull();
+  });
+
   it('handles cleanup state correctly: waiting when cleanupPending=true and actions empty', async () => {
     const cleaningWaitingView: StorageMigrationView = {
       ...mockBaseView,
+      status: { ...mockBaseView.status, state: 'complete', phase: 'complete', authority: 'sqlite' },
       actions: [],
       transition: {
         state: 'failed',
@@ -168,6 +193,8 @@ describe('StorageMigrationViewComponent', () => {
 
     await renderComponent(cleaningWaitingView);
 
+    expect(container.querySelector('[data-testid="migration-state-tag"]')?.textContent).toBe('Normal startup failed');
+    expect(container.textContent).toContain('Migration finished');
     // Should render startup failure banner
     expect(container.querySelector('[data-testid="startup-failure-banner"]')?.textContent).toContain('Startup failed because database was locked');
     // Should render cleaning indicator
@@ -181,6 +208,7 @@ describe('StorageMigrationViewComponent', () => {
   it('handles cleanup failure correctly: shows original failure + cleanup failure and exposes retry_cleanup action', async () => {
     const cleanupFailedView: StorageMigrationView = {
       ...mockBaseView,
+      status: { ...mockBaseView.status, state: 'complete', phase: 'complete', authority: 'sqlite' },
       actions: ['retry_cleanup'],
       transition: {
         state: 'failed',
@@ -192,6 +220,7 @@ describe('StorageMigrationViewComponent', () => {
 
     await renderComponent(cleanupFailedView);
 
+    expect(container.querySelector('[data-testid="migration-state-tag"]')?.textContent).toBe('Cleanup failed');
     // Both failure banners must be displayed
     expect(container.querySelector('[data-testid="startup-failure-banner"]')?.textContent).toContain('Original startup error: missing key');
     expect(container.querySelector('[data-testid="cleanup-failure-banner"]')?.textContent).toContain('Cleanup error: file locked by background process');
@@ -224,6 +253,7 @@ describe('StorageMigrationViewComponent', () => {
     });
 
     expect(postStorageMigrationActionMock).toHaveBeenCalledWith('retry_cleanup');
+    expect(container.querySelector('[data-testid="migration-state-tag"]')?.textContent).toBe('Data migrated');
     expect(container.querySelector('[data-action="start"]')).not.toBeNull();
     expect(container.querySelector('[data-action="rollback"]')).not.toBeNull();
   });

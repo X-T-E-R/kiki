@@ -17,7 +17,7 @@ import { convertLegacyMailboxRows, mailboxPeerIndexWrites } from '#/app/threadCo
 import type { AcceptedThreadMessage } from '#/app/threadCommunication/threadMailboxStore';
 import { acquireFileLock, isFileLockActive } from '../node-fs/fileLock';
 import {
-  MAILBOX_SOURCE_NAMES, authorityPath, checkLocalHome, inspectSources, installMailboxFence, inventory, inventorySource, isFence, mailboxDirectory, migrationPath,
+  MAILBOX_SOURCE_NAMES, assertMailboxStartupReadySync, authorityPath, checkLocalHome, inspectSources, installMailboxFence, inventory, inventorySource, isFence, mailboxDirectory, migrationPath,
   pathKind, readJson, readMailboxAuthority, recoveryPath, saveJson, syncDirectory, validateMigrationManifest,
   type MailboxAuthority, type MigrationManifest,
 } from './authority';
@@ -42,21 +42,34 @@ class FileMailboxMigrationService implements MailboxMigrationService {
 
   async status(): Promise<MailboxMigrationStatus> {
     try { return await this.readStatus(); }
-    catch (error) { return { ...initialStatus(this.homeDir, []), state: 'failed', failure: { code: String((error as { code?: unknown }).code ?? 'mailbox.status_failed'), message: error instanceof Error ? error.message : String(error) } }; }
+    catch (error) {
+      const status = initialStatus(this.homeDir, []);
+      return { ...status, state: 'failed', failure: { code: 'mailbox.status_failed', message: error instanceof Error ? error.message : String(error) } };
+    }
   }
 
   private async readStatus(): Promise<MailboxMigrationStatus> {
     if (this.current !== undefined && this.flight !== undefined) return this.current;
     const authority = await readMailboxAuthority(this.homeDir);
-    const manifest = await readJson<MigrationManifest>(migrationPath(this.homeDir));
+    let manifest: MigrationManifest | undefined;
+    try {
+      manifest = await readJson<MigrationManifest>(migrationPath(this.homeDir));
+      if (manifest !== undefined) validateMigrationManifest(this.homeDir, manifest);
+    } catch (error) {
+      if (authority === undefined) throw error;
+      assertMailboxStartupReadySync(this.homeDir);
+      return { ...initialStatus(this.homeDir, await inspectSources(this.homeDir)), authority: 'sqlite', phase: 'complete', state: 'complete',
+        migrationId: authority.migrationId, databasePath: join(mailboxDirectory(this.homeDir), authority.database), canRollback: false,
+        warning: { code: 'mailbox.checkpoint_warning', message: `Historical mailbox upgrade progress needs repair before rollback: ${error instanceof Error ? error.message : String(error)}` } };
+    }
     if (manifest !== undefined) {
-      validateMigrationManifest(this.homeDir, manifest);
       if (manifest.rollbackAuthority !== undefined && manifest.rolledBack !== true) {
         const active = await isFileLockActive(join(mailboxDirectory(this.homeDir), 'migration.lock'));
         const state = active || !['running', 'cancelling'].includes(manifest.status.state) ? manifest.status.state : 'ready';
         return { ...manifest.status, phase: 'rolling_back', state, canCancel: false, canRollback: true };
       }
       if (authority !== undefined) {
+        assertMailboxStartupReadySync(this.homeDir);
         const db = new CanonicalMailboxDatabase<Document>(join(mailboxDirectory(this.homeDir), authority.database), false, true);
         try { return { ...manifest.status, authority: 'sqlite', phase: 'complete', state: 'complete', canCancel: false, canRollback: await db.metadata<boolean>('hasNewWrites') !== true }; }
         finally { await db.close(); }
@@ -66,6 +79,12 @@ class FileMailboxMigrationService implements MailboxMigrationService {
       const state = active && cancellation?.migrationId === manifest.status.migrationId ? 'cancelling'
         : active ? manifest.status.state : manifest.status.state === 'running' || manifest.status.state === 'cancelling' ? 'ready' : manifest.status.state;
       return { ...manifest.status, state, canCancel: active && state === 'running' && manifest.cutoverStarted !== true };
+    }
+    if (authority !== undefined) {
+      assertMailboxStartupReadySync(this.homeDir);
+      return { ...initialStatus(this.homeDir, await inspectSources(this.homeDir)), authority: 'sqlite', phase: 'complete', state: 'complete',
+        migrationId: authority.migrationId, databasePath: join(mailboxDirectory(this.homeDir), authority.database), canRollback: false,
+        warning: { code: 'mailbox.checkpoint_warning', message: 'Historical mailbox upgrade progress is missing; repair it before rollback.' } };
     }
     return initialStatus(this.homeDir, await inspectSources(this.homeDir));
   }

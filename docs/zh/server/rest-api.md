@@ -100,11 +100,11 @@ home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进
 | `GET /api/storage` | 无请求体 | `StorageMigrationView`；只读状态，不开始迁移或切换存储 |
 | `POST /api/storage` | `{ "action": "migrate" }`，或 `cancel`、`rollback`、`start`、`retry_cleanup` | 更新后的 `StorageMigrationView`；启动指定操作 |
 
-`@kiki/protocol` 导出 `storageMigrationViewSchema` 和 `storageMigrationActionSchema`。视图包含 `schemaVersion: 1`、`mode`、`status`、`actions`、`transition`，以及可选的 `operationFailure`。状态提供 `authority`、`phase`、`state`、`progress`、源数据与备份路径、可选的 `writer` 和 `failure`，以及 `canCancel` / `canRollback`。这些状态字段也用于 [`kiki storage --json`](../reference/command.md#kiki-storage)。
+`@kiki/protocol` 导出 `storageMigrationViewSchema` 和 `storageMigrationActionSchema`。视图包含 `schemaVersion: 1`、`mode`、`status`、`actions`、`transition`，以及可选的 `operationFailure`。状态提供 `authority`、`phase`、`state`、`progress`、源数据与备份路径、可选的 `writer`、`failure` 和 `warning`，以及 `canCancel` / `canRollback`。这些字段也用于 [`kiki storage --json`](../reference/command.md#kiki-storage)。`mailbox.checkpoint_warning` 表示 SQLite 邮箱可用，但旧迁移进度记录需修复后才能回滚；它不表示迁移失败，也不会提供再次 `migrate` 的动作。
 
 客户端根据 `actions` 显示可操作按钮，不要仅凭阶段和状态猜测：持久阶段已经完成时，工作线程和锁可能还在关闭。`migrate` 续接保留的进度；`waiting` 表示旧 writer 仍持有写入权，应先停止该进程，再在 `migrate` 可用时重试。`cancel` 停止可取消的导入或正常启动尝试。只有恢复原件不会丢失 SQLite 新写入时，才会提供 `rollback`。动作格式错误返回 envelope 代码 `40001`；当前不可执行的动作返回 `40901`；缺少凭据返回 HTTP `401`。
 
-迁移完成后，显式提交 `start` 开始正常启动，并继续轮询同一地址。启动失败、取消或超时时，升级结果保持不变，`transition.state` 为 `"failed"`，`failure` 保留原始启动错误。原尝试关闭期间，`cleanupPending` 为 `true`，`actions` 为空。清理失败时，`transition.cleanupFailure` 提供原因，唯一可用动作为 `retry_cleanup`；它只重试未完成的清理，不重新启动引擎。再次清理失败后仍保持门禁。清理成功后，`cleanupPending` 变为 `false`，`actions` 才提供 `start` 和仍可用的 `rollback`。
+迁移完成后，显式提交 `start` 开始正常启动，并继续轮询同一地址。准备超过 30 秒仍保持 `starting`，可用 `cancel`，不会因固定截止时间自动中止。启动失败或取消时，升级结果保持不变，`transition.state` 为 `"failed"`，`failure` 保留原始启动错误。旧尝试清理期间，`cleanupPending` 为 `true`，`actions` 为空；清理完毕前不能再次启动。清理失败时，`transition.cleanupFailure` 提供原因，唯一可用动作为 `retry_cleanup`；它只重试未完成的清理，不重新启动引擎。清理成功后，`cleanupPending` 变为 `false`，`actions` 才提供 `start` 和仍可用的 `rollback`。
 
 只有 `GET /api/meta` 返回 `storage_mode: "normal"`，且 `server_id`、`server_home_id` 与原值一致时，才切换到正常会话加载。home、身份和端口保持不变，客户端无需另启 daemon。未完成的回退同样进入维护模式，并提供 `rollback`，应先完成回退，再迁移或正常启动。正常模式仍可读取 `GET /api/storage`，但 `actions` 为空。
 

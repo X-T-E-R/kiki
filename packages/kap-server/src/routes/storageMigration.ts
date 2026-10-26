@@ -21,7 +21,7 @@ export class StorageMigrationController {
     if (this.mode === 'maintenance' && this.cleanup !== undefined && this.operation === undefined) actions.push('retry_cleanup');
     if (this.mode === 'maintenance' && this.transition.state !== 'starting' && this.transition.cleanupPending !== true) {
       if (status.canCancel) actions.push('cancel');
-      if (this.operation === undefined && !['running', 'cancelling'].includes(status.state)) {
+      if (this.operation === undefined && status.failure?.code !== 'mailbox.status_failed' && !['running', 'cancelling'].includes(status.state)) {
         if (status.phase === 'rolling_back') actions.push('rollback');
         else if (status.authority === 'sqlite' && status.state === 'complete') {
           actions.push('start');
@@ -69,8 +69,6 @@ export class StorageMigrationController {
     const activation = this.activation!;
     const interrupted = (): void => { this.transition = { state: 'failed', failure: failure(activation.signal.reason), cleanupPending: true }; };
     activation.signal.addEventListener('abort', interrupted, { once: true });
-    const deadline = setTimeout(() => activation.abort(new DOMException('Normal startup timed out; the SQLite upgrade is preserved. Retry startup after cleanup, or review the server log.', 'TimeoutError')), 30_000);
-    deadline.unref();
     this.launch(async () => {
       try { activation.signal.throwIfAborted(); await this.activate!(activation.signal); }
       catch (error) {
@@ -80,7 +78,6 @@ export class StorageMigrationController {
         } else this.transition = { state: 'failed', failure: failure(error) };
       }
       finally {
-        clearTimeout(deadline);
         activation.signal.removeEventListener('abort', interrupted);
         if (this.transition.state === 'failed' && this.cleanup === undefined) this.transition = { ...this.transition, cleanupPending: false };
         this.activation = undefined;

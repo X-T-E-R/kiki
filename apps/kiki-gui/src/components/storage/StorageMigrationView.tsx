@@ -129,6 +129,11 @@ export function StorageMigrationViewComponent({
   const transition = view?.transition;
   const isCleaningWaiting = transition?.cleanupPending === true && !actions.includes('retry_cleanup');
   const isCleanupFailed = transition?.cleanupPending === true && actions.includes('retry_cleanup');
+  const stateLabel = status?.state === 'complete' && isCleanupFailed
+    ? t('storage.migration.cleanupFailureTitle')
+    : status?.state === 'complete' && transition?.state === 'failed'
+      ? t('storage.migration.startupFailureTitle')
+      : status ? t(`storage.migration.status.${status.state}`) : '';
 
   const progress = status?.progress;
   const progressText = progress
@@ -183,7 +188,7 @@ export function StorageMigrationViewComponent({
                   data-testid="migration-state-tag"
                   className="text-[12px] font-semibold text-ink"
                 >
-                  {status ? t(`storage.migration.status.${status.state}`) : ''}
+                  {stateLabel}
                 </span>
               </div>
 
@@ -234,6 +239,18 @@ export function StorageMigrationViewComponent({
                 <div className="font-semibold break-words">{view.operationFailure.code}</div>
                 <div className="mt-0.5 text-ink-soft break-words">{view.operationFailure.message}</div>
               </div>
+            )}
+
+            {status?.warning && (
+              <p
+                data-testid="migration-warning"
+                role="status"
+                className="rounded-lg border border-amber-rule/40 bg-amber-card p-3 text-[12px] leading-relaxed text-amber-ink break-words"
+              >
+                {status.warning.code === 'mailbox.checkpoint_warning'
+                  ? t('storage.migration.checkpointWarning')
+                  : status.warning.message}
+              </p>
             )}
 
             {/* Status migration failure (e.g. data import/verify error) */}
