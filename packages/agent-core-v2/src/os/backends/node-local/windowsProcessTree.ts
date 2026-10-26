@@ -9,12 +9,10 @@ import { Writable, type Readable } from 'node:stream';
 import { BufferedReadable } from '#/_base/execEnv/bufferedReadable';
 import { HostProcessError, HostProcessErrorCode, type IHostProcess } from '#/os/interface/hostProcess';
 
+import { quoteWindowsArgument } from './windowsCommandLine';
+
 const CONTROL_TIMEOUT_MS = 5_000;
 const RELEASE_EXIT_CAPABILITY = 'release-exit-v2';
-
-function quoteArgument(value: string): string {
-  return `"${value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1')}"`;
-}
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
@@ -339,17 +337,9 @@ export async function spawnWindowsProcessTree(command: string, args: readonly st
       details: { command, phase: 'helper', helperMissing: true },
     });
   }
-  let executable = command;
-  let commandLine = [command, ...args].map(quoteArgument).join(' ');
-  if (options.shell) {
-    const shellCommand = [command, ...args].join(' ');
-    executable = typeof options.shell === 'string' ? options.shell : process.env['ComSpec'] || 'cmd.exe';
-    commandLine = /^(?:.*[\\/])?cmd(?:\.exe)?$/i.test(executable)
-      ? `${quoteArgument(executable)} /d /s /c "${shellCommand}"`
-      : [executable, '-c', shellCommand].map(quoteArgument).join(' ');
-  }
+  const commandLine = [quoteWindowsArgument(command), ...args.map((arg) => options.windowsVerbatimArguments ? arg : quoteWindowsArgument(arg))].join(' ');
   const name = `kiki-owned-${randomUUID()}`;
-  const encoded = [executable, commandLine, resolve(options.cwd?.toString() ?? process.cwd())]
+  const encoded = [command, commandLine, resolve(options.cwd?.toString() ?? process.cwd())]
     .map((value) => Buffer.from(value).toString('base64'));
   const child = spawn(helper, [name], { ...options, stdio: 'ignore', shell: false });
   let processTree: WindowsProcessTree | undefined;

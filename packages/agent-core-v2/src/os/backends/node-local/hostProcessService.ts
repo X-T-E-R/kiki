@@ -13,6 +13,7 @@ import {
   type IHostProcess,
 } from '#/os/interface/hostProcess';
 
+import { prepareWindowsSpawn } from './windowsCommandLine';
 import { spawnWindowsProcessTree } from './windowsProcessTree';
 
 const isWindows: boolean = process.platform === 'win32';
@@ -37,8 +38,17 @@ function buildSpawnOptions(options: HostProcessOptions): SpawnOptions {
 
 function buildEnv(overrides: Record<string, string> | undefined, unset: readonly string[] | undefined): Record<string, string> | undefined {
   if (overrides === undefined && unset === undefined) return undefined;
-  const env = { ...(process.env as Record<string, string>), ...overrides };
-  for (const key of unset ?? []) delete env[key];
+  const env = { ...(process.env as Record<string, string>) };
+  const remove = (name: string): void => {
+    for (const key of Object.keys(env)) {
+      if (isWindows ? key.toLowerCase() === name.toLowerCase() : key === name) delete env[key];
+    }
+  };
+  for (const [key, value] of Object.entries(overrides ?? {})) {
+    remove(key);
+    env[key] = value;
+  }
+  for (const key of unset ?? []) remove(key);
   return env;
 }
 
@@ -217,9 +227,11 @@ export class HostProcessService implements IHostProcessService {
     if (ownerLifetime && (!isWindows || options.ownedProcessTree !== true)) {
       throw new HostProcessError(HostProcessErrorCode.SpawnFailed, 'Owner lifetime requires an owned Windows process tree.', { details: { command, phase: 'owner' } });
     }
-    const spawnOptions = buildSpawnOptions(options);
+    const initialOptions = buildSpawnOptions(options);
+    const launch = isWindows ? prepareWindowsSpawn(command, args, initialOptions) : { command, args, options: initialOptions };
+    const spawnOptions = launch.options;
     if (isWindows && options.ownedProcessTree === true) {
-      const pending = spawnWindowsProcessTree(command, args, spawnOptions, options.mergeStderr ?? false, ownerLifetime);
+      const pending = spawnWindowsProcessTree(launch.command, launch.args, spawnOptions, options.mergeStderr ?? false, ownerLifetime);
       if (!ownerLifetime) return pending;
       this.pendingTrees.add(pending);
       try {
@@ -230,7 +242,7 @@ export class HostProcessService implements IHostProcessService {
         return tree;
       } finally { this.pendingTrees.delete(pending); }
     }
-    const child = spawn(command, args as string[], spawnOptions);
+    const child = spawn(launch.command, launch.args as string[], spawnOptions);
     const processHandle = new HostProcess(child, options.mergeStderr ?? false, spawnOptions.detached === true);
     const observedExit = processHandle.wait().catch(() => undefined);
     try {

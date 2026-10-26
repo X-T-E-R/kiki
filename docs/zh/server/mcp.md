@@ -81,6 +81,10 @@ MCP server 配置写在 `mcp.json` 中，分两层：
 | `enabledTools` | `string[]` | 全部 | 工具白名单 |
 | `disabledTools` | `string[]` | 全部 | 工具黑名单 |
 
+在 Windows 上，`command` 可以填写可执行文件路径，也可以填写 `node`、`npx` 等名称。名称只按子进程生效的 `PATH`/`PATHEXT` 查找，不会隐式搜索工作目录；`env` 中的 `Path` 等覆写会替换继承值，不区分大小写。要启动工作目录中的文件，请在 `command` 中写带路径分隔符的相对路径，例如 `.\server.cmd`。`command` 中的路径不要额外加引号，每个参数单独放入一个 `args` 数组项，即使参数中包含空格、引号或 `&`。
+
+Kiki 会自动启动 Windows `.cmd`/`.bat` 包装脚本，不必为它们加上 `cmd /c`。包装脚本的参数不能包含 NUL 或换行；需要多行参数时，直接启动底层可执行文件，例如使用 `node`，把脚本路径放在第一个参数中。找不到命令时会报告 `ENOENT`；请安装该命令或填写绝对路径。
+
 连接超时和单次工具调用超时的默认值都不必逐个 server 设置：`config.toml` 的 `[mcp] startup_timeout_ms` / `[mcp] tool_timeout_ms` 或环境变量 `KIKI_MCP_STARTUP_TIMEOUT_MS` / `KIKI_MCP_TOOL_TIMEOUT_MS` 可以调整全局默认值，优先级为 server 字段 > 环境变量 > `config.toml` > 内置默认。详见 [配置文件](../configuration/config-files.md#mcp)。
 
 HTTP 与 SSE server 支持通过 `headers` 或 `bearerTokenEnvVar` 提供静态凭证。需要 OAuth 时，运行 `/kiki-ops 帮我登录 MCP <server-name>` 完成浏览器授权。如果该 server 的授权元数据声明支持 `offline_access`，Kiki 会在登录时一并请求这个 scope，以便之后能续期而不必重新登录；否则按你原本的 scope 授权。声明支持该 scope 的 server 仍可能多显示一次同意页，也不保证一定签发 refresh token。已经登录过的 server 保留现有授权并继续用它续期——新增 scope 不会把你登出。

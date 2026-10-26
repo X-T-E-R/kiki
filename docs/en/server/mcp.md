@@ -81,6 +81,10 @@ Optional fields:
 | `enabledTools` | `string[]` | All | Tool allowlist |
 | `disabledTools` | `string[]` | All | Tool blocklist |
 
+On Windows, `command` can be an executable path or a name such as `node` or `npx`. Names are resolved through the child's effective `PATH`/`PATHEXT`, not by searching its working directory; `env` overrides such as `Path` replace inherited values without case sensitivity. To run a file in the child working directory, give `command` an explicit relative path such as `.\server.cmd`. Keep paths unquoted in `command` and put each argument in its own `args` entry, including arguments containing spaces, quotes or `&`.
+
+Kiki launches Windows `.cmd`/`.bat` wrappers automatically; do not add `cmd /c` for them. Batch-wrapper arguments cannot contain NUL or line breaks; for multiline arguments, launch the underlying executable directly, such as `node` with the script path as its first argument. A missing command reports `ENOENT`; install it or provide its absolute path.
+
 You do not have to set the connection timeout or the single tool-call timeout per server: `[mcp] startup_timeout_ms` / `[mcp] tool_timeout_ms` in `config.toml` or the `KIKI_MCP_STARTUP_TIMEOUT_MS` / `KIKI_MCP_TOOL_TIMEOUT_MS` environment variables change the global defaults. Precedence is: per-server field > environment variable > `config.toml` > built-in default. See [Configuration files](../configuration/config-files.md#mcp).
 
 HTTP and SSE servers support providing static credentials via `headers` or `bearerTokenEnvVar`. When OAuth is needed, run `/kiki-ops help me log in to MCP <server-name>` to complete browser-based authorization. If the server's authorization metadata says it supports `offline_access`, Kiki asks for that scope during login so the authorization can be refreshed later without a new sign-in; otherwise your original scopes are used as they are. A server that advertises the scope may still show an extra consent page, and does not guarantee it issues a refresh token. An already-signed-in server keeps its existing grant and goes on refreshing it — a new scope does not sign you out.

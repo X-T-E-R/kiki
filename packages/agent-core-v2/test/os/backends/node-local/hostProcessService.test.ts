@@ -1,8 +1,8 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { ProcessTask } from '#/agent/tools/os/bash/process-task';
@@ -33,6 +33,8 @@ import {
   IHostProcessService,
 } from '#/os/interface/hostProcess';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
+import { StdioMcpClient } from '#/mcpCore/client-stdio';
+import { LocalRuntime } from '#/runtime/localRuntime';
 
 async function collectBytes(stream: Readable): Promise<Buffer> {
   const chunks: Buffer[] = [];
@@ -174,6 +176,10 @@ describe('HostProcessService Windows taskkill settlement', () => {
         return child;
       },
     }));
+    vi.doMock('#/os/backends/node-local/windowsCommandLine', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('#/os/backends/node-local/windowsCommandLine')>()),
+      prepareWindowsSpawn: (command: string, args: readonly string[], options: import('node:child_process').SpawnOptions) => ({ command, args, options }),
+    }));
     vi.resetModules();
     const { HostProcessService: WindowsHostProcessService } = await import('#/os/backends/node-local/hostProcessService');
     const { IHostProcessService: WindowsProcessId } = await import('#/os/interface/hostProcess');
@@ -190,6 +196,7 @@ describe('HostProcessService Windows taskkill settlement', () => {
     await disposables.dispose();
     vi.useRealTimers();
     vi.doUnmock('node:child_process');
+    vi.doUnmock('#/os/backends/node-local/windowsCommandLine');
     vi.resetModules();
     Object.defineProperty(process, 'platform', { value: platform });
   });
@@ -374,6 +381,130 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
   });
 
   afterAll(async () => { await rm(directory, { recursive: true, force: true }); });
+
+  it('resolves a bare node executable for an owned Host launch', async () => {
+    const proc = await spawnOwned('node', ['-e', 'process.stdout.write(process.version)'], { env: { Path: dirname(process.execPath) } });
+    expect(await collect(proc.stdout)).toBe(process.version);
+    expect(await proc.wait()).toBe(0);
+  });
+
+  it.each(['cmd', 'bat'])('launches a %s shim through the owned Host path with literal arguments', async (extension) => {
+    const bin = join(directory, 'bin & shims');
+    await mkdir(bin, { recursive: true });
+    const shim = join(bin, `host launcher.${extension}`);
+    const script = join(directory, 'argv fixture.cjs');
+    await writeFile(script, 'process.stdout.write(JSON.stringify([process.cwd(),process.env.HOST_LAUNCH_VALUE,process.argv.slice(2)]));');
+    await writeFile(shim, `@echo off\r\n"${process.execPath}" "${script}" %*\r\n`);
+    const args = ['two words', 'say "hello" & echo INJECTED', 'trailing\\', '', 'a&b', '^()<>|', '%HOST_LAUNCH_VALUE%', '!HOST_LAUNCH_VALUE!', 'backslash\\"quote', '中文'];
+    for (const ownedProcessTree of [true, false]) {
+      for (const invalid of ['line1\nline2', 'line1\rline2', '\0']) {
+        await expect(svc.spawn(shim, [invalid], { ownedProcessTree })).rejects.toMatchObject({
+          code: 'os.process.spawn_failed', details: { errno: 'EINVAL', phase: 'arguments', argumentIndex: 0 },
+        });
+      }
+      const proc = await svc.spawn('host launcher', args, {
+        ownedProcessTree, cwd: directory, env: { Path: 'bin & shims', pathext: `.${extension}`, HOST_LAUNCH_VALUE: 'EXPANDED' },
+      });
+      owned.push(proc);
+      expect(await collect(proc.stdout)).toBe(JSON.stringify([directory, 'EXPANDED', args]));
+      expect(await proc.wait()).toBe(0);
+      await proc.dispose();
+    }
+  });
+
+  it('resolves bare executables from PATH before cwd while preserving explicit paths and Windows env overrides', async () => {
+    const bin = join(directory, 'binary path');
+    await mkdir(bin, { recursive: true });
+    const executable = join(bin, 'fixture.exe');
+    await copyFile(process.execPath, executable);
+    await writeFile(join(directory, 'fixture.cmd'), '@echo off\r\necho CWD_SHADOW\r\n');
+    const args = ['-e', 'process.stdout.write(JSON.stringify([process.cwd(),process.env.HOST_CASE_TEST,process.env.HOST_REMOVE_TEST,process.argv.slice(1)]));', 'space "quoted" & literal'];
+    vi.stubEnv('HOST_CASE_TEST', 'inherited');
+    vi.stubEnv('HOST_REMOVE_TEST', 'remove');
+    for (const command of ['fixture', executable, relative(directory, executable)]) {
+      const proc = await spawnOwned(command, args, {
+        cwd: directory,
+        env: { Path: '"binary path"', PaThExT: '.CMD;.EXE', host_case_test: 'overridden' },
+        envUnset: ['host_remove_test'],
+      });
+      expect(await collect(proc.stdout)).toBe(JSON.stringify([directory, 'overridden', undefined, [args[2]]]));
+      expect(await proc.wait()).toBe(0);
+    }
+    await expect(spawnOwned('fixture', args, { cwd: bin, env: { Path: '', PATHEXT: '.EXE' } })).rejects.toMatchObject({
+      code: 'os.process.spawn_failed', details: { command: 'fixture', errno: 'ENOENT', phase: 'resolve' },
+    });
+    const local = await spawnOwned('.\\fixture', args, { cwd: bin, env: { Path: '', PATHEXT: '.EXE' } });
+    expect(await collect(local.stdout)).toBe(JSON.stringify([bin, 'inherited', 'remove', [args[2]]]));
+    expect(await local.wait()).toBe(0);
+    const explicit = await spawnOwned('.\\fixture.cmd', [], { cwd: directory, env: { Path: '' } });
+    expect((await collect(explicit.stdout)).trim()).toBe('CWD_SHADOW');
+    expect(await explicit.wait()).toBe(0);
+  });
+
+  it('reports ENOENT before launching a helper when an owned command is missing', async () => {
+    const unhandled: unknown[] = [];
+    const onUnhandled = (error: unknown): void => { unhandled.push(error); };
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      await expect(spawnOwned('missing-owned-command')).rejects.toMatchObject({
+        code: 'os.process.spawn_failed', details: { command: 'missing-owned-command', errno: 'ENOENT', phase: 'resolve' }, cause: { code: 'ENOENT' },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandled).toEqual([]);
+    } finally { process.off('unhandledRejection', onUnhandled); }
+  });
+
+  it('cancels descendants of a PATH-resolved cmd shim through Job ownership', async () => {
+    const file = join(directory, 'shim-tree-pids.txt');
+    const shim = join(directory, 'resident.cmd');
+    await writeFile(shim, `@echo off\r\n"${process.execPath}" "${join(directory, 'tree.cjs')}" %*\r\n`);
+    const proc = await spawnOwned('resident', [file], { env: { Path: directory }, ownedProcessLifetime: 'owner' });
+    proc.stdin.end();
+    await vi.waitFor(async () => { expect((await readPids(file)).length).toBe(4); }, { timeout: 3_000 });
+    const pids = await readPids(file);
+    const helperPid = (proc as unknown as { child: { pid: number } }).child.pid;
+    const taskId = tasks.registerTask(new ProcessTask(proc, 'resident', 'shim cancel'), { detached: true });
+    expect((await tasks.stop(taskId, 'TaskStop'))?.status).toBe('killed');
+    expect(pids.filter(alive)).toEqual([]);
+    expect(alive(proc.pid)).toBe(false);
+    expect(alive(helperPid)).toBe(false);
+  });
+
+  it('round-trips near-end MCP stdio through LocalRuntime with bare node and a PATH cmd shim', async () => {
+    const bin = join(directory, 'mcp launchers');
+    await mkdir(bin, { recursive: true });
+    await writeFile(join(bin, 'fixture-launch.cmd'), `@echo off\r\n"${process.execPath}" %*\r\n`);
+    await writeFile(join(directory, 'node.cmd'), '@echo off\r\necho CWD_SHADOW\r\n');
+    const fixture = fileURLToPath(new URL('../../../mcpCore/fixtures/cwd-stdio-server.mjs', import.meta.url));
+    const runtime = new LocalRuntime('host-launch', {
+      _serviceBrand: undefined, osKind: 'Windows', osArch: process.arch, osVersion: 'fixture',
+      shellName: 'bash', shellPath: 'C:/Program Files/Git/bin/bash.exe', pathClass: 'win32', homeDir: directory, ready: Promise.resolve(),
+    }, undefined, svc, undefined, undefined);
+    const spawn = vi.spyOn(svc, 'spawn');
+    try {
+      for (const command of ['node', 'fixture-launch']) {
+        const client = new StdioMcpClient({
+          transport: 'stdio', command, args: [fixture], env: { Path: `${bin};${dirname(process.execPath)}` },
+        }, {
+          workspaceId: 'host-launch', runtimeId: 'local', defaultCwd: directory,
+          runtimeResolver: {
+            _serviceBrand: undefined, inspect: () => runtime,
+            acquire: () => ({ runtime, track: (resource) => resource, dispose: () => {} }),
+          },
+        });
+        let child: IHostProcess | undefined;
+        try {
+          await client.connect();
+          expect((await client.listTools()).map((tool) => tool.name)).toEqual(['get_cwd']);
+          expect((await client.callTool('get_cwd', {})).content).toEqual([{ type: 'text', text: directory }]);
+          child = await spawn.mock.results.at(-1)!.value;
+          expect(alive(child!.pid)).toBe(true);
+        } finally { await client.close(); }
+        expect(alive(child!.pid)).toBe(false);
+        expect(alive((child as unknown as { child: { pid: number } }).child.pid)).toBe(false);
+      }
+    } finally { spawn.mockRestore(); runtime.dispose(); }
+  });
 
   it('preserves binary stdin/stdout/stderr, EOF, cwd, env, argv and actual exit status', async () => {
     const proc = await spawnOwned(process.execPath, ['-e',
