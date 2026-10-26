@@ -450,4 +450,150 @@ describe('App sidebar Escape wiring', () => {
     expect(anyOverlayOpen()).toBe(false);
     expect((await escape()).event.defaultPrevented).toBe(false);
   });
+
+  it('renders StorageMigrationView directly and does not load sessions when storage_mode is maintenance', async () => {
+    const conn = appHarness.connection as {
+      meta: { server_home_id: string; capabilities: Record<string, unknown>; open_in_apps: unknown[]; storage_mode?: 'maintenance' | 'normal'; storage_status_path?: string };
+      client: { listSessions: () => Promise<unknown>; getStorageMigration?: () => Promise<unknown> };
+    };
+    const originalMeta = conn.meta;
+    const originalScope = 'scopeId' in conn ? conn.scopeId : undefined;
+    const originalListSessions = conn.client.listSessions;
+    const originalGetStorageMigration = conn.client.getStorageMigration;
+
+    const listSessionsSpy = vi.fn(async () => ({ items: [], has_more: false }));
+    const getStorageMigrationSpy = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      mode: 'maintenance' as const,
+      status: {
+        schemaVersion: 1 as const,
+        homeDir: '/test/home',
+        authority: 'legacy' as const,
+        phase: 'detecting' as const,
+        state: 'ready' as const,
+        sources: [],
+        progress: { items: 0, bytes: 0 },
+        canCancel: false,
+        canRollback: false,
+        minimumReaderVersion: '0.5.0' as const,
+        legacyImportRemovedVersion: '0.6.0' as const,
+      },
+      actions: ['migrate' as const],
+      transition: { state: 'idle' as const },
+    }));
+
+    conn.meta = { ...originalMeta, storage_mode: 'maintenance', storage_status_path: '/api/storage' };
+    conn.client.listSessions = listSessionsSpy;
+    conn.client.getStorageMigration = getStorageMigrationSpy;
+
+    try {
+      await mountApp();
+      expect(listSessionsSpy).not.toHaveBeenCalled();
+      expect(container.querySelector('h1')?.textContent).toContain('Mailbox storage upgrade');
+      expect(container.querySelector('[data-action="migrate"]')).not.toBeNull();
+    } finally {
+      conn.meta = originalMeta;
+      if ('scopeId' in conn && originalScope !== undefined) conn.scopeId = originalScope;
+      conn.client.listSessions = originalListSessions;
+      conn.client.getStorageMigration = originalGetStorageMigration;
+    }
+  });
+
+  it('switches between maintenance and normal mode and handles connection change on same mounted tree without hook crashes', async () => {
+    const conn = appHarness.connection as {
+      meta: { server_home_id: string; capabilities: Record<string, unknown>; open_in_apps: unknown[]; storage_mode?: 'maintenance' | 'normal'; storage_status_path?: string };
+      client: { listSessions: () => Promise<unknown>; getStorageMigration?: () => Promise<unknown> };
+      scopeId: string;
+    };
+    const originalMeta = conn.meta;
+    const originalScope = 'scopeId' in conn ? conn.scopeId : undefined;
+    const originalListSessions = conn.client.listSessions;
+    const originalGetStorageMigration = conn.client.getStorageMigration;
+
+    const listSessionsSpy = vi.fn(async () => ({ items: [], has_more: false }));
+    const getStorageMigrationSpy = vi.fn(async () => ({
+      schemaVersion: 1 as const,
+      mode: 'maintenance' as const,
+      status: {
+        schemaVersion: 1 as const,
+        homeDir: '/test/home',
+        authority: 'legacy' as const,
+        phase: 'detecting' as const,
+        state: 'ready' as const,
+        sources: [],
+        progress: { items: 0, bytes: 0 },
+        canCancel: false,
+        canRollback: false,
+        minimumReaderVersion: '0.5.0' as const,
+        legacyImportRemovedVersion: '0.6.0' as const,
+      },
+      actions: ['migrate' as const],
+      transition: { state: 'idle' as const },
+    }));
+
+    conn.client.listSessions = listSessionsSpy;
+    conn.client.getStorageMigration = getStorageMigrationSpy;
+
+    try {
+      // 1. Mount in normal mode
+      await mountApp();
+      expect(container.querySelector('h1')?.textContent).not.toContain('Mailbox storage upgrade');
+
+      // 2. Flip to maintenance mode on the same mounted tree
+      conn.meta = { ...originalMeta, storage_mode: 'maintenance', storage_status_path: '/api/storage' };
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <MemoryRouter initialEntries={['/usage']}>
+                  <App />
+                </MemoryRouter>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      expect(container.querySelector('h1')?.textContent).toContain('Mailbox storage upgrade');
+
+      // 3. Switch connection scope on same tree while in maintenance
+      conn.scopeId = 'remote:srv-2';
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <MemoryRouter initialEntries={['/usage']}>
+                  <App />
+                </MemoryRouter>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      expect(container.querySelector('h1')?.textContent).toContain('Mailbox storage upgrade');
+
+      // 4. Flip back to normal mode on the same mounted tree
+      conn.meta = { ...originalMeta, storage_mode: 'normal' };
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <I18nProvider>
+              <HostProvider host={browserHost}>
+                <MemoryRouter initialEntries={['/usage']}>
+                  <App />
+                </MemoryRouter>
+              </HostProvider>
+            </I18nProvider>
+          </QueryClientProvider>,
+        );
+      });
+      expect(container.querySelector('h1')?.textContent).not.toContain('Mailbox storage upgrade');
+    } finally {
+      conn.meta = originalMeta;
+      if ('scopeId' in conn && originalScope !== undefined) conn.scopeId = originalScope;
+      conn.client.listSessions = originalListSessions;
+      conn.client.getStorageMigration = originalGetStorageMigration;
+    }
+  });
 });

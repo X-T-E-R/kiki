@@ -4,7 +4,7 @@
  * `@kiki/klient`; this module only preserves GUI-facing wire shapes.
  */
 
-import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse } from '@kiki/protocol';
+import { nbSearchCapabilitiesSchema, nbSearchKeyUsageViewSchema, nbSearchTestStatusSchema, nbSearchManagedCredentialViewSchema, requestIdentityCatalogSchema, requestIdentityPreviewSchema, revealedSecretSchema, documentPreviewResponseSchema, workPresetMutationResponseSchema, workPresetsResponseSchema, storageMigrationViewSchema, type DocumentPreviewRequest, type DocumentPreviewResponse, type NbSearchKeyUsageView, type NbSearchManagedCredentialView, type WorkPresetMutationResponse, type WorkPresetPreference, type WorkPresetsResponse, type StorageMigrationAction, type StorageMigrationView } from '@kiki/protocol';
 import { createConnectionTransport, createKlient, HTTP_TRANSPORT_TIMEOUT_REASON } from '@kiki/klient/http';
 import { translate } from '@kiki/session-core/i18n';
 import type { PromptConfig } from '@kiki/agent-profiles/promptConfig';
@@ -3213,6 +3213,18 @@ export class KikiClient {
   /** Back to the initial / profile face. */
   deletePersonaAvatar(id: string): Promise<PersonaAvatarDeleteResponse> {
     return this.run(() => this.rest.personas.deleteAvatar(id));
+  }
+
+  /**
+   * Mailbox SQLite storage migration (`/api/storage`).
+   * Available in maintenance mode and normal mode to inspect status and execute permitted lifecycle actions.
+   */
+  async getStorageMigration(): Promise<StorageMigrationView> {
+    return storageMigrationViewSchema.parse(await this.memoryRequest<unknown>('GET', '/storage'));
+  }
+
+  async postStorageMigrationAction(action: StorageMigrationAction['action']): Promise<StorageMigrationView> {
+    return storageMigrationViewSchema.parse(await this.memoryRequest<unknown>('POST', '/storage', { body: { action } }));
   }
 }
 

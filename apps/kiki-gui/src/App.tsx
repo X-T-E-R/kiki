@@ -67,6 +67,7 @@ import { readSpaceViewRoute } from './lib/spaceViewState';
 import { ShortcutsOverlay } from './components/ShortcutsOverlay';
 import { Sidebar } from './components/Sidebar';
 import { isBotOrRoomSession } from './components/persona/personaSessionUtils';
+import { StorageMigrationViewComponent } from './components/storage/StorageMigrationView';
 import { TasksPage } from './components/TasksPage';
 import { Toasts } from './components/Toasts';
 import { UsagePage } from './components/UsagePage';
@@ -186,6 +187,14 @@ function RootRedirect() {
 export { isEditableTarget };
 
 export function App() {
+  const { meta } = useConnection();
+  if (meta.storage_mode === 'maintenance') {
+    return <StorageMigrationViewComponent onComplete={() => { window.location.reload(); }} />;
+  }
+  return <NormalApp />;
+}
+
+function NormalApp() {
   const host = useHost();
   const { client, socket, wsStatus } = useConnection();
   const { t, locale } = useI18n();
