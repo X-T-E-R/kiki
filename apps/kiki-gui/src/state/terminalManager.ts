@@ -122,7 +122,7 @@ export function shellDisplayName(shell: string): string {
 }
 
 export function terminalCapabilityAvailable(capabilities: {
-  readonly terminal?: true;
+  readonly terminal?: boolean;
 }): boolean {
   return capabilities.terminal === true;
 }
