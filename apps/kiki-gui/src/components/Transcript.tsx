@@ -1444,11 +1444,12 @@ function SubagentCardBody({
   status,
   toolCallCount,
   toolCallCountKnown,
-  childCount,
+  childCount = 0,
   thinkingEffort,
   description,
   error,
   elapsed,
+  depth = 0,
 }: {
   name: string;
   model?: string;
@@ -1456,20 +1457,28 @@ function SubagentCardBody({
   toolCallCount: number;
   /** false = neither the task nor the roster ever reported a count. */
   toolCallCountKnown: boolean;
-  childCount: number;
+  childCount?: number;
   thinkingEffort?: string;
   description?: string;
   error?: string;
   /** undefined = start or end unknown — rendered as an explicit "—". */
   elapsed: number | undefined;
+  depth?: number;
 }) {
   const { t, tp, time } = useI18n();
   const busy = status === 'running' || status === 'background';
+  const bodyIndent = depth > 0 ? 'pl-[26px]' : 'pl-4';
   return (
     <>
       <div className="flex items-center gap-2">
-        <span className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
-        <span className="min-w-0 truncate text-[13px] font-semibold text-ink">{name}</span>
+        {depth > 0 ? (
+          <span aria-hidden className="flex h-4 w-[18px] shrink-0 items-center justify-center">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
+          </span>
+        ) : (
+          <span className={`h-2 w-2 shrink-0 rounded-full ${subagentStatusTone(status)} ${busy ? 'status-dot-busy' : ''}`} />
+        )}
+        <span className={`min-w-0 truncate text-[13px] ${depth > 0 ? 'font-medium' : 'font-semibold'} text-ink`}>{name}</span>
         {model !== undefined ? (
           <span className="min-w-0 shrink truncate text-[12px] text-ink-faint">{model}</span>
         ) : null}
@@ -1478,7 +1487,7 @@ function SubagentCardBody({
         </span>
         <Icon name="arrowRight" size={12} className="text-ink-faint transition-transform group-hover:translate-x-0.5 motion-reduce:transition-none" />
       </div>
-      <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 pl-4 text-[12px] text-ink-faint">
+      <div className={`mt-0.5 flex flex-wrap items-center gap-x-1.5 ${bodyIndent} text-[12px] text-ink-faint`}>
         <span>{t(`subagent.status.${status}` as I18nKey)}</span>
         {toolCallCountKnown ? (
           <>
@@ -1502,7 +1511,7 @@ function SubagentCardBody({
       {description !== undefined || error !== undefined ? (
         <p
           title={error}
-          className={`mt-1 truncate pl-4 text-[13px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
+          className={`mt-0.5 truncate ${bodyIndent} text-[13px] ${error !== undefined ? 'text-danger' : 'text-ink-soft'}`}
         >
           {error ?? description}
         </p>
@@ -1602,7 +1611,8 @@ function SubagentCompactCard({
   );
   return (
     <ActivityRow
-      className={`@container ${depth === 0 ? '' : `ml-4${block.orphaned === true ? ' opacity-60' : ''}`}`}
+      nested={depth > 0}
+      className={`@container${block.orphaned === true && depth > 0 ? ' opacity-60' : ''}`}
       attrs={{
         'data-subagent-id': block.subagentId,
         'data-agent-depth': depth,
@@ -1613,7 +1623,7 @@ function SubagentCompactCard({
       buttonAttrs={{ 'data-agent-open': block.subagentId }}
       glyph={<span className={`inline-block h-2 w-2 rounded-full align-middle ${subagentStatusTone(status)}`} />}
       tone={error !== undefined ? 'danger' : 'plain'}
-      label={block.name}
+      label={<span className="block max-w-[10rem] truncate @sm:max-w-none">{block.name}</span>}
       detail={detail}
       title={error ?? t('subagent.openAgent', { name: block.name })}
       onOpen={() => { onOpenAgent?.(block.subagentId); }}
@@ -1668,7 +1678,7 @@ function OtherDescendantGroup({
   ].filter((part): part is string => part !== null).join(' · ');
   return (
     <ActivityRow
-      className="ml-4"
+      nested
       attrs={{ 'data-other-descendants': counts.total, 'data-other-descendants-open': open || undefined }}
       glyph={<DisclosureChevron open={open} className="text-ink-faint" />}
       chevronInGlyph
@@ -1711,7 +1721,7 @@ const SubagentCard = memo(function SubagentCard({
   formOverride?: SubagentCardForm;
   onToggleForm?: (agentId: string, form: SubagentCardForm) => void;
 }) {
-  const { t } = useI18n();
+  const { t, tp } = useI18n();
   const node = forest?.byId[block.subagentId];
   const children = forest === undefined ? [] : agentChildren(forest, block.subagentId);
   const status = displayStatus ?? node?.status ?? block.status;
@@ -1797,8 +1807,9 @@ const SubagentCard = memo(function SubagentCard({
       />
     );
   }
-  const cardClass =
-    'anim-enter group flex items-start gap-1 rounded-[10px] bg-panel px-3 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-bubble-user/60';
+  const cardClass = depth === 0
+    ? 'anim-enter group flex items-start gap-1 rounded-[10px] bg-panel px-3 py-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-bubble-user/60'
+    : 'anim-enter group -ml-[17px] flex w-[calc(100%+25px)] items-start gap-1 rounded-md py-1.5 pl-[17px] pr-2 transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.04]';
   const body = (
     <SubagentCardBody
       name={block.name}
@@ -1806,11 +1817,11 @@ const SubagentCard = memo(function SubagentCard({
       status={status}
       toolCallCount={toolCalls.count}
       toolCallCountKnown={toolCalls.known}
-      childCount={childCount}
       thinkingEffort={thinkingEffort}
       description={block.description}
       error={runError}
       elapsed={elapsed}
+      depth={depth}
     />
   );
   return (
@@ -1819,80 +1830,75 @@ const SubagentCard = memo(function SubagentCard({
       data-agent-depth={depth}
       data-card-form="full"
       data-orphaned={block.orphaned === true || undefined}
-      className={`${depth === 0 ? '' : 'ml-4'}${block.orphaned === true ? ' opacity-60' : ''}`}
+      className={block.orphaned === true ? 'opacity-60' : undefined}
     >
-      <div className="flex items-stretch gap-1">
-        {depth > 0 ? <span aria-hidden className="w-px shrink-0 bg-hairline" /> : null}
-        <div className="min-w-0 flex-1">
-          <div className={cardClass}>
-            {onToggleForm !== undefined && !nested ? (
-              <button
-                type="button"
-                data-card-collapse={block.subagentId}
-                aria-label={t('subagent.collapseCard')}
-                title={t('subagent.collapseCard')}
-                onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
-                className="-mt-1 -ml-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
-              >
-                <Icon name="collapse" size={12} className="text-current" />
-              </button>
-            ) : null}
+      <div className="min-w-0">
+        <div className={cardClass}>
+          {onToggleForm !== undefined && !nested ? (
             <button
               type="button"
-              onClick={() => { onOpenAgent?.(block.subagentId); }}
-              data-agent-open={block.subagentId}
-              className="min-w-0 flex-1 text-left"
+              data-card-collapse={block.subagentId}
+              aria-label={t('subagent.collapseCard')}
+              title={t('subagent.collapseCard')}
+              onClick={() => { onToggleForm(block.subagentId, 'compact'); }}
+              className="-mt-1 -ml-1.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-md text-ink-faint transition-colors hover:bg-paper hover:text-ink"
             >
-              {body}
-              <AgentTurnOutcomeLine outcome={node?.turnOutcome} />
+              <Icon name="collapse" size={12} className="text-current" />
             </button>
-            <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
-              {invocation.button}
-            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={() => { onOpenAgent?.(block.subagentId); }}
+            data-agent-open={block.subagentId}
+            className="min-w-0 flex-1 text-left"
+          >
+            {body}
+            <AgentTurnOutcomeLine outcome={node?.turnOutcome} />
+          </button>
+          <div className="-mt-1 -mr-1.5 flex shrink-0 items-center gap-0.5">
+            {invocation.button}
           </div>
-          {invocation.body}
-          {block.orphaned === true ? (
-            <p className="mt-1 pl-1 text-[12px] text-ink-faint italic">
-              {t('transcript.orphanedSubagent')}
-            </p>
-          ) : null}
-          {childCount > 0 ? (
-            <div className="flex items-center gap-1">
-              {/* A chevron and the count: the button disclosed the child cards,
-                  and the count says how many without a second line of words. */}
-              <button
-                type="button"
-                data-subagent-children={block.subagentId}
-                aria-expanded={expanded}
-                aria-label={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
-                title={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
-                onClick={() => {
-                  setExpanded((value) => !value);
-                }}
-                className="mt-1 inline-flex min-h-7 items-center gap-1 rounded-md px-1.5 text-[12px] tabular-nums text-ink-faint transition-colors hover:bg-ink/[0.05] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
-              >
-                <DisclosureChevron open={expanded} className="text-current" />
-                {childCount}
-              </button>
-            </div>
-          ) : null}
-          {expanded && children.length > 0 ? (
-            <div className="mt-1 space-y-1">
-              {/* The descendants this dispatch provably created lay out; every
-                  other one folds into one line, including any this view cannot
-                  place. Folding is a default, not a deletion and not a claim
-                  about age — the reader opens it and finds the same subtree. */}
-              {descendantGroups.current.map((child) => renderChildCard(child))}
-              {descendantGroups.other.length > 0 ? (
-                <OtherDescendantGroup
-                  groupKey={dispatchGroupKey}
-                  members={descendantGroups.other}
-                  renderMember={renderChildCard}
-                />
-              ) : null}
-            </div>
-          ) : null}
         </div>
+        {invocation.body}
+        {block.orphaned === true ? (
+          <p className="mt-1 pl-1 text-[12px] text-ink-faint italic">
+            {t('transcript.orphanedSubagent')}
+          </p>
+        ) : null}
+        {childCount > 0 ? (
+          <div className={depth === 0 ? 'mt-0.5 pl-3' : 'mt-0.5 pl-4'}>
+            <button
+              type="button"
+              data-subagent-children={block.subagentId}
+              aria-expanded={expanded}
+              aria-label={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
+              title={t(expanded ? 'subagent.collapseChildren' : 'subagent.expandChildren')}
+              onClick={() => {
+                setExpanded((value) => !value);
+              }}
+              className="inline-flex min-h-6 items-center gap-1.5 rounded-md px-1.5 py-0.5 text-[12px] tabular-nums text-ink-faint transition-colors hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
+            >
+              <DisclosureChevron open={expanded} className="text-current" />
+              <span>{tp('subagent.children', childCount)}</span>
+            </button>
+            {expanded && children.length > 0 ? (
+              <div className="mt-0.5 ml-1.5 space-y-0.5 border-l border-hairline pl-[17px]">
+                {/* The descendants this dispatch provably created lay out; every
+                    other one folds into one line, including any this view cannot
+                    place. Folding is a default, not a deletion and not a claim
+                    about age — the reader opens it and finds the same subtree. */}
+                {descendantGroups.current.map((child) => renderChildCard(child))}
+                {descendantGroups.other.length > 0 ? (
+                  <OtherDescendantGroup
+                    groupKey={dispatchGroupKey}
+                    members={descendantGroups.other}
+                    renderMember={renderChildCard}
+                  />
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
       </div>
     </div>
   );

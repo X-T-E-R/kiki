@@ -6261,8 +6261,14 @@ describe('subagent timeline dual form (G-4)', () => {
 
     it('opens a folded nested agent on click and keeps it open', async () => {
       const container = await renderWithAgents([leadBlock], [], tree({ done: 'completed' }));
+      const toggle = container.querySelector<HTMLButtonElement>('[data-subagent-children="lead"]')!;
+      expect(toggle.textContent).toBe('1 child');
       await act(async () => { container.querySelector<HTMLButtonElement>('[data-card-expand="done"]')!.click(); });
-      expect(card(container, 'done')?.getAttribute('data-card-form')).toBe('full');
+      const expandedChild = card(container, 'done')!;
+      expect(expandedChild.getAttribute('data-card-form')).toBe('full');
+      expect(expandedChild.getAttribute('data-agent-depth')).toBe('1');
+      expect(expandedChild.querySelector('.bg-panel')).toBeNull();
+      expect(card(container, 'lead')?.querySelector('.bg-panel')).not.toBeNull();
     });
   });
 
