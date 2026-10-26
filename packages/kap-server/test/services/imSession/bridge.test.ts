@@ -658,7 +658,7 @@ it('requires provider instance, account, chat, topic, and sender identity compon
   base.ports.credentials.read = (id) => credentials.get(id);
   base.ports.credentials.check = async () => ({ ok: true, accountId: 'changed-account' });
   const bridge = new ImSessionBridge({ ports: base.ports, factories: [{ providerKind: 'telegram', create: ({ instanceId }) => {
-    const adapter = new FakeImAdapter('telegram', '42');
+    const adapter = new FakeImAdapter('telegram', instanceId === 'first' ? '42' : '99');
     adapters.set(instanceId, adapter);
     return adapter;
   } }], wait: async () => undefined });
@@ -685,7 +685,7 @@ it('requires provider instance, account, chat, topic, and sender identity compon
     expect(snapshot.discoveries).toEqual(expect.arrayContaining([
       expect.objectContaining({ provider_instance_id: 'first', identity: expect.objectContaining({ topic_id: 'other-topic' }) }),
       expect.objectContaining({ provider_instance_id: 'first', identity: expect.objectContaining({ chat_id: 'other-chat' }) }),
-      expect.objectContaining({ provider_instance_id: 'second', account_id: '42', identity: expect.objectContaining({ chat_id: 'c1', sender_id: 'u1', topic_id: '0' }) }),
+      expect.objectContaining({ provider_instance_id: 'second', account_id: '99', identity: expect.objectContaining({ chat_id: 'c1', sender_id: 'u1', topic_id: '0' }) }),
     ]));
   } finally { await bridge.close(); }
 });
