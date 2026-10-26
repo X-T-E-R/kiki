@@ -13,7 +13,7 @@ export * from './model/external';
 export * from './ops/operation';
 export { EMPTY_AGENT_STATE, applyOperation, appendAtOffset } from './ops/apply';
 export type { AgentState, ApplyResult } from './ops/apply';
-export { transcriptValueEquals } from './ops/equality';
+export { transcriptValueEquals, transcriptResidentValueEquals } from './ops/equality';
 export * from './store/agentTranscript';
 export * from './store/agentTranscriptDraft';
 export * from './store/transcriptStore';

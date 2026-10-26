@@ -188,6 +188,13 @@ export class TranscriptWireAdapter {
     readonly lookups?: TranscriptWireAdapterLookups,
   ) {}
 
+  residentIndexBytes(): number {
+    let bytes = 0;
+    for (const [key, ids] of this.#frameOrder) bytes += 128 + key.length * 2 + ids.length * 8;
+    for (const id of this.#releasedTurnIds) bytes += 64 + id.length * 2;
+    return bytes;
+  }
+
   checkpoint(): TranscriptWireAdapterCheckpoint {
     return {
       version: 2,

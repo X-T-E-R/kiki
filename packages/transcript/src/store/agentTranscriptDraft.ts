@@ -225,6 +225,17 @@ export class AgentTranscriptDraft {
     });
   }
 
+  residentIndexBytes(): number {
+    let bytes = 0;
+    for (const map of [this.#itemNodes, this.#turns, this.#steps, this.#frames, this.#tools, this.#tasks, this.#interactions, this.#attachments, this.#todos, this.#prompts]) {
+      for (const key of map.keys()) bytes += 128 + key.length * 2;
+    }
+    for (const set of [this.#appendDirty, this.#removedItemIds, this.#pendingInteractions]) {
+      for (const key of set) bytes += 64 + key.length * 2;
+    }
+    return bytes;
+  }
+
   checkpoint(): AgentTranscriptSnapshot {
     return {
       items: this.materializeItems(true),

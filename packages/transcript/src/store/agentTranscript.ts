@@ -8,6 +8,7 @@ import type { TranscriptPrompt } from '../model/prompt';
 import type { TranscriptTask } from '../model/task';
 import type { TranscriptTodo } from '../model/todo';
 import type { TranscriptTurn } from '../model/turn';
+import { transcriptResidentValueEquals } from '../ops/equality';
 import {
   EMPTY_AGENT_STATE,
   applyOperation,
@@ -396,7 +397,7 @@ interface WindowedGlobals {
 }
 
 function sameResidentEntity(left: unknown, right: unknown): boolean {
-  return left === right || JSON.stringify(left) === JSON.stringify(right);
+  return transcriptResidentValueEquals(left, right);
 }
 
 function retainResidentEntities<K, V>(current: ReadonlyMap<K, V>, durable: readonly V[], id: (value: V) => K, keep: ReadonlySet<K>): ReadonlyMap<K, V> {

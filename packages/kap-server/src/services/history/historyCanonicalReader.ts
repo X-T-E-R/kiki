@@ -2,8 +2,9 @@ import { open, stat, type FileHandle } from 'node:fs/promises';
 
 import { openLogicalWire, readLogicalInto, type LogicalWire } from './logicalWireRead';
 
-import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter,
+import { AgentTranscriptDraft, TranscriptFactReducer, TranscriptWireAdapter, transcriptResidentValueEquals,
   type AgentTranscriptSnapshot, type ContentSource, type ToolCallFrame, type TranscriptFrame, type TranscriptTurn } from '@kiki/transcript';
+import { HistoryResidentProof } from './historyResidentProof';
 import type { HistoryNavManifest, HistoryNavigationDb, LazyHistoryNavigationDb } from './historyNavigationDb';
 import { historyNavigationProof, matchesNavigationProof, type HistoryNavigationProof } from './historyNavigationProof';
 import { hashHistoryRecord } from './historySource';
@@ -33,6 +34,11 @@ export type CanonicalToolLookup = { readonly status: 'found'; readonly turnId: s
   { readonly status: 'preparing' | 'not_found' };
 export type CanonicalEntityLookup = { readonly status: 'found'; readonly entity: object } |
   { readonly status: 'preparing' | 'not_found' };
+export type ResidentTurnProofResult = { readonly status: 'found'; readonly snapshot: AgentTranscriptSnapshot } |
+  { readonly status: 'not_found' | 'mismatch' | 'over_budget' };
+export interface ResidentTurnProofSource {
+  prove(turn: TranscriptTurn, signal: AbortSignal): Promise<ResidentTurnProofResult>;
+}
 
 /** A source-backed detail read is not yet covered by the navigation watermark. */
 export class CanonicalEntityPreparingError extends Error {
@@ -93,6 +99,15 @@ export class HistoryCanonicalReader {
   private preparationsFailed = 0;
   private preparationsCancelled = 0;
   private readonly projectedScans = new WeakSet<HistoryNavScan>();
+  private residentFailures = new WeakMap<TranscriptTurn, { revision: string; status: 'mismatch' | 'not_found' | 'over_budget' }>();
+  private proofPages = 0;
+  private proofSkipped = 0;
+  private proofMaxPageBytes = 0;
+  private proofMaxExtraBytes = 0;
+  private proofRejectedOrdinal?: number;
+  private proofReconciliations = 0;
+  private proofMaxRecordWorkspaceEstimate = 0;
+  private proofMaxTraversalBytes = 0;
 
   constructor(private readonly database: LazyHistoryNavigationDb, private readonly transcript: TranscriptService,
     private readonly scan: (session: string, agent: string, signal?: AbortSignal) => Promise<HistoryNavScan | undefined>) {}
@@ -108,6 +123,7 @@ export class HistoryCanonicalReader {
     if (this.oversizedCacheKey !== undefined) this.deleteCached(this.oversizedCacheKey);
     this.cache.clear();
     this.cacheBytes = 0;
+    this.residentFailures = new WeakMap();
   }
 
   report() {
@@ -118,6 +134,10 @@ export class HistoryCanonicalReader {
       cacheBudgetBytes: CACHE_BYTES + this.transcript.detailCacheBudgetBytes(), replayBytes: this.replayBytes,
       replayRecords: this.replayRecords, replays: this.replays, cacheHits: this.cacheHits,
       projectionBytes: this.projectionBytes, projectionRecords: this.projectionRecords,
+      proofPages: this.proofPages, proofSkipped: this.proofSkipped,
+      proofMaxPageBytes: this.proofMaxPageBytes, proofMaxExtraBytes: this.proofMaxExtraBytes,
+      proofRejectedOrdinal: this.proofRejectedOrdinal, proofReconciliations: this.proofReconciliations,
+      proofMaxRecordWorkspaceEstimate: this.proofMaxRecordWorkspaceEstimate, proofMaxTraversalBytes: this.proofMaxTraversalBytes,
       preparationsActive: this.preparationFlights.size, preparationsCompleted: this.preparationsCompleted,
       preparationsFailed: this.preparationsFailed, preparationsCancelled: this.preparationsCancelled };
   }
@@ -232,6 +252,107 @@ export class HistoryCanonicalReader {
     if (input.db.canonicalSeed(input.scope, turnId) === undefined) return { status: 'not_found' };
     const snapshot = await this.transcript.scheduleHistoryRead(signal, owned => this.replaySnapshot(input, agent, turnId, owned, 8 << 20));
     return snapshot === undefined ? { status: 'over_budget' } : { status: 'found', snapshot };
+  }
+
+  async prepareResidentProof(session: string, agent: string, signal: AbortSignal): Promise<ResidentTurnProofSource | undefined> {
+    const generation = this.generation;
+    const input = await this.transcript.scheduleHistoryRead(signal, owned => this.prepare(session, agent, owned));
+    if (input === undefined) return undefined;
+    return { prove: (resident, owned) => this.transcript.scheduleHistoryRead(owned,
+      active => this.proveResidentTurn(input, agent, resident, generation, active)) };
+  }
+
+  private async proveResidentTurn(input: Prepared, agent: string, resident: TranscriptTurn, generation: number,
+    signal: AbortSignal): Promise<ResidentTurnProofResult> {
+    const { db, scope, manifest } = input;
+    const turnRevision = db.canonicalTurnRevision(scope, resident.turnId);
+    const revision = `${generation}\0${manifest.generation}\0${manifest.incarnation}\0${turnRevision}`;
+    const validate = async (): Promise<void> => {
+      signal.throwIfAborted();
+      const proof = await historyNavigationProof(input.wirePath, manifest.offset);
+      signal.throwIfAborted();
+      const current = db.readManifest(scope);
+      if (generation !== this.generation || !matchesNavigationProof(manifest.source, proof) ||
+          current?.generation !== manifest.generation || current.incarnation !== manifest.incarnation ||
+          current.offset < manifest.offset || db.canonicalTurnRevision(scope, resident.turnId) !== turnRevision) throw new Error('history_source_changed');
+    };
+    await validate();
+    const cached = this.residentFailures.get(resident);
+    if (cached?.revision === revision) { this.proofSkipped += 1; return { status: cached.status }; }
+    const fail = (status: 'mismatch' | 'not_found' | 'over_budget'): ResidentTurnProofResult => {
+      this.residentFailures.set(resident, { revision, status });
+      return { status };
+    };
+    const seed = db.canonicalSeed(scope, resident.turnId);
+    if (seed === undefined) return fail('not_found');
+    const replay = new HistoryResidentProof(resident, agent);
+    await replay.initialize(signal);
+    if (replay.extraBytes() > (8 << 20)) { await validate(); return fail('over_budget'); }
+    replay.adapter.restore({ ...replay.adapter.checkpoint(), legacyTurnOrdinal: seed.legacyTurn, recordOrdinal: seed.ordinal });
+    let ordinal = -1;
+    let expectedOrdinal = seed.ordinal;
+    let reportedReconciliations = 0;
+    this.replays += 1;
+    for (;;) {
+      await validate();
+      const spans = db.canonicalSources(scope, resident.turnId, ordinal, 128);
+      if (spans.length === 0) break;
+      let bytesRead = 0;
+      let recordsRead = 0;
+      let overBudget = false;
+      let logical: LogicalWire | undefined;
+      let handle: FileHandle | undefined;
+      try {
+        logical = await openLogicalWire(input.wirePath);
+        handle = logical === undefined ? await open(input.wirePath, 'r') : undefined;
+        for (const span of spans) {
+          signal.throwIfAborted();
+          const size = span.end - span.start;
+          if (!Number.isSafeInteger(size) || size <= 0 || span.end > manifest.offset) throw new Error('history_source_changed');
+          if (size > (8 << 20)) { await validate(); return fail('over_budget'); }
+          if (bytesRead + size > (8 << 20) || recordsRead >= 50_000) break;
+          const bytes = Buffer.allocUnsafe(size);
+          let offset = 0;
+          while (offset < size) {
+            signal.throwIfAborted();
+            const read = await readAddressedBytes(logical, handle, bytes, offset, size - offset, span.start + offset);
+            if (read === 0) throw new Error('history_source_changed');
+            offset += read; bytesRead += read; this.replayBytes += read;
+          }
+          if (hashHistoryRecord(bytes) !== span.digest) throw new Error('history_source_changed');
+          if (span.ordinal !== expectedOrdinal) replay.adapter.restore({ ...replay.adapter.checkpoint(), recordOrdinal: span.ordinal });
+          recordsRead += 1;
+          this.replayRecords += 1;
+          if (!await replay.apply(JSON.parse(bytes.toString('utf8')), signal)) {
+            overBudget = true;
+            this.proofRejectedOrdinal = span.ordinal;
+            break;
+          }
+          expectedOrdinal = span.ordinal + 1;
+          ordinal = span.ordinal;
+        }
+      } finally { logical?.close(); if (handle !== undefined) await handle.close(); }
+      this.proofPages += 1;
+      this.proofMaxPageBytes = Math.max(this.proofMaxPageBytes, bytesRead);
+      const fits = !overBudget && await replay.reconcileBudget(signal);
+      const extra = replay.extraBytes();
+      this.proofMaxExtraBytes = Math.max(this.proofMaxExtraBytes, extra);
+      const report = replay.report();
+      this.proofReconciliations += report.reconciliations - reportedReconciliations;
+      reportedReconciliations = report.reconciliations;
+      this.proofMaxRecordWorkspaceEstimate = Math.max(this.proofMaxRecordWorkspaceEstimate, report.recordWorkspaceEstimate);
+      this.proofMaxTraversalBytes = Math.max(this.proofMaxTraversalBytes, report.traversalPeakBytes);
+      await validate();
+      if (!fits) return fail('over_budget');
+      await new Promise<void>(resolve => setImmediate(resolve));
+    }
+    await validate();
+    const snapshot = replay.snapshot();
+    const turn = snapshot.items.find(item => item.kind === 'turn' && item.turnId === resident.turnId);
+    if (turn === undefined) return fail('not_found');
+    if (resident.state === 'running' || !transcriptResidentValueEquals(resident, turn)) return fail('mismatch');
+    this.residentFailures.delete(resident);
+    return { status: 'found', snapshot: { ...snapshot, items: [resident] } };
   }
 
   private async prepare(session: string, agent: string, signal?: AbortSignal): Promise<Prepared | undefined> {

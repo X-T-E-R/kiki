@@ -185,6 +185,13 @@ export class HistoryNavigationDb implements NavigationStore {
     return rows.map((row) => JSON.parse(row.value) as HistoryCanonicalSpan);
   }
 
+  canonicalTurnRevision(scope: string, turnId: string): string {
+    const row = navigationStatement(this.db, `SELECT value FROM state WHERE scope=? AND bucket='canonicalRecords'
+      AND json_extract(value,'$.turnId')=? ORDER BY CAST(key AS INTEGER) DESC LIMIT 1`)
+      .get(scope, turnId) as { value: string } | undefined;
+    return row?.value ?? '';
+  }
+
   beginSlice(): void {
     if (this.scanTransactionOpen) throw new Error('history navigation transaction already active');
     this.db.exec('BEGIN IMMEDIATE');

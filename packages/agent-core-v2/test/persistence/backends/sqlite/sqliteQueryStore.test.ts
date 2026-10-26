@@ -6,6 +6,7 @@ import type { Worker } from 'node:worker_threads';
 import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
@@ -88,6 +89,30 @@ describe('SqliteQueryStore', () => {
     await store.recover!();
     expect((await store.query('a').where({ group: 'x' }).execute()).items).toHaveLength(1);
   });
+
+  it('retires definitions and physical indexes across 84 session generations and reopen', async () => {
+    const store = open();
+    await store.put('other', 'preserved', { custom: { parent_session_id: 'parent' } });
+    const database = new DatabaseSync(join(home, 'cache', SQLITE_QUERY_STORE_SUBDIR, 'index.sqlite'), { readOnly: true });
+    const counts = () => [database.prepare('SELECT count(*) AS n FROM definitions').get()!['n'],
+      database.prepare("SELECT count(*) AS n FROM sqlite_schema WHERE type='index' AND name GLOB 'query_value_*'").get()!['n']];
+    try {
+      for (let generation = 1; generation <= 84; generation++) {
+        const collection = `session:v4:g${generation}`;
+        await store.ensureIndex(collection, { kind: 'value', name: 'byParent', field: 'custom.parent_session_id' });
+        await store.put(collection, 'child', { custom: { parent_session_id: 'parent' } });
+        if (generation > 1) await store.dropCollection(`session:v4:g${generation - 1}`);
+        expect(counts()).toEqual([1, 1]);
+        expect(await store.query(collection).where({ 'custom.parent_session_id': 'parent' }).execute()).toMatchObject({ items: [{ custom: { parent_session_id: 'parent' } }] });
+      }
+      await store.dropCollection('session:v4:g84');
+      expect(counts()).toEqual([0, 0]);
+      await store.close();
+      const reopened = open();
+      expect(await reopened.get('other', 'preserved')).toEqual({ custom: { parent_session_id: 'parent' } });
+      expect(counts()).toEqual([0, 0]);
+    } finally { database.close(); }
+  }, 20_000);
 
   it('publishes stage and head atomically with two connections and rejects stale CAS', async () => {
     const first = open(), peer = open();

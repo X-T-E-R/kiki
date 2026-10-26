@@ -3324,6 +3324,7 @@ describe('TranscriptWireAdapter', () => {
     };
     const first = reducer.apply([fact]);
     const duplicate = reducer.apply([fact]);
+    expect(reducer.residentBytes()).toBe(64 + fact.factId.length * 2);
     expect(first.acceptedOperations).toHaveLength(1);
     expect(first.changedIds).toEqual(new Set(['t0']));
     expect(duplicate.acceptedFacts).toHaveLength(0);
@@ -3337,6 +3338,12 @@ describe('TranscriptWireAdapter', () => {
       },
     ]);
     expect(countResult.changedIds).toEqual(new Set(['toolCallCount']));
+    expect(reducer.residentBytes()).toBe(128 + (fact.factId.length + 'fact-count'.length) * 2);
+    reducer.restore([fact.factId, fact.factId]);
+    expect(reducer.residentBytes()).toBe(64 + fact.factId.length * 2);
+    expect(reducer.apply([fact]).acceptedFacts).toHaveLength(0);
+    reducer.restore([]);
+    expect(reducer.residentBytes()).toBe(0);
   });
 
   it('retains prompt-bound controls on the same message through queue moves and cold replay', () => {
@@ -4660,6 +4667,24 @@ it('windows a resident tail independently of historical standalone headers witho
   expect(transcript.snapshot({ tailTurns: 20 }).hasMoreOlder).toBe(true);
   expect(transcript.snapshot().items.map(idLabel)).toEqual(['old-marker', 'old-taskref', 't2', 'tail-marker']);
   expect(durable.items.map(idLabel)).toEqual(['t0', 'old-marker', 't1', 'old-taskref', 't2', 'tail-marker']);
+});
+
+it('releases equal resident history regardless of object key order while preserving changed content and frame order', () => {
+  const transcript = new AgentTranscript('main');
+  transcript.apply([turnOp(1), stepOp, frameOp,
+    { op: 'frame.upsert', turnId: 't1', stepId: 't1.1', frame: { kind: 'text', frameId: 'second', role: 'assistant', text: 'second' } },
+    { op: 'turn.upsert', turn: { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, error: undefined } }]);
+  const snapshot = transcript.snapshot();
+  const turn = snapshot.items[0];
+  if (turn?.kind !== 'turn') throw new Error('missing turn');
+  const durable = { ...snapshot, items: [{ ...turn, steps: turn.steps.map(step => ({ ...step, frames: [...step.frames].reverse() })) }] };
+  expect(transcript.releaseDurableHistory(durable, { tailTurns: 0, maxBytes: 1 })).toEqual([]);
+  const changed = { ...snapshot, items: [{ ...turn, prompt: 'different' }] };
+  expect(transcript.releaseDurableHistory(changed, { tailTurns: 0, maxBytes: 1 })).toEqual([]);
+  const reordered = JSON.parse(JSON.stringify(snapshot), (_key, value) => value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).reverse()) : value) as AgentTranscriptSnapshot;
+  expect(JSON.stringify(reordered.items[0])).not.toBe(JSON.stringify(turn));
+  expect(transcript.releaseDurableHistory(reordered, { tailTurns: 0, maxBytes: 1 })).toEqual(['t1']);
 });
 
 it('preserves subagent task effort and provenance through wire and schema projection', () => {

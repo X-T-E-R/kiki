@@ -19,8 +19,13 @@ export interface TranscriptFactResult {
 
 export class TranscriptFactReducer {
   readonly #acceptedDurableFacts = new Set<string>();
+  #residentBytes = 0;
 
   constructor(readonly transcript: TranscriptFactTarget) {}
+
+  residentBytes(): number {
+    return this.#residentBytes;
+  }
 
   checkpoint(): readonly string[] {
     return [...this.#acceptedDurableFacts];
@@ -28,7 +33,8 @@ export class TranscriptFactReducer {
 
   restore(factIds: readonly string[]): void {
     this.#acceptedDurableFacts.clear();
-    for (const factId of factIds) this.#acceptedDurableFacts.add(factId);
+    this.#residentBytes = 0;
+    for (const factId of factIds) this.acceptDurableFact(factId);
   }
 
   hasAcceptedDurableFact(factId: string): boolean {
@@ -43,7 +49,7 @@ export class TranscriptFactReducer {
     for (const fact of facts) {
       if (fact.durability === 'durable' && this.#acceptedDurableFacts.has(fact.factId)) continue;
       const result = this.transcript.apply(fact.operations);
-      if (fact.durability === 'durable') this.#acceptedDurableFacts.add(fact.factId);
+      if (fact.durability === 'durable') this.acceptDurableFact(fact.factId);
       if (result.gap !== undefined) gap = result.gap;
       if (result.accepted.length === 0) continue;
       acceptedFacts.push(fact);
@@ -51,6 +57,12 @@ export class TranscriptFactReducer {
       for (const operation of result.accepted) collectChangedIds(operation, changedIds);
     }
     return { acceptedFacts, acceptedOperations, changedIds, gap };
+  }
+
+  private acceptDurableFact(factId: string): void {
+    if (this.#acceptedDurableFacts.has(factId)) return;
+    this.#acceptedDurableFacts.add(factId);
+    this.#residentBytes += 64 + factId.length * 2;
   }
 }
 

@@ -72,7 +72,7 @@ import {
 
 import type { HistoryLocatorStore } from '../history/historyLocatorStore';
 import { openLogicalWire, streamLogicalWireRecords, type LogicalWire } from '../history/logicalWireRead';
-import { CanonicalEntityPreparingError, type CanonicalToolLookup } from '../history/historyCanonicalReader';
+import { CanonicalEntityPreparingError, type CanonicalToolLookup, type ResidentTurnProofResult } from '../history/historyCanonicalReader';
 
 import {
   readWireRecordsBounded,
@@ -1008,27 +1008,36 @@ export class TranscriptService {
         if (snapshot !== undefined && current()) this.releaseDurableHistory(entry, agentId, snapshot);
         return;
       }
-      const turns = transcript.getItems().flatMap(item => item.kind === 'turn' && item.state !== 'running' ? [item.turnId] : []);
+      const turns = completedResidentTurnIds(transcript);
       const retained = { notFound: 0, overBudget: 0, mismatch: 0 };
+      let source;
+      do {
+        source = await this.detailLocator().prepareResidentProof(sessionId, agentId, signal);
+        await new Promise<void>(resolve => setImmediate(resolve));
+        if (!current()) return;
+      } while (source === undefined);
       for (const turnId of turns) {
         signal.throwIfAborted();
         if (!current()) return;
+        let resident = transcript.getTurn(turnId);
+        if (resident === undefined || resident.state === 'running') continue;
         const report = transcript.residentReport();
         const effective = this.aggregateResidentLimits(key, report.estimatedBytes, limits);
         if (report.turns <= effective.tailTurns && report.estimatedBytes <= effective.maxBytes) break;
         const newest = transcript.getItems().findLast(item => item.kind === 'turn');
-        if (effective.tailTurns > 0 && newest?.kind === 'turn' && newest.turnId === turnId) continue;
-        let result;
-        do {
-          result = await this.detailLocator().readDurableTurn(sessionId, agentId, turnId, signal);
-          await new Promise<void>(resolve => setImmediate(resolve));
+        if (effective.tailTurns > 0 && newest?.kind === 'turn' && newest.turnId === resident.turnId) continue;
+        let result: ResidentTurnProofResult | undefined;
+        try {
+          result = await source.prove(resident, signal);
           if (!current()) return;
-        } while (result.status === 'preparing');
-        if (result.status === 'found') {
-          this.releaseDurableHistory(entry, agentId, result.snapshot);
-          if (transcript.getTurn(turnId) !== undefined) retained.mismatch += 1;
-        } else if (result.status === 'not_found') retained.notFound += 1;
-        else retained.overBudget += 1;
+          if (transcript.getTurn(resident.turnId) !== resident) continue;
+          if (result.status === 'found') {
+            this.releaseDurableHistory(entry, agentId, result.snapshot);
+            if (transcript.getTurn(resident.turnId) !== undefined) retained.mismatch += 1;
+          } else if (result.status === 'not_found') retained.notFound += 1;
+          else if (result.status === 'mismatch') retained.mismatch += 1;
+          else retained.overBudget += 1;
+        } finally { resident = undefined; result = undefined; }
       }
       if (retained.notFound + retained.overBudget + retained.mismatch > 0) this.deps.logger?.warn(
         { sessionId, agentId, ...retained }, 'transcript: retaining turns without matching bounded durable proof');
@@ -3465,6 +3474,10 @@ function positiveLimit(value: number | undefined, fallback: number): number {
 
 function nonNegativeLimit(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) ? Math.max(0, Math.floor(value)) : fallback;
+}
+
+function completedResidentTurnIds(transcript: AgentTranscript): string[] {
+  return transcript.getItems().flatMap(item => item.kind === 'turn' && item.state !== 'running' ? [item.turnId] : []);
 }
 
 function estimateColdSnapshotBytes(snapshot: unknown, cap: number): number {
