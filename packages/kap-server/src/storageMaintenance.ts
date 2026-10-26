@@ -133,7 +133,7 @@ export async function startStorageMaintenance(input: StorageMaintenanceInput): P
       server_id: registration.serverId, server_home_id: input.serverHomeId, current_space_id: 'main', started_at: new Date(input.startedAt).toISOString(),
       desktop_managed: process.env['KIKI_DESKTOP_BUNDLED'] === '1', dangerous_bypass_auth: false, backend: 'v2', web_title: options.webTitle,
       capabilities: { websocket: false, file_upload: false, fs_query: false, mcp: false, tasks: false, thread_communication: false },
-      external_delegation: { state: 'not_configured' }, experimental_flags: {}, features: [], storage_mode: 'maintenance', storage_status_path: '/api/storage',
+      open_in_apps: [], external_delegation: { state: 'not_configured' }, experimental_flags: {}, features: [], storage_mode: 'maintenance', storage_status_path: '/api/storage',
     }, request.id)));
     app.get('/api/remote-connections/handshake', async (request, reply) => reply.send(okEnvelope({ identity: input.admission.identity, serverId: registration.serverId, inboundEnabled: input.admission.status().enabled }, request.id)));
     app.get('/api/desktop-lifecycle', async (request, reply) => reply.send(okEnvelope({ server_id: registration.serverId, home_id: 'main', managed: process.env['KIKI_DESKTOP_BUNDLED'] === '1', draining: closing, work_pending: [], impact: 'all-windows-in-this-space' }, request.id)));

@@ -78,51 +78,28 @@ describe('metaResponseSchema', () => {
     }).success).toBe(false);
   });
 
-  it('accepts an omitted terminal capability but rejects terminal = false', () => {
-    const { terminal: _omit, ...capabilitiesWithoutTerminal } = sample.capabilities;
-    const parsed = metaResponseSchema.parse({
-      ...sample,
-      capabilities: capabilitiesWithoutTerminal,
-    });
-    expect(parsed.capabilities.terminal).toBeUndefined();
-
-    const bad = {
-      ...sample,
-      capabilities: { ...sample.capabilities, terminal: false },
-    };
-    expect(metaResponseSchema.safeParse(bad).success).toBe(false);
+  it.each(['terminal', 'thread_communication', 'transcript'] as const)('accepts omitted or unavailable %s capability', (name) => {
+    const capabilities = { ...sample.capabilities } as Record<string, boolean>;
+    delete capabilities[name];
+    expect(metaResponseSchema.parse({ ...sample, capabilities }).capabilities[name]).toBeUndefined();
+    for (const available of [true, false]) {
+      expect(metaResponseSchema.parse({ ...sample, capabilities: { ...capabilities, [name]: available } }).capabilities[name]).toBe(available);
+    }
+    expect(metaResponseSchema.safeParse({ ...sample, capabilities: { ...capabilities, [name]: 'false' } }).success).toBe(false);
   });
 
-  it('accepts an omitted thread_communication capability (old server) but rejects false', () => {
-    const { thread_communication: _omit, ...capabilitiesWithoutThreadComm } = sample.capabilities;
+  it('preserves maintenance recovery metadata and unavailable capabilities without rejecting connection', () => {
     const parsed = metaResponseSchema.parse({
-      ...sample,
-      capabilities: capabilitiesWithoutThreadComm,
+      ...sample, open_in_apps: [], storage_mode: 'maintenance', storage_status_path: '/api/storage',
+      capabilities: { websocket: false, file_upload: false, fs_query: false, mcp: false, tasks: false, thread_communication: false },
     });
-    expect(parsed.capabilities.thread_communication).toBeUndefined();
-
-    const bad = {
-      ...sample,
-      capabilities: { ...sample.capabilities, thread_communication: false },
-    };
-    expect(metaResponseSchema.safeParse(bad).success).toBe(false);
-  });
-
-  it('accepts an omitted transcript capability (old server) but rejects false', () => {
-    const parsed = metaResponseSchema.parse(sample);
-    expect(parsed.capabilities.transcript).toBeUndefined();
-
-    const withTranscript = metaResponseSchema.parse({
-      ...sample,
-      capabilities: { ...sample.capabilities, transcript: true },
-    });
-    expect(withTranscript.capabilities.transcript).toBe(true);
-
-    const bad = {
-      ...sample,
-      capabilities: { ...sample.capabilities, transcript: false },
-    };
-    expect(metaResponseSchema.safeParse(bad).success).toBe(false);
+    expect(parsed.storage_mode).toBe('maintenance');
+    expect(parsed.storage_status_path).toBe('/api/storage');
+    expect(parsed.capabilities.websocket).toBe(false);
+    expect(parsed.open_in_apps).toEqual([]);
+    expect(metaResponseSchema.parse(sample).storage_mode).toBeUndefined();
+    expect(metaResponseSchema.parse({ ...sample, storage_mode: 'normal' }).storage_mode).toBe('normal');
+    expect(metaResponseSchema.safeParse({ ...sample, storage_mode: 'unknown' }).success).toBe(false);
   });
 
   it('normalizes started_at to UTC Z with millisecond precision', () => {
@@ -179,10 +156,10 @@ describe('metaResponseSchema', () => {
     expect(metaResponseSchema.safeParse(bad).success).toBe(false);
   });
 
-  it('rejects a capability set with the wrong boolean literal', () => {
+  it('rejects a capability set with a non-boolean value', () => {
     const bad = {
       ...sample,
-      capabilities: { ...sample.capabilities, websocket: false },
+      capabilities: { ...sample.capabilities, websocket: 'false' },
     };
     expect(metaResponseSchema.safeParse(bad).success).toBe(false);
   });

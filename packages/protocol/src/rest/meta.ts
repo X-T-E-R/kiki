@@ -14,16 +14,16 @@ import { spaceIdSchema } from './space';
 import { isoDateTimeSchema } from '../time';
 
 export const metaCapabilitiesSchema = z.object({
-  websocket: z.literal(true),
-  file_upload: z.literal(true),
-  fs_query: z.literal(true),
-  mcp: z.literal(true),
-  tasks: z.literal(true),
-  terminal: z.literal(true).optional(),
+  websocket: z.boolean(),
+  file_upload: z.boolean(),
+  fs_query: z.boolean(),
+  mcp: z.boolean(),
+  tasks: z.boolean(),
+  terminal: z.boolean().optional(),
   /** Present only on servers that expose peer-thread communication (v2). */
-  thread_communication: z.literal(true).optional(),
+  thread_communication: z.boolean().optional(),
   /** Present only on servers that expose the transcript WS/REST protocol. */
-  transcript: z.literal(true).optional(),
+  transcript: z.boolean().optional(),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;
@@ -73,6 +73,8 @@ export const metaResponseSchema = z.object({
    * probing routes.
    */
   backend: z.enum(['v1', 'v2']).optional(),
+  storage_mode: z.enum(['maintenance', 'normal']).optional(),
+  storage_status_path: z.literal('/api/storage').optional(),
 });
 
 export type MetaResponse = z.infer<typeof metaResponseSchema>;
