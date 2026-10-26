@@ -91,6 +91,23 @@ HTTP 状态码几乎总是 200，业务结果以 `code` 为准。例外情况：
 | `GET /api/meta` | 服务版本、能力集、`server_id`、实验开关等 |
 | `POST /api/shutdown` | 优雅退出（先回 200 再关闭）；仅 loopback 绑定时挂载 |
 
+### 消息邮箱存储升级
+
+home 中存在旧格式消息邮箱，或升级尚未完成时，服务会先进入维护模式，不启动普通引擎、插件或会话。鉴权后的 `GET /api/meta` 返回 `storage_mode: "maintenance"`、`storage_status_path: "/api/storage"`，以及原有的 `server_id` 和 `server_home_id`；不可用的能力标为 `false`。维护模式沿用服务地址、鉴权、Host 检查与 Origin 策略。正常启动前，会话端点返回 HTTP `503`。
+
+| 方法与路径 | 请求 | 响应 data |
+| --- | --- | --- |
+| `GET /api/storage` | 无请求体 | `StorageMigrationView`；只读状态，不开始迁移或切换存储 |
+| `POST /api/storage` | `{ "action": "migrate" }`，或 `cancel`、`rollback`、`start`、`retry_cleanup` | 更新后的 `StorageMigrationView`；启动指定操作 |
+
+`@kiki/protocol` 导出 `storageMigrationViewSchema` 和 `storageMigrationActionSchema`。视图包含 `schemaVersion: 1`、`mode`、`status`、`actions`、`transition`，以及可选的 `operationFailure`。状态提供 `authority`、`phase`、`state`、`progress`、源数据与备份路径、可选的 `writer` 和 `failure`，以及 `canCancel` / `canRollback`。这些状态字段也用于 [`kiki storage --json`](../reference/command.md#kiki-storage)。
+
+客户端根据 `actions` 显示可操作按钮，不要仅凭阶段和状态猜测：持久阶段已经完成时，工作线程和锁可能还在关闭。`migrate` 续接保留的进度；`waiting` 表示旧 writer 仍持有写入权，应先停止该进程，再在 `migrate` 可用时重试。`cancel` 停止可取消的导入或正常启动尝试。只有恢复原件不会丢失 SQLite 新写入时，才会提供 `rollback`。动作格式错误返回 envelope 代码 `40001`；当前不可执行的动作返回 `40901`；缺少凭据返回 HTTP `401`。
+
+迁移完成后，显式提交 `start` 开始正常启动，并继续轮询同一地址。启动失败、取消或超时时，升级结果保持不变，`transition.state` 为 `"failed"`，`failure` 保留原始启动错误。原尝试关闭期间，`cleanupPending` 为 `true`，`actions` 为空。清理失败时，`transition.cleanupFailure` 提供原因，唯一可用动作为 `retry_cleanup`；它只重试未完成的清理，不重新启动引擎。再次清理失败后仍保持门禁。清理成功后，`cleanupPending` 变为 `false`，`actions` 才提供 `start` 和仍可用的 `rollback`。
+
+只有 `GET /api/meta` 返回 `storage_mode: "normal"`，且 `server_id`、`server_home_id` 与原值一致时，才切换到正常会话加载。home、身份和端口保持不变，客户端无需另启 daemon。未完成的回退同样进入维护模式，并提供 `rollback`，应先完成回退，再迁移或正常启动。正常模式仍可读取 `GET /api/storage`，但 `actions` 为空。
+
 ### 空间预设
 
 `GET /api/homes/presets` 返回 `{ items: [{ id, name, color?, description }] }`。目前只随包提供 `kiki` 基线预设。从主空间服务调用 `POST /api/homes` 派生空间：
@@ -643,7 +660,7 @@ peer thread 接口用于跨会话协作：以 `{ host_id, workspace_id, session_
 
 Klient 提供 `klient.rest.threads.messages(query, options)`，参数和结果沿用上述 snake_case 形状。`klient.global.threads.messages({ workspaceId, sessionId, peerSessionId, cursor, limit })` 以 camelCase 形状提供同一读取能力，支持 HTTP、IPC 和内存传输。
 
-Peer 消息不再受邮箱原来的 512 条淘汰上限影响。升级后的首个邮箱 owner 会按持久检查点回填仍在邮箱中的记录；旧版本已淘汰的消息不会从会话 wire 重建。依赖新保留规则前，应重启共享同一 Kiki home 的旧进程。
+Peer 消息不再受邮箱原来的 512 条淘汰上限影响。[消息邮箱存储升级](#消息邮箱存储升级)会在切换前回填旧邮箱中仍保留的记录；旧版本已经淘汰的消息不会从会话 wire 重建。用 Kiki 0.5.x 打开该 home 前，先关闭旧 writer 并完成升级。
 
 ### 房间会话条目
 

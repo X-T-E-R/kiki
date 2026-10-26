@@ -42,6 +42,7 @@ import { agentScopeOf, sessionScopeOf, workspacePersistenceScope } from '@kiki/a
 import { IBlobStore } from '@kiki/agent-core-v2/persistence/interface/blobStore';
 import { contentToCoreParts, resolvePromptMediaFiles } from '../../lib/promptMedia';
 import { withSessionOperation } from '../../lib/sessionOperationLease';
+import { StorageStartupCleanupError } from '../../storageStartupCleanup';
 import type { NotificationService } from '../notifications/notificationService';
 import type { ImAdapterFactory, ImHttpTransport } from './adapter';
 import { ImSessionBridge } from './bridge';
@@ -64,26 +65,54 @@ export async function createImSessionHost(input: {
   readonly logger: HostLogger;
   readonly factories?: readonly ImAdapterFactory[];
   readonly wechatFetch?: WechatLoginFetch;
+  readonly signal?: AbortSignal;
+  readonly onCreate?: (close: () => Promise<void>) => void;
 }): Promise<ImSessionBridge> {
+  input.signal?.throwIfAborted();
   const factories = [...(input.factories ?? loadSessionFactories(input.homeDir))];
   const plugins = new PluginImAdapterBridge(factories);
   const ports = new NotificationSessionPorts(input.core, input.homeDir, input.notifications, input.logger, plugins);
   const fetchImpl = input.wechatFetch ?? ((url, init) => globalThis.fetch(url, init));
   const wechatLogin = new WechatQrLogin(fetchImpl, () => ports.wechatTokens(), async (credential) => ports.credentials.create!({ providerKind: 'wechat_bridge', credential }));
   const bridge = new ImSessionBridge({ ports, factories, locale: () => readHostLocale(input.homeDir), wechatLogin });
-  await bridge.whenReady();
-  await plugins.attach(input.core.accessor.get(IPluginHostService), (kinds) => bridge.reconcileAdapters(kinds));
-  const snapshot = await bridge.snapshot();
-  await bridge.setPolicy(snapshot.policy);
-  input.core.instantiation.provide(IUserMessageRouter, {
-    _serviceBrand: undefined,
-    sendMessage: (message) => bridge.sendUserMessage(message),
-  });
-  input.core.instantiation.provide(IImMessageHistoryReader, {
-    _serviceBrand: undefined,
-    read: (sessionId, query) => bridge.readMessageHistory(sessionId, query),
-  });
-  return bridge;
+  let closing: Promise<void> | undefined;
+  const close = (): Promise<void> => {
+    if (closing === undefined) {
+      const current = bridge.close();
+      closing = current;
+      void current.catch(() => { if (closing === current) closing = undefined; });
+    }
+    return closing;
+  };
+  const abort = (): void => { void close().catch(() => undefined); };
+  input.signal?.addEventListener('abort', abort, { once: true });
+  try {
+    input.onCreate?.(close);
+    await bridge.whenReady();
+    input.signal?.throwIfAborted();
+    await plugins.attach(input.core.accessor.get(IPluginHostService), async (kinds) => {
+      if (input.signal?.aborted) return;
+      await bridge.reconcileAdapters(kinds);
+    });
+    input.signal?.throwIfAborted();
+    const snapshot = await bridge.snapshot();
+    input.signal?.throwIfAborted();
+    await bridge.setPolicy(snapshot.policy);
+    input.signal?.throwIfAborted();
+    input.core.instantiation.provide(IUserMessageRouter, {
+      _serviceBrand: undefined,
+      sendMessage: (message) => bridge.sendUserMessage(message),
+    });
+    input.core.instantiation.provide(IImMessageHistoryReader, {
+      _serviceBrand: undefined,
+      read: (sessionId, query) => bridge.readMessageHistory(sessionId, query),
+    });
+    return bridge;
+  } catch (error) {
+    try { await close(); }
+    catch (cleanupError) { throw new StorageStartupCleanupError(error, cleanupError, close); }
+    throw error;
+  } finally { input.signal?.removeEventListener('abort', abort); }
 }
 
 export function loadSessionFactories(homeDir: string) {

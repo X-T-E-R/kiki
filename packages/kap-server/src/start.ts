@@ -156,6 +156,12 @@ import { UsageExportRuntime } from './usage/export/runtime';
 import { registerUsageExportRoutes } from './routes/usageExport';
 import { registerProviderQuotaRoutes } from './routes/providerQuota';
 import { createProviderQuotaService } from './usage/quota/runtime';
+import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
+import { assertMailboxStartupReady } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/authority';
+import { createMailboxMigrationService } from '@kiki/agent-core-v2/persistence/backends/sqliteMailbox/migration';
+import { startStorageMaintenance } from './storageMaintenance';
+import { StorageMigrationController, registerStorageMigrationRoutes } from './routes/storageMigration';
+import { StorageStartupCleanupError } from './storageStartupCleanup';
 
 export interface ServerHostIdentity extends KimiHostIdentity {
   /** Fills the `${product_name}` slot in the base system prompt. Defaults render the CLI text. */
@@ -370,7 +376,22 @@ export interface RunningServer {
 const DEFAULT_HOST = '127.0.0.1';
 const DEFAULT_PORT = 58627;
 
-export async function startServer(opts: ServerStartOptions): Promise<RunningServer> {
+export function startServer(opts: ServerStartOptions): Promise<RunningServer> { return startServerRuntime(opts); }
+
+interface StartupAttempt { core?: Scope; close?: () => Promise<void>; release?: () => Promise<void>; }
+
+async function cleanupStartupSteps(steps: readonly ServerCleanupStep[], completed: Set<number>): Promise<readonly ServerCleanupFailure[]> {
+  for (const [index, step] of steps.entries()) {
+    if (completed.has(index)) continue;
+    try { await step.run(); completed.add(index); }
+    catch (error) { return [{ error, durable: step.durable === true }]; }
+  }
+  return [];
+}
+
+async function startServerRuntime(opts: ServerStartOptions, continuation?: { readonly registration: InstanceRegistration; readonly startedAt: number; readonly releaseListener: () => Promise<void>; readonly signal: AbortSignal }, startup?: StartupAttempt): Promise<RunningServer> {
+  const preparing = <T>(promise: Promise<T>): Promise<T> => continuation === undefined ? promise : abortable(promise, continuation.signal);
+  continuation?.signal.throwIfAborted();
   const host = opts.host ?? DEFAULT_HOST;
   const port = opts.port ?? DEFAULT_PORT;
   const homeDir = resolveKikiHome(opts.homeDir);
@@ -392,7 +413,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   await Promise.all([admission.ready(), remoteConnections.ready()]);
   const buildId = opts.buildId ?? process.env['KIKI_BUILD_ID'];
   const buildChannel = opts.buildChannel ?? process.env['KIKI_BUILD_CHANNEL'];
-  const startedAt = Date.now();
+  const startedAt = continuation?.startedAt ?? Date.now();
   const logger = opts.logger ?? createServerLogger({ level: opts.logLevel ?? 'info' });
   const externalDelegation = opts.externalDelegation === undefined
     ? externalDelegationAuthorityFromEnv(process.env)
@@ -403,7 +424,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const registry = createInstanceRegistry({
     instancesDir: opts.instancesDir ?? join(homeDir, 'server', 'instances'),
   });
-  const registration: InstanceRegistration = await registry.register({
+  const registration: InstanceRegistration = continuation?.registration ?? await registry.register({
     pid: process.pid,
     host,
     port,
@@ -425,6 +446,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const authFailureLimiter =
     exposureClass === 'loopback' ? undefined : createAuthFailureLimiter({ logger });
 
+  if (startup !== undefined) startup.release = async () => { authFailureLimiter?.dispose(); await remoteConnections.close(); await registration.release(); };
   const configPath = resolveConfigPath({ homeDir, configPath: opts.configPath });
   const guiStore = new GuiStoreService(homeDir, logger);
   let authTokenService: IAuthTokenService;
@@ -440,6 +462,37 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     authTokenService = createAuthTokenService({ tokenStore, passwordHash });
   }
   const validateCredential = createCredentialValidator(authTokenService, opts.rpcToken);
+  try { await assertMailboxStartupReady(homeDir); }
+  catch (error) {
+    authFailureLimiter?.dispose();
+    if (continuation !== undefined) { await remoteConnections.close(); throw error; }
+    return startStorageMaintenance({ options: opts, homeDir, serverHomeId, serverVersion, startedAt, host, port, registration,
+      authTokenService, validateCredential, localOwnerToken, admission, remoteConnections, logger,
+      service: createMailboxMigrationService(homeDir),
+      startNormal: async (boundPort, sharedRegistration, releaseListener, signal) => {
+        const attempt: StartupAttempt = {};
+        try { return await startServerRuntime({ ...opts, port: boundPort }, { registration: sharedRegistration, startedAt, releaseListener, signal }, attempt); }
+        catch (error) {
+          const startupError = signal.aborted ? signal.reason : error instanceof StorageStartupCleanupError ? error.startupError : error;
+          const completed = new Set<number>();
+          const cleanup = async (): Promise<void> => {
+            if (attempt.close !== undefined) { await attempt.close(); return; }
+            const partial = attempt.core;
+            const failures = await cleanupStartupSteps([
+              { run: () => partial?.accessor.get(IThreadMailboxStore).close() },
+              { run: () => partial?.accessor.get(IHomeRuntimeService).close() },
+              { run: () => partial?.accessor.get(IPluginHostService).stopAll() },
+              { run: () => partial?.dispose() }, { run: () => attempt.release?.() },
+            ], completed);
+            if (failures.length > 0) throw selectServerCleanupError(failures);
+          };
+          try { await cleanup(); }
+          catch (cleanupError) { throw new StorageStartupCleanupError(startupError, cleanupError, cleanup); }
+          throw startupError;
+        }
+      },
+    });
+  }
   const audience = new ConnectionAudience(admission, localOwnerToken, validateCredential, () => core.accessor.get(IBootstrapService).spaceId ?? 'main');
   let threadBridge: SpaceThreadBridge | undefined;
   const logging = resolveLoggingConfig({ homeDir, env: process.env });
@@ -474,8 +527,10 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       ...historyDirectorySeed(() => transcriptService, navigation), ...(opts.seeds ?? [])],
   );
 
-  await core.accessor.get(IPluginHostService).ready.catch(() => {
-    logger.warn({ event_type: 'plugin_app_activation_failed' }, 'An App plugin could not start; open its settings to recover');
+  if (startup !== undefined) startup.core = core;
+  await preparing(core.accessor.get(IPluginHostService).ready).catch((error: unknown) => {
+    continuation?.signal.throwIfAborted();
+    logger.warn({ err: error, event_type: 'plugin_app_activation_failed' }, 'An App plugin could not start; open its settings to recover');
   });
 
   if (exposureClass !== 'loopback') {
@@ -490,14 +545,13 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       );
     }
   }
-  await core.accessor.get(IConfigService).ready;
-  await core.accessor.get(IModelPricingService).ready;
-  const usageExport = new UsageExportRuntime(core, homeDir);
+  await preparing(core.accessor.get(IConfigService).ready);
+  await preparing(core.accessor.get(IModelPricingService).ready);
   const externalClients = new ExternalClientHost(core);
   const externalClientListener = new NativeExternalClientListenerManager(externalClients);
   if (core.accessor.get(IFlagService).enabled(EXTERNAL_CLIENT_FLAG_ID)) {
-    await externalClients.initialize();
-    await externalClientListener.initialize();
+    await preparing(externalClients.initialize());
+    await preparing(externalClientListener.initialize());
   }
 
   const runPostListenWarmup = async (): Promise<void> => {
@@ -528,6 +582,8 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     disableRequestLogging: true,
     genReqId: (req) => resolveRequestId(req.headers),
   }) as unknown as FastifyInstance;
+  const usageExport = new UsageExportRuntime(core, homeDir);
+  app.addHook('preClose', () => usageExport.close());
   const webRequests = new WeakSet<IncomingMessage>();
   const web = new WebAccess(homeDir, serverHomeId, (input) => {
     if (opts.sshManaged === true || opts.disableAuth === true) throw new AdmissionError(403, 'web_access_unavailable');
@@ -589,7 +645,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     if (path.startsWith('/api/web-access')) reply.header('cache-control', 'no-store');
     if (request.headers.authorization === undefined && ((path === '/api/web-access/session' && request.method === 'GET') || (['/api/web-access/exchange', '/api/web-access/logout'].includes(path) && request.method === 'POST'))) return;
     if (webRequests.has(request.raw) && (/^\/api\/(?:debug|klient\/delegation)(?:\/|$)/.test(path) || path === '/mcp')) return reply.code(403).send({ code: 40101, msg: 'local_owner_required' });
-    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients)(?:\/|$)/.test(path);
+    const d24 = /^\/api\/(?:web-access|remote-connections|thread-bridges|thread-bridge|usage-export|external-clients|storage)(?:\/|$)/.test(path);
     if (opts.disableAuth !== true || d24 || peerGrant(request.headers) !== undefined) return authHook(request, reply);
   });
   if (opts.disableAuth === true) {
@@ -608,6 +664,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     return payload;
   });
   registerWebAccessRoutes(app, web);
+  const storageController = new StorageMigrationController(createMailboxMigrationService(homeDir), 'normal');
+  registerStorageMigrationRoutes(app, storageController);
+  app.addHook('onClose', () => storageController.close());
   const shutdownController = new AbortController();
   const unrequestedSockets = new Set<Socket>();
   app.server.on('connection', (socket) => {
@@ -633,6 +692,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   });
   let notifications: NotificationService | undefined;
   let imSessions: import('./services/imSession/bridge').ImSessionBridge | undefined;
+  let imPreparation: Promise<import('./services/imSession/bridge').ImSessionBridge> | undefined;
+  let imCleanup: (() => Promise<void>) | undefined;
+  let imFactoryCleanupReported = false;
   let imSessionTimer: ReturnType<typeof setInterval> | undefined;
   let idleTimer: NodeJS.Timeout | undefined;
   let authMonitor: NodeJS.Timeout | undefined;
@@ -655,6 +717,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       return undefined;
     }
   };
+  const completedCleanup = new Set<number>();
+  let startupComplete = false;
+  let appendLogStore: IAppendLogStore | undefined;
   const doClose = async (): Promise<void> => {
     shutdownController.abort();
     if (idleTimer !== undefined) clearInterval(idleTimer);
@@ -665,7 +730,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       { run: () => externalClients.close() },
       { run: () => leaseRegistry.dispose() },
       { run: () => app.close() },
-      { run: () => { if (imSessionTimer !== undefined) clearInterval(imSessionTimer); return imSessions?.close(); } },
+      { run: async () => {
+        if (imSessionTimer !== undefined) clearInterval(imSessionTimer);
+        try { await imPreparation; }
+        catch (error) {
+          if (error instanceof StorageStartupCleanupError && !imFactoryCleanupReported) {
+            imFactoryCleanupReported = true;
+            throw error.cleanupError;
+          }
+        }
+        await imCleanup?.();
+      } },
       { run: () => notifications?.close() },
       { run: () => core.accessor.get(IThreadCommunicationService).shutdown() },
       {
@@ -708,7 +783,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       { run: () => core.accessor.get(IPluginHostService).stopAll() },
       { run: () => fsWatchBridge.dispose() },
     );
-    let appendLogStore: IAppendLogStore | undefined;
     steps.push({
       run: () => { appendLogStore = core.accessor.get(IAppendLogStore); },
       durable: true,
@@ -724,7 +798,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
       { run: () => drainLogCloses(), durable: true },
       { run: () => registration.release() },
     );
-    const failures = await collectServerCleanupFailures(steps);
+    const failures = startup === undefined || startupComplete ? await collectServerCleanupFailures(steps) : await cleanupStartupSteps(steps, completedCleanup);
     if (failures.length === 0) return;
     const primary = selectServerCleanupError(failures);
     closeFailureDomain = failures.some((failure) => failure.durable && flattenServerCleanupErrors(failure.error).includes(primary)) ? 'persistence' : 'cleanup';
@@ -764,6 +838,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
           resolveClosed();
         },
         (error: unknown) => {
+          if (startup !== undefined && !startupComplete) closeFlight = undefined;
           const normalized = error instanceof Error ? error : new Error(String(error));
           const errorCode = (normalized as { readonly code?: unknown }).code;
           const resourcesAfter = resourceCount();
@@ -788,6 +863,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     return closeFlight;
   };
 
+  if (startup !== undefined) startup.close = close;
   const connectionRegistry = new ConnectionRegistry();
   const transcriptService = new TranscriptService({ homeDir, core, logger });
   transcriptService.setHistoryLocatorReader(navigation);
@@ -843,13 +919,17 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     .catch(() => {
     });
 
-  await configService.ready;
+  await preparing(configService.ready);
   notifications = new NotificationService(core, homeDir,
     (sessionId) => broadcaster.isSessionViewed(sessionId),
     () => logger.warn({ event_type: 'notification_operation_failed' }, 'notification operation failed'));
-  await notifications.start();
-  const { createImSessionHost } = await import('./services/imSession/host');
-  imSessions = await createImSessionHost({ core, homeDir, notifications, logger });
+  await preparing(notifications.start());
+  const { createImSessionHost } = await preparing(import('./services/imSession/host'));
+  imPreparation = createImSessionHost({ core, homeDir, notifications, logger,
+    signal: continuation === undefined ? shutdownController.signal : AbortSignal.any([shutdownController.signal, continuation.signal]),
+    onCreate: (closeBridge) => { imCleanup = closeBridge; },
+  });
+  imSessions = await preparing(imPreparation);
   const startedImSessions = imSessions;
   notifications.setSceneSuppressor((input) => startedImSessions.suppressChannel(input));
   imSessionTimer = setInterval(() => { void startedImSessions.syncInteractions().catch(() => undefined); }, 2_000);
@@ -867,11 +947,12 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     : { state: 'disabled', reason: 'feature_disabled' };
   if (externalDelegationEnabled) {
     try {
-      await ensureExternalDelegationSession(core, externalDelegation);
+      await preparing(ensureExternalDelegationSession(core, externalDelegation));
       if (externalDelegation?.sessionBootstrap !== undefined) {
-        await registration.update({ workspaces: [externalDelegation.sessionBootstrap.workspacePath] });
+        await preparing(registration.update({ workspaces: [externalDelegation.sessionBootstrap.workspacePath] }));
       }
     } catch (error) {
+      continuation?.signal.throwIfAborted();
       const reason = error instanceof ExternalDelegationBootstrapError
         ? error.reason
         : 'bootstrap_failed';
@@ -1027,7 +1108,6 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const wssBroker = registerRemoteConnectionRoutes(app, admission, remoteConnections, registration.serverId, () => authTokenService.getToken(), sshRemote);
   threadBridge = await registerSpaceThreadBridge(app, core, admission, remoteConnections, transcriptService, shutdownController.signal);
   registerUsageExportRoutes(app, usageExport.service);
-  app.addHook('preClose', () => usageExport.close());
   const providerQuota = createProviderQuotaService(core);
   registerProviderQuotaRoutes(app, providerQuota);
   app.addHook('preClose', async () => { providerQuota.close(); });
@@ -1165,16 +1245,18 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   }
 
   try {
-    await listenWithPortRetry({
-      listen: (h, p) => app.listen({ host: h, port: p }),
-      host,
-      port,
-      logger,
-    });
+    if (continuation === undefined) {
+      await listenWithPortRetry({ listen: (h, p) => app.listen({ host: h, port: p }), host, port, logger });
+    } else {
+      continuation.signal.throwIfAborted();
+      await continuation.releaseListener();
+      continuation.signal.throwIfAborted();
+      await app.listen({ host, port });
+      continuation.signal.throwIfAborted();
+    }
   } catch (error) {
-    try {
-      await close();
-    } catch {
+    if (startup === undefined) {
+      try { await close(); } catch {}
     }
     throw error;
   }
@@ -1182,8 +1264,9 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
   const address = app.server.address();
   const boundPort = typeof address === 'object' && address !== null ? address.port : port;
 
-  await registration.update({ port: boundPort });
-  try { await web.ready(); } catch (error) { await close(); throw error; }
+  await preparing(registration.update({ port: boundPort }));
+  try { await preparing(web.ready()); continuation?.signal.throwIfAborted(); }
+  catch (error) { if (startup === undefined) await close(); throw error; }
   remoteConnections.start();
   usageExport.start();
   try {
@@ -1226,6 +1309,7 @@ export async function startServer(opts: ServerStartOptions): Promise<RunningServ
     idleTimer.unref();
   }
 
+  startupComplete = true;
   return {
     app,
     core,

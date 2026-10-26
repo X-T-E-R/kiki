@@ -91,6 +91,23 @@ Endpoints are grouped by resource below. A `:{action}` suffix in a path is the a
 | `GET /api/meta` | Server version, capability map, `server_id`, experimental flags |
 | `POST /api/shutdown` | Graceful shutdown (replies 200 first); mounted only on loopback binds |
 
+### Mailbox storage upgrade
+
+A home with legacy or interrupted mailbox storage starts in maintenance mode before the ordinary engine, plugins, or sessions are bootstrapped. Authenticated `GET /api/meta` returns `storage_mode: "maintenance"`, `storage_status_path: "/api/storage"`, and the usual `server_id` and `server_home_id`; unavailable capabilities are `false`. It uses the existing server address, authentication, host checks, and origin policy. Session endpoints return HTTP `503` until normal startup.
+
+| Method and path | Request | Response data |
+| --- | --- | --- |
+| `GET /api/storage` | No body | `StorageMigrationView`; reads status without starting migration or changing authority |
+| `POST /api/storage` | `{ "action": "migrate" }`, `cancel`, `rollback`, `start`, or `retry_cleanup` | Updated `StorageMigrationView`; launches the requested operation |
+
+The schemas are exported by `@kiki/protocol`: `storageMigrationViewSchema` and `storageMigrationActionSchema`. A view contains `schemaVersion: 1`, `mode`, `status`, `actions`, `transition`, and optional `operationFailure`. Status supplies `authority`, `phase`, `state`, `progress`, source and backup paths, optional `writer` and `failure`, and `canCancel` / `canRollback`. These status fields also appear in [`kiki storage --json`](../reference/command.md#kiki-storage).
+
+Drive controls from `actions`, not from a guessed combination of phase and state: a durable phase may finish while its worker and locks are still closing. `migrate` resumes preserved progress; `waiting` leaves the old writer in control, so stop that writer and retry when `migrate` is offered. `cancel` stops a cancellable import or normal-start attempt. `rollback` is offered only while the original can be restored without losing new SQLite writes. A malformed action returns envelope code `40001`; an unavailable action returns `40901`. Missing credentials return HTTP `401`.
+
+After migration, `start` explicitly requests normal startup. Continue polling the same address. A failed, cancelled, or timed-out start leaves the upgrade intact and reports `transition.state: "failed"` with the original startup `failure`. While the attempt is closing, `cleanupPending` is `true` and `actions` is empty. If cleanup fails, `transition.cleanupFailure` explains it and the only action is `retry_cleanup`; this retries unfinished cleanup without starting the engine again. Repeated cleanup failure keeps that gate closed. Once cleanup succeeds, `cleanupPending` becomes `false` and `actions` offers `start` and any available `rollback`.
+
+Switch to normal session loading only when `GET /api/meta` reports `storage_mode: "normal"` with the same `server_id` and `server_home_id`. The home, identity, and port stay unchanged; clients do not need to launch another daemon. An interrupted rollback also returns to maintenance and offers `rollback` so it can finish before another migration or normal startup. In normal mode, `GET /api/storage` remains readable and `actions` is empty.
+
 ### Space presets
 
 `GET /api/homes/presets` returns `{ items: [{ id, name, color?, description }] }`. Only the `kiki` baseline preset is currently bundled. Create a space from the main space's server with `POST /api/homes`:
@@ -647,7 +664,7 @@ For `undeliverable` records, `reason_code` is a stable localization key and `rea
 
 Klient provides `klient.rest.threads.messages(query, options)` with these snake_case wire shapes. `klient.global.threads.messages({ workspaceId, sessionId, peerSessionId, cursor, limit })` provides the same read using camelCase shapes over HTTP, IPC, and memory transports.
 
-Peer messages are no longer evicted by the mailbox's former 512-message limit. The first upgraded mailbox owner resumes a checkpointed backfill of records still present in the mailbox; messages already evicted by older versions are not reconstructed from session wires. Restart older processes sharing the same Kiki home before relying on the new retention behavior.
+Peer messages are no longer evicted by the mailbox's former 512-message limit. The [mailbox storage upgrade](#mailbox-storage-upgrade) backfills records still present in the old mailbox before switching authority; messages already evicted by older versions are not reconstructed from session wires. Close older writers and complete that upgrade before using the home with Kiki 0.5.x.
 
 ### Room conversation entries
 

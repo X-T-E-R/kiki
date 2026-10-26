@@ -529,6 +529,39 @@ describe('im session bridge', () => {
     expect(adapter.stopped).toBe(1);
   });
 
+  it('retains failed shared listeners for cleanup retry while closing the other listeners once', async () => {
+    class FailingStopAdapter extends FakeImAdapter {
+      attempts = 0;
+      override async stop(): Promise<void> {
+        this.attempts++;
+        if (this.attempts === 1) throw new Error('example listener cleanup failed');
+        await super.stop();
+      }
+    }
+    const first = new FailingStopAdapter('telegram', 'first');
+    const second = new FakeImAdapter('telegram', 'second');
+    const secrets = new Map([['a', 'first-token'], ['alias', 'first-token'], ['b', 'second-token']]);
+    const base = ports();
+    base.ports.credentials.list = () => [...secrets.keys()].map((id) => ({ id, providerId: 'telegram', configured: true }));
+    base.ports.credentials.read = (id) => secrets.get(id);
+    const bridge = new ImSessionBridge({ ports: base.ports, factories: [{ ...fakeAdapterFactory(first),
+      create: ({ credential }) => credential === 'first-token' ? first : second }], editIntervalMs: 0, wait: () => Promise.resolve() });
+    try {
+      for (const id of secrets.keys()) await bridge.setListening(id, true);
+      expect(first.started).toBe(1);
+      await expect(bridge.close()).rejects.toMatchObject({ name: 'AggregateError', errors: [expect.objectContaining({ message: 'example listener cleanup failed' })] });
+      expect(first.attempts).toBe(1);
+      expect(second.stopped).toBe(1);
+      await bridge.close();
+      expect(first.attempts).toBe(2);
+      expect(first.stopped).toBe(1);
+      expect(second.stopped).toBe(1);
+      await bridge.close();
+      expect(first.attempts).toBe(2);
+      expect(second.stopped).toBe(1);
+    } finally { await bridge.close(); }
+  });
+
   it('reports a webhook without starting the poller', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     adapter.conflict = 'webhook';

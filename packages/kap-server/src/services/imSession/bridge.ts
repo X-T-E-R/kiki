@@ -1243,10 +1243,16 @@ export class ImSessionBridge {
   private stopAll(): Promise<void> {
     return this.enqueueLifecycle(async () => {
       const pollers = new Set([...this.pollers.values(), ...[...this.pending.values()].map((attempt) => attempt.poller)]);
-      this.pending.clear();
-      this.pollers.clear();
-      this.failures.clear();
-      for (const poller of pollers) await this.stopAdapter(poller.adapter);
+      const failures: unknown[] = [];
+      for (const poller of pollers) {
+        try {
+          await this.stopAdapter(poller.adapter);
+          this.forgetPending(poller);
+          for (const [key, current] of this.pollers) if (current === poller) this.pollers.delete(key);
+          for (const id of poller.instances) this.failures.delete(id);
+        } catch (error) { failures.push(error); }
+      }
+      if (failures.length > 0) throw new AggregateError(failures, 'IM listeners could not all be stopped');
     });
   }
 

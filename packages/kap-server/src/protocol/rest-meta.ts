@@ -6,14 +6,14 @@ import { isoDateTimeSchema } from '@kiki/agent-core-v2/_base/utils/isoDateTime';
 import { fsOpenInAppIdSchema } from './rest-fs';
 
 export const metaCapabilitiesSchema = z.object({
-  websocket: z.literal(true),
-  file_upload: z.literal(true),
-  fs_query: z.literal(true),
-  mcp: z.literal(true),
-  tasks: z.literal(true),
-  terminal: z.literal(true).optional(),
-  thread_communication: z.literal(true),
-  transcript: z.literal(true).optional(),
+  websocket: z.boolean(),
+  file_upload: z.boolean(),
+  fs_query: z.boolean(),
+  mcp: z.boolean(),
+  tasks: z.boolean(),
+  terminal: z.boolean().optional(),
+  thread_communication: z.boolean(),
+  transcript: z.boolean().optional(),
 });
 
 export type MetaCapabilities = z.infer<typeof metaCapabilitiesSchema>;
@@ -70,6 +70,8 @@ export const metaResponseSchema = z.object({
   backend: z.enum(['v1', 'v2']).optional(),
   web_title: z.string().optional(),
   features: z.array(metaFeatureSchema).optional(),
+  storage_mode: z.enum(['maintenance', 'normal']).optional(),
+  storage_status_path: z.literal('/api/storage').optional(),
 });
 
 export type MetaResponse = z.infer<typeof metaResponseSchema>;

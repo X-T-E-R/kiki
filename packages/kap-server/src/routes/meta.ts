@@ -82,6 +82,8 @@ export function registerMetaRoute(app: RouteHost, opts: MetaRouteOptions): void 
     external_delegation: Object.freeze(opts.externalDelegation),
     backend: 'v2' as const,
     web_title: opts.webTitle,
+    storage_mode: 'normal' as const,
+    storage_status_path: '/api/storage' as const,
   });
 
   const route = defineRoute(
