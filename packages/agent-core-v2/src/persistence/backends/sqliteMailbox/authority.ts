@@ -197,8 +197,7 @@ export function assertMailboxStartupReadySync(homeDir: string): void {
   try { manifest = JSON.parse(readFileSync(migrationPath(homeDir), 'utf8')) as MigrationManifest; }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error; }
   if (manifest !== undefined) {
-    validateMigrationManifest(homeDir, manifest);
-    if (manifest.rollbackAuthority !== undefined && manifest.rolledBack !== true || manifest.status.phase === 'rolling_back') {
+    if (manifest.rollbackAuthority !== undefined && manifest.rolledBack !== true || manifest.status?.phase === 'rolling_back') {
       throw new HomeRuntimeError('mailbox.migration_required', `Mailbox rollback is incomplete. Review kiki storage status --home "${homeDir}", then finish kiki storage rollback --home "${homeDir}" before starting Kiki.`);
     }
   }

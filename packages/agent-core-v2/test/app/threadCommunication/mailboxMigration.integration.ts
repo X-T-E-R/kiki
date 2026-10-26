@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -12,7 +12,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createMailboxMigrationService } from '#/persistence/backends/sqliteMailbox/migration';
 import { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
-import { assertMailboxStartupReady, assertMailboxStartupReadySync, authorityPath, readMailboxAuthority } from '#/persistence/backends/sqliteMailbox/authority';
+import { assertMailboxStartupReady, assertMailboxStartupReadySync, authorityPath, migrationPath, readMailboxAuthority } from '#/persistence/backends/sqliteMailbox/authority';
 
 let home: string;
 const handles: Array<{ close(): Promise<void> }> = [];
@@ -192,6 +192,24 @@ describe('canonical mailbox SQLite migration', () => {
     expect(result.state).toBe('complete');
     const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!); handles.push(db);
     expect(await db.prefix('w/test/override/')).toHaveLength(3);
+  });
+
+  it('starts an empty home and active SQLite without requiring historical backup progress', async () => {
+    await expect(assertMailboxStartupReady(home)).resolves.toBeUndefined();
+    expect(() => assertMailboxStartupReadySync(home)).not.toThrow();
+    const old = await source(); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    expect(await migration.migrate()).toMatchObject({ state: 'complete', authority: 'sqlite' });
+    const path = migrationPath(home);
+    const manifest = JSON.parse(await readFile(path, 'utf8'));
+    await writeFile(path, JSON.stringify({ ...manifest, copiedFiles: -1, files: null,
+      status: { ...manifest.status, progress: null, backupPath: 'unavailable-historical-backup' } }));
+    await expect(assertMailboxStartupReady(home)).resolves.toBeUndefined();
+    expect(() => assertMailboxStartupReadySync(home)).not.toThrow();
+    expect(await migration.status()).toMatchObject({ state: 'failed' });
+    await writeFile(path, JSON.stringify({ ...manifest, rollbackAuthority: await readMailboxAuthority(home) }));
+    await expect(assertMailboxStartupReady(home)).rejects.toMatchObject({ code: 'mailbox.migration_required' });
+    expect(() => assertMailboxStartupReadySync(home)).toThrow('rollback is incomplete');
   });
 
   describe('rollback authority commit crash', () => {
