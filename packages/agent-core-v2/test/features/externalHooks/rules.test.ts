@@ -618,7 +618,9 @@ describe('hooks v2 completed-step engine contract', () => {
 
   it('keeps prompt input intact and skips a failed prompt injection without consuming its receipt', async () => {
     const ctx = agentWithRules(() => snapshot([rule({ event: 'prompt.submit', cadence: undefined })]));
-    const append = vi.spyOn(ctx.get(IAgentSystemReminderService), 'appendSystemReminder').mockImplementationOnce(() => { throw new Error('append failed'); });
+    const slot = ctx.get(IAgentPromptService).hooks.onBeforeSubmitPrompt;
+    const run = slot.run.bind(slot);
+    const append = vi.spyOn(slot, 'run').mockImplementationOnce((input) => run({ ...input, appendMessage: () => { throw new Error('append failed'); } }));
     await turn(ctx, 'Original first input');
     expect(injections(ctx)).toHaveLength(0);
     expect(ctx.get(IAgentStateService).get(hookStateKey).rules['user/focus']!.buckets).toEqual({});
