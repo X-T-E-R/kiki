@@ -157,6 +157,7 @@ describe('AgentShellCommandService', () => {
     const registry = {
       _serviceBrand: undefined,
       register: () => ({ dispose: () => {} }),
+      registerPreparation: () => ({ dispose: () => {} }),
       list: () => [fakeBash],
       resolve: () => fakeBash,
     } as unknown as IAgentToolRegistryService;
