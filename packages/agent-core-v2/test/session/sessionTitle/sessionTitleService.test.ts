@@ -420,7 +420,7 @@ describe('SessionTitleService', () => {
 
   it.each(['backoff', 'request'] as const)('disposal cancels a pending title %s without publishing or replaying', async phase => {
     vi.useFakeTimers();
-    responseScript = (_attempt, signal) => asyncStream(async () => {
+    responseScript = (_attempt, signal) => asyncStream<ModelRequestEvent>(async () => {
       if (phase === 'backoff') throw new APIConnectionError('fixture disconnect');
       await new Promise<void>(resolve => { signal?.addEventListener('abort', () => resolve(), { once: true }); });
       signal?.throwIfAborted();
