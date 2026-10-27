@@ -2,7 +2,7 @@ import Fastify from 'fastify';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { TestInstantiationService } from '@kiki/agent-core-v2/_base/di/test';
 import { SyncDescriptor } from '@kiki/agent-core-v2/_base/di/descriptors';
-import { IOutputLayerService, OutputLayerService, IPluginService, IPluginHostService, IPluginSettingsService, IModelCatalog, IModelService, IPluginUsageService, ISessionIndex, IWorkspaceService, type Scope } from '@kiki/agent-core-v2';
+import { IOutputLayerService, OutputLayerService, IPluginService, IPluginHostService, IPluginSettingsService, IModelCatalog, IModelService, IPluginUsageService, ISessionIndex, IWorkspaceService, IConfigService, type Scope } from '@kiki/agent-core-v2';
 import type { Model } from '@kiki/agent-core-v2/kosong/model/catalog';
 import type { ModelRequestInput, ModelRequestEvent } from '@kiki/agent-core-v2/kosong/model/modelRequester';
 import { HttpChannel } from '@kiki/klient/transports/http/channel';
@@ -41,6 +41,7 @@ async function fixture() {
     } }; return { values: {}, secretsConfigured: [] };
   } });
   ix.stub(IModelCatalog, { getRequester: () => requester, getConnectionRequester: () => requester });
+  ix.stub(IConfigService, { get: <T>(): T => undefined as T });
   ix.stub(IModelService, { getDefaultModel: () => 'fixture-model' });
   const allows = vi.fn(async (_workspaceId: string | undefined, _pluginId: string, sessionId?: string) => sessionId !== 'disabled-session');
   ix.stub(IPluginUsageService, { allows });

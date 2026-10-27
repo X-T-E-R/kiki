@@ -3,12 +3,16 @@ import {
   type OutputLayerConfiguration, type OutputLayerEvent, type OutputLayerRequest,
 } from '@kiki/protocol';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
+import { IConfigService } from '#/app/config/config';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { requestModelWithRetry } from '#/agent/stepRetry/modelRequestRetry';
 import { LifecycleScope } from '#/app/scopes';
 import { IPluginHostService } from '#/app/plugin/pluginHostService';
 import { IPluginSettingsService } from '#/app/plugin/pluginSettingsService';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import type { Message } from '#/kosong/contract/message';
+import type { ModelRequestParams } from '#/kosong/model/modelRequester';
 import { estimateTokens, estimateTokensForMessages } from '#/kosong/contract/tokens';
 import { IOutputLayerService } from './outputLayer';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
@@ -27,6 +31,7 @@ export class OutputLayerService implements IOutputLayerService {
     @IPluginUsageService private readonly usage: IPluginUsageService,
     @ISessionIndex private readonly sessions: ISessionIndex,
     @IWorkspaceService private readonly workspaces: IWorkspaceService,
+    @IConfigService private readonly config: IConfigService,
   ) {}
 
   async configuration(sessionId?: string): Promise<OutputLayerConfiguration> {
@@ -84,11 +89,13 @@ export class OutputLayerService implements IOutputLayerService {
       const inputTokensEstimate = prefixTokens + estimateTokensForMessages(messages);
       const cycleId = historyReset ? crypto.randomUUID() : input.cycleId;
       yield { type: 'started', cycleId, historyReset, contextWindow: window, inputTokensEstimate };
-      for await (const event of requester.request({ systemPrompt, messages, tools: [] }, signal, {
+      const request = { systemPrompt, messages, tools: [] };
+      const params: ModelRequestParams & { attribution: NonNullable<ModelRequestParams['attribution']> } = {
         cacheKey: `output-layer:${input.sessionId}:${cycleId}`,
         maxCompletionTokens: outputBudget, maxContextTokens: window, usedContextTokens: inputTokensEstimate,
         attribution: { logicalRequestId: crypto.randomUUID(), sessionId: input.sessionId, agentId: 'output-layer', purpose: 'output_layer', waitBudget: { waitedMs: 0 } },
-      })) {
+      };
+      for await (const event of requestModelWithRetry(requester, request, signal, params, () => this.config.get<RetryConfig | undefined>(RETRY_SECTION))) {
         if (event.type === 'attempt.discarded') { text = ''; yield { type: 'reset' }; }
         if (event.type === 'part' && event.part.type === 'text') { text += event.part.text; yield { type: 'delta', text: event.part.text }; }
         if (event.type === 'finish') {

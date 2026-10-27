@@ -11,6 +11,8 @@ import { TurnPrompt, TurnEnded, turnKey } from '#/agent/loop/turnOps';
 import { IAgentStateService } from '#/agent/state/agentState';
 import { LifecycleScope } from '#/app/scopes';
 import { IConfigService } from '#/app/config/config';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { requestModelWithRetry } from '#/agent/stepRetry/modelRequestRetry';
 import { IFlagService } from '#/app/flag/flag';
 import { IEventService } from '#/app/event/event';
 import { IEventBus } from '#/app/event/eventBus';
@@ -39,6 +41,7 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
   private _shared: Promise<string | undefined> | undefined;
   private automatic = Promise.resolve();
   private readonly mainSubscriptions = this._register(new DisposableStore());
+  private readonly requestController = new AbortController();
 
   constructor(
     @ISessionContext private readonly ctx: ISessionContext,
@@ -51,6 +54,7 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
     @IModelCatalog private readonly modelCatalog: IModelCatalog,
   ) {
     super();
+    this._register({ dispose: () => this.requestController.abort(new Error('Session title service disposed')) });
     const main = this.agentLifecycle.get(MAIN_AGENT_ID);
     if (main !== undefined) this.attachMain(main);
     this._register(this.agentLifecycle.onDidCreate((handle) => {
@@ -149,6 +153,7 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
     const current = await this.metadata.read();
     if (!force && current.titleKind === 'custom') return undefined;
     const title = await this.requestModelTitle(chatContent, alias);
+    this.requestController.signal.throwIfAborted();
     const applied = await this.metadata.setGeneratedTitleIfUncustomized(title, { force });
     if (!applied) return undefined;
     this.eventService.publish(new SessionMetaUpdated({
@@ -167,14 +172,14 @@ export class SessionTitleService extends Disposable implements ISessionTitleServ
     let finishReason: string | undefined;
     try {
       const requester = this.modelCatalog.getRequester(alias);
-      for await (const event of requester.request({
+      for await (const event of requestModelWithRetry(requester, {
         systemPrompt: resolveSessionTitlePrompt(this.config),
         tools: [],
         messages: [{ role: 'user', content: [{ type: 'text', text: chatContent }], toolCalls: [] }],
-      }, undefined, { attribution: {
+      }, this.requestController.signal, { attribution: {
         logicalRequestId: crypto.randomUUID(), sessionId: this.ctx.sessionId,
         agentId: MAIN_AGENT_ID, purpose: 'session_title', waitBudget: { waitedMs: 0 },
-      } })) {
+      } }, () => this.config.get<RetryConfig | undefined>(RETRY_SECTION))) {
         if (event.type !== 'finish') continue;
         finishReason = event.rawFinishReason ?? event.providerFinishReason;
         for (const part of event.message.content) {

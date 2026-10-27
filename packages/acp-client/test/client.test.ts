@@ -175,6 +175,27 @@ function validOversizedProcess(dispose: ReturnType<typeof vi.fn<() => void>>): H
 }
 
 describe('AcpProcessClient limits and observers', () => {
+  it.each(['reject', 'cancel', 'disconnect'] as const)('sends no prompt when actual-session preparation ends in %s', async outcome => {
+    const child = burstProcess(vi.fn(), 0);
+    const writes = vi.spyOn(child.stdin, 'write');
+    const client = new AcpProcessClient({ spawn: async () => child }, { id: 'fixture', command: 'fixture' }, { platform: 'linux' });
+    const controller = new AbortController();
+    const prepareSession = vi.fn(async (session: { sessionId: string }) => {
+      expect(session.sessionId).toBe('session-burst');
+      if (outcome === 'reject') throw new Error('fixture controls unverifiable');
+      if (outcome === 'cancel') controller.abort();
+      if (outcome === 'disconnect') await child.kill();
+    });
+    try {
+      await expect(client.startTurn({ prompt: 'work', signal: controller.signal, session: { cwd: '/example' }, prepareSession })).rejects.toThrow();
+      expect(prepareSession).toHaveBeenCalledOnce();
+      const methods = writes.mock.calls.map(([chunk]) => typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('utf8')).join('').trim().split('\n')
+        .map(line => (JSON.parse(line) as { method?: string }).method);
+      expect(methods).not.toContain('session/prompt');
+      expect(methods.filter(method => method === 'session/new')).toHaveLength(1);
+    } finally { await client.shutdown(); }
+  });
+
   it('neg-v2-diff-not-delivered: rejects protocol 2 at initialize before opening a session', async () => {
     const methods: string[] = [];
     const client = new AcpProcessClient({ spawn: async () => {

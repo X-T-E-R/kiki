@@ -599,11 +599,11 @@ New sessions keep changing date, directory listings, workspace instructions and 
 
 ## `retry`
 
-`retry` customizes the total attempt budget and fixed backoff for selected step errors. By default, a retryable step gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. Policies can also target exact model and provider configuration keys, so one provider's temporary failures do not change retry behavior elsewhere. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
+`retry` customizes the total attempt budget and fixed backoff for selected step errors, Output Layer transformations, and session title requests. By default, each retryable operation gets five total attempts, with waits of 2, 4, 8, and 16 seconds plus up to 25% jitter (30–37.5 seconds in total). A provider `Retry-After` value or a matching policy's fixed `backoff` replaces the corresponding default wait. Policies can also target exact model and provider configuration keys, so one provider's temporary failures do not change retry behavior elsewhere. The section and each policy are strict: an unknown field is rejected rather than silently ignored.
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
-| `max_attempts` | `integer` | — | Maximum total attempts for a failing step, including the initial attempt; overrides `loop_control.max_attempts_per_step` |
+| `max_attempts` | `integer` | — | Maximum total attempts, including the initial attempt; for agent steps, overrides `loop_control.max_attempts_per_step` |
 | `policies` | `array<table>` | — | Ordered per-error policies written as `[[retry.policies]]`; the first matching policy applies |
 
 Each `[[retry.policies]]` entry has these fields:
@@ -824,7 +824,7 @@ Which image formats reach the model depends on the provider the request resolves
 
 The built-in prompt asks for a recognizable title based on the current purpose and concrete subject, keeping useful names and identifiers without claiming unproven success. Changing `prompt` takes effect on the next title request, including in an open session, without restarting. Saving or removing the override does not rename existing sessions or send a title request.
 
-A model you picked is used as-is, under the same excerpt budgets. Automatic titling never overwrites a title you typed yourself, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
+A model you picked is used as-is, under the same excerpt budgets. Zero-output transient failures follow [`retry`](#retry); a missing model or invalid configuration fails once, and observed model output is never replayed. Automatic titling never overwrites a title you typed yourself, including during retry backoff, and neither does an ordinary on-demand request. Only a forced request replaces a title you set by hand.
 
 `GET /api/config` and successful `POST /api/config` responses include `session_title.default_prompt` and `prompt_source` (`default` or `custom`). These are read-only fields; `prompt` is returned only for a nonblank override. Save with `{ "session_title": { "prompt": "Your title instructions" } }`, or remove the override with `{ "session_title": { "prompt": null } }`. Omitted fields stay unchanged, so these patches preserve `model` and `triggers`. Use `model: null` to remove the model without erasing the prompt or selected moments; do not use `replace_domains` for a single-field edit.
 

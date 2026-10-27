@@ -526,17 +526,27 @@ export class AcpProcessClient {
       throw new AcpClientError(AcpClientErrorCode.Busy, 'An ACP prompt is already active');
     }
 
-    const session = await this.openSession({
+    let session = await this.openSession({
       ...request.session,
       signal: request.signal,
     });
     const connection = this.#connection;
-    if (connection === undefined) {
+    if (request.session.requireResume && request.session.sessionRef !== undefined &&
+        session.sessionId !== sessionIdFromEnvelope(request.session.sessionRef, this.#descriptor.id)) {
+      throw new AcpClientError(AcpClientErrorCode.InvalidSessionRef, 'ACP opened a different session before prompt');
+    }
+    await request.prepareSession?.(session);
+    if (request.signal.aborted) {
+      throw new AcpClientError(AcpClientErrorCode.Cancelled, 'ACP turn was cancelled', { cause: abortReason(request.signal) });
+    }
+    if (connection === undefined || this.#connection !== connection || connection.signal.aborted ||
+        this.#process?.exitCode !== null || this.#state !== 'ready' || this.#openResult?.sessionId !== session.sessionId) {
       throw new AcpClientError(
         AcpClientErrorCode.Disconnected,
-        'ACP connection closed before prompt',
+        'ACP connection closed or changed before prompt',
       );
     }
+    session = { ...this.#openResult, mode: session.mode };
 
     for (const attachment of request.attachments ?? []) {
       if (attachment.type === 'image' && session.capabilities.promptCapabilities?.image !== true && this.#descriptor.id !== 'grok-acp') {

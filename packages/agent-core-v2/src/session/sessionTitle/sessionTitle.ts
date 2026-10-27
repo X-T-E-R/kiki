@@ -15,6 +15,7 @@ export type SessionTitleSource = 'user_prompts' | 'first_turn' | 'digest';
 export interface ISessionTitleService {
   readonly _serviceBrand: undefined;
 
+  /** Uses the configured bounded retry policy only before any model output, preserves concurrent manual renames unless forced, and cancels on service disposal. */
   generateTitle(opts?: {
     force?: boolean;
     source?: SessionTitleSource;

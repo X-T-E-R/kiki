@@ -188,6 +188,8 @@ export interface AcpTurnRequest {
   readonly attachments?: readonly import('@agentclientprotocol/sdk').ContentBlock[];
   readonly signal: AbortSignal;
   readonly session: AcpOpenSessionOptions;
+  /** Restores and verifies controls on the actual opened session before prompt delivery. A rejection sends no prompt. */
+  readonly prepareSession?: (session: AcpOpenSessionResult) => Promise<void>;
 }
 
 export interface AcpTurnResult {

@@ -552,10 +552,25 @@ describe.each(['failed', 'event_error', 'close'] as const)('Responses non-yielde
     { name: 'hosted tool', observed: true, event: { type: 'response.output_item.done', item: { type: 'web_search_call', id: 'builtin_fixture', status: 'completed' } } },
     { name: 'encrypted thinking', observed: true, event: { type: 'response.output_item.added', item: { type: 'reasoning', id: 'reason_fixture', summary: [], encrypted_content: 'encrypted-fixture' } } },
     { name: 'reasoning summary', observed: true, event: { type: 'response.reasoning_summary_part.added', part: { type: 'summary_text', text: 'observed thought' } } },
+    { name: 'summary part done', observed: true, event: { type: 'response.reasoning_summary_part.done', part: { type: 'summary_text', text: 'observed thought' } } },
+    { name: 'summary text done', observed: true, event: { type: 'response.reasoning_summary_text.done', text: 'observed thought' } },
+    { name: 'reasoning text delta', observed: true, event: { type: 'response.reasoning_text.delta', delta: 'observed thought' } },
+    { name: 'reasoning text done', observed: true, event: { type: 'response.reasoning_text.done', text: 'observed thought' } },
+    { name: 'refusal done', observed: true, event: { type: 'response.refusal.done', refusal: 'refused' } },
+    { name: 'content refusal done', observed: true, event: { type: 'response.content_part.done', part: { type: 'refusal', refusal: 'refused' } } },
+    { name: 'content text done', observed: true, event: { type: 'response.content_part.done', part: { type: 'output_text', text: 'observed text' } } },
+    { name: 'output text done', observed: true, event: { type: 'response.output_text.done', text: 'observed text' } },
+    { name: 'in-progress output snapshot', observed: true, event: { type: 'response.in_progress', response: { output: [{ type: 'reasoning', summary: [{ type: 'summary_text', text: 'observed thought' }] }] } } },
+    { name: 'empty summary done', observed: false, event: { type: 'response.reasoning_summary_text.done', text: '' } },
+    { name: 'empty refusal done', observed: false, event: { type: 'response.content_part.done', part: { type: 'refusal', refusal: '' } } },
     { name: 'empty message', observed: false, event: { type: 'response.output_item.added', item: { type: 'message', id: 'msg_fixture', role: 'assistant', content: [] } } },
     { name: 'empty reasoning', observed: false, event: { type: 'response.output_item.added', item: { type: 'reasoning', id: 'reason_fixture', summary: [] } } },
   ])('preserves $name through generate and the delivery guard', async ({ observed, event }) => {
     const events = (async function* () {
+      yield { type: 'response.output_item.added', item: { type: 'message', id: 'msg_fixture', role: 'assistant', content: [] } };
+      yield { type: 'response.content_part.added', part: { type: 'refusal', refusal: '' } };
+      yield { type: 'response.output_item.added', item: { type: 'reasoning', id: 'reason_fixture', summary: [] } };
+      yield { type: 'response.reasoning_summary_part.added', part: { type: 'summary_text', text: '' } };
       yield event;
       if (ending === 'close') throw new ResponsesWebSocketError('fixture close', 'responses_websocket_closed_before_terminal', { status: 1012 });
       if (ending === 'event_error') yield { type: 'error', code: 'websocket_connection_limit_reached', message: 'native limit' };

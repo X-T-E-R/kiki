@@ -916,6 +916,41 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
     }
   }
 
+  private _observeStreamOutput(type: string, event: RawObject): void {
+    switch (type) {
+      case 'response.output_text.delta':
+      case 'response.reasoning_summary_text.delta':
+      case 'response.reasoning_text.delta':
+      case 'response.refusal.delta':
+        this._observedOutput ||= (readStringField(event, 'delta')?.length ?? 0) > 0;
+        break;
+      case 'response.output_text.done':
+      case 'response.reasoning_summary_text.done':
+      case 'response.reasoning_text.done':
+        this._observedOutput ||= (readStringField(event, 'text')?.length ?? 0) > 0;
+        break;
+      case 'response.refusal.done':
+        this._observedOutput ||= (readStringField(event, 'refusal')?.length ?? 0) > 0;
+        break;
+      case 'response.content_part.added':
+      case 'response.content_part.done':
+      case 'response.reasoning_summary_part.added':
+      case 'response.reasoning_summary_part.done': {
+        const part = readObjectField(event, 'part') ?? {};
+        this._observedOutput ||= (readStringField(part, 'text')?.length ?? 0) > 0 || (readStringField(part, 'refusal')?.length ?? 0) > 0;
+        break;
+      }
+      case 'response.function_call_arguments.delta':
+      case 'response.function_call_arguments.done':
+        this._observedOutput = true;
+        break;
+      case 'response.created':
+      case 'response.in_progress':
+        for (const item of readObjectArrayField(readObjectField(event, 'response') ?? {}, 'output') ?? []) this._observeOutputItem(item);
+        break;
+    }
+  }
+
   private _extractUsage(usage: RawObject): void {
     const inputTokens = readNumberField(usage, 'input_tokens') ?? 0;
     const outputTokens = readNumberField(usage, 'output_tokens') ?? 0;
@@ -1132,6 +1167,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           failResponsesDecode('stream event.type', 'must be a string.');
         }
 
+        this._observeStreamOutput(type, chunk);
         switch (type) {
           case 'response.output_text.delta': {
             const text = requireStringField(chunk, 'delta', type);
@@ -1160,12 +1196,10 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             }
             break;
           }
-          case 'response.content_part.added': {
+          case 'response.content_part.added':
+          case 'response.content_part.done': {
             const part = requireObjectField(chunk, 'part', type);
-            if (part['type'] === 'refusal') {
-              this._continuationBlocked = true;
-              this._observedOutput ||= (readStringField(part, 'refusal')?.length ?? 0) > 0;
-            }
+            if (part['type'] === 'refusal') this._continuationBlocked = true;
             if (part['type'] === 'output_text') {
               yield* yieldFinalTextSuffix(
                 requireStringField(part, 'text', type),
@@ -1241,7 +1275,6 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'response.reasoning_summary_part.added':
-            this._observedOutput ||= (readStringField(readObjectField(chunk, 'part') ?? {}, 'text')?.length ?? 0) > 0;
             yield { type: 'think', think: '' };
             break;
           case 'response.reasoning_summary_text.delta':
@@ -1250,7 +1283,6 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.refusal.delta':
           case 'response.refusal.done':
             this._continuationBlocked = true;
-            this._observedOutput ||= (readStringField(chunk, type === 'response.refusal.delta' ? 'delta' : 'refusal')?.length ?? 0) > 0;
             break;
           case 'response.completed':
           case 'response.incomplete': {

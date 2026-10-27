@@ -267,6 +267,86 @@ describe('recoverable ACP broken resume', () => {
     } finally { await harness.execution.dispose(); await harness.ix.dispose(); }
   });
 
+  it.each(['retained', 'reset', 'reject', 'readback', 'disconnect'] as const)('restores and verifies actual reopened controls before prompt: %s', async scenario => {
+    const processes: Array<{ disconnect(): void }> = [];
+    const methods: Array<{ generation: number; method: string }> = [];
+    let controls = { model: 'ambient-model', thought: 'low', autoApprove: true };
+    const prompts: Array<typeof controls & { sessionId: string }> = [];
+    const configOptions = () => [
+      { id: 'model-id', name: 'Model', category: 'model', type: 'select', currentValue: controls.model,
+        options: [{ value: 'model-a', name: 'A' }, { value: 'ambient-model', name: 'Ambient' }] },
+      { id: 'thought-id', name: 'Thought', category: 'thought_level', type: 'select', currentValue: controls.thought,
+        options: [{ value: 'low', name: 'Low' }, { value: 'high', name: 'High' }] },
+      { id: 'auto_approve', name: 'Auto approve', category: 'mode', type: 'boolean', currentValue: controls.autoApprove },
+    ];
+    const client = new AcpProcessClient({ spawn: async () => {
+      const generation = processes.length + 1;
+      const stdout = new PassThrough();
+      const stderr = new PassThrough();
+      let exitCode: number | null = null;
+      let finish!: (code: number) => void;
+      const exited = new Promise<number>(resolve => { finish = resolve; });
+      const disconnect = () => { if (exitCode !== null) return; exitCode = 0; stdout.end(); stderr.end(); finish(0); };
+      let input = '';
+      const stdin = new Writable({ write(chunk, _encoding, callback) {
+        input += String(chunk);
+        for (let newline = input.indexOf('\n'); newline >= 0; newline = input.indexOf('\n')) {
+          const line = input.slice(0, newline); input = input.slice(newline + 1);
+          const request = JSON.parse(line) as { id?: number; method: string; params?: Record<string, unknown> };
+          methods.push({ generation, method: request.method });
+          if (request.id === undefined) continue;
+          const reply = (result: unknown) => stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, result }) + '\n');
+          if (request.method === 'initialize') reply({ protocolVersion: 1, agentCapabilities: { loadSession: true, sessionCapabilities: { resume: {} } } });
+          else if (request.method === 'session/new') reply({ sessionId: 'remote-original', configOptions: configOptions() });
+          else if (request.method === 'session/resume' || request.method === 'session/load') {
+            if (scenario !== 'retained') controls = { model: 'ambient-model', thought: 'low', autoApprove: true };
+            reply({ configOptions: configOptions() });
+          } else if (request.method === 'session/set_config_option') {
+            if (generation > 1 && scenario === 'reject') {
+              stdout.write(JSON.stringify({ jsonrpc: '2.0', id: request.id, error: { code: -32602, message: 'fixture selection refused' } }) + '\n');
+              continue;
+            }
+            if (generation > 1 && scenario === 'disconnect') { disconnect(); continue; }
+            if (generation === 1 || scenario !== 'readback') {
+              if (request.params?.['configId'] === 'model-id') controls.model = String(request.params['value']);
+              if (request.params?.['configId'] === 'thought-id') controls.thought = String(request.params['value']);
+              if (request.params?.['configId'] === 'auto_approve') controls.autoApprove = request.params['value'] === true;
+            }
+            reply({ configOptions: configOptions() });
+          } else if (request.method === 'session/prompt') {
+            prompts.push({ sessionId: String(request.params?.['sessionId']), ...controls });
+            reply({ stopReason: 'end_turn' });
+          } else reply({});
+        }
+        callback();
+      } });
+      processes.push({ disconnect });
+      return { pid: generation, get exitCode() { return exitCode; }, stdin, stdout, stderr,
+        wait: () => exited, kill: async () => disconnect(), dispose() {} };
+    } }, { id: 'example-acp', command: 'fixture', startupTimeoutMs: 2_000, shutdownGraceMs: 20 }, { platform: 'linux' });
+    const harness = createExecutionHarness({ client, permissionMode: 'manual' });
+    const startTurn = client.startTurn.bind(client);
+    vi.spyOn(client, 'startTurn').mockImplementationOnce(async request => {
+      expect(controls).toEqual({ model: 'model-a', thought: 'high', autoApprove: false });
+      processes[0]!.disconnect();
+      await vi.waitFor(() => expect(client.status().state).toBe('cold'));
+      return startTurn(request);
+    });
+    try {
+      const run = harness.execution.run({ kind: 'prompt', prompt: 'perform work' }, { signal });
+      if (scenario === 'retained' || scenario === 'reset') {
+        await (await run).completion;
+        expect(prompts).toEqual([{ sessionId: 'remote-original', model: 'model-a', thought: 'high', autoApprove: false }]);
+      } else {
+        await expect(run).rejects.toThrow();
+        expect(prompts).toEqual([]);
+      }
+      expect(methods.filter(entry => entry.method === 'session/new')).toHaveLength(1);
+      expect(methods.filter(entry => entry.generation > 1 && entry.method === 'session/resume')).toHaveLength(1);
+      expect(harness.ix.get(IAgentStateService).get(externalExecutorKey).sessionRef?.ref['sessionId']).toBe('remote-original');
+    } finally { await harness.execution.dispose(); await harness.ix.dispose(); }
+  });
+
   it('resumes the original remote session through AgentRun after a real open fails', async () => {
     let failSpawn = true;
     const remote = recordingClient(() => ({

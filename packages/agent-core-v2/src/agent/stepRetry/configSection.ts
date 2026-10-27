@@ -40,10 +40,10 @@ export const RetryPolicySchema = z
 export type RetryPolicy = z.infer<typeof RetryPolicySchema>;
 
 /**
- * `[retry]` — engine step-retry policy. `max_attempts` bounds the total attempts
- * for one step, the first attempt included, and takes precedence over
- * `[loop_control] max_attempts_per_step`. A provider retry-after hint still wins
- * over any configured `backoff`.
+ * `[retry]` — retry policy for agent steps, Output Layer and session titles.
+ * `max_attempts` bounds the total attempts including the first; for agent steps
+ * it takes precedence over `[loop_control] max_attempts_per_step`. A provider
+ * retry-after hint still wins over any configured `backoff`.
  */
 export const RetryConfigSchema = z
   .object({

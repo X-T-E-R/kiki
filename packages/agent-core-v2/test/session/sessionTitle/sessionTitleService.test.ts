@@ -36,6 +36,9 @@ import { FAST_MODEL_SECTION, SESSION_TITLE_SECTION, type SessionTitleTrigger } f
 import { SessionTitleService } from '#/session/sessionTitle/sessionTitleService';
 import { ISessionMetadata, type SessionMeta, type SessionMetaPatch, type SessionMetadataChangedEvent } from '#/session/sessionMetadata/sessionMetadata';
 import { SessionMetaUpdated } from '#/session/sessionMetadata/sessionMetaEvents';
+import { RETRY_SECTION, type RetryConfig } from '#/agent/stepRetry/configSection';
+import { APIConnectionError, APIStatusError, markProviderEventError } from '#/kosong/contract/errors';
+import type { StreamedMessagePart } from '#/kosong/contract/message';
 
 import { registerLogServices } from '../../_base/log/stubs';
 
@@ -92,6 +95,8 @@ describe('SessionTitleService', () => {
   let main: IAgentScopeHandle;
   let nextTurnId: number;
   let beforeReply: (() => Promise<void>) | undefined;
+  let retryConfig: RetryConfig | undefined;
+  let responseScript: ((attempt: number, signal?: AbortSignal) => AsyncIterable<ModelRequestEvent>) | undefined;
   let fetchMock: ReturnType<typeof vi.fn>;
   let tokenMock: ReturnType<typeof vi.fn<() => Promise<string>>>;
 
@@ -100,7 +105,7 @@ describe('SessionTitleService', () => {
     flagEnabled = true; titleModelAlias = 'title-model'; fastModelAlias = 'fast-title'; triggers = undefined;
     modelRequesters = new Map(); requesterLookups = []; titleRequests = []; published = [];
     titlePrompt = undefined; systemPrompts = [];
-    nextTurnId = 0; beforeReply = undefined;
+    nextTurnId = 0; beforeReply = undefined; retryConfig = undefined; responseScript = undefined;
     metadata = new FakeSessionMetadata();
     fetchMock = vi.fn(); tokenMock = vi.fn(async () => 'test-token');
     vi.stubGlobal('fetch', fetchMock);
@@ -131,7 +136,7 @@ describe('SessionTitleService', () => {
         reg.definePartialInstance(IOAuthService, { resolveTokenProvider: () => ({ getAccessToken: tokenMock }) });
         reg.definePartialInstance(IFlagService, { enabled: () => flagEnabled });
         reg.definePartialInstance(IConfigService, {
-          get: ((key: string) => key === SESSION_TITLE_SECTION ? { model: titleModelAlias, triggers, prompt: titlePrompt } : key === FAST_MODEL_SECTION ? fastModelAlias : undefined) as IConfigService['get'],
+          get: ((key: string) => key === SESSION_TITLE_SECTION ? { model: titleModelAlias, triggers, prompt: titlePrompt } : key === FAST_MODEL_SECTION ? fastModelAlias : key === RETRY_SECTION ? retryConfig : undefined) as IConfigService['get'],
         });
         reg.definePartialInstance(IModelCatalog, {
           getRequester: (alias) => {
@@ -147,16 +152,17 @@ describe('SessionTitleService', () => {
     modelRequesters.set('title-model', stubTitleRequester('生成的标题'));
     ix.get(ISessionTitleService);
   });
-  afterEach(async () => { await disposables.dispose(); vi.unstubAllGlobals(); });
+  afterEach(async () => { await disposables.dispose(); vi.useRealTimers(); vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
   function stubTitleRequester(answer: string): ModelRequester {
     return {
-      model: { id: 'title-model' } as ModelRequester['model'],
+      model: { id: 'title-model', providerName: 'example-provider' } as ModelRequester['model'],
       request: (input, _signal, params) => {
         systemPrompts.push(input.systemPrompt);
         titleRequests.push({
           params, text: input.messages.flatMap((message) => message.content).map((part) => part.type === 'text' ? part.text : '').join(''),
         });
+        if (responseScript !== undefined) return responseScript(titleRequests.length, _signal);
         return (async function* (): AsyncGenerator<ModelRequestEvent> {
           await beforeReply?.();
           yield { type: 'finish', message: { role: 'assistant', content: [{ type: 'text', text: answer }], toolCalls: [] } };
@@ -339,6 +345,88 @@ describe('SessionTitleService', () => {
     titleModelAlias = 'missing-model'; triggers = ['first_user_message']; submitted(); await flush();
     expect(requesterLookups).toEqual(['missing-model']); expect(published).toHaveLength(0); expect(metadata.meta.title).toBeUndefined();
   });
+  it.each([false, true])('recovers a zero-output transient title request with a single publication (automatic=%s)', async automatic => {
+    vi.useFakeTimers();
+    retryConfig = { maxAttempts: 2, policies: [{ match: 'APIStatusError', backoff: 1, retry: true }] };
+    responseScript = async function* (attempt) {
+      if (attempt === 1) throw new APIStatusError(503, 'fixture temporary overload');
+      yield { type: 'finish', message: { role: 'assistant', content: [{ type: 'text', text: 'Recovered title' }], toolCalls: [] } };
+    };
+    const title = ix.get(ISessionTitleService);
+    let pending: Promise<string | undefined> | undefined;
+    if (automatic) { triggers = ['first_user_message']; submitted(); }
+    else pending = title.generateTitle();
+    await vi.runAllTimersAsync();
+    if (pending !== undefined) await expect(pending).resolves.toBe('Recovered title');
+    expect(titleRequests).toHaveLength(2);
+    expect(requesterLookups).toEqual(['title-model']);
+    expect(titleRequests[1]!.params).toBe(titleRequests[0]!.params);
+    expect(titleRequests[1]!.text).toBe(titleRequests[0]!.text);
+    expect(published).toHaveLength(1);
+    expect(metadata.meta).toMatchObject({ title: 'Recovered title', titleKind: 'generated' });
+  });
+
+  it('keeps the shared default title budget bounded at five attempts', async () => {
+    vi.useFakeTimers();
+    responseScript = async function* () { throw new APIConnectionError('fixture unavailable'); };
+    const pending = expect(ix.get(ISessionTitleService).generateTitle()).rejects.toMatchObject({ code: 'session.title_generation_failed' });
+    await vi.runAllTimersAsync();
+    await pending;
+    expect(titleRequests).toHaveLength(5);
+    expect(published).toHaveLength(0);
+  });
+
+  it.each([
+    { type: 'text', text: 'partial title' }, { type: 'think', think: 'hidden thought' },
+    { type: 'function', id: 'fixture', name: 'Lookup', arguments: '{}' },
+  ] satisfies StreamedMessagePart[])('does not replay title requests after $type output', async part => {
+    responseScript = async function* () { yield { type: 'part', part }; throw new APIStatusError(503, 'fixture interrupted'); };
+    await expect(ix.get(ISessionTitleService).generateTitle()).rejects.toMatchObject({ code: 'session.title_generation_failed' });
+    expect(titleRequests).toHaveLength(1);
+    expect(published).toHaveLength(0);
+  });
+
+  it.each([false, true])('preserves title retry vetoes (safety=%s)', async safety => {
+    retryConfig = { policies: [{ match: '.*', retry: !safety ? false : true, backoff: 0 }] };
+    responseScript = async function* () { throw safety ? markProviderEventError(new APIStatusError(503, 'fixture safety'), 'antigravity_safety') : new APIConnectionError('fixture disconnect'); };
+    await expect(ix.get(ISessionTitleService).generateTitle()).rejects.toMatchObject({ code: 'session.title_generation_failed' });
+    expect(titleRequests).toHaveLength(1);
+    expect(published).toHaveLength(0);
+  });
+
+  it('does not overwrite a manual rename while a title request is backing off', async () => {
+    vi.useFakeTimers();
+    responseScript = async function* (attempt) {
+      if (attempt === 1) throw new APIConnectionError('fixture disconnect');
+      yield { type: 'finish', message: { role: 'assistant', content: [{ type: 'text', text: 'Late title' }], toolCalls: [] } };
+    };
+    const pending = ix.get(ISessionTitleService).generateTitle();
+    await vi.advanceTimersByTimeAsync(0);
+    await metadata.setTitle('Manual title');
+    await vi.runAllTimersAsync();
+    await expect(pending).resolves.toBeUndefined();
+    expect(titleRequests).toHaveLength(2);
+    expect(metadata.meta.title).toBe('Manual title');
+    expect(published).toHaveLength(0);
+  });
+
+  it.each(['backoff', 'request'] as const)('disposal cancels a pending title %s without publishing or replaying', async phase => {
+    vi.useFakeTimers();
+    responseScript = async function* (_attempt, signal) {
+      if (phase === 'backoff') throw new APIConnectionError('fixture disconnect');
+      await new Promise<void>(resolve => { signal?.addEventListener('abort', () => resolve(), { once: true }); });
+      signal?.throwIfAborted();
+    };
+    const pending = expect(ix.get(ISessionTitleService).generateTitle()).rejects.toMatchObject({ code: 'session.title_generation_failed' });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(titleRequests).toHaveLength(1);
+    await disposables.dispose();
+    await pending;
+    await vi.runAllTimersAsync();
+    expect(titleRequests).toHaveLength(1);
+    expect(published).toHaveLength(0);
+  });
+
   it('shares concurrent nonforce manual requests', async () => {
     let release!: () => void; beforeReply = () => new Promise((resolve) => { release = resolve; });
     const first = ix.get(ISessionTitleService).generateTitle(); const second = ix.get(ISessionTitleService).generateTitle();

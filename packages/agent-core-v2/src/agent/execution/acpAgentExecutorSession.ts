@@ -282,7 +282,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       profileDelivery: priorSessionId === opened.sessionId ? prior.profileDelivery : undefined,
     }));
     await this.#dispatcher.flush();
-    const configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']).catch(async (error: unknown) => {
+    let configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']).catch(async (error: unknown) => {
       const auth = acpAuthObservation(error);
       if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
       throw error;
@@ -405,6 +405,22 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         attachments: acpAttachments(externalAttachments(request)),
         signal: controller.signal,
         session: { ...sessionOptions, sessionRef: configured.sessionRef, requireResume: true },
+        prepareSession: async actual => {
+          if (actual.sessionId !== configured.sessionId) throw new Error2(ErrorCodes.CONFIG_INVALID, 'ACP session identity changed before prompt');
+          const restored = actual.mode === 'live' ? actual :
+            await this.#configure(actual, controller.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']);
+          const permissionId = this.context.descriptor.permissionModeMapping?.configId ??
+            (this.context.descriptor.permission?.via === 'config_option' ? this.context.descriptor.permission.configId : undefined);
+          const controlIds = [this.context.descriptor.modelConfigId, this.context.descriptor.thoughtConfigId, permissionId];
+          for (const option of configured.configOptions) {
+            if (!['model', 'thought_level', 'native_agent', 'mode'].includes(option.category ?? '') && !controlIds.includes(option.id)) continue;
+            assertConfigured(restored.configOptions, { configId: option.id, value: option.currentValue }, 'resumed session control');
+          }
+          if (configured.currentModeId !== undefined && restored.currentModeId !== configured.currentModeId) {
+            throw new Error2(ErrorCodes.CONFIG_INVALID, 'External executor did not restore its configured session mode');
+          }
+          configured = restored;
+        },
       });
       await this.#dispatcher.dispatch(
         new ExecutorSessionUpdated({

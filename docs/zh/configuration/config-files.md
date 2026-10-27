@@ -585,11 +585,11 @@ history = ["as I said", "earlier", "之前", "我说过"]
 
 ## `retry`
 
-`retry` 可为指定的单步错误定制总尝试次数与固定退避时间。默认情况下，可重试的单步最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
+`retry` 可为指定的单步错误、Output Layer 转换和会话标题请求定制总尝试次数与固定退避时间。默认情况下，每次可重试操作最多尝试 5 次，重试前依次等待 2、4、8、16 秒，并加入最多 25% 的随机抖动（总计 30–37.5 秒）。provider 返回的 `Retry-After` 值或命中策略的固定 `backoff` 会替代对应的默认等待时间。策略还可限定精确的模型和 provider 配置键，避免一个 provider 的临时故障改变其它渠道的重试行为。本节及每条策略都是严格配置：未知字段会被拒绝，不会静默忽略。
 
 | 字段 | 类型 | 默认值 | 说明 |
 | --- | --- | --- | --- |
-| `max_attempts` | `integer` | — | 单步失败后的最大总尝试次数（含首次尝试）；优先于 `loop_control.max_attempts_per_step` |
+| `max_attempts` | `integer` | — | 最大总尝试次数（含首次尝试）；用于 Agent 单步时优先于 `loop_control.max_attempts_per_step` |
 | `policies` | `array<table>` | — | 用 `[[retry.policies]]` 编写的有序逐错误策略；首个命中的策略生效 |
 
 每条 `[[retry.policies]]` 包含以下字段：
@@ -810,7 +810,7 @@ disabled = ["EnterPlanMode", "ExitPlanMode", "mcp__github__*"]
 
 内置提示词根据当前目的和具体对象生成便于辨认的标题，保留有用的名字与标识符，不虚报尚未证实的成功。修改 `prompt` 会在下一次标题请求生效，已打开的会话也无需重启。保存或删除覆盖不改已有会话标题，也不主动发起标题请求。
 
-选定的模型按原有的会话摘录预算直接使用。自动生成不会覆盖你手写的标题，普通按需生成请求也不会。只有强制请求（force）才会替换你手写的标题。
+选定的模型按原有的会话摘录预算直接使用。零输出的暂态失败遵循 [`retry`](#retry)；模型不存在或配置无效时只失败一次，已观察到模型输出后不重放。自动生成不会覆盖你手写的标题，重试等待期间手动改名也会保留，普通按需生成请求同样如此。只有强制请求（force）才会替换你手写的标题。
 
 `GET /api/config` 与成功的 `POST /api/config` 响应包含 `session_title.default_prompt` 和 `prompt_source`（`default` 或 `custom`）。它们是只读字段；仅存在非空白覆盖时才返回 `prompt`。发送 `{ "session_title": { "prompt": "你的标题规则" } }` 保存，发送 `{ "session_title": { "prompt": null } }` 删除覆盖。省略的字段保持不变，因此这两种写入保留 `model` 与 `triggers`；`model: null` 只移除模型，保留提示词和生成时机。修改单个字段时不要使用 `replace_domains`。
 
