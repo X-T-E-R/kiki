@@ -381,7 +381,14 @@ describe('im session startup reconnect', () => {
       await bridge.updateBinding('b-kept', { target: { kind: 'session', session_id: 'sess-next' }, rebind: true });
       server = await listen(port);
       let sockets = 0;
-      server.on('connection', () => { sockets += 1; });
+      server.on('connection', (socket) => {
+        sockets += 1;
+        socket.on('message', (data) => {
+          const text = Buffer.isBuffer(data) ? data.toString('utf8') : Array.isArray(data) ? Buffer.concat(data).toString('utf8') : Buffer.from(data).toString('utf8');
+          const request = JSON.parse(text) as { action: string; echo: string };
+          if (request.action === 'get_login_info') socket.send(JSON.stringify({ echo: request.echo, status: 'ok', retcode: 0, data: { user_id: 42 } }));
+        });
+      });
       await until(async () => (await bridge!.snapshot()).instances[0]?.adapter === 'running', 'listener did not recover');
       const online = await bridge.snapshot();
       expect(online.bindings.map((item) => [item.id, item.session_id])).toEqual([['b-kept', 'sess-next']]);
