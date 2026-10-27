@@ -227,11 +227,13 @@ class NotificationSessionPorts implements ImSessionPorts {
     submit: (input) => this.submit(input),
     steer: (sessionId, promptId) => this.inSession(sessionId, async (session) => {
       const prompt = (await ensureMainAgent(session)).accessor.get(IAgentPromptService);
+      if (!prompt.list().pending.some((item) => item.id === promptId)) return 'started' as const;
       try {
         const [handle] = await prompt.steer([promptId]);
-        return handle?.state === 'steered' ? 'steered' as const : 'queued' as const;
-      } catch {
-        return 'queued' as const;
+        return handle?.state === 'steered' ? 'steered' as const : prompt.list().pending.some((item) => item.id === promptId) ? 'queued' as const : 'started' as const;
+      } catch (error) {
+        if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
+        return prompt.list().pending.some((item) => item.id === promptId) ? 'queued' as const : 'started' as const;
       }
     }),
     abort: (sessionId, promptId, turnId) => this.inSession(sessionId, async (session) => {
@@ -338,7 +340,7 @@ class NotificationSessionPorts implements ImSessionPorts {
       const agent = await ensureMainAgent(session);
       const prompt = agent.accessor.get(IAgentPromptService);
       const known = prompt.lookup(input.promptId);
-      if (known !== undefined) return { duplicate: true, promptId: input.promptId, ...(known.turnId === undefined ? {} : { turnId: known.turnId }), deliveryState: 'pending' };
+      if (known !== undefined) return { duplicate: true, promptId: input.promptId, turnId: known.turnId, deliveryState: prompt.list().pending.some((item) => item.id === input.promptId) ? 'queued' : 'pending' };
       const prepared = await resolvePromptMediaFiles([...input.content], this.core.accessor.get(IFileService), this.core.accessor.get(IBootstrapService).cacheDir, {
         resolveAttachmentsDir: async () => join(session.accessor.get(ISessionContext).sessionDir, 'attachments'),
       });
@@ -348,8 +350,7 @@ class NotificationSessionPorts implements ImSessionPorts {
         void Promise.race([handle.launched, handle.completion]).then(() => prepared.discard(), () => prepared.discard());
         const queue = prompt.list();
         const pending = queue.pending.some((item) => item.id === handle.id);
-        const busy = queue.active !== undefined || queue.launching !== undefined;
-        return { duplicate: false, promptId: handle.id, deliveryState: input.delivery === 'queue' && pending && busy ? 'queued' : 'pending' };
+        return { duplicate: false, promptId: handle.id, turnId: prompt.lookup(handle.id)?.turnId, deliveryState: pending ? 'queued' : 'pending' };
       } catch (error) {
         await prepared.discard();
         if (isError2(error) && error.code === ErrorCodes.PROMPT_ID_CONFLICT) return { duplicate: true, promptId: input.promptId, deliveryState: 'pending' };

@@ -87,6 +87,9 @@ export const imDiscoverySchema = z.object({
 }).strict();
 export type ImDiscovery = z.infer<typeof imDiscoverySchema>;
 
+export const imBusyDeliverySchema = z.enum(['immediate', 'queue', 'steer']);
+export type ImBusyDelivery = z.infer<typeof imBusyDeliverySchema>;
+
 export const imBindingSchema = z.object({
   id: z.string().min(1),
   provider_instance_id: z.string().min(1),
@@ -102,7 +105,7 @@ export const imBindingSchema = z.object({
   session_enabled: z.boolean().optional(),
   input_enabled: z.boolean().optional(),
   output_enabled: z.boolean().optional(),
-  busy: z.enum(['queue', 'steer']),
+  busy: imBusyDeliverySchema,
   reply: z.enum(['final', 'edit']),
   mobile_interactions: z.boolean(),
 }).strict();
@@ -187,7 +190,7 @@ export const imConfirmRequestSchema = z.object({
     z.object({ kind: z.literal('persona'), persona_id: z.string().min(1) }).strict(),
     z.object({ kind: z.literal('session'), session_id: z.string().min(1) }).strict(),
   ]),
-  busy: z.enum(['queue', 'steer']).optional(),
+  busy: imBusyDeliverySchema.optional(),
   reply: z.enum(['final', 'edit']).optional(),
   mobile_interactions: z.boolean().optional(),
   also_home: z.boolean().optional(),
@@ -207,7 +210,7 @@ export const imBindingPatchSchema = z.object({
   input_enabled: z.boolean().nullable().optional(),
   output_enabled: z.boolean().nullable().optional(),
   rebind: z.boolean().optional(),
-  busy: z.enum(['queue', 'steer']).optional(),
+  busy: imBusyDeliverySchema.optional(),
   reply: z.enum(['final', 'edit']).optional(),
   mobile_interactions: z.boolean().optional(),
   session_id: z.string().min(1).optional(),

@@ -623,6 +623,33 @@ describe('server-v2 /api prompts', () => {
     }, { before: 'context-injector' });
   }
 
+  it('reconciles stale steer and queued-only removal through HTTP without stopping the active turn', async () => {
+    const id = await createSession(home!);
+    await createHeldMainAgent(id);
+    const client = new KikiClient({ baseUrl: base, token: bearerToken(server!) });
+    try {
+      const active = await client.submitPrompt(id, { prompt_id: 'active-removal', content: [{ type: 'text', text: 'Working' }] });
+      const main = getLiveSessionById(server!.core.accessor, id)!.accessor.get(IAgentLifecycleService).get('main')!;
+      const prompt = main.accessor.get(IAgentPromptService);
+      await vi.waitFor(() => expect(prompt.list().active?.id).toBe(active.prompt_id));
+      const queued = await client.submitPrompt(id, { prompt_id: 'im:test:queued', content: [{ type: 'text', text: 'Not yet started' }] });
+      expect(queued.status).toBe('queued');
+      const removed = await client.klient.session(id).commands.abort(queued.prompt_id, undefined, true);
+      expect(removed).toMatchObject({ aborted: true });
+      expect((await call('POST', `/api/sessions/${id}/prompts/${queued.prompt_id}:abort?queued_only=true`)).body).toMatchObject({ code: 0, data: { aborted: false } });
+      expect((await call('POST', `/api/sessions/${id}/prompts/${queued.prompt_id}:steer`)).body).toMatchObject({ code: 0, data: { steered: false, delivery_reason: 'prompt_no_longer_pending' } });
+      expect((await call('POST', `/api/sessions/${id}/prompts/${active.prompt_id}:abort?queued_only=true`)).body).toMatchObject({ code: 0, data: { aborted: false } });
+      expect(prompt.list().active?.id).toBe(active.prompt_id);
+      const snapshot = await client.klient.session(id).view.transcript.page({ agentId: 'main' });
+      expect(snapshot.prompts.find((item) => item.promptId === queued.prompt_id)).toMatchObject({ status: 'aborted', abortedBeforeStart: true });
+      expect(agentTranscriptToBlocks(snapshot).some((item) => item.kind === 'user' && item.promptId === queued.prompt_id)).toBe(false);
+      expect((await call('POST', `/api/sessions/${id}/prompts/never-admitted:steer`)).body.code).toBe(40402);
+    } finally {
+      getLiveSessionById(server!.core.accessor, id)?.accessor.get(IAgentLifecycleService).get('main')?.accessor.get(IAgentPromptService).abort('active-removal');
+      await client.klient.close();
+    }
+  });
+
   it('round-trips scheduled delivery modes over HTTP and projects fired queue text with its origin', async () => {
     const sessionId = await createSession(home!);
     await createHeldMainAgent(sessionId);

@@ -6,6 +6,7 @@ import {
   type ImBinding,
   type ImBindingPatch,
   type ImBindingTestResult,
+  type ImBusyDelivery,
   type ImCatalog,
   type ImChannelCapability,
   type ImConfirmRequest,
@@ -1627,7 +1628,7 @@ function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget, inboun
   const [target, setTarget] = useState(initialTarget);
   const [alsoHome, setAlsoHome] = useState(false);
   const [expanded, setExpanded] = useState(false);
-  const [busy, setBusy] = useState<'queue' | 'steer'>('queue');
+  const [busy, setBusy] = useState<ImBusyDelivery>('immediate');
   const [reply, setReply] = useState<'final' | 'edit'>('final');
   const [actions, setActions] = useState(true);
 
@@ -1733,12 +1734,12 @@ function BindingOptions({ kind, setupPlatform, capabilities, busy, reply, action
   kind: ImProviderKind;
   setupPlatform?: SetupPlatformEntry;
   capabilities?: readonly ImChannelCapability[];
-  busy: 'queue' | 'steer';
+  busy: ImBusyDelivery;
   reply: 'final' | 'edit';
   actions: boolean;
   disabled: boolean;
   prefix: string;
-  onBusy: (value: 'queue' | 'steer') => void;
+  onBusy: (value: ImBusyDelivery) => void;
   onReply: (value: 'final' | 'edit') => void;
   onActions: (value: boolean) => void;
 }) {
@@ -1750,7 +1751,7 @@ function BindingOptions({ kind, setupPlatform, capabilities, busy, reply, action
   return <div className="space-y-2" data-im-bind-advanced>
     <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
       <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.busy')}</p>
-        <SettingsSegmented ariaLabel={t('st.im.busy')} value={busy} onChange={onBusy} disabled={disabled} dataAttr={`${prefix}-busy`} choices={[{ value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
+        <SettingsSegmented ariaLabel={t('st.im.busy')} value={busy} onChange={onBusy} disabled={disabled} dataAttr={`${prefix}-busy`} choices={[{ value: 'immediate', label: t('st.im.immediate') }, { value: 'queue', label: t('st.im.queue') }, { value: 'steer', label: t('st.im.steer') }]} />
       </div>
       <div className="space-y-1"><p className="text-[13px] text-ink-soft">{t('st.im.text')}</p>
         <ReplyMode kind={kind} setupPlatform={setupPlatform} value={reply} onChange={onReply} disabled={disabled} dataAttr={`${prefix}-text`} />

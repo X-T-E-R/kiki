@@ -2,7 +2,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { basename } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 
-import { imSessionAdmitted, imProviderKindSchema, type ImBinding, type ImBindingTestResult, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
+import { imSessionAdmitted, imProviderKindSchema, type ImBinding, type ImBusyDelivery, type ImBindingTestResult, type ImCatalog, type ImCheckResult, type ImConfirmRequest, type ImDiscovery, type ImInstanceView, type ImPasteResult, type ImPolicy, type ImProviderKind, type ImSessionSnapshot, type ImStranger, type MessageContent } from '@kiki/protocol';
 import {
   internalMessageChannel,
   routeUserMessage,
@@ -37,7 +37,7 @@ interface BindingRecord {
   pendingReanchor?: boolean;
   bindingScope?: 'sender' | 'topic' | 'chat';
   groupPolicy?: ImGroupPolicy;
-  busy: 'queue' | 'steer';
+  busy: ImBusyDelivery;
   reply: 'final' | 'edit';
   mobileInteractions: boolean;
   interactionFailure?: 'feishu_thread_context_missing' | 'wechat_group_unsupported';
@@ -61,7 +61,7 @@ interface InstanceMeta {
   virtual: boolean;
   accountId?: string;
   conflict?: 'webhook' | 'account_in_use';
-  busy?: 'queue' | 'steer';
+  busy?: ImBusyDelivery;
   reply?: 'final' | 'edit';
   persona?: string;
 }
@@ -669,9 +669,9 @@ export class ImSessionBridge {
       const binding: BindingRecord = existing === undefined ? {
         id: this.next('b'), providerInstanceId: discovery.providerInstanceId, providerKind: discovery.providerKind,
         accountId: discovery.accountId, identity: discovery.identity, sessionId: resolved.sessionId, personaId: resolved.personaId,
-        enabled: true, busy: request.busy ?? meta.busy ?? 'queue', reply: request.reply ?? meta.reply ?? 'final', mobileInteractions: request.mobile_interactions ?? true,
+        enabled: true, busy: request.busy ?? meta.busy ?? 'immediate', reply: request.reply ?? meta.reply ?? 'final', mobileInteractions: request.mobile_interactions ?? true,
       } : { ...existing, identity: discovery.identity, sessionId: resolved.sessionId, personaId: resolved.personaId,
-        busy: request.busy ?? meta.busy ?? existing.busy, reply: request.reply ?? meta.reply ?? existing.reply,
+        busy: request.busy ?? existing.busy ?? meta.busy ?? 'immediate', reply: request.reply ?? meta.reply ?? existing.reply,
         mobileInteractions: request.mobile_interactions ?? existing.mobileInteractions,
       };
       binding.pendingReanchor = false;
@@ -746,7 +746,7 @@ export class ImSessionBridge {
     return this.snapshot();
   }
 
-  updateBinding(id: string, patch: { bindingScope?: 'sender' | 'topic' | 'chat'; groupPolicy?: ImGroupPolicy; enabled?: boolean; sessionEnabled?: boolean | null; inputEnabled?: boolean | null; outputEnabled?: boolean | null; rebind?: boolean; busy?: 'queue' | 'steer'; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string; target?: ImConfirmRequest['target'] }): Promise<ImSessionSnapshot> {
+  updateBinding(id: string, patch: { bindingScope?: 'sender' | 'topic' | 'chat'; groupPolicy?: ImGroupPolicy; enabled?: boolean; sessionEnabled?: boolean | null; inputEnabled?: boolean | null; outputEnabled?: boolean | null; rebind?: boolean; busy?: ImBusyDelivery; reply?: 'final' | 'edit'; mobileInteractions?: boolean; sessionId?: string; target?: ImConfirmRequest['target'] }): Promise<ImSessionSnapshot> {
     return this.mutateBindings(async () => {
       const binding = this.only(this.state.bindings, id);
       if (binding === undefined) throw new Error('unknown_binding');
@@ -1339,6 +1339,13 @@ export class ImSessionBridge {
     const text = originalText.trim();
     const textOnly = event.kind === 'text' || (event.kind === 'message' && parts.every((part) => part.kind === 'text'));
     const interactionOwner = event.identity.senderId === binding.identity.senderId;
+    if (textOnly && /^\/\S/u.test(text)) {
+      if (adapter !== undefined) {
+        if (interactionOwner) await this.onCommand(binding, text, adapter);
+        else await this.send(adapter, event.identity, this.locale() === 'zh' ? '仅绑定者可使用此命令。' : 'Only the binding owner can use this command.', 'command_denied');
+      }
+      return;
+    }
     if (interactionOwner && textOnly && text.startsWith(':')) {
       await this.onCommand(binding, text, adapter);
       return;
@@ -1382,6 +1389,7 @@ export class ImSessionBridge {
     }
     if (content.length === 0) return;
     let background: Awaited<ReturnType<ImHistoryJournal['background']>> | undefined;
+    let quoted = event.quotedText?.trim().slice(0, 16_384);
     let currentParts = content.length;
     if (room !== undefined) {
       const row = await this.history!.record(room, { eventId: event.eventId, receivedAt: this.now(), metadata: im, operation: 'create', isSelf: event.isSelf, timestamp: event.timestamp, text: originalText, sessionId: binding.sessionId,
@@ -1396,6 +1404,7 @@ export class ImSessionBridge {
       }
       const policy = binding.groupPolicy ?? { wake: 'always' as const };
       const reply = event.replyToMessageId === undefined ? undefined : await this.history!.find(room, event.replyToMessageId);
+      if (!quoted && reply?.operation !== 'retract' && reply?.text && reply.sessionId === binding.sessionId) quoted = reply.text.slice(0, 16_384);
       const ownReply = event.replyToMessageId !== undefined && await this.history!.isSent(room, event.replyToMessageId);
       const wake = policy.wake !== 'manual' && (policy.wake === 'always' || (policy.prefixes ?? []).some((prefix) => text.startsWith(prefix)) || event.mentioned === true || reply?.isSelf === true || ownReply);
       if (!wake) return;
@@ -1419,33 +1428,42 @@ export class ImSessionBridge {
       content.splice(0, content.length, ...prepared.current ?? content.slice(0, currentParts), ...prepared.images);
       background = { ...background, snapshot: prepared.snapshot };
     }
+    if (quoted && !im.context?.messages.some((item) => item.source_message_id === event.replyToMessageId && item.text === quoted)) {
+      content.unshift({ type: 'text', text: `Referenced IM message ${JSON.stringify(event.replyToMessageId ?? null)} (quoted text, not the current message):\n${quoted}\nCurrent message follows:` });
+    }
     if (!this.admittedInbound(binding) || !this.state.bindings.includes(binding) || this.adapterFor(instanceId) !== adapter) return;
     const promptId = `im:${instanceId}:${event.eventId}`;
     const submitted = await this.ports.sessions.submit({ sessionId: binding.sessionId, promptId, content, delivery: binding.busy, im });
     if (room !== undefined && background !== undefined) await this.history!.consume(room, `${binding.id}:${binding.sessionId}`, background.snapshot);
     if (submitted.duplicate) return;
-    if (binding.busy === 'steer') {
-      const steered = await this.ports.sessions.steer(binding.sessionId, submitted.promptId);
-      if (steered === 'queued' && adapter !== undefined) await this.send(adapter, event.identity, this.copy('queued'), 'queued');
-    } else if (submitted.deliveryState === 'queued' && adapter !== undefined) await this.send(adapter, event.identity, this.copy('queued'), 'queued');
+    const delivery = submitted.deliveryState === 'queued' && binding.busy !== 'queue'
+      ? await this.ports.sessions.steer(binding.sessionId, submitted.promptId) : submitted.deliveryState;
+    if (delivery === 'queued' && adapter !== undefined) await this.send(adapter, event.identity, this.copy('queued'), 'queued');
     if (adapter !== undefined) this.watchReply(binding, submitted.promptId, submitted.turnId, adapter, event.identity);
   }
 
   private async onCommand(binding: BindingRecord, text: string, adapter: ImSessionAdapter | undefined): Promise<void> {
     if (adapter === undefined) return;
     const [name, arg] = text.split(/\s+/u);
-    if (name === ':status') {
+    if (name === '/help') {
+      const help = this.locale() === 'zh'
+        ? '/help — 显示可用命令\n/status — 查看会话状态\n/abort — 停止当前回合\n/target — 查看绑定目标（切换需在 Kiki 确认）'
+        : '/help — Available commands\n/status — Session status\n/abort — Stop the current turn\n/target — View binding targets (confirm changes in Kiki)';
+      await this.send(adapter, binding.identity, help, 'help');
+      return;
+    }
+    if (name === ':status' || name === '/status') {
       const activity = await this.ports.sessions.activity(binding.sessionId);
       await this.send(adapter, binding.identity, COPY[this.locale()].status(activity.busy, activity.pending, activity.queueLength), 'status');
       return;
     }
-    if (name === ':abort') {
+    if (name === ':abort' || name === '/abort') {
       const activity = await this.ports.sessions.activity(binding.sessionId);
       const aborted = await this.ports.sessions.abort(binding.sessionId, activity.activePromptId, activity.activeTurnId);
       if (!aborted) await this.send(adapter, binding.identity, this.copy('noTurn'), 'no_turn');
       return;
     }
-    if (name === ':target') {
+    if (name === ':target' || name === '/target') {
       const targets = this.state.bindings.filter((item) => item.providerInstanceId === binding.providerInstanceId && item.identity.senderId === binding.identity.senderId);
       if (arg === undefined) {
         const lines = targets.map((item, index) => `${index + 1}. ${item.sessionId}`);
@@ -1454,11 +1472,16 @@ export class ImSessionBridge {
       }
       const index = Number(arg);
       const target = targets[index - 1];
-      if (!Number.isInteger(index) || target === undefined) return;
-      if (target.sessionId !== binding.sessionId) {
-        await this.send(adapter, binding.identity, this.locale() === 'zh' ? '请在 Kiki 中确认信道转绑，当前归属没有改变。' : 'Confirm channel reassignment in Kiki. The current binding has not changed.', 'target_confirmation_required');
+      if (!Number.isInteger(index) || target === undefined) {
+        await this.send(adapter, binding.identity, this.locale() === 'zh' ? '没有该目标。发送 /target 查看列表。' : 'No such target. Send /target to list bindings.', 'target_unknown');
+        return;
       }
+      await this.send(adapter, binding.identity, target.sessionId === binding.sessionId
+        ? this.copy('switched')
+        : this.locale() === 'zh' ? '请在 Kiki 中确认信道转绑，当前归属没有改变。' : 'Confirm channel reassignment in Kiki. The current binding has not changed.', 'target_confirmation_required');
+      return;
     }
+    if (name?.startsWith('/')) await this.send(adapter, binding.identity, this.locale() === 'zh' ? `未知命令 ${name}。发送 /help 查看可用命令；若想发送正文，请去掉开头的 /。` : `Unknown command ${name}. Send /help for available commands, or remove the leading / to send it as text.`, 'unknown_command');
   }
 
   private async answerNumbers(binding: BindingRecord, text: string): Promise<boolean> {

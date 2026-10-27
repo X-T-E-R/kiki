@@ -2191,9 +2191,28 @@ export class AgentPromptService implements IAgentPromptService {
   abort(promptId: string, reason: Error = userCancellationReason()): boolean {
     const cancelled = this.cancelLivePrompt(promptId, reason);
     if (cancelled === undefined) {
+      const known = this.lookup(promptId);
+      if (known?.phase === 'pending') {
+        void this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart: true }));
+        void this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId, state: 'cancelled' } }));
+        return true;
+      }
+      if (known !== undefined) return false;
       throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${promptId} not found`);
     }
     return cancelled;
+  }
+
+  async abortQueued(promptId: string): Promise<boolean> {
+    if (this.lookup(promptId)?.phase !== 'pending' || this.active?.id === promptId ||
+      this.steeringFlights.has(promptId) || this.steeredTurnIds.has(promptId)) return false;
+    const live = this.pending.some((item) => item.id === promptId) || this.launchingPrompt?.record.id === promptId ||
+      this.launchingBatch.some((item) => item.id === promptId && !this.pending.includes(item));
+    if (live) return this.abort(promptId);
+    await this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart: true }));
+    await this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId, state: 'cancelled' } }));
+    this.syncRecoveryHold();
+    return true;
   }
 
   private cancelLivePrompt(promptId: string, reason: Error): boolean | undefined {

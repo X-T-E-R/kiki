@@ -3392,9 +3392,16 @@ export class SessionController {
   }
 
   async abortPrompt(promptId: string): Promise<void> {
-    await this.client.abortPrompt(this.sessionId, promptId);
+    const result = await this.client.abortPrompt(this.sessionId, promptId, undefined, true);
     this.unprojectedQueueReceipts.delete(promptId);
+    const queuedPromptMeta = { ...this.state.queuedPromptMeta };
+    delete queuedPromptMeta[promptId];
+    this.setState({ ...this.state, version: this.state.version + 1,
+      queuedPromptIds: this.state.queuedPromptIds.filter((id) => id !== promptId), queuedPromptMeta,
+      blocks: this.state.blocks.filter((block) => !(block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued' && block.turnId === undefined)),
+    });
     await this.refreshPrompts();
+    if (!result.aborted) await this.resync();
   }
 
   async readQueuedPromptContent(promptId: string, signal?: AbortSignal): Promise<readonly MessageContent[] | undefined> {
@@ -3534,15 +3541,8 @@ export class SessionController {
     return true;
   }
 
-  /**
-   * "Send now" for a parked prompt — a REAL wire capability, not a client
-   * approximation: `POST …:steer` injects the queued prompt's content into
-   * the currently running turn immediately, and the prompt leaves the queue
-   * and settles with that turn. Throws PROMPT_NOT_FOUND when no turn is
-   * active or the prompt already left the queue (the UI surfaces that as an
-   * action error; the next reconcile repaints the strip).
-   */
-  async steerQueued(promptId: string): Promise<void> {
+  /** Send a parked prompt at the next safe boundary; report its actual disposition. */
+  async steerQueued(promptId: string): Promise<{ readonly outcome: 'steered' | 'queued' | 'not_pending'; readonly reason?: PromptItem['delivery_reason'] }> {
     assertSessionWritable(this.state);
     const queued = this.state.blocks.find((block) =>
       block.kind === 'user' && block.promptId === promptId && block.promptStatus === 'queued');
@@ -3556,16 +3556,26 @@ export class SessionController {
         phase: 'sending',
       });
     }
+    let delivery: Awaited<ReturnType<SessionTransport['steerPrompt']>>;
     try {
-      await this.client.steerPrompt(this.sessionId, promptId);
+      delivery = await this.client.steerPrompt(this.sessionId, promptId);
     } catch (error) {
       this.clearPendingSteer(MAIN_AGENT_ID, promptId);
+      if (error instanceof ApiError && error.code === API_CODES.PROMPT_NOT_FOUND) {
+        await this.resync();
+        return { outcome: 'not_pending', reason: 'prompt_no_longer_pending' };
+      }
+      await this.refreshPrompts();
       throw error;
     }
     this.unprojectedQueueReceipts.delete(promptId);
-    const accepted = this.findPendingSteer(MAIN_AGENT_ID, promptId);
-    if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
+    if (delivery.steered) {
+      const accepted = this.findPendingSteer(MAIN_AGENT_ID, promptId);
+      if (accepted !== undefined) this.setPendingSteer(MAIN_AGENT_ID, { ...accepted, phase: 'waiting' });
+    } else this.clearPendingSteer(MAIN_AGENT_ID, promptId);
     await this.refreshPrompts();
+    if (!delivery.steered && delivery.delivery_state !== 'queued') await this.resync();
+    return { outcome: delivery.steered ? 'steered' : delivery.delivery_state === 'queued' ? 'queued' : 'not_pending', reason: delivery.delivery_reason };
   }
 
   /** "Send now" echoes still between the keypress and their delivered frame, per agent. */
@@ -3606,7 +3616,7 @@ export class SessionController {
     readonly planGate?: PromptPlanGate;
     readonly onPreservation?: (persisted: boolean) => void;
     readonly onAcknowledged?: () => void;
-  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' | 'restoring' | 'held' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
+  }): Promise<{ readonly promptId: string; readonly outcome: 'steered' | 'started' | 'queued' | 'not_pending' | 'restoring' | 'held' | 'failed' | 'cancelled'; readonly reason?: PromptItem['delivery_reason'] }> {
     assertSessionWritable(this.state);
     const agentId = input.agentId ?? MAIN_AGENT_ID;
     const promptId = input.promptId ?? newSteerPromptId();
@@ -3695,12 +3705,21 @@ export class SessionController {
         this.reconcileSteerOutcome(agentId, promptId, outcome);
         return { promptId: result.prompt_id, outcome: outcome ?? 'queued', reason: outcome === undefined ? delivery.delivery_reason : undefined };
       }
+      if (!delivery.steered) {
+        this.clearPendingSteer(agentId, promptId);
+        await this.resync();
+        const disposition = this.settledSteerOutcome(agentId, result.prompt_id);
+        return { promptId: result.prompt_id, outcome: disposition ?? 'not_pending', reason: disposition === undefined ? delivery.delivery_reason ?? 'prompt_no_longer_pending' : undefined };
+      }
     } catch (error) {
       const outcome = this.settledSteerOutcome(agentId, result.prompt_id);
       this.reconcileSteerOutcome(agentId, promptId, outcome);
       if (outcome !== undefined) return { promptId: result.prompt_id, outcome };
       if (error instanceof ApiError && error.code === API_CODES.PROMPT_NOT_FOUND) {
-        return { promptId: result.prompt_id, outcome: 'queued', reason: 'prompt_no_longer_pending' };
+        await this.resync();
+        const disposition = this.settledSteerOutcome(agentId, result.prompt_id);
+        if (disposition !== undefined) return { promptId: result.prompt_id, outcome: disposition };
+        return { promptId: result.prompt_id, outcome: 'not_pending', reason: 'prompt_no_longer_pending' };
       }
       if (error instanceof ApiError && error.code === API_CODES.REQUEST_INVALID) {
         // Refused before it left the queue (it changes a mode, which needs a

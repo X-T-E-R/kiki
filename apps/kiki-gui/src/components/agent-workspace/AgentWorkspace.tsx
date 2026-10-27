@@ -135,6 +135,7 @@ export function sendNowNotice(
   reason: PromptDeliveryReason | undefined,
 ): { readonly tone: 'info'; readonly key: I18nKey } | undefined {
   if (outcome === 'held') return { tone: 'info', key: 'sv.submissionRecovery.server' };
+  if (outcome === 'not_pending') return { tone: 'info', key: 'sv.steerQueuedNotPending' };
   if (outcome === 'queued') return { tone: 'info', key: sendNowQueuedNotice(reason) };
   return undefined;
 }

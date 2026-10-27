@@ -2588,6 +2588,21 @@ describe('AgentPromptService', () => {
     expect(aborted).toEqual([{ promptId: handle.id, beforeStart: true }]);
   });
 
+  it('never cancels the executing turn when a queued-only removal races with a steer', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const active = await prompt.enqueue({ message: message('active') });
+    await active.launched;
+    const queued = await prompt.enqueue({ message: message('queued') });
+    expect(await prompt.abortQueued(queued.id)).toBe(true);
+    expect(await prompt.abortQueued(queued.id)).toBe(false);
+    expect(prompt.list().active?.id).toBe(active.id);
+    const later = await prompt.enqueue({ message: message('later') });
+    expect((await prompt.steer([later.id]))[0]?.state).toBe('steered');
+    expect(await prompt.abortQueued(later.id)).toBe(false);
+    expect(prompt.list().active?.id).toBe(active.id);
+    loop.settleActive();
+  });
+
   it('keeps injections outside the prompt queue', async () => {
     const { prompt } = harness();
     await prompt.inject({ ...message('system'), origin: { kind: 'injection', variant: 'test' } });

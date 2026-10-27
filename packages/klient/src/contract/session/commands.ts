@@ -25,7 +25,7 @@ export const sessionCommandContract = {
   edit: { method: 'POST', suffix: '/messages/{target}:edit', input: targetBodyInput(editMessageRequestSchema), output: messageActionResponseSchema, okCodes: [0] },
   regenerate: { method: 'POST', suffix: '/messages/{target}:regenerate', input: targetBodyInput(regenerateMessageRequestSchema), output: messageActionResponseSchema, okCodes: [0] },
   fork: { method: 'POST', suffix: ':fork', input: bodyInput(forkSessionRequestSchema), output: sessionSchema, okCodes: [0] },
-  abort: { method: 'POST', suffix: '/prompts/{target}:abort', input: agentTargetInput, output: promptAbortResponseSchema, okCodes: [0, 40903] },
+  abort: { method: 'POST', suffix: '/prompts/{target}:abort', input: z.object({ target, query: z.object({ agent_id: z.string().min(1).optional(), queued_only: z.literal('true').optional() }).optional() }), output: promptAbortResponseSchema, okCodes: [0, 40903] },
   abortTurn: { method: 'POST', suffix: '/turns/{target}:abort', input: targetInput, output: turnAbortResponseSchema, okCodes: [0] },
   move: { method: 'POST', suffix: '/prompts/{target}:move', input: targetBodyInput(promptMoveRequestSchema), output: promptMoveResultSchema, okCodes: [0] },
   replace: { method: 'POST', suffix: '/prompts/{target}:replace', input: targetBodyInput(promptReplaceRequestSchema), output: promptReplaceResultSchema, okCodes: [0] },

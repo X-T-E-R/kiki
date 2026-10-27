@@ -40,7 +40,7 @@ export function createSessionTransport(klient: SessionCommandClient): SessionTra
     editMessage: (id, target, body) => active(id, () => commands(id).edit(target, editMessageRequestSchema.parse(body))),
     regenerateMessage: (id, target, body) => active(id, () => commands(id).regenerate(target, regenerateMessageRequestSchema.parse(body))),
     forkSession: (id, body) => run(() => commands(id).fork(forkSessionRequestSchema.parse(body))),
-    abortPrompt: (id, target, agentId) => run(() => commands(id).abort(target, agentId)),
+    abortPrompt: (id, target, agentId, queuedOnly) => run(() => commands(id).abort(target, agentId, queuedOnly)),
     abortTurn: (id, target) => run(() => commands(id).abortTurn(target)),
     movePrompt: (id, target, body) => run(() => commands(id).move(target, body)),
     replacePrompt: (id, target, body) => run(() => commands(id).replace(target, body)),

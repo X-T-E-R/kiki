@@ -1,11 +1,11 @@
-import type { ImProviderKind } from '@kiki/protocol';
+import type { ImBusyDelivery, ImProviderKind } from '@kiki/protocol';
 
 const TELEGRAM_TOKEN = /^[0-9]{1,20}:[A-Za-z0-9_-]{20,128}$/u;
 
 export interface ImPaste {
   readonly providerKind?: ImProviderKind;
   readonly credential?: string;
-  readonly busy?: 'queue' | 'steer';
+  readonly busy?: ImBusyDelivery;
   readonly reply?: 'final' | 'edit';
   readonly persona?: string;
   readonly ignoredKeys: readonly string[];
@@ -31,7 +31,7 @@ export function parseImPaste(text: string): ImPaste {
   const ignored = new Set<string>();
   let providerKind: ImProviderKind | undefined;
   let credential: string | undefined;
-  let busy: 'queue' | 'steer' | undefined;
+  let busy: ImBusyDelivery | undefined;
   let reply: 'final' | 'edit' | undefined;
   let persona: string | undefined;
   let chatHintIgnored = false;
@@ -87,7 +87,7 @@ export function parseImPaste(text: string): ImPaste {
       }
     } else if (key === 'endpoint') {
       endpoint = value;
-    } else if (key === 'busy' && (value === 'queue' || value === 'steer')) busy = value;
+    } else if (key === 'busy' && (value === 'immediate' || value === 'queue' || value === 'steer')) busy = value;
     else if (key === 'reply' && (value === 'final' || value === 'edit')) reply = value;
     else if (key === 'persona') persona = value;
     else if (key === 'chat' || key === 'chat_id' || key === 'topic' || key === 'message_thread_id') chatHintIgnored = true;

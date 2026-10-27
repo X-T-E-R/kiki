@@ -4,7 +4,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 
-import type { SessionSnapshotResponse } from '@kiki/protocol';
+import type { PromptSteerResult, SessionSnapshotResponse } from '@kiki/protocol';
 import type { TranscriptOperation } from '@kiki/transcript';
 import type { SessionViewFacade } from '@kiki/klient/session-view';
 
@@ -35,7 +35,7 @@ function queuedReceipt(promptId: string, text = STEER_TEXT) {
 async function open() {
   const client = {
     submitPrompt: vi.fn(),
-    steerPrompt: vi.fn(async (_sid: string, promptId: string) => ({ steered: true as const, prompt_ids: [promptId] })),
+    steerPrompt: vi.fn(async (_sid: string, promptId: string): Promise<PromptSteerResult> => ({ steered: true, prompt_ids: [promptId] })),
     abortPrompt: vi.fn(async () => ({ aborted: true, at_seq: 1 })),
     getAgentTranscript: vi.fn(async (): Promise<AgentTranscriptResponse> => ({
       agent_id: 'main', items: [], has_more: false, tasks: [], interactions: [], attachments: [], todos: [], prompts: [], meta: {},
@@ -490,6 +490,30 @@ describe('send now (steer) — main agent', () => {
     },
   );
 
+  it('reports a model boundary as queued rather than claiming immediate insertion', async () => {
+    const { controller, client } = await open();
+    const promptId = 'queued-model-change';
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    await deliver(controller, opsEvent('main', [queuedOp(promptId)], 2));
+    client.steerPrompt.mockResolvedValueOnce({ steered: false, prompt_ids: [promptId], delivery_state: 'queued', delivery_reason: 'model_switch_boundary' });
+    await expect(controller.steerQueued(promptId)).resolves.toEqual({ outcome: 'queued', reason: 'model_switch_boundary' });
+    expect(controller.getState().queuedPromptIds).toContain(promptId);
+    expect(controller.getPendingSteers()).toEqual([]);
+    controller.close();
+  });
+
+  it('reconciles an obsolete queue entry instead of surfacing the old 40402 error', async () => {
+    const { controller, client } = await open();
+    const promptId = 'stale-send-now';
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    await deliver(controller, opsEvent('main', [queuedOp(promptId)], 2));
+    client.steerPrompt.mockRejectedValueOnce(new ApiError({ code: 40402, msg: 'one or more prompts are not pending', data: null }));
+    await expect(controller.steerQueued(promptId)).resolves.toEqual({ outcome: 'not_pending', reason: 'prompt_no_longer_pending' });
+    expect(controller.getPendingSteers()).toEqual([]);
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    controller.close();
+  });
+
   it('shows the message on the very first publish, before the submit answers', async () => {
     const { controller, client } = await open();
     await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
@@ -667,12 +691,23 @@ describe('send now (steer) — main agent', () => {
     controller.close();
   });
 
-  it('keeps the prompt queued (not withdrawn) when the turn ended during the steer', async () => {
+  it('does not claim an obsolete queued prompt was inserted when the turn ended during steer', async () => {
     const { controller, client } = await open();
     await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
     client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => queuedReceipt(body.prompt_id));
     client.steerPrompt.mockRejectedValue(new ApiError({ code: 40402, msg: 'no active turn', data: null }));
-    await expect(controller.sendPromptNow({ text: STEER_TEXT })).resolves.toMatchObject({ outcome: 'queued' });
+    await expect(controller.sendPromptNow({ text: STEER_TEXT })).resolves.toMatchObject({ outcome: 'not_pending', reason: 'prompt_no_longer_pending' });
+    expect(client.abortPrompt).not.toHaveBeenCalled();
+    expect(controller.getPendingSteers()).toEqual([]);
+    controller.close();
+  });
+
+  it('uses an explicit no-longer-pending receipt instead of treating it as an accepted steer', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => queuedReceipt(body.prompt_id));
+    client.steerPrompt.mockImplementation(async (_sid: string, promptId: string) => ({ steered: false, prompt_ids: [promptId], delivery_reason: 'prompt_no_longer_pending' }));
+    await expect(controller.sendPromptNow({ text: STEER_TEXT })).resolves.toMatchObject({ outcome: 'not_pending', reason: 'prompt_no_longer_pending' });
     expect(client.abortPrompt).not.toHaveBeenCalled();
     expect(controller.getPendingSteers()).toEqual([]);
     controller.close();
@@ -796,14 +831,29 @@ describe('queued submit acknowledgement before transcript recovery', () => {
     await deliver(controller, resetEvent('main', emptySnapshot({ prompts }), 1));
     expect(controller.getState().queuedPromptMeta['cron-fire']).toMatchObject({ cronDeliveryMode: 'idle' });
     await controller.abortPrompt('cron-fire');
-    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'cron-fire');
-    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'cron-fire', 'second-draft']);
+    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', 'cron-fire', undefined, true);
+    expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'second-draft']);
     await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: {
       ...prompts[1]!, status: 'aborted', abortedBeforeStart: true, queuePosition: undefined, finishedAt: '2026-01-01T00:00:04.000Z',
     } }], 2));
     expect(controller.getState().queuedPromptIds).toEqual(['first-draft', 'second-draft']);
     expect(controller.getState().queuedPromptMeta['cron-fire']).toBeUndefined();
     expect(controller.getState().blocks.some(block => block.kind === 'user' && block.promptId === 'cron-fire')).toBe(false);
+    controller.close();
+  });
+
+  it('converges a stale queued removal without erasing an already started turn', async () => {
+    const { controller, client } = await open();
+    const queued = { promptId: 'stale', userMessageId: 'stale', status: 'queued' as const, queuePosition: 0,
+      content: [{ type: 'text' as const, text: 'waiting' }], createdAt: '2026-01-01T00:00:03.000Z' };
+    await deliver(controller, resetEvent('main', emptySnapshot({ prompts: [queued] }), 1));
+    client.abortPrompt.mockResolvedValueOnce({ aborted: false, at_seq: 1 });
+    await controller.abortPrompt('stale');
+    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', 'stale', undefined, true);
+    expect(controller.getState().queuedPromptIds).toEqual([]);
+    expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.promptId === 'stale' && block.promptStatus === 'queued')).toBe(false);
+    await deliver(controller, opsEvent('main', [{ op: 'prompt.upsert', prompt: { ...queued, status: 'running', queuePosition: undefined } }], 2));
+    expect(controller.getState().queuedPromptIds).toEqual([]);
     controller.close();
   });
 

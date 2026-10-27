@@ -262,12 +262,15 @@ export interface IAgentPromptService {
    * Targeted per state: a pending prompt leaves the queue, a prompt still
    * launching is cancelled before it can start, and a running or steered
    * prompt cancels its turn (a steered prompt shares the turn it joined, so
-   * that turn's prompt settles with it). `false` means the prompt is already
-   * cancelled or its turn is already over; an unknown prompt id — including
-   * one that already settled — throws `prompt.not_found` and never falls back
+   * that turn's prompt settles with it). A restored pending identity that has
+   * not yet entered the live queue is cancelled durably before it can launch.
+   * `false` means a known prompt has already settled or its turn is over;
+   * an unknown prompt id throws `prompt.not_found` and never falls back
    * to another prompt.
    */
   abort(promptId: string, reason?: Error): boolean;
+  /** Remove an unlaunched queued request without cancelling a turn it has joined. */
+  abortQueued(promptId: string): Promise<boolean>;
   /**
    * Stops admission and settles owned launch preparation and recovery hydration.
    * The default cancels durable pending requests. Normal owner shutdown uses

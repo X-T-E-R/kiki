@@ -316,6 +316,70 @@ describe('im session bridge', () => {
     expect(adapter.sent.some((item) => item.code === 'target_confirmation_required')).toBe(true);
   });
 
+  it('defaults new bindings to immediate delivery while preserving explicit queue and saved settings', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const deliveries: string[] = [];
+    let steers = 0;
+    const harness = bridgeFor(adapter, ports({
+      submit: async (input) => { deliveries.push(input.delivery); return { duplicate: false, promptId: input.promptId, deliveryState: 'queued' }; },
+      steer: async () => { steers++; return 'steered'; },
+    }));
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'discover', identity, kind: 'text', text: 'hello' });
+      const binding = (await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } })).bindings[0]!;
+      expect(binding.busy).toBe('immediate');
+      await adapter.emit({ eventId: 'now', identity, kind: 'text', text: 'now' });
+      expect(deliveries).toEqual(['immediate']);
+      expect(steers).toBe(1);
+      await harness.bridge.updateBinding(binding.id, { busy: 'queue' });
+      await adapter.emit({ eventId: 'later', identity, kind: 'text', text: 'later' });
+      expect(deliveries).toEqual(['immediate', 'queue']);
+      expect(steers).toBe(1);
+      expect(adapter.sent.some((item) => item.code === 'queued')).toBe(true);
+      expect((await harness.bridge.snapshot()).bindings[0]?.busy).toBe('queue');
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('runs slash help and known commands locally, rejects unknown slash without a prompt', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const harness = bridgeFor(adapter);
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'discover', identity, kind: 'text', text: 'hello' });
+      await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await adapter.emit({ eventId: 'help', identity, kind: 'text', text: '/help' });
+      await adapter.emit({ eventId: 'status', identity, kind: 'text', text: '/status' });
+      await adapter.emit({ eventId: 'unknown', identity, kind: 'text', text: '/nonexistent' });
+      await adapter.emit({ eventId: 'denied', identity: other, kind: 'text', text: '/abort' });
+      expect(harness.submitted).toHaveLength(0);
+      expect(adapter.sent.find((item) => item.code === 'help')?.text).toContain('/status');
+      expect(adapter.sent.some((item) => item.code === 'status')).toBe(true);
+      expect(adapter.sent.some((item) => item.code === 'unknown_command')).toBe(true);
+    } finally { await harness.bridge.close(); }
+  });
+
+  it('keeps current text distinct from a quoted private-chat message', async () => {
+    const adapter = new FakeImAdapter('telegram', '42');
+    const submitted: { content: readonly import('@kiki/protocol').MessageContent[]; im?: import('@kiki/protocol').ImMessageMetadata }[] = [];
+    const harness = bridgeFor(adapter, ports({ submit: async (input) => {
+      submitted.push({ content: input.content, im: input.im });
+      return { duplicate: false, promptId: input.promptId, deliveryState: 'pending' };
+    } }));
+    try {
+      await harness.bridge.paste({ text: '123456:abcdefghijklmnopqrstuvwxyz' });
+      await harness.bridge.setListening('inst', true);
+      await adapter.emit({ eventId: 'discover', identity, kind: 'text', text: 'hello' });
+      await harness.bridge.confirm((await harness.bridge.snapshot()).discoveries[0]!.id, { target: { kind: 'session', session_id: 'sess' } });
+      await adapter.emit({ eventId: 'reply', identity, kind: 'text', text: 'Current question', replyToMessageId: 'ref-1', quotedText: 'Earlier fact' });
+      expect(submitted[0]?.im?.reply_to_message_id).toBe('ref-1');
+      expect(submitted[0]?.content).toEqual([{ type: 'text', text: expect.stringContaining('Earlier fact') }, { type: 'text', text: 'Current question' }]);
+      expect(JSON.stringify(submitted[0]?.content)).toContain('not the current message');
+    } finally { await harness.bridge.close(); }
+  });
+
   it('edits the same message, then sends a new one when the edit is gone', async () => {
     const adapter = new FakeImAdapter('telegram', '42');
     let step = 0;
@@ -1241,7 +1305,7 @@ describe('IM group context vertical flow', () => {
       expect(harness.adapter.sent).toHaveLength(0);
       await harness.adapter.emit({ eventId: 'edit-event', sourceMessageId: 'one', operation: 'edit', identity: group, kind: 'text', text: 'revised discussion' });
       await harness.adapter.emit({ eventId: 'retract-event', sourceMessageId: 'two', operation: 'retract', identity: peer, kind: 'text' });
-      await harness.adapter.emit({ eventId: 'trigger', sourceMessageId: 'three', identity: peer, kind: 'text', text: 'what happened?', mentioned: true, mentionIds: ['bot-real'], replyToMessageId: 'one' });
+      await harness.adapter.emit({ eventId: 'trigger', sourceMessageId: 'three', identity: peer, kind: 'text', text: 'what happened?', mentioned: true, mentionIds: ['bot-real'], replyToMessageId: 'one', quotedText: 'revised discussion' });
       expect(received).toHaveLength(1);
       expect(received[0]?.content).toEqual([{ type: 'text', text: 'what happened?' }]);
       expect(received[0]?.im).toMatchObject({ identity: { sender_id: 'peer', sender_name: 'Same name' }, source_message_id: 'three', mentioned: true, context: { order: 'chronological', messages: [
@@ -1256,6 +1320,8 @@ describe('IM group context vertical flow', () => {
       await harness.adapter.emit({ eventId: 'retract-consumed', sourceMessageId: 'one', operation: 'retract', identity: group, kind: 'text' });
       await harness.adapter.emit({ eventId: 'wake-after-retract', sourceMessageId: 'wake-after-retract', identity: peer, kind: 'text', text: 'latest changes?', mentioned: true });
       expect(received[2]?.im?.context?.messages).toMatchObject([{ source_message_id: 'one', operation: 'retract', text: '' }]);
+      await harness.adapter.emit({ eventId: 'unseen-quote', sourceMessageId: 'unseen-quote', identity: peer, kind: 'text', text: 'Does this still hold?', mentioned: true, replyToMessageId: 'external-older', quotedText: 'Earlier external answer' });
+      expect(received[3]?.content).toEqual([{ type: 'text', text: expect.stringContaining('Earlier external answer') }, { type: 'text', text: 'Does this still hold?' }]);
       await expect(harness.bridge.readMessageHistory('home', { channel: `im:${binding.id}` })).rejects.toThrow('history_channel_not_admitted');
       await expect(harness.bridge.readMessageHistory('sess', { topicId: 'other-topic' })).rejects.toThrow('history_topic_not_admitted');
       expect(await harness.bridge.readMessageHistory('sess', { source: 'platform' })).toEqual({ status: 'unsupported' });

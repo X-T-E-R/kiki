@@ -95,6 +95,7 @@ describe('RestGateway', () => {
       setEditHold: () => { throw new Error('unexpected prompt edit hold'); },
       move: () => { throw new Error('unexpected prompt move'); },
       abort: () => true,
+      abortQueued: async () => { throw new Error('unexpected queued prompt removal'); },
       drain: () => Promise.resolve(),
       inject: () => Promise.resolve(undefined),
       retry: () => Promise.resolve(undefined),

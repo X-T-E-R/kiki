@@ -3583,7 +3583,10 @@ export function SessionView({
           throw error;
         }),
       sendNowQueued: (promptId: string) => {
-        return controller.steerQueued(promptId).catch((error: unknown) => {
+        return controller.steerQueued(promptId).then((delivery) => {
+          if (delivery.outcome === 'queued') pushToast({ tone: 'info', text: t(sendNowQueuedNotice(delivery.reason)) });
+          else if (delivery.outcome === 'not_pending') pushToast({ tone: 'info', text: t('sv.steerQueuedNotPending') });
+        }).catch((error: unknown) => {
           pushToast({
             tone: 'error',
             text: t('sv.steerQueuedFailed', {

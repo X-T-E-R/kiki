@@ -111,6 +111,37 @@ describe('ImSessionCard channel management', () => {
     expect(fixture.read().bindings[0]).toEqual(before);
   });
 
+  it('uses immediate for discovery, preserves saved delivery choices, and persists queue changes', async () => {
+    fixture = createImSettingsFixture(imChannelSnapshot('telegram'));
+    const container = await render();
+    const contact = binding(container, 'binding-contact');
+    await click(contact, '[data-im-binding-options-toggle]');
+    expect(contact.querySelector('[data-im-binding-busy="queue"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    const group = binding(container, 'binding-group');
+    await click(group, '[data-im-binding-options-toggle]');
+    expect(group.querySelector('[data-im-binding-busy="steer"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(group.querySelector('[data-im-binding-policy="off"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    await click(container, '[data-im-start-bind="account-a"]');
+    fixture.discover('account-a', 'immediate-discovery');
+    await click(container, '[data-im-refresh-discovery]');
+    const discovery = container.querySelector<HTMLElement>('[data-im-discovery="immediate-discovery"]')!;
+    await click(discovery, '[data-im-advanced-toggle]');
+    expect(discovery.querySelector('[data-im-busy="immediate"]')?.getAttribute('aria-pressed')).toBe('true');
+    await click(discovery, '[data-im-confirm="immediate-discovery"]');
+    expect(fixture.calls).toContainEqual({
+      operation: 'confirm',
+      id: 'immediate-discovery',
+      body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false },
+    });
+
+    const created = binding(container, 'bound-immediate-discovery');
+    await click(created, '[data-im-binding-options-toggle]');
+    await click(created, '[data-im-binding-busy="queue"]');
+    expect(fixture.read().bindings.find((item) => item.id === 'bound-immediate-discovery')?.busy).toBe('queue');
+  });
+
   it('opens add-channel discovery without an account-wide target and confirms independent drafts across accounts', async () => {
     fixture = createImSettingsFixture(imSettingsSnapshot());
     const container = await render('360px');
@@ -131,8 +162,8 @@ describe('ImSessionCard channel management', () => {
     await click(wx, '[data-im-confirm]');
     await click(tg, '[data-im-confirm]');
     expect(fixture.calls.filter((item) => item.operation === 'confirm')).toEqual([
-      { operation: 'confirm', id: 'wx-new', body: { target: { kind: 'session', session_id: 'reading-list' }, busy: 'queue', reply: 'final', mobile_interactions: true, also_home: false } },
-      { operation: 'confirm', id: 'tg-new', body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'queue', reply: 'final', mobile_interactions: true, also_home: true } },
+      { operation: 'confirm', id: 'wx-new', body: { target: { kind: 'session', session_id: 'reading-list' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: false } },
+      { operation: 'confirm', id: 'tg-new', body: { target: { kind: 'persona', persona_id: 'lin' }, busy: 'immediate', reply: 'final', mobile_interactions: true, also_home: true } },
     ]);
     expect(fixture.read().bindings.slice(0, original.length)).toEqual(original);
     expect(container.querySelectorAll('[data-im-account="account-a"] [data-im-binding]')).toHaveLength(3);
@@ -713,7 +744,7 @@ describe('ImSessionCard channel management', () => {
       id: 'wx-inbound-1',
       body: {
         target: { kind: 'session', session_id: 'session-42' },
-        busy: 'queue',
+        busy: 'immediate',
         reply: 'final',
         mobile_interactions: true,
         also_home: false,

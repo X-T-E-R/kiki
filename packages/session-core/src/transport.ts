@@ -557,7 +557,7 @@ export interface SessionTransport {
   editMessage(sessionId: string, messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerateMessage(sessionId: string, messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   forkSession(sessionId: string, body: KikiForkSessionRequest): Promise<Session>;
-  abortPrompt(sessionId: string, promptId: string, agentId?: string): Promise<PromptAbortResponse>;
+  abortPrompt(sessionId: string, promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse>;
   abortTurn(sessionId: string, turnId: number): Promise<TurnAbortResponse>;
   movePrompt(sessionId: string, promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replacePrompt(sessionId: string, promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;

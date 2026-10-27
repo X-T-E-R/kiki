@@ -223,7 +223,7 @@ export const promptSteerRequestSchema = z.object({
 export type PromptSteerRequest = z.infer<typeof promptSteerRequestSchema>;
 
 export const promptSteerResultSchema = z.object({
-  steered: z.literal(true),
+  steered: z.boolean(),
   prompt_ids: z.array(z.string().min(1)).min(1),
   delivery_state: z.enum(['queued', 'steered']).optional(),
   delivery_reason: promptDeliveryReasonSchema.optional(),

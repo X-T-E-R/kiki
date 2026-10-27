@@ -1,4 +1,4 @@
-import type { ImProviderKind } from '@kiki/protocol';
+import type { ImBusyDelivery, ImProviderKind } from '@kiki/protocol';
 import type { MessageContent } from '@kiki/protocol';
 
 import type { ImAdapterFactory, ImInboundIdentity } from './adapter';
@@ -88,8 +88,8 @@ export interface ImSessionPorts {
     ensureHome(personaId: string): Promise<{ homeSessionId?: string }>;
     setHome?(personaId: string, sessionId: string): Promise<void>;
     activity(sessionId: string): Promise<{ busy: boolean; pending: 'none' | 'approval' | 'question'; queueLength: number; activePromptId?: string; activeTurnId?: number }>;
-    submit(input: { sessionId: string; promptId: string; content: readonly MessageContent[]; delivery: 'queue' | 'steer'; im?: import('@kiki/protocol').ImMessageMetadata }): Promise<ImSubmitResult>;
-    steer(sessionId: string, promptId: string): Promise<'steered' | 'queued'>;
+    submit(input: { sessionId: string; promptId: string; content: readonly MessageContent[]; delivery: ImBusyDelivery; im?: import('@kiki/protocol').ImMessageMetadata }): Promise<ImSubmitResult>;
+    steer(sessionId: string, promptId: string): Promise<'steered' | 'queued' | 'started'>;
     abort(sessionId: string, promptId?: string, turnId?: number): Promise<boolean>;
     saveMedia(input: { sessionId: string; kind: 'image' | 'file' | 'audio' | 'video'; name: string; mediaType: string; bytes: Uint8Array; text?: string }): Promise<readonly MessageContent[]>;
     historyMedia?(sessionId: string, content: readonly MessageContent[]): Promise<readonly MessageContent[]>;

@@ -1584,8 +1584,9 @@ describe('sendNowNotice', () => {
     expect(sendNowNotice('steered', undefined)).toBeUndefined();
   });
 
-  it('keeps the held recovery notice', () => {
+  it('keeps the held recovery notice and identifies requests no longer pending', () => {
     expect(sendNowNotice('held', undefined)).toEqual({ tone: 'info', key: 'sv.submissionRecovery.server' });
+    expect(sendNowNotice('not_pending', 'prompt_no_longer_pending')).toEqual({ tone: 'info', key: 'sv.steerQueuedNotPending' });
   });
 
   it('names the reason the server kept the message queued', () => {

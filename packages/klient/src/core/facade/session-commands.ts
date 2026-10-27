@@ -15,7 +15,7 @@ export interface SessionCommandsFacade {
   edit(messageId: string, body: EditMessageRequest): Promise<PromptSubmitResult>;
   regenerate(messageId: string, body: RegenerateMessageRequest): Promise<PromptSubmitResult>;
   fork(body?: ForkSessionRequest): Promise<Session>;
-  abort(promptId: string, agentId?: string): Promise<PromptAbortResponse>;
+  abort(promptId: string, agentId?: string, queuedOnly?: boolean): Promise<PromptAbortResponse>;
   abortTurn(turnId: number): Promise<TurnAbortResponse>;
   move(promptId: string, body: PromptMoveRequest): Promise<PromptMoveResult>;
   replace(promptId: string, body: PromptReplaceRequest): Promise<PromptReplaceResult>;
@@ -53,7 +53,7 @@ export function createSessionCommandsFacade(channel: SessionCommandChannel | und
     edit: (target, body) => invoke('edit', { target, body }),
     regenerate: (target, body) => invoke('regenerate', { target, body }),
     fork: (body = {}) => invoke('fork', { body }),
-    abort: (target, agentId) => invoke('abort', agentScoped(target, agentId)),
+    abort: (target, agentId, queuedOnly) => invoke('abort', queuedOnly ? { target, query: { agent_id: agentId === 'main' ? undefined : agentId, queued_only: 'true' } } : agentScoped(target, agentId)),
     abortTurn: (turnId) => invoke('abortTurn', { target: String(turnId) }),
     move: (target, body) => invoke('move', { target, body }),
     replace: (target, body) => invoke('replace', { target, body }),

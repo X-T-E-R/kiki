@@ -56,6 +56,7 @@ import { toErrorMessage } from '@kiki/agent-core-v2/_base/errors/errorMessage';
 import { abortable } from '@kiki/agent-core-v2/_base/utils/abort';
 import { validatePromptRuntimeControls } from '@kiki/agent-core-v2/agent/prompt/runtimeControls';
 import { promptLaunchFailure } from '@kiki/agent-core-v2/agent/prompt/promptFailure';
+import { PromptAborted } from '@kiki/agent-core-v2/agent/prompt/promptService';
 import { delegatorRef } from '@kiki/agent-core-v2/session/agentLifecycle/subagentMetadata';
 import { ErrorCode } from '../protocol/error-codes';
 import { ensurePromptAuthReady } from '../lib/promptAuth';
@@ -130,6 +131,7 @@ const sessionIdParamSchema = z.object({
 const promptActionQuerySchema = z.object({
   agent_id: z.string().min(1).optional(),
   admission: z.literal('durable').optional(),
+  queued_only: z.literal('true').optional(),
 });
 
 const validationDetailsSchema = z.array(z.object({ path: z.string(), message: z.string() }));
@@ -813,8 +815,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const { session_id } = req.params;
         await withSessionOperation(core, session_id, async (handle) => {
           const resolved = await resolvePromptFromSession(core, requireSession(handle, session_id));
-          const handles = await resolved.prompt.steer(req.body.prompt_ids);
-          reply.send(okEnvelope(projectSteerResult(handles, req.body.prompt_ids), req.id));
+          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, req.body.prompt_ids), req.id));
         });
       } catch (error) {
         sendMappedError(reply, req, error);
@@ -964,12 +965,26 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           resolved.prompt.setEditHold(parsed.id, hold.data.held);
           reply.send(okEnvelope({ prompt_id: parsed.id, held: hold.data.held }, req.id));
         } else if (parsed.action === 'abort') {
-          resolved.prompt.abort(parsed.id);
+          if (req.query.queued_only === 'true') {
+            let aborted = await resolved.prompt.abortQueued(parsed.id);
+            if (!aborted && resolved.prompt.lookup(parsed.id) === undefined && transcriptService !== undefined) {
+              const snapshot = await transcriptService.readColdSnapshot(session_id, agentId ?? MAIN_AGENT_ID);
+              const stale = snapshot?.prompts.find((item) => item.promptId === parsed.id && item.status === 'queued');
+              if (stale !== undefined && resolved.prompt.lookup(parsed.id) === undefined) {
+                await resolved.accessor.get(IEventDispatcher).dispatch(new PromptAborted({ promptId: parsed.id, abortedAt: new Date().toISOString(), beforeStart: true }));
+                aborted = true;
+              }
+            }
+            await resolved.accessor.get(IEventDispatcher).flush();
+            reply.send(okEnvelope({ aborted }, req.id));
+            return;
+          }
+          const aborted = resolved.prompt.abort(parsed.id);
+          await resolved.accessor.get(IEventDispatcher).flush();
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
-          reply.send(okEnvelope({ aborted: true }, req.id));
+          reply.send(okEnvelope({ aborted }, req.id));
         } else {
-          const handles = await resolved.prompt.steer([parsed.id]);
-          reply.send(okEnvelope(projectSteerResult(handles, [parsed.id]), req.id));
+          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, [parsed.id]), req.id));
         }
       } catch (error) {
         if (!replaced) await preparedMedia?.discard();
@@ -1030,10 +1045,28 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
   };
 }
 
+async function steerPendingPrompts(prompt: IAgentPromptService, promptIds: readonly string[]): Promise<z.infer<typeof promptSteerResultSchema>> {
+  const pending = () => new Set(prompt.list().pending.map((item) => item.id));
+  const available = pending();
+  if (promptIds.some((id) => !available.has(id))) {
+    if (promptIds.every((id) => prompt.lookup(id) !== undefined)) return { steered: false, prompt_ids: [...promptIds], delivery_reason: 'prompt_no_longer_pending' };
+    throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts were not found');
+  }
+  try {
+    return projectSteerResult(await prompt.steer(promptIds), promptIds);
+  } catch (error) {
+    if (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND && promptIds.every((id) => prompt.lookup(id) !== undefined)) {
+      return { steered: false, prompt_ids: [...promptIds], delivery_state: promptIds.every((id) => pending().has(id)) ? 'queued' : undefined,
+        delivery_reason: 'prompt_no_longer_pending' };
+    }
+    throw error;
+  }
+}
+
 function projectSteerResult(handles: readonly PromptHandle[], promptIds: readonly string[]): z.infer<typeof promptSteerResultSchema> {
   const single = handles.length === 1 ? handles[0] : undefined;
   return {
-    steered: true,
+    steered: handles.every((handle) => handle.state === 'steered'),
     prompt_ids: [...promptIds],
     delivery_state: single?.state === 'steered' ? 'steered' : single?.state === 'pending' ? 'queued' : undefined,
     delivery_reason: single?.deliveryReason,
