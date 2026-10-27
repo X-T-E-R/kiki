@@ -334,10 +334,11 @@ export function isAmbiguousRequestDelivery(error: unknown): boolean {
 
 export function ambiguousRequestDelivery(error: unknown): ChatProviderError {
   noteRequestDelivery(error, 'ambiguous');
-  const wrapped = new ChatProviderError('The provider request ended without an observed outcome.', undefined, {
-    cause: error,
-    details: { request_delivery: 'ambiguous' },
-  });
+  const wrapped = new ChatProviderError('The provider request ended without an observed outcome.',
+    error instanceof ChatProviderError ? error.code as ProviderErrorCode : undefined, {
+      cause: error,
+      details: { request_delivery: 'ambiguous' },
+    });
   noteRequestDelivery(wrapped, 'ambiguous');
   return wrapped;
 }

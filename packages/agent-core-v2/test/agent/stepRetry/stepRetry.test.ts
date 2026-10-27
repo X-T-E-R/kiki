@@ -849,6 +849,30 @@ describe('stepRetry plugin', () => {
     expect(unwrapErrorCause(result.error)).toMatchObject({ name: 'APIConnectionError', message: 'terminated' });
   });
 
+  it('recovers an unobserved WebSocket 1012 through the bounded turn policy', async () => {
+    vi.useFakeTimers();
+    const connection = attachErrorDetails(new APIConnectionError('Responses WebSocket closed before a terminal response event.'), {
+      nativeCode: 'responses_websocket_closed_before_terminal', websocketCloseCode: 1012, retry: true,
+    });
+    const failure = await caughtDelivery(deliveryStream(connection));
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1) throw failure;
+        return { id: 'recovered', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+      }),
+      { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', maxAttempts: 2, backoff: 1 }] } } },
+    );
+
+    const result = await runTurn(1);
+    expect(result).toEqual({ type: 'completed', steps: 2, truncated: false });
+    expect(calls).toBe(2);
+    expect(rpcEvents('turn.step.retrying')).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({ delayMs: 1, maxAttempts: 2, errorName: 'APIConnectionError' }) }),
+    ]);
+  });
+
   it('retries a parsed temporary provider event with no output using the shared classification', async () => {
     vi.useFakeTimers();
     const parsed = attachErrorDetails(new APIStatusError(429, 'slow down', 'req-temporary'), {

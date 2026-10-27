@@ -372,6 +372,8 @@ describe('requestDeliveryProvenance', () => {
       expect(isRetryableGenerateError(wrapped)).toBe(true);
       expect(isRetryableGenerateError(unwrapErrorCause(wrapped))).toBe(true);
       expect(wrapped.message).toBe('The provider request ended without an observed outcome.');
+      expect(wrapped.code).toBe(cause.code);
+      expect(wrapped.details?.['error_kind']).toBe(cause.details?.['error_kind']);
       expect((unwrapErrorCause(wrapped) as Error).message).toBe(cause.message);
     }
   });

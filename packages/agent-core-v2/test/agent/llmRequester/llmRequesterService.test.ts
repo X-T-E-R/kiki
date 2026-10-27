@@ -77,6 +77,7 @@ import {
 import { emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import { readGenerateFailureFacts } from '#/kosong/contract/generate';
 import { toErrorPayload } from '#/_base/errors/serialize';
+import { unwrapErrorCause } from '#/errors';
 import {
   isToolCall,
   type Message,
@@ -104,6 +105,7 @@ import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { ILogService } from '#/_base/log/log';
 import { Error2, ErrorCodes, attachErrorDetails } from '#/errors';
 import type { RetryConfig } from '#/agent/stepRetry/configSection';
+import { resolveRetryPolicy } from '#/agent/stepRetry/retryPolicy';
 import { IEventDispatcher } from '#/state/eventDispatcher';
 import type { WireRecord } from '#/wire/record';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -2655,7 +2657,7 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
   });
 });
 
-it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('recovers WebSocket %s only before output and replaces the failed connection', async mode => {
+it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'partial-close-1012', 'tool-close-1012', '1006', '1013', '1002', '1008', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('classifies WebSocket %s before deciding whether to replay', async mode => {
   const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
   const server = createServer();
   const webSockets = new WebSocketServer({ server });
@@ -2675,8 +2677,11 @@ it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 
       const frameBytes = Array.isArray(bytes) ? Buffer.concat(bytes) : bytes instanceof ArrayBuffer ? Buffer.from(bytes) : bytes;
       frames.push(JSON.parse(frameBytes.toString()) as Record<string, unknown>);
       if (calls === 1) {
-        if (mode.endsWith('1012')) {
-          if (mode !== '1012') {
+        if (mode.endsWith('1012') || mode === '1006' || mode === '1013' || mode === '1002' || mode === '1008') {
+          if (mode === 'partial-close-1012') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
+          else if (mode === 'tool-close-1012') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
+            item: { type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture', name: 'Lookup', arguments: '{}' } }));
+          else if (mode.endsWith('1012') && mode !== '1012' && mode !== 'direct-1012') {
             const message = mode === 'empty-message-1012';
             const item = message
               ? { type: 'message', id: 'msg_fixture', role: 'assistant', status: 'in_progress', content: [] }
@@ -2693,7 +2698,8 @@ it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 
             ];
             for (const [sequence_number, event] of events.entries()) socket.send(JSON.stringify({ ...event, sequence_number }));
           }
-          socket.close(1012, 'fixture service restart');
+          if (mode === '1006') socket.terminate();
+          else socket.close(mode.endsWith('1012') ? 1012 : Number(mode), 'fixture close');
         } else {
           if (mode === 'partial-limit') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
           if (mode === 'tool-limit') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
@@ -2722,19 +2728,53 @@ it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 
     try { yield* request(input, signal, params); }
     catch (error) { failures.push(error); throw error; }
   };
-  const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+  const { service } = createService(requester, undefined, { env: mode === 'direct-1012' ? {} : { [KIKI_INFINITE_RETRY_ENV]: '1' } });
   const onAttemptRetry = vi.fn();
   const parts: StreamedMessagePart[] = [];
-  const hasOutput = mode === 'partial-limit' || mode === 'tool-limit' || mode === 'thinking-1012';
+  const hasOutput = mode === 'partial-limit' || mode === 'tool-limit' || mode === 'thinking-1012' || mode === 'partial-close-1012' || mode === 'tool-close-1012';
   try {
+    if (mode === 'direct-1012') {
+      const transport = new ResponsesWebSocketTransport();
+      try {
+        const input: ModelRequestInput = { systemPrompt: '', tools: [], messages: [{ role: 'user', content: [{ type: 'text', text: 'hello' }], toolCalls: [] }] };
+        const params = { responsesTransport: transport, attribution: {
+          logicalRequestId: 'direct-retry-fixture', sessionId: 'example-session', agentId: 'main', purpose: 'operation', waitBudget: { waitedMs: 0 },
+        } };
+        const collect = async (): Promise<ModelRequestEvent[]> => {
+          const events: ModelRequestEvent[] = [];
+          for await (const event of requester.request(input, AbortSignal.timeout(2000), params)) events.push(event);
+          return events;
+        };
+        await expect(collect()).rejects.toMatchObject({ code: 'provider.connection_error', message: expect.any(String) });
+        expect(toErrorPayload(failures[0]).details).toMatchObject({ request_delivery: 'ambiguous' });
+        expect(toErrorPayload(unwrapErrorCause(failures[0])).details).toMatchObject({ websocketCloseCode: 1012 });
+        expect(calls).toBe(1);
+        expect(failures).toHaveLength(1);
+        expect(resolveRetryPolicy(undefined, failures[0]).retry).toBe(true);
+        expect(resolveRetryPolicy({ policies: [{ match: 'APIConnectionError', retry: false }] }, failures[0]).retry).toBe(false);
+        expect((await collect()).find(event => event.type === 'finish')).toMatchObject({ message: { content: [{ type: 'text', text: 'recovered' }] } });
+        expect(calls).toBe(2);
+        expect(requestSockets[1]).not.toBe(requestSockets[0]);
+        expect(frames[1]?.['input']).toEqual(frames[0]?.['input']);
+      } finally {
+        transport.dispose();
+      }
+      return;
+    }
     const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, part => { parts.push(part); }, AbortSignal.timeout(2000));
     if (hasOutput) {
       const error = await pending.catch((error: unknown) => error);
       expect(error).toBe(failures[0]);
       expect(toErrorPayload(error).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
-      if (mode !== 'thinking-1012') expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code });
-      expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' ? { type: 'text', text: 'partial answer' }
+      if (mode.endsWith('1012')) expect(toErrorPayload(error)).toMatchObject({ code: 'provider.connection_error', message: expect.stringContaining('code 1012') });
+      if (!mode.endsWith('1012')) expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code });
+      expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' || mode === 'partial-close-1012' ? { type: 'text', text: 'partial answer' }
         : mode === 'thinking-1012' ? { type: 'think', think: 'fixture thought' } : { type: 'function', name: 'Lookup' }));
+      expect(calls).toBe(1);
+      expect(onAttemptRetry).not.toHaveBeenCalled();
+    } else if (mode === '1002' || mode === '1008') {
+      const error = await pending.catch((failure: unknown) => failure);
+      expect(error).toBe(failures[0]);
       expect(calls).toBe(1);
       expect(onAttemptRetry).not.toHaveBeenCalled();
     } else {
@@ -2748,8 +2788,19 @@ it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 
       expect(toErrorPayload(failures[0]).details).not.toHaveProperty('request_delivery', 'executed');
     }
     expect(failures).toHaveLength(1);
-    expect(isRetryableGenerateError(failures[0])).toBe(!hasOutput);
+    expect(isRetryableGenerateError(failures[0])).toBe(!hasOutput && mode !== '1002' && mode !== '1008');
     expect(readGenerateFailureFacts(failures[0])).toBeUndefined();
+    if (mode.endsWith('1012') || mode === '1006' || mode === '1013' || mode === '1002' || mode === '1008') {
+      const raw = unwrapErrorCause(failures[0]);
+      expect(toErrorPayload(failures[0]).code).toBe(mode === '1002' || mode === '1008' ? 'provider.api_error' : 'provider.connection_error');
+      expect(raw).toBeInstanceOf(mode === '1002' || mode === '1008' ? ChatProviderError : APIConnectionError);
+      expect(toErrorPayload(raw).code).toBe(mode === '1002' || mode === '1008' ? 'provider.api_error' : 'provider.connection_error');
+      expect(toErrorPayload(raw).details).toMatchObject({
+        nativeCode: 'responses_websocket_closed_before_terminal',
+        websocketCloseCode: mode.endsWith('1012') ? 1012 : Number(mode),
+        retry: mode !== '1002' && mode !== '1008',
+      });
+    }
     if (mode === 'empty-message-1012' || mode === 'empty-reasoning-1012' || mode === 'thinking-1012') {
       const payload = toErrorPayload(failures[0]);
       expect(payload.details?.['streamDiagnostics']).toMatchObject({
@@ -2765,6 +2816,25 @@ it.each(['1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 
     await new Promise<void>(resolve => { webSockets.close(() => { resolve(); }); });
     server.closeAllConnections();
     await new Promise<void>(resolve => { server.close(() => { resolve(); }); });
+  }
+});
+
+it('rejects an unsupported WebSocket control locally without entering either retry path', async () => {
+  const baseUrl = 'http://127.0.0.1:1/v1';
+  const provider = new OpenAIResponsesChatProvider({ model: 'fixture', baseUrl, apiKey: 'YOUR_API_KEY', responsesWebSocket: { targets: [baseUrl] } });
+  const model = { ...createRequester({ value: 0 }, null).model, protocol: 'openai_responses' as const, baseUrl,
+    requestParams: { background: true }, responsesWebSocket: { targets: [baseUrl] }, authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+  const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+  const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+  const onAttemptRetry = vi.fn();
+  try {
+    const error = await service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, undefined, AbortSignal.timeout(2000))
+      .catch((failure: unknown) => failure);
+    expect(toErrorPayload(error)).toMatchObject({ code: 'provider.api_error', details: { nativeCode: 'unsupported_control', retry: false } });
+    expect(isRetryableGenerateError(error)).toBe(false);
+    expect(onAttemptRetry).not.toHaveBeenCalled();
+  } finally {
+    await (service as AgentLLMRequesterService).dispose();
   }
 });
 

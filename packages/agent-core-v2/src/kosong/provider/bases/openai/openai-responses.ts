@@ -3,6 +3,7 @@ import OpenAI, { APIError as OpenAIAPIError, OpenAIError } from 'openai';
 import { Error2, attachErrorDetails } from '#/_base/errors/errors';
 import { addDiagnosticCount, attachStreamDiagnostics, createStreamDiagnostics, safeProviderFailureDetails, safeStreamDiagnostics, type StreamDiagnostics } from '#/kosong/contract/streamDiagnostics';
 import {
+  APIConnectionError,
   APIContextOverflowError,
   APIProviderQuotaExhaustedError,
   APIProviderRateLimitError,
@@ -134,6 +135,26 @@ function transportStatusError(error: unknown): APIStatusError | undefined {
   return attachErrorDetails(new APIStatusError(error.status, error.message), {
     errorSource: 'provider_event', nativeCode: error.code, execution: error.execution,
   });
+}
+
+function transportClosureError(error: unknown): ChatProviderError | undefined {
+  if (!(error instanceof ResponsesWebSocketError) ||
+    (error.code !== 'responses_websocket_closed_before_terminal' && error.code !== 'responses_websocket_handshake_closed')) return undefined;
+  const closeCode = error.status;
+  const retry = closeCode === undefined || [1000, 1001, 1006, 1011, 1012, 1013, 1014].includes(closeCode);
+  const message = closeCode === undefined ? error.message : `${error.message} (code ${closeCode})`;
+  return attachErrorDetails(retry ? new APIConnectionError(message) : new ChatProviderError(message), {
+    nativeCode: error.code, websocketCloseCode: closeCode, retry,
+  });
+}
+
+function transportLocalError(error: unknown): ChatProviderError | undefined {
+  if (!(error instanceof ResponsesWebSocketError) || ![
+    'invalid_request', 'unsupported_control', 'responses_ws_capabilities_unsupported',
+    'responses_websocket_disposed', 'responses_websocket_retired', 'responses_websocket_inflight',
+    'responses_websocket_frame_too_large', 'responses_websocket_protocol',
+  ].includes(error.code)) return undefined;
+  return attachErrorDetails(new ChatProviderError(error.message), { nativeCode: error.code, retry: false });
 }
 
 function readStringField(object: RawObject, key: string): string | undefined {
@@ -1281,9 +1302,10 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         throw attachStreamDiagnostics(createAbortError(), diagnostics);
       }
       if (readingEvent && diagnostics.endSource === 'terminal' && this.completionAuthority === 'normal' &&
+        !(error instanceof ResponsesWebSocketError) &&
         !(error instanceof OpenAIAPIError && error.error !== undefined)) return;
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
-      throw attachStreamDiagnostics(transportStatusError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      throw attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
     } finally {
       if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'cancelled';
     }
@@ -1500,7 +1522,9 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion))), true);
         } catch (error) {
           if (isAbortError(error)) throw error;
-          if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) throw transportStatusError(error) ?? ambiguousRequestDelivery(error);
+          if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) {
+            throw transportStatusError(error) ?? transportLocalError(error) ?? ambiguousRequestDelivery(transportClosureError(error) ?? error);
+          }
           if (fullInput !== undefined) createParams['input'] = fullInput;
         }
       }

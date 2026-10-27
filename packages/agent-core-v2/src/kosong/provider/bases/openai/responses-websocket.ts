@@ -895,6 +895,7 @@ export class ResponsesWebSocketTransport {
           throw new ResponsesWebSocketError(
             'Responses WebSocket closed before the handshake completed.',
             'responses_websocket_handshake_closed',
+            { status: record.code },
           );
         }
         if (record.type !== 'open') continue;
