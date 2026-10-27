@@ -410,11 +410,12 @@ function ExternalOutput({ output, agentId, island = false }: { output: unknown; 
 }
 
 /** The result well: engine content parts, canonical result media, or both. */
-function OutputView({ output, media, agentId, island = false, external = false }: {
+function OutputView({ output, media, agentId, outputPending = false, island = false, external = false }: {
   output: unknown;
   /** Canonical result media from the frame's own attachment references. */
   media?: readonly MediaRef[];
   agentId: string;
+  outputPending?: boolean;
   island?: boolean;
   /** A foreign engine's payload: it carries its own body and artifacts. */
   external?: boolean;
@@ -426,7 +427,7 @@ function OutputView({ output, media, agentId, island = false, external = false }
   const mediaOutput = output === undefined || output === null ? undefined : extractToolOutputMedia(output);
   // A result that carries both the reference and the part reports one file
   // twice; `toolResultMedia` folds them so the well draws each image once.
-  const resultMedia = toolResultMedia(media, mediaOutput?.media, agentId, true);
+  const resultMedia = toolResultMedia(media, mediaOutput?.media, agentId, true, outputPending);
   const resultList = resultMedia.length > 0 ? <MediaPartList media={resultMedia} agentId={agentId} /> : null;
   if (mediaOutput !== undefined) {
     return (
@@ -627,7 +628,7 @@ ${engineError}`;
         ? undefined
         : time.formatDuration(frameDuration);
   const inputWell = <ToolRecordField block={block} agentId={agentId} field="input" />;
-  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} media={block.media} agentId={agentId} external={external} /></ToolRecordField>;
+  const outputWell = <ToolRecordField block={block} agentId={agentId} field="output"><OutputView output={block.output} media={block.media} agentId={agentId} outputPending={block.outputPending} external={external} /></ToolRecordField>;
 
   if (semantics !== undefined) {
     // One skeleton for every built-in tool: the verb, what it acted on, the
@@ -725,7 +726,7 @@ ${engineError}`;
                 command={block.display.command}
                 cwd={block.display.cwd}
                 output={
-                  block.output !== undefined ? <OutputView output={block.output} media={block.media} agentId={agentId} island external={external} /> : undefined
+                  block.output !== undefined ? <OutputView output={block.output} media={block.media} agentId={agentId} outputPending={block.outputPending} island external={external} /> : undefined
                 }
               />
               {/* Controls stay on paper under the island: the command line and

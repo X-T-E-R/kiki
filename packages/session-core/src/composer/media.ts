@@ -131,18 +131,27 @@ function samePublishedInlineMedia(left: string, right: string, agentId: string |
  * name, MIME) and the engine's own content part (url, and sometimes the host
  * path the read came from). Shared identities fold normally; `sameFrameOrder`
  * additionally pairs the two lists by ordinal only when a frame's adapter
- * derived its attachment IDs from those content parts. The surviving entry
- * keeps every field either side knew.
+ * derived its attachment IDs from those content parts. A bounded head-prefix
+ * output may omit later parts; only matching published inline revisions pair
+ * its visible prefix, leaving every unseen attachment in place.
  */
 export function toolResultMedia(
   references: readonly MediaRef[] | undefined,
   parts: readonly MediaRef[] | undefined,
   agentId?: string,
   sameFrameOrder = false,
+  partialOutputPrefix = false,
 ): readonly MediaRef[] {
-  const paired = sameFrameOrder && references !== undefined && parts !== undefined &&
-    references.length === parts.length && references.every((item, index) => {
-      const part = parts[index]!;
+  const fullFrame = references !== undefined && parts !== undefined && references.length === parts.length;
+  const boundedPrefix = partialOutputPrefix && references !== undefined && parts !== undefined &&
+    parts.length > 0 && references.length > parts.length && parts.every((part, index) => {
+      const reference = references[index]!;
+      return reference.kind === part.kind && reference.fileId !== undefined && part.fileId !== undefined &&
+        (reference.fileId === part.fileId || samePublishedInlineMedia(reference.fileId, part.fileId, agentId));
+    });
+  const paired = sameFrameOrder && (fullFrame || boundedPrefix) && parts !== undefined && references !== undefined &&
+    parts.every((part, index) => {
+      const item = references[index]!;
       const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
       const referenceHash = item.blobHash ?? blob?.hash;
       return item.kind === part.kind &&
@@ -154,7 +163,8 @@ export function toolResultMedia(
     });
   const inputs = paired
     ? references.map((item, index): MediaRef => {
-      const part = parts[index]!;
+      const part = parts[index];
+      if (part === undefined) return item;
       return {
         ...part, ...item,
         url: item.url ?? part.url,

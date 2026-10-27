@@ -313,6 +313,56 @@ describe('canonical inline media original', () => {
     }
   });
 
+  it('keeps two wire attachments when a bounded output exposes only the first image', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { picture } = await import(fixture);
+    const originals: Buffer[] = [picture(80, 60, [140, 50, 20]), picture(80, 60, [20, 140, 50])];
+    const media = originals.map((bytes) => ({ type: 'image_url', imageUrl: { url: `data:image/png;base64,${bytes.toString('base64')}` } }));
+    const output = [media[0], ...Array.from({ length: 3 }, (_, index) => ({ type: 'text', text: `segment ${index}` })), media[1]];
+    const transcript = new AgentTranscript('child');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('child');
+    for (const record of [
+      { type: 'turn.prompt', turnId: 0, promptId: 'prompt', input: [{ type: 'text', text: 'show both' }], origin: { kind: 'user' } },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' } },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', toolCallId: 'call-1', name: 'ReadMediaFile' } },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'call-1', result: { output } } },
+    ]) reducer.apply(adapter.add(record));
+    const projected = boundedTranscriptSnapshot(transcript.snapshot(), 'child');
+    const turn = projected.items[0];
+    if (turn?.kind !== 'turn') throw new Error('Expected turn');
+    const frame = turn.steps[0]?.frames.find((candidate) => candidate.kind === 'tool');
+    if (frame?.kind !== 'tool') throw new Error('Expected tool frame');
+    expect(frame.attachmentIds).toHaveLength(2);
+    expect(frame.output).toHaveLength(4);
+    expect(frame.contentRefs).toEqual(expect.arrayContaining([expect.objectContaining({ path: ['output'], offset: 4, total: 5 })]));
+    const references = frame.attachmentIds!.map((id) => {
+      const source = projected.attachments.find((candidate) => candidate.attachmentId === id)?.source;
+      if (source?.kind !== 'session_media') throw new Error('Expected bounded media attachment');
+      return source.fileId;
+    });
+    const contentId = (frame.output as { source?: { file_id?: string } }[])[0]?.source?.file_id;
+    expect(references[0]).toMatch(/^inline:child:/u);
+    expect(references[1]).toMatch(/^inline:child:/u);
+    expect(contentId).toMatch(/^inline-content:child:/u);
+    expect(references[0]!.split(':').at(-1)).toBe(contentId!.split(':').at(-1));
+    expect(references[1]!.split(':').at(-1)).not.toBe(contentId!.split(':').at(-1));
+    const reader = async (agentId: string, source: { kind: string; id: string; turnId?: string; stepId?: string }) => {
+      if (agentId !== 'child') return undefined;
+      if (source.kind === 'attachment') return transcript.getAttachment(source.id);
+      return source.kind === 'frame' ? transcript.getTurn(source.turnId!)?.steps.find((step) => step.stepId === source.stepId)?.frames.find((candidate) => candidate.frameId === source.id) : undefined;
+    };
+    for (const [index, fileIds] of [[0, [references[0], contentId]], [1, [references[1]]]] as const) {
+      for (const fileId of fileIds) {
+        const file = await openPublishedInlineMedia(fileId!, reader);
+        expect(file).toBeDefined();
+        const chunks: Uint8Array[] = [];
+        for await (const chunk of file!.stream()) chunks.push(chunk);
+        expect(Buffer.concat(chunks)).toEqual(originals[index]);
+      }
+    }
+  });
+
   it('projects large recorded tool images to exact revision-bound HTTP media instead of truncated data URLs', async () => {
     const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
     const { pictures } = await import(fixture);

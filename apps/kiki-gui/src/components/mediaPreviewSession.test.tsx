@@ -372,6 +372,25 @@ describe('ReadMediaFile tool result preview', () => {
     expect(mocks.readHostMediaPreviewBytes).not.toHaveBeenCalled();
   });
 
+  it('shows both canonical images once when the bounded output retains only the first inline image', async () => {
+    const firstId = `inline:main:YXR0MQ:${'a'.repeat(64)}`;
+    const secondId = `inline:main:YXR0Mg:${'b'.repeat(64)}`;
+    const contentId = `inline-content:main:eyJzb3VyY2UifQ:${'a'.repeat(64)}`;
+    mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });
+    mocks.readSessionMediaBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3, 4]), mime: 'image/png' });
+    const container = await renderReadMedia({
+      ...readMediaBlock('/fixtures/both.png', ''),
+      outputPending: true,
+      output: [{ type: 'image', source: { kind: 'session_media', file_id: contentId } },
+        ...Array.from({ length: 3 }, () => ({ type: 'text', text: 'retained output' }))],
+      media: [firstId, secondId].map((fileId, index) => ({ kind: 'image', fileId, name: `${index}.png`, mime: 'image/png' })),
+    });
+    expect(container.querySelectorAll('img')).toHaveLength(2);
+    expect(mocks.readSessionMediaPreviewBytes.mock.calls.map(([, fileId]) => fileId)).toEqual([firstId, secondId]);
+    await act(async () => { container.querySelectorAll('img')[1]?.closest('button')?.click(); });
+    expect(mocks.readSessionMediaBytes).toHaveBeenCalledExactlyOnceWith('session_test', secondId, expect.anything());
+  });
+
   it('preserves two saved crops in one result alongside their canonical references', async () => {
     const hashes = ['a'.repeat(64), 'b'.repeat(64)];
     mocks.readSessionMediaPreviewBytes.mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]), mime: 'image/png' });

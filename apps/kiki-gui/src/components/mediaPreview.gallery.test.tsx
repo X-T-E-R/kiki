@@ -8,7 +8,9 @@ import { resetMediaOutcomes } from './imageActions';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import type { MediaRef } from '@kiki/session-core/composer/media';
-import type { MediaRun, SessionViewState, ToolBlock } from '@kiki/session-core/session';
+import { agentTranscriptToBlocks, type MediaRun, type SessionViewState, type ToolBlock } from '@kiki/session-core/session';
+import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter } from '@kiki/transcript';
+import { boundedTranscriptSnapshot } from '../../../../packages/kap-server/src/transport/klient/boundedTranscript';
 import { MediaRunRow } from './timeline/FoldRows';
 
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: undefined, scopeId: 'gallery' }) }));
@@ -139,5 +141,47 @@ describe('image gallery', () => {
     expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(image.url);
     expect(document.querySelector('[role="dialog"] [aria-label="Next image"]')).toBeNull();
     expect(document.querySelector('[role="dialog"] [aria-label="Previous image"]')).toBeNull();
+  });
+
+  it('renders a bounded wire result with two attachments and only its first output image once per call', () => {
+    const originals = [
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGOYai27z02DoTdQdFeCCgAfDQRLsfu+ogAAAABJRU5ErkJggg==',
+      'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAAFklEQVR4nGOQnWrttsCNQXS1sdMuJwActQRLdz7l3wAAAABJRU5ErkJggg==',
+    ];
+    const image = originals.map((data) => ({ type: 'image_url', imageUrl: { url: `data:image/png;base64,${data}` } }));
+    const transcript = new AgentTranscript('main');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('main');
+    for (const record of [
+      { type: 'turn.prompt', turnId: 0, promptId: 'prompt', input: [{ type: 'text', text: 'show both' }], origin: { kind: 'user' } },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' } },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', toolCallId: 'call-1', name: 'ReadMediaFile' } },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'call-1', result: { output: [image[0], ...Array.from({ length: 3 }, (_, index) => ({ type: 'text', text: `segment ${index}` })), image[1]] } } },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', toolCallId: 'call-2', name: 'ReadMediaFile' } },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'call-2', result: { output: [image[0]] } } },
+    ]) reducer.apply(adapter.add(record));
+    const projected = boundedTranscriptSnapshot(transcript.snapshot(), 'main');
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', ...projected });
+    const tools = blocks.filter((block): block is ToolBlock => block.kind === 'tool');
+    expect(tools).toHaveLength(2);
+    const tool = tools[0]!;
+    expect(tool.outputPending).toBe(true);
+    expect(tool.media).toHaveLength(2);
+    expect(tool.media![0]?.fileId).not.toBe(tool.media![1]?.fileId);
+    expect(tools[1]?.media).toHaveLength(1);
+    const view = { sessionId: 'session', blocks } as unknown as SessionViewState;
+    const run: MediaRun = { kind: 'media-run', id: 'media-bounded', turnId: 't1', members: tools, latest: false };
+    const order = new Map(tools.map((block) => [block.id, blocks.indexOf(block)]));
+    const container = render(<MediaPreviewProvider sessionId="session" sessionViewState={view}>
+      <MediaRunRow run={run} agentId="main" blockOrder={order} />
+    </MediaPreviewProvider>);
+    const thumbs = container.querySelectorAll('[data-media-thumb]');
+    expect(thumbs).toHaveLength(3);
+    act(() => { thumbs[0]!.querySelector('button')!.click(); });
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('1 / 3');
+    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Next image"]')!.click(); });
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('2 / 3');
+    act(() => { document.querySelector<HTMLButtonElement>('[aria-label="Next image"]')!.click(); });
+    expect(document.querySelector('[role="dialog"]')?.textContent).toContain('3 / 3');
   });
 });

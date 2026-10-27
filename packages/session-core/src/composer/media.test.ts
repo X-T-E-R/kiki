@@ -278,6 +278,18 @@ describe('toolResultMedia', () => {
     expect(toolResultMedia([reference], [output], 'agent-a')).toHaveLength(2);
   });
 
+  it('pairs only the verified visible prefix of a bounded frame and keeps the later image slot', () => {
+    const first = { kind: 'image' as const, fileId: `inline:agent-a:YXR0MQ:${hash}`, name: 'a.png' };
+    const second = { kind: 'image' as const, fileId: `inline:agent-a:YXR0Mg:${'b'.repeat(64)}`, name: 'b.png' };
+    const visible = { kind: 'image' as const, fileId: `inline-content:agent-a:eyJzb3VyY2UifQ:${hash}` };
+    expect(toolResultMedia([first, second], [visible], 'agent-a', true, true)).toEqual([first, second]);
+    expect(toolResultMedia([first, second], [visible], 'agent-a', true)).toHaveLength(3);
+    expect(toolResultMedia([first, second], [{ ...visible, fileId: visible.fileId.replace(hash, 'b'.repeat(64)) }], 'agent-a', true, true)).toHaveLength(3);
+    expect(toolResultMedia([first, second], [{ ...visible, fileId: visible.fileId.replace('agent-a:', 'agent-b:') }], 'agent-a', true, true)).toHaveLength(3);
+    const file = { kind: 'file' as const, fileId: 'file-notes' };
+    expect(toolResultMedia([file, first, second], [file, visible], 'agent-a', true, true)).toEqual([file, first, second]);
+  });
+
   it('does not guess identity from paths, names or unscoped attachment ids', () => {
     const pathOnly = { kind: 'image' as const, path: part.path, name: 'saved.png' };
     expect(toolResultMedia([pathOnly], [pathOnly], 'agent-a')).toHaveLength(2);

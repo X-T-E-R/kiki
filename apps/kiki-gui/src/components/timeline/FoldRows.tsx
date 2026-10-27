@@ -31,7 +31,7 @@ interface MediaItem {
 
 function mediaItems(run: MediaRun, agentId: string): MediaItem[] {
   return run.members.flatMap((tool) => {
-    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId, true);
+    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId, true, tool.outputPending === true);
     const argPath = (tool.args as { path?: unknown } | undefined)?.path;
     return media.flatMap((item, index) => {
       if (item.kind !== 'image') return [];
