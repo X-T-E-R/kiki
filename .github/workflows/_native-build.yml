@@ -18,6 +18,37 @@ on:
         required: false
         type: boolean
         default: false
+      build-desktop:
+        description: 'Build desktop bundles in the four supported native target jobs'
+        required: false
+        type: boolean
+        default: false
+      prepare-artifact-id:
+        description: 'Immutable release input artifact ID; empty keeps the legacy manual build path'
+        required: false
+        type: string
+        default: ''
+      prepare-run-attempt:
+        description: 'Producer attempt recorded by the release input receipt'
+        required: false
+        type: string
+        default: ''
+      release-source-sha:
+        required: false
+        type: string
+        default: ''
+      release-tag:
+        required: false
+        type: string
+        default: ''
+      release-version:
+        required: false
+        type: string
+        default: ''
+      release-channel:
+        required: false
+        type: string
+        default: ''
     secrets:
       APPLE_CERTIFICATE_P12:
         required: false
@@ -37,32 +68,68 @@ jobs:
   native-bundle:
     name: Native bundle (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         include:
           - os: ubuntu-24.04
             target: linux-x64
+            rust-target: x86_64-unknown-linux-gnu
             extension: ''
+            desktop-name: linux-x64
+            bundles: appimage,deb
           - os: ubuntu-24.04-arm
             target: linux-arm64
+            rust-target: aarch64-unknown-linux-gnu
             extension: ''
+            desktop-name: ''
+            bundles: ''
           - os: macos-15-intel
             target: darwin-x64
+            rust-target: x86_64-apple-darwin
             extension: ''
+            desktop-name: macos-x64
+            bundles: dmg
           - os: macos-15
             target: darwin-arm64
+            rust-target: aarch64-apple-darwin
             extension: ''
+            desktop-name: macos-arm64
+            bundles: dmg
           - os: windows-2025-vs2026
             target: win32-x64
+            rust-target: x86_64-pc-windows-msvc
             extension: .exe
+            desktop-name: windows-x64
+            bundles: nsis
           - os: windows-11-arm
             target: win32-arm64
+            rust-target: aarch64-pc-windows-msvc
             extension: .exe
+            desktop-name: ''
+            bundles: ''
+    env:
+      KIKI_BUILD_TARGET: ${{ matrix.target }}
 
     steps:
+      - name: Reject desktop builds without immutable release inputs
+        if: inputs.build-desktop && inputs.prepare-artifact-id == ''
+        shell: bash
+        run: |
+          echo 'Desktop release builds require an immutable prepare artifact receipt.' >&2
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release-source-sha || github.sha }}
+
+      - name: Install Tauri Linux dependencies
+        if: inputs.build-desktop && matrix.desktop-name != '' && runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev patchelf libssl-dev
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -73,8 +140,10 @@ jobs:
           node-version-file: .nvmrc
           cache: 'pnpm'
 
-      - name: Setup host Rust toolchain
+      - name: Setup Rust target
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-target }}
 
       - name: Install dependencies
         if: matrix.target != 'win32-x64'
@@ -103,7 +172,44 @@ jobs:
           certificate-p12: ${{ secrets.APPLE_CERTIFICATE_P12 }}
           certificate-password: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
 
-      - name: Generate built-in catalog (release artifacts)
+      - name: Download immutable release input
+        if: inputs.prepare-artifact-id != ''
+        uses: actions/download-artifact@v8
+        with:
+          artifact-ids: ${{ inputs.prepare-artifact-id }}
+          path: ${{ runner.temp }}/kiki-release-input
+
+      - name: Verify immutable release input
+        if: inputs.prepare-artifact-id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          input="$RUNNER_TEMP/kiki-release-input"
+          node apps/kimi-code/scripts/native/release-receipt.mjs verify-prepare \
+            --receipt "$input/release-input.json" \
+            --catalog "$input/built-in-catalog.json" \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha '${{ inputs.release-source-sha }}' \
+            --tag '${{ inputs.release-tag }}' \
+            --version '${{ inputs.release-version }}' \
+            --channel '${{ inputs.release-channel }}' \
+            --run-id "$GITHUB_RUN_ID" \
+            --prepare-attempt '${{ inputs.prepare-run-attempt }}'
+          {
+            echo "KIKI_BUILT_IN_CATALOG_FILE=$input/built-in-catalog.json"
+            echo "KIKI_RELEASE_INPUT_RECEIPT=$input/release-input.json"
+            echo 'KIKI_RELEASE_REPOSITORY=${{ github.repository }}'
+            echo 'KIKI_RELEASE_TAG=${{ inputs.release-tag }}'
+            echo 'KIKI_VERSION=${{ inputs.release-version }}'
+            echo 'KIKI_UPDATE_CHANNEL=${{ inputs.release-channel }}'
+            echo "KIKI_RELEASE_RUN_ID=$GITHUB_RUN_ID"
+            echo 'KIKI_RELEASE_PREPARE_ATTEMPT=${{ inputs.prepare-run-attempt }}'
+            echo 'KIKI_RELEASE_PREPARE_ARTIFACT_ID=${{ inputs.prepare-artifact-id }}'
+            echo "KIKI_RELEASE_CANDIDATE_ATTEMPT=$GITHUB_RUN_ATTEMPT"
+          } >> "$GITHUB_ENV"
+
+      - name: Generate built-in catalog (manual native build)
+        if: inputs.prepare-artifact-id == ''
         shell: bash
         run: |
           CATALOG_FILE="$RUNNER_TEMP/kimi-code-built-in-catalog.json"
@@ -147,7 +253,176 @@ jobs:
           mkdir -p "$destination"
           cp "$helper" "$destination/windows-process-helper.exe"
 
+      - name: Write native source receipt
+        if: inputs.prepare-artifact-id != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          output="$RUNNER_TEMP/kiki-target-candidate"
+          node apps/kimi-code/scripts/native/release-receipt.mjs stage-native \
+            --output "$output" \
+            --receipt "$KIKI_RELEASE_INPUT_RECEIPT" \
+            --catalog "$KIKI_BUILT_IN_CATALOG_FILE" \
+            --prepare-artifact-id '${{ inputs.prepare-artifact-id }}' \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha '${{ inputs.release-source-sha }}' \
+            --tag '${{ inputs.release-tag }}' \
+            --version '${{ inputs.release-version }}' \
+            --channel '${{ inputs.release-channel }}' \
+            --run-id "$GITHUB_RUN_ID" \
+            --prepare-attempt '${{ inputs.prepare-run-attempt }}' \
+            --candidate-attempt "$GITHUB_RUN_ATTEMPT" \
+            --target '${{ matrix.target }}' \
+            --rust-target '${{ matrix.rust-target }}' \
+            --rust "$(rustc --version)" \
+            --signing unsigned
+          {
+            echo "KIKI_SIDECAR_SOURCE=$GITHUB_WORKSPACE/apps/kimi-code/dist-native/bin/${{ matrix.target }}/kiki${{ matrix.extension }}"
+            echo 'KIKI_SIDECAR_RELEASE_MODE=verified-prebuilt'
+            echo "KIKI_SIDECAR_RECEIPT=$output/release-receipt.json"
+          } >> "$GITHUB_ENV"
+
+      - name: Test release scripts
+        if: inputs.build-desktop && matrix.desktop-name != ''
+        shell: bash
+        run: |
+          node --test apps/kiki-gui/scripts/desktop-version.test.mjs apps/kiki-gui/scripts/desktop-release-manifest.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs apps/kiki-gui/scripts/verify-updater-signature.test.mjs
+          pnpm --filter @kiki/gui run desktop:version:check
+          pnpm --filter @kiki/gui run desktop:prepare:test
+
+      - name: Generate temporary updater key (Windows)
+        if: inputs.build-desktop && matrix.desktop-name != '' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          password="$(node -e "console.log(require('crypto').randomUUID().replace(/-/g,''))")"
+          key_path="$RUNNER_TEMP/kiki-build-updater.key"
+          pnpm --filter @kiki/gui exec tauri signer generate --ci --password "$password" --write-keys "$key_path"
+          delimiter="KIKI_SIGNING_KEY_$(node -e "console.log(require('crypto').randomUUID().replace(/-/g,''))")"
+          {
+            echo "TAURI_SIGNING_PRIVATE_KEY<<$delimiter"
+            cat "$key_path"
+            echo
+            echo "$delimiter"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$password"
+          } >> "$GITHUB_ENV"
+
+      - name: Build and stage desktop bundles
+        if: inputs.build-desktop && matrix.desktop-name != ''
+        env:
+          KIKI_BUILD_SHA: ${{ inputs.release-source-sha }}
+          KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
+          KIKI_TAURI_CONFIG_PATH: ${{ runner.temp }}/kiki-tauri-release-config.json
+          KIKI_RUST_TARGET: ${{ matrix.rust-target }}
+          KIKI_BUNDLES: ${{ matrix.bundles }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            export KIKI_DISTRIBUTION=github
+            if [ -z "$KIKI_UPDATER_PUBLIC_KEY" ]; then
+              echo 'KIKI_UPDATER_PUBLIC_KEY repository variable is required.' >&2
+              exit 1
+            fi
+          else
+            export KIKI_DISTRIBUTION=manual
+            unset KIKI_UPDATER_PUBLIC_KEY
+          fi
+          node -e '
+            const fs = require("node:fs");
+            const windows = process.env.RUNNER_OS === "Windows";
+            const config = {
+              version: process.env.KIKI_VERSION,
+              bundle: {
+                createUpdaterArtifacts: windows,
+                resources: ["../THIRD_PARTY_NOTICES.md"],
+              },
+            };
+            if (windows) config.plugins = { updater: { pubkey: process.env.KIKI_UPDATER_PUBLIC_KEY } };
+            fs.writeFileSync(process.env.KIKI_TAURI_CONFIG_PATH, JSON.stringify(config));
+          '
+          pnpm --filter @kiki/gui exec tauri build --ci --target "$KIKI_RUST_TARGET" --bundles "$KIKI_BUNDLES" --config "$KIKI_TAURI_CONFIG_PATH"
+
+          bundle_dir="apps/kiki-gui/src-tauri/target/$KIKI_RUST_TARGET/release/bundle"
+          stage="$RUNNER_TEMP/kiki-release-candidate"
+          rm -rf "$stage"
+          mkdir -p "$stage"
+          shopt -s nullglob
+          case "$RUNNER_OS" in
+            Windows)
+              bundles=("$bundle_dir"/nsis/*-setup.exe)
+              if [ "${#bundles[@]}" -ne 1 ] || [ ! -f "${bundles[0]}.sig" ]; then
+                echo 'Expected one NSIS installer and temporary updater signature.' >&2
+                exit 1
+              fi
+              cp "${bundles[0]}" "$stage/"
+              ;;
+            Linux)
+              appimages=("$bundle_dir"/appimage/*.AppImage)
+              debs=("$bundle_dir"/deb/*.deb)
+              if [ "${#appimages[@]}" -ne 1 ] || [ "${#debs[@]}" -ne 1 ]; then
+                echo 'Expected one AppImage and one deb bundle.' >&2
+                exit 1
+              fi
+              bundles=("${appimages[0]}" "${debs[0]}")
+              ;;
+            macOS)
+              bundles=("$bundle_dir"/dmg/*.dmg)
+              if [ "${#bundles[@]}" -ne 1 ]; then
+                echo 'Expected one dmg bundle.' >&2
+                exit 1
+              fi
+              ;;
+          esac
+          shopt -u nullglob
+          if [ "$RUNNER_OS" != 'Windows' ]; then
+            for bundle in "${bundles[@]}"; do
+              cp "$bundle" "$stage/"
+              node -e '
+                const fs = require("node:fs");
+                const crypto = require("node:crypto");
+                const path = require("node:path");
+                const file = process.argv[1];
+                const digest = crypto.createHash("sha256").update(fs.readFileSync(file)).digest("hex");
+                fs.writeFileSync(`${file}.sha256`, `${digest}  ${path.basename(file)}\n`);
+              ' "$stage/$(basename "$bundle")"
+            done
+          fi
+
+      - name: Finalize target release receipt
+        if: inputs.prepare-artifact-id != '' && inputs.build-desktop && matrix.desktop-name != ''
+        shell: bash
+        run: |
+          set -euo pipefail
+          node apps/kimi-code/scripts/native/release-receipt.mjs stage-native \
+            --output "$RUNNER_TEMP/kiki-target-candidate" \
+            --desktop "$RUNNER_TEMP/kiki-release-candidate" \
+            --receipt "$KIKI_RELEASE_INPUT_RECEIPT" \
+            --catalog "$KIKI_BUILT_IN_CATALOG_FILE" \
+            --prepare-artifact-id '${{ inputs.prepare-artifact-id }}' \
+            --repository "$GITHUB_REPOSITORY" \
+            --source-sha '${{ inputs.release-source-sha }}' \
+            --tag '${{ inputs.release-tag }}' \
+            --version '${{ inputs.release-version }}' \
+            --channel '${{ inputs.release-channel }}' \
+            --run-id "$GITHUB_RUN_ID" \
+            --prepare-attempt '${{ inputs.prepare-run-attempt }}' \
+            --candidate-attempt "$GITHUB_RUN_ATTEMPT" \
+            --target '${{ matrix.target }}' \
+            --rust-target '${{ matrix.rust-target }}' \
+            --rust "$(rustc --version)" \
+            --signing unsigned
+
+      - name: Upload immutable target candidate
+        if: inputs.prepare-artifact-id != ''
+        uses: actions/upload-artifact@v7
+        with:
+          name: kiki-release-target-${{ github.run_id }}-${{ matrix.target }}-${{ github.run_attempt }}
+          retention-days: ${{ inputs.retention-days }}
+          path: ${{ runner.temp }}/kiki-target-candidate/
+          if-no-files-found: error
+
       - name: Upload native artifact
+        if: inputs.prepare-artifact-id == ''
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.upload-artifact-prefix }}-${{ matrix.target }}

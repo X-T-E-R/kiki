@@ -30,9 +30,52 @@ void test('public CLI and desktop sidecar builds use the release SEA policy inde
   assert.match(native, /run build:native:release\r?\n/);
   const desktop = await read('.github/workflows/kiki-desktop-release.yml');
   assert.ok(!desktop.includes('run build:native:sea'));
-  assert.match(desktop, /run build:native:release\r?\n/);
+  assert.doesNotMatch(desktop, /^  desktop-bundle:/m);
+  assert.match(desktop, /build-desktop: true/);
+  assert.match(desktop, /uses: \.\/\.github\/workflows\/_native-build\.yml/);
   const build = await read('apps/kimi-code/scripts/native/build.mjs');
   assert.match(build, /runSignStep\(macosSigningOptions\(values\['sign-macos'\]\)\)/);
+});
+
+void test('desktop release freezes one catalog and keeps native to desktop ordering per target', async () => {
+  const release = await read('.github/workflows/kiki-desktop-release.yml');
+  const native = await read('.github/workflows/_native-build.yml');
+
+  assert.equal((release.match(/update-catalog\.mjs/g) ?? []).length, 1);
+  assert.match(release, /^  prepare:/m);
+  const prepare = release.slice(release.indexOf('  prepare:'), release.indexOf('  cli-native:'));
+  assert.match(prepare, /- name: Checkout release commit[\s\S]*?ref: \$\{\{ github\.sha \}\}/);
+  assert.match(release, /artifact-id: \$\{\{ steps\.upload\.outputs\.artifact-id \}\}/);
+  assert.match(release, /prepare-artifact-id: \$\{\{ needs\.prepare\.outputs\.artifact-id \}\}/);
+  assert.match(release, /select-artifacts/);
+  assert.match(release, /artifact-ids: \$\{\{ steps\.target-artifacts\.outputs\.artifact-ids \}\}/);
+  assert.match(release, /verify-candidates/);
+  assert.doesNotMatch(release, /pattern: kiki-agent-|pattern: kiki-desktop-/);
+
+  const build = native.indexOf('- name: Build native executable');
+  const smoke = native.indexOf('- name: Smoke test native executable');
+  const receipt = native.indexOf('- name: Write native source receipt');
+  const desktop = native.indexOf('- name: Build and stage desktop bundles');
+  const upload = native.indexOf('- name: Upload immutable target candidate');
+  assert.ok(build >= 0 && build < smoke && smoke < receipt && receipt < desktop && desktop < upload);
+  assert.match(native, /kiki-release-target-\$\{\{ github\.run_id \}\}-\$\{\{ matrix\.target \}\}-\$\{\{ github\.run_attempt \}\}/);
+  assert.match(native, /if: inputs\.prepare-artifact-id == ''[\s\S]*name: \$\{\{ inputs\.upload-artifact-prefix \}\}-\$\{\{ matrix\.target \}\}/);
+  assert.match(native, /if: inputs\.build-desktop && matrix\.desktop-name != ''/);
+  assert.doesNotMatch(release, /needs:[\s\S]{0,80}desktop-bundle/);
+
+  const publish = release.slice(release.indexOf('  publish:'));
+  assert.match(publish, /^  publish:[\s\S]*?    environment: release/m);
+  assert.match(publish, /gh api --paginate --slurp/);
+  assert.doesNotMatch(publish, /update-catalog\.mjs/);
+  assert.match(publish, /test -f "\$KIKI_BUILT_IN_CATALOG_FILE"/);
+  assert.match(publish, /Published npm package differs/);
+  assert.match(publish, /Existing release asset differs/);
+  assert.match(publish, /refusing to mutate public assets/);
+  const signatureVerify = publish.indexOf('verify-updater-signature.mjs');
+  const manifest = publish.indexOf('desktop-release-manifest.mjs');
+  assert.ok(signatureVerify >= 0 && signatureVerify < manifest);
+  assert.match(publish, /--public-key "\$KIKI_UPDATER_PUBLIC_KEY"/);
+  assert.match(publish, /stage-npm/);
 });
 
 void test('every Pages artifact contains feeds before upload and deployment', async () => {
@@ -280,4 +323,172 @@ void test('Nix application build failure cannot be hidden by a stale successful 
   await assert.rejects(readFile(join(scratch, 'smoke-marker')), /ENOENT/);
   assert.match(await execute(0), /^BUILD_FAILED=false$/m);
   assert.equal(await readFile(join(scratch, 'smoke-marker'), 'utf8'), 'smoke\n');
+});
+
+void test('release upload reuses exact draft assets and refuses unsafe public mutations', async (t) => {
+  const workflow = await read('.github/workflows/kiki-desktop-release.yml');
+  const uploadStep = workflow.indexOf('      - name: Upload draft assets without replacement');
+  const runMarker = '        run: |\n';
+  const runStart = workflow.indexOf(runMarker, uploadStep);
+  const nextStep = workflow.indexOf('\n      - name:', runStart);
+  assert.ok(uploadStep >= 0 && runStart > uploadStep && nextStep > runStart);
+  const uploadScript = workflow.slice(runStart + runMarker.length, nextStep).split('\n')
+    .map((line) => line.startsWith('          ') ? line.slice(10) : line)
+    .join('\n');
+
+  await mkdir(join(root, '.tmp'), { recursive: true });
+  const scratch = await mkdtemp(join(root, '.tmp/release-upload-shell-test-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, 'fake-bin');
+  const candidate = join(scratch, 'release-candidate');
+  const notices = join(scratch, 'apps/kiki-gui');
+  await mkdir(fakeBin, { recursive: true });
+  await mkdir(candidate, { recursive: true });
+  await mkdir(notices, { recursive: true });
+
+  const installer = 'Kiki-1.2.3-setup.exe';
+  const localAssets = {
+    [installer]: 'installer bytes\n',
+    [`${installer}.sig`]: 'signature bytes\n',
+    [`${installer}.sha256`]: 'checksum bytes\n',
+    'latest.json': '{"version":"1.2.3"}\n',
+    'THIRD_PARTY_NOTICES.md': 'third-party notices\n',
+  };
+  for (const [name, contents] of Object.entries(localAssets)) {
+    const destination = name === 'THIRD_PARTY_NOTICES.md' ? join(notices, name) : join(candidate, name);
+    await writeFile(destination, contents);
+  }
+
+  const fakeGh = join(fakeBin, 'gh');
+  await writeFile(fakeGh, String.raw`#!/usr/bin/env bash
+set -euo pipefail
+if [[ "$1" != release ]]; then
+  echo "unexpected gh command: $*" >&2
+  exit 2
+fi
+case "$2" in
+  view)
+    if [[ "$*" == *"--json assets"* ]]; then
+      shopt -s nullglob
+      for path in "$FAKE_GH_REMOTE"/*; do
+        if [[ -f "$path" ]]; then basename "$path"; fi
+      done | sort
+      exit 0
+    fi
+    if [[ "$*" == *"--json isDraft"* ]]; then
+      printf '%s\n' "$FAKE_GH_DRAFT"
+      exit 0
+    fi
+    echo "unexpected gh release view arguments: $*" >&2
+    exit 2
+    ;;
+  download)
+    shift 2
+    shift
+    pattern=''
+    directory=''
+    while (($#)); do
+      case "$1" in
+        --pattern)
+          pattern="$2"
+          shift 2
+          ;;
+        --dir)
+          directory="$2"
+          shift 2
+          ;;
+        *)
+          shift
+          ;;
+      esac
+    done
+    printf '%s\n' "$pattern" >> "$FAKE_GH_DOWNLOAD_LOG"
+    mkdir -p "$directory"
+    cp "$FAKE_GH_REMOTE/$pattern" "$directory/$pattern"
+    ;;
+  upload)
+    shift 2
+    shift
+    asset="$1"
+    printf '%s\n' "$(basename "$asset")" >> "$FAKE_GH_UPLOAD_LOG"
+    ;;
+  *)
+    echo "unexpected gh release subcommand: $*" >&2
+    exit 2
+    ;;
+esac
+`);
+  await chmod(fakeGh, 0o755);
+
+  const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' : 'bash';
+  const harness = `export PATH="$PWD/fake-bin:$PATH"\n${uploadScript}`;
+  const tag = 'kiki-v1.2.3';
+  const lines = (contents) => contents.trim() === '' ? [] : contents.trim().split(/\r?\n/);
+  const execute = async ({ label, draft, remoteAssets }) => {
+    const remote = join(scratch, `remote-${label}`);
+    const runnerTemp = join(scratch, `runner-temp-${label}`);
+    const uploadLog = join(scratch, `uploads-${label}`);
+    const downloadLog = join(scratch, `downloads-${label}`);
+    await mkdir(remote, { recursive: true });
+    await mkdir(runnerTemp, { recursive: true });
+    for (const [name, contents] of Object.entries(remoteAssets)) {
+      await writeFile(join(remote, name), contents);
+    }
+    await writeFile(uploadLog, '');
+    await writeFile(downloadLog, '');
+    const result = spawnSync(bash, ['-c', harness], {
+      cwd: scratch,
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        KIKI_TAG: tag,
+        RUNNER_TEMP: runnerTemp,
+        FAKE_GH_REMOTE: remote,
+        FAKE_GH_DRAFT: draft,
+        FAKE_GH_UPLOAD_LOG: uploadLog,
+        FAKE_GH_DOWNLOAD_LOG: downloadLog,
+      },
+    });
+    return {
+      result,
+      uploads: lines(await readFile(uploadLog, 'utf8')),
+      downloads: lines(await readFile(downloadLog, 'utf8')),
+      output: `${result.stdout}\n${result.stderr}`,
+    };
+  };
+
+  const draftReuse = await execute({
+    label: 'draft-reuse', draft: 'true', remoteAssets: { ...localAssets },
+  });
+  assert.equal(draftReuse.result.status, 0, draftReuse.output);
+  assert.deepEqual(draftReuse.downloads, Object.keys(localAssets));
+  assert.deepEqual(draftReuse.uploads, []);
+
+  const draftMissingAssets = { ...localAssets };
+  delete draftMissingAssets['latest.json'];
+  const draftMissing = await execute({
+    label: 'draft-missing', draft: 'true', remoteAssets: draftMissingAssets,
+  });
+  assert.equal(draftMissing.result.status, 0, draftMissing.output);
+  assert.deepEqual(draftMissing.downloads, [installer, `${installer}.sig`, `${installer}.sha256`, 'THIRD_PARTY_NOTICES.md']);
+  assert.deepEqual(draftMissing.uploads, ['latest.json']);
+
+  const differentAssets = { ...localAssets, [`${installer}.sig`]: 'different signature bytes\n' };
+  const different = await execute({
+    label: 'draft-different', draft: 'true', remoteAssets: differentAssets,
+  });
+  assert.notEqual(different.result.status, 0, different.output);
+  assert.match(different.output, /Existing release asset differs: Kiki-1\.2\.3-setup\.exe\.sig/);
+  assert.deepEqual(different.downloads, [installer, `${installer}.sig`]);
+  assert.deepEqual(different.uploads, []);
+
+  const publicMissingAssets = { ...localAssets };
+  delete publicMissingAssets[installer];
+  const publicMissing = await execute({
+    label: 'public-missing', draft: 'false', remoteAssets: publicMissingAssets,
+  });
+  assert.notEqual(publicMissing.result.status, 0, publicMissing.output);
+  assert.match(publicMissing.output, /Published release is missing asset; refusing to mutate public assets/);
+  assert.deepEqual(publicMissing.downloads, []);
+  assert.deepEqual(publicMissing.uploads, []);
 });
