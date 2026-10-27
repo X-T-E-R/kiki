@@ -4480,9 +4480,8 @@ boundExecution,
   const usage = state.session?.usage;
   const usageError = state.session?.usage_error;
   const contextUsed = state.contextTokens ?? usage?.context_tokens;
-  const contextLimit =
-    state.maxContextTokens ??
-    (usage !== undefined && usage.context_limit > 0 ? usage.context_limit : undefined);
+  const contextLimit = state.maxContextTokens !== undefined && state.maxContextTokens > 0
+    ? state.maxContextTokens : undefined;
   // The main agent's automatic-compaction point, read from the server for the
   // meter's adjustable track (absent on engines that do not report one).
   const compactionProgress = useCompactionProgress(client, sessionId);

@@ -62,6 +62,8 @@ An approval appears in the timeline before a protected operation runs, with the 
 
 The rail describes one agent at a time — whichever you last clicked into or focused. The main agent and every subagent get the same page, and the rail follows you into a subagent's transcript. It shows what that agent is doing now, items waiting on you, the activity feed, and two independently folded capability sections.
 
+For the native executor, the context overview uses the selected agent's current effective model limit, including its bound profile and recipe constraints. Changing that model's configured limit refreshes the window, percentage and automatic-compaction point in open main and subagent views. An unavailable limit leaves the token count visible without a percentage; recorded usage for earlier turns stays unchanged.
+
 The agent tree labels external executors beside each agent's name. An **off** thinking effort is shown only when it was explicitly selected.
 
 **Capability inventory** has **Tools**, **Skills**, and **Subagents** tabs. The tools list includes plugin and MCP tools. Each subagent row names the profile and route, and whether that child can be launched now. Who this agent may start is set on the profile under **Child agents** — see [Dispatch capabilities](./settings.md#dispatch-capabilities).

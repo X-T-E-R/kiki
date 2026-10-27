@@ -9,6 +9,7 @@ export interface AgentStatusUpdatedPayload {
   planMode?: boolean;
   model?: string;
   thinkingEffort?: string;
+  /** Current effective input window; 0 clears an unknown native model limit, omission leaves other status slices unchanged. */
   maxContextTokens?: number;
   contextStrategy?: 'summarize' | 'auto' | 'fresh';
   contextStrategySource?: 'session' | 'profile' | 'global' | 'default' | 'subagent' | 'executor';

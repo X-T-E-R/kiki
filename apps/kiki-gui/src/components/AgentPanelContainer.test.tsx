@@ -12,6 +12,8 @@ import type { SessionViewFacade } from '@kiki/klient/session-view';
 import { AgentTranscript, type AgentTranscriptSnapshot, type ContentRef, type ContentSegment, type TranscriptOperation, type TranscriptTodo } from '@kiki/transcript';
 import { boundedTranscriptSnapshot, boundedTranscriptOps } from '../../../../packages/kap-server/src/transport/klient/boundedTranscript';
 import { boundedEntity, readContentSegment } from '../../../../packages/kap-server/src/transport/klient/boundedContent';
+import { SessionViewTarget } from '../../../../packages/kap-server/src/transport/klient/sessionViewTarget';
+import { AgentTranscriptLiveAdapter, type LiveAdapterBusEvent } from '../../../../packages/transcript-live/src/liveAdapter';
 import { UNKNOWN_AGENT_PANEL_METRICS } from '@kiki/session-core/session/agentPanel';
 import { I18nProvider } from '../i18n';
 import { AgentPanelContainer } from './AgentPanelContainer';
@@ -35,6 +37,8 @@ const harness = vi.hoisted(() => {
   const loadTranscriptEntities = vi.fn();
   const retryOpen = vi.fn();
   const resync = vi.fn();
+  const getAutoCompact = vi.fn();
+  const client = { getAutoCompact };
   const controller = {
     beginContentRead,
     loadTranscriptEntities,
@@ -68,6 +72,8 @@ const harness = vi.hoisted(() => {
     emit: () => { for (const listener of listeners) listener(); },
     getAgentCapabilities: vi.fn(),
     getAgentPlan: vi.fn(),
+    getAutoCompact,
+    client,
     spaceKey: 'main',
     scopeId: 'local',
     serverId: 'server-a',
@@ -81,6 +87,7 @@ vi.mock('../state/connection', () => ({
     spaceKey: harness.spaceKey,
     scopeId: harness.scopeId,
     meta: { server_id: harness.serverId },
+    client: harness.client,
     klient: {
       global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => harness.getAgentCapabilities(query, options.signal) } },
       session: (_sessionId: string) => ({
@@ -118,6 +125,8 @@ beforeEach(() => {
   getAgentCapabilities.mockReset();
   getAgentPlan.mockReset();
   getAgentPlan.mockResolvedValue(null);
+  harness.getAutoCompact.mockReset();
+  harness.getAutoCompact.mockRejectedValue(new Error('Fixture has no compaction status'));
   harness.beginContentRead.mockClear();
   harness.releaseTodoRead.mockClear();
   harness.retryTodoRead.mockClear();
@@ -1810,4 +1819,122 @@ it('prioritizes ready todoRead over old unknown history coverage without reverti
   expect(element.querySelector('[data-agent-notes-state="written"]')).not.toBeNull();
   expect(element.querySelector('[data-agent-notes-read-status="partial"]')).toBeNull();
   expect(element.textContent).toContain('Confirmed latest goal');
+});
+
+
+it('updates the selected agent window through serialized subscription ops, including model switches and unknown limits', async () => {
+  const limits: Record<string, number> = { main: 131_072, child: 64_000 };
+  getAgentCapabilities.mockResolvedValue({
+    context: 'live', owner: { agent_id: 'main' }, available: true, targets: [], tools: [], skills: [],
+    metrics: { main: { ...countedMetrics(1_200, 0.05), contextLimit: 131_072 }, child: { ...countedMetrics(3_400, 0.10), contextLimit: 64_000 } },
+  });
+  harness.getAutoCompact.mockImplementation(async (_sessionId: string, agentId: string) => ({
+    tokens: Math.round((limits[agentId] ?? 0) * 0.8), source: 'legacy',
+    effectiveMaxContextTokens: limits[agentId] ?? 0, reservedContextTokens: 0,
+  }));
+  let target: SessionViewTarget | undefined;
+  const view: SessionViewFacade = {
+    snapshot: async () => ({ as_of_seq: 1, epoch: 'e', session: { id: 'session', workspace_id: 'workspace_example',
+      title: 'Fixture', created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', busy: false,
+      negotiated: {}, permission_rules: [], message_count: 1, last_seq: 1,
+      metadata: { cwd: 'C:/example' }, agent_config: { model: 'fixture' },
+      usage: { input_tokens: 100, output_tokens: 12, cache_read_tokens: 0, cache_creation_tokens: 0, total_cost_usd: 0,
+        turn_count: 1, context_tokens: 79_100, context_limit: 131_072 } }, in_flight_turn: null,
+      messages: { items: [], has_more: false }, pending_approvals: [], pending_questions: [] }),
+    transcript: { page: vi.fn(), catchUp: vi.fn() },
+    subscribe: (_input, onSignal) => {
+      target = new SessionViewTarget('session', onSignal);
+      target.begin(1);
+      target.finish({ seq: 1, epoch: 'e' }, false);
+      return { close() {}, updateTranscriptCursor() {}, updateSessionCursor() {}, setTranscriptGrades() {}, nudge() {}, restart() {} };
+    },
+  };
+  const controller = new SessionController({} as SessionTransport, view, 'session', {
+    scheduler: { schedule: () => 0, cancel() {} },
+  });
+  await controller.open();
+  harness.holder.value = { subscribe: harness.registry.subscribe, snapshot: harness.registry.snapshot,
+    [Symbol.iterator]: () => [controller][Symbol.iterator]() };
+  const seq: Record<string, number> = { main: 1, child: 1 };
+  const adapters = { main: new AgentTranscriptLiveAdapter('main'), child: new AgentTranscriptLiveAdapter('child') };
+  const snapshots: Array<{ name: string; agentId: string; html: string }> = [];
+  const send = (event: Parameters<SessionController['handleTranscript']>[0]) => {
+    const serialized = JSON.parse(JSON.stringify(event));
+    target!.send({ type: event.type, session_id: 'session', payload: serialized,
+      seq: 1, epoch: 'e', timestamp: '2026-01-01T00:00:00.000Z' });
+  };
+  const publish = async (agentId: 'main' | 'child', model: string, maxContextTokens: number) => {
+    limits[agentId] = maxContextTokens;
+    const ops = adapters[agentId].map({ type: 'agent.status.updated', model, maxContextTokens } as LiveAdapterBusEvent);
+    const nextSeq = (seq[agentId] ?? 1) + 1;
+    seq[agentId] = nextSeq;
+    await act(async () => {
+      send({ type: 'transcript.ops', session_id: 'session', agent_id: agentId,
+        ops, cursor: { seq: nextSeq, epoch: 'e' }, through_seq: nextSeq });
+      controller.flushFrames();
+    });
+    await flushRender();
+  };
+  const capture = (name: string, agentId: string) => snapshots.push({ name, agentId, html: element.innerHTML });
+  const meter = () => element.querySelector('[data-inspector-overview] [role="meter"]');
+  try {
+    for (const agentId of ['main', 'child'] as const) {
+      const snapshot: AgentTranscriptSnapshot = { items: [{ kind: 'turn', turnId: 'historic', ordinal: 0,
+        state: 'completed', origin: { kind: 'user' }, steps: [], usage: { inputTokens: 100, outputTokens: 12 } }],
+        tasks: [], interactions: [], attachments: [], prompts: [], todos: [],
+        meta: { agent: { model: agentId === 'main' ? 'fixture' : 'child-model', contextTokens: agentId === 'main' ? 79_100 : 32_000,
+          maxContextTokens: limits[agentId] } } };
+      await act(async () => { send({ type: 'transcript.reset', session_id: 'session', agent_id: agentId, snapshot,
+        grade: 'delta', coverage: { kind: 'tail', hasMoreOlder: false }, cursor: { seq: 1, epoch: 'e' } }); });
+    }
+    const historyBefore = JSON.stringify(controller.getState().blocks);
+    await render('main', { part: 'overview', forest: forestOf(['main', 'child']) });
+    expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('79.1k / 131k');
+    expect(meter()?.getAttribute('aria-valuenow')).toBe('60');
+    capture('main-before', 'main');
+    await publish('main', 'fixture', 262_144);
+    expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('79.1k / 262k');
+    expect(meter()?.getAttribute('aria-valuenow')).toBe('30');
+    expect(element.textContent).toContain('210k');
+    expect(Number.parseFloat(element.querySelector<HTMLElement>('[data-overview-compact-mark]')?.style.left ?? '')).toBeCloseTo(80, 3);
+    capture('main-hot', 'main');
+    expect(controller.getAgentState('child')?.maxContextTokens).toBe(64_000);
+    await render('child', { part: 'overview', forest: forestOf(['main', 'child']) });
+    expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('32k / 64k');
+    await publish('child', 'child-model', 128_000);
+    expect(meter()?.getAttribute('aria-valuenow')).toBe('25');
+    expect(element.textContent).toContain('102k');
+    capture('child-hot', 'child');
+    expect(controller.getState().maxContextTokens).toBe(262_144);
+    await publish('child', 'switched-model', 160_000);
+    expect(meter()?.getAttribute('aria-valuenow')).toBe('20');
+    await render('child', { part: 'overview', overviewMode: 'cockpit', forest: forestOf(['main', 'child']) });
+    expect(element.querySelector('[data-cockpit-gauge="上下文"]')?.textContent).toContain('20%');
+    capture('child-cockpit-switched', 'child');
+    await publish('child', 'unknown', 0);
+    expect(element.querySelector('[data-cockpit-gauge="上下文"]')?.textContent).toContain('—');
+    await render('child', { part: 'overview', forest: forestOf(['main', 'child']) });
+    expect(meter()).toBeNull();
+    expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('32k');
+    expect(element.querySelector('[data-overview-compact-mark]')).toBeNull();
+    capture('child-unknown', 'child');
+    await render('main', { part: 'overview', forest: forestOf(['main', 'child']) });
+    expect(meter()?.getAttribute('aria-valuenow')).toBe('30');
+    await publish('main', 'unknown', 0);
+    expect(meter()).toBeNull();
+    expect(element.querySelector('[data-overview-context-figures]')?.textContent).toBe('79.1k');
+    capture('main-unknown', 'main');
+    expect(JSON.stringify(controller.getState().blocks)).toBe(historyBefore);
+    expect(harness.getAutoCompact.mock.calls.map((call) => call[1])).toContain('child');
+    const { existsSync } = await import('node:fs');
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const { join } = await import('node:path');
+    const repo = existsSync(join(process.cwd(), 'pnpm-workspace.yaml')) ? process.cwd() : join(process.cwd(), '../..');
+    const out = join(repo, '.tmp', 'context-limit-proof');
+    await mkdir(out, { recursive: true });
+    await writeFile(join(out, 'states.json'), JSON.stringify(snapshots, null, 2));
+  } finally {
+    await act(async () => { root.render(null); });
+    controller.close();
+  }
 });

@@ -130,6 +130,7 @@ export interface AgentStatusMeta {
   readonly thinkingEffort?: string;
   readonly usage?: AgentUsageMeta;
   readonly contextTokens?: number;
+  /** Current effective input window; 0 explicitly clears a previously known limit. */
   readonly maxContextTokens?: number;
   readonly contextUsage?: number;
   readonly permission?: 'manual' | 'auto' | 'review' | 'yolo';

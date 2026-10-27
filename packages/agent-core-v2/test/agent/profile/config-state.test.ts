@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { IAgentLLMRequesterService } from '#/agent/llmRequester/llmRequester';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IConfigService } from '#/app/config/config';
+import { resolveAutoCompact } from '#/agent/fullCompaction/autoCompact';
 import type { ModelRecord } from '#/kosong/model/model';
 import { IModelCatalog } from '#/kosong/model/catalog';
 import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
@@ -156,14 +158,53 @@ describe('ConfigState model capabilities', () => {
     });
   });
 
-  it('omits maxContextTokens when the bound model no longer resolves', () => {
+  it.each([
+    ['main', 100_000, 220_000],
+    ['sub', 131_072, 220_000],
+    ['independent', 90_000, 180_000],
+  ] as const)('publishes hot effective model limits for %s without rebinding', async (position, before, after) => {
+    await ctx.ready;
+    const fixture: TestProtocolModelConfig & Pick<ModelRecord, 'overrides' | 'usage'> = {
+      provider: 'fixture', model: 'fixture', maxContextSize: 64_000,
+      overrides: { maxContextSize: 131_072 },
+      usage: { main: { contextBudget: 100_000 }, independent: { contextBudget: 90_000 } },
+    };
+    kimiConfig = {
+      providers: { fixture: { type: 'openai', baseUrl: 'https://example.test/v1' } },
+      models: { fixture },
+      loopControl: { reservedContextSize: 10_000, compactionTriggerRatio: 0.8 },
+    };
+    await ctx.get(IConfigService).replace('models', kimiConfig.models);
+    await profile.bind({ model: 'fixture', delegationPosition: position,
+      resolvedProfile: normalizeAgentProfile({ name: 'fixture-role', contextBudget: 240_000,
+        modelProfiles: [{ alias: 'fixture', contextBudget: 220_000 }], systemPrompt: () => 'Fixture' }) });
+    const lastStatus = () => ctx.allEvents.findLast((entry) => entry.event === 'agent.status.updated' &&
+      typeof entry.args === 'object' && entry.args !== null && 'model' in entry.args)?.args;
+    expect(lastStatus()).toMatchObject({ model: 'fixture', maxContextTokens: before });
+    const bound = profile.data().boundProfile;
+    const bindings = ctx.allEvents.filter((entry) => entry.event === 'profile.bind').length;
+    const compactionBefore = resolveAutoCompact(profile.resolveModelContext()).tokens;
+    const updated: typeof fixture = { ...fixture,
+      overrides: { maxContextSize: 300_000 },
+      usage: { main: { contextBudget: 250_000 }, independent: { contextBudget: 180_000 } },
+    };
+    kimiConfig = { ...kimiConfig, models: { fixture: updated } };
+    await ctx.get(IConfigService).replace('models', kimiConfig.models);
+    await vi.waitFor(() => { expect(lastStatus()).toMatchObject({ model: 'fixture', maxContextTokens: after }); });
+    expect(profile.data().boundProfile).toEqual(bound);
+    expect(ctx.allEvents.filter((entry) => entry.event === 'profile.bind')).toHaveLength(bindings);
+    expect(resolveAutoCompact(profile.resolveModelContext()).tokens).toBeGreaterThan(compactionBefore);
+    expect(ctx.llmCalls).toHaveLength(0);
+  });
+
+  it('clears maxContextTokens when the bound native model no longer resolves', () => {
     profile.update({ modelAlias: 'ghost/model' });
 
     const statuses = ctx.allEvents.filter((entry) => entry.event === 'agent.status.updated');
     expect(statuses.length).toBeGreaterThan(0);
     const last = statuses.at(-1)?.args as { model?: string; maxContextTokens?: number };
     expect(last.model).toBe('ghost/model');
-    expect(last.maxContextTokens).toBeUndefined();
+    expect(last.maxContextTokens).toBe(0);
   });
 
   it('tracks thinking_toggle with the effort payload when effort changes', () => {

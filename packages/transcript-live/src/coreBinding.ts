@@ -2,6 +2,7 @@ import {
   IAgentLifecycleService,
   IAgentActivityView,
   IAgentPromptService,
+  IAgentProfileService,
   IAgentTaskService,
   IEventBus,
   ISessionMetadata,
@@ -330,6 +331,7 @@ export function bindSessionTranscript(
     const buffered = bufferedEvents.get(agentId) ?? [];
     bufferedEvents.delete(agentId);
     for (const event of buffered) processEvent(agentId, event);
+    agents.get(agentId)?.accessor.get(IAgentProfileService)?.republishStatus();
   };
 
   const subscribeAgent = (handle: IAgentScopeHandle, replay: boolean): void => {
@@ -353,6 +355,7 @@ export function bindSessionTranscript(
     const list = agentDisposables.get(handle.id) ?? [];
     list.push(busD);
     agentDisposables.set(handle.id, list);
+    if (!replay) handle.accessor.get(IAgentProfileService)?.republishStatus();
   };
 
   const interactionAgentId = (interaction: Interaction): string => {

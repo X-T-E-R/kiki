@@ -551,6 +551,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const routeMatchesSession = routeSessionId === undefined || routeSessionId === state.sessionId;
   const sessionMatchesState = state.session === undefined || state.session.id === state.sessionId;
   const canFallbackToState = controller === undefined && isMain && routeMatchesSession && sessionMatchesState;
+  const currentAgentState = agentState ?? (canFallbackToState ? state : undefined);
   const fallbackTodos = canFallbackToState ? state.todos : undefined;
   const rawTodos = (agentState?.todos ?? fallbackTodos ?? []).filter((todo): todo is typeof todo & { status: 'pending' | 'in_progress' | 'done' } =>
     todo.status === 'pending' || todo.status === 'in_progress' || todo.status === 'done');
@@ -596,7 +597,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const autoCompact = useAutoCompact({
     sessionId: part === 'overview' && visible ? state.sessionId : undefined,
     agentId,
-    refreshKey: `${agentState?.model ?? ''}:${agentState?.maxContextTokens ?? ''}`,
+    refreshKey: `${currentAgentState?.model ?? ''}:${currentAgentState?.maxContextTokens ?? ''}`,
   });
   const [scope, setScope] = useState<'agent' | 'tree'>('agent');
 
@@ -731,7 +732,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     </>;
   }
   const facts = overviewFacts({
-    t, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree,
+    t, agentId, state, agentState: currentAgentState, forest, usage, metrics, ids, treeComplete, tree,
     compactPoint: autoCompact?.status?.tokens,
   });
   if (part === 'overview') {
@@ -925,10 +926,10 @@ function overviewFacts(input: {
   const { t, agentId, state, agentState, forest, usage, metrics, ids, treeComplete, tree } = input;
   const isMain = agentId === MAIN_AGENT_ID;
   const node = forest.byId[agentId];
-  const contextUsed = agentState?.contextTokens ?? (isMain ? state.contextTokens ?? state.session?.usage?.context_tokens : node?.contextTokens)
+  const contextUsed = agentState?.contextTokens ?? node?.contextTokens
     ?? (known(usage.contextTokens) ? usage.contextTokens : undefined);
-  const contextLimit = agentState?.maxContextTokens ?? (isMain ? state.maxContextTokens ?? (state.session?.usage?.context_limit || undefined) : node?.maxContextTokens)
-    ?? (known(usage.contextLimit) && usage.contextLimit > 0 ? usage.contextLimit : undefined);
+  const reportedLimit = agentState === undefined ? node?.maxContextTokens : agentState.maxContextTokens;
+  const contextLimit = reportedLimit !== undefined && reportedLimit > 0 ? reportedLimit : undefined;
   const figures = figuresFrom(usage, t);
   // The standard inspector's own tree scope. It stays main-only on purpose:
   // the inspector offers a reader a switch between "this agent" and "the
@@ -969,7 +970,8 @@ function overviewFacts(input: {
   return {
     contextUsed,
     contextLimit,
-    compactPoint: input.compactPoint,
+    compactPoint: contextLimit !== undefined && input.compactPoint !== undefined && input.compactPoint > 0
+      ? input.compactPoint : undefined,
     figures,
     treeFigures,
     cockpitTreeFigures,

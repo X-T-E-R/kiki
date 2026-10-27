@@ -396,6 +396,9 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         }
       }),
     );
+    this._register(this.models.onDidChangeModels(() => {
+      this.republishStatus();
+    }));
     this._register(this.promptFields.onDidChange(() => {
       this.promptConfigurationSignature = 'invalidated';
     }));
@@ -3137,8 +3140,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
             ? this.profileState.thinkingLevel as ThinkingEffort
             : this.getEffectiveThinkingLevel()
           : undefined,
-        maxContextTokens:
-          maxContextTokens !== undefined && maxContextTokens > 0 ? maxContextTokens : undefined,
+        maxContextTokens: capabilities === undefined ? undefined : maxContextTokens ?? 0,
       }),
     );
   }

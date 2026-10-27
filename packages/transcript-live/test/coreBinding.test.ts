@@ -8,6 +8,7 @@ import {
   IAgentLoopService,
   IAgentPermissionModeService,
   IAgentPromptService,
+  IAgentProfileService,
   IAgentTaskService,
   IAgentToolRegistryService,
   IEventBus,
@@ -174,7 +175,7 @@ describe('bindSessionTranscript', () => {
       this.disposeHandlers.add(cb);
       return { dispose: () => this.disposeHandlers.delete(cb) };
     }
-    add(id: string, opts?: { loopStatus?: unknown; tasks?: readonly unknown[]; prompts?: { active?: unknown; pending?: readonly unknown[]; hold?: unknown } }): FakeAgentHandle {
+    add(id: string, opts?: { profileStatus?: () => Record<string, unknown>; loopStatus?: unknown; tasks?: readonly unknown[]; prompts?: { active?: unknown; pending?: readonly unknown[]; hold?: unknown } }): FakeAgentHandle {
       const bus = new FakeBus();
       const handle: FakeAgentHandle = {
         id,
@@ -182,6 +183,9 @@ describe('bindSessionTranscript', () => {
         accessor: {
           get: (token: unknown) => {
             if (token === IEventBus) return bus;
+            if (token === IAgentProfileService && opts?.profileStatus !== undefined) return {
+              republishStatus: () => bus.emit({ type: 'agent.status.updated', ...opts.profileStatus!() } as unknown as Event2<any>),
+            };
             if (token === IAgentLoopService) {
               return { status: () => opts?.loopStatus ?? { state: 'idle' } };
             }
@@ -245,6 +249,30 @@ describe('bindSessionTranscript', () => {
       },
     } as unknown as ISessionScopeHandle;
   }
+
+  it.each([false, true])('seeds current model metadata after attach/replay=%s and clears unknown limits per agent', async (replay) => {
+    const agents = new FakeAgents();
+    let window = 131_072;
+    const main = agents.add('main', { profileStatus: () => ({ model: 'fixture', maxContextTokens: window }) });
+    const child = agents.add('child', { profileStatus: () => ({ model: 'child-model', maxContextTokens: 64_000 }) });
+    const store = new TranscriptStore('session_limits');
+    const binding = bindSessionTranscript(store, fakeSession(new SessionInteractionService(new TestSessionStateService()), agents), undefined, undefined, replay);
+    onTestFinished(() => binding.dispose());
+    if (replay) {
+      store.ensureAgent('main').apply([{ op: 'meta.merge', meta: { agent: { model: 'old', maxContextTokens: 32_000 } } }]);
+      window = 262_144;
+      binding.finishReplay('main');
+      binding.finishReplay('child');
+    }
+    expect(store.getAgent('main')?.getMeta().agent).toMatchObject({ model: 'fixture', maxContextTokens: window });
+    expect(store.getAgent('child')?.getMeta().agent).toMatchObject({ model: 'child-model', maxContextTokens: 64_000 });
+    main.bus.emit({ type: 'agent.status.updated', model: 'fixture', maxContextTokens: 300_000 } as unknown as Event2<any>);
+    expect(store.getAgent('main')?.getMeta().agent?.maxContextTokens).toBe(300_000);
+    child.bus.emit({ type: 'agent.status.updated', model: 'unknown', maxContextTokens: 0 } as unknown as Event2<any>);
+    expect(store.getAgent('child')?.getMeta().agent).toMatchObject({ model: 'unknown', maxContextTokens: 0 });
+    main.bus.emit({ type: 'agent.status.updated', usage: {} } as unknown as Event2<any>);
+    expect(store.getAgent('main')?.getMeta().agent?.maxContextTokens).toBe(300_000);
+  });
 
   it.each(['main', 'child'])('preserves %s cold-seeded notes on the first live items-only update (NP-LIVE-FOLD)', (agentId) => {
     const agents = new FakeAgents();
