@@ -1031,12 +1031,27 @@ describe('GET /api/agents', () => {
   });
 
   it('projects scoped runtime auth through the real live and cold capability API without starting a vendor', async () => {
+    const script = join(home!, 'codex-fixture.mjs');
+    await writeFile(join(home!, 'config.toml'), [
+      '[agent_executor_overrides."codex-app-server"]',
+      `bin_path = "${script.replaceAll('\\', '/')}"`,
+    ].join('\n'));
     server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
     base = `http://127.0.0.1:${server.port}`;
-    const created = await (await authedFetch(server, base, '/api/sessions', {
+    const create = async () => (await authedFetch(server!, base, '/api/sessions', {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ metadata: { cwd: home }, agent_config: { execution: { executor: 'codex-app-server' } } }),
-    })).json() as Envelope<{ id: string }>;
+    })).json() as Promise<Envelope<{ id: string }>>;
+    const missing = await create();
+    expect(missing.code).toBe(ErrorCode.VALIDATION_FAILED);
+    expect(missing.msg).toContain('No executable source is available for agent executor "codex-app-server"');
+    await writeFile(script, [
+      'import { appendFileSync } from "node:fs";',
+      'appendFileSync(new URL("./codex-fixture-invocations", import.meta.url), JSON.stringify(process.argv.slice(2)) + "\\n");',
+      'if (process.argv.length !== 3 || process.argv[2] !== "--version") process.exit(1);',
+      'console.log("codex-fixture 1.0");',
+    ].join('\n'));
+    const created = await create();
     expect(created.code, created.msg).toBe(0);
     const manager = server.core.accessor.get(ISessionManager);
     const session = manager.get(created.data.id)!;
@@ -1055,6 +1070,7 @@ describe('GET /api/agents', () => {
       return agentCapabilitiesResponseSchema.parse(body.data);
     };
     const live = await read();
+    expect(live).toMatchObject({ context: 'live', live: true });
     expect(live.executor_auth).toMatchObject({ status: 'unknown', executor_id: 'codex-app-server', cwd: home });
     const metadata = session.accessor.get(ISessionMetadata);
     await metadata.updateAgent('main', (current) => ({ ...current, executorAuth: { ...live.executor_auth!, binding_fingerprint: '0'.repeat(64) } }));
@@ -1063,8 +1079,14 @@ describe('GET /api/agents', () => {
     expect((await read()).executor_auth).toBeUndefined();
     await metadata.updateAgent('main', (current) => ({ ...current, executorAuth: live.executor_auth }));
     await manager.close(created.data.id);
-    expect((await read()).executor_auth).toEqual(live.executor_auth);
+    const cold = await read();
+    expect(cold).toMatchObject({ context: 'live', live: false, available: false,
+      unavailable_reason_code: 'session_or_agent_not_live' });
+    expect(cold.executor_auth).toEqual(live.executor_auth);
     expect(manager.get(created.data.id)).toBeUndefined();
+    const invocations = (await readFile(join(home!, 'codex-fixture-invocations'), 'utf8')).trim().split('\n');
+    expect(invocations.length).toBeGreaterThan(0);
+    expect(invocations.every((args) => args === '["--version"]')).toBe(true);
   });
 
   it('answers capabilities for a cold session without resuming it', async () => {
