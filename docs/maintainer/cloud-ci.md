@@ -4,7 +4,7 @@ Use **Kiki Cloud CI** from the Actions page on the `kiki` branch, or dispatch it
 
 ```sh
 gh workflow run kiki-cloud-ci.yml --repo X-T-E-R/kiki --ref kiki \
-  -f target=both -f suite=smoke -f shard=1/5
+  -f target=baidu -f suite=smoke -f shard=1/5
 gh run list --repo X-T-E-R/kiki --workflow kiki-cloud-ci.yml --limit 5
 gh run watch RUN_ID --repo X-T-E-R/kiki --exit-status
 ```
@@ -15,24 +15,26 @@ Both runners must be online for `target=both` to finish. Each job records its ru
 
 | Selection | What runs | Target |
 | --- | --- | --- |
-| `smoke` | CI partition and desktop updater contract tests | `baidu`, `tencent`, or `both` |
-| `transcript` | The transcript package test suite | `baidu`, `tencent`, or `both` |
-| `ordinary-shard` | One of the existing five ordinary CI shards, excluding GUI and media-preview lanes | `tencent` |
+| `smoke` | CI partition and desktop updater contract tests | `baidu`, `hp`, or `both` |
+| `transcript` | The transcript package test suite | `baidu`, `hp`, or `both` |
+| `ordinary-shard` | One of the existing five ordinary CI shards, excluding GUI and media-preview lanes | `hp` |
 
-For example, run the third ordinary shard with `-f target=tencent -f suite=ordinary-shard -f shard=3/5`. Run all five shard selections to cover the ordinary lane. GUI, real media preview, lint, typecheck and packaging remain in the existing GitHub-hosted CI workflow.
+For example, run the third ordinary shard with `-f target=hp -f suite=ordinary-shard -f shard=3/5`. Run all five shard selections to cover the ordinary lane. GUI, real media preview, lint, typecheck and packaging remain in the existing GitHub-hosted CI workflow.
 
 The workflow installs the locked dependencies and uses `.nvmrc` and the repository's pnpm version. Ordinary shards build the same native auth and PTY dependencies as hosted CI. Vitest uses one worker; the workflow does not increase the Node heap limit.
 
 ## Runner contract
 
-The workflow selects Linux x64 machines with the common `kiki-ci` label and a provider label:
+The workflow selects Linux x64 machines with the common `kiki-ci` label, a host label and its capacity label:
 
-| Runner | Provider label | Capacity label | Planned service limit |
+| Runner | Host label | Capacity label | Service limit |
 | --- | --- | --- | --- |
 | `kiki-baidu-01` | `baidu` | `kiki-small` | 150% CPU, 3 GiB memory |
-| `kiki-tencent-01` | `tencent` | `kiki-medium` | 300% CPU, 5 GiB memory |
+| `kiki-hp-01` | `hp` | `kiki-medium` | 300% CPU, 5 GiB memory |
 
-Each runner processes one job at a time. The cloud host configuration owns service limits, the dedicated non-root account and runner installation. The repository workflow owns test selection. Keep deployment credentials, Docker access and sudo privileges out of the runner account.
+Each runner processes one job at a time. The host configuration owns service limits, the dedicated non-root account and runner installation. The repository workflow owns test selection. Keep deployment credentials, Docker access, privileged sockets and sudo privileges out of the runner account.
+
+HP runs inside the existing VM100 guest, sharing its kernel with other services. A dedicated user, systemd CPU and memory limits, and filesystem restrictions separate trusted CI work from those services; this is not a separate VM. Do not change the guest's memory allocation or restart it to prepare a job. The Tencent runner is retired from this workflow and must remain stopped.
 
 Only manual dispatch on `X-T-E-R/kiki` at `refs/heads/kiki` is accepted by this workflow. The host must also enforce those repository, event and ref values in a root-owned job-start hook before accepting jobs; labels alone do not stop another public-PR workflow from targeting a registered runner. Preserve this check when updating the runner service.
 

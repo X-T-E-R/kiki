@@ -7,11 +7,11 @@ on:
       target:
         description: Cloud runner
         required: true
-        default: tencent
+        default: baidu
         type: choice
-        options: [tencent, baidu, both]
+        options: [baidu, hp, both]
       suite:
-        description: Test selection (ordinary-shard requires Tencent)
+        description: Test selection (ordinary-shard requires HP)
         required: true
         default: smoke
         type: choice
@@ -32,8 +32,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cloud: ${{ fromJSON(inputs.target == 'both' && '["baidu","tencent"]' || inputs.target == 'baidu' && '["baidu"]' || '["tencent"]') }}
-    runs-on: [self-hosted, Linux, X64, kiki-ci, '${{ matrix.cloud }}']
+        cloud: ${{ fromJSON(inputs.target == 'both' && '["baidu","hp"]' || inputs.target == 'baidu' && '["baidu"]' || '["hp"]') }}
+    runs-on: [self-hosted, Linux, X64, kiki-ci, '${{ matrix.cloud }}', "${{ matrix.cloud == 'hp' && 'kiki-medium' || 'kiki-small' }}"]
     timeout-minutes: 90
     env:
       CLOUD_RUNNER: ${{ matrix.cloud }}
@@ -46,11 +46,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$(id -u)" != 0
-          case "$CLOUD_RUNNER" in baidu|tencent) ;; *) exit 1 ;; esac
+          case "$CLOUD_RUNNER" in baidu|hp) ;; *) exit 1 ;; esac
           case "$TEST_SUITE" in smoke|transcript|ordinary-shard) ;; *) exit 1 ;; esac
           case "$TEST_SHARD" in 1/5|2/5|3/5|4/5|5/5) ;; *) exit 1 ;; esac
-          if [[ "$TEST_SUITE" == ordinary-shard && "$CLOUD_RUNNER" != tencent ]]; then
-            echo 'ordinary-shard requires the Tencent runner; use smoke or transcript on Baidu.' >&2
+          if [[ "$TEST_SUITE" == ordinary-shard && "$CLOUD_RUNNER" != hp ]]; then
+            echo 'ordinary-shard requires the HP runner; use smoke or transcript on Baidu.' >&2
             exit 1
           fi
           uname -sm

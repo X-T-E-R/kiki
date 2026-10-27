@@ -129,6 +129,10 @@ await test('cloud tests require trusted manual dispatch and keep the existing re
   assert.match(workflow, /VITEST_MAX_WORKERS: '1'/);
   assert.match(workflow, /pnpm install --frozen-lockfile/);
   assert.match(workflow, /node scripts\/ci-test-partition\.mjs run ordinary "--shard=\$TEST_SHARD"/);
-  assert.match(workflow, /\$TEST_SUITE" == ordinary-shard && "\$CLOUD_RUNNER" != tencent/);
-  assert.doesNotMatch(workflow, /continue-on-error: true|NODE_OPTIONS|sudo|secrets\./);
+  assert.match(workflow, /default: baidu/);
+  assert.match(workflow, /options: \[baidu, hp, both\]/);
+  assert.match(workflow, /\["baidu","hp"\]/);
+  assert.match(workflow, /matrix\.cloud == 'hp' && 'kiki-medium' \|\| 'kiki-small'/);
+  assert.match(workflow, /\$TEST_SUITE" == ordinary-shard && "\$CLOUD_RUNNER" != hp/);
+  assert.doesNotMatch(workflow, /tencent|Tencent|continue-on-error: true|NODE_OPTIONS|sudo|secrets\./);
 });
