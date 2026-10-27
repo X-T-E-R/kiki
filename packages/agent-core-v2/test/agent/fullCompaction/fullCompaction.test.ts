@@ -2513,7 +2513,7 @@ describe('FullCompaction', () => {
       code: 'compaction.unable',
     });
 
-    ctx.clearContext();
+    await ctx.clearContext();
     ctx.appendExchange(1, 'old user one', 'old assistant one', 20);
     ctx.appendExchange(2, 'recent user two', 'recent assistant two', 80);
     const compacted = ctx.once('full_compaction.complete');
@@ -4601,7 +4601,7 @@ describe('queued manual compaction failures', () => {
     const compactor = ctx.get(IAgentFullCompactionService);
     expect(compactor.begin({ source: 'manual' })).toBe(true);
     expect(calls).toBe(0);
-    ctx.context.clear();
+    await ctx.context.clear();
     await lease?.dispose();
     await failed;
     await ctx.get(IAgentLoopService).settled();

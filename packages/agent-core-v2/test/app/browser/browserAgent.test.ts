@@ -52,6 +52,11 @@ async function execute(work: ToolExecution | Promise<ToolExecution>): Promise<Ex
   return 'execute' in execution ? execution.execute({ turnId: 1, toolCallId: 'test-call', signal: new AbortController().signal }) : execution;
 }
 
+function textOf(result: ExecutableToolResult): string {
+  if (typeof result.output === 'string') return result.output;
+  return result.output.map((part) => part.type === 'text' ? part.text : '').join('\n');
+}
+
 function sameBrowserControl(connections: BrowserConfig['connections']): { sections: Emitter<ConfigSectionChangedEvent>; config: BrowserConfig; store: { list: () => Promise<{ connections: Array<BrowserConfig['connections'][string] & { id: string }>; allowedBrowsers?: readonly string[]; disabledSources?: BrowserConfig['disabledSources'] }>; resolve: (id: string) => Promise<BrowserConfig['connections'][string] & { id: string }> }; configService: { onDidSectionChange: Emitter<ConfigSectionChangedEvent>['event']; get: <T>(domain: string) => T } } {
   const sections = new Emitter<ConfigSectionChangedEvent>();
   const config: BrowserConfig = { connections };
@@ -760,16 +765,16 @@ describe('native browser agent selection, schema and local file channel', () => 
       expect((await harness.service.tabs({ action: 'window', browser: 'a' })).isError).not.toBe(true);
       const closed = await harness.service.tabs({ action: 'close', browser: 'a', target: 'window-tab' });
       expect(closed.isError).toBe(true);
-      expect(String(closed.output)).toContain('not replayed');
+      expect(textOf(closed)).toContain('not replayed');
       harness.connect.mockImplementation(async () => {
         generation = 3;
         tabs = [{ tabId: 't1', targetId: 'blank' }, { tabId: 't2', targetId: 'fixture' }];
         return { browser: 'a', state: 'ready' as const, executionHost: 'fixture-host', generation };
       });
-      const reconnected = JSON.parse(String((await harness.service.connections({ action: 'connect', browser: 'a' })).output)) as { selectedTab?: unknown; selection?: string };
+      const reconnected = JSON.parse(textOf(await harness.service.connections({ action: 'connect', browser: 'a' }))) as { selectedTab?: unknown; selection?: string };
       expect(reconnected.selectedTab).toBeNull();
       expect(reconnected.selection).toContain('not replaced');
-      const listed = JSON.parse(String((await harness.service.tabs({ action: 'list', browser: 'a' })).output)) as { selected: unknown; tabs: { targetId: string }[] };
+      const listed = JSON.parse(textOf(await harness.service.tabs({ action: 'list', browser: 'a' }))) as { selected: unknown; tabs: { targetId: string }[] };
       expect(listed.tabs.map((tab) => tab.targetId)).toEqual(['blank', 'fixture']);
       expect(listed.selected).toBeNull();
       expect(calls).toEqual(['agent_browser_tab_new', 'agent_browser_window_new', 'agent_browser_tab_close']);
@@ -791,7 +796,7 @@ describe('native browser agent selection, schema and local file channel', () => 
         generation = 4;
         return { browser: 'a', state: 'ready' as const, executionHost: 'fixture-host', generation };
       });
-      const reconnected = JSON.parse(String((await harness.service.connections({ action: 'connect', browser: 'a' })).output)) as { selectedTab?: { tab?: string; generation?: number; observed?: boolean; frame?: string } };
+      const reconnected = JSON.parse(textOf(await harness.service.connections({ action: 'connect', browser: 'a' }))) as { selectedTab?: { tab?: string; generation?: number; observed?: boolean; frame?: string } };
       expect(reconnected.selectedTab).toMatchObject({ tab: 'fixture', generation: 4 });
       expect(reconnected.selectedTab?.observed).toBeUndefined();
       expect(reconnected.selectedTab?.frame).toBeUndefined();

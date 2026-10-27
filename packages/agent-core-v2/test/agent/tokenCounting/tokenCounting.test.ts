@@ -145,11 +145,11 @@ describe('Agent token counting', () => {
     expect(tokenCounting.isCurrentContextMeasured()).toBe(false);
   });
 
-  it('resets the ledger when the context is cleared', () => {
+  it('resets the ledger when the context is cleared', async () => {
     ctx.appendAssistantTextWithUsage(1, 'answer', 1_000);
     expect(tokenCounting.get().measured).toBe(1_000);
 
-    context.clear();
+    await context.clear();
 
     expect(tokenCounting.get()).toEqual({ size: 0, measured: 0, estimated: 0 });
     expect(ctx.agentState.get(tokenCountingKey).anchors).toEqual([

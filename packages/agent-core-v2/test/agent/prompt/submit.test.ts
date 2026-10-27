@@ -204,7 +204,7 @@ describe('prompt submit', () => {
       loop.cancel(undefined, new Error('abort'));
     });
     const result = await prompts.submitAndWait({ input: [{ type: 'text', text: 'Second.' }] });
-    stop.dispose();
+    await stop.dispose();
     expect(result.state).toBe('cancelled');
     expect(deliveryReminders(ctx)).toHaveLength(0);
     const last = ctx.get(IAgentContextMemoryService).get().at(-1);

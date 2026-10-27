@@ -270,7 +270,7 @@ async function harness(seen: { action?: string; args?: Record<string, unknown>; 
       if (planned.statusResponse === 'unavailable') return new Response('', { status: 503 });
       return new Response(JSON.stringify({ running: planned.statusResponse !== 'stopped', extension_connected: planned.statusResponse !== 'extension-off', version: 'v2.0.23' }), { status: 200 });
     }
-    const body = JSON.parse(String(init?.body)) as { action?: string; args?: Record<string, unknown>; session?: string };
+    const body = JSON.parse(await new Request(url, init).text()) as { action?: string; args?: Record<string, unknown>; session?: string };
     if (body.action === planned.failAction) {
       seen.push(body);
       throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');

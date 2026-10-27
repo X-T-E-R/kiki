@@ -656,11 +656,11 @@ describe('Agent context', () => {
     expect(tokenCounting.get(-1, -3)).toEqual({ size: 0, measured: 0, estimated: 0 });
   });
 
-  it('resets the measured context size when the context is cleared', () => {
+  it('resets the measured context size when the context is cleared', async () => {
     ctx.appendAssistantTextWithUsage(1, 'answer', 1_000);
     expect(tokenCounting.get().measured).toBe(1_000);
 
-    context.clear();
+    await context.clear();
 
     expect(tokenCounting.get()).toEqual({ size: 0, measured: 0, estimated: 0 });
   });

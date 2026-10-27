@@ -196,7 +196,7 @@ describe('SendMessage completion guidance', () => {
       expect(historyText(1)).toContain('If this was a progress update and work remains, continue');
       expect(sendCalls()).toEqual(['send-progress']);
     } finally {
-      registration.dispose();
+      await registration.dispose();
     }
   });
 
@@ -220,7 +220,7 @@ describe('SendMessage completion guidance', () => {
       expect(historyText(1)).toContain('Background work finished; inspect the result.');
       expect(loop.status()).toMatchObject({ state: 'idle', hasPendingRequests: false });
     } finally {
-      pending.dispose();
+      await pending.dispose();
     }
   });
 

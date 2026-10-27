@@ -802,7 +802,7 @@ describe('WorkspaceMcpService', () => {
         expect(handle.connectionManager.get('plugin-example:server')).toBeUndefined();
       } finally {
         release();
-        await Promise.all(disposers.map((dispose) => dispose()));
+        await Promise.all(disposers.map(async (dispose) => { await dispose(); }));
       }
     });
 
@@ -834,7 +834,7 @@ describe('WorkspaceMcpService', () => {
         expect(overlay.handle.connectionManager.resolved('plugin-example:server')).toBeUndefined();
         expect(overlay.handle.connectionManager.get('caller')?.status).toBe('connected');
       } finally {
-        await Promise.all(disposers.map((dispose) => dispose()));
+        await Promise.all(disposers.map(async (dispose) => { await dispose(); }));
       }
     }, 20_000);
 

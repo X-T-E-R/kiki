@@ -2508,8 +2508,8 @@ describe('Anthropic request tail structure', () => {
       model: 'gemini-3.8-flash', apiKey: 'YOUR_API_KEY', stream: false,
       clientFactory: () => new Anthropic({
         apiKey: 'YOUR_API_KEY', maxRetries: 0,
-        fetch: async (_input, init) => {
-          sent = JSON.parse(String(init?.body));
+        fetch: async (input, init) => {
+          sent = JSON.parse(await new Request(input, init).text()) as { messages: Array<{ role: string; content: Array<{ type: string; tool_use_id?: string }> }> };
           return new Response(JSON.stringify(anthropicMessageResponse()), { status: 200, headers: { 'content-type': 'application/json' } });
         },
       }),

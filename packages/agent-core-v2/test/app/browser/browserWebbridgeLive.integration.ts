@@ -46,10 +46,10 @@ describe.skipIf(process.env['KIKI_WEBBRIDGE_SMOKE'] !== '1')('live Kimi WebBridg
     let bridge: Awaited<ReturnType<typeof harness>> | undefined;
     try {
       vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
-        const url = String(input);
+        const url = input instanceof Request ? input.url : input instanceof URL ? input.href : input;
         if (!url.startsWith('http://127.0.0.1:10086/')) throw new Error('fixture fetch left the WebBridge daemon');
         if (init?.body !== undefined) {
-          const body = JSON.parse(String(init.body)) as { action?: string; session?: string; args?: { active?: boolean; url?: unknown; selector?: unknown } };
+          const body = JSON.parse(await new Request(input, init).text()) as { action?: string; session?: string; args?: { active?: boolean; url?: unknown; selector?: unknown } };
           if (body.session !== SESSION) throw new Error('fixture fetch left the smoke session');
           if (body.action === 'close_session' || body.args?.active === true) throw new Error('fixture fetch refused a session takeover');
           if (!['navigate', 'list_tabs', 'find_tab', 'snapshot', 'click', 'fill', 'close_tab'].includes(body.action ?? '')) throw new Error('fixture fetch refused an unapproved action');

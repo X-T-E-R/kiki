@@ -340,7 +340,7 @@ describe('AgentProfileService.applyProfile', () => {
     expect(textOf(snapshots().at(-1)!)).not.toContain(created.entry.body);
     expect(textOf(snapshots().at(-1)!)).toContain('status=empty');
     const retainedDelta = context.get().at(-1)!;
-    context.clear();
+    await context.clear();
     context.append(retainedDelta);
     await injector.reconcileAllAtSafeBoundary();
     expect(textOf(snapshots().at(-1)!)).toContain('Full snapshot; all sections replace earlier values.');
