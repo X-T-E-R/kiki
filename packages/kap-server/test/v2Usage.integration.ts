@@ -309,7 +309,7 @@ describe('server /api/usage', () => {
   }
 
   it('serves native source grouping and repeated profile filters with precise session attribution', async () => {
-    const at = BASE_TIME + 100 * DAY;
+    const at = BASE_TIME + 10 * DAY;
     const identity = { modelAlias: 'shared-alias', agentId: 'same-agent' };
     await writeWire(home!, WS_A, 'session-high', 'main', [
       usageRecord(at - 1, 'billing-a', 99, { ...identity, provider: 'provider-a', profileName: 'explore' }),
@@ -355,7 +355,7 @@ describe('server /api/usage', () => {
   });
 
   it('carries wire accounting provenance through the public response without hiding unpriced tokens', async () => {
-    const at = BASE_TIME + 100 * DAY;
+    const at = BASE_TIME + 10 * DAY;
     await writeWire(home!, WS_A, 'session-high', 'main', [
       usageRecord(at, 'billing-a', 0, { usageKnown: false }),
       usageRecord(at + 1, 'billing-a', 0),

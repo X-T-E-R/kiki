@@ -95,7 +95,8 @@ describe('server-v2 /api/secrets:reveal', () => {
     expect(config.body.code).toBe(0);
     expect(config.body.data.providers['inline']).toMatchObject({ has_api_key: true });
     expect(config.body.data.providers['inline']).not.toHaveProperty('api_key');
-    expect(config.body.data.providers['kimi']).toMatchObject({ has_api_key: true, api_key_env: 'KIMI_API_KEY' });
+    expect(config.body.data.providers['kimi']).toMatchObject({ has_api_key: false });
+    expect(config.body.data.providers['kimi']).not.toHaveProperty('api_key_env');
     const providers = await call<{ items: Record<string, unknown>[] }>('GET', '/providers');
     const single = await call<Record<string, unknown>>('GET', '/providers/inline');
     const mcp = await call<{ name: string; config: Record<string, unknown> }[]>('GET', '/mcp/servers');
