@@ -131,6 +131,7 @@ describe('globally enabled plugin registration on a new session', () => {
           tools.set(tool.name, tool);
           return { dispose: () => { tools.delete(tool.name); } };
         },
+        registerPreparation: () => ({ dispose() {} }),
         resolve: (name: string) => tools.get(name),
       } as unknown as IAgentToolRegistryService;
       const runtime = new FakeRuntime(

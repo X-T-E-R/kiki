@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IConfigService, ISessionManager, type Scope } from '@kiki/agent-core-v2';
+import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import { NotificationService } from '../../../src/services/notifications/notificationService';
@@ -30,6 +31,7 @@ describe('im session credentials', () => {
     const core = { instantiation: { provide() {} }, accessor: { get: (key: unknown) => {
       if (key === IConfigService) return config;
       if (key === ISessionManager) return { list: () => [] };
+      if (key === IPluginHostService) return { attachImAdapters: async () => {} };
       throw new Error('unexpected_app_service');
     } } } as unknown as Scope;
     service = new NotificationService(core, home, () => false, () => undefined);

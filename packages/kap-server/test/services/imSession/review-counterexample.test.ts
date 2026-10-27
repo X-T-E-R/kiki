@@ -2,6 +2,7 @@ import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IBotService, IConfigService, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionQuestionService, type Scope } from '@kiki/agent-core-v2';
+import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import type { SessionAdapter, SessionInbound, SessionOutbound, SessionPlatformId, SessionSink } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -430,6 +431,7 @@ function stubCore(pending: { id: string; kind: 'question'; payload: { questions:
     if (key === ISessionIndex) return { get: async (id: string) => id === 'home' ? { id } : undefined };
     if (key === ISessionManager) return { list: () => [], acquire: async () => ({ handle: { accessor: { get: sessionGet } }, dispose: async () => undefined }) };
     if (key === IBotService) return { list: async () => [], ensureHomeSession: async () => ({ homeSessionId: 'home' }) };
+    if (key === IPluginHostService) return { attachImAdapters: async () => {} };
     throw new Error('unexpected_app_service');
   } } } as unknown as Scope;
 }

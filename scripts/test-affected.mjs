@@ -188,7 +188,7 @@ function owningPackage(path, packages) {
 
 function incompleteReason(path) {
   const normalized = slash(path);
-  if (/[\r\n\"&|<>^%!]/.test(normalized)) return `path contains unsafe Windows shell characters: ${normalized}`;
+  if (/[\r\n"&|<>^%!]/.test(normalized)) return `path contains unsafe Windows shell characters: ${normalized}`;
   if (FULL_FILES.has(normalized)) return `global repository input changed: ${normalized}`;
   const prefix = SHARED_PREFIXES.find(entry => normalized.startsWith(entry));
   if (prefix) return `shared repository area changed: ${normalized}`;
@@ -240,7 +240,7 @@ function focusedCommands(changes, selected, affected) {
   const commands = [];
   if (selectedHasVitestProject && projects.length > 0) {
     const vitestArgs = ['exec', 'vitest', 'related', '--run', '--maxWorkers=2', '--passWithNoTests=false'];
-    for (const project of projects) vitestArgs.push(`--project=${project}`);
+    for (const project of projects) vitestArgs.push(`--project=${String(project)}`);
     vitestArgs.push(...related);
     commands.push(command('affected root Vitest relation', vitestArgs));
   }

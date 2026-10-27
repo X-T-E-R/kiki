@@ -47,7 +47,7 @@ async function repositoryFixture(t) {
   return { root, base: git(root, ['rev-parse', 'HEAD']) };
 }
 
-test('parses argument modes without allowing an ambiguous base and path set', () => {
+void test('parses argument modes without allowing an ambiguous base and path set', () => {
   assert.deepEqual(parseArguments(['focused', '--base', 'HEAD~1', '--plan']), {
     mode: 'focused', base: 'HEAD~1', paths: [], planOnly: true, receipt: undefined,
   });
@@ -58,14 +58,14 @@ test('parses argument modes without allowing an ambiguous base and path set', ()
   assert.throws(() => parseArguments(['full', '--path', 'a.ts']), /does not accept/);
 });
 
-test('parses rename and delete records without losing either rename path', () => {
+void test('parses rename and delete records without losing either rename path', () => {
   assert.deepEqual(parseNameStatus('R100\0packages/base/src/old.ts\0packages/base/src/new.ts\0D\0packages/base/src/gone.ts\0'), [
     { status: 'R100', oldPath: 'packages/base/src/old.ts', path: 'packages/base/src/new.ts' },
     { status: 'D', path: 'packages/base/src/gone.ts' },
   ]);
 });
 
-test('selects changed packages, reverse consumers, related Vitest, and bounded typechecks', () => {
+void test('selects changed packages, reverse consumers, related Vitest, and bounded typechecks', () => {
   const selected = selectAffected({ changes: [{ status: 'M', path: 'packages/base/src/value.ts' }], packages });
   assert.equal(selected.mode, 'focused');
   assert.deepEqual(selected.packages, ['@fixture/base']);
@@ -90,7 +90,7 @@ test('selects changed packages, reverse consumers, related Vitest, and bounded t
   }
 });
 
-test('keeps mapped rename focused and marks delete or unmappable changes incomplete', () => {
+void test('keeps mapped rename focused and marks delete or unmappable changes incomplete', () => {
   const renamed = selectAffected({
     changes: [{ status: 'R100', oldPath: 'packages/base/src/old.ts', path: 'packages/base/src/new.ts' }],
     packages,
@@ -114,7 +114,7 @@ test('keeps mapped rename focused and marks delete or unmappable changes incompl
   assert.equal(unknownDelete.mode, 'incomplete');
 });
 
-test('shared, global, setup, script, and unknown changes require an explicit full choice', () => {
+void test('shared, global, setup, script, and unknown changes require an explicit full choice', () => {
   for (const path of [
     'pnpm-lock.yaml',
     'vendor/archive.tgz',
@@ -132,14 +132,14 @@ test('shared, global, setup, script, and unknown changes require an explicit ful
   }
 });
 
-test('empty selection is explicitly incomplete instead of a pass', () => {
+void test('empty selection is explicitly incomplete instead of a pass', () => {
   const selected = selectAffected({ changes: [], packages });
   assert.equal(selected.mode, 'none');
   assert.deepEqual(selected.commands, []);
   assert.match(selected.reasons[0], /no pass claim/);
 });
 
-test('base collection includes untracked files and rejects a missing base', async t => {
+void test('base collection includes untracked files and rejects a missing base', async t => {
   const { root, base } = await repositoryFixture(t);
   await writeFile(join(root, 'packages/base/src/untracked.ts'), 'export {};\n');
   const collected = collectBaseChanges(root, base);
@@ -151,7 +151,7 @@ test('base collection includes untracked files and rejects a missing base', asyn
   assert.match(missing.reason, /cannot be resolved/);
 });
 
-test('base collection preserves mapped rename and delete facts from Git', async t => {
+void test('base collection preserves mapped rename and delete facts from Git', async t => {
   const { root, base } = await repositoryFixture(t);
   git(root, ['mv', 'packages/base/src/old.ts', 'packages/base/src/new.ts']);
   await writeFile(join(root, 'packages/base/src/delete.ts'), 'export {};\n');
@@ -182,7 +182,7 @@ function fakeChild(exitCode) {
   return child;
 }
 
-test('launches parameter arrays, propagates failure, and marks later commands skipped', async t => {
+void test('launches parameter arrays, propagates failure, and marks later commands skipped', async t => {
   const root = await mkdtemp(join(tmpdir(), 'test-affected-run-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const launches = [];
@@ -209,7 +209,7 @@ test('launches parameter arrays, propagates failure, and marks later commands sk
   assert.equal(results[1].status, 'skipped');
 });
 
-test('full collection is complete only through the explicit full mode', () => {
+void test('full collection is complete only through the explicit full mode', () => {
   const commands = fullCommands();
   const rootVitest = commands.find(entry => entry.args.includes('vitest'));
   assert.deepEqual(rootVitest.args, ['exec', 'vitest', 'run', '--project=!kap-server']);
@@ -220,7 +220,7 @@ test('full collection is complete only through the explicit full mode', () => {
   assert.ok(commands.some(entry => entry.label === 'repository node:test contracts' && entry.args.includes('--test-concurrency=2')));
 });
 
-test('legacy promote entry keeps its five-command contract and continues after failure', () => {
+void test('legacy promote entry keeps its five-command contract and continues after failure', () => {
   const launches = [];
   const exits = [1, 0, 0, 0, 0];
   const code = runPromoteTests({
@@ -237,7 +237,7 @@ test('legacy promote entry keeps its five-command contract and continues after f
   assert.ok(launches.every(launch => Array.isArray(launch.args)));
 });
 
-test('uses pnpm.cmd directly when npm_execpath is absent on Windows', () => {
+void test('uses pnpm.cmd directly when npm_execpath is absent on Windows', () => {
   const launch = pnpmLaunch(['--version'], { npm_execpath: undefined });
   assert.equal(launch.command, process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm');
   assert.deepEqual(launch.args, ['--version']);

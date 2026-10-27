@@ -62,6 +62,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     ],
     [
       "DELETE",
+      "/api/im/sessions/targets/{id}/notify/{channelId}",
+    ],
+    [
+      "DELETE",
       "/api/mcp/servers/{name}",
     ],
     [
@@ -2007,6 +2011,10 @@ exports[`API surface snapshot > matches the documented v2 route table and meta e
     [
       "PUT",
       "/api/im/sessions/targets/{id}/internal",
+    ],
+    [
+      "PUT",
+      "/api/im/sessions/targets/{id}/notify/{channelId}",
     ],
     [
       "PUT",

@@ -430,7 +430,7 @@ export class McpConnectionManager implements McpConnectionView {
     for (const entry of computerEntries) {
       if (this.stopping || !computerSpawnHeld(entry.name, entry.config)) continue;
       entry.accepting = false;
-      if (entry.calls.size > 0) await Promise.all([...entry.calls]);
+      if (entry.calls.size > 0) await Promise.all(entry.calls);
       if (this.stopping || this.entries.get(entry.name) !== entry) continue;
       if (entry.client !== undefined) {
         try {

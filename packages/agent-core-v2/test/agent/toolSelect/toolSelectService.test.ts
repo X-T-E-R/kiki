@@ -1262,9 +1262,10 @@ describe('AgentToolSelectService executor interception', () => {
     h.contextMemory.history.push(schemaMessage(tool.name));
     expect(h.sut.shapeTools(h.registry.list()).find((entry) => entry.name === tool.name)?.deferred).toBe(true);
     await plugin.dispose();
-    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toEqual([]);
     expect(h.sut.shapeTools(h.registry.list()).map((entry) => entry.name)).not.toContain(tool.name);
     disposables.add(h.registry.register(new EchoTool(tool.name), { source: 'plugin', disclosure: 'deferred' }));
+    expect(h.sut.shapeHistory(h.contextMemory.get())).toBe(h.contextMemory.get());
     expect(h.sut.load([tool.name]).alreadyAvailable).toEqual([tool.name]);
     expect(h.sut.drainPendingToolSchemas()).toBeUndefined();
     expect(wire()).toBe(initial);
@@ -1415,7 +1416,7 @@ describe('AgentToolSelectService loadable-tools announcements', () => {
     await announce(h);
     expect(await announce(h, 2)).toBeUndefined();
 
-    h.contextMemory.clear();
+    await h.contextMemory.clear();
     const reannounced = await announceAfterCompaction(h);
     expect(reannounced).toContain(`<tools_added>\n${MCP_ALPHA} — ${MCP_ALPHA} desc\n${MCP_BETA} — ${MCP_BETA} desc\n</tools_added>`);
   });

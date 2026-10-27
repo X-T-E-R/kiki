@@ -13,7 +13,7 @@ import { IOAuthService } from '#/app/auth/auth';
 import { IPluginService } from '#/app/plugin/plugin';
 import { IPluginUsageService } from '#/app/pluginUsage/pluginUsage';
 import { PluginUsageService } from '#/app/pluginUsage/pluginUsageService';
-import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAtomicDocumentStore, IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
@@ -25,6 +25,8 @@ import { LifecycleScope } from '#/app/scopes';
 import { IProviderService } from '#/kosong/provider/provider';
 import { IAgentPluginToolService, AgentPluginToolService } from '#/agent/userTool/pluginToolService';
 import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCatalog';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
@@ -132,7 +134,11 @@ function liveAgent(media?: IAgentPluginMediaService) {
     stubPair(ISessionMediaStore, { _serviceBrand: undefined, pathFor: () => undefined, resolveDisplayPath: async () => undefined,
       read: async () => undefined, open: async () => undefined, materialize: async () => undefined }),
   ]);
-  const agent = host.childOf(session, LifecycleScope.Agent, 'continuing-agent', media === undefined ? [] : [stubPair(IAgentPluginMediaService, media)]);
+  const agent = host.childOf(session, LifecycleScope.Agent, 'continuing-agent', [
+    stubPair(IAgentToolExecutorService, {} as IAgentToolExecutorService),
+    stubPair(IAgentScopeContext, {} as IAgentScopeContext),
+    ...(media === undefined ? [] : [stubPair(IAgentPluginMediaService, media)]),
+  ]);
   return {
     registry: agent.accessor.get(IAgentToolRegistryService),
     pluginTools: agent.accessor.get(IAgentPluginToolService),
@@ -168,9 +174,21 @@ beforeEach(async () => {
     { pathClass: process.platform === 'win32' ? 'win32' : 'posix' });
   Object.assign(runtime, { fs: new HostFileSystem() });
   const documents = new Map<string, unknown>();
+  const textDocuments = new Map<string, string>();
   host = createScopedTestHost([
     stubPair(IAtomicDocumentStore, { get: async <T>(scope: string, key: string) => documents.get(`${scope}:${key}`) as T | undefined,
       set: async <T>(scope: string, key: string, value: T) => { documents.set(`${scope}:${key}`, value); } } as IAtomicDocumentStore),
+    stubPair(IAtomicTomlDocumentStore, {
+      getText: async (scope: string, key: string) => textDocuments.get(`${scope}:${key}`),
+      setText: async (scope: string, key: string, text: string) => { textDocuments.set(`${scope}:${key}`, text); },
+      compareAndSetText: async (scope: string, key: string, expected: string | undefined, next: string | undefined) => {
+        const name = `${scope}:${key}`;
+        if (textDocuments.get(name) !== expected) return false;
+        if (next === undefined) textDocuments.delete(name);
+        else textDocuments.set(name, next);
+        return true;
+      },
+    } as IAtomicTomlDocumentStore),
     stubPair(IBootstrapService, stubBootstrap(path.join(root, 'home'))),
     stubPair(IProviderService, stubProviderService()),
     stubPair(ISessionManager, { list: () => [], get: () => undefined } as unknown as ISessionManager),

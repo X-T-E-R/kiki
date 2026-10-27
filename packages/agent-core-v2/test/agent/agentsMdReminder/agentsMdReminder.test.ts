@@ -154,9 +154,9 @@ function createHarness(
       reg.defineInstance(IEventBus, eventBus);
       registerLogServices(reg);
       reg.definePartialInstance(IAgentContextMemoryService, { get: () => history });
+      reg.define(IAgentToolRegistryService, AgentToolRegistryService);
       reg.define(IAgentContextInjectorService, AgentContextInjectorService);
       if (options.withRealExecutor === true) {
-        reg.define(IAgentToolRegistryService, AgentToolRegistryService);
         reg.define(IAgentToolExecutorService, AgentToolExecutorService);
         reg.defineInstance(IAgentScopeContext, {
           _serviceBrand: undefined,

@@ -240,6 +240,7 @@ describe('plugin messages.send', () => {
     const executor = { hooks: { onDidExecuteTool: new OrderedHookSlot<ToolDidExecuteContext>() }, execute: async function* (tools: ToolCall[]): AsyncGenerator<ToolExecutionResult> {
       calls.push(tools[0]!);
       await release.promise;
+      yield* [];
       throw new Error('transport ended after submission');
     } } as unknown as IAgentToolExecutorService;
     const first = setup(workspace, undefined, 'workspace-a', executor);

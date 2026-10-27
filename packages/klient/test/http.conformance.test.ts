@@ -164,10 +164,10 @@ it('persona REST supports action suffixes and character-card import/export', asy
     expect(preview.definition.name).toBe('Example');
     const imported = await api.importCard({ ...input, id: 'example-import' });
     expect(imported.snapshot.definition.id).toBe('example-import');
-    await expect(api.delete(copy.definition.id)).rejects.toThrow('session index is building');
-    expect((await api.get(copy.definition.id)).definition.id).toBe(copy.definition.id);
     await server.core.accessor.get(ISessionIndex).prepare();
+    expect((await api.get(copy.definition.id)).definition.id).toBe(copy.definition.id);
     expect(await api.delete(copy.definition.id)).toEqual({ deleted: true, memory: { status: 'committed' } });
+    await expect(api.get(copy.definition.id)).rejects.toThrow();
     await klient.global.kosong.addProvider({ id: 'example-model', model: 'example-model', protocol: 'openai', baseUrl: 'http://127.0.0.1:1', maxContextSize: 1000, auth: { method: 'api-key', apiKey: 'test-key' } });
     await api.put({ definition: { ...created.definition, modelAlias: 'example-model' } });
     const session = await klient.rest.sessions.create({ persona: created.definition.id, delivery: 'message', ephemeral: false, metadata: { cwd: process.cwd() } });

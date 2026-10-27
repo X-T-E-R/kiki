@@ -1320,7 +1320,7 @@ include = ["memory_snapshot"]
     expect(item('openclaw-acp')?.kiki_mcp?.support.fact).toContain('mcpServers');
     expect(item('claude-acp')?.kiki_mcp?.support).toMatchObject({ state: 'supported' });
     expect(item('claude-acp')?.kiki_mcp?.support.fact).toContain('supports_mcp is true');
-    expect(item('gemini-acp')?.kiki_mcp?.support.state).toBe('undeclared');
+    expect(item('gemini-acp')?.kiki_mcp?.support).toMatchObject({ state: 'supported' });
     expect(item('codex-app-server')?.kiki_mcp?.support).toMatchObject({ state: 'supported' });
     const cleared = await patchConfig({ agent_executor_overrides: { 'agy-cli': { defaults: { inject_kiki_mcp: null } } } });
     expect(cleared.raw?.['agent_executor_overrides']).toEqual({

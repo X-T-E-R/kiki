@@ -21,7 +21,7 @@ export function pnpmSpawnOptions(env = process.env) {
 export function pnpmSpawnArgs(args, env = process.env) {
   if (!pnpmSpawnOptions(env).shell) return args;
   return args.map((value) => {
-    if (/[\r\n\"&|<>^%!]/.test(value)) throw new Error(`unsafe Windows pnpm argument: ${value}`);
+    if (/[\r\n"&|<>^%!]/.test(value)) throw new Error(`unsafe Windows pnpm argument: ${value}`);
     return /^[A-Za-z0-9_./:=@+-]+$/.test(value) ? value : JSON.stringify(value);
   });
 }

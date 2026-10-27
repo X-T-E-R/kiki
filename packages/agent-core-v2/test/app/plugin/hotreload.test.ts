@@ -21,6 +21,8 @@ import { IRequestIdentityCatalog } from '#/app/requestIdentity/requestIdentityCa
 import { ISkillDiscovery } from '#/app/skillCatalog/skillDiscovery';
 import { LifecycleScope } from '#/app/scopes';
 import { IAgentPluginToolService, AgentPluginToolService } from '#/agent/userTool/pluginToolService';
+import { IAgentToolExecutorService } from '#/agent/toolExecutor/toolExecutor';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentRuntimeService } from '#/agent/runtimeBinding/agentRuntime';
@@ -28,7 +30,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentPluginMediaService } from '#/agent/pluginMedia/pluginMedia';
 import { ISessionMediaStore } from '#/agent/media/sessionMediaStore';
 import { ISessionManager } from '#/app/sessionManager/sessionManager';
-import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { IAtomicDocumentStore, IAtomicTomlDocumentStore } from '#/persistence/interface/atomicDocumentStore';
 import { ISessionContext, makeSessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionWorkspaceContext } from '#/session/workspaceContext/workspaceContext';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
@@ -108,11 +110,23 @@ function makeHost(home: string): { readonly host: ScopedTestHost; readonly root:
   Object.assign(runtime, { fs: new HostFileSystem() });
   const root = path.dirname(home);
   const documents = new Map<string, unknown>();
+  const textDocuments = new Map<string, string>();
   const host = createScopedTestHost([
     stubPair(IAtomicDocumentStore, {
       get: async <T>(scope: string, key: string) => documents.get(`${scope}:${key}`) as T | undefined,
       set: async <T>(scope: string, key: string, value: T) => { documents.set(`${scope}:${key}`, value); },
     } as IAtomicDocumentStore),
+    stubPair(IAtomicTomlDocumentStore, {
+      getText: async (scope: string, key: string) => textDocuments.get(`${scope}:${key}`),
+      setText: async (scope: string, key: string, text: string) => { textDocuments.set(`${scope}:${key}`, text); },
+      compareAndSetText: async (scope: string, key: string, expected: string | undefined, next: string | undefined) => {
+        const name = `${scope}:${key}`;
+        if (textDocuments.get(name) !== expected) return false;
+        if (next === undefined) textDocuments.delete(name);
+        else textDocuments.set(name, next);
+        return true;
+      },
+    } as IAtomicTomlDocumentStore),
     stubPair(IBootstrapService, stubBootstrap(home)),
     stubPair(IConfigService, configStub()),
     stubPair(IFlagService, { enabled: () => true } as unknown as IFlagService),
@@ -170,7 +184,10 @@ describe('plugin hot reload lifecycle', () => {
         read: async () => undefined, open: async () => undefined, materialize: async () => undefined }),
       stubPair(IAgentPluginMediaService, { api: () => undefined } as unknown as IAgentPluginMediaService),
     ]);
-    const agent = host.childOf(session, LifecycleScope.Agent, 'agent');
+    const agent = host.childOf(session, LifecycleScope.Agent, 'agent', [
+      stubPair(IAgentToolExecutorService, {} as IAgentToolExecutorService),
+      stubPair(IAgentScopeContext, {} as IAgentScopeContext),
+    ]);
     const registry = agent.accessor.get(IAgentToolRegistryService);
     const pluginTools = agent.accessor.get(IAgentPluginToolService);
     await pluginTools.ready();

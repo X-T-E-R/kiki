@@ -545,14 +545,16 @@ describe('server-v2 /api model/provider catalog', () => {
     expect(config.body.data.providers['kimi']).not.toHaveProperty('api_key');
   });
 
-  it('reports a declared process environment key as an env source across both read projections', async () => {
+  it('does not read an undeclared process environment key across provider projections', async () => {
     vi.stubEnv('KIMI_API_KEY', 'sk-shell-only');
     await boot('[providers.kimi]\ntype = "kimi"\n');
     const single = await getJson<Record<string, unknown>>('/api/providers/kimi');
-    expect(single.body.data).toMatchObject({ api_key_env: 'KIMI_API_KEY', has_api_key: true });
+    expect(single.body.data).toMatchObject({ has_api_key: false });
+    expect(single.body.data).not.toHaveProperty('api_key_env');
     expect(single.body.data).not.toHaveProperty('api_key');
     const config = await getJson<{ providers: Record<string, Record<string, unknown>> }>('/api/config');
-    expect(config.body.data.providers['kimi']).toMatchObject({ api_key_env: 'KIMI_API_KEY', has_api_key: true });
+    expect(config.body.data.providers['kimi']).toMatchObject({ has_api_key: false });
+    expect(config.body.data.providers['kimi']).not.toHaveProperty('api_key_env');
     expect(config.body.data.providers['kimi']).not.toHaveProperty('api_key');
     vi.unstubAllEnvs();
   });

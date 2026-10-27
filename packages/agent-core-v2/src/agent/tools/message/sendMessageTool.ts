@@ -67,7 +67,6 @@ export const SendMessageToolInputSchema = z.object({
   }
 });
 
-type MessageBatchItem = z.infer<typeof MessageBatchItemSchema>;
 type SendMessageToolInput = z.infer<typeof SendMessageToolInputSchema>;
 
 export interface ISendMessageTool extends AgentTool<SendMessageToolInput> {
