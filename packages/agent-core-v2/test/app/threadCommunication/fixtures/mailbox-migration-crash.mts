@@ -8,7 +8,7 @@ import { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/d
 const [home = '', boundary = 'importing'] = process.argv.slice(2);
 const service = createMailboxMigrationService(home);
 if (boundary === 'rollback-authority') {
-  const original = CanonicalMailboxDatabase.prototype.metadata;
+  const original = Object.getOwnPropertyDescriptor(CanonicalMailboxDatabase.prototype, 'metadata')?.value as CanonicalMailboxDatabase<unknown>['metadata'];
   CanonicalMailboxDatabase.prototype.metadata = async function<T>(key: string, value?: T): Promise<T | undefined> {
     const result = await original.call(this, key, value) as T | undefined;
     if (key === 'authority' && value === 'rolled_back') {

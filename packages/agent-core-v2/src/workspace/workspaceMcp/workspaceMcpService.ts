@@ -437,8 +437,11 @@ export class WorkspaceMcpService extends Disposable implements IWorkspaceMcpServ
     const previousNames = entry.allNames;
     entry.allNames = Object.keys(all);
     const configuredNames = Object.keys(entry.overlay.configuredServers?.() ?? {});
-    await Promise.all([...new Set([...previousNames, ...configuredNames])].filter((name) => !Object.hasOwn(all, name))
-      .map((name) => entry.overlay.removeConfiguredServer?.(name, 'plugin')));
+    const removals = [...new Set([...previousNames, ...configuredNames])]
+      .filter((name) => !Object.hasOwn(all, name))
+      .map((name) => entry.overlay.removeConfiguredServer?.(name, 'plugin'))
+      .filter((removal) => removal !== undefined);
+    await Promise.all(removals);
     if (revision !== entry.refreshRevision || this.sessionOverlays.get(sessionId) !== entry) return;
     const hidden = new Set([...previousNames, ...entry.allNames].filter((name) =>
       !Object.hasOwn(enabled, name) && !this.mcpConfig.isFileServer?.(name),

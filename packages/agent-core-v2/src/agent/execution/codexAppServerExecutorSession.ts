@@ -243,7 +243,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     const roots = this.#roots();
     this.#harnessMcp ??= await acquireHarnessMcp(this.context, roots.workDir);
     await this.#alignKikiToolApproval();
-    await this.#client.connect(controller.signal).finally(() => this.#authUpdates);
+    try {
+      await this.#client.connect(controller.signal);
+    } finally {
+      await this.#authUpdates;
+    }
     await recordNegotiatedSnapshot(this.context, {
       agentVersion: this.#client.status().agentVersion,
     });
@@ -475,7 +479,12 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
     cleanup: () => void,
   ): Promise<{ readonly summary: string; readonly usage?: TokenUsage }> {
     try {
-      const completed = await handle.completion.finally(() => this.#authUpdates);
+      let completed: Awaited<typeof handle.completion>;
+      try {
+        completed = await handle.completion;
+      } finally {
+        await this.#authUpdates;
+      }
       const turnResult = turnResultFromCodex(completed);
       if (turnResult.type === 'completed') {
         const usage = usageFromCodex(completed);

@@ -382,7 +382,7 @@ interface AgentRpcPassthroughAPI {
   setActiveTools: (payload: SetActiveToolsPayload) => void;
   stopTask: (payload: StopTaskPayload) => void;
   detachTask: (payload: DetachTaskPayload) => AgentTaskInfo | undefined;
-  clearContext: (payload: EmptyPayload) => void;
+  clearContext: (payload: EmptyPayload) => Promisable<void>;
   createGoal: (payload: CreateGoalPayload) => Promisable<GoalSnapshot>;
   getGoal: (payload: EmptyPayload) => GoalToolResult;
   pauseGoal: (payload: EmptyPayload) => Promisable<GoalSnapshot>;

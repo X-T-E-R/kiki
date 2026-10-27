@@ -324,7 +324,7 @@ describe('strict session media', () => {
   it('checks Matrix identity through whoami and keeps credentials out of diagnostics', async () => {
     const requests: { url: string; authorization: string | null }[] = [];
     const fetcher: typeof fetch = async (url, init) => {
-      requests.push({ url: String(url), authorization: new Headers(init?.headers).get('authorization') });
+      requests.push({ url: typeof url === 'string' ? url : url instanceof URL ? url.href : url.url, authorization: new Headers(init?.headers).get('authorization') });
       return Response.json({ user_id: '@bot:example.test' });
     };
     expect(await checkRealtimeSessionAccount('matrix', 'https://matrix.example.test\nsecret', fetcher)).toEqual({ ok: true, accountId: '@bot:example.test' });

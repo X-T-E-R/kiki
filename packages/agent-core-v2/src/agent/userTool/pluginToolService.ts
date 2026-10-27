@@ -284,7 +284,7 @@ export class AgentPluginToolService extends Service implements IAgentPluginToolS
         result = item;
         break;
       }
-    } finally { observation.dispose(); }
+    } finally { await observation.dispose(); }
     if (result === undefined) throw new Error2(ErrorCodes.REQUEST_INVALID, 'SendMessage did not return a receipt.');
     if (result.result.isError === true) {
       const output = typeof result.result.output === 'string' ? result.result.output : 'SendMessage failed.';
