@@ -42,7 +42,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { parseUsageRangeProjection } from '../src/usage/usageRangeProjection';
-import { UsageRangeFold, type RangeFoldHead } from '../src/usage/usageRangeFold';
+import { UsageRangeFold, UsageRangeFoldChangedError, type RangeFoldHead } from '../src/usage/usageRangeFold';
 import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
 
 const queryFixtures: { home: string; ix: TestInstantiationService; store: IQueryStore }[] = [];
@@ -2753,6 +2753,32 @@ describe('shared agent and history usage projection', () => {
 
 
 describe('SQLite UsageRangeFold publication', () => {
+  it('reuses committed fold rows across pages and discards them after an interleaved revision', async () => {
+    const saved = await openRange([], {}, true);
+    const fold = new UsageRangeFold(saved.store, 'cached-pages', 100, 100);
+    const session = summary('session', 'workspace');
+    const fact = { time: 1, model: 'example', turnId: 7, usageKnown: true, usage: { inputOther: 0, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } };
+    await fold.reset();
+    const reads = vi.spyOn(saved.store, 'getMany');
+    try {
+      await fold.addPage(session, [fact, fact], () => 'bucket', () => true, {});
+      await fold.addPage(session, [fact], () => 'bucket', () => true, {});
+      expect(reads).not.toHaveBeenCalled();
+      const other = new UsageRangeFold(saved.store, 'cached-pages', 100, 100);
+      await other.head();
+      await other.addPage(session, [fact], () => 'bucket', () => true, {});
+      await expect(fold.addPage(session, [fact], () => 'bucket', () => true, {})).rejects.toBeInstanceOf(UsageRangeFoldChangedError);
+      await fold.head();
+      await fold.addPage(session, [fact], () => 'bucket', () => true, {});
+      const page = await fold.recordPage();
+      expect(page.items).toHaveLength(1);
+      expect(page.items[0]!.record.usage.output).toBe(5);
+      expect(page.items[0]!.record.folded).toMatchObject({ records: 5, known: 5, missing: 0 });
+      const buckets = await fold.buckets(['bucket']);
+      expect([...buckets.values()][0]?.turnCount).toBe(1);
+    } finally { reads.mockRestore(); }
+  });
+
   it('publishes one prepared session without encoding other sources and preserves the full-head cache', async () => {
     const saved = await openRange([], {}, true);
     const checkpoint = { generation: 'example', offset: 1, size: 1, mtimeMs: 1, boundaryHash: '', valid: true };
@@ -2932,8 +2958,8 @@ describe('SQLite UsageRangeFold publication', () => {
       let enteredPage!: () => void, releasePage!: () => void;
       const enteredFlight = new Promise<void>((resolve) => { enteredPage = resolve; });
       const pausedPage = new Promise<void>((resolve) => { releasePage = resolve; });
-      const getMany = splitStore.getMany.bind(splitStore);
-      const gate = vi.spyOn(splitStore, 'getMany').mockImplementation(async (collection, keys, signal) => { const result = await getMany(collection, keys, signal); enteredPage(); await pausedPage; return result; });
+      const batchIf = splitStore.batchIf!.bind(splitStore);
+      const gate = vi.spyOn(splitStore, 'batchIf').mockImplementation(async (conditions, ops, staged) => { enteredPage(); await pausedPage; return batchIf(conditions, ops, staged); });
       const stale = split.addPage(session.summary, [records[1]!], () => 'bucket', () => true, head, undefined, { session, source: session.sources[0]! });
       const rejected = expect(stale).rejects.toThrow('Usage fact cursor changed');
       await enteredFlight;

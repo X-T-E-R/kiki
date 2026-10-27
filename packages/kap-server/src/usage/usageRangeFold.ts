@@ -88,6 +88,38 @@ export class UsageRangeFold {
   private initialized = false;
   private revision?: FoldRevision;
   private readonly persisted = new Map<string, string>();
+  private readonly cachedRows = new Map<string, { value: GroupRow | BucketRow | true; bytes: number }>();
+  private cachedBytes = 0;
+  private emptyBase = false;
+  private readonly createdKeys = new Set<string>();
+
+  private clearRows(emptyBase = false): void {
+    this.cachedRows.clear();
+    this.cachedBytes = 0;
+    this.createdKeys.clear();
+    this.emptyBase = emptyBase;
+  }
+
+  private remember(key: string, value: GroupRow | BucketRow | true): void {
+    if (this.emptyBase) {
+      this.createdKeys.add(key);
+      if (this.createdKeys.size > 32768) { this.emptyBase = false; this.createdKeys.clear(); }
+    }
+    const bytes = key.length * 2 + (value === true ? 32 : value.kind === 'group'
+      ? 768 + [value.record.model, value.record.sourceAgentId, value.record.agentId, value.record.parentAgentId, value.record.provider, value.record.modelAlias, value.record.profileName].reduce((sum, field) => sum + (field?.length ?? 0) * 2, 0)
+      : 128 + value.sessions.reduce((sum, session) => sum + 192 + session.sessionId.length * 2 + session.turnIds.length * 8 + (session.agents ?? []).reduce((total, agent) => total + 128 + agent.agentId.length * 2 + agent.turnIds.length * 8, 0), 0));
+    const existing = this.cachedRows.get(key);
+    if (existing !== undefined) { this.cachedBytes -= existing.bytes; this.cachedRows.delete(key); }
+    if (bytes > 8 * 1024 * 1024) return;
+    while (this.cachedRows.size >= 8192 || this.cachedBytes + bytes > 8 * 1024 * 1024) {
+      const oldest = this.cachedRows.entries().next().value;
+      if (oldest === undefined) break;
+      this.cachedBytes -= oldest[1].bytes;
+      this.cachedRows.delete(oldest[0]);
+    }
+    this.cachedRows.set(key, { value, bytes });
+    this.cachedBytes += bytes;
+  }
 
   constructor(
     private readonly query: IQueryStore,
@@ -97,6 +129,7 @@ export class UsageRangeFold {
   ) {}
 
   async head<T>(): Promise<T | undefined> {
+    this.clearRows();
     if (this.query.batchIf === undefined) return this.query.get<T>(this.collection, 'head');
     const roots = await this.query.getMany<StoredHead | FoldRevision>(this.collection, ['head', REVISION]);
     this.revision = roots.get(REVISION) as FoldRevision | undefined;
@@ -142,6 +175,7 @@ export class UsageRangeFold {
     if (!committed) this.conflict();
     this.revision = revision;
     this.persisted.clear();
+    this.clearRows(true);
   }
 
   private async initialize(): Promise<void> {
@@ -185,6 +219,7 @@ export class UsageRangeFold {
   private conflict(): never {
     this.initialized = false;
     this.persisted.clear();
+    this.clearRows();
     throw new UsageRangeFoldChangedError();
   }
 
@@ -210,7 +245,13 @@ export class UsageRangeFold {
     const keys = [...new Set(rows.flatMap((row) => [row.group, row.bucket, row.turn, row.drilldown].filter((key): key is string => key !== undefined)))];
     if (this.query.batchIf !== undefined) await this.initialize();
     const revision = this.revision;
-    const existing = await this.query.getMany<GroupRow | BucketRow | true>(this.collection, keys, signal);
+    const existing = new Map<string, GroupRow | BucketRow | true>();
+    const missing = keys.filter((key) => {
+      const cached = this.query.batchIf === undefined ? undefined : this.cachedRows.get(key);
+      if (cached !== undefined) { existing.set(key, cached.value); return false; }
+      return !this.emptyBase || this.createdKeys.has(key);
+    });
+    if (missing.length > 0) for (const [key, value] of await this.query.getMany<GroupRow | BucketRow | true>(this.collection, missing, signal)) existing.set(key, value);
     signal?.throwIfAborted();
     const changed = new Map<string, GroupRow | BucketRow | true>();
     const read = <T extends GroupRow | BucketRow | true>(key: string): T | undefined => (changed.get(key) ?? existing.get(key)) as T | undefined;
@@ -272,8 +313,11 @@ export class UsageRangeFold {
     }
     const ops: WriteOp[] = [...changed].map(([key, value]) => ({ kind: 'put', collection: this.collection, key, value, columns: value === true ? undefined : { view: value.kind === 'group' ? 1 : 2 } }));
     signal?.throwIfAborted();
-    if (this.query.batchIf !== undefined) await this.commit(ops, this.headRows(head, progress), false, revision);
-    else { ops.push({ kind: 'put', collection: this.collection, key: 'head', value: head }); await this.query.batch(ops); }
+    if (this.query.batchIf !== undefined) {
+      await this.commit(ops, this.headRows(head, progress), false, revision);
+      for (const [key, value] of existing) if (!changed.has(key)) this.remember(key, value);
+      for (const [key, value] of changed) this.remember(key, value);
+    } else { ops.push({ kind: 'put', collection: this.collection, key: 'head', value: head }); await this.query.batch(ops); }
   }
 
   recordPage(cursor?: string) {
@@ -291,6 +335,7 @@ export class UsageRangeFold {
     if (this.query.batchIf === undefined) return this.query.batch([op]);
     await this.initialize();
     await this.commit([op], new Map(), false, this.revision);
+    this.remember(op.key, structuredClone(op.value as BucketRow));
   }
 }
 
