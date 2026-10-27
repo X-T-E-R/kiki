@@ -7,4 +7,5 @@ export type {
   MailboxMigrationService,
   MailboxMigrationSource,
   MailboxMigrationStatus,
+  MailboxRecoveryCleanupPlan,
 } from '@kiki/agent-core-v2/app/threadCommunication/mailboxMigration';

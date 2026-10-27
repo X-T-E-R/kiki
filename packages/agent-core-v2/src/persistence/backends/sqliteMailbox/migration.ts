@@ -1,7 +1,8 @@
 import { randomUUID } from 'node:crypto';
-import { link, mkdir, open, rename, unlink, lstat } from 'node:fs/promises';
-import { dirname, join, relative, resolve } from 'node:path';
+import { link, mkdir, open, rename, unlink, lstat, readdir, realpath, rmdir } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { homedir } from 'node:os';
+import { isDeepStrictEqual } from 'node:util';
 
 import { LockFile, MiniDb } from '@kiki/minidb';
 import { shardDirName } from '@kiki/minidb/cluster';
@@ -12,8 +13,8 @@ import { ServiceCollection } from '#/_base/di/serviceCollection';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IHomeRuntimeService } from '#/app/runtimeHost/runtimeHost';
 import { HomeRuntimeHostService } from '#/app/runtimeHost/runtimeHostService';
-import type { MailboxMigrationOptions, MailboxMigrationService, MailboxMigrationSource, MailboxMigrationStatus } from '#/app/threadCommunication/mailboxMigration';
-import { convertLegacyMailboxRows, mailboxPeerIndexWrites } from '#/app/threadCommunication/legacyMailboxImport';
+import type { MailboxMigrationOptions, MailboxMigrationService, MailboxMigrationSource, MailboxMigrationStatus, MailboxRecoveryCleanupPlan } from '#/app/threadCommunication/mailboxMigration';
+import { convertLegacyMailboxRows, LegacyMailboxImportError, mailboxPeerIndexWrites } from '#/app/threadCommunication/legacyMailboxImport';
 import type { AcceptedThreadMessage } from '#/app/threadCommunication/threadMailboxStore';
 import { acquireFileLock, isFileLockActive } from '../node-fs/fileLock';
 import {
@@ -22,7 +23,7 @@ import {
   type MailboxAuthority, type MigrationManifest,
 } from './authority';
 import { CanonicalMailboxDatabase } from './database';
-import type { MailboxRow, MailboxWrite } from './protocol';
+import type { LegacyDeliveryCursor, MailboxOwner, MailboxRow, MailboxWrite } from './protocol';
 
 type Document = Record<string, unknown>;
 interface FrozenLock { readonly lock: LockFile; readonly token: string; originalPath: string; }
@@ -125,6 +126,91 @@ class FileMailboxMigrationService implements MailboxMigrationService {
     } finally { await closeAll([() => db.close(), async () => { await unlink(temporary).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'ENOENT') throw error; }); }]); }
   }
 
+  async cleanupRecovery(options: { readonly confirm?: boolean; readonly backupDestination?: string } = {}): Promise<MailboxRecoveryCleanupPlan> {
+    if (this.flight !== undefined) throw new Error('Wait for the mailbox migration to finish before cleaning its recovery copies');
+    const authority = await readMailboxAuthority(this.homeDir);
+    if (authority === undefined) throw new Error('A verified SQLite mailbox is required before recovery cleanup');
+    const manifest = await readJson<MigrationManifest>(migrationPath(this.homeDir));
+    if (manifest === undefined) throw new Error('The mailbox migration record is missing; keep the recovery copies');
+    validateMigrationManifest(this.homeDir, manifest);
+    if (manifest.status.migrationId !== authority.migrationId || manifest.cutoverStarted !== true || manifest.rolledBack === true || manifest.rollbackAuthority !== undefined || manifest.status.phase !== 'complete') {
+      throw new Error('Mailbox recovery cleanup requires a completed SQLite authority without an unfinished rollback');
+    }
+    const recovery = recoveryPath(this.homeDir, authority.migrationId);
+    const markerPath = join(recovery, 'cleanup.json');
+    const marker = await readJson<RecoveryCleanupMarker>(markerPath);
+    if (marker !== undefined && (marker.version !== 1 || marker.migrationId !== authority.migrationId || typeof marker.backupDestination !== 'string' ||
+      typeof marker.mailboxOwner?.hostId !== 'string' || !Number.isSafeInteger(marker.mailboxOwner.epoch))) {
+      throw new Error('Unrecognized mailbox recovery cleanup record; keep the original copies');
+    }
+    const destination = options.backupDestination === undefined ? marker?.backupDestination : resolve(options.backupDestination);
+    if (destination !== undefined) await assertIndependentBackupPath(this.homeDir, destination);
+    const database = new CanonicalMailboxDatabase<Document>(join(mailboxDirectory(this.homeDir), authority.database), false, true);
+    try {
+      if (await database.metadata<boolean>('hasNewWrites') !== true) throw new Error('Mailbox rollback is still available; retain both recovery copies');
+    } finally { await database.close(); }
+    const plan = await recoveryCleanupPlan(manifest, recovery, destination, marker !== undefined);
+    if (options.confirm !== true || plan.remove.length === 0 && (marker === undefined || marker.completed === true)) {
+      return { ...plan, completed: marker?.completed === true && plan.remove.length === 0 };
+    }
+    if (destination === undefined) throw new Error('Confirm cleanup with --backup <absolute-path> for a new independent SQLite backup');
+    const lease = await acquireFileLock(join(mailboxDirectory(this.homeDir), 'migration.lock'), { waitForMs: 0, owner: { kind: 'mailbox-recovery-cleanup' } });
+    const maintenance = createMaintenanceRuntime(this.homeDir);
+    const locks: FrozenLock[] = [];
+    try {
+      await maintenance.runtime.ready();
+      if (maintenance.runtime.status().role !== 'owner') throw new Error('Another Kiki writer still owns this home; stop it naturally before cleanup');
+      const busy = await acquireSourceLocks(this.homeDir, manifest, locks);
+      if (busy !== undefined) throw new Error(`A legacy writer still holds the frozen source lock: ${busy}`);
+      const current = await readMailboxAuthority(this.homeDir);
+      if (current?.migrationId !== authority.migrationId) throw new Error('Mailbox authority changed during cleanup; preserve the recovery copies');
+      const verified = await recoveryCleanupPlan(manifest, recovery, destination, marker !== undefined);
+      if (verified.remove.length !== plan.remove.length || verified.removeBytes !== plan.removeBytes) throw new Error('Recovery files changed during cleanup; review the new dry-run plan');
+      const live = new CanonicalMailboxDatabase<Document>(join(mailboxDirectory(this.homeDir), authority.database), false, true);
+      let mailboxOwner: MailboxOwner | undefined;
+      try { mailboxOwner = await live.metadata<MailboxOwner>('owner'); } finally { await live.close(); }
+      if (mailboxOwner === undefined) throw new Error('SQLite mailbox writer ownership is missing; preserve recovery copies');
+      const refreshBackup = marker === undefined || !isDeepStrictEqual(marker.mailboxOwner, mailboxOwner);
+      if (marker !== undefined && refreshBackup && (options.backupDestination === undefined || destination === marker.backupDestination)) {
+        throw new Error('SQLite writer changed since the previous cleanup backup; specify a new --backup destination before resuming');
+      }
+      if (marker !== undefined && !refreshBackup && marker.backupDestination !== destination) throw new Error('Resume recovery cleanup using its original verified backup destination');
+      await assertIndependentBackupPath(this.homeDir, destination);
+      if (refreshBackup) {
+        if (await pathKind(destination) !== 'missing') throw new Error('Independent SQLite backup destination already exists');
+        await this.backup(destination);
+      }
+      await assertIndependentBackupPath(this.homeDir, destination, true);
+      const backupIdentity = await lstat(destination);
+      const backup = new CanonicalMailboxDatabase<Document>(destination, false, true);
+      try {
+        await backup.verify();
+        if (await backup.metadata<string>('authority') !== 'sqlite' || await backup.metadata<string>('migrationReady') !== authority.migrationId) {
+          throw new Error('Independent SQLite backup cannot restore this mailbox authority');
+        }
+      } finally { await backup.close(); }
+      await assertVerifiedBackupUnchanged(this.homeDir, destination, backupIdentity);
+      const record = { version: 1, migrationId: authority.migrationId, backupDestination: destination, mailboxOwner } satisfies RecoveryCleanupMarker;
+      if (refreshBackup) await saveJson(markerPath, record);
+      const writable = new CanonicalMailboxDatabase<Document>(join(mailboxDirectory(this.homeDir), authority.database));
+      try { await writable.discardArchive(authority.migrationId); } finally { await writable.close(); }
+      await assertVerifiedBackupUnchanged(this.homeDir, destination, backupIdentity);
+      const finalPlan = await recoveryCleanupPlan(manifest, recovery, destination, marker !== undefined);
+      if (finalPlan.remove.length !== verified.remove.length || finalPlan.removeBytes !== verified.removeBytes) {
+        throw new Error('Recovery files changed after backup; retain the remaining copies and review the new dry-run plan');
+      }
+      for (const item of finalPlan.remove) {
+        const source = MAILBOX_SOURCE_NAMES.find((name) => item.path === join(recovery, 'sources', name));
+        if (source === undefined) throw new Error('Unexpected recovery cleanup path; no files removed');
+        await assertVerifiedBackupUnchanged(this.homeDir, destination, backupIdentity);
+        await removeRecoveryFiles(item.path, join(recovery, 'originals', source), manifest.files.filter((entry) => entry.source === source).map((entry) => entry.relative),
+          () => assertVerifiedBackupUnchanged(this.homeDir, destination, backupIdentity));
+      }
+      await saveJson(markerPath, { ...record, completed: true } satisfies RecoveryCleanupMarker);
+      return { ...verified, completed: true };
+    } finally { await closeAll([...locks.reverse().map((held) => () => releaseSourceLock(held)), () => maintenance.close(), () => lease.release()]); }
+  }
+
   rollback(options: MailboxMigrationOptions = {}): Promise<MailboxMigrationStatus> {
     if (this.flight !== undefined) return Promise.reject(new Error('Wait for the current migration to stop before rolling back'));
     this.current = undefined;
@@ -210,6 +296,9 @@ class FileMailboxMigrationService implements MailboxMigrationService {
       await saveJson(migrationPath(this.homeDir), manifest);
       options.onProgress?.(status);
     };
+    const markSource = async (name: string, stage: NonNullable<MailboxMigrationSource['stage']>, status: MailboxMigrationStatus = manifest!.status): Promise<void> => {
+      await update({ ...status, sources: status.sources.map((source) => source.name === name ? { ...source, stage } : source) });
+    };
     try {
       const complete = await readMailboxAuthority(this.homeDir);
       if (complete !== undefined) return await this.status();
@@ -230,7 +319,8 @@ class FileMailboxMigrationService implements MailboxMigrationService {
       if (!this.switching) {
         const sources = await inspectSources(this.homeDir);
         if (manifest.status.sources.some((source, index) => source.exists && !sources[index]!.exists)) throw new Error('A canonical source disappeared before it could be frozen; the prior backup and checkpoint were preserved');
-        await update({ ...manifest.status, sources });
+        await update({ ...manifest.status, sources: sources.map((source) => ({ ...source,
+          stage: source.exists ? manifest!.status.sources.find((prior) => prior.name === source.name)?.stage ?? 'discovered' : undefined })) });
       }
       const busy = await acquireSourceLocks(this.homeDir, manifest, locks, () => this.checkCancelled(options.signal, manifest!.status.migrationId!));
       if (busy !== undefined) {
@@ -240,14 +330,15 @@ class FileMailboxMigrationService implements MailboxMigrationService {
       await verifyFrozenSources(this.homeDir, manifest, locks, manifest.cutoverStarted === true);
       if (manifest.cutoverStarted !== true) {
         const sources = await inspectSources(this.homeDir);
-        if (JSON.stringify(sources) !== JSON.stringify(manifest.status.sources)) throw new Error('A canonical source appeared while acquiring writer locks; retry after every legacy writer has stopped');
+        if (JSON.stringify(sources) !== JSON.stringify(manifest.status.sources.map(({ stage: _stage, ...source }) => source))) throw new Error('A canonical source appeared while acquiring writer locks; retry after every legacy writer has stopped');
         const files = await inventory(this.homeDir, sources);
         if (manifest.files.length > 0 && JSON.stringify(files) !== JSON.stringify(manifest.files)) {
           await saveJson(join(recoveryPath(this.homeDir, manifest.status.migrationId!), 'superseded-migration.json'), manifest);
           manifest = newManifest(this.homeDir, sources);
           await mkdir(recoveryPath(this.homeDir, manifest.status.migrationId!), { recursive: true, mode: 0o700 });
         }
-        manifest = { ...manifest, files, status: { ...manifest.status, sources } };
+        manifest = { ...manifest, files, status: { ...manifest.status, sources: sources.map((source) => ({ ...source,
+          stage: source.exists ? manifest!.status.sources.find((prior) => prior.name === source.name)?.stage ?? 'discovered' : undefined })) } };
         await update({ ...manifest.status, phase: 'backing_up', state: 'running', writer: undefined, canCancel: true,
           progress: { items: manifest.copiedFiles, totalItems: files.length, bytes: files.slice(0, manifest.copiedFiles).reduce((sum, file) => sum + file.bytes, 0), totalBytes: files.reduce((sum, file) => sum + file.bytes, 0) } });
         for (const source of sources) {
@@ -266,17 +357,26 @@ class FileMailboxMigrationService implements MailboxMigrationService {
           });
           await update({ ...manifest.status, progress: { ...manifest.status.progress, items: index + 1 } }, { copiedFiles: index + 1 });
         }
+        await update({ ...manifest.status, sources: manifest.status.sources.map((source) => source.exists ? { ...source, stage: 'backed_up' } : source) });
       }
       const database = manifest.status.databasePath!;
       db = new CanonicalMailboxDatabase<Document>(database, manifest.cutoverStarted !== true);
       if (manifest.cutoverStarted !== true) {
-        await update({ ...manifest.status, phase: 'importing', progress: { items: 0, bytes: 0 }, currentKey: undefined });
+        const sources = await Promise.all(manifest.status.sources.filter((source) => source.exists).map(async (source) => {
+          const root = join(manifest!.status.backupPath!, source.name);
+          const directories = source.name === 'thread-mailbox-v3' ? await shardDirectories(root) : [root];
+          return { source, root, directories };
+        }));
         let importedItems = 0;
         let importedBytes = 0;
-        for (const source of manifest.status.sources) {
-          if (!source.exists) continue;
-          const root = join(manifest.status.backupPath!, source.name);
-          const directories = source.name === 'thread-mailbox-v3' ? await shardDirectories(root) : [root];
+        for (const { source, root, directories } of sources) for (const directory of directories) {
+          const point = await db.checkpoint(`${source.name}/${relative(root, directory)}`);
+          importedItems += point?.items ?? 0;
+          importedBytes += point?.bytes ?? 0;
+        }
+        await update({ ...manifest.status, phase: 'importing', progress: { items: importedItems, bytes: importedBytes }, currentKey: undefined });
+        for (const { source, root, directories } of sources) {
+          await markSource(source.name, 'importing');
           for (const directory of directories) {
             const sourceId = `${source.name}/${relative(root, directory)}`;
             const point = await db.checkpoint(sourceId);
@@ -288,6 +388,14 @@ class FileMailboxMigrationService implements MailboxMigrationService {
             try {
               const recovery = legacy.recoveryInfo;
               if (recovery === null || recovery.corruptRanges.length > 0 || recovery.snapshotCorruptRanges.length > 0 || recovery.corruptBatches > 0 || recovery.lostBytes > 0) throw new Error(`Corrupted canonical source at ${sourceId}; the original and backup were preserved`);
+              const reader = {
+                get: (key: string) => db!.partitionGet('', key), find: (partition: string, field: 'messageId' | 'legacyIdentity', value: string) => db!.findIdentity(partition, field, value),
+                sourceGet: (key: string): MailboxRow | undefined => {
+                  const record = legacy.store.getRecord(key);
+                  const value = legacy.get(key);
+                  return record === undefined || value === undefined ? undefined : { key, value, expireAt: record.expireAt };
+                },
+              };
               for (;;) {
                 await this.checkCancelled(options.signal, manifest.status.migrationId!);
                 const rows: MailboxRow[] = [];
@@ -298,33 +406,64 @@ class FileMailboxMigrationService implements MailboxMigrationService {
                   if (pageBytes >= 1024 * 1024) break;
                 }
                 if (rows.length === 0) break;
-                let writes: readonly MailboxWrite<Document>[];
-                if (source.name === 'thread-mailbox-v3') writes = rows.map((row) => ({ op: 'set', ...row }));
-                else writes = await convertLegacyMailboxRows(rows, {
-                  get: (key) => db!.partitionGet('', key), find: (partition, field, value) => db!.findIdentity(partition, field, value),
-                  sourceGet: (key) => {
-                    const record = legacy.store.getRecord(key);
-                    const value = legacy.get(key);
-                    return record === undefined || value === undefined ? undefined : { key, value, expireAt: record.expireAt };
-                  },
-                });
-                items += rows.length;
-                bytes += rows.reduce((sum, row) => sum + Buffer.byteLength(row.key) + Buffer.byteLength(JSON.stringify(row.value)), 0);
-                after = rows.at(-1)!.key;
-                await db.importBatch(writes, { source: sourceId, after, items, bytes }, options.signal, rows);
-                await update({ ...manifest.status, currentSource: sourceId, currentKey: after, progress: { items: importedItems + items, bytes: importedBytes + bytes } });
+                const writes: readonly MailboxWrite<Document>[] = source.name === 'thread-mailbox-v3'
+                  ? rows.map((row) => ({ op: 'set', ...row }))
+                  : await convertLegacyMailboxRows(rows.filter((row) => row.value['kind'] !== 'delivery' && row.value['kind'] !== 'idempotency'), reader);
+                const nextItems = items + rows.length;
+                const nextBytes = bytes + rows.reduce((sum, row) => sum + Buffer.byteLength(row.key) + Buffer.byteLength(JSON.stringify(row.value)), 0);
+                const nextAfter = rows.at(-1)!.key;
+                await db.importBatch(writes, { source: sourceId, after: nextAfter, items: nextItems, bytes: nextBytes }, options.signal,
+                  source.name === 'thread-mailbox-v3' ? rows : rows.filter((row) => row.value['kind'] === 'delivery'));
+                importedItems += rows.length;
+                importedBytes += nextBytes - bytes;
+                items = nextItems;
+                bytes = nextBytes;
+                after = nextAfter;
+                await update({ ...manifest.status, currentSource: sourceId, currentKey: after, progress: { items: importedItems, bytes: importedBytes } });
+              }
+              if (source.name !== 'thread-mailbox-v3') {
+                const messageMarker = `@legacy-delivery/${sourceId}`;
+                const messagePoint = await db.checkpoint(messageMarker);
+                let cursor = messagePoint === undefined ? undefined : JSON.parse(messagePoint.after) as LegacyDeliveryCursor;
+                let accepted = messagePoint?.items ?? 0;
+                for (;;) {
+                  await this.checkCancelled(options.signal, manifest.status.migrationId!);
+                  const page = await db.legacyDeliveries(sourceId, cursor, options.signal);
+                  if (page.rows.length === 0) break;
+                  const rows = page.rows.map(({ key }) => reader.sourceGet(key) ?? { key, value: { kind: 'missing' }, expireAt: 0 });
+                  const writes = await convertLegacyMailboxRows(rows, reader);
+                  cursor = page.rows.at(-1)!;
+                  accepted += page.rows.length;
+                  await db.importBatch(writes, { source: messageMarker, after: JSON.stringify(cursor), items: accepted, bytes: 0 }, options.signal);
+                  await update({ ...manifest.status, currentKey: cursor.key });
+                }
+                const idemMarker = `@legacy-idempotency/${sourceId}`;
+                const idemPoint = await db.checkpoint(idemMarker);
+                let idemAfter = idemPoint?.after ?? 'idem/';
+                let idemItems = idemPoint?.items ?? 0;
+                for (;;) {
+                  await this.checkCancelled(options.signal, manifest.status.migrationId!);
+                  const rows: MailboxRow[] = [];
+                  for (const entry of legacy.store.scan({ gt: idemAfter, count: 256 })) rows.push({ key: entry.key.toString('utf8'), value: legacy.codec.decode(entry.value), expireAt: entry.expireAt });
+                  if (rows.length === 0) break;
+                  const writes = await convertLegacyMailboxRows(rows.filter((row) => row.value['kind'] === 'idempotency'), reader);
+                  idemAfter = rows.at(-1)!.key;
+                  idemItems += rows.length;
+                  await db.importBatch(writes, { source: idemMarker, after: idemAfter, items: idemItems, bytes: 0 }, options.signal);
+                }
               }
             } finally { await legacy.close(); }
-            importedItems += items;
-            importedBytes += bytes;
           }
+          await markSource(source.name, 'imported');
+          await update(manifest.status, { importedSources: [...new Set([...manifest.importedSources, source.name])] });
         }
         await update({ ...manifest.status, phase: 'verifying', currentSource: undefined, currentKey: undefined,
           progress: { items: importedItems, totalItems: importedItems, bytes: importedBytes, totalBytes: importedBytes } });
         await preparePeerHistory(db, options.signal);
         await db.verify(options.signal);
-        await db.metadata('migrationReady', manifest.status.migrationId!);
         await verifyFrozenSources(this.homeDir, manifest, locks, true);
+        await update({ ...manifest.status, sources: manifest.status.sources.map((source) => source.exists ? { ...source, stage: 'verified' } : source) });
+        await db.metadata('migrationReady', manifest.status.migrationId!);
         await this.checkCancelled(options.signal, manifest.status.migrationId!);
         this.switching = true;
         await update({ ...manifest.status, phase: 'switching', canCancel: false, canRollback: true }, { cutoverStarted: true });
@@ -332,6 +471,7 @@ class FileMailboxMigrationService implements MailboxMigrationService {
       this.switching = true;
       const id = manifest.status.migrationId!;
       if (await db.metadata('migrationReady') !== id) throw new Error('Interrupted mailbox cutover has no verified SQLite import; keep the original sources and use a compatible 0.5.x repair tool');
+      await db.discardArchive();
       await mkdir(join(recoveryPath(this.homeDir, id), 'originals'), { recursive: true, mode: 0o700 });
       for (const name of MAILBOX_SOURCE_NAMES) {
         const path = join(this.homeDir, 'store', name);
@@ -356,7 +496,7 @@ class FileMailboxMigrationService implements MailboxMigrationService {
       if (manifest === undefined) throw error;
       const cancelled = !this.switching && (options.signal?.aborted || (error as Error).name === 'AbortError');
       const status: MailboxMigrationStatus = { ...manifest.status, state: cancelled ? 'cancelled' : 'failed', canCancel: false,
-        failure: cancelled ? undefined : { code: String((error as { code?: unknown }).code ?? 'mailbox.migration_failed'), message: error instanceof Error ? error.message : String(error), source: manifest.status.currentSource, key: manifest.status.currentKey } };
+        failure: cancelled ? undefined : { code: String((error as { code?: unknown }).code ?? 'mailbox.migration_failed'), message: error instanceof Error ? error.message : String(error), source: manifest.status.currentSource, key: error instanceof LegacyMailboxImportError ? error.key : manifest.status.currentKey } };
       await update(status);
       return status;
     } finally {
@@ -370,6 +510,132 @@ class FileMailboxMigrationService implements MailboxMigrationService {
     const request = await readJson<{ migrationId?: string }>(join(mailboxDirectory(this.homeDir), 'cancel.json'));
     if (request?.migrationId === migrationId) throw new DOMException('Mailbox migration cancelled', 'AbortError');
   }
+}
+
+interface RecoveryCleanupMarker {
+  readonly version: 1;
+  readonly migrationId: string;
+  readonly backupDestination: string;
+  readonly mailboxOwner: MailboxOwner;
+  readonly completed?: boolean;
+}
+
+async function recoveryFiles(root: string, allowLocks = false): Promise<readonly { readonly relative: string; readonly bytes: number; readonly mtimeMs: number }[]> {
+  const result: { relative: string; bytes: number; mtimeMs: number }[] = [];
+  const visit = async (directory: string): Promise<void> => {
+    for (const name of await readdir(directory)) {
+      const file = join(directory, name);
+      const info = await lstat(file);
+      if (info.isDirectory()) await visit(file);
+      else if (info.isFile() && (name === 'db.lock' || name.startsWith('db.lock.')) && allowLocks) continue;
+      else if (info.isFile()) result.push({ relative: relative(root, file), bytes: info.size, mtimeMs: info.mtimeMs });
+      else throw new Error(`Recovery copy contains a link or unknown file: ${file}`);
+    }
+  };
+  await visit(root);
+  return result.toSorted((left, right) => left.relative.localeCompare(right.relative));
+}
+
+async function sameFileBytes(left: string, right: string): Promise<boolean> {
+  const [a, b] = await Promise.all([open(left, 'r'), open(right, 'r')]);
+  try {
+    const l = Buffer.allocUnsafe(1024 * 1024);
+    const r = Buffer.allocUnsafe(1024 * 1024);
+    for (;;) {
+      const [first, second] = await Promise.all([a.read(l, 0, l.length), b.read(r, 0, r.length)]);
+      if (first.bytesRead !== second.bytesRead || !l.subarray(0, first.bytesRead).equals(r.subarray(0, second.bytesRead))) return false;
+      if (first.bytesRead === 0) return true;
+    }
+  } finally { await Promise.all([a.close(), b.close()]); }
+}
+
+async function assertIndependentBackupPath(homeDir: string, destination: string, mustExist = false): Promise<void> {
+  const inside = (root: string, path: string): boolean => {
+    const position = relative(root, path);
+    return position === '' || !position.startsWith('..') && !isAbsolute(position);
+  };
+  const home = await realpath(homeDir);
+  let existing = dirname(destination);
+  let projected: string;
+  for (;;) {
+    try { projected = resolve(await realpath(existing), relative(existing, destination)); break; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      const parent = dirname(existing);
+      if (parent === existing) throw error;
+      existing = parent;
+    }
+  }
+  if (inside(homeDir, destination) || inside(home, projected)) throw new Error('Place the independent SQLite backup outside this Kiki home (including linked directories)');
+  if (mustExist) {
+    if (await pathKind(destination) !== 'file' || inside(home, await realpath(destination))) {
+      throw new Error('Independent SQLite backup moved or links into this Kiki home; retain the recovery copies');
+    }
+  }
+}
+
+async function assertVerifiedBackupUnchanged(homeDir: string, destination: string, verified: Awaited<ReturnType<typeof lstat>>): Promise<void> {
+  await assertIndependentBackupPath(homeDir, destination, true);
+  const current = await lstat(destination);
+  if (!current.isFile() || current.dev !== verified.dev || current.ino !== verified.ino || current.size !== verified.size ||
+    current.mtimeMs !== verified.mtimeMs || current.ctimeMs !== verified.ctimeMs) {
+    throw new Error('Independent SQLite backup changed after verification; retain the recovery copies');
+  }
+}
+
+async function recoveryCleanupPlan(manifest: MigrationManifest, recovery: string, backupDestination?: string, resuming = false): Promise<MailboxRecoveryCleanupPlan> {
+  const remove: { path: string; bytes: number }[] = [];
+  const preserve: { path: string; bytes: number }[] = [];
+  for (const source of manifest.status.sources) {
+    if (!source.exists) continue;
+    const original = join(recovery, 'originals', source.name);
+    const copy = join(recovery, 'sources', source.name);
+    if (await pathKind(original) !== 'directory') throw new Error(`Frozen original source is missing: ${original}`);
+    const expected = manifest.files.filter((entry) => entry.source === source.name).toSorted((a, b) => a.relative.localeCompare(b.relative));
+    const originals = await recoveryFiles(original, true);
+    if (JSON.stringify(originals.map(({ relative: path, bytes, mtimeMs }) => ({ path, bytes, mtimeMs }))) !==
+      JSON.stringify(expected.map(({ relative: path, bytes, mtimeMs }) => ({ path, bytes, mtimeMs })))) {
+      throw new Error(`Frozen original source changed; preserve recovery: ${original}`);
+    }
+    preserve.push({ path: original, bytes: originals.reduce((sum, item) => sum + item.bytes, 0) });
+    const kind = await pathKind(copy);
+    if (kind === 'missing' && resuming) continue;
+    if (kind !== 'directory') throw new Error(`Frozen backup copy is missing or changed: ${copy}`);
+    const remaining = await recoveryFiles(copy);
+    if (!resuming && remaining.length !== expected.length) throw new Error(`Frozen backup inventory differs from the original: ${copy}`);
+    for (const file of remaining) {
+      const originalFile = expected.find((entry) => entry.relative === file.relative);
+      if (originalFile === undefined || originalFile.bytes !== file.bytes || !await sameFileBytes(join(original, file.relative), join(copy, file.relative))) {
+        throw new Error(`Frozen backup differs from original; preserve both: ${join(copy, file.relative)}`);
+      }
+    }
+    remove.push({ path: copy, bytes: remaining.reduce((sum, item) => sum + item.bytes, 0) });
+  }
+  return { migrationId: manifest.status.migrationId!, remove, preserve,
+    removeBytes: remove.reduce((sum, item) => sum + item.bytes, 0), preserveBytes: preserve.reduce((sum, item) => sum + item.bytes, 0), backupDestination, completed: false };
+}
+
+async function removeRecoveryFiles(root: string, original: string, files: readonly string[], checkBackup: () => Promise<void>): Promise<void> {
+  for (const file of files) {
+    const path = join(root, file);
+    if (await pathKind(path) === 'missing') continue;
+    const before = await lstat(path);
+    const preserved = await lstat(join(original, file));
+    if (!before.isFile() || !preserved.isFile() || before.size !== preserved.size || !await sameFileBytes(path, join(original, file))) {
+      throw new Error(`Frozen backup changed before deletion; preserve remaining recovery copies: ${path}`);
+    }
+    const after = await lstat(path);
+    if (after.dev !== before.dev || after.ino !== before.ino || after.size !== before.size || after.mtimeMs !== before.mtimeMs) {
+      throw new Error(`Frozen backup changed before deletion; preserve remaining recovery copies: ${path}`);
+    }
+    await checkBackup();
+    await unlink(path);
+  }
+  const prune = async (directory: string): Promise<void> => {
+    for (const entry of await readdir(directory)) if (await pathKind(join(directory, entry)) === 'directory') await prune(join(directory, entry));
+    await rmdir(directory);
+  };
+  await prune(root);
 }
 
 async function closeAll(actions: readonly (() => Promise<unknown> | undefined)[]): Promise<void> {

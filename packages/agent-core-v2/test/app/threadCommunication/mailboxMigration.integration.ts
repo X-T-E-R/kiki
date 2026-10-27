@@ -1,14 +1,16 @@
 import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rename, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { MiniDb } from '@kiki/minidb';
+import { DatabaseSync } from 'node:sqlite';
+
+import { LockFile, MiniDb } from '@kiki/minidb';
 import { ClusterDb, shardDirName } from '@kiki/minidb/cluster';
 import type { MailboxRow } from '#/persistence/backends/sqliteMailbox/protocol';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createMailboxMigrationService } from '#/persistence/backends/sqliteMailbox/migration';
 import { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
@@ -90,6 +92,52 @@ describe('canonical mailbox SQLite migration', () => {
     handles.push(db);
     expect(await db.prefix('w/test/override/')).toHaveLength(300);
     expect((await db.verify()).counts['workspace_override']).toBe(300);
+  });
+
+  it('imports a persistent legacy message beyond a full page that expires after the source opens, including cancel and resume', async () => {
+    const now = Date.now();
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    try {
+      const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
+      const sourceRef = { ...target, sessionId: 'example-source' };
+      const message = { source: sourceRef, target, messageId: 'after-expiry-page', targetSeq: 1, acceptedAt: 1,
+        content: 'durable message after TTL page', idempotencyKey: 'example-key' };
+      const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+      await v1.batch([
+        ...Array.from({ length: 256 }, (_, index) => ({ op: 'set' as const, key: `activity/ghost/event/${String(index).padStart(16, '0')}`,
+          value: { kind: 'activity_event', target, activity: { seq: index + 1, epoch: 'expired', kind: 'terminal', at: 1, reason: 'gone' } }, ttl: 5_000 })),
+        { op: 'set', key: 'delivery/z-live', value: { kind: 'delivery', message, state: 'pending', attempt: 0, idempotencyStorageKey: 'idem/example-key' } },
+      ]);
+      await v1.close();
+      const originalOpen = MiniDb.open.bind(MiniDb);
+      let expiredAfterOpen = false;
+      const open = vi.spyOn(MiniDb, 'open').mockImplementation(async (options) => {
+        const db = await originalOpen(options);
+        if (options.readOnly && options.dir.endsWith('thread-mailbox-v1') && !expiredAfterOpen) {
+          expect([...db.store.scan({ gt: '', count: 1 })]).toHaveLength(1);
+          vi.setSystemTime(now + 6_000);
+          expect(db.get('delivery/z-live')).toBeDefined();
+          expiredAfterOpen = true;
+        }
+        return db;
+      });
+      try {
+        const migration = createMailboxMigrationService(home); handles.push(migration);
+        const controller = new AbortController();
+        const stopped = await migration.migrate({ signal: controller.signal, onProgress: (status) => {
+          if (status.phase === 'importing' && status.currentSource?.startsWith('thread-mailbox-v1/') && status.progress.items > 0) controller.abort();
+        } });
+        expect(expiredAfterOpen).toBe(true);
+        expect(stopped.state).toBe('cancelled');
+        expect(stopped.progress.items).toBe(1);
+        const completed = await migration.migrate();
+        expect(completed.state).toBe('complete');
+        const db = new CanonicalMailboxDatabase<Record<string, unknown>>(completed.databasePath!); handles.push(db);
+        expect((await db.verify()).counts['message']).toBe(1);
+        expect((await db.page(`t/${digest(target)}/message/`)).map((row) => (row.value['message'] as { messageId: string }).messageId)).toEqual(['after-expiry-page']);
+      } finally { open.mockRestore(); }
+    } finally { vi.useRealTimers(); }
   });
 
   it('preserves all canonical key kinds and absolute receipt TTL while completing historical peer coverage', async () => {
@@ -212,6 +260,364 @@ describe('canonical mailbox SQLite migration', () => {
     expect((await db.page(`${partition}/activity/`)).map((row) => (row.value['activity'] as { seq: number }).seq)).toEqual([1, 2, 3]);
   });
 
+  it('keeps recovery copies but removes temporary archive bytes from the completed SQLite database', async () => {
+    const old = await source(0);
+    const payload = 'x'.repeat(512 * 1024);
+    await old.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/large', value: { kind: 'workspace_override', workspaceId: 'large', enabled: true, updatedAt: 1, payload } }]);
+    await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    expect(result.failure).toBeUndefined();
+    const db = new DatabaseSync(result.databasePath!, { readOnly: true });
+    try {
+      expect(Number(db.prepare('SELECT count(*) n FROM legacy_archive').get()!['n'])).toBe(0);
+      expect(Number(db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum'])).toBe(2);
+      expect(Number(db.prepare('PRAGMA freelist_count').get()!['freelist_count'])).toBe(0);
+    } finally { db.close(); }
+    const bytes = (await stat(result.databasePath!)).size;
+    expect(bytes).toBeLessThan(850 * 1024);
+    expect((await stat(join(result.backupPath!, 'thread-mailbox-v3'))).isDirectory()).toBe(true);
+    expect((await stat(join(home, 'store/thread-mailbox-sqlite-v1/recovery', result.migrationId!, 'originals/thread-mailbox-v3'))).isDirectory()).toBe(true);
+  });
+
+  it('previews and explicitly removes only matching frozen copies after new writes and an independent SQLite backup', async () => {
+    const old = await source(3); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    expect(result.state).toBe('complete');
+    await expect(migration.cleanupRecovery()).rejects.toThrow('rollback is still available');
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const priorDatabase = new DatabaseSync(result.databasePath!);
+    try {
+      priorDatabase.exec('PRAGMA auto_vacuum=NONE; VACUUM');
+      priorDatabase.prepare('INSERT INTO legacy_archive(source,key,json,expire_at) VALUES(?,?,?,?)').run('old/import', 'example-legacy',
+        JSON.stringify({ kind: 'delivery', payload: 'x'.repeat(512 * 1024) }), 0);
+      expect(priorDatabase.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']).toBe(0);
+    } finally { priorDatabase.close(); }
+    const inflatedBytes = (await stat(result.databasePath!)).size;
+    const preview = await migration.cleanupRecovery();
+    expect(preview.completed).toBe(false);
+    expect(preview.remove).toHaveLength(1);
+    expect(preview.remove[0]!.path).toBe(join(result.backupPath!, 'thread-mailbox-v3'));
+    expect(preview.removeBytes).toBeGreaterThan(0);
+    expect(preview.preserveBytes).toBeGreaterThan(0);
+    expect(preview.removeBytes).toBe(preview.preserveBytes);
+    await expect(migration.cleanupRecovery({ confirm: true, backupDestination: join(home, 'bad.sqlite') })).rejects.toThrow('outside this Kiki home');
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    try {
+      const snapshot = join(external, 'mailbox.sqlite');
+      const cleaned = await migration.cleanupRecovery({ confirm: true, backupDestination: snapshot });
+      expect(cleaned).toMatchObject({ completed: true, backupDestination: snapshot, removeBytes: preview.removeBytes });
+      await expect(stat(preview.remove[0]!.path)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect((await stat(preview.preserve[0]!.path)).isDirectory()).toBe(true);
+      const backup = new CanonicalMailboxDatabase<Record<string, unknown>>(snapshot, false, true);
+      try {
+        expect((await backup.verify()).counts['workspace_override']).toBe(4);
+        expect(await backup.metadata<string>('authority')).toBe('sqlite');
+      } finally { await backup.close(); }
+      const compacted = new DatabaseSync(result.databasePath!, { readOnly: true });
+      try { expect(Number(compacted.prepare('SELECT count(*) n FROM legacy_archive').get()!['n'])).toBe(0); }
+      finally { compacted.close(); }
+      expect((await stat(result.databasePath!)).size).toBeLessThan(inflatedBytes - 400 * 1024);
+      expect((await migration.cleanupRecovery()).removeBytes).toBe(0);
+    } finally { await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('refuses recovery cleanup when the frozen copy differs from its original', async () => {
+    const old = await source(1); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const manifest = JSON.parse(await readFile(migrationPath(home), 'utf8'));
+    const first = manifest.files.find((file: { source: string }) => file.source === 'thread-mailbox-v3');
+    await writeFile(join(result.backupPath!, first.source, first.relative), 'damaged frozen copy');
+    await expect(migration.cleanupRecovery()).rejects.toThrow('differs from original');
+    expect((await stat(join(result.backupPath!, first.source))).isDirectory()).toBe(true);
+  });
+
+  it('keeps recovery copies if a legacy writer still owns an original shard', async () => {
+    const old = await source(1); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const original = join(home, 'store/thread-mailbox-sqlite-v1/recovery', result.migrationId!, 'originals/thread-mailbox-v3');
+    const lock = new LockFile(join(original, shardDirName(0, 2), 'db.lock'));
+    expect(await lock.acquire()).toBe(true);
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    try {
+      const destination = join(external, 'mailbox.sqlite');
+      await expect(migration.cleanupRecovery({ confirm: true, backupDestination: destination })).rejects.toThrow('legacy writer still holds');
+      await expect(stat(destination)).rejects.toMatchObject({ code: 'ENOENT' });
+      expect((await stat(join(result.backupPath!, 'thread-mailbox-v3'))).isDirectory()).toBe(true);
+    } finally { await lock.release(); await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('resumes an interrupted recovery cleanup only with its original verified independent backup', async () => {
+    const old = await source(2); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    try {
+      const snapshot = join(external, 'mailbox.sqlite');
+      await migration.backup(snapshot);
+      const recovery = join(home, 'store/thread-mailbox-sqlite-v1/recovery', result.migrationId!);
+      await writeFile(join(recovery, 'cleanup.json'), JSON.stringify({ version: 1, migrationId: result.migrationId!, backupDestination: snapshot,
+        mailboxOwner: { hostId: 'fixture-owner', epoch: 1_000 } }));
+      const manifest = JSON.parse(await readFile(migrationPath(home), 'utf8'));
+      const first = manifest.files.find((file: { source: string }) => file.source === 'thread-mailbox-v3');
+      await rm(join(result.backupPath!, first.source, first.relative));
+      const preview = await migration.cleanupRecovery();
+      expect(preview.removeBytes).toBeGreaterThan(0);
+      await expect(migration.cleanupRecovery({ confirm: true, backupDestination: join(external, 'different.sqlite') })).rejects.toThrow('original verified backup');
+      const resumed = await migration.cleanupRecovery({ confirm: true, backupDestination: snapshot });
+      expect(resumed.completed).toBe(true);
+      expect((await stat(join(recovery, 'originals', 'thread-mailbox-v3'))).isDirectory()).toBe(true);
+      expect((await migration.cleanupRecovery()).completed).toBe(true);
+    } finally { await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('requires a fresh independent backup when writes happened after an interrupted cleanup', async () => {
+    const old = await source(1); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'first-writer', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/first', value: { kind: 'workspace_override', workspaceId: 'first', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    try {
+      const snapshot = join(external, 'old.sqlite');
+      await migration.backup(snapshot);
+      const markerPath = join(home, 'store/thread-mailbox-sqlite-v1/recovery', result.migrationId!, 'cleanup.json');
+      await writeFile(markerPath, JSON.stringify({ version: 1, migrationId: result.migrationId!, backupDestination: snapshot,
+        mailboxOwner: { hostId: 'first-writer', epoch: 1_000 } }));
+      const newer = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+      try {
+        await newer.claimOwner({ hostId: 'next-writer', epoch: 1_001 });
+        await newer.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/latest', value: { kind: 'workspace_override', workspaceId: 'latest', enabled: true, updatedAt: 3 } }]);
+      } finally { await newer.close(); }
+      await expect(migration.cleanupRecovery({ confirm: true, backupDestination: snapshot })).rejects.toThrow('new --backup destination');
+      expect((await stat(join(result.backupPath!, 'thread-mailbox-v3'))).isDirectory()).toBe(true);
+      const fresh = join(external, 'current.sqlite');
+      expect((await migration.cleanupRecovery({ confirm: true, backupDestination: fresh })).completed).toBe(true);
+      const backup = new CanonicalMailboxDatabase<Record<string, unknown>>(fresh, false, true);
+      try { expect((await backup.verify()).counts['workspace_override']).toBe(3); }
+      finally { await backup.close(); }
+    } finally { await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('rejects an outside backup path whose junction resolves inside the home, including a missing nested parent', async () => {
+    const old = await source(1); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-link-'));
+    const alias = join(external, 'linked-home');
+    try {
+      await symlink(home, alias, process.platform === 'win32' ? 'junction' : 'dir');
+      const destination = join(alias, 'missing-parent', 'backup.sqlite');
+      await expect(migration.cleanupRecovery({ confirm: true, backupDestination: destination })).rejects.toThrow('outside this Kiki home');
+      await expect(stat(join(home, 'missing-parent'))).rejects.toMatchObject({ code: 'ENOENT' });
+      expect((await stat(join(result.backupPath!, 'thread-mailbox-v3'))).isDirectory()).toBe(true);
+    } finally { await rm(alias, { force: true }); await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('retains recovery when the backup parent becomes a home junction after the backup finishes', async () => {
+    const old = await source(1); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-link-'));
+    const parent = join(external, 'backup-parent');
+    const moved = join(external, 'original-parent');
+    await mkdir(parent);
+    try {
+      const realBackup = migration.backup.bind(migration);
+      vi.spyOn(migration, 'backup').mockImplementation(async (destination, options) => {
+        const saved = await realBackup(destination, options);
+        await rename(parent, moved);
+        await symlink(home, parent, process.platform === 'win32' ? 'junction' : 'dir');
+        return saved;
+      });
+      await expect(migration.cleanupRecovery({ confirm: true, backupDestination: join(parent, 'backup.sqlite') })).rejects.toThrow('outside this Kiki home');
+      expect((await stat(join(moved, 'backup.sqlite'))).isFile()).toBe(true);
+      expect((await stat(join(result.backupPath!, 'thread-mailbox-v3'))).isDirectory()).toBe(true);
+    } finally { vi.restoreAllMocks(); await rm(parent, { force: true }); await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('keeps recovery if another ordinary external file replaces the verified backup before deletion', async () => {
+    const old = await source(1); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    try {
+      const destination = join(external, 'backup.sqlite');
+      const replacement = join(external, 'replacement.sqlite');
+      await writeFile(replacement, 'ordinary unrelated file');
+      const realClose = CanonicalMailboxDatabase.prototype.close;
+      vi.spyOn(CanonicalMailboxDatabase.prototype, 'close').mockImplementation(async function (this: CanonicalMailboxDatabase<Record<string, unknown>>) {
+        await realClose.call(this);
+        if (this.database === destination) {
+          await rename(destination, join(external, 'verified.sqlite'));
+          await rename(replacement, destination);
+        }
+      });
+      await expect(migration.cleanupRecovery({ confirm: true, backupDestination: destination })).rejects.toThrow('backup changed after verification');
+      expect((await stat(join(result.backupPath!, 'thread-mailbox-v3'))).isDirectory()).toBe(true);
+    } finally { vi.restoreAllMocks(); await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('retains a frozen copy changed after the independent backup but before deletion', async () => {
+    const old = await source(1); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!);
+    try {
+      await db.claimOwner({ hostId: 'fixture-owner', epoch: 1_000 });
+      await db.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/new', value: { kind: 'workspace_override', workspaceId: 'new', enabled: true, updatedAt: 2 } }]);
+    } finally { await db.close(); }
+    const manifest = JSON.parse(await readFile(migrationPath(home), 'utf8'));
+    const first = manifest.files.find((file: { source: string }) => file.source === 'thread-mailbox-v3');
+    const frozen = join(result.backupPath!, first.source, first.relative);
+    const original = await readFile(frozen);
+    const external = await mkdtemp(join(tmpdir(), 'kiki-mailbox-cleanup-'));
+    try {
+      const realBackup = migration.backup.bind(migration);
+      vi.spyOn(migration, 'backup').mockImplementation(async (destination, options) => {
+        const saved = await realBackup(destination, options);
+        const changed = Buffer.from(original);
+        const firstByte = changed.at(0);
+        if (firstByte === undefined) throw new Error('Fixture expected a nonempty frozen source file');
+        changed[0] = firstByte ^ 1;
+        await writeFile(frozen, changed);
+        return saved;
+      });
+      await expect(migration.cleanupRecovery({ confirm: true, backupDestination: join(external, 'backup.sqlite') })).rejects.toThrow('differs from original');
+      expect((await stat(join(result.backupPath!, first.source))).isDirectory()).toBe(true);
+      expect((await stat(frozen)).isFile()).toBe(true);
+    } finally { vi.restoreAllMocks(); await rm(external, { recursive: true, force: true }); }
+  });
+
+  it('uses each real legacy activity meta key before earlier-sorted mixed-epoch events', async () => {
+    const old = await source(0); await old.close();
+    const targets = ['first', 'second'].map((sessionId) => ({ hostId: 'example-host', workspaceId: 'example-workspace', sessionId }));
+    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    for (const target of targets) {
+      const key = `activity/${digest(target)}`;
+      await v1.batch([
+        { op: 'set', key: `${key}/event/0000000000000001`, value: { kind: 'activity_event', target,
+          activity: { seq: 1, epoch: target.sessionId === 'first' ? 'old-epoch' : 'current-epoch', kind: 'attention', at: 1, reason: 'old warning' } } },
+        { op: 'set', key: `${key}/event/0000000000000002`, value: { kind: 'activity_event', target,
+          activity: { seq: 2, epoch: 'current-epoch', kind: 'terminal', at: 2, reason: 'new completed' } } },
+        { op: 'set', key: `${key}/meta`, value: { kind: 'activity_meta', target, epoch: 'current-epoch', nextSeq: 3, minSeq: 1 } },
+      ]);
+    }
+    await v1.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    expect(result.failure).toBeUndefined();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!); handles.push(db);
+    for (const target of targets) {
+      const partition = `t/${digest(target)}`;
+      const meta = (await db.partitionGet(partition, `${partition}/meta`))!;
+      expect(meta).toMatchObject({ activityEpoch: 'current-epoch', nextActivitySeq: 3 });
+      const activities = await db.page(`${partition}/activity/`);
+      expect(activities.map((entry) => (entry.value['activity'] as { seq: number }).seq)).toEqual(target.sessionId === 'first' ? [2] : [1, 2]);
+    }
+  });
+
+  it('appends distinct legacy messages in original target order when both sequence positions are occupied', async () => {
+    const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
+    const sourceRef = { ...target, sessionId: 'example-source' };
+    const producer = { kind: 'peer_thread', source: sourceRef };
+    const partition = `t/${digest(target)}`;
+    const old = await source(0);
+    const existing = [1, 2].map((seq) => ({ messageId: `canonical-${seq}`, producer, target, content: `original-${seq}`, idempotencyKey: `original-${seq}`, acceptedAt: seq, targetSeq: seq }));
+    await old.partitionBatch(partition, [
+      { op: 'set', key: `${partition}/meta`, value: { kind: 'target_meta', target, nextMessageSeq: 3, nextDeliverableSeq: 1, pendingCount: 2, activityEpoch: 'existing', nextActivitySeq: 1, minActivitySeq: 1 } },
+      ...existing.map((message) => ({ op: 'set' as const, key: `${partition}/message/${message.targetSeq.toString().padStart(16, '0')}`,
+        value: { kind: 'message', message, idempotencyStorageKey: `example-canonical-${message.targetSeq}`, payloadHash: digest({ content: message.content }), state: 'pending', fence: 0 } })),
+    ]);
+    await old.close();
+    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    await v1.batch([
+      { op: 'set', key: 'delivery/z-first', value: { kind: 'delivery', message: { ...existing[0], source: sourceRef, producer: undefined, messageId: 'legacy-first', content: 'first', idempotencyKey: 'first' }, idempotencyStorageKey: 'idem/first', state: 'pending', attempt: 0 } },
+      { op: 'set', key: 'delivery/a-second', value: { kind: 'delivery', message: { ...existing[1], source: sourceRef, producer: undefined, messageId: 'legacy-second', content: 'second', idempotencyKey: 'second' }, idempotencyStorageKey: 'idem/second', state: 'pending', attempt: 0 } },
+    ]);
+    await v1.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    expect(result.failure).toBeUndefined();
+    expect(result.sources.filter((entry) => entry.exists).every((entry) => entry.stage === 'verified')).toBe(true);
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!); handles.push(db);
+    const messages = await db.page(`${partition}/message/`);
+    expect(messages.map((entry) => (entry.value['message'] as { messageId: string; targetSeq: number }).messageId)).toEqual([
+      'canonical-1', 'canonical-2', 'legacy-first', 'legacy-second',
+    ]);
+    expect(messages.map((entry) => (entry.value['message'] as { targetSeq: number }).targetSeq)).toEqual([1, 2, 3, 4]);
+    expect((await db.partitionGet(partition, `${partition}/meta`))?.['pendingCount']).toBe(4);
+    expect((await db.verify()).counts['message']).toBe(4);
+    expect((await db.page(`${partition}/idempotency/`)).map((row) => row.value['messageKey']).toSorted()).toEqual([
+      `${partition}/message/0000000000000003`, `${partition}/message/0000000000000004`,
+    ]);
+  });
+
+  it('keeps a true message-id content conflict unresolved with its exact legacy row', async () => {
+    const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
+    const sourceRef = { ...target, sessionId: 'example-source' };
+    const partition = `t/${digest(target)}`;
+    const old = await source(0);
+    const message = { messageId: 'shared-id', producer: { kind: 'peer_thread', source: sourceRef }, target,
+      content: 'original content', idempotencyKey: 'original', acceptedAt: 1, targetSeq: 1 };
+    await old.partitionBatch(partition, [
+      { op: 'set', key: `${partition}/meta`, value: { kind: 'target_meta', target, nextMessageSeq: 2, nextDeliverableSeq: 1, pendingCount: 1, activityEpoch: 'existing', nextActivitySeq: 1, minActivitySeq: 1 } },
+      { op: 'set', key: `${partition}/message/0000000000000001`, value: { kind: 'message', message,
+        idempotencyStorageKey: 'canonical-idempotency', payloadHash: digest({ content: message.content }), state: 'pending', fence: 0 } },
+    ]);
+    await old.close();
+    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    await v1.batch([{ op: 'set', key: 'delivery/changed', value: { kind: 'delivery', message: { ...message, content: 'different content' },
+      idempotencyStorageKey: 'idem/changed', state: 'pending', attempt: 0 } }]);
+    await v1.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const failed = await migration.migrate();
+    expect(failed).toMatchObject({ state: 'failed', authority: 'legacy', failure: { key: 'delivery/changed', source: expect.stringContaining('thread-mailbox-v1'), message: expect.stringContaining('Conflicting legacy message identity') } });
+    await expect(readFile(authorityPath(home))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await stat(join(home, 'store/thread-mailbox-v1'))).isDirectory()).toBe(true);
+    expect((await stat(join(failed.backupPath!, 'thread-mailbox-v1'))).isDirectory()).toBe(true);
+  });
+
   it('reports the source that failed instead of the previously imported one', async () => {
     const old = await source(0);
     await old.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/0001', value: { kind: 'workspace_override', workspaceId: 'workspace', enabled: true, updatedAt: 1 } }]);
@@ -224,7 +630,12 @@ describe('canonical mailbox SQLite migration', () => {
     const result = await migration.migrate();
     expect(result.state).toBe('failed');
     expect(result.failure?.source).toContain('thread-mailbox-v1');
+    expect(result.failure?.key).toBe('activity/event/0');
     expect(result.failure?.message).toContain('Invalid legacy mailbox record');
+    expect(result.progress.items).toBeGreaterThan(0);
+    expect(result.sources.find((source) => source.name === 'thread-mailbox-v3')?.stage).toBe('imported');
+    expect(result.sources.find((source) => source.name === 'thread-mailbox-v1')?.stage).toBe('importing');
+    expect((await migration.status()).progress).toEqual(result.progress);
   });
 
   describe('switching recovery after a legacy writer restart', () => {

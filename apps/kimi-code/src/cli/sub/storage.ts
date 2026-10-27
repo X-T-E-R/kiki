@@ -3,7 +3,7 @@ import type { Command } from 'commander';
 
 import { resolveKikiHome } from '#/kiki/home';
 
-interface StorageCommandOptions { readonly home?: string; readonly json?: boolean; }
+interface StorageCommandOptions { readonly home?: string; readonly json?: boolean; readonly confirm?: boolean; readonly backup?: string; }
 
 const phases: Record<MailboxMigrationStatus['phase'], string> = {
   detecting: 'Detecting mailbox storage', waiting_for_writers: 'Waiting for writers to exit', backing_up: 'Backing up the original mailbox',
@@ -25,6 +25,23 @@ export function registerStorageCommand(program: Command): void {
       process.stdout.write(options.json ? `${JSON.stringify(result)}\n` : `Mailbox backup: ${result.destination}\n${result.items} records · ${result.bytes} bytes\n`);
     } finally { await service.close(); }
   });
+  command('cleanup-recovery', 'Preview redundant frozen mailbox copies; remove only after verified SQLite backup.')
+    .option('--backup <destination>', 'New independent SQLite backup outside this home (omit to resume a verified cleanup backup).')
+    .option('--confirm', 'Create and verify the backup, then remove matching frozen copies.')
+    .action(async (options: StorageCommandOptions) => {
+      const service = createMailboxMigrationService(resolveKikiHome(options.home));
+      try {
+        const plan = await service.cleanupRecovery({ confirm: options.confirm === true, backupDestination: options.backup });
+        if (options.json) process.stdout.write(`${JSON.stringify(plan)}\n`);
+        else {
+          process.stdout.write(`Matching frozen copies: ${plan.removeBytes} bytes · ${plan.completed ? 'cleanup complete' : 'dry run'}\n`);
+          for (const item of plan.remove) process.stdout.write(`Remove ${item.path} · ${item.bytes} bytes\n`);
+          for (const item of plan.preserve) process.stdout.write(`Keep ${item.path} · ${item.bytes} bytes (older legacy records remain recoverable)\n`);
+          if (plan.backupDestination) process.stdout.write(`Independent SQLite backup: ${plan.backupDestination}\n`);
+          if (!options.confirm && plan.removeBytes > 0) process.stdout.write('Stop all Kiki writers for this home, then use --backup <destination> --confirm to clean these copies.\n');
+        }
+      } finally { await service.close(); }
+    });
 }
 
 async function run(options: StorageCommandOptions, operation: (service: MailboxMigrationService, signal: AbortSignal) => Promise<MailboxMigrationStatus>): Promise<void> {

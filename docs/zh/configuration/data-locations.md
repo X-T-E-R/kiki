@@ -110,7 +110,7 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 `store/thread-mailbox-sqlite-v1/` 保存线程间消息、投递状态、幂等回执、活动游标和工作区覆盖设置。这些记录是持久原件，不像搜索和查询缓存，不能靠删除后重建来恢复。`authority.json` 指定当前使用的 `mailbox-<migrationId>.sqlite`；数据库打开时，旁边的 `-wal` 和 `-shm` 文件也要保留。请用 [`kiki storage backup`](../reference/command.md#kiki-storage) 创建一致的 SQLite 副本，不要只复制正在使用的 `.sqlite` 文件。
 
-0.5.x 升级将检查点保存在 `migration.json`，源数据备份放在 `recovery/<migrationId>/sources/`，移走的原目录放在 `recovery/<migrationId>/originals/`。原来的 `store/thread-mailbox-v3`、`store/thread-mailbox-v1` 和 `store/agent-collaboration-mailbox-v2` 目录名会变成阻止旧版本写入的占位文件。请保留这些文件，也不要让旧二进制程序使用恢复副本作为可写邮箱。用 `kiki storage status` 查看恢复状态，用 `kiki storage migrate` 续接；需要回退时，遵循 [storage 命令的回退规则](../reference/command.md#kiki-storage)，不要手动移回原目录。
+0.5.x 升级将检查点保存在 `migration.json`，源数据冻结副本放在 `recovery/<migrationId>/sources/`，移走的原目录放在 `recovery/<migrationId>/originals/`。原来的 `store/thread-mailbox-v3`、`store/thread-mailbox-v1` 和 `store/agent-collaboration-mailbox-v2` 目录名会变成阻止旧版本写入的占位文件。请保留原目录及阻写文件：它们既阻止旧版重新写入，也保存旧活动记录。不要让旧二进制程序使用恢复副本作为可写邮箱。用 `kiki storage status` 查看恢复状态，用 `kiki storage migrate` 续接。回滚窗口关闭后，[`kiki storage cleanup-recovery`](../reference/command.md#kiki-storage) 可以预览，并在独立 SQLite 备份验证通过、显式确认后，仅移除与原件相同的 `sources/` 副本。不要手动删除这些目录；需要回退时，遵循 [storage 命令的回退规则](../reference/command.md#kiki-storage)，不要手动移回原目录。
 
 ## 会话与用量查询缓存
 

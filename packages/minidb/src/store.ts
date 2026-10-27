@@ -339,10 +339,13 @@ export class Store {
 
   /** Ordered scan over keys. */
   *scan(opts: RangeOptions<string> = {}): Generator<StoreEntry> {
-    for (const n of this.order.range(opts) as Iterable<RangeEntry<string, string>>) {
+    let remaining = opts.count ?? Infinity;
+    if (!(remaining > 0)) return;
+    for (const n of this.order.iterate({ ...opts, count: undefined })) {
       const r = this.getRecord(n.key);
       if (!r) continue;
       yield { key: fromKStr(n.key), value: this.materialize(r.ref), expireAt: r.expireAt, dt: r.dt };
+      if (--remaining <= 0) break;
     }
   }
 

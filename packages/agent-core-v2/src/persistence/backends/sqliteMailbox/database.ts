@@ -1,5 +1,5 @@
 import { MailboxWorker } from './host';
-import type { MailboxOwner, MailboxRow, MailboxWrite } from './protocol';
+import type { LegacyDeliveryCursor, LegacyDeliveryPage, MailboxOwner, MailboxRow, MailboxWrite } from './protocol';
 
 export interface MailboxImportCheckpoint {
   readonly after: string;
@@ -75,6 +75,10 @@ export class CanonicalMailboxDatabase<V> {
   }
 
   checkpoint(source: string): Promise<MailboxImportCheckpoint | undefined> { return this.worker.request({ type: 'checkpoint', source }); }
+  legacyDeliveries(source: string, after?: LegacyDeliveryCursor, signal?: AbortSignal): Promise<LegacyDeliveryPage> {
+    return this.worker.request({ type: 'legacy_deliveries', source, after, limit: 128 }, signal);
+  }
+  discardArchive(completedMigrationId?: string): Promise<void> { return this.worker.request({ type: 'discard_archive', completedMigrationId }); }
   metadata<T>(key: string, value?: T): Promise<T | undefined> { return this.worker.request({ type: 'metadata', key, value }); }
   verify(signal?: AbortSignal): Promise<MailboxVerification> { return this.worker.request({ type: 'verify' }, signal); }
   backup(destination: string, signal?: AbortSignal): Promise<MailboxVerification & { readonly pages: number }> { return this.worker.request({ type: 'backup', destination }, signal); }

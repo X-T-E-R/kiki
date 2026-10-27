@@ -13,6 +13,16 @@ export interface MailboxOwner {
   readonly hostId: string;
 }
 
+export interface LegacyDeliveryCursor {
+  readonly target: string;
+  readonly seq: number;
+  readonly key: string;
+}
+
+export interface LegacyDeliveryPage {
+  readonly rows: readonly LegacyDeliveryCursor[];
+}
+
 export type MailboxOperation =
   | { readonly type: 'owner'; readonly owner: MailboxOwner }
   | { readonly type: 'get'; readonly keys: readonly string[] }
@@ -21,6 +31,8 @@ export type MailboxOperation =
   | { readonly type: 'scan'; readonly prefix: string; readonly after?: string; readonly limit: number; readonly kind?: string }
   | { readonly type: 'peer'; readonly group: string; readonly before?: string; readonly limit: number }
   | { readonly type: 'checkpoint'; readonly source: string }
+  | { readonly type: 'legacy_deliveries'; readonly source: string; readonly after?: LegacyDeliveryCursor; readonly limit: number }
+  | { readonly type: 'discard_archive'; readonly completedMigrationId?: string }
   | { readonly type: 'verify' }
   | { readonly type: 'backup'; readonly destination: string }
   | { readonly type: 'metadata'; readonly key: string; readonly value?: unknown }

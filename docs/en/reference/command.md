@@ -198,7 +198,7 @@ kiki storage migrate --home /path/to/home
 
 Close every other Kiki writer using that home before `migrate`. If a writer still owns it, the command reports `waiting` and exits with code `2`; it does not take the writer's lock. After the writer exits, repeat `migrate`. The upgrade backs up the source, imports and verifies records, then switches to SQLite. Interrupting a cancellable phase preserves the source and committed import pages; repeat `migrate` to resume. Legacy imports belong to the 0.5.x upgrade series: complete this step with the latest 0.5.x tool before moving to 0.6.
 
-Every storage subcommand accepts `--home` and `--json`. JSON status and progress are newline-delimited objects, including `authority`, `phase`, `state`, `progress`, optional `failure` or `warning`, `canCancel`, and `canRollback`. If `mailbox.checkpoint_warning` appears with `authority: "sqlite"` and `state: "complete"`, the mailbox remains usable; the old migration record needs repair before rollback, so `canRollback` is `false`. A failed operation exits `1`; a cancelled upgrade exits `130`. The recovery commands are:
+Every storage subcommand accepts `--home` and `--json`. JSON status and progress are newline-delimited objects, including `authority`, `phase`, `state`, `progress`, optional `failure` or `warning`, `canCancel`, and `canRollback`. A source's `exists` means its directory was detected; `stage` tracks its backup, import, and verification, while `failure.source` and `failure.key` identify a bad row. If `mailbox.checkpoint_warning` appears with `authority: "sqlite"` and `state: "complete"`, the mailbox remains usable; the old migration record needs repair before rollback, so `canRollback` is `false`. A failed operation exits `1`; a cancelled upgrade exits `130`. The recovery commands are:
 
 ```sh
 kiki storage cancel --home /path/to/home
@@ -206,7 +206,16 @@ kiki storage rollback --home /path/to/home
 kiki storage backup /path/to/mailbox-backup.sqlite --home /path/to/home
 ```
 
-`cancel` requests cancellation at a committed batch boundary; authority switching finishes once it has begun. `rollback` restores the retained original only before SQLite has accepted new canonical writes. After new writes, keep SQLite authority and retain its backups. `backup` creates and verifies a consistent SQLite copy without overwriting an existing destination; it requires a completed upgrade. Keep the [canonical mailbox directory and its recovery copies](../configuration/data-locations.md#canonical-mailbox), not only the search or query caches.
+`cancel` requests cancellation at a committed batch boundary; authority switching finishes once it has begun. `rollback` restores the retained original only before SQLite has accepted new canonical writes. After new writes, keep SQLite authority and retain its backups. `backup` creates and verifies a consistent SQLite copy without overwriting an existing destination; it requires a completed upgrade.
+
+To reclaim duplicate recovery copies after rollback has closed, first preview the exact directories and byte counts. Once all Kiki writers for this home have stopped, confirm with a new backup destination outside the home:
+
+```sh
+kiki storage cleanup-recovery --home /path/to/home --json
+kiki storage cleanup-recovery --home /path/to/home --backup /path/outside-home/mailbox-cleanup.sqlite --confirm
+```
+
+The confirmed command verifies that every frozen `sources/` file matches its moved original, creates and checks an independent SQLite backup, then removes only matching `sources/` copies for this migration. New migrations already discard their temporary import archive when switching to SQLite; this command also compacts archives left in previously migrated databases. It preserves `originals/` (including older activity epochs), mailbox fences, and the independent backup. If an old or current writer is active, a copy differs, or backup verification fails, no recovery copy is removed. Resume an interrupted cleanup with `--confirm` and its recorded backup, without supplying `--backup` again; if another mailbox writer took ownership since then, choose a new backup destination. Keep the [canonical mailbox directory and retained originals](../configuration/data-locations.md#canonical-mailbox), not only the search or query caches.
 
 ### `kiki serve`
 

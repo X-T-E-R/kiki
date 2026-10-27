@@ -1,10 +1,11 @@
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync, backup, type SQLInputValue } from 'node:sqlite';
 import { parentPort, workerData } from 'node:worker_threads';
 import { isDeepStrictEqual } from 'node:util';
 
-import type { MailboxOperation, MailboxOwner, MailboxRequest, MailboxResponse, MailboxRow } from './protocol.ts';
+import type { LegacyDeliveryCursor, MailboxOperation, MailboxOwner, MailboxRequest, MailboxResponse, MailboxRow } from './protocol.ts';
 
 const port = parentPort;
 if (port === null) throw new Error('Canonical mailbox requires a worker');
@@ -29,6 +30,7 @@ function open(): DatabaseSync {
     if ((application !== 0 && application !== APPLICATION_ID) || version > 1 || (!configuration.create && (application !== APPLICATION_ID || version !== 1))) throw new Error('Unsupported canonical mailbox SQLite schema');
     if (application === 0 && db.prepare("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'").get() !== undefined) throw new Error('Unrecognized canonical mailbox database');
     if (configuration.readOnly === true) { db.exec('PRAGMA query_only=ON; PRAGMA cache_size=-8192'); connection = db; return db; }
+    if (application === 0) db.exec('PRAGMA auto_vacuum=INCREMENTAL');
     db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA cache_size=-8192;
       CREATE TABLE IF NOT EXISTS records(key TEXT PRIMARY KEY COLLATE BINARY, json TEXT NOT NULL CHECK(json_valid(json)), expire_at INTEGER NOT NULL DEFAULT 0 CHECK(expire_at>=0),
         kind TEXT GENERATED ALWAYS AS (json_extract(json,'$.kind')) VIRTUAL,
@@ -72,6 +74,17 @@ function assertOwner(db: DatabaseSync, owner: MailboxOwner | undefined): void {
 
 function row(value: Record<string, SQLInputValue>): MailboxRow {
   return { key: String(value['key']), value: JSON.parse(String(value['json'])), expireAt: Number(value['expire_at']) };
+}
+
+function archiveDigest(json: string): string { return createHash('sha256').update(json).digest('base64url'); }
+
+function ensureLegacyOrder(db: DatabaseSync): void {
+  if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_delivery_order'").get() !== undefined) return;
+  db.exec('CREATE TABLE legacy_delivery_order(source TEXT NOT NULL,target TEXT NOT NULL,seq INTEGER NOT NULL,key TEXT NOT NULL,PRIMARY KEY(source,target,seq,key)) WITHOUT ROWID');
+  db.prepare(`INSERT OR IGNORE INTO legacy_delivery_order
+    SELECT source,json_array(json_extract(json,'$.message.target.hostId'),json_extract(json,'$.message.target.workspaceId'),json_extract(json,'$.message.target.sessionId')),
+      coalesce(json_extract(json,'$.message.targetSeq'),-1),key FROM legacy_archive
+    WHERE json_extract(json,'$.kind')='delivery'`).run();
 }
 
 function verify(db: DatabaseSync): { readonly counts: Record<string, number>; readonly items: number; readonly bytes: number } {
@@ -120,8 +133,18 @@ function verify(db: DatabaseSync): { readonly counts: Record<string, number>; re
     }
   }
   if (metadata(db, 'authority') === undefined) {
-    const mismatch = db.prepare("SELECT a.key FROM legacy_archive a LEFT JOIN records r ON r.key=a.key WHERE a.source LIKE 'thread-mailbox-v3/%' AND json_extract(a.json,'$.kind') NOT IN ('target_meta','workspace_override') AND (r.key IS NULL OR r.json<>a.json OR r.expire_at<>a.expire_at) LIMIT 1").get();
-    if (mismatch !== undefined) throw new Error(`Imported canonical record differs from its frozen source at ${String(mismatch['key'])}`);
+    const current = db.prepare('SELECT json,expire_at FROM records WHERE key=?');
+    for (const archived of db.prepare("SELECT key,json,expire_at FROM legacy_archive WHERE source LIKE 'thread-mailbox-v3/%'").iterate()) {
+      check();
+      const key = String(archived['key']);
+      const source = JSON.parse(String(archived['json'])) as Record<string, unknown>;
+      if (source['kind'] === 'target_meta' || source['kind'] === 'workspace_override') continue;
+      const found = current.get(key);
+      if (found === undefined || Number(found['expire_at']) !== Number(archived['expire_at']) ||
+        (typeof source['digest'] === 'string' ? archiveDigest(String(found['json'])) !== source['digest'] : String(found['json']) !== String(archived['json']))) {
+        throw new Error(`Imported canonical record differs from its frozen source at ${key}`);
+      }
+    }
   }
   return { counts, items, bytes };
 }
@@ -166,7 +189,17 @@ async function execute(operation: MailboxOperation): Promise<unknown> {
       }
       if (operation.archive !== undefined) {
         const archive = db.prepare('INSERT INTO legacy_archive VALUES(?,?,?,?) ON CONFLICT(source,key) DO UPDATE SET json=excluded.json,expire_at=excluded.expire_at');
-        for (const item of operation.archive.rows) archive.run(operation.archive.source, item.key, JSON.stringify(item.value), item.expireAt);
+        const order = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_delivery_order'").get() === undefined ? undefined
+          : db.prepare(`INSERT OR IGNORE INTO legacy_delivery_order
+            SELECT source,json_array(json_extract(json,'$.message.target.hostId'),json_extract(json,'$.message.target.workspaceId'),json_extract(json,'$.message.target.sessionId')),
+              coalesce(json_extract(json,'$.message.targetSeq'),-1),key FROM legacy_archive WHERE source=? AND key=?`);
+        for (const item of operation.archive.rows) {
+          check();
+          const json = JSON.stringify(item.value);
+          const retained = operation.archive.source.startsWith('thread-mailbox-v3/') ? JSON.stringify({ kind: item.value['kind'], digest: archiveDigest(json) }) : json;
+          archive.run(operation.archive.source, item.key, retained, item.expireAt);
+          if (order !== undefined && item.value['kind'] === 'delivery') order.run(operation.archive.source, item.key);
+        }
       }
       if (operation.importCheckpoint !== undefined) {
         const point = operation.importCheckpoint;
@@ -191,6 +224,37 @@ async function execute(operation: MailboxOperation): Promise<unknown> {
       return db.prepare(`${sql} ORDER BY peer_order DESC,key DESC LIMIT ?`).all(...values).map((record) => ({ ...row(record), orderValue: (JSON.parse(String(record['json'])) as { peerOrder: string }).peerOrder }));
     }
     case 'checkpoint': return db.prepare('SELECT after_key AS after,items,bytes FROM imports WHERE source=?').get(operation.source);
+    case 'legacy_deliveries': {
+      if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='legacy_delivery_order'").get() === undefined) transaction((connection) => {
+        assertOwner(connection, undefined);
+        ensureLegacyOrder(connection);
+      });
+      const after = operation.after;
+      const rows = db.prepare(`SELECT target,seq,key FROM legacy_delivery_order WHERE source=?
+        AND (? IS NULL OR (target,seq,key)>(?,?,?)) ORDER BY target,seq,key LIMIT ?`).all(
+        operation.source, after?.target ?? null, after?.target ?? '', after?.seq ?? 0, after?.key ?? '', operation.limit);
+      return { rows: rows.map((entry) => ({ target: String(entry['target']), seq: Number(entry['seq']), key: String(entry['key']) } satisfies LegacyDeliveryCursor)) };
+    }
+    case 'discard_archive': {
+      transaction((connection) => {
+        if (operation.completedMigrationId === undefined) assertOwner(connection, undefined);
+        else if (metadata(connection, 'authority') !== 'sqlite' || metadata(connection, 'migrationReady') !== operation.completedMigrationId || metadata(connection, 'hasNewWrites') !== true) {
+          throw new Error('Only a completed mailbox migration with new SQLite writes can discard its old import archive');
+        }
+        connection.exec(`DROP TABLE IF EXISTS legacy_archive;
+          CREATE TABLE legacy_archive(source TEXT NOT NULL,key TEXT NOT NULL,json TEXT NOT NULL CHECK(json_valid(json)),expire_at INTEGER NOT NULL,PRIMARY KEY(source,key)) WITHOUT ROWID;
+          DROP TABLE IF EXISTS legacy_delivery_order`);
+      });
+      const free = (): number => Number(db.prepare('PRAGMA freelist_count').get()!['freelist_count']);
+      if (Number(db.prepare('PRAGMA auto_vacuum').get()!['auto_vacuum']) === 2) {
+        while (free() > 0) { check(); db.exec('PRAGMA incremental_vacuum(256)'); }
+      } else if (operation.completedMigrationId !== undefined && free() > 0) { check(); db.exec('VACUUM'); }
+      if (operation.completedMigrationId !== undefined) {
+        const checkpoint = db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').get()!;
+        if (Number(checkpoint['busy']) !== 0) throw new Error('SQLite archive cleanup cannot checkpoint while another reader holds the database');
+      }
+      return undefined;
+    }
     case 'metadata': {
       if (operation.value === undefined) return metadata(db, operation.key);
       return transaction((db) => { db.prepare('INSERT INTO metadata VALUES(?,?) ON CONFLICT(key) DO UPDATE SET json=excluded.json').run(operation.key, JSON.stringify(operation.value)); });

@@ -80,6 +80,29 @@ test('ordered scan over keys (range)', () => {
   );
 });
 
+test('limited scans count live rows after expiring a full leading page', () => {
+  const s = new Store({ activeExpireIntervalMs: 0 });
+  const now = Date.now();
+  for (let index = 0; index < 256; index++) s.set(`a-${String(index).padStart(4, '0')}`, B('temporary'), now + 1000);
+  s.set('z-live', B('persistent'));
+  const clock = Date.now;
+  try {
+    Date.now = () => now + 2000;
+    assert.deepEqual([...s.scan({ gt: '', count: 256 })].map((row) => row.key.toString()), ['z-live']);
+    assert.deepEqual([...s.scan({ gt: '', count: 1 })].map((row) => row.key.toString()), ['z-live']);
+  } finally { Date.now = clock; s.close(); }
+});
+
+test('fractional scan count preserves the previous bounded result', () => {
+  const s = new Store({ activeExpireIntervalMs: 0 });
+  try {
+    for (let index = 0; index < 5; index++) s.set(`k${index}`, B('value'));
+    assert.deepEqual([...s.scan({ count: 0.5 })].map((row) => row.key.toString()), ['k0']);
+    assert.deepEqual([...s.scan({ count: 0 })], []);
+    assert.deepEqual([...s.scan({ count: -1 })], []);
+  } finally { s.close(); }
+});
+
 test('prefix scan over keys', () => {
   const s = new Store({ activeExpireIntervalMs: 0 });
   ['user:1', 'user:2', 'user:10', 'order:1'].forEach((k) => s.set(k, B(k)));

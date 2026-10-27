@@ -2,7 +2,7 @@ import { z } from 'zod';
 
 export const mailboxMigrationPhaseSchema = z.enum(['detecting', 'waiting_for_writers', 'backing_up', 'importing', 'verifying', 'switching', 'rolling_back', 'complete']);
 export const mailboxMigrationProgressSchema = z.object({ items: z.number().nonnegative(), totalItems: z.number().nonnegative().optional(), bytes: z.number().nonnegative(), totalBytes: z.number().nonnegative().optional() });
-export const mailboxMigrationSourceSchema = z.object({ name: z.enum(['thread-mailbox-v3', 'thread-mailbox-v1', 'agent-collaboration-mailbox-v2']), exists: z.boolean(), bytes: z.number().nonnegative().optional() });
+export const mailboxMigrationSourceSchema = z.object({ name: z.enum(['thread-mailbox-v3', 'thread-mailbox-v1', 'agent-collaboration-mailbox-v2']), exists: z.boolean(), bytes: z.number().nonnegative().optional(), stage: z.enum(['discovered', 'backed_up', 'importing', 'imported', 'verified']).optional() });
 export const mailboxMigrationFailureSchema = z.object({ code: z.string(), message: z.string(), source: z.string().optional(), key: z.string().optional() });
 export const mailboxMigrationStatusSchema = z.object({
   schemaVersion: z.literal(1), homeDir: z.string(), migrationId: z.string().optional(), authority: z.enum(['legacy', 'sqlite']),

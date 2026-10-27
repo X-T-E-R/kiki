@@ -7,6 +7,10 @@ import type { AcceptedThreadMessage, ThreadMessageProducer } from './threadMailb
 
 type Document = Record<string, unknown>;
 
+export class LegacyMailboxImportError extends Error {
+  constructor(readonly key: string, message: string) { super(message); }
+}
+
 export interface LegacyMailboxImportReader {
   get(key: string): Promise<Document | undefined>;
   find(partition: string, field: 'messageId' | 'legacyIdentity', value: string): Promise<MailboxRow | undefined>;
@@ -18,13 +22,18 @@ export async function convertLegacyMailboxRows(rows: readonly MailboxRow[], read
   const writes: MailboxWrite<Document>[] = [];
   const get = async (key: string): Promise<Document | undefined> => staged.get(key) ?? reader.get(key);
   const put = (key: string, value: Document, expireAt = 0): void => { staged.set(key, value); writes.push({ op: 'set', key, value, expireAt }); };
-  const metaFor = async (target: ThreadRef): Promise<Document> => await get(`${partitionFor(target)}/meta`) ?? {
-    kind: 'target_meta', target, nextMessageSeq: 1, nextDeliverableSeq: 1, pendingCount: 0,
-    activityEpoch: '', nextActivitySeq: 1, minActivitySeq: 1,
+  const metaFor = async (target: ThreadRef): Promise<Document> => {
+    const current = await get(`${partitionFor(target)}/meta`);
+    if (current !== undefined) return current;
+    const sourceMeta = reader.sourceGet(`activity/${hash({ hostId: target.hostId, workspaceId: target.workspaceId, sessionId: target.sessionId })}/meta`)?.value;
+    const epoch = sourceMeta?.['kind'] === 'activity_meta' && isDeepStrictEqual(sourceMeta['target'], target) && typeof sourceMeta['epoch'] === 'string'
+      ? sourceMeta['epoch'] : '';
+    return { kind: 'target_meta', target, nextMessageSeq: 1, nextDeliverableSeq: 1, pendingCount: 0,
+      activityEpoch: epoch, nextActivitySeq: 1, minActivitySeq: 1 };
   };
   for (const row of rows) {
     const value = row.value;
-    const fail = (): never => { throw new Error(`Invalid legacy mailbox record at ${row.key} (${String(value['kind'])})`); };
+    const fail = (): never => { throw new LegacyMailboxImportError(row.key, `Invalid legacy mailbox record at ${row.key} (${String(value['kind'])})`); };
     switch (value['kind']) {
       case 'delivery': {
         if (!row.key.startsWith('delivery/')) fail();
@@ -36,13 +45,14 @@ export async function convertLegacyMailboxRows(rows: readonly MailboxRow[], read
         const known = [...staged.entries()].find(([key, doc]) => key.startsWith(`${partition}/message/`) && doc['kind'] === 'message' && (doc['message'] as AcceptedThreadMessage).messageId === accepted.messageId)?.[1]
           ?? (await reader.find(partition, 'messageId', accepted.messageId))?.value;
         if (known !== undefined) {
-          if (!isDeepStrictEqual(known['message'], accepted)) throw new Error(`Conflicting legacy message identity at ${row.key}`);
+          const existing = known['message'] as AcceptedThreadMessage;
+          if (!isDeepStrictEqual({ ...existing, targetSeq: accepted.targetSeq }, accepted)) throw new LegacyMailboxImportError(row.key, `Conflicting legacy message identity at ${row.key}`);
           break;
         }
         const meta = await metaFor(accepted.target);
-        const seq = accepted.targetSeq;
-        if (await get(messageKey(partition, seq)) !== undefined) throw new Error(`Conflicting legacy message sequence at ${row.key}; both sources were preserved`);
-        const normalized = accepted;
+        const seq = Math.max(accepted.targetSeq, Number(meta['nextMessageSeq']));
+        if (!Number.isSafeInteger(seq) || seq < 1) fail();
+        const normalized = { ...accepted, targetSeq: seq };
         const idem = idempotencyKey(partition, accepted);
         const originalIdem = reader.sourceGet(String(value['idempotencyStorageKey']));
         const payloadHash = typeof originalIdem?.value['payloadHash'] === 'string' ? originalIdem.value['payloadHash'] : hash({ content: accepted.content });
@@ -51,7 +61,7 @@ export async function convertLegacyMailboxRows(rows: readonly MailboxRow[], read
           fence: Number(value['attempt']) + (state === 'delivering' ? 1 : 0),
           legacyAttempt: { attempt: value['attempt'], activeAttemptId: value['activeAttemptId'], sourceKey: row.key } }, row.expireAt);
         const priorIdem = await get(idem);
-        if (priorIdem !== undefined && (priorIdem['payloadHash'] !== payloadHash || priorIdem['messageKey'] !== key)) throw new Error(`Conflicting legacy idempotency key at ${row.key}`);
+        if (priorIdem !== undefined && (priorIdem['payloadHash'] !== payloadHash || priorIdem['messageKey'] !== key)) throw new LegacyMailboxImportError(row.key, `Conflicting legacy idempotency key at ${row.key}`);
         put(idem, { kind: 'idempotency', producer: accepted.producer, target: accepted.target, idempotencyKey: accepted.idempotencyKey, payloadHash, messageKey: key, messageId: accepted.messageId }, originalIdem?.expireAt ?? row.expireAt);
         const pending = state === 'pending' || state === 'delivering';
         const nextMessageSeq = Math.max(Number(meta['nextMessageSeq']), seq + 1);
@@ -98,7 +108,7 @@ export async function convertLegacyMailboxRows(rows: readonly MailboxRow[], read
         const meta = await metaFor(target!);
         if (supersededActivityEpoch(meta, activity!['epoch'])) break;
         const seq = Number(activity!['seq']);
-        if (await get(activityKey(partition, seq)) !== undefined) throw new Error(`Conflicting legacy activity sequence at ${row.key}; both sources were preserved`);
+        if (await get(activityKey(partition, seq)) !== undefined) throw new LegacyMailboxImportError(row.key, `Conflicting legacy activity sequence at ${row.key}; both sources were preserved`);
         put(activityKey(partition, seq), { kind: 'activity', target, activity, legacyIdentity: identity }, row.expireAt);
         put(`${partition}/meta`, { ...meta, activityEpoch: meta['activityEpoch'] === '' ? activity!['epoch'] : meta['activityEpoch'],
           nextActivitySeq: Math.max(Number(meta['nextActivitySeq']), seq + 1), minActivitySeq: Number(meta['nextActivitySeq']) === 1 ? seq : Math.min(Number(meta['minActivitySeq']), seq) });

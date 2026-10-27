@@ -198,7 +198,7 @@ kiki storage migrate --home /path/to/home
 
 运行 `migrate` 前，关闭所有使用这个 home 写入数据的其他 Kiki 进程。仍有进程持有写锁时，命令报告 `waiting` 并以退出码 `2` 结束，不抢占写锁；原进程退出后，重复运行 `migrate`。升级依次备份原件、导入并核对记录，再切换到 SQLite。在可取消阶段中断时，原件与已提交的导入页都会保留；重复运行 `migrate` 即可续接。旧格式导入属于 0.5.x 升级流程，请先用最新的 0.5.x 工具完成迁移，再升级到 0.6。
 
-每个 storage 子命令都接受 `--home` 和 `--json`。JSON 状态和进度按行输出，包含 `authority`、`phase`、`state`、`progress`、可选的 `failure` 或 `warning`，以及 `canCancel` 和 `canRollback`。若 `mailbox.checkpoint_warning` 与 `authority: "sqlite"`、`state: "complete"` 同时出现，邮箱仍可使用；旧迁移记录需修复后才能回滚，因此 `canRollback` 为 `false`。操作失败时退出码为 `1`，升级取消时为 `130`。恢复相关命令如下：
+每个 storage 子命令都接受 `--home` 和 `--json`。JSON 状态和进度按行输出，包含 `authority`、`phase`、`state`、`progress`、可选的 `failure` 或 `warning`，以及 `canCancel` 和 `canRollback`。来源的 `exists` 只表示发现了目录；`stage` 表示备份、导入与校验阶段，`failure.source` 和 `failure.key` 则定位出错记录。若 `mailbox.checkpoint_warning` 与 `authority: "sqlite"`、`state: "complete"` 同时出现，邮箱仍可使用；旧迁移记录需修复后才能回滚，因此 `canRollback` 为 `false`。操作失败时退出码为 `1`，升级取消时为 `130`。恢复相关命令如下：
 
 ```sh
 kiki storage cancel --home /path/to/home
@@ -206,7 +206,16 @@ kiki storage rollback --home /path/to/home
 kiki storage backup /path/to/mailbox-backup.sqlite --home /path/to/home
 ```
 
-`cancel` 请求在已提交的批次边界停止；一旦开始切换存储，这一步会继续完成。`rollback` 仅在 SQLite 尚未接受新的持久写入前恢复保留的原件。已有新写入后，应继续使用 SQLite 并保留其备份。`backup` 创建并核对一份一致的 SQLite 副本，不覆盖已有目标；运行前须先完成升级。请保留[消息邮箱目录与恢复副本](../configuration/data-locations.md#持久消息邮箱)，不能只备份搜索或查询缓存。
+`cancel` 请求在已提交的批次边界停止；一旦开始切换存储，这一步会继续完成。`rollback` 仅在 SQLite 尚未接受新的持久写入前恢复保留的原件。已有新写入后，应继续使用 SQLite 并保留其备份。`backup` 创建并核对一份一致的 SQLite 副本，不覆盖已有目标；运行前须先完成升级。
+
+回滚窗口关闭后，如需回收重复的恢复副本，先预览待清理目录及字节数。确认该 home 的所有 Kiki writer 均已自然停止，再指定 home 外的新备份位置并显式确认：
+
+```sh
+kiki storage cleanup-recovery --home /path/to/home --json
+kiki storage cleanup-recovery --home /path/to/home --backup /path/outside-home/mailbox-cleanup.sqlite --confirm
+```
+
+执行时会逐文件核对冻结的 `sources/` 与移走的原件、创建并验证独立 SQLite 备份，然后只移除本次迁移中相同的 `sources/` 副本。新迁移在切换到 SQLite 时已清除临时导入档案；此命令也会收缩旧版迁移留在数据库中的档案。`originals/`（含旧活动 epoch）、邮箱阻写文件和独立备份均保留。如果旧版或当前 writer 仍在使用该 home、副本不同或备份校验失败，就不会删除恢复副本。清理中断后可用 `--confirm` 及已记录的备份续接，无须再传 `--backup`；若这期间另一个邮箱 writer 接管了写入权，需指定新的备份位置。请保留[持久邮箱目录及原件](../configuration/data-locations.md#持久消息邮箱)，不能只备份搜索或查询缓存。
 
 ### `kiki serve`
 
