@@ -980,6 +980,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             return;
           }
           const aborted = resolved.prompt.abort(parsed.id);
+          if (!aborted) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, `prompt ${parsed.id} already settled`);
           await resolved.accessor.get(IEventDispatcher).flush();
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
           reply.send(okEnvelope({ aborted }, req.id));

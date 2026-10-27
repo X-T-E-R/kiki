@@ -489,7 +489,7 @@ describe('AgentPromptService', () => {
     gate.resolve();
     await next.launched;
     expect(prompt.list().active?.id).toBe('next');
-    expect(() => prompt.abort('launching')).toThrow(expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }));
+    expect(prompt.abort('launching')).toBe(false);
     expect(loop.cancels).toEqual([]);
     loop.settleActive();
     await next.completion;
@@ -570,7 +570,7 @@ describe('AgentPromptService', () => {
     loop.settleActive({ type: 'cancelled', steps: 0, reason: controller.signal.reason });
     expect((await steered.completion).state).toBe('cancelled');
     const later = await prompt.enqueue({ id: 'later', message: message('later') });
-    expect(() => prompt.abort('steered')).toThrow(expect.objectContaining({ code: ErrorCodes.PROMPT_NOT_FOUND }));
+    expect(prompt.abort('steered')).toBe(false);
     expect(loop.cancels).toHaveLength(1);
     expect((await later.launched)?.signal.aborted).toBe(false);
     loop.settleActive();

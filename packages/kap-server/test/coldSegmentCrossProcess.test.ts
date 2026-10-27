@@ -20,7 +20,6 @@ const WORKSPACE_ID = 'wd_ws';
 const SESSION_ID = 'session_offline_read';
 const repo = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 const childPath = join(dirname(fileURLToPath(import.meta.url)), 'coldSegmentCrossProcess.child.mts');
-const tsxBin = join(repo, 'node_modules', '.bin', 'tsx.cmd');
 const loaderPath = './build/register-raw-text-loader.mjs';
 
 function line(value: Record<string, unknown>): string {
@@ -92,12 +91,13 @@ function killPid(pid: number): void {
 }
 
 function pin(laid: LaidOut): PinnedReader {
-  const child = spawn(tsxBin, [
+  const child = spawn(process.execPath, [
+    fileURLToPath(import.meta.resolve('tsx/cli')),
     '--import',
     loaderPath,
     childPath,
     laid.scratch,
-  ], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true, shell: true });
+  ], { cwd: repo, stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   let output = '';
   child.stdout?.on('data', (chunk) => { output += String(chunk); });
   child.stderr?.on('data', (chunk) => { output += String(chunk); });
