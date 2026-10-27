@@ -102,6 +102,32 @@ describe('native Kimi WebBridge chain', () => {
     } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
   });
 
+  it('diagnoses the saved HTTP connection without treating missing status as an extension outage and clears an old failure on check', async () => {
+    const seen: { action?: string; args?: Record<string, unknown>; session?: string }[] = [];
+    const fault: ChainFault = { savedType: 'kimi-webbridge', statusResponse: 'unavailable' };
+    const bridge = await harness(seen, fault);
+    try {
+      const disconnected = JSON.parse(textOf(await bridge.service.connections({ action: 'connect', browser: 'kimi-webbridge' })));
+      expect(disconnected).toMatchObject({ state: 'disconnected', failure: { code: 'browser.disconnected' } });
+      expect(disconnected.error).toContain('HTTP status is unavailable');
+      expect(disconnected.error).not.toContain('extension is not connected');
+      fault.statusResponse = 'stopped';
+      expect(JSON.parse(textOf(await bridge.service.connections({ action: 'check', browser: 'kimi-webbridge' }))).error).toContain('daemon is not running');
+      fault.statusResponse = 'extension-off';
+      expect(JSON.parse(textOf(await bridge.service.connections({ action: 'check', browser: 'kimi-webbridge' }))).error).toContain('extension is not connected');
+      fault.statusResponse = undefined;
+      const checked = JSON.parse(textOf(await bridge.service.connections({ action: 'check', browser: 'kimi-webbridge' })));
+      expect(checked).toMatchObject({ state: 'idle', driverVersion: 'v2.0.23' });
+      expect(checked).not.toHaveProperty('error');
+      expect(checked).not.toHaveProperty('failure');
+      const connected = JSON.parse(textOf(await bridge.service.connections({ action: 'connect', browser: 'kimi-webbridge' })));
+      expect(connected).toMatchObject({ state: 'ready', generation: 1 });
+      expect(JSON.parse(textOf(await bridge.service.tabs({ action: 'list', browser: 'kimi-webbridge' }))).tabs).toEqual([]);
+      expect(seen.map((call) => call.action)).toEqual(['list_tabs', 'list_tabs']);
+      expect(bridge.factory.open).not.toHaveBeenCalled();
+    } finally { vi.unstubAllGlobals(); await bridge.ix.dispose(); }
+  });
+
   it('keeps a timed-out write unconfirmed and does not replay it or open the CDP driver', async () => {
     const seen: { action?: string; args?: Record<string, unknown>; session?: string }[] = [];
     const bridge = await harness(seen, { failAction: 'click' });
@@ -231,7 +257,7 @@ describe('native Kimi WebBridge chain', () => {
   });
 });
 
-interface ChainFault { failAction?: string; rejectAction?: string; abortAction?: string; truncateAction?: string; abort?: () => void; reportActiveTabId?: number }
+interface ChainFault { failAction?: string; rejectAction?: string; abortAction?: string; truncateAction?: string; abort?: () => void; reportActiveTabId?: number; savedType?: 'kimi-webbridge'; statusResponse?: 'unavailable' | 'stopped' | 'extension-off' }
 
 async function harness(seen: { action?: string; args?: Record<string, unknown>; session?: string }[], fault?: ChainFault) {
   const planned: ChainFault = fault ?? {};
@@ -240,7 +266,10 @@ async function harness(seen: { action?: string; args?: Record<string, unknown>; 
   let next = 0;
   let current: number | undefined;
   vi.stubGlobal('fetch', async (url: string | URL, init?: RequestInit) => {
-    if (String(url).endsWith('/status')) return new Response(JSON.stringify({ running: true, extension_connected: true, version: 'v2.0.23' }), { status: 200 });
+    if (String(url).endsWith('/status')) {
+      if (planned.statusResponse === 'unavailable') return new Response('', { status: 503 });
+      return new Response(JSON.stringify({ running: planned.statusResponse !== 'stopped', extension_connected: planned.statusResponse !== 'extension-off', version: 'v2.0.23' }), { status: 200 });
+    }
     const body = JSON.parse(String(init?.body)) as { action?: string; args?: Record<string, unknown>; session?: string };
     if (body.action === planned.failAction) {
       seen.push(body);
@@ -287,15 +316,18 @@ async function harness(seen: { action?: string; args?: Record<string, unknown>; 
     }
     return new Response(JSON.stringify({ ok: false, error: 'unexpected' }), { status: 200 });
   });
-  const config: BrowserConfig = { connections: { 'kimi-webbridge': { type: 'agent-browser-cdp', name: 'edge-kimi', enabled: true, endpointSecret: 'http://127.0.0.1' } } };
+  const saved = planned.savedType === 'kimi-webbridge'
+    ? { type: 'kimi-webbridge' as const, name: 'edge-kimi', enabled: true }
+    : { type: 'agent-browser-cdp' as const, name: 'edge-kimi', enabled: true, endpointSecret: 'http://127.0.0.1' };
+  const config: BrowserConfig = { connections: { 'kimi-webbridge': saved } };
   const sections = new Emitter<ConfigSectionChangedEvent>();
   const ix = new TestInstantiationService();
   const factory = { _serviceBrand: undefined, open: vi.fn(async () => { throw new Error('CDP driver must stay closed'); }) };
   ix.stub(IFlagService, { enabled: () => true });
   ix.stub(IBrowserConnectionStore, {
     _serviceBrand: undefined,
-    list: async () => ({ connections: [{ id: 'kimi-webbridge', name: 'edge-kimi', type: 'agent-browser-cdp' as const, enabled: true }] }),
-    resolve: async () => ({ id: 'kimi-webbridge', type: 'agent-browser-cdp' as const, name: 'edge-kimi', enabled: true, endpointSecret: 'http://127.0.0.1' }),
+    list: async () => ({ connections: [{ id: 'kimi-webbridge', ...saved }] }),
+    resolve: async () => ({ id: 'kimi-webbridge', ...saved }),
     upsert: async () => { throw new Error('config write is not part of this chain'); },
     remove: async () => undefined, setDefault: async () => undefined, revealEndpoint: async () => undefined,
   });

@@ -193,6 +193,19 @@ describe('webbridge command control', () => {
       expect(f.open).not.toHaveBeenCalled();
     } finally { await f.ix.dispose(); }
   });
+  it('reports an unavailable local status instead of a stale ready state and recovers through a healthy check', async () => {
+    const f = fixture(); const peer = installPeer();
+    try {
+      expect(await f.control.connect(browser)).toMatchObject({ state: 'ready', generation: 1 });
+      vi.stubGlobal('fetch', vi.fn(async () => new Response('', { status: 503 })));
+      expect(await f.control.check(browser)).toMatchObject({ state: 'disconnected', generation: 2,
+        failure: { code: 'browser.disconnected' }, error: expect.stringContaining('HTTP status is unavailable') });
+      expect(peer.requests).toHaveLength(1);
+      installPeer();
+      expect(await f.control.check(browser)).toMatchObject({ state: 'idle', generation: 2, error: undefined, failure: undefined });
+      expect(f.open).not.toHaveBeenCalled();
+    } finally { await f.ix.dispose(); }
+  });
   it('checks idle using status only and rejects frames/windows without a command', async () => {
     const f = fixture(); const peer = installPeer();
     try {

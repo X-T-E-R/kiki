@@ -106,6 +106,25 @@ describe('browser connection configuration', () => {
     await expect(open(home).resolve('cdp')).rejects.toMatchObject({ code: 'browser.not_found' });
   });
 
+  it('distinguishes an unregistered HTTP bridge from a disconnected extension and reloads its endpoint-free type', async () => {
+    const { home, store } = await fixture();
+    await expect(store.resolve('kimi-webbridge')).rejects.toMatchObject({ code: 'browser.not_found',
+      message: expect.stringContaining('type = "kimi-webbridge"') });
+    await expect(store.resolve('webbridge-command')).rejects.toMatchObject({ code: 'browser.not_found',
+      message: expect.stringContaining('type = "webbridge-command"') });
+    await expect(store.resolve('other')).rejects.toMatchObject({ code: 'browser.not_found', message: 'Unknown browser connection "other"' });
+    await store.upsert('kimi-webbridge', { type: 'kimi-webbridge', name: 'Kimi Edge WebBridge', enabled: true });
+    await store.upsert('webbridge-command', { type: 'webbridge-command', name: 'Command bridge', enabled: true });
+    const reopened = open(home);
+    expect(await reopened.resolve('kimi-webbridge')).toMatchObject({ type: 'kimi-webbridge', name: 'Kimi Edge WebBridge' });
+    expect((await reopened.list()).connections.map((item) => [item.id, item.type])).toEqual([
+      ['kimi-webbridge', 'kimi-webbridge'], ['webbridge-command', 'webbridge-command'],
+    ]);
+    const saved = await readFile(join(home, 'config.toml'), 'utf8');
+    expect(saved).toContain('kimi-webbridge');
+    expect(saved).not.toContain('endpoint');
+  });
+
   it('keeps an explicit WebBridge route switch when a connection is removed', async () => {
     const { home, store } = await fixture();
     await store.upsert('a', { type: 'agent-browser-profile', name: 'A', enabled: true, profilePath: join(home, 'a') });

@@ -43,7 +43,11 @@ export class BrowserConnectionStore implements IBrowserConnectionStore {
     if (!BrowserIdSchema.safeParse(id).success) throw new BrowserError('browser.invalid', 'Invalid browser connection id');
     const connections = (await this.read()).connections;
     const entry = Object.hasOwn(connections, id) ? connections[id] : undefined;
-    if (entry === undefined) throw new BrowserError('browser.not_found', `Unknown browser connection "${id}"`);
+    if (entry === undefined) throw new BrowserError('browser.not_found', id === 'kimi-webbridge'
+      ? 'Browser connection "kimi-webbridge" is not registered in Kiki. Save [browser_control.connections.kimi-webbridge] with type = "kimi-webbridge", name = "Kimi WebBridge", and enabled = true in config.toml, then check this connection again.'
+      : id === 'webbridge-command'
+        ? 'Browser connection "webbridge-command" is not registered in Kiki. Save [browser_control.connections.webbridge-command] with type = "webbridge-command", name = "Kimi WebBridge", and enabled = true in config.toml, then check this connection again.'
+        : `Unknown browser connection "${id}"`);
     return { ...entry, id };
   }
 

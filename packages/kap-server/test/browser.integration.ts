@@ -171,6 +171,9 @@ describe('browser REST persisted configuration and explicit secret access', () =
     const start = () => startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home!,
       env: { ...process.env, KIKI_EXPERIMENTAL_NATIVE_BROWSER: 'false', KIKI_SEARCH_DISABLED: '1' }, logLevel: 'silent' });
     server = await start();
+    expect(await request('POST', '/browser/connections/kimi-webbridge:check', {})).toMatchObject({
+      code: ErrorCode.VALIDATION_FAILED, details: { code: 'browser.not_found' }, msg: expect.stringContaining('type = "kimi-webbridge"'),
+    });
     const saved = await request('PUT', '/browser/connections/http-bridge', { type: 'kimi-webbridge', name: 'Local bridge', enabled: true });
     expect(saved.code).toBe(0);
     expect(browserConnectionResponseSchema.parse(saved.data).connection).toMatchObject({ id: 'http-bridge', type: 'kimi-webbridge', name: 'Local bridge' });

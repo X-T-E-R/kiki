@@ -65,8 +65,14 @@ function webbridgeResult(data: Record<string, unknown>): MCPToolResult {
 }
 
 function webbridgeFailureText(error: unknown): string {
-  const message = error instanceof Error ? error.message : 'The Kimi WebBridge extension is not connected';
+  const message = error instanceof Error ? error.message : 'Kimi WebBridge request failed';
   return message.replace(/https?:\/\/\S+/gi, '').replace(/\s+/g, ' ').trim().slice(0, 240);
+}
+
+function assertWebbridgeAvailable(status: Awaited<ReturnType<typeof readWebbridgeStatus>>): asserts status is NonNullable<typeof status> {
+  if (status === undefined) throw new BrowserError('browser.disconnected', 'Kimi WebBridge HTTP status is unavailable on the Kiki host (127.0.0.1:10086). Check the local bridge service.');
+  if (!status.running) throw new BrowserError('browser.disconnected', 'The Kimi WebBridge daemon is not running on the Kiki host. Start it, then check again.');
+  if (!status.extensionConnected) throw new BrowserError('browser.disconnected', 'The Kimi WebBridge extension is not connected to the local daemon. Reconnect the extension, then check again.');
 }
 
 function browserOutcomeUnconfirmed(error: unknown): boolean {
@@ -573,14 +579,18 @@ export class BrowserControlService implements IBrowserControlService {
   }
 
   private failWebbridge(live: LiveBrowser, error: unknown, unconfirmed = false): BrowserStatus {
+    const disconnected = error instanceof BrowserError && error.code === 'browser.disconnected' && !unconfirmed;
+    const wasReady = live.admitting && live.status.state === 'ready';
     live.admitting = false;
     live.observation = undefined;
     if (live.webbridge !== undefined) {
       const { currentTabId: _omit, ...bridge } = live.webbridge;
       live.webbridge = unconfirmed ? bridge : undefined;
     }
-    live.status = { ...live.status, state: unconfirmed ? 'unconfirmed' : 'failed', currentCall: undefined, checkedAt: new Date().toISOString(),
-      failure: { code: 'browser.execution_failed', ...(unconfirmed ? { reason: 'outcome_unknown' as const } : {}) },
+    live.status = { ...live.status, state: unconfirmed ? 'unconfirmed' : disconnected ? 'disconnected' : 'failed',
+      generation: wasReady && disconnected ? live.status.generation + 1 : live.status.generation,
+      currentCall: undefined, checkedAt: new Date().toISOString(),
+      failure: { code: disconnected ? 'browser.disconnected' : 'browser.execution_failed', ...(unconfirmed ? { reason: 'outcome_unknown' as const } : {}) },
       error: unconfirmed ? WEBBRIDGE_UNCONFIRMED : webbridgeFailureText(error) };
     return { ...live.status };
   }
@@ -588,7 +598,7 @@ export class BrowserControlService implements IBrowserControlService {
   private async connectWebbridge(live: LiveBrowser, signal?: AbortSignal): Promise<BrowserStatus> {
     signal?.throwIfAborted();
     const status = await readWebbridgeStatus();
-    if (status?.running !== true || status.extensionConnected !== true) throw new Error('The Kimi WebBridge extension is not connected');
+    assertWebbridgeAvailable(status);
     const session = webbridgeExecutionSession(live.connection.id);
     live.webbridge = { session, version: status.version, tabs: [] };
     live.admitting = true;
@@ -602,11 +612,11 @@ export class BrowserControlService implements IBrowserControlService {
     try {
       signal?.throwIfAborted();
       const status = await readWebbridgeStatus();
-      if (status?.running !== true || status.extensionConnected !== true) throw new Error('The Kimi WebBridge extension is not connected');
+      assertWebbridgeAvailable(status);
       const session = webbridgeExecutionSession(live.connection.id);
       const currentTabId = live.webbridge?.currentTabId;
       live.webbridge = { session, version: status.version, tabs: live.webbridge?.tabs ?? [], ...(currentTabId !== undefined ? { currentTabId } : {}) };
-      const state = live.admitting && live.status.state === 'ready' ? 'ready' : live.status.state === 'failed' ? 'idle' : 'idle';
+      const state = live.admitting && live.status.state === 'ready' ? 'ready' : 'idle';
       live.status = { ...live.status, state, checkedAt: new Date().toISOString(), driverVersion: status.version, runtimeSession: session, error: undefined, failure: undefined };
     } catch (error) {
       if (signal?.aborted && error === signal.reason) throw error;
@@ -1032,21 +1042,22 @@ export class BrowserControlService implements IBrowserControlService {
       signal?.throwIfAborted();
       if (live.status.state === 'unconfirmed') return this.commandRecheck(live);
       const bridge = await readWebbridgeStatus();
-      const usable = bridge?.running === true && bridge.extensionConnected === true;
       const checkedAt = new Date().toISOString();
-      if (live.admitting && live.status.state === 'ready' && !usable) {
+      try { assertWebbridgeAvailable(bridge); }
+      catch (error) {
+        const wasReady = live.admitting && live.status.state === 'ready';
         live.admitting = false;
         this.clearCommandTargets(live);
-        live.status = { ...live.status, state: 'disconnected', generation: live.status.generation + 1, checkedAt, currentCall: undefined,
-          error: 'WebBridge is not ready. No page command was sent.', failure: undefined };
+        live.status = { ...live.status, state: 'disconnected', generation: wasReady ? live.status.generation + 1 : live.status.generation,
+          checkedAt, currentCall: undefined, error: webbridgeFailureText(error), failure: { code: 'browser.disconnected' } };
         return { ...live.status };
       }
-      if (usable && (live.status.state === 'ready' || live.status.state === 'failed')) {
-        live.status = { ...live.status, state: live.status.state === 'failed' ? 'idle' : live.status.state, checkedAt, currentCall: undefined,
-          error: undefined, failure: undefined, driverVersion: bridge?.version };
+      if (live.status.state === 'ready' || live.status.state === 'failed' || live.status.state === 'disconnected') {
+        live.status = { ...live.status, state: live.admitting ? 'ready' : 'idle', checkedAt, currentCall: undefined,
+          error: undefined, failure: undefined, driverVersion: bridge.version };
         return { ...live.status };
       }
-      live.status = { ...live.status, checkedAt, driverVersion: bridge?.version ?? live.status.driverVersion };
+      live.status = { ...live.status, checkedAt, driverVersion: bridge.version };
       return { ...live.status };
     }, signal);
   }
