@@ -28,6 +28,17 @@ function emitImEvent(id, event, owner) {
   }
   return transmitImEvent(id, event, owner);
 }
+function reportImDiagnostic(id, diagnostic, owner) {
+  const connection = imConnections.get(id);
+  if (connection !== owner || connection?.started !== true || !connection.definition.inbound || connection.controller.signal.aborted) return Promise.reject(new Error('IM connection is not receiving'));
+  if (Buffer.byteLength(JSON.stringify(diagnostic), 'utf8') > 1024) return Promise.reject(new Error('IM diagnostic exceeds the byte limit'));
+  const callId = ++nextImEvent;
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => { imEventCalls.delete(callId); reject(new Error('IM diagnostic acknowledgement timed out')); }, 30_000);
+    imEventCalls.set(callId, { adapterId: id, resolve: () => { clearTimeout(timer); resolve(); }, reject: (error) => { clearTimeout(timer); reject(error); } });
+    send({ method: 'im-adapter-report', params: { adapterId: id, connectionId: connection.id, callId, diagnostic } });
+  });
+}
 function transmitImEvent(id, event, connection) {
   if (imConnections.get(id) !== connection || connection.controller.signal.aborted) throw new Error('IM connection is not receiving');
   const imCompleteLimits = connection.context.messageLimits;
@@ -311,7 +322,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     else call?.resolve(message.params?.result);
     continue;
   }
-  if (message.method === 'im-adapter-event-result') {
+  if (message.method === 'im-adapter-event-result' || message.method === 'im-adapter-report-result') {
     const call = imEventCalls.get(message.params?.callId);
     imEventCalls.delete(message.params?.callId);
     if (message.params?.error !== undefined) call?.reject(new Error(message.params.error));
@@ -319,7 +330,7 @@ for await (const line of createInterface({ input: process.stdin })) {
     continue;
   }
   if (message.method === 'im-adapter-request') {
-    const { adapterId, action, input, settings, instanceId, offset, messageLimits } = message.params ?? {};
+    const { adapterId, action, input, settings, instanceId, offset, messageLimits, connectionId } = message.params ?? {};
     Promise.resolve().then(async () => {
       const registered = imAdapters.get(adapterId);
       if (registered === undefined) throw new Error('Unknown IM adapter');
@@ -327,10 +338,10 @@ for await (const line of createInterface({ input: process.stdin })) {
       if (action === 'start') {
         if (imConnections.has(adapterId)) throw new Error('IM adapter already connected');
         const controller = new AbortController();
-        const connection = { ...registered, controller, started: false, context: { signal: controller.signal, settings: settings ?? {}, instanceId, messageLimits: Object.freeze({ ...messageLimits }) } };
+        const connection = { ...registered, id: connectionId, controller, started: false, context: { signal: controller.signal, settings: settings ?? {}, instanceId, messageLimits: Object.freeze({ ...messageLimits }) } };
         imConnections.set(adapterId, connection);
         try {
-          const result = await registered.adapter.start({ ...connection.context, offset, emit: (event) => emitImEvent(adapterId, event, connection) });
+          const result = await registered.adapter.start({ ...connection.context, offset, emit: (event) => emitImEvent(adapterId, event, connection), report: (diagnostic) => reportImDiagnostic(adapterId, diagnostic, connection) });
           connection.started = true;
           return result;
         } catch (error) { await stopImAdapter(adapterId); throw error; }

@@ -968,6 +968,7 @@ export class ImSessionBridge {
         adapter: !active ? (this.factories.some((factory) => factory.providerKind === kind) ? 'stopped' : 'missing') : poller.ownerId === id ? 'running' : 'shared',
         connection: phase,
         connection_detail: (poller?.adapter ?? attempt?.poller.adapter)?.connectionDetail?.() ?? this.failures.get(id)?.detail,
+        inbound_diagnostics: (poller?.adapter ?? attempt?.poller.adapter)?.inboundDiagnostics?.().map((entry) => ({ ...entry })),
       };
       views.push(view);
     }

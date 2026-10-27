@@ -154,11 +154,25 @@ export interface PluginImAdapterContext {
   readonly instanceId: string;
 }
 
+export const PLUGIN_IM_DIAGNOSTIC_LIMITS = Object.freeze({ reportBytes: 1024, sources: 32 });
+
+export const pluginImDiagnosticCodeSchema = z.enum(['hydrate_failed', 'download_failed', 'message_too_large', 'admission_failed']);
+export const pluginImDiagnosticReportSchema = z.object({
+  status: z.enum(['failed', 'recovered']),
+  sourceId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  code: pluginImDiagnosticCodeSchema,
+}).strict();
+
+/** Use an opaque, non-content source token, stable across retries. Never include message text, URLs, credentials or errors. */
+export type PluginImDiagnosticReport = z.infer<typeof pluginImDiagnosticReportSchema>;
+
 export interface PluginImStartContext extends PluginImAdapterContext {
   readonly offset?: number;
   readonly messageLimits: typeof PLUGIN_IM_COMPLETE_LIMITS;
   /** Resolves after the Host has processed this event. Emits before start resolves are rejected. */
   emit(event: PluginImEvent): Promise<void>;
+  /** Optional on older Hosts. Acknowledges retained management diagnostics, not message delivery; recovery clears only the matching source and code. */
+  report?(diagnostic: PluginImDiagnosticReport): Promise<void>;
 }
 
 export interface PluginImAdapter {

@@ -92,6 +92,46 @@ describe('plugin IM digest bridge', () => {
     expect(withdrawals).toBe(1);
   });
 
+  it('exposes the optional SDK report from an installed managed plugin without emitting chat messages', async () => {
+    const plugins = host.app.accessor.get(IPluginService);
+    const hosts = host.app.accessor.get(IPluginHostService);
+    await hosts.ready;
+    let registration: import('#/app/plugin/imAdapter').PluginImAdapterRegistration | undefined;
+    let connection: import('#/app/plugin/imAdapter').PluginImConnection | undefined;
+    await hosts.attachImAdapters({
+      replace: async (items) => { registration = items[0]; },
+      withdraw: async () => { await connection?.stop(); connection = undefined; registration = undefined; },
+    });
+    const source = join(root, 'diagnostic-source');
+    await mkdir(source);
+    const definition = { schemaVersion: 1, id: 'account', label: 'Diagnostic fixture', inbound: true, outbound: false, listenerRealm: 'diagnostic-fixture', maxInboundBytes: 1024, mediaCapabilities: [] };
+    const tool = { schemaVersion: 1, name: 'diagnose', description: 'Report a receive failure', accesses: [{ kind: 'all' }], disclosure: 'deferred' };
+    await writeFile(join(source, 'kimi.plugin.json'), JSON.stringify({ name: 'fixture-receive', version: '1.0.0', 'x-kiki': { engines: { kiki: '^0.4.0' }, entry: './entry.mjs', tools: [tool], imAdapters: [definition] } }));
+    await writeFile(join(source, 'entry.mjs'), `
+      let context;
+      export function register(api) {
+        api.registerImAdapter(${JSON.stringify(definition)}, { async start(value) { context = value; return { accountId: 'verified-account' }; }, async stop() {} });
+        api.registerTool(${JSON.stringify(tool)}, async (report) => { await context.report(report); return { output: 'retained' }; });
+      }
+    `);
+    const plan = await plugins.previewPlugin({ source });
+    await plugins.installPlugin({ source, fingerprint: plan.fingerprint, consent: true });
+    const info = await plugins.getPluginInfo({ id: 'fixture-receive' });
+    expect(info.root).not.toBe(source);
+    const events: unknown[] = [];
+    connection = await registration!.connect(async (event) => { events.push(event); });
+    const report = { status: 'failed', sourceId: 'opaque-source-1', code: 'download_failed' };
+    expect((await hosts.execute('fixture-receive', 'diagnose', report, new AbortController().signal)).output).toBe('retained');
+    expect(connection.inboundDiagnostics?.()).toEqual([{ source_id: 'opaque-source-1', code: 'download_failed', account_id: 'verified-account', at: expect.any(String) }]);
+    await expect(hosts.execute('fixture-receive', 'diagnose', { ...report, accountId: 'foreign', text: 'private body' }, new AbortController().signal)).rejects.toThrow('IM diagnostic was not retained');
+    expect(events).toEqual([]);
+    await hosts.execute('fixture-receive', 'diagnose', { ...report, status: 'recovered' }, new AbortController().signal);
+    expect(connection.inboundDiagnostics?.()).toEqual([]);
+    await plugins.setPluginEnabled({ id: 'fixture-receive', enabled: false });
+    expect(registration).toBeUndefined();
+    expect(hosts.running('fixture-receive')).toBe(false);
+  });
+
   it('retracts only owned adapter connections on hot changes and enforces declared plugin dependencies', async () => {
     const plugins = host.app.accessor.get(IPluginService);
     const hosts = host.app.accessor.get(IPluginHostService);

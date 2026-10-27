@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { PLUGIN_IM_COMPLETE_LIMITS, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, pluginImHistoryRequestSchema, pluginImHistoryPageSchema, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
+import { PLUGIN_IM_COMPLETE_LIMITS, PLUGIN_IM_DIAGNOSTIC_LIMITS, pluginImDiagnosticReportSchema, sessionSourceDefinitionSchema, mediaProviderDefinitionSchema, pluginImAdapterDefinitionSchema, pluginImHistoryRequestSchema, pluginImHistoryPageSchema, type ImInboundDiagnostic, type PluginImAdapterDefinition, type PluginImEvent, type PluginMessagesApi, type MediaProviderDefinition, type PluginMediaApi, type SessionSourceDefinition } from '@kiki/protocol';
 import { parsePluginImEvent, pluginImDeliverySchema, pluginImIdentitySchema, type PluginImConnection } from './imAdapter';
 import { toolContributionSchema, type PluginTool } from './contributions';
 import type { ExecutableToolResult, ToolUpdate } from '#/tool/toolContract';
@@ -59,6 +59,9 @@ export class PluginHost {
   private stopped = false;
   private activitySubscription?: { dispose(): void };
   private readonly imCalls = new Map<number, AbortController>();
+  private nextImConnection = 0;
+  private readonly imReportOwners = new Map<string, { id: number; accountId?: string; diagnostics: Map<string, ImInboundDiagnostic> }>();
+  private readonly imDiagnostics = new Map<string, { accountId: string; diagnostics: Map<string, ImInboundDiagnostic> }>();
 
   constructor(
     readonly id: string,
@@ -76,12 +79,19 @@ export class PluginHost {
     await this.start();
     if (!this.registeredImAdapters.has(adapterId) || this.imListeners.has(adapterId)) throw new Error('IM adapter unavailable or already connected');
     this.imListeners.set(adapterId, listener);
+    const owner = { id: ++this.nextImConnection, accountId: undefined as string | undefined, diagnostics: new Map<string, ImInboundDiagnostic>() };
+    this.imReportOwners.set(adapterId, owner);
     try {
-      const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'start', settings, instanceId, offset, messageLimits: PLUGIN_IM_COMPLETE_LIMITS }) as { accountId?: unknown; listenerAccountId?: unknown; targets?: unknown };
-      if (typeof result?.accountId !== 'string' || result.accountId.length === 0) throw new Error('IM adapter returned no account identity');
+      const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'start', settings, instanceId, offset, connectionId: owner.id, messageLimits: PLUGIN_IM_COMPLETE_LIMITS }) as { accountId?: unknown; listenerAccountId?: unknown; targets?: unknown };
+      if (typeof result?.accountId !== 'string' || result.accountId.length === 0 || result.accountId.length > 1024) throw new Error('IM adapter returned no account identity');
+      owner.accountId = result.accountId;
       if (result.listenerAccountId !== undefined && (typeof result.listenerAccountId !== 'string' || result.listenerAccountId.length === 0 || result.listenerAccountId.length > 1024)) throw new Error('IM adapter returned an invalid listener account identity');
       const targets = result.targets === undefined ? undefined : pluginImIdentitySchema.array().max(1000).parse(result.targets);
+      const retained = this.imDiagnostics.get(adapterId);
+      if (retained?.accountId === owner.accountId) owner.diagnostics = retained.diagnostics;
+      this.imDiagnostics.set(adapterId, { accountId: owner.accountId, diagnostics: owner.diagnostics });
       return { accountId: result.accountId, listenerAccountId: result.listenerAccountId, targets,
+        inboundDiagnostics: () => [...owner.diagnostics.values()].map((entry) => ({ ...entry })),
         request: async (action, input) => {
           if (this.stopped || !this.imListeners.has(adapterId)) throw new Error('IM adapter was withdrawn');
           const result = await this.lifecycleRequest('im-adapter-request', { adapterId, action, input });
@@ -97,6 +107,8 @@ export class PluginHost {
           return page;
         },
         stop: async () => {
+          if (this.imReportOwners.get(adapterId) !== owner) return;
+          this.imReportOwners.delete(adapterId);
           this.clearImAssembly(adapterId);
           this.imListeners.delete(adapterId);
           if (this.child !== undefined) await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'stop' });
@@ -104,6 +116,7 @@ export class PluginHost {
         },
       };
     } catch (error) {
+      this.imReportOwners.delete(adapterId);
       this.imListeners.delete(adapterId);
       if (this.child !== undefined) await this.lifecycleRequest('im-adapter-request', { adapterId, action: 'stop' }).catch(() => undefined);
       throw error;
@@ -382,6 +395,23 @@ export class PluginHost {
             const expected = this.imAdapters.find((item) => item.id === definition.id);
             if (expected === undefined || JSON.stringify(expected) !== JSON.stringify(definition) || this.registeredImAdapters.has(definition.id)) throw new Error('Plugin IM adapter definition mismatch');
             this.registeredImAdapters.add(definition.id);
+          } else if (message.method === 'im-adapter-report') {
+            const { adapterId, connectionId, callId, diagnostic } = message.params ?? {};
+            void Promise.resolve().then(() => {
+              const owner = this.imReportOwners.get(adapterId);
+              const definition = this.imAdapters.find((item) => item.id === adapterId);
+              if (this.stopped || owner?.accountId === undefined || owner.id !== connectionId || definition?.inbound !== true) throw new Error('IM adapter is not receiving');
+              if (Buffer.byteLength(JSON.stringify(diagnostic), 'utf8') > PLUGIN_IM_DIAGNOSTIC_LIMITS.reportBytes) throw new Error('Invalid IM diagnostic');
+              const report = pluginImDiagnosticReportSchema.parse(diagnostic);
+              const key = `${report.sourceId}:${report.code}`;
+              if (report.status === 'recovered') owner.diagnostics.delete(key);
+              else {
+                owner.diagnostics.delete(key);
+                if (owner.diagnostics.size >= PLUGIN_IM_DIAGNOSTIC_LIMITS.sources) owner.diagnostics.delete(owner.diagnostics.keys().next().value!);
+                owner.diagnostics.set(key, { source_id: report.sourceId, code: report.code, account_id: owner.accountId, at: new Date().toISOString() });
+              }
+            }).then(() => this.send({ method: 'im-adapter-report-result', params: { callId, result: true } }),
+              () => this.send({ method: 'im-adapter-report-result', params: { callId, error: 'IM diagnostic was not retained' } }));
           } else if (message.method === 'im-adapter-message-chunk') {
             this.receiveImChunk(message.params ?? {});
           } else if (message.method === 'im-adapter-event') {
@@ -532,6 +562,8 @@ export class PluginHost {
     this.registeredImAdapters.clear();
     for (const adapterId of this.imAssemblies.keys()) this.clearImAssembly(adapterId);
     this.imListeners.clear();
+    this.imReportOwners.clear();
+    this.imDiagnostics.clear();
     for (const call of this.pending.values()) call.reject(reason);
     this.pending.clear();
     if (child !== undefined && !child.killed) child.kill();

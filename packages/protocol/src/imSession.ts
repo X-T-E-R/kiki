@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { pluginImDiagnosticCodeSchema, PLUGIN_IM_DIAGNOSTIC_LIMITS } from '@kiki/plugin-sdk/im';
 
 export const builtinImProviderKindSchema = z.enum(['telegram', 'feishu_app', 'onebot_v11', 'wechat_bridge', 'discord', 'slack', 'matrix']);
 export const pluginImProviderKindSchema = z.string().regex(/^plugin:[a-z0-9][a-z0-9_-]{0,63}\/[a-z0-9][a-z0-9-]{0,63}$/).transform((value) => value as `plugin:${string}/${string}`);
@@ -121,6 +122,14 @@ export const imConnectionDetailSchema = z.object({
 }).strict();
 export type ImConnectionDetail = z.infer<typeof imConnectionDetailSchema>;
 
+export const imInboundDiagnosticSchema = z.object({
+  source_id: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/),
+  code: pluginImDiagnosticCodeSchema,
+  at: z.string().datetime(),
+  account_id: z.string().min(1).max(1024),
+}).strict();
+export type ImInboundDiagnostic = z.infer<typeof imInboundDiagnosticSchema>;
+
 export const imInstanceViewSchema = z.object({
   id: z.string().min(1),
   provider_kind: imProviderKindSchema,
@@ -134,6 +143,7 @@ export const imInstanceViewSchema = z.object({
   adapter: z.enum(['missing', 'running', 'shared', 'stopped']),
   connection: z.enum(['starting', 'reconnecting', 'auth_expired', 'stopped']).optional(),
   connection_detail: imConnectionDetailSchema.optional(),
+  inbound_diagnostics: z.array(imInboundDiagnosticSchema).max(PLUGIN_IM_DIAGNOSTIC_LIMITS.sources).optional(),
 }).strict();
 export type ImInstanceView = z.infer<typeof imInstanceViewSchema>;
 

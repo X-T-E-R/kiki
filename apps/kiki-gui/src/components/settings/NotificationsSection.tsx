@@ -105,7 +105,7 @@ export function NotificationsSection() {
   const imCached = queryClient.getQueryData<ImSessionSnapshot>(['im-sessions']);
   const imNeedsAttention = imCached !== undefined && (
     imCached.discoveries.length > 0 ||
-    imCached.instances.some((inst) => inst.connection === 'auth_expired' || (inst.listening && (inst.connection === 'stopped' || inst.adapter === 'stopped' || inst.adapter === 'missing')))
+    imCached.instances.some((inst) => (inst.inbound_diagnostics?.length ?? 0) > 0 || inst.connection === 'auth_expired' || (inst.listening && (inst.connection === 'stopped' || inst.adapter === 'stopped' || inst.adapter === 'missing')))
   );
   const pushPaused = data !== undefined && !data.global.enabled;
   const registry = useMemo(() => providers.data ?? [], [providers.data]);

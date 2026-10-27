@@ -1280,6 +1280,7 @@ function AccountChannels({ account, data, catalog, setupPlatform, initialTarget,
       </div>
     </div>
     {account.connection_detail !== undefined ? <ConnectionFailure detail={account.connection_detail} /> : state.state === 'auth_expired' ? <p className="mt-2 text-[13px] text-amber-ink">{t('st.im.authExpiredHint')}</p> : null}
+    {(account.inbound_diagnostics?.length ?? 0) > 0 ? <InboundFailures diagnostics={account.inbound_diagnostics!} /> : null}
     {account.conflict === 'webhook' ? <p data-im-webhook className="mt-2 text-[13px] text-amber-ink">{t('st.im.webhook')}</p> : null}
     {account.adapter === 'missing' ? <p data-im-missing className="mt-2 text-[13px] text-ink-soft">{t('st.im.missing')}</p> : null}
     <FeedbackLine feedback={action.error === undefined ? null : { tone: 'error', text: action.error }} />
@@ -1835,6 +1836,19 @@ function instanceStateInfo(item: ImInstanceStatus, t: Translator): { state: 'lis
   if (connection === 'reconnecting') return { state: 'reconnecting', label: t('st.im.stateReconnecting'), dotClass: 'bg-amber-ink status-dot-busy' };
   if (connection === 'stopped' || item.adapter === 'stopped' || item.adapter === 'missing') return { state: 'stopped', label: t('st.im.stateListenerStopped'), dotClass: 'bg-ink/[0.25]' };
   return { state: 'listening', label: t('st.im.stateListening'), dotClass: 'bg-success' };
+}
+
+function InboundFailures({ diagnostics }: { diagnostics: NonNullable<ImInstanceStatus['inbound_diagnostics']> }) {
+  const { t } = useI18n();
+  return <details data-im-inbound-diagnostics className="mt-2 text-[13px] leading-5 text-amber-ink">
+    <summary className="w-fit cursor-pointer rounded focus-visible:outline-2 focus-visible:outline-selected-ink">{t('st.im.inboundFailureCount', { count: diagnostics.length })}</summary>
+    <ul className="mt-1 max-h-64 space-y-2 overflow-y-auto pl-4">
+      {diagnostics.map((diagnostic) => <li key={`${diagnostic.source_id}:${diagnostic.code}`} data-im-inbound-code={diagnostic.code}>
+        <p>{t(`st.im.inboundFailure.${diagnostic.code}`)}</p>
+        <p className="break-all font-mono text-[11px] text-ink-soft">{diagnostic.source_id} · <time dateTime={diagnostic.at}>{new Date(diagnostic.at).toLocaleString()}</time></p>
+      </li>)}
+    </ul>
+  </details>;
 }
 
 function ConnectionFailure({ detail }: { detail: ImConnectionDetail }) {

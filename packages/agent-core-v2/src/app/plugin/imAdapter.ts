@@ -34,6 +34,7 @@ export interface PluginImConnection {
   readHistory?(input: import('@kiki/protocol').PluginImHistoryRequest): Promise<import('@kiki/protocol').PluginImHistoryPage>;
   stop(): Promise<void>;
   readonly accountId: string;
+  inboundDiagnostics?(): readonly import('@kiki/protocol').ImInboundDiagnostic[];
   readonly listenerAccountId?: string;
   readonly targets?: readonly import('@kiki/protocol').PluginImIdentity[];
 }

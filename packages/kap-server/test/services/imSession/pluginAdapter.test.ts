@@ -29,7 +29,7 @@ async function fixture(pluginId: string, direction = { inbound: true, outbound: 
   roots.push(root);
   const definition = pluginImAdapterDefinitionSchema.parse({ schemaVersion: 1, id: 'account', label: 'Fixture account', ...direction, listenerRealm: pluginId, maxInboundBytes, supportsReply: true, supportsMentions: true,
     mediaCapabilities: direction.outbound ? ['image', 'voice', 'video'].map((kind) => ({ kind, mimeTypes: [kind === 'voice' ? 'audio/*' : `${kind}/*`] })) : [] });
-  const tools = ['event', 'state'].map((name) => ({ schemaVersion: 1 as const, name, description: name, accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const }));
+  const tools = ['event', 'state', 'report'].map((name) => ({ schemaVersion: 1 as const, name, description: name, accesses: [{ kind: 'all' as const }], disclosure: 'deferred' as const }));
   await writeFile(join(root, 'entry.mjs'), `
     const definition = ${JSON.stringify(definition)};
     const tools = ${JSON.stringify(tools)};
@@ -51,6 +51,7 @@ async function fixture(pluginId: string, direction = { inbound: true, outbound: 
           if (args.incomplete) process.stdout.write(JSON.stringify({ method: 'im-adapter-message-chunk', params: { adapterId: definition.id, callId: 999999, index: 0, characters: context.messageLimits.chunkChars + 1, data: ' '.repeat(context.messageLimits.chunkChars) } }) + '\\n');
           else await (args.previous ? contexts.at(-2) : context).emit(event);
         }
+        if (tool.name === 'report') await (args.previous ? contexts.at(-2) : context).report(args.diagnostic);
         return { output: JSON.stringify(state) };
       });
     }
@@ -63,7 +64,7 @@ async function fixture(pluginId: string, direction = { inbound: true, outbound: 
     if (typeof result.output !== 'string') throw new Error('Fixture returned non-text state');
     return JSON.parse(result.output);
   };
-  return { host, registration, emit: (event: PluginImEvent) => call('event', event), generated: (event: PluginImEvent, generation: { generateBytes?: number; generateText?: { character: string; length: number }; previous?: boolean; incomplete?: boolean }) => call('event', { event, ...generation }), state: () => call('state') };
+  return { host, registration, report: (diagnostic: unknown, previous = false) => call('report', { diagnostic, previous }), emit: (event: PluginImEvent) => call('event', event), generated: (event: PluginImEvent, generation: { generateBytes?: number; generateText?: { character: string; length: number }; previous?: boolean; incomplete?: boolean }) => call('event', { event, ...generation }), state: () => call('state') };
 }
 
 async function hostBridge(registrations: readonly PluginImAdapterRegistration[], builtin?: { adapter: FakeImAdapter; minSendIntervalMs?: number }, clock?: { now: () => number; wait: (ms: number) => Promise<void> }, overrides: { sessions?: Partial<ImSessionPorts['sessions']>; history?: ImSessionPorts['history'] } = {}) {
@@ -109,6 +110,37 @@ function memoryRegistration(id: string, realm: string, accountId = '42', inbound
 }
 
 describe('plugin IM adapter contribution', () => {
+  it('retains account-bound receive diagnostics through snapshots and clears only the recovered source/code', async () => {
+    const plugin = await fixture('fixture-diagnostic');
+    const other = await fixture('fixture-diagnostic-other');
+    const { bridge, submitted } = await hostBridge([plugin.registration, other.registration]);
+    const row = async () => (await bridge.snapshot()).instances.find((item) => item.id === plugin.registration.instanceId)!;
+    const failed = { status: 'failed', sourceId: 'source-1', code: 'download_failed' };
+    await plugin.report(failed);
+    await plugin.report({ ...failed, sourceId: 'source-2', code: 'hydrate_failed' });
+    expect((await row()).inbound_diagnostics).toEqual([
+      { source_id: 'source-1', code: 'download_failed', account_id: 'account-42', at: expect.any(String) },
+      { source_id: 'source-2', code: 'hydrate_failed', account_id: 'account-42', at: expect.any(String) },
+    ]);
+    expect((await bridge.snapshot()).instances.find((item) => item.id === other.registration.instanceId)?.inbound_diagnostics).toEqual([]);
+    expect(submitted).toEqual([]);
+    await expect(plugin.report({ ...failed, accountId: 'foreign-account', message: 'private body' })).rejects.toThrow('IM diagnostic was not retained');
+    await expect(plugin.report({ ...failed, sourceId: 'secret'.repeat(500) })).rejects.toThrow('byte limit');
+    expect((await row()).inbound_diagnostics).toHaveLength(2);
+    await plugin.report({ ...failed, status: 'recovered' });
+    expect((await row()).inbound_diagnostics?.map((entry) => entry.source_id)).toEqual(['source-2']);
+    await bridge.setListening(plugin.registration.instanceId, false);
+    await expect(plugin.report(failed)).rejects.toThrow('not receiving');
+    await bridge.setListening(plugin.registration.instanceId, true);
+    await expect(plugin.report(failed, true)).rejects.toThrow('not receiving');
+    expect((await row()).inbound_diagnostics?.map((entry) => entry.source_id)).toEqual(['source-2']);
+    await plugin.report({ status: 'recovered', sourceId: 'source-2', code: 'hydrate_failed' });
+    expect((await row()).inbound_diagnostics).toEqual([]);
+    for (let index = 0; index < 40; index++) await plugin.report({ ...failed, sourceId: `bounded-${index}` });
+    expect((await row()).inbound_diagnostics).toHaveLength(32);
+    expect((await row()).inbound_diagnostics?.[0]?.source_id).toBe('bounded-8');
+    expect(submitted).toEqual([]);
+  });
   it('admits one complete source message with two 8 MiB images through the real child and replies once', async () => {
     const plugin = await fixture('fixture-complete', undefined, 8 * 1024 * 1024);
     const saved: { name: string; size: number; first: number | undefined }[] = [];

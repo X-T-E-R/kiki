@@ -366,6 +366,34 @@ describe('ImSessionCard channel management', () => {
     expect(container.querySelector('[data-im-account="account-a"] [data-im-instance-state]')?.textContent).toBe('Listening');
   });
 
+  it('shows receive diagnostics on their account and removes only the recovered source while keeping connection errors', async () => {
+    const state = imSettingsSnapshot();
+    state.instances[0] = { ...state.instances[0]!, inbound_diagnostics: [
+      { source_id: 'opaque-1', account_id: 'studio-account', code: 'download_failed', at: '2026-10-27T00:00:00.000Z' },
+      { source_id: 'opaque-2', account_id: 'studio-account', code: 'hydrate_failed', at: '2026-10-27T00:01:00.000Z' },
+    ] };
+    fixture = createImSettingsFixture(state);
+    const container = await render('360px');
+    const account = container.querySelector('[data-im-account="account-a"]')!;
+    expect(account.querySelector('[data-im-inbound-diagnostics]')?.textContent).toContain('Receive diagnostics (2)');
+    await click(account, '[data-im-inbound-diagnostics] summary');
+    expect(account.querySelector('[data-im-inbound-code="download_failed"]')?.textContent).toContain('Attachment download failed.');
+    expect(container.querySelector('[data-im-account="account-tg"] [data-im-inbound-diagnostics]')).toBeNull();
+    const next = fixture.read();
+    next.instances[0]!.inbound_diagnostics = next.instances[0]!.inbound_diagnostics!.slice(1);
+    fixture.replace(next);
+    await act(async () => { clients[0]!.setQueryData(['im-sessions'], next); await settle(); });
+    expect(account.querySelector('[data-im-inbound-code="download_failed"]')).toBeNull();
+    expect(account.querySelector('[data-im-inbound-code="hydrate_failed"]')).not.toBeNull();
+    expect(account.querySelector('[data-im-connection-detail]')?.textContent).toContain('Network request failed.');
+    next.instances[0]!.inbound_diagnostics = [];
+    fixture.replace(next);
+    await act(async () => { clients[0]!.setQueryData(['im-sessions'], next); await settle(); });
+    expect(account.querySelector('[data-im-inbound-diagnostics]')).toBeNull();
+    expect(account.querySelector('[data-im-connection-detail]')).not.toBeNull();
+    expect(fixture.calls).toEqual([]);
+  });
+
   it('searches a thread beyond the initial catalog for only the edited binding', async () => {
     vi.spyOn(fixture.client, 'listSessions').mockResolvedValue({ items: [{ id: 'older-thread', title: 'Older research' }] });
     const container = await render();

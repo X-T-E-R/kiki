@@ -85,6 +85,7 @@ function createAdapter(entry: PluginImAdapterRegistration): ImSessionAdapter {
     supportsReply: definition.supportsReply === true, supportsMentions: definition.supportsMentions === true,
     get listenerAccountId() { return connection?.listenerAccountId; },
     get targets() { return connection?.targets; },
+    inboundDiagnostics: () => connection?.inboundDiagnostics?.() ?? [],
     describeConflict: async () => 'none', connectionPhase: () => stopped ? 'stopped' : connection === undefined ? 'starting' : 'running',
     splitText: (text) => definition.textLimit === undefined ? [text] : segmentText(text, definition.textLimit),
     acceptsVoice: (mime) => definition.mediaCapabilities.some((item) => (item.kind === 'voice' || item.kind === 'audio') && (item.mimeTypes === undefined || item.mimeTypes.some((type) => type === mime || type === 'audio/*'))),
