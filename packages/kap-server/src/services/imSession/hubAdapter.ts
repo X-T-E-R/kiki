@@ -381,6 +381,7 @@ export class HubSessionAdapter implements ImSessionAdapter {
       mentioned: event.mentioned,
       mentionIds: event.mention_ids,
       replyToMessageId: event.reply_to_message_id,
+      quotedText: event.quoted_text,
       isSelf: event.is_self,
     };
     const payload = event.payload;

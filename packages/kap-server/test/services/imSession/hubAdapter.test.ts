@@ -174,6 +174,7 @@ it('uses the packaged WeChat poller to recover optional-ret updates and keeps tw
   const recovered = new Promise<string>((resolve) => { release = resolve; });
   const requests: Record<string, unknown>[] = [];
   const identities: { chatId: string; senderId: string; topicId: string }[] = [];
+  const receivedEvents: { text?: string; quotedText?: string; replyToMessageId?: string; preview?: string }[] = [];
   let polls = 0;
   let admitted: () => void = () => undefined;
   const received = new Promise<void>((resolve) => { admitted = resolve; });
@@ -196,17 +197,22 @@ it('uses the packaged WeChat poller to recover optional-ret updates and keeps tw
     async load() { return undefined; }, async save() {},
   });
   const hub = new HubSessionAdapter(raw);
-  const start = hub.start(async (event) => { identities.push(event.identity); if (identities.length === 2) admitted(); });
+  const start = hub.start(async (event) => { identities.push(event.identity); receivedEvents.push(event); if (identities.length === 2) admitted(); });
   try {
     await reconnecting;
     expect(hub.connectionPhase()).toBe('reconnecting');
     expect(hub.connectionDetail()).toMatchObject({ code: 'api_error', http_status: 200, ret: -2, failure_count: 1 });
     expect(JSON.stringify(hub.connectionDetail())).not.toContain('private-error');
-    release(JSON.stringify({ get_updates_buf: 'next', msgs: ['a', 'b'].map((id) => ({ message_id: id, from_user_id: id, to_user_id: 'bot', message_type: 1, message_state: 2, context_token: `context-${id}`, item_list: [{ type: 1, text_item: { text: 'pair' } }] })) }));
+    release(JSON.stringify({ get_updates_buf: 'next', msgs: ['a', 'b'].map((id) => ({ message_id: id, from_user_id: id, to_user_id: 'bot', message_type: 1, message_state: 2, context_token: `context-${id}`, item_list: [{ type: 1, text_item: { text: `current-${id}` }, ref_msg: id === 'a' ? { title: 'misleading title', message_item: { msg_id: 'older-a', type: 1, text_item: { text: 'actual quote' } } } : { title: 'title only', message_item: { msg_id: 'older-b', type: 2 } } }] })) }));
     await start;
     await received;
     expect(hub.connectionPhase()).toBe('running');
     expect(hub.connectionDetail()).toBeUndefined();
+    expect(receivedEvents).toMatchObject([
+      { kind: 'text', text: 'current-a', preview: 'current-a', replyToMessageId: 'older-a', quotedText: 'actual quote' },
+      { kind: 'text', text: 'current-b', preview: 'current-b', replyToMessageId: 'older-b' },
+    ]);
+    expect(receivedEvents[1]?.quotedText).toBeUndefined();
     for (const identity of identities) await hub.sendText({ identity, text: 'reply', code: 'reply' });
     expect(requests.map((request) => request['msg'])).toEqual([
       expect.objectContaining({ to_user_id: 'a', context_token: 'context-a' }),

@@ -1,0 +1,97 @@
+diff --git a/src/session/contract.ts b/src/session/contract.ts
+--- a/src/session/contract.ts
++++ b/src/session/contract.ts
+@@ -65,9 +65,10 @@ export interface SessionInbound {
+   timestamp?: number;
+   mentioned?: boolean;
+   mention_ids?: readonly string[];
+   reply_to_message_id?: string;
++  quoted_text?: string;
+   is_self?: boolean;
+   /** Host passes this back on send. It is not a bot credential. Do not put it in a model prompt. */
+   reply_context?: string;
+   cursor: string;
+ }
+diff --git a/src/session/wechat.ts b/src/session/wechat.ts
+--- a/src/session/wechat.ts
++++ b/src/session/wechat.ts
+@@ -108,5 +108,15 @@ function mimeBase(mime: string): string {
+   return mime.split(';', 1)[0]!.trim().toLowerCase();
+ }
+ function joinUrl(base: string, pathAndQuery: string): string {
+   return `${base.replace(/\/$/u, '')}/${pathAndQuery.replace(/^\//u, '')}`;
+ }
++function quotedText(text: string): string {
++  let excerpt = '';
++  let length = 0;
++  for (const character of text) {
++    if (length === 1024) return `${excerpt}…`;
++    excerpt += character;
++    length += 1;
++  }
++  return excerpt;
++}
+@@ -242,9 +252,15 @@ function buildWechat(spec: WechatSpec, store: SessionCursorStore, key: string):
+       const messageId = typeof message.message_id === 'string' ? message.message_id :
+         typeof item.msg_id === 'string' ? item.msg_id : '';
+       if (!messageId) continue;
+       const eventKey = `wx:${accountId}:${messageId}:${index}`;
+       const cursor = bufCursor(nextBuf);
++      const referenced = record(record(item.ref_msg)?.message_item);
++      const replyId = typeof referenced?.msg_id === 'string' && referenced.msg_id.trim() ? referenced.msg_id : undefined;
++      const referenceText = record(referenced?.text_item)?.text;
++      const quote = typeof referenceText === 'string' && referenceText.trim() ? quotedText(referenceText) : undefined;
+       const base = { event_key: eventKey, platform_event_id: messageId, identity, cursor,
++        ...(replyId === undefined ? {} : { reply_to_message_id: replyId }),
++        ...(quote === undefined ? {} : { quoted_text: quote }),
+         ...(context ? { reply_context: context } : {}) };
+       const type = item.type;
+       if (type === 1) {
+diff --git a/test/session-wechat.test.ts b/test/session-wechat.test.ts
+--- a/test/session-wechat.test.ts
++++ b/test/session-wechat.test.ts
+@@ -190,6 +190,44 @@ test('WeChat send confirms ret 0 or message id, never an empty HTTP 200', async
+     assert.deepEqual(receipt.message_ids, ['7520810038038921608']);
+   }
+ });
++test('WeChat item ref_msg keeps referenced ID and bounded text separate from current text and media', async () => {
++  const events: SessionInbound[] = [];
++  let polls = 0;
++  const response = '{"ret":0,"get_updates_buf":"quoted","msgs":[{"message_id":100,"from_user_id":"friend","to_user_id":"bot","message_type":1,"message_state":2,"item_list":[' +
++    JSON.stringify({ type: 1, text_item: { text: 'new question' }, ref_msg: { title: 'not original', message_item: { msg_id: 'NUMERIC_ID', type: 1, text_item: { text: 'original text' } } } }).replace('"NUMERIC_ID"', '7520810038038921608') + ',' +
++    JSON.stringify({ type: 2, image_item: { media: { encrypt_query_param: 'image' } }, ref_msg: { title: 'image title only', message_item: { msg_id: '22', type: 2 } } }) + ',' +
++    JSON.stringify({ type: 3, voice_item: { media: { encrypt_query_param: 'voice' } }, ref_msg: { title: 'not original', message_item: { msg_id: '23', type: 1, text_item: { text: '😀'.repeat(1025) } } } }) + ',' +
++    JSON.stringify({ type: 1, text_item: { text: 'no reference' }, ref_msg: { title: 'title must not become quote', message_item: { msg_id: '', text_item: { text: '  ' } } } }) +
++    ']}]}';
++  const transport: WechatTransport = {
++    async post(url) {
++      if (url.endsWith('getupdates')) return polls++ === 0 ? { status: 200, body: response } : { status: 401, body: '' };
++      return { status: 200, body: '{"ret":0}' };
++    },
++    async postBytes() { throw new Error('unexpected upload'); },
++    async getBytes() { return { status: 0, body: new Uint8Array() }; },
++  };
++  const adapter = createWechatSessionAdapter({ platform: 'personal_wechat', instance_id: 'wx.quote', token: 'offline-quote', transport, retry_ms: 0 }, memory());
++  try {
++    await adapter.start({ async admit(event) { events.push(event); return { decision: 'accepted' }; } });
++    for (let i = 0; i < 40 && adapter.state !== 'auth_expired'; i += 1) await new Promise((resolve) => setTimeout(resolve, 5));
++    assert.equal(adapter.state, 'auth_expired');
++    assert.equal(events.length, 4);
++    assert.equal(events[0]?.reply_to_message_id, '7520810038038921608');
++    assert.equal(events[0]?.quoted_text, 'original text');
++    assert.deepEqual(events[0]?.payload, { type: 'text', text: 'new question' });
++    assert.equal(events[1]?.reply_to_message_id, '22');
++    assert.equal(events[1]?.quoted_text, undefined);
++    assert.equal(events[1]?.payload.type, 'media_unavailable');
++    assert.equal(events[2]?.reply_to_message_id, '23');
++    assert.equal(events[2]?.quoted_text, `${'😀'.repeat(1024)}…`);
++    assert.equal(events[2]?.payload.type, 'media_unavailable');
++    assert.equal(events[3]?.reply_to_message_id, undefined);
++    assert.equal(events[3]?.quoted_text, undefined);
++    assert.deepEqual(events[3]?.payload, { type: 'text', text: 'no reference' });
++    assert.equal(JSON.stringify(events).includes('image title only'), false);
++  } finally { await adapter.stop(); }
++});
+ test('WeChat getBytes stops reading once the body passes 100 MiB', async () => {
+   const chunk = 34 * 1024 * 1024;
+   let pulls = 0;

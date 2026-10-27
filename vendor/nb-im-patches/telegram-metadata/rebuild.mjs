@@ -10,7 +10,7 @@ const archive = join(scratch, 'nb-im-core-0.3.0-kiki-im-metadata.tgz');
 const run = (command, args, cwd = root) => execFileSync(command, args, { cwd, stdio: 'inherit' });
 const local = (path) => relative(root, path).replaceAll('\\', '/');
 run('tar', ['-xf', 'vendor/nb-im-core-0.3.0.tgz', '-C', local(scratch)]);
-for (const patch of ['source.patch', 'wechat-send.patch']) {
+for (const patch of ['source.patch', 'wechat-send.patch', 'wechat-quote.patch']) {
   run('git', ['apply', '--unidiff-zero', `--directory=${relative(root, join(scratch, 'package')).replaceAll('\\', '/')}`, join(patchDir, patch)]);
 }
 await writeFile(join(scratch, 'tsconfig.json'), JSON.stringify({
