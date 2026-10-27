@@ -2563,6 +2563,45 @@ describe('AgentPromptService', () => {
     expect((await cancelled.completion).state).toBe('cancelled');
   });
 
+  it('removes an uncommitted merged batch head while preserving the next queued prompt', async () => {
+    const { prompt, context, loop, dispatcher } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'before-batch', message: message('active') });
+    loop.drainNextBatch(context);
+    const first = await prompt.enqueue({ id: 'batch-first', message: message('first') });
+    const second = await prompt.enqueue({ id: 'batch-second', message: message('second') });
+    const third = await prompt.enqueue({ id: 'batch-third', message: message('third') });
+    const preparing = deferred<void>();
+    const proceed = deferred<void>();
+    prompt.hooks.onBeforeSubmitPrompt.register('pause-batch', async (ctx, next) => {
+      if (turnPromptText(ctx.promptMessage.content, ctx.promptMessage.origin)?.includes('first')) {
+        preparing.resolve();
+        await proceed.promise;
+      }
+      await next();
+    });
+    loop.settleActive();
+    await preparing.promise;
+    expect(prompt.lookup(first.id)?.phase).toBe('pending');
+    expect(prompt.list().launching?.id).toBe(first.id);
+    expect(prompt.list().pending.map((item) => item.id)).toEqual([second.id, third.id]);
+    const removed = await prompt.abortQueued(first.id);
+    proceed.resolve();
+    expect(removed).toBe(true);
+    expect((await first.completion).state).toBe('cancelled');
+    const secondTurn = await second.launched;
+    expect(await third.launched).toBe(secondTurn);
+    await dispatcher.flush();
+    expect(prompt.lookup(first.id)?.terminal?.state).toBe('cancelled');
+    expect(prompt.list().active?.id).toBe(second.id);
+    expect(prompt.list().pending).toEqual([]);
+    loop.drainNextBatch(context);
+    expect(context.get().slice(-2)).toEqual([second.message, third.message]);
+    expect(context.get()).not.toContainEqual(first.message);
+    loop.settleActive();
+    await second.completion;
+    await third.completion;
+  });
+
   it('removing a merged secondary after the first launch commit cannot abort the first request', async () => {
     const { prompt, context, loop, dispatcher } = harness({ manualTurnResult: true });
     await prompt.enqueue({ id: 'active-before-batch', message: message('active') });
@@ -2584,6 +2623,7 @@ describe('AgentPromptService', () => {
     expect(prompt.lookup(first.id)?.phase).toBe('launched');
     expect(prompt.lookup(second.id)?.phase).toBe('pending');
     expect(prompt.list().pending.some((item) => item.id === second.id)).toBe(false);
+    expect(await prompt.abortQueued(first.id)).toBe(false);
     expect(await prompt.abortQueued(second.id)).toBe(true);
     continueBatch.resolve();
     await first.launched;

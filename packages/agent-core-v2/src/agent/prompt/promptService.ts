@@ -767,6 +767,7 @@ export class AgentPromptService implements IAgentPromptService {
     { readonly record: Record; readonly receipt: EnqueueReceipt; readonly turnId: number; reason?: Error }
   >();
   private launchingBatch: readonly Record[] = [];
+  private launchingCommitStarted = false;
   private launchingPrompt: {
     readonly record: Record;
     readonly controller: AbortController;
@@ -2214,7 +2215,7 @@ export class AgentPromptService implements IAgentPromptService {
       this.syncRecoveryHold();
       return true;
     }
-    if (this.launchingPrompt?.record.id === promptId && this.launchingBatch.length > 1) return false;
+    if (this.launchingPrompt?.record.id === promptId && this.launchingCommitStarted) return false;
     if (this.pending.some((item) => item.id === promptId) || this.launchingPrompt?.record.id === promptId) return this.abort(promptId);
     await this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart: true }));
     await this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId, state: 'cancelled' } }));
@@ -2484,6 +2485,7 @@ export class AgentPromptService implements IAgentPromptService {
         return;
       }
       for (const candidate of selected.slice(1)) this.pending.splice(this.pending.indexOf(candidate), 1);
+      this.launchingCommitStarted = true;
       for (const candidate of selected) {
         if (candidate.state === 'cancelled') continue;
         await this.dispatcher.dispatch(new PromptLaunchCommitted({
@@ -2575,6 +2577,7 @@ export class AgentPromptService implements IAgentPromptService {
       finally {
         for (const candidate of selected) this.steeringPromptIds.delete(candidate.id);
         this.launchingBatch = [];
+        this.launchingCommitStarted = false;
         this.launchingPrompt = undefined;
         this.launching = false;
         launchSettled.resolve();
