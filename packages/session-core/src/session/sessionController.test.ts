@@ -5784,6 +5784,53 @@ it('keeps selected answers visible immediately after a successful question respo
 });
 
 
+it.each(['main', 'child'])('keeps a locally answered %s question before continued work while its canonical resolution is in flight', async (agentId) => {
+  const { controller, client, flushAll } = await openController();
+  Object.assign(client, { resolveQuestion: vi.fn(async () => undefined) });
+  const interaction = {
+    interactionId: 'q-continuation', interactionKind: 'question' as const, state: 'pending' as const,
+    toolCallId: 'off-page-ask', origin: { agentId },
+    anchor: { kind: 'tool_call' as const, toolCallId: 'off-page-ask' },
+    request: { turnId: 1, toolCallId: 'off-page-ask', created_at: '2026-01-01T00:00:01.000Z', questions: [
+      { id: 'q_0', question: 'Choose the implementation route?', options: [{ id: 'opt_0_0', label: 'Continue with the agreed plan' }] },
+    ] },
+  };
+  const read = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+  const canonicalPending = emptySnapshot({
+    interactions: [interaction],
+    items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' }, startedAt: '2026-01-01T00:00:00.000Z', steps: [{
+      kind: 'step', stepId: 'later-step', turnId: 't1', ordinal: 20, state: 'running', startedAt: '2026-01-01T00:00:02.000Z', frames: [{
+        kind: 'tool', frameId: 'later-tool', toolCallId: 'later-call', name: 'Read', state: 'done',
+        startedAt: '2026-01-01T00:00:02.000Z', input: { path: 'example.ts' }, output: 'continued work',
+      }],
+    }] }],
+  });
+  try {
+    controller.handleTranscript(resetEvent(agentId, canonicalPending, 1));
+    flushAll();
+    const originalAt = read().blocks.findIndex((block) => block.kind === 'question');
+    expect(originalAt).toBeGreaterThanOrEqual(0);
+    await controller.answerQuestion('q-continuation', { q_0: { kind: 'single', option_id: 'opt_0_0' } });
+    controller.handleTranscript(resetEvent(agentId, canonicalPending, 2));
+    flushAll();
+    expect(read().blocks.findIndex((block) => block.kind === 'question')).toBe(originalAt);
+    expect(read().blocks[originalAt]).toMatchObject({
+      kind: 'question', outcome: { kind: 'answered', answers: { q_0: 'Continue with the agreed plan' } },
+    });
+    controller.handleTranscript(opsEvent(agentId, [{ op: 'frame.upsert', turnId: 't1', stepId: 'later-step', frame: {
+      kind: 'tool', frameId: 'newer-tool', toolCallId: 'newer-call', name: 'Read', state: 'done',
+      startedAt: '2026-01-01T00:00:03.000Z', input: { path: 'newer.ts' }, output: 'more work',
+    } }], 3));
+    flushAll();
+    const blocks = read().blocks;
+    const questionAt = blocks.findIndex((block) => block.kind === 'question');
+    const laterAt = blocks.findIndex((block) => block.kind === 'tool' && block.toolCallId === 'later-call');
+    expect(questionAt).toBeGreaterThanOrEqual(0);
+    expect(questionAt).toBeLessThan(laterAt);
+    expect(blocks[questionAt]).toMatchObject({ outcome: { kind: 'answered', answers: { q_0: 'Continue with the agreed plan' } } });
+  } finally { controller.close(); }
+});
+
 describe('question terminal REST reconciliation', () => {
   const pending = {
     interactionId: 'q-reply', interactionKind: 'question' as const, state: 'pending' as const,

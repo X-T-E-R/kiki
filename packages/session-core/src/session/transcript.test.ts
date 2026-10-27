@@ -7130,6 +7130,36 @@ function backgroundOrder(snapshot: AgentTranscriptSnapshot): readonly string[] {
 }
 
 describe('background question placement', () => {
+  it('keeps a pending question at its recorded moment when its asking step is outside the page', () => {
+    const question = backgroundQuestion({ state: 'pending', response: undefined });
+    const page = { ...backgroundQuestionSnapshot({ steps: 'page-tail' }), interactions: [question] };
+    expect(backgroundOrder(page)).toEqual(['user', 'question:pending', 'shell:tc-bash-tail', 'assistant']);
+    const prior = projectAgentTranscriptView(createViewState('session_test'), 'main', page);
+    const appended = { ...backgroundQuestionSnapshot({ steps: 'page-tail', extraStep: true }), interactions: [question] };
+    const next = projectAgentTranscriptView(prior, 'main', appended);
+    expect(next.blocks.findIndex((block) => block.kind === 'question')).toBe(1);
+    expect(next.blocks.find((block) => block.kind === 'question')).toMatchObject({ outcome: undefined });
+  });
+
+  it('uses a pending question request time instead of a stale slot when its whole turn is outside the page', () => {
+    const snapshot = emptySnapshot({
+      interactions: [backgroundQuestion({ state: 'pending', response: undefined })],
+      items: [{ kind: 'turn', turnId: 't2', ordinal: 2, state: 'running', origin: { kind: 'user' },
+        prompt: 'Continue the task.', startedAt: '2026-01-01T00:00:10.000Z', steps: [{
+          kind: 'step', stepId: 't2.1', turnId: 't2', ordinal: 1, state: 'running', startedAt: '2026-01-01T00:00:11.000Z',
+          frames: [{ kind: 'text', frameId: 'later-turn', role: 'assistant', text: 'Working on the later turn.' }],
+        }],
+      }],
+    });
+    const cold = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    expect(cold.blocks.map((block) => block.kind)).toEqual(['question', 'user', 'assistant']);
+    const question = cold.blocks[0]!;
+    const stale = { ...cold, blocks: [...cold.blocks.slice(1), question] };
+    const rebuilt = projectAgentTranscriptView(stale, 'main', snapshot);
+    expect(rebuilt.blocks).toEqual(cold.blocks);
+    expect(rebuilt.blocks[0]).toMatchObject({ kind: 'question', outcome: undefined });
+  });
+
   it('keeps an answered question at its own moment when the page arrives without its asking step', () => {
     const page = backgroundQuestionSnapshot({ steps: 'page-tail' });
     const view = projectAgentTranscriptView(createViewState('session_test'), 'main', { ...page, interactions: [backgroundQuestion({})] });

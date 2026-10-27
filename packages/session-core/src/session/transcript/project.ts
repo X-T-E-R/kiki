@@ -1135,15 +1135,7 @@ function blockStepId(block: Block): string | undefined {
   }
 }
 
-/**
- * Sits a settled record at its own recorded moment inside its turn. The turn's
- * newest work is not a history anchor: it moves every time the turn produces
- * another step — or reports one — which dragged an answered question to the
- * tail of a running turn and kept it there (any rebuild that no longer carries
- * the asking step, such as a page whose long turn arrives with its newest
- * steps only, falls through to the turn anchor). False when the turn is not on
- * this page: nothing loaded can then say where the moment falls.
- */
+/** Places an interaction at its request time inside a loaded turn, independently of its latest work. */
 function insertWithinTurnByTime(blocks: Block[], block: Block, turnId: string): boolean {
   const at = blockTimelineMs(block);
   if (at === undefined) return false;
@@ -1818,13 +1810,9 @@ function insertInteractionBlocks(
       }
     }
     if (interaction.turnId !== undefined) {
-      // Sit with the turn's work, not after its final answer: a settled
-      // record anchored behind the reply reads as stale chrome at the tail.
-      // A settled record also sits at its own moment: the turn's newest row
-      // keeps arriving while the turn runs, so the tail of the turn is where
-      // the record would follow it down.
       const inTurn = (candidate: Block) => sameTurnId(blockTurnId(candidate), interaction.turnId);
-      if (isSettledInteraction(interaction.block) && insertWithinTurnByTime(blocks, interaction.block, interaction.turnId)) {
+      if ((interaction.block.kind === 'question' || isSettledInteraction(interaction.block)) &&
+        insertWithinTurnByTime(blocks, interaction.block, interaction.turnId)) {
         continue;
       }
       const workAnchor = blocks.findLastIndex(
@@ -1836,13 +1824,8 @@ function insertInteractionBlocks(
         continue;
       }
     }
-    // A previous slot is not a history anchor for a settled interaction.
-    // An open question can sit at the tail while its tool is off the page;
-    // once it is answered, that slot would keep the line under every later
-    // message. Recorded request time is the anchor when no frame, tool or
-    // turn is on the page.
     if (isSettledInteraction(interaction.block) && blockTimelineMs(interaction.block) === undefined) continue;
-    if (interaction.block.kind === 'question' && interaction.block.outcome !== undefined) {
+    if (interaction.block.kind === 'question' && blockTimelineMs(interaction.block) !== undefined) {
       insertByTimeline(blocks, interaction.block);
       continue;
     }
