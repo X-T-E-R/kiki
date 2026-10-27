@@ -217,6 +217,39 @@ it('uses the packaged WeChat poller to recover optional-ret updates and keeps tw
   expect(polls).toBeLessThanOrEqual(3);
 });
 
+it('returns the real packaged WeChat send receipt through the Kiki hub', async () => {
+  let body = '{"message_id":7520810038038921608}';
+  const calls: string[] = [];
+  const transport: NonNullable<Extract<SessionSpec, { platform: 'personal_wechat' }>['transport']> = {
+    async post(url) {
+      if (url.endsWith('getuploadurl')) return { status: 200, body: '{"ret":0,"upload_param":"upload-test"}' };
+      calls.push(url);
+      return { status: 200, body };
+    },
+    async postBytes() { return { status: 200, body: '', headers: { 'x-encrypted-param': 'download-test' } }; },
+    async getBytes() { throw new Error('unexpected download'); },
+  };
+  const raw = createWechatSessionAdapter({ platform: 'personal_wechat', instance_id: 'packaged-wx-send',
+    token: 'offline-send-test', account_id: 'bot', transport }, { async load() { return undefined; }, async save() {} });
+  const hub = new HubSessionAdapter(raw);
+  const identity = { chatId: 'user', senderId: 'user', topicId: '0' };
+  expect(await hub.sendText({ identity, text: 'pong', code: 'reply' })).toEqual({
+    messageId: '7520810038038921608', messageIds: ['7520810038038921608'],
+  });
+  for (const [name, mediaType, asVoice, asImage] of [
+    ['picture.png', 'image/png', false, true], ['note.silk', 'audio/silk', true, false],
+  ] as const) {
+    expect(await hub.sendFile({ identity, name, mediaType, bytes: Uint8Array.of(1), asVoice, asImage }))
+      .toMatchObject({ messageId: '7520810038038921608' });
+  }
+  expect(calls).toHaveLength(3);
+  body = '{"ret":-2,"errmsg":"prepare failed"}';
+  await expect(hub.sendText({ identity, text: 'pong', code: 'reply' })).rejects.toThrow('wechat_rejected');
+  body = '';
+  await expect(hub.sendText({ identity, text: 'pong', code: 'reply' })).rejects.toThrow('wechat_unconfirmed');
+  expect(calls).toHaveLength(5);
+});
+
 describe('strict session media', () => {
   it.each(['discord', 'slack', 'matrix'] as const)('keeps %s capabilities and media intents aligned with the package', async (platform) => {
     const raw = session();

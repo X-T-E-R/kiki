@@ -1,0 +1,77 @@
+diff --git a/src/session/wechat.ts b/src/session/wechat.ts
+--- a/src/session/wechat.ts
++++ b/src/session/wechat.ts
+@@ -353,11 +353,13 @@ function finishSend(response: { status: number; body: string }, token: string):
+   const ret = parsed.ret;
+   const errcode = parsed.errcode;
+   if (ret === -14 || errcode === -14) return failed('auth', 'wechat_auth');
+-  if (typeof errcode === 'number' && errcode !== 0) return failed('unknown', 'wechat_rejected');
+-  // Documented sendMessage success is `{ret:0,errmsg:""}` and does not include message_id.
+-  // A missing ret is not confirmation; the official client skips that check, this host does not.
+-  if (typeof ret !== 'number') return unknownReceipt('wechat_unconfirmed');
+-  if (response.status >= 400 || ret !== 0 || parsed.errmsg === token) return failed('unknown', 'wechat_rejected');
+-  const id = typeof parsed.message_id === 'string' ? parsed.message_id : '';
++  if (response.status >= 400 || (typeof ret === 'number' && ret !== 0) ||
++      (typeof errcode === 'number' && errcode !== 0) || parsed.errmsg === token) {
++    return failed('unknown', 'wechat_rejected');
++  }
++  if (response.status !== 200 || (ret !== undefined && ret !== 0) ||
++      (errcode !== undefined && errcode !== 0)) return unknownReceipt('wechat_unconfirmed');
++  const id = typeof parsed.message_id === 'string' && parsed.message_id.trim() ? parsed.message_id : '';
++  if (ret !== 0 && !id) return unknownReceipt('wechat_unconfirmed');
+   return accepted(id ? [id] : []);
+ }
+diff --git a/test/session-wechat.test.ts b/test/session-wechat.test.ts
+--- a/test/session-wechat.test.ts
++++ b/test/session-wechat.test.ts
+@@ -140,11 +140,15 @@ test('WeChat send cancel does not post and a bad base URL is refused', async ()
+   assert.throws(() => createWechatSessionAdapter({ platform: 'personal_wechat', instance_id: 'wx.bad', token: 'ilink-bot-token-rejected',
+     base_url: 'http://127.0.0.1/ilink', transport }, memory()), /wechat_endpoint_rejected/);
+ });
+-test('WeChat send accepts only a confirmed ret 0 body', async () => {
++test('WeChat send confirms ret 0 or message id, never an empty HTTP 200', async () => {
+   let body = '';
++  let status = 200;
+   const transport: WechatTransport = {
+-    async post() { return { status: 200, body }; },
+-    async postBytes() { return { status: 200, body: '' }; },
++    async post(url) {
++      if (url.endsWith('getuploadurl')) return { status: 200, body: '{"ret":0,"upload_param":"upload-test"}' };
++      return { status, body };
++    },
++    async postBytes() { return { status: 200, body: '', headers: { 'x-encrypted-param': 'download-test' } }; },
+     async getBytes() { return { status: 0, body: new Uint8Array() }; },
+   };
+   const adapter = createWechatSessionAdapter({ platform: 'personal_wechat', instance_id: 'wx.receipt',
+@@ -160,7 +164,13 @@ test('WeChat send accepts only a confirmed ret 0 body', async () => {
+   assert.equal((await send('{}')).diagnostic_code, 'wechat_unconfirmed');
+   assert.equal((await send('{"errcode":-2}')).diagnostic_code, 'wechat_rejected');
+   assert.equal((await send('{"ret":0,"errcode":-2}')).diagnostic_code, 'wechat_rejected');
++  assert.equal((await send('{"ret":-2,"errmsg":"prepare failed","message_id":7520810038038921608}')).diagnostic_code, 'wechat_rejected');
+   assert.equal((await send('')).diagnostic_code, 'wechat_unconfirmed');
++  assert.equal((await send('{"message_id":""}')).diagnostic_code, 'wechat_unconfirmed');
++  assert.equal((await send('{"message_id":"   "}')).diagnostic_code, 'wechat_unconfirmed');
++  status = 500;
++  assert.equal((await send('{"message_id":7520810038038921608}')).status, 'failed');
++  status = 200;
+   const zero = await send('{"ret":0}');
+   assert.equal(zero.status, 'accepted');
+   assert.deepEqual(zero.message_ids, []);
+@@ -168,6 +178,17 @@ test('WeChat send accepts only a confirmed ret 0 body', async () => {
+   const named = await send('{"ret":0,"message_id":"9"}');
+   assert.equal(named.status, 'accepted');
+   assert.deepEqual(named.message_ids, ['9']);
++  body = '{"message_id":7520810038038921608}';
++  const target = { chat_id: 'user-1' };
++  for (const message of [
++    { type: 'text' as const, target, text: 'pong' },
++    { type: 'media' as const, target, media: { kind: 'image' as const, filename: 'a.png', mime: 'image/png', bytes: Uint8Array.of(1) } },
++    { type: 'media' as const, target, media: { kind: 'voice' as const, filename: 'a.silk', mime: 'audio/silk', bytes: Uint8Array.of(1) } },
++  ]) {
++    const receipt = await adapter.send(message);
++    assert.equal(receipt.status, 'accepted');
++    assert.deepEqual(receipt.message_ids, ['7520810038038921608']);
++  }
+ });
+ test('WeChat getBytes stops reading once the body passes 100 MiB', async () => {
+   const chunk = 34 * 1024 * 1024;
