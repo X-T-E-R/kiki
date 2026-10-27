@@ -1708,6 +1708,158 @@ describe('UsageSourceTracker', () => {
 
 
 describe('shared agent and history usage projection', () => {
+  it('freezes journal replay at the source checkpoint when an append commits before replay', async () => {
+    const main = scope('w', 's');
+    const saved = await openRange([summary('s', 'w')], { [main]: [] }, true);
+    saved.core.accessor.get(IUsageFactStore);
+    saved.logs.append(main, 'wire.jsonl', usageRecord(10, 1));
+    await saved.logs.flush(main, 'wire.jsonl');
+    const service = new UsageAggregationService(saved.core, () => 100);
+    const replay = Reflect.get(service, 'replayFactJournal');
+    let injected = false;
+    Reflect.set(service, 'replayFactJournal', async (...args: unknown[]) => {
+      if (!injected) {
+        injected = true;
+        saved.logs.append(main, 'wire.jsonl', usageRecord(1, 2));
+        await saved.logs.flush(main, 'wire.jsonl');
+      }
+      return replay.apply(service, args);
+    });
+    const input = { range: 'custom', start_at: 0, end_at: 100 } as const;
+    const first = await service.query(input);
+    expect(first.reliability.complete).toBe(true);
+    expect(first.summary.tokens.output).toBe(1);
+    const next = await service.query(input);
+    const restarted = await new UsageAggregationService(saved.core, () => 100).query(input);
+    for (const response of [next, restarted]) {
+      expect(response.reliability.complete).toBe(true);
+      expect(response.summary.tokens).toEqual({ input_other: 2, output: 2, input_cache_read: 2, input_cache_creation: 2 });
+      expect(response.summary.cost_usd_estimated).toBe(2);
+      expect(response.reliability.usage_coverage).toEqual({ known_records: 2, missing_records: 0, legacy_zero_records: 0 });
+      expect(response.trend[0]?.turn_count).toBe(2);
+    }
+    service.dispose();
+  });
+
+  it.each([false, true])('keeps the frozen prefix across 256-fact pages and a backdated append (reject page: %s)', async (reject) => {
+    const main = scope('w', 's');
+    const saved = await openRange([summary('s', 'w')], { [main]: [] }, true);
+    saved.core.accessor.get(IUsageFactStore);
+    for (let index = 0; index < 600; index++) saved.logs.append(main, 'wire.jsonl', {
+      ...usageRecord(10 + index, index), usageKnown: index === 2 ? false : index === 3 ? undefined : true,
+      usage: index === 3 || index === 4 ? { inputOther: 0, output: 0, inputCacheRead: 0, inputCacheCreation: 0 } : { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 },
+    });
+    await saved.logs.flush(main, 'wire.jsonl');
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const add = UsageRangeFold.prototype.addPage;
+    let pages = 0;
+    const gate = vi.spyOn(UsageRangeFold.prototype, 'addPage').mockImplementation(async function (this: UsageRangeFold, ...args) {
+      pages++;
+      if (pages === (reject ? 2 : 1)) {
+        if (!reject) await add.apply(this, args);
+        saved.logs.append(main, 'wire.jsonl', usageRecord(1, 9999));
+        await saved.logs.flush(main, 'wire.jsonl');
+        vi.advanceTimersByTime(10_001);
+        if (reject) throw new DOMException('Pause journal page', 'TimeoutError');
+        return;
+      }
+      return add.apply(this, args);
+    });
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    let first: UsageResponse;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try { first = await service.query(input); }
+    finally { vi.useRealTimers(); gate.mockRestore(); service.dispose(); }
+    expect(first!.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+    expect(first!.reliability.usage_coverage).toEqual({ known_records: 254, missing_records: 1, legacy_zero_records: 1 });
+    const continued = new UsageAggregationService(saved.core, () => 1000);
+    const frozen = await continued.query(input);
+    expect(frozen.reliability.complete).toBe(true);
+    expect(frozen.summary.tokens.output).toBe(597);
+    expect(frozen.reliability.usage_coverage).toEqual({ known_records: 598, missing_records: 1, legacy_zero_records: 1 });
+    const refreshed = await continued.query(input);
+    const restarted = await new UsageAggregationService(saved.core, () => 1000).query(input);
+    for (const response of [refreshed, restarted]) {
+      expect(response.reliability.complete).toBe(true);
+      expect(response.summary.tokens.output).toBe(598);
+      expect(response.summary.cost_usd_estimated).toBe(598);
+      expect(response.reliability.usage_coverage).toEqual({ known_records: 599, missing_records: 1, legacy_zero_records: 1 });
+      expect(response.trend[0]?.turn_count).toBe(601);
+    }
+    continued.dispose();
+  });
+
+  it('rebuilds saved pre-watermark-fix folds and projections from unchanged facts', async () => {
+    const main = scope('w', 's');
+    const saved = await openRange([summary('s', 'w')], { [main]: [] }, true);
+    saved.core.accessor.get(IUsageFactStore);
+    saved.logs.append(main, 'wire.jsonl', usageRecord(10, 1));
+    saved.logs.append(main, 'wire.jsonl', usageRecord(11, 2));
+    await saved.logs.flush(main, 'wire.jsonl');
+    const input = { range: 'custom', start_at: 0, end_at: 100 } as const;
+    const built = await new UsageAggregationService(saved.core, () => 100).query(input);
+    expect(built.summary.tokens.output).toBe(2);
+    const key = (await saved.storage.list('cache/usage-aggregation-v1')).find((name) => name.startsWith('range-projection-'))!;
+    const projection = JSON.parse(Buffer.from((await saved.storage.read('cache/usage-aggregation-v1', key))!).toString('utf8'));
+    const collection = `usage-range-v1:${projection.fingerprint}`;
+    const fold = new UsageRangeFold(saved.store, collection, 100, 100), head = (await fold.head<RangeFoldHead>())!;
+    const duplicate = { time: 10, model: 'priced-model', sourceAgentId: 'main', turnId: 1, usage: { inputOther: 1, output: 1, inputCacheRead: 1, inputCacheCreation: 1 } };
+    await fold.addPage(summary('s', 'w'), [duplicate], () => '0', () => true, head);
+    await fold.saveHead({ ...head, journalReplayVersion: 2 });
+    await saved.store.put(collection, 'old-corrupt-fold', true);
+    projection.journalReplayVersion = 2;
+    const row = projection.agents[0].rows[0];
+    for (const field of ['inputOther', 'output', 'inputCacheRead', 'inputCacheCreation']) row.usage[field]++;
+    row.folded.records++; row.folded.known++;
+    await saved.storage.write('cache/usage-aggregation-v1', key, Buffer.from(JSON.stringify(projection)));
+    const recovered = await new UsageAggregationService(saved.core, () => 100).query(input);
+    expect(recovered.reliability.complete).toBe(true);
+    expect(recovered.summary).toEqual(built.summary);
+    expect(recovered.trend).toEqual(built.trend);
+    expect(recovered.reliability.usage_coverage).toEqual(built.reliability.usage_coverage);
+    expect(await saved.store.get(collection, 'old-corrupt-fold')).toBeUndefined();
+    expect((await fold.head<RangeFoldHead>())?.journalReplayVersion).toBe(3);
+    const restarted = await new UsageAggregationService(saved.core, () => 100).query(input);
+    expect(restarted.summary).toEqual(built.summary);
+    expect(restarted.reliability.complete).toBe(true);
+  });
+
+  it('excludes old source journals before checkpoint preparation in a bounded SQLite query', async () => {
+    const main = scope('w', 's'), old = main.replace(/main$/, 'old'), start = Date.UTC(2026, 9, 1);
+    const saved = await openRange([summary('s', 'w')], { [main]: [], [old]: [] }, true);
+    saved.core.accessor.get(IUsageFactStore);
+    saved.logs.append(main, 'wire.jsonl', usageRecord(start, 1));
+    saved.logs.append(old, 'wire.jsonl', usageRecord(start - 1, 2));
+    await saved.logs.flush();
+    const mtime = saved.storage.mtime.bind(saved.storage);
+    vi.spyOn(saved.storage, 'mtime').mockImplementation((source, key) => source === old && key === 'wire.jsonl' ? Promise.resolve(start - 1) : mtime(source, key));
+    const read = vi.spyOn(saved.storage, 'readStream');
+    const response = await new UsageAggregationService(saved.core, () => start + 1000).query({ range: 'custom', start_at: start, end_at: start + 1000 });
+    expect(response.reliability.complete).toBe(true);
+    expect(response.summary.tokens.output).toBe(1);
+    const directory = `cache/usage-facts-v1/${createHash('sha256').update(old).digest('hex')}`;
+    expect(read.mock.calls.filter(([source, key]) => source === directory && key === 'facts.jsonl')).toHaveLength(0);
+  });
+
+  it('reads only the complete journal checkpoint tail and grows nonoverlapping windows for a large final batch', async () => {
+    const main = scope('w', 's');
+    const saved = await openRange([], { [main]: [] });
+    const directory = `cache/usage-facts-v1/${createHash('sha256').update(main).digest('hex')}`;
+    const checkpoint = { generation: 'example', offset: 600, size: 600, mtimeMs: 100, boundaryHash: '', valid: true };
+    const line = (padding: number) => JSON.stringify({ version: 1, start: 0, checkpoint, records: [], padding: 'x'.repeat(padding) }) + '\n';
+    const service = new UsageAggregationService(saved.core);
+    const read = vi.spyOn(saved.storage, 'readStream');
+    try {
+      await saved.storage.write(directory, 'facts.jsonl', Buffer.from(line(50000) + line(0)));
+      expect(await Reflect.apply(Reflect.get(service, 'factJournalCheckpoint'), service, [main])).toEqual(checkpoint);
+      expect(read.mock.calls.map((call) => call[2]!.end - call[2]!.start + 1)).toEqual([4096]);
+      read.mockClear();
+      await saved.storage.write(directory, 'facts.jsonl', Buffer.from(line(50000) + line(9000)));
+      expect(await Reflect.apply(Reflect.get(service, 'factJournalCheckpoint'), service, [main])).toEqual(checkpoint);
+      expect(read.mock.calls.map((call) => call[2]!.end - call[2]!.start + 1)).toEqual([4096, 4096, 8192]);
+    } finally { service.dispose(); read.mockRestore(); }
+  });
+
   it('folds small committed journal batches in bounded pages across batch boundaries', async () => {
     const main = scope('w', 's');
     const saved = await openRange([summary('s', 'w')], { [main]: [] }, true);

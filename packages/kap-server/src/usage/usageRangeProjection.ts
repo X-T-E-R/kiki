@@ -39,6 +39,7 @@ export interface UsageRangeProjection {
   readonly fingerprint: string;
   readonly folded: true;
   readonly storedBuckets: boolean;
+  readonly journalReplayVersion?: number;
   readonly agents: readonly UsageProjectionAgent[];
   readonly buckets: readonly FoldBucketView[];
   readonly sessions: readonly UsageProjectionSession[];

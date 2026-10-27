@@ -67,7 +67,7 @@ export interface RangeFoldSession {
 
 export interface RangeFoldHead {
   readonly version: 1;
-  readonly journalReplayVersion?: 2;
+  readonly journalReplayVersion?: 2 | 3;
   readonly fingerprint: string;
   readonly sessions: RangeFoldSession[];
   complete: boolean;

@@ -638,7 +638,7 @@ export class UsageAggregationService {
       const inventory = new Set(listed.items.map(sessionKey));
       const sameInventory = budget.incompleteReason === null && head !== undefined && (!head.complete || head.sessions.length === listed.items.length) && head.sessions.every((session) => inventory.has(sessionKey(session.summary)));
       const current = head !== undefined && sameInventory ? await waitForSource(this.rangeSourcesCurrent(head, query.range, budget.factSignal), budget.factSignal) : false;
-      const replayCompatible = !this.factJournalReplayEnabled() || head?.journalReplayVersion === 2;
+      const replayCompatible = head?.journalReplayVersion === 3;
       const aligned = head !== undefined && head.version === 1 && replayCompatible && head.fingerprint === fingerprint && !head.invalidated && sameInventory && current;
       const reuseCompleteHead = aligned && head?.complete === true;
       if (!aligned) {
@@ -647,7 +647,7 @@ export class UsageAggregationService {
           : false;
         if (!advanced) {
           await fold.reset();
-          head = { version: 1, journalReplayVersion: 2, fingerprint, sessions: listed.items.map((summary) => ({ summary, invalid: false, prepared: false })), complete: false, inventoryComplete: budget.incompleteReason === null, invalidated: false };
+          head = { version: 1, journalReplayVersion: 3, fingerprint, sessions: listed.items.map((summary) => ({ summary, invalid: false, prepared: false })), complete: false, inventoryComplete: budget.incompleteReason === null, invalidated: false };
           await fold.saveHead(head);
         }
       }
@@ -671,7 +671,7 @@ export class UsageAggregationService {
                   session.invalid ||= records.some((record) => record.invalid);
                   try { await fold.addPage(session.summary, records, (record) => resolveBucket(record.time, session.summary, query).key, (record) => inRange(record.time, query.range) && matchesFilters(record, query), foldHead, budget.factSignal, { session, source }); }
                   catch (error) { source.cursor = cursor; session.invalid = invalid; throw error; }
-                }, source.checkpoint.generation ?? 'legacy');
+                }, source.checkpoint.generation ?? 'legacy', source.checkpoint.offset);
                 if (replayed === undefined) source.cursor = undefined;
                 else {
                   source.done = replayed.done;
@@ -1104,7 +1104,8 @@ export class UsageAggregationService {
     const cacheKey = sessionKey(summary);
     const cached = options.projectionOnly ? undefined : this.readCachedSession(cacheKey)?.persisted;
     const exportSnapshots = exportRead ? new Map<string, UsageFactSnapshot>() : undefined;
-    const persisted = cached ?? prepared ?? await this.readPersistentSession(storage, cacheKey, undefined, options.factSignal ?? options.signal, targetedAgentIds, options.factBudget, options.projectionOnly, exportSnapshots);
+    const range = options.projectionOnly && options.rangeStart !== undefined ? { preset: 'custom' as const, startAt: options.rangeStart, defaultedToAllHistory: false } : undefined;
+    const persisted = cached ?? prepared ?? await this.readPersistentSession(storage, cacheKey, range, options.factSignal ?? options.signal, targetedAgentIds, options.factBudget, options.projectionOnly, exportSnapshots);
     if (persisted.readComplete === false) return { session: { summary, records: persisted.records, complete: false, deleted: false }, persisted, scannedRecordCount: 0, incompleteReason: persisted.incompleteReason ?? 'record_budget' };
     const sessionScope = sessionScopeOf(workspacePersistenceScope('sessions', summary.workspaceId), summary.id);
     options.signal?.throwIfAborted();
@@ -1288,6 +1289,7 @@ export class UsageAggregationService {
     const logs = this.core.accessor.get(IAppendLogStore);
     const agentIds = targetedAgentIds ?? await waitForSource(storage.list(`${scope}/agents`), signal);
     const agents: Record<string, WireCheckpoint> = {};
+    const excluded = new Set<string>();
     const records: NormalizedUsageRecord[] = [];
     let readComplete = true;
     const concurrency = projectionOnly && budget !== undefined && !this.factJournalReplayEnabled() ? 1 : CHECKPOINT_READ_CONCURRENCY;
@@ -1301,6 +1303,7 @@ export class UsageAggregationService {
         snapshots = await waitForSource(Promise.all(agentIds.slice(start, start + concurrency).map(async (agentId) => {
         const wireScope = agentScopeOf(scope, agentId);
         if (range?.startAt !== undefined && mtimeExcludesRange(await storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY) ?? 0, range.startAt)) {
+          excluded.add(agentId);
           return { agentId, snapshot: { records: [] as readonly NormalizedUsageRecord[], readComplete: true } };
         }
         if (exportSnapshots !== undefined) {
@@ -1341,7 +1344,7 @@ export class UsageAggregationService {
         }
         for (const agentId of agentIds) {
           const checkpoint = legacy.agents[agentId];
-          if (agents[agentId] !== undefined || checkpoint === undefined) continue;
+          if (agents[agentId] !== undefined || checkpoint === undefined || excluded.has(agentId)) continue;
           const wireScope = agentScopeOf(scope, agentId);
           const generation = await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY);
           if (generation !== (checkpoint.generation ?? 'legacy')) continue;
@@ -1424,15 +1427,24 @@ export class UsageAggregationService {
     const directory = factJournalDirectory(wireScope);
     const size = await storage.size(directory, FACT_JOURNAL_KEY) ?? 0;
     if (size === 0) return undefined;
-    const bytes = await readKeyedRange(storage, directory, FACT_JOURNAL_KEY, Math.max(0, size - Math.min(size, 1024 * 1024)), size - 1);
-    const end = bytes.lastIndexOf(10);
-    const start = bytes.lastIndexOf(10, Math.max(0, end - 1));
-    if (end <= start) return undefined;
-    try {
-      const batch = JSON.parse(bytes.subarray(start + 1, end).toString('utf8')) as { checkpoint?: WireCheckpoint };
-      const checkpoint = batch.checkpoint;
-      if (checkpoint !== undefined && Number.isSafeInteger(checkpoint.offset) && checkpoint.offset >= 0 && Number.isSafeInteger(checkpoint.size) && checkpoint.size >= checkpoint.offset && typeof checkpoint.mtimeMs === 'number' && Number.isFinite(checkpoint.mtimeMs) && typeof checkpoint.boundaryHash === 'string' && typeof checkpoint.valid === 'boolean') return checkpoint;
-    } catch { return undefined; }
+    let bytes = Buffer.alloc(0), length = Math.min(size, 4096);
+    const limit = Math.min(size, 1024 * 1024);
+    while (length <= limit) {
+      const prefix = await readKeyedRange(storage, directory, FACT_JOURNAL_KEY, size - length, size - bytes.byteLength - 1);
+      bytes = bytes.byteLength === 0 ? Buffer.from(prefix) : Buffer.concat([prefix, bytes]);
+      const end = bytes.lastIndexOf(10);
+      const start = bytes.lastIndexOf(10, Math.max(0, end - 1));
+      if (end > start && (start >= 0 || length === size)) {
+        try {
+          const batch = JSON.parse(bytes.subarray(start + 1, end).toString('utf8')) as { checkpoint?: WireCheckpoint };
+          const checkpoint = batch.checkpoint;
+          if (checkpoint !== undefined && Number.isSafeInteger(checkpoint.offset) && checkpoint.offset >= 0 && Number.isSafeInteger(checkpoint.size) && checkpoint.size >= checkpoint.offset && typeof checkpoint.mtimeMs === 'number' && Number.isFinite(checkpoint.mtimeMs) && typeof checkpoint.boundaryHash === 'string' && typeof checkpoint.valid === 'boolean') return checkpoint;
+        } catch { return undefined; }
+        return undefined;
+      }
+      if (length === limit) return undefined;
+      length = Math.min(length * 2, limit);
+    }
     return undefined;
   }
 
@@ -1444,24 +1456,28 @@ export class UsageAggregationService {
     hold: { cursor: string },
     emit: (records: readonly UsageFact[]) => Promise<void>,
     generation?: string,
+    endOffset?: number,
   ): Promise<{ done: boolean; cursor: string } | undefined> {
+    const changed = (): { done: boolean; cursor: string } | undefined => { if (endOffset !== undefined) throw new UsageFactCursorChangedError(); return undefined; };
     const parts = cursor.split(':');
     const startOffset = Number(parts[1]);
     let skip = Number(parts[2]);
     let covered: { generation: string; offset: number; count: number } | undefined;
     try { if (parts[3] !== undefined) covered = JSON.parse(Buffer.from(parts[3], 'base64url').toString('utf8')); }
-    catch { return undefined; }
-    if (!Number.isSafeInteger(startOffset) || startOffset < 0 || !Number.isSafeInteger(skip) || skip < 0 || (covered !== undefined && (covered === null || typeof covered.generation !== 'string' || !Number.isSafeInteger(covered.offset) || covered.offset < 0 || !Number.isSafeInteger(covered.count) || covered.count < 0))) return undefined;
+    catch { return changed(); }
+    if (!Number.isSafeInteger(startOffset) || startOffset < 0 || !Number.isSafeInteger(skip) || skip < 0 || (covered !== undefined && (covered === null || typeof covered.generation !== 'string' || !Number.isSafeInteger(covered.offset) || covered.offset < 0 || !Number.isSafeInteger(covered.count) || covered.count < 0))) return changed();
     const continuation = (offset: number, index: number): string => `journal:${offset}:${index}${covered === undefined ? '' : `:${Buffer.from(JSON.stringify(covered)).toString('base64url')}`}`;
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const directory = factJournalDirectory(wireScope);
     const size = await storage.size(directory, FACT_JOURNAL_KEY) ?? 0;
-    if (size === 0 || startOffset > size) return undefined;
+    if (size === 0 || startOffset > size) return changed();
     hold.cursor = continuation(startOffset, skip);
-    if (startOffset === size) return { done: true, cursor: hold.cursor };
+    const reached = (): boolean => endOffset !== undefined && covered !== undefined && covered.generation === generation && covered.offset === endOffset;
+    if (startOffset === size) return endOffset === undefined || reached() ? { done: true, cursor: hold.cursor } : changed();
     let pending = Buffer.alloc(0);
     let lineStart = startOffset;
     let invalid = false;
+    let done = false;
     const selected: UsageFact[] = [];
     const publish = async (offset: number, index: number): Promise<void> => {
       const previous = hold.cursor;
@@ -1477,6 +1493,7 @@ export class UsageAggregationService {
       catch { invalid = true; return true; }
       const checkpoint = batch.checkpoint;
       if (batch.version !== 1 || !Number.isSafeInteger(batch.start) || batch.start < 0 || checkpoint === undefined || typeof checkpoint.generation !== 'string' || !Number.isSafeInteger(checkpoint.offset) || checkpoint.offset < batch.start || !Array.isArray(batch.records)) { invalid = true; return true; }
+      if (checkpoint.generation === generation && endOffset !== undefined && checkpoint.offset > endOffset) throw new UsageFactCursorChangedError();
       const records = batch.records;
       const sameGeneration = covered?.generation === checkpoint.generation;
       const replacement = batch.start === 0;
@@ -1495,9 +1512,10 @@ export class UsageAggregationService {
         if (selected.length === 256) await publish(lineStart, index + 1);
       }
       if (apply) covered = { generation: checkpoint.generation, offset: checkpoint.offset, count: replacement ? records.length : (covered?.count ?? 0) + records.length };
-      if (selected.length === 0) await publish(lineStart + line.byteLength + 1, 0);
+      done = reached();
+      if (done || selected.length === 0) await publish(lineStart + line.byteLength + 1, 0);
       skip = 0;
-      return false;
+      return done;
     };
     try {
       for await (const chunk of storage.readStream(directory, FACT_JOURNAL_KEY, { start: startOffset, end: size - 1 }, { signal: budget.factSignal })) {
@@ -1506,12 +1524,13 @@ export class UsageAggregationService {
         while (newline >= 0) {
           const line = pending.subarray(0, newline);
           pending = pending.subarray(newline + 1);
-          if (line.length > 0 && await consume(line)) return invalid ? undefined : { done: false, cursor: hold.cursor };
+          if (line.length > 0 && await consume(line)) return invalid ? changed() : { done, cursor: hold.cursor };
           lineStart += line.byteLength + 1;
           newline = pending.indexOf(10);
         }
       }
-      if (pending.length > 0 && await consume(pending)) return invalid ? undefined : { done: false, cursor: hold.cursor };
+      if (pending.length > 0 && await consume(pending)) return invalid ? changed() : { done, cursor: hold.cursor };
+      if (endOffset !== undefined && !reached()) return changed();
       if (!invalid) await publish(size, 0);
     } catch (error) {
       budget.signal?.throwIfAborted();
@@ -1522,7 +1541,7 @@ export class UsageAggregationService {
       }
       throw error;
     }
-    return invalid ? undefined : { done: true, cursor: hold.cursor };
+    return invalid ? changed() : { done: true, cursor: hold.cursor };
   }
 
   private async boundaryHash(
@@ -1713,7 +1732,7 @@ export class UsageAggregationService {
     if (projection === undefined) {
       const bytes = await this.core.accessor.get(IFileSystemStorageService).read(PERSISTENCE_SCOPE, projectionFileName(fingerprint));
       const parsed = bytes === undefined ? undefined : parseUsageRangeProjection(bytes);
-      if (parsed === undefined || parsed.fingerprint !== fingerprint || !hasProjectionTurnEvidence(parsed)) return undefined;
+      if (parsed === undefined || parsed.fingerprint !== fingerprint || !hasProjectionTurnEvidence(parsed) || (parsed.storedBuckets && parsed.journalReplayVersion !== 3)) return undefined;
       projection = parsed;
     }
     if (!hasProjectionTurnEvidence(projection)) return undefined;
@@ -2010,6 +2029,7 @@ export class UsageAggregationService {
         fingerprint,
         folded: true,
         storedBuckets: true,
+        journalReplayVersion: 3,
         sessions: listed.map(projectionSessionOf),
         buckets,
         agents,
