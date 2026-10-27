@@ -4924,6 +4924,9 @@ it.each([0, 12])('continues a budget-clipped resident baseline from its tail bou
   expect(items.map(key)).toEqual(canonical.items.map(key));
   expect(new Set(items.map(key)).size).toBe(items.length);
   expect(items.filter((item) => item.kind === 'turn').map((item) => item.turnId)).toEqual(Array.from({ length: 820 }, (_, ordinal) => `t${ordinal}`));
+  const staleCursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'derived', anchor: 'marker:missing', epoch: 'resident-test' }), 'utf8').toString('base64url');
+  const stale = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: staleCursor, pageSize: 100 });
+  expect(stale).toMatchObject({ items: [], read: { source: 'derived', readiness: 'partial', reason: 'stale_cursor' } });
 });
 
 
@@ -4966,6 +4969,10 @@ it.each([{ turnId: 0, prepared: false }, { turnId: 7, prepared: true }, { turnId
         let continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: page!.next_cursor! });
         if (continued?.items.length === 0) continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: continued.next_cursor ?? page!.next_cursor! });
         expect(continued?.items.find(item => item.kind === 'turn' && item.turnId === 't7')).toMatchObject({ prompt: 'opening-7', origin: { kind: 'user' } });
+        expect(JSON.parse(Buffer.from(continued!.next_cursor!, 'base64url').toString('utf8'))).toMatchObject({ anchor: 'turn:t7', refreshedTurn: 't7' });
+        const preceding = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: continued!.next_cursor! });
+        expect(preceding?.items.some(item => item.kind === 'turn' && item.turnId === 't7')).toBe(false);
+        expect(preceding?.items.some(item => item.kind === 'turn' && item.turnId === 't6')).toBe(true);
       }
       const cancelled = new AbortController(); cancelled.abort();
       await expect(navigation.readCanonicalTurnHeader('s1', 'main', `t${turnId}`, cancelled.signal)).rejects.toThrow();
@@ -4978,7 +4985,7 @@ it.each([{ turnId: 0, prepared: false }, { turnId: 7, prepared: true }, { turnId
     } finally { service.dispose(); await database.close(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 
-it('keeps an earlier prompt on the same turn when the cold tail already shows that turn', async () => {
+it.each(['cold', 'derived'] as const)('keeps an earlier prompt on the same turn when the cold tail already shows that turn (%s)', async (source) => {
   const home = await mkdtemp(join(tmpdir(), 'transcript-same-turn-prefix-'));
   const wireDir = join(home, 'sessions', 'ws', 's1', 'agents', 'main');
   await mkdir(wireDir, { recursive: true });
@@ -5000,6 +5007,15 @@ it('keeps an earlier prompt on the same turn when the cold tail already shows th
     expect(tailTurn).toMatchObject({ prompt: undefined, origin: { kind: 'other' } });
     expect(page?.has_more).toBe(true);
     let cursor = page?.next_cursor;
+    if (source === 'derived') {
+      const resident = new AgentTranscript('main');
+      resident.apply([{ op: 'reset', agentId: 'main', snapshot: (await service.readColdPageSnapshot('s1', 'main', value => value))! }]);
+      vi.spyOn(service, 'forSessionLive').mockReturnValue({ agents: () => [] } as unknown as TranscriptStore);
+      vi.spyOn(service, 'ensureAgentHistory').mockResolvedValue(resident);
+      vi.spyOn(service, 'verifyTranscriptLiveCoverage').mockResolvedValue(false);
+      vi.spyOn(service, 'getTranscriptCursor').mockReturnValue({ epoch: 'resident-test', seq: 7 });
+      cursor = (await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeTurn: 't1' }))?.next_cursor;
+    }
     let recovered: typeof tailTurn;
     for (let attempt = 0; attempt < 16 && cursor !== undefined && recovered === undefined; attempt += 1) {
       const continued = await readSessionViewTranscriptPage(service, 's1', { agentId: 'main', beforeItem: cursor });
@@ -5007,6 +5023,10 @@ it('keeps an earlier prompt on the same turn when the cold tail already shows th
       cursor = continued?.next_cursor;
     }
     expect(recovered).toMatchObject({ prompt: 'visible-prefix', promptId: 'same-turn-prefix', origin: { kind: 'user' } });
+    if (source === 'derived') {
+      expect(recovered).toMatchObject({ state: 'completed' });
+      expect(recovered?.kind === 'turn' ? recovered.steps.length : 0).toBeGreaterThan(0);
+    }
   } finally { service.dispose(); await rm(home, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
 });
 

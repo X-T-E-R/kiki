@@ -1975,9 +1975,8 @@ export class TranscriptService {
     const entire = next === 0 && read.complete && window.droppedTail !== true;
     const snapshot = this.projectColdRecords(agentId, merged, entire, preserveOpenTurnIds, captureReplayState, entire ? undefined : window);
     const bytes = this.coldWindowBytes(snapshot, merged);
-    const retainEntireFile = entire && bytes <= COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES;
     let extended: ColdWireWindow;
-    if (window.records.length > 0 && bytes > COLD_WIRE_WINDOW_MAX_BYTES && !retainEntireFile && read.records.length > 0) {
+    if (window.records.length > 0 && bytes > COLD_WIRE_WINDOWS_MAX_TOTAL_BYTES && read.records.length > 0) {
       if (read.complete && !coldPrefixAddsItem(window.snapshot.items, snapshot.items)) {
         const skipped: ColdWireWindow = {
           ...window,
@@ -2874,7 +2873,14 @@ export class TranscriptService {
     }
     const merged = new AgentTranscript(agentId);
     merged.apply([{ op: 'reset', agentId, snapshot: cold }]);
-    merged.apply(snapshotToOps(transcript.snapshot()));
+    merged.apply(snapshotToOps(transcript.snapshot(), turn => {
+      const recovered = merged.getTurn(turn.turnId);
+      if (turn.origin.kind !== 'other' || turn.message !== undefined || turn.promptId !== undefined ||
+          recovered === undefined || (recovered.message === undefined && recovered.promptId === undefined)) return snapshotTurnOps(turn);
+      return snapshotTurnOps({ ...turn, prompt: recovered.prompt, promptId: recovered.promptId, message: recovered.message,
+        origin: recovered.origin, startedAt: recovered.startedAt, presentation: recovered.presentation,
+        attachmentIds: recovered.attachmentIds, contentRefs: recovered.contentRefs });
+    }));
     const snapshot = this.reconcileQuestionSnapshot(sessionId, merged.snapshot());
     const state = this.anchorReads.get(cold);
     if (state !== undefined) this.anchorReads.set(snapshot, state);
@@ -3003,7 +3009,7 @@ export class TranscriptService {
         current.start < end && current.end >= end) return cached.snapshot;
     const opened = signal ?? new AbortController().signal;
     const recordEnd = end >= fileSize ? fileSize : await this.nextRecordBoundary(wirePath, end, fileSize, opened);
-    const matchedFits = recordEnd <= end || recordEnd - end <= FIRST_SCREEN_WINDOW_BYTES;
+    const matchedFits = recordEnd <= end || recordEnd - end <= FIRST_SCREEN_WINDOW_MAX_BYTES;
     const readEnd = matchedFits ? recordEnd : end;
     const start = await this.tailRecordStart(wirePath, readEnd, opened);
     const read = await this.readWireRange(wirePath, start, readEnd, opened);
