@@ -115,6 +115,8 @@ describe('plugin IM adapter contribution', () => {
     const other = await fixture('fixture-diagnostic-other');
     const { bridge, submitted } = await hostBridge([plugin.registration, other.registration]);
     const row = async () => (await bridge.snapshot()).instances.find((item) => item.id === plugin.registration.instanceId)!;
+    const waitForRunning = () => vi.waitFor(async () => expect((await row()).adapter).toBe('running'));
+    await waitForRunning();
     const failed = { status: 'failed', sourceId: 'source-1', code: 'download_failed' };
     await plugin.report(failed);
     await plugin.report({ ...failed, sourceId: 'source-2', code: 'hydrate_failed' });
@@ -132,6 +134,7 @@ describe('plugin IM adapter contribution', () => {
     await bridge.setListening(plugin.registration.instanceId, false);
     await expect(plugin.report(failed)).rejects.toThrow('not receiving');
     await bridge.setListening(plugin.registration.instanceId, true);
+    await waitForRunning();
     await expect(plugin.report(failed, true)).rejects.toThrow('not receiving');
     expect((await row()).inbound_diagnostics?.map((entry) => entry.source_id)).toEqual(['source-2']);
     await plugin.report({ status: 'recovered', sourceId: 'source-2', code: 'hydrate_failed' });
