@@ -59,20 +59,3 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个�
 - **[历史导入、IDE 与外部引擎](/zh/features/ecosystem)**：无需插件即可把 Claude Code、Codex、Pi、Grok Build、OpenCode 的旧对话预览并导入为可继续的会话或只读归档；通过 `kiki acp` 在 Zed、JetBrains 等 IDE 中驱动 Kiki，用 `kiki seat` 固定入站 MCP 席位，或把这些外部工具设为子智能体的执行引擎。
 
 ![导入历史：六个可读的来源，以及一段对话的预览，写明哪些内容不会带过来。](/shots/ecosystem/ecosystem-history-import.zh.png)
-
-## 功能目录速查
-
-| 页面 | 什么时候看 | 核心内容 |
-| --- | --- | --- |
-| [子智能体与多模型分工](/zh/features/workbench) | 任务超过单轮对话或单个模型 | 桌面 / 终端 / Web 共用守护进程、主会话派发子智能体、按角色绑定不同模型、独立子记录、后台任务 |
-| [智能体配置与复用](/zh/features/agent-workflows) | 想定义或复用专业智能体配置 | 单文件 Markdown 定义 Profile、模型与思考档位继承、内置配置与 `implementer` / `reviewer` 模板、热刷新 |
-| [目标、队列、定时与记忆](/zh/features/long-work) | 活要跑几小时、跨天或按计划重复 | `/goal` 跨轮次目标、带送达时机的忙碌队列、定时任务、可选任务看板、上下文续接与三层可撤销记忆 |
-| [常驻角色与讨论房间](/zh/features/people) | 想要固定搭档或多视角同屏讨论 | 角色卡（Persona）、固定日常对话入口、角色独立记忆、2–6 个角色或线程在主持人与预算下讨论的房间 |
-| [浏览器与电脑控制](/zh/features/browser-and-computer) | 需要操作网页后台或桌面软件 | 日常已登录浏览器扩展、独立受管浏览器、Ego Lite 与 CDP 附着；内置电脑控制执行器与 Kimi Computer Use 插件 |
-| [插件、Skill、MCP 与搜索](/zh/features/extend) | 处理文档、表格、数据、网页与媒体 | PDF/Office 提取与编辑、表格比对、金融文献数据、媒体生成、`WebSearch` 搜索与 `FetchURL` 抓取通道、`/skill`、MCP |
-| [日常界面与用量监控](/zh/features/daily) | 盯进度、盯花费或排查排队请求 | 步骤折叠时间线、消息批注、「需要你」审批托盘、焦点右栏、Usage 历史花费 / 实时限流规则 / 额度 / 外部同步 |
-| [模型连接、提示词与权限](/zh/features/freedom) | 管理账号连接、改写提示词或管住审批 | 连接与 OAuth 列表、复用本机 ChatGPT / Grok Build 登录、`kiki prompt-fields` 覆写、四种权限模式与 Hooks |
-| [皮肤、字体与背景](/zh/features/look) | 调整窗口配色、字体或背景 | 六套内置浅深色皮肤、强调色与字体密度微调、自动保障对比度的本地图片与视频背景、外观包与 TUI 主题 |
-| [多空间、远程连接与 SSH](/zh/features/spaces) | 分开工作与个人账号，或跨机器干活 | 多空间凭据隔离与共享、Work 模式预设、双向批准远端连接、单向 thread bridge、一次性 Web 链接、会话内 SSH |
-| [手机会话](/zh/features/phone) | 人不在电脑前，需要回复或审批 | 微信扫码与 QQ 机器人绑定、按联系人路由到角色或会话、忙碌插入与排队、手机端数字回复提问与审批 |
-| [历史导入、IDE 与外部引擎](/zh/features/ecosystem) | 迁移旧对话，或与 IDE / 外部工具协同 | 预览式导入 Claude Code / Codex / Pi / Grok Build / OpenCode 历史、`kiki acp` IDE 集成、`kiki seat` 席位、外部执行引擎 |

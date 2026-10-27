@@ -739,7 +739,7 @@ New topic/chat group bindings default to `group_policy: { wake: "mention_or_repl
 
 Mention/reply detection requires adapter metadata. Built-in Telegram provides real message IDs, timestamps, sender/chat names, entity-based mentions and reply IDs; update IDs remain separate event deduplication keys. Other transports without those fields can use prefixes or `always` instead.
 
-Group policy is configured through REST confirmation or `PATCH /api/im/sessions/bindings/{id}`; the GUI currently has no group-policy control. For a built-in transport without mention/reply metadata, PATCH `{ "group_policy": { "wake": "mention_or_reply", "prefixes": ["Kiki:"] } }` to use that prefix, or `{ "group_policy": { "wake": "always" } }` for every-message wake.
+Choose a group binding's scope and wake rule in Notifications & messages. To change them through REST, use confirmation or `PATCH /api/im/sessions/bindings/{id}`. For a transport without mention/reply metadata, set `{ "group_policy": { "wake": "mention_or_reply", "prefixes": ["Kiki:"] } }` to use a prefix, or `{ "group_policy": { "wake": "always" } }` to wake on every message.
 
 An enabled inbound group binding keeps a bounded, persistent received timeline per account, chat and topic. Quiet messages do not start a model turn. A triggered prompt includes recent unconsumed background and up to four quoted ancestors as untrusted external data; accepted submission advances only its captured background watermark, without deleting the timeline or losing newer arrivals. The main agent can use [ReadMessageHistory](../reference/tools.md#im-chat-history) for explicit local searches or optional platform backfill. Disabling input stops both collection and reads for that binding.
 

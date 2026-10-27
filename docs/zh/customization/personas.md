@@ -74,7 +74,7 @@ room_budget = 12
 
 ## 连接会话信道
 
-发给用户的 `SendMessage` 会使用该会话启用的信道：名为 `internal` 的 Kiki 内部信道，以及已确认绑定的 IM 信道。内部信道默认开启，新增 IM 绑定不会把它关闭。HTTP 客户端可用 `rest.imSessions.channelViews(sessionId)` 查看信道，用 `setInternalChannel(sessionId, false)` 显式关闭内部信道，与 reply/message 模式分别控制。关闭不会删除历史消息或投递诊断。
+发给用户的 `SendMessage` 会使用名为 `internal` 的 Kiki 内部信道，以及该会话已启用的 IM 绑定。新增 IM 绑定不会关闭内部信道。HTTP 客户端可用 `rest.imSessions.channelViews(sessionId)` 查看信道。
 
 每个附件至少要有一个已启用信道支持，否则发送会报 `media_unsupported`；没有任何启用目标时会报 `no_destination`。只有部分信道支持某个附件时，Kiki 会向支持端发送，并在其它端提醒跳过了哪些媒体。收据的 `channels` 逐端返回 `delivered`、`unsupported`、`failed` 或 `unknown`；已投递的信道也可能在 `unsupported` 中列出跳过的类型。`unknown` 表示无法确认结果，平台可能已经接收，不要自动重发。
 
@@ -88,7 +88,7 @@ HTTP 客户端通过 `rest.imSessions.setupCatalog()` 和 `setup(...)` 配置这
 | Slack | `bot_token`、`app_token` | `slack_manifest` 创建 Socket Mode 应用；OAuth 可取得 Bot token，仍需单独提供应用级 `xapp` token。 |
 | Matrix | `homeserver`、`access_token` | `matrix_discover` 查询登录方式；可用 `matrix_sso_begin` / `matrix_sso_complete` 或 `matrix_password` 取得并保存 token。 |
 
-调用 `setup({ action: "save", provider_kind, fields })` 保存凭据时不会启动监听。接着用返回的 `provider_instance_id` 调用 `check` 和 `listen(id, true)`，在平台给 Bot 发一条消息，再把出现的发现项确认绑定到目标会话或角色。已有 Telegram、飞书、OneBot 和微信连接保留原配置与绑定流程。连接认证见 [REST API 指南](../server/rest-api.md)；上述操作的 HTTP 入口是 `GET` / `POST /api/im/sessions/setup`、`GET /api/im/sessions/targets/{sessionId}/channels` 和 `PUT /api/im/sessions/targets/{sessionId}/internal`。
+调用 `setup({ action: "save", provider_kind, fields })` 保存凭据时不会启动监听。接着用返回的 `provider_instance_id` 调用 `check` 和 `listen(id, true)`，在平台给 Bot 发一条消息，再把出现的发现项确认绑定到目标会话或角色。已有 Telegram、飞书、OneBot 和微信连接保留原配置与绑定流程。连接认证见 [REST API 指南](../server/rest-api.md)；上述操作的 HTTP 入口是 `GET` / `POST /api/im/sessions/setup` 和 `GET /api/im/sessions/targets/{sessionId}/channels`。
 
 确认绑定后，调用 `rest.imSessions.testBinding(bindingId)`，会向该绑定的聊天发送一条明确标注测试的固定消息，不会启动模型回复。测试使用现有连接，要求绑定已启用且连接可用。对应 HTTP 请求是 `POST /api/im/sessions/bindings/{bindingId}/test`，正文为 `{}`，不接受自定义正文或目标。结果包含 `binding_id`、`status`、`message_ids` 和可选的 `detail`。`delivered` 表示平台已接收，不代表对方已读；`failed` 时按返回原因修复后再试。`unknown` 时先查看聊天，再决定是否手动重试。
 

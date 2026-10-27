@@ -735,7 +735,7 @@ PATCH 原位修改绑定。扩大范围与其他已启用入站绑定重叠时�
 
 @ 和回复识别依赖适配器提供真实元数据。内置 Telegram 提供真实消息 ID、时间戳、发送者和群名称、基于实体的 @ 与回复 ID；update ID 单独用于事件去重。未提供这些字段的其他传输可使用前缀或 `always`。
 
-群策略目前通过 REST 确认接口或 `PATCH /api/im/sessions/bindings/{id}` 配置，GUI 尚无群策略控件。对未提供 @／回复元数据的内置传输，可 PATCH `{ "group_policy": { "wake": "mention_or_reply", "prefixes": ["Kiki:"] } }` 启用该前缀，或用 `{ "group_policy": { "wake": "always" } }` 逐条唤醒。
+在「通知与消息」中选择群绑定的作用域和唤醒方式；REST 客户端可通过确认接口或 `PATCH /api/im/sessions/bindings/{id}` 修改。传输未提供 @／回复元数据时，可设置 `{ "group_policy": { "wake": "mention_or_reply", "prefixes": ["Kiki:"] } }` 使用前缀，或设置 `{ "group_policy": { "wake": "always" } }` 逐条唤醒。
 
 已启用的群入站绑定按账号、群和话题保留有界持久时间线。静默消息不启动模型轮次。触发时，提示词会附带近期尚未消费的背景和最多四层引用祖先，并标记为不可信外部数据；提交获准后只推进本次捕获的背景水位，不删除时间线，也不丢失处理期间的新到消息。主 Agent 可用 [ReadMessageHistory](../reference/tools.md#im-聊天历史) 主动搜索本地记录，或显式读取可选的平台历史。关闭输入后，该绑定停止收集，也不再允许读取。
 

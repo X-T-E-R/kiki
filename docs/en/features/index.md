@@ -59,20 +59,3 @@ Sessions and configuration stay in your local Kiki home by default, and connect 
 - **[History Import, IDEs & Engines](/en/features/ecosystem)**: preview and import conversations from Claude Code, Codex, Pi, Grok Build, or OpenCode as continuable sessions or read-only archives; drive Kiki inside Zed, JetBrains, and other IDEs over `kiki acp`; fix an inbound MCP seat with `kiki seat`; or run subagents on external harnesses with Kiki context bridging.
 
 ![Importing history: six readable sources and a preview of one conversation showing what will not be carried over.](/shots/ecosystem/ecosystem-history-import.en.png)
-
-## All feature pages
-
-| Page | When you need it | What it covers |
-| --- | --- | --- |
-| [Subagents & Multi-Model](/en/features/workbench) | A task is bigger than one turn or one model | Shared local daemon across desktop / TUI / Web, isolated subagents, per-role model binding, subagent transcripts, background tasks |
-| [Agent Profiles](/en/features/agent-workflows) | You want reusable specialist roles | Single-file Markdown profiles, model and effort inheritance, shipped roles and `implementer` / `reviewer` templates, live hot reload |
-| [Goals, Queues, Cron & Memory](/en/features/long-work) | Work spans hours, days, or a recurring schedule | Cross-turn `/goal`, busy message queue with per-message timing, scheduled prompts, optional task board, context renewal, and 3-scope memory |
-| [Personas & Discussion Rooms](/en/features/people) | You want a standing collaborator or multi-perspective room | Persona cards, fixed daily conversation entry, isolated persona memory, and moderated rooms for 2–6 personas or threads |
-| [Browser & Computer Control](/en/features/browser-and-computer) | The task needs a live browser or desktop GUI app | Everyday signed-in browser extensions, independent browser, Ego Lite, and CDP attachment; built-in desktop executor and Kimi Computer Use plugin |
-| [Plugins, Skills, MCP & Search](/en/features/extend) | Work involves PDFs, Office files, datasets, web search, or media | Local PDF/Office extraction and editing, CSV audit, financial & academic data, media generation, `WebSearch` & `FetchURL` lanes, `/skill`, and MCP |
-| [Timeline, Approvals & Usage](/en/features/daily) | You are watching progress, cost, or a waiting request | Folded step timeline, message annotations, "Needs you" tray, focus-following right rail, and Usage (history cost, live rule IDs, quotas, external sync) |
-| [Models, Prompts & Permissions](/en/features/freedom) | You want to customize model auth, prompts, or approvals | Unified connections and OAuth list, reusing local ChatGPT / Grok Build sign-ins, `kiki prompt-fields` overrides, permission modes, and Hooks |
-| [Skins, Fonts & Backgrounds](/en/features/look) | You want the window to match how you read | Six built-in light and dark skin families, live accent and font tuning, contrast-checked image and video backgrounds, appearance packs, and TUI themes |
-| [Spaces, Remote Links & SSH](/en/features/spaces) | You separate work and personal accounts, or work across hosts | Multi-space credential isolation or sharing, Work mode presets, mutually approved remote connections, thread bridges, Web access links, and in-session SSH |
-| [Phone Session](/en/features/phone) | You are away from the desk and a step is waiting | WeChat QR and QQ bot pairing, per-contact routing to personas or sessions, busy steering vs. queueing, and numeric replies for approvals |
-| [History Import, IDEs & Engines](/en/features/ecosystem) | You also use Claude Code, Codex, Cursor, Zed, or JetBrains | Previewed history import, `kiki acp` IDE integration, `kiki seat` inbound MCP seats, and external executor harnesses with Kiki context bridging |
