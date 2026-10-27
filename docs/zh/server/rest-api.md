@@ -364,7 +364,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 | `GET /api/sessions/{session_id}/prompts` | 进行中与排队中的提示词 |
 | `POST /api/sessions/{session_id}/prompts` | 提交提示词（内容块数组，可带模型 / 权限模式等覆盖） |
 | `POST /api/sessions/{session_id}/prompts:steer` | 立即发送选中的排队提示词 |
-| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定的排队中、启动中、运行中或已追加的提示词 |
+| `POST /api/sessions/{session_id}/prompts/{prompt_id}:abort` | 中止指定提示词；`?queued_only=true` 只移除尚未启动的队列项 |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:steer` | 立即发送单个排队提示词 |
 | `GET /api/sessions/{session_id}/prompts/{prompt_id}?admission=durable` | 读取已保存请求的完整内容，不恢复 Agent |
 | `POST /api/sessions/{session_id}/prompts/{prompt_id}:resume?admission=durable` | 重试等待确认或失败的已保存请求 |
@@ -379,7 +379,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 `admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。立即发送时，可选的 `delivery_state: "steered"` 表示核心已将消息分配给目标轮次，`"queued"` 表示记录该回执时仍在等待投递，也包括等待模型切换边界的情况。分配或受理都不证明消息已进入模型请求；应以转录中的实际投递帧及后续请求为准。较新的 canonical 启动、追加或终态事实优先于旧 queued 回执。
 
-可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。单 ID 的 `:steer` 响应也携带 `delivery_state` 和 `delivery_reason`；原有的 `steered: true` 确认命令已受理，不代表模型已经消费。多 ID 的 steer 回执不返回这些单提示词字段。
+可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。单 ID 的 `:steer` 响应也携带 `delivery_state` 和 `delivery_reason`；`steered: true` 表示消息已加入当前回合，`steered: false` 表示仍在排队或已离开队列。已启动的已知提示词返回 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。多 ID 回执不返回单条提示词字段。调用 `:abort?queued_only=true` 时，`aborted: true` 确认未启动项已从队列和时间线移除；`aborted: false` 表示队列中已无该项，已启动回合及其历史保留。普通 `:abort` 仍可停止运行中的提示词。
 
 | `delivery_reason` | 含义 |
 | --- | --- |
@@ -407,7 +407,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 仅当消息明确依赖已有的显式切换操作时，使用 `after_model_switch`。不要同时携带新的模型、思考强度、profile、execution 或上下文选择：服务端会拒绝混合选择，不会静默换成旧依赖的绑定。独立的手动压缩通过 `compaction.started`、`compaction.completed` 或 `compaction.cancelled` 报告自身进度；它不会受理或执行待发送消息的模型选择。
 
-对于显式切换操作，受理发送不表示切换已完成。切换失败或持久化完成状态不确定时，原消息仍保留在队列中，切换显示可恢复的状态；按同一操作重试即可继续已受理的投递，已取消的切换不会被重新启用。与模型切换无关的 execution 选择仍须独立启动轮次。重启后，立即发送只让选中项绕过恢复确认，其他恢复的提示词仍等待确认。中止已追加的提示词会取消它所加入的轮次，不会取消后续轮次。中止不存在或已经结束的提示词会返回 `40402`。
+对于显式切换操作，受理发送不表示切换已完成。切换失败或持久化完成状态不确定时，原消息仍保留在队列中，切换显示可恢复的状态；按同一操作重试即可继续已受理的投递，已取消的切换不会被重新启用。与模型切换无关的 execution 选择仍须独立启动轮次。重启后，立即发送只让选中项绕过恢复确认，其他恢复的提示词仍等待确认。中止已追加的提示词会取消它所加入的轮次，不会取消后续轮次。普通 `:abort` 对不存在或已经结束的提示词返回 `40402`；从队列移除条目时使用 `?queued_only=true`。
 
 ### 审批与提问
 
@@ -497,11 +497,11 @@ Kiki 根据 OpenSSH 配置和路径展开结果确定 `UserKnownHostsFile` 的�
 
 `PUT` 使用与 GUI 相同的判别联合请求体。`type` 为 `agent-browser-profile` 时必须给出 `name`，可带 `profilePath`、`executablePath`、`headed`、`driverPath`；`type` 为 `agent-browser-cdp` 时必须给出 `name` 与 `endpoint`，`endpoint` 取值为 `{ "action": "set", "value": "<CDP 的 http 或 ws 地址>" }`，或 `{ "action": "keep" }` 表示保留已存地址。两者都可带 `enabled`，默认 `true`。新建 CDP 连接时未提供 `set` 会被拒绝。已保存的 CDP 地址读回时是掩码；显式读取需用 `POST /api/secrets:reveal`，其 `ref` 的 `kind` 为 `"browser_endpoint"`。`type` 为 `ego-lite` 时必须给出 `name`，可带可选的 `cliPath`、`profileId` 和 `serverName`，没有 endpoint。
 
-`kimi-webbridge` 请求体必须给出 `name`，可带 `enabled` 和可选的 `driverPath`，不接受 `endpoint`。它使用服务器本机 `http://127.0.0.1:10086` 的 Kimi HTTP 桥，不启动 CDP 驱动。旧版保存为 CDP、且 id 恰为 `kimi-webbridge` 的条目默认也走这条 HTTP 路由，但不改写保存的类型；见 [`webbridge_preset_route`](../configuration/config-files.md#browser-control)。其他 CDP id 保持原路由。
+`kimi-webbridge` 请求体必须给出 `name`，可带 `enabled` 和可选的 `driverPath`，不接受 `endpoint`。它使用服务器本机 `http://127.0.0.1:10086` 的 Kimi HTTP 桥，不启动 CDP 驱动。扩展已运行不会自动注册 Kiki 连接：若 `BrowserConnections` 或 REST API 对此 id 报 `browser.not_found`，先在浏览器控制设置或 `config.toml` 保存 `kimi-webbridge` 类型连接，再检查该连接。旧版保存为 CDP、且 id 恰为 `kimi-webbridge` 的条目默认也走这条 HTTP 路由，但不改写保存的类型；见 [`webbridge_preset_route`](../configuration/config-files.md#browser-control)。其他 CDP id 保持原路由。
 
 `webbridge-command` 请求体必须给出 `name`，可带 `enabled`（默认 `true`），不接受 `endpoint` 或 `driverPath`。它向固定的本地 `/command` 端点发送扩展命令，不启动 agent-browser。工具目录返回 `contextIsolation: "extension-command-session"`。每个调用方使用独立的命令会话；标签身份为 `wb:<十进制 id>`，不是 DevTools target ID。页面操作、选择与关闭只能作用于该调用方最近一次 navigate 打开的标签。Kiki 不会按 URL 查找另一个标签，同 URL 的两个标签也不会混选。不支持 window 和 frame 方法。断开连接只释放 Kiki 的绑定，不关闭标签；显式的 `agent_browser_end_session` 页面操作会关闭该调用方的命令会话。
 
-既有 `kimi-webbridge` HTTP 桥的工具目录返回 `contextIsolation: "main-frame-only"`：不支持新建窗口或操作非主 frame。选择标签时使用列表返回的准确 id，并核对实际选中的 id；重复 URL 导致目标不唯一时，会拒绝切换到另一标签。命令已发出、但应答丢失或无法读取时，状态为 `unconfirmed`，`failure.reason` 为 `"outcome_unknown"`，不会重放命令。`:check` 只检查桥的健康状态；返回 `idle` 后，先重新连接、选择标签并观察，再决定下一步动作。明确的否定应答则记为已结束的 `failed` 结果。
+既有 `kimi-webbridge` HTTP 桥的工具目录返回 `contextIsolation: "main-frame-only"`：不支持新建窗口或操作非主 frame。选择标签时使用列表返回的准确 id，并核对实际选中的 id；重复 URL 导致目标不唯一时，会拒绝切换到另一标签。已保存的连接若本机 HTTP 状态无法读取、守护程序报告停止，或扩展报告断线，会返回 `state: "disconnected"`、`failure.code: "browser.disconnected"` 和对应原因；恢复后再次 `:check` 会清除这一失败；若连接尚未附着，则返回 `idle`，需要先连接再列出标签。命令已发出、但应答丢失或无法读取时，状态为 `unconfirmed`，`failure.reason` 为 `"outcome_unknown"`，不会重放命令。`:check` 只检查桥的健康状态；未确认命令后返回 `idle` 时，先重新连接、选择标签并观察，再决定下一步动作。明确的否定应答则记为已结束的 `failed` 结果。
 
 执行类动作失败即关闭：未开启 `native_browser` 实验开关时，`:connect` 返回信封码 `40001`，`details.code` 为 `"browser.disabled"`、`details.reason` 为 `"feature_disabled"`；连接自身被停用时返回的 `details.reason` 为 `"connection_disabled"`。Klient 对应方法为 `rest.browser.list()`、`upsert(id, input)`、`remove(id)`、`setDefault(browser?)`、`status(id)`、`tabs(id)`、`catalog(id, { includeSchema })`、`check(id)`、`connect(id)` 和 `disconnect(id)`。
 
