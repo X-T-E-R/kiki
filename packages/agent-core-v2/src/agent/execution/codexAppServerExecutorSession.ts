@@ -336,11 +336,11 @@ export class CodexAppServerExecutorSession implements AgentExecutorSession {
 
     let handle: CodexTurnHandle;
     try {
-      if (this.#approvalRestore !== undefined) {
+      if (priorThreadId !== opened.threadId || this.#approvalRestore !== undefined) {
         await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
           executionGeneration: this.context.binding.execution?.generation, executorId: this.context.descriptor.id,
           descriptorRevision: this.context.descriptor.revision, bindingFingerprint: agentExecutorBindingFingerprint(this.context.binding),
-          sessionRef, sessionEpoch, profileDeliveredSessionId: prior.profileDeliveredSessionId,
+          sessionRef, sessionEpoch, profileDeliveredSessionId: priorThreadId === opened.threadId ? prior.profileDeliveredSessionId : undefined,
         }));
         await this.#dispatcher.flush();
       }

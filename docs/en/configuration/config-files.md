@@ -630,7 +630,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. The policy does not make HTTP 400, exhausted quota, partial output, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
+Replace `gemini-4-argon` and `google-native` with the exact keys used in your `[models]` and `[providers]` tables. The `backoff` applies only when the provider does not send `Retry-After`. A model stream that ends without its protocol's completion event is a connection failure, not a successful partial answer. It can be retried only before text, thinking, or a tool call has been observed; native tools from an incomplete response are not executed. The policy does not make HTTP 400, exhausted quota, partial output, or already-executed failures retryable; `retry = true` never overrides Kiki's non-retryable classification.
 
 ## `transcript_memory`
 

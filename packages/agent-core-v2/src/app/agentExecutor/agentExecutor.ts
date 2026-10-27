@@ -224,6 +224,8 @@ export interface AgentExecutorSession {
   ): Promise<AgentRunHandle>;
   status(): AgentExecutionStatus;
   canResumeBrokenOriginal?(): boolean;
+  /** True only before any remote prompt was attempted and with no saved original session to preserve. */
+  canRetryBrokenConstruction?(): boolean;
   steer?(message: import('#/agent/contextMemory/types').ContextMessage): Promise<boolean | 'unknown'>;
   updateBinding?(binding: ProfileBindingSnapshot): void;
   cancel(reason?: unknown): boolean;

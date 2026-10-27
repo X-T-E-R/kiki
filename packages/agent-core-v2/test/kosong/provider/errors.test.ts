@@ -517,6 +517,32 @@ describe('OpenAI Responses quota-exhausted conversion', () => {
   });
 });
 
+describe('Responses native WebSocket failure boundaries', () => {
+  it.each([false, true])('classifies connection-limit by active transport rather than its message (webSocket=%s)', async webSocket => {
+    const stream = new OpenAIResponsesStreamedMessage(streamEvents([{ type: 'response.failed', response: {
+      id: 'failed', status: 'failed', output: [], error: { code: 'websocket_connection_limit_reached', message: 'native connection limit' },
+    } }]), true, undefined, undefined, webSocket);
+    const failure = await consume(stream).catch((error: unknown) => error);
+    expect(toErrorPayload(failure)).toMatchObject({ code: webSocket ? 'provider.connection_error' : 'provider.api_error', details: {
+      errorSource: 'provider_event', upstreamErrorCode: 'websocket_connection_limit_reached',
+    } });
+  });
+
+  it.each([
+    { type: 'reasoning', summary: [{ type: 'summary_text', text: 'observed thought' }] },
+    { type: 'reasoning', summary: [], encrypted_content: 'encrypted-fixture' },
+    { type: 'web_search_call', id: 'builtin_fixture', status: 'completed' },
+    { type: 'message', content: [{ type: 'refusal', refusal: 'refused' }] },
+  ])('keeps actual failed-terminal output from being replayed: $type', async item => {
+    const stream = new OpenAIResponsesStreamedMessage(streamEvents([{ type: 'response.failed', response: {
+      id: 'failed', status: 'failed', output: [item], error: { code: 'websocket_connection_limit_reached', message: 'native limit' },
+    } }]), true, undefined, undefined, true);
+    const failure = await consume(stream).catch((error: unknown) => error);
+    expect(isRetryableGenerateError(failure)).toBe(false);
+    expect(toErrorPayload(failure).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
+  });
+});
+
 describe('convertGoogleGenAIError RetryInfo recovery', () => {
   function googleApiError(status: number, body: unknown): GoogleApiError {
     return new GoogleApiError({ message: JSON.stringify(body), status });

@@ -1643,6 +1643,7 @@ async function* anthropicEventStreamWithCacheUsage(): AsyncIterable<unknown> {
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
   yield { type: 'content_block_stop', index: 0 };
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+  yield { type: 'message_stop' };
 }
 
 async function* openAIChunkStream(): AsyncIterable<unknown> {
@@ -1679,11 +1680,11 @@ async function* anthropicEventStream(): AsyncIterable<unknown> {
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
   yield { type: 'content_block_stop', index: 0 };
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 1 } };
+  yield { type: 'message_stop' };
 }
 
 async function* anthropicEventStreamWithStop(): AsyncIterable<unknown> {
   yield* anthropicEventStream();
-  yield { type: 'message_stop' };
 }
 
 async function* anthropicThinkingOnlyStopStream(): AsyncIterable<unknown> {
@@ -1713,11 +1714,12 @@ async function* anthropicSignedThinkUnnamedErrorStream(): AsyncIterable<unknown>
   yield { type: 'error', error: { type: 'api_error', message: 'upstream reset' } };
 }
 
-async function* anthropicEventStreamWithoutUsage(): AsyncIterable<unknown> {
+async function* anthropicEventStreamWithoutUsage(terminal = true): AsyncIterable<unknown> {
   yield { type: 'content_block_start', index: 0, content_block: { type: 'text', text: '' } };
   yield { type: 'content_block_delta', index: 0, delta: { type: 'text_delta', text: 'Hello' } };
   yield { type: 'content_block_stop', index: 0 };
   yield { type: 'message_delta', delta: { stop_reason: 'end_turn' } };
+  if (terminal) yield { type: 'message_stop' };
 }
 
 function anthropicMessageResponse(): Record<string, unknown> {
@@ -3388,6 +3390,55 @@ describe('Responses safe stream diagnostics', () => {
 });
 
 
+describe('incomplete provider tool streams through the agent loop', () => {
+  it.each(['openai', 'anthropic', 'google-genai'] as const)('does not execute or replay a %s tool call after clean EOF', async protocol => {
+    let requests = 0;
+    const events: Record<string, unknown>[] = protocol === 'openai'
+      ? [{ id: 'fixture', object: 'chat.completion.chunk', created: 0, model: 'fixture', choices: [{ index: 0, delta: {
+        tool_calls: [{ index: 0, id: 'call_lookup', type: 'function', function: { name: 'Lookup', arguments: '{}' } }],
+      }, finish_reason: null }] }]
+      : protocol === 'anthropic'
+        ? [{ type: 'message_start', message: { id: 'fixture', usage: { input_tokens: 1, output_tokens: 0 } } },
+          { type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_lookup', name: 'Lookup', input: {} } }]
+        : [{ candidates: [{ content: { role: 'model', parts: [{ functionCall: { name: 'Lookup', args: {} } }] } }] }];
+    const server = createServer((request, response) => {
+      requests++;
+      request.resume();
+      request.on('end', () => {
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(events.map(event => `${typeof event['type'] === 'string' ? `event: ${event['type']}\n` : ''}data: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('fixture server has no address');
+    const options = { model: 'fixture', apiKey: 'YOUR_API_KEY', baseUrl: `http://127.0.0.1:${address.port}/v1` };
+    const provider = protocol === 'openai' ? new OpenAILegacyChatProvider(options)
+      : protocol === 'anthropic' ? new AnthropicChatProvider(options) : new GoogleGenAIChatProvider(options);
+    class FixtureRegistry extends ProtocolAdapterRegistry {
+      override createChatProvider(): ChatProvider { return provider; }
+    }
+    const ctx = createTestAgent(permissionModeServices('yolo'), appService(IProtocolAdapterRegistry, new FixtureRegistry()));
+    const execute = vi.fn(async () => ({ output: 'must not run' }));
+    try {
+      ctx.get(IAgentProfileService).update({ activeToolNames: ['Lookup'] });
+      ctx.get(IAgentToolRegistryService).register({ name: 'Lookup', description: 'Fixture lookup', parameters: { type: 'object', properties: {} },
+        resolveExecution: () => ({ approvalRule: 'Lookup', execute }) });
+      await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Run the fixture lookup.' }] });
+      await ctx.untilTurnEnd();
+      expect(execute).not.toHaveBeenCalled();
+      expect(requests).toBe(1);
+      const wire = ctx.allEvents.filter(entry => entry.type === '[wire]');
+      expect(wire.find(entry => entry.event === 'turn.ended')?.args).toMatchObject({ reason: 'failed' });
+      expect(wire.filter(entry => entry.event === 'turn.step.retrying')).toEqual([]);
+    } finally {
+      await ctx.dispose();
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
+
 describe('Responses completed silence through the agent loop', () => {
   it.each(['empty', 'reasoning', 'unknown-statistics'] as const)('finishes after a tool result and %s completion without retrying', async mode => {
     const call = { id: 'fc_lookup', type: 'function_call' as const, call_id: 'call_lookup', name: 'Lookup', arguments: '{}', status: 'completed' as const };
@@ -3454,13 +3505,13 @@ describe('completion authority from the provider protocol', () => {
     expect(stream.completionAuthority).toBe('normal');
   });
 
-  it('claims no authority when the stream ends without message_stop', async () => {
+  it('rejects an incomplete stream even when message_delta supplied a normal stop reason', async () => {
     const provider = new AnthropicChatProvider({ model: 'example-model', apiKey: 'sk-probe', baseUrl: 'https://api.example.test' });
     const client = sdkClient(provider) as { messages: { create: unknown } };
-    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithoutUsage());
+    client.messages.create = vi.fn().mockResolvedValue(anthropicEventStreamWithoutUsage(false));
 
     const stream = await provider.generate('', [], PROBE_HISTORY);
-    await drain(stream);
+    await expect(drain(stream)).rejects.toMatchObject({ code: 'provider.connection_error', message: expect.stringContaining('message_stop') });
 
     expect(stream.finishReason).toBe('completed');
     expect(stream.completionAuthority).toBeUndefined();

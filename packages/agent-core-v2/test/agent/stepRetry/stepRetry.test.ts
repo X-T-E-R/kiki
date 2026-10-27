@@ -9,6 +9,7 @@ import {
   requestDeliveryProvenance,
 } from '#/kosong/contract/errors';
 import { guardRequestDelivery } from '#/kosong/provider/bases/request-delivery';
+import { OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import type { StreamedMessage } from '#/kosong/contract/provider';
 import { emptyUsage } from '#/kosong/contract/usage';
 import { IEventBus } from '#/app/event/eventBus';
@@ -871,6 +872,34 @@ describe('stepRetry plugin', () => {
     expect(rpcEvents('turn.step.retrying')).toEqual([
       expect.objectContaining({ args: expect.objectContaining({ delayMs: 1, maxAttempts: 2, errorName: 'APIConnectionError' }) }),
     ]);
+  });
+
+  it.each(['recover', 'exhaust', 'disabled'] as const)('applies the bounded turn policy to a WebSocket connection-limit event: %s', async mode => {
+    vi.useFakeTimers();
+    let calls = 0;
+    ctx = createRetryTestAgent(
+      llmGenerateServices(async () => {
+        calls += 1;
+        if (calls === 1 || mode !== 'recover') {
+          const failure = await caughtDelivery(new OpenAIResponsesStreamedMessage((async function* () {
+            yield { type: 'response.failed', response: { id: 'resp_limit', status: 'failed', output: [], error: {
+              code: 'websocket_connection_limit_reached', message: 'Create a new websocket connection to continue.',
+            } } };
+          })(), true, undefined, undefined, true));
+          throw failure;
+        }
+        return { id: 'recovered', message: { role: 'assistant', content: [{ type: 'text', text: 'done' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
+      }),
+      { initialConfig: { retry: { policies: [{ match: 'APIConnectionError', retry: mode !== 'disabled', backoff: 1 }] } } },
+    );
+    const result = await runTurn(1);
+    expect(result.type).toBe(mode === 'recover' ? 'completed' : 'failed');
+    expect(calls).toBe(mode === 'recover' ? 2 : mode === 'exhaust' ? 5 : 1);
+    expect(rpcEvents('turn.step.retrying')).toHaveLength(calls - 1);
+    for (const event of rpcEvents('turn.step.retrying')) {
+      expect(event.args).toMatchObject({ delayMs: 1, maxAttempts: 5, errorName: 'APIConnectionError' });
+    }
+    if (result.type === 'failed') expect(result.error).toMatchObject({ code: 'provider.connection_error' });
   });
 
   it('retries a parsed temporary provider event with no output using the shared classification', async () => {

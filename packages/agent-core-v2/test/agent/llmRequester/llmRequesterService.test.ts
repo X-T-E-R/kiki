@@ -7,6 +7,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import { OpenAIResponsesChatProvider } from '#/kosong/provider/bases/openai/openai-responses';
 import { OpenAILegacyChatProvider } from '#/kosong/provider/bases/openai/openai-legacy';
 import { AnthropicChatProvider } from '#/kosong/provider/bases/anthropic/anthropic';
+import { GoogleGenAIChatProvider } from '#/kosong/provider/bases/google-genai/google-genai';
 import { ModelRequesterImpl } from '#/kosong/model/modelRequesterImpl';
 import type { IProtocolAdapterRegistry } from '#/kosong/protocol/protocol';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -2657,7 +2658,67 @@ describe('AgentLLMRequesterService production delivery provenance', () => {
   });
 });
 
-it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'partial-close-1012', 'tool-close-1012', '1006', '1013', '1002', '1008', 'connection-limit', 'partial-limit', 'tool-limit'] as const)('classifies WebSocket %s before deciding whether to replay', async mode => {
+describe.each(['openai', 'anthropic', 'google-genai'] as const)('%s clean SSE EOF', protocol => {
+  it.each(['empty', 'text', 'tool'] as const)('recovers only without observed %s output', async mode => {
+    let calls = 0;
+    const bodies: string[] = [];
+    const server = createServer((request, response) => {
+      let body = '';
+      request.on('data', chunk => { body += String(chunk); });
+      request.on('end', () => {
+        bodies.push(body);
+        const recover = ++calls > 1;
+        const text = recover ? 'recovered' : 'partial';
+        let events: Record<string, unknown>[];
+        if (protocol === 'openai') {
+          const delta = recover || mode === 'text' ? { content: text } : mode === 'tool'
+            ? { tool_calls: [{ index: 0, id: 'call_fixture', type: 'function', function: { name: 'Lookup', arguments: '{}' } }] } : {};
+          events = [{ id: 'fixture', object: 'chat.completion.chunk', created: 0, model: 'm', choices: [{ index: 0, delta, finish_reason: recover ? 'stop' : null }] }];
+        } else if (protocol === 'anthropic') {
+          events = [{ type: 'message_start', message: { id: 'fixture', usage: { input_tokens: 1, output_tokens: 0 } } }];
+          if (recover || mode === 'text') events.push({ type: 'content_block_start', index: 0, content_block: { type: 'text', text } });
+          else if (mode === 'tool') events.push({ type: 'content_block_start', index: 0, content_block: { type: 'tool_use', id: 'call_fixture', name: 'Lookup', input: {} } });
+          if (recover) events.push({ type: 'message_delta', delta: { stop_reason: 'end_turn' } }, { type: 'message_stop' });
+        } else {
+          const parts = recover || mode === 'text' ? [{ text }] : mode === 'tool' ? [{ functionCall: { name: 'Lookup', args: {} } }] : [];
+          events = [{ candidates: [{ index: 0, content: { role: 'model', parts }, finishReason: recover ? 'STOP' : undefined }] }];
+        }
+        response.writeHead(200, { 'content-type': 'text/event-stream' });
+        response.end(events.map(event => `${typeof event['type'] === 'string' ? `event: ${event['type']}\n` : ''}data: ${JSON.stringify(event)}\n\n`).join(''));
+      });
+    });
+    await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve));
+    const baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}/v1`;
+    const model = { ...createRequester({ value: 0 }, null).model, protocol, baseUrl,
+      authProvider: { getAuth: async () => ({ apiKey: 'YOUR_API_KEY' }) } };
+    const options = { model: model.name, baseUrl, apiKey: 'YOUR_API_KEY' };
+    const provider = protocol === 'openai' ? new OpenAILegacyChatProvider(options)
+      : protocol === 'anthropic' ? new AnthropicChatProvider(options) : new GoogleGenAIChatProvider(options);
+    const requester = new ModelRequesterImpl(model, { createChatProvider: () => provider } as unknown as IProtocolAdapterRegistry);
+    const { service } = createService(requester, undefined, { env: { [KIKI_INFINITE_RETRY_ENV]: '1' } });
+    const onAttemptRetry = vi.fn();
+    try {
+      const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, undefined, AbortSignal.timeout(3000));
+      if (mode === 'empty') {
+        expect((await pending).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
+        expect(calls).toBe(2);
+        expect(bodies[1]).toBe(bodies[0]);
+        expect(onAttemptRetry).toHaveBeenCalledOnce();
+      } else {
+        const error = await pending.catch((failure: unknown) => failure);
+        expect(toErrorPayload(error)).toMatchObject({ code: 'provider.connection_error', details: { request_delivery: 'executed', request_output: 'observed' } });
+        expect(isRetryableGenerateError(error)).toBe(false);
+        expect(calls).toBe(1);
+        expect(onAttemptRetry).not.toHaveBeenCalled();
+      }
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    }
+  });
+});
+
+it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 'thinking-1012', 'partial-close-1012', 'tool-close-1012', '1006', '1013', '1002', '1008', 'connection-limit', 'reused-limit', 'partial-limit', 'tool-limit', 'terminal-output-limit', 'terminal-tool-limit', 'safety-lookalike'] as const)('classifies WebSocket %s before deciding whether to replay', async mode => {
   const handshake = readFileSync(new URL('../../kosong/provider/fixtures/responses-ws-capabilities.json', import.meta.url), 'utf8').trim();
   const server = createServer();
   const webSockets = new WebSocketServer({ server });
@@ -2665,7 +2726,8 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
   const closedSockets = new Set<WebSocket>();
   const requestSockets: WebSocket[] = [];
   const frames: Record<string, unknown>[] = [];
-  const code = 'websocket_connection_limit_reached';
+  const code = mode === 'safety-lookalike' ? 'antigravity_safety' : 'websocket_connection_limit_reached';
+  const failureCall = mode === 'reused-limit' ? 2 : 1;
   let calls = 0;
   webSockets.on('headers', headers => { headers.push(`X-Responses-WebSocket-Capabilities: ${handshake}`); });
   webSockets.on('connection', socket => {
@@ -2676,7 +2738,14 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
       requestSockets.push(socket);
       const frameBytes = Array.isArray(bytes) ? Buffer.concat(bytes) : bytes instanceof ArrayBuffer ? Buffer.from(bytes) : bytes;
       frames.push(JSON.parse(frameBytes.toString()) as Record<string, unknown>);
-      if (calls === 1) {
+      if (mode === 'reused-limit' && calls === 1) {
+        socket.send(JSON.stringify({ type: 'response.completed', sequence_number: 0, response: {
+          id: 'resp_initial', status: 'completed', output: [{ type: 'message', id: 'msg_initial', role: 'assistant',
+            status: 'completed', content: [{ type: 'output_text', text: 'initial', annotations: [] }] }],
+        } }));
+        return;
+      }
+      if (calls === failureCall) {
         if (mode.endsWith('1012') || mode === '1006' || mode === '1013' || mode === '1002' || mode === '1008') {
           if (mode === 'partial-close-1012') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
           else if (mode === 'tool-close-1012') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
@@ -2704,7 +2773,11 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
           if (mode === 'partial-limit') socket.send(JSON.stringify({ type: 'response.output_text.delta', delta: 'partial answer' }));
           if (mode === 'tool-limit') socket.send(JSON.stringify({ type: 'response.output_item.added', output_index: 0,
             item: { type: 'function_call', id: 'fc_fixture', call_id: 'call_fixture', name: 'Lookup', arguments: '{}' } }));
-          socket.send(JSON.stringify({ type: 'response.failed', response: { id: 'resp_failed', status: 'failed', output: [], error: {
+          const output = mode === 'terminal-output-limit' ? [{ type: 'message', id: 'msg_failed', role: 'assistant',
+            content: [{ type: 'output_text', text: 'observed in failed response', annotations: [] }] }]
+            : mode === 'terminal-tool-limit' ? [{ type: 'function_call', id: 'fc_failed', call_id: 'call_failed', name: 'Lookup', arguments: '{}' }]
+              : [];
+          socket.send(JSON.stringify({ type: 'response.failed', response: { id: 'resp_failed', status: 'failed', output, error: {
             code, message: 'Responses websocket connection limit reached (60 minutes). Create a new websocket connection to continue.',
           } } }));
         }
@@ -2731,7 +2804,7 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
   const { service } = createService(requester, undefined, { env: mode === 'direct-1012' ? {} : { [KIKI_INFINITE_RETRY_ENV]: '1' } });
   const onAttemptRetry = vi.fn();
   const parts: StreamedMessagePart[] = [];
-  const hasOutput = mode === 'partial-limit' || mode === 'tool-limit' || mode === 'thinking-1012' || mode === 'partial-close-1012' || mode === 'tool-close-1012';
+  const hasOutput = mode === 'partial-limit' || mode === 'tool-limit' || mode === 'thinking-1012' || mode === 'partial-close-1012' || mode === 'tool-close-1012' || mode === 'terminal-output-limit' || mode === 'terminal-tool-limit';
   try {
     if (mode === 'direct-1012') {
       const transport = new ResponsesWebSocketTransport();
@@ -2761,35 +2834,48 @@ it.each(['1012', 'direct-1012', 'empty-message-1012', 'empty-reasoning-1012', 't
       }
       return;
     }
-    const pending = service.request({ source: { type: 'turn', turnId: 1, step: 1 }, onAttemptRetry }, part => { parts.push(part); }, AbortSignal.timeout(2000));
+    if (mode === 'reused-limit') {
+      const initial = await service.request({ source: { type: 'turn', turnId: 1, step: 1 } }, undefined, AbortSignal.timeout(2000));
+      expect(initial.message.content).toEqual([{ type: 'text', text: 'initial' }]);
+      expect(calls).toBe(1);
+      expect(closedSockets.has(requestSockets[0]!)).toBe(false);
+    }
+    const pending = service.request({ source: { type: 'turn', turnId: mode === 'reused-limit' ? 2 : 1, step: 1 }, onAttemptRetry }, part => { parts.push(part); }, AbortSignal.timeout(2000));
     if (hasOutput) {
       const error = await pending.catch((error: unknown) => error);
       expect(error).toBe(failures[0]);
       expect(toErrorPayload(error).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
       if (mode.endsWith('1012')) expect(toErrorPayload(error)).toMatchObject({ code: 'provider.connection_error', message: expect.stringContaining('code 1012') });
       if (!mode.endsWith('1012')) expect(toErrorPayload(error).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: code });
-      expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' || mode === 'partial-close-1012' ? { type: 'text', text: 'partial answer' }
+      if (mode === 'terminal-output-limit' || mode === 'terminal-tool-limit') expect(parts).toEqual([]);
+      else expect(parts).toContainEqual(expect.objectContaining(mode === 'partial-limit' || mode === 'partial-close-1012' ? { type: 'text', text: 'partial answer' }
         : mode === 'thinking-1012' ? { type: 'think', think: 'fixture thought' } : { type: 'function', name: 'Lookup' }));
       expect(calls).toBe(1);
       expect(onAttemptRetry).not.toHaveBeenCalled();
-    } else if (mode === '1002' || mode === '1008') {
+    } else if (mode === '1002' || mode === '1008' || mode === 'safety-lookalike') {
       const error = await pending.catch((failure: unknown) => failure);
       expect(error).toBe(failures[0]);
       expect(calls).toBe(1);
       expect(onAttemptRetry).not.toHaveBeenCalled();
     } else {
       expect((await pending).message.content).toEqual([{ type: 'text', text: 'recovered' }]);
-      expect(calls).toBe(2);
-      expect(requestSockets[1]).not.toBe(requestSockets[0]);
-      expect(frames[1]?.['input']).toEqual(frames[0]?.['input']);
-      expect(frames[1]).not.toHaveProperty('previous_response_id');
+      expect(calls).toBe(failureCall + 1);
+      expect(requestSockets[failureCall]).not.toBe(requestSockets[failureCall - 1]);
+      if (mode === 'reused-limit') expect(requestSockets[1]).toBe(requestSockets[0]);
+      else expect(frames[1]?.['input']).toEqual(frames[0]?.['input']);
+      expect(frames[failureCall]).not.toHaveProperty('previous_response_id');
       expect(onAttemptRetry).toHaveBeenCalledTimes(1);
       expect(toErrorPayload(failures[0]).details).not.toHaveProperty('request_output', 'observed');
       expect(toErrorPayload(failures[0]).details).not.toHaveProperty('request_delivery', 'executed');
     }
     expect(failures).toHaveLength(1);
-    expect(isRetryableGenerateError(failures[0])).toBe(!hasOutput && mode !== '1002' && mode !== '1008');
+    expect(isRetryableGenerateError(failures[0])).toBe(!hasOutput && mode !== '1002' && mode !== '1008' && mode !== 'safety-lookalike');
     expect(readGenerateFailureFacts(failures[0])).toBeUndefined();
+    if (mode === 'connection-limit' || mode === 'reused-limit' || mode === 'partial-limit' || mode === 'tool-limit' || mode === 'terminal-output-limit' || mode === 'terminal-tool-limit') {
+      expect(toErrorPayload(failures[0])).toMatchObject({ code: 'provider.connection_error', message: expect.stringContaining('websocket_connection_limit_reached') });
+      expect(toErrorPayload(failures[0]).details).toMatchObject({ errorSource: 'provider_event', upstreamErrorCode: 'websocket_connection_limit_reached' });
+    }
+    if (mode === 'safety-lookalike') expect(toErrorPayload(failures[0])).toMatchObject({ code: 'provider.api_error', details: { retry: false } });
     if (mode.endsWith('1012') || mode === '1006' || mode === '1013' || mode === '1002' || mode === '1008') {
       const raw = unwrapErrorCause(failures[0]);
       expect(toErrorPayload(failures[0]).code).toBe(mode === '1002' || mode === '1008' ? 'provider.api_error' : 'provider.connection_error');

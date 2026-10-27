@@ -28,6 +28,7 @@ import {
   APITimeoutError,
   ChatProviderError,
   classifyBaseApiError,
+  createAbortError,
   markProviderEventError,
   markProviderHttpError,
   readProviderEventErrorCode,
@@ -752,6 +753,7 @@ class AnthropicStreamedMessage implements StreamedMessage {
     response: AsyncIterable<MessageStreamEvent>,
   ): AsyncGenerator<StreamedMessagePart> {
     const toolUseBlockIndexes = new Set<number>();
+    let sawMessageStop = false;
     const streamed: { signed: boolean; text: boolean; tool: boolean } = {
       signed: false,
       text: false,
@@ -887,9 +889,12 @@ class AnthropicStreamedMessage implements StreamedMessage {
             );
           }
         } else if (eventType === 'message_stop') {
+          sawMessageStop = true;
           this._completedNormally = this._finishReason === 'completed';
         }
       }
+      if (this._controller?.signal.aborted) throw createAbortError();
+      if (!sawMessageStop) throw new APIConnectionError('Anthropic stream ended before message_stop.');
     } catch (error: unknown) {
       this._completedNormally = false;
       const code = error instanceof AnthropicAPIError

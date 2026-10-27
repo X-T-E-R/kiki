@@ -142,6 +142,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
   #settled: Promise<void> = Promise.resolve();
   #nextReservedTurnId: number | undefined;
   #shutdown = false;
+  #promptAttempted = false;
   #harnessMcp: HarnessMcpLease | undefined;
   #permissionRestore: { readonly sessionId: string; readonly config?: AcpSessionConfigSelection; readonly modeId?: string } | undefined;
 
@@ -262,6 +263,25 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       losses.add('additional_directories_dropped');
     }
     const prior = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
+    const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
+    const reusablePrior = agentExecutorBindingMatches(this.context.binding, prior.bindingFingerprint);
+    const priorSessionId = reusablePrior ? sessionIdFromState(prior.sessionRef) : undefined;
+    const sessionEpoch = priorSessionId === opened.sessionId
+      ? prior.sessionEpoch ?? 1
+      : (prior.sessionEpoch ?? 0) + 1;
+    if (this.#permissionRestore?.sessionId !== opened.sessionId) this.#permissionRestore = undefined;
+    if (opened.mode !== 'new' && priorSessionId === opened.sessionId) this.#permissionRestore ??= permissionRestoreFromRef(prior.sessionRef);
+    await this.#dispatcher.dispatch(new ExecutorSessionUpdated({
+      executionGeneration: this.context.binding.execution?.generation,
+      executorId: this.context.descriptor.id,
+      descriptorRevision: this.context.descriptor.revision,
+      bindingFingerprint,
+      sessionRef: this.#permissionSessionRef(opened.sessionRef, prior.sessionRef?.ref['localSource']),
+      sessionEpoch,
+      profileDeliveredSessionId: priorSessionId === opened.sessionId ? prior.profileDeliveredSessionId : undefined,
+      profileDelivery: priorSessionId === opened.sessionId ? prior.profileDelivery : undefined,
+    }));
+    await this.#dispatcher.flush();
     const configured = await this.#configure(opened, options.signal, losses, sessionOptions.sessionMeta?.['kiki.permission']).catch(async (error: unknown) => {
       const auth = acpAuthObservation(error);
       if (auth !== undefined) await recordExecutorAuth(this.context, sessionOptions.cwd, auth);
@@ -287,12 +307,6 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     this.context.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
       this.context.descriptor.id, this.context.descriptor.version, negotiated,
     );
-    const bindingFingerprint = agentExecutorBindingFingerprint(this.context.binding);
-    const reusablePrior = agentExecutorBindingMatches(this.context.binding, prior.bindingFingerprint);
-    const priorSessionId = reusablePrior ? sessionIdFromState(prior.sessionRef) : undefined;
-    const sessionEpoch = priorSessionId === configured.sessionId
-      ? prior.sessionEpoch ?? 1
-      : (prior.sessionEpoch ?? 0) + 1;
     const handoff = this.context.binding.execution === undefined && opened.mode === 'new' && prior.sessionRef !== undefined
       ? buildHandoff(this.#memory.get())
       : undefined;
@@ -385,6 +399,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
 
     let handle: AcpTurnHandle<NormalizedExecutorEvent>;
     try {
+      this.#promptAttempted = true;
       handle = await this.#client.startTurn({
         prompt: remotePrompt,
         attachments: acpAttachments(externalAttachments(request)),
@@ -481,12 +496,17 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
     if (state.sessionRef?.ref['localSource'] !== undefined &&
         !agentExecutorBindingMatches(this.context.binding, state.bindingFingerprint)) return false;
     const resume = originalRemoteResumeFields(this.context.binding, this.context.descriptor, state);
-    if (resume.sessionRef === undefined || resume.requireResume !== true) return false;
+    if (resume.sessionRef === undefined) return false;
     const negotiated = this.context.agent.accessor.get(IAgentExecutorRegistry).negotiated?.(
       this.context.descriptor.id,
       this.context.descriptor.version,
     );
     return negotiated?.resume !== false || negotiated?.load !== false;
+  }
+
+  canRetryBrokenConstruction(): boolean {
+    const state = externalStateForGeneration(this.#states.get(externalExecutorKey), this.context.binding.execution?.generation);
+    return !this.#promptAttempted && state.sessionRef === undefined;
   }
 
   async steer(message: ContextMessage): Promise<boolean | 'unknown'> {
@@ -667,7 +687,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
       mcpServers: servers,
       sessionMeta: { ...this.#harnessMcp?.sessionMeta,
         'kiki.permission': { ...externalPermissionMeta(this.context, roots.workDir, roots.additionalDirs), requestId: randomUUID() } },
-      ...originalRemoteResumeFields(this.context.binding, this.context.descriptor, state),
+      ...originalRemoteResumeFields(this.context.binding, this.context.descriptor, state, this.#client.status().state === 'broken'),
       systemPromptOverride:
         resolvePromptDelivery(this.context.descriptor, this.context.binding).actual === 'replace' &&
           this.context.descriptor.profileDelivery === 'system_prompt_override' && systemPrompt.length > 0
@@ -1356,6 +1376,7 @@ function originalRemoteResumeFields(
   binding: AgentExecutorContext['binding'],
   descriptor: AgentExecutorContext['descriptor'],
   state: ReturnType<typeof externalStateForGeneration>,
+  broken = false,
 ): { readonly sessionRef: ExecutorSessionRefEnvelope | undefined; readonly requireResume: boolean } {
   return {
     sessionRef:
@@ -1363,7 +1384,7 @@ function originalRemoteResumeFields(
         ? sessionRefWithLocalSource(state.sessionRef, state.sessionRef.ref['localSource'])
         : undefined,
     requireResume: state.sessionRef?.ref['localSource'] !== undefined ||
-      ((binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined),
+      ((broken || binding.execution !== undefined || descriptor.permission?.via === 'argv') && state.sessionRef !== undefined),
   };
 }
 

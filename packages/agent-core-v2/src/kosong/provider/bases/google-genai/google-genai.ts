@@ -2,6 +2,7 @@ import { ApiError as GoogleApiError, GoogleGenAI as GenAIClient } from '@google/
 
 import {
   APIConnectionError,
+  APIEmptyResponseError,
   APITimeoutError,
   ChatProviderError,
   markProviderEventError,
@@ -738,6 +739,11 @@ export class GoogleGenAIStreamedMessage implements StreamedMessage {
           yield part;
         }
       }
+      this._throwIfAborted(signal);
+      if (this._rawFinishReason === null) {
+        if (this._blocked) throw new APIEmptyResponseError('Google GenAI blocked the response.', { finishReason: 'filtered' });
+        throw new APIConnectionError('Google GenAI stream ended before a finish reason.');
+      }
     } catch (error: unknown) {
       if (error instanceof DOMException && error.name === 'AbortError') {
         throw error;
@@ -774,6 +780,7 @@ function antigravityErrorInfoReason(message: string): string | undefined {
 }
 
 export function convertGoogleGenAIError(error: unknown): ChatProviderError {
+  if (error instanceof ChatProviderError) return error;
   if (error instanceof GoogleApiError) {
     return markProviderHttpError(
       normalizeAPIStatusError(

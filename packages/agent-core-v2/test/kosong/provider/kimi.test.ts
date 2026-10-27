@@ -304,7 +304,10 @@ describe('Kimi image files', () => {
       if (new URL(request.url).pathname === '/coding/v1/files') {
         return new Response(JSON.stringify({ id: 'file-fixture', purpose: 'image' }), { headers: { 'content-type': 'application/json' } });
       }
-      return new Response('data: [DONE]\n\n', { headers: { 'content-type': 'text/event-stream' } });
+      const terminal = protocol === 'openai'
+        ? 'data: {"id":"fixture","object":"chat.completion.chunk","created":0,"model":"fixture","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n'
+        : 'event: message_delta\ndata: {"type":"message_delta","delta":{"stop_reason":"end_turn"}}\n\nevent: message_stop\ndata: {"type":"message_stop"}\n\n';
+      return new Response(terminal, { headers: { 'content-type': 'text/event-stream' } });
     }));
     const provider = new ProtocolAdapterRegistry().createChatProvider({
       protocol, providerType: 'kimi', modelName: 'kimi-for-coding',

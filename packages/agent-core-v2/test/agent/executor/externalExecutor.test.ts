@@ -2062,6 +2062,40 @@ describe('ACP external executor', () => {
     expect(harness.starts[0]?.prompt).not.toContain('BEGIN KIKI FROZEN PROFILE INSTRUCTIONS');
   });
 
+  it('releases an ACP wrapper that failed before any original session or prompt existed', async () => {
+    const harness = createExecutionHarness();
+    vi.spyOn(harness.client, 'openSession').mockRejectedValueOnce(new AcpClientError('executor.spawn_failed', 'temporary spawn failure'));
+    try {
+      await expect(harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toThrow('temporary spawn failure');
+      expect(harness.execution.status()).toEqual({ state: 'broken' });
+      expect(harness.execution.canResumeBrokenOriginal()).toBe(false);
+      expect(harness.execution.canRetryBrokenExecution()).toBe(true);
+      expect(harness.client.shutdown).toHaveBeenCalledOnce();
+      expect(harness.starts).toHaveLength(0);
+      const handle = await harness.execution.run({ kind: 'prompt', prompt: 'retry construction' }, { signal: new AbortController().signal });
+      expect(harness.starts).toHaveLength(1);
+      harness.execution.cancel();
+      await expect(handle.completion).rejects.toThrow('External ACP turn cancelled');
+      await harness.execution.settled();
+      expect(harness.execution.status()).toEqual({ state: 'idle' });
+    } finally { await harness.execution.dispose(); await harness.ix.dispose(); }
+  });
+
+  it('saves a new ACP session before prompt delivery and retains it after an unknown start outcome', async () => {
+    const harness = createHarness();
+    vi.spyOn(harness.client, 'startTurn').mockImplementationOnce(async () => {
+      expect(harness.state.get(externalExecutorKey)).toMatchObject({ sessionRef: { ref: { sessionId: 'remote-2' } }, sessionEpoch: 1 });
+      expect(harness.wire.flush).toHaveBeenCalled();
+      throw new AcpClientError('executor.disconnected', 'unknown prompt outcome');
+    });
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toThrow('unknown prompt outcome');
+      expect(harness.session.canRetryBrokenConstruction()).toBe(false);
+      expect(harness.state.get(externalExecutorKey).sessionRef?.ref['sessionId']).toBe('remote-2');
+      expect(harness.client.startTurn).toHaveBeenCalledOnce();
+    } finally { await harness.session.shutdown(); }
+  });
+
   it('resumes a broken ACP child only on the original binding and remote session', async () => {
     const prior = {
       executorId: 'example-acp',
@@ -2080,7 +2114,7 @@ describe('ACP external executor', () => {
     const drifted = createHarness({
       clientState: 'broken', permission, prior, mode: 'resume', priorBindingFingerprint: '0'.repeat(64),
     });
-    const unsupported = createHarness({ clientState: 'broken', prior, mode: 'resume' });
+    const noArgv = createHarness({ clientState: 'broken', prior, mode: 'resume' });
     const refused = createHarness({ clientState: 'broken', permission, prior, mode: 'resume' });
     refused.executorContext.agent.accessor.get(IAgentExecutorRegistry).recordNegotiated?.(
       'example-acp', undefined, { resume: false, load: false },
@@ -2092,7 +2126,9 @@ describe('ACP external executor', () => {
       expect(recoverable.session.status()).toEqual({ state: 'broken' });
       expect(recoverable.session.canResumeBrokenOriginal?.()).toBe(true);
       expect(drifted.session.canResumeBrokenOriginal?.()).toBe(false);
-      expect(unsupported.session.canResumeBrokenOriginal?.()).toBe(false);
+      expect(noArgv.session.canResumeBrokenOriginal?.()).toBe(true);
+      await (await noArgv.session.run({ kind: 'prompt', prompt: 'same session' }, { signal: new AbortController().signal })).completion;
+      expect(noArgv.opens[0]).toMatchObject({ requireResume: true, sessionRef: { ref: { sessionId: 'remote-2' } } });
       expect(refused.session.canResumeBrokenOriginal?.()).toBe(false);
       const run = await busy.session.run({ kind: 'prompt', prompt: 'busy' }, { signal: new AbortController().signal });
       expect(busy.opens[0]).toMatchObject({
@@ -2104,7 +2140,7 @@ describe('ACP external executor', () => {
       void run.completion.catch(() => undefined);
     } finally {
       await Promise.all([
-        recoverable.session.shutdown(), drifted.session.shutdown(), unsupported.session.shutdown(),
+        recoverable.session.shutdown(), drifted.session.shutdown(), noArgv.session.shutdown(),
         refused.session.shutdown(), busy.session.shutdown(),
       ]);
     }

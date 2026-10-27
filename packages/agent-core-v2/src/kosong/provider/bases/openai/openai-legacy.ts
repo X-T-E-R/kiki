@@ -1,6 +1,6 @@
 import OpenAI from 'openai';
 
-import { ChatProviderError, parseTraceId } from '#/kosong/contract/errors';
+import { APIConnectionError, ChatProviderError, createAbortError, parseTraceId } from '#/kosong/contract/errors';
 import type {
   ContentPart,
   Message,
@@ -511,6 +511,8 @@ export class OpenAILegacyStreamedMessage implements StreamedMessage {
         const text = details.map((part) => part.think).join('');
         if (text.length > 0) yield { type: 'think', think: text, reasoningDetails: [] };
       }
+      if (this._controller?.signal.aborted) throw createAbortError();
+      if (this._rawFinishReason === null) throw new APIConnectionError('OpenAI chat stream ended before a finish reason.');
     } catch (error: unknown) {
       throw convertOpenAIError(error, this._convertErrorHook);
     }

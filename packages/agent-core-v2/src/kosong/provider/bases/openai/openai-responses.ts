@@ -13,6 +13,8 @@ import {
   createAbortError,
   isAbortError,
   isContextOverflowErrorCode,
+  markProviderEventError,
+  noteExecutedRequestDelivery,
   providerStreamErrorDetails,
 } from '#/kosong/contract/errors';
 import type {
@@ -293,6 +295,7 @@ function errorFromOpenAIResponsesEvent(
   param: string | null,
   options?: {
     readonly rawEvent?: unknown;
+    readonly webSocket?: boolean;
     readonly convertErrorHook?: (error: unknown) => ChatProviderError | undefined;
   },
 ): ChatProviderError {
@@ -305,11 +308,14 @@ function errorFromOpenAIResponsesEvent(
     error: body ?? { type: 'error', code },
     request_id: raw?.['request_id'],
   });
-  const withEventDetails = (error: ChatProviderError): ChatProviderError => attachErrorDetails(error, {
+  const withEventDetails = (error: ChatProviderError): ChatProviderError => attachErrorDetails(markProviderEventError(error, code), {
     ...metadata,
     ...Object.fromEntries(Object.entries(safeProviderFailureDetails(error.details)).filter(([, value]) => value !== null)),
     errorSource: 'provider_event',
   });
+  if (options?.webSocket === true && code === 'websocket_connection_limit_reached') {
+    return withEventDetails(new APIConnectionError(fullMessage));
+  }
   const hooked = options?.convertErrorHook?.(options.rawEvent ?? { code, message, param });
   if (hooked !== undefined) {
     return withEventDetails(hooked);
@@ -803,6 +809,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
       | ((error: unknown) => ChatProviderError | undefined)
       | undefined,
     private readonly _commitMessage?: (responseId: string, message: Message) => void,
+    private readonly _webSocket = false,
   ) {
     if (isStream) {
       this._controller = (response as { controller?: AbortController }).controller;
@@ -1262,7 +1269,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
               readNullableStringField(chunk, 'code') ?? null,
               message,
               readNullableStringField(chunk, 'param') ?? null,
-              { rawEvent: chunk, convertErrorHook: this._convertErrorHook },
+              { rawEvent: chunk, webSocket: this._webSocket, convertErrorHook: this._convertErrorHook },
             );
           }
           case 'response.failed': {
@@ -1272,20 +1279,25 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             this._captureTerminalDiagnostics(responseObject, 'failed');
             const usage = readObjectField(responseObject, 'usage');
             if (usage !== undefined) this._extractUsage(usage);
-            for (const item of readObjectArrayField(responseObject, 'output') ?? []) this._observeOutputItem(item);
+            const output = readObjectArrayField(responseObject, 'output') ?? [];
+            for (const item of output) this._observeOutputItem(item);
             const error = readResponsesFailedResponseError(responseObject);
-            if (error !== undefined) {
-              throw errorFromOpenAIResponsesEvent(
-                'OpenAI Responses response.failed',
-                error.code,
-                error.message,
-                null,
-                { rawEvent: chunk, convertErrorHook: this._convertErrorHook },
+            const failure = error === undefined
+              ? attachErrorDetails(new ChatProviderError(
+                `OpenAI Responses response.failed: ${formatResponsesFailedResponse(responseObject)}`,
+              ), { ...providerStreamErrorDetails({ type, code: null }), errorSource: 'provider_event' })
+              : errorFromOpenAIResponsesEvent(
+                'OpenAI Responses response.failed', error.code, error.message, null,
+                { rawEvent: chunk, webSocket: this._webSocket, convertErrorHook: this._convertErrorHook },
               );
+            if (output.some(item => !['message', 'reasoning'].includes(String(item['type'])) ||
+              (readStringField(item, 'encrypted_content')?.length ?? 0) > 0 ||
+              (readObjectArrayField(item, 'content') ?? []).some(part =>
+                (readStringField(part, 'text')?.length ?? 0) > 0 || (readStringField(part, 'refusal')?.length ?? 0) > 0) ||
+              (readObjectArrayField(item, 'summary') ?? []).some(part => (readStringField(part, 'text')?.length ?? 0) > 0))) {
+              noteExecutedRequestDelivery(failure);
             }
-            throw attachErrorDetails(new ChatProviderError(
-              `OpenAI Responses response.failed: ${formatResponsesFailedResponse(responseObject)}`,
-            ), { ...providerStreamErrorDetails({ type, code: null }), errorSource: 'provider_event' });
+            throw failure;
           }
           default:
             break;
@@ -1519,7 +1531,7 @@ export class OpenAIResponsesChatProvider implements ChatProvider {
             onFullInput: (input) => { fullInput = input; },
           });
           return guardRequestDelivery(new OpenAIResponsesStreamedMessage(response, true, this._convertErrorHook,
-            (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion))), true);
+            (id, message) => transport.commitResponse(id, convertMessage(message, this._model, this._toolMessageConversion)), true), true);
         } catch (error) {
           if (isAbortError(error)) throw error;
           if (!(error instanceof ResponsesWebSocketError && error.safeHttpFallback)) {

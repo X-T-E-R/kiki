@@ -616,7 +616,7 @@ max_attempts = 20
 backoff = 15000
 ```
 
-请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。该策略不会让 HTTP 400、额度耗尽、部分输出或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
+请把 `gemini-4-argon` 和 `google-native` 替换成 `[models]` 与 `[providers]` 表中的精确配置键。仅当 provider 未返回 `Retry-After` 时才使用 `backoff`。模型流在协议完成事件到达前结束，属于连接失败，不会把部分回答当作成功；只有尚未观察到文本、思考或工具调用时才能重试，未完成响应中的原生工具不会执行。该策略不会让 HTTP 400、额度耗尽、部分输出或已经执行的失败变成可重试；`retry = true` 不会越过 Kiki 的不可重试判定。
 
 ## `transcript_memory`
 

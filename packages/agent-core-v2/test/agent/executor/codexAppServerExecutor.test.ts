@@ -1348,6 +1348,17 @@ describe('Codex Kiki MCP approval under YOLO', () => {
     } finally { await session.shutdown(); }
   });
 
+  it('retains a new thread without a permission override when turn acceptance is unknown', async () => {
+    const harness = createHarness({ failTurnStart: true });
+    try {
+      await expect(harness.session.run({ kind: 'prompt', prompt: 'work' }, { signal: new AbortController().signal })).rejects.toThrow('turn start failed');
+      expect(harness.states.get(externalExecutorKey)).toMatchObject({ sessionRef: { ref: { threadId: 'thread-new' } }, sessionEpoch: 1 });
+      expect(harness.states.get(externalExecutorKey).profileDeliveredSessionId).toBeUndefined();
+      expect(harness.prompts).toHaveLength(1);
+      expect(harness.starts).toHaveLength(1);
+    } finally { await harness.session.shutdown(); }
+  });
+
   it('retains the vendor restoration baseline when a turn fails to start', async () => {
     const harness = createHarness({ failTurnStart: true });
     Object.assign(harness.context.binding, { permissionMode: 'yolo' });
