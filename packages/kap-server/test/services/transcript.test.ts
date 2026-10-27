@@ -1470,7 +1470,7 @@ describe('TranscriptService live integration', () => {
 
   it('reuses a sub-8MiB wide numeric record with bounded traversal and cancels inside traversal', async () => {
     const resident: TranscriptTurn = { kind: 'turn', turnId: 't1', ordinal: 1, state: 'completed', origin: { kind: 'user' }, steps: [] };
-    const record = { type: 'context.append_loop_event', event: { type: 'tool.progress', toolCallId: 'call', update: { kind: 'custom', customData: new Array<number>(1_000_000).fill(0) } } };
+    const record = { type: 'context.append_loop_event', event: { type: 'tool.progress', toolCallId: 'call', update: { kind: 'custom', customData: Array.from({ length: 1_000_000 }, () => 0) } } };
     expect(Buffer.byteLength(JSON.stringify(record))).toBeLessThan(8 << 20);
     const original = Object.entries;
     const entries = vi.spyOn(Object, 'entries').mockImplementation(value => {
