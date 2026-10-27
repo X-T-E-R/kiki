@@ -62,7 +62,7 @@ export function speakerOf(block: MessageBlock, fallback: PersonaAvatarData | und
 export function messageDraftText(block: MessageBlock): string {
   if (block.status !== 'sending') return block.text;
   const argsText = block.sourceTool?.argsText ?? '';
-  const draft = argsText === '' ? '' : streamingMessageText(argsText);
+  const draft = argsText === '' ? '' : streamingMessageText(argsText, block.itemIndex);
   return draft !== '' ? draft : block.text;
 }
 

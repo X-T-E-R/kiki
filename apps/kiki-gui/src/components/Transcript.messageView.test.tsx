@@ -380,6 +380,31 @@ describe('message view (Bot mode)', () => {
     expect(container.querySelector('[data-message-status="sent"]')?.textContent).toContain('能，差两件事。');
   });
 
+  it('streams independent ordered batch drafts, keeps their rows, and settles per-item delivery', async () => {
+    const base: Block[] = [user('batch-user', '分两条发给我', 'batch-turn')];
+    const running = (argsText: string) => tool('batch-send', 'SendMessage', 'batch-turn', { status: 'running', args: undefined, argsText, output: undefined });
+    const stream = '{"messages":[{"text":"第一条"},{"text":"第二条 \\u00';
+    const { container, rerender } = await render(timeline([...base, running(stream)], 'message', { busy: true }));
+    const rows = () => [...container.querySelectorAll<HTMLElement>('[data-message-row]')];
+    const drafts = () => rows().map(row => row.querySelector('[data-message-text]')?.textContent?.replace('▍', ''));
+    expect(drafts()).toEqual(['第一条', '第二条 ']);
+    const originalRows = rows();
+    await rerender(timeline([...base, running(`${stream}e9"}]}`)], 'message', { busy: true }));
+    expect(drafts()).toEqual(['第一条', '第二条 é']);
+    expect(rows()[0]).toBe(originalRows[0]);
+    expect(rows()[1]).toBe(originalRows[1]);
+    const args = { messages: [{ text: '第一条' }, { text: '第二条 é' }] };
+    await rerender(timeline([...base, tool('batch-send', 'SendMessage', 'batch-turn', { args, argsText: JSON.stringify(args), output: JSON.stringify({ messages: [
+      { index: 0, message_id: 'batch-0', delivered_to: ['user'], channels: [{ channel_id: 'internal', status: 'delivered' }] },
+      { index: 1, delivery: 'not_sent', detail: 'Delivery refused' },
+    ] }) })], 'message'));
+    expect(container.querySelector('[data-message-status="sending"]')).toBeNull();
+    expect(rows().map(row => row.dataset['messageStatus'])).toEqual(['sent', 'failed']);
+    expect(rows()[0]?.querySelector('[data-message-text]')?.textContent).toBe('第一条');
+    expect(rows()[1]?.textContent).toContain('Delivery refused');
+    expect(rows()[1]?.textContent).not.toContain('第二条');
+  });
+
   it('leaves one line and no bubble when the send is cancelled', async () => {
     const blocks: Block[] = [
       user('u1', '发个消息', 't1'),

@@ -37,6 +37,27 @@ describe('SendMessage projection', () => {
     expect(projectMessageView([original]).map((item) => item.id)).toEqual(messages.map((item) => item.id));
     expect(projectSendMessage(original)).toEqual(messages[0]);
   });
+  it('keeps ordered batch slot identities through partial arguments, settlement, and cancellation', () => {
+    const argsText = '{"messages":[{"text":"first"},{"text":"second \\u00';
+    const running = tool({ status: 'running', args: undefined, argsText, output: undefined });
+    const draft = projectSendMessages(running);
+    expect(draft.map(({ id, itemIndex, status, text }) => [id, itemIndex, status, text])).toEqual([
+      ['tool-call:message:0', 0, 'sending', 'first'], ['tool-call:message:1', 1, 'sending', 'second '],
+    ]);
+    expect(draft.every(item => item.sourceTool === running && item.deliveredTo.length === 0)).toBe(true);
+    const settled = projectSendMessages(tool({ args: { messages: [{ text: 'first' }, { text: 'second é' }] }, output: { messages: [
+      { index: 0, message_id: 'm0', delivered_to: ['user'] },
+      { index: 1, delivery: 'not_sent', detail: 'stopped before delivery' },
+    ] } }));
+    expect(settled.map(item => item.id)).toEqual(draft.map(item => item.id));
+    expect(settled.map(item => [item.itemIndex, item.status, item.text])).toEqual([[0, 'sent', 'first'], [1, 'failed', '']]);
+    expect(projectSendMessages({ ...running, status: 'stopped' }).map(item => [item.itemIndex, item.status, item.text]))
+      .toEqual([[0, 'cancelled', ''], [1, 'cancelled', '']]);
+    expect(projectSendMessages({ ...running, argsText: '{"messages":[' })).toEqual([]);
+    expect(projectSendMessages({ ...running, argsText: '{"messages":[null,{"text":"slot one' }).map(item => [item.itemIndex, item.text]))
+      .toEqual([[1, 'slot one']]);
+  });
+
   it('retains the call identity through streaming, success, and reconnect replay', () => {
     const pending = projectSendMessage(tool({ status: 'running', output: undefined, args: undefined,
       argsText: '{"text":"Hel' }))!;

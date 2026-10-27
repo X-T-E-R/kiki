@@ -312,6 +312,8 @@ export interface MessageBlock {
   readonly failureDetail?: string;
   /** The original call remains available for process inspection and streaming argsText. */
   readonly sourceTool?: ToolBlock;
+  /** The original messages array slot, stable while the call streams and settles. */
+  readonly itemIndex?: number;
   /** The assistant body a promoted final reply speaks for, so its text keeps continuing. */
   readonly sourceBlock?: AssistantBlock;
 }

@@ -1,3 +1,4 @@
+import { partialArrayItems, streamingMessageText } from './partialJson';
 import type {
   ActivitySummary, AssistantBlock, Block, MessageAttachment, MessageBlock, MessageChannelDelivery, MessageReach,
   NoticeBlock, ToolBlock,
@@ -80,11 +81,14 @@ export function projectSendMessage(tool: ToolBlock): MessageBlock | undefined {
   return projectSendMessages(tool)[0];
 }
 
+/** Project ordered array slots before JSON completes, retaining each slot identity and its own receipt. */
 export function projectSendMessages(tool: ToolBlock): MessageBlock[] {
   if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return [];
   const args = record(tool.args) ?? record(tool.argsText);
-  const items = args?.['messages'];
-  if (!Array.isArray(items)) {
+  const declaredItems = args?.['messages'];
+  const items = Array.isArray(declaredItems) ? declaredItems : partialArrayItems(tool.argsText, 'messages')?.map((item, index) =>
+    record(item) ?? (item.startsWith('{') ? { text: streamingMessageText(tool.argsText, index) } : undefined));
+  if (items === undefined || items === null) {
     const message = projectSingleSendMessage(tool);
     return message === undefined ? [] : [message];
   }
@@ -97,7 +101,7 @@ export function projectSendMessages(tool: ToolBlock): MessageBlock[] {
     const receipt = matches.length === 1 ? record(matches[0]) : undefined;
     const child: ToolBlock = { ...tool, id: `${tool.id}:message:${index}`, args: { to: args?.['to'], channel: args?.['channel'], channels: args?.['channels'], ...content }, argsText: '', output: receipt === undefined ? undefined : JSON.stringify(receipt) };
     const message = projectSingleSendMessage(child);
-    return message === undefined ? [] : [{ ...message, sourceTool: tool }];
+    return message === undefined ? [] : [{ ...message, itemIndex: index, sourceTool: tool }];
   });
 }
 
