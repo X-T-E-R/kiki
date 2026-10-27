@@ -184,6 +184,7 @@ describe('quick switcher content search', () => {
     client.searchMessages.mockResolvedValue(readyPage());
     await mount();
     await typeQuery('persimmon');
+    await waitFor(hasText('No sessions match'), 'the empty results message');
     expect(document.querySelector('[data-search-error]')).toBeNull();
     expect(document.querySelector('[data-search-unavailable]')).toBeNull();
     expect(document.querySelector('[data-switcher-search-status]')).toBeNull();

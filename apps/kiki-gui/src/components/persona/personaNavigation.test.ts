@@ -24,7 +24,11 @@ const { scope, client, navigate, route, draftPage } = vi.hoisted(() => ({
 vi.mock('../../state/connection', () => ({ useConnection: () => ({ client, scopeId: scope.id, sshLabel: scope.label }) }));
 vi.mock('../../host', () => ({ useHost: () => ({ kind: 'browser' }) }));
 vi.mock('../dirtyGuard', () => ({ useGuardedNavigate: () => navigate }));
-vi.mock('react-router-dom', () => ({ useParams: () => ({ personaId: route.personaId }), useNavigate: () => navigate }));
+vi.mock('react-router-dom', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('react-router-dom')>()),
+  useParams: () => ({ personaId: route.personaId }),
+  useNavigate: () => navigate,
+}));
 vi.mock('./usePersonas', () => ({ usePersonaList: () => route }));
 vi.mock('../NewSessionPage', () => ({ NewSessionPage: (props: unknown) => { draftPage(props); return null; } }));
 const mounted: { root: Root; container: HTMLDivElement; queryClient: QueryClient }[] = [];
@@ -95,7 +99,7 @@ describe('daily draft consumer integration', () => {
     expect(current().persona?.definition.id).toBe('a');
     await act(async () => { await current().send('first daily message', []); });
     expect(client.createSession).toHaveBeenCalledWith(expect.objectContaining({ persona: 'a', persona_home: true }));
-    expect(navigate).toHaveBeenCalledWith('/s/created-session', expect.objectContaining({ state: expect.objectContaining({ initialPrompt: 'first daily message' }) }));
+    expect(navigate).toHaveBeenCalledWith('/s/created-session', expect.objectContaining({ state: expect.objectContaining({ initialPrompt: 'first daily message' }) }), expect.any(Function));
   });
 });
 

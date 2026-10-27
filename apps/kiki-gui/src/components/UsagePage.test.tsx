@@ -1161,6 +1161,7 @@ describe('UsagePage (V2)', () => {
     // A summary narrowed to one model is not "all of today", so opening the
     // strip reads on its own instead of borrowing the main result.
     await openLiveStrip(container);
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const strip = getUsage.mock.calls.find(([query]) => (query as Record<string, unknown>)['page_size'] === 1);
     expect(strip).toBeDefined();
     expect((strip![0] as Record<string, unknown>)['model']).toBeUndefined();
@@ -1472,7 +1473,8 @@ describe('UsagePage manual full rescan', () => {
       const beforeCompletion = mainCalls().length;
       getUsageRescan.mockResolvedValue({ ...running, state: 'completed', scanned_sessions: 10, finished_at: 2 });
       await act(async () => { await vi.advanceTimersByTimeAsync(1000); });
-      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await Promise.resolve(); });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(100); });
       expect(container.textContent).toContain('Rescanned 10 sessions');
       expect(container.querySelector('progress')).toBeNull();
       expect(button.disabled).toBe(false);
@@ -1504,7 +1506,8 @@ describe('UsagePage manual full rescan', () => {
       expect(alert).toBe('Progress unavailable. Reconnecting…');
       expect(alert).not.toContain('Rescan failed');
       await act(async () => { await vi.advanceTimersByTimeAsync(3000); });
-      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+      await act(async () => { await Promise.resolve(); });
+      for (let i = 0; i < 5; i += 1) await act(async () => { await vi.advanceTimersByTimeAsync(100); });
       expect(getUsageRescan).toHaveBeenCalledTimes(2);
       expect(container.querySelector('[data-usage-rescan] [role="alert"]')).toBeNull();
       await act(async () => { root.unmount(); });
