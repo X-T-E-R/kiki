@@ -116,3 +116,19 @@ await test('keeps expensive environments out of ordinary shards and preserves co
     assert.match(workflow, new RegExp(`\\n  ${job}:`));
   }
 });
+
+await test('cloud tests require trusted manual dispatch and keep the existing resource-bounded test entry points', () => {
+  const workflow = readFileSync(resolve(import.meta.dirname, '../.github/workflows/kiki-cloud-ci.yml'), 'utf8');
+  assert.match(workflow, /on:\s*\n  workflow_dispatch:/);
+  assert.doesNotMatch(workflow, /pull_request|\n  push:/);
+  assert.match(workflow, /github\.repository == 'X-T-E-R\/kiki'/);
+  assert.match(workflow, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(workflow, /github\.ref == 'refs\/heads\/kiki'/);
+  assert.match(workflow, /runs-on: \[self-hosted, Linux, X64, kiki-ci,/);
+  assert.match(workflow, /persist-credentials: false/);
+  assert.match(workflow, /VITEST_MAX_WORKERS: '1'/);
+  assert.match(workflow, /pnpm install --frozen-lockfile/);
+  assert.match(workflow, /node scripts\/ci-test-partition\.mjs run ordinary "--shard=\$TEST_SHARD"/);
+  assert.match(workflow, /\$TEST_SUITE" == ordinary-shard && "\$CLOUD_RUNNER" != tencent/);
+  assert.doesNotMatch(workflow, /continue-on-error: true|NODE_OPTIONS|sudo|secrets\./);
+});

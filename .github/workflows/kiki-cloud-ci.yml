@@ -1,0 +1,105 @@
+name: Kiki Cloud CI
+run-name: Cloud ${{ inputs.suite }} on ${{ inputs.target }} (${{ inputs.shard }})
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Cloud runner
+        required: true
+        default: tencent
+        type: choice
+        options: [tencent, baidu, both]
+      suite:
+        description: Test selection (ordinary-shard requires Tencent)
+        required: true
+        default: smoke
+        type: choice
+        options: [smoke, transcript, ordinary-shard]
+      shard:
+        description: Ordinary test shard
+        required: true
+        default: 1/5
+        type: choice
+        options: [1/5, 2/5, 3/5, 4/5, 5/5]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    if: github.repository == 'X-T-E-R/kiki' && github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/kiki'
+    strategy:
+      fail-fast: false
+      matrix:
+        cloud: ${{ fromJSON(inputs.target == 'both' && '["baidu","tencent"]' || inputs.target == 'baidu' && '["baidu"]' || '["tencent"]') }}
+    runs-on: [self-hosted, Linux, X64, kiki-ci, '${{ matrix.cloud }}']
+    timeout-minutes: 90
+    env:
+      CLOUD_RUNNER: ${{ matrix.cloud }}
+      TEST_SUITE: ${{ inputs.suite }}
+      TEST_SHARD: ${{ inputs.shard }}
+      VITEST_MAX_WORKERS: '1'
+    steps:
+      - name: Check runner and selection
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(id -u)" != 0
+          case "$CLOUD_RUNNER" in baidu|tencent) ;; *) exit 1 ;; esac
+          case "$TEST_SUITE" in smoke|transcript|ordinary-shard) ;; *) exit 1 ;; esac
+          case "$TEST_SHARD" in 1/5|2/5|3/5|4/5|5/5) ;; *) exit 1 ;; esac
+          if [[ "$TEST_SUITE" == ordinary-shard && "$CLOUD_RUNNER" != tencent ]]; then
+            echo 'ordinary-shard requires the Tencent runner; use smoke or transcript on Baidu.' >&2
+            exit 1
+          fi
+          uname -sm
+          getconf _NPROCESSORS_ONLN
+          free -m
+          df -h .
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version-file: .nvmrc
+          cache: pnpm
+      - name: Verify toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(node --version)" = "v$(cat .nvmrc)"
+          test "$(pnpm --version)" = '10.33.0'
+      - name: Install locked dependencies
+        run: pnpm install --frozen-lockfile --network-concurrency=8 --child-concurrency=1
+      - uses: dtolnay/rust-toolchain@stable
+        if: inputs.suite == 'ordinary-shard'
+      - name: Build host auth binding
+        if: inputs.suite == 'ordinary-shard'
+        run: pnpm --filter @kiki/auth-native run build
+      - name: Rebuild host PTY dependency
+        if: inputs.suite == 'ordinary-shard'
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '["node-pty"]\n' > "$RUNNER_TEMP/ci-native-build-allowlist.json"
+          pnpm --config.onlyBuiltDependenciesFile="$RUNNER_TEMP/ci-native-build-allowlist.json" --filter @kiki/agent-core-v2 rebuild node-pty
+      - name: Test workflow and updater contracts
+        if: inputs.suite == 'smoke'
+        run: node --test scripts/ci-test-partition.test.mjs apps/kiki-gui/scripts/desktop-release-feed.test.mjs
+      - name: Test transcript contracts
+        if: inputs.suite == 'transcript'
+        run: pnpm --filter @kiki/transcript exec vitest run --maxWorkers=1
+      - name: Run ordinary test shard
+        if: inputs.suite == 'ordinary-shard'
+        shell: bash
+        run: node scripts/ci-test-partition.mjs run ordinary "--shard=$TEST_SHARD"
+      - name: Record result
+        if: always()
+        shell: bash
+        env:
+          JOB_STATUS: ${{ job.status }}
+        run: |
+          printf '## Cloud CI\n\n- Runner: %s (%s)\n- Commit: `%s`\n- Suite: `%s`\n- Shard: `%s`\n- Result: %s\n' \
+            "$RUNNER_NAME" "$CLOUD_RUNNER" "$GITHUB_SHA" "$TEST_SUITE" "$TEST_SHARD" "$JOB_STATUS" >> "$GITHUB_STEP_SUMMARY"

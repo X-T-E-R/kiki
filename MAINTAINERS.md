@@ -14,6 +14,7 @@ instructions. This page is a router: it holds no package contracts.
 | CLI and terminal UI | [`apps/kimi-code/AGENTS.md`](apps/kimi-code/AGENTS.md) | [`apps/kimi-code/README.md`](apps/kimi-code/README.md), [`docs/en/reference/command.md`](docs/en/reference/command.md) |
 | Kiki GUI runtime client | `apps/kiki-gui/package.json` and adjacent source/tests | [`docs/en/server/local-server.md`](docs/en/server/local-server.md) |
 | Embedded persistence | [`packages/minidb/AGENTS.md`](packages/minidb/AGENTS.md) | [`packages/minidb/README.md`](packages/minidb/README.md) |
+| Cloud CI runners | [`.github/workflows/kiki-cloud-ci.yml`](.github/workflows/kiki-cloud-ci.yml) | [`docs/maintainer/cloud-ci.md`](docs/maintainer/cloud-ci.md) |
 
 Adding a new area? Add its row here and point at the new owner rather than
 writing the entry inline.
