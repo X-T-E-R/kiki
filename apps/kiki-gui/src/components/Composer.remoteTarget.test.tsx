@@ -114,7 +114,7 @@ describe('Composer target in a remote space', () => {
   it('names the space a message would be delivered to', async () => {
     connection.connectionId = REMOTE_ID;
     const container = await renderComposer();
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(target(container)?.textContent).toContain('ACME');
   });
 
@@ -122,7 +122,7 @@ describe('Composer target in a remote space', () => {
     connection.connectionId = REMOTE_ID;
     listConnections.mockResolvedValue([record('   ')]);
     const container = await renderComposer();
-    await act(async () => { await Promise.resolve(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
     expect(target(container)?.textContent).toContain('https://acme.test');
   });
 

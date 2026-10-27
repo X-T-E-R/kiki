@@ -1204,6 +1204,7 @@ describe('Composer execution control', () => {
         { name: 'beta-main', source: 'workspace', main: true, disabled: false, routes: [] },
       ],
     });
+    await settle();
     const trigger = await waitForProfileTrigger(rendered.container);
     expect(trigger.textContent).toContain('beta-main');
     await click(trigger);

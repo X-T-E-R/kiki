@@ -52,7 +52,6 @@ import {
   insertDroppedPaths,
   insertThreadRef,
   isNativeExecutor,
-  NATIVE_EXECUTOR,
   profileExecutor,
   removeThreadRef,
   subscribeComposerInserts,

@@ -268,9 +268,10 @@ async function joinHost(container: ParentNode): Promise<void> {
   if (trigger.getAttribute('aria-expanded') !== 'true') await click(trigger);
   const sshRow = container.querySelector('[data-add-menu-ssh]');
   if (sshRow !== null) await click(sshRow);
-  const host = container.querySelector('[data-composer-ssh-host="example-host"]');
-  if (host === null) throw new Error('ssh host row missing');
-  await click(host);
+  const hostRow = container.querySelector('[data-composer-ssh-host="example-host"]');
+  if (hostRow === null) throw new Error('ssh host row missing');
+  const button = hostRow.querySelector('button') ?? hostRow;
+  await click(button);
 }
 
 describe('catalog reads and the running turn are not the submit latch', () => {
