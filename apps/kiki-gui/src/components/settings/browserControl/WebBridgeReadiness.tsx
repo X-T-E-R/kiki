@@ -2,10 +2,13 @@
  * WebBridge readiness — whether the local bridge behind the Kimi route is
  * actually working, and the one action that starts it.
  *
- * It sits inside the Kimi route it serves, as that route's last block, so the
- * page says "Kimi" once instead of in two cards. Its old bookmark still lands
- * here (`st-card-webbridge` in `LEGACY_CARD_ALIASES`): the block announces the
- * id the way a settings card does, and flashes when a search hit asks for it.
+ * It sits inside the Kimi route it serves as a fold, so the page says "Kimi"
+ * once and a working bridge costs one quiet line. The fold opens by itself
+ * when the bridge needs a person: a read that failed (the state is unknown,
+ * never "fine"), a missing or failed runtime, or an install still running.
+ * Its old bookmark still lands here (`st-card-webbridge` in
+ * `LEGACY_CARD_ALIASES`): the block announces the id the way a settings card
+ * does, opens, and flashes when a search hit asks for it.
  */
 
 import { useContext, useEffect, useState } from 'react';
@@ -100,21 +103,30 @@ export function WebBridgeReadiness() {
   const runtimeMissing = steps.some((step) => (step.id === 'daemon' || step.id === 'skill') && (step.state === 'missing' || step.state === 'failed'));
   const stepFailed = steps.some((step) => step.state === 'failed');
   const needsSetup = capability !== undefined && capability.state !== 'unsupported' && (capability.state === 'not_installed' || runtimeMissing || stepFailed);
+  const attention = query.isError || needsSetup || capability?.install.running === true || capability?.install.error !== undefined
+    || (capability?.state === 'partial' && blocking.length > 0);
+  const [open, setOpen] = useState(false);
+  useEffect(() => {
+    if (attention || flashId === 'st-card-webbridge') setOpen(true);
+  }, [attention, flashId]);
   return (
-    <div
+    <details
       id="st-card-webbridge"
       data-settings-card="st-card-webbridge"
       data-webbridge-readiness
-      className={`mt-3 scroll-mt-4 space-y-2 border-t border-dashed border-hairline pt-3 ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
+      open={open}
+      onToggle={(event) => { setOpen((event.currentTarget as HTMLDetailsElement).open); }}
+      className={`mt-2.5 scroll-mt-4 text-[12px] ${flashId === 'st-card-webbridge' ? 'settings-card-flash' : ''}`}
     >
-      <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-        <h3 className="text-[12px] font-medium text-ink-soft">{t('st.plugins.runtimeTitle')}</h3>
+      <summary className="cursor-pointer select-none text-[12px] text-ink-soft hover:text-ink">
+        <span className="font-medium">{t('st.plugins.runtimeTitle')}</span>
         {capability === undefined || query.isError ? null : (
-          <span className="text-[12px] text-ink" data-webbridge-state={capability.state}>
-            {t(`st.plugins.runtimeState.${capability.state}`)}
+          <span className={capability.state === 'ready' ? 'text-ink-soft' : 'text-ink'} data-webbridge-state={capability.state}>
+            {` · ${t(`st.plugins.runtimeState.${capability.state}`)}`}
           </span>
         )}
-      </div>
+      </summary>
+      <div className="mt-2 space-y-2">
       {query.isPending ? <BusyHint>{t('st.plugins.loading')}</BusyHint> : query.isError ? (
         <QueryRetry error={query.error} onRetry={() => { void query.refetch(); }} />
       ) : capability !== undefined ? (
@@ -163,6 +175,7 @@ export function WebBridgeReadiness() {
           onCancel={() => { setConfirming(null); }}
           onConfirm={() => { void prepare(confirming); }} />
       ) : null}
-    </div>
+      </div>
+    </details>
   );
 }

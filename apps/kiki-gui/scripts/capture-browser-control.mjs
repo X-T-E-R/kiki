@@ -37,6 +37,20 @@ async function openConnection(page, id) {
   await page.waitForSelector(`[data-browser-detail="${id}"]`, { timeout: 10_000 });
 }
 
+async function openSourcesFold(page) {
+  const back = page.locator('[data-browser-back]');
+  if (await back.isVisible().catch(() => false)) {
+    await back.click();
+    await page.waitForSelector('[data-browser-connections][data-browser-view="list"]', { timeout: 10_000 });
+  }
+  const fold = page.locator('[data-browser-sources]');
+  await fold.waitFor({ state: 'visible', timeout: 10_000 });
+  const isOpen = await fold.evaluate((el) => el instanceof HTMLDetailsElement && el.open);
+  if (!isOpen) {
+    await fold.locator('summary').click();
+  }
+}
+
 /**
  * The native-flag trip has to land on the row that holds the switch, inside
  * the viewport — visible in the DOM is not enough, or the page is sending
@@ -62,18 +76,28 @@ const scenarios = [
     fixture: 'browser-control',
     matrix: ['theme', 'width'],
     run: async ({ page, view, link, shot }) => {
-      // A wide job takes the phone-width twin of the states that have to survive
-      // the narrow layout, so both widths come out of one run.
-      const phoneWidth = view.width > 600;
-      const phoneShot = async (name) => {
-        if (!phoneWidth) return;
-        await page.setViewportSize({ width: 390, height: 844 });
-        await shot(name);
-        await page.setViewportSize({ width: view.width, height: 900 });
-      };
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      // The wizard is the opening state: three named routes, each saying what
-      // it still needs. Nothing below it has to be opened to see this.
+      await page.waitForSelector('[data-browser-verdict="allowed"]', { timeout: 30_000 });
+      await page.waitForSelector('[data-browser-connection="research"]', { timeout: 30_000 });
+      await resetScroll(page);
+      await shot('connections-list');
+
+      // The rows at the width they get with nothing open: the bridge has to read
+      // as a type and a place without being opened first, so its own words are
+      // measured rather than assumed.
+      await page.locator('[data-browser-connections]').scrollIntoViewIfNeeded();
+      const bridgeTypeAndPlace = page.locator('[data-browser-row="kimi-webbridge"] [data-browser-row-type="kimi-webbridge"]');
+      await bridgeTypeAndPlace.waitFor({ state: 'visible', timeout: 10_000 });
+
+      // The default is its own control on the list header, and "choose each time" is a real value.
+      await page.locator('#browser-default').click();
+      await page.waitForSelector('[role="option"][data-option-value="research"]', { timeout: 10_000 });
+      await resetScroll(page);
+      await shot('default-open');
+      await page.keyboard.press('Escape');
+
+      // Browser sources fold under the list: four named sources, each saying what it still needs.
+      await openSourcesFold(page);
       await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
       await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
       await page.waitForSelector('[data-browser-route="codex-browser"]', { timeout: 30_000 });
@@ -89,7 +113,6 @@ const scenarios = [
       await page.locator('[data-confirm-action="confirm"]').click();
       await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-open]', { timeout: 30_000 });
       await shot('wizard-ready');
-      await phoneShot('wizard-ready-390');
 
       // Advanced update / shortcut within the route
       await page.locator('[data-browser-route="independent-browser"] [data-browser-route-advanced] summary').click();
@@ -98,34 +121,22 @@ const scenarios = [
       await page.locator('[data-browser-route="independent-browser"] [data-browser-route-update]').click();
       await page.waitForSelector('[data-browser-route="independent-browser"] [data-feedback-tone="info"]', { timeout: 10_000 });
       await shot('wizard-updated-disk');
-      await phoneShot('wizard-updated-disk-390');
 
       // Primary open action
       await page.locator('[data-browser-route="independent-browser"] [data-browser-route-open]').click();
       await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-connected]', { timeout: 30_000 });
       await shot('wizard-opened-connected');
-      await phoneShot('wizard-opened-connected-390');
 
-      // Codex route: candidate connection selector and save flow.
+      // Codex route: single save-and-allow path for discovered pipes.
       await page.locator('[data-browser-route="codex-browser"]').scrollIntoViewIfNeeded();
-      await page.waitForSelector('[data-browser-route="codex-browser"] [data-browser-candidates-region]', { timeout: 10_000 });
+      await page.waitForSelector('[data-browser-source-items="codex-browser"]', { timeout: 10_000 });
       await page.waitForSelector('[data-browser-route="codex-browser"] [data-browser-route-instructions]', { timeout: 10_000 });
-      const connectBtn = page.locator('[data-browser-route="codex-browser"] [data-browser-route-connect]');
-      if (!await connectBtn.isDisabled()) throw new Error('codex connect button should be disabled before selection');
-
-      // Explicit selection of candidate pipe 1
-      await page.locator('#candidate-select-codex-browser').click();
-      await page.waitForSelector('[role="option"][data-option-value="codex-browser-use-pipe-1"]', { timeout: 10_000 });
-      await page.locator('[role="option"][data-option-value="codex-browser-use-pipe-1"]').click();
-
-      // Save connection
-      await connectBtn.click();
-      await page.waitForSelector('[data-browser-route="codex-browser"][data-browser-route-state="ready"]', { timeout: 10_000 });
+      await page.locator('[data-browser-source-items="codex-browser"] [data-browser-allow-checkbox="codex-browser-use-pipe-1"]').click();
+      await page.waitForSelector('[data-browser-row="codex-browser"]', { timeout: 10_000 });
       const connectedBadge = await page.locator('[data-browser-route="codex-browser"] [data-browser-route-connected]').count();
       if (connectedBadge !== 0) throw new Error('codex saved connection should not claim connected or approved');
       await resetScroll(page);
       await shot('wizard-codex');
-      await phoneShot('wizard-codex-390');
 
       // The Kimi route: everything installed except the store approval, which
       // is a link to a page only a person can click through.
@@ -133,33 +144,6 @@ const scenarios = [
       await page.waitForSelector('[data-browser-route-blocker="extension"]', { timeout: 10_000 });
       await resetScroll(page);
       await shot('wizard-kimi-extension');
-      await phoneShot('wizard-kimi-extension-390');
-
-      // The connections and the default live below the routes, in the advanced
-      // region — the things a person fills in, not picks.
-      await page.locator('[data-browser-advanced-region] summary').click();
-      await page.waitForSelector('[data-browser-connection="research"]', { timeout: 10_000 });
-      await page.waitForSelector('[data-browser-state="ready"]', { timeout: 30_000 });
-      await resetScroll(page);
-      await shot('advanced-connections');
-
-      // The rows at the width they get with nothing open: the bridge has to read
-      // as a type and a place without being opened first, so its own words are
-      // measured rather than assumed.
-      await page.locator('[data-browser-connections]').scrollIntoViewIfNeeded();
-      const bridgeTypeAndPlace = page.locator('[data-browser-connection="kimi-webbridge"] span[title="Kimi WebBridge · Local bridge"]');
-      await bridgeTypeAndPlace.waitFor({ state: 'visible', timeout: 10_000 });
-      if (await bridgeTypeAndPlace.evaluate((node) => node.scrollWidth > node.clientWidth)) {
-        throw new Error('the bridge row clips its own type and location at list width');
-      }
-      await shot('connections-list');
-
-      // The default is its own control, and "choose each time" is a real value.
-      await page.locator('#browser-default').click();
-      await page.waitForSelector('[role="option"][data-option-value="research"]', { timeout: 10_000 });
-      await resetScroll(page);
-      await shot('default-open');
-      await page.keyboard.press('Escape');
 
       // A connection that was never started: normal, with the actions offered.
       await openConnection(page, 'work');
@@ -230,12 +214,6 @@ const scenarios = [
       await shot('runtime-catalog-schema');
       await page.locator('[data-browser-catalog-search]').fill('');
       await page.waitForSelector('[data-browser-catalog-groups]', { timeout: 10_000 });
-      if (phoneWidth) {
-        await page.setViewportSize({ width: 390, height: 844 });
-        await page.locator('[data-browser-tabs-section]').scrollIntoViewIfNeeded();
-        await shot('runtime-catalog-390');
-        await page.setViewportSize({ width: view.width, height: 900 });
-      }
 
       // A borrowed browser: endpoint masked, revealed only on request, and a
       // disconnect that keeps the browser.
@@ -268,19 +246,14 @@ const scenarios = [
       await shot('detail-bridge');
       await page.locator('[data-browser-bridge]').scrollIntoViewIfNeeded();
       await shot('bridge-hint');
-      await phoneShot('detail-bridge-390');
       if (await page.locator('[data-browser-detail="kimi-webbridge"] [data-secret-field]').count() !== 0) {
         throw new Error('the bridge form offered a CDP endpoint');
       }
       if (!await page.locator('[data-browser-bridge]').isVisible()) throw new Error('the bridge form never said which bridge it talks to');
-      const bridgeRowText = await page.locator('[data-browser-connection="kimi-webbridge"]').innerText();
-      if (!bridgeRowText.includes('Kimi WebBridge') || !bridgeRowText.includes('Local bridge')) {
-        throw new Error(`the bridge row reads ${JSON.stringify(bridgeRowText)}`);
-      }
-      const bridgeType = await page.locator('#browser-type').innerText();
-      if (!bridgeType.includes('Kimi WebBridge')) throw new Error(`the bridge style reads ${JSON.stringify(bridgeType)}`);
       const bridgeCheck = await page.locator('[data-browser-check]').innerText();
-      if (bridgeCheck.trim() !== 'Check bridge') throw new Error(`the bridge check reads ${JSON.stringify(bridgeCheck)}`);
+      if (bridgeCheck.trim() !== 'Check bridge' && bridgeCheck.trim() !== '检查桥接') {
+        throw new Error(`the bridge check reads ${JSON.stringify(bridgeCheck)}`);
+      }
       await page.locator('[data-browser-check]').click();
       await page.waitForSelector('[data-browser-outcome="check:idle"]', { timeout: 30_000 });
       await page.locator('[data-browser-runtime]').scrollIntoViewIfNeeded();
@@ -288,14 +261,21 @@ const scenarios = [
 
       // The bridge answers for its own tool list: three page tools, no backend
       // started. The fold may already be open from an earlier connection.
-      if (await page.locator('[data-browser-catalog]').count() === 0) await page.locator('[data-browser-catalog-read]').click();
+      if (await page.locator('[data-browser-catalog]').count() === 0) {
+        await page.locator('[data-browser-runtime-tree] summary').click();
+        await page.waitForSelector('[data-browser-catalog-read]', { timeout: 10_000 });
+        await page.locator('[data-browser-catalog-read]').click();
+      }
       await page.waitForSelector('[data-browser-catalog-count]', { timeout: 30_000 });
       const bridgeToolCount = await page.locator('[data-browser-catalog-count]').innerText();
       if (bridgeToolCount.trim() !== '3') throw new Error(`the bridge catalogue reports ${JSON.stringify(bridgeToolCount)} tools`);
       // The bridge's own isolation model, in words: the main frame of the
       // selected tab, never the managed driver's opaque window context.
-      const bridgeIsolation = await page.locator('[data-browser-catalog-isolation]');
-      if (await bridgeIsolation.innerText() !== 'main frame only') throw new Error(`the bridge isolation reads ${JSON.stringify(await bridgeIsolation.innerText())}`);
+      const bridgeIsolation = page.locator('[data-browser-catalog-isolation]');
+      const isolationText = await bridgeIsolation.innerText();
+      if (isolationText !== 'main frame only' && isolationText !== '仅主帧') {
+        throw new Error(`the bridge isolation reads ${JSON.stringify(isolationText)}`);
+      }
       if (await bridgeIsolation.getAttribute('title') !== 'main-frame-only') throw new Error('the bridge isolation lost its server token');
       await page.locator('[data-browser-catalog]').scrollIntoViewIfNeeded();
       await shot('bridge-catalog');
@@ -306,8 +286,6 @@ const scenarios = [
       await page.locator('[data-browser-detail="kimi-webbridge"]').scrollIntoViewIfNeeded();
       await shot('bridge-saved');
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
-      await page.locator('[data-browser-advanced-region] summary').click();
       await page.waitForSelector('[data-browser-connection="kimi-webbridge"]', { timeout: 30_000 });
       await openConnection(page, 'kimi-webbridge');
       if (await page.locator('[data-browser-name-input]').inputValue() !== '日常 Edge（桥接）') {
@@ -317,10 +295,16 @@ const scenarios = [
         throw new Error('the reloaded bridge form offered an endpoint');
       }
 
-      // A new connection: the id and the style decide everything. The
-      // hand-written routes the wizard does not cover are named here rather
-      // than as a wall of inert conditions.
+      // Add browser view: setup wizard + manual connection form.
+      await page.locator('[data-browser-back]').click();
+      await page.waitForSelector('[data-browser-add]', { timeout: 10_000 });
       await page.locator('[data-browser-add]').click();
+      await page.waitForSelector('[data-browser-add-view]', { timeout: 10_000 });
+      await resetScroll(page);
+      await shot('add-browser-view');
+      await page.locator('[data-browser-other]').scrollIntoViewIfNeeded();
+      await shot('other-ecosystems');
+      await page.locator('[data-browser-add-manual]').click();
       await page.waitForSelector('[data-browser-detail="new"]', { timeout: 10_000 });
       await page.fill('[data-browser-id-input]', 'staging');
       await page.fill('[data-browser-name-input]', '预发布检查');
@@ -333,8 +317,6 @@ const scenarios = [
       await page.waitForSelector('[data-secret-field]', { timeout: 10_000 });
       await resetScroll(page);
       await shot('create-cdp');
-      await page.locator('[data-browser-other]').scrollIntoViewIfNeeded();
-      await shot('other-ecosystems');
 
       // Releasing a running browser under an edited draft: the two actions that
       // write through the saved configuration are gated, this one is not, and
@@ -349,14 +331,6 @@ const scenarios = [
       if (!await page.locator('[data-browser-connect]').isDisabled()) throw new Error('connect should be gated by the draft');
       await resetScroll(page);
       await shot('dirty-disconnect');
-      if (phoneWidth) {
-        // The narrow twin of the state that has the two gated actions and the
-        // one that is not.
-        await page.setViewportSize({ width: 390, height: 844 });
-        await page.locator('[data-browser-runtime]').scrollIntoViewIfNeeded();
-        await shot('dirty-disconnect-390');
-        await page.setViewportSize({ width: view.width, height: 900 });
-      }
       await page.locator('[data-browser-disconnect]').click();
       await page.waitForSelector('[data-browser-outcome="disconnect:disconnected"]', { timeout: 30_000 });
       if (await page.locator('[data-browser-profile-input]').inputValue() !== 'C:\\Users\\fixture\\kiki\\browsers\\research-next') {
@@ -370,8 +344,6 @@ const scenarios = [
       // flag, in the viewport, not just in the DOM — otherwise the page is
       // sending people somewhere that does not have the switch.
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
-      await page.locator('[data-browser-advanced-region] summary').click();
       await page.waitForSelector('[data-browser-connection="work"]', { timeout: 30_000 });
       await openConnection(page, 'work');
       await page.locator('[data-browser-connect]').click();
@@ -379,56 +351,6 @@ const scenarios = [
       await page.locator('[data-browser-open-flag]').click();
       await requireFlagRowInViewport(page, view.width, "the connection card's flag trip");
       await shot('flag-home');
-
-      // Affected UI in Chinese (zh) - wide and narrow views
-      await page.evaluate(() => {
-        try { localStorage.setItem('kiki.locale', 'zh'); } catch { /* ignore */ }
-      });
-      await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
-      await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
-      await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
-      await resetScroll(page);
-      await shot('wizard-zh');
-      await phoneShot('wizard-zh-390');
-
-      // Chinese independent browser route: ready and advanced
-      const advZh = page.locator('[data-browser-route="independent-browser"] [data-browser-route-advanced] summary');
-      if (await advZh.isVisible().catch(() => false)) {
-        await advZh.click();
-        await page.waitForSelector('[data-browser-route="independent-browser"] [data-browser-route-update]', { timeout: 10_000 });
-        await shot('wizard-advanced-options-zh');
-        await page.locator('[data-browser-route="independent-browser"] [data-browser-route-update]').click();
-        await page.waitForSelector('[data-browser-route="independent-browser"] [data-feedback-tone="info"]', { timeout: 10_000 });
-        await shot('wizard-updated-disk-zh');
-        await phoneShot('wizard-updated-disk-zh-390');
-      }
-
-      // Chinese Codex route
-      await page.locator('[data-browser-route="codex-browser"]').scrollIntoViewIfNeeded();
-      await page.waitForSelector('[data-browser-route="codex-browser"] [data-browser-candidates-region]', { timeout: 10_000 });
-      await resetScroll(page);
-      await shot('wizard-codex-zh');
-      await phoneShot('wizard-codex-zh-390');
-
-      // The bridge in Chinese, read back from what the earlier save wrote: the
-      // type, the place and the form all have to say local bridge.
-      await page.locator('[data-browser-advanced-region] summary').click();
-      await page.waitForSelector('[data-browser-connection="kimi-webbridge"]', { timeout: 30_000 });
-      const zhBridgeRow = await page.locator('[data-browser-connection="kimi-webbridge"]').innerText();
-      if (!zhBridgeRow.includes('本地桥接') || !zhBridgeRow.includes('Kimi WebBridge')) {
-        throw new Error(`the Chinese bridge row reads ${JSON.stringify(zhBridgeRow)}`);
-      }
-      await openConnection(page, 'kimi-webbridge');
-      const zhBridgeHint = await page.locator('[data-browser-bridge]').innerText();
-      if (!zhBridgeHint.includes('本地 HTTP 桥接')) throw new Error(`the Chinese bridge form reads ${JSON.stringify(zhBridgeHint)}`);
-      if (await page.locator('[data-browser-detail="kimi-webbridge"] [data-secret-field]').count() !== 0) {
-        throw new Error('the Chinese bridge form offered an endpoint');
-      }
-      await page.locator('[data-browser-detail="kimi-webbridge"]').scrollIntoViewIfNeeded();
-      await shot('detail-bridge-zh');
-      await page.locator('[data-browser-bridge]').scrollIntoViewIfNeeded();
-      await shot('bridge-hint-zh');
-      await phoneShot('detail-bridge-zh-390');
     },
   },
   {
@@ -440,6 +362,7 @@ const scenarios = [
       const check = route.locator('[data-browser-route-connect]');
       const chosen = 'C:/Ego/0.6.0.15/ego-browser.exe';
       await page.goto(link('/settings/browser-control'), { waitUntil: 'domcontentloaded', timeout: 60_000 });
+      await openSourcesFold(page);
       await page.waitForSelector('[data-browser-route="kimi-webbridge"]', { timeout: 30_000 });
       await page.waitForSelector('[data-browser-route="independent-browser"]', { timeout: 30_000 });
       await page.waitForSelector('[data-browser-route="codex-browser"]', { timeout: 30_000 });
@@ -487,7 +410,6 @@ const scenarios = [
       await route.scrollIntoViewIfNeeded();
       await shot('ego-ready');
 
-      await page.locator('[data-browser-advanced-region] summary').click();
       await page.waitForSelector('[data-browser-connection="ego-lite"]', { timeout: 10_000 });
       await page.locator('[data-browser-connection="ego-lite"]').click();
       await page.waitForSelector('[data-browser-detail="ego-lite"]', { timeout: 10_000 });

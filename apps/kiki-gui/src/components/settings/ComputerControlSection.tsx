@@ -1,21 +1,21 @@
 /**
- * Settings → 电脑控制. Four flat sections in the order a person decides:
+ * Settings → 电脑控制. Three flat sections in the order a person decides:
  *
- *   0  whether the Agent may drive a desktop at all (switch, default, policy)
- *   A+B  which server this drives (its real platform/arch), whether the
- *        open-source executor is installed, and a re-check — one fact table
- *   C  the existing computer MCP connections — active selector, list, editor,
- *      and external Windows-MCP 0.8.8 registration on Windows
- *   D  model usage preference (avoid vs prefer)
+ *   1  the verdict: may the Agent drive a desktop on this server, and the first
+ *      gate to fix — with the switch, its new-session default, the connected
+ *      server's own platform/arch, the executor's install state and its check
+ *   2  the connections: which one runs (the active selector), the list, adding
+ *      one by hand, and the external Windows-MCP 0.8.8 registration on Windows
+ *   3  model usage preference (avoid vs prefer), saved as it is picked
  *
  * Nothing here is predicted: the machine line is the connected server's own
- * `platform`/`arch`, the readiness line is the capability service's state, and
- * the configuration block reads and writes the same global MCP plane the MCP
- * page uses. "Installed" means the pinned executor files verified — it is not
- * a claim that the desktop is being controlled or that it is idle.
+ * `platform`/`arch`, the install state is the capability service's state, and
+ * the connections read and write the same global MCP plane the MCP page uses.
+ * "Installed" means the pinned executor files verified — it is not a claim that
+ * the desktop is being controlled or that it is idle.
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   windowsMcpEnvironmentResponseSchema,
@@ -27,9 +27,11 @@ import {
   computerControlConnectionPatch,
   computerControlPreference,
   computerControlPreferencePatch,
+  computerControlVerdict,
   isComputerControlEnabled,
   isComputerToolPolicyDenied,
   isComputerToolPolicyPartiallyDenied,
+  type ComputerControlVerdictKind,
 } from '@kiki/session-core/settings';
 
 import { DefaultOnSwitch, optionalCapabilityState } from '../capabilities/optionalCapabilityUi';
@@ -39,17 +41,17 @@ import type { CapabilityStatus, KikiConfigPatch } from '../../lib/client';
 import { ConfirmDialog } from '../ConfirmDialog';
 import { FeedbackLine, Hint, InlineError, SaveStatus, type Feedback } from '../controls';
 import { INPUT, PRIMARY_BUTTON, SECONDARY_BUTTON } from '../ui';
-import { SectionCard } from './SectionCard';
+import { SectionCard, SettingsCardMountContext } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
 import {
   FORM_LABEL,
-  SettingsDraftFooter,
   SettingsSegmented,
   SettingsSelect,
   type SettingsChoice,
 } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 import { useInstantSave } from './useInstantSave';
+import { CapabilitySwitch, ControlVerdictLine } from './browserControl/ControlVerdict';
 import { ComputerConnectionCard } from './computerControl/ComputerConnectionCard';
 import {
   commandSummary,
@@ -98,10 +100,30 @@ const STATE_KEYS: Readonly<Record<CapabilityStatus['state'], I18nKey>> = {
   unsupported: 'st.computer.state.unsupported',
 };
 
+const VERDICT_KEYS: Readonly<Record<Exclude<ComputerControlVerdictKind, 'ready'>, I18nKey>> = {
+  unresolved: 'st.computer.verdict.unresolved',
+  host_locked: 'st.computer.verdict.hostLocked',
+  off: 'st.computer.verdict.off',
+  tool_denied: 'st.computer.toolPolicyDenied',
+  checking: 'st.computer.state.detecting',
+  unknown: 'st.computer.verdict.unknown',
+  unsupported: 'st.computer.verdict.unsupported',
+  installing: 'st.computer.installing',
+  not_installed: 'st.computer.verdict.notInstalled',
+  partial: 'st.computer.verdict.partial',
+  no_connection: 'st.computer.verdict.noConnection',
+  connection_not_ready: 'st.computer.verdict.connectionNotReady',
+};
+
 export function ComputerControlSection() {
   const { client, klient, scopeId, sshLabel } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
+  const onCardMount = useContext(SettingsCardMountContext);
+  useEffect(() => {
+    onCardMount?.('st-card-computer-machine');
+    onCardMount?.('st-card-computer-setup');
+  }, [onCardMount]);
 
   const envQuery = useQuery({
     queryKey: ['computer-control-env', scopeId],
@@ -221,8 +243,8 @@ export function ComputerControlSection() {
   }, [scopeId]);
 
   const isPreferenceSaved = preferenceSaved && savedGeneration === scopeGenerationRef.current;
+  /** The pick shows at once while it is written; a refused write falls back to the stored value. */
   const activePreference = draftPreference ?? effectivePreference;
-  const isPreferenceDirty = !isOverriddenByHigherSource && draftPreference !== null && draftPreference !== effectivePreference;
 
   const persistPreference = async (targetPreference: ComputerUsagePreference | null) => {
     const targetScopeId = scopeId;
@@ -247,6 +269,7 @@ export function ComputerControlSection() {
       }
     } catch (error) {
       if (ownsCurrentUi()) {
+        setDraftPreference(null);
         setPreferenceFeedback({ tone: 'error', text: errorText(locale, error) });
       }
     } finally {
@@ -256,14 +279,10 @@ export function ComputerControlSection() {
     }
   };
 
-  const savePreference = async () => {
-    if (draftPreference === null || draftPreference === effectivePreference || isOverriddenByHigherSource || preferenceSaving) return;
-    await persistPreference(draftPreference);
-  };
-
-  const discardPreference = () => {
-    setDraftPreference(null);
-    setPreferenceFeedback(null);
+  const choosePreference = (next: ComputerUsagePreference) => {
+    if (isOverriddenByHigherSource || preferenceSaving || next === activePreference) return;
+    setDraftPreference(next);
+    void persistPreference(next);
   };
 
   const resetToInherited = async () => {
@@ -300,6 +319,7 @@ export function ComputerControlSection() {
     setFeedback(null);
     try {
       await capabilityQuery.refetch();
+      await mcpQuery.refetch();
     } catch (error) {
       reportFailure(error);
     } finally {
@@ -317,8 +337,8 @@ export function ComputerControlSection() {
       const next = await client.installCapability(status.id, digest);
       queryClient.setQueryData(['capability', CAPABILITY_ID, scopeId], next);
       // A completed install registers the global connection itself, so the
-      // configuration block below has to re-read rather than keep its list.
-      await queryClient.invalidateQueries({ queryKey: ['computer-control-mcp', scopeId] });
+      // connections below have to re-read rather than keep their list.
+      await queryClient.invalidateQueries({ queryKey: computerMcpQueryKey(scopeId) });
       setFeedback({ tone: 'success', text: t('st.computer.installDone', { version: status.plan?.artifact.version ?? '' }) });
     } catch (error) {
       reportFailure(error);
@@ -329,13 +349,42 @@ export function ComputerControlSection() {
 
   const installError = capability?.install.error;
   const optionalUnchecked = capability?.steps.some((step) => step.optional === true && step.state !== 'ok') === true;
+  const canInstall = capability !== undefined && capability.state !== 'ready' && !capability.install.running && capability.plan !== undefined;
+
+  const verdict = computerControlVerdict({
+    enabled: isComputerEnabled,
+    hostLocked: computerHostLocked,
+    unresolved: computerCapability?.unresolved,
+    toolPolicyDenied: isToolPolicyDenied,
+    executor: capabilityQuery.isPending || configQuery.isPending
+      ? 'checking'
+      : capabilityQuery.isError || capability === undefined
+        ? 'unknown'
+        : { state: capability.state, installing: capability.install.running || installing },
+    hasConnection: selectedConnection !== undefined || activeEntry !== undefined,
+    activeConnectionReady: !activeWindowsNotReady,
+  });
+  const verdictText = verdict.kind === 'ready'
+    ? t('st.computer.verdict.ready', { name: selectedConnection ?? activeEntry?.name ?? t('st.computer.activeConnectionDefault') })
+    : t(VERDICT_KEYS[verdict.kind]);
+  const verdictAction = verdict.kind === 'unknown' ? (
+    <button type="button" className={SECONDARY_BUTTON} data-computer-retry onClick={() => { void check(); }}>
+      {t('common.retry')}
+    </button>
+  ) : (verdict.kind === 'not_installed' || verdict.kind === 'partial') && canInstall ? (
+    <button type="button" className={PRIMARY_BUTTON} data-computer-install-btn
+      disabled={installing}
+      onClick={() => { setConfirmingInstall(true); }}>
+      {installing ? t('st.computer.installing') : installError === undefined ? t('st.computer.installButton') : t('st.computer.retryInstall')}
+    </button>
+  ) : null;
 
   const showConnectionSelect = mcpEntries.length > 0 || selectedConnection !== undefined;
 
   const connectionSummary = showConnectionSelect ? (
     <div className="space-y-1.5" data-computer-active-connection-row>
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px] text-ink-soft">
-        <span id="computer-active-connection-label" className="text-[13px] text-ink">
+      <div className="flex flex-wrap items-center gap-x-2 gap-y-2 text-[12px] text-ink-soft">
+        <span id="computer-active-connection-label">
           {t('st.computer.activeConnectionLabel')}
         </span>
         <SettingsSelect
@@ -361,7 +410,6 @@ export function ComputerControlSection() {
         ) : null}
         <SaveStatus saving={connectionSave.saving} saved={connectionSave.saved} />
       </div>
-      <Hint>{t('st.computer.activeConnectionHint')}</Hint>
       {activeKind === 'windows-mcp' ? (
         <p className="text-[12px] text-ink-soft" data-computer-active-windows-mcp-hint>
           {t('st.computer.windowsMcp.foregroundHint')}
@@ -378,40 +426,32 @@ export function ComputerControlSection() {
 
   return (
     <div className="space-y-6" data-settings-computer-control>
-      {/* 0 — may the Agent drive this desktop at all */}
       <SectionCard id="st-card-computer-enabled" title={t('st.computer.title')}>
         <div className="space-y-3" data-computer-control-enabled={isComputerEnabled ? 'true' : 'false'}>
-          <div className="flex items-center justify-between gap-4">
-            <div className="min-w-0">
-              <label htmlFor="computer-master-switch" className="cursor-pointer text-[13px] font-medium text-ink">
-                {t('st.computer.enabledLabel')}
-              </label>
-              <p className="mt-0.5 text-[12px] leading-relaxed text-ink-soft">
-                {t('st.computer.enabledHint')}
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <SaveStatus saving={enabledSave.saving} saved={enabledSave.saved} />
-              <button
-                type="button"
-                id="computer-master-switch"
-                role="switch"
-                aria-checked={isComputerEnabled}
-                data-computer-enabled-switch
-                disabled={enabledSave.saving || configQuery.isLoading || computerHostLocked}
-                onClick={() => { handleToggleEnabled(!isComputerEnabled); }}
-                className={`relative inline-flex h-[18px] w-8 shrink-0 items-center rounded-full ring-1 transition-colors duration-[var(--kiki-motion-quick)] ${
-                  isComputerEnabled ? 'bg-selected ring-selected-ink/45' : 'bg-hairline ring-hairline-strong'
-                } ${enabledSave.saving || configQuery.isLoading || computerHostLocked ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
-              >
-                <span
-                  className={`inline-block h-3 w-3 transform rounded-full transition-transform duration-[var(--kiki-motion-quick)] motion-reduce:transition-none ${
-                    isComputerEnabled ? 'translate-x-[16px] bg-selected-ink' : 'translate-x-[3px] bg-ink-faint'
-                  }`}
-                />
-              </button>
-            </div>
+          <div className="flex flex-wrap items-start justify-between gap-x-6 gap-y-3">
+            <ControlVerdictLine
+              attr="data-computer-verdict"
+              kind={verdict.kind}
+              tone={verdict.tone}
+              text={verdictText}
+              action={verdictAction}
+            />
+            <CapabilitySwitch
+              id="computer-master-switch"
+              attr="data-computer-enabled-switch"
+              label={t('st.computer.enabledLabel')}
+              checked={isComputerEnabled}
+              disabled={enabledSave.saving || configQuery.isLoading || computerHostLocked}
+              saving={enabledSave.saving}
+              saved={enabledSave.saved}
+              onChange={handleToggleEnabled}
+            />
           </div>
+          {isToolPolicyPartiallyDenied ? (
+            <p className="text-[12px] text-amber-ink" data-computer-toolpolicy-partial>
+              {t('st.computer.toolPolicyPartial')}
+            </p>
+          ) : null}
           <DefaultOnSwitch
             id="computer"
             state={computerCapability}
@@ -423,132 +463,77 @@ export function ComputerControlSection() {
               });
             }}
           />
-
-          {isToolPolicyDenied ? (
-            <p className="text-[12px] text-danger" data-computer-toolpolicy-denied>
-              {t('st.computer.toolPolicyDenied')}
-            </p>
-          ) : isToolPolicyPartiallyDenied ? (
-            <p className="text-[12px] text-amber-ink" data-computer-toolpolicy-partial>
-              {t('st.computer.toolPolicyPartial')}
-            </p>
-          ) : null}
-
           <FeedbackLine feedback={enabledSave.error} />
-        </div>
-      </SectionCard>
 
-      {/* A+B — the machine this drives, and whether its executor is in place */}
-      <SectionCard id="st-card-computer-machine" title={t('st.computer.machineTitle')}>
-        <div className="space-y-3">
-          <dl className="grid grid-cols-[minmax(6rem,auto)_minmax(0,1fr)] items-center gap-x-6 gap-y-3 text-[13px]">
-            <dt className="text-ink-soft" id="computer-machine-label">{t('st.computer.machineLabel')}</dt>
-            <dd className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-              <span className="font-mono text-[12px] text-ink" data-computer-platform aria-labelledby="computer-machine-label">
-                {machineLine}
-              </span>
+          <div className="space-y-2 border-t border-hairline pt-3" id="st-card-computer-machine" data-settings-card="st-card-computer-machine">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]" id="st-card-computer-setup" data-settings-card="st-card-computer-setup">
+              <span className="text-ink-soft" id="computer-machine-label">{sshLabel ?? t('st.computer.machineLabel')}</span>
+              <span className="font-mono text-ink" data-computer-platform aria-labelledby="computer-machine-label">{machineLine}</span>
+              {capabilityQuery.isPending ? (
+                <span className="text-ink-faint" role="status" data-computer-state="detecting">{t('st.computer.state.detecting')}</span>
+              ) : capabilityQuery.isError || capability === undefined ? (
+                <span className="text-danger" data-computer-state="failed">{t('st.computer.state.failed')}</span>
+              ) : (
+                <span className="text-ink-soft" data-computer-state={capability.state}>
+                  {t(STATE_KEYS[capability.state])}
+                  {capability.version === undefined ? null : <span className="font-mono text-ink-faint" data-computer-version>{` v${capability.version}`}</span>}
+                </span>
+              )}
               <button type="button" className={`${SECONDARY_BUTTON} ml-auto`} data-computer-check-btn
                 disabled={checking}
                 onClick={() => { void check(); }}>
                 {checking ? t('st.computer.checking') : t('st.computer.recheckButton')}
               </button>
-            </dd>
+            </div>
 
-            <dt className="text-ink-soft" id="computer-state-label">{t('st.computer.statusLabel')}</dt>
-            <dd className="min-w-0" id="st-card-computer-setup">
-              {capabilityQuery.isPending ? (
-                <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-state="detecting">
-                  <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
-                  {t('st.computer.state.detecting')}
-                </p>
-              ) : capabilityQuery.isError || capability === undefined ? (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2" data-computer-state="failed">
-                  <p className="text-[12px] text-danger" role="alert">{t('st.computer.state.failed')}</p>
-                  <button type="button" className={`${SECONDARY_BUTTON} ml-auto`} data-computer-retry
-                    onClick={() => { void check(); }}>
-                    {t('common.retry')}
-                  </button>
-                </div>
-              ) : (
-                <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-                  <span className="inline-flex items-center gap-1.5 text-ink" data-computer-state={capability.state} aria-labelledby="computer-state-label">
-                    <span aria-hidden className={`h-1.5 w-1.5 rounded-full ${capability.state === 'ready' ? 'bg-success' : capability.state === 'partial' ? 'bg-amber-rule' : 'bg-hairline-strong'}`} />
-                    {t(STATE_KEYS[capability.state])}
-                  </span>
-                  {capability.version !== undefined ? (
-                    <span className="font-mono text-[11px] text-ink-faint" data-computer-version>v{capability.version}</span>
-                  ) : null}
-                  {capability.state !== 'ready' && !capability.install.running && capability.plan !== undefined ? (
-                    <button type="button" className={`${PRIMARY_BUTTON} ml-auto`} data-computer-install-btn
-                      disabled={installing}
-                      onClick={() => { setConfirmingInstall(true); }}>
-                      {installing ? t('st.computer.installing') : installError === undefined ? t('st.computer.installButton') : t('st.computer.retryInstall')}
-                    </button>
-                  ) : null}
-                </div>
-              )}
-            </dd>
-          </dl>
+            {capabilityQuery.isError ? <InlineError error={capabilityQuery.error} /> : null}
+            {envQuery.isError ? <InlineError error={envQuery.error} /> : null}
+            {capability !== undefined && capability.install.running ? (
+              <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-installing>
+                <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
+                {capability.install.step ?? t('st.computer.installing')}
+                {capability.install.percent === undefined ? null : ` · ${Math.round(capability.install.percent)}%`}
+              </p>
+            ) : null}
+            {installError !== undefined ? <FeedbackLine feedback={{ tone: 'error', text: installError }} /> : null}
+            <FeedbackLine feedback={feedback} />
+            {capability?.state === 'ready' && platform === 'darwin' ? <Hint>{t('st.computer.macPermissions')}</Hint> : null}
 
-          {capabilityQuery.isError ? <InlineError error={capabilityQuery.error} /> : null}
-          {envQuery.isError ? <InlineError error={envQuery.error} /> : null}
-
-          {capability !== undefined && capability.install.running ? (
-            <p className="flex items-center gap-2 text-[12px] leading-4 text-ink-faint" role="status" data-computer-installing>
-              <span className="status-dot-busy inline-block h-1.5 w-1.5 shrink-0 rounded-full bg-ink-soft" />
-              {capability.install.step ?? t('st.computer.installing')}
-              {capability.install.percent === undefined ? null : ` · ${Math.round(capability.install.percent)}%`}
-            </p>
-          ) : null}
-          {installError !== undefined ? <FeedbackLine feedback={{ tone: 'error', text: installError }} /> : null}
-          {capability?.install.note !== undefined ? (
-            <p className="text-[11px] text-ink-soft" data-computer-install-note>{capability.install.note}</p>
-          ) : null}
-
-          <Hint>
-            {sshLabel === null
-              ? t('st.computer.machineHint')
-              : t('st.computer.machineHintSsh', { label: sshLabel })}
-          </Hint>
-          {capability?.state === 'ready' ? <Hint>{t('st.computer.installedHint')}</Hint> : null}
-          {capability?.state === 'ready' && optionalUnchecked ? <Hint>{t('st.computer.optionalUnverified')}</Hint> : null}
-          {capability?.state === 'ready' && platform === 'darwin' ? <Hint>{t('st.computer.macPermissions')}</Hint> : null}
-
-          <FeedbackLine feedback={feedback} />
-
-          {capability !== undefined && capability.steps.length > 0 ? (
-            <AdvancedDetails summary={t('st.computer.details')} data-computer-steps>
-              <ul className="space-y-1">
-                {capability.steps.map((step) => (
-                  <li className="text-[11px] text-ink-soft" key={step.id} data-computer-step={step.id}
-                    data-computer-step-kind={step.optional === true ? 'optional' : 'required'}>
-                    {(STEP_KEYS[step.id] === undefined ? step.id : t(STEP_KEYS[step.id]!))}
-                    {' · '}
-                    {step.optional === true ? `${t('st.plugins.optional')} · ` : ''}
-                    {t(`st.plugins.runtimeStepState.${step.state}`)}
-                    {step.detail === undefined ? '' : ` · ${step.detail}`}
-                  </li>
-                ))}
-              </ul>
-            </AdvancedDetails>
-          ) : null}
+            {capability !== undefined ? (
+              <AdvancedDetails summary={t('st.computer.details')} data-computer-steps>
+                <ul className="space-y-1">
+                  {capability.steps.map((step) => (
+                    <li className="text-[11px] text-ink-soft" key={step.id} data-computer-step={step.id}
+                      data-computer-step-kind={step.optional === true ? 'optional' : 'required'}>
+                      {(STEP_KEYS[step.id] === undefined ? step.id : t(STEP_KEYS[step.id]!))}
+                      {' · '}
+                      {step.optional === true ? `${t('st.plugins.optional')} · ` : ''}
+                      {t(`st.plugins.runtimeStepState.${step.state}`)}
+                      {step.detail === undefined ? '' : ` · ${step.detail}`}
+                    </li>
+                  ))}
+                </ul>
+                {capability.install.note === undefined ? null : (
+                  <p className="text-[11px] text-ink-soft" data-computer-install-note>{capability.install.note}</p>
+                )}
+                {capability.state === 'ready' ? <p>{t('st.computer.installedHint')}</p> : null}
+                {capability.state === 'ready' && optionalUnchecked ? <p>{t('st.computer.optionalUnverified')}</p> : null}
+                <p>{sshLabel === null ? t('st.computer.machineHint') : t('st.computer.machineHintSsh', { label: sshLabel })}</p>
+              </AdvancedDetails>
+            ) : null}
+          </div>
         </div>
       </SectionCard>
 
-      {/* C — the connections themselves */}
       <SectionCard id="st-card-computer-mcp" title={t('st.computer.connectionsTitle')}>
-        <div className="space-y-3">
-          <ComputerConnectionCard
-            platform={platform}
-            planBinary={capability?.plan?.destination}
-            summary={connectionSummary}
-            footer={platform === 'win32' ? <WindowsMcpRegistrationFold scopeId={scopeId} /> : null}
-          />
-          <Hint>{t('st.computer.connectionsHint')}</Hint>
-        </div>
+        <ComputerConnectionCard
+          platform={platform}
+          planBinary={capability?.plan?.destination}
+          summary={connectionSummary}
+          footer={platform === 'win32' ? <WindowsMcpRegistrationFold scopeId={scopeId} /> : null}
+        />
       </SectionCard>
 
-      {/* D — model usage guidance preference */}
       <SectionCard id="st-card-computer-preference" title={t('st.computer.preferenceTitle')}>
         <div className="space-y-3">
           {configQuery.isPending && configQuery.data === undefined ? (
@@ -576,10 +561,7 @@ export function ComputerControlSection() {
                   <SettingsSegmented
                     choices={preferenceChoices}
                     value={activePreference}
-                    onChange={(next) => {
-                      setPreferenceFeedback(null);
-                      setDraftPreference(next === effectivePreference ? null : next);
-                    }}
+                    onChange={choosePreference}
                     disabled={isOverriddenByHigherSource || preferenceSaving}
                     ariaLabelledBy="computer-preference-label"
                     dataAttr="data-computer-preference-choice"
@@ -603,6 +585,7 @@ export function ComputerControlSection() {
                       {t('st.computer.restoreInherit')}
                     </button>
                   ) : null}
+                  <SaveStatus saving={preferenceSaving} saved={isPreferenceSaved} />
                 </div>
               </SettingField>
 
@@ -619,15 +602,6 @@ export function ComputerControlSection() {
               ) : null}
 
               <FeedbackLine feedback={preferenceFeedback} />
-
-              <SettingsDraftFooter
-                id="computer-preference"
-                dirty={isPreferenceDirty}
-                saving={preferenceSaving}
-                saved={isPreferenceSaved}
-                onSave={() => { void savePreference(); }}
-                onDiscard={discardPreference}
-              />
             </>
           )}
         </div>

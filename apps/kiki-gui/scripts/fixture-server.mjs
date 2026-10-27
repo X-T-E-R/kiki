@@ -2760,7 +2760,16 @@ class FixtureServer {
         const prevBc = typeof this.config.browser_control === 'object' && this.config.browser_control !== null
           ? { ...this.config.browser_control }
           : { enabled: true };
-        if ('enabled' in patch.browser_control) prevBc.enabled = Boolean(patch.browser_control.enabled);
+        if ('enabled' in patch.browser_control) {
+          prevBc.enabled = patch.browser_control.enabled !== false;
+          prevBc.enabledSource = patch.browser_control.enabled === false ? 'home' : 'default';
+          if (this.config.optional_capabilities?.browser && typeof this.config.optional_capabilities.browser === 'object') {
+            this.config.optional_capabilities = {
+              ...this.config.optional_capabilities,
+              browser: { ...this.config.optional_capabilities.browser, allowed: prevBc.enabled },
+            };
+          }
+        }
         if ('allowed_browsers' in patch.browser_control || 'allowedBrowsers' in patch.browser_control) {
           const rawAllowed = patch.browser_control.allowed_browsers ?? patch.browser_control.allowedBrowsers;
           if (rawAllowed === null || rawAllowed === undefined) {
@@ -2785,6 +2794,57 @@ class FixtureServer {
           if (this.browser) this.browser.disabledSources = list.length > 0 ? list : undefined;
         }
         this.config.browser_control = prevBc;
+      }
+      if (patch.computer_control !== undefined && patch.computer_control !== null && typeof patch.computer_control === 'object') {
+        const prevCc = typeof this.config.computer_control === 'object' && this.config.computer_control !== null
+          ? { ...this.config.computer_control }
+          : { enabled: true, usagePreference: 'avoid', usagePreferenceSource: 'default' };
+        if ('enabled' in patch.computer_control) {
+          prevCc.enabled = patch.computer_control.enabled !== false;
+          prevCc.enabledSource = patch.computer_control.enabled === false ? 'home' : 'default';
+          if (this.config.optional_capabilities?.computer && typeof this.config.optional_capabilities.computer === 'object') {
+            this.config.optional_capabilities = {
+              ...this.config.optional_capabilities,
+              computer: { ...this.config.optional_capabilities.computer, allowed: prevCc.enabled },
+            };
+          }
+        }
+        if ('usage_preference' in patch.computer_control || 'usagePreference' in patch.computer_control) {
+          const rawPref = patch.computer_control.usage_preference ?? patch.computer_control.usagePreference;
+          delete prevCc.usage_preference;
+          if (rawPref === null || rawPref === undefined) {
+            prevCc.usagePreference = 'avoid';
+            prevCc.usagePreferenceSource = 'default';
+          } else {
+            prevCc.usagePreference = rawPref;
+            prevCc.usagePreferenceSource = 'home';
+          }
+        }
+        if ('connection' in patch.computer_control) {
+          const rawConn = patch.computer_control.connection;
+          if (rawConn === null || rawConn === undefined || rawConn === '') {
+            delete prevCc.connection;
+            delete prevCc.connectionSource;
+          } else {
+            prevCc.connection = String(rawConn);
+            prevCc.connectionSource = 'home';
+          }
+        }
+        this.config.computer_control = prevCc;
+      }
+      if (patch.optional_capabilities?.defaults !== undefined && typeof patch.optional_capabilities.defaults === 'object' && patch.optional_capabilities.defaults !== null) {
+        const prevOpt = typeof this.config.optional_capabilities === 'object' && this.config.optional_capabilities !== null
+          ? { ...this.config.optional_capabilities }
+          : {};
+        delete prevOpt.defaults;
+        for (const [id, nextDefault] of Object.entries(patch.optional_capabilities.defaults)) {
+          const current = typeof prevOpt[id] === 'object' && prevOpt[id] !== null
+            ? { ...prevOpt[id] }
+            : { allowed: true, host_locked: false, default_on: false, unresolved: false };
+          current.default_on = Boolean(nextDefault);
+          prevOpt[id] = current;
+        }
+        this.config.optional_capabilities = prevOpt;
       }
       // The built-in body and the source are answered facts, never stored
       // config: what is in force follows from whether an override is there.

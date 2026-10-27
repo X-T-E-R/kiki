@@ -1,19 +1,24 @@
 /**
  * 浏览器控制 → the browsers themselves. Every saved connection is one row: may
- * the Agent use it (the box), is it the default (the tag on the right), what it
- * is and where it runs, and the state the control service last reported.
- * Pressing a row opens it as a flat form on the right (one column under `md`,
- * with a back row), the way the SSH hosts and identity pages work.
+ * the Agent use it (the box), what it is and where it runs, the state the
+ * control service last reported, and a quiet tag on the default. The default
+ * itself is chosen in one place, the select on the list's header line.
  *
- * Allowed and default are written straight from the row; they are two
+ * The card shows one thing at a time. Pressing a row replaces the list with
+ * that connection as a flat form, with a back row; Add replaces it with the
+ * ways to get a browser — the sources Kiki can prepare, then a manual form.
+ * The same sources stay manageable (switch, prepare, check) in a fold under
+ * the list.
+ *
+ * Allowed and default are written straight from the list; they are two
  * separate facts, and the default tag never ticks the box. A connection whose
  * source is switched off keeps its box as stored, greyed, so turning the source
  * back on restores exactly what was there.
  *
  * Three things stay apart in the form on purpose:
  *
- *   config   name / id / type / enable / driver and profile paths or CDP
- *            endpoint — saved by the draft footer, never by a runtime action;
+ *   config   name / id / type / driver and profile paths or CDP endpoint —
+ *            saved by the draft footer, never by a runtime action;
  *   runtime  check / connect / disconnect, which use the *saved* config and are
  *            therefore offered only while the draft is clean;
  *   state    the control service's own `status`, worded as the service words it
@@ -25,7 +30,7 @@
  * pressing check / connect does that.
  */
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useContext, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -38,35 +43,30 @@ import { useI18n } from '../../../i18n';
 import { useConnection } from '../../../state/connection';
 import {
   AGENT_BROWSER_MARKERS, AGENT_BROWSER_VERSION, LIVE_BLOCKING_CONNECT, LIVE_STATES, browserApi, browserFailureOf, browserKeys, endpointHost,
-  isFlagDisabled, whenText,
+  isFlagDisabled, presetReadiness, whenText,
 } from '../../../lib/browserRest';
 import type { BrowserConnection, BrowserConnectionRow, BrowserConnectionType, BrowserOwnership } from '../../../lib/browserRest';
 import { ConfirmDialog } from '../../ConfirmDialog';
-import { FeedbackLine, Hint, InlineError, Toggle, type Feedback } from '../../controls';
+import { FeedbackLine, Hint, InlineError, SaveStatus, Toggle, type Feedback } from '../../controls';
 import { useDirtyGuard } from '../../dirtyGuard';
 import { Icon } from '../../icons';
 import { Tag } from '../../capabilities/primitives';
 import { DANGER_GHOST_BUTTON, INPUT, SECONDARY_BUTTON } from '../../ui';
 import { AdvancedDetails } from '../fields';
 import { SecretField } from '../SecretField';
-import { FieldIssue, FORM_LABEL, SettingsDetailLayout, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
+import { SettingsCardMountContext, SettingsFlashContext } from '../SectionCard';
+import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
+import { useInstantSave } from '../useInstantSave';
 import { useSavedTick } from '../useSavedTick';
 import { BrowserRuntimeDetails, BrowserStateMark, OtherBrowserEcosystems } from './BrowserBits';
-import { useBrowserAllowance } from './browserAllowance';
+import { BrowserSetupWizard } from './BrowserSetupWizard';
+import { SOURCE_NAME_KEYS, useBrowserAllowance } from './browserAllowance';
 import {
   browserConnectionInput, draftIssues, draftOf, hasIssues, isDirtyDraft, isNewDraft, newBrowserDraft, parseBrowserInput,
   type BrowserDraft,
 } from './browserDraft';
 
 type RuntimeAction = 'check' | 'connect' | 'disconnect';
-
-/** What a source is called when the server has not listed its route. */
-const SOURCE_FALLBACK_KEYS: Readonly<Record<BrowserSourceId, I18nKey>> = {
-  'kimi-webbridge': 'st.browser.sourceName.kimi-webbridge',
-  'independent-browser': 'st.browser.sourceName.independent-browser',
-  'codex-browser': 'st.browser.sourceName.codex-browser',
-  'ego-lite': 'st.browser.sourceName.ego-lite',
-};
 
 /**
  * The development-candidate flag that gates a run
@@ -197,23 +197,21 @@ function DraftField({ id, label, value, onChange, issue, hint, placeholder, mono
   );
 }
 
-export function BrowserConnectionCard({ summary }: {
-  /** The page's own line about what is allowed and which is the default, drawn beside Add. */
-  readonly summary?: ReactNode;
-} = {}) {
+export function BrowserConnectionCard() {
   const { client, scopeId } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const guard = useDirtyGuard();
   const allowance = useBrowserAllowance();
+  const defaultSave = useInstantSave();
 
   const query = allowance.connectionsQuery;
   const rows = allowance.connections;
   const defaultBrowser = allowance.defaultBrowser;
 
-  // The routes name the Codex pipe whose approval is still unproven, and what
-  // each source is called; both are read from the same cached setup read.
+  // The routes name the Codex pipe whose approval is still unproven, and which
+  // sources still need a person; both are read from the same cached setup read.
   const presetsQuery = useQuery({
     queryKey: browserKeys.presets(scopeId),
     queryFn: () => browserApi(client).setupPresets(),
@@ -223,8 +221,10 @@ export function BrowserConnectionCard({ summary }: {
   const codexPending = new Set(presets
     .filter((item) => item.preset === 'codex-browser' && item.reason === 'approval_unproven' && item.browserId !== undefined)
     .map((item) => item.browserId!));
-  const sourceName = (source: BrowserSourceId): string =>
-    presets.find((item) => item.preset === source)?.displayName ?? t(SOURCE_FALLBACK_KEYS[source]);
+  const sourceName = (source: BrowserSourceId): string => t(SOURCE_NAME_KEYS[source]);
+  const sourcesNeedingAction = presets.filter((item) => item.controlSurface !== 'external-app'
+    && allowance.sourceEnabled(item.preset)
+    && ['needs-action', 'failed', 'blocked'].includes(presetReadiness(item))).length;
 
   const [rowBusy, setRowBusy] = useState(false);
   const [rowFeedback, setRowFeedback] = useState<Feedback>(null);
@@ -241,16 +241,18 @@ export function BrowserConnectionCard({ summary }: {
   };
   const toggleAllowed = (row: BrowserConnectionRow, next: boolean) =>
     rowWrite(() => allowance.writeAllowed(row.id, next, { fallbackBrowserId: row.browserId }));
-  const toggleDefault = (id: string, isDefault: boolean) => rowWrite(() => allowance.writeDefault(id, isDefault));
 
   const [draft, setDraft] = useState<BrowserDraft | null>(null);
-  const [narrowPane, setNarrowPane] = useState<'list' | 'detail'>('list');
+  /** The add view: the sources Kiki can prepare, then the manual form. */
+  const [adding, setAdding] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [saving, setSaving] = useState(false);
   const [busy, setBusy] = useState<RuntimeAction | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [feedback, setFeedback] = useState<Feedback>(null);
+  /** Where the last feedback belongs: beside the run actions, or beside the save row. */
+  const [feedbackAt, setFeedbackAt] = useState<'runtime' | 'form'>('form');
   /** Set when the run was refused by the development-candidate flag, not by the config. */
   const [flagOff, setFlagOff] = useState(false);
   const [outcome, setOutcome] = useState<{ readonly action: RuntimeAction; readonly status: BrowserStatus } | null>(null);
@@ -262,19 +264,22 @@ export function BrowserConnectionCard({ summary }: {
   const selectedId = draft?.original?.id;
   const selectedRow = selectedId === undefined ? undefined : rows.find((row) => row.id === selectedId);
   const selectedStatus: BrowserStatus | undefined = selectedRow?.status;
+  /** The stored switch, which the list's box writes; the form no longer edits it. */
+  const liveEnabled = selectedRow?.enabled ?? draft?.enabled ?? true;
 
   const vanished = selectedId !== undefined && query.isSuccess && selectedRow === undefined;
   useEffect(() => {
     // Removed elsewhere: a clean draft has nothing to keep, an edited one stays
     // so the person can decide where to re-apply it.
-    if (vanished && !dirty) { setDraft(null); setNarrowPane('list'); }
+    if (vanished && !dirty) setDraft(null);
   }, [vanished, dirty]);
 
   /** Replace the open draft without asking: the caller already has an answer. */
   const apply = (next: BrowserDraft | null) => {
     setDraft(next);
-    setNarrowPane(next === null ? 'list' : 'detail');
+    setAdding(false);
     setFeedback(null);
+    setFeedbackAt('form');
     setFlagOff(false);
     setOutcome(null);
     setAttempted(false);
@@ -318,17 +323,20 @@ export function BrowserConnectionCard({ summary }: {
     if (hasIssues(issues)) { setAttempted(true); return; }
     setSaving(true);
     setFeedback(null);
+    setFeedbackAt('form');
     setFlagOff(false);
     try {
-      const input = parseBrowserInput(browserConnectionInput(draft));
+      // The stored switch belongs to the list's box, not to this form: an edit
+      // carries whatever the box last wrote rather than the value at open time.
+      const input = parseBrowserInput(browserConnectionInput(isNewDraft(draft) ? draft : { ...draft, enabled: liveEnabled }));
       const id = draft.original?.id ?? draft.id.trim();
       const saved = await browserApi(client).upsert(id, input);
       // The draft becomes the server's own object, so a normalised field shows;
       // the row's state is re-read rather than carried over from before.
+      await reload();
       setDraft(draftOf(saved.connection));
       setOutcome(null);
       pingSaved();
-      await reload();
     } catch (error) {
       reportFailure(error);
     } finally {
@@ -341,6 +349,7 @@ export function BrowserConnectionCard({ summary }: {
     if (connection === undefined) return;
     setDeleting(true);
     setFeedback(null);
+    setFeedbackAt('form');
     try {
       await browserApi(client).remove(connection.id);
       setConfirmingDelete(false);
@@ -358,6 +367,7 @@ export function BrowserConnectionCard({ summary }: {
   const run = async (action: RuntimeAction, call: () => Promise<BrowserStatus>) => {
     setBusy(action);
     setFeedback(null);
+    setFeedbackAt('runtime');
     setFlagOff(false);
     setOutcome(null);
     try {
@@ -429,6 +439,7 @@ export function BrowserConnectionCard({ summary }: {
                         <span data-browser-status-tag="auth_unknown"><Tag tone="warn">{t('st.browser.status.authUnknown')}</Tag></span>
                       ) : null}
                       <BrowserStateMark state={row.enabled ? row.status.state : 'disabled'} />
+                      {isDefault ? <span data-browser-default-tag={row.id}><Tag tone="accent">{t('st.browser.defaultActive')}</Tag></span> : null}
                     </span>
                   </span>
                   <span className="mt-0.5 flex w-full min-w-0 flex-wrap items-baseline gap-x-1.5 text-[12px] text-ink-faint">
@@ -438,33 +449,16 @@ export function BrowserConnectionCard({ summary }: {
                       data-browser-identity={row.type === 'codex-extension' ? (row.browserId ?? row.id) : undefined}>
                       {locationLabel(t, row)}
                     </span>
-                    {source === undefined ? null : (
+                    {source === undefined || sourceOn ? null : (
                       <>
                         <span aria-hidden>·</span>
-                        <span className={`shrink-0 ${sourceOn ? '' : 'text-amber-ink'}`} data-browser-source-tag={source}>
-                          {sourceOn ? sourceName(source) : t('st.browser.row.sourceOff', { source: sourceName(source) })}
+                        <span className="shrink-0 text-amber-ink" data-browser-source-tag={source}>
+                          {t('st.browser.row.sourceOff', { source: sourceName(source) })}
                         </span>
                       </>
                     )}
                   </span>
                 </button>
-                {chosen || isDefault ? (
-                  <button
-                    type="button"
-                    data-browser-default-star={row.id}
-                    aria-pressed={isDefault}
-                    aria-label={isDefault ? t('st.browser.defaultActive') : t('st.browser.row.makeDefault', { name: row.name })}
-                    disabled={rowBusy}
-                    onClick={() => { void toggleDefault(row.id, isDefault); }}
-                    className={`mt-px shrink-0 rounded px-1.5 py-0.5 text-[11px] transition-colors ${
-                      isDefault
-                        ? 'bg-selected font-medium text-selected-ink'
-                        : 'text-ink-faint hover:bg-ink/[0.05] hover:text-ink-soft'
-                    }`}
-                  >
-                    {isDefault ? t('st.browser.defaultActive') : t('st.browser.setDefaultAction')}
-                  </button>
-                ) : <span className="w-[4.5rem] shrink-0" aria-hidden />}
               </li>
             );
           })}
@@ -482,9 +476,7 @@ export function BrowserConnectionCard({ summary }: {
 
   const detail = draft === null ? null : (
     <div className="min-w-0 space-y-4" data-browser-detail={draft.original?.id ?? 'new'}>
-      <button type="button" data-browser-back className={`${SECONDARY_BUTTON} md:hidden`} onClick={() => { open(null); }}>
-        <span className="inline-flex items-center gap-1"><Icon name="arrowLeft" size={12} />{t('st.browser.connectionsTitle')}</span>
-      </button>
+      <BackRow label={t('st.browser.connectionsTitle')} onBack={() => { open(null); }} />
 
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
@@ -507,11 +499,20 @@ export function BrowserConnectionCard({ summary }: {
           </p>
         </div>
         {isNewDraft(draft) ? null : (
-          <button type="button" className={DANGER_GHOST_BUTTON} data-browser-delete
-            disabled={deleting || saving}
-            onClick={() => { setConfirmingDelete(true); }}>
-            {t('st.browser.delete')}
-          </button>
+          <div className="flex shrink-0 items-center gap-2.5">
+            {selectedRow === undefined ? null : (
+              <span data-browser-detail-allowed={allowance.isEffective(selectedRow) ? 'true' : 'false'}>
+                <Tag tone={allowance.isEffective(selectedRow) ? 'accent' : 'faint'}>
+                  {t(allowance.isEffective(selectedRow) ? 'st.browser.status.allowed' : 'st.browser.state.disabled')}
+                </Tag>
+              </span>
+            )}
+            <button type="button" className={DANGER_GHOST_BUTTON} data-browser-delete
+              disabled={deleting || saving}
+              onClick={() => { setConfirmingDelete(true); }}>
+              {t('st.browser.delete')}
+            </button>
+          </div>
         )}
       </div>
 
@@ -520,7 +521,7 @@ export function BrowserConnectionCard({ summary }: {
       {isNewDraft(draft) || selectedStatus === undefined ? null : (
         <div className="space-y-2 border-t border-hairline pt-4" data-browser-runtime>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-            <BrowserStateMark state={draft.enabled ? selectedStatus.state : 'disabled'} />
+            <BrowserStateMark state={liveEnabled ? selectedStatus.state : 'disabled'} />
             {selectedStatus.driverVersion === undefined ? null : (
               <span className="text-[11px] text-ink-faint" data-browser-driver-line>
                 {t('st.browser.driverLine', { version: selectedStatus.driverVersion })}
@@ -531,13 +532,13 @@ export function BrowserConnectionCard({ summary }: {
             )}
             <span className="ml-auto flex flex-wrap items-center gap-2">
               <button type="button" className={SECONDARY_BUTTON} data-browser-check
-                disabled={busy !== null || saving || dirty || !draft.enabled}
+                disabled={busy !== null || saving || dirty || !liveEnabled}
                 title={runLabels.checkHint}
                 onClick={() => { void run('check', () => browserApi(client).check(draft.id)); }}>
                 {busy === 'check' ? t('st.browser.checking') : runLabels.check}
               </button>
               <button type="button" className={SECONDARY_BUTTON} data-browser-connect
-                disabled={busy !== null || saving || dirty || !draft.enabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
+                disabled={busy !== null || saving || dirty || !liveEnabled || LIVE_BLOCKING_CONNECT.has(selectedStatus.state)}
                 onClick={() => { void run('connect', () => browserApi(client).connect(draft.id)); }}>
                 {busy === 'connect' ? t('st.browser.connecting') : runLabels.connect}
               </button>
@@ -585,7 +586,7 @@ export function BrowserConnectionCard({ summary }: {
             </p>
           )}
           {selectedStatus.state === 'unconfirmed' ? <Hint>{t('st.browser.state.unconfirmedHint')}</Hint> : null}
-          {draft.enabled ? null : <Hint>{t('st.browser.disabledHint')}</Hint>}
+          {liveEnabled ? null : <Hint>{t('st.browser.disabledHint')}</Hint>}
           {dirty ? <Hint>{t('st.browser.dirtyRuntimeHint')}</Hint> : null}
           {/* What releasing this connection does to the browser itself, shown
               whenever there is something live to release — including under an
@@ -597,7 +598,7 @@ export function BrowserConnectionCard({ summary }: {
           {dirty && LIVE_STATES.has(selectedStatus.state) ? <Hint>{t('st.browser.saveEndsSession')}</Hint> : null}
 
           <BrowserRuntimeDetails id={draft.id} type={draft.type} status={selectedStatus} />
-          <FeedbackLine feedback={feedback} />
+          {feedbackAt === 'runtime' ? <FeedbackLine feedback={feedback} /> : null}
           {/* The refusal names the flag; this is the same trip the SSH page
               offers, to the rows that hold it. */}
           {flagOff ? (
@@ -625,10 +626,6 @@ export function BrowserConnectionCard({ summary }: {
               ariaLabel={t('st.browser.fieldType')} value={draft.type} dataAttr="data-browser-type"
               choices={typeChoices(t, draft.original)}
               onChange={(type) => { setDraft({ ...draft, type }); }} />
-          </div>
-          <div className="flex items-end pb-1" data-browser-enabled>
-            <Toggle label={t('st.browser.fieldEnabled')} checked={draft.enabled}
-              onChange={(enabled) => { setDraft({ ...draft, enabled }); }} />
           </div>
         </div>
 
@@ -714,7 +711,7 @@ export function BrowserConnectionCard({ summary }: {
 
       </fieldset>
 
-      <FeedbackLine feedback={feedback} />
+      {feedbackAt === 'form' || isNewDraft(draft) ? <FeedbackLine feedback={feedback} /> : null}
 
       <SettingsDraftFooter id={editorId} dirty={dirty} saving={saving} saved={justSaved}
         saveLabel={isNewDraft(draft) ? t('st.browser.create') : t('st.browser.save')}
@@ -723,11 +720,6 @@ export function BrowserConnectionCard({ summary }: {
         // Discard is the person answering the question already; asking again
         // through the guard would be a second confirmation for one decision.
         onDiscard={() => { apply(draft.original === undefined ? null : draftOf(draft.original)); }} />
-
-      {/* Reference material for a new connection, after the commit row so the
-          commit stays next to the fields it writes. */}
-      {isNewDraft(draft) ? <OtherBrowserEcosystems /> : null}
-      {isNewDraft(draft) ? <Hint>{t('st.browser.modelNotice')}</Hint> : null}
 
       <ConfirmDialog open={confirmingDelete} overlayId="confirm-browser-delete" busy={deleting}
         title={t('st.browser.deleteTitle', { name: draft.original?.name ?? '' })}
@@ -743,25 +735,152 @@ export function BrowserConnectionCard({ summary }: {
     </div>
   );
 
-  return (
-    <div className="min-w-0 space-y-3" data-browser-connections>
+  const empty = query.isSuccess && rows.length === 0;
+
+  const addView = (
+    <div className="min-w-0 space-y-4" data-browser-add-view>
+      <BackRow label={t('st.browser.connectionsTitle')} onBack={() => { setAdding(false); }} />
+      <h3 className="text-[15px] font-medium text-ink">{t('st.browser.add')}</h3>
+      <BrowserSetupWizard />
+      <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 border-t border-hairline pt-3.5" data-browser-add-manual-row>
+        <div className="min-w-0">
+          <p className="text-[14px] font-medium text-ink">{t('st.browser.addManual')}</p>
+          <p className="mt-0.5 text-[12.5px] text-ink-soft">{t('st.browser.addManualHint')}</p>
+        </div>
+        <button type="button" className={SECONDARY_BUTTON} data-browser-add-manual
+          onClick={() => { open(newBrowserDraft()); }}>
+          {t('st.browser.addManual')}
+        </button>
+      </div>
+      <div className="space-y-1.5">
+        <OtherBrowserEcosystems />
+        <Hint>{t('st.browser.modelNotice')}</Hint>
+      </div>
+    </div>
+  );
+
+  const listView = (
+    <div className="min-w-0 space-y-3">
       <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-        <div className="mr-auto min-w-0">{summary}</div>
+        <div className="mr-auto min-w-0">
+          {empty || query.isError ? null : (
+            <DefaultSelect allowance={allowance} save={defaultSave} />
+          )}
+        </div>
         <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-browser-add
           disabled={saving || deleting}
-          onClick={() => { open(newBrowserDraft()); }}>
+          onClick={() => { setAdding(true); }}>
           <Icon name="plus" size={12} />
           {t('st.browser.add')}
         </button>
       </div>
-
-      {detail === null
-        ? list
-        : <SettingsDetailLayout narrowPane={narrowPane} list={list} detail={detail} />}
-
-      {draft === null ? <FeedbackLine feedback={feedback} /> : null}
-      {draft === null && rows.length > 0 ? <Hint>{t('st.browser.intro')}</Hint> : null}
+      {list}
+      <FeedbackLine feedback={feedback} />
+      <SourcesFold attention={sourcesNeedingAction} defaultOpen={empty} />
     </div>
+  );
+
+  return (
+    <div className="min-w-0" data-browser-connections data-browser-view={draft !== null ? 'detail' : adding ? 'add' : 'list'}>
+      {draft !== null ? detail : adding ? addView : listView}
+    </div>
+  );
+}
+
+/** The back row of a view that replaced the list. */
+function BackRow({ label, onBack }: { readonly label: string; readonly onBack: () => void }) {
+  return (
+    <button type="button" data-browser-back
+      className="inline-flex items-center gap-1 rounded text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:underline"
+      onClick={onBack}>
+      <Icon name="arrowLeft" size={12} />{label}
+    </button>
+  );
+}
+
+/**
+ * The one place the default is chosen. The select lists the allowed
+ * connections plus the current default whatever its state; picking one never
+ * allows it, and "choose each time" clears it.
+ */
+function DefaultSelect({ allowance, save }: {
+  readonly allowance: ReturnType<typeof useBrowserAllowance>;
+  readonly save: ReturnType<typeof useInstantSave>;
+}) {
+  const { t } = useI18n();
+  const flashId = useContext(SettingsFlashContext);
+  const onCardMount = useContext(SettingsCardMountContext);
+  useEffect(() => { onCardMount?.('st-card-browser-default'); }, [onCardMount]);
+  const { connections, defaultBrowser, connectionsQuery } = allowance;
+  const choices = useMemo(() => [
+    { value: '', label: t('st.browser.defaultNone'), hint: t('st.browser.defaultNoneHint') },
+    ...connections
+      .filter((connection) => connection.enabled || connection.id === defaultBrowser)
+      .map((connection) => ({
+        value: connection.id,
+        label: connection.name,
+        hint: connection.enabled ? connection.id : `${connection.id} · ${t('st.browser.state.disabled')}`,
+      })),
+  ], [connections, defaultBrowser, t]);
+  return (
+    <div
+      className={`space-y-1.5 scroll-mt-4 ${flashId === 'st-card-browser-default' ? 'settings-card-flash' : ''}`}
+      id="st-card-browser-default"
+      data-settings-card="st-card-browser-default"
+    >
+      <span className="flex flex-wrap items-center gap-2 text-[12px] text-ink-soft">
+        <span id="browser-default-label">{t('st.browser.defaultLabel')}</span>
+        <SettingsSelect
+          id="browser-default"
+          ariaLabel={t('st.browser.defaultLabel')}
+          dataAttr="data-browser-default"
+          value={defaultBrowser}
+          choices={choices}
+          disabled={save.saving || connectionsQuery.isLoading}
+          onChange={(next) => { void save.run(() => allowance.writeDefault(next, next === '')); }}
+          variant="row"
+        />
+        <SaveStatus saving={save.saving} saved={save.saved} />
+      </span>
+      <FeedbackLine feedback={save.error} />
+    </div>
+  );
+}
+
+/**
+ * The sources, folded under the list for management: each one's switch, the
+ * preparation and the checks. A search hit on the old setup card opens it.
+ */
+function SourcesFold({ attention, defaultOpen }: { readonly attention: number; readonly defaultOpen: boolean }) {
+  const { t } = useI18n();
+  const flashId = useContext(SettingsFlashContext);
+  const onCardMount = useContext(SettingsCardMountContext);
+  const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    onCardMount?.('st-card-browser-setup');
+    onCardMount?.('st-card-webbridge');
+  }, [onCardMount]);
+  useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
+  useEffect(() => {
+    if (flashId === 'st-card-browser-setup' || flashId === 'st-card-webbridge') setOpen(true);
+  }, [flashId]);
+  return (
+    <details
+      id="st-card-browser-setup"
+      data-settings-card="st-card-browser-setup"
+      data-browser-sources
+      open={open}
+      onToggle={(event) => { setOpen((event.currentTarget as HTMLDetailsElement).open); }}
+      className={`scroll-mt-4 border-t border-hairline pt-3 ${flashId === 'st-card-browser-setup' ? 'settings-card-flash' : ''}`}
+    >
+      <summary className="cursor-pointer select-none text-[13px] text-ink-soft hover:text-ink">
+        {t('st.browser.setup.title')}
+        {attention === 0 ? null : <span className="text-amber-ink" data-browser-sources-attention={attention}>{` · ${t('st.browser.sourcesAttention', { count: attention })}`}</span>}
+      </summary>
+      <div className="pt-3">
+        {open ? <BrowserSetupWizard /> : null}
+      </div>
+    </details>
   );
 }
 

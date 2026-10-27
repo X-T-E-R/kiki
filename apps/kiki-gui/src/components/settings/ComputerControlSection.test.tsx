@@ -281,16 +281,20 @@ describe('ComputerControlSection', () => {
     await render(guard);
     await settleUntil('[data-computer-connection="kiki-computer"]');
     await click('[data-computer-connection="kiki-computer"]');
-    setInput('[data-computer-name-input]', 'renamed-computer');
+    await act(async () => { setInput('[data-computer-name-input]', 'renamed-computer'); });
     await settle();
 
-    await click('[data-computer-connection="second-computer"]');
+    // Detail replaces the list on desktop too; pressing back asks the dirty guard.
+    expect(query('[data-computer-connection="second-computer"]')).toBeNull();
+    await click('[data-computer-back]');
     expect(asked).toEqual([reported.at(-1)]);
-    // Still the edited draft, not the other connection.
+    // Still the edited draft, not the list.
     expect(query<HTMLInputElement>('[data-computer-name-input]')?.value).toBe('renamed-computer');
 
     await act(async () => { pending[0]?.(); });
     await settle();
+    expect(query('[data-computer-connection="second-computer"]')).not.toBeNull();
+    await click('[data-computer-connection="second-computer"]');
     expect(query<HTMLInputElement>('[data-computer-name-input]')?.value).toBe('second-computer');
   });
 
@@ -478,12 +482,12 @@ describe('ComputerControlSection', () => {
     expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('false');
     expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('default');
     expect(query('[data-computer-preference-reset]')).toBeNull();
-    expect(query('[data-settings-draft="computer-preference"]')?.getAttribute('hidden')).not.toBeNull();
+    expect(query('[data-settings-draft="computer-preference"]')).toBeNull();
     expect(installCapability).not.toHaveBeenCalled();
     expect(mcpAdd).not.toHaveBeenCalled();
   });
 
-  it('switches to prefer via draft and POST patchConfig, echoing new value and clearing dirty draft', async () => {
+  it('switches to prefer immediately via POST patchConfig, echoing new value and updating source', async () => {
     getConfig.mockResolvedValue({
       computer_control: { usagePreference: 'avoid', usagePreferenceSource: 'default' },
     } as KikiConfigResponse);
@@ -494,26 +498,21 @@ describe('ComputerControlSection', () => {
     await render();
     await settleUntil('[data-computer-preference-choice="prefer"]');
 
-    expect(query('[data-settings-draft="computer-preference"]')?.getAttribute('hidden')).not.toBeNull();
     await click('[data-computer-preference-choice="prefer"]');
 
-    expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(query('[data-settings-draft="computer-preference"]')?.getAttribute('hidden')).toBeNull();
-    expect(query('[data-settings-draft="computer-preference"]')?.dataset['dirty']).toBe('true');
-
-    await click('[data-settings-draft="computer-preference"] button');
     expect(patchConfig).toHaveBeenCalledWith({
       computer_control: { usage_preference: 'prefer' },
     });
     expect(installCapability).not.toHaveBeenCalled();
 
-    // Cache updated from echo, draft cleared, source updated to home
+    // Cache updated from echo, source updated to home
     expect(queries.getQueryData(['config', 'local'])).toEqual({
       computer_control: { usagePreference: 'prefer', usagePreferenceSource: 'home' },
     });
+    expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('home');
-    expect(query('[data-settings-draft="computer-preference"]')?.getAttribute('hidden')).not.toBeNull();
     expect(query('[data-computer-preference-reset]')).not.toBeNull();
+    expect(query('[data-saved-tick]')).not.toBeNull();
   });
 
   it('restores inherited default when home override is active via null patch', async () => {
@@ -547,7 +546,7 @@ describe('ComputerControlSection', () => {
     });
   });
 
-  it('preserves draft and displays error on patch failure without claiming success', async () => {
+  it('rolls back to stored preference and displays error on patch failure without claiming success', async () => {
     getConfig.mockResolvedValue({
       computer_control: { usagePreference: 'avoid', usagePreferenceSource: 'default' },
     } as KikiConfigResponse);
@@ -557,14 +556,14 @@ describe('ComputerControlSection', () => {
     await settleUntil('[data-computer-preference-choice="prefer"]');
 
     await click('[data-computer-preference-choice="prefer"]');
-    await click('[data-settings-draft="computer-preference"] button');
 
-    expect(patchConfig).toHaveBeenCalled();
-    expect(query('[data-settings-draft="computer-preference"]')?.getAttribute('hidden')).toBeNull();
-    expect(query('[data-settings-draft="computer-preference"]')?.dataset['dirty']).toBe('true');
-    expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(patchConfig).toHaveBeenCalledWith({
+      computer_control: { usage_preference: 'prefer' },
+    });
+    expect(query('[data-computer-preference-choice="avoid"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('false');
     expect(query('[data-feedback-tone="error"]')?.textContent).toContain('Network error');
-    expect(query('[data-settings-draft-saved="computer-preference"]')).toBeNull();
+    expect(query('[data-saved-tick]')).toBeNull();
     expect(installCapability).not.toHaveBeenCalled();
     // Cache remains unchanged
     expect(queries.getQueryData(['config', 'local'])).toEqual({
@@ -585,7 +584,6 @@ describe('ComputerControlSection', () => {
     expect(query('[data-computer-preference-override-notice]')).not.toBeNull();
     expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('env');
     expect(query('[data-computer-preference-reset]')).toBeNull();
-    expect(query('[data-settings-draft="computer-preference"]')?.getAttribute('hidden')).not.toBeNull();
   });
 
   it('reports failed config fetch without falling back to default or avoid and retries successfully', async () => {
@@ -651,14 +649,12 @@ describe('ComputerControlSection', () => {
     patchConfig.mockImplementationOnce(() => localSave.promise).mockImplementationOnce(() => remoteSave.promise);
     await render();
     await click('[data-computer-preference-choice="prefer"]');
-    await click('[data-settings-draft="computer-preference"] button');
 
     connection.scopeId = 'ssh:office-mac';
     getConfig.mockResolvedValue(preferenceConfig('prefer', 'base'));
     await render();
     await settleUntil('[data-computer-preference-source="base"]');
     await click('[data-computer-preference-choice="avoid"]');
-    await click('[data-settings-draft="computer-preference"] button');
     expect(patchConfig).toHaveBeenCalledTimes(2);
 
     const localEcho = preferenceConfig('prefer', 'home');
@@ -668,14 +664,12 @@ describe('ComputerControlSection', () => {
     expect(queries.getQueryData(['config', 'ssh:office-mac'])).toEqual(preferenceConfig('prefer', 'base'));
     expect(query('[data-computer-preference-choice="avoid"]')?.getAttribute('aria-pressed')).toBe('true');
     expect(query<HTMLButtonElement>('[data-computer-preference-choice="avoid"]')?.disabled).toBe(true);
-    expect(query<HTMLButtonElement>('[data-settings-draft="computer-preference"] button')?.disabled).toBe(true);
-    expect(query('[data-settings-draft="computer-preference"]')?.dataset['dirty']).toBe('true');
-    expect(query('[data-settings-draft-saved="computer-preference"]')).toBeNull();
+    expect(query('[data-saved-tick]')).toBeNull();
 
     await act(async () => { remoteSave.resolve(preferenceConfig('avoid', 'home')); });
     await settle();
     expect(query<HTMLButtonElement>('[data-computer-preference-choice="avoid"]')?.disabled).toBe(false);
-    expect(query('[data-settings-draft-saved="computer-preference"]')).not.toBeNull();
+    expect(query('[data-saved-tick]')).not.toBeNull();
   });
 
   it.each(['save', 'reset'] as const)('rejects late same-scope %s success after returning and saving a newer choice', async (oldAction) => {
@@ -686,7 +680,6 @@ describe('ComputerControlSection', () => {
     await render();
     if (oldAction === 'save') {
       await click('[data-computer-preference-choice="prefer"]');
-      await click('[data-settings-draft="computer-preference"] button');
     } else {
       await click('[data-computer-preference-reset]');
     }
@@ -697,42 +690,32 @@ describe('ComputerControlSection', () => {
     await act(async () => { queries.setQueryData(['config', 'local'], preferenceConfig('prefer', 'home')); });
     await settle();
     await click('[data-computer-preference-choice="avoid"]');
-    await click('[data-settings-draft="computer-preference"] button');
     expect(patchConfig).toHaveBeenNthCalledWith(2, { computer_control: { usage_preference: 'avoid' } });
     const newest = preferenceConfig('avoid', 'home');
     await act(async () => { newRequest.resolve(newest); });
     await settle();
-    expect(query('[data-settings-draft-saved="computer-preference"]')).not.toBeNull();
+    expect(query('[data-saved-tick]')).not.toBeNull();
     expect(query<HTMLButtonElement>('[data-computer-preference-choice="avoid"]')?.disabled).toBe(false);
 
-    await click('[data-computer-preference-choice="prefer"]');
     await act(async () => { oldRequest.resolve(preferenceConfig('prefer', oldAction === 'reset' ? 'base' : 'home')); });
     await settle();
     expect(queries.getQueryData(['config', 'local'])).toEqual(newest);
     expect(query('[data-computer-preference-source]')?.getAttribute('data-computer-preference-source')).toBe('home');
-    expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(query('[data-settings-draft="computer-preference"]')?.dataset['dirty']).toBe('true');
-    expect(query<HTMLButtonElement>('[data-settings-draft="computer-preference"] button')?.disabled).toBe(false);
-    expect(query('[data-settings-draft-saved="computer-preference"]')).toBeNull();
+    expect(query('[data-computer-preference-choice="avoid"]')?.getAttribute('aria-pressed')).toBe('true');
   });
 
-  it('keeps newer same-scope cache data and the unsaved draft when an older save succeeds', async () => {
+  it('keeps newer same-scope cache data when an older save succeeds', async () => {
     const save = deferred<KikiConfigResponse>();
     getConfig.mockResolvedValue(preferenceConfig('avoid', 'default'));
     patchConfig.mockImplementationOnce(() => save.promise);
     await render();
     await click('[data-computer-preference-choice="prefer"]');
-    await click('[data-settings-draft="computer-preference"] button');
     const newer = preferenceConfig('avoid', 'base');
     await act(async () => { queries.setQueryData(['config', 'local'], newer); });
     await act(async () => { save.resolve(preferenceConfig('prefer', 'home')); });
     await settle();
     expect(queries.getQueryData(['config', 'local'])).toEqual(newer);
     expect(query('[data-computer-preference-source="base"]')).not.toBeNull();
-    expect(query('[data-computer-preference-choice="prefer"]')?.getAttribute('aria-pressed')).toBe('true');
-    expect(query('[data-settings-draft="computer-preference"]')?.dataset['dirty']).toBe('true');
-    expect(query<HTMLButtonElement>('[data-settings-draft="computer-preference"] button')?.disabled).toBe(false);
-    expect(query('[data-settings-draft-saved="computer-preference"]')).toBeNull();
   });
 
   it('may update its original cache after unmount without creating a saved UI timer', async () => {
@@ -741,7 +724,6 @@ describe('ComputerControlSection', () => {
     patchConfig.mockImplementationOnce(() => save.promise);
     await render();
     await click('[data-computer-preference-choice="prefer"]');
-    await click('[data-settings-draft="computer-preference"] button');
     await act(async () => { root.render(<></>); });
     const timer = vi.spyOn(globalThis, 'setTimeout');
     const echo = preferenceConfig('prefer', 'home');
@@ -769,7 +751,6 @@ describe('ComputerControlSection', () => {
     await settleUntil('[data-computer-preference-choice="prefer"]');
 
     await click('[data-computer-preference-choice="prefer"]');
-    await click('[data-settings-draft="computer-preference"] button');
 
     // Switch scope away and then back to local
     connection.scopeId = 'ssh:remote';
@@ -844,7 +825,7 @@ describe('ComputerControlSection', () => {
       expect(query('#st-card-computer-mcp')).not.toBeNull();
     });
 
-    it('displays explicit tool policy denied message when tools disable computer', async () => {
+    it('displays explicit tool policy denied message in verdict when tools disable computer', async () => {
       getConfig.mockResolvedValue({
         providers: {},
         tools: { disabled: ['mcp__kiki-computer__*'] },
@@ -856,7 +837,7 @@ describe('ComputerControlSection', () => {
       await render();
       await settleUntil('[data-computer-control-enabled]');
 
-      const denied = query('[data-computer-toolpolicy-denied]');
+      const denied = query('[data-computer-verdict="tool_denied"]');
       expect(denied).not.toBeNull();
       expect(denied?.textContent).toContain('Computer control tools are denied by tool policy.');
     });

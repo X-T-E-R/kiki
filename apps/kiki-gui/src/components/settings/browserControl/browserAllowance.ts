@@ -24,9 +24,19 @@ import {
   type BrowserSourceId,
 } from '@kiki/session-core/settings';
 
+import type { I18nKey } from '@kiki/session-core/i18n';
+
 import type { KikiConfigPatch } from '../../../lib/client';
 import { browserApi, browserKeys, type BrowserConnectionRow } from '../../../lib/browserRest';
 import { useConnection } from '../../../state/connection';
+
+/** The sources the page names in the reader's own language; an unknown one keeps the server's name. */
+export const SOURCE_NAME_KEYS: Readonly<Record<BrowserSourceId, I18nKey>> = {
+  'kimi-webbridge': 'st.browser.sourceName.kimi-webbridge',
+  'independent-browser': 'st.browser.sourceName.independent-browser',
+  'codex-browser': 'st.browser.sourceName.codex-browser',
+  'ego-lite': 'st.browser.sourceName.ego-lite',
+};
 
 type ControlFields = {
   readonly allowedBrowsers?: string[];
@@ -169,6 +179,7 @@ export function useBrowserAllowance() {
 
   return {
     configQuery, connectionsQuery, connections, defaultBrowser, disabledSources, toolPolicyDenied, toolPolicyPartial,
+    allowedConfigured, allowedBrowsers,
     sourceOf, sourceEnabled, isChosen, isEffective, effectiveCount,
     writeAllowed, writeDefault, writeSourceEnabled, invalidate,
   };

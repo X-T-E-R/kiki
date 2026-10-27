@@ -17,11 +17,11 @@ You can connect the kind of browser that fits the job:
 - **Your everyday signed-in browser (Kimi / Codex browser extensions)**: use the **Kimi Browser Extension** or **Codex / ChatGPT browser extension** to drive the browser you already use, keeping your existing sign-ins and cookies for internal dashboards, social research, form filling, and cross-site collection. Kiki prepares the local bridge components, and you add and approve the extension from your browser's store.
 - **Kiki-managed independent browser**: Kiki starts and manages a separate browser and sign-in profile on the server without copying your everyday cookies. It is suited for automated verification, stateless browsing, or tasks that need an isolated account. It runs headless by default, with an option to show the browser window.
 - **Ego Lite**: if you install Ego Lite yourself and finish its setup window, Kiki can check its readiness and connect it so agents can run page automation scripts with screenshots attached directly to the timeline.
-- **Existing or remote browsers (CDP)**: under the advanced fold, attach directly to any local or remote browser that already exposes a CDP address without launching a new browser instance.
+- **Existing or remote browsers (CDP)**: under **+ Add browser → Add manual connection**, attach directly to any local or remote browser that already exposes a CDP address without launching a new browser instance.
 
 ### Browser permissions
 
-Each source and each listed browser has its own enable switch and **Allow agent use** checkbox. An agent can use only the browsers you check, and clearing a checkbox revokes that access immediately. You can allow several browsers at once and mark one as the **Default** for new sessions, or require each call to name its browser explicitly.
+Each source and each listed browser has its own enable switch and **Allow agent use** checkbox. An agent can use only the browsers you check, and clearing a checkbox revokes that access immediately. You can allow several browsers at once and pick one in **Default connection** for new sessions, or choose **Choose each time** so each call names its browser explicitly.
 
 See [Settings pages: Browser control](/en/guides/settings#browser-control) for route setup and readiness checks, and [Built-in Tools: Browser Tools](/en/reference/tools#browser-tools) for tool parameters.
 

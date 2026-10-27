@@ -100,3 +100,80 @@ export function effectiveAllowedBrowserCount(
 ): number {
   return connections.filter((c) => isBrowserConnectionEffectiveAllowed(c, allowedBrowsersConfigured, allowedBrowsers, disabledSources)).length;
 }
+
+/** How a settings verdict reads at a glance; `unknown` is never drawn as success. */
+export type ControlVerdictTone = 'ok' | 'attention' | 'off' | 'unknown';
+
+export type BrowserControlVerdictKind =
+  | 'unresolved'
+  | 'host_locked'
+  | 'off'
+  | 'tool_denied'
+  | 'unknown'
+  | 'no_connections'
+  | 'none_allowed'
+  | 'default_not_allowed'
+  | 'allowed';
+
+export interface BrowserControlVerdictInput {
+  readonly enabled: boolean;
+  readonly hostLocked?: boolean;
+  readonly unresolved?: boolean;
+  readonly toolPolicyDenied: boolean;
+  /** `undefined` while the connection list has not been read (loading or failed). */
+  readonly connections: readonly { id: string; enabled?: boolean; type?: string }[] | undefined;
+  readonly allowedBrowsersConfigured: boolean;
+  readonly allowedBrowsers?: readonly string[];
+  readonly disabledSources?: readonly string[];
+  readonly defaultBrowser?: string;
+}
+
+export interface BrowserControlVerdict {
+  readonly kind: BrowserControlVerdictKind;
+  readonly tone: ControlVerdictTone;
+  /** Connections the configuration allows. Allowed is not connected, and not a successful call. */
+  readonly allowedCount: number;
+  /** The default connection id when one is set. */
+  readonly defaultBrowser?: string;
+}
+
+const BROWSER_VERDICT_TONE: Readonly<Record<BrowserControlVerdictKind, ControlVerdictTone>> = {
+  unresolved: 'unknown',
+  host_locked: 'off',
+  off: 'off',
+  tool_denied: 'attention',
+  unknown: 'unknown',
+  no_connections: 'attention',
+  none_allowed: 'attention',
+  default_not_allowed: 'attention',
+  allowed: 'ok',
+};
+
+/**
+ * The one sentence the browser settings page leads with: whether the
+ * configuration lets the Agent reach any browser at all, and the first gate to
+ * fix when it does not. It speaks about configuration only — a connection's own
+ * runtime state (failed, not connected, unconfirmed) stays on that connection's
+ * row, so one broken browser never marks the others unusable.
+ */
+export function browserControlVerdict(input: BrowserControlVerdictInput): BrowserControlVerdict {
+  const connections = input.connections ?? [];
+  const allowedCount = effectiveAllowedBrowserCount(connections, input.allowedBrowsersConfigured, input.allowedBrowsers, input.disabledSources);
+  const defaultBrowser = input.defaultBrowser === undefined || input.defaultBrowser === '' ? undefined : input.defaultBrowser;
+  const kind = ((): BrowserControlVerdictKind => {
+    if (input.unresolved === true) return 'unresolved';
+    if (!input.enabled) return input.hostLocked === true ? 'host_locked' : 'off';
+    if (input.toolPolicyDenied) return 'tool_denied';
+    if (input.connections === undefined) return 'unknown';
+    if (connections.length === 0) return 'no_connections';
+    if (allowedCount === 0) return 'none_allowed';
+    if (defaultBrowser !== undefined) {
+      const row = connections.find((connection) => connection.id === defaultBrowser);
+      if (row === undefined || !isBrowserConnectionEffectiveAllowed(row, input.allowedBrowsersConfigured, input.allowedBrowsers, input.disabledSources)) {
+        return 'default_not_allowed';
+      }
+    }
+    return 'allowed';
+  })();
+  return { kind, tone: BROWSER_VERDICT_TONE[kind], allowedCount, defaultBrowser };
+}

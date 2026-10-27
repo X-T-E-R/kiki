@@ -63,6 +63,77 @@ export function isComputerToolPolicyDenied(config: unknown, connection?: string 
   return disabled.some((name) => name === 'ComputerControl' || name === server || name === `mcp__${server}__*`);
 }
 
+export type ComputerControlVerdictKind =
+  | 'unresolved'
+  | 'host_locked'
+  | 'off'
+  | 'tool_denied'
+  | 'checking'
+  | 'unknown'
+  | 'unsupported'
+  | 'installing'
+  | 'not_installed'
+  | 'partial'
+  | 'no_connection'
+  | 'connection_not_ready'
+  | 'ready';
+
+export interface ComputerControlVerdictInput {
+  readonly enabled: boolean;
+  readonly hostLocked?: boolean;
+  readonly unresolved?: boolean;
+  readonly toolPolicyDenied: boolean;
+  /** The executor capability as last read; `checking` before the first answer, `unknown` when the read failed. */
+  readonly executor: 'checking' | 'unknown' | { readonly state: 'not_installed' | 'partial' | 'ready' | 'unsupported'; readonly installing: boolean };
+  /** Whether a computer connection would be used: an explicit choice, or a configured default CUA entry. */
+  readonly hasConnection: boolean;
+  /** False when the active connection is known not to be startable (e.g. Windows-MCP not serve-ready). */
+  readonly activeConnectionReady: boolean;
+}
+
+export interface ComputerControlVerdict {
+  readonly kind: ComputerControlVerdictKind;
+  readonly tone: 'ok' | 'attention' | 'off' | 'unknown';
+}
+
+const COMPUTER_VERDICT_TONE: Readonly<Record<ComputerControlVerdictKind, ComputerControlVerdict['tone']>> = {
+  unresolved: 'unknown',
+  host_locked: 'off',
+  off: 'off',
+  tool_denied: 'attention',
+  checking: 'unknown',
+  unknown: 'unknown',
+  unsupported: 'attention',
+  installing: 'unknown',
+  not_installed: 'attention',
+  partial: 'attention',
+  no_connection: 'attention',
+  connection_not_ready: 'attention',
+  ready: 'ok',
+};
+
+/**
+ * The lead sentence of the computer settings page. "Ready" means the switch is
+ * on, the pinned executor verified and a connection is chosen — it is not a
+ * claim that the desktop is reachable or being controlled.
+ */
+export function computerControlVerdict(input: ComputerControlVerdictInput): ComputerControlVerdict {
+  const kind = ((): ComputerControlVerdictKind => {
+    if (input.unresolved === true) return 'unresolved';
+    if (!input.enabled) return input.hostLocked === true ? 'host_locked' : 'off';
+    if (input.toolPolicyDenied) return 'tool_denied';
+    if (input.executor === 'checking' || input.executor === 'unknown') return input.executor;
+    if (input.executor.installing) return 'installing';
+    if (input.executor.state === 'unsupported') return 'unsupported';
+    if (input.executor.state === 'not_installed') return 'not_installed';
+    if (input.executor.state === 'partial') return 'partial';
+    if (!input.hasConnection) return 'no_connection';
+    if (!input.activeConnectionReady) return 'connection_not_ready';
+    return 'ready';
+  })();
+  return { kind, tone: COMPUTER_VERDICT_TONE[kind] };
+}
+
 export function isComputerToolPolicyPartiallyDenied(config: unknown, connection?: string | null): boolean {
   if (isComputerToolPolicyDenied(config, connection)) return false;
   const disabled = extractDisabledToolNames(config);

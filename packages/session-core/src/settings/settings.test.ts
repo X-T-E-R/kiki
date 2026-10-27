@@ -2,8 +2,8 @@ import { globSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
-import { isBrowserControlEnabled, browserControlEnabledPatch, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
+import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, computerControlVerdict, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
+import { isBrowserControlEnabled, browserControlEnabledPatch, browserControlVerdict, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
 
 import {
@@ -2234,6 +2234,25 @@ describe('computer-use preference settings', () => {
     expect(isComputerToolPolicyPartiallyDenied({ tools: { disabled: ['mcp__kiki-computer__click'] } }, 'kiki-windows-mcp')).toBe(false);
     expect(isComputerToolPolicyDenied({ tools: { disabled: ['mcp__kiki-windows-mcp__Click'] } }, 'kiki-windows-mcp')).toBe(false);
   });
+
+  it('leads the computer page with the first gate, and calls ready only what is verified', () => {
+    const installed = { state: 'ready' as const, installing: false };
+    const base = { enabled: true, toolPolicyDenied: false, executor: installed, hasConnection: true, activeConnectionReady: true };
+    expect(computerControlVerdict(base)).toEqual({ kind: 'ready', tone: 'ok' });
+    expect(computerControlVerdict({ ...base, enabled: false }).kind).toBe('off');
+    expect(computerControlVerdict({ ...base, enabled: false, executor: { state: 'not_installed', installing: false } }).kind).toBe('off');
+    expect(computerControlVerdict({ ...base, enabled: false, hostLocked: true })).toEqual({ kind: 'host_locked', tone: 'off' });
+    expect(computerControlVerdict({ ...base, unresolved: true }).tone).toBe('unknown');
+    expect(computerControlVerdict({ ...base, toolPolicyDenied: true }).kind).toBe('tool_denied');
+    expect(computerControlVerdict({ ...base, executor: 'checking' })).toEqual({ kind: 'checking', tone: 'unknown' });
+    expect(computerControlVerdict({ ...base, executor: 'unknown' })).toEqual({ kind: 'unknown', tone: 'unknown' });
+    expect(computerControlVerdict({ ...base, executor: { state: 'not_installed', installing: true } }).kind).toBe('installing');
+    expect(computerControlVerdict({ ...base, executor: { state: 'not_installed', installing: false } }).kind).toBe('not_installed');
+    expect(computerControlVerdict({ ...base, executor: { state: 'partial', installing: false } }).kind).toBe('partial');
+    expect(computerControlVerdict({ ...base, executor: { state: 'unsupported', installing: false } }).kind).toBe('unsupported');
+    expect(computerControlVerdict({ ...base, hasConnection: false }).kind).toBe('no_connection');
+    expect(computerControlVerdict({ ...base, activeConnectionReady: false }).kind).toBe('connection_not_ready');
+  });
 });
 
 describe('browser-control settings helpers', () => {
@@ -2334,5 +2353,31 @@ describe('browser-control settings helpers', () => {
     expect(isBrowserConnectionEffectiveAllowed({ ...bridge, enabled: false }, false, undefined)).toBe(false);
     // An allowlist that names only the legacy row still reaches it through the bridge source.
     expect(effectiveAllowedBrowserCount([legacyBridge, cdp], true, ['kimi-webbridge'], undefined)).toBe(1);
+  });
+
+  it('leads with the first configuration gate and never counts allowed as connected', () => {
+    const rows = [
+      { id: 'research', enabled: true, type: 'agent-browser-profile' },
+      { id: 'edge', enabled: true, type: 'kimi-webbridge' },
+      { id: 'legacy', enabled: false, type: 'agent-browser-profile' },
+    ];
+    const base = { enabled: true, toolPolicyDenied: false, connections: rows, allowedBrowsersConfigured: false };
+    expect(browserControlVerdict(base)).toEqual({ kind: 'allowed', tone: 'ok', allowedCount: 2, defaultBrowser: undefined });
+    // Off keeps the stored choices: the count is still reported, the verdict is off.
+    expect(browserControlVerdict({ ...base, enabled: false })).toMatchObject({ kind: 'off', tone: 'off', allowedCount: 2 });
+    expect(browserControlVerdict({ ...base, enabled: false, hostLocked: true }).kind).toBe('host_locked');
+    expect(browserControlVerdict({ ...base, unresolved: true }).kind).toBe('unresolved');
+    expect(browserControlVerdict({ ...base, toolPolicyDenied: true }).kind).toBe('tool_denied');
+    expect(browserControlVerdict({ ...base, connections: undefined })).toMatchObject({ kind: 'unknown', tone: 'unknown' });
+    expect(browserControlVerdict({ ...base, connections: [] }).kind).toBe('no_connections');
+    expect(browserControlVerdict({ ...base, allowedBrowsersConfigured: true, allowedBrowsers: [] }).kind).toBe('none_allowed');
+    // A source switched off removes only its own connections.
+    expect(browserControlVerdict({ ...base, disabledSources: ['kimi-webbridge'] })).toMatchObject({ kind: 'allowed', allowedCount: 1 });
+    // The default is its own fact: being the default never makes a connection allowed.
+    expect(browserControlVerdict({ ...base, defaultBrowser: 'legacy' })).toMatchObject({ kind: 'default_not_allowed', defaultBrowser: 'legacy' });
+    expect(browserControlVerdict({ ...base, defaultBrowser: 'gone' }).kind).toBe('default_not_allowed');
+    expect(browserControlVerdict({ ...base, defaultBrowser: 'edge', disabledSources: ['kimi-webbridge'] }).kind).toBe('default_not_allowed');
+    expect(browserControlVerdict({ ...base, defaultBrowser: 'research' })).toMatchObject({ kind: 'allowed', defaultBrowser: 'research' });
+    expect(browserControlVerdict({ ...base, defaultBrowser: '' }).defaultBrowser).toBeUndefined();
   });
 });

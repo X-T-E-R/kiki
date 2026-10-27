@@ -1,7 +1,7 @@
 /**
- * 电脑控制 → existing connections. A short list on the left; the selected
- * connection opens as a flat form on the right (a single column under `md`,
- * with a back row), the way the hooks and identity settings pages work.
+ * 电脑控制 → the connections. The header line chooses which connection runs
+ * and adds one by hand; pressing a row replaces the list with that connection
+ * as a flat form, with a back row, so the form never squeezes the list.
  *
  * Everything the form shows is read back from the server's MCP management
  * plane and written through it — no local mirror, no default the installer
@@ -29,7 +29,6 @@ import { McpSecretRows, mcpSecretLines } from '../McpSecretRows';
 import { AdvancedDetails } from '../fields';
 import {
   FORM_LABEL,
-  SettingsDetailLayout,
   SettingsDraftFooter,
   SettingsSelect,
 } from '../SettingsPrimitives';
@@ -66,7 +65,7 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   platform: string | undefined;
   /** Pinned executor path from the install plan, when one is available. */
   planBinary: string | undefined;
-  /** Active connection selector rendered above the connection list. */
+  /** Active connection selector drawn on the list's header line. */
   summary?: ReactNode;
   /** Optional registration fold rendered below the connection list. */
   footer?: ReactNode;
@@ -84,7 +83,6 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   const entries = (query.data ?? []).filter((entry) => isComputerConnection(entry));
 
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [narrowPane, setNarrowPane] = useState<'list' | 'detail'>('list');
   const [draft, setDraft] = useState<ComputerDraft | null>(null);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -110,7 +108,6 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   const applyDraft = (next: ComputerDraft | null) => {
     setDraft(next);
     setSelectedKey(next?.original === undefined ? null : entryKey(next.original));
-    setNarrowPane(next === null ? 'list' : 'detail');
     setTestResult(null);
     setStopResult(null);
     setFeedback(null);
@@ -233,13 +230,7 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
       {query.isLoading ? <p className="text-[13px] text-ink-faint" role="status">{t('st.computer.loading')}</p> : null}
       {query.isError ? <InlineError error={query.error} /> : null}
       {query.isSuccess && entries.length === 0 ? (
-        <div className="space-y-2">
-          <Hint>{t('st.computer.empty')}</Hint>
-          <button type="button" className={SECONDARY_BUTTON} data-computer-new
-            onClick={() => { open(newComputerDraft(platform, planBinary)); }}>
-            {t('st.computer.setupEntry')}
-          </button>
-        </div>
+        <p className="py-1 text-[13px] text-ink-soft" data-computer-empty>{t('st.computer.empty')}</p>
       ) : null}
       {entries.length > 0 ? (
         <ul className="space-y-0.5">
@@ -278,12 +269,11 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
 
   const detail = draft === null ? null : (
     <div className="min-w-0 space-y-4">
-      <button type="button" data-computer-back className={`${SECONDARY_BUTTON} md:hidden`}
+      <button type="button" data-computer-back
+        className="inline-flex items-center gap-1 rounded text-[12px] text-ink-soft transition-colors hover:text-ink focus-visible:underline"
         onClick={() => { open(null); }}>
-        <span className="inline-flex items-center gap-1">
-          <Icon name="arrowLeft" size={12} />
-          {t('st.computer.connectionsTitle')}
-        </span>
+        <Icon name="arrowLeft" size={12} />
+        {t('st.computer.connectionsTitle')}
       </button>
 
       {draftWindowsNotReady ? (
@@ -480,14 +470,21 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
   ];
 
   return (
-    <div className="min-w-0 space-y-3" data-computer-connections>
-      {summary}
-      {/* Nothing selected: the list is the whole card, instead of a two-column
-          grid holding an empty editor column. */}
-      {detail === null
-        ? list
-        : <SettingsDetailLayout narrowPane={narrowPane} list={list} detail={detail} />}
-      {footer}
+    <div className="min-w-0 space-y-3" data-computer-connections data-computer-view={detail === null ? 'list' : 'detail'}>
+      {detail ?? (
+        <>
+          <div className="flex flex-wrap items-start gap-x-3 gap-y-2">
+            <div className="mr-auto min-w-0">{summary}</div>
+            <button type="button" className={`${SECONDARY_BUTTON} inline-flex items-center gap-1.5`} data-computer-new
+              onClick={() => { open(newComputerDraft(platform, planBinary)); }}>
+              <Icon name="plus" size={12} />
+              {t('st.computer.setupEntry')}
+            </button>
+          </div>
+          {list}
+          {footer}
+        </>
+      )}
       <ConfirmDialog
         open={confirmingStop}
         overlayId="confirm-computer-stop"

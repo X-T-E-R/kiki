@@ -50,7 +50,7 @@ import { PRIMARY_BUTTON, SECONDARY_BUTTON } from '../../ui';
 import { ConfirmDialog } from '../../ConfirmDialog';
 import { AdvancedDetails } from '../fields';
 import { SettingsSelect } from '../SettingsPrimitives';
-import { useBrowserAllowance } from './browserAllowance';
+import { SOURCE_NAME_KEYS, useBrowserAllowance } from './browserAllowance';
 import { WebBridgeReadiness } from './WebBridgeReadiness';
 
 const READINESS_TONE: Readonly<Record<PresetReadiness, { text: I18nKey; dot: string }>> = {
@@ -166,6 +166,7 @@ function BrowserRoute({ preset, active, onSelect, children }: {
   }, [preset.cliPaths]);
 
   const { connections } = allowance;
+  const name = preset.preset in SOURCE_NAME_KEYS ? t(SOURCE_NAME_KEYS[preset.preset as BrowserSourceId]) : preset.displayName;
   const sourceEnabled = allowance.sourceEnabled(preset.preset);
   const owned = connections.filter((connection) => allowance.sourceOf(connection) === preset.preset);
   const ownedAllowed = owned.filter((connection) => allowance.isEffective(connection)).length;
@@ -180,10 +181,10 @@ function BrowserRoute({ preset, active, onSelect, children }: {
       if (saved === undefined) list.push({ id: candidate.browserId, browserId: candidate.browserId, label: candidate.browserId });
     }
     if (preset.preset === 'ego-lite' && (preset.state === 'ready' || preset.state === 'connected') && owned.length === 0) {
-      list.push({ id: 'ego-lite', browserId: 'ego-lite', label: preset.displayName || 'Ego Lite' });
+      list.push({ id: 'ego-lite', browserId: 'ego-lite', label: t('st.browser.sourceName.ego-lite') });
     }
     return list;
-  }, [preset, connections, owned.length, sourceEnabled]);
+  }, [preset, connections, owned.length, sourceEnabled, t]);
 
   const handleToggleSource = async (nextSourceEnabled: boolean) => {
     setBusy('source');
@@ -415,7 +416,7 @@ function BrowserRoute({ preset, active, onSelect, children }: {
           aria-pressed={active}
           onClick={onSelect}
           className="mr-auto min-w-0 text-left text-[14px] font-medium text-ink hover:underline underline-offset-2">
-          {preset.displayName}
+          {name}
         </button>
         {owned.length === 0 ? null : (
           <span className="shrink-0 text-[12px] tabular-nums text-ink-faint" data-browser-allowed-count={preset.preset}>
@@ -430,7 +431,7 @@ function BrowserRoute({ preset, active, onSelect, children }: {
           type="button"
           role="switch"
           aria-checked={sourceEnabled}
-          aria-label={t('st.browser.source.enable', { name: preset.displayName })}
+          aria-label={t('st.browser.source.enable', { name })}
           data-browser-source-switch={preset.preset}
           disabled={busy !== null}
           onClick={() => { void handleToggleSource(!sourceEnabled); }}
@@ -543,47 +544,11 @@ function BrowserRoute({ preset, active, onSelect, children }: {
             </p>
           )}
 
-          {preset.candidates !== undefined ? (
+          {preset.candidates !== undefined && preset.candidates.length === 0 ? (
             <div className="mt-2.5 space-y-1.5" data-browser-candidates-region>
-              {preset.candidates.length === 0 ? (
-                <p className="text-[12px] leading-[18px] text-ink-soft" data-browser-candidates-empty>
-                  {t('st.browser.candidates.empty')}
-                </p>
-              ) : (
-                <div className="flex flex-wrap items-center gap-2">
-                  <label htmlFor={`candidate-select-${preset.preset}`} className="text-[12px] font-medium text-ink-soft shrink-0">
-                    {t('st.browser.candidates.label')}
-                  </label>
-                  <div className="min-w-[240px] max-w-full">
-                    <SettingsSelect
-                      id={`candidate-select-${preset.preset}`}
-                      ariaLabel={t('st.browser.candidates.label')}
-                      dataAttr="data-browser-candidate-select"
-                      choices={preset.candidates.map((c) => ({
-                        value: c.browserId,
-                        label: c.browserId,
-                      }))}
-                      value={selectedBrowserId}
-                      emptyText={t('st.browser.candidates.placeholder')}
-                      onChange={(val) => { setSelectedBrowserId(val); }}
-                      disabled={busy !== null}
-                      variant="row"
-                      mono
-                    />
-                  </div>
-                  {selectedBrowserId !== (preset.browserId ?? '') ? (
-                    <button
-                      type="button"
-                      className={SECONDARY_BUTTON}
-                      data-browser-candidate-cancel
-                      disabled={busy !== null}
-                      onClick={() => { setSelectedBrowserId(preset.browserId ?? ''); }}
-                    >
-                      {t('st.browser.route.cancelSelection')}
-                    </button>
-                  ) : null}
-                </div>
-              )}
+              <p className="text-[12px] leading-[18px] text-ink-soft" data-browser-candidates-empty>
+                {t('st.browser.candidates.empty')}
+              </p>
             </div>
           ) : null}
 
@@ -629,13 +594,12 @@ function BrowserRoute({ preset, active, onSelect, children }: {
                 {busy === 'open' ? t('st.browser.route.opening') : t('st.browser.route.open')}
               </button>
             )}
-            {!routeActions || connect === undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
-              <button type="button" className={openAction !== undefined ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
-                disabled={busy !== null || (preset.candidates !== undefined && (!selectedBrowserId || selectedBrowserId === '')) || (preset.cliPaths !== undefined && preset.cliPaths.length > 0 && selectedCliPath === '')}
+            {!routeActions || connect === undefined || preset.candidates !== undefined || (readiness !== 'ready' && preset.state !== 'needs_user_action' && preset.state !== 'failed' && preset.error === undefined) || busy !== null ? null : (
+              <button type="button" className={openAction !== undefined || preset.preset === 'ego-lite' ? SECONDARY_BUTTON : PRIMARY_BUTTON} data-browser-route-connect
+                disabled={busy !== null || (preset.cliPaths !== undefined && preset.cliPaths.length > 0 && selectedCliPath === '')}
                 onClick={() => { void act('connect'); }}>
                 {busy === 'connect' ? t('st.browser.route.connecting')
-                  : preset.preset === 'ego-lite' ? t('st.browser.route.checkEgo')
-                    : preset.candidates !== undefined ? t('st.browser.route.saveConnection') : t('st.browser.route.connect')}
+                  : preset.preset === 'ego-lite' ? t('st.browser.route.checkEgo') : t('st.browser.route.connect')}
               </button>
             )}
             {hasVersionMismatch && updateAction !== undefined ? (
@@ -738,7 +702,7 @@ function BrowserRoute({ preset, active, onSelect, children }: {
       {children}
 
       <ConfirmDialog open={confirming} overlayId={`confirm-browser-prepare-${preset.preset}`}
-        title={t('st.browser.route.confirmTitle', { name: preset.displayName })}
+        title={t('st.browser.route.confirmTitle', { name })}
         body={t('st.browser.route.confirmBody')}
         consequences={[
           t('st.browser.route.consequenceHost', { host: preset.executionHost }),
@@ -826,9 +790,6 @@ export function BrowserSetupWizard() {
           </ul>
           {external.length === 0 ? null : (
             <>
-              <p className="pt-1 text-[12px] font-medium text-ink-faint" data-browser-routes-external-label>
-                {t('st.browser.route.otherApps')}
-              </p>
               <ul className="divide-y divide-hairline" data-browser-routes-external>
                 {external.map((preset, index) => (
                   <BrowserRoute key={`${preset.preset}-${index}`} preset={preset} active={false} onSelect={() => {}} />
