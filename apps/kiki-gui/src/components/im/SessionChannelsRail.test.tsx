@@ -87,7 +87,59 @@ async function renderRail(props: { sessionId: string; sessionTitle?: string; per
   return container;
 }
 
+async function expandChannels(container: ParentNode) {
+  const toggle = container.querySelector<HTMLButtonElement>('[data-rail-channels-toggle]');
+  expect(toggle).not.toBeNull();
+  if (toggle!.getAttribute('aria-expanded') === 'false') {
+    await act(async () => {
+      toggle!.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+  }
+  expect(container.querySelector('[data-rail-channels-body]')).not.toBeNull();
+}
+
 describe('SessionChannelsRail', () => {
+  it('starts folded, supports manual expansion and resets for a newly selected session', async () => {
+    mockImSessions.snapshot.mockResolvedValue(createSnapshot([]));
+    mockClient.getSessionOptionalCapabilities.mockResolvedValue({ sessionId: 'sess-1', revision: 1, rows: [] });
+    mockClient.getConfig.mockResolvedValue({});
+
+    const container = await renderRail({ sessionId: 'sess-1' });
+    const foldedToggle = container.querySelector<HTMLButtonElement>('[data-rail-channels-toggle]')!;
+    expect(foldedToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-rail-channels-body]')).toBeNull();
+
+    await expandChannels(container);
+    expect(foldedToggle.getAttribute('aria-expanded')).toBe('true');
+
+    await act(async () => {
+      roots.at(-1)!.render(
+        <QueryClientProvider client={queryClient}>
+          <I18nProvider>
+            <SessionChannelsRail sessionId="sess-2" />
+          </I18nProvider>
+        </QueryClientProvider>
+      );
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    const nextToggle = container.querySelector<HTMLButtonElement>('[data-rail-channels-toggle]')!;
+    expect(mockClient.getSessionOptionalCapabilities).toHaveBeenCalledWith('sess-2');
+    expect(nextToggle.getAttribute('aria-expanded')).toBe('false');
+    expect(container.querySelector('[data-rail-channels-body]')).toBeNull();
+
+    const addButton = container.querySelector<HTMLButtonElement>('[data-rail-channel-add]')!;
+    await act(async () => {
+      addButton.click();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(nextToggle.getAttribute('aria-expanded')).toBe('true');
+    expect(addButton.getAttribute('aria-expanded')).toBe('true');
+    expect(container.querySelector('[data-rail-channel-picker]')).not.toBeNull();
+  });
+
   it('renders channels section with counts and hot-loads SendMessage tool in pure thread', async () => {
     const bindings = [
       {
@@ -127,6 +179,8 @@ describe('SessionChannelsRail', () => {
     const summaryEl = container.querySelector('[data-rail-channels-summary]');
     expect(summaryEl?.textContent).toContain('1'); // 1 in
     expect(summaryEl?.textContent).toContain('3'); // 3 out (internal + 1 IM + 1 notify)
+
+    await expandChannels(container);
 
     // SendMessage tool is initially off for pure thread
     const smSwitch = container.querySelector('[data-rail-sendmessage-switch]') as HTMLButtonElement;
@@ -171,6 +225,7 @@ describe('SessionChannelsRail', () => {
     mockClient.getConfig.mockResolvedValue({});
 
     const container = await renderRail({ sessionId: 'sess-1' });
+    await expandChannels(container);
 
     const inPill = container.querySelector('[data-io-pill-in="b-tg-41"]') as HTMLButtonElement;
     const outPill = container.querySelector('[data-io-pill-out="b-tg-41"]') as HTMLButtonElement;
@@ -331,6 +386,7 @@ describe('SessionChannelsRail', () => {
     mockClient.getConfig.mockResolvedValue({});
 
     const container = await renderRail({ sessionId: 'sess-1' });
+    await expandChannels(container);
 
     // 1. Toggle bound notify channel on -> calls setNotificationChannel with stripped 'mail'
     const notifyItem = container.querySelector('[data-rail-out-list]');
@@ -379,6 +435,7 @@ describe('SessionChannelsRail', () => {
     mockClient.getConfig.mockResolvedValue({});
 
     const container = await renderRail({ sessionId: 'sess-1', personaId: 'ada', personaName: 'Ada' });
+    await expandChannels(container);
 
     const smSwitch = container.querySelector('[data-rail-sendmessage-switch]') as HTMLButtonElement;
     expect(smSwitch.getAttribute('aria-checked')).toBe('false');
@@ -397,6 +454,7 @@ describe('SessionChannelsRail', () => {
     mockClient.getConfig.mockResolvedValue({});
 
     const container = await renderRail({ sessionId: 'sess-1' });
+    await expandChannels(container);
 
     const smSwitch = container.querySelector('[data-rail-sendmessage-switch]') as HTMLButtonElement;
     expect(smSwitch.getAttribute('aria-checked')).toBe('false');

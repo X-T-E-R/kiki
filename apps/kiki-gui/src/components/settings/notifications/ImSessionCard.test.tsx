@@ -995,6 +995,96 @@ describe('ImSessionCard channel management', () => {
     });
   });
 
+  it('keeps prefix labels and saves scoped to each of multiple group bindings', async () => {
+    const state = imChannelSnapshot('telegram');
+    const firstBinding = {
+      ...state.bindings[1]!,
+      binding_scope: 'chat' as const,
+      group_policy: { wake: 'mention_or_reply' as const, prefixes: ['First:'] },
+    };
+    const secondBinding = {
+      ...firstBinding,
+      id: 'binding-group-2',
+      identity: { ...firstBinding.identity, chat_id: 'release-group-2', chat_title: 'Release team 2' },
+      session_id: 'reading-list',
+    };
+    state.bindings = [firstBinding, secondBinding];
+    fixture = createImSettingsFixture(state);
+    const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
+    const container = await render();
+    const firstRow = binding(container, 'binding-group');
+    const secondRow = binding(container, 'binding-group-2');
+    await click(firstRow, '[data-im-binding-options-toggle]');
+    await click(secondRow, '[data-im-binding-options-toggle]');
+
+    const inputs = container.querySelectorAll<HTMLInputElement>('[data-im-prefixes="data-im-binding"]');
+    expect(inputs).toHaveLength(2);
+    const firstInput = firstRow.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-binding"]')!;
+    const secondInput = secondRow.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-binding"]')!;
+    expect(secondInput.id).not.toBe(firstInput.id);
+    const secondLabel = secondRow.querySelector<HTMLLabelElement>(`label[for="${secondInput.id}"]`)!;
+    expect(secondLabel).not.toBeNull();
+    expect(document.getElementById(secondLabel.htmlFor)).toBe(secondInput);
+    secondInput.focus();
+
+    await input(secondRow, '[data-im-prefixes="data-im-binding"]', 'Second:, Review:');
+    expect(firstInput.value).toBe('First:');
+    await act(async () => { secondInput.blur(); await settle(); });
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group-2', {
+      group_policy: { wake: 'mention_or_reply', prefixes: ['Second:', 'Review:'] },
+    });
+    expect(fixture.read().bindings.find((item) => item.id === 'binding-group')?.group_policy?.prefixes).toEqual(['First:']);
+    expect(fixture.read().bindings.find((item) => item.id === 'binding-group-2')?.group_policy?.prefixes).toEqual(['Second:', 'Review:']);
+  });
+
+  it('keeps prefix labels and confirms scoped to each of multiple discoveries', async () => {
+    const state = imChannelSnapshot('telegram');
+    state.discoveries = [{
+      id: 'tg-disc-group-1',
+      provider_instance_id: 'account-a',
+      provider_kind: 'telegram',
+      account_id: 'studio-account',
+      identity: { chat_id: 'disc-group-1', sender_id: 'member-1', topic_id: '0', chat_kind: 'group', chat_title: 'Design Team', sender_name: 'Bob' },
+      preview: 'hello',
+      at: '2026-10-27T01:00:00.000Z',
+    }];
+    state.discoveries.push({
+      ...state.discoveries[0]!,
+      id: 'tg-disc-group-2',
+      identity: { ...state.discoveries[0]!.identity, chat_id: 'disc-group-2', chat_title: 'Release Team' },
+    });
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    const firstRow = container.querySelector<HTMLElement>('[data-im-discovery="tg-disc-group-1"]')!;
+    const secondRow = container.querySelector<HTMLElement>('[data-im-discovery="tg-disc-group-2"]')!;
+    await click(firstRow, '[data-im-discovery-scope="chat"]');
+    await click(secondRow, '[data-im-discovery-scope="chat"]');
+
+    const inputs = container.querySelectorAll<HTMLInputElement>('[data-im-prefixes="data-im-discovery"]');
+    expect(inputs).toHaveLength(2);
+    const firstInput = firstRow.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-discovery"]')!;
+    const secondInput = secondRow.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-discovery"]')!;
+    expect(secondInput.id).not.toBe(firstInput.id);
+    const secondLabel = secondRow.querySelector<HTMLLabelElement>(`label[for="${secondInput.id}"]`)!;
+    expect(secondLabel).not.toBeNull();
+    expect(document.getElementById(secondLabel.htmlFor)).toBe(secondInput);
+    secondInput.focus();
+
+    await input(secondRow, '[data-im-prefixes="data-im-discovery"]', 'Second:, Review:');
+    expect(firstInput.value).toBe('');
+    await act(async () => { secondInput.blur(); await settle(); });
+    await click(secondRow, '[data-im-confirm]');
+    const confirmCalls = fixture.calls.filter((call) => call.operation === 'confirm');
+    expect(confirmCalls).toHaveLength(1);
+    expect(confirmCalls[0]?.id).toBe('tg-disc-group-2');
+    expect(confirmCalls[0]?.body).toMatchObject({
+      binding_scope: 'chat',
+      group_policy: { wake: 'mention_or_reply', prefixes: ['Second:', 'Review:'] },
+    });
+    expect(fixture.read().discoveries.map((item) => item.id)).toEqual(['tg-disc-group-1']);
+  });
+
   it('renders inline error feedback when backend returns topic_scope_unavailable or group_binding_scope_required', async () => {
     const state = imChannelSnapshot('telegram');
     state.bindings[1] = { ...state.bindings[1]!, identity: { ...state.bindings[1]!.identity, topic_id: '42' } };

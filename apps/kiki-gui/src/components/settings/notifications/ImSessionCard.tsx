@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useId, useMemo, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   builtinImProviderKindSchema,
@@ -89,6 +89,7 @@ function GroupBindingOptions({
   onPrefixes?: (prefixes: string[]) => void;
 }) {
   const { t } = useI18n();
+  const prefixesId = useId();
   const prefixesValue = (prefixes ?? []).join(', ');
   const policyVisible = scope !== 'sender' || showWake;
 
@@ -122,11 +123,11 @@ function GroupBindingOptions({
       </div>
       {policyVisible && wake === 'mention_or_reply' && onPrefixes ? (
         <div className="space-y-1 max-w-sm">
-          <label className="text-[13px] text-ink-soft block" htmlFor={`${prefix}-prefixes`}>
+          <label className="text-[13px] text-ink-soft block" htmlFor={prefixesId}>
             {t('st.im.wake.prefixes')}
           </label>
           <input
-            id={`${prefix}-prefixes`}
+            id={prefixesId}
             key={prefixesValue}
             type="text"
             defaultValue={prefixesValue}

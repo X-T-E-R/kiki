@@ -53,7 +53,7 @@ function SessionChannelsRailBody({
   const connection = useOptionalConnection();
   const queryClient = useQueryClient();
 
-  const [open, setOpen] = useState(true);
+  const [open, setOpen] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [busyId, setBusyId] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
@@ -380,11 +380,12 @@ function SessionChannelsRailBody({
   };
 
   return (
-    <section data-rail-channels="" className="border-t border-hairline py-3">
+    <section data-rail-channels="">
       {/* Header */}
       <div className="flex items-center justify-between min-h-7 gap-1">
         <button
           type="button"
+          data-rail-channels-toggle=""
           aria-expanded={open}
           onClick={() => { setOpen((v) => !v); }}
           className={SECTION_BUTTON}
@@ -405,8 +406,12 @@ function SessionChannelsRailBody({
         <button
           type="button"
           data-rail-channel-add=""
-          aria-expanded={pickerOpen}
-          onClick={() => { setPickerOpen((v) => !v); }}
+          aria-expanded={open && pickerOpen}
+          onClick={() => {
+            const nextPickerOpen = !open || !pickerOpen;
+            setOpen(true);
+            setPickerOpen(nextPickerOpen);
+          }}
           className={`shrink-0 rounded px-1.5 py-0.5 text-[12px] text-ink-soft hover:bg-ink/[0.05] hover:text-ink ${FOCUS_RING}`}
         >
           {t('st.im.addBinding')}
