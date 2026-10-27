@@ -118,12 +118,12 @@ describe('read-only local executor sessions', () => {
       const acpPath = `/api/executors/codex-acp/local-sessions/${encodeURIComponent(summary.id)}/resume`;
       expect(await request<Receipt>(acpPath, init)).toMatchObject({ code: 0, data: { session_id: id, executor_id: executorId, created: false } });
     }
-    const wire = await readFile(join(sessionDir, 'agents', 'main', 'wire.jsonl'), 'utf8');
-    expect(wire).toContain('executor.session.updated');
-    expect(wire).toMatch(/bindingFingerprint/);
     expect(await readFile(sourcePath, 'utf8')).toBe(content);
     await server!.close();
     server = undefined;
+    const wire = await readFile(join(sessionDir, 'agents', 'main', 'wire.jsonl'), 'utf8');
+    expect(wire).toContain('executor.session.updated');
+    expect(wire).toMatch(/bindingFingerprint/);
     await boot();
     expect(await request<Receipt>(path, init)).toMatchObject({ code: 0, data: { session_id: id, created: false } });
     expect((await request(path, { ...init, body: JSON.stringify({ source_home: '/different-home' }) })).code).toBe(ErrorCode.VALIDATION_FAILED);
