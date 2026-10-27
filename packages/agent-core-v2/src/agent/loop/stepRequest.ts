@@ -30,7 +30,7 @@ export abstract class StepRequest {
   abstract readonly kind: string;
   readonly mergeable: boolean;
   readonly turnScoped: boolean;
-  readonly admission: StepRequestAdmission;
+  private readonly admissionPolicy: StepRequestAdmission;
   readonly deliveryOrigin?: MessageDeliveryOrigin;
 
   private _state: StepRequestState = 'pending';
@@ -38,8 +38,12 @@ export abstract class StepRequest {
   constructor(options: StepRequestOptions = {}) {
     this.mergeable = options.mergeable ?? false;
     this.turnScoped = options.turnScoped ?? true;
-    this.admission = options.admission ?? 'activeOrNextTurn';
+    this.admissionPolicy = options.admission ?? 'activeOrNextTurn';
     this.deliveryOrigin = options.deliveryOrigin;
+  }
+
+  get admission(): StepRequestAdmission {
+    return this.admissionPolicy;
   }
 
   get turnSeed(): TurnSeed | undefined {

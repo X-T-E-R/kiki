@@ -5,6 +5,7 @@ import { Event2 } from '#/app/event/event2';
 import { defineState } from '#/state/state';
 
 import type {
+  GoalActor,
   GoalBudgetLimits,
   GoalChange,
   GoalFollowUpTiming,
@@ -17,6 +18,7 @@ export interface GoalState {
   readonly objective: string;
   readonly completionCriterion?: string;
   readonly status: GoalStatus;
+  readonly statusActor?: GoalActor;
   readonly followUpTiming: GoalFollowUpTiming;
   readonly controlRevision: number;
   readonly turnsUsed: number;
@@ -126,6 +128,7 @@ export const goalKey = defineState('goal', (): GoalModelState => null).replayabl
     objective: e.objective,
     completionCriterion: e.completionCriterion,
     status: e.status ?? 'active',
+    statusActor: e.actor,
     followUpTiming: e.followUpTiming ?? 'subagents_done',
     controlRevision: e.controlRevision ?? 1,
     turnsUsed: 0,
@@ -142,10 +145,13 @@ export const goalKey = defineState('goal', (): GoalModelState => null).replayabl
     }
     if (e.followUpTiming !== undefined) s.followUpTiming = e.followUpTiming;
     if (e.controlRevision !== undefined) s.controlRevision = e.controlRevision;
-    if (e.status !== undefined && e.status !== s.status) {
+    if (e.status !== undefined) {
+      if (e.status !== s.status || e.actor !== s.statusActor) {
+        s.terminalReason = e.status === 'active' ? undefined : e.reason;
+        s.wallClockResumedAt = e.status === 'active' ? e.wallClockResumedAt : undefined;
+      }
       s.status = e.status;
-      s.terminalReason = e.status === 'active' ? undefined : e.reason;
-      s.wallClockResumedAt = e.status === 'active' ? e.wallClockResumedAt : undefined;
+      s.statusActor = e.actor;
     }
     if (e.turnsUsed !== undefined && e.turnsUsed !== s.turnsUsed) {
       s.turnsUsed = e.turnsUsed;

@@ -14,6 +14,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { LifecycleScope } from '#/app/scopes';
 import { type IAgentScopeHandle } from '#/_base/di/scope';
 import type { generate as kosongGenerate } from '#/kosong/contract/generate';
+import { ChatProviderError } from '#/kosong/contract/errors';
+import { IConfigService } from '#/app/config/config';
+import { LOOP_CONTROL_SECTION } from '#/agent/loop/configSection';
 import { IAgentTaskService } from '#/agent/task/task';
 import { SubagentTask } from '#/agent/tools/agent/subagent-task';
 import { QuestionBackgroundTask } from '#/agent/tools/ask-user-question/question-background-task';
@@ -23,6 +26,7 @@ import { IAgentProfileService } from '#/agent/profile/profile';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
 import { IAgentGoalService } from '#/agent/goal/goal';
+import { IEventDispatcher } from '#/state/eventDispatcher';
 import {
   agentService,
   sessionService,
@@ -428,7 +432,120 @@ describe('task notification → main agent (real Agent instance)', () => {
       }
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
-    it.each(['paused', 'cancelled', 'complete', 'replaced', 'token budget', 'turn budget', 'time budget'] as const)(
+    it('COMMIT: a completion wakes main only after the terminal event flushes', async () => {
+      const saving = createControlledPromise<void>();
+      const save = createControlledPromise<void>();
+      const dispatcher = ctx.get(IEventDispatcher);
+      const originalFlush = dispatcher.flush.bind(dispatcher);
+      const flush = vi.spyOn(dispatcher, 'flush').mockImplementationOnce(async () => {
+        saving.resolve();
+        await save;
+        await originalFlush();
+      });
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      ctx.mockNextResponse({ type: 'text', text: 'durable receipt received' });
+      const ended = ctx.untilTurnEnd();
+      const taskId = background.registerTask(agentTask(Promise.resolve({ result: 'durable receipt' }), 'saved completion'));
+      try {
+        await saving;
+        expect(background.getTask(taskId)?.status).toBe('completed');
+        expect(enqueue.mock.calls.filter(([request]) => request.kind === 'task_notification')).toHaveLength(0);
+        expect(ctx.llmCalls).toHaveLength(0);
+        save.resolve();
+        await ended;
+        await loop.settled();
+        expect(enqueue.mock.calls.filter(([request]) => request.kind === 'task_notification')).toHaveLength(1);
+        expect(notifiedCount(ctx)).toBe(1);
+        expect(JSON.stringify(ctx.llmCalls[0]!.history)).toContain('durable receipt');
+      } finally {
+        save.resolve();
+        flush.mockRestore();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('RACE: an explicit pause after notification enqueue is honored when wake admission resumes', async () => {
+      const goals = ctx.get(IAgentGoalService);
+      await goals.createGoal({ objective: 'finish delegated work' });
+      const hold = loop.tryAcquireQuiescence();
+      expect(hold).toBeDefined();
+      const enqueue = vi.spyOn(loop, 'enqueue');
+      const taskId = background.registerTask(agentTask(Promise.resolve({ result: 'receipt saved before pause' }), 'held notification'));
+      try {
+        await background.wait(taskId);
+        await vi.waitFor(() => {
+          expect(enqueue.mock.calls.some(([request]) => request.kind === 'task_notification')).toBe(true);
+        });
+        await goals.pauseGoal();
+        await hold!.dispose();
+        await loop.settled();
+        expect(ctx.llmCalls).toHaveLength(0);
+        expect(notifiedCount(ctx)).toBe(0);
+        ctx.mockNextResponse({ type: 'text', text: 'authorized handling' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect the retained receipt' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        expect(notifiedCount(ctx)).toBe(1);
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
+        expect(goals.getGoal().goal?.status).toBe('paused');
+      } finally {
+        await hold?.dispose();
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it('RUNTIME PAUSE: child receipts wake main after a successful user turn without resuming the goal', async () => {
+      const goals = ctx.get(IAgentGoalService);
+      await goals.createGoal({ objective: 'finish delegated work' });
+      const first = createControlledPromise<{ result: string }>();
+      const second = createControlledPromise<{ result: string }>();
+      const firstId = background.registerTask(agentTask(first, 'first receipt'));
+      const secondId = background.registerTask(new SubagentTask(
+        { agentId: 'agent-second', profileName: 'coder', completion: second },
+        'second receipt', new AbortController(),
+      ));
+      try {
+        await ctx.get(IConfigService).set(LOOP_CONTROL_SECTION, { maxAttemptsPerStep: 1 });
+        ctx.mockNextProviderResponse({ error: new ChatProviderError(
+          'Responses websocket connection limit reached', 'provider.api_error',
+        ) });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'start delegated work' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        expect(goals.getGoal().goal).toMatchObject({
+          status: 'paused', terminalReason: 'Paused after provider API error: Responses websocket connection limit reached',
+        });
+        ctx.mockNextResponse({ type: 'text', text: 'provider recovered' });
+        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'check current progress' }] });
+        await ctx.untilTurnEnd();
+        await loop.settled();
+        const enqueue = vi.spyOn(loop, 'enqueue');
+        for (const [completion, taskId, result] of [
+          [first, firstId, 'first durable receipt'],
+          [second, secondId, 'second durable receipt'],
+        ] as const) {
+          ctx.mockNextResponse({ type: 'text', text: 'receipt received' });
+          const ended = ctx.untilTurnEnd();
+          completion.resolve({ result });
+          await background.wait(taskId);
+          await vi.waitFor(() => {
+            expect(enqueue.mock.calls.at(-1)?.[0].admission).toBe('activeOrNewTurn');
+          });
+          await ended;
+          await loop.settled();
+          expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain(result);
+          expect(goals.getGoal().goal?.status).toBe('paused');
+          expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
+        }
+        await (background as TaskServiceTestManager).reconcile();
+        expect(notifiedCount(ctx)).toBe(2);
+        expect(ctx.llmCalls).toHaveLength(4);
+        expect(ctx.context.get().filter((m) => m.origin?.kind === 'system_trigger' && m.origin.name === 'goal_continuation')).toHaveLength(0);
+      } finally {
+        first.resolve({ result: 'cleanup' });
+        second.resolve({ result: 'cleanup' });
+      }
+    }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
+
+    it.each(['paused', 'runtime then user pause', 'runtime pause with token budget', 'cancelled', 'complete', 'replaced', 'replaced runtime pause', 'token budget', 'turn budget', 'time budget'] as const)(
       'GOAL CONTROL: %s retains completion until an authorized prompt', async (control) => {
         const goals = ctx.get(IAgentGoalService);
         const goal = await goals.createGoal({ objective: 'finish delegated work' });
@@ -438,12 +555,19 @@ describe('task notification → main agent (real Agent instance)', () => {
           : agentTask(completion, 'controlled dependency');
         const taskId = background.registerTask(task);
         if (control === 'paused') await goals.pauseGoal();
-        else if (control === 'cancelled') await goals.cancelGoal();
+        else if (control === 'runtime then user pause') {
+          await goals.pauseGoal({ reason: 'Paused after provider API error' }, 'runtime');
+          await goals.pauseGoal();
+        } else if (control === 'runtime pause with token budget') {
+          await goals.pauseGoal({ reason: 'Paused after provider API error' }, 'runtime');
+          await goals.setBudgetLimits({ budgetLimits: { tokenBudget: 0 } });
+        } else if (control === 'cancelled') await goals.cancelGoal();
         else if (control === 'complete') await goals.markComplete();
-        else if (control === 'replaced') {
+        else if (control === 'replaced' || control === 'replaced runtime pause') {
           await goals.markBlocked();
           await goals.createGoal({ objective: 'new work', replace: true });
-          await goals.markBlocked();
+          if (control === 'replaced runtime pause') await goals.pauseGoal({}, 'runtime');
+          else await goals.markBlocked();
           expect(goals.getGoal().goal?.goalId).not.toBe(goal.goalId);
         } else {
           const budgetLimits = control === 'token budget' ? { tokenBudget: 0 }
@@ -606,7 +730,7 @@ describe('task notification → main agent (real Agent instance)', () => {
     }, PARALLEL_WORKER_CONTENTION_TIMEOUT_MS);
 
     it.each(['completed', 'cancelled'] as const)(
-      'replays a queued notification after %s turn exit exactly once at the next prompt', async (outcome) => {
+      'readmits an unconsumed notification after %s turn exit under the current wake policy', async (outcome) => {
       ctx.mockNextResponse({ type: 'text', text: 'first ack' });
       ctx.mockNextResponse({ type: 'text', text: 'second ack' });
       ctx.mockNextResponse({ type: 'text', text: 'third ack' });
@@ -624,11 +748,20 @@ describe('task notification → main agent (real Agent instance)', () => {
       try {
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'first prompt' }] });
         await ctx.untilTurnEnd();
-        await vi.waitFor(() => expect(loop.status().state).toBe('idle'));
-        expect(ctx.context.get().filter((m) => m.origin?.kind === 'task')).toHaveLength(0);
-        expect(notifiedCount(ctx)).toBe(0);
-        await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next authorized prompt' }] });
-        await ctx.untilTurnEnd();
+        if (outcome === 'cancelled') {
+          await loop.settled();
+          expect(ctx.context.get().filter((m) => m.origin?.kind === 'task')).toHaveLength(0);
+          expect(notifiedCount(ctx)).toBe(0);
+          await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next authorized prompt' }] });
+          await ctx.untilTurnEnd();
+        } else {
+          await vi.waitFor(() => {
+            expect(notifiedCount(ctx)).toBe(1);
+          });
+          await loop.settled();
+          expect(ctx.llmCalls).toHaveLength(2);
+          expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).toContain('durable child report');
+        }
         expect(ctx.context.get().filter((m) => m.origin?.kind === 'task' && m.origin.taskId === taskId)).toHaveLength(1);
         expect(notifiedCount(ctx)).toBe(1);
         await ctx.rpc.prompt({ input: [{ type: 'text', text: 'another prompt' }] });

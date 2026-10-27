@@ -632,7 +632,11 @@ export class AgentGoalService extends Disposable implements IAgentGoalService {
   async pauseGoal(input: GoalReasonInput = {}, actor: GoalActor = 'user'): Promise<GoalSnapshot> {
     this.assertSupportedAgent();
     const state = this.requireState();
-    if (state.status === 'paused') return this.toSnapshot(state);
+    if (state.status === 'paused') {
+      return actor === 'user' && state.statusActor !== 'user'
+        ? this.applyLifecycle(state, 'paused', input.reason, actor)
+        : this.toSnapshot(state);
+    }
     if (state.status !== 'active') {
       throw new Error2(
         ErrorCodes.GOAL_STATUS_INVALID,

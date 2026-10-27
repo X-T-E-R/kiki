@@ -23,6 +23,8 @@ subagent 由 main agent 自行判断何时派发，你也可以直接指定："�
 
 每次派发都会以审批请求的形式出现（命中 allow 规则或处于 YOLO 模式时除外），派发前可以先看任务描述。subagent 支持后台运行，完成后结果自动回到 main agent；也可以唤回已有实例继续同一任务。
 
+运行中的后台任务完成时，即使 goal 因供应商或运行时错误暂停，也能唤醒空闲的 main agent。接收结果后 goal 仍保持暂停；要继续执行，用 `/goal resume`。用户显式暂停、取消或 goal 预算耗尽时，相关任务结果会保留到下一条获准执行的提示词。完成通知若恰好排在成功轮次结束时，会在新轮次中送达，无须再发消息。
+
 ## 具名子 Agent
 
 主 `agent` profile 默认就有三个子 Agent 工具，不需要实验开关：`AgentRun`、`AgentList` 和 `AgentSend`。内置 subagent profile 没有它们。每个调用方只能看到自己直接创建的子 Agent——孙级或别人创建的都不是有效目标。

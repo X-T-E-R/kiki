@@ -2379,6 +2379,7 @@ export interface AgentStateSnapshot {
     readonly objective: string;
     readonly completionCriterion?: string;
     readonly status: /* GoalStatus — packages/agent-core-v2/src/agent/goal/types.ts */ 'blocked' | 'active' | 'paused' | 'complete';
+    readonly statusActor?: 'user' | 'model' | 'system' | 'runtime';
     readonly followUpTiming: /* GoalFollowUpTiming — packages/agent-core-v2/src/agent/goal/types.ts */ 'subagents_done' | 'tasks_done';
     readonly controlRevision: number;
     readonly turnsUsed: number;

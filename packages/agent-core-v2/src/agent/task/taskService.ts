@@ -232,14 +232,17 @@ export class TaskNotificationStepRequest extends MessageStepRequest {
     message: ContextMessage,
     private readonly onWillDeliver?: () => void,
     private readonly renderContent?: (delivery: object) => readonly ContentPart[],
-    admission: StepRequestAdmission = 'activeOrNewTurn',
+    private readonly resolveAdmission: StepRequestAdmission | (() => StepRequestAdmission) = 'activeOrNewTurn',
   ) {
     super(message, {
       kind: 'task_notification',
       mergeable: true,
       turnScoped: false,
-      admission,
     });
+  }
+
+  override get admission(): StepRequestAdmission {
+    return typeof this.resolveAdmission === 'function' ? this.resolveAdmission() : this.resolveAdmission;
   }
 
   override resolveContextMessages(delivery: object = {}): readonly ContextMessage[] {
@@ -1644,19 +1647,24 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       },
       () => this.fireNotificationHook(context.notification),
       context.renderContent,
-      this.notificationAdmission(info),
+      () => this.notificationAdmission(info),
     );
     this.pendingNotificationRequests.set(key, request);
     try {
       const receipt = this.loop.enqueue(request);
       void receipt.assigned
-        .then(({ step }) => step.result)
-        .then(
-          () => {
-            if (request.aborted) this.clearPendingNotification(key, request);
-          },
-          () => this.clearPendingNotification(key, request),
-        );
+        .then(async ({ turn, step }) => {
+          await step.result;
+          if (!request.aborted) return;
+          const result = await turn.result.catch(() => undefined);
+          if (generation !== this.notificationUndoGeneration || this.pendingNotificationRequests.get(key) !== request) return;
+          this.clearPendingNotification(key, request);
+          if (result?.type === 'completed') await this.notifyAgentTask(info);
+        })
+        .catch((error) => {
+          this.clearPendingNotification(key, request);
+          this.log.error('task notification admission failed', { taskId: info.taskId, error });
+        });
     } catch (error) {
       this.clearPendingNotification(key, request);
       throw error;
@@ -1679,7 +1687,10 @@ export class AgentTaskService extends Disposable implements IAgentTaskService {
       return 'activeOrNextTurn';
     }
     if (goal?.status === 'active') return 'activeOrNewTurn';
-    if (goal?.status === 'blocked' && info.goalId === goal.goalId &&
+    if (goal !== null &&
+      ((goal.status === 'blocked' && info.goalId === goal.goalId) ||
+        (goal.status === 'paused' && goal.statusActor === 'runtime' &&
+          (info.goalId === undefined || info.goalId === goal.goalId))) &&
       (goal.budgetLimits.tokenBudget === undefined || goal.tokensUsed < goal.budgetLimits.tokenBudget) &&
       (goal.budgetLimits.turnBudget === undefined || goal.turnsUsed < goal.budgetLimits.turnBudget) &&
       (goal.budgetLimits.wallClockBudgetMs === undefined || goal.wallClockMs < goal.budgetLimits.wallClockBudgetMs)) {

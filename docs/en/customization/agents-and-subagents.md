@@ -23,6 +23,8 @@ The main agent dispatches sub-agents on its own as the work calls for it, and yo
 
 Each dispatch appears as an approval request unless it matches an allow rule or YOLO mode is active, so you can read the task description before it runs. A sub-agent can run in the background and returns its result to the main agent on completion; you can also resume an existing sub-agent to continue the same task.
 
+A live background-task completion can wake an idle main agent even when a provider or runtime error paused its goal. Receiving the result leaves that goal paused; use `/goal resume` to continue it. An explicit user pause, cancellation, or exhausted goal budget holds the affected task results until your next authorized prompt. A completion queued just as a successful turn ends is delivered in a new turn without another user message.
+
 ## Named child agents
 
 The main `agent` profile gets three child-agent tools with no experiment flag: `AgentRun`, `AgentList` and `AgentSend`. Built-in subagent profiles do not. Each caller sees only the children it created itself — a grandchild or another caller's child is not a valid target.

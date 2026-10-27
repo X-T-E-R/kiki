@@ -236,6 +236,21 @@ describe('AgentGoalService (wire-backed)', () => {
     expect(replaySignals).toEqual([]);
   });
 
+  it('retains the pause actor across replay and lets an explicit pause supersede a runtime pause', async () => {
+    await svc.createGoal({ objective: 'finish delegated work' });
+    await svc.pauseGoal({ reason: 'Paused after provider API error' }, 'runtime');
+    const records = await readRecords();
+    const host = buildHost('goal-runtime-pause');
+    await restoreTestEventDispatcher(
+      host.dispatcher, host.log, testWireScope(SCOPE, 'goal-runtime-pause'), records,
+    );
+    expect(host.agentState.get(goalKey)).toMatchObject({ status: 'paused', statusActor: 'runtime' });
+    await host.svc.pauseGoal({ reason: 'User paused' });
+    expect(host.agentState.get(goalKey)).toMatchObject({
+      status: 'paused', statusActor: 'user', terminalReason: 'User paused',
+    });
+  });
+
   it('onDidRestore forces a replayed active goal to paused after replay', async () => {
     const created = await svc.createGoal({ objective: 'resume me' });
     const records = await readRecords();

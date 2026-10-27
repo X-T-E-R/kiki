@@ -110,7 +110,7 @@ Position legend: **system** = inside the system-prompt string; **tools** = the r
 | 38 | `init` | reminder | Session-init subagent finished writing `AGENTS.md` | Once per init run | Init invocation | `packages/agent-core-v2/test/features/sessionInit/sessionInit.test.ts` |
 | 39 | `btw` (side question) | reminder | `/btw` fork created | Once per fork | — | `packages/agent-core-v2/test/features/btw/btw.test.ts` |
 | 40 | `room_joined` / `room_left` | reminder | Thread added to / removed from a room | Once per membership change | Room membership | `packages/agent-core-v2/test/app/room/room.test.ts` |
-| 41 | Task completion `<notification>` | message (`user`) | Background task reached a terminal state | Once per (task, status) | Task lifetime | `packages/agent-core-v2/test/agent/task/taskService.test.ts` |
+| 41 | Task completion `<notification>` | message (`user`) | Background task reached a terminal state | Once per task | Task lifetime | `packages/agent-core-v2/test/agent/task/taskService.test.ts` |
 | 42 | `agent_message` (subagent → parent) | message (`user`) | Subagent sent a message | Delivery-driven | — | `packages/agent-core-v2/test/session/agentCollaboration/messagingService.test.ts` |
 | 43 | `peer_thread` message | message (`user`) | Another thread sent a message | Delivery-driven | Thread config | `packages/agent-core-v2/test/app/threadCommunication/threadCommunicationService.test.ts` |
 | 44 | Room message catch-up `<room-messages>` | message (`user`) | Member woken by a room message | One per wake | Room config | `packages/agent-core-v2/test/app/room/room.test.ts` |
@@ -461,7 +461,7 @@ These are not `<system-reminder>` notes: they are ordinary user-role messages th
 
 ### 4.1 Task completion notification (`<notification>`)
 
-Terminal background tasks are delivered as XML (`packages/agent-core-v2/src/agent/task/taskService.ts:1645-1665`; renderer `packages/agent-core-v2/src/agent/task/notificationXml.ts:3-38`):
+Terminal background tasks are delivered as XML by `AgentTaskService` (`packages/agent-core-v2/src/agent/task/taskService.ts`; renderer `packages/agent-core-v2/src/agent/task/notificationXml.ts`):
 
 ```text
 <notification id="…" category="…" type="…" source_kind="…" source_id="…" agent_id="…">
@@ -472,10 +472,12 @@ Severity: …
 </notification>
 ```
 
-- Origin: `{kind:'task', taskId, status, notificationId}` (`packages/agent-core-v2/src/agent/task/taskService.ts:1619`).
-- Dedupe: once per `(taskId, status)` key, checked against in-memory sets and against the existing context (`:1604-1612`, `:1730-1736`). Preview bytes are budgeted across the batch (`NOTIFICATION_BATCH_PREVIEW_BYTES`, `:1580-1584`).
-- Cache: appended mid-stream and delivered between turns; append-only.
-- Tests: `packages/agent-core-v2/test/agent/task/taskService.test.ts`.
+- Origin: `{kind:'task', taskId, status, notificationId}`. Task ownership and receipt verification remain attached to the original task and agent.
+- Dedupe: once per task ID, checked against scheduled/delivered sets, replayable delivery state and existing context. Legacy status-qualified keys normalize to task IDs. Preview bytes share the batch budget.
+- Admission: live notifications join an available turn or wake an idle agent. A runtime-paused goal permits a notification turn for its own tasks or tasks launched without a goal, without resuming the goal; an explicit user pause, cancelled turn, exhausted budget or stopped goal retains the affected notification for the next authorized turn. `goalKey.statusActor` preserves the lifecycle actor from existing goal events; unknown actors retain the pause. Admission reads current control state when the loop releases a held request, not when its output preview was built.
+- Turn exit: an unmaterialized notification aborted by a successfully completed host turn is readmitted through the same notification path after that turn settles. Failed or cancelled exits do not immediately retry admission. Restored terminal tasks are injected silently during reconciliation, without an automatic turn.
+- Commitment: the task receipt and terminal event precede enqueue. Context materialization and notification-consumption hooks are flushed before delivery is marked; `TaskWait` and explicit suppression retain their delivery/deduplication rules.
+- Tests: `packages/agent-core-v2/test/agent/task/{idle-notification-repro,taskService}.test.ts` and `test/agent/goal/goalOps.test.ts` cover runtime failure/recovery, turn exit, pause-at-admission, replay, capacity rejection, suppression and deduplication.
 
 ### 4.2 `agent_message` (subagent → parent)
 
