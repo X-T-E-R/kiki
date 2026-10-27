@@ -1,8 +1,9 @@
 import '#/_base/utils/fsWatchGuard';
 import { createReadStream, mkdirSync, statSync } from 'node:fs';
 import { mkdir, open, readFile, readdir, rename, stat, unlink, type FileHandle } from 'node:fs/promises';
+import { posix } from 'node:path';
 import { FSWatcher } from 'chokidar';
-import { basename, dirname, join, normalize } from 'pathe';
+import * as portablePath from 'pathe';
 
 import { DisposableStore, combinedDisposable, toDisposable, type IDisposable } from '#/_base/di/lifecycle';
 import { Emitter, type Event } from '#/_base/event';
@@ -22,6 +23,11 @@ import { toStorageIoError } from '#/persistence/interface/storage';
 
 import { acquireFileLock } from './fileLock';
 
+const storagePath = process.platform === 'win32' ? portablePath : posix;
+const basename = (value: string): string => storagePath.basename(value);
+const dirname = (value: string): string => storagePath.dirname(value);
+const join = (...parts: string[]): string => storagePath.join(...parts);
+const normalize = (value: string): string => storagePath.normalize(value);
 const WATCH_DEBOUNCE_MS = 150;
 const TORN_READ_RETRIES = 3;
 const TORN_READ_RETRY_DELAY_MS = 15;

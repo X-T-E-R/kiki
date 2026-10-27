@@ -13,8 +13,9 @@ import {
   utimes,
   writeFile,
 } from 'node:fs/promises';
+import { posix } from 'node:path';
 import { promisify } from 'node:util';
-import { basename, dirname, join, resolve } from 'pathe';
+import * as portablePath from 'pathe';
 
 import {
   isStorageError,
@@ -24,6 +25,12 @@ import {
   type StorageLockOptions,
   toStorageIoError,
 } from '#/persistence/interface/storage';
+
+const storagePath = process.platform === 'win32' ? portablePath : posix;
+const basename = (value: string): string => storagePath.basename(value);
+const dirname = (value: string): string => storagePath.dirname(value);
+const join = (...parts: string[]): string => storagePath.join(...parts);
+const resolve = (...parts: string[]): string => storagePath.resolve(...parts);
 
 interface FileLockPayload {
   readonly version: 1;

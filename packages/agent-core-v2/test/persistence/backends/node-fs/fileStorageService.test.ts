@@ -4,6 +4,7 @@ import { once } from 'node:events';
 import { statSync } from 'node:fs';
 import { mkdtemp, mkdir, readFile, readdir, rm, stat, unlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import { join as nativeJoin } from 'node:path';
 
 import { FSWatcher } from 'chokidar';
 import { join } from 'pathe';
@@ -19,6 +20,38 @@ vi.mock('node:fs', async (importOriginal) => {
 
 const isWin = process.platform === 'win32';
 const encoder = new TextEncoder();
+
+describe('FileStorageService — native path identity', () => {
+  it.each(['custom-session_001', ...(!isWin ? ['legacy\\name', 'legacy:name'] : [])])('preserves the directory entry %j across storage operations', async (id) => {
+    const dir = await mkdtemp(join(tmpdir(), 'fss-native-path-'));
+    const storage = new FileStorageService(dir);
+    const scope = `sessions/ws/${id}`;
+    const original = nativeJoin(dir, scope, 'state.json');
+    try {
+      await mkdir(nativeJoin(dir, scope), { recursive: true });
+      await writeFile(original, 'original');
+      expect(nativeJoin(storage.pathFor(scope, 'state.json'))).toBe(original);
+      expect(new TextDecoder().decode(await storage.read(scope, 'state.json'))).toBe('original');
+      await storage.write(scope, 'state.json', encoder.encode('updated'));
+      await storage.append(scope, 'state.json', encoder.encode('-tail'));
+      expect(await readFile(original, 'utf8')).toBe('updated-tail');
+      expect(await storage.list(scope)).toContain('state.json');
+      expect(await storage.size(scope, 'state.json')).toBe(12);
+      const lock = await storage.acquireLock(scope, 'entry.lock');
+      expect(await stat(nativeJoin(dir, scope, 'entry.lock'))).toMatchObject({ size: expect.any(Number) });
+      await lock.release();
+      const movedScope = `${scope}-moved`;
+      await storage.moveDirectory(scope, movedScope);
+      expect(await storage.read(scope, 'state.json')).toBeUndefined();
+      expect(new TextDecoder().decode(await storage.read(movedScope, 'state.json'))).toBe('updated-tail');
+      await storage.delete(movedScope, 'state.json');
+      expect(await storage.list(movedScope)).not.toContain('state.json');
+    } finally {
+      await storage.close();
+      await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
+    }
+  });
+});
 
 describe('FileStorageService — watch initialization', () => {
   let dir: string;
