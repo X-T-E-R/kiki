@@ -234,6 +234,61 @@ describe('message view', () => {
     expect(view[1]?.kind === 'message' && view[1].origin).toBe('send_message');
   });
 
+  it.each([
+    ['sent', tool()],
+    ['pending', tool({ output: '{"message_id":', outputPending: true })],
+    ['failed', tool({ status: 'error', isError: true, output: 'media_unsupported: voice is unavailable' })],
+    ['cancelled', tool({ status: 'stopped', output: undefined })],
+  ] as const)('uses the actual SendMessage call to suppress the final reply when %s', (status, call) => {
+    for (const process of [[call], [projectSendMessage(call)!]]) {
+      const final = reply('after-send', 'Final sentence is not another send', 't1');
+      const view = projectMessageView([...process, final], { completedTurnIds: ['t1'] });
+      expect(view.map((node) => node.kind)).toEqual(['message', 'activity-summary']);
+      expect(view[0]).toMatchObject({ kind: 'message', origin: 'send_message', status });
+      expect(view[0]?.kind === 'message' && view[0].failureDetail).toBe(status === 'failed'
+        ? 'media_unsupported: voice is unavailable' : undefined);
+      expect(view[1]?.kind === 'activity-summary' && view[1].members).toEqual([final]);
+      expect(view.some((node) => node.kind === 'message' && node.origin === 'ordinary_final')).toBe(false);
+      expect(view.some((node) => node.kind === 'notice' && node.reasonCodes?.includes('message.no_reply'))).toBe(false);
+    }
+  });
+
+  it('keeps a structured failed receipt and its reason when a final sentence follows', () => {
+    const refused = tool({ output: { message_id: 'send:call', delivered_to: [], delivery: 'undeliverable',
+      detail: 'No channel accepted the message', channels: [{ channel_id: 'internal', status: 'failed', detail: 'blocked' }] } });
+    const final = reply('after-refusal', 'Not a second delivery', 't1');
+    const view = projectMessageView([projectSendMessage(refused)!, final], { completedTurnIds: ['t1'] });
+    expect(view.map((node) => node.kind)).toEqual(['message', 'activity-summary']);
+    expect(view[0]).toMatchObject({ kind: 'message', status: 'failed', failureDetail: 'No channel accepted the message',
+      channels: [{ channelId: 'internal', status: 'failed', detail: 'blocked' }] });
+    expect(view[1]?.kind === 'activity-summary' && view[1].members).toEqual([final]);
+  });
+
+  it('still suppresses fallback when a native call has no projectable batch item', () => {
+    const invalid = tool({ args: { messages: [null] }, output: undefined });
+    const final = reply('after-call', 'Not another send', 't1');
+    const view = projectMessageView([invalid, final], { completedTurnIds: ['t1'] });
+    expect(view.map((node) => node.kind)).toEqual(['activity-summary']);
+    expect(view[0]?.kind === 'activity-summary' && view[0].members).toEqual([invalid, final]);
+  });
+
+  it('does not let an external same-name call or another turn suppress an ordinary reply', () => {
+    const ordinary = reply('ordinary', 'A normal final reply', 't1');
+    const external = tool({ id: 'external-send', toolCallId: 'external:session:call', name: 'SendMessage' });
+    const unrelated = projectMessageView([external, ordinary], { completedTurnIds: ['t1'] });
+    expect(unrelated.map((node) => node.kind)).toEqual(['activity-summary', 'message']);
+    expect(unrelated[1]).toMatchObject({ kind: 'message', origin: 'ordinary_final', text: ordinary.text });
+
+    const later = reply('later', 'A later turn replies normally', 't2');
+    const acrossTurns = projectMessageView([tool(), reply('after-send', 'Not speech', 't1'), later], {
+      completedTurnIds: ['t1', 't2'],
+    });
+    expect(acrossTurns.map((node) => node.kind)).toEqual(['message', 'activity-summary', 'message']);
+    expect(acrossTurns[2]).toMatchObject({ kind: 'message', origin: 'ordinary_final', text: later.text, turnId: 't2' });
+    expect(projectMessageView([ordinary], { completedTurnIds: ['t1'] })[0])
+      .toMatchObject({ kind: 'message', origin: 'ordinary_final', text: ordinary.text });
+  });
+
   it('leaves the reply in the process when the reader stopped it, and says so', () => {
     const stopped = projectMessageView([{ ...thought, stopped: true }], { completedTurnIds: ['t1'], personaName: 'Coordinator' });
     expect(stopped.map((node) => node.kind)).toEqual(['activity-summary', 'notice']);

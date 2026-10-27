@@ -185,6 +185,12 @@ function turnId(block: Block): string | undefined {
   return block.turnId;
 }
 
+function isNativeSendMessageCall(block: Block): boolean {
+  if (block.kind === 'tool') return block.name === 'SendMessage' && !block.toolCallId.startsWith('external:');
+  return block.kind === 'message' && block.origin === 'send_message' &&
+    block.toolCallId !== undefined && !block.toolCallId.startsWith('external:');
+}
+
 function activity(members: readonly Block[], turn: string | undefined): ActivitySummary {
   const counts = { tools: 0, reads: 0, commands: 0, thinking: 0, subagents: 0, memories: 0 };
   const subagents = new Set<string>();
@@ -226,7 +232,7 @@ function activity(members: readonly Block[], turn: string | undefined): Activity
 
 /**
  * Message mode as speech: what the Bot said to you. A finished turn's final
- * ordinary reply is speech even when the model never called `SendMessage`;
+ * ordinary reply is fallback speech only if that turn never called `SendMessage`;
  * everything else stays inspectable activity behind its summary.
  */
 export function projectMessageView(blocks: readonly Block[], options: MessageViewOptions = {}): MessageViewNode[] {
@@ -236,7 +242,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
   const completed = new Set(options.completedTurnIds ?? []);
   const turns: string[] = [];
   const seen = new Set<string>();
-  const sent = new Set<string>();
+  const calledSendMessage = new Set<string>();
   const failed = new Set<string>(options.failedTurnIds ?? []);
   const failureShown = new Set<string>();
   const replies = new Map<string, AssistantBlock>();
@@ -255,25 +261,20 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       seen.add(turn);
       turns.push(turn);
     }
-    const messages = block.kind === 'message' ? [block] : block.kind === 'tool' ? projectSendMessages(block) : [];
-    // The turn spoke through its own call even when the words did not land
-    // here, and even when no channel has confirmed them yet: the promotion
-    // below must not speak a second copy as this conversation's reply.
-    for (const message of messages) if (message.origin === 'send_message' && message.turnId !== undefined
-      && (message.status === 'sent' || message.status === 'pending')) {
-      sent.add(message.turnId);
-    }
+    // A native call, including a failed or cancelled one, displaces the
+    // ordinary final reply in this turn. Projected message rows retain that
+    // call identity even when the process no longer contains the tool block.
+    if (turn !== undefined && isNativeSendMessageCall(block)) calledSendMessage.add(turn);
     if (block.kind === 'assistant' && block.text.trim() !== '' && block.turnId !== undefined) replies.set(block.turnId, block);
   }
   // A reply that keeps streaming, one the reader stopped, and one from a turn
-  // that failed are not speech yet. Only this turn's own delivery decides: two
-  // turns may legitimately say the same words, so nothing is inferred across
-  // turns.
+  // that failed are not speech yet. A native SendMessage call suppresses only
+  // its own turn's fallback; other turns may legitimately say the same words.
   const promoted = new Map<string, MessageBlock>();
   const speechIds = new Set<string>();
   for (const turn of turns) {
     const reply = replies.get(turn);
-    if (reply === undefined || !completed.has(turn) || sent.has(turn) || failed.has(turn)) continue;
+    if (reply === undefined || !completed.has(turn) || calledSendMessage.has(turn) || failed.has(turn)) continue;
     if (reply.streaming || reply.stopped === true) continue;
     promoted.set(turn, replySpeech(reply, turn));
     speechIds.add(reply.id);
@@ -299,7 +300,7 @@ export function projectMessageView(blocks: readonly Block[], options: MessageVie
       }
       return;
     }
-    if (sent.has(turn) || replies.get(turn) === undefined) return;
+    if (calledSendMessage.has(turn) || replies.get(turn) === undefined) return;
     nodes.push({ kind: 'notice', id: `message-no-reply-${turn}`, turnId: turn,
       text: `${options.personaName ?? ''} 没有回复 · 查看过程`.trim(), tone: 'neutral',
       i18n: { key: 'message.noReply', params: { name: options.personaName ?? '' } },
