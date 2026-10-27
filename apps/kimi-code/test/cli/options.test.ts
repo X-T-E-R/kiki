@@ -701,6 +701,7 @@ describe('CLI options parsing', () => {
       expect(commandNames).toEqual([
         'export',
         'session',
+        'storage',
         'provider',
         'acp',
         'desktop',
@@ -745,6 +746,8 @@ describe('CLI options parsing', () => {
       expect(show?.options.map((option) => option.long)).toEqual([
         '--json',
         '--agent',
+        '--before',
+        '--max-bytes',
         '--follow',
         '--workspace',
       ]);
