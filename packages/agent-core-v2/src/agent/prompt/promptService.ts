@@ -1493,7 +1493,7 @@ export class AgentPromptService implements IAgentPromptService {
   list(): PromptQueueSnapshot {
     return {
       active: this.active === undefined ? undefined : snapshot(this.active),
-      pending: this.pending.map((item) => ({ ...snapshot(item), execution: item.execution, queueIndex: this.queueOrder.indexOf(item.id) })),
+      pending: this.pending.map((item) => ({ ...snapshot(item), queueIndex: this.queueOrder.indexOf(item.id) })),
       modelSwitches: this.states.get(modelSwitchQueueKey).size === 0 ? undefined : this.listModelSwitches(),
       launching: this.launchingPrompt === undefined ? undefined : snapshot(this.launchingPrompt.record),
       hold: this.queueHold(),
@@ -2859,6 +2859,7 @@ function snapshot(item: Record): PromptSnapshot {
     createdAt: item.createdAt,
     state: item.state,
     message: item.message,
+    execution: item.execution,
     appendTiming: item.appendTiming,
     revision: item.revision,
     error: item.error,

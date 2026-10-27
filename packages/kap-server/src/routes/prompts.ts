@@ -759,7 +759,8 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           }
           signal?.throwIfAborted();
           const activeTurnId = resolved.accessor.get(IAgentLoopService).status().activeTurnId;
-          const activePromptId = resolved.prompt.list().active?.id;
+          const queue = resolved.prompt.list();
+          const activePromptId = queue.active?.id ?? queue.launching?.id;
           if ((activeTurnId !== undefined && activeTurnId !== steerTarget?.turnId) ||
               (activePromptId !== undefined && activePromptId !== steerTarget?.promptId)) {
             return { ...result, delivery_state: 'queued' as const, delivery_reason: 'target_changed' as const };
@@ -768,7 +769,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
             const [handle] = await resolved.prompt.steer([result.prompt_id]);
             return { ...result,
               status: handle?.state === 'blocked' ? 'blocked' as const : handle?.state === 'running' ? 'running' as const : result.status,
-              delivery_state: handle?.state === 'steered' ? 'steered' as const : handle?.state === 'pending' ? 'queued' as const : undefined,
+              delivery_state: wasSteeredIntoTurn(resolved.prompt, handle, activeTurnId) ? 'steered' as const : handle?.state === 'pending' ? 'queued' as const : undefined,
               delivery_reason: handle?.deliveryReason };
           } catch (error) {
             if (!isError2(error) || (error.code !== ErrorCodes.PROMPT_NOT_FOUND && error.code !== ErrorCodes.REQUEST_INVALID)) throw error;
@@ -815,7 +816,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
         const { session_id } = req.params;
         await withSessionOperation(core, session_id, async (handle) => {
           const resolved = await resolvePromptFromSession(core, requireSession(handle, session_id));
-          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, req.body.prompt_ids), req.id));
+          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, req.body.prompt_ids, resolved.accessor.get(IAgentLoopService).status().activeTurnId), req.id));
         });
       } catch (error) {
         sendMappedError(reply, req, error);
@@ -985,7 +986,7 @@ export function registerPromptsRoutes(app: PromptRouteHost, core: Scope, transcr
           requestLog(req)?.info({ session_id, prompt_id: parsed.id }, 'prompt aborted');
           reply.send(okEnvelope({ aborted }, req.id));
         } else {
-          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, [parsed.id]), req.id));
+          reply.send(okEnvelope(await steerPendingPrompts(resolved.prompt, [parsed.id], resolved.accessor.get(IAgentLoopService).status().activeTurnId), req.id));
         }
       } catch (error) {
         if (!replaced) await preparedMedia?.discard();
@@ -1046,7 +1047,7 @@ function projectPromptList(snapshot: PromptQueueSnapshot) {
   };
 }
 
-async function steerPendingPrompts(prompt: IAgentPromptService, promptIds: readonly string[]): Promise<z.infer<typeof promptSteerResultSchema>> {
+async function steerPendingPrompts(prompt: IAgentPromptService, promptIds: readonly string[], activeTurnId?: number): Promise<z.infer<typeof promptSteerResultSchema>> {
   const pending = () => new Set(prompt.list().pending.map((item) => item.id));
   const available = pending();
   if (promptIds.some((id) => !available.has(id))) {
@@ -1054,7 +1055,7 @@ async function steerPendingPrompts(prompt: IAgentPromptService, promptIds: reado
     throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts were not found');
   }
   try {
-    return projectSteerResult(await prompt.steer(promptIds), promptIds);
+    return projectSteerResult(prompt, await prompt.steer(promptIds), promptIds, activeTurnId);
   } catch (error) {
     if (isError2(error) && error.code === ErrorCodes.PROMPT_NOT_FOUND && promptIds.every((id) => prompt.lookup(id) !== undefined)) {
       return { steered: false, prompt_ids: [...promptIds], delivery_state: promptIds.every((id) => pending().has(id)) ? 'queued' : undefined,
@@ -1064,12 +1065,16 @@ async function steerPendingPrompts(prompt: IAgentPromptService, promptIds: reado
   }
 }
 
-function projectSteerResult(handles: readonly PromptHandle[], promptIds: readonly string[]): z.infer<typeof promptSteerResultSchema> {
+function wasSteeredIntoTurn(prompt: IAgentPromptService, handle: PromptHandle | undefined, turnId?: number): boolean {
+  return handle !== undefined && (handle.state === 'steered' || (turnId !== undefined && prompt.lookup(handle.id)?.turnId === turnId));
+}
+
+function projectSteerResult(prompt: IAgentPromptService, handles: readonly PromptHandle[], promptIds: readonly string[], turnId?: number): z.infer<typeof promptSteerResultSchema> {
   const single = handles.length === 1 ? handles[0] : undefined;
   return {
-    steered: handles.every((handle) => handle.state === 'steered'),
+    steered: handles.every((handle) => wasSteeredIntoTurn(prompt, handle, turnId)),
     prompt_ids: [...promptIds],
-    delivery_state: single?.state === 'steered' ? 'steered' : single?.state === 'pending' ? 'queued' : undefined,
+    delivery_state: wasSteeredIntoTurn(prompt, single, turnId) ? 'steered' : single?.state === 'pending' ? 'queued' : undefined,
     delivery_reason: single?.deliveryReason,
   };
 }

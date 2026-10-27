@@ -464,6 +464,16 @@ describe('AgentPromptService', () => {
     expect(loop.launches).toHaveLength(2);
   });
 
+  it('keeps prompt-bound execution controls in the active queue snapshot', async () => {
+    const { prompt, loop } = harness({ manualTurnResult: true });
+    const execution = { planMode: false };
+    const handle = await prompt.enqueue({ id: 'bound-active', message: message('work'), execution });
+    expect(await handle.launched).toBeDefined();
+    await vi.waitFor(() => expect(prompt.list().active).toMatchObject({ id: handle.id, execution }));
+    loop.settleActive();
+    await handle.completion;
+  });
+
   it('cancels a queued prompt while it is launching without cancelling the next prompt', async () => {
     const { prompt, loop } = harness({ manualTurnResult: true });
     const first = await prompt.enqueue({ id: 'first', message: message('first') });
