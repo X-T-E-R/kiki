@@ -1094,7 +1094,8 @@ describe('AgentProfileService.bind', () => {
     );
     const profile = ctx.get(IAgentProfileService);
     await profile.bind({ profile: original.name, model: RESUME_OLD_MODEL, thinking: 'low' });
-    const binding = profile.data().boundProfile;
+    const binding = profile.data().boundProfile!;
+    const inputs = binding.promptBase!.inputs!;
     if (change === 'private') {
       current = normalizeAgentProfile({
         name: original.name, private: true, modelAlias: RESUME_OLD_MODEL,
@@ -1103,10 +1104,24 @@ describe('AgentProfileService.bind', () => {
     } else {
       current = undefined;
     }
-    await profile.rebuildPromptContext();
     await profile.refreshSystemPrompt();
-    expect(profile.getSystemPrompt()).toContain('stable prompt');
     expect(profile.data().boundProfile).toEqual(binding);
+
+    await profile.rebuildPromptContext();
+    const rebuilt = profile.data().boundProfile!;
+    expect({ ...rebuilt, promptBase: binding.promptBase }).toEqual(binding);
+    expect(rebuilt.promptBase).toEqual({
+      ...binding.promptBase,
+      inputs: {
+        ...inputs,
+        cognition: { ...inputs.cognition, revision: inputs.cognition.revision + 1 },
+        revision: expect.any(String),
+      },
+    });
+    expect(rebuilt.promptBase!.inputs!.revision).not.toBe(inputs.revision);
+    await profile.refreshSystemPrompt();
+    expect(profile.data().boundProfile).toEqual(rebuilt);
+    expect(profile.getSystemPrompt()).toContain('stable prompt');
     expect(profile.data().profileName).toBe(original.name);
   });
 

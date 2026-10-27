@@ -22,11 +22,12 @@ export function compactionFailureKind(error: unknown): 'filtered' | 'auth' | 'qu
 }
 
 export function isRetryableCompactionError(error: unknown): boolean {
-  if (!isRetryableGenerateError(error)) return false;
   const cause = unwrapErrorCause(error);
-  if (isAbortError(cause)) return false;
+  if (isAbortError(error) || isAbortError(cause)) return false;
   const kind = compactionFailureKind(error);
   if (kind === 'filtered' || kind === 'auth' || kind === 'quota') return false;
+  if (cause instanceof APIEmptyResponseError) return true;
+  if (!isRetryableGenerateError(error)) return false;
   if (cause instanceof APIStatusError && cause.statusCode === 400 && !(cause instanceof APIContextOverflowError)) return false;
   return true;
 }

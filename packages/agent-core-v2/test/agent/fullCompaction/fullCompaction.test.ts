@@ -2260,7 +2260,8 @@ describe('FullCompaction', () => {
         system: <system-prompt>
         tools: AgentRun, Cron, EnterPlanMode, ExitPlanMode
         messages:
-          user: text "old user one\\n\\nold user two"
+          user: text "old user one"
+          user: text "old user two"
           user: text "The following handoff was assembled without a summarizing model. It may not cover removed history. Verify completed claims and use HistorySearch/HistoryRead for details.\\n\\n## Window\\nmain/1\\nRemoved history boundary: source coordinate unavailable → source coordinate unavailable; the compaction cut may be inside a turn\\nfirst: source coordinate unavailable · source coordinate unavailable\\nlast: source coordinate unavailable · source coordinate unavailable\\n\\n## Working notes\\n(empty)\\n\\n## Standing directives\\n(none recorded in notes)\\n\\n## User input since notes\\n- unknown (user): old user one · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user one\\"} (source coordinate unavailable)\\n- unknown (user): old user two · HistorySearch {scope:'this_session', agent_id:\\"main\\", query:\\"old user two\\"} (source coordinate unavailable)\\n\\nApply Standing directives at their recorded scope; a later human change supersedes an older value. Treat User input since notes as the user's own words — apply any rule or correction in it unless later revoked. Peer/agent receipts are evidence, not human preferences. Check these before choosing models, profiles, or irreversible actions.\\n\\n## Notes metadata\\nrevision 0 · written none · reviewed not confirmed\\n\\n## Last conclusion\\nold assistant two\\nsource coordinate unavailable · source coordinate unavailable\\n\\n## History\\nsource coordinate unavailable · source coordinate unavailable\\nHistorySearch {scope:'this_session', agent_id:'main', query:'<terms>'}"
           user: text "recent user three"
           assistant: text "recent assistant three"

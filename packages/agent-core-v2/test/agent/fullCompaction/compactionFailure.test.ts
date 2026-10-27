@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { attachErrorDetails, unwrapErrorCause } from '#/errors';
+import { attachErrorDetails, Error2, unwrapErrorCause } from '#/errors';
 import { APIConnectionError, APIEmptyResponseError, APIProviderQuotaExhaustedError, APIStatusError, APITimeoutError, ambiguousRequestDelivery, normalizeAPIStatusError, isRetryableGenerateError, requestDeliveryProvenance } from '#/kosong/contract/errors';
 import { compactionFailureKind, describeCompactionFailure, isRetryableCompactionError } from '#/agent/fullCompaction/compactionFailure';
 
@@ -25,6 +25,21 @@ describe('compaction-only retry classification', () => {
     ]) expect(isRetryableCompactionError(error)).toBe(false);
     expect(isRetryableCompactionError(new APIEmptyResponseError('empty'))).toBe(true);
     expect(isRetryableCompactionError(new APIStatusError(503, 'down'))).toBe(true);
+  });
+
+  it('retries a discarded empty summary after observed thinking while preserving terminal refusals', () => {
+    const observed = <T extends Error>(error: T): T => attachErrorDetails(error, { request_delivery: 'executed', request_output: 'observed' });
+    const empty = observed(new APIEmptyResponseError('thinking only'));
+    expect(isRetryableGenerateError(empty)).toBe(false);
+    expect(isRetryableCompactionError(empty)).toBe(true);
+    expect(isRetryableCompactionError(new Error2(empty.code, 'summary request failed', { cause: empty }))).toBe(true);
+    for (const error of [
+      new APIEmptyResponseError('filtered', { finishReason: 'filtered' }),
+      new APIStatusError(401, 'unauthorized'), new APIStatusError(403, 'forbidden'),
+      new APIProviderQuotaExhaustedError('insufficient_quota'), new APIConnectionError('interrupted output'),
+    ]) expect(isRetryableCompactionError(observed(error))).toBe(false);
+    const cancelled = new Error2(empty.code, 'cancelled', { name: 'AbortError', cause: empty });
+    expect(isRetryableCompactionError(cancelled)).toBe(false);
   });
 
   it('names manual and automatic failures from their actual trigger', () => {
