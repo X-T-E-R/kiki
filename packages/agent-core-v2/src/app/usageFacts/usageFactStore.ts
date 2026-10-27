@@ -292,7 +292,7 @@ export class UsageFactStore extends Disposable implements IUsageFactStore {
       await this.discardProgress(retired);
     }
     const staging = await this.query.createStaging?.(collection);
-    const stage = staging?.stage ?? `${collection}:stage:${randomUUID()}`;
+    const stage = staging?.stage ?? `usage-stage-v1:${randomUUID()}`;
     const progress: IndexProgress = { stage, publication: staging?.publication ?? `${stage}:publish`, staging, replace: false, size, offset: head?.ledgerOffset ?? 0, head, decoder: new TextDecoder(), queued: [], staged: 0, reset: true, copied: 0 };
     this.indexing.set(scope, progress);
     return this.advanceIndex(scope, progress, signal, budget);

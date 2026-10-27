@@ -200,12 +200,13 @@ export class UsageRangeFold {
   ): Promise<void> {
     signal?.throwIfAborted();
     const selected = records.filter((record) => !record.invalid && matches(record));
+    const keyLimit = this.query.batchIf === undefined ? Math.min(90, 127 - this.collection.length) : 90;
     const rows = selected.map((record) => {
       const bucket = bucketOf(record);
-      const group = foldKey(`group:${JSON.stringify([summary.id, bucket, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName])}`);
-      const turn = record.turnId === undefined ? undefined : foldKey(`turn:${JSON.stringify([bucket, summary.id, record.agentId ?? record.sourceAgentId ?? '', record.turnId])}`);
-      const drilldown = record.turnId === undefined ? undefined : foldKey(`drilldown:${JSON.stringify([bucket, summary.id, record.turnId])}`);
-      return { record, bucket: foldKey(`bucket:${bucket}`), bucketKey: bucket, group, turn, drilldown };
+      const group = foldKey(`group:${JSON.stringify([summary.id, bucket, record.model, record.agentId, record.parentAgentId, record.provider, record.modelAlias, record.profileName])}`, keyLimit);
+      const turn = record.turnId === undefined ? undefined : foldKey(`turn:${JSON.stringify([bucket, summary.id, record.agentId ?? record.sourceAgentId ?? '', record.turnId])}`, keyLimit);
+      const drilldown = record.turnId === undefined ? undefined : foldKey(`drilldown:${JSON.stringify([bucket, summary.id, record.turnId])}`, keyLimit);
+      return { record, bucket: foldKey(`bucket:${bucket}`, keyLimit), bucketKey: bucket, group, turn, drilldown };
     });
     const keys = [...new Set(rows.flatMap((row) => [row.group, row.bucket, row.turn, row.drilldown].filter((key): key is string => key !== undefined)))];
     if (this.query.batchIf !== undefined) await this.initialize();
@@ -281,11 +282,13 @@ export class UsageRangeFold {
   }
 
   buckets(keys: readonly string[]): Promise<Map<string, FoldBucketView>> {
-    return this.query.getMany<BucketRow>(this.collection, keys.map((key) => foldKey(`bucket:${key}`)));
+    const keyLimit = this.query.batchIf === undefined ? Math.min(90, 127 - this.collection.length) : 90;
+    return this.query.getMany<BucketRow>(this.collection, keys.map((key) => foldKey(`bucket:${key}`, keyLimit)));
   }
 
   async putBucket(bucket: FoldBucketView): Promise<void> {
-    const op: WriteOp = { kind: 'put', collection: this.collection, key: foldKey(`bucket:${bucket.key}`), value: { kind: 'bucket', ...bucket }, columns: { view: 2 } };
+    const keyLimit = this.query.batchIf === undefined ? Math.min(90, 127 - this.collection.length) : 90;
+    const op: WriteOp = { kind: 'put', collection: this.collection, key: foldKey(`bucket:${bucket.key}`, keyLimit), value: { kind: 'bucket', ...bucket }, columns: { view: 2 } };
     if (this.query.batchIf === undefined) return this.query.batch([op]);
     await this.initialize();
     await this.commit([op], new Map(), false, this.revision);
@@ -298,9 +301,9 @@ function isRangeHead(head: unknown): head is RangeFoldHead {
 function sessionRowKey(session: RangeFoldSession): string { return foldKey(`session:${JSON.stringify([session.summary.workspaceId, session.summary.id])}`); }
 function sourceRowKey(source: RangeFoldSource): string { return foldKey(`source:${source.scope}`); }
 
-function foldKey(key: string): string {
-  if (key.length <= 90) return key;
+function foldKey(key: string, limit = 90): string {
+  if (key.length <= limit) return key;
   const prefix = key.slice(0, Math.max(0, key.indexOf(':')));
-  const hashed = `${prefix}:${createHash('sha256').update(key).digest('hex')}`;
-  return hashed.length <= 90 ? hashed : createHash('sha256').update(key).digest('hex');
+  const hash = createHash('sha256').update(key).digest('hex');
+  return `${prefix}:${hash}`.slice(0, limit);
 }

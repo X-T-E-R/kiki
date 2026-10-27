@@ -18,6 +18,8 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import { IAgentSystemReminderService } from '#/agent/systemReminder/systemReminder';
 import { AgentSystemReminderService } from '#/agent/systemReminder/systemReminderService';
+import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
+import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IEventBus } from '#/app/event/eventBus';
 import { IWireService } from '#/wire/wire';
 import { registerLogServices } from '../../_base/log/stubs';
@@ -74,6 +76,7 @@ describe('AgentContextInjectorService', () => {
         reg.defineInstance(IAgentLoopService, loop);
         reg.defineInstance(IWireService, stubWire());
         reg.defineInstance(IAgentStateService, new AgentStateService());
+        reg.define(IAgentToolRegistryService, AgentToolRegistryService);
         reg.define(IAgentSystemReminderService, AgentSystemReminderService);
         reg.define(IAgentContextInjectorService, AgentContextInjectorService);
       },

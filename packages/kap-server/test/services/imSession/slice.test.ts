@@ -3,6 +3,7 @@ import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { IBotService, IConfigService, ISessionIndex, ISessionInteractionService, ISessionManager, ISessionQuestionService, type Scope } from '@kiki/agent-core-v2';
+import { IPluginHostService } from '@kiki/agent-core-v2/app/plugin/pluginHostService';
 import { FEISHU_TEXT_UTF8_BYTES, splitFeishuText, type SessionAdapter, type SessionInbound, type SessionOutbound, type SessionPlatformId, type SessionReceipt, type SessionSink } from '@nb-im/core';
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -155,6 +156,7 @@ async function hostCore(home: string): Promise<{ core: Scope; service: Notificat
     if (key === ISessionIndex) return { get: async (id: string) => id === 'home' ? { id } : undefined };
     if (key === ISessionManager) return { list: () => [], acquire: async () => ({ handle: { accessor: { get: sessionGet } }, dispose: async () => undefined }) };
     if (key === IBotService) return { list: async () => [], ensureHomeSession: async () => ({ homeSessionId: 'home' }) };
+    if (key === IPluginHostService) return { attachImAdapters: async () => undefined };
     throw new Error('unexpected_app_service');
   } } } as unknown as Scope;
   const opened = new NotificationService(core, home, () => false, () => undefined);

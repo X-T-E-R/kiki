@@ -22,6 +22,7 @@ function host(records: unknown[]) {
     reader: new PersistedModelSwitchReader({ docs: { get: async () => undefined } as never,
       files: { stat: async () => ({ isFile: true, isDirectory: false, size: data.length, mtimeMs: time, ino: identity }) },
       storage: { size: async () => data.length, mtime: async () => time, pathFor: () => 'example-wire',
+        read: async () => undefined,
         readStream: async function* (_scope: string, _key: string, range: { start: number; end: number }, options?: { chunkBytes?: number }) {
           reads(range, options);
           const bytes = data.subarray(range.start, range.end + 1);
