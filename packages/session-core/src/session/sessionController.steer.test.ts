@@ -664,7 +664,7 @@ describe('send now (steer) — main agent', () => {
     const error = await controller.sendPromptNow({ text: STEER_TEXT }).catch((caught: unknown) => caught);
     expect((error as SendNowError).reason).toBe('refused');
     const promptId = client.submitPrompt.mock.calls[0]![1].prompt_id as string;
-    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', promptId, 'main');
+    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', promptId, 'main', true);
     expect(steerRows(controller.getState())).toEqual([]);
     controller.close();
   });
@@ -684,9 +684,45 @@ describe('send now (steer) — main agent', () => {
     expect((error as SendNowError).reason).toBe('unknown');
     expect((error as SendNowError).cause).toBe(abortError);
     const promptId = client.submitPrompt.mock.calls[0]![1].prompt_id as string;
-    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', promptId, 'main');
+    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', promptId, 'main', true);
     expect(controller.getState().queuedPromptIds).toContain(promptId);
     expect(steerRows(controller.getState())).toEqual([]);
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
+  it('does not cancel a new turn or restore the draft when steer rejection races its queued prompt starting', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    let promptId = '';
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => {
+      promptId = body.prompt_id;
+      return queuedReceipt(promptId);
+    });
+    client.steerPrompt.mockRejectedValue(new ApiError({ code: 40001, msg: 'must start a new turn', data: null }));
+    client.abortPrompt.mockResolvedValue({ aborted: false, at_seq: 2 });
+    client.getAgentTranscript.mockImplementation(async () => ({
+      agent_id: 'main', items: [], has_more: false, tasks: [], interactions: [], attachments: [], todos: [], meta: {},
+      prompts: [{ promptId, userMessageId: promptId, status: 'running' as const, content: [{ type: 'text' as const, text: STEER_TEXT }], createdAt: '2026-01-01T00:00:03.000Z' }],
+    }));
+    const acknowledged = vi.fn();
+    await expect(controller.sendPromptNow({ text: STEER_TEXT, onAcknowledged: acknowledged })).resolves.toMatchObject({ promptId: expect.any(String), outcome: 'started' });
+    expect(acknowledged).toHaveBeenCalledOnce();
+    expect(client.abortPrompt).toHaveBeenCalledExactlyOnceWith('session_test', promptId, 'main', true);
+    expect(client.submitPrompt).toHaveBeenCalledTimes(1);
+    controller.close();
+  });
+
+  it('does not restore a draft when a refused steer races an unknown queue transition', async () => {
+    const { controller, client } = await open();
+    await deliver(controller, resetEvent('main', userTurnSnapshot({ streaming: true }), 1));
+    client.submitPrompt.mockImplementation(async (_sid: string, body: { prompt_id: string }) => queuedReceipt(body.prompt_id));
+    client.steerPrompt.mockRejectedValue(new ApiError({ code: 40001, msg: 'must start a new turn', data: null }));
+    client.abortPrompt.mockResolvedValue({ aborted: false, at_seq: 2 });
+    const outcome = await controller.sendPromptNow({ text: STEER_TEXT }).catch((error: unknown) => error);
+    expect(outcome).toBeInstanceOf(SendNowError);
+    expect((outcome as SendNowError).reason).toBe('unknown');
+    expect(client.abortPrompt).toHaveBeenCalledWith('session_test', expect.any(String), 'main', true);
     expect(client.submitPrompt).toHaveBeenCalledTimes(1);
     controller.close();
   });

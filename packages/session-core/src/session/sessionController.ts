@@ -3728,12 +3728,21 @@ export class SessionController {
         // queued, so its outcome is unknown and it must not be re-sent.
         let withdrawn: Awaited<ReturnType<SessionTransport['abortPrompt']>>;
         try {
-          withdrawn = await this.client.abortPrompt(this.sessionId, result.prompt_id, agentId);
+          withdrawn = await this.client.abortPrompt(this.sessionId, result.prompt_id, agentId, true);
         } catch (abortError) {
           throw new SendNowError('unknown', abortError);
         }
-        if (withdrawn.aborted !== true) throw new SendNowError('unknown', error);
-        throw new SendNowError('refused', error);
+        if (withdrawn.aborted === true) throw new SendNowError('refused', error);
+        let canonical: NonNullable<AgentTranscriptResponse['prompts']>[number] | undefined;
+        try {
+          canonical = (await this.view.transcript.page({ agentId })).prompts?.find((item) => item.promptId === result.prompt_id);
+        } catch (readError) {
+          throw new SendNowError('unknown', readError);
+        }
+        if (canonical?.status === 'running' || canonical?.status === 'completed') {
+          return { promptId: result.prompt_id, outcome: canonical.steeredAt === undefined ? 'started' : 'steered' };
+        }
+        throw new SendNowError('unknown', error);
       }
       // Outcome unknown: it may already be in the turn. Never withdraw it.
       throw new SendNowError('unknown', error);

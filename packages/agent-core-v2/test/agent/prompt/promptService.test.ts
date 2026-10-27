@@ -2563,6 +2563,42 @@ describe('AgentPromptService', () => {
     expect((await cancelled.completion).state).toBe('cancelled');
   });
 
+  it('removing a merged secondary after the first launch commit cannot abort the first request', async () => {
+    const { prompt, context, loop, dispatcher } = harness({ manualTurnResult: true });
+    await prompt.enqueue({ id: 'active-before-batch', message: message('active') });
+    loop.drainNextBatch(context);
+    const first = await prompt.enqueue({ id: 'batch-first', message: message('first') });
+    const second = await prompt.enqueue({ id: 'batch-second', message: message('second') });
+    const firstCommitted = deferred<void>();
+    const continueBatch = deferred<void>();
+    const dispatch = dispatcher.dispatch.bind(dispatcher);
+    vi.spyOn(dispatcher, 'dispatch').mockImplementation(async (event) => {
+      await dispatch(event);
+      if (event instanceof PromptLaunchCommitted && event.promptId === first.id) {
+        firstCommitted.resolve();
+        await continueBatch.promise;
+      }
+    });
+    loop.settleActive();
+    await firstCommitted.promise;
+    expect(prompt.lookup(first.id)?.phase).toBe('launched');
+    expect(prompt.lookup(second.id)?.phase).toBe('pending');
+    expect(prompt.list().pending.some((item) => item.id === second.id)).toBe(false);
+    expect(await prompt.abortQueued(second.id)).toBe(true);
+    continueBatch.resolve();
+    await first.launched;
+    expect((await second.completion).state).toBe('cancelled');
+    await dispatcher.flush();
+    expect(prompt.lookup(second.id)?.terminal?.state).toBe('cancelled');
+    expect(prompt.list().pending.some((item) => item.id === second.id)).toBe(false);
+    expect(prompt.list().active?.id).toBe(first.id);
+    loop.drainNextBatch(context);
+    expect(context.get().at(-1)).toEqual(first.message);
+    expect(context.get()).not.toContainEqual(second.message);
+    loop.settleActive();
+    await first.completion;
+  });
+
   it('steers selected prompts in FIFO order', async () => {
     const { prompt, context, loop } = harness();
     const active = await prompt.enqueue({ message: message('active') });

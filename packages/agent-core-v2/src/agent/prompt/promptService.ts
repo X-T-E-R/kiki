@@ -2206,9 +2206,16 @@ export class AgentPromptService implements IAgentPromptService {
   async abortQueued(promptId: string): Promise<boolean> {
     if (this.lookup(promptId)?.phase !== 'pending' || this.active?.id === promptId ||
       this.steeringFlights.has(promptId) || this.steeredTurnIds.has(promptId)) return false;
-    const live = this.pending.some((item) => item.id === promptId) || this.launchingPrompt?.record.id === promptId ||
-      this.launchingBatch.some((item) => item.id === promptId && !this.pending.includes(item));
-    if (live) return this.abort(promptId);
+    const secondary = this.launchingBatch.find((item) => item.id === promptId &&
+      item !== this.launchingPrompt?.record && !this.pending.includes(item));
+    if (secondary !== undefined) {
+      if (secondary.state === 'cancelled') return false;
+      this.cancelUnlaunched(secondary, true);
+      this.syncRecoveryHold();
+      return true;
+    }
+    if (this.launchingPrompt?.record.id === promptId && this.launchingBatch.length > 1) return false;
+    if (this.pending.some((item) => item.id === promptId) || this.launchingPrompt?.record.id === promptId) return this.abort(promptId);
     await this.dispatcher.dispatch(new PromptAborted({ promptId, abortedAt: new Date().toISOString(), beforeStart: true }));
     await this.dispatcher.dispatch(new PromptOutcomeCommitted({ terminal: { promptId, state: 'cancelled' } }));
     this.syncRecoveryHold();
@@ -2477,14 +2484,21 @@ export class AgentPromptService implements IAgentPromptService {
         return;
       }
       for (const candidate of selected.slice(1)) this.pending.splice(this.pending.indexOf(candidate), 1);
-      for (const candidate of selected) await this.dispatcher.dispatch(new PromptLaunchCommitted({
-        launchId: randomUUID(),
-        promptId: candidate.id,
-        revision: candidate.revision,
-        committedAt: new Date().toISOString(),
-      }));
+      for (const candidate of selected) {
+        if (candidate.state === 'cancelled') continue;
+        await this.dispatcher.dispatch(new PromptLaunchCommitted({
+          launchId: randomUUID(),
+          promptId: candidate.id,
+          revision: candidate.revision,
+          committedAt: new Date().toISOString(),
+        }));
+      }
       await this.wire.flush();
       controller.signal.throwIfAborted();
+      const deliverable = selected.filter((candidate) => candidate.state !== 'cancelled');
+      const deliverableBatch = deliverable.map((candidate) => batch[selected.indexOf(candidate)]!);
+      const deliveredMessage = deliverable.length === selected.length ? message : deliverable.length === 1
+        ? deliverableBatch[0]!.message : mergeSteerMessages(deliverableBatch);
       const applyControls = this.instantiation.invokeFunction((accessor) =>
         preparePromptRuntimeControls(accessor, item.execution, item.goalId));
       await applyControls();
@@ -2495,11 +2509,11 @@ export class AgentPromptService implements IAgentPromptService {
       let turn: Turn | undefined;
       if ((this.profile.data().executorId ?? 'native') === 'native') {
         const receipt = this.loop.enqueue(
-          new PromptStepRequest(message, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined, item.id, batch,
-            selected.length > 1 ? () => {
+          new PromptStepRequest(deliveredMessage, captions, this.reminders, this.providerType(), item.alreadyMaterialized, recovered ? 'recovery' : undefined, item.id, deliverableBatch,
+            deliverable.length > 1 ? () => {
               void this.dispatcher.dispatch(new PromptSteered({ activePromptId: item.id,
-                promptIds: selected.slice(1).map(candidate => candidate.id),
-                content: selected.slice(1).flatMap(candidate => stripBundledSkillBlocks(candidate.message)),
+                promptIds: deliverable.slice(1).map(candidate => candidate.id),
+                content: deliverable.slice(1).flatMap(candidate => stripBundledSkillBlocks(candidate.message)),
                 steeredAt: new Date().toISOString() }));
             } : undefined, hookMessages),
           { at: 'head' },
@@ -2508,10 +2522,10 @@ export class AgentPromptService implements IAgentPromptService {
         await admission.dispose();
         turn = (await receipt.assigned).turn;
       } else {
-        const text = message.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
+        const text = deliveredMessage.content.filter((part) => part.type === 'text').map((part) => part.text).join('');
         await admission.dispose();
         const execution = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentExecutionService));
-        turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: message.content, origin: message.origin }, { signal: controller.signal })).turn;
+        turn = (await execution.run({ kind: 'prompt', prompt: text, promptId: item.id, input: deliveredMessage.content, origin: deliveredMessage.origin }, { signal: controller.signal })).turn;
         if (this.queuedExternalSteerIds.delete(item.id)) {
           await this.dispatcher.dispatch(new ExecutorHintDelivery({
             executorId: this.profile.data().executorId, turnId: turn.id,
@@ -2524,8 +2538,8 @@ export class AgentPromptService implements IAgentPromptService {
         throw new Error2(ErrorCodes.INTERNAL, 'Prompt launch was not assigned after launch commit');
       }
       this.active = Object.assign(item, { turn });
-      if (selected.length > 1) this.steered.set(item.id, selected.slice(1));
-      for (const candidate of selected) {
+      if (deliverable.length > 1) this.steered.set(item.id, deliverable.slice(1));
+      for (const candidate of deliverable) {
         candidate.state = 'running'; candidate.launchedDeferred.resolve(turn);
         this.immediatePromptIds.delete(candidate.id);
         this.recoveryPendingIds.delete(candidate.id);
@@ -2539,11 +2553,12 @@ export class AgentPromptService implements IAgentPromptService {
         executorId: this.profile.data().executorId, promptId: item.id, origin: item.message.origin?.kind ?? 'user', method: 'undelivered', status: 'undelivered',
       }));
       for (const candidate of selected) {
+        if (candidate.state === 'cancelled') continue;
         const index = this.pending.indexOf(candidate);
         if (controller.signal.aborted && candidate !== item && index >= 0) continue;
         if (index >= 0) this.pending.splice(index, 1);
         if (controller.signal.aborted) {
-          if (candidate.state !== 'cancelled') this.cancelUnlaunched(candidate, true);
+          this.cancelUnlaunched(candidate, true);
         } else {
           candidate.state = 'failed';
           const payload = toErrorPayload(error);
