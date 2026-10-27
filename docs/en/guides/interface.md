@@ -10,7 +10,7 @@ If a turn ends without a reply, its footer says whether background work is still
 
 Messages from another agent or conversation show the source title above the body, falling back to its task name or short ID when no title is available. Hover over the label to see its full identity; select it to open the source agent or a conversation available in the current connection. Copying or quoting uses the body without repeating the label; editing keeps the original source prefix. A source label you type yourself stays literal. Context injected after a user message stays after that message when you reopen or continue loading the conversation.
 
-Anything that has been resolved — a question you answered, an approval you granted, a marker — collapses into a compact one-line entry that stays where it happened. Several in a row fold into an **Activity history** row you can expand. Expanding or collapsing a conversation row keeps your reading position; scrolling takes over again. Failed and cancelled entries always stay visible on their own. Repeating markers such as goal updates show the latest one with a count ("Goal updated ×12") when nothing else separates them.
+Anything that has been resolved — a question you answered, an approval you granted, a marker — collapses into a compact one-line entry that stays where it happened. A question keeps that position while awaiting your answer and as the conversation continues; expand its entry to read the saved question and answer. Several in a row fold into an **Activity history** row you can expand. Expanding or collapsing a conversation row keeps your reading position; scrolling takes over again. Failed and cancelled entries always stay visible on their own. Repeating markers such as goal updates show the latest one with a count ("Goal updated ×12") when nothing else separates them.
 
 A subagent dispatch card expands children created during that particular run. Children from other runs, or whose creation time cannot be placed, stay under **Other subagents**, with their count and running or failed status. Open the group to see the same child cards. Resuming an older child does not make it newly created, and later status changes do not override your choice to open or close the group.
 
@@ -44,7 +44,7 @@ To pick the timing for a message you submit, hover the send button or focus it a
 
 With the native executor, compatible queued messages ready at the same safe step are sent together as one model input. Steering and submit hooks run once for that batch; each original message keeps its own history entry and result. A message added after that step has begun stays in a later batch.
 
-A profile or engine change needs a separate turn even with **Send now**. Messages with different execution settings are not batched together. If the message stays queued, Kiki explains the reported reason.
+A profile or engine change needs a separate turn even with **Send now**. Messages with different execution settings are not batched together. For external engines, the handshake determines whether sending into the current turn is available. AGY CLI currently does not support it; Kiki keeps messages queued for the next turn. If delivery is unconfirmed, the queue pauses: check the timeline before deciding whether to resume it.
 
 When the main agent is blocked waiting on a foreground `AgentRun`, **Send now** moves that wait to the background without stopping the child, which still reports back when it completes; plain queueing does not.
 
