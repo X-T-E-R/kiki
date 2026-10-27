@@ -334,7 +334,7 @@ jobs:
             Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/gui', 'exec', 'vitest', 'run', 'src/lib/client.test.ts', '-t', 'round-trips the canonical reply paragraph over HTTP', '--maxWorkers=1', '--no-file-parallelism')
             Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/session-core', 'exec', 'vitest', 'run', 'src/settings/onboarding.test.ts', '--maxWorkers=1', '--no-file-parallelism')
             Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/agent-core-v2', 'exec', 'vitest', 'run', 'test/kosong/model/modelRequester.test.ts', '-t', 'assigns one response instance per actual attempt', '--maxWorkers=1', '--no-file-parallelism')
-            Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript-live', 'exec', 'vitest', 'run', 'test/liveAdapter.test.ts', '-t', 'retracts an actual 401 retry through the loop, live projection and durable cold replay', '--maxWorkers=1', '--no-file-parallelism')
+            Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript-live', 'exec', 'vitest', 'run', 'test/liveAdapter.test.ts', '-t', 'replays a pre-output 401 after auth refresh through the loop, live projection and durable cold replay', '--maxWorkers=1', '--no-file-parallelism')
             Invoke-CandidateCommand 'pnpm' @('--filter', '@kiki/transcript', 'exec', 'vitest', 'run', 'test/layers.test.ts', '-t', 'retracts discarded streaming frames idempotently in stores and subscriber grades', '--maxWorkers=1', '--no-file-parallelism')
           }
           ConvertTo-Json -InputObject $reused -Depth 5 | Set-Content -Encoding utf8 (Join-Path $output 'reused-checks.json')

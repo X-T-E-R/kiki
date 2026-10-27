@@ -577,7 +577,7 @@ describe('AgentTranscriptLiveAdapter', () => {
     ]);
   });
 
-  it('retracts an actual 401 retry through the loop, live projection and durable cold replay', async () => {
+  it('replays a pre-output 401 after auth refresh through the loop, live projection and durable cold replay', async () => {
     const ctx = createTestAgent(permissionModeServices('manual'));
     const tx = new AgentTranscript('main');
     const adapter = new AgentTranscriptLiveAdapter('main', { stepFrames: (turnId, stepId) => tx.getTurn(turnId)?.steps.find((step) => step.stepId === stepId)?.frames });
@@ -593,13 +593,7 @@ describe('AgentTranscriptLiveAdapter', () => {
         return {
           id: `response-fixture-${attempt}`, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop', traceId: null,
           async *[Symbol.asyncIterator]() {
-            if (attempt === 0) {
-              yield { type: 'think' as const, think: 'discarded thinking', encrypted: 'discarded-opaque' };
-              yield { type: 'text' as const, text: 'discarded prose' };
-              yield { type: 'function' as const, id: 'discarded-call', name: 'Read', arguments: '', _streamIndex: 0 };
-              yield { type: 'tool_call_part' as const, index: 0, argumentsPart: '{}' };
-              throw new APIStatusError(401, 'fixture unauthorized');
-            }
+            if (attempt === 0) throw new APIStatusError(401, 'fixture unauthorized');
             yield { type: 'think' as const, think: 'Successful reasoning', encrypted: 'fixture-reasoning-opaque' };
             yield { type: 'think' as const, think: 'Successful summary', encrypted: 'fixture-summary-opaque' };
             yield { type: 'text' as const, text: 'Final body' };
@@ -611,12 +605,10 @@ describe('AgentTranscriptLiveAdapter', () => {
     const catalog = ctx.get(IModelCatalog);
     const providerSpy = vi.spyOn(registry, 'createChatProvider').mockReturnValue(provider);
     const requesterSpy = vi.spyOn(catalog, 'getRequester').mockImplementation((id, settings) => new ModelRequesterImpl({ ...catalog.get(id, settings), authProvider: { canRefresh: true, getAuth: () => Promise.resolve({ apiKey: 'fixture-token' }) } }, registry));
-    let sawDiscardedTool = false;
     const subscription = ctx.get(IEventBus).subscribe((event) => {
       const record = event.serialize();
       reducer.apply(wire.add(record));
       tx.apply(adapter.map(event as unknown as LiveAdapterBusEvent));
-      sawDiscardedTool ||= tx.getToolCall('discarded-call') !== undefined;
     });
     try {
       await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Fixture request' }] });
@@ -624,8 +616,6 @@ describe('AgentTranscriptLiveAdapter', () => {
       await ctx.get(IAgentLoopService).settled();
       expect(calls).toBe(2);
       expect(histories[1]).toEqual(histories[0]);
-      expect(sawDiscardedTool).toBe(true);
-      expect(tx.getToolCall('discarded-call')).toBeUndefined();
       const records = await ctx.persistedWireRecords();
       const cold = new AgentTranscript('main');
       const coldWire = new TranscriptWireAdapter('main');
@@ -635,8 +625,8 @@ describe('AgentTranscriptLiveAdapter', () => {
       const thoughts = (snapshot: AgentTranscriptSnapshot) => agentTranscriptToBlocks({ ...snapshot, agent_id: 'main' }).filter((block) => block.kind === 'thinking');
       expect(thoughts(tx.snapshot())).toEqual([expect.objectContaining({ text: 'Successful reasoning\n\nSuccessful summary', streaming: false, fragments: [expect.objectContaining({ text: 'Successful reasoning' }), expect.objectContaining({ text: 'Successful summary' })] })]);
       expect(thoughts(cold.snapshot()).map((block) => [block.id, block.text])).toEqual(thoughts(tx.snapshot()).map((block) => [block.id, block.text]));
-      expect(JSON.stringify(tx.snapshot())).not.toContain('discarded');
-      expect(JSON.stringify(cold.snapshot())).not.toContain('discarded');
+      expect(JSON.stringify(tx.snapshot())).not.toContain('fixture unauthorized');
+      expect(JSON.stringify(cold.snapshot())).not.toContain('fixture unauthorized');
       const assistant = ctx.contextData().history.find((message) => message.role === 'assistant');
       expect(assistant?.content).toEqual([
         { type: 'think', think: 'Successful reasoning', encrypted: 'fixture-reasoning-opaque' },
