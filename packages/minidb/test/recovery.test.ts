@@ -379,7 +379,11 @@ test('generation pairing: a rotation-like WAL inode swap at the post-scan forens
   const dir = await tmpDir();
   try {
     const writer = await MiniDb.open<string>({ dir, valueCodec: 'string', fsyncPolicy: 'no', autoCompact: false, indexGenerations: false });
-    for (let i = 0; i < 50; i++) await writer.set(`k${i}`, `v${i}`);
+    try {
+      for (let i = 0; i < 50; i++) await writer.set(`k${i}`, `v${i}`);
+    } finally {
+      await writer.close();
+    }
 
     // The injection fires when recover takes its post-scan path stat of
     // db.wal (forensics round 2): the WAL is swapped for a new inode between
@@ -387,6 +391,7 @@ test('generation pairing: a rotation-like WAL inode swap at the post-scan forens
     // pairing exists to catch. One-shot: the retried pass sees a stable pair.
     const walPath = path.join(dir, 'db.wal');
     let swaps = 0;
+    vi.resetModules();
     mockFsSyncForWal(walPath, {
       onStatSync: (call, real) => {
         if (call === 1) {
@@ -397,13 +402,15 @@ test('generation pairing: a rotation-like WAL inode swap at the post-scan forens
     });
     const { MiniDb: MockedMiniDb } = await import('../src/index.js');
     const reader = await MockedMiniDb.open<string>({ dir, valueCodec: 'string', readOnly: true, indexGenerations: false });
-    assert.equal(swaps, 1);
-    assert.equal(reader.recoveryInfo!.generationRetries, 1, 'the swapped inode forced exactly one retry');
-    assert.equal(reader.size, 50);
-    assert.equal(reader.get('k0'), 'v0');
-    assert.equal(reader.get('k49'), 'v49');
-    await reader.close();
-    await writer.close();
+    try {
+      assert.equal(swaps, 1);
+      assert.equal(reader.recoveryInfo!.generationRetries, 1, 'the swapped inode forced exactly one retry');
+      assert.equal(reader.size, 50);
+      assert.equal(reader.get('k0'), 'v0');
+      assert.equal(reader.get('k49'), 'v49');
+    } finally {
+      await reader.close();
+    }
   } finally {
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
