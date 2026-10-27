@@ -2753,6 +2753,75 @@ describe('shared agent and history usage projection', () => {
 
 
 describe('SQLite UsageRangeFold publication', () => {
+  it.each(['AbortError', 'TimeoutError'])('cancels stalled journal preparation without publishing unfinished metadata (%s)', async (reason) => {
+    const saved = await openRange([], {}, true);
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const session = { summary: summary('session', 'workspace'), invalid: false, prepared: false };
+    const controller = new AbortController();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const gate = vi.spyOn(saved.storage, 'list').mockImplementation(async () => { enter(); return new Promise(() => {}); });
+    const pending = Reflect.apply(Reflect.get(service, 'prepareJournalSessions'), service, [[session], { startAt: 0, endAt: 1000 }, controller.signal]) as Promise<unknown>;
+    const settled = reason === 'TimeoutError' ? expect(pending).resolves.toEqual(new Map()) : expect(pending).rejects.toThrow('Stopped journal preparation');
+    await entered;
+    controller.abort(new DOMException('Stopped journal preparation', reason));
+    await settled;
+    expect(session).toEqual({ summary: summary('session', 'workspace'), invalid: false, prepared: false });
+    gate.mockRestore();
+    service.dispose();
+  });
+
+  it('retains verified source metadata when the default preparation deadline expires', async () => {
+    const wireScope = scope('workspace', 'session');
+    const saved = await openRange([summary('session', 'workspace')], { [wireScope]: [usageRecord(1, 7)] }, true);
+    const warm = new UsageAggregationService(saved.core, () => 1000);
+    await warm.readAgentUsage('workspace', 'session', ['main']);
+    let now = 1000;
+    const service = new UsageAggregationService(saved.core, () => now);
+    const prepare = Reflect.get(service, 'prepareJournalSessions') as (...args: unknown[]) => Promise<unknown>;
+    const gate = vi.spyOn(service as unknown as { prepareJournalSessions: (...args: unknown[]) => Promise<unknown> }, 'prepareJournalSessions').mockImplementationOnce(async (...args) => {
+      const prepared = await prepare.apply(service, args);
+      now = 11_001;
+      return prepared;
+    });
+    const fallback = vi.spyOn(service as unknown as { loadSessionIncremental: (...args: unknown[]) => Promise<unknown> }, 'loadSessionIncremental');
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    const partial = await service.query(input);
+    expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+    const complete = await service.query(input);
+    expect(complete.reliability.complete).toBe(true);
+    expect(complete.summary.tokens.output).toBe(1);
+    expect(fallback).not.toHaveBeenCalled();
+    expect((gate.mock.calls[1]?.[0] as RangeFoldHead['sessions'])[0]?.sources).toHaveLength(1);
+    service.dispose();
+    warm.dispose();
+  });
+
+  it.each([false, true])('prepares unchanged journal checkpoints together and falls back for an unaligned source (stale: %s)', async (stale) => {
+    const sessions = Array.from({ length: 40 }, (_, index) => summary(`session-${index}`, 'workspace'));
+    const saved = await openRange(sessions, Object.fromEntries(sessions.flatMap((session) => ['main', 'child'].map((agentId) => [`sessions/workspace/${session.id}/agents/${agentId}`, [usageRecord(1, 7)]]))), true);
+    const warm = new UsageAggregationService(saved.core, () => 1000);
+    for (const session of sessions) await warm.readAgentUsage('workspace', session.id, ['main', 'child']);
+    await saved.storage.write(`sessions/workspace/${sessions[0]!.id}/agents`, 'empty', new Uint8Array());
+    await saved.storage.write(`sessions/workspace/${sessions[0]!.id}/agents/empty`, 'wire.jsonl', new Uint8Array());
+    if (stale) await saved.storage.append(scope('workspace', sessions[0]!.id), 'wire.jsonl', Buffer.from(JSON.stringify(usageRecord(2, 8)) + '\n'));
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const fallback = vi.spyOn(service as unknown as { loadSessionIncremental: (...args: unknown[]) => Promise<unknown> }, 'loadSessionIncremental');
+    const lists = vi.spyOn(saved.storage, 'list');
+    const response = await service.query({ range: 'custom', start_at: 0, end_at: 1000 });
+    expect(response.reliability.complete).toBe(true);
+    expect(response.reliability.usage_coverage).toMatchObject({ known_records: stale ? 81 : 80, missing_records: 0 });
+    expect(response.summary.tokens.output).toBe(stale ? 81 : 80);
+    expect(fallback).toHaveBeenCalledTimes(stale ? 1 : 0);
+    if (stale) expect(fallback.mock.calls[0]?.[6]).toEqual(['main']);
+    expect(lists.mock.calls.filter(([target]) => sessions.some((session) => target === `sessions/workspace/${session.id}/agents`))).toHaveLength(40);
+    const reopened = await new UsageAggregationService(saved.core, () => 1000).query({ range: 'custom', start_at: 0, end_at: 1000 });
+    expect(reopened.summary).toEqual(response.summary);
+    expect(reopened.trend).toEqual(response.trend);
+    service.dispose();
+    warm.dispose();
+  });
+
   it('reuses committed fold rows across pages and discards them after an interleaved revision', async () => {
     const saved = await openRange([], {}, true);
     const fold = new UsageRangeFold(saved.store, 'cached-pages', 100, 100);

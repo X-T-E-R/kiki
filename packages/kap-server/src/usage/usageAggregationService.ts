@@ -695,36 +695,54 @@ export class UsageAggregationService {
         }
       };
       await pageOpened();
+      const journalPreparation = replayJournal && budget.incompleteReason === null
+        ? await this.prepareJournalSessions(head.sessions, query.range, budget.factSignal)
+        : undefined;
+      if (journalPreparation !== undefined && (this.now() >= budget.deadlineAt || budget.factSignal?.aborted)) {
+        for (const [session, prepared] of journalPreparation) {
+          const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
+          session.sources = Object.entries(prepared.checkpoints).map(([agentId, checkpoint]) => {
+            const done = checkpoint.size === 0 || mtimeExcludesRange(checkpoint.mtimeMs, query.range.startAt);
+            return { agentId, scope: agentScopeOf(scope, agentId), checkpoint, done, cursor: done ? undefined : 'journal:0:0' };
+          });
+          session.invalid = Object.values(prepared.checkpoints).some((checkpoint) => !checkpoint.valid);
+        }
+        budget.incompleteReason = 'deadline';
+      }
       for (const session of head.sessions) {
         if (session.prepared) continue;
         if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; break; }
         if ((budget.remainingFacts ?? Infinity) <= 0 || budget.remainingRecords <= 0) { budget.incompleteReason = 'record_budget'; break; }
         const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
-        const listedAgents = await storage.list(`${scope}/agents`);
+        const journalSession = journalPreparation?.get(session);
+        const listedAgents = journalSession?.agentIds ?? await storage.list(`${scope}/agents`);
         const known = new Set((session.sources ?? []).map((source) => source.agentId));
-        const pending = session.sources === undefined ? undefined : listedAgents.filter((agentId) => !known.has(agentId));
-        if (pending === undefined || pending.length > 0) {
+        const pending = journalSession !== undefined ? listedAgents.filter((agentId) => journalSession.checkpoints[agentId] === undefined)
+          : session.sources === undefined ? undefined : listedAgents.filter((agentId) => !known.has(agentId));
+        if (session.sources === undefined || pending === undefined || pending.length > 0) {
           const prepared = pending === undefined ? undefined : {
             version: PERSISTENCE_VERSION,
             sessionKey: sessionKey(session.summary),
             records: [],
-            agents: Object.fromEntries((session.sources ?? []).map((source) => [source.agentId, source.checkpoint])),
+            agents: journalSession?.checkpoints ?? Object.fromEntries((session.sources ?? []).map((source) => [source.agentId, source.checkpoint])),
             readComplete: true,
           };
-          const recovered = await this.loadSessionIncremental(session.summary, budget.remainingRecords, budget.deadlineAt, undefined, false, prepared, pending, { signal, factSignal: budget.factSignal, factBudget: budget.factBudget, maxFacts: budget.remainingFacts, projectionOnly: true, rangeStart: query.range.startAt });
+          const recovered: SessionLoadResult = journalSession === undefined || pending?.length !== 0
+            ? await this.loadSessionIncremental(session.summary, budget.remainingRecords, budget.deadlineAt, undefined, false, prepared, pending, { signal, factSignal: budget.factSignal, factBudget: budget.factBudget, maxFacts: budget.remainingFacts, projectionOnly: true, rangeStart: query.range.startAt })
+            : { session: { summary: session.summary, records: [], complete: true, deleted: false }, persisted: prepared!, scannedRecordCount: 0, incompleteReason: null };
           budget.remainingRecords -= recovered.scannedRecordCount;
           if (budget.remainingFacts !== undefined) budget.remainingFacts -= recovered.scannedFactCount ?? 0;
           const sources = session.sources ?? [];
           const present = new Set(sources.map((source) => source.agentId));
           for (const [agentId, checkpoint] of Object.entries(recovered.persisted.agents)) {
             if (present.has(agentId) || checkpoint.offset !== checkpoint.size) continue;
-            const excluded = mtimeExcludesRange(checkpoint.mtimeMs, query.range.startAt);
+            const excluded = checkpoint.size === 0 || mtimeExcludesRange(checkpoint.mtimeMs, query.range.startAt);
             sources.push({ agentId, scope: agentScopeOf(scope, agentId), checkpoint, done: excluded, ...(replayJournal && !excluded ? { cursor: 'journal:0:0' } : {}) });
             present.add(agentId);
           }
           session.sources = sources;
           const covered = listedAgents.every((agentId) => present.has(agentId));
-          if (covered && recovered.incompleteReason === null && recovered.persisted.readComplete !== false) session.invalid = !recovered.session.complete;
+          if (covered && recovered.incompleteReason === null && recovered.persisted.readComplete !== false) session.invalid = !recovered.session.complete || Object.values(recovered.persisted.agents).some((checkpoint) => !checkpoint.valid);
           if (!covered || recovered.incompleteReason !== null || recovered.persisted.readComplete === false) {
             budget.incompleteReason = recovered.incompleteReason ?? 'record_budget';
             await fold.saveHead(head);
@@ -811,6 +829,47 @@ export class UsageAggregationService {
       }
       return response;
     } finally { clearTimeout(timer); }
+  }
+
+  private async prepareJournalSessions(sessions: readonly RangeFoldSession[], range: RangeBounds, signal?: AbortSignal): Promise<Map<RangeFoldSession, { agentIds: readonly string[]; checkpoints: Record<string, WireCheckpoint> }>> {
+    const storage = this.core.accessor.get(IFileSystemStorageService);
+    const logs = this.core.accessor.get(IAppendLogStore);
+    const prepared = new Map<RangeFoldSession, { agentIds: readonly string[]; checkpoints: Record<string, WireCheckpoint> }>();
+    const pending = sessions.filter((session) => !session.prepared && session.sources === undefined);
+    const parallel = async <T>(items: readonly T[], run: (item: T) => Promise<void>): Promise<boolean> => {
+      let next = 0;
+      const results = await Promise.allSettled(Array.from({ length: Math.min(32, items.length) }, async () => {
+        for (let index = next++; index < items.length; index = next++) {
+          signal?.throwIfAborted();
+          await waitForSource(run(items[index]!), signal);
+        }
+      }));
+      for (const result of results) if (result.status === 'rejected') {
+        if (signal?.aborted && (signal.reason as { name?: string } | undefined)?.name === 'TimeoutError') return false;
+        throw result.reason;
+      }
+      return true;
+    };
+    if (!await parallel(pending, async (session) => {
+      const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
+      prepared.set(session, { agentIds: await storage.list(`${scope}/agents`), checkpoints: {} });
+    })) return prepared;
+    const jobs = pending.flatMap((session) => {
+      const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
+      return prepared.get(session)!.agentIds.map((agentId) => ({ session, agentId, scope: agentScopeOf(scope, agentId) }));
+    });
+    await parallel(jobs, async ({ session, agentId, scope }) => {
+      const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
+      const [size, mtime] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
+      const excluded = mtimeExcludesRange(mtime ?? 0, range.startAt);
+      const checkpoint = excluded || (size ?? 0) === 0
+        ? { generation, offset: size ?? 0, size: size ?? 0, mtimeMs: mtime ?? 0, boundaryHash: '', valid: true }
+        : await this.factJournalCheckpoint(scope).catch(() => undefined);
+      const current = checkpoint !== undefined && checkpoint.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0) && (excluded || await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation);
+      if (current) prepared.get(session)!.checkpoints[agentId] = { ...checkpoint, generation };
+    });
+    for (const value of prepared.values()) value.checkpoints = Object.fromEntries(value.agentIds.flatMap((agentId) => value.checkpoints[agentId] === undefined ? [] : [[agentId, value.checkpoints[agentId]]]));
+    return prepared;
   }
 
   private async rangeSourcesCurrent(head: RangeFoldHead, range: RangeBounds, signal?: AbortSignal): Promise<boolean> {
