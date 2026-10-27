@@ -15,6 +15,7 @@ import {
   drainQueryStoreDisposals,
   drainSessionIndexMirror,
   SQLITE_QUERY_STORE_SUBDIR,
+  IThreadMailboxStore,
   ISessionIndex,
   ISessionIndexMirror,
 } from '@kiki/agent-core-v2';
@@ -27,6 +28,8 @@ import { TEST_IDENTITY } from './test-identity';
 const tempDirs: string[] = [];
 
 afterEach(async () => {
+  await drainSessionIndexMirror();
+  await drainQueryStoreDisposals();
   for (const dir of tempDirs.splice(0)) {
     await rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
@@ -36,6 +39,14 @@ async function makeTempDir(): Promise<string> {
   const dir = await mkdtemp(join(tmpdir(), 'kimi-sdk-list-'));
   tempDirs.push(dir);
   return dir;
+}
+
+async function closeThreadMailbox(client: SDKRpcClient): Promise<void> {
+  try {
+    await client.engineAccessor.get(IThreadMailboxStore).close();
+  } catch (error) {
+    if (!(error instanceof Error) || error.message !== 'Thread mailbox store is closed.') throw error;
+  }
 }
 
 async function writeSessionState(
@@ -282,7 +293,9 @@ describe('SDKRpcClient search-index separation', () => {
       expect(resumed.id).toBe(created.id);
 
       expect(existsSync(join(homeDir, 'search-index'))).toBe(false);
+      expect(existsSync(join(homeDir, 'search-index-v2'))).toBe(false);
     } finally {
+      await closeThreadMailbox(client);
       await client.close();
       await drainQueryStoreDisposals();
       vi.unstubAllEnvs();
@@ -310,6 +323,7 @@ describe('SDKRpcClient search-index separation', () => {
       expect(resumed.id).toBe(created.id);
 
       expect(existsSync(join(homeDir, 'search-index'))).toBe(false);
+      expect(existsSync(join(homeDir, 'search-index-v2'))).toBe(false);
 
       // Settle the kicked projection before close so teardown never races it,
       // and prove the read model really did engage (the flag took effect).
@@ -318,6 +332,7 @@ describe('SDKRpcClient search-index separation', () => {
       expect(existsSync(join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR))).toBe(true);
       expect(existsSync(join(homeDir, 'search-index'))).toBe(false);
     } finally {
+      await closeThreadMailbox(client);
       await client.close();
       // Dispose fired the mirror/query-store async closes; await them before
       // the shared afterEach removes the temp home.
