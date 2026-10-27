@@ -148,6 +148,33 @@ describe('bounded canonical content', () => {
     expect(Object.getPrototypeOf(current.output)).toBe(Object.prototype);
     expect(({} as { text?: string }).text).toBeUndefined();
   });
+  it('keeps SendMessage receipts intact within the entity budget while ordinary outputs stay windowed', () => {
+    const receipt = JSON.stringify({ messages: [
+      { index: 0, message_id: 'send:call:item:0', delivered_to: ['user'], delivery: 'delivered',
+        channels: [{ channel_id: 'internal', status: 'delivered' }], attachments: [{ blob_id: 'blob-1', path: 'example.png', kind: 'image' }] },
+      { index: 1, message_id: 'send:call:item:1', delivered_to: [], delivery: 'not_sent', detail: 'Cannot route this message. ' + 'x'.repeat(400) },
+      ...[2, 3, 4].map((index) => ({ index, message_id: `send:call:item:${index}`, delivered_to: [], delivery: 'not_sent' })),
+    ] }, null, 2);
+    expect(receipt.length).toBeGreaterThan(899);
+    const input = { messages: Array.from({ length: 5 }, (_, index) => ({ text: `item ${index}` })) };
+    const frame = { kind: 'tool', frameId: 'frame-send', toolCallId: 'call', name: 'SendMessage', state: 'done', input, output: receipt };
+    const turn = transcriptTurnSchema.parse({ kind: 'turn', turnId: 't1', ordinal: 0, state: 'completed', origin: { kind: 'user' },
+      steps: [{ kind: 'step', stepId: 's1', turnId: 't1', ordinal: 0, state: 'completed', frames: [frame] }] });
+    const preview = boundedTranscriptSnapshot({ items: [turn], tasks: [], attachments: [], prompts: [], interactions: [], todos: [], meta: {} }, 'main').items[0]!;
+    if (preview.kind !== 'turn') throw new Error('Expected turn');
+    expect(preview.steps[0]?.frames[0]).toMatchObject({ input, output: receipt });
+    expect(preview.steps[0]?.frames[0]?.contentRefs).toBeUndefined();
+    const ordinary = boundedEntity({ ...frame, name: 'Read' }, { kind: 'frame', id: frame.frameId });
+    expect(ordinary.output.length).toBeLessThan(receipt.length);
+    expect(ordinary.contentRefs).toContainEqual(expect.objectContaining({ path: ['output'] }));
+    const oversized = { ...frame, output: JSON.stringify({ message_id: 'send:call', delivered_to: ['user'], detail: 'x'.repeat(200_000) }) };
+    const bounded = boundedEntity(oversized, { kind: 'frame', id: frame.frameId });
+    expect(jsonBytes(bounded)).toBeLessThan(128 * 1024);
+    const outputRef = bounded.contentRefs?.find((ref) => ref.path.length === 1 && ref.path[0] === 'output');
+    expect(outputRef).toBeDefined();
+    expect(applyContentSegment(bounded, readContentSegment(oversized, outputRef!)).output).not.toBe(bounded.output);
+  });
+
   it('keeps a 50 MiB tool result bounded and reads the exact multibyte body in explicit segments', () => {
     const text = '汉😀\n\\"'.repeat(Math.ceil(50 * 1024 * 1024 / 11));
     const original = { kind: 'turn', turnId: 't0', ordinal: 0, state: 'completed', origin: { kind: 'user' }, prompt: 'prompt', steps: [{ kind: 'step', turnId: 't0', stepId: 's0', ordinal: 0, state: 'completed', frames: [{ kind: 'tool', frameId: 'f0', toolCallId: 'call0', name: 'Read', state: 'done', input: { path: 'example.txt' }, output: { text } }] }] };

@@ -6631,6 +6631,67 @@ describe('queued prompt scheduling projection', () => {
   });
 });
 
+describe('SendMessage transcript frames', () => {
+  function blocks(input: unknown, output: unknown, contentRefs?: ContentRef[], state: 'done' | 'error' = 'done'): Block[] {
+    return agentTranscriptToBlocks({ agent_id: 'main', items: [{
+      kind: 'turn', turnId: 't1', ordinal: 0, state: 'completed', origin: { kind: 'user' }, steps: [{
+        kind: 'step', stepId: 's1', turnId: 't1', ordinal: 0, state: 'completed', frames: [{
+          kind: 'tool', frameId: 'f1', toolCallId: 'call', name: 'SendMessage', state, input, output, contentRefs,
+        }],
+      }],
+    }] });
+  }
+
+  it('retains a long structured single receipt in both views', () => {
+    const output = JSON.stringify({ message_id: 'send:call', delivery: 'delivered', delivered_to: ['user'],
+      channels: [{ channel_id: 'internal', status: 'delivered' }, { channel_id: 'im:one', status: 'partial', unsupported: ['video'] }],
+      attachments: [{ blob_id: 'blob-1', path: 'example.png', kind: 'image' }, { blob_id: 'blob-2', path: 'example.ogg', kind: 'voice' }],
+      detail: 'x'.repeat(1000),
+    }, null, 2);
+    expect(output.length).toBeGreaterThan(899);
+    const process = blocks({ text: 'Attached' }, output);
+    const message = process.find((block): block is MessageBlock => block.kind === 'message')!;
+    expect(message).toMatchObject({ messageId: 'send:call', status: 'sent', reached: 'here', text: 'Attached' });
+    expect(message.attachments.map((attachment) => attachment.kind)).toEqual(['image', 'voice']);
+    expect(message.channels?.map((channel) => channel.status)).toEqual(['delivered', 'partial']);
+    expect(projectMessageView(process).filter((block) => block.kind === 'message')).toEqual([message]);
+  });
+
+  it('projects each batch item in order with independent delivery, media and failure', () => {
+    const input = { messages: [{ text: 'first' }, { text: 'second' }, { text: 'third' }] };
+    const output = JSON.stringify({ messages: [
+      { index: 0, message_id: 'send:call:item:0', delivery: 'delivered', delivered_to: ['user'],
+        channels: [{ channel_id: 'internal', status: 'delivered' }, { channel_id: 'im:one', status: 'partial' }],
+        attachments: [{ blob_id: 'blob-1', path: 'a.png', kind: 'image' }, { blob_id: 'blob-2', path: 'b.ogg', kind: 'voice' }] },
+      { index: 1, message_id: 'send:call:item:1', delivery: 'delivered', delivered_to: ['user'],
+        channels: [{ channel_id: 'internal', status: 'delivered' }] },
+      { index: 2, message_id: 'send:call:item:2', delivery: 'not_sent', delivered_to: [], detail: 'Cannot route this message.' },
+    ] }, null, 2);
+    expect(output.length).toBeGreaterThan(899);
+    const process = blocks(input, output);
+    const messages = process.filter((block): block is MessageBlock => block.kind === 'message');
+    expect(messages.map((message) => [message.id, message.messageId, message.status, message.text]))
+      .toEqual([['tool-call:message:0', 'send:call:item:0', 'sent', 'first'],
+        ['tool-call:message:1', 'send:call:item:1', 'sent', 'second'],
+        ['tool-call:message:2', 'send:call:item:2', 'failed', '']]);
+    expect(messages[0]?.attachments.map((attachment) => attachment.kind)).toEqual(['image', 'voice']);
+    expect(messages[0]?.channels?.map((channel) => channel.status)).toEqual(['delivered', 'partial']);
+    expect(messages[2]?.failureDetail).toBe('Cannot route this message.');
+    expect(projectMessageView(process).filter((block) => block.kind === 'message')).toEqual(messages);
+  });
+
+  it('keeps truncated receipts unconfirmed rather than reporting failure or success', () => {
+    const ref: ContentRef = { source: { kind: 'frame', id: 'f1', turnId: 't1', stepId: 's1' },
+      path: ['output'], kind: 'text', revision: 'r1', offset: 899, total: 2388 };
+    const single = blocks({ text: 'Already sent' }, '{"message_id":"send:call","channels":', [ref]);
+    expect(single.find((block) => block.kind === 'message')).toMatchObject({ status: 'pending', text: 'Already sent', messageId: undefined });
+    const batch = blocks({ messages: [{ text: 'first' }, { text: 'second' }] }, '{"messages":[{"index":0', [ref]);
+    expect(batch.filter((block) => block.kind === 'message').map((block) => block.status)).toEqual(['pending', 'pending']);
+    const error = blocks({ text: 'Rejected' }, 'media_unsupported', undefined, 'error');
+    expect(error.find((block) => block.kind === 'message')).toMatchObject({ status: 'failed', text: '', failureDetail: 'media_unsupported' });
+  });
+});
+
 describe('AgentSend delivery receipts', () => {
   const sendTurn = (output: boolean) => ({
     kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const,

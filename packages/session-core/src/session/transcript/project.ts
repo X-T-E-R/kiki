@@ -74,7 +74,7 @@ import {
   type ToolBlock,
   type ThinkingBlock,
 } from './types';
-import { projectSendMessage } from '../messageView';
+import { projectSendMessages } from '../messageView';
 import { questionAnswerTexts } from './questionAnswers';
 
 export type AgentTranscriptProjectionSource = {
@@ -2869,6 +2869,7 @@ export function agentTranscriptToBlocks(
               description: undefined,
               status: frame.state === 'error' ? 'error' : frame.state === 'interrupted' ? 'stopped' : frame.state,
               output: frame.output ?? frame.error,
+              outputPending: (frame as ContentWindow).contentRefs?.some((ref) => ref.path[0] === 'output'),
               media: mediaFromAttachmentIds(
                 (frame as { readonly attachmentIds?: readonly string[] }).attachmentIds,
                 attachmentsById,
@@ -2891,7 +2892,8 @@ export function agentTranscriptToBlocks(
               agentRefs: frame.agentRefs,
               turnId: item.turnId,
             };
-            blocks.push(projectSendMessage(tool) ?? tool);
+            const messages = projectSendMessages(tool);
+            blocks.push(...(messages.length === 0 ? [tool] : messages));
             break;
           }
           case 'notice':

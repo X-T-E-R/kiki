@@ -140,11 +140,14 @@ function projectAt(value: unknown, path: Path, source: ContentSource, entity: ob
   let textBytes = source.kind === 'turn' || source.kind === 'frame' ? 16 * 1024 : CONTENT_PREVIEW_BYTES;
   let arrayWindow = ARRAY_WINDOW;
   let structureWindow = 8;
+  let completeSendReceipts = true;
   for (;;) {
     const cuts: Cut[] = [];
-    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media, structureDirection);
+    const receiptProjection = { complete: completeSendReceipts, retained: false };
+    const projected = projectValue(value, path, cuts, textBytes, arrayWindow, 0, { nodes: 128 }, structureWindow, media, structureDirection, receiptProjection);
     const refs = bindCuts(entity, source, cuts);
     if (jsonBytes({ value: projected, refs }) <= maxBytes) return { value: projected, refs };
+    if (receiptProjection.retained) { completeSendReceipts = false; continue; }
     if (textBytes > CONTENT_PREVIEW_BYTES) { textBytes = Math.floor(textBytes / 2); continue; }
     if (arrayWindow > 0) { arrayWindow = 0; continue; }
     if (textBytes > 32) { textBytes = Math.floor(textBytes / 2); continue; }
@@ -221,7 +224,27 @@ function isExternalTextMarker(value: object, path: Path): boolean {
     typeof identity['clientName'] === 'string' && typeof identity['sessionRef'] === 'string';
 }
 
-function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }, structureDirection: StructureDirection = 'head'): unknown {
+function isSendMessageFrame(value: object): boolean {
+  const frame = value as Record<string, unknown>;
+  return frame['kind'] === 'tool' && frame['name'] === 'SendMessage' &&
+    typeof frame['toolCallId'] === 'string' && !frame['toolCallId'].startsWith('external:');
+}
+
+function isSendMessageReceipt(output: string): boolean {
+  if (output.length > TIMELINE_ENTITY_BYTES) return false;
+  try {
+    const receipt: unknown = JSON.parse(output);
+    if (receipt === null || typeof receipt !== 'object' || Array.isArray(receipt)) return false;
+    const fields = receipt as Record<string, unknown>;
+    return typeof fields['message_id'] === 'string' ||
+      Array.isArray(fields['messages']) && fields['messages'].every((item) =>
+        item !== null && typeof item === 'object' && typeof (item as Record<string, unknown>)['message_id'] === 'string');
+  } catch {
+    return false;
+  }
+}
+
+function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number, arrayWindow: number, depth: number, budget: Budget, structureWindow = 16, media?: { source: ContentSource; entity: object; agentId: string }, structureDirection: StructureDirection = 'head', receiptProjection = { complete: false, retained: false }): unknown {
   budget.nodes -= 1;
   if (media !== undefined && value !== null && typeof value === 'object' && !Array.isArray(value)) {
     const projected = projectInlineToolMedia(value, path, media.source, media.entity, media.agentId);
@@ -243,7 +266,7 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
     const count = structure ? Math.min(value.length, structureWindow)
       : depth > 12 || budget.nodes < 0 ? 0 : Math.min(value.length, arrayWindow);
     const start = structure && structureDirection === 'tail' ? value.length - count : 0;
-    const projected = value.slice(start, start + count).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow, media, structureDirection));
+    const projected = value.slice(start, start + count).map((child, index) => projectValue(child, [...path, start + index], cuts, textBytes, arrayWindow, depth + 1, structure ? { nodes: 128 } : budget, structureWindow, media, structureDirection, receiptProjection));
     if (count < value.length) {
       if (structure && structureDirection === 'tail') cuts.push({ path, kind: 'array', offset: start, total: value.length, direction: 'backward' });
       else cuts.push({ path, kind: 'array', offset: count, total: value.length });
@@ -263,6 +286,14 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
     if (compactionMarker && key === 'payload' && child !== null && typeof child === 'object' && !Array.isArray(child)) {
       return [key, compactionHeadline(child, childPath, cuts, textBytes)];
     }
+    if (receiptProjection.complete && isSendMessageFrame(value) && (
+      key === 'output' && typeof child === 'string' && isSendMessageReceipt(child) ||
+      key === 'input' && child !== null && typeof child === 'object' && !Array.isArray(child) &&
+        Array.isArray((child as Record<string, unknown>)['messages']) && jsonBytes(child) <= TIMELINE_ENTITY_BYTES
+    )) {
+      receiptProjection.retained = true;
+      return [key, child];
+    }
     if (OPAQUE_FIELDS.has(key) && !(externalText && key === 'payload') && textBytes <= CONTENT_PREVIEW_BYTES && child !== null && typeof child === 'object') {
       const total = Array.isArray(child) ? child.length : Object.keys(child).length;
       if (total > 8) {
@@ -270,7 +301,7 @@ function projectValue(value: unknown, path: Path, cuts: Cut[], textBytes: number
         return [key, Array.isArray(child) ? [] : {}];
       }
     }
-    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media, structureDirection)];
+    return [key, projectValue(child, childPath, cuts, textBytes, arrayWindow, depth + 1, OPAQUE_FIELDS.has(key) ? { nodes: 64 } : budget, structureWindow, media, structureDirection, receiptProjection)];
   }));
 }
 

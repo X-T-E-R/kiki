@@ -88,7 +88,7 @@ export function projectSendMessages(tool: ToolBlock): MessageBlock[] {
     const message = projectSingleSendMessage(tool);
     return message === undefined ? [] : [message];
   }
-  const output = record(tool.output);
+  const output = tool.outputPending === true ? undefined : record(tool.output);
   const receipts = Array.isArray(output?.['messages']) ? output['messages'] : [];
   return items.flatMap((item, index) => {
     const content = record(item);
@@ -104,7 +104,7 @@ export function projectSendMessages(tool: ToolBlock): MessageBlock[] {
 function projectSingleSendMessage(tool: ToolBlock): MessageBlock | undefined {
   if (tool.toolCallId.startsWith('external:') || tool.name !== 'SendMessage') return undefined;
   const args = record(tool.args) ?? record(tool.argsText);
-  const result = record(tool.output);
+  const result = tool.outputPending === true ? undefined : record(tool.output);
   const messageId = string(result?.['message_id']);
   const succeeded = tool.status === 'done' && tool.isError !== true && messageId !== undefined;
   const channels = channelDeliveries(result?.['channels']);
@@ -112,9 +112,10 @@ function projectSingleSendMessage(tool: ToolBlock): MessageBlock | undefined {
   const delivery = string(result?.['delivery']);
   const status: MessageBlock['status'] = tool.status === 'running' ? 'sending'
     : tool.status === 'stopped' || delivery === 'cancelled' ? 'cancelled'
-      : !succeeded || reach === 'nowhere' || delivery === 'undeliverable' || delivery === 'not_sent' ? 'failed'
-        : reach === 'unconfirmed' || delivery === 'pending' ? 'pending'
-          : 'sent';
+      : tool.status === 'done' && tool.isError !== true && tool.outputPending === true ? 'pending'
+        : !succeeded || reach === 'nowhere' || delivery === 'undeliverable' || delivery === 'not_sent' ? 'failed'
+          : reach === 'unconfirmed' || delivery === 'pending' ? 'pending'
+            : 'sent';
   const spoken = status === 'sent' || status === 'sending' || status === 'pending';
   // A refused send never produced a receipt: the call's own error text is the
   // only reason there is, and it must stay readable instead of the row alone

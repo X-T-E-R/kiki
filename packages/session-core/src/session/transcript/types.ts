@@ -204,6 +204,8 @@ export interface ToolBlock {
   readonly description: string | undefined;
   readonly status: ToolStatus;
   readonly output: unknown;
+  /** The tool output has an unread canonical continuation; its preview is not a receipt. */
+  readonly outputPending?: boolean;
   /**
    * Media this call produced, taken from the frame's canonical attachment
    * references. An external harness reports its result bodies as attachment
