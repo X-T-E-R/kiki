@@ -109,6 +109,8 @@ describe('StorageMigrationViewComponent', () => {
     expect(container.querySelector('h1')?.textContent).toContain('Mailbox storage upgrade');
     expect(container.querySelector('[data-testid="storage-authority-badge"]')?.textContent).toContain('Legacy JSON files');
     expect(container.querySelector('[data-testid="migration-state-tag"]')?.textContent).toContain('Ready to upgrade');
+    expect(Array.from(container.querySelectorAll('[data-testid="migration-source-stage"]'), (node) => node.textContent))
+      .toEqual(['Found · 4.0 KB', '—']);
 
     const migrateBtn = container.querySelector<HTMLButtonElement>('[data-action="migrate"]');
     expect(migrateBtn).not.toBeNull();
@@ -121,6 +123,25 @@ describe('StorageMigrationViewComponent', () => {
     expect(postStorageMigrationActionMock).toHaveBeenCalledWith('migrate');
     expect(container.querySelector('[data-action="cancel"]')).not.toBeNull();
     expect(container.querySelector('[data-testid="migration-progress"]')?.textContent).toContain('10 of 100 items');
+  });
+
+  it('distinguishes discovered, importing and verified sources without implying import from file presence', async () => {
+    await renderComponent({
+      ...mockBaseView,
+      status: {
+        ...mockBaseView.status,
+        state: 'failed',
+        phase: 'importing',
+        sources: [
+          { name: 'thread-mailbox-v3', exists: true, bytes: 4096 },
+          { name: 'thread-mailbox-v1', exists: true, bytes: 1024, stage: 'verified' },
+          { name: 'agent-collaboration-mailbox-v2', exists: true, bytes: 512, stage: 'importing' },
+        ],
+      },
+    });
+    expect(Array.from(container.querySelectorAll('[data-testid="migration-source-stage"]'), (node) => node.textContent))
+      .toEqual(['Found · 4.0 KB', 'Verified · 1.0 KB', 'Importing · 512 B']);
+    expect(container.textContent).not.toContain('✓');
   });
 
   it('renders status.failure details when migration fails during execution', async () => {

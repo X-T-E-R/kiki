@@ -301,12 +301,13 @@ export function StorageMigrationViewComponent({
                     className="flex items-center justify-between text-[11px] text-ink-soft"
                   >
                     <span className="truncate pr-2">{src.name}</span>
-                    <span className="shrink-0 font-mono">
-                      {src.exists
-                        ? src.bytes !== undefined
-                          ? formatBytes(src.bytes)
-                          : '✓'
-                        : '—'}
+                    <span className="shrink-0 text-ink-faint" data-testid="migration-source-stage">
+                      {src.exists ? (
+                        <>
+                          {t(`storage.migration.source.${src.stage ?? 'discovered'}`)}
+                          {src.bytes !== undefined && <> · {formatBytes(src.bytes)}</>}
+                        </>
+                      ) : '—'}
                     </span>
                   </div>
                 ))}
