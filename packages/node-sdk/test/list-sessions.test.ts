@@ -16,6 +16,7 @@ import {
   drainSessionIndexMirror,
   SQLITE_QUERY_STORE_SUBDIR,
   IThreadMailboxStore,
+  IHomeRuntimeService,
   ISessionIndex,
   ISessionIndexMirror,
 } from '@kiki/agent-core-v2';
@@ -41,8 +42,13 @@ async function makeTempDir(): Promise<string> {
   return dir;
 }
 
-function closeThreadMailbox(client: SDKRpcClient): Promise<void> {
-  return client.engineAccessor.get(IThreadMailboxStore).close();
+async function closeClientRuntime(client: SDKRpcClient): Promise<void> {
+  const mailboxClose = vi.spyOn(client.engineAccessor.get(IThreadMailboxStore), 'close');
+  const runtimeClose = vi.spyOn(client.engineAccessor.get(IHomeRuntimeService), 'close');
+  await client.close();
+  expect(mailboxClose).toHaveBeenCalledOnce();
+  expect(runtimeClose).toHaveBeenCalledOnce();
+  expect(mailboxClose.mock.invocationCallOrder[0]).toBeLessThan(runtimeClose.mock.invocationCallOrder[0]!);
 }
 
 async function writeSessionState(
@@ -266,6 +272,21 @@ describe('SDKRpcClient.listSessionsPage', () => {
 });
 
 describe('SDKRpcClient search-index separation', () => {
+  it('propagates mailbox shutdown failures before closing its runtime', async () => {
+    const homeDir = await makeTempDir();
+    const client = new SDKRpcClient({ homeDir, identity: TEST_IDENTITY });
+    const failure = new Error('Mailbox shutdown failed fixture');
+    const mailboxClose = vi.spyOn(client.engineAccessor.get(IThreadMailboxStore), 'close').mockRejectedValueOnce(failure);
+    const runtimeClose = vi.spyOn(client.engineAccessor.get(IHomeRuntimeService), 'close');
+    try {
+      await expect(client.close()).rejects.toBe(failure);
+      expect(runtimeClose).not.toHaveBeenCalled();
+    } finally {
+      mailboxClose.mockRestore();
+      await client.close();
+    }
+  });
+
   // The global full-text search database (`<homeDir>/search-index`) belongs
   // to the kap-server search surface. The TUI-side chain (rpc client →
   // klient → `ISessionIndex`) must list, resume and continue sessions without
@@ -291,8 +312,7 @@ describe('SDKRpcClient search-index separation', () => {
       expect(existsSync(join(homeDir, 'search-index'))).toBe(false);
       expect(existsSync(join(homeDir, 'search-index-v2'))).toBe(false);
     } finally {
-      await closeThreadMailbox(client);
-      await client.close();
+      await closeClientRuntime(client);
       await drainQueryStoreDisposals();
       vi.unstubAllEnvs();
     }
@@ -328,8 +348,7 @@ describe('SDKRpcClient search-index separation', () => {
       expect(existsSync(join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR))).toBe(true);
       expect(existsSync(join(homeDir, 'search-index'))).toBe(false);
     } finally {
-      await closeThreadMailbox(client);
-      await client.close();
+      await closeClientRuntime(client);
       // Dispose fired the mirror/query-store async closes; await them before
       // the shared afterEach removes the temp home.
       await drainSessionIndexMirror();

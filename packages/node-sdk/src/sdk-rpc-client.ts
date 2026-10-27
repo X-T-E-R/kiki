@@ -162,6 +162,8 @@ import {
   IEventService,
   IHostEnvironment,
   IHostFileSystem,
+  IHomeRuntimeService,
+  IThreadMailboxStore,
   ILogService,
   IMcpOAuthService,
   IModelService,
@@ -530,6 +532,8 @@ export class SDKRpcClient extends SDKRpcClientBase {
     }
     await this.klient.close();
     await this.configReady.catch(() => undefined);
+    await this.app.accessor.get(IThreadMailboxStore).close();
+    await this.app.accessor.get(IHomeRuntimeService).close();
     // Same shutdown order as kap-server: drain the session-index mirror while
     // the query store is still open, then await the asynchronous closes that
     // disposal fires — a host that removes homeDir right after close() must
