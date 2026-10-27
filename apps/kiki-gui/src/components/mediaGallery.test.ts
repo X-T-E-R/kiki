@@ -17,6 +17,17 @@ describe('gallery order', () => {
     expect(images.map((image) => image.id)).toEqual(['late', 'early']);
   });
 
+  it('preserves separate tool occurrences of the same file but folds registration of the same slot', () => {
+    const blocks = [
+      { id: 'tool-first', media: [{ kind: 'image', fileId: 'same' }] },
+      { id: 'tool-second', media: [{ kind: 'image', fileId: 'same' }] },
+    ] as unknown as readonly Block[];
+    const source = blockGalleryImages(blocks, 'main');
+    const images = orderedGalleryImages([...source, { ...source[1]!, order: [1, 1, 0] }], 'main');
+    expect(images.map((image) => image.occurrenceId)).toEqual(['["tool-first",1,0]', '["tool-second",1,0]']);
+    expect(images.map((image) => image.id)).toEqual(['main:file:same', 'main:file:same']);
+  });
+
   it('reads attachment index from the block list and skips crops and non-images', () => {
     const blocks = [
       { media: [

@@ -5,7 +5,14 @@ export interface GalleryImage {
   readonly id: string;
   readonly agentId: string;
   readonly order: readonly number[];
+  /** The emitting block and media slot; the same bytes in another call are another occurrence. */
+  readonly occurrenceId?: string;
+  readonly blockId?: string;
   readonly item: MediaRef;
+}
+
+export function galleryOccurrenceId(blockId: string | undefined, index: number, lane = 1): string | undefined {
+  return blockId === undefined ? undefined : JSON.stringify([blockId, lane, index]);
 }
 
 export function galleryImageId(item: MediaRef, agentId: string): string | undefined {
@@ -34,7 +41,7 @@ export function blockGalleryImages(blocks: readonly Block[], agentId: string): G
       const isImage = item.kind === 'image' || item.mime?.startsWith('image/') === true;
       if (!isImage || item.detail !== undefined) return [];
       const id = galleryImageId(item, agentId);
-      return id === undefined ? [] : [{ id, agentId, order: [messageIndex, 1, attachmentIndex], item: canonicalGalleryItem(item, agentId) }];
+      return id === undefined ? [] : [{ id, agentId, order: [messageIndex, 1, attachmentIndex], occurrenceId: galleryOccurrenceId(block.id, attachmentIndex), blockId: block.id, item: canonicalGalleryItem(item, agentId) }];
     });
   });
 }
@@ -48,9 +55,10 @@ export function orderedGalleryImages(images: readonly GalleryImage[], agentId: s
     return a.id.localeCompare(b.id);
   });
   const seen = new Set<string>();
-  return sorted.filter(({ id }) => {
-    if (seen.has(id)) return false;
-    seen.add(id);
+  return sorted.filter(({ id, occurrenceId }) => {
+    const key = occurrenceId ?? id;
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
   });
 }

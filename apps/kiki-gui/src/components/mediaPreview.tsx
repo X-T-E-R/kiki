@@ -166,27 +166,29 @@ export function MediaPreviewProvider({
     registeredImages.current = { client: clientIdentity, sessionId, agentId: snapshotAgentId, images: new Map() };
   }
   const registerGalleryImage = useCallback((entry: GalleryImage) => {
-    registeredImages.current.images.set(entry.id, entry);
+    registeredImages.current.images.set(entry.occurrenceId ?? entry.id, entry);
   }, []);
   const imagesFor = useCallback((item: MediaRef, agentId = snapshotAgentId) => {
     const id = galleryImageId(item, agentId);
     if (id === undefined) return [];
-    const source = sessionViewState !== undefined && sessionViewState.sessionId === sessionId
-      ? blockGalleryImages(sessionViewState.blocks, snapshotAgentId)
-      : [];
-    const entries = [...source, ...registeredImages.current.images.values()];
+    const blocks = sessionViewState?.sessionId === sessionId ? sessionViewState?.blocks : undefined;
+    const activeBlocks = blocks === undefined ? undefined : new Set(blocks.map((block) => block.id));
+    const source = blocks === undefined ? [] : blockGalleryImages(blocks, snapshotAgentId);
+    const entries = [...source, ...[...registeredImages.current.images.values()].filter((entry) =>
+      activeBlocks === undefined || entry.blockId === undefined || entry.agentId !== snapshotAgentId || activeBlocks.has(entry.blockId))];
     if (!entries.some((entry) => entry.id === id)) entries.push({ id, agentId, order: [Number.MAX_SAFE_INTEGER], item: canonicalGalleryItem(item, agentId) });
     return orderedGalleryImages(entries, agentId);
   }, [sessionId, snapshotAgentId, sessionViewState]);
-  const openGalleryImage = useCallback((item: MediaRef, agentId = snapshotAgentId, initialSrc?: string) => {
+  const openGalleryImage = useCallback((item: MediaRef, agentId = snapshotAgentId, initialSrc?: string, occurrenceId?: string) => {
     const id = galleryImageId(item, agentId);
     if (id === undefined) return;
     const images = imagesFor(item, agentId);
-    const selected = images.findIndex((entry) => entry.id === id);
-    if (selected < 0) return;
+    const selected = occurrenceId === undefined ? -1 : images.findIndex((entry) => entry.occurrenceId === occurrenceId);
+    const index = selected < 0 ? images.findIndex((entry) => entry.id === id) : selected;
+    if (index < 0) return;
     setImage(null);
     setAttachment(null);
-    setGallery({ images, selected, client: clientIdentity, sessionId, scopeAgentId: snapshotAgentId, seededId: initialSrc === undefined ? undefined : id, seededSrc: initialSrc });
+    setGallery({ images, selected: index, client: clientIdentity, sessionId, scopeAgentId: snapshotAgentId, seededId: initialSrc === undefined ? undefined : id, seededSrc: initialSrc });
   }, [clientIdentity, imagesFor, sessionId, snapshotAgentId]);
   const [attachment, setAttachment] = useState<{ item: MediaRef; client: unknown; sessionId?: string; agentId: string; galleryAgentId: string } | null>(null);
   useEffect(() => { setImage(null); setGallery(null); setAttachment(null); }, [clientIdentity, sessionId, snapshotAgentId]);

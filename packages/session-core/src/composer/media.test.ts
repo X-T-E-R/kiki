@@ -243,6 +243,29 @@ describe('toolResultMedia', () => {
       .toEqual([{ kind: 'image', fileId: 'saved-file', name: 'saved.png' }]);
   });
 
+  it('pairs one frame’s attachment refs with its output parts by ordinal when their source forms differ', () => {
+    const references = [
+      { kind: 'image' as const, fileId: 'saved-one', name: 'first.png' },
+      { kind: 'image' as const, detail: { agentId: 'agent-a', attachmentId: 'frame.att2' }, name: 'second.png' },
+    ];
+    const parts = [
+      { kind: 'image' as const, url: 'data:image/png;base64,AAA', path: '/fixture/first.png' },
+      { kind: 'image' as const, blobHash: 'b'.repeat(64), path: '/fixture/second.png' },
+    ];
+    expect(toolResultMedia(references, parts, 'agent-a')).toHaveLength(4);
+    expect(toolResultMedia(references, parts, 'agent-a', true)).toEqual([
+      { ...references[0], url: parts[0]!.url, path: parts[0]!.path },
+      { ...references[1], blobHash: parts[1]!.blobHash, path: parts[1]!.path },
+    ]);
+    expect(toolResultMedia(references, [parts[0]!], 'agent-a', true)).toHaveLength(3);
+    expect(toolResultMedia(references, [parts[0]!, { ...parts[1]!, kind: 'video' }], 'agent-a', true)).toHaveLength(4);
+    const otherHash = 'b'.repeat(64);
+    expect(toolResultMedia([{ ...canonical, blobHash: hash }], [{ ...part, blobHash: otherHash }], 'agent-a', true)).toHaveLength(2);
+    expect(toolResultMedia([{ ...canonical, fileId: `blobref:agent-b:${hash}` }], [part], 'agent-a', true)).toHaveLength(2);
+    expect(toolResultMedia([{ kind: 'image', url: 'data:image/png;base64,AAA' }], [{ kind: 'image', url: 'data:image/png;base64,BBB' }], 'agent-a', true)).toHaveLength(2);
+    expect(toolResultMedia([{ kind: 'image', detail: { agentId: 'agent-b', attachmentId: 'frame.att1' } }], [parts[0]!], 'agent-a', true)).toHaveLength(2);
+  });
+
   it('does not guess identity from paths, names or unscoped attachment ids', () => {
     const pathOnly = { kind: 'image' as const, path: part.path, name: 'saved.png' };
     expect(toolResultMedia([pathOnly], [pathOnly], 'agent-a')).toHaveLength(2);

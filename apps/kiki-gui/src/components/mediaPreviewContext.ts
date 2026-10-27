@@ -25,7 +25,7 @@ export interface MediaPreviewApi {
   /** Open the fullscreen image lightbox for a ready URL (data:/blob:/http). */
   readonly openImage: (src: string, name?: string) => void;
   /** Canonical source remains valid when virtualized thumbnails unmount. */
-  readonly openGalleryImage?: (item: MediaRef, agentId?: string, initialSrc?: string) => void;
+  readonly openGalleryImage?: (item: MediaRef, agentId?: string, initialSrc?: string, occurrenceId?: string) => void;
   /** Retain source descriptors, never a thumbnail's expiring blob URL. */
   readonly registerGalleryImage?: (image: GalleryImage) => void;
   /** Open a raw filesystem path or an already-resolved FileReference. Strings

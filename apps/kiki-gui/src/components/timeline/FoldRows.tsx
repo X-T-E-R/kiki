@@ -31,7 +31,7 @@ interface MediaItem {
 
 function mediaItems(run: MediaRun, agentId: string): MediaItem[] {
   return run.members.flatMap((tool) => {
-    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId);
+    const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId, true);
     const argPath = (tool.args as { path?: unknown } | undefined)?.path;
     return media
       .filter((item) => item.kind === 'image')
@@ -67,12 +67,15 @@ export const MediaRunRow = memo(function MediaRunRow({ run, agentId, blockOrder 
   const shown = latest ? items : items.slice(0, MEDIA_STRIP_MAX);
   const more = items.length - shown.length;
   const names = items.map((entry) => entry.name).join(', ');
+  const failed = run.members.some((tool) => tool.status === 'error' || tool.isError === true);
   return (
     <div data-media-run={run.members.length} data-media-run-latest={latest || undefined}>
       <ActivityRow
         glyph={<Icon name="eye" />}
         label={t('transcript.media.label')}
         detail={<span className="text-ink-faint">{tp('transcript.media.count', items.length)}</span>}
+        tone={failed ? 'danger' : 'plain'}
+        status={failed ? <OutcomeMark state="failed" labels={{ running: t('transcript.runningAria'), failed: t('transcript.failedAria'), stopped: t('transcript.stoppedAria'), done: t('transcript.doneAria') }} /> : undefined}
         title={names}
       />
       <ul

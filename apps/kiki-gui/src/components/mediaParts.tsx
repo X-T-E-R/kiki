@@ -10,22 +10,23 @@ import { imagePreviewLabel, safeImagePreviewName } from './imagePreviewName';
 import { MiniContextMenu, type MiniMenuEntry } from './MiniContextMenu';
 import { useMediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import { isRemoteConnection, mediaOutcomeKey, useMediaReady } from './imageActions';
-import { canonicalGalleryItem, galleryImageId } from './mediaGallery';
+import { canonicalGalleryItem, galleryImageId, galleryOccurrenceId } from './mediaGallery';
 
 export function useGalleryImage(item: MediaRef, attachmentIndex = 0, agentId?: string, markdownOffset?: number) {
   const preview = useMediaPreview();
   const order = useMediaGalleryOrder();
   const owner = order?.agentId ?? agentId ?? 'main';
   const id = galleryImageId(item, owner);
+  const occurrenceId = galleryOccurrenceId(order?.blockId, markdownOffset ?? attachmentIndex, markdownOffset === undefined ? 1 : 0);
   const register = preview?.registerGalleryImage;
   useEffect(() => {
     if (item.kind !== 'image' || id === undefined || item.detail !== undefined || register === undefined) return;
-    register({ id, agentId: owner, order: [order?.order ?? 0, markdownOffset === undefined ? 1 : 0, markdownOffset ?? attachmentIndex], item: canonicalGalleryItem(item, owner) });
-  }, [register, id, owner, order?.order, attachmentIndex, markdownOffset, item]);
+    register({ id, agentId: owner, order: [order?.order ?? 0, markdownOffset === undefined ? 1 : 0, markdownOffset ?? attachmentIndex], occurrenceId, blockId: order?.blockId, item: canonicalGalleryItem(item, owner) });
+  }, [register, id, owner, order?.order, attachmentIndex, markdownOffset, occurrenceId, item]);
   return (initialSrc?: string) => {
     const prepared = canonicalGalleryItem(item, owner);
     if (preview?.openGalleryImage !== undefined) {
-      preview.openGalleryImage(prepared, owner, initialSrc);
+      preview.openGalleryImage(prepared, owner, initialSrc, occurrenceId);
     } else if (initialSrc !== undefined || item.url !== undefined) {
       preview?.openImage(initialSrc ?? item.url!, safeImagePreviewName({ name: item.name, path: item.path }));
     } else {

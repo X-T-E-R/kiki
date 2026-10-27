@@ -121,17 +121,48 @@ export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef
  * The media a tool call produced, as one list per file. A result reports the
  * same bytes twice when it has both a canonical attachment reference (file id,
  * name, MIME) and the engine's own content part (url, and sometimes the host
- * path the read came from), so the two are folded by identity and the surviving
- * entry keeps every field either side knew.
+ * path the read came from). Shared identities fold normally; `sameFrameOrder`
+ * additionally pairs the two lists by ordinal only when a frame's adapter
+ * derived its attachment IDs from those content parts. The surviving entry
+ * keeps every field either side knew.
  */
 export function toolResultMedia(
   references: readonly MediaRef[] | undefined,
   parts: readonly MediaRef[] | undefined,
   agentId?: string,
+  sameFrameOrder = false,
 ): readonly MediaRef[] {
+  const paired = sameFrameOrder && references !== undefined && parts !== undefined &&
+    references.length === parts.length && references.every((item, index) => {
+      const part = parts[index]!;
+      const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
+      const referenceHash = item.blobHash ?? blob?.hash;
+      return item.kind === part.kind &&
+        (blob?.kind !== 'agent' || agentId === undefined || blob.agentId === agentId) &&
+        (item.detail === undefined || agentId === undefined || item.detail.agentId === agentId) &&
+        (referenceHash === undefined || part.blobHash === undefined || referenceHash === part.blobHash) &&
+        (item.fileId === undefined || part.fileId === undefined || item.fileId === part.fileId) &&
+        (item.url === undefined || part.url === undefined || item.url === part.url);
+    });
+  const inputs = paired
+    ? references.map((item, index): MediaRef => {
+      const part = parts[index]!;
+      return {
+        ...part, ...item,
+        url: item.url ?? part.url,
+        path: item.path ?? part.path,
+        fileId: item.fileId ?? part.fileId,
+        blobHash: item.blobHash ?? part.blobHash,
+        detail: item.detail ?? part.detail,
+        name: item.name ?? part.name,
+        mime: item.mime ?? part.mime,
+        size: item.size ?? part.size,
+      };
+    })
+    : [...(references ?? []), ...(parts ?? [])];
   const merged: MediaRef[] = [];
   const positions = new Map<string, number>();
-  for (const item of [...(references ?? []), ...(parts ?? [])]) {
+  for (const item of inputs) {
     const blob = item.fileId === undefined ? undefined : parseMediaBlobRef(item.fileId);
     const owner = blob?.kind === 'agent' ? blob.agentId : item.detail?.agentId ?? agentId;
     const hash = item.blobHash ?? blob?.hash;

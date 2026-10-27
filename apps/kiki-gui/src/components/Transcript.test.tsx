@@ -7729,6 +7729,50 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     const deduped = container.querySelector('[data-media-run]');
     expect(deduped?.getAttribute('data-media-run')).toBe('1');
     expect(deduped?.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
+    // The wire adapter aligns attachment IDs to output media parts by index.
+    // One image may have a canonical session file ID and an inline output URL,
+    // so identity-only matching would count both as separate thumbnails.
+    const differentlyAddressed: Block = { ...look('a3'), media: [{ kind: 'image', fileId: 'saved-a3', name: 'a3.png' }] };
+    await render([user, step('s1'), differentlyAddressed]);
+    const paired = container.querySelector('[data-media-run]');
+    expect(paired?.textContent).toContain('1 image');
+    expect(paired?.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
+    await render([user, step('s1'), differentlyAddressed, look('distinct')]);
+    const twoCalls = container.querySelector('[data-media-run]');
+    expect(twoCalls?.textContent).toContain('2 images');
+    expect(twoCalls?.querySelectorAll('[data-media-thumb]')).toHaveLength(2);
+  });
+
+  it('keeps one thumbnail per canonical result part as the turn settles, including failed calls', async () => {
+    const { root, container } = makeRoot();
+    const first = 'data:image/png;base64,iVBORw0KGgo=';
+    const second = 'data:image/png;base64,iVBORw0KGgp=';
+    const frames = [
+      { kind: 'tool' as const, frameId: 'media-a', toolCallId: 'media-a', name: 'ReadMediaFile', state: 'done' as const,
+        attachmentIds: ['media-a.att1', 'media-a.att2'], output: [
+          { type: 'image_url', imageUrl: { url: first } }, { type: 'image_url', imageUrl: { url: second } },
+        ] },
+      { kind: 'tool' as const, frameId: 'media-b', toolCallId: 'media-b', name: 'ReadMediaFile', state: 'error' as const,
+        attachmentIds: ['media-b.att1'], output: [{ type: 'image_url', imageUrl: { url: first } }] },
+    ];
+    const items = [{ kind: 'turn' as const, turnId: 't1', ordinal: 1, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt: 'show pictures', steps: [
+        { kind: 'step' as const, stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'completed' as const, frames },
+      ] }];
+    const attachments = [
+      { attachmentId: 'media-a.att1', mediaType: 'image/png', source: { kind: 'session_media' as const, fileId: 'file-a' } },
+      { attachmentId: 'media-a.att2', mediaType: 'image/png', source: { kind: 'session_media' as const, fileId: 'file-b' } },
+      { attachmentId: 'media-b.att1', mediaType: 'image/png', source: { kind: 'session_media' as const, fileId: 'file-a' } },
+    ];
+    const blocks = agentTranscriptToBlocks({ agent_id: 'main', items, attachments });
+    for (const busy of [true, false]) {
+      await renderSettled(root, virtualTranscript(transcriptState(blocks, { busy })));
+      const run = container.querySelector('[data-media-run]');
+      expect(run?.getAttribute('data-media-run')).toBe('2');
+      expect(run?.textContent).toContain('3 images');
+      expect(run?.querySelectorAll('[data-media-thumb]')).toHaveLength(3);
+      expect(run?.querySelector('[data-outcome="failed"]')).not.toBeNull();
+    }
   });
 });
 
