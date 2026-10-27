@@ -155,3 +155,7 @@ Kiki 最初是 [Kimi Code](https://github.com/MoonshotAI/kimi-code) 的 fork，�
 ## 许可证
 
 基于 [MIT 许可证](LICENSE)发布。
+
+## 友链
+
+[Linux.do](https://linux.do/)

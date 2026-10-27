@@ -155,3 +155,7 @@ Kiki began as a fork of [Kimi Code](https://github.com/MoonshotAI/kimi-code) and
 ## License
 
 Released under the [MIT License](LICENSE).
+
+## Friends
+
+[Linux.do](https://linux.do/)
