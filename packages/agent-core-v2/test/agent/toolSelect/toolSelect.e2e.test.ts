@@ -287,7 +287,7 @@ describe('progressive tool disclosure end-to-end', () => {
   });
 
   it('reports a resident tool as already available rather than policy denied', async () => {
-    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES });
+    ctx.configure({ provider: OPENAI_PROVIDER, modelCapabilities: DISCLOSURE_CAPABILITIES, tools: ['Read'] });
     ctx.mockNextResponse(selectToolsCall('resident-read', ['Read']));
     ctx.mockNextResponse({ type: 'text', text: 'done' });
     await ctx.rpc.prompt({ input: [{ type: 'text', text: 'inspect the resident tool' }] });

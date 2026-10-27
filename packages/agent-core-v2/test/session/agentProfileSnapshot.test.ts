@@ -14,6 +14,8 @@ describe('readPersistedAgentProfileSnapshot', () => {
       storage: {
         size: async () => PERSISTED_AGENT_PROFILE_INLINE_BYTE_BUDGET + 1,
         mtime: async () => 3,
+        pathFor: () => undefined,
+        read: async () => undefined,
         readStream: async function* () {
           streamReads += 1;
           await gate;
@@ -74,6 +76,8 @@ describe('readPersistedAgentProfileSnapshot', () => {
       storage: {
         size: async () => Buffer.byteLength(noise + request + update),
         mtime: async () => 4,
+        pathFor: () => undefined,
+        read: async () => undefined,
         readStream: async function* () {
           yield Buffer.from(noise);
           yield Buffer.from(request);

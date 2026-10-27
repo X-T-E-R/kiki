@@ -827,12 +827,13 @@ describe('Agent context', () => {
       expect(textOf(messages[1]!)).toBe('Actual follow-up from the user');
     });
 
-    it('only merges user-role messages with user origin', () => {
+    it('merges consecutive user-role messages at one safe boundary without crossing an unanchored message', () => {
+      const source = { turnId: 1, stepId: 'same-step' };
       const messages = ctx.project([
-        userMessage('First real prompt', { kind: 'user' }),
-        userMessage('Second real prompt', { kind: 'user' }),
+        { ...userMessage('First real prompt', { kind: 'user' }), source },
+        { ...userMessage('Second real prompt', { kind: 'user' }), source },
         userMessage('No origin prompt'),
-        userMessage('Third real prompt', { kind: 'user' }),
+        { ...userMessage('Third real prompt', { kind: 'user' }), source },
       ]);
 
       expect(messages).toHaveLength(3);

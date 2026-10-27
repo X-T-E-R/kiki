@@ -75,7 +75,7 @@ function createPlanFileFakes(
 }
 
 type InjectableDynamicInjector = {
-  inject(boundary: undefined, isNewTurn: boolean): Promise<void>;
+  inject(isNewTurn: boolean, signal?: AbortSignal): Promise<void>;
 };
 
 function expectFirstPlanRequest(ctx: TestAgentContext, prompt: string, tokens: number): void {
@@ -1003,7 +1003,7 @@ describe('Plan service', () => {
   }
 
   async function injectDynamic(): Promise<void> {
-    await injector.inject(undefined, false);
+    await injector.inject(false);
   }
 });
 

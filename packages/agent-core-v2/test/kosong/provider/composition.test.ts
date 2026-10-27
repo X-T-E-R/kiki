@@ -2279,7 +2279,7 @@ describe('reasoning dialect (behavior probes)', () => {
       parts.push(part);
     }
     expect(parts).toEqual([
-      { type: 'think', think: 'hmm' },
+      { type: 'think', think: 'hmm', hidden: undefined, reasoningKey: 'reasoning' },
       { type: 'text', text: 'ok' },
     ]);
   });

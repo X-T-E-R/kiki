@@ -438,8 +438,10 @@ describe('ThreadCommunicationService', () => {
       expect(history.filter((message) => message.origin?.kind === 'room_message')).toMatchObject([
         { origin: { kind: 'room_message', messageId: receipt.messageId } },
       ]);
-      const projected = await service.listMessages({ sessionId: 'target' });
-      expect(projected.items).toMatchObject([{ messageId: receipt.messageId, source: { kind: 'room', roomId: 'room-example' }, delivery: 'delivered' }]);
+      await vi.waitFor(async () => {
+        const projected = await service.listMessages({ sessionId: 'target' });
+        expect(projected.items).toMatchObject([{ messageId: receipt.messageId, source: { kind: 'room', roomId: 'room-example' }, delivery: 'delivered' }]);
+      });
       const originalTurnId = (await active.launched)?.id;
       if (queueWhenBusy) {
         expect(steer).not.toHaveBeenCalled();

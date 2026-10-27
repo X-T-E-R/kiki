@@ -158,11 +158,14 @@ export class AgentToolSelectService extends Service implements IAgentToolSelectS
   load(names: readonly string[]): LoadToolsResult {
     const loadable = new Set(this.loadableToolNames());
     const loaded = this.activeLoadedToolNames();
+    const resident = new Set(this.toolRegistry.list()
+      .filter((info) => !this.isDynamicallyLoadable(info) && this.toolPolicy.isToolActive(info.name, info.source))
+      .map((info) => info.name));
     const toLoad: string[] = [];
     const alreadyAvailable: string[] = [];
     const unknown: string[] = [];
     for (const name of new Set(names)) {
-      if (loaded.has(name)) {
+      if (loaded.has(name) || resident.has(name)) {
         alreadyAvailable.push(name);
       } else if (loadable.has(name)) {
         toLoad.push(name);

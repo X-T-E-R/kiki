@@ -107,8 +107,8 @@ describe('SDK stream error metadata', () => {
       expect(convertAnthropicError(converted)).toBe(converted);
       const payload = toErrorPayload(converted);
       expect(payload.message).toBe(expectedMessage);
-      expect(payload.details).toEqual(converted.details);
-      expect(fromErrorPayload(payload).details).toEqual(converted.details);
+      expect(payload.details).toEqual({ ...converted.details, errorSource: protocol === 'openai' ? 'provider_event' : 'provider_stream' });
+      expect(fromErrorPayload(payload).details).toEqual(payload.details);
       expect(payload.cause).toBeUndefined();
       expect(JSON.stringify(payload.details)).not.toContain('fixture-secret');
       expect(payload.details).not.toHaveProperty('statusCode');
