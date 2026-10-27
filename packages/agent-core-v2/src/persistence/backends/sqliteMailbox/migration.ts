@@ -283,6 +283,7 @@ class FileMailboxMigrationService implements MailboxMigrationService {
             let after = point?.after ?? '';
             let items = point?.items ?? 0;
             let bytes = point?.bytes ?? 0;
+            await update({ ...manifest.status, currentSource: sourceId, currentKey: after === '' ? undefined : after });
             const legacy = await MiniDb.open<Document>({ dir: directory, readOnly: true, valueCodec: 'json', valueMode: 'disk', recovery: 'strict', indexGenerations: false, activeExpireIntervalMs: 0 });
             try {
               const recovery = legacy.recoveryInfo;

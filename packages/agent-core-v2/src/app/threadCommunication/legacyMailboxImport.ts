@@ -82,6 +82,7 @@ export async function convertLegacyMailboxRows(rows: readonly MailboxRow[], read
         const partition = partitionFor(target!);
         const existing = await get(`${partition}/meta`);
         const meta = existing ?? await metaFor(target!);
+        if (supersededActivityEpoch(meta, value['epoch'])) break;
         put(`${partition}/meta`, { ...meta, activityEpoch: meta['activityEpoch'] === '' ? value['epoch'] : meta['activityEpoch'],
           nextActivitySeq: Math.max(Number(meta['nextActivitySeq']), Number(value['nextSeq'])),
           minActivitySeq: Number(meta['nextActivitySeq']) === 1 ? value['minSeq'] : Math.min(Number(meta['minActivitySeq']), Number(value['minSeq'])) });
@@ -95,6 +96,7 @@ export async function convertLegacyMailboxRows(rows: readonly MailboxRow[], read
         const identity = hash({ target, activity });
         if ([...staged.values()].some((doc) => doc['legacyIdentity'] === identity) || await reader.find(partition, 'legacyIdentity', identity) !== undefined) break;
         const meta = await metaFor(target!);
+        if (supersededActivityEpoch(meta, activity!['epoch'])) break;
         const seq = Number(activity!['seq']);
         if (await get(activityKey(partition, seq)) !== undefined) throw new Error(`Conflicting legacy activity sequence at ${row.key}; both sources were preserved`);
         put(activityKey(partition, seq), { kind: 'activity', target, activity, legacyIdentity: identity }, row.expireAt);
@@ -136,6 +138,10 @@ function messageKey(partition: string, seq: number): string { return `${partitio
 function activityKey(partition: string, seq: number): string { return `${partition}/activity/${seq.toString().padStart(16, '0')}`; }
 function idempotencyKey(partition: string, input: { producer: ThreadMessageProducer; target: ThreadRef; idempotencyKey: string }): string { return `${partition}/idempotency/${hash({ producer: input.producer, target: input.target, key: input.idempotencyKey })}`; }
 function record(value: unknown): Document | undefined { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Document : undefined; }
+function supersededActivityEpoch(meta: Document, epoch: unknown): boolean {
+  const current = meta['activityEpoch'];
+  return typeof current === 'string' && current !== '' && current !== epoch;
+}
 function nonnegative(value: unknown): value is number { return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0; }
 function positive(value: unknown): value is number { return nonnegative(value) && value > 0; }
 function threadRef(value: unknown): ThreadRef | undefined {

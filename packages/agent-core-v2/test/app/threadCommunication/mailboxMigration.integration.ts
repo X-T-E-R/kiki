@@ -158,6 +158,75 @@ describe('canonical mailbox SQLite migration', () => {
     expect((await db.verify()).counts['message']).toBe(2);
   });
 
+  it('keeps the established activity epoch and archives a superseded legacy activity stream', async () => {
+    const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
+    const partition = `t/${digest(target)}`;
+    const old = await source(0);
+    await old.partitionBatch(partition, [
+      { op: 'set', key: `${partition}/meta`, value: { kind: 'target_meta', target, nextMessageSeq: 1, nextDeliverableSeq: 1, pendingCount: 0, activityEpoch: 'current-epoch', nextActivitySeq: 3, minActivitySeq: 1 } },
+      { op: 'set', key: `${partition}/activity/0000000000000001`, value: { kind: 'activity', target, activity: { seq: 1, epoch: 'current-epoch', kind: 'terminal', at: 1, reason: 'done' } } },
+      { op: 'set', key: `${partition}/activity/0000000000000002`, value: { kind: 'activity', target, activity: { seq: 2, epoch: 'current-epoch', kind: 'terminal', at: 2, reason: 'done' } } },
+    ]);
+    await old.close();
+    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    await v1.batch([
+      { op: 'set', key: 'activity/meta', value: { kind: 'activity_meta', target, epoch: 'superseded-epoch', nextSeq: 5, minSeq: 1 } },
+      { op: 'set', key: 'activity/event/1', value: { kind: 'activity_event', target, activity: { seq: 1, epoch: 'superseded-epoch', kind: 'terminal', at: 0, reason: 'superseded' } } },
+      { op: 'set', key: 'activity/event/2', value: { kind: 'activity_event', target, activity: { seq: 2, epoch: 'superseded-epoch', kind: 'attention', at: 0, reason: 'superseded' } } },
+      { op: 'set', key: 'activity/event/4', value: { kind: 'activity_event', target, activity: { seq: 4, epoch: 'superseded-epoch', kind: 'terminal', at: 0, reason: 'superseded' } } },
+    ]);
+    await v1.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    expect(result.failure).toBeUndefined();
+    expect(result.state).toBe('complete');
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!); handles.push(db);
+    expect((await db.page(`${partition}/meta`)).map((row) => row.value['activityEpoch'])).toEqual(['current-epoch']);
+    expect((await db.page(`${partition}/meta`)).map((row) => row.value['nextActivitySeq'])).toEqual([3]);
+    const activities = await db.page(`${partition}/activity/`);
+    expect(activities.map((row) => (row.value['activity'] as { epoch: string }).epoch)).toEqual(['current-epoch', 'current-epoch']);
+    expect(activities.map((row) => (row.value['activity'] as { seq: number }).seq)).toEqual([1, 2]);
+  });
+
+  it('merges legacy activity events that still belong to the established epoch', async () => {
+    const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
+    const partition = `t/${digest(target)}`;
+    const old = await source(0);
+    await old.partitionBatch(partition, [
+      { op: 'set', key: `${partition}/meta`, value: { kind: 'target_meta', target, nextMessageSeq: 1, nextDeliverableSeq: 1, pendingCount: 0, activityEpoch: 'current-epoch', nextActivitySeq: 2, minActivitySeq: 1 } },
+      { op: 'set', key: `${partition}/activity/0000000000000001`, value: { kind: 'activity', target, activity: { seq: 1, epoch: 'current-epoch', kind: 'terminal', at: 1, reason: 'done' } } },
+    ]);
+    await old.close();
+    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    await v1.batch([
+      { op: 'set', key: 'activity/meta', value: { kind: 'activity_meta', target, epoch: 'current-epoch', nextSeq: 4, minSeq: 1 } },
+      { op: 'set', key: 'activity/event/2', value: { kind: 'activity_event', target, activity: { seq: 2, epoch: 'current-epoch', kind: 'attention', at: 2, reason: 'approval' } } },
+      { op: 'set', key: 'activity/event/3', value: { kind: 'activity_event', target, activity: { seq: 3, epoch: 'current-epoch', kind: 'terminal', at: 3, reason: 'completed' } } },
+    ]);
+    await v1.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    expect(result.failure).toBeUndefined();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(result.databasePath!); handles.push(db);
+    expect((await db.page(`${partition}/meta`)).map((row) => row.value['nextActivitySeq'])).toEqual([4]);
+    expect((await db.page(`${partition}/activity/`)).map((row) => (row.value['activity'] as { seq: number }).seq)).toEqual([1, 2, 3]);
+  });
+
+  it('reports the source that failed instead of the previously imported one', async () => {
+    const old = await source(0);
+    await old.partitionBatch('w/test', [{ op: 'set', key: 'w/test/override/0001', value: { kind: 'workspace_override', workspaceId: 'workspace', enabled: true, updatedAt: 1 } }]);
+    await old.close();
+    const target = { hostId: 'example-host', workspaceId: 'example-workspace', sessionId: 'example-target' };
+    const v1 = await MiniDb.open<Record<string, unknown>>({ dir: join(home, 'store/thread-mailbox-v1'), valueCodec: 'json', indexGenerations: false, fsyncPolicy: 'always', activeExpireIntervalMs: 0 });
+    await v1.batch([{ op: 'set', key: 'activity/event/0', value: { kind: 'activity_event', target, activity: { seq: 0, epoch: 'example-epoch', kind: 'terminal', at: 1, reason: 'done' } } }]);
+    await v1.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const result = await migration.migrate();
+    expect(result.state).toBe('failed');
+    expect(result.failure?.source).toContain('thread-mailbox-v1');
+    expect(result.failure?.message).toContain('Invalid legacy mailbox record');
+  });
+
   describe('switching recovery after a legacy writer restart', () => {
     beforeEach(async () => {
       const old = await source(); await old.close();
