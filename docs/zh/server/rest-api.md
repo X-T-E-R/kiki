@@ -379,7 +379,7 @@ Agent 空闲时，`agent_config` 里的 `thinking: null` 只清除会话上的�
 
 `admission: "admitted"` 表示 Agent 已受理请求，`status` 是保存的回执状态，不代表当前队列位置或模型已经消费。立即发送时，可选的 `delivery_state: "steered"` 表示核心已将消息分配给目标轮次，`"queued"` 表示记录该回执时仍在等待投递，也包括等待模型切换边界的情况。分配或受理都不证明消息已进入模型请求；应以转录中的实际投递帧及后续请求为准。较新的 canonical 启动、追加或终态事实优先于旧 queued 回执。
 
-可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。单 ID 的 `:steer` 响应也携带 `delivery_state` 和 `delivery_reason`；`steered: true` 表示消息已加入当前回合，`steered: false` 表示仍在排队或已离开队列。已启动的已知提示词返回 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。多 ID 回执不返回单条提示词字段。调用 `:abort?queued_only=true` 时，`aborted: true` 确认未启动项已从队列和时间线移除；`aborted: false` 表示队列中已无该项，已启动回合及其历史保留。普通 `:abort` 仍可停止运行中的提示词。
+可选的 `delivery_reason` 在提交回执和持久请求读取中说明立即投递的实际决定。单 ID 的 `:steer` 响应也携带 `delivery_state` 和 `delivery_reason`；`steered: true` 表示消息已加入当前回合，`steered: false` 表示仍在排队或已离开队列。已不在可选队列中的已知提示词返回 `prompt_no_longer_pending`，不再报 404；未知 ID 仍返回 `40402`。多 ID 回执不返回单条提示词字段。调用 `:abort?queued_only=true` 时，`aborted: true` 确认未启动项已从队列和时间线移除；`aborted: false` 表示未移除，应刷新读取当前状态。已启动回合及其历史不受影响。普通 `:abort` 仍可停止运行中的提示词。
 
 | `delivery_reason` | 含义 |
 | --- | --- |
