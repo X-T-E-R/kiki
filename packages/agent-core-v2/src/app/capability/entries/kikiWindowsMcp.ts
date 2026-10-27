@@ -58,8 +58,8 @@ export function windowsMcpConfigDocument(): string {
 }
 
 export function assertWindowsMcpInterpreter(pythonExecutable: string): void {
-  if (!path.isAbsolute(pythonExecutable)) throw new Error('Windows-MCP requires the absolute path of the environment interpreter');
-  const base = path.basename(pythonExecutable).toLowerCase();
+  if (!isAbsoluteWindowsMcpPath(pythonExecutable)) throw new Error('Windows-MCP requires the absolute path of the environment interpreter');
+  const base = path.win32.basename(pythonExecutable).toLowerCase();
   if (base === 'uv' || base === 'uv.exe' || base === 'uvx' || base === 'uvx.exe') {
     throw new Error('Windows-MCP must launch from the pinned interpreter, not uv or uvx');
   }
@@ -74,7 +74,7 @@ export function assertWindowsMcpVersion(version: string): void {
 
 export function windowsMcpServerConfig(pythonExecutable: string, configPath: string): WindowsMcpServerConfig {
   assertWindowsMcpInterpreter(pythonExecutable);
-  if (!path.isAbsolute(configPath)) throw new Error('Windows-MCP requires an absolute --config path');
+  if (!isAbsoluteWindowsMcpPath(configPath)) throw new Error('Windows-MCP requires an absolute --config path');
   const config = { name: WINDOWS_MCP_COMPUTER_CONNECTION, ...windowsMcpStdioConfig(pythonExecutable, configPath) };
   if (!isWindowsMcpServeReady(config)) throw new Error('Windows-MCP launch contract was rejected');
   if (config.args?.includes('install') === true || config.args?.includes('auth') === true) {
@@ -134,7 +134,7 @@ export async function registerInstalledWindowsMcpEnvironment(
   version: string,
 ): Promise<'mcp-configured' | 'existing-mcp-config-reused'> {
   assertWindowsMcpInterpreter(pythonExecutable);
-  if (!path.isAbsolute(configPath)) throw new Error('Windows-MCP requires an absolute --config path');
+  if (!isAbsoluteWindowsMcpPath(configPath)) throw new Error('Windows-MCP requires an absolute --config path');
   await assertRegularFile(pythonExecutable, 'Windows-MCP interpreter');
   await assertRegularFile(configPath, 'Windows-MCP config');
   return registerInstalledWindowsMcp(mcp, platform, pythonExecutable, configPath, version);
@@ -142,11 +142,11 @@ export async function registerInstalledWindowsMcpEnvironment(
 
 export function windowsMcpManagedInstallCommands(targetDir: string, pythonExecutable: string): readonly (readonly string[])[] {
   assertWindowsMcpInterpreter(pythonExecutable);
-  const venv = path.join(targetDir, 'venv');
-  const lock = path.join(targetDir, 'windows-mcp-0.8.8.lock');
+  const venv = windowsMcpJoin(targetDir, 'venv');
+  const lock = windowsMcpJoin(targetDir, 'windows-mcp-0.8.8.lock');
   return [
     ['uv', 'venv', '--python', pythonExecutable, venv],
-    ['uv', 'pip', 'sync', '--python', path.join(venv, 'Scripts', 'python.exe'), '--require-hashes', lock],
+    ['uv', 'pip', 'sync', '--python', windowsMcpJoin(venv, 'Scripts', 'python.exe'), '--require-hashes', lock],
   ];
 }
 
@@ -157,4 +157,12 @@ export async function prepareWindowsMcpManagedLayout(targetDir: string): Promise
   await writeFile(configPath, windowsMcpConfigDocument(), { flag: 'wx' });
   await copyFile(LOCK_FILE, lockPath);
   return { configPath, lockPath };
+}
+
+function isAbsoluteWindowsMcpPath(value: string): boolean {
+  return path.win32.isAbsolute(value) || path.posix.isAbsolute(value);
+}
+
+function windowsMcpJoin(targetDir: string, ...parts: string[]): string {
+  return path.win32.isAbsolute(targetDir) ? path.win32.join(targetDir, ...parts) : path.join(targetDir, ...parts);
 }

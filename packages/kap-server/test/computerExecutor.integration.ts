@@ -30,7 +30,7 @@ describe('server-v2 Windows-MCP registration', () => {
     layout = undefined;
   });
 
-  it('describes the external executor and records an installed interpreter without starting it or selecting it', async () => {
+  it.skipIf(process.platform !== 'win32')('describes the external executor and records an installed interpreter without starting it or selecting it', async () => {
     home = await mkdtemp(join(tmpdir(), 'kiki-windows-mcp-home-'));
     layout = await mkdtemp(join(tmpdir(), 'kiki-windows-mcp-layout-'));
     const python = join(layout, 'python.exe');
@@ -83,7 +83,7 @@ describe('server-v2 Windows-MCP registration', () => {
       bundled: false,
     });
     const stored = await readFile(join(home, 'mcp.json'), 'utf8');
-    expect(stored).toContain(python.replace(/\\/g, '\\\\'));
+    expect(stored).toContain(python.replaceAll('\\', '\\\\'));
     expect(stored).toContain('windows_mcp');
     expect(stored).not.toContain('install');
     expect(stored).not.toContain('auth');
