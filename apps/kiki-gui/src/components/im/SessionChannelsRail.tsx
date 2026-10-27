@@ -82,13 +82,6 @@ function SessionChannelsRailBody({
     staleTime: 5_000,
   });
 
-  const configQuery = useQuery({
-    queryKey: ['config', scopeId, spaceKey],
-    queryFn: () => connection!.client.getConfig(),
-    enabled: connection !== null && typeof connection.client.getConfig === 'function',
-    staleTime: 30_000,
-  });
-
   // R1 / R2: Fetch target session channels from authoritative GET /api/im/sessions/targets/:id/channels
   const targetChannelsQuery = useQuery({
     queryKey: ['target-channels', scopeId, spaceKey, sessionId],
@@ -253,7 +246,7 @@ function SessionChannelsRailBody({
     const patch: ImBindingPatch = {
       input_enabled: next,
     };
-    runAction(binding.id, () => connection.client.imSessions.updateBinding(binding.id, patch));
+    void runAction(binding.id, () => connection.client.imSessions.updateBinding(binding.id, patch));
   };
 
   // Toggle Output pill on IM binding (R3: do not silently mutate session_enabled)
@@ -264,13 +257,13 @@ function SessionChannelsRailBody({
     const patch: ImBindingPatch = {
       output_enabled: next,
     };
-    runAction(binding.id, () => connection.client.imSessions.updateBinding(binding.id, patch));
+    void runAction(binding.id, () => connection.client.imSessions.updateBinding(binding.id, patch));
   };
 
   // Unbind / Remove
   const removeBinding = (bindingId: string) => {
     if (!connection) return;
-    runAction(bindingId, () => connection.client.imSessions.removeBinding(bindingId));
+    void runAction(bindingId, () => connection.client.imSessions.removeBinding(bindingId));
   };
 
   // R4: Handle Candidate Confirmation
@@ -285,7 +278,7 @@ function SessionChannelsRailBody({
     }
 
     // Source is new discovery -> confirm(id) directly
-    runAction(candidate.id, () =>
+    void runAction(candidate.id, () =>
       connection.client.imSessions.confirm(candidate.id, {
         target: { kind: 'session', session_id: sessionId },
         input_enabled: true,
@@ -440,7 +433,7 @@ function SessionChannelsRailBody({
                 aria-checked={smEffective}
                 aria-label={t('st.im.sendMessageTitle')}
                 disabled={smSwitchDisabled}
-                onClick={toggleSendMessageTool}
+                onClick={() => { void toggleSendMessageTool(); }}
                 data-rail-sendmessage-switch=""
                 className={`relative inline-flex h-4 w-7 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors focus:outline-none ${
                   smEffective ? 'bg-selected' : 'bg-hairline-strong'
@@ -609,7 +602,7 @@ function SessionChannelsRailBody({
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => toggleNotifyEnabled(c)}
+                          onClick={() => { void toggleNotifyEnabled(c); }}
                           className={`inline-flex h-5 items-center gap-1 rounded border px-1.5 text-[11px] font-medium transition-colors ${
                             c.enabled
                               ? 'border-selected-ink/40 bg-selected text-selected-ink'
@@ -622,7 +615,7 @@ function SessionChannelsRailBody({
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => toggleNotifyBinding(c.id, false)}
+                          onClick={() => { void toggleNotifyBinding(c.id, false); }}
                           className="text-[11px] text-ink-faint hover:text-danger hover:underline"
                         >
                           {t('st.im.removeNotify')}
@@ -748,7 +741,7 @@ function SessionChannelsRailBody({
                         <button
                           type="button"
                           disabled={busy}
-                          onClick={() => toggleNotifyBinding(nc.id, true)}
+                          onClick={() => { void toggleNotifyBinding(nc.id, true); }}
                           className={`shrink-0 rounded px-2 py-0.5 text-[11.5px] font-medium border border-hairline-strong bg-paper text-ink hover:bg-ink/[0.04] ${FOCUS_RING}`}
                         >
                           {busy ? t('st.im.railBusy') : t('st.im.bindNotify')}
@@ -776,7 +769,7 @@ function SessionChannelsRailBody({
           conflict={rebindConflict}
           targetSessionId={sessionId}
           targetSessionTitle={sessionTitle}
-          onConfirm={handleExecuteRebind}
+          onConfirm={() => { void handleExecuteRebind(); }}
           onCancel={() => {
             setRebindModalOpen(false);
             setRebindCandidate(undefined);

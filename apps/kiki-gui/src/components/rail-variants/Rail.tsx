@@ -64,7 +64,6 @@ import { readExternalClientMark } from '../../lib/externalClients';
 import { ActivityFeed, CapabilitiesBlock, NeedsYouList, ProfileHead } from './DefaultSections';
 import { RailTodos } from './DefaultRail';
 import { SessionCronSection } from './SessionCronSection';
-import { ImSessionRailSwitch } from '../im/ImSessionRailSwitch';
 import { SessionChannelsRail } from '../im/SessionChannelsRail';
 import { PersonaSettingsUpdate } from '../persona/PersonaSettingsUpdate';
 import { useEntityPage } from '../transcriptDetail';

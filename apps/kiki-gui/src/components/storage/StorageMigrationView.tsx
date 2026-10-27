@@ -321,7 +321,7 @@ export function StorageMigrationViewComponent({
                   type="button"
                   data-action="migrate"
                   disabled={actionPending}
-                  onClick={() => handleAction('migrate')}
+                  onClick={() => { void handleAction('migrate'); }}
                   className={PRIMARY_BUTTON}
                 >
                   {t('storage.migration.action.migrate')}
@@ -333,7 +333,7 @@ export function StorageMigrationViewComponent({
                   type="button"
                   data-action="start"
                   disabled={actionPending}
-                  onClick={() => handleAction('start')}
+                  onClick={() => { void handleAction('start'); }}
                   className={PRIMARY_BUTTON}
                 >
                   {t('storage.migration.action.start')}
@@ -345,7 +345,7 @@ export function StorageMigrationViewComponent({
                   type="button"
                   data-action="retry_cleanup"
                   disabled={actionPending}
-                  onClick={() => handleAction('retry_cleanup')}
+                  onClick={() => { void handleAction('retry_cleanup'); }}
                   className={DANGER_BUTTON}
                 >
                   {t('storage.migration.action.retry_cleanup')}
@@ -357,7 +357,7 @@ export function StorageMigrationViewComponent({
                   type="button"
                   data-action="cancel"
                   disabled={actionPending}
-                  onClick={() => handleAction('cancel')}
+                  onClick={() => { void handleAction('cancel'); }}
                   className={SECONDARY_BUTTON}
                 >
                   {t('storage.migration.action.cancel')}
@@ -369,7 +369,7 @@ export function StorageMigrationViewComponent({
                   type="button"
                   data-action="rollback"
                   disabled={actionPending}
-                  onClick={() => handleAction('rollback')}
+                  onClick={() => { void handleAction('rollback'); }}
                   className={SECONDARY_BUTTON}
                 >
                   {t('storage.migration.action.rollback')}
@@ -380,7 +380,7 @@ export function StorageMigrationViewComponent({
                 type="button"
                 data-action="refresh"
                 disabled={actionPending}
-                onClick={() => fetchStatus()}
+                onClick={() => { void fetchStatus(); }}
                 className={`${SECONDARY_BUTTON} ml-auto`}
               >
                 {t('storage.migration.action.refresh')}
