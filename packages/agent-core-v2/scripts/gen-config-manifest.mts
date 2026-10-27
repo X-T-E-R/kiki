@@ -13,7 +13,6 @@ import {
   isRecord,
   resolveRef,
   toJsonSchema,
-  truncate,
   type JsonSchema,
 } from './lib/jsonSchema.mts';
 
@@ -138,12 +137,12 @@ function renderBody(section: ConfigSectionContribution): string[] {
         `[${key}]`,
         `# (${schema === undefined ? 'no schema — passthrough' : 'schema uses transforms'}; fields below come from the registered default)`,
         ...Object.entries(options.defaultValue).map(
-          ([k, v]) => `${camelToSnake(k)} = ${truncate(toTomlValue(v))}`,
+          ([k, v]) => `${camelToSnake(k)} = ${toTomlValue(v)}`,
         ),
       ];
     }
     if (options.defaultValue !== undefined) {
-      return [`${key} = ${truncate(toTomlValue(options.defaultValue))}`];
+      return [`${key} = ${toTomlValue(options.defaultValue)}`];
     }
     return [`[${key}]`, `# (${schema === undefined ? 'no schema — passthrough' : 'schema uses transforms; see the owner file'})`];
   }
@@ -154,7 +153,7 @@ function renderBody(section: ConfigSectionContribution): string[] {
     for (const [name, prop] of Object.entries(jsonSchema.properties)) {
       const fieldKey = camelToSnake(name);
       if (defaults[name] !== undefined) {
-        lines.push(`${fieldKey} = ${truncate(toTomlValue(defaults[name]))}`);
+        lines.push(`${fieldKey} = ${toTomlValue(defaults[name])}`);
         continue;
       }
       const resolved = resolveRef(prop, jsonSchema);
@@ -205,7 +204,7 @@ function renderBody(section: ConfigSectionContribution): string[] {
   }
 
   if (options.defaultValue !== undefined) {
-    return [`${key} = ${truncate(toTomlValue(options.defaultValue))}`];
+    return [`${key} = ${toTomlValue(options.defaultValue)}`];
   }
   return [`# ${key}: ${describeType(jsonSchema)}`];
 }
