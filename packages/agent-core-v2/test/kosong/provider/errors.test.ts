@@ -22,6 +22,9 @@ import { convertGoogleGenAIError } from '#/kosong/provider/bases/google-genai/go
 import { convertOpenAIError } from '#/kosong/provider/bases/openai/openai-common';
 import { OpenAIResponsesStreamedMessage } from '#/kosong/provider/bases/openai/openai-responses';
 import { composeOpenAIChatHooks } from '#/kosong/provider/bases/openai/openaiHooks';
+import { generate } from '#/kosong/contract/generate';
+import { guardRequestDelivery } from '#/kosong/provider/bases/request-delivery';
+import { ResponsesWebSocketError } from '#/kosong/provider/bases/openai/responses-websocket';
 import { kimiAnthropicTrait, kimiOpenAITrait } from '#/kosong/provider/providers/kimi/kimi.contrib';
 import { classifyKimiQuotaError } from '#/kosong/provider/providers/kimi/kimi-errors';
 
@@ -540,6 +543,30 @@ describe('Responses native WebSocket failure boundaries', () => {
     const failure = await consume(stream).catch((error: unknown) => error);
     expect(isRetryableGenerateError(failure)).toBe(false);
     expect(toErrorPayload(failure).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
+  });
+});
+
+describe.each(['failed', 'event_error', 'close'] as const)('Responses non-yielded output before %s', ending => {
+  it.each([
+    { name: 'refusal delta', observed: true, event: { type: 'response.refusal.delta', delta: 'refused' } },
+    { name: 'hosted tool', observed: true, event: { type: 'response.output_item.done', item: { type: 'web_search_call', id: 'builtin_fixture', status: 'completed' } } },
+    { name: 'encrypted thinking', observed: true, event: { type: 'response.output_item.added', item: { type: 'reasoning', id: 'reason_fixture', summary: [], encrypted_content: 'encrypted-fixture' } } },
+    { name: 'reasoning summary', observed: true, event: { type: 'response.reasoning_summary_part.added', part: { type: 'summary_text', text: 'observed thought' } } },
+    { name: 'empty message', observed: false, event: { type: 'response.output_item.added', item: { type: 'message', id: 'msg_fixture', role: 'assistant', content: [] } } },
+    { name: 'empty reasoning', observed: false, event: { type: 'response.output_item.added', item: { type: 'reasoning', id: 'reason_fixture', summary: [] } } },
+  ])('preserves $name through generate and the delivery guard', async ({ observed, event }) => {
+    const events = (async function* () {
+      yield event;
+      if (ending === 'close') throw new ResponsesWebSocketError('fixture close', 'responses_websocket_closed_before_terminal', { status: 1012 });
+      if (ending === 'event_error') yield { type: 'error', code: 'websocket_connection_limit_reached', message: 'native limit' };
+      else yield { type: 'response.failed', response: { id: 'failed', status: 'failed', output: [], error: { code: 'websocket_connection_limit_reached', message: 'native limit' } } };
+    })();
+    const stream = new OpenAIResponsesStreamedMessage(events, true, undefined, undefined, true);
+    const failure = await generate({ name: 'fixture', modelName: 'fixture', thinkingEffort: null,
+      generate: async () => guardRequestDelivery(stream, true) }, '', [], []).catch((error: unknown) => error);
+    expect(isRetryableGenerateError(failure)).toBe(!observed);
+    if (observed) expect(toErrorPayload(failure).details).toMatchObject({ request_delivery: 'executed', request_output: 'observed' });
+    else expect(toErrorPayload(failure).details).not.toHaveProperty('request_output', 'observed');
   });
 });
 

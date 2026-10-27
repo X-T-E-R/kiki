@@ -97,11 +97,13 @@ function recordingClient(script: () => InProcessAgentScript, failSpawn: () => bo
   const opens: AcpOpenSessionOptions[] = [];
   const histories: Array<ReturnType<typeof createInProcessScriptedAgent>['history']> = [];
   let spawns = 0;
+  let currentChild: HostProcessLike | undefined;
   const client = new AcpProcessClient({
     spawn: async () => {
       spawns += 1;
       if (failSpawn()) throw new Error('spawn failed');
       const { child, toAgent, fromAgent } = scriptedChild();
+      currentChild = child;
       const fixture = createInProcessScriptedAgent(script());
       histories.push(fixture.history);
       connectInProcessScriptedAgent(fixture.app, Writable.toWeb(fromAgent), Readable.toWeb(toAgent));
@@ -113,7 +115,7 @@ function recordingClient(script: () => InProcessAgentScript, failSpawn: () => bo
     opens.push(options);
     return openSession(options);
   }) as typeof client.openSession;
-  return { client, opens, histories, spawns: () => spawns };
+  return { client, opens, histories, spawns: () => spawns, exit: async () => { await currentChild?.kill(); } };
 }
 
 function sessionMetadata(): ISessionMetadata & { agents: Record<string, AgentMeta> } {
@@ -240,6 +242,31 @@ const argvPermission = {
 };
 
 describe('recoverable ACP broken resume', () => {
+  it.each([true, false])('preserves the opened identity when the process exits before prompt (resume=%s)', async supported => {
+    const remote = recordingClient(() => ({ sessionId: `remote-${remote.spawns()}`,
+      capabilities: supported ? { loadSession: true, sessionCapabilities: { resume: {} } } : {},
+    }), () => false);
+    const harness = createExecutionHarness({ client: remote.client, modelBinding: 'argv', thinkingEffort: 'medium', permissionMapping: null });
+    const startTurn = remote.client.startTurn.bind(remote.client);
+    vi.spyOn(remote.client, 'startTurn').mockImplementationOnce(async request => {
+      expect(harness.ix.get(IAgentStateService).get(externalExecutorKey).sessionRef?.ref['sessionId']).toBe('remote-1');
+      await remote.exit();
+      return startTurn(request);
+    });
+    try {
+      const run = harness.execution.run({ kind: 'prompt', prompt: 'work' }, { signal });
+      if (supported) await (await run).completion;
+      else await expect(run).rejects.toMatchObject({ code: 'executor.session_open_failed' });
+      expect(remote.histories[0]?.methods.filter(method => method === 'session/new')).toHaveLength(1);
+      expect(remote.histories.slice(1).flatMap(history => history.methods)).not.toContain('session/new');
+      const prompts = remote.histories.flatMap(history => history.promptParams);
+      expect(prompts).toHaveLength(supported ? 1 : 0);
+      if (supported) expect(prompts[0]).toMatchObject({ sessionId: 'remote-1' });
+      expect(remote.opens.slice(1).every(options => options.requireResume === true && options.sessionRef?.ref['sessionId'] === 'remote-1')).toBe(true);
+      expect(harness.ix.get(IAgentStateService).get(externalExecutorKey).sessionRef?.ref['sessionId']).toBe('remote-1');
+    } finally { await harness.execution.dispose(); await harness.ix.dispose(); }
+  });
+
   it('resumes the original remote session through AgentRun after a real open fails', async () => {
     let failSpawn = true;
     const remote = recordingClient(() => ({

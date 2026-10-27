@@ -404,7 +404,7 @@ export class AcpAgentExecutorSession implements AgentExecutorSession {
         prompt: remotePrompt,
         attachments: acpAttachments(externalAttachments(request)),
         signal: controller.signal,
-        session: sessionOptions,
+        session: { ...sessionOptions, sessionRef: configured.sessionRef, requireResume: true },
       });
       await this.#dispatcher.dispatch(
         new ExecutorSessionUpdated({

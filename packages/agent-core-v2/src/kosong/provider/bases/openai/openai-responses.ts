@@ -792,6 +792,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
   private _diagnostics?: { -readonly [K in keyof StreamDiagnostics]: StreamDiagnostics[K] };
   private _completedNormally = false;
   private _continuationBlocked = false;
+  private _observedOutput = false;
   private _cancelled = false;
 
   get completionAuthority(): 'normal' | undefined {
@@ -902,6 +903,11 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
   }
 
   private _observeOutputItem(item: RawObject): void {
+    this._observedOutput ||= !['message', 'reasoning'].includes(String(item['type'])) ||
+      (readStringField(item, 'encrypted_content')?.length ?? 0) > 0 ||
+      (readObjectArrayField(item, 'content') ?? []).some(part =>
+        (readStringField(part, 'text')?.length ?? 0) > 0 || (readStringField(part, 'refusal')?.length ?? 0) > 0) ||
+      (readObjectArrayField(item, 'summary') ?? []).some(part => (readStringField(part, 'text')?.length ?? 0) > 0);
     if (!['message', 'reasoning', 'function_call'].includes(String(item['type'])) || item['status'] === 'incomplete') {
       this._continuationBlocked = true;
     }
@@ -1156,7 +1162,10 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           }
           case 'response.content_part.added': {
             const part = requireObjectField(chunk, 'part', type);
-            if (part['type'] === 'refusal') this._continuationBlocked = true;
+            if (part['type'] === 'refusal') {
+              this._continuationBlocked = true;
+              this._observedOutput ||= (readStringField(part, 'refusal')?.length ?? 0) > 0;
+            }
             if (part['type'] === 'output_text') {
               yield* yieldFinalTextSuffix(
                 requireStringField(part, 'text', type),
@@ -1232,6 +1241,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
             break;
           }
           case 'response.reasoning_summary_part.added':
+            this._observedOutput ||= (readStringField(readObjectField(chunk, 'part') ?? {}, 'text')?.length ?? 0) > 0;
             yield { type: 'think', think: '' };
             break;
           case 'response.reasoning_summary_text.delta':
@@ -1240,6 +1250,7 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
           case 'response.refusal.delta':
           case 'response.refusal.done':
             this._continuationBlocked = true;
+            this._observedOutput ||= (readStringField(chunk, type === 'response.refusal.delta' ? 'delta' : 'refusal')?.length ?? 0) > 0;
             break;
           case 'response.completed':
           case 'response.incomplete': {
@@ -1290,13 +1301,6 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
                 'OpenAI Responses response.failed', error.code, error.message, null,
                 { rawEvent: chunk, webSocket: this._webSocket, convertErrorHook: this._convertErrorHook },
               );
-            if (output.some(item => !['message', 'reasoning'].includes(String(item['type'])) ||
-              (readStringField(item, 'encrypted_content')?.length ?? 0) > 0 ||
-              (readObjectArrayField(item, 'content') ?? []).some(part =>
-                (readStringField(part, 'text')?.length ?? 0) > 0 || (readStringField(part, 'refusal')?.length ?? 0) > 0) ||
-              (readObjectArrayField(item, 'summary') ?? []).some(part => (readStringField(part, 'text')?.length ?? 0) > 0))) {
-              noteExecutedRequestDelivery(failure);
-            }
             throw failure;
           }
           default:
@@ -1317,7 +1321,9 @@ export class OpenAIResponsesStreamedMessage implements StreamedMessage {
         !(error instanceof ResponsesWebSocketError) &&
         !(error instanceof OpenAIAPIError && error.error !== undefined)) return;
       if (diagnostics.endSource !== 'event_error' && diagnostics.endSource !== 'eof') diagnostics.endSource = readingEvent ? 'sdk_error' : 'local_error';
-      throw attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      const failure = attachStreamDiagnostics(transportStatusError(error) ?? transportClosureError(error) ?? transportLocalError(error) ?? convertOpenAIError(error, this._convertErrorHook), diagnostics);
+      if (this._observedOutput) noteExecutedRequestDelivery(failure);
+      throw failure;
     } finally {
       if (diagnostics.endSource === 'in_progress') diagnostics.endSource = 'cancelled';
     }
