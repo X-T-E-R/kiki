@@ -889,4 +889,132 @@ describe('ImSessionCard channel management', () => {
     expect(document.body.textContent).toContain('Remote Incident Thread');
     expect(document.body.textContent).not.toContain('Move to · sess-remote-search');
   });
+
+  it('renders group scope and wake options in DiscoveryRow for group channels and submits them on confirm', async () => {
+    const state = imChannelSnapshot('telegram');
+    state.discoveries = [{
+      id: 'tg-disc-group',
+      provider_instance_id: 'account-a',
+      provider_kind: 'telegram',
+      account_id: 'studio-account',
+      identity: { chat_id: 'disc-group-1', chat_title: 'Engineering Team', sender_id: 'member-1', sender_name: 'Bob', topic_id: '100', topic_title: 'Deployments', chat_kind: 'group' },
+      preview: 'Hello group',
+      at: '2026-10-27T01:00:00.000Z',
+    }];
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    const row = container.querySelector<HTMLElement>('[data-im-discovery="tg-disc-group"]')!;
+
+    expect(row.querySelector('[data-im-group-options]')).not.toBeNull();
+    expect(row.querySelector('[data-im-discovery-scope="sender"]')?.getAttribute('aria-pressed')).toBe('true');
+    await click(row, '[data-im-discovery-scope="topic"]');
+    expect(row.querySelector('[data-im-discovery-wake="mention_or_reply"]')?.getAttribute('aria-pressed')).toBe('true');
+    await click(row, '[data-im-discovery-wake="always"]');
+    expect(row.querySelector('[data-im-discovery-wake="always"]')?.getAttribute('aria-pressed')).toBe('true');
+
+    await click(row, '[data-im-discovery-scope="chat"]');
+    expect(row.querySelector('[data-im-discovery-scope="chat"]')?.getAttribute('aria-pressed')).toBe('true');
+    await click(row, '[data-im-discovery-wake="mention_or_reply"]');
+    row.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-discovery"]')!.focus();
+    await input(row, '[data-im-prefixes="data-im-discovery"]', 'Kiki:');
+    await act(async () => { row.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-discovery"]')!.blur(); await settle(); });
+
+    await click(row, '[data-im-confirm]');
+    expect(fixture.calls.find((call) => call.operation === 'confirm' && call.id === 'tg-disc-group')?.body).toMatchObject({
+      binding_scope: 'chat',
+      group_policy: { wake: 'mention_or_reply', prefixes: ['Kiki:'] },
+    });
+  });
+
+  it('handles group scope changes in BindingRow: confirms scope expansion with rebind: true and allows scope reduction immediately', async () => {
+    const state = imChannelSnapshot('telegram');
+    // binding-group starts with binding_scope: 'sender'
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    const group = binding(container, 'binding-group');
+    const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
+
+    await click(group, '[data-im-binding-options-toggle]');
+    expect(group.querySelector('[data-im-binding-scope="sender"]')?.getAttribute('aria-pressed')).toBe('true');
+    expect(group.querySelector<HTMLButtonElement>('[data-im-binding-scope="topic"]')?.disabled).toBe(true);
+
+    // 1. Expand scope: sender -> chat (SCOPE_RANK 1 -> 3). Opens scopeExpand confirmation modal!
+    await click(group, '[data-im-binding-scope="chat"]');
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).not.toBeNull();
+    expect(document.body.textContent).toContain('Expand group scope?');
+
+    // Cancel expansion -> 0 mutation
+    const cancelBtn = Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent?.trim() === 'Cancel');
+    expect(cancelBtn).not.toBeUndefined();
+    await act(async () => { cancelBtn!.click(); await settle(); });
+    expect(updateSpy).not.toHaveBeenCalled();
+    expect(document.body.querySelector('[data-confirm-action="confirm"]')).toBeNull();
+
+    // Expand scope again and confirm -> updateBinding with rebind: true
+    await click(group, '[data-im-binding-scope="chat"]');
+    await click(document.body, '[data-confirm-action="confirm"]');
+    expect(updateSpy).toHaveBeenCalledTimes(1);
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      binding_scope: 'chat',
+      group_policy: { wake: 'mention_or_reply' },
+      rebind: true,
+    });
+
+    // Simulate binding now being chat scoped
+    fixture.replace({
+      ...fixture.read(),
+      bindings: fixture.read().bindings.map((b) => b.id === 'binding-group' ? { ...b, binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } } : b),
+    });
+    await act(settle);
+
+    // 2. Reduce scope: chat -> sender (SCOPE_RANK 3 -> 1). Direct mutation without confirmation dialog
+    await click(group, '[data-im-binding-scope="sender"]');
+    expect(updateSpy).toHaveBeenCalledTimes(2);
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      binding_scope: 'sender',
+    });
+
+    // 3. Update wake policy and prefixes
+    fixture.replace({
+      ...fixture.read(),
+      bindings: fixture.read().bindings.map((b) => b.id === 'binding-group' ? { ...b, binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } } : b),
+    });
+    await act(settle);
+    await click(group, '[data-im-binding-wake="manual"]');
+    expect(updateSpy).toHaveBeenCalledTimes(3);
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      group_policy: { wake: 'manual' },
+    });
+    await click(group, '[data-im-binding-wake="mention_or_reply"]');
+    group.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-binding"]')!.focus();
+    await input(group, '[data-im-prefixes="data-im-binding"]', 'Kiki:');
+    await act(async () => { group.querySelector<HTMLInputElement>('[data-im-prefixes="data-im-binding"]')!.blur(); await settle(); });
+    expect(updateSpy).toHaveBeenLastCalledWith('binding-group', {
+      group_policy: { wake: 'mention_or_reply', prefixes: ['Kiki:'] },
+    });
+  });
+
+  it('renders inline error feedback when backend returns topic_scope_unavailable or group_binding_scope_required', async () => {
+    const state = imChannelSnapshot('telegram');
+    state.bindings[1] = { ...state.bindings[1]!, identity: { ...state.bindings[1]!.identity, topic_id: '42' } };
+    fixture = createImSettingsFixture(state);
+    const container = await render();
+    const group = binding(container, 'binding-group');
+    const updateSpy = vi.spyOn(fixture.client.imSessions, 'updateBinding');
+
+    await click(group, '[data-im-binding-options-toggle]');
+
+    // Mock 40001 topic_scope_unavailable
+    updateSpy.mockRejectedValueOnce(new Error('topic_scope_unavailable'));
+    await click(group, '[data-im-binding-scope="topic"]');
+    await click(document.body, '[data-confirm-action="confirm"]');
+    expect(group.textContent).toContain('This group has no topics. Select the whole group.');
+
+    // Mock 40001 group_binding_scope_required
+    updateSpy.mockRejectedValueOnce(new Error('group_binding_scope_required'));
+    await click(group, '[data-im-binding-scope="chat"]');
+    await click(document.body, '[data-confirm-action="confirm"]');
+    expect(group.textContent).toContain('Only groups support topic or whole-group scope.');
+  });
 });

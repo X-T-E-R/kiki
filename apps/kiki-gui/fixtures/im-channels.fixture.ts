@@ -92,8 +92,8 @@ export function imChannelSnapshot(kind: ImProviderKind = 'wechat_bridge'): ImSes
     instances: [{ id: 'account-a', provider_kind: kind, label: 'Studio', account_id: 'studio-account', listening: true, configured: true, adapter: 'running' }],
     discoveries: [],
     bindings: [
-      { id: 'binding-contact', provider_instance_id: 'account-a', provider_kind: kind, account_id: 'studio-account', identity: { chat_id: 'contact-lin', sender_id: 'lin', sender_name: 'Lin', topic_id: '0' }, persona_id: 'lin', session_id: 'lin-daily', enabled: true, session_enabled: true, busy: 'queue', reply: 'final', mobile_interactions: true },
-      { id: 'binding-group', provider_instance_id: 'account-a', provider_kind: kind, account_id: 'studio-account', identity: { chat_id: kind === 'wechat_bridge' ? 'contact-mei' : 'release-group', chat_title: kind === 'wechat_bridge' ? undefined : 'Release team', sender_id: 'mei', sender_name: 'Mei', topic_id: '0' }, session_id: 'release-notes', enabled: true, session_enabled: false, busy: 'steer', reply: 'final', mobile_interactions: false },
+      { id: 'binding-contact', provider_instance_id: 'account-a', provider_kind: kind, account_id: 'studio-account', identity: { chat_id: 'contact-lin', sender_id: 'lin', sender_name: 'Lin', topic_id: '0', chat_kind: 'private' }, persona_id: 'lin', session_id: 'lin-daily', enabled: true, session_enabled: true, busy: 'queue', reply: 'final', mobile_interactions: true },
+      { id: 'binding-group', provider_instance_id: 'account-a', provider_kind: kind, account_id: 'studio-account', identity: { chat_id: kind === 'wechat_bridge' ? 'contact-mei' : 'release-group', chat_title: kind === 'wechat_bridge' ? undefined : 'Release team', sender_id: 'mei', sender_name: 'Mei', topic_id: '0', chat_kind: kind === 'wechat_bridge' ? 'private' : 'group' }, session_id: 'release-notes', enabled: true, session_enabled: false, busy: 'steer', reply: 'final', mobile_interactions: false, binding_scope: 'sender' },
     ],
     strangers: [],
     voice_fallbacks: 0,
@@ -112,7 +112,7 @@ export function imSettingsSnapshot(): ImSessionSnapshot {
     ],
     bindings: [
       ...base.bindings,
-      { ...base.bindings[0]!, id: 'binding-topic', provider_instance_id: 'account-tg', provider_kind: 'telegram', account_id: 'research-bot', identity: { chat_id: 'research-group', chat_title: 'Research group', sender_id: 'lin', sender_name: 'Lin', topic_id: '42', topic_title: 'Paper reviews' }, session_id: 'reading-list', persona_id: undefined, reply: 'edit' },
+      { ...base.bindings[0]!, id: 'binding-topic', provider_instance_id: 'account-tg', provider_kind: 'telegram', account_id: 'research-bot', identity: { chat_id: 'research-group', chat_title: 'Research group', sender_id: 'lin', sender_name: 'Lin', topic_id: '42', topic_title: 'Paper reviews', chat_kind: 'group' }, session_id: 'reading-list', persona_id: undefined, reply: 'edit', binding_scope: 'topic', group_policy: { wake: 'mention_or_reply' } },
     ],
   };
 }
@@ -251,7 +251,13 @@ export function createImSettingsFixture(initial: ImSessionSnapshot = imSettingsS
       const discovery = state.discoveries.find((item) => item.id === id);
       if (discovery === undefined) throw new Error('Fixture channel no longer exists. Refresh and try again.');
       const existing = state.bindings.find((item) => item.provider_instance_id === discovery.provider_instance_id && item.identity.chat_id === discovery.identity.chat_id && item.identity.sender_id === discovery.identity.sender_id && item.identity.topic_id === discovery.identity.topic_id);
-      const options = { busy: body.busy ?? existing?.busy ?? 'queue', reply: body.reply ?? existing?.reply ?? 'final', mobile_interactions: body.mobile_interactions ?? existing?.mobile_interactions ?? true };
+      const options = {
+        busy: body.busy ?? existing?.busy ?? 'queue',
+        reply: body.reply ?? existing?.reply ?? 'final',
+        mobile_interactions: body.mobile_interactions ?? existing?.mobile_interactions ?? true,
+        binding_scope: body.binding_scope ?? existing?.binding_scope ?? 'sender',
+        group_policy: body.group_policy ?? existing?.group_policy,
+      };
       if (existing === undefined) state.bindings.push({ ...discovery, ...resolve(body.target), ...options, id: `bound-${id}`, enabled: true });
       else Object.assign(existing, resolve(body.target), options);
       state.discoveries = state.discoveries.filter((item) => item.id !== id);

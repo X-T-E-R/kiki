@@ -11,6 +11,7 @@ import {
   type ImConfirmRequest,
   type ImConnectionDetail,
   type ImDiscovery,
+  type ImGroupPolicy,
   type ImIdentity,
   type ImPasteResult,
   type ImProviderKind,
@@ -31,7 +32,7 @@ import { ConfirmDialog } from '../../ConfirmDialog';
 import { extractConflictDetails, isIdentityAlreadyBoundError } from '../../im/channelTypes';
 import { AdvancedDetails, SettingField } from '../fields';
 import { SectionCard } from '../SectionCard';
-import { FORM_LABEL, SettingsSegmented, SettingsSelect } from '../SettingsPrimitives';
+import { FORM_LABEL, SettingsSegmented, SettingsSelect, type SettingsChoice } from '../SettingsPrimitives';
 import { wechatQrImage } from './wechatQr';
 
 const KEY = ['im-sessions'] as const;
@@ -39,6 +40,115 @@ type ImInstanceStatus = ImSessionSnapshot['instances'][number];
 type Translator = ReturnType<typeof useI18n>['t'];
 type SetupPlatformEntry = ImSetupCatalog['platforms'][number];
 type ConnectMode = 'wechat' | 'paste' | ImSetupProvider;
+type ImBindingScope = NonNullable<ImBinding['binding_scope']>;
+type ImWakeMode = NonNullable<ImGroupPolicy['wake']>;
+
+const SCOPE_RANK: Record<ImBindingScope, number> = {
+  sender: 1,
+  topic: 2,
+  chat: 3,
+};
+
+function groupScopeChoices(t: Translator, topicDisabled = false): readonly SettingsChoice<ImBindingScope>[] {
+  return [
+    { value: 'sender', label: t('st.im.groupScope.sender') },
+    { value: 'topic', label: t('st.im.groupScope.topic'), disabled: topicDisabled },
+    { value: 'chat', label: t('st.im.groupScope.chat') },
+  ];
+}
+
+function groupWakeChoices(t: Translator): readonly SettingsChoice<ImWakeMode>[] {
+  return [
+    { value: 'mention_or_reply', label: t('st.im.wake.mention_or_reply') },
+    { value: 'always', label: t('st.im.wake.always') },
+    { value: 'manual', label: t('st.im.wake.manual') },
+  ];
+}
+
+function GroupBindingOptions({
+  scope,
+  wake,
+  prefixes,
+  topicDisabled = false,
+  showWake = false,
+  disabled,
+  prefix,
+  onScope,
+  onWake,
+  onPrefixes,
+}: {
+  scope: ImBindingScope;
+  wake: ImWakeMode;
+  prefixes?: readonly string[];
+  topicDisabled?: boolean;
+  showWake?: boolean;
+  disabled: boolean;
+  prefix: string;
+  onScope: (scope: ImBindingScope) => void;
+  onWake: (wake: ImWakeMode) => void;
+  onPrefixes?: (prefixes: string[]) => void;
+}) {
+  const { t } = useI18n();
+  const prefixesValue = (prefixes ?? []).join(', ');
+  const policyVisible = scope !== 'sender' || showWake;
+
+  return (
+    <div className="space-y-3" data-im-group-options>
+      <div className="flex flex-wrap items-start gap-x-6 gap-y-3">
+        <div className="space-y-1">
+          <p className="text-[13px] text-ink-soft">{t('st.im.groupScope')}</p>
+          <SettingsSegmented
+            ariaLabel={t('st.im.groupScope')}
+            value={scope}
+            disabled={disabled}
+            dataAttr={`${prefix}-scope`}
+            choices={groupScopeChoices(t, topicDisabled)}
+            onChange={onScope}
+          />
+        </div>
+        {policyVisible ? (
+          <div className="space-y-1">
+            <p className="text-[13px] text-ink-soft">{t('st.im.groupPolicy')}</p>
+            <SettingsSegmented
+              ariaLabel={t('st.im.groupPolicy')}
+              value={wake}
+              disabled={disabled}
+              dataAttr={`${prefix}-wake`}
+              choices={groupWakeChoices(t)}
+              onChange={onWake}
+            />
+          </div>
+        ) : null}
+      </div>
+      {policyVisible && wake === 'mention_or_reply' && onPrefixes ? (
+        <div className="space-y-1 max-w-sm">
+          <label className="text-[13px] text-ink-soft block" htmlFor={`${prefix}-prefixes`}>
+            {t('st.im.wake.prefixes')}
+          </label>
+          <input
+            id={`${prefix}-prefixes`}
+            key={prefixesValue}
+            type="text"
+            defaultValue={prefixesValue}
+            placeholder={t('st.im.wake.prefixesPlaceholder')}
+            disabled={disabled}
+            className={`${INPUT} text-[13px]`}
+            data-im-prefixes={prefix}
+            onBlur={(event) => {
+              const list = event.currentTarget.value.split(',').map((s) => s.trim()).filter(Boolean);
+              if (list.join(',') !== (prefixes ?? []).join(',')) onPrefixes(list);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.currentTarget.blur();
+              }
+            }}
+          />
+        </div>
+      ) : null}
+    </div>
+  );
+}
 
 const SETUP_FIELD_KEYS: Readonly<Record<string, I18nKey>> = {
   bot_token: 'st.im.setup.field.bot_token',
@@ -75,8 +185,16 @@ function useImAction() {
           ? `${t('st.im.rebind.title')}: ${t('st.im.occupiedBy')} ${details.previous_session_title ?? details.previous_session_id}`
           : t('st.im.error');
         setError(conflictMsg);
+      } else if (message.includes('unsupported_wechat_group')) {
+        setError(t('st.im.wechatDirectOnly'));
+      } else if (message.includes('topic_scope_unavailable')) {
+        setError(t('st.im.error.topicScopeUnavailable'));
+      } else if (message.includes('group_binding_scope_required')) {
+        setError(t('st.im.error.groupBindingScopeRequired'));
+      } else if (message.includes('direction_unsupported') || message.includes('input_unsupported') || message.includes('output_unsupported')) {
+        setError(t('st.im.error.directionUnsupported'));
       } else {
-        setError(message.includes('unsupported_wechat_group') ? t('st.im.wechatDirectOnly') : message || t('st.im.error'));
+        setError(message || t('st.im.error'));
       }
       return false;
     } finally {
@@ -1172,12 +1290,13 @@ function AccountChannels({ account, data, catalog, setupPlatform, initialTarget,
           catalog={catalog}
           setupPlatform={setupPlatform}
           initialTarget={preselectedTarget ?? initialTarget}
+          inbound={account.inbound !== false}
         />
       ))}
     </div> : null}
 
     {bindings.length > 0 ? <div data-im-bindings-list className="mt-3 divide-y divide-hairline">
-      {bindings.map((binding) => <BindingRow key={binding.id} binding={binding} policy={data.policy} catalog={catalog} setupPlatform={setupPlatform} />)}
+      {bindings.map((binding) => <BindingRow key={binding.id} binding={binding} policy={data.policy} catalog={catalog} setupPlatform={setupPlatform} inbound={account.inbound !== false} />)}
     </div> : null}
 
     {showAdd ? <div data-im-bind-flow={account.id} className="mt-3 space-y-3 rounded-lg border border-hairline bg-ink/[0.025] p-3 sm:p-4">
@@ -1212,11 +1331,12 @@ function AccountChannels({ account, data, catalog, setupPlatform, initialTarget,
   </section>;
 }
 
-function BindingRow({ binding, policy, catalog, setupPlatform }: {
+function BindingRow({ binding, policy, catalog, setupPlatform, inbound = true }: {
   binding: ImBinding;
   policy: ImSessionSnapshot['policy'];
   catalog: ImCatalog | undefined;
   setupPlatform?: SetupPlatformEntry;
+  inbound?: boolean;
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -1226,6 +1346,12 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
   const [search, setSearch] = useState('');
   const [testing, setTesting] = useState(false);
   const [testFeedback, setTestFeedback] = useState<Feedback>(null);
+  const [pendingScopeExpand, setPendingScopeExpand] = useState<ImBindingScope | null>(null);
+
+  const isGroup = binding.identity.chat_kind === 'group' && binding.provider_kind !== 'wechat_bridge';
+  const topicDisabled = binding.identity.topic_id === '0' || setupPlatform?.capabilities.threads === false;
+  const currentScope: ImBindingScope = binding.binding_scope ?? 'sender';
+  const currentWake: ImWakeMode = binding.group_policy?.wake ?? 'mention_or_reply';
 
   const sessions = useQuery({
     queryKey: [...KEY, 'session-search', search.trim()],
@@ -1270,6 +1396,22 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
 
   const handleCancelRebind = () => {
     setRebindTargetValue(null);
+  };
+
+  const selectScope = (scope: ImBindingScope) => {
+    if (scope === currentScope) return;
+    if (SCOPE_RANK[scope] > SCOPE_RANK[currentScope]) {
+      setPendingScopeExpand(scope);
+      return;
+    }
+    update({ binding_scope: scope });
+  };
+
+  const confirmScopeExpand = () => {
+    if (pendingScopeExpand === null) return;
+    const scope = pendingScopeExpand;
+    setPendingScopeExpand(null);
+    update({ binding_scope: scope, group_policy: binding.group_policy ?? { wake: 'mention_or_reply' }, rebind: true });
   };
 
   const runTestBinding = async () => {
@@ -1387,6 +1529,20 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
           <Hint>{t('st.im.internalAlwaysOn')}</Hint>
         </div>
       ) : null}
+      {isGroup && inbound ? <GroupBindingOptions
+        scope={currentScope}
+        wake={currentWake}
+        prefixes={binding.group_policy?.prefixes}
+        showWake={binding.group_policy !== undefined}
+        topicDisabled={topicDisabled}
+        disabled={action.saving}
+        prefix="data-im-binding"
+        onScope={selectScope}
+        onWake={(wake) => { update({ group_policy: { ...binding.group_policy, wake } }); }}
+        onPrefixes={(prefixes) => {
+          if (prefixes.join(',') !== (binding.group_policy?.prefixes ?? []).join(',')) update({ group_policy: { ...binding.group_policy, wake: currentWake, prefixes } });
+        }}
+      /> : null}
       <BindingOptions kind={binding.provider_kind} setupPlatform={setupPlatform} capabilities={boundChannelView?.capabilities} busy={binding.busy} reply={binding.reply} actions={binding.mobile_interactions} disabled={action.saving} prefix="data-im-binding"
         onBusy={(busy) => { update({ busy }); }} onReply={(reply) => { update({ reply }); }} onActions={(mobile_interactions) => { update({ mobile_interactions }); }} />
       <div className="flex flex-wrap items-center gap-2">
@@ -1443,14 +1599,25 @@ function BindingRow({ binding, policy, catalog, setupPlatform }: {
         </div>
       </div>
     </ConfirmDialog>
+    <ConfirmDialog
+      open={pendingScopeExpand !== null}
+      title={t('st.im.scopeExpand.title')}
+      body={t('st.im.scopeExpand.description')}
+      confirmLabel={t('st.im.scopeExpand.confirm')}
+      busy={action.saving}
+      tone="default"
+      onConfirm={confirmScopeExpand}
+      onCancel={() => { setPendingScopeExpand(null); }}
+    />
   </div>;
 }
 
-function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget }: {
+function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget, inbound = true }: {
   discovery: ImDiscovery;
   catalog: ImCatalog | undefined;
   setupPlatform?: SetupPlatformEntry;
   initialTarget: string;
+  inbound?: boolean;
 }) {
   const { t } = useI18n();
   const { client } = useConnection();
@@ -1462,6 +1629,12 @@ function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget }: {
   const [busy, setBusy] = useState<'queue' | 'steer'>('queue');
   const [reply, setReply] = useState<'final' | 'edit'>('final');
   const [actions, setActions] = useState(true);
+
+  const isGroup = discovery.identity.chat_kind === 'group' && discovery.provider_kind !== 'wechat_bridge';
+  const topicDisabled = discovery.identity.topic_id === '0' || setupPlatform?.capabilities.threads === false;
+  const [scope, setScope] = useState<ImBindingScope>('sender');
+  const [wake, setWake] = useState<ImWakeMode>('mention_or_reply');
+  const [prefixes, setPrefixes] = useState<string[]>([]);
 
   useEffect(() => {
     if (initialTarget !== '') setTarget(initialTarget);
@@ -1482,12 +1655,34 @@ function DiscoveryRow({ discovery, catalog, setupPlatform, initialTarget }: {
     {!unsupported && selected.startsWith('persona:') ? <label className="flex min-h-8 items-center gap-2 text-[13px] text-ink-soft">
       <input type="checkbox" data-im-also-home checked={alsoHome} disabled={action.saving} onChange={(event) => { setAlsoHome(event.target.checked); }} />{t('st.im.alsoHome')}
     </label> : null}
+    {isGroup && inbound ? <GroupBindingOptions
+      scope={scope}
+      wake={wake}
+      prefixes={prefixes}
+      topicDisabled={topicDisabled}
+      disabled={action.saving}
+      prefix="data-im-discovery"
+      onScope={setScope}
+      onWake={setWake}
+      onPrefixes={setPrefixes}
+    /> : null}
     {expanded ? <BindingOptions kind={discovery.provider_kind} setupPlatform={setupPlatform} busy={busy} reply={reply} actions={actions} disabled={action.saving} prefix="data-im"
       onBusy={setBusy} onReply={setReply} onActions={setActions} /> : null}
     <div className="flex flex-wrap gap-2">
       <button type="button" className={PRIMARY_BUTTON} data-im-confirm={discovery.id} disabled={unsupported || selected.length <= 8 || catalog === undefined || action.saving}
         onClick={() => { void action.run(async () => {
-          const next = await client.imSessions.confirm(discovery.id, { target: parseTarget(selected), busy, reply: liveText(discovery.provider_kind, setupPlatform) ? reply : 'final', mobile_interactions: actions, also_home: selected.startsWith('persona:') && alsoHome });
+          const request: ImConfirmRequest = {
+            target: parseTarget(selected),
+            busy,
+            reply: liveText(discovery.provider_kind, setupPlatform) ? reply : 'final',
+            mobile_interactions: actions,
+            also_home: selected.startsWith('persona:') && alsoHome,
+          };
+          if (isGroup && inbound && scope !== 'sender') {
+            request.binding_scope = scope;
+            request.group_policy = { wake, prefixes: prefixes.length > 0 ? prefixes : undefined };
+          }
+          const next = await client.imSessions.confirm(discovery.id, request);
           void queryClient.invalidateQueries({ queryKey: [...KEY, 'catalog'] });
           return next;
         }); }}>{t('st.im.confirm')}</button>
