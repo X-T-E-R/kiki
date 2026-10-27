@@ -16,6 +16,7 @@ import { writeLastSessionId } from '@kiki/session-core/settings';
 import type { Klient } from '@kiki/klient';
 
 const containers: HTMLDivElement[] = [];
+const mounted: { root: ReturnType<typeof createRoot>; queryClient: QueryClient }[] = [];
 const reactActEnvironment = globalThis as typeof globalThis & {
   IS_REACT_ACT_ENVIRONMENT: boolean;
 };
@@ -25,7 +26,11 @@ beforeAll(() => {
   reactActEnvironment.IS_REACT_ACT_ENVIRONMENT = true;
 });
 
-afterEach(() => {
+afterEach(async () => {
+  for (const { root, queryClient } of mounted.splice(0)) {
+    await act(async () => { root.unmount(); });
+    queryClient.clear();
+  }
   for (const container of containers.splice(0)) container.remove();
 });
 
@@ -189,6 +194,7 @@ async function renderPage(entry = '/usage?panel=history', options: { flush?: boo
   document.body.append(container);
   containers.push(container);
   const root = createRoot(container);
+  mounted.push({ root, queryClient });
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
@@ -317,6 +323,41 @@ describe('UsagePage (V2)', () => {
     await act(async () => { root.unmount(); });
     queryClient.clear();
   });
+  it.each(['today', 'last_7_days', 'custom&start_at=1790467200000&end_at=1793059200000'])(
+    'continues a bounded partial %s query until the complete total arrives without cancelling it',
+    async (range) => {
+      let complete!: (response: UsageResponseWire) => void;
+      let signal: AbortSignal | undefined;
+      getUsage.mockResolvedValueOnce(usageResponse({ incompleteReason: 'record_budget', summaryCost: 1.25 }))
+        .mockImplementationOnce((_query, options) => {
+          signal = options.signal;
+          return new Promise<UsageResponseWire>((resolve) => { complete = resolve; });
+        })
+        .mockResolvedValue(usageResponse({ summaryCost: 8.5 }));
+      const { container } = await renderPage(`/usage?panel=history&range=${range}`);
+      expect(container.querySelector('[data-usage-scan-pending]')).not.toBeNull();
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+      expect(getUsage).toHaveBeenCalledTimes(2);
+      expect(getUsage.mock.calls[1]?.[0]).toEqual(getUsage.mock.calls[0]?.[0]);
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+      expect(signal?.aborted).toBe(false);
+      expect(getUsage).toHaveBeenCalledTimes(2);
+      await act(async () => { complete(usageResponse({ summaryCost: 8.5 })); });
+      for (let index = 0; index < 5; index++) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+      expect(container.querySelector('[data-usage-scan-pending]')).toBeNull();
+      expect(container.querySelector('[data-usage-summary-cost]')?.textContent).toContain('8.50');
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+      expect(getUsage).toHaveBeenCalledTimes(2);
+    },
+  );
+
+  it('does not retry an unadvanceable session cap automatically', async () => {
+    getUsage.mockResolvedValue(usageResponse({ incompleteReason: 'session_cap' }));
+    await renderPage('/usage?panel=history&range=last_7_days');
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 350)); });
+    expect(getUsage).toHaveBeenCalledTimes(1);
+  });
+
   it('refreshes the current dashboard, strip and session automatically on settled usage', async () => {
     writeLastSessionId('usage-session');
     let cost = 3.25;

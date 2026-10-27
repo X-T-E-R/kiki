@@ -953,7 +953,6 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   const reuseTodaySummary = filters.range === 'today' && filters.includeArchived && !usageFiltersHaveScope(filters);
   const usageQuery = useInfiniteQuery({
     queryKey: ['usage-v2', filters, localUsageDate, timezoneOffsetMinutes],
-    refetchInterval: panel === 'history' && reuseTodaySummary ? 60_000 : false,
     enabled: panel === 'history',
     queryFn: ({ pageParam, signal }) =>
       client.getUsage(
@@ -963,6 +962,12 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) =>
       lastPage.sessions.has_more ? (lastPage.sessions.next_page_token ?? undefined) : undefined,
+    refetchInterval: (query) => {
+      if (panel !== 'history' || query.state.status === 'error') return false;
+      const unfinished = query.state.data?.pages.some(({ reliability }) => !reliability.complete &&
+        (reliability.incomplete_reason === 'deadline' || reliability.incomplete_reason === 'record_budget'));
+      return unfinished ? 250 : reuseTodaySummary ? 60_000 : false;
+    },
   });
   // A session locator must find its target beyond the first page: keep
   // pulling pages until it appears or the set is exhausted (a failed page

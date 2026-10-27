@@ -148,7 +148,7 @@ Start with the cost trend, then select a bar to see the consumption sources for 
 
 For a bounded date range, request the previous-period comparison when you need it. Missing prior data is shown as unavailable, not zero; a failed comparison leaves the current period readable. The collapsed live reference remains separate from the selected history.
 
-When a scan has not finished, the page says so and shows only the counted subtotal; an unfinished empty total appears as a dash, not zero. **Continue counting** resumes from saved progress rather than starting a full rescan. Leaving History cancels its pending reads.
+When a scan has not finished, the page says so and shows only the counted subtotal; an unfinished empty total appears as a dash, not zero. Scans paused by a time or record limit resume automatically from saved progress. **Continue counting** also resumes that progress rather than starting a full rescan. Leaving History cancels its pending reads.
 
 Token usage and estimated cost each carry their own completeness marker. If a provider returned no usage, Kiki shows that as unknown rather than as a real zero, and mixed results show the recorded subtotal with an incomplete-accounting notice. A missing model price affects the cost estimate only, never the recorded token count. **Data reliability** tells these cases apart from an empty range or a failed request.
 

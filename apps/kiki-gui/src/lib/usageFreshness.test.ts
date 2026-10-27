@@ -36,6 +36,33 @@ describe('usage query freshness', () => {
     off(); stop(); queries.clear(); otherScope.clear();
   });
 
+  it('lets a settled refresh finish during continuous usage events and then reads the newest total', async () => {
+    const queries = new QueryClient();
+    const key = ['usage-v2', { range: 'last_7_days' }];
+    queries.setQueryData(key, 0);
+    let finish!: (value: number) => void;
+    const inFlight = new Promise<number>((resolve) => { finish = resolve; });
+    let refreshSignal: AbortSignal | undefined;
+    const read = vi.fn().mockImplementationOnce(({ signal }) => {
+      refreshSignal = signal;
+      return inFlight;
+    }).mockResolvedValue(2);
+    const observer = new QueryObserver(queries, { queryKey: key, queryFn: read, staleTime: Infinity });
+    const stop = observer.subscribe(() => {});
+    const event = source();
+    const off = subscribeUsageFreshness(event.klient, queries);
+    event.emit();
+    await vi.waitFor(() => { expect(read).toHaveBeenCalledTimes(1); });
+    for (let index = 0; index < 10; index++) event.emit(index % 2 === 0 ? 'session-a' : 'session-b');
+    await Promise.resolve();
+    expect(refreshSignal?.aborted).toBe(false);
+    expect(read).toHaveBeenCalledTimes(1);
+    finish(1);
+    await vi.waitFor(() => { expect(observer.getCurrentResult().data).toBe(2); });
+    expect(read).toHaveBeenCalledTimes(2);
+    off(); stop(); queries.clear();
+  });
+
   it('cancels an older in-flight dashboard response before fetching a settled total', async () => {
     const queries = new QueryClient();
     const key = ['usage-v2-strip'];

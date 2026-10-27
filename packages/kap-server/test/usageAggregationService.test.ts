@@ -1708,6 +1708,74 @@ describe('UsageSourceTracker', () => {
 
 
 describe('shared agent and history usage projection', () => {
+  it('folds small committed journal batches in bounded pages across batch boundaries', async () => {
+    const main = scope('w', 's');
+    const saved = await openRange([summary('s', 'w')], { [main]: [] }, true);
+    saved.core.accessor.get(IUsageFactStore);
+    for (let index = 0; index < 300; index++) {
+      saved.logs.append(main, 'wire.jsonl', usageRecord(index + 1, index + 1));
+      await saved.logs.flush(main, 'wire.jsonl');
+    }
+    const pages = vi.spyOn(UsageRangeFold.prototype, 'addPage');
+    try {
+      const response = await new UsageAggregationService(saved.core).query({ range: 'custom', start_at: 0, end_at: 1000 });
+      expect(response.reliability.complete).toBe(true);
+      expect(response.summary.tokens.output).toBe(300);
+      expect(response.reliability.usage_coverage?.known_records).toBe(300);
+      expect(pages.mock.calls.map((call) => call[1].length)).toEqual([256, 44]);
+    } finally { pages.mockRestore(); }
+  });
+
+  it('starts a bounded SQLite history from committed journals without preparing full source indexes', async () => {
+    const main = scope('w', 's');
+    const saved = await openRange([summary('s', 'w')], { [main]: [] }, true);
+    const facts = saved.core.accessor.get(IUsageFactStore);
+    saved.logs.append(main, 'wire.jsonl', usageRecord(10, 1));
+    await saved.logs.flush(main, 'wire.jsonl');
+    const read = vi.spyOn(facts, 'read');
+    const summarize = vi.spyOn(facts, 'summary');
+    const service = new UsageAggregationService(saved.core, () => 100);
+    const response = await service.query({ range: 'custom', start_at: 0, end_at: 100 });
+    expect(response.reliability.complete).toBe(true);
+    expect(response.summary.tokens.output).toBe(1);
+    expect(response.reliability.usage_coverage?.known_records).toBe(1);
+    expect(read).not.toHaveBeenCalled();
+    expect(summarize).not.toHaveBeenCalled();
+  });
+
+  it('replays and maintains a SQLite range projection after panel reads warm the shared session cache', async () => {
+    const day = Date.UTC(2026, 9, 27);
+    const sessions = [summary('s1', 'w'), summary('s2', 'w')];
+    const main = scope('w', 's1');
+    const saved = await openRange(sessions, {
+      [main]: [usageRecord(day, 1)],
+      [scope('w', 's2')]: [usageRecord(day, 2)],
+    }, true);
+    const input = { range: 'custom', start_at: day, end_at: day + 86_400_000 } as const;
+    const built = await new UsageAggregationService(saved.core).query(input);
+    expect(built.reliability.complete).toBe(true);
+    const service = new UsageAggregationService(saved.core);
+    await service.readAgentUsage('w', 's1', ['main']);
+    expect(service.cacheStatus().entries).toBeGreaterThan(0);
+    const facts = vi.spyOn(saved.core.accessor.get(IUsageFactStore), 'read');
+    const reads = vi.spyOn(saved.storage, 'read');
+    const replayed = await service.query(input);
+    expect(replayed.reliability.complete).toBe(true);
+    expect(replayed.summary).toEqual(built.summary);
+    expect(reads.mock.calls.some(([target, key]) => target === 'cache/usage-aggregation-v1' && key.startsWith('range-projection-'))).toBe(true);
+    expect(facts).not.toHaveBeenCalled();
+    saved.logs.append(main, 'wire.jsonl', usageRecord(day + 1, 3));
+    await saved.logs.flush(main, 'wire.jsonl');
+    const appended = await service.query(input);
+    expect(appended.reliability.complete).toBe(true);
+    expect(appended.summary.tokens.output).toBe(3);
+    expect(appended.reliability.usage_coverage?.known_records).toBe(3);
+    expect(facts).not.toHaveBeenCalled();
+    const restarted = await new UsageAggregationService(saved.core).query(input);
+    expect(restarted.summary).toEqual(appended.summary);
+    expect(restarted.trend).toEqual(appended.trend);
+  });
+
   it('reuses one durable projection across agent reads, range views, appends, rewrites and restart', async () => {
     const main = scope('w', 's');
     const child = main.replace('/main', '/child');

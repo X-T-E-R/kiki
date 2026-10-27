@@ -11,11 +11,24 @@ function isUsageRead(query: Query, sessionId?: string): boolean {
 
 export function subscribeUsageFreshness(klient: Pick<Klient, 'events'>, queries: QueryClient): () => void {
   let active = true;
+  let refreshing = false;
+  const pending = new Set<string | undefined>();
+  const drain = async () => {
+    refreshing = true;
+    try {
+      while (pending.size > 0) {
+        if (!active) return;
+        const sessions = [...pending];
+        pending.clear();
+        const filters = { predicate: (query: Query) => sessions.some((sessionId) => isUsageRead(query, sessionId)) };
+        await queries.cancelQueries(filters);
+        if (active) await queries.invalidateQueries(filters, { cancelRefetch: false });
+      }
+    } finally { refreshing = false; }
+  };
   const refresh = (sessionId?: string) => {
-    const filters = { predicate: (query: Query) => isUsageRead(query, sessionId) };
-    void queries.cancelQueries(filters).then(() => {
-      if (active) return queries.invalidateQueries(filters);
-    });
+    pending.add(sessionId);
+    if (!refreshing) void drain().catch(() => {});
   };
   const subscription = klient.events.on('usage.settled', ({ sessionId }) => {
     if (active) refresh(sessionId);

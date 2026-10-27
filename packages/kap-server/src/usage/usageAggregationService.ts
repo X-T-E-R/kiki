@@ -588,7 +588,9 @@ export class UsageAggregationService {
       signal.throwIfAborted();
       const replayed = await this.replayRangeProjection(raw, normalized, fingerprint, signal);
       if (replayed !== undefined) return replayed;
-      const resumable = await waitForSource(this.core.accessor.get(IQueryStore).get('usage-range-routing-v1', fingerprint), signal);
+      const store = this.core.accessor.get(IQueryStore);
+      const journalFold = store.batchIf !== undefined && this.factJournalReplayEnabled() && normalized.range.startAt !== undefined && normalized.range.endAt !== undefined;
+      const resumable = journalFold ? true : await waitForSource(store.get('usage-range-routing-v1', fingerprint), signal);
       return resumable === undefined ? this.querySourcesRecordLevel(raw, signal) : this.queryFoldedSources(raw, normalized, fingerprint, signal);
     });
     this.rangeOperations.set(fingerprint, next);
@@ -1288,14 +1290,15 @@ export class UsageAggregationService {
     const agents: Record<string, WireCheckpoint> = {};
     const records: NormalizedUsageRecord[] = [];
     let readComplete = true;
-    for (let start = 0; start < agentIds.length; start += CHECKPOINT_READ_CONCURRENCY) {
+    const concurrency = projectionOnly && budget !== undefined && !this.factJournalReplayEnabled() ? 1 : CHECKPOINT_READ_CONCURRENCY;
+    for (let start = 0; start < agentIds.length; start += concurrency) {
       if (signal?.aborted) {
         if ((signal.reason as { name?: string } | undefined)?.name !== 'TimeoutError') signal.throwIfAborted();
         return { version: PERSISTENCE_VERSION, sessionKey: cacheKey, records, agents, readComplete: false, incompleteReason: 'deadline' };
       }
       let snapshots;
       try {
-        snapshots = await waitForSource(Promise.all(agentIds.slice(start, start + CHECKPOINT_READ_CONCURRENCY).map(async (agentId) => {
+        snapshots = await waitForSource(Promise.all(agentIds.slice(start, start + concurrency).map(async (agentId) => {
         const wireScope = agentScopeOf(scope, agentId);
         if (range?.startAt !== undefined && mtimeExcludesRange(await storage.mtime(wireScope, AGENT_WIRE_RECORD_KEY) ?? 0, range.startAt)) {
           return { agentId, snapshot: { records: [] as readonly NormalizedUsageRecord[], readComplete: true } };
@@ -1459,11 +1462,14 @@ export class UsageAggregationService {
     let pending = Buffer.alloc(0);
     let lineStart = startOffset;
     let invalid = false;
-    const publish = async (records: readonly UsageFact[], offset: number, index: number): Promise<void> => {
+    const selected: UsageFact[] = [];
+    const publish = async (offset: number, index: number): Promise<void> => {
       const previous = hold.cursor;
       hold.cursor = continuation(offset, index);
-      try { if (records.length > 0) await emit(records); }
-      catch (error) { hold.cursor = previous; throw error; }
+      try {
+        if (selected.length > 0) await emit(selected.slice());
+        selected.length = 0;
+      } catch (error) { hold.cursor = previous; throw error; }
     };
     const consume = async (line: Buffer): Promise<boolean> => {
       let batch: { version: number; start: number; checkpoint: WireCheckpoint; records: UsageFact[] };
@@ -1477,22 +1483,19 @@ export class UsageAggregationService {
       const prefix = replacement && sameGeneration ? covered!.count : 0;
       const apply = (generation === undefined || checkpoint.generation === generation) &&
         (replacement ? covered === undefined || (sameGeneration && checkpoint.offset > covered.offset) : covered !== undefined && sameGeneration && batch.start === covered.offset);
-      const selected: UsageFact[] = [];
       for (let index = skip; index < records.length; index += 1) {
         if (this.now() >= budget.deadlineAt || (budget.remainingFacts ?? Infinity) <= 0) {
-          await publish(selected, lineStart, index);
+          await publish(lineStart, index);
           budget.incompleteReason = this.now() >= budget.deadlineAt ? 'deadline' : 'record_budget';
           return true;
         }
         if (budget.remainingFacts !== undefined) budget.remainingFacts -= 1;
         const record = records[index]!;
         if (apply && index >= prefix && (record.invalid || inRange(record.time, range))) selected.push(record);
-        if (selected.length === 256) { await publish(selected, lineStart, index + 1); selected.length = 0; }
+        if (selected.length === 256) await publish(lineStart, index + 1);
       }
-      const previous = covered;
       if (apply) covered = { generation: checkpoint.generation, offset: checkpoint.offset, count: replacement ? records.length : (covered?.count ?? 0) + records.length };
-      try { await publish(selected, lineStart + line.byteLength + 1, 0); }
-      catch (error) { covered = previous; throw error; }
+      if (selected.length === 0) await publish(lineStart + line.byteLength + 1, 0);
       skip = 0;
       return false;
     };
@@ -1508,6 +1511,8 @@ export class UsageAggregationService {
           newline = pending.indexOf(10);
         }
       }
+      if (pending.length > 0 && await consume(pending)) return invalid ? undefined : { done: false, cursor: hold.cursor };
+      if (!invalid) await publish(size, 0);
     } catch (error) {
       budget.signal?.throwIfAborted();
       if (error instanceof UsageFactCursorChangedError) throw error;
@@ -1517,7 +1522,6 @@ export class UsageAggregationService {
       }
       throw error;
     }
-    if (pending.length > 0 && await consume(pending)) return invalid ? undefined : { done: false, cursor: hold.cursor };
     return invalid ? undefined : { done: true, cursor: hold.cursor };
   }
 
@@ -1694,21 +1698,19 @@ export class UsageAggregationService {
   }
 
   private projectionWritable(): boolean {
-    return this.cache.size === 0 && this.limits.usageFactBudget >= DEFAULT_LIMITS.usageFactBudget && this.limits.deadlineMs >= DEFAULT_LIMITS.deadlineMs && this.rescan.state !== 'running';
+    return this.cache.size === 0 && this.factJournalReplayEnabled() && this.rescan.state !== 'running';
   }
 
   private async replayRangeProjection(raw: UsageQuery, query: NormalizedQuery, fingerprint: string, signal: AbortSignal): Promise<UsageResponse | undefined> {
-    if (query.range.startAt === undefined || query.range.endAt === undefined || !this.projectionWritable() && this.loadedProjection === undefined) return undefined;
-    if (this.limits.usageFactBudget < DEFAULT_LIMITS.usageFactBudget || this.limits.deadlineMs < DEFAULT_LIMITS.deadlineMs || this.rescan.state === 'running') return undefined;
+    if (query.range.startAt === undefined || query.range.endAt === undefined || !this.factJournalReplayEnabled() || this.rescan.state === 'running') return undefined;
     const tracked = this.sourceChanges?.ready === true;
     const hot = this.loadedProjection;
+    if (hot === undefined && this.cache.size > 0 && [...this.cache.values()].every((entry) => entry.complete)) return undefined;
     if (hot?.fingerprint === fingerprint && hot.epoch === this.replayEpoch && tracked && this.now() - hot.verifiedAt < SOURCE_RECHECK_MS && raw.page_token === undefined) {
       return this.aggregateProjection(hot.projection, raw, query, fingerprint, signal);
     }
-    if (this.cache.size !== 0 && hot?.fingerprint !== fingerprint) return undefined;
     let projection = hot?.fingerprint === fingerprint ? hot.projection : undefined;
     if (projection === undefined) {
-      if (this.cache.size !== 0) return undefined;
       const bytes = await this.core.accessor.get(IFileSystemStorageService).read(PERSISTENCE_SCOPE, projectionFileName(fingerprint));
       const parsed = bytes === undefined ? undefined : parseUsageRangeProjection(bytes);
       if (parsed === undefined || parsed.fingerprint !== fingerprint || !hasProjectionTurnEvidence(parsed)) return undefined;
