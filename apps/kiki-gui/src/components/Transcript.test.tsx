@@ -7479,6 +7479,37 @@ describe('settled history folds and the unified locate entry', () => {
     }
   });
 
+  it('does not leave a blank continuation lane after a complete answer before the next turn', async () => {
+    const container = await renderTranscript([
+      userBlock({ id: 'u-complete', text: 'first', turnId: 't1' }),
+      assistantBlock('a-complete', 'Answer delivered.', { turnId: 't1' }),
+      userBlock({ id: 'u-next', text: 'next', turnId: 't2' }),
+    ]);
+    const answer = container.querySelector('[data-block-id="a-complete"]')?.closest('[data-transcript-virtual-item]');
+    expect(answer?.querySelectorAll('[data-transcript-lane="agent"]')).toHaveLength(1);
+    expect(answer?.nextElementSibling?.querySelector('[data-block-id="u-next"]')).not.toBeNull();
+  });
+
+  it('keeps the structural continuation lane when a turn really has unread steps', async () => {
+    const { TranscriptDetailProvider } = await import('./transcriptDetail');
+    const ref: import('@kiki/transcript').ContentRef = {
+      source: { kind: 'turn', id: 't1' }, path: ['steps'], revision: 'bounded-v1',
+      kind: 'array', offset: 1, total: 2,
+    };
+    const blocks = [
+      userBlock({ id: 'u-steps', text: 'first', turnId: 't1' }),
+      assistantBlock('a-steps', 'Answer delivered.', { turnId: 't1' }),
+      userBlock({ id: 'u-after-steps', text: 'next', turnId: 't2' }),
+    ];
+    const { root, container } = makeRoot();
+    await renderSettled(root, <TranscriptDetailProvider load={async () => false} loads={{}} contentRefs={[ref]} loadContent={async () => false}>
+      {virtualTranscript(transcriptState(blocks, { contentRefs: [ref] }))}
+    </TranscriptDetailProvider>);
+    const answer = container.querySelector('[data-block-id="a-steps"]')?.closest('[data-transcript-virtual-item]');
+    expect(answer?.querySelectorAll('[data-transcript-lane="agent"]')).toHaveLength(2);
+    expect(answer?.querySelector('[data-content-continuation-action]')).not.toBeNull();
+  });
+
   it('folds each turn’s work into one line once its answer is in, and expands in place', async () => {
     const container = await renderTranscript([...turnBlocks(1, 'first'), ...turnBlocks(2, 'second')]);
     const folds = container.querySelectorAll('[data-history-fold]');
@@ -7743,6 +7774,25 @@ describe('folding the live turn and what the agent looked at (FOLDING.md)', () =
     expect(twoCalls?.querySelectorAll('[data-media-thumb]')).toHaveLength(2);
   });
 
+  it('renders bounded inline attachment and content handles once per actual call, including a failure', async () => {
+    const { root, container } = makeRoot();
+    const hash = 'a'.repeat(64);
+    const other = 'b'.repeat(64);
+    const framed = (id: string, revision: string, failed = false): Block => ({
+      ...look(id), status: failed ? 'error' : 'done', isError: failed,
+      media: [{ kind: 'image', fileId: `inline:main:ZnJhbWUuYXR0MQ:${revision}`, name: `${id}.png` }],
+      output: [{ type: 'image', source: { kind: 'session_media', file_id: `inline-content:main:eyJzb3VyY2UifQ:${revision}` } }],
+    });
+    const blocks = [user, framed('one', hash), framed('two', other, true)];
+    for (const busy of [true, false]) {
+      await renderSettled(root, virtualTranscript(transcriptState(blocks, { busy })));
+      const run = container.querySelector('[data-media-run]');
+      expect(run?.textContent).toContain('2 images');
+      expect(run?.querySelectorAll('[data-media-thumb]')).toHaveLength(2);
+      expect(run?.querySelector('[data-outcome="failed"]')).not.toBeNull();
+    }
+  });
+
   it('keeps one thumbnail per canonical result part as the turn settles, including failed calls', async () => {
     const { root, container } = makeRoot();
     const first = 'data:image/png;base64,iVBORw0KGgo=';
@@ -7841,6 +7891,15 @@ describe('semantic tool cards', () => {
   async function openRaw(container: HTMLElement): Promise<void> {
     await act(async () => { click(container.querySelector('[data-tool-raw-toggle]')!); });
   }
+
+  it('shows one bounded inline tool image in the expanded result well', async () => {
+    const revision = 'a'.repeat(64);
+    const { container } = await renderCard(semanticTool('ReadMediaFile', { path: 'image.png' }, [
+      { type: 'image', source: { kind: 'session_media', file_id: `inline-content:main:eyJzb3VyY2UifQ:${revision}` } },
+    ], { media: [{ kind: 'image', fileId: `inline:main:ZnJhbWUuYXR0MQ:${revision}`, name: 'image.png' }] }));
+    await expand(container);
+    expect(container.querySelectorAll('[data-tool-record-field="output"] [data-media-broken], [data-tool-record-field="output"] img, [data-tool-record-field="output"] [aria-busy]')).toHaveLength(1);
+  });
 
   it('says who a thread message went to, whether it landed, and jumps to that thread', async () => {
     const content = `Please rebase onto main and rerun the integration suite. ${'context '.repeat(20)}`;

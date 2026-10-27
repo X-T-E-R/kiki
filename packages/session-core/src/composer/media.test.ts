@@ -266,6 +266,18 @@ describe('toolResultMedia', () => {
     expect(toolResultMedia([{ kind: 'image', detail: { agentId: 'agent-b', attachmentId: 'frame.att1' } }], [parts[0]!], 'agent-a', true)).toHaveLength(2);
   });
 
+  it('pairs bounded attachment and frame-content handles only for the same agent and image revision', () => {
+    const attachmentId = `inline:agent-a:YXR0MQ:${hash}`;
+    const contentId = `inline-content:agent-a:eyJzb3VyY2UifQ:${hash}`;
+    const reference = { kind: 'image' as const, fileId: attachmentId, name: 'original.png' };
+    const output = { kind: 'image' as const, fileId: contentId };
+    expect(toolResultMedia([reference], [output], 'agent-a', true)).toEqual([reference]);
+    expect(toolResultMedia([reference], [{ ...output, fileId: contentId.replace(hash, 'b'.repeat(64)) }], 'agent-a', true)).toHaveLength(2);
+    expect(toolResultMedia([reference], [{ ...output, fileId: contentId.replace('agent-a:', 'agent-b:') }], 'agent-a', true)).toHaveLength(2);
+    expect(toolResultMedia([reference], [output], 'agent-b', true)).toHaveLength(2);
+    expect(toolResultMedia([reference], [output], 'agent-a')).toHaveLength(2);
+  });
+
   it('does not guess identity from paths, names or unscoped attachment ids', () => {
     const pathOnly = { kind: 'image' as const, path: part.path, name: 'saved.png' };
     expect(toolResultMedia([pathOnly], [pathOnly], 'agent-a')).toHaveLength(2);

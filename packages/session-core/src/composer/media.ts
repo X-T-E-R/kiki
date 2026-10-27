@@ -117,6 +117,14 @@ export function mediaFromContentParts(content: readonly ContentPart[]): MediaRef
 // Tool result media
 // ---------------------------------------------------------------------------
 
+function samePublishedInlineMedia(left: string, right: string, agentId: string | undefined): boolean {
+  const pattern = /^(inline|inline-content):([^:]+):[A-Za-z0-9_-]+:([0-9a-f]{64})$/u;
+  const first = pattern.exec(left);
+  const second = pattern.exec(right);
+  return first !== null && second !== null && first[1] !== second[1] && first[2] === second[2] && first[3] === second[3] &&
+    (agentId === undefined || first[2] === agentId);
+}
+
 /**
  * The media a tool call produced, as one list per file. A result reports the
  * same bytes twice when it has both a canonical attachment reference (file id,
@@ -141,7 +149,7 @@ export function toolResultMedia(
         (blob?.kind !== 'agent' || agentId === undefined || blob.agentId === agentId) &&
         (item.detail === undefined || agentId === undefined || item.detail.agentId === agentId) &&
         (referenceHash === undefined || part.blobHash === undefined || referenceHash === part.blobHash) &&
-        (item.fileId === undefined || part.fileId === undefined || item.fileId === part.fileId) &&
+        (item.fileId === undefined || part.fileId === undefined || item.fileId === part.fileId || samePublishedInlineMedia(item.fileId, part.fileId, agentId)) &&
         (item.url === undefined || part.url === undefined || item.url === part.url);
     });
   const inputs = paired

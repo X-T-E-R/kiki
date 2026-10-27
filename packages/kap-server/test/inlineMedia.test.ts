@@ -5,7 +5,7 @@ import * as imageValidation from '@kiki/agent-core-v2/agent/media/image-compress
 import { installErrorHandler } from '../src/error-handler';
 import Fastify from 'fastify';
 import { createKlient } from '@kiki/klient/http';
-import { AgentTranscript, contentOriginalFileId, jsonBytes, type TranscriptAttachment, transcriptTurnSchema } from '@kiki/transcript';
+import { AgentTranscript, TranscriptFactReducer, TranscriptWireAdapter, contentOriginalFileId, jsonBytes, type TranscriptAttachment, transcriptTurnSchema } from '@kiki/transcript';
 import { boundedEntity, readContentSegment } from '../src/transport/klient/boundedContent';
 import { IAgentProfileService, IAgentPromptService, IAgentSkillService, IBootstrapService, IFileService, ISessionContext, ISessionIndex, ISessionManager, ISessionMediaStore as SessionMediaStoreToken, ISessionSkillCatalog, ITelemetryService, type Scope } from '@kiki/agent-core-v2';
 import * as mainAgent from '../src/transport/mainAgent';
@@ -14,7 +14,7 @@ import { registerSkillsRoutes } from '../src/routes/skills';
 import { registerSessionMediaRoutes } from '../src/routes/sessionMedia';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedTranscriptOps, boundedTranscriptSnapshot } from '../src/transport/klient/boundedTranscript';
-import { inlineMediaFile, parseInlineMediaIdentity } from '../src/services/inlineMedia';
+import { inlineMediaFile, openPublishedInlineMedia, parseInlineMediaIdentity } from '../src/services/inlineMedia';
 import { publishedInlineMediaReader } from '../src/services/publishedMedia';
 import { resolvePromptSessionMediaRefs } from '../src/lib/promptMedia';
 import type { ISessionMediaStore } from '@kiki/agent-core-v2/agent/media/sessionMediaStore';
@@ -269,6 +269,48 @@ describe('canonical inline media original', () => {
     expect((await app.inject({ url: `/api/sessions/fixture-session/media/${encodeURIComponent(forged)}` })).statusCode).toBe(404);
     changed = true;
     expect((await app.inject({ url: path })).statusCode).toBe(404);
+  });
+
+  it('publishes one wire tool image through paired attachment and bounded output handles to the same original', async () => {
+    const fixture = new URL('../../../apps/kiki-gui/fixtures/sent-images.scenario.mjs', import.meta.url).href;
+    const { picture } = await import(fixture);
+    const original: Buffer = picture(80, 60, [140, 50, 20]);
+    const output = [{ type: 'image_url', imageUrl: { url: `data:image/png;base64,${original.toString('base64')}` } }];
+    const transcript = new AgentTranscript('child');
+    const reducer = new TranscriptFactReducer(transcript);
+    const adapter = new TranscriptWireAdapter('child');
+    for (const record of [
+      { type: 'turn.prompt', turnId: 0, promptId: 'prompt', input: [{ type: 'text', text: 'show' }], origin: { kind: 'user' } },
+      { type: 'context.append_loop_event', event: { type: 'step.begin', turnId: 0, step: 1, uuid: 'step-1' } },
+      { type: 'context.append_loop_event', event: { type: 'tool.call', turnId: 0, stepUuid: 'step-1', toolCallId: 'call-1', name: 'ReadMediaFile' } },
+      { type: 'context.append_loop_event', event: { type: 'tool.result', toolCallId: 'call-1', result: { output } } },
+    ]) reducer.apply(adapter.add(record));
+    const projected = boundedTranscriptSnapshot(transcript.snapshot(), 'child');
+    const turn = projected.items[0];
+    if (turn?.kind !== 'turn') throw new Error('Expected tool turn');
+    const frame = turn.steps[0]?.frames.find((candidate) => candidate.kind === 'tool');
+    if (frame?.kind !== 'tool') throw new Error('Expected tool frame');
+    const attachment = projected.attachments.find((candidate) => candidate.attachmentId === frame.attachmentIds?.[0]);
+    if (attachment?.source?.kind !== 'session_media') throw new Error('Expected bounded attachment');
+    const part = (frame.output as { source: { kind: string; file_id: string } }[])[0]!;
+    expect(part.source.kind).toBe('session_media');
+    const attachmentId = attachment.source.fileId;
+    const contentId = part.source.file_id;
+    expect(attachmentId).toMatch(/^inline:child:/u);
+    expect(contentId).toMatch(/^inline-content:child:/u);
+    expect(attachmentId.split(':').at(-1)).toBe(contentId.split(':').at(-1));
+    const reader = async (agentId: string, source: { kind: string; id: string; turnId?: string; stepId?: string }) => {
+      if (agentId !== 'child') return undefined;
+      if (source.kind === 'attachment') return transcript.getAttachment(source.id);
+      return source.kind === 'frame' ? transcript.getTurn(source.turnId!)?.steps.find((step) => step.stepId === source.stepId)?.frames.find((candidate) => candidate.frameId === source.id) : undefined;
+    };
+    for (const fileId of [attachmentId, contentId]) {
+      const file = await openPublishedInlineMedia(fileId, reader);
+      expect(file).toBeDefined();
+      const chunks: Uint8Array[] = [];
+      for await (const chunk of file!.stream()) chunks.push(chunk);
+      expect(Buffer.concat(chunks)).toEqual(original);
+    }
   });
 
   it('projects large recorded tool images to exact revision-bound HTTP media instead of truncated data URLs', async () => {

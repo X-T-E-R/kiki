@@ -1329,12 +1329,13 @@ export const ShellMessage = memo(function ShellMessage({ block }: { block: Shell
  */
 function TurnStepsContinuation({ turnId }: { turnId: string }) {
   const { t } = useI18n();
+  const source = useMemo(() => ({ kind: 'turn' as const, id: turnId }), [turnId]);
+  const continuation = useContentContinuation(source, TURN_STEP_ROOTS);
+  if (continuation.pending.length === 0) return null;
   return (
-    <ContentContinuation
-      source={{ kind: 'turn', id: turnId }}
-      roots={TURN_STEP_ROOTS}
-      label={t('transcript.content.steps')}
-    />
+    <div data-transcript-lane="agent" className={AGENT_LANE}>
+      <ContentContinuation source={source} roots={TURN_STEP_ROOTS} label={t('transcript.content.steps')} />
+    </div>
   );
 }
 
@@ -5238,11 +5239,7 @@ export function Transcript({
                       />
                     </div>
                   )}
-                  {isTurnTail && turnTailId !== undefined ? (
-                    <div data-transcript-lane="agent" className={AGENT_LANE}>
-                      <TurnStepsContinuation turnId={turnTailId} />
-                    </div>
-                  ) : null}
+                  {isTurnTail && turnTailId !== undefined ? <TurnStepsContinuation turnId={turnTailId} /> : null}
                   {last && view === 'message' && presence !== undefined ? (
                     <div className={AGENT_LANE}>
                       <PresenceLine

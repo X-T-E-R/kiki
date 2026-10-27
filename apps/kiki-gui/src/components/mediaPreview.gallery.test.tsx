@@ -8,6 +8,8 @@ import { resetMediaOutcomes } from './imageActions';
 import { MediaPartList, MediaPreviewProvider } from './mediaPreview';
 import { MediaGalleryOrder, useMediaPreview } from './mediaPreviewContext';
 import type { MediaRef } from '@kiki/session-core/composer/media';
+import type { MediaRun, SessionViewState, ToolBlock } from '@kiki/session-core/session';
+import { MediaRunRow } from './timeline/FoldRows';
 
 vi.mock('../state/connection', () => ({ useOptionalConnection: () => ({ client: undefined, scopeId: 'gallery' }) }));
 
@@ -117,5 +119,25 @@ describe('image gallery', () => {
     expect(container.querySelector('img[alt="kept.png"]')).toBe(keptImage);
     expect(container.querySelector('img[alt="foreign.png"]')).toBe(foreignImage);
     expect(document.querySelector('[role="dialog"]')?.textContent).toContain('1 / 2');
+  });
+
+  it('uses the original mixed-media slot for a folded image and opens a single gallery occurrence', () => {
+    const image: MediaRef = { kind: 'image', url: 'https://example.test/visual.png', name: 'visual.png' };
+    const tool: ToolBlock = {
+      kind: 'tool', id: 'mixed-tool', toolCallId: 'mixed-call', name: 'ReadMediaFile', status: 'done',
+      argsText: '', args: {}, display: undefined, description: undefined, output: undefined,
+      isError: undefined, durationMs: undefined, progressText: undefined,
+      media: [{ kind: 'file', fileId: 'notes', name: 'notes.txt' }, image],
+    };
+    const run: MediaRun = { kind: 'media-run', id: 'media-mixed', turnId: 't1', members: [tool], latest: false };
+    const view = { sessionId: 'session', blocks: [tool] } as unknown as SessionViewState;
+    const container = render(<MediaPreviewProvider sessionId="session" sessionViewState={view}>
+      <MediaRunRow run={run} agentId="main" blockOrder={new Map([['mixed-tool', 0]])} />
+    </MediaPreviewProvider>);
+    expect(container.querySelectorAll('[data-media-thumb]')).toHaveLength(1);
+    act(() => { container.querySelector<HTMLButtonElement>('[data-media-thumb] button')!.click(); });
+    expect(document.querySelector('[role="dialog"] img')?.getAttribute('src')).toBe(image.url);
+    expect(document.querySelector('[role="dialog"] [aria-label="Next image"]')).toBeNull();
+    expect(document.querySelector('[role="dialog"] [aria-label="Previous image"]')).toBeNull();
   });
 });

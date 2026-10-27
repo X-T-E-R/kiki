@@ -33,18 +33,17 @@ function mediaItems(run: MediaRun, agentId: string): MediaItem[] {
   return run.members.flatMap((tool) => {
     const media = toolResultMedia(tool.media, extractToolOutputMedia(tool.output)?.media, agentId, true);
     const argPath = (tool.args as { path?: unknown } | undefined)?.path;
-    return media
-      .filter((item) => item.kind === 'image')
-      .map((item, index) => {
-        const path = item.path ?? (typeof argPath === 'string' ? argPath : undefined);
-        return {
-          key: `${tool.id}:${index}`,
-          blockId: tool.id,
-          index,
-          item: path === undefined || item.path !== undefined ? item : { ...item, name: item.name ?? basenameOf(path) },
-          name: item.name ?? (path === undefined ? tool.name : basenameOf(path)),
-        };
-      });
+    return media.flatMap((item, index) => {
+      if (item.kind !== 'image') return [];
+      const path = item.path ?? (typeof argPath === 'string' ? argPath : undefined);
+      return [{
+        key: `${tool.id}:${index}`,
+        blockId: tool.id,
+        index,
+        item: path === undefined || item.path !== undefined ? item : { ...item, name: item.name ?? basenameOf(path) },
+        name: item.name ?? (path === undefined ? tool.name : basenameOf(path)),
+      }];
+    });
   });
 }
 
