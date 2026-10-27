@@ -9,6 +9,7 @@ export default defineConfig({
   entry: ['./src/index.ts', './src/mcp/stdio.ts', './src/mcp/stdioRuntime.ts'],
   format: ['esm'],
   dts: { eager: true },
+  tsconfig: 'tsconfig.build.json',
   outDir: 'dist',
   clean: true,
   deps: {
