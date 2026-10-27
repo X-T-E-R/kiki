@@ -2631,6 +2631,7 @@ export function SessionView({
     model: modelControlPending ? effectiveModel : undefined,
     thinking: effortControlPending ? effectiveEffort : undefined,
   } : undefined;
+  const nativeSteeringUnavailable = harnessDenies(harness, 'native_steering');
   const composerEngine = useMemo<ComposerEngine | undefined>(() => harness === undefined ? undefined : {
     label: harness.label, fork: !harnessDenies(harness, 'fork'), images: !harnessDenies(harness, 'image'),
   }, [harness]);
@@ -4614,6 +4615,7 @@ boundExecution,
           onEditModelSwitch={modelSwitchActions.edit} onCancelModelSwitch={modelSwitchActions.cancel}
           editingPromptId={queueEdit?.promptId} onClearAll={handleClearQueue}
           sendNowDisabled={state.resyncing || state.resyncFailed}
+          sendNowUnavailable={nativeSteeringUnavailable ? t('harness.steerUnsupported') : undefined}
           timingReady={queueTimingReady}
         />
         </TranscriptDetailProvider>
@@ -4622,7 +4624,7 @@ boundExecution,
   }, [
     queuedItems, queuedItemCount, queueRowCount, heldCronItems, queueEdit, headerGoal, t, handleSendNowQueued, handleCancelQueued,
     handleRemoveQueuedAttachment, handleStartQueueEdit, handleMoveQueued, handleQueuedTiming,
-    handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady,
+    handleClearQueue, state.resyncing, state.resyncFailed, queueTimingReady, nativeSteeringUnavailable,
     modelSwitches.switches, modelSwitchActions.edit, modelSwitchActions.cancel, modelsQuery.data,
     hasPromptContinuation, promptCoverage, promptEntityLoad, handleLoadPromptEntities,
     controller, sessionId, state.detailLoads, state.contentRefs,
@@ -4909,7 +4911,7 @@ boundExecution,
             onChangeGoalMode={setGoalMode}
             onChangeEffort={handleEffortChange}
             onSend={handleComposerSend}
-            onSendNow={handleComposerSendNow}
+            onSendNow={nativeSteeringUnavailable ? undefined : handleComposerSendNow}
             sendTimingDefault={liveSettings.defaultAppendTiming}
             working={composerWorkingInfo}
             sessionRemainder={sessionRemainder}
@@ -4985,6 +4987,7 @@ boundExecution,
     handleCompactContext,
     handleComposerSend,
     handleComposerSendNow,
+    nativeSteeringUnavailable,
     handleComposerAbort,
     queueEdit,
     updateQueueEditAttachments,

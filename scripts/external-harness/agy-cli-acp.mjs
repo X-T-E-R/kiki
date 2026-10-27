@@ -217,7 +217,7 @@ export class AgyBridge {
     return { protocolVersion: version, agentInfo: { name: 'agy-cli-acp', version: '0.1.0' },
       agentCapabilities: { loadSession: Boolean(this.auditDir), promptCapabilities: { image: false, audio: false, embeddedContext: false },
         mcpCapabilities: { http: false, sse: false }, sessionCapabilities: { additionalDirectories: {} } },
-      authMethods: [] };
+      authMethods: [], _meta: { steering: { supported: false } } };
   }
 
   async requestPermission(session, input) {

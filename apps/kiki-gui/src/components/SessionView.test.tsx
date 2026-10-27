@@ -1593,7 +1593,8 @@ describe('sendNowNotice', () => {
     expect(sendNowNotice('queued', 'target_changed')?.key).toBe('sv.steerQueuedTargetChanged');
     expect(sendNowNotice('queued', 'prompt_no_longer_pending')?.key).toBe('sv.steerQueuedNotPending');
     expect(sendNowNotice('queued', 'steer_rejected')?.key).toBe('sv.steerQueuedRejected');
-    expect(sendNowNotice('queued', 'external_retry')?.key).toBe('sv.steerQueuedExternal');
+    expect(sendNowNotice('queued', 'external_retry')?.key).toBe('sv.steerQueuedExternalUnknown');
+    expect(sendNowNotice('held', 'external_retry')?.key).toBe('sv.steerQueuedExternalUnknown');
     expect(sendNowNotice('queued', 'executor_deferred')?.key).toBe('sv.steerQueuedExternal');
     expect(sendNowNotice('queued', 'model_switch_boundary')?.key).toBe('sv.steerQueuedModelBoundary');
     expect(sendNowNotice('queued', 'no_active_turn')?.key).toBe('sv.steerQueuedNoActiveTurn');

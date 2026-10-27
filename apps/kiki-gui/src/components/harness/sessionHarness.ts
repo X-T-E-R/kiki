@@ -63,6 +63,6 @@ export function useSessionHarness(profileName: string | undefined, profiles: rea
 }
 
 /** Only a handshake that said no removes an entry; unknown keeps the native one. */
-export function harnessDenies(harness: SessionHarness | undefined, capability: 'fork' | 'image'): boolean {
+export function harnessDenies(harness: SessionHarness | undefined, capability: 'fork' | 'image' | 'native_steering'): boolean {
   return harness?.negotiated?.[capability] === false;
 }

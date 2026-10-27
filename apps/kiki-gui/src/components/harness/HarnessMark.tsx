@@ -59,7 +59,7 @@ export function HarnessMark({ harness }: { harness: SessionHarness }) {
       </button>
       {open ? (
         <div id={panelId} role="dialog" aria-label={t('harness.panelTitle', { engine: harness.label })} data-harness-panel
-          className="anim-enter absolute top-full left-0 z-40 mt-1.5 w-72 rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
+          className="anim-enter absolute top-full right-0 z-40 mt-1.5 w-72 rounded-[10px] border border-hairline bg-panel p-3 shadow-[0_1px_2px_rgb(var(--kiki-shadow-ink)/0.06),0_8px_24px_-12px_rgb(var(--kiki-shadow-ink)/0.18)]">
           <p className="text-[12.5px] font-medium text-ink">{t('harness.panelTitle', { engine: harness.label })}</p>
           <p className="mt-0.5 font-mono text-[11px] text-ink-faint">
             {[harness.executorId, harness.protocol, harness.version].filter((part) => part !== undefined && part !== '').join(' · ')}

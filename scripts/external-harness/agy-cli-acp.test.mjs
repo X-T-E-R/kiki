@@ -24,6 +24,33 @@ function turn(b, id, text, messages) {
   return b.prompt({ sessionId: id, prompt: [{ type: 'text', text }] }, { notify: async (_method, event) => messages.push(event) });
 }
 
+void test('advertises no current-turn steering and rejects a concurrent prompt without writing another native turn', async () => {
+  const b = bridge(); const id = await session(b);
+  assert.deepEqual(b.initialize(1)._meta.steering, { supported: false });
+  let toolStarted;
+  const started = new Promise(done => { toolStarted = done; });
+  const pending = b.prompt({ sessionId: id, prompt: [{ type: 'text', text: 'tool-hang' }] }, {
+    notify: async (_method, event) => {
+      if (event.update?.sessionUpdate === 'tool_call') toolStarted();
+    },
+  });
+  pending.catch(() => {});
+  try {
+    await started;
+    const s = b.session(id); const active = s.active; const child = s.child;
+    const writes = [];
+    const write = child.stdin.write.bind(child.stdin);
+    child.stdin.write = (...args) => { writes.push(args[0]); return write(...args); };
+    await assert.rejects(turn(b, id, 'must not become a new turn', []), /already has an active turn/);
+    assert.deepEqual(writes, []);
+    assert.equal(s.active, active);
+    assert.equal(s.child, child);
+    assert.equal(b.sessions.size, 1);
+    await b.cancel({ sessionId: id });
+    assert.equal((await pending).stopReason, 'cancelled');
+  } finally { await b.close(); }
+});
+
 void test('bare launch preserves AGY model, effort, permissions and context settings', () => {
   assert.deepEqual(launchArgs({ model: 'engine-default', effort: 'engine-default', additionalDirectories: [] }),
     ['--input-format', 'stream-json', '--output-format', 'stream-json']);
@@ -274,6 +301,7 @@ void test('real ACP transport preserves tool failure, protocol diagnostics and s
   try {
     const initialized = await request('initialize', { protocolVersion: 1, clientCapabilities: {} });
     assert.ok(initialized.result);
+    assert.deepEqual(initialized.result._meta.steering, { supported: false });
     const created = await request('session/new', { cwd, mcpServers: [] });
     const sessionId = created.result.sessionId;
     const completed = await request('session/prompt', { sessionId, prompt: [{ type: 'text', text: 'missing-file' }] });
@@ -885,7 +913,7 @@ void test('Windows registered hook command survives native shell quoting for exa
     child.stdin.end(JSON.stringify(input));
     return { code: await closed, stdout, stderr };
   }
-  const exactNode = 'C:/nvm4w/nodejs/node.exe';
+  const exactNode = process.execPath;
   const sourceHandler = fileURLToPath(new URL('./agy-permission-hook.mjs', import.meta.url));
   try {
     const old = await shell(`"${exactNode}" "${sourceHandler}" & exit /b 0`);

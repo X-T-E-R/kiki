@@ -235,6 +235,7 @@ export function QueueStrip({
   onEditModelSwitch,
   onCancelModelSwitch,
   sendNowDisabled = false,
+  sendNowUnavailable,
   timingReady,
   promptContinuation,
 }: {
@@ -272,6 +273,7 @@ export function QueueStrip({
   readonly onChangeTiming?: (promptId: string, timing: DeferredAppendTiming) => Promise<void> | void;
   /** Steer is a send-equivalent; disable it while the session is resyncing. */
   readonly sendNowDisabled?: boolean;
+  readonly sendNowUnavailable?: string;
   /**
    * Whether a timing condition is met right now (agent idle and the awaited
    * work done). Only used to tell the user an edited prompt would already be
@@ -744,9 +746,9 @@ export function QueueStrip({
             {held ? null : (
               <button
                 type="button"
-                disabled={pending || sendNowDisabled}
+                disabled={pending || sendNowDisabled || sendNowUnavailable !== undefined}
                 onClick={() => { run(item.promptId, onSendNow); }}
-                title={sendNowDisabled ? t('sv.sendPaused') : t('sv.queueSendNowTitle')}
+                title={sendNowDisabled ? t('sv.sendPaused') : sendNowUnavailable ?? t('sv.queueSendNowTitle')}
                 aria-label={t('sv.queueSendNow')}
                 className="h-7 rounded-md px-2 text-[12px] font-medium text-ink transition-colors duration-[var(--kiki-motion-quick)] hover:bg-ink/[0.05] disabled:opacity-50 focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none"
               >

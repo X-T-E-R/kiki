@@ -46,6 +46,16 @@ describe('sessionHarnessOf', () => {
 });
 
 describe('capability gates', () => {
+  it('uses the session steering handshake, preserving native, supported and unknown paths', () => {
+    for (const supported of [true, false, undefined]) {
+      const harness = sessionHarnessOf('lead', [], [], {
+        executor_id: 'agy-cli', negotiated: { native_steering: supported },
+      });
+      expect(harnessDenies(harness, 'native_steering')).toBe(supported === false);
+    }
+    expect(harnessDenies(undefined, 'native_steering')).toBe(false);
+  });
+
   it('hides an entry only on an explicit no', () => {
     const harness = sessionHarnessOf('lead', [profile({ executor: 'claude-acp' })], [claude]);
     expect(harnessDenies(harness, 'fork')).toBe(true);

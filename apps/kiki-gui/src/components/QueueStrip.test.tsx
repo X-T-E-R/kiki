@@ -163,6 +163,24 @@ function queueGeometry(container: HTMLDivElement): void {
   });
 }
 
+describe('QueueStrip unsupported steering', () => {
+  it('disables Send now with the engine reason while keeping edit and removal available', async () => {
+    const onSendNow = vi.fn();
+    const { container } = await renderStrip({
+      onSendNow, onEdit: vi.fn(),
+      sendNowUnavailable: 'This engine cannot accept messages during a turn. Messages wait for the next turn.',
+    });
+    const row = rows(container)[0]!;
+    const button = row.querySelector<HTMLButtonElement>('button[aria-label="Send now"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe('This engine cannot accept messages during a turn. Messages wait for the next turn.');
+    await click(button);
+    expect(onSendNow).not.toHaveBeenCalled();
+    expect(row.querySelector<HTMLButtonElement>('button[aria-label="Remove"]')!.disabled).toBe(false);
+    expect(row.querySelector<HTMLButtonElement>('button[aria-label="Edit queued prompt"]')!.disabled).toBe(false);
+  });
+});
+
 describe('QueueStrip remove confirmation', () => {
   it('arms Remove on the first click and removes on the second', async () => {
     const onRemove = vi.fn();

@@ -463,6 +463,28 @@ describe('AcpProcessClient steering consumption', () => {
     return { ...opened, turn };
   }
 
+  it('does not send a steering request or start another turn when the adapter advertises unsupported', async () => {
+    const { client, history } = await openWithScriptedAgent({
+      hangPrompt: true,
+      initializeMeta: { steering: { supported: false } },
+      steeringOutcome: 'injected',
+    }, {});
+    const turn = await client.startTurn({
+      prompt: 'work', signal: new AbortController().signal, session: { cwd: 'C:/workspace' },
+    });
+    void turn.completion.catch(() => undefined);
+    try {
+      await whenPrompting(history.methods);
+      const before = [...history.methods];
+      await expect(client.steer([{ type: 'text', text: 'later' }])).resolves.toBe(false);
+      expect(history.methods).toEqual(before);
+      expect(history.steeringParams).toEqual([]);
+    } finally {
+      await turn.cancel();
+      await client.shutdown();
+    }
+  });
+
   it('acks an injected steering prompt', async () => {
     const { client, history, turn } = await duringPrompt('injected');
     try {

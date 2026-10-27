@@ -121,7 +121,7 @@ const SEND_NOW_QUEUED_KEYS: Readonly<Record<PromptDeliveryReason, I18nKey>> = {
   target_changed: 'sv.steerQueuedTargetChanged',
   prompt_no_longer_pending: 'sv.steerQueuedNotPending',
   steer_rejected: 'sv.steerQueuedRejected',
-  external_retry: 'sv.steerQueuedExternal',
+  external_retry: 'sv.steerQueuedExternalUnknown',
   executor_deferred: 'sv.steerQueuedExternal',
   model_switch_boundary: 'sv.steerQueuedModelBoundary',
 };
@@ -134,7 +134,7 @@ export function sendNowNotice(
   outcome: SendNowOutcome,
   reason: PromptDeliveryReason | undefined,
 ): { readonly tone: 'info'; readonly key: I18nKey } | undefined {
-  if (outcome === 'held') return { tone: 'info', key: 'sv.submissionRecovery.server' };
+  if (outcome === 'held') return { tone: 'info', key: reason === 'external_retry' ? 'sv.steerQueuedExternalUnknown' : 'sv.submissionRecovery.server' };
   if (outcome === 'not_pending') return { tone: 'info', key: 'sv.steerQueuedNotPending' };
   if (outcome === 'queued') return { tone: 'info', key: sendNowQueuedNotice(reason) };
   return undefined;
