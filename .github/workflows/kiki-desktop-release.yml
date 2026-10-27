@@ -75,6 +75,8 @@ jobs:
       - name: Fetch catalog and write immutable input receipt
         id: input
         shell: bash
+        env:
+          KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
         run: |
           set -euo pipefail
           source_sha="$(git rev-parse HEAD)"
@@ -90,7 +92,8 @@ jobs:
             --version '${{ needs.validate.outputs.version }}' \
             --channel '${{ needs.validate.outputs.channel }}' \
             --run-id "$GITHUB_RUN_ID" \
-            --producer-attempt "$GITHUB_RUN_ATTEMPT"
+            --producer-attempt "$GITHUB_RUN_ATTEMPT" \
+            --updater-public-key "$KIKI_UPDATER_PUBLIC_KEY"
           {
             echo "source-sha=$source_sha"
             echo "producer-attempt=$GITHUB_RUN_ATTEMPT"
@@ -177,7 +180,16 @@ jobs:
         run: |
           set -euo pipefail
           api="$RUNNER_TEMP/target-artifacts.json"
-          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" --jq '{artifacts: [.[].artifacts[]]}' > "$api"
+          pages="$RUNNER_TEMP/target-artifact-pages.json"
+          gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts?per_page=100" > "$pages"
+          node -e '
+            const fs = require("node:fs");
+            const pages = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
+            if (!Array.isArray(pages) || pages.some(page => !Array.isArray(page.artifacts))) {
+              throw new Error("Artifact API pages must each contain an artifacts array.");
+            }
+            fs.writeFileSync(process.argv[2], JSON.stringify({ artifacts: pages.flatMap(page => page.artifacts) }));
+          ' "$pages" "$api"
           node apps/kimi-code/scripts/native/release-receipt.mjs select-artifacts \
             --api-json "$api" \
             --run-id "$GITHUB_RUN_ID" \
@@ -208,7 +220,8 @@ jobs:
             --version "$KIKI_VERSION" \
             --channel "$KIKI_CHANNEL" \
             --run-id "$GITHUB_RUN_ID" \
-            --prepare-attempt "$KIKI_PREPARE_ATTEMPT"
+            --prepare-attempt "$KIKI_PREPARE_ATTEMPT" \
+            --github-env "$GITHUB_ENV"
           echo "KIKI_BUILT_IN_CATALOG_FILE=$input/built-in-catalog.json" >> "$GITHUB_ENV"
 
           shopt -s nullglob
@@ -260,7 +273,6 @@ jobs:
       - name: Sign updater with production key
         shell: bash
         env:
-          KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
@@ -491,14 +503,20 @@ jobs:
             package="apps/kimi-code/dist-npm/$kind"
             name="$(node -p "require('./$package/package.json').name")"
             expected="$(npm pack "$package" --silent --json --dry-run --registry=https://registry.npmjs.org/ | node -e "let s='';process.stdin.on('data',c=>s+=c).on('end',()=>console.log(JSON.parse(s)[0].integrity))")"
-            published="$(npm view "$name@$KIKI_VERSION" dist.integrity --json --registry=https://registry.npmjs.org/ 2>/dev/null || true)"
-            published="${published%\"}"
-            published="${published#\"}"
-            if [ -n "$published" ]; then
-              if [ "$published" != "$expected" ]; then
-                echo "Published npm package differs: $name@$KIKI_VERSION" >&2
-                exit 1
-              fi
+            query="$RUNNER_TEMP/npm-query-$kind.json"
+            query_error="$RUNNER_TEMP/npm-query-$kind.stderr"
+            if npm view "$name@$KIKI_VERSION" dist.integrity --json --registry=https://registry.npmjs.org/ > "$query" 2> "$query_error"; then
+              query_status=0
+            else
+              query_status=$?
+            fi
+            action="$(node apps/kimi-code/scripts/native/release-receipt.mjs npm-publication-action \
+              --query-json "$query" \
+              --query-stderr "$query_error" \
+              --query-status "$query_status" \
+              --expected-integrity "$expected" \
+              --package "$name@$KIKI_VERSION")"
+            if [ "$action" = 'reuse' ]; then
               echo "Reusing exact npm package: $name@$KIKI_VERSION"
             else
               npm publish "$package" --access public --registry=https://registry.npmjs.org/

@@ -5,6 +5,7 @@ import { dirname, join } from 'node:path';
 import test from 'node:test';
 
 import { stageSidecar } from '../../../kiki-gui/scripts/prepare-sidecar.mjs';
+import { updaterPublicKeyIdentity } from '../../../kiki-gui/scripts/verify-updater-signature.mjs';
 import {
   NATIVE_RECEIPT_NAME,
   createNpmReceipt,
@@ -19,6 +20,10 @@ import {
 } from './release-receipt.mjs';
 
 const SHA = '1234567890abcdef1234567890abcdef12345678';
+const keyPacket = (byte) => Buffer.concat([Buffer.from('Ed'), Buffer.alloc(8, byte), Buffer.alloc(32, byte)]);
+const publicKey = (byte) => Buffer.from(`untrusted comment: offline fixture\n${keyPacket(byte).toString('base64')}\n`).toString('base64');
+const UPDATER_KEY_A = publicKey(1);
+const UPDATER_KEY_B = publicKey(2);
 const TARGETS = [
   ['linux-x64', 'x86_64-unknown-linux-gnu', 'kiki-linux-x64'],
   ['linux-arm64', 'aarch64-unknown-linux-gnu', 'kiki-linux-arm64'],
@@ -62,6 +67,7 @@ function fixture() {
     producerAttempt: '1',
     nodeVersion: '24.22.1',
     pnpmVersion: '10.33.0',
+    updaterPublicKey: UPDATER_KEY_A,
   });
   write(preparePath, `${JSON.stringify(prepare)}\n`);
   return { root, catalog, preparePath, prepare };
@@ -100,6 +106,7 @@ function stageAll(state, attempt = '2') {
       rustVersion: 'rustc 1.91.0',
       signingMode: 'unsigned',
       desktopDir,
+      updaterPublicKey: UPDATER_KEY_A,
     });
   }
   return artifacts;
@@ -155,7 +162,7 @@ test('prepare and verification bind all five current version authorities', () =>
       assert.deepEqual(state.prepare.versions, { cli: '1.2.3', gui: '1.2.3', tauri: '1.2.3', cargo: '1.2.3', system: '1.2.3' });
       write(join(state.root, path), changed);
       assert.throws(() => verifyPrepareReceipt({ receiptPath: state.preparePath, catalogPath: state.catalog, expected: expected(), root: state.root }), /release version mismatch/);
-      assert.throws(() => createPrepareReceipt({ root: state.root, catalogPath: state.catalog, ...expected(), pnpmVersion: '10.33.0' }), /does not match release version/);
+      assert.throws(() => createPrepareReceipt({ root: state.root, catalogPath: state.catalog, ...expected(), pnpmVersion: '10.33.0', updaterPublicKey: UPDATER_KEY_A }), /does not match release version/);
     } finally {
       rmSync(state.root, { recursive: true, force: true });
     }
@@ -179,6 +186,7 @@ test('Windows CLI samples pnpm.cmd through the native command wrapper when --pnp
       '--tag', 'kiki-v1.2.3', '--version', '1.2.3', '--channel', 'stable', '--run-id', '77',
       '--prepare-attempt', '1', '--candidate-attempt', '2', '--target', 'win32-x64',
       '--rust-target', 'x86_64-pc-windows-msvc', '--rust', 'rustc fixture', '--signing', 'unsigned',
+      '--updater-public-key', UPDATER_KEY_A,
     ], state.root);
     const receipt = JSON.parse(readFileSync(join(output, NATIVE_RECEIPT_NAME), 'utf8'));
     assert.equal(receipt.tools.pnpm, '10.33.0');
@@ -266,6 +274,7 @@ test('desktop staging consumes the verified native bytes and rejects a changed s
       root: state.root, outputDir: candidate, target: 'win32-x64', rustTarget: 'x86_64-pc-windows-msvc',
       prepareReceiptPath: state.preparePath, catalogPath: state.catalog, prepareArtifactId: '9001',
       expected: expected('2'), nodeVersion: '24.22.1', pnpmVersion: '10.33.0', rustVersion: 'rustc fixture', signingMode: 'unsigned',
+      updaterPublicKey: UPDATER_KEY_A,
     });
     const env = {
       KIKI_SIDECAR_SOURCE: source, KIKI_SIDECAR_RELEASE_MODE: 'verified-prebuilt',
@@ -361,5 +370,68 @@ test('candidate assembly rejects missing, duplicate, wrong-attempt, source, and 
     } finally {
       rmSync(state.root, { recursive: true, force: true });
     }
+  }
+});
+
+
+test('frozen updater key binds native staging, target consumption, and publisher key export', () => {
+  const state = fixture();
+  try {
+    const artifacts = stageAll(state);
+    const common = [
+      '--receipt', state.preparePath, '--catalog', state.catalog,
+      '--repository', 'example/kiki', '--source-sha', SHA,
+      '--tag', 'kiki-v1.2.3', '--version', '1.2.3', '--channel', 'stable',
+      '--run-id', '77', '--prepare-attempt', '1',
+    ];
+    assert.equal(state.prepare.updater.publicKey, UPDATER_KEY_A);
+    assert.equal(state.prepare.updater.identity, updaterPublicKeyIdentity(UPDATER_KEY_A));
+    const nativeEnv = join(state.root, 'native-github-env');
+    runCli(['verify-prepare', ...common, '--github-env', nativeEnv], state.root);
+    assert.equal(readFileSync(nativeEnv, 'utf8'), `KIKI_UPDATER_PUBLIC_KEY=${UPDATER_KEY_A}\n`);
+
+    const publishEnv = join(state.root, 'publish-github-env');
+    const nativeOutput = join(state.root, 'assembled/native');
+    const desktopOutput = join(state.root, 'assembled/desktop');
+    runCli([
+      'verify-candidates', ...common, '--artifacts', artifacts,
+      '--native-output', nativeOutput, '--desktop-output', desktopOutput,
+      '--prepare-artifact-id', '9001', '--github-env', publishEnv,
+    ], state.root);
+    assert.equal(readFileSync(publishEnv, 'utf8'), readFileSync(nativeEnv, 'utf8'));
+
+    assert.throws(() => stageNativeCandidate({
+      root: state.root, outputDir: join(state.root, 'wrong-key-candidate'),
+      target: 'win32-x64', rustTarget: 'x86_64-pc-windows-msvc',
+      prepareReceiptPath: state.preparePath, catalogPath: state.catalog, prepareArtifactId: '9001',
+      expected: expected('3'), nodeVersion: '24.22.1', pnpmVersion: '10.33.0', rustVersion: 'rustc fixture',
+      signingMode: 'unsigned', desktopDir: join(state.root, 'desktop/win32-x64'), updaterPublicKey: UPDATER_KEY_B,
+    }), /Windows embedded updater public key mismatch/);
+
+    const windowsPath = join(artifacts, 'kiki-release-target-77-win32-x64-2', NATIVE_RECEIPT_NAME);
+    const windows = JSON.parse(readFileSync(windowsPath, 'utf8'));
+    assert.equal(windows.guiEnvironment.updaterPublicKeyIdentity, state.prepare.updater.identity);
+    for (const identity of [updaterPublicKeyIdentity(UPDATER_KEY_B), undefined]) {
+      windows.guiEnvironment.updaterPublicKeyIdentity = identity;
+      write(windowsPath, JSON.stringify(windows));
+      assert.throws(() => verifyCandidateSet({
+        root: state.root, artifactsRoot: artifacts, nativeOutput, desktopOutput,
+        prepareReceiptPath: state.preparePath, catalogPath: state.catalog,
+        prepareArtifactId: '9001', expected: expected(),
+      }), /Windows embedded updater public key mismatch/);
+    }
+
+    state.prepare.updater.publicKey = UPDATER_KEY_B;
+    write(state.preparePath, JSON.stringify(state.prepare));
+    assert.throws(() => verifyPrepareReceipt({
+      root: state.root, receiptPath: state.preparePath, catalogPath: state.catalog, expected: expected(),
+    }), /frozen updater public key identity mismatch/);
+    delete state.prepare.updater;
+    write(state.preparePath, JSON.stringify(state.prepare));
+    assert.throws(() => verifyPrepareReceipt({
+      root: state.root, receiptPath: state.preparePath, catalogPath: state.catalog, expected: expected(),
+    }), /frozen updater public key is required/);
+  } finally {
+    rmSync(state.root, { recursive: true, force: true });
   }
 });

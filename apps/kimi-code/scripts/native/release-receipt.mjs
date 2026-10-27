@@ -15,6 +15,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 
 import { readDesktopVersions } from '../../../kiki-gui/scripts/desktop-version.mjs';
+import { updaterPublicKeyIdentity } from '../../../kiki-gui/scripts/verify-updater-signature.mjs';
 import { commandForExecFile } from './exec.mjs';
 
 function releaseVersions(root) {
@@ -119,7 +120,10 @@ export function createPrepareReceipt({
   producerAttempt,
   nodeVersion = process.versions.node,
   pnpmVersion,
+  updaterPublicKey,
 }) {
+  updaterPublicKey = required(updaterPublicKey, 'updater public key');
+  const updater = { publicKey: updaterPublicKey, identity: updaterPublicKeyIdentity(updaterPublicKey) };
   repository = required(repository, 'repository');
   sourceSha = fullSha(sourceSha);
   tag = required(tag, 'tag');
@@ -148,6 +152,7 @@ export function createPrepareReceipt({
     tools: { node: nodeVersion, pnpm: pnpmVersion },
     lock: describeFile(join(root, 'pnpm-lock.yaml')),
     versions,
+    updater,
     catalog: { name: basename(catalogPath), ...describeFile(catalogPath) },
   };
 }
@@ -178,6 +183,8 @@ export function verifyPrepareReceipt({ receiptPath, catalogPath, expected, root 
     'producer attempt',
   );
   assertReleaseCoordinates(receipt);
+  const publicKey = required(receipt.updater?.publicKey, 'frozen updater public key');
+  assertEqual(receipt.updater?.identity, updaterPublicKeyIdentity(publicKey), 'frozen updater public key identity');
   assertEqual(receipt.lock?.sha256, describeFile(join(root, 'pnpm-lock.yaml')).sha256, 'lock digest');
   const catalog = describeFile(catalogPath);
   assertEqual(receipt.catalog?.name, basename(catalogPath), 'catalog name');
@@ -230,9 +237,15 @@ export function stageNativeCandidate({
   rustVersion,
   signingMode,
   desktopDir,
+  updaterPublicKey,
 }) {
   const metadata = targetMetadata(target, rustTarget);
   const prepare = verifyPrepareReceipt({ receiptPath: prepareReceiptPath, catalogPath, expected, root });
+  const updaterKeyIdentity = target === 'win32-x64'
+    ? updaterPublicKeyIdentity(required(updaterPublicKey, 'Windows embedded updater public key')) : undefined;
+  if (target === 'win32-x64') {
+    assertEqual(updaterKeyIdentity, prepare.receipt.updater.identity, 'Windows embedded updater public key');
+  }
   prepareArtifactId = integerString(prepareArtifactId, 'prepare artifact ID');
   nodeVersion = required(nodeVersion, 'Node version').replace(/^v/, '');
   pnpmVersion = required(pnpmVersion, 'pnpm version');
@@ -300,6 +313,7 @@ export function stageNativeCandidate({
       channel: prepare.receipt.channel,
       sourceSha: prepare.receipt.sourceSha,
       distribution: target === 'win32-x64' ? 'github' : metadata.desktop ? 'manual' : 'none',
+      updaterPublicKeyIdentity: updaterKeyIdentity,
     },
     smoke: { native: true, desktop: metadata.desktop ? desktopDir !== undefined : undefined },
     files,
@@ -340,6 +354,11 @@ function verifyCandidateReceipt({ receipt, candidateRoot, prepare, prepareArtifa
     receipt.guiEnvironment?.distribution,
     receipt.target.sea === 'win32-x64' ? 'github' : desktopTarget ? 'manual' : 'none',
     'GUI distribution',
+  );
+  assertEqual(
+    receipt.guiEnvironment?.updaterPublicKeyIdentity,
+    receipt.target.sea === 'win32-x64' ? prepare.receipt.updater.identity : undefined,
+    'Windows embedded updater public key',
   );
   assertEqual(receipt.smoke?.native, true, 'native smoke result');
   if (!Array.isArray(receipt.files) || receipt.files.length === 0) fail('Native release receipt has no files.');
@@ -579,8 +598,42 @@ export function verifyCandidateSet({
   return byTarget;
 }
 
+export function npmPublicationAction({ status, stdout, stderr, expectedIntegrity, packageName }) {
+  if (!Number.isSafeInteger(status) || status < 0) fail('npm query exit status is invalid.');
+  expectedIntegrity = required(expectedIntegrity, 'expected npm integrity');
+  packageName = required(packageName, 'npm package');
+  let response;
+  try {
+    response = JSON.parse(stdout);
+  } catch {
+    fail(`npm registry query returned invalid JSON for ${packageName} (exit ${status}): ${stderr || stdout}`);
+  }
+  if (status !== 0) {
+    if (response?.error?.code === 'E404') return 'publish';
+    fail(`npm registry query failed for ${packageName} (exit ${status}): ${stderr || stdout}`);
+  }
+  if (typeof response !== 'string' || response.trim() === '') {
+    fail(`npm registry query returned no valid integrity for ${packageName}.`);
+  }
+  if (response !== expectedIntegrity) fail(`Published npm package differs: ${packageName}`);
+  return 'reuse';
+}
+
+function exportUpdaterKey(path, receipt) {
+  if (path !== undefined) {
+    writeFileSync(resolve(path), `KIKI_UPDATER_PUBLIC_KEY=${receipt.updater.publicKey}\n`, { flag: 'a' });
+  }
+}
+
 function optionSpec() {
   return {
+    'updater-public-key': { type: 'string' },
+    'github-env': { type: 'string' },
+    'query-status': { type: 'string' },
+    'query-json': { type: 'string' },
+    'query-stderr': { type: 'string' },
+    'expected-integrity': { type: 'string' },
+    package: { type: 'string' },
     catalog: { type: 'string' },
     output: { type: 'string' },
     receipt: { type: 'string' },
@@ -649,6 +702,7 @@ export function runCli(argv = process.argv.slice(2), root = REPO_ROOT) {
       runId: values['run-id'],
       producerAttempt: values['producer-attempt'],
       pnpmVersion: values.pnpm ?? toolVersion(process.platform === 'win32' ? 'pnpm.cmd' : 'pnpm'),
+      updaterPublicKey: values['updater-public-key'],
     });
     process.stdout.write(`identity=${result.identity}\n`);
     return;
@@ -660,6 +714,7 @@ export function runCli(argv = process.argv.slice(2), root = REPO_ROOT) {
       catalogPath: resolve(required(values.catalog, '--catalog')),
       expected: commonExpected(values),
     });
+    exportUpdaterKey(values['github-env'], result.receipt);
     process.stdout.write(`identity=${result.identity}\n`);
     return;
   }
@@ -678,6 +733,7 @@ export function runCli(argv = process.argv.slice(2), root = REPO_ROOT) {
       rustVersion: values.rust ?? toolVersion('rustc', ['-vV']),
       signingMode: values.signing,
       desktopDir: values.desktop === undefined ? undefined : resolve(values.desktop),
+      updaterPublicKey: values['updater-public-key'],
     });
     return;
   }
@@ -728,6 +784,18 @@ export function runCli(argv = process.argv.slice(2), root = REPO_ROOT) {
       prepareArtifactId: values['prepare-artifact-id'],
       expected: commonExpected(values),
     });
+    exportUpdaterKey(values['github-env'], readJson(resolve(values.receipt), 'release input receipt'));
+    return;
+  }
+  if (command === 'npm-publication-action') {
+    const action = npmPublicationAction({
+      status: Number(required(values['query-status'], '--query-status')),
+      stdout: readFileSync(resolve(required(values['query-json'], '--query-json')), 'utf8'),
+      stderr: readFileSync(resolve(required(values['query-stderr'], '--query-stderr')), 'utf8'),
+      expectedIntegrity: values['expected-integrity'],
+      packageName: values.package,
+    });
+    process.stdout.write(`${action}\n`);
     return;
   }
   fail(`Unknown release receipt command: ${command ?? ''}.`);

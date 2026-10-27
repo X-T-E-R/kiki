@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
 import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
@@ -61,6 +62,9 @@ void test('desktop release freezes one catalog and keeps native to desktop order
   assert.match(native, /kiki-release-target-\$\{\{ github\.run_id \}\}-\$\{\{ matrix\.target \}\}-\$\{\{ github\.run_attempt \}\}/);
   assert.match(native, /if: inputs\.prepare-artifact-id == ''[\s\S]*name: \$\{\{ inputs\.upload-artifact-prefix \}\}-\$\{\{ matrix\.target \}\}/);
   assert.match(native, /if: inputs\.build-desktop && matrix\.desktop-name != ''/);
+  assert.doesNotMatch(native, /vars\.KIKI_UPDATER_PUBLIC_KEY/);
+  assert.match(native, /verify-prepare[\s\S]*?--github-env "\$GITHUB_ENV"/);
+  assert.match(native, /--updater-public-key "\$\{KIKI_EMBEDDED_UPDATER_PUBLIC_KEY:-\}"/);
   assert.doesNotMatch(release, /needs:[\s\S]{0,80}desktop-bundle/);
 
   const publish = release.slice(release.indexOf('  publish:'));
@@ -68,9 +72,17 @@ void test('desktop release freezes one catalog and keeps native to desktop order
   assert.match(publish, /gh api --paginate --slurp/);
   assert.doesNotMatch(publish, /update-catalog\.mjs/);
   assert.match(publish, /test -f "\$KIKI_BUILT_IN_CATALOG_FILE"/);
-  assert.match(publish, /Published npm package differs/);
+  assert.match(publish, /npm-publication-action/);
   assert.match(publish, /Existing release asset differs/);
   assert.match(publish, /refusing to mutate public assets/);
+  const verifyCandidates = publish.indexOf('verify-candidates');
+  const signatureStep = publish.indexOf('- name: Sign updater with production key');
+  const publishValidated = publish.indexOf('- name: Publish validated release');
+  assert.ok(verifyCandidates >= 0 && signatureStep >= 0 && publishValidated >= 0);
+  assert.ok(verifyCandidates < signatureStep && verifyCandidates < publishValidated);
+  assert.match(publish.slice(verifyCandidates, signatureStep), /--github-env "\$GITHUB_ENV"/);
+  const signature = publish.slice(signatureStep, publish.indexOf('- name: Create versioned release metadata', signatureStep));
+  assert.doesNotMatch(signature, /vars\.KIKI_UPDATER_PUBLIC_KEY/);
   const signatureVerify = publish.indexOf('verify-updater-signature.mjs');
   const manifest = publish.indexOf('desktop-release-manifest.mjs');
   assert.ok(signatureVerify >= 0 && signatureVerify < manifest);
@@ -491,4 +503,319 @@ esac
   assert.match(publicMissing.output, /Published release is missing asset; refusing to mutate public assets/);
   assert.deepEqual(publicMissing.downloads, []);
   assert.deepEqual(publicMissing.uploads, []);
+});
+
+function extractBashStep(workflow, stepName) {
+  const stepMarker = `      - name: ${stepName}`;
+  const stepStart = workflow.indexOf(stepMarker);
+  assert.ok(stepStart >= 0, `Missing workflow step: ${stepName}`);
+  const runMarker = '        run: |\n';
+  const runStart = workflow.indexOf(runMarker, stepStart);
+  const nextStep = workflow.indexOf('\n      - name:', runStart + runMarker.length);
+  assert.ok(runStart > stepStart, `Missing run body: ${stepName}`);
+  const end = nextStep >= 0 ? nextStep : workflow.length;
+  return workflow.slice(runStart + runMarker.length, end).split('\n')
+    .map((line) => line.startsWith('          ') ? line.slice(10) : line)
+    .join('\n');
+}
+
+function shellQuote(path) {
+  const normalized = path.replaceAll('\\', '/');
+  return `'${normalized.replaceAll("'", "'\\''")}'`;
+}
+
+function withAbsoluteReceiptSource(script) {
+  const source = join(root, 'apps/kimi-code/scripts/native/release-receipt.mjs');
+  const invocation = /node (?:\.\/)?apps\/kimi-code\/scripts\/native\/release-receipt\.mjs/g;
+  assert.ok(invocation.test(script), 'release step must invoke the receipt script');
+  return script.replace(invocation, `node ${shellQuote(source)}`);
+}
+
+function runProcess(command, args, options = {}) {
+  return new Promise((resolveProcess, rejectProcess) => {
+    const child = spawn(command, args, { ...options, stdio: ['ignore', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', rejectProcess);
+    child.once('close', (status, signal) => resolveProcess({ status, signal, stdout, stderr }));
+  });
+}
+
+function listen(server) {
+  return new Promise((resolveListen, rejectListen) => {
+    const onError = (error) => rejectListen(error);
+    server.once('error', onError);
+    server.listen(0, '127.0.0.1', () => {
+      server.off('error', onError);
+      resolveListen();
+    });
+  });
+}
+
+function closeServer(server) {
+  return new Promise((resolveClose, rejectClose) => {
+    if (!server.listening) {
+      resolveClose();
+      return;
+    }
+    server.close((error) => error === undefined ? resolveClose() : rejectClose(error));
+  });
+}
+
+void test('release artifact selection executes real gh pagination and aggregates one artifact response', async (t) => {
+  const workflow = await read('.github/workflows/kiki-desktop-release.yml');
+  const sourceScript = extractBashStep(workflow, 'Select one target artifact per platform');
+  const endpointPattern = /gh api --paginate --slurp\s+(['"])([^'"]+)\1/;
+  const endpointMatch = sourceScript.match(endpointPattern);
+  assert.ok(endpointMatch, 'target selection must use gh api --paginate --slurp');
+  assert.doesNotMatch(sourceScript, /gh api --paginate --slurp[^\n]*--jq/);
+
+  await mkdir(join(root, '.tmp'), { recursive: true });
+  const scratch = await mkdtemp(join(root, '.tmp/release-gh-pagination-test-'));
+  let server;
+  t.after(async () => {
+    if (server !== undefined) await closeServer(server);
+    await rm(scratch, { recursive: true, force: true });
+  });
+  const runnerTemp = join(scratch, 'runner-temp');
+  const ghConfig = join(scratch, 'gh-config');
+  const githubOutput = join(scratch, 'github-output');
+  await mkdir(runnerTemp, { recursive: true });
+  await mkdir(ghConfig, { recursive: true });
+  await writeFile(githubOutput, '');
+
+  const gh = process.platform === 'win32' ? 'gh.exe' : 'gh';
+  const ghVersionEnv = {
+    ...process.env,
+    GH_CONFIG_DIR: ghConfig,
+    GH_TOKEN: 'offline-fake-token',
+    GITHUB_TOKEN: 'offline-fake-token',
+    GH_PROMPT_DISABLED: '1',
+    NO_PROXY: '*',
+    no_proxy: '*',
+  };
+  for (const key of ['GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST', 'GH_REPO']) delete ghVersionEnv[key];
+  const ghVersion = await runProcess(gh, ['--version'], { cwd: scratch, env: ghVersionEnv });
+  assert.equal(ghVersion.status, 0, `${ghVersion.stdout}\n${ghVersion.stderr}`);
+  assert.match(ghVersion.stdout, /^gh version \d+\.\d+\.\d+/);
+
+  const runId = '4242';
+  const firstPage = [
+    { id: 101, name: `kiki-release-target-${runId}-linux-x64-2`, expired: false },
+    { id: 102, name: `kiki-release-target-${runId}-linux-arm64-2`, expired: false },
+    { id: 103, name: `kiki-release-target-${runId}-darwin-x64-2`, expired: false },
+    { id: 104, name: `kiki-release-target-${runId}-darwin-arm64-2`, expired: false },
+  ];
+  const secondPage = [
+    { id: 205, name: `kiki-release-target-${runId}-win32-x64-2`, expired: false },
+    { id: 206, name: `kiki-release-target-${runId}-win32-arm64-2`, expired: false },
+    { id: 307, name: `kiki-release-target-${runId}-linux-x64-3`, expired: false },
+  ];
+  const requests = [];
+  server = createServer((request, response) => {
+    requests.push(request.url ?? '');
+    const parsed = new URL(request.url ?? '/', `http://${request.headers.host ?? '127.0.0.1'}`);
+    const page = parsed.searchParams.get('page');
+    response.setHeader('content-type', 'application/json');
+    if (page === null || page === '1') {
+      const next = `http://127.0.0.1:${server.address().port}${parsed.pathname}?page=2`;
+      response.setHeader('link', `<${next}>; rel="next"`);
+      response.end(JSON.stringify({ artifacts: firstPage }));
+      return;
+    }
+    if (page === '2') {
+      response.end(JSON.stringify({ artifacts: secondPage }));
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: 'unexpected page' }));
+  });
+  await listen(server);
+  const port = server.address().port;
+  const endpoint = `http://127.0.0.1:${port}/repos/example/kiki/actions/runs/${runId}/artifacts?per_page=100`;
+  const endpointScript = sourceScript.replace(endpointMatch[0], endpointMatch[0].replace(endpointMatch[2], endpoint));
+  const script = withAbsoluteReceiptSource(endpointScript);
+  const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' : 'bash';
+  const ghEnv = {
+    ...process.env,
+    GH_CONFIG_DIR: ghConfig,
+    GH_TOKEN: 'offline-fake-token',
+    GITHUB_TOKEN: 'offline-fake-token',
+    GH_PROMPT_DISABLED: '1',
+    NO_PROXY: '*',
+    no_proxy: '*',
+    RUNNER_TEMP: runnerTemp,
+    GITHUB_OUTPUT: githubOutput,
+    GITHUB_REPOSITORY: 'example/kiki',
+    GITHUB_RUN_ID: runId,
+    GITHUB_RUN_ATTEMPT: '3',
+  };
+  for (const key of ['GH_ENTERPRISE_TOKEN', 'GITHUB_ENTERPRISE_TOKEN', 'GH_HOST', 'GH_REPO']) delete ghEnv[key];
+  const result = await runProcess(bash, ['-c', script], { cwd: scratch, env: ghEnv });
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+  assert.equal(requests.length, 2, `expected two paginated requests, got ${JSON.stringify(requests)}`);
+  assert.match(requests[0], /per_page=100/);
+  assert.match(requests[1], /page=2/);
+
+  const api = JSON.parse(await readFile(join(runnerTemp, 'target-artifacts.json'), 'utf8'));
+  assert.deepEqual(Object.keys(api), ['artifacts']);
+  assert.deepEqual(api, { artifacts: [...firstPage, ...secondPage] });
+  assert.equal(
+    await readFile(githubOutput, 'utf8'),
+    'artifact-ids=307,102,103,104,205,206\n',
+  );
+});
+
+void test('publish npm step preserves query results and delegates publication decisions offline', async (t) => {
+  const workflow = await read('.github/workflows/kiki-desktop-release.yml');
+  const sourceScript = extractBashStep(workflow, 'Publish npm CLI/TUI and desktop distributions');
+  assert.match(sourceScript, /npm-publication-action/);
+  for (const option of ['--query-json', '--query-stderr', '--query-status', '--expected-integrity', '--package']) {
+    assert.ok(sourceScript.includes(option), `Missing ${option} in npm publication action`);
+  }
+  const script = withAbsoluteReceiptSource(sourceScript);
+  await mkdir(join(root, '.tmp'), { recursive: true });
+  const scratch = await mkdtemp(join(root, '.tmp/release-npm-publication-test-'));
+  t.after(() => rm(scratch, { recursive: true, force: true }));
+  const fakeBin = join(scratch, 'fake-bin');
+  const npmRoot = join(scratch, 'apps/kimi-code/dist-npm');
+  await mkdir(fakeBin, { recursive: true });
+  for (const [kind, name] of [['lite', 'kiki-agent-lite'], ['full', 'kiki-agent']]) {
+    const packageRoot = join(npmRoot, kind);
+    await mkdir(packageRoot, { recursive: true });
+    await writeFile(join(packageRoot, 'package.json'), JSON.stringify({ name, version: '1.2.3' }));
+  }
+  const fakeNpm = join(fakeBin, 'npm');
+  await writeFile(fakeNpm, String.raw`#!/usr/bin/env bash
+set -euo pipefail
+case "$1" in
+  pack)
+    case "$2" in
+      */lite|*\\lite) printf '[{"integrity":"%s"}]\n' "$FAKE_NPM_PACK_LITE" ;;
+      */full|*\\full) printf '[{"integrity":"%s"}]\n' "$FAKE_NPM_PACK_FULL" ;;
+      *) echo "unexpected npm pack path: $2" >&2; exit 2 ;;
+    esac
+    ;;
+  view)
+    case "$2" in
+      kiki-agent-lite@*) status="$FAKE_NPM_VIEW_LITE_STATUS"; stdout="$FAKE_NPM_VIEW_LITE_STDOUT"; stderr="$FAKE_NPM_VIEW_LITE_STDERR" ;;
+      kiki-agent@*) status="$FAKE_NPM_VIEW_FULL_STATUS"; stdout="$FAKE_NPM_VIEW_FULL_STDOUT"; stderr="$FAKE_NPM_VIEW_FULL_STDERR" ;;
+      *) echo "unexpected npm view package: $2" >&2; exit 2 ;;
+    esac
+    printf '%s\n' "$stdout"
+    if [[ -n "$stderr" ]]; then printf '%s\n' "$stderr" >&2; fi
+    exit "$status"
+    ;;
+  publish)
+    printf '%s\n' "$2" >> "$FAKE_NPM_PUBLISH_MARKER"
+    ;;
+  *)
+    echo "unexpected npm command: $*" >&2
+    exit 2
+    ;;
+esac
+`);
+  await chmod(fakeNpm, 0o755);
+
+  const bash = process.platform === 'win32' ? 'C:\\Program Files\\Git\\usr\\bin\\bash.exe' : 'bash';
+  const harness = `export PATH="$PWD/fake-bin:$PATH"\n${script}\n`;
+  const litePackage = 'apps/kimi-code/dist-npm/lite';
+  const fullPackage = 'apps/kimi-code/dist-npm/full';
+  const liteIntegrity = 'sha512-lite-integrity';
+  const fullIntegrity = 'sha512-full-integrity';
+  const execute = async ({ label, lite, full }) => {
+    const runnerTemp = join(scratch, `runner-temp-${label}`);
+    const marker = join(scratch, `publish-${label}.marker`);
+    await mkdir(runnerTemp, { recursive: true });
+    await writeFile(marker, '');
+    const result = await runProcess(bash, ['-c', harness], {
+      cwd: scratch,
+      env: {
+        ...process.env,
+        NODE_AUTH_TOKEN: 'offline-npm-token',
+        KIKI_VERSION: '1.2.3',
+        RUNNER_TEMP: runnerTemp,
+        FAKE_NPM_PACK_LITE: liteIntegrity,
+        FAKE_NPM_PACK_FULL: fullIntegrity,
+        FAKE_NPM_VIEW_LITE_STATUS: String(lite.status),
+        FAKE_NPM_VIEW_LITE_STDOUT: lite.stdout,
+        FAKE_NPM_VIEW_LITE_STDERR: lite.stderr,
+        FAKE_NPM_VIEW_FULL_STATUS: String(full.status),
+        FAKE_NPM_VIEW_FULL_STDOUT: full.stdout,
+        FAKE_NPM_VIEW_FULL_STDERR: full.stderr,
+        FAKE_NPM_PUBLISH_MARKER: marker,
+      },
+    });
+    const contents = await readFile(marker, 'utf8');
+    return {
+      result,
+      published: contents.trim() === '' ? [] : contents.trim().split(/\r?\n/),
+      output: `${result.stdout}\n${result.stderr}`,
+    };
+  };
+
+  const firstPublish = await execute({
+    label: 'first-publish',
+    lite: { status: 1, stdout: '{"error":{"code":"E404","summary":"Not found"}}', stderr: '' },
+    full: { status: 1, stdout: '{"error":{"code":"E404","summary":"Not found"}}', stderr: '' },
+  });
+  assert.equal(firstPublish.result.status, 0, firstPublish.output);
+  assert.deepEqual(firstPublish.published, [litePackage, fullPackage]);
+
+  const same = await execute({
+    label: 'same-reuse',
+    lite: { status: 0, stdout: JSON.stringify(liteIntegrity), stderr: '' },
+    full: { status: 0, stdout: JSON.stringify(fullIntegrity), stderr: '' },
+  });
+  assert.equal(same.result.status, 0, same.output);
+  assert.deepEqual(same.published, []);
+
+  const emptyResponse = await execute({
+    label: 'empty-response-reject',
+    lite: { status: 0, stdout: '{}', stderr: '' },
+    full: { status: 0, stdout: JSON.stringify(fullIntegrity), stderr: '' },
+  });
+  assert.notEqual(emptyResponse.result.status, 0, emptyResponse.output);
+  assert.deepEqual(emptyResponse.published, []);
+  assert.match(emptyResponse.output, /valid integrity/);
+
+  const different = await execute({
+    label: 'different-reject',
+    lite: { status: 0, stdout: JSON.stringify('sha512-different'), stderr: '' },
+    full: { status: 0, stdout: JSON.stringify(fullIntegrity), stderr: '' },
+  });
+  assert.notEqual(different.result.status, 0, different.output);
+  assert.deepEqual(different.published, []);
+  assert.match(different.output, /Published npm package differs: kiki-agent-lite/);
+
+  const unauthorized = await execute({
+    label: 'e401-reject',
+    lite: { status: 1, stdout: '{"error":{"code":"E401","summary":"Unauthorized"}}', stderr: 'E401 credentials invalid' },
+    full: { status: 1, stdout: '{"error":{"code":"E401","summary":"Unauthorized"}}', stderr: 'E401 credentials invalid' },
+  });
+  assert.notEqual(unauthorized.result.status, 0, unauthorized.output);
+  assert.deepEqual(unauthorized.published, []);
+  assert.match(unauthorized.output, /E401 credentials invalid/);
+
+  const network = await execute({
+    label: 'network-reject',
+    lite: { status: 1, stdout: '{"error":{"code":"EAI_AGAIN","summary":"Temporary failure"}}', stderr: 'registry network unavailable' },
+    full: { status: 1, stdout: '{"error":{"code":"EAI_AGAIN","summary":"Temporary failure"}}', stderr: 'registry network unavailable' },
+  });
+  assert.notEqual(network.result.status, 0, network.output);
+  assert.deepEqual(network.published, []);
+  assert.match(network.output, /registry network unavailable/);
+
+  const invalidResponse = await execute({
+    label: 'invalid-response-reject',
+    lite: { status: 1, stdout: 'not-json', stderr: 'registry response was not JSON' },
+    full: { status: 1, stdout: JSON.stringify(fullIntegrity), stderr: '' },
+  });
+  assert.notEqual(invalidResponse.result.status, 0, invalidResponse.output);
+  assert.deepEqual(invalidResponse.published, []);
+  assert.match(invalidResponse.output, /registry response was not JSON/);
 });

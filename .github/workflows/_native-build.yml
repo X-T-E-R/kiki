@@ -194,7 +194,8 @@ jobs:
             --version '${{ inputs.release-version }}' \
             --channel '${{ inputs.release-channel }}' \
             --run-id "$GITHUB_RUN_ID" \
-            --prepare-attempt '${{ inputs.prepare-run-attempt }}'
+            --prepare-attempt '${{ inputs.prepare-run-attempt }}' \
+            --github-env "$GITHUB_ENV"
           {
             echo "KIKI_BUILT_IN_CATALOG_FILE=$input/built-in-catalog.json"
             echo "KIKI_RELEASE_INPUT_RECEIPT=$input/release-input.json"
@@ -275,7 +276,8 @@ jobs:
             --target '${{ matrix.target }}' \
             --rust-target '${{ matrix.rust-target }}' \
             --rust "$(rustc --version)" \
-            --signing unsigned
+            --signing unsigned \
+            --updater-public-key "$KIKI_UPDATER_PUBLIC_KEY"
           {
             echo "KIKI_SIDECAR_SOURCE=$GITHUB_WORKSPACE/apps/kimi-code/dist-native/bin/${{ matrix.target }}/kiki${{ matrix.extension }}"
             echo 'KIKI_SIDECAR_RELEASE_MODE=verified-prebuilt'
@@ -310,7 +312,6 @@ jobs:
         if: inputs.build-desktop && matrix.desktop-name != ''
         env:
           KIKI_BUILD_SHA: ${{ inputs.release-source-sha }}
-          KIKI_UPDATER_PUBLIC_KEY: ${{ vars.KIKI_UPDATER_PUBLIC_KEY }}
           KIKI_TAURI_CONFIG_PATH: ${{ runner.temp }}/kiki-tauri-release-config.json
           KIKI_RUST_TARGET: ${{ matrix.rust-target }}
           KIKI_BUNDLES: ${{ matrix.bundles }}
@@ -341,6 +342,9 @@ jobs:
             fs.writeFileSync(process.env.KIKI_TAURI_CONFIG_PATH, JSON.stringify(config));
           '
           pnpm --filter @kiki/gui exec tauri build --ci --target "$KIKI_RUST_TARGET" --bundles "$KIKI_BUNDLES" --config "$KIKI_TAURI_CONFIG_PATH"
+          if [ "$RUNNER_OS" = 'Windows' ]; then
+            echo "KIKI_EMBEDDED_UPDATER_PUBLIC_KEY=$KIKI_UPDATER_PUBLIC_KEY" >> "$GITHUB_ENV"
+          fi
 
           bundle_dir="apps/kiki-gui/src-tauri/target/$KIKI_RUST_TARGET/release/bundle"
           stage="$RUNNER_TEMP/kiki-release-candidate"
@@ -410,7 +414,8 @@ jobs:
             --target '${{ matrix.target }}' \
             --rust-target '${{ matrix.rust-target }}' \
             --rust "$(rustc --version)" \
-            --signing unsigned
+            --signing unsigned \
+            --updater-public-key "${KIKI_EMBEDDED_UPDATER_PUBLIC_KEY:-}"
 
       - name: Upload immutable target candidate
         if: inputs.prepare-artifact-id != ''

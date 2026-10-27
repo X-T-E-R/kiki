@@ -36,6 +36,7 @@ function parsePublicKey(value) {
     fail('Updater public key packet is unsupported.');
   }
   return {
+    identity: createHash('sha256').update(packet).digest('hex'),
     keyId: packet.subarray(2, 10),
     key: createPublicKey({
       key: Buffer.concat([ED25519_SPKI_PREFIX, packet.subarray(10)]),
@@ -59,6 +60,10 @@ function parseSignature(value) {
     trustedComment: lines[2].slice('trusted comment: '.length),
     globalSignature,
   };
+}
+
+export function updaterPublicKeyIdentity(publicKey) {
+  return parsePublicKey(publicKey).identity;
 }
 
 export function verifyUpdaterSignature({ installerPath, signaturePath, publicKey }) {

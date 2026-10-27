@@ -17,7 +17,7 @@ The `kiki-v*` release workflow targets the public repository `X-T-E-R/kiki`. It 
 6. In **Settings → Pages**, select **GitHub Actions** as the deployment source.
 7. Set repository secret `NPM_TOKEN` with publish access to `kiki-agent-lite` and `kiki-agent` on the public npm registry. The local npm registry may be a mirror, but the workflow explicitly publishes to `https://registry.npmjs.org/`. Do not copy npm credentials into the repository.
 
-The pull-request CI generates an ephemeral updater key and never reads the production private key. The Windows release build embeds `KIKI_UPDATER_PUBLIC_KEY`; the `publish` job reads the production private key to sign only the NSIS installer. Before the validated GitHub Release is published, the same job runs a pack-and-install smoke test; after publication it publishes both npm packages.
+The pull-request CI generates an ephemeral updater key and never reads the production private key. The release prepare job freezes `KIKI_UPDATER_PUBLIC_KEY` and its minisign key-packet identity in the input receipt. The Windows build embeds that frozen key and records its identity in the target receipt; the publish job verifies that identity and uses the same frozen key to check signatures. It reads the production private key only when a new NSIS installer signature is needed. Before the validated GitHub Release is published, the same job runs a pack-and-install smoke test; after publication it publishes both npm packages.
 
 ## Publish a version
 
@@ -51,9 +51,11 @@ Use `-beta.<number>` only for beta tags. Publish two beta versions and verify a 
 
 Use **Re-run failed jobs** on the original Actions run to retain its successful targets and frozen input artifact. Target artifacts are named `kiki-release-target-<run>-<target>-<attempt>`; the publish job selects the latest successful artifact ID for each target within that run. All six receipts must match the original prepare identity, source, catalog, lockfile and release environment. If the input or target artifacts have expired, recovery stops; do not substitute artifacts from another run.
 
-For an existing draft Release, identical assets are reused and missing assets can be uploaded. Different bytes under an existing name stop publication. For an already public Release, missing assets or signatures also stop recovery rather than changing public contents. Both reused and newly generated Windows updater signatures are verified against the exact installer bytes and `KIKI_UPDATER_PUBLIC_KEY`, including the minisign trusted comment. A valid reused signature does not require the private signing key again.
+For an existing draft Release, identical assets are reused and missing assets can be uploaded. Different bytes under an existing name stop publication. For an already public Release, missing assets or signatures also stop recovery rather than changing public contents.
 
-If npm publication was interrupted, rerun the failed publish job. An existing version is accepted only when its registry integrity matches the locally staged package; different integrity stops the run. Release publication still precedes npm publication.
+Both reused and newly generated Windows updater signatures are verified against the exact installer bytes and the frozen input key, including the minisign trusted comment. Changing the repository public-key variable does not change a resumed run's key. A signature from a different private key stops the run before publication; restore the matching signing key to resume. A valid reused signature does not require the private signing key again.
+
+If npm publication was interrupted, rerun the failed publish job. A registry `E404` publishes the missing version. An existing version is accepted only when its registry integrity matches the locally staged package; different integrity stops the run. Other registry query errors stop the run with their error details; fix registry access or connectivity before retrying. Release publication still precedes npm publication.
 
 Standalone calls to `_native-build.yml` keep their original per-target build behavior when no prepare artifact is supplied. Local default and explicit `KIKI_SIDECAR_SOURCE` paths retain their existing staging contract. Release-only byte reuse requires explicit `KIKI_SIDECAR_RELEASE_MODE=verified-prebuilt` plus matching native/input receipts and catalog; setting a source path alone does not enable it.
 
