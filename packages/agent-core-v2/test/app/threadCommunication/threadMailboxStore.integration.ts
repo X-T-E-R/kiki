@@ -34,7 +34,9 @@ import type {
   AcceptedThreadMessage,
   ThreadDeliveryClaim,
   ThreadMailboxMutationOptions,
+  ThreadMessageProducer,
 } from '#/app/threadCommunication/threadMailboxStore';
+import { threadMessageIdempotencyKey } from '#/app/threadCommunication/threadMessageIdentity';
 import { HostFileSystem } from '#/os/backends/node-local/hostFsService';
 
 const source: ThreadRef = { hostId: 'host-a', workspaceId: 'workspace-a', sessionId: 'source' };
@@ -154,9 +156,10 @@ async function openMailboxDb(homeDir: string, incompleteHistory = false): Promis
   } catch (error) { await db.close(); throw error; }
 }
 
-async function seedLegacyMailbox(homeDir: string): Promise<AcceptedThreadMessage> {
+async function seedLegacyMailbox(homeDir: string, producer: ThreadMessageProducer): Promise<AcceptedThreadMessage> {
   const message: AcceptedThreadMessage = {
     ...acceptInput('legacy'),
+    producer,
     messageId: 'legacy-message',
     acceptedAt: 1,
     targetSeq: 1,
@@ -1372,8 +1375,34 @@ describe('runtime thread mailbox', () => {
     await expect(reopened.store.acceptMessage(acceptInput('locked'))).resolves.toMatchObject({ deduplicated: false });
   });
 
-  it('resumes explicit legacy migration without duplicating messages, history or activity', async () => {
-    const accepted = await seedLegacyMailbox(homeDir);
+  it('keeps the existing runtime idempotency keys for every producer kind', () => {
+    const producers: ThreadMessageProducer[] = [
+      { kind: 'external_client' },
+      { kind: 'peer_thread', source, sender: { sessionId: 'source', personaId: 'example-persona', name: 'Example' }, allowWhenDisabled: false },
+      { kind: 'room', roomId: 'example-room', targeted: true, queueWhenBusy: false, requireCommunication: true, generation: 2,
+        sender: { sessionId: 'source', personaId: 'example-persona', name: 'Example' } },
+      { kind: 'bridged_peer', source, sourceHomeId: 'source-home', targetHomeId: 'target-home', bridgeId: 'example-bridge',
+        revision: 1, location: 'local', createdAt: 1, expiresAt: 2, sourceSeq: 3, causeId: 'example-cause', hop: 0 },
+    ];
+    const partition = mailboxPartition(target);
+    for (const producer of producers) {
+      const storedProducer = producer.kind === 'bridged_peer' ? { kind: producer.kind, bridgeId: producer.bridgeId,
+        sourceHomeId: producer.sourceHomeId, source: producer.source } : producer;
+      const digest = createHash('sha256').update(JSON.stringify({ producer: storedProducer, target, key: 'existing-key' })).digest('base64url');
+      expect(threadMessageIdempotencyKey(partition, { producer, target, idempotencyKey: 'existing-key' })).toBe(`${partition}/idempotency/${digest}`);
+    }
+  });
+
+  it.each([
+    { label: 'peer defaults', producer: { kind: 'peer_thread', source } },
+    { label: 'peer metadata', producer: { allowWhenDisabled: true,
+      sender: { name: 'Example sender', sessionId: source.sessionId },
+      source: { sessionId: source.sessionId, workspaceId: source.workspaceId, hostId: source.hostId }, kind: 'peer_thread' } },
+    { label: 'room metadata', producer: { sender: { name: 'Example sender', sessionId: source.sessionId },
+      generation: 1, requireCommunication: true, queueWhenBusy: true, targeted: true, roomId: 'example-room', kind: 'room' } },
+  ] satisfies readonly { label: string; producer: ThreadMessageProducer }[])(
+    'resumes explicit legacy migration without duplicating messages, history or activity ($label)', async ({ producer }) => {
+    const accepted = await seedLegacyMailbox(homeDir, producer);
     const migration = createMailboxMigrationService(homeDir);
     const controller = new AbortController();
     try {
@@ -1386,16 +1415,18 @@ describe('runtime thread mailbox', () => {
       const resumed = await migration.migrate();
       expect(resumed).toMatchObject({ state: 'complete', authority: 'sqlite', migrationId: stopped.migrationId });
       const db = await openMailboxDb(homeDir);
-      try { expect(await db.partitionPrefix(mailboxPartition(target), `${mailboxPartition(target)}/peer/`)).toHaveLength(5); }
+      try { expect(await db.partitionPrefix(mailboxPartition(target), `${mailboxPartition(target)}/peer/`)).toHaveLength(producer.kind === 'room' ? 3 : 5); }
       finally { await db.close(); }
     } finally { await migration.close(); }
 
     const reopened = harness(homeDir);
     open.push(reopened);
-    const migrated = await reopened.store.acceptMessage(acceptInput('legacy'));
-    expect(migrated).toMatchObject({
-      deduplicated: true,
-      message: { messageId: accepted.messageId },
+    const input = { ...acceptInput('legacy'), producer };
+    const migrated = await reopened.store.acceptMessage(input);
+    expect(migrated).toMatchObject({ deduplicated: true, payloadConflict: false, message: accepted });
+    expect(await reopened.store.acceptMessage(input)).toEqual(migrated);
+    expect(await reopened.store.acceptMessage({ ...input, content: 'changed payload' })).toMatchObject({
+      deduplicated: true, payloadConflict: true, message: accepted,
     });
     const claim = await reopened.store.claimNext({ target, consumerId: 'consumer', leaseMs: 10_000 });
     expect(claim?.message.messageId).toBe(accepted.messageId);

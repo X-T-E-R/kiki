@@ -3,6 +3,7 @@ import { isDeepStrictEqual } from 'node:util';
 
 import type { MailboxRow, MailboxWrite } from '#/persistence/backends/sqliteMailbox/protocol';
 import type { ThreadRef } from './threadCommunication';
+import { threadMessageIdempotencyKey as idempotencyKey } from './threadMessageIdentity';
 import type { AcceptedThreadMessage, ThreadMessageProducer } from './threadMailboxStore';
 
 type Document = Record<string, unknown>;
@@ -146,7 +147,6 @@ function hash(value: unknown): string { return createHash('sha256').update(JSON.
 function partitionFor(target: ThreadRef): string { return `t/${hash({ hostId: target.hostId, workspaceId: target.workspaceId, sessionId: target.sessionId })}`; }
 function messageKey(partition: string, seq: number): string { return `${partition}/message/${seq.toString().padStart(16, '0')}`; }
 function activityKey(partition: string, seq: number): string { return `${partition}/activity/${seq.toString().padStart(16, '0')}`; }
-function idempotencyKey(partition: string, input: { producer: ThreadMessageProducer; target: ThreadRef; idempotencyKey: string }): string { return `${partition}/idempotency/${hash({ producer: input.producer, target: input.target, key: input.idempotencyKey })}`; }
 function record(value: unknown): Document | undefined { return value !== null && typeof value === 'object' && !Array.isArray(value) ? value as Document : undefined; }
 function supersededActivityEpoch(meta: Document, epoch: unknown): boolean {
   const current = meta['activityEpoch'];

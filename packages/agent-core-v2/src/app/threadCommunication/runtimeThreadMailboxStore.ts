@@ -17,6 +17,7 @@ import {
   ThreadMailboxBacklogError,
 } from './mailboxErrors';
 import { THREAD_DELIVERY_REASON_CODES, type ThreadActivityKind, type ThreadDeliveryReasonCode, type ThreadRef } from './threadCommunication';
+import { threadMessageIdempotencyKey } from './threadMessageIdentity';
 import {
   IThreadMailboxStore,
   type AcceptedThreadMessage,
@@ -1405,7 +1406,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     if (receipt !== undefined) {
       return { result: receipt.result as ThreadMessageAcceptance, ops: [] };
     }
-    const idemKey = idempotencyKey(partition, input);
+    const idemKey = threadMessageIdempotencyKey(partition, input);
     const prior = asIdempotency(await read(idemKey));
     if (prior !== undefined) {
       assertThreadIdentity(prior.target, input.target, idemKey);
@@ -1646,16 +1647,6 @@ function targetActivityKey(partition: string, seq: number): string {
 
 function workspaceOverrideKey(partition: string): string {
   return `${partition}/override`;
-}
-
-function idempotencyKey(partition: string, input: {
-  readonly producer: ThreadMessageProducer;
-  readonly target: ThreadRef;
-  readonly idempotencyKey: string;
-}): string {
-  const producer = input.producer.kind === 'bridged_peer' ? { kind: input.producer.kind,
-    bridgeId: input.producer.bridgeId, sourceHomeId: input.producer.sourceHomeId, source: input.producer.source } : input.producer;
-  return `${partition}/idempotency/${hashJson({ producer, target: input.target, key: input.idempotencyKey })}`;
 }
 
 function requestReceiptKey(partition: string, method: RuntimeMethodName, ctx: RuntimeMethodContext): string {
