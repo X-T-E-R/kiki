@@ -748,7 +748,7 @@ export class UsageAggregationService {
         }
         const sourceIds = new Set((session.sources ?? []).map((source) => source.agentId));
         session.prepared = opened && listedAgents.every((agentId) => sourceIds.has(agentId)) && (session.sources ?? []).every((source) => source.done || source.cursor !== undefined);
-        await fold.saveHead(head);
+        await fold.saveHead(head, session);
         if (!session.prepared) {
           budget.incompleteReason ??= 'record_budget';
           break;
@@ -1127,7 +1127,8 @@ export class UsageAggregationService {
         const scope = agentScopeOf(sessionScope, agentId);
         const [size, mtimeMs] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
         if (mtimeExcludesRange(mtimeMs ?? 0, options.rangeStart)) {
-          sources.set(agentId, { size, mtimeMs: mtimeMs ?? 0, generation: 'legacy', stable: true, excluded: true });
+          const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
+          sources.set(agentId, { size, mtimeMs: mtimeMs ?? 0, generation, stable: true, excluded: true });
           return;
         }
         const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
@@ -1157,8 +1158,7 @@ export class UsageAggregationService {
         if (existing?.valid && existing.offset === existing.size && existing.size === size && existing.mtimeMs === mtimeMs) {
           agents[agentId] = { ...existing, generation: existing.generation ?? generation };
         } else {
-          const coveredGeneration = await logs.generation(wireScope, AGENT_WIRE_RECORD_KEY);
-          agents[agentId] = { generation: coveredGeneration, offset: size, size, mtimeMs, boundaryHash: '', valid: true };
+          agents[agentId] = { generation, offset: size, size, mtimeMs, boundaryHash: '', valid: true };
         }
         continue;
       }

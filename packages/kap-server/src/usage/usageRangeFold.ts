@@ -78,7 +78,7 @@ export interface RangeFoldHead {
 interface FoldRevision { readonly epoch: string; readonly revision: number }
 interface StoredHead { readonly layout: 2; readonly value: unknown; readonly sessions?: readonly string[] }
 interface StoredSession { readonly value: Omit<RangeFoldSession, 'sources'>; readonly hasSources: boolean }
-interface FoldProgress { readonly session: RangeFoldSession; readonly source: RangeFoldSource }
+interface FoldProgress { readonly session: RangeFoldSession; readonly source?: RangeFoldSource }
 const REVISION = 'head:revision';
 
 export class UsageRangeFoldChangedError extends UsageFactCursorChangedError {}
@@ -127,11 +127,11 @@ export class UsageRangeFold {
     return { ...(root.value as object), sessions } as T;
   }
 
-  async saveHead(head: unknown): Promise<void> {
+  async saveHead(head: unknown, session?: RangeFoldSession): Promise<void> {
     if (this.query.batchIf === undefined) return this.query.put(this.collection, 'head', head);
     await this.initialize();
-    const rows = this.headRows(head);
-    await this.commit([], rows, true, this.revision);
+    const rows = this.headRows(head, session === undefined ? undefined : { session });
+    await this.commit([], rows, session === undefined, this.revision);
   }
 
   async reset(): Promise<void> {
@@ -159,7 +159,7 @@ export class UsageRangeFold {
       const key = sessionRowKey(session);
       const { sources, ...value } = session;
       rows.set(key, { value, hasSources: sources !== undefined });
-      if (progress === undefined) {
+      if (progress?.source === undefined) {
         if (sources !== undefined) rows.set(`${key}:sources`, sources.map(sourceRowKey));
         for (const source of sources ?? []) rows.set(sourceRowKey(source), source);
       } else rows.set(sourceRowKey(progress.source), progress.source);
@@ -178,9 +178,8 @@ export class UsageRangeFold {
     ops.push({ kind: 'put', collection: this.collection, key: REVISION, value: revision });
     if (!await this.query.batchIf!([{ collection: this.collection, key: REVISION, value: expected }], ops)) this.conflict();
     this.revision = revision;
-    if (replace) this.persisted.clear();
+    if (replace) for (const key of this.persisted.keys()) if (!rows.has(key)) this.persisted.delete(key);
     for (const [key, value] of changes) this.persisted.set(key, value);
-    if (replace) for (const [key, value] of rows) if (!this.persisted.has(key)) this.persisted.set(key, JSON.stringify(value));
   }
 
   private conflict(): never {

@@ -2722,6 +2722,30 @@ describe('shared agent and history usage projection', () => {
 
 
 describe('SQLite UsageRangeFold publication', () => {
+  it('publishes one prepared session without encoding other sources and preserves the full-head cache', async () => {
+    const saved = await openRange([], {}, true);
+    const checkpoint = { generation: 'example', offset: 1, size: 1, mtimeMs: 1, boundaryHash: '', valid: true };
+    const sessions = [1000, 1].map((count, index) => ({ summary: summary(`session-${index}`, 'workspace'), prepared: false, invalid: false, sources: Array.from({ length: count }, (_, i) => ({ agentId: `agent-${i}`, scope: `sessions/workspace/session-${index}/agents/agent-${i}`, checkpoint, done: true })) }));
+    const head: RangeFoldHead = { version: 1, journalReplayVersion: 3, fingerprint: 'scoped-session', sessions, complete: false, inventoryComplete: true, invalidated: false };
+    const fold = new UsageRangeFold(saved.store, 'scoped-session', 100, 100);
+    await fold.saveHead(head);
+    const revision = await saved.store.get('scoped-session', 'head:revision');
+    sessions[1]!.prepared = true;
+    const stringify = vi.spyOn(JSON, 'stringify'), commits = vi.spyOn(saved.store, 'batchIf');
+    try {
+      await fold.saveHead(head, sessions[1]);
+      expect(stringify.mock.calls.filter(([value]) => value === sessions[0]!.sources[0])).toHaveLength(0);
+      expect(commits.mock.calls[0]?.[0]).toEqual([{ collection: 'scoped-session', key: 'head:revision', value: revision }]);
+      expect(commits.mock.calls[0]?.[1]).toHaveLength(2);
+      expect(await new UsageRangeFold(saved.store, 'scoped-session', 100, 100).head()).toEqual(head);
+      stringify.mockClear();
+      head.complete = true;
+      await fold.saveHead(head);
+      expect(stringify.mock.calls.filter(([value]) => value === sessions[0]!.sources[0])).toHaveLength(1);
+      expect(await new UsageRangeFold(saved.store, 'scoped-session', 100, 100).head()).toEqual(head);
+    } finally { stringify.mockRestore(); commits.mockRestore(); }
+  });
+
   it('reopens a dead SQLite worker on a real Usage history request without a manual recovery call', async () => {
     const wireScope = scope('workspace', 'session');
     const saved = await openRange([summary('session', 'workspace')], { [wireScope]: [usageRecord(1, 1), usageRecord(2, 2)] }, true);
