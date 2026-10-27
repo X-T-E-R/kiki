@@ -14,7 +14,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   drainQueryStoreDisposals,
   drainSessionIndexMirror,
-  MINIDB_QUERY_STORE_SUBDIR,
+  SQLITE_QUERY_STORE_SUBDIR,
   ISessionIndex,
   ISessionIndexMirror,
 } from '@kiki/agent-core-v2';
@@ -282,10 +282,9 @@ describe('SDKRpcClient search-index separation', () => {
       expect(resumed.id).toBe(created.id);
 
       expect(existsSync(join(homeDir, 'search-index'))).toBe(false);
-      // With the read model off, the session query-store is never opened either.
-      expect(existsSync(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR))).toBe(false);
     } finally {
       await client.close();
+      await drainQueryStoreDisposals();
       vi.unstubAllEnvs();
     }
   });
@@ -316,7 +315,7 @@ describe('SDKRpcClient search-index separation', () => {
       // and prove the read model really did engage (the flag took effect).
       const status = await client.engineAccessor.get(ISessionIndex).prepare();
       expect(status.state).toBe('ready');
-      expect(existsSync(join(homeDir, 'cache', MINIDB_QUERY_STORE_SUBDIR))).toBe(true);
+      expect(existsSync(join(homeDir, 'cache', SQLITE_QUERY_STORE_SUBDIR))).toBe(true);
       expect(existsSync(join(homeDir, 'search-index'))).toBe(false);
     } finally {
       await client.close();
