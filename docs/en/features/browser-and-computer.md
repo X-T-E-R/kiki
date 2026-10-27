@@ -21,7 +21,7 @@ You can connect the kind of browser that fits the job:
 
 ### Browser permissions
 
-Each source and each listed browser has its own enable switch and **Allow agent use** checkbox. An agent can use only the browsers you check, and clearing a checkbox revokes that access immediately. You can allow several browsers at once and pick one in **Default connection** for new sessions, or choose **Choose each time** so each call names its browser explicitly.
+Each browser source has an enable switch for that integration method (turning a source off stops discovery, connection, and tool calls for it while preserving your checked browsers), and each browser in the connection list has an **Allow agent use** checkbox. An agent can use only the browsers you check, and clearing a checkbox revokes that access immediately. You can allow several browsers at once and pick one in **Default connection** at the top of the list for new sessions, or choose **Choose each time** so each call names its browser explicitly.
 
 See [Settings pages: Browser control](/en/guides/settings#browser-control) for route setup and readiness checks, and [Built-in Tools: Browser Tools](/en/reference/tools#browser-tools) for tool parameters.
 
