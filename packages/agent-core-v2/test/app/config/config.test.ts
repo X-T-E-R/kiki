@@ -17,8 +17,8 @@ import {
   toErrorPayload,
 } from '#/errors';
 import { WIRE_PROTOCOL_VERSION } from '#/wire/migration/migration';
-import { createTestAgent, permissionModeServices, type TestAgentContext } from '../../harness';
-import { DEFAULT_TEST_SYSTEM_PROMPT } from '../../harness/snapshots';
+import { createTestAgent, permissionModeServices, type EventSnapshotEntry, type TestAgentContext } from '../../harness';
+import { createEventSnapshotter, DEFAULT_TEST_SYSTEM_PROMPT } from '../../harness/snapshots';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { createDecorator, type ProvideHandle } from '#/_base/di/instantiation';
@@ -376,9 +376,15 @@ describe('Agent config', () => {
       output: 'original-result',
     });
     ctx.mockNextResponse({ type: 'text', text: 'Still using the original turn config.' });
-    await toolCallEvents;
-    expect(await ctx.untilTurnEnd()).toMatchInlineSnapshot(`
-      [wire] context.append_loop_event   { "event": { "type": "tool.call", "uuid": "<uuid-5>", "turnId": "0", "step": 1, "stepUuid": "<uuid-2>", "toolCallId": "call_lookup", "name": "Lookup", "args": { "query": "original" } }, "time": "<time>" }
+    const beforeResult = await toolCallEvents as unknown as EventSnapshotEntry[];
+    const afterResult = await ctx.untilTurnEnd() as unknown as EventSnapshotEntry[];
+    const isWireToolCall = (entry: EventSnapshotEntry) => entry.type === '[wire]' && entry.event === 'context.append_loop_event' &&
+      typeof entry.args === 'object' && entry.args !== null &&
+      (entry.args as { event?: { type?: string } }).event?.type === 'tool.call';
+    expect([...beforeResult, ...afterResult].filter(isWireToolCall)).toEqual([
+      expect.objectContaining({ args: expect.objectContaining({ event: expect.objectContaining({ type: 'tool.call', toolCallId: 'call_lookup' }) }) }),
+    ]);
+    expect(createEventSnapshotter()(afterResult.filter((entry) => !isWireToolCall(entry)))).toMatchInlineSnapshot(`
       [emit] tool.result                 { "time": "<time>", "turnId": 0, "toolCallId": "call_lookup", "output": "original-result" }
       [emit] agent.activity.updated      { "time": "<time>", "lifecycle": "ready", "turn": { "turnId": 0, "origin": { "kind": "user" }, "phase": "running", "step": 1, "ending": false, "pendingApprovals": [], "activeToolCalls": [], "since": "<time>" }, "background": [] }
       [emit] context.append_loop_event   { "time": "<time>", "event": { "type": "tool.result", "parentUuid": "<uuid-5>", "toolCallId": "call_lookup", "result": { "output": "original-result" } } }
@@ -972,6 +978,8 @@ describe('loopControl config section', () => {
     expect(section).toBeDefined();
     expect(registry.defaultValue(LOOP_CONTROL_SECTION)).toEqual({
       compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
+      thinkingOnlyContinuation: true,
+      zeroOutputContinuation: false,
     });
 
     expect(registry.validate(LOOP_CONTROL_SECTION, {})).toEqual({});
@@ -1012,6 +1020,8 @@ describe('loopControl config section', () => {
 
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({
       compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
+      thinkingOnlyContinuation: true,
+      zeroOutputContinuation: false,
     });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = 'abc';
@@ -1019,6 +1029,8 @@ describe('loopControl config section', () => {
     env[LOOP_COMPACTION_SOFT_CONTEXT_SIZE_ENV] = '-1';
     expect(config.get<LoopControl>(LOOP_CONTROL_SECTION)).toEqual({
       compactionSoftContextSize: DEFAULT_COMPACTION_SOFT_CONTEXT_SIZE,
+      thinkingOnlyContinuation: true,
+      zeroOutputContinuation: false,
     });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = '100';
@@ -1028,6 +1040,8 @@ describe('loopControl config section', () => {
       maxStepsPerTurn: 100,
       maxAttemptsPerStep: 3,
       compactionSoftContextSize: 512_000,
+      thinkingOnlyContinuation: true,
+      zeroOutputContinuation: false,
     });
 
     env[LOOP_MAX_STEPS_PER_TURN_ENV] = '50';
