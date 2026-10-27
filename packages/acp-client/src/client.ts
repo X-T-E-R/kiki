@@ -422,6 +422,7 @@ export class AcpProcessClient {
           options.signal,
         );
       }
+      this.#openResult = { ...this.#openResult, configOptions };
       if (options.modeId !== undefined) {
         this.#observedModeId = undefined;
         const observed = new Promise<string>((resolve) => { this.#modeWaiter = resolve; });
@@ -441,7 +442,7 @@ export class AcpProcessClient {
           this.#modeWaiter = undefined;
         }
       }
-      this.#openResult = { ...this.#openResult, configOptions, currentModeId: this.#observedModeId };
+      this.#openResult = { ...this.#openResult, currentModeId: this.#observedModeId };
       this.#setState('ready');
       return this.#openResult;
     } catch (error) {
@@ -1156,9 +1157,18 @@ export class AcpProcessClient {
     const pending = this.#pendingEventReservations.shift();
     try {
       const mapped = mapAcpSessionNotification(params, method);
-      if (mapped.event.type === 'mode.update' && mapped.sessionId === this.#openResult?.sessionId) {
-        this.#observedModeId = mapped.event.currentModeId;
-        this.#modeWaiter?.(mapped.event.currentModeId);
+      if (this.#openResult !== undefined && mapped.sessionId === this.#openResult.sessionId) {
+        const configOptions = mapped.event.type === 'config.update'
+          ? mapped.event.configOptions as SessionConfigOption[]
+          : undefined;
+        if (configOptions !== undefined) this.#openResult = { ...this.#openResult, configOptions };
+        const mode = mapped.event.type === 'mode.update'
+          ? mapped.event.currentModeId
+          : configOptions?.find((option) => option.category === 'mode' && option.type === 'select')?.currentValue;
+        if (typeof mode === 'string') {
+          this.#observedModeId = mode;
+          this.#modeWaiter?.(mode);
+        }
       }
       if (this.#state === 'opening_session' && this.#openingMode === 'load') {
         pending?.reservation.release();

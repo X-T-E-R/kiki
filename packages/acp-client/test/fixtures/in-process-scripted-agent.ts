@@ -26,6 +26,7 @@ export interface InProcessAgentScript {
   readonly stopReason?: StopReason;
   readonly hangPrompt?: boolean;
   readonly modeUpdate?: string;
+  readonly modeConfigUpdate?: { readonly value: string; readonly sessionId?: string };
   readonly sessionResponseMeta?: Record<string, unknown>;
   readonly initializeMeta?: Record<string, unknown>;
   readonly steeringOutcome?: 'injected' | 'promptRequired' | 'startedNewTurn' | 'unknown' | 'reject' | 'abort' | 'hang';
@@ -147,6 +148,15 @@ export function createInProcessScriptedAgent(
         await client.notify(methods.client.session.update as string, {
           sessionId,
           update: { sessionUpdate: 'current_mode_update', currentModeId: script.modeUpdate },
+        });
+      }
+      if (script.modeConfigUpdate !== undefined) {
+        await client.notify(methods.client.session.update as string, {
+          sessionId: script.modeConfigUpdate.sessionId ?? sessionId,
+          update: { sessionUpdate: 'config_option_update', configOptions: [...configOptions, {
+            id: 'mode', name: 'Mode', category: 'mode', type: 'select', currentValue: script.modeConfigUpdate.value,
+            options: [{ value: 'manual', name: 'Manual' }, { value: 'auto', name: 'Auto' }],
+          }] },
         });
       }
       return {};
