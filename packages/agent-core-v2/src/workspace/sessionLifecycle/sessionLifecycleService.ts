@@ -1411,6 +1411,12 @@ export class SessionLifecycleService extends Disposable implements ISessionLifec
         continue;
       }
       if (entry.isSymbolicLink === true) continue;
+      if (/^agents\/[^/]+$/.test(relBase)) {
+        const coldLock = `${AGENT_WIRE_RECORD_KEY}.cold.lock`;
+        if (entry.isDirectory && entry.name === `${AGENT_WIRE_RECORD_KEY}.readers`) continue;
+        if (entry.isFile && (entry.name === coldLock || entry.name.startsWith(`${coldLock}.tmp-`) ||
+          entry.name.startsWith(`${coldLock}.watch-`) || entry.name.startsWith(`${coldLock}.bid-`))) continue;
+      }
       const sourcePath = join(sourceDir, entry.name);
       const targetPath = join(targetDir, entry.name);
       if (entry.isDirectory) {

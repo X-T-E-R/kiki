@@ -869,6 +869,58 @@ it('keeps a durable recovered prompt through an unload attempt and resumes its o
 });
 
 
+describe('SessionLifecycleService fork file copying', () => {
+  it.each(['present', 'removed'] as const)('excludes %s journal coordination files without excluding conversation attachments', async (sidecarState) => {
+    const fx = fixture();
+    const sidecars = ['wire.jsonl.cold.lock', 'wire.jsonl.cold.lock.tmp-123-1',
+      'wire.jsonl.cold.lock.watch-123-example', 'wire.jsonl.cold.lock.bid-123-2'];
+    const kept = ['attachment.txt', 'wire.jsonl.cold.lock.notes', 'ordinary.lock', 'ordinary.tmp-123-1'];
+    const file = (name: string) => ({ name, isFile: true, isDirectory: false });
+    const directory = (name: string) => ({ name, isFile: false, isDirectory: true });
+    const read = vi.fn(async (path: string) => {
+      if (sidecarState === 'removed' && sidecars.some(name => path === `/source/agents/main/${name}`)) {
+        throw Object.assign(new Error('removed coordination file'), { code: 'ENOENT' });
+      }
+      return new TextEncoder().encode(path);
+    });
+    const write = vi.fn(async () => {});
+    const readdir = vi.fn(async (path: string) => {
+      if (path === '/source') return [directory('agents'), directory('attachments')];
+      if (path === '/source/agents') return [directory('main')];
+      if (path === '/source/agents/main') return [...sidecars.map(file), ...kept.map(file),
+        directory('wire.jsonl.readers'), directory('attachments'), file(AGENT_WIRE_RECORD_KEY), file(WIRE_TRANSCRIPT_RECEIPT_KEY)];
+      if (path.endsWith('/attachments')) return sidecars.map(file);
+      if (path.endsWith('/wire.jsonl.readers')) throw Object.assign(new Error('removed lease directory'), { code: 'ENOENT' });
+      throw new Error(`Unexpected directory: ${path}`);
+    });
+    Object.assign(fx.service, { hostFs: { readdir, readBytes: read, writeBytes: write, mkdir: async () => {} } });
+    try {
+      await (fx.service as unknown as { copySessionFiles(source: string, target: string): Promise<void> }).copySessionFiles('/source', '/target');
+      const copied = [...kept.map(name => `agents/main/${name}`),
+        ...sidecars.map(name => `attachments/${name}`), ...sidecars.map(name => `agents/main/attachments/${name}`)];
+      expect(read.mock.calls.map(([path]) => path).toSorted()).toEqual(copied.map(path => `/source/${path}`).toSorted());
+      expect(write.mock.calls).toHaveLength(copied.length);
+      for (const path of copied) expect(write).toHaveBeenCalledWith(`/target/${path}`, new TextEncoder().encode(`/source/${path}`));
+      expect(readdir).not.toHaveBeenCalledWith('/source/agents/main/wire.jsonl.readers');
+    } finally { await fx.service.dispose(); }
+  });
+
+  it('propagates a required source file disappearing after directory enumeration', async () => {
+    const fx = fixture();
+    const failure = Object.assign(new Error('missing attachment'), { code: 'ENOENT' });
+    const write = vi.fn(async () => {});
+    Object.assign(fx.service, { hostFs: {
+      readdir: async () => [{ name: 'attachment.txt', isFile: true, isDirectory: false }],
+      readBytes: async () => { throw failure; }, writeBytes: write, mkdir: async () => {},
+    } });
+    try {
+      await expect((fx.service as unknown as { copySessionFiles(source: string, target: string): Promise<void> })
+        .copySessionFiles('/source', '/target')).rejects.toBe(failure);
+      expect(write).not.toHaveBeenCalled();
+    } finally { await fx.service.dispose(); }
+  });
+});
+
 describe('SessionLifecycleService fork cron ownership', () => {
   it('supports an external-material-only fork without cloning child agents or main task state', async () => {
     const fx = fixture();
