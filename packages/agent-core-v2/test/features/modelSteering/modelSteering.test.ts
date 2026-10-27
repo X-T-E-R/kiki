@@ -188,6 +188,7 @@ describe('AgentModelSteeringService', () => {
     for (const text of ['initial answer', 'corrected answer', 'continued answer']) {
       scripted.mockNextResponse({ type: 'text', text });
     }
+    const steerings: Array<ReturnType<typeof prompts.steer>> = [];
     try {
       await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial request' }] });
       await started;
@@ -205,11 +206,11 @@ describe('AgentModelSteeringService', () => {
         role: 'user', content: [{ type: 'text', text: 'Superseded correction' }], toolCalls: [], origin: { kind: 'user' },
       } });
       expect(prompts.replace(first.id, [{ type: 'text', text: 'Understand the complete intent first.' }]).revision).toBe(1);
-      await prompts.steer([first.id]);
+      steerings.push(prompts.steer([first.id]));
       const second = await prompts.enqueue({ message: {
         role: 'user', content: [{ type: 'text', text: 'Then prioritize the intended use.' }], toolCalls: [], origin: { kind: 'user' },
       } });
-      await prompts.steer([second.id]);
+      steerings.push(prompts.steer([second.id]));
       expect(steeringMessages(memory)).toHaveLength(configured ? 1 : 0);
       expect(memory.get().flatMap((message) => message.content)).not.toContainEqual({ type: 'text', text: 'Understand the complete intent first.' });
       loop.enqueue(new ContinuationStepRequest());
@@ -217,6 +218,7 @@ describe('AgentModelSteeringService', () => {
     } finally {
       release.resolve();
     }
+    await Promise.all(steerings);
     await loop.settled();
     expect(scripted.calls).toHaveLength(3);
     expect(turnBoundaries).toEqual([true, false, false]);
@@ -340,9 +342,12 @@ describe('AgentModelSteeringService', () => {
     await bindModel(true, { steeringOnInput: onInput, steeringIntervalSteps: 2 });
     const agent = ctx;
     const loop = agent.get(IAgentLoopService);
+    const prompts = agent.get(IAgentPromptService);
+    const steerings: Array<ReturnType<typeof prompts.steer>> = [];
     const subscription = loop.hooks.onDidFinishStep.register('test.steer-and-continue', async ({ step }, next) => {
       if (step === 1) {
-        await agent.rpc.steer({ input: [{ type: 'text', text: 'Accepted correction' }] });
+        const correction = await prompts.enqueue({ message: { role: 'user', content: [{ type: 'text', text: 'Accepted correction' }], toolCalls: [], origin: { kind: 'user' } } });
+        steerings.push(prompts.steer([correction.id]));
         for (let index = 0; index < 3; index++) loop.enqueue(new ContinuationStepRequest());
       }
       await next();
@@ -351,6 +356,7 @@ describe('AgentModelSteeringService', () => {
     try {
       await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial request' }] });
       await loop.settled();
+      await Promise.all(steerings);
     } finally {
       await subscription.dispose();
     }
@@ -404,25 +410,26 @@ describe('AgentModelSteeringService', () => {
     ctx = createTestAgent(homeDirServices(homeDir), permissionModeServices('manual'));
     await bindModel(true, { steeringIntervalSteps: 1, steeringSources: enabled ? { agent: { mode: 'custom', custom: { steering: { text: 'AGENT CUE' } } }, task: { mode: 'inherit' } } : undefined });
     const agent = ctx; const loop = agent.get(IAgentLoopService); const prompts = agent.get(IAgentPromptService);
+    const steerings: Array<ReturnType<typeof prompts.steer>> = [];
     const hook = loop.hooks.onDidFinishStep.register('test.mixed-sources', async ({ step }, next) => {
       if (step === 1) {
         const handles = [];
         for (const origin of [{ kind: 'agent_message', messageId: 'example-agent', senderAgentId: 'example-child', senderTaskName: 'example' }, { kind: 'task', taskId: 'example-task', notificationId: 'example-notice', status: 'completed' }] satisfies ContextMessage['origin'][]) handles.push(await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text: `Input ${origin.kind}` }], origin } }));
-        await prompts.steer(handles.map((handle) => handle.id));
+        steerings.push(prompts.steer(handles.map((handle) => handle.id)));
       }
       if (step === 2) loop.enqueue(new ContinuationStepRequest());
       await next();
     });
     for (let index = 0; index < 3; index++) agent.mockNextResponse({ type: 'text', text: `Answer ${index}` });
-    try { await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial human' }] }); await loop.settled(); }
+    try { await agent.rpc.prompt({ input: [{ type: 'text', text: 'Initial human' }] }); await loop.settled(); await Promise.all(steerings); }
     finally { await hook.dispose(); }
     expect(agent.llmCalls).toHaveLength(3);
     const cues = agent.llmCalls.map((call) => call.history.flatMap((message) => message.content).filter((part) => part.type === 'text' && part.text === 'CLASSIFY THEN ACT').length);
     expect(cues).toEqual(enabled ? [1, 2, 3] : [1, 1, 1]);
     const second = agent.llmCalls[1]!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text);
-    expect(second).toEqual(expect.arrayContaining(['Input agent_message', 'Input task']));
+    expect(second).toContain('Input agent_message\n\nInput task');
     expect(second.filter((text) => text === 'AGENT CUE')).toHaveLength(enabled ? 1 : 0);
-    expect(agent.get(IAgentContextMemoryService).get().find((message) => message.origin?.kind === 'merged')?.origin).toMatchObject({ kind: 'merged', origins: [{ kind: 'agent_message', senderAgentId: 'example-child' }, { kind: 'task', taskId: 'example-task' }] });
+    expect(agent.get(IAgentContextMemoryService).get().filter((message) => message.origin?.kind === 'agent_message' || message.origin?.kind === 'task').map((message) => message.origin)).toMatchObject([{ kind: 'agent_message', senderAgentId: 'example-child' }, { kind: 'task', taskId: 'example-task' }]);
   });
 
   it.each(['off', 'inherit', 'custom'] as const)('gates real peer turns and interval/compaction by source mode %s', async (mode) => {

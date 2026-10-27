@@ -410,11 +410,12 @@ describe('prompt submit', () => {
       execution: { planMode: false, goalObjective: 'finish the example' } });
     const targetTurn = loop.status().activeTurnId;
     expect(queued.state).toBe('pending');
-    await prompts.steer([queued.id]);
+    const steering = prompts.steer([queued.id]);
+    release();
+    await steering;
     expect(queued.state).toBe('steered');
     expect((await queued.launched)?.id).toBe(targetTurn);
     await goal.markComplete({}, 'system');
-    release();
     const completion = await queued.completion;
     expect(completion.state, JSON.stringify(completion.result)).toBe('completed');
     await loop.settled();

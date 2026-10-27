@@ -407,25 +407,33 @@ describe('hooks v2 completed-step engine contract', () => {
     ]), (event) => observed.push(event));
     const loop = ctx.get(IAgentLoopService);
     const prompts = ctx.get(IAgentPromptService);
+    const steerings: Array<ReturnType<typeof prompts.steer>> = [];
     const subscription = loop.hooks.onDidFinishStep.register('test.sendnow-hooks', async ({ step }, next) => {
       if (step === 1) {
         const human = await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Human correction' }], origin: { kind: 'user' } } });
         const peer = await prompts.enqueue({ message: { role: 'user', toolCalls: [], content: [{ type: 'text', text: 'Peer correction' }], origin: { kind: 'agent_message', messageId: 'example-message', senderAgentId: 'example-child', senderTaskName: 'example' } } });
-        await prompts.steer([human.id, peer.id]);
         expect(injections(ctx)).toHaveLength(1);
+        steerings.push(prompts.steer([human.id, peer.id]));
       }
       await next();
     });
     ctx.mockNextResponse({ type: 'text', text: 'Initial answer' });
     ctx.mockNextResponse({ type: 'text', text: 'Corrected answer' });
-    try { await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Initial user input' }] }); await loop.settled(); }
+    try { await ctx.rpc.prompt({ input: [{ type: 'text', text: 'Initial user input' }] }); await loop.settled(); await Promise.all(steerings); }
     finally { await subscription.dispose(); }
     expect(ctx.llmCalls).toHaveLength(2);
     const text = ctx.llmCalls[1]!.history.flatMap((message) => message.content).filter((part) => part.type === 'text').map((part) => part.text).join('\n');
     expect(text.match(/USER GUIDANCE/g)).toHaveLength(2);
     expect(text.match(/STEER GUIDANCE/g)).toHaveLength(2);
     expect(observed.some((event) => event.source === 'mailbox' && event.delivery === 'steering')).toBe(true);
-    expect(ctx.get(IAgentContextMemoryService).get().some((message) => message.origin?.kind === 'merged' && message.origin.origins.map((origin) => origin.kind).join(',') === 'user,agent_message')).toBe(true);
+    const history = ctx.get(IAgentContextMemoryService).get();
+    const corrections = history.filter((message) => (message.origin?.kind === 'user' || message.origin?.kind === 'agent_message') && JSON.stringify(message.content).includes('correction'));
+    expect(corrections.map((message) => message.origin?.kind)).toEqual(['user', 'agent_message']);
+    const steeringOwners = injections(ctx).flatMap((message) => {
+      const origin = message.origin;
+      return origin?.kind === 'injection' && origin.variant === 'hook_rule/user/steer' ? [origin.ownerPromptId] : [];
+    });
+    expect(steeringOwners).toEqual(corrections.map((message) => message.id));
   });
   it.each([1, 5])('injects only after %s committed steps, on the next request, including across naturally-ended turns', async (n) => {
     const config = snapshot([rule({ cadence: { everyCompletedSteps: n, counterScope: 'agent', partitionBy: 'model' } })]);

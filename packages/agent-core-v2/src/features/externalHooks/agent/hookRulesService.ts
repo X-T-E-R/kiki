@@ -79,15 +79,17 @@ export class AgentHookRules extends Service implements IAgentHookRules {
     this._register(prompt.hooks.onBeforeSubmitPrompt.register('hook-rules', async (ctx, next) => {
       await next();
       if (ctx.block) return;
-      const origin = ctx.promptMessage.origin;
-      const human = origin?.kind === 'user' || origin?.kind === 'plugin_command' || (origin?.kind === 'skill_activation' && origin.trigger === 'user-slash');
-      const mailbox = origin?.kind === 'agent_message' || origin?.kind === 'peer_thread' || origin?.kind === 'bridged_peer' || origin?.kind === 'room_message';
-      const promptId = ctx.promptMessage.id ?? randomUUID();
-      const { event, snapshot } = await this.event('prompt.submit', `prompt/${promptId}`, {
-        promptId, source: human ? 'user' : origin?.kind === 'task' ? 'task' : mailbox ? 'mailbox' : undefined,
-        delivery: ctx.isSteer ? 'steering' : undefined,
-      });
-      this.applyInputRules(event, snapshot, promptId, ctx.appendMessage);
+      for (const message of ctx.messages ?? [ctx.promptMessage]) {
+        const origin = message.origin;
+        const human = origin?.kind === 'user' || origin?.kind === 'plugin_command' || (origin?.kind === 'skill_activation' && origin.trigger === 'user-slash');
+        const mailbox = origin?.kind === 'agent_message' || origin?.kind === 'peer_thread' || origin?.kind === 'bridged_peer' || origin?.kind === 'room_message';
+        const promptId = message.id ?? randomUUID();
+        const { event, snapshot } = await this.event('prompt.submit', `prompt/${promptId}`, {
+          promptId, source: human ? 'user' : origin?.kind === 'task' ? 'task' : mailbox ? 'mailbox' : undefined,
+          delivery: ctx.isSteer ? 'steering' : undefined,
+        });
+        this.applyInputRules(event, snapshot, promptId, ctx.appendMessage);
+      }
     }));
     const tasks = instantiation.invokeFunction((accessor) => accessor.get(IAgentTaskService));
     this._register(tasks.hooks.onWillConsumeNotification.register('hook-rules', async ({ origin, signal }, next) => {

@@ -12,6 +12,7 @@ import type { PlanGate } from '#/features/plan/configSection';
 /** One hook invocation per consumed input batch; promptMessage summarizes the batch while original messages retain their identities. */
 export interface PromptSubmitContext {
   readonly promptMessage: ContextMessage;
+  readonly messages?: readonly ContextMessage[];
   readonly isSteer: boolean;
   readonly appendMessage?: (message: ContextMessage) => void;
   block: boolean;

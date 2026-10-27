@@ -2012,7 +2012,7 @@ export class AgentPromptService implements IAgentPromptService {
         content: this.repairKnownTruncatedImages(item.id, item.message.content) }));
       const rerouted = mergeSteerMessages(batch);
       const hookMessages: ContextMessage[] = [];
-      const blocked = await this.blockedByHook(rerouted, true, message => hookMessages.push(message));
+      const blocked = await this.blockedByHook(rerouted, true, message => hookMessages.push(message), batch.map(item => item.message));
       if (selected.some((item) => !this.pending.includes(item)) || this.active !== activeAtEntry || this.loop.status().activeTurnId !== targetTurnId) throw new Error2(ErrorCodes.PROMPT_NOT_FOUND, 'one or more prompts are no longer pending');
       if (blocked) {
         for (const item of selected) {
@@ -2458,7 +2458,7 @@ export class AgentPromptService implements IAgentPromptService {
       await this.materializeDaemonRefs(message);
       controller.signal.throwIfAborted();
       const hookMessages: ContextMessage[] = [];
-      const blocked = await this.blockedByHook(message, false, message => hookMessages.push(message));
+      const blocked = await this.blockedByHook(message, false, message => hookMessages.push(message), batch.map(item => item.message));
       controller.signal.throwIfAborted();
       if (selected.slice(1).some(candidate => !this.pending.includes(candidate))) {
         this.pending.splice(Math.min(candidateIndex, this.pending.length), 0, item);
@@ -2760,8 +2760,8 @@ export class AgentPromptService implements IAgentPromptService {
     await materializePromptDaemonRefs(message.content, { files, mediaStore });
   }
 
-  private async blockedByHook(promptMessage: ContextMessage, isSteer: boolean, appendMessage?: (message: ContextMessage) => void): Promise<boolean> {
-    const ctx = { promptMessage, isSteer, appendMessage, block: false }; await this.hooks.onBeforeSubmitPrompt.run(ctx); return ctx.block;
+  private async blockedByHook(promptMessage: ContextMessage, isSteer: boolean, appendMessage?: (message: ContextMessage) => void, messages?: readonly ContextMessage[]): Promise<boolean> {
+    const ctx = { promptMessage, messages, isSteer, appendMessage, block: false }; await this.hooks.onBeforeSubmitPrompt.run(ctx); return ctx.block;
   }
   private get fullCompaction(): IAgentFullCompactionService {
     if (this.fullCompactionService === undefined) {
