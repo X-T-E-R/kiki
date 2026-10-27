@@ -1,11 +1,12 @@
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { lstatSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { AcpClientError } from '@kiki/acp-client';
-import { ClusterDb } from '@kiki/minidb/cluster';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { readMailboxAuthority } from '#/persistence/backends/sqliteMailbox/authority';
+import { CanonicalMailboxDatabase } from '#/persistence/backends/sqliteMailbox/database';
 import { Event, Emitter } from '#/_base/event';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import type { ServiceIdentifier } from '#/_base/di/instantiation';
@@ -228,8 +229,9 @@ describe('thread mailbox agent collaboration adapter', () => {
     const accepted = await store.accept(messageInput('shared mailbox', 'shared-mailbox'));
 
     expect(accepted.message.targetSeq).toBe(1);
-    expect(existsSync(join(homeDir, 'store', 'agent-collaboration-mailbox-v2'))).toBe(false);
-    expect(existsSync(join(homeDir, 'store', 'thread-mailbox-v3'))).toBe(true);
+    expect(lstatSync(join(homeDir, 'store', 'agent-collaboration-mailbox-v2')).isFile()).toBe(true);
+    expect(lstatSync(join(homeDir, 'store', 'thread-mailbox-v3')).isFile()).toBe(true);
+    expect(await readMailboxAuthority(homeDir)).toMatchObject({ backend: 'sqlite' });
   });
 });
 
@@ -3259,7 +3261,7 @@ function blockFirstTargetBatch(): {
   readonly release: () => void;
   readonly restore: () => void;
 } {
-  const original = ClusterDb.prototype.partitionBatch;
+  const original = CanonicalMailboxDatabase.prototype.partitionBatch;
   let markEntered!: () => void;
   let releaseBatch!: () => void;
   const entered = new Promise<void>((resolve) => {
@@ -3269,7 +3271,7 @@ function blockFirstTargetBatch(): {
     releaseBatch = resolve;
   });
   let blockedOnce = false;
-  ClusterDb.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
+  CanonicalMailboxDatabase.prototype.partitionBatch = async function (...args: Parameters<typeof original>) {
     const [partition] = args;
     if (!blockedOnce && partition.startsWith('t/')) {
       blockedOnce = true;
@@ -3283,7 +3285,7 @@ function blockFirstTargetBatch(): {
     release: releaseBatch,
     restore: () => {
       releaseBatch();
-      ClusterDb.prototype.partitionBatch = original;
+      CanonicalMailboxDatabase.prototype.partitionBatch = original;
     },
   };
 }
