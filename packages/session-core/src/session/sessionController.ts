@@ -23,6 +23,7 @@ import {
   AgentTranscript,
   GRADE_RANK,
   gradeFor,
+  itemId,
   releaseFramePayload,
   type AgentTranscriptSnapshot,
   type TranscriptCoverage,
@@ -2881,7 +2882,17 @@ export class SessionController {
     const removed = new Set<string>();
     for (const op of ops) if (op.op === 'items.remove') for (const id of op.ids) removed.add(id);
     const planned: { key: string; turnId: string }[] = [];
+    const removedRetained = new Set<string>();
     if (removed.size > 0) {
+      const older = this.olderPages.get(agentId);
+      for (const item of older?.items ?? []) if (removed.has(itemId(item))) removedRetained.add(itemId(item));
+      if (older !== undefined && removedRetained.size > 0) {
+        const retained = new AgentTranscript(agentId);
+        retained.apply([{ op: 'reset', agentId, snapshot: older }]);
+        planned.push(...this.residentToolDetailsOnTurns(agentId, retained, removedRetained));
+        retained.apply([{ op: 'items.remove', ids: [...removedRetained] }]);
+        this.olderPages.set(agentId, retained.snapshot());
+      }
       planned.push(...this.residentToolDetailsOnTurns(agentId, store, removed));
       for (const op of ops) {
         if (op.op === 'frame.upsert' && op.frame.kind === 'tool' && removed.has(op.turnId)) planned.push({ key: `${agentId}/${op.frame.toolCallId}`, turnId: op.turnId });
@@ -2892,14 +2903,24 @@ export class SessionController {
       }
     }
     const result = store.apply(ops);
+    const retainedRemovals = ops.filter((op) => op.op === 'items.remove' && op.ids.some((id) => removedRetained.has(id)) && !result.accepted.includes(op));
+    const acceptedOps = retainedRemovals.length === 0 ? result.accepted : [...result.accepted, ...retainedRemovals];
     if (removed.size > 0) {
       const accepted = new Set<string>();
-      for (const op of result.accepted) if (op.op === 'items.remove') for (const id of op.ids) accepted.add(id);
+      for (const op of acceptedOps) if (op.op === 'items.remove') for (const id of op.ids) accepted.add(id);
       const keys = new Set<string>();
       for (const entry of planned) if (accepted.has(entry.turnId)) keys.add(entry.key);
       for (const key of keys) this.invalidateToolDetail(key);
+      if (accepted.size > 0) {
+        for (const id of accepted) this.historyPreviewPages.delete(`${agentId}/${id}`);
+        for (const [key, entry] of this.contentBodies) if (entry.agentId === agentId &&
+          (entry.source.kind === 'turn' && accepted.has(entry.source.id) || entry.source.kind === 'frame' && entry.source.turnId !== undefined && accepted.has(entry.source.turnId))) this.contentBodies.delete(key);
+        this.olderPageCursors.delete(agentId);
+        if (accepted.has(this.olderPageTurns.get(agentId) ?? '')) this.olderPageTurns.delete(agentId);
+        this.cancelHistoryRead(agentId);
+      }
     }
-    return result;
+    return retainedRemovals.length === 0 ? result : { ...result, accepted: acceptedOps };
   }
 
   private residentToolDetailsOnTurns(agentId: string, store: AgentTranscript, turnIds: ReadonlySet<string>): { key: string; turnId: string }[] {

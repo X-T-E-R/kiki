@@ -3275,6 +3275,49 @@ describe('SessionController transcript authority', () => {
     controller.close();
   });
 
+  it.each(['main', 'child-1'])('removes rewritten turns from retained history for %s before publishing a replacement', async (agentId) => {
+    const { controller, client, flushAll } = await openTranscriptController();
+    const turn = (ordinal: number, messageId: string, prompt: string) => ({
+      kind: 'turn' as const, turnId: `t${ordinal}`, ordinal, state: 'completed' as const,
+      origin: { kind: 'user' as const }, prompt, steps: [],
+      message: { messageId, role: 'user' as const, revision: 0, provenance: { source: 'engine' as const } },
+    });
+    const kept = turn(0, 'kept-message', 'keep this earlier message');
+    const original = turn(1, 'edited-message', 'original');
+    const followup = turn(2, 'followup-message', 'discard this followup');
+    const read = () => agentId === 'main' ? controller.getState() : controller.getAgentState(agentId);
+    try {
+      controller.handleTranscript(resetEvent(agentId, emptySnapshot({ items: [followup] }), 1, true));
+      client.getAgentTranscript.mockResolvedValueOnce({ agent_id: agentId, items: [kept, original], has_more: true });
+      await controller.loadOlderMessages(agentId);
+      expect(read().blocks.filter((block) => block.kind === 'user')).toHaveLength(3);
+      const held = deferred<AgentTranscriptResponse>();
+      client.getAgentTranscript.mockReturnValueOnce(held.promise);
+      const pending = controller.loadOlderHistory(agentId);
+      await waitFor(() => client.getAgentTranscript.mock.calls.length === 2);
+      const replacement = turn(3, 'edited-message', 'edited');
+      const ops = [{ op: 'items.remove' as const, ids: ['t1', 't2'] }, { op: 'turn.upsert' as const, turn: replacement }];
+      controller.handleTranscript(opsEvent(agentId, ops, 2));
+      flushAll();
+      expect(read().blocks.filter((block) => block.kind === 'user').map((block) => ({ id: block.userMessageId, text: block.text }))).toEqual([
+        { id: 'kept-message', text: 'keep this earlier message' }, { id: 'edited-message', text: 'edited' },
+      ]);
+      held.resolve({ agent_id: agentId, items: [original], has_more: false });
+      await expect(pending).resolves.toMatchObject({ kind: 'cancelled', changed: false });
+      controller.handleTranscript(opsEvent(agentId, ops, 3));
+      flushAll();
+      expect(read().blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual(['keep this earlier message', 'edited']);
+      expect(new Set(read().blocks.map((block) => block.id)).size).toBe(read().blocks.length);
+      controller.handleTranscript(opsEvent(agentId, [{ op: 'items.remove', ids: ['t0'] }], 4));
+      flushAll();
+      expect(read().blocks.filter((block) => block.kind === 'user').map((block) => block.text)).toEqual(['edited']);
+      const settled = read();
+      controller.handleTranscript(opsEvent(agentId, [{ op: 'items.remove', ids: ['t0'] }], 5));
+      flushAll();
+      expect(read()).toBe(settled);
+    } finally { controller.close(); }
+  });
+
   it.each([
     { agentId: 'main', initialCount: undefined },
     { agentId: 'child-1', initialCount: undefined },

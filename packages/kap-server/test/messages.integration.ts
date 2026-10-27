@@ -28,6 +28,10 @@ import {
 } from '@kiki/agent-core-v2';
 import type { Model } from '@kiki/agent-core-v2/kosong/model/catalog';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createKlient } from '@kiki/klient/http';
+import { WebSocket } from 'ws';
+import { SessionController } from '../../session-core/src/session/sessionController';
+import { createSessionTransport } from '../../session-core/src/session/klientTransport';
 
 import { type RunningServer, startServer } from '../src/start';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
@@ -1143,6 +1147,87 @@ describe('server-v2 /api/sessions/{sid}/messages', () => {
       role: 'user',
       content: [{ type: 'text', text: 'edited prompt' }],
     });
+  });
+
+  it('keeps repeated edit-resend projections consistent across live reads and cold replay', async () => {
+    const { id, main, submitted, requestCount } = await createTerminalPrompt('original prompt');
+    const path = `/api/sessions/${id}/transcript?agent_id=main&transcript_coverage_version=2`;
+    const readProjection = async () => {
+      const response = await getJson<import('@kiki/transcript').TranscriptResponse>(path);
+      expect(response.body.code, JSON.stringify(response.body)).toBe(0);
+      return response.body.data;
+    };
+    const client = createKlient({ endpoint: base, token: server!.localOwnerToken, WebSocket: WebSocket as unknown as typeof globalThis.WebSocket });
+    const view = client.session(id).view;
+    const protocolErrors: import('@kiki/klient/session-view').SessionViewSignal[] = [];
+    const subscribe = view.subscribe.bind(view);
+    vi.spyOn(view, 'subscribe').mockImplementation((options, callback) => subscribe(options, (signal) => {
+      if (signal.type === 'protocolError') protocolErrors.push(signal);
+      callback(signal);
+    }));
+    const controller = new SessionController(createSessionTransport(client), view, id);
+    const observations: string[][] = [];
+    const unsubscribe = controller.subscribe(() => observations.push(controller.getState().blocks.map((block) => block.id)));
+    try {
+      await controller.open();
+      await vi.waitFor(() => {
+        controller.flushFrames();
+        expect(controller.getState().blocks.some((block) => block.kind === 'user' && block.text === 'original prompt')).toBe(true);
+      });
+      await readProjection();
+      for (let revision = 1; revision <= 3; revision += 1) {
+        const followup = await postJson<PromptWire>(`/api/sessions/${id}/prompts`, {
+          content: [{ type: 'text', text: `discarded followup ${revision}` }],
+        });
+        expect(followup.code, JSON.stringify(followup)).toBe(0);
+        await waitForTerminal(main);
+        const text = `edited prompt ${revision}`;
+        const body = { operation_id: `repeat-edit-${revision}`, content: [{ type: 'text', text }], expected_cursor: await stableCursor(id) };
+        const edited = await postJson<PromptWire>(`/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`, body);
+        expect(edited.code, JSON.stringify(edited)).toBe(0);
+        expect(edited.data.user_message_id).toBe(submitted.data.user_message_id);
+        await waitForTerminal(main);
+        expect(requestCount()).toBe(revision * 2 + 1);
+        const replay = await postJson<PromptWire>(`/api/sessions/${id}/messages/${submitted.data.user_message_id}:edit`, body);
+        expect(replay.data).toEqual(edited.data);
+        expect(requestCount()).toBe(revision * 2 + 1);
+        const projection = await readProjection();
+        const turns = projection.items.filter((item) => item.kind === 'turn');
+        expect(turns).toHaveLength(1);
+        expect(turns[0]).toMatchObject({ message: { messageId: submitted.data.user_message_id }, prompt: text });
+        expect((await readProjection()).items).toEqual(projection.items);
+        await vi.waitFor(() => {
+          controller.flushFrames();
+          expect(controller.getState().blocks.filter((block) => block.kind === 'user')).toMatchObject([
+            { userMessageId: submitted.data.user_message_id, text },
+          ]);
+          expect(controller.getState().blocks.some((block) => block.kind === 'assistant' && block.text === 'fixture answer')).toBe(true);
+          expect(controller.getState().resyncFailed).toBe(false);
+        });
+      }
+      expect(observations.filter((ids) => new Set(ids).size !== ids.length)).toEqual([]);
+      expect(protocolErrors).toEqual([]);
+      controller.close();
+      const live = await readProjection();
+      await closeSessionById(server!.core.accessor, id);
+      const cold = await readProjection();
+      expect(cold.items).toEqual(live.items);
+      const reopened = new SessionController(createSessionTransport(client), view, id);
+      try {
+        await reopened.open();
+        await vi.waitFor(() => {
+          reopened.flushFrames();
+          expect(reopened.getState().blocks.filter((block) => block.kind === 'user')).toMatchObject([
+            { userMessageId: submitted.data.user_message_id, text: 'edited prompt 3' },
+          ]);
+        });
+      } finally { reopened.close(); }
+      expect(requestCount()).toBe(7);
+    } finally {
+      unsubscribe();
+      controller.close();
+      await client.close();
+    }
   });
 
   it('replays an after-commit edit failure without duplicating the rewrite', async () => {
