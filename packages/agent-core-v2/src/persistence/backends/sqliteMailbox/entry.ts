@@ -73,7 +73,10 @@ function assertOwner(db: DatabaseSync, owner: MailboxOwner | undefined): void {
 }
 
 function row(value: Record<string, SQLInputValue>): MailboxRow {
-  return { key: String(value['key']), value: JSON.parse(String(value['json'])), expireAt: Number(value['expire_at']) };
+  const key = value['key'];
+  const json = value['json'];
+  if (typeof key !== 'string' || typeof json !== 'string') throw new Error('Canonical mailbox row is not text');
+  return { key, value: JSON.parse(json), expireAt: Number(value['expire_at']) };
 }
 
 function archiveDigest(json: string): string { return createHash('sha256').update(json).digest('base64url'); }

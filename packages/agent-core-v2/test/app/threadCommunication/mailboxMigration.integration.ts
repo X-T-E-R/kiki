@@ -638,28 +638,23 @@ describe('canonical mailbox SQLite migration', () => {
     expect((await migration.status()).progress).toEqual(result.progress);
   });
 
-  describe('switching recovery after a legacy writer restart', () => {
-    beforeEach(async () => {
-      const old = await source(); await old.close();
-      const crash = await crashAt('switching');
-      expect(crash.output).toContain('"boundary":"switching"');
-      expect(crash.code).not.toBe(0);
-    });
-
-    it('rejects the changed source, then preserves it through explicit rollback and reimport', async () => {
-      const changed = await source(4); await changed.close();
-      const migration = createMailboxMigrationService(home); handles.push(migration);
-      const refused = await migration.migrate();
-      expect(refused.state).toBe('failed');
-      expect(refused.failure?.message).toContain('changed while frozen');
-      await expect(readFile(authorityPath(home))).rejects.toMatchObject({ code: 'ENOENT' });
-      expect((await migration.rollback()).authority).toBe('legacy');
-      const completed = await migration.migrate();
-      expect(completed.failure).toBeUndefined();
-      const db = new CanonicalMailboxDatabase<Record<string, unknown>>(completed.databasePath!); handles.push(db);
-      expect(await db.prefix('w/test/override/')).toHaveLength(4);
-    });
-  });
+  it('rejects a changed source after a legacy writer restart, then preserves it through rollback and reimport', async () => {
+    const old = await source(); await old.close();
+    const crash = await crashAt('switching');
+    expect(crash.output).toContain('"boundary":"switching"');
+    expect(crash.code).not.toBe(0);
+    const changed = await source(4); await changed.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const refused = await migration.migrate();
+    expect(refused.state).toBe('failed');
+    expect(refused.failure?.message).toContain('changed while frozen');
+    await expect(readFile(authorityPath(home))).rejects.toMatchObject({ code: 'ENOENT' });
+    expect((await migration.rollback()).authority).toBe('legacy');
+    const completed = await migration.migrate();
+    expect(completed.failure).toBeUndefined();
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(completed.databasePath!); handles.push(db);
+    expect(await db.prefix('w/test/override/')).toHaveLength(4);
+  }, 20_000);
 
   it.each(['switching', 'fenced', 'complete'])('resumes a real process crash at %s without publishing an empty mailbox', async (boundary) => {
     const old = await source(); await old.close();
@@ -697,36 +692,30 @@ describe('canonical mailbox SQLite migration', () => {
     expect(await migration.status()).toMatchObject({ phase: 'rolling_back', canRollback: true });
   });
 
-  describe('rollback authority commit crash', () => {
-    beforeEach(async () => {
-      const old = await source(); await old.close();
-      const migration = createMailboxMigrationService(home); handles.push(migration);
-      const completed = await migration.migrate();
-      expect(completed.state).toBe('complete');
-      const db = new CanonicalMailboxDatabase<Record<string, unknown>>(completed.databasePath!);
-      try {
-        await db.metadata('authority', 'rolled_back');
-        await expect(assertMailboxStartupReady(home)).rejects.toMatchObject({ code: 'mailbox.migration_required' });
-        expect(() => assertMailboxStartupReadySync(home)).toThrow('database authority is not active');
-        await db.metadata('authority', 'sqlite');
-      } finally { await db.close(); }
-      const crash = await crashAt('rollback-authority');
-      expect(crash.output, crash.errors).toContain('"boundary":"rollback-authority"');
-      expect(crash.code).not.toBe(0);
-    });
-
-    it('blocks both startup gates after the rollback authority commit crash and permits explicit recovery', async () => {
-      const migration = createMailboxMigrationService(home); handles.push(migration);
-      expect(await readMailboxAuthority(home)).toBeDefined();
+  it('blocks both startup gates after a rollback authority commit crash and permits explicit recovery', async () => {
+    const old = await source(); await old.close();
+    const migration = createMailboxMigrationService(home); handles.push(migration);
+    const completed = await migration.migrate();
+    expect(completed.state).toBe('complete');
+    const db = new CanonicalMailboxDatabase<Record<string, unknown>>(completed.databasePath!);
+    try {
+      await db.metadata('authority', 'rolled_back');
       await expect(assertMailboxStartupReady(home)).rejects.toMatchObject({ code: 'mailbox.migration_required' });
-      expect(() => assertMailboxStartupReadySync(home)).toThrow('rollback is incomplete');
-      expect(await migration.status()).toMatchObject({ phase: 'rolling_back', canRollback: true });
-      expect(await migration.rollback()).toMatchObject({ authority: 'legacy' });
-      expect(await migration.migrate()).toMatchObject({ state: 'complete', authority: 'sqlite' });
-      await expect(assertMailboxStartupReady(home)).resolves.toBeUndefined();
-      expect(() => assertMailboxStartupReadySync(home)).not.toThrow();
-    });
-  });
+      expect(() => assertMailboxStartupReadySync(home)).toThrow('database authority is not active');
+      await db.metadata('authority', 'sqlite');
+    } finally { await db.close(); }
+    const crash = await crashAt('rollback-authority');
+    expect(crash.output, crash.errors).toContain('"boundary":"rollback-authority"');
+    expect(crash.code).not.toBe(0);
+    expect(await readMailboxAuthority(home)).toBeDefined();
+    await expect(assertMailboxStartupReady(home)).rejects.toMatchObject({ code: 'mailbox.migration_required' });
+    expect(() => assertMailboxStartupReadySync(home)).toThrow('rollback is incomplete');
+    expect(await migration.status()).toMatchObject({ phase: 'rolling_back', canRollback: true });
+    expect(await migration.rollback()).toMatchObject({ authority: 'legacy' });
+    expect(await migration.migrate()).toMatchObject({ state: 'complete', authority: 'sqlite' });
+    await expect(assertMailboxStartupReady(home)).resolves.toBeUndefined();
+    expect(() => assertMailboxStartupReadySync(home)).not.toThrow();
+  }, 20_000);
 
   it('restores the legacy authority before new SQLite writes and refuses rollback afterwards', async () => {
     const old = await source(); await old.close();

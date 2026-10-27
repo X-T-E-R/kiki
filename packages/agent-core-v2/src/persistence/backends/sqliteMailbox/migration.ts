@@ -228,12 +228,12 @@ class FileMailboxMigrationService implements MailboxMigrationService {
     let manifest: MigrationManifest | undefined;
     try {
       manifest = await readJson<MigrationManifest>(migrationPath(this.homeDir));
-      if (manifest === undefined || manifest.rolledBack === true) return this.status();
+      if (manifest === undefined || manifest.rolledBack === true) return await this.status();
       validateMigrationManifest(this.homeDir, manifest);
       const published = await readMailboxAuthority(this.homeDir);
       const authority = manifest.rollbackAuthority ?? published ?? (manifest.cutoverStarted === true
         ? { version: 1, backend: 'sqlite', migrationId: manifest.status.migrationId!, database: `mailbox-${manifest.status.migrationId!}.sqlite`, publishedAt: 0 } satisfies MailboxAuthority : undefined);
-      if (authority === undefined) return this.status();
+      if (authority === undefined) return await this.status();
       db = new CanonicalMailboxDatabase<Document>(join(mailboxDirectory(this.homeDir), authority.database), false, true);
       if (await db.metadata<boolean>('hasNewWrites') === true) throw rollbackAfterWrites();
       await db.close(); db = undefined;
@@ -495,8 +495,9 @@ class FileMailboxMigrationService implements MailboxMigrationService {
     } catch (error) {
       if (manifest === undefined) throw error;
       const cancelled = !this.switching && (options.signal?.aborted || (error as Error).name === 'AbortError');
+      const code = (error as { code?: unknown }).code;
       const status: MailboxMigrationStatus = { ...manifest.status, state: cancelled ? 'cancelled' : 'failed', canCancel: false,
-        failure: cancelled ? undefined : { code: String((error as { code?: unknown }).code ?? 'mailbox.migration_failed'), message: error instanceof Error ? error.message : String(error), source: manifest.status.currentSource, key: error instanceof LegacyMailboxImportError ? error.key : manifest.status.currentKey } };
+        failure: cancelled ? undefined : { code: typeof code === 'string' ? code : 'mailbox.migration_failed', message: error instanceof Error ? error.message : String(error), source: manifest.status.currentSource, key: error instanceof LegacyMailboxImportError ? error.key : manifest.status.currentKey } };
       await update(status);
       return status;
     } finally {
@@ -773,5 +774,5 @@ function createMaintenanceRuntime(homeDir: string): MaintenanceRuntime {
   const container = new InstantiationService(new ServiceCollection([IBootstrapService, bootstrap], [IHomeRuntimeService, new SyncDescriptor(HomeRuntimeHostService)]), true);
   const runtime = container.invokeFunction((accessor) => accessor.get(IHomeRuntimeService));
   const registration = runtime.registerMethod('threadMailbox.migrationFence', async () => null);
-  return { runtime, close: async () => { registration.dispose(); await runtime.close(); container.dispose(); } };
+  return { runtime, close: async () => { await registration.dispose(); await runtime.close(); await container.dispose(); } };
 }
