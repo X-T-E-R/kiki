@@ -1,5 +1,4 @@
 import { appendFile, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import * as fs from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 import { IConfigService, ISessionIndex, ISessionManager, type Scope } from '@kiki/agent-core-v2';
@@ -12,12 +11,13 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
 import { HistoryLocatorStore } from '../src/services/history/historyLocatorStore';
+import * as logicalWire from '../src/services/history/logicalWireRead';
 import { CanonicalEntityPreparingError, HistoryCanonicalReader } from '../src/services/history/historyCanonicalReader';
 import { TranscriptService } from '../src/services/transcript/transcriptService';
 import { boundedEntity } from '../src/transport/klient/boundedContent';
 import { readSessionViewTranscriptContent, readSessionViewTranscriptPage } from '../src/transport/klient/sessionViewReads';
 
-vi.mock('node:fs/promises', { spy: true });
+vi.mock('../src/services/history/logicalWireRead', { spy: true });
 
 const line = (record: Record<string, unknown>) => `${JSON.stringify(record)}\n`;
 const event = (value: Record<string, unknown>) => ({ type: 'context.append_loop_event', event: value, time: 2000 });
@@ -248,21 +248,20 @@ describe('source-backed canonical detail', () => {
     const records = turnRecords(100, 'saved response');
     records[0] = { ...records[0], input: [{ type: 'text', text: raw, presentation }] };
     const f = await fixture(records);
-    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const actual = await vi.importActual<typeof import('../src/services/history/logicalWireRead')>('../src/services/history/logicalWireRead');
+    const db = await f.db.ready();
     let appended = false;
-    const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
-      const handle = await actual.open(...args);
-      if (args[0] !== f.wirePath) return handle;
-      const read = handle.read.bind(handle);
-      Object.assign(handle, { read: async (buffer: Buffer, offset: number, length: number, position: number) => {
-        const result = await read(buffer, offset, length, position);
-        if (!appended) {
+    const gate = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (path) => {
+      const wire = await actual.openLogicalWire(path);
+      if (path !== f.wirePath || wire === undefined) return wire;
+      return { ...wire, readAt: async (position, length) => {
+        const result = await wire.readAt(position, length);
+        if (!appended && db.readManifest('ws\0s\0main')?.complete) {
           appended = true;
-          await actual.appendFile(f.wirePath, line(event({ type: 'tool.result', toolCallId: 'call-100', result: { output: 'later result', isError: false } })));
+          await appendFile(f.wirePath, line(event({ type: 'tool.result', toolCallId: 'call-100', result: { output: 'later result', isError: false } })));
         }
         return result;
-      } });
-      return handle;
+      } };
     });
     try {
       expect(await f.service.lookupToolCall('s', 'main', 'call-100')).toMatchObject({ status: 'found', frame: { output: 'saved response' } });
@@ -380,35 +379,25 @@ describe('source-backed canonical detail', () => {
 
   it('cancels between chunks of an oversized supported record and leaves its checkpoint reusable', async () => {
     const f = await fixture([...turnRecords(100, 'x'.repeat(9 << 20)), ...turnRecords(101, 'small')]);
-    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const actual = await vi.importActual<typeof import('../src/services/history/logicalWireRead')>('../src/services/history/logicalWireRead');
     const controller = new AbortController();
-    let streamingHandles = 0;
     let retryBytes = 0;
     try {
       expect(await f.service.lookupToolCall('s', 'main', 'call-101')).toEqual({ status: 'preparing' });
       const db = await f.db.ready();
       const checkpoint = db.readManifest('ws\0s\0main');
-      const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
-        const handle = await actual.open(...args);
-        if (args[0] !== f.wirePath) return handle;
-        const read = handle.read.bind(handle);
-        const stat = handle.stat.bind(handle);
-        let streamingHandle = 0;
-        Object.assign(handle, {
-          stat: async (options?: { bigint?: boolean }) => {
-            if (options?.bigint !== true) streamingHandle = ++streamingHandles;
-            return stat(options);
-          },
-          read: async (buffer: Buffer, offset: number, length: number, position: number) => {
-            const result = await read(buffer, offset, length, position);
-            if (streamingHandle === 2) {
-              retryBytes += result.bytesRead;
-              if (retryBytes >= (128 << 10)) controller.abort(new DOMException('Closed while reading a large record', 'AbortError'));
-            }
-            return result;
-          },
-        });
-        return handle;
+      expect(checkpoint?.offset).toBeGreaterThan(0);
+      const gate = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (path) => {
+        const wire = await actual.openLogicalWire(path);
+        if (path !== f.wirePath || wire === undefined) return wire;
+        return { ...wire, readAt: async (position, length) => {
+          const result = await wire.readAt(position, length);
+          if (position >= checkpoint!.offset && position < checkpoint!.offset + (9 << 20) && length <= (64 << 10)) {
+            retryBytes += result.byteLength;
+            if (retryBytes >= (128 << 10)) controller.abort(new DOMException('Closed while reading a large record', 'AbortError'));
+          }
+          return result;
+        } };
       });
       await expect(f.service.lookupToolCall('s', 'main', 'call-101', controller.signal)).rejects.toMatchObject({ name: 'AbortError' });
       gate.mockRestore();
@@ -418,7 +407,7 @@ describe('source-backed canonical detail', () => {
       expect(db.readManifest('ws\0s\0main')?.generation).toBe(checkpoint?.generation);
       expect(await f.service.lookupToolCall('s', 'main', 'call-101')).toMatchObject({ status: 'found', frame: { output: 'small' } });
       expect(f.nav.canonicalReadReport()).toMatchObject({ replays: 1, replayRecords: 8 });
-    } finally { vi.mocked(fs.open).mockRestore(); await f.close(); }
+    } finally { vi.mocked(logicalWire.openLogicalWire).mockRestore(); await f.close(); }
   });
 
   it('isolates identical call IDs by caller and invalidates cache after rewrite, append and visibility reset', async () => {
@@ -536,7 +525,7 @@ describe('source-backed canonical detail', () => {
       db.db.prepare("UPDATE state SET value=json_set(value,'$.digest',?) WHERE scope=? AND bucket='canonicalRecords' AND key=?")
         .run('0'.repeat(64), 'ws\0s\0main', String(output.ordinal));
       await expect(f.service.lookupToolCall('s', 'main', 'call-20')).rejects.toThrow('history_source_changed');
-      const spy = vi.spyOn(fs, 'open').mockRejectedValueOnce(Object.assign(new Error('unreadable synthetic file'), { code: 'EACCES' }));
+      const spy = vi.spyOn(logicalWire, 'openLogicalWire').mockRejectedValueOnce(Object.assign(new Error('unreadable synthetic file'), { code: 'EACCES' }));
       await expect(f.service.lookupToolCall('s', 'main', 'absent')).rejects.toThrow('unreadable synthetic file');
       spy.mockRestore();
     } finally { await f.close(); }

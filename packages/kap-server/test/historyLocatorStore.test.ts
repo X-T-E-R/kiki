@@ -1,5 +1,4 @@
 import { appendFile, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import * as fs from 'node:fs/promises';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -17,10 +16,11 @@ import { IWorkspaceService as WorkspaceToken, type IWorkspaceService } from '@ki
 import { TranscriptWireAdapter } from '@kiki/transcript';
 import { HistoryLocatorStore, HISTORY_NAV_COLLECTION } from '../src/services/history/historyLocatorStore';
 import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb';
+import * as logicalWire from '../src/services/history/logicalWireRead';
 import { historyArchiveSeed } from '../src/services/historyArchive';
 import type { TranscriptService } from '../src/services/transcript/transcriptService';
 
-vi.mock('node:fs/promises', { spy: true });
+vi.mock('../src/services/history/logicalWireRead', { spy: true });
 
 function memoryStore(): IQueryStore {
   const rows = new Map<string, unknown>();
@@ -813,21 +813,19 @@ describe('history navigation source rows', () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-search-proof-append-'));
     const wirePath = join(dir, 'wire.jsonl');
     const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
-    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const actual = await vi.importActual<typeof import('../src/services/history/logicalWireRead')>('../src/services/history/logicalWireRead');
     let nextTurn = 3;
     const prompt = (turnId: number) => line({ type: 'turn.prompt', turnId, time: 1000 + turnId,
       input: [{ type: 'text', text: `needle ${turnId} 汉😀` }], origin: { kind: 'user' } });
     await writeFile(wirePath, [0, 1, 2].map(prompt).join(''));
-    const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
-      const handle = await actual.open(...args);
-      if (args[0] !== wirePath) return handle;
-      const read = handle.read.bind(handle);
-      Object.assign(handle, { read: async (buffer: Buffer, offset: number, length: number, position: number) => {
-        const result = await read(buffer, offset, length, position);
-        await actual.appendFile(wirePath, prompt(nextTurn++));
+    const gate = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (path) => {
+      const wire = await actual.openLogicalWire(path);
+      if (path !== wirePath || wire === undefined) return wire;
+      return { ...wire, readAt: async (position, length) => {
+        const result = await wire.readAt(position, length);
+        await appendFile(wirePath, prompt(nextTurn++));
         return result;
-      } });
-      return handle;
+      } };
     });
     try {
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
@@ -860,7 +858,7 @@ describe('history navigation source rows', () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-search-proof-truncate-'));
     const wirePath = join(dir, 'wire.jsonl');
     const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
-    const actual = await vi.importActual<typeof import('node:fs/promises')>('node:fs/promises');
+    const actual = await vi.importActual<typeof import('../src/services/history/logicalWireRead')>('../src/services/history/logicalWireRead');
     try {
       await writeFile(wirePath, lines.join(''));
       const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
@@ -872,16 +870,14 @@ describe('history navigation source rows', () => {
       const first = await archive.search(request);
       expect(first.items).toHaveLength(1);
       let changed = false;
-      const gate = vi.spyOn(fs, 'open').mockImplementation(async (...args) => {
-        const handle = await actual.open(...args);
-        if (args[0] !== wirePath) return handle;
-        const read = handle.read.bind(handle);
-        Object.assign(handle, { read: async (buffer: Buffer, offset: number, length: number, position: number) => {
-          const result = await read(buffer, offset, length, position);
+      const gate = vi.spyOn(logicalWire, 'openLogicalWire').mockImplementation(async (path) => {
+        const wire = await actual.openLogicalWire(path);
+        if (path !== wirePath || wire === undefined) return wire;
+        return { ...wire, readAt: async (position, length) => {
+          const result = await wire.readAt(position, length);
           if (!changed) { changed = true; writeFileSync(wirePath, lines[0]!); }
           return result;
-        } });
-        return handle;
+        } };
       });
       try { await expect(archive.search(request)).rejects.toThrow('history_source_changed'); }
       finally { gate.mockRestore(); }

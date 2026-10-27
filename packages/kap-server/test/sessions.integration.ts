@@ -41,7 +41,7 @@ import {
   ISessionToolPolicy,
   IWorkspaceService,
   MAIN_AGENT_ID,
-  MINIDB_QUERY_STORE_SUBDIR,
+  SQLITE_QUERY_STORE_SUBDIR,
   closeSessionById,
   drainSessionMetadataWrites,
   getLiveSessionById,
@@ -3477,7 +3477,7 @@ describe('server-v2 /api/sessions status context window', () => {
   });
 });
 
-describe('server-v2 /api/sessions (minidb read model)', () => {
+describe('server-v2 /api/sessions (SQLite read model)', () => {
   let server: RunningServer | undefined;
   let home: string | undefined;
   let base: string;
@@ -4068,8 +4068,8 @@ describe('server-v2 /api/sessions (minidb read model)', () => {
 
     await (server as RunningServer).close();
     server = undefined;
-    await rm(join(home as string, 'cache', MINIDB_QUERY_STORE_SUBDIR), { recursive: true, force: true });
-    await writeFile(join(home as string, 'cache', MINIDB_QUERY_STORE_SUBDIR), 'sabotage', 'utf8');
+    await rm(join(home as string, 'cache', SQLITE_QUERY_STORE_SUBDIR), { recursive: true, force: true });
+    await writeFile(join(home as string, 'cache', SQLITE_QUERY_STORE_SUBDIR), 'sabotage', 'utf8');
 
     server = await startServer({
       hostIdentity: TEST_HOST_IDENTITY,
@@ -4081,11 +4081,13 @@ describe('server-v2 /api/sessions (minidb read model)', () => {
     });
     base = `http://127.0.0.1:${server.port}`;
 
-    const status = await getJson<{ state: string; reason?: string; degradedCount: number }>(
-      '/api/debug/sessionIndex/status',
-    );
-    expect(status.body.data.state).toBe('degraded');
-    expect(status.body.data.degradedCount).toBeGreaterThan(0);
+    await vi.waitFor(async () => {
+      const status = await getJson<{ state: string; reason?: string; degradedCount: number }>(
+        '/api/debug/sessionIndex/status',
+      );
+      expect(status.body.data.state).toBe('degraded');
+      expect(status.body.data.degradedCount).toBeGreaterThan(0);
+    }, { timeout: 10_000 });
 
     const listed = await getJson<null>('/api/sessions');
     expect(listed.body.code).toBe(40939);
