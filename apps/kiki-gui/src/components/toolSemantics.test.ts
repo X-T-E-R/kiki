@@ -149,6 +149,34 @@ describe('network tool previews', () => {
   });
 });
 
+describe('question tool history', () => {
+  const args = { background: true, questions: [{ question: 'Which checks?', options: [{ label: 'Typecheck' }] }] };
+
+  it('keeps a background task receipt neutral instead of claiming the user is still answering', () => {
+    const output = 'task_id: question-example\ndescription: Which checks?\nstatus: running\nautomatic_notification: true\nnext_step: Continue your current work; the answer will arrive automatically when the user responds.';
+    const view = semantics('AskUserQuestion', output, args);
+    expect(view.verb).toBe('Ask');
+    expect(view.object).toBe('Which checks?');
+    expect(view.state).toBeUndefined();
+    expect(view.items).toEqual([]);
+  });
+
+  it.each([undefined, 'Unrecognized question receipt', {}, { cancelled: true }, { answers: null }])('keeps an unknown outcome neutral: %j', (output) => {
+    const view = semantics('AskUserQuestion', output, args);
+    expect(view.state).toBeUndefined();
+    expect(view.items).toEqual([]);
+  });
+
+  it.each([false, true])('uses explicit answers for a synchronous result (JSON text: %s)', (asText) => {
+    const result = { answers: { 'Which checks?': 'Typecheck' } };
+    const answered = semantics('AskUserQuestion', asText ? native(result) : result, args);
+    expect(answered.state).toEqual({ text: 'Answered', tone: 'plain' });
+    expect(answered.items).toEqual([{ key: 'Which checks?', primary: 'Typecheck', secondary: 'Which checks?' }]);
+    const dismissed = { answers: {}, note: 'User dismissed the question without answering.' };
+    expect(semantics('AskUserQuestion', asText ? native(dismissed) : dismissed, args).state).toEqual({ text: 'Dismissed', tone: 'warn' });
+  });
+});
+
 describe('TodoList working note previews', () => {
   it.each([
     ['goal', 'Goal'], ['directives', 'User instructions'], ['decided', 'Decided'], ['rejected', 'Ruled out'],

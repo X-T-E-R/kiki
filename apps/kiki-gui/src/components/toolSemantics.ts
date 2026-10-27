@@ -1222,21 +1222,17 @@ function describeQuestion(block: ToolBlock, ctx: SemanticContext): ToolSemantics
   const questions = arr(args['questions']).map(rec).filter((item): item is Rec => item !== undefined);
   const result = rec(outputJson(block.output));
   const answers = rec(result?.['answers']);
-  const text = outputText(block.output) ?? '';
-  const background = text.startsWith('task_id: ');
   const answered = answers === undefined ? 0 : Object.keys(answers).length;
   return {
     icon: 'ask',
     verb: t('tc.sem.ask'),
     object: str(questions[0]?.['question']),
     note: questions.length > 1 ? tp('tc.sem.questions', questions.length) : undefined,
-    state: background
-      ? { text: t('tc.sem.ask.waiting'), tone: 'accent' }
-      : result === undefined
-        ? undefined
-        : answered === 0
-          ? { text: t('tc.sem.ask.dismissed'), tone: 'warn' }
-          : { text: t('tc.sem.ask.answered'), tone: 'plain' },
+    state: answers === undefined
+      ? undefined
+      : answered === 0
+        ? { text: t('tc.sem.ask.dismissed'), tone: 'warn' }
+        : { text: t('tc.sem.ask.answered'), tone: 'plain' },
     items: answers === undefined ? [] : Object.entries(answers).map(([question, answer]) => ({
       key: question,
       primary: typeof answer === 'string' ? answer : Array.isArray(answer) ? answer.join(', ') : JSON.stringify(answer),

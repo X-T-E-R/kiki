@@ -6764,6 +6764,48 @@ describe('a dispatch card lays out only the descendants it provably created', ()
   });
 });
 
+describe('background question tool history', () => {
+  it.each(['pending', 'answered', 'dismissed', 'unknown'] as const)('keeps the tool receipt neutral beside the %s interaction facts', async (status) => {
+    const questions = [{ id: 'q1', question: 'Which checks?', options: [{ id: 'a', label: 'Typecheck' }] }];
+    const receipt = 'task_id: question-example\ndescription: Which checks?\nstatus: running\nautomatic_notification: true\nnext_step: Continue your current work; the answer will arrive automatically when the user responds.';
+    const snapshot: AgentTranscriptSnapshot = {
+      tasks: [], attachments: [], todos: [], prompts: [], meta: {}, hasMoreOlder: false,
+      interactions: status === 'unknown' ? [] : [{
+        interactionId: 'question-bg', interactionKind: 'question', toolCallId: 'ask-bg', state: status,
+        anchor: { kind: 'tool_call', toolCallId: 'ask-bg' }, origin: { agentId: 'main', turnId: 1 },
+        request: { questions, created_at: '2026-01-01T00:00:01.000Z' },
+        response: status === 'answered' ? { answers: { 'Which checks?': 'Typecheck' } } : undefined,
+      }],
+      items: [{ kind: 'turn', turnId: 't1', ordinal: 1, state: 'running', origin: { kind: 'user' },
+        prompt: 'Run the selected checks.', startedAt: '2026-01-01T00:00:00.000Z', steps: [{
+          kind: 'step', stepId: 't1.1', turnId: 't1', ordinal: 1, state: 'running', startedAt: '2026-01-01T00:00:01.000Z', frames: [{
+            kind: 'tool', frameId: 'ask-bg-frame', toolCallId: 'ask-bg', name: 'AskUserQuestion', state: 'done',
+            startedAt: '2026-01-01T00:00:01.000Z', input: { background: true, questions }, output: receipt,
+          }, { kind: 'text', frameId: 'continued-work', role: 'assistant', text: 'Checking the implementation.' }],
+        }],
+      }],
+    };
+    const state = projectAgentTranscriptView(createViewState('session_test'), 'main', snapshot);
+    const container = await renderTranscript([...state.blocks], undefined, state);
+    const fold = container.querySelector('[data-history-fold]:not([data-history-fold-open])');
+    if (fold !== null) await act(async () => { click(fold.querySelector('button')!); });
+    const tool = container.querySelector('[data-tool-id="ask-bg"]');
+    expect(tool).not.toBeNull();
+    expect(tool!.textContent).toContain('Which checks?');
+    expect(tool!.querySelector('[data-tool-state]')).toBeNull();
+    expect(state.blocks.find((block) => block.kind === 'tool')).toMatchObject({ output: receipt });
+    if (status === 'pending') {
+      expect(container.querySelector('[data-question-card]')).not.toBeNull();
+      expect(container.querySelector('[data-question-history]')).toBeNull();
+    } else if (status === 'unknown') {
+      expect(container.querySelector('[data-question-card], [data-question-history]')).toBeNull();
+    } else {
+      expect(container.querySelector(`[data-question-history="${status}"]`)).not.toBeNull();
+      expect(container.querySelector('[data-question-card]')).toBeNull();
+    }
+  });
+});
+
 describe('background task notification folding (TUI-01)', () => {
   type SnapshotItem = AgentTranscriptSnapshot['items'][number];
 
