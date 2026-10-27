@@ -35,6 +35,7 @@ import { type IAgentScopeHandle, type ISessionScopeHandle } from '#/_base/di/sco
 import type { ServiceIdentifier, ServicesAccessor } from '#/_base/di/instantiation';
 import { ILogService, type ILogService as LogService } from '#/_base/log/log';
 import { IWireService } from '#/wire/wire';
+import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { openZipSource, type ZipSource } from '#/app/sessionExport/file-source';
 import {
@@ -73,6 +74,18 @@ vi.mock('node:fs/promises', async (importOriginal) => {
     },
   };
 });
+
+function spyOnWireScanSize(beforeSize: (path: string) => Promise<void>) {
+  const original = FileStorageService.prototype.size;
+  return vi.spyOn(FileStorageService.prototype, 'size').mockImplementation(async function (
+    this: FileStorageService,
+    scope: string,
+    key: string,
+  ) {
+    await beforeSize(this.pathFor(scope, key));
+    return original.call(this, scope, key);
+  });
+}
 
 const noopDisposable: IDisposable = { dispose: () => {} };
 const noopEvent = () => noopDisposable;
@@ -209,12 +222,12 @@ describe('sessionExport', () => {
     await writeFile(logPath, log);
     await writeFile(wirePath, `${JSON.stringify({ type: 'metadata', time: 1_700_000_000 })}\n`);
     let rotated = false;
-    fsOpenHook.afterOpen = async (path) => {
+    const sizeSpy = spyOnWireScanSize(async (path) => {
       if (!rotated && path === wirePath) {
         await rename(logPath, rotatedPath);
         rotated = true;
       }
-    };
+    });
 
     try {
       const result = await exportSessionDirectory({
@@ -234,7 +247,7 @@ describe('sessionExport', () => {
       expect(result.entries).toContain('logs/kimi-code.log');
       await expect(readZipEntry(outputPath, 'logs/kimi-code.log')).resolves.toEqual(log);
     } finally {
-      fsOpenHook.afterOpen = undefined;
+      sizeSpy.mockRestore();
     }
   });
 
@@ -252,12 +265,12 @@ describe('sessionExport', () => {
     await writeFile(wirePath, `${JSON.stringify({ type: 'metadata', time: 1_700_000_000 })}\n`);
     await writeFile(globalLogPath, log);
     let rotated = false;
-    fsOpenHook.afterOpen = async (path) => {
+    const sizeSpy = spyOnWireScanSize(async (path) => {
       if (!rotated && path === wirePath) {
         await rename(globalLogPath, rotatedPath);
         rotated = true;
       }
-    };
+    });
 
     try {
       const result = await exportSessionDirectory({
@@ -279,7 +292,7 @@ describe('sessionExport', () => {
       expect(result.entries).toContain('logs/global/kimi-code.log');
       await expect(readZipEntry(outputPath, 'logs/global/kimi-code.log')).resolves.toEqual(log);
     } finally {
-      fsOpenHook.afterOpen = undefined;
+      sizeSpy.mockRestore();
     }
   });
 

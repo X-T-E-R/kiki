@@ -39,10 +39,10 @@ describe('bounded session-view canonical reads', () => {
     expect(page?.has_more).toBe(true);
     expect(extended).toBe(false);
   });
-  it.each(['turn', 'marker', 'orphan'] as const)('extends a consumed leading %s before seeking a replacement turn window', async (kind) => {
+  it.each(['turn', 'marker'] as const)('extends a consumed leading %s before seeking a replacement turn window', async (kind) => {
     const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed', origin: { kind: 'user' }, steps: [] });
     const marker = { kind: 'marker' as const, markerId: 'delivery-before-next-turn', marker: 'message.delivery', payload: { text: 'recorded delivery' } };
-    const boundary = kind === 'marker' ? [marker, turn(8)] : [{ ...turn(8), origin: { kind: kind === 'orphan' ? 'other' as const : 'user' as const } }];
+    const boundary = kind === 'marker' ? [marker, turn(8)] : [turn(8)];
     const tail = { ...empty(), items: boundary, hasMoreOlder: true };
     const older = { ...empty(), items: [turn(6), turn(7), ...boundary], hasMoreOlder: false };
     const seeks: string[] = [];
@@ -62,6 +62,46 @@ describe('bounded session-view canonical reads', () => {
     expect(page?.items).toEqual([turn(6), turn(7)]);
     expect(extensions).toBe(1);
     expect(seeks).toEqual([]);
+  });
+
+  it('repairs a consumed orphan through canonical seek and continues through every earlier prompt to EOF', async () => {
+    const turn = (ordinal: number): TranscriptTurn => ({ kind: 'turn', turnId: `t${ordinal}`, ordinal, state: 'completed',
+      origin: { kind: 'user' }, promptId: `p${ordinal}`, prompt: `Prompt ${ordinal}`, steps: [] });
+    const orphan: TranscriptTurn = { kind: 'turn', turnId: 't8', ordinal: 8, state: 'completed', origin: { kind: 'other' }, steps: [] };
+    const tail = { ...empty(), items: [orphan], hasMoreOlder: true };
+    const seeks: string[] = [];
+    let extensions = 0;
+    const service = {
+      forSessionLive: () => undefined,
+      readColdPageSnapshot: async (_sessionId: string, _agentId: string, _project: unknown, _signal: unknown, extend: boolean) => {
+        if (extend) extensions += 1;
+        return tail;
+      },
+      readAnchoredColdSnapshot: async (_sessionId: string, _agentId: string, beforeTurn: string) => {
+        seeks.push(beforeTurn);
+        return beforeTurn === 't8' ? { ...empty(), items: [turn(7), turn(8)], hasMoreOlder: true }
+          : { ...empty(), items: [turn(6), turn(7)], hasMoreOlder: false };
+      },
+      anchorReadState: (snapshot: AgentTranscriptSnapshot) => snapshot.hasMoreOlder ? 'continues' : 'window',
+      coldHistoryTruncated: async () => false, readColdRoster: async () => [],
+      reconcileQuestionSnapshot: (_sessionId: string, value: AgentTranscriptSnapshot) => value,
+    } as unknown as TranscriptService;
+    const cursor = Buffer.from(JSON.stringify({ v: 2, agentId: 'main', source: 'cold', anchor: 'turn:t8',
+      seekTurn: 't8', beforeTurn: 't8', orphanTurn: 't8' })).toString('base64url');
+    const repaired = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: cursor });
+    expect(repaired?.items).toEqual([turn(8)]);
+    expect(repaired?.has_more).toBe(true);
+    expect(repaired?.next_cursor).not.toBe(cursor);
+    const older = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: repaired!.next_cursor });
+    expect(older?.items).toEqual([turn(7)]);
+    expect(older?.has_more).toBe(true);
+    expect(older?.next_cursor).not.toBe(repaired?.next_cursor);
+    const first = await readSessionViewTranscriptPage(service, 'fixture-session', { agentId: 'main', beforeItem: older!.next_cursor });
+    expect(first?.items).toEqual([turn(6)]);
+    expect(first?.has_more).toBe(false);
+    expect(first?.next_cursor).toBeUndefined();
+    expect(seeks).toEqual(['t8', 't8', 't7']);
+    expect(extensions).toBe(0);
   });
 
   it('continues a leading marker across byte progress without replacing it with a neighbouring turn seek', async () => {

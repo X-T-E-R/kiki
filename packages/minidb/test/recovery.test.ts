@@ -2,7 +2,6 @@
 import { afterEach, test, vi } from 'vitest';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
-import type { PathLike } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MiniDb } from '../src/index.js';
@@ -579,59 +578,105 @@ test('generation pairing: a stable writer costs a read-only open zero retries', 
 });
 
 test('a read-only open racing a compaction rotation always recovers one complete generation', { timeout: 30_000 }, async () => {
-  // Deterministic interleave, no sleeps: the writer's rotation is parked
-  // BETWEEN its two renames (the new snapshot is already in place, the old
-  // full WAL is still at db.wal) while the read-only open runs its whole
-  // recovery inside that window. The only consistent outcomes are one
-  // complete generation or the other — never a mix.
-  let armed = true;
+  // Deterministic interleave, no sleeps: the writer's rotation is parked while
+  // awaiting the directory fsync after the snapshot rename (the new snapshot
+  // is already in place, the old full WAL is still at db.wal) while the
+  // read-only open runs its whole recovery inside that window. The only
+  // consistent outcomes are one complete generation or the other — never a
+  // mix.
+  let gateArmed = false;
+  let gateParked = false;
+  let gateReleased = false;
   let parked!: () => void;
-  let release!: () => void;
+  let releaseGate!: () => void;
   const parkedPromise = new Promise<void>((r) => (parked = r));
-  const gate = new Promise<void>((r) => (release = r));
-  const rename = async (src: PathLike, dst: PathLike): Promise<void> => {
-    if (armed && String(src).endsWith('db.wal.tmp') && String(dst).endsWith('db.wal')) {
-      armed = false;
-      parked();
-      await gate;
-    }
-    return fs.rename(src, dst);
+  const gate = new Promise<void>((r) => (releaseGate = r));
+  const release = (): void => {
+    if (gateReleased) return;
+    gateReleased = true;
+    gateArmed = false;
+    releaseGate();
   };
-  const mocked = { ...fs, rename };
-  vi.doMock('node:fs/promises', () => ({ ...mocked, default: mocked }));
+  let compactPromise: Promise<void> | undefined;
+  let closeWriter: (() => Promise<void>) | undefined;
+  let closeMidReader: (() => Promise<void>) | undefined;
+  let closePostReader: (() => Promise<void>) | undefined;
+  const closeQuietly = async (close: (() => Promise<void>) | undefined): Promise<void> => {
+    if (close) await close().catch(() => {});
+  };
 
-  const { MiniDb: MockedMiniDb } = await import('../src/index.js');
   const dir = await tmpDir();
   try {
+    // The production rotation uses synchronous renameSync calls and only
+    // yields at the directory fsync between them. Park that real async
+    // boundary instead of mocking the rename that production never awaits.
+    const open = async (...args: Parameters<typeof fs.open>) => {
+      const [p, flags] = args;
+      const handle = await fs.open(...args);
+      if (String(p) === dir && flags === 'r') {
+        const sync = handle.sync.bind(handle);
+        handle.sync = async () => {
+          if (gateArmed && !gateParked) {
+            gateParked = true;
+            parked();
+            await gate;
+          }
+          await sync();
+        };
+      }
+      return handle;
+    };
+    const mocked = { ...fs, open };
+    vi.resetModules();
+    vi.doMock('node:fs/promises', () => ({ ...mocked, default: mocked }));
+
+    const { MiniDb: MockedMiniDb } = await import('../src/index.js');
     const writer = await MockedMiniDb.open<string>({ dir, valueCodec: 'string', fsyncPolicy: 'no', autoCompact: false, indexGenerations: false });
+    closeWriter = () => writer.close();
     const N = 100;
     for (let i = 0; i < N; i++) await writer.set(`k${i}`, `v${i}`);
 
-    const compactPromise = writer.compact();
-    await parkedPromise; // the rotation is now parked between the two renames
+    gateArmed = true;
+    compactPromise = writer.compact();
+    await Promise.race([
+      parkedPromise,
+      compactPromise.then(() => {
+        throw new Error('compaction completed without reaching the rotation fsync gate');
+      }),
+    ]);
 
     // The reader opens in the mid-rotation window: new snapshot + old full
     // WAL is a complete, consistent pairing (the replay is idempotent), and
     // the stable window costs no retry.
     const midReader = await MockedMiniDb.open<string>({ dir, valueCodec: 'string', readOnly: true, indexGenerations: false });
+    closeMidReader = () => midReader.close();
     assert.equal(midReader.size, N);
     assert.equal(midReader.get('k0'), 'v0');
     assert.equal(midReader.get(`k${N - 1}`), `v${N - 1}`);
     assert.equal(midReader.recoveryInfo!.generationRetries, 0);
     await midReader.close();
+    closeMidReader = undefined;
 
     release();
     await compactPromise;
 
     // After the rotation, a fresh open recovers the new generation, complete.
     const postReader = await MockedMiniDb.open<string>({ dir, valueCodec: 'string', readOnly: true, indexGenerations: false });
+    closePostReader = () => postReader.close();
     assert.equal(postReader.size, N);
     assert.equal(postReader.get('k0'), 'v0');
     assert.equal(postReader.get(`k${N - 1}`), `v${N - 1}`);
     assert.equal(postReader.recoveryInfo!.generationRetries, 0);
     await postReader.close();
+    closePostReader = undefined;
     await writer.close();
+    closeWriter = undefined;
   } finally {
+    release();
+    await compactPromise?.catch(() => {});
+    await closeQuietly(closePostReader);
+    await closeQuietly(closeMidReader);
+    await closeQuietly(closeWriter);
     await fs.rm(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   }
 });

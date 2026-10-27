@@ -714,7 +714,7 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(announced).not.toContain('browser__ego_run');
     expect(announced).not.toContain('HistoryRead');
     expect(h.sut.load(['browser__agent_browser_snapshot', 'browser__ego_run', 'HistoryRead'])).toEqual({
-      toLoad: ['browser__agent_browser_snapshot'], alreadyAvailable: [], unknown: ['browser__ego_run', 'HistoryRead'],
+      toLoad: ['browser__agent_browser_snapshot'], alreadyAvailable: ['browser__ego_run', 'HistoryRead'], unknown: [],
     });
     const declared = await declareSchemas(h, 2);
     expect(declared?.tools?.map((tool) => tool.name)).toEqual(['browser__agent_browser_snapshot']);
@@ -900,8 +900,8 @@ describe('AgentToolSelectService view shaping (gate open)', () => {
     expect(inline?.deferred).toBeUndefined();
     expect(h.sut.load([USER_DEFERRED])).toEqual({
       toLoad: [],
-      alreadyAvailable: [],
-      unknown: [USER_DEFERRED],
+      alreadyAvailable: [USER_DEFERRED],
+      unknown: [],
     });
   });
 });
@@ -935,8 +935,8 @@ describe('AgentToolSelectService.load', () => {
 
     expect(h.sut.load([USER_DEFERRED])).toEqual({
       toLoad: [],
-      alreadyAvailable: [],
-      unknown: [USER_DEFERRED],
+      alreadyAvailable: [USER_DEFERRED],
+      unknown: [],
     });
     expect(await declareSchemas(h)).toBeUndefined();
   });
