@@ -41,12 +41,8 @@ async function makeTempDir(): Promise<string> {
   return dir;
 }
 
-async function closeThreadMailbox(client: SDKRpcClient): Promise<void> {
-  try {
-    await client.engineAccessor.get(IThreadMailboxStore).close();
-  } catch (error) {
-    if (!(error instanceof Error) || error.message !== 'Thread mailbox store is closed.') throw error;
-  }
+function closeThreadMailbox(client: SDKRpcClient): Promise<void> {
+  return client.engineAccessor.get(IThreadMailboxStore).close();
 }
 
 async function writeSessionState(
