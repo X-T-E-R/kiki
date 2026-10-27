@@ -87,6 +87,10 @@ async function collect(service: IOutputLayerService, request = input, signal = n
   return events;
 }
 
+function failedStream(error: unknown): AsyncIterable<ModelRequestEvent> {
+  return { [Symbol.asyncIterator]: () => ({ next: async () => { throw error; } }) };
+}
+
 async function* recoveredOutput(): AsyncGenerator<ModelRequestEvent> {
   yield { type: 'part', part: { type: 'text', text: 'recovered' } };
   yield { type: 'finish', message: { role: 'assistant', content: [{ type: 'text', text: 'recovered' }], toolCalls: [] } };
@@ -118,7 +122,7 @@ describe('output layer bounded recovery', () => {
     vi.useFakeTimers();
     vi.spyOn(Math, 'random').mockReturnValue(0);
     const fixture = setup();
-    fixture.script(async function* () { throw new APIStatusError(503, 'fixture overload'); });
+    fixture.script(() => failedStream(new APIStatusError(503, 'fixture overload')));
     const startedAt = Date.now();
     const pending = collect(fixture.service);
     await vi.runAllTimersAsync();
@@ -134,7 +138,7 @@ describe('output layer bounded recovery', () => {
   ])('honors exact provider policy selectors and budgets: $attempts attempts', async ({ providers, retry, attempts }) => {
     vi.useFakeTimers();
     const fixture = setup(true, { maxAttempts: 3, policies: [{ match: 'APIConnectionError', models: ['chosen-model'], providers, maxAttempts: 2, backoff: 1, retry }] });
-    fixture.script(async function* () { throw new APIConnectionError('fixture disconnect'); });
+    fixture.script(() => failedStream(new APIConnectionError('fixture disconnect')));
     const pending = collect(fixture.service);
     await vi.runAllTimersAsync();
     expect((await pending).at(-1)).toMatchObject({ type: 'failed' });
@@ -165,7 +169,7 @@ describe('output layer bounded recovery', () => {
     new Error('connection failed, retry this arbitrary message'),
   ])('keeps nonretryable errors and safety vetoes terminal: $message', async failure => {
     const fixture = setup(true, { maxAttempts: 2, policies: [{ match: '.*', retry: true, backoff: 0 }] });
-    fixture.script(async function* () { throw failure; });
+    fixture.script(() => failedStream(failure));
     const events = await collect(fixture.service);
     expect(events.map(event => event.type)).toEqual(['started', 'failed']);
     expect(fixture.calls).toHaveLength(1);
@@ -193,7 +197,7 @@ describe('output layer bounded recovery', () => {
     const failure = new APIConnectionError('observed remotely');
     noteExecutedRequestDelivery(failure);
     const fixture = setup();
-    fixture.script(async function* () { throw failure; });
+    fixture.script(() => failedStream(failure));
     expect((await collect(fixture.service)).at(-1)).toMatchObject({ type: 'failed' });
     expect(fixture.calls).toHaveLength(1);
   });
@@ -202,7 +206,7 @@ describe('output layer bounded recovery', () => {
     vi.useFakeTimers();
     const fixture = setup();
     const controller = new AbortController();
-    fixture.script(async function* () { throw new APIConnectionError('fixture disconnect'); });
+    fixture.script(() => failedStream(new APIConnectionError('fixture disconnect')));
     const pending = collect(fixture.service, input, controller.signal);
     await vi.advanceTimersByTimeAsync(0);
     expect(fixture.calls).toHaveLength(1);

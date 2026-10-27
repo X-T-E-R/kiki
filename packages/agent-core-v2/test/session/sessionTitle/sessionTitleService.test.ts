@@ -44,6 +44,14 @@ import { registerLogServices } from '../../_base/log/stubs';
 
 const SESSION_ID = 'sess-1';
 
+function asyncStream<T>(next: () => Promise<IteratorResult<T>>): AsyncIterable<T> {
+  return { [Symbol.asyncIterator]: () => ({ next }) };
+}
+
+function failedStream(error: unknown): AsyncIterable<ModelRequestEvent> {
+  return asyncStream(async () => { throw error; });
+}
+
 class FakeSessionMetadata implements ISessionMetadata {
   declare readonly _serviceBrand: undefined;
   readonly ready = Promise.resolve();
@@ -368,7 +376,7 @@ describe('SessionTitleService', () => {
 
   it('keeps the shared default title budget bounded at five attempts', async () => {
     vi.useFakeTimers();
-    responseScript = async function* () { throw new APIConnectionError('fixture unavailable'); };
+    responseScript = () => failedStream(new APIConnectionError('fixture unavailable'));
     const pending = expect(ix.get(ISessionTitleService).generateTitle()).rejects.toMatchObject({ code: 'session.title_generation_failed' });
     await vi.runAllTimersAsync();
     await pending;
@@ -388,7 +396,7 @@ describe('SessionTitleService', () => {
 
   it.each([false, true])('preserves title retry vetoes (safety=%s)', async safety => {
     retryConfig = { policies: [{ match: '.*', retry: !safety ? false : true, backoff: 0 }] };
-    responseScript = async function* () { throw safety ? markProviderEventError(new APIStatusError(503, 'fixture safety'), 'antigravity_safety') : new APIConnectionError('fixture disconnect'); };
+    responseScript = () => failedStream(safety ? markProviderEventError(new APIStatusError(503, 'fixture safety'), 'antigravity_safety') : new APIConnectionError('fixture disconnect'));
     await expect(ix.get(ISessionTitleService).generateTitle()).rejects.toMatchObject({ code: 'session.title_generation_failed' });
     expect(titleRequests).toHaveLength(1);
     expect(published).toHaveLength(0);
@@ -412,11 +420,12 @@ describe('SessionTitleService', () => {
 
   it.each(['backoff', 'request'] as const)('disposal cancels a pending title %s without publishing or replaying', async phase => {
     vi.useFakeTimers();
-    responseScript = async function* (_attempt, signal) {
+    responseScript = (_attempt, signal) => asyncStream(async () => {
       if (phase === 'backoff') throw new APIConnectionError('fixture disconnect');
       await new Promise<void>(resolve => { signal?.addEventListener('abort', () => resolve(), { once: true }); });
       signal?.throwIfAborted();
-    };
+      return { done: true, value: undefined };
+    });
     const pending = expect(ix.get(ISessionTitleService).generateTitle()).rejects.toMatchObject({ code: 'session.title_generation_failed' });
     await vi.advanceTimersByTimeAsync(0);
     expect(titleRequests).toHaveLength(1);
