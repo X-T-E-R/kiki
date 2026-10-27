@@ -1544,9 +1544,7 @@ export class RuntimeThreadMailboxStore implements IThreadMailboxStore {
     if (epoch === undefined || this.ownerEpoch === epoch) this.ownerEpoch = 0;
     const db = this.db;
     this.db = undefined;
-    const closeResults = await Promise.allSettled([
-      ...(db === undefined ? [] : [db.close()]),
-    ]);
+    const closeResults = await Promise.allSettled(db === undefined ? [] : [db.close()]);
     for (const result of closeResults) {
       if (result.status === 'rejected') this.ownerReleaseErrors.push(result.reason);
     }
