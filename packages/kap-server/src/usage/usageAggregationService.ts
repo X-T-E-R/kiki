@@ -748,7 +748,7 @@ export class UsageAggregationService {
         }
         const sourceIds = new Set((session.sources ?? []).map((source) => source.agentId));
         session.prepared = opened && listedAgents.every((agentId) => sourceIds.has(agentId)) && (session.sources ?? []).every((source) => source.done || source.cursor !== undefined);
-        await fold.saveHead(head, session);
+        if (!replayJournal || !session.prepared || (session.sources ?? []).some((source) => !source.done)) await fold.saveHead(head, session);
         if (!session.prepared) {
           budget.incompleteReason ??= 'record_budget';
           break;

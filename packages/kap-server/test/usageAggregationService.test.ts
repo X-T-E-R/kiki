@@ -1841,6 +1841,37 @@ describe('shared agent and history usage projection', () => {
     expect(read.mock.calls.filter(([source, key]) => source === directory && key === 'facts.jsonl')).toHaveLength(0);
   });
 
+  it('publishes excluded-only session metadata with the final head instead of one transaction per session', async () => {
+    const start = Date.UTC(2026, 9, 1);
+    const sessions = Array.from({ length: 12 }, (_, index) => summary(`session-${index}`, 'w'));
+    const scopes = sessions.map((item) => scope('w', item.id));
+    const saved = await openRange(sessions, Object.fromEntries(scopes.map((source) => [source, []])), true);
+    saved.core.accessor.get(IUsageFactStore);
+    for (const [index, source] of scopes.entries()) saved.logs.append(source, 'wire.jsonl', usageRecord(index === 0 ? start : start - 1, index + 1));
+    await saved.logs.flush();
+    const mtime = saved.storage.mtime.bind(saved.storage);
+    const excluded = new Set(scopes.slice(1));
+    vi.spyOn(saved.storage, 'mtime').mockImplementation((source, key) => excluded.has(source) && key === 'wire.jsonl' ? Promise.resolve(start - 1) : mtime(source, key));
+    const publish = vi.spyOn(UsageRangeFold.prototype, 'saveHead');
+    try {
+      const input = { range: 'custom', start_at: start, end_at: start + 1000 } as const;
+      const service = new UsageAggregationService(saved.core, () => start + 1000);
+      const response = await service.query(input);
+      expect(response.reliability.complete).toBe(true);
+      expect(response.summary.tokens.output).toBe(1);
+      expect(publish.mock.calls.filter((call) => call[1] !== undefined)).toHaveLength(1);
+      const complete = publish.mock.calls.at(-1)![0] as RangeFoldHead;
+      const persisted = await new UsageRangeFold(saved.store, `usage-range-v1:${complete.fingerprint}`, 100, 100).head<RangeFoldHead>();
+      expect(persisted?.complete).toBe(true);
+      expect(persisted?.sessions).toHaveLength(12);
+      expect(persisted?.sessions.every((session) => session.prepared && session.sources?.every((source) => source.done))).toBe(true);
+      const reopened = await new UsageAggregationService(saved.core, () => start + 1000).query(input);
+      expect(reopened.reliability.complete).toBe(true);
+      expect(reopened.summary).toEqual(response.summary);
+      expect(reopened.trend).toEqual(response.trend);
+    } finally { publish.mockRestore(); }
+  });
+
   it('reads only the complete journal checkpoint tail and grows nonoverlapping windows for a large final batch', async () => {
     const main = scope('w', 's');
     const saved = await openRange([], { [main]: [] });
