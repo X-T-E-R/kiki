@@ -1,4 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Event } from '#/_base/event';
+import { resolvedRecipeSchema } from '@kiki/protocol';
+import { IRecipeService } from '#/app/recipes/recipes';
 
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentContextRebuildService } from '#/agent/contextRebuild/contextRebuild';
@@ -8,7 +11,7 @@ import { IAgentPermissionModeService } from '#/agent/permissionMode/permissionMo
 import { IAgentProfileService } from '#/agent/profile/profile';
 import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
-import { sessionServices, testAgent, type TestAgentContext } from '../../harness';
+import { appServices, sessionServices, testAgent, type TestAgentContext } from '../../harness';
 
 const PROVIDER = {
   type: 'kimi',
@@ -51,6 +54,7 @@ describe('context rebuild at the committed compaction boundary', () => {
 
     expect(reload).toHaveBeenCalledTimes(1);
     expect(ctx.compactHistory()).not.toEqual(history);
+    expect(ctx.get(IAgentContextRebuildService).control().error).toBeUndefined();
     expect(ctx.get(IAgentContextRebuildService).control()).toMatchObject({
       enabled: true,
       outcome: 'applied',
@@ -169,7 +173,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     const reload = vi.fn(async () => ({ instructionsChanged: false, pluginsChanged: false }));
     const ctx = openAgent(reload);
     const profile = ctx.get(IAgentProfileService);
-    profile.update({ thinkingLevel: 'low', disallowedTools: ['shell'], systemPrompt: 'before rebuild' });
+    profile.update({ thinkingLevel: 'low', disallowedTools: ['Bash'], systemPrompt: 'before rebuild' });
     const mode = ctx.get(IAgentPermissionModeService).mode;
     const model = profile.getModel();
     const service = ctx.get(IAgentFullCompactionService);
@@ -193,7 +197,7 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(profile.data().systemPrompt).toContain('REBUILT_MARKER');
     expect(profile.getModel()).toBe(model);
     expect(profile.data().thinkingLevel).toBe('low');
-    expect(profile.data().disallowedTools).toEqual(['shell']);
+    expect(profile.data().disallowedTools).toEqual(['Bash']);
     expect(ctx.get(IAgentPermissionModeService).mode).toBe(mode);
     const afterCompaction = ctx.compactHistory();
     expect(afterCompaction.slice(0, compacted.length)).toEqual(compacted);
@@ -205,6 +209,42 @@ describe('context rebuild at the committed compaction boundary', () => {
     expect(ctx.llmCalls.length).toBe(callsBefore + 1);
     expect(ctx.llmCalls.at(-1)?.systemPrompt).toBe(profile.data().systemPrompt);
     expect(ctx.llmCalls.at(-1)?.systemPrompt).toContain('REBUILT_MARKER');
+  }, 30_000);
+
+  it('assembles a configured Recipe on the first enabled boundary even without a named profile', async () => {
+    const selected = resolvedRecipeSchema.parse({ revision: 'recipe-latest', branches: {
+      main: { system: 'RECIPE CURRENT BODY', fields: {} }, sub: { fields: {} }, independent: { fields: {} },
+    }, dependencies: [], origins: [], model: { parameters: { temperature: 0.62 } }, model_origins: {} });
+    const ctx = testAgent(sessionServices((reg) => reg.defineInstance(ISessionContextSourceReloader, {
+      _serviceBrand: undefined, reload: async () => ({ instructionsChanged: false, pluginsChanged: false }),
+    })), appServices((reg) => reg.definePartialInstance(IRecipeService, {
+      resolve: async () => structuredClone(selected), onDidChange: Event.None as IRecipeService['onDidChange'],
+    })));
+    agents.push(ctx);
+    ctx.configure({ provider: PROVIDER, modelCapabilities: CAPABILITIES });
+    const original = ctx.kimiConfig.models![PROVIDER.model]!;
+    ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [PROVIDER.model]: { ...original, recipe: 'example-recipe' } } };
+    ctx.notifyModelConfigChanged();
+    ctx.appendExchange(1, 'earlier question', 'earlier answer', 80);
+    const profile = ctx.get(IAgentProfileService);
+    expect(profile.data().profileName).toBeUndefined();
+    profile.update({ thinkingLevel: 'off', disallowedTools: ['Bash'] });
+    const modelAlias = profile.data().modelAlias;
+    await ctx.get(IAgentContextRebuildService).setEnabled(true);
+    const compaction = ctx.get(IAgentFullCompactionService);
+    expect(compaction.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    await expect(compaction.compacting!.promise).resolves.toMatchObject({ strategy: 'relay' });
+    expect(ctx.get(IAgentContextRebuildService).control()).toMatchObject({ outcome: 'applied', trigger: 'fresh_start' });
+    expect(profile.data().modelAlias).toBe(modelAlias);
+    expect(profile.data().thinkingLevel).toBe('off');
+    expect(profile.data().disallowedTools).toContain('Bash');
+    expect(profile.getSystemPrompt()).toContain('RECIPE CURRENT BODY');
+    expect(profile.getRecipeModelSettings()?.['parameters']).toMatchObject({ temperature: 0.62 });
+    ctx.mockNextResponse({ type: 'text', text: 'reply' });
+    await ctx.rpc.prompt({ input: [{ type: 'text', text: 'next request' }] });
+    await ctx.untilTurnEnd();
+    expect(ctx.llmCalls.at(-1)?.systemPrompt).toContain('RECIPE CURRENT BODY');
+    expect((await profile.getPromptDiagnostics()).request?.binding_revision).toBe((await profile.getPromptDiagnostics()).binding_revision);
   }, 30_000);
 
   it('does not re-read sources when the switch stays off', async () => {

@@ -13,6 +13,8 @@ import { RecipeService } from '#/app/recipes/recipeService';
 import { RecipeSourceReader } from '#/os/backends/node-fs/recipeSourceReader';
 import { stringify } from 'smol-toml';
 import { IAgentPromptService } from '#/agent/prompt/prompt';
+import { IAgentContextRebuildService } from '#/agent/contextRebuild/contextRebuild';
+import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompaction';
 import { IAgentExternalHooksService } from '#/features/externalHooks/agent/agentExternalHooks';
 import { makeHookRunner } from '../../features/externalHooks/runner-stub';
 import { IModelCatalogMutationService } from '#/app/kosongConfig/modelCatalogMutation';
@@ -40,6 +42,7 @@ import { IAgentModelSteeringService } from '#/features/modelSteering/modelSteeri
 import '#/features/modelSteering/modelSteeringFeature';
 import { runWillBeginStepHooks } from '../loop/stubs';
 import { ISessionAgentProfileCatalog } from '#/session/sessionAgentProfileCatalog/sessionAgentProfileCatalog';
+import { ISessionContextSourceReloader } from '#/session/contextRebuild/contextSourceReloader';
 
 import {
   createTestAgent,
@@ -48,6 +51,7 @@ import {
   appServices,
   llmGenerateServices,
   sessionService,
+  sessionServices,
   externalHookServices,
   type TestAgentContext,
 } from '../../harness';
@@ -126,13 +130,20 @@ describe('per-model cognition overlay', () => {
     const directory = join(homeDir, 'bundle'); await mkdir(directory);
     const script = (text: string) => `let input = ''; for await (const part of process.stdin) input += part; const value = JSON.parse(input); if (value.hook_event_name === 'UserPromptSubmit') console.log(JSON.stringify({ message: ${JSON.stringify(text)} }));`;
     await writeFile(join(directory, 'cue.mjs'), script('OLD SCRIPT GUIDANCE'));
-    await writeFile(join(directory, 'recipe.toml'), stringify({ schema_version: 1, id: 'example-hooks', name: 'Example hooks', version: '1.0.0', hooks: [{ event: 'UserPromptSubmit', command: 'node cue.mjs', files: ['cue.mjs'], timeout: 5 }] }));
-    let installation: string | undefined; let observed = '';
+    const manifest = (body: string, temperature: number) => stringify({
+      schema_version: 1, id: 'example-hooks', name: 'Example hooks', version: '1.0.0',
+      prompts: { system: { text: body } }, model: { parameters: { temperature } },
+      hooks: [{ event: 'UserPromptSubmit', command: 'node cue.mjs', files: ['cue.mjs'], timeout: 5 }],
+    });
+    await writeFile(join(directory, 'recipe.toml'), manifest('OLD RECIPE BODY', 0.25));
+    let installation: string | undefined; let observed = ''; let observedSystem = ''; let observedSampling: GenerateOptions['sampling'];
     const create = () => {
       ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => {
         reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
-      }), externalHookServices(makeHookRunner([])), llmGenerateServices(async (_provider, _system, _tools, messages) => {
-        observed = JSON.stringify(messages);
+      }), sessionServices((reg) => reg.defineInstance(ISessionContextSourceReloader, {
+        _serviceBrand: undefined, reload: async () => ({ instructionsChanged: false, pluginsChanged: false }),
+      })), externalHookServices(makeHookRunner([])), llmGenerateServices(async (_provider, system, _tools, messages, _callbacks, options) => {
+        observed = JSON.stringify(messages); observedSystem = system; observedSampling = options?.sampling;
         return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
       }));
       ctx.kimiConfig = { ...ctx.kimiConfig, models: { ...ctx.kimiConfig.models, [MOCK_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, recipe: installation }, [OTHER_MODEL]: { ...ctx.kimiConfig.models![MOCK_MODEL]!, model: OTHER_MODEL, recipe: 'off' } } };
@@ -145,7 +156,7 @@ describe('per-model cognition overlay', () => {
     installation = (await recipes.install({ preview_id: preview.preview_id, consent: true, update_mode: 'pinned' })).installation_id;
     await agent.dispose(); agent = create(); recipes = agent.get(IRecipeService);
     let profile = agent.get(IAgentProfileService);
-    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL });
+    await profile.bind({ profile: DEFAULT_AGENT_PROFILE_NAME, model: MOCK_MODEL, thinking: 'off', toolOverride: { disallowedTools: ['Bash'] } });
     agent.get(IAgentExternalHooksService);
     const submit = async () => {
       const input = { promptMessage: { role: 'user' as const, content: [{ type: 'text' as const, text: 'hello' }], toolCalls: [], origin: { kind: 'user' as const } }, isSteer: false, block: false };
@@ -156,17 +167,56 @@ describe('per-model cognition overlay', () => {
       await agent.get(IAgentLLMRequesterService).request({ tools: [] });
     };
     await submit(); expect(observed).toContain('OLD SCRIPT GUIDANCE');
+    expect(observedSystem).toContain('OLD RECIPE BODY'); expect(observedSampling?.temperature).toBe(0.25);
     const frozen = structuredClone(await profile.getCognitionBinding());
     await writeFile(join(directory, 'cue.mjs'), script('NEW SCRIPT GUIDANCE'));
+    await writeFile(join(directory, 'recipe.toml'), manifest('NEW RECIPE BODY', 0.75));
     const updated = await recipes.preview({ source: preview.summary.source, installation_id: installation, expected_revision: preview.digest });
     await recipes.install({ preview_id: updated.preview_id, consent: true });
+    const frozenRebuild = agent.get(IAgentContextRebuildService);
+    expect(frozenRebuild.control().enabled).toBe(false);
+    agent.appendExchange(2, 'previous prompt', 'previous answer', 80);
+    const frozenCompaction = agent.get(IAgentFullCompactionService);
+    expect(frozenCompaction.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    await expect(frozenCompaction.compacting!.promise).resolves.toMatchObject({ strategy: 'relay' });
+    expect(frozenRebuild.control().outcome).toBeUndefined();
+    await submit(); expect(observed).toContain('OLD SCRIPT GUIDANCE'); expect(observedSystem).toContain('OLD RECIPE BODY');
     await agent.get(IWireService).flush(); await agent.dispose();
     await rm(directory, { recursive: true });
     agent = create(); await agent.restorePersisted(); profile = agent.get(IAgentProfileService); recipes = agent.get(IRecipeService);
     await profile.syncBindingMetadata(); agent.get(IAgentExternalHooksService);
     expect(await profile.getCognitionBinding()).toEqual(frozen);
+    const oldRevision = (await profile.getPromptDiagnostics()).recipe_model_binding?.references?.[0]?.revision;
     await submit(); expect(observed).toContain('OLD SCRIPT GUIDANCE'); expect(observed).not.toContain('NEW SCRIPT GUIDANCE');
-    await profile.rebuildPromptContext(); await submit(); expect(observed).toContain('NEW SCRIPT GUIDANCE');
+    expect(observedSystem).toContain('OLD RECIPE BODY'); expect(observedSampling?.temperature).toBe(0.25);
+    const beforeBinding = profile.data();
+    const rebuild = agent.get(IAgentContextRebuildService);
+    await rebuild.setEnabled(true);
+    agent.appendExchange(3, 'compact user', 'compact assistant', 80);
+    const compaction = agent.get(IAgentFullCompactionService);
+    expect(compaction.begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    await expect(compaction.compacting!.promise).resolves.toMatchObject({ strategy: 'relay' });
+    expect(rebuild.control()).toMatchObject({ enabled: true, outcome: 'applied', trigger: 'fresh_start' });
+    const diagnostics = await profile.getPromptDiagnostics();
+    expect(diagnostics.recipe_model_binding?.references?.[0]?.revision).toBe(updated.digest);
+    expect(diagnostics.recipe_model_binding?.references?.[0]?.revision).not.toBe(oldRevision);
+    expect(profile.data()).toMatchObject({ modelAlias: beforeBinding.modelAlias, thinkingLevel: beforeBinding.thinkingLevel, toolOverride: beforeBinding.toolOverride, disallowedTools: beforeBinding.disallowedTools });
+    await submit(); expect(observed).toContain('NEW SCRIPT GUIDANCE');
+    expect(observedSystem).toContain('NEW RECIPE BODY'); expect(observedSystem).not.toContain('OLD RECIPE BODY');
+    expect(observedSampling?.temperature).toBe(0.75);
+    expect((await profile.getPromptDiagnostics()).request?.binding_revision).toBe(diagnostics.binding_revision);
+    const configuredModel = agent.kimiConfig.models![MOCK_MODEL]!;
+    agent.kimiConfig = { ...agent.kimiConfig, models: { ...agent.kimiConfig.models, [MOCK_MODEL]: { ...configuredModel, recipe: 'missing-recipe' } } };
+    agent.notifyModelConfigChanged();
+    await expect(rebuild.rebuild()).rejects.toThrow('Recipe installation not found');
+    expect(rebuild.control()).toMatchObject({ outcome: 'partial', trigger: 'manual', error: expect.stringContaining('Recipe installation not found') });
+    expect(rebuild.control().rebuilt).not.toContain('profile');
+    expect((await profile.getCognitionBinding()).recipe?.resolved.layers?.[0]?.resolved.revision).toBe(updated.digest);
+    await submit(); expect(observedSystem).toContain('NEW RECIPE BODY'); expect(observedSampling?.temperature).toBe(0.75);
+    vi.spyOn(agent.get(ISessionAgentProfileCatalog), 'get').mockReturnValue(undefined);
+    await expect(rebuild.rebuild()).rejects.toThrow('Recipe installation not found');
+    expect(rebuild.control()).toMatchObject({ outcome: 'partial', trigger: 'manual' });
+    expect(rebuild.control().rebuilt).not.toContain('profile');
     const role = normalizeAgentProfile({ name: DEFAULT_AGENT_PROFILE_NAME, recipe: installation, systemPrompt: () => 'ROLE BODY' });
     await profile.bind({ resolvedProfile: role, model: OTHER_MODEL }); expect(await profile.getRecipeScriptHooks()).toHaveLength(1);
     await profile.bind({ resolvedProfile: { ...role, recipe: 'off' }, model: OTHER_MODEL }); expect(await profile.getRecipeScriptHooks()).toEqual([]);
@@ -880,7 +930,9 @@ describe('per-model cognition overlay', () => {
     const create = () => {
       ctx = createTestAgent({ persistence, autoConfigure: false }, homeDirServices(homeDir), appServices((reg) => {
         reg.define(IRecipeService, RecipeService); reg.define(IRecipeSourceReader, RecipeSourceReader);
-      }), llmGenerateServices(async (_provider, system, _tools, _messages, _callbacks, options) => {
+      }), sessionServices((reg) => reg.defineInstance(ISessionContextSourceReloader, {
+        _serviceBrand: undefined, reload: async () => ({ instructionsChanged: false, pluginsChanged: false }),
+      })), llmGenerateServices(async (_provider, system, _tools, _messages, _callbacks, options) => {
         observed = system; sampling = options?.sampling;
         return { id: 'response', message: { role: 'assistant', content: [{ type: 'text', text: 'ok' }], toolCalls: [] }, usage: emptyUsage(), finishReason: 'completed', rawFinishReason: 'stop' };
       }));
@@ -916,9 +968,13 @@ describe('per-model cognition overlay', () => {
     expect(observed).toContain('FILE BODY');
     expect(observed).not.toContain('FILE NEW');
     expect(await profile.getCognitionBinding()).toEqual(frozen);
-    await profile.rebuildPromptContext();
+    const rebuild = agent.get(IAgentContextRebuildService);
+    expect(rebuild.control().enabled).toBe(false);
+    expect((await rebuild.rebuild()).outcome).toBe('applied');
+    expect(rebuild.control().trigger).toBe('manual');
     await agent.get(IAgentLLMRequesterService).request({ tools: [] });
     expect(observed).toContain('FILE NEW');
+    expect((await profile.getPromptDiagnostics()).request?.binding_revision).toBe((await profile.getPromptDiagnostics()).binding_revision);
     expect((await profile.getCognitionBinding()).slots?.steering).toBe('LOWER STEERING');
     const absoluteRole = roleFor(absolutePack.replaceAll('\\', '/'));
     await profile.bind({ resolvedProfile: absoluteRole, model: MOCK_MODEL });

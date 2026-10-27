@@ -1902,11 +1902,37 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
         delegationPosition: this.delegationPosition });
       return;
     }
-    if (current.profileName === undefined) return;
+    if (current.profileName === undefined) {
+      if (current.modelAlias === undefined) return;
+      await this.bind({
+        profile: DEFAULT_AGENT_PROFILE_NAME,
+        model: current.modelAlias,
+        thinking: current.thinkingLevel,
+        toolOverride: current.disallowedTools?.length
+          ? {
+              ...current.toolOverride,
+              disallowedTools: [...new Set([
+                ...(current.toolOverride?.disallowedTools ?? []), ...current.disallowedTools,
+              ])],
+            }
+          : current.toolOverride,
+        personaSnapshot: current.persona ?? this.currentPersona,
+        personaOverrides: current.personaOverrides,
+        lease: current.appliedLease,
+        spawnPolicy: current.spawnPolicy,
+        dispatchDecision: current.dispatchDecision,
+        executionRestriction: current.executionRestriction,
+        allowParentNotify: current.allowParentNotify,
+        delegationPosition: this.delegationPosition,
+      });
+      return;
+    }
     const liveProfile = this.catalog.get(current.profileName);
     if (liveProfile === undefined || liveProfile.private === true ||
       (current.routeId !== undefined && !this.catalog.listRoutes().some((route) => route.id === current.routeId))) {
-      await this.refreshSystemPrompt();
+      this.frozenSkillListing = undefined;
+      this.frozenPluginSections = undefined;
+      await this.refreshSystemPromptNow(true, true);
       return;
     }
     this.activeProfile = undefined;
@@ -1987,7 +2013,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
     return refresh;
   }
 
-  private async refreshSystemPromptNow(adoptPromptInputs: boolean): Promise<void> {
+  private async refreshSystemPromptNow(adoptPromptInputs: boolean, propagate = false): Promise<void> {
     try {
       if (!adoptPromptInputs && this.profileState.boundProfile !== undefined) {
         await this.restoreCommittedPromptProjections();
@@ -1996,7 +2022,10 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       if (this.profileState.execution !== undefined && this.isExternalExecutor) return;
       this.syncRestoredPersona();
       const profile = this.resolveActiveProfile();
-      if (profile === undefined) return;
+      if (profile === undefined) {
+        if (propagate) throw new Error2(ErrorCodes.CONFIG_INVALID, 'The saved profile cannot be resolved for context rebuild.');
+        return;
+      }
       const renderProfile = { ...profile, ...effectiveToolBinding(this.data().toolPolicyBase ?? profile, this.profileState.toolOverride, this.profileState.boundProfile) };
       const context = await this.buildSystemPromptContext(renderProfile);
       this.activeProfile = profile;
@@ -2034,7 +2063,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
           code: 'system-prompt-refresh-failed',
         }),
       );
-      return;
+      if (propagate) throw error;
     }
   }
 
