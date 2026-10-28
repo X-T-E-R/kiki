@@ -7,6 +7,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import type { Message } from '#/kosong/contract/message';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
 import { projectCurrentMemory } from '#/app/memory/memoryProjection';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
@@ -38,6 +39,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     @ILogService private readonly log: ILogService,
     @ITelemetryService private readonly telemetry: ITelemetryService,
     @IAgentStateService private readonly states: IAgentStateService,
+    @IAgentMemorySnapshot private readonly memory: IAgentMemorySnapshot,
   ) {
     this.states.contributeState(contextProjectorLastRepairSignatureKey);
   }
@@ -73,7 +75,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     fn: (history: readonly ContextMessage[], onAnomaly?: OnAnomaly) => Message[],
   ): readonly Message[] {
     const anomalies: ProjectionAnomaly[] = [];
-    const result = fn(projectCurrentMemory(messages), (anomaly) => anomalies.push(anomaly));
+    const result = fn(projectCurrentMemory(messages, this.memory.projectionView), (anomaly) => anomalies.push(anomaly));
     this.reportProjectionRepairs(anomalies);
     return result;
   }

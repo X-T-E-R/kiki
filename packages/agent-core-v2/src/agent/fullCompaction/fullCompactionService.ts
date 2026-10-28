@@ -31,6 +31,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
 import { compactionDirectivesBudget, renderTodoNotes } from '#/session/todo/todoNotes';
 import { IAgentMemorySnapshot, memoryEntryReference } from '#/app/memory/memorySnapshot';
+import { memoryHandoffMessages } from '#/app/memory/memoryProjection';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IConfigService } from '#/app/config/config';
 import { type LoopControl } from '#/agent/loop/configSection';
@@ -893,7 +894,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     if (!history.some((message) => message.role === 'assistant' || message.role === 'tool' || message.origin?.kind === 'compaction_summary')) return undefined;
     const model = this.profile.resolveModelContext();
     const instruction = renderPrompt(compactionInstructionTemplate, { custom_instruction_block: '' }).trimEnd();
-    const messages: Message[] = [...stripDynamicToolContext(history), createUserMessage(instruction)];
+    const messages: Message[] = [...stripDynamicToolContext(memoryHandoffMessages(history)), createUserMessage(instruction)];
     const tokensBefore = this.requestTokens(history);
     const notes = this.todo.getNotes?.(this.scope.agentId) ?? {};
     const [liveEntries, memoryReferences, linkedBoardCards] = await Promise.all([
@@ -906,7 +907,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       sessionId: this.session.sessionId, epoch: this.states.get(contextWindowEpochKey),
       notes: notes.notes, meta: notes.meta, todos: this.currentTodos(),
       estimateText: (text) => this.tokenCounting.estimateText(text),
-      memoryEntries: liveEntries.map((entry) => memoryEntryReference(entry)), memoryReferences, linkedBoardCards,
+      memoryEntries: liveEntries.map((entry) => memoryEntryReference(entry, undefined, this.memorySnapshot.workingSet)), memoryReferences, linkedBoardCards,
     };
     const startedAt = Date.now();
     const maxAttempts = model.compactionMaxAttempts ?? MAX_COMPACTION_RETRY_ATTEMPTS;
@@ -990,7 +991,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       ]);
       signal.throwIfAborted();
       if (this._compacting !== active) throw compactionCancelledReason(active);
-      const memoryEntries = liveEntries.map((entry) => memoryEntryReference(entry));
+      const memoryEntries = liveEntries.map((entry) => memoryEntryReference(entry, undefined, this.memorySnapshot.workingSet));
       const relayInput: RelayInput = {
         history: originalHistory, compactCount, agentId: this.scope.agentId,
         sessionId: this.session.sessionId, epoch,
@@ -1087,7 +1088,7 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
       let overflowShrinkCount = 0;
       let leadingDropRounds = 0;
       const selectHistoryForModel = (): readonly ContextMessage[] => {
-        let selected = stripDynamicToolContext(originalHistory.slice(0, compactCount));
+        let selected = stripDynamicToolContext(memoryHandoffMessages(originalHistory.slice(0, compactCount)));
         droppedCount = 0;
         for (let i = 0; i < leadingDropRounds; i++) {
           const reduced = dropOldestMessageAndLeadingToolResults(selected);

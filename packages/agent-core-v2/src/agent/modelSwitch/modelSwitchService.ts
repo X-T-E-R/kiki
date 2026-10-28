@@ -271,7 +271,7 @@ export class AgentModelSwitchService extends Disposable implements IAgentModelSw
         this.states.has(permissionModeKey) ? `## Permission state\n${this.states.get(permissionModeKey)}` : '',
         this.states.has(planKey) ? `## Plan state\n${JSON.stringify(this.states.get(planKey))}` : '',
       ].filter(Boolean),
-      memoryEntries: memoryEntries.map((entry) => memoryEntryReference(entry)), memoryReferences,
+      memoryEntries: memoryEntries.map((entry) => memoryEntryReference(entry, undefined, this.memory.workingSet)), memoryReferences,
     };
   }
 

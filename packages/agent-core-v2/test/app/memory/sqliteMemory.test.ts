@@ -20,7 +20,7 @@ import { IFileSystemStorageService } from '#/persistence/interface/storage';
 import { IAgentMemorySnapshot, AgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { rankMemoryRecall, selectMemoryRecall } from '#/app/memory/memoryRecall';
 import { renderMemoryWorkingSet, memoryRequestText, memoryTextFits } from '#/app/memory/memoryContext';
-import { withoutMemoryWorkset } from '#/app/memory/memoryProjection';
+import { projectCurrentMemory, withoutMemoryWorkset } from '#/app/memory/memoryProjection';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import type { ContextMessage } from '#/agent/contextMemory/types';
@@ -556,6 +556,31 @@ describe('Memory recall and complete working units', () => {
     expect(memoryRequestText(messages)).toBe('The actual child assignment, including limit 17.');
     messages.push({ role: 'user', toolCalls: [], origin: { kind: 'system_trigger', name: 'subagent' }, content: [{ type: 'text', text: 'The actual delegated deployment task.' }] });
     expect(memoryRequestText(messages)).toBe('The actual delegated deployment task.');
+  });
+
+  it('projects only trusted Memory units by scope and revision while preserving user text and call pairs', async () => {
+    const entry = (await save('Deployment instructions', 'Use exactly 9 workers. Never upload output.')).entry;
+    const input = { action: 'create', title: entry.title, body: entry.body, reason: 'Human guidance' };
+    const receipt = { action: 'create', outcome: 'applied', entry, owner_scope: global, title: entry.title, revision: entry.revision };
+    const messages: ContextMessage[] = [
+      { role: 'user', toolCalls: [], content: [{ type: 'text', text: entry.body }], origin: { kind: 'user' } },
+      { role: 'assistant', toolCalls: [{ type: 'function', id: 'write', name: 'MemoryWrite', arguments: JSON.stringify(input) }], content: [] },
+      { role: 'tool', toolCallId: 'write', toolCalls: [], content: [{ type: 'text', text: JSON.stringify(receipt) }] },
+      { role: 'assistant', toolCalls: [{ type: 'function', id: 'other', name: 'Read', arguments: '{}' }], content: [] },
+      { role: 'tool', toolCallId: 'other', toolCalls: [], content: [{ type: 'text', text: JSON.stringify([{ ...entry, scope: global }]) }] },
+    ];
+    const before = JSON.stringify(messages);
+    const valid = { generation: '1', scopes: [global], entries: [{ ...entry, scope: global }] };
+    expect(projectCurrentMemory(messages, valid)).toEqual(messages);
+    const unavailable = projectCurrentMemory(messages, { generation: '2', scopes: [workspace], entries: [{ ...entry, scope: workspace }] });
+    expect(unavailable[0]).toBe(messages[0]);
+    expect(unavailable[4]).toBe(messages[4]);
+    expect(JSON.stringify(unavailable.slice(1, 3))).not.toContain(entry.body);
+    expect(unavailable[1]!.toolCalls[0]).toMatchObject({ id: 'write', name: 'MemoryWrite' });
+    expect(unavailable[2]!.toolCallId).toBe('write');
+    expect(JSON.stringify(unavailable[2])).toContain('memory_unavailable');
+    expect(JSON.stringify(messages)).toBe(before);
+    expect(projectCurrentMemory(messages)).toEqual(messages);
   });
 
   it('removes canonical worksets from legacy external hints while preserving the legacy Memory projection', () => {

@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createTestAgent, appService, sessionService, agentService, type TestAgentContext } from '../../../harness';
+import { createTestAgent, appService, sessionService, agentService, homeDirServices, type TestAgentContext } from '../../../harness';
 import { IAgentModelSwitchService } from '#/agent/modelSwitch/modelSwitch';
 import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
+import { SessionMetadata } from '#/session/sessionMetadata/sessionMetadataService';
 import { LOOP_CONTROL_SECTION, LoopControlSchema } from '#/agent/loop/configSection';
 import { Emitter, Event } from '#/_base/event';
 import type { IAgentScopeHandle } from '#/_base/di/scope';
@@ -45,6 +46,12 @@ import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 import { continuityClockKey } from '#/session/todo/continuityState';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
 import { runAgentTurn } from '#/session/subagent/runAgentTurn';
+import { IAgentLifecycleService } from '#/session/agentLifecycle/agentLifecycle';
+import { AgentLifecycleService } from '#/session/agentLifecycle/agentLifecycleService';
+import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanceManager';
+import { FakeRuntime } from '#/runtime/fakeRuntime';
+import { ISessionStateService } from '#/session/state/sessionState';
+import { SessionStateService } from '#/session/state/sessionStateService';
 
 const contexts: TestAgentContext[] = [];
 const memoryCleanup: Array<() => Promise<void>> = [];
@@ -290,16 +297,25 @@ describe('actual default memory contract consumption', () => {
 });
 
 
-async function canonicalMemory(): Promise<ISqliteMemoryStore> {
+async function canonicalMemory(onPeer?: (peer: ISqliteMemoryStore) => void): Promise<ISqliteMemoryStore> {
   const home = await mkdtemp(join(tmpdir(), 'memory-request-'));
-  const ix = new TestInstantiationService();
-  ix.stub(IBootstrapService, { storeDir: join(home, 'store') });
-  ix.stub(IMemoryScopes, memoryScopes);
-  ix.set(IMemoryPersistence, new SyncDescriptor(SqliteMemoryPersistence));
-  ix.set(ISqliteMemoryStore, new SyncDescriptor(SqliteMemoryStore));
-  const persistence = ix.get(IMemoryPersistence);
-  memoryCleanup.push(async () => { await persistence.close(); await ix.dispose(); await rm(home, { recursive: true, force: true }); });
-  return ix.get(ISqliteMemoryStore);
+  const containers: TestInstantiationService[] = [];
+  const open = () => {
+    const ix = new TestInstantiationService();
+    ix.stub(IBootstrapService, { storeDir: join(home, 'store') });
+    ix.stub(IMemoryScopes, memoryScopes);
+    ix.set(IMemoryPersistence, new SyncDescriptor(SqliteMemoryPersistence));
+    ix.set(ISqliteMemoryStore, new SyncDescriptor(SqliteMemoryStore));
+    containers.push(ix);
+    return ix.get(ISqliteMemoryStore);
+  };
+  const store = open();
+  if (onPeer !== undefined) onPeer(open());
+  memoryCleanup.push(async () => {
+    for (const ix of containers) { await ix.get(IMemoryPersistence).close(); await ix.dispose(); }
+    await rm(home, { recursive: true, force: true });
+  });
+  return store;
 }
 
 describe('canonical Memory actual request working sets', () => {
@@ -331,6 +347,104 @@ describe('canonical Memory actual request working sets', () => {
     await store.forget(scope, (await store.previewForget(scope, [saved.entry.id])).targets, `forget-request-${agentId}`);
     await send('Continue the deployment instructions');
     expect(requestText(ctx)).not.toContain(changed.entry.body);
+  });
+
+  it.each([['main', 'relay'], ['child', 'relay'], ['main', 'summarize']] as const)('removes stale explicit Memory tool payloads from %s requests and restored %s histories', async (agentId, strategy) => {
+    let writer!: ISqliteMemoryStore;
+    const store = await canonicalMemory((peer) => { writer = peer; });
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'Deployment instructions', body: 'Use exactly 9 workers. Never publish artifacts; isolated smoke tests are the exception.', source: { writer: 'user' }, reason: 'Human guidance' });
+    const ctx = memoryAgent(undefined, agentId, store);
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    const send = async (input: string) => {
+      const run = await runAgentTurn({ id: agentId, accessor: { get: (id) => ctx.get(id) } }, { kind: 'prompt', prompt: input }, { signal: new AbortController().signal });
+      await run.completion;
+      await ctx.get(IAgentLoopService).settled();
+    };
+    ctx.mockNextResponse({ type: 'function', id: 'explicit-search', name: 'MemorySearch', arguments: JSON.stringify({ query: 'Deployment instructions' }) });
+    ctx.mockNextResponse({ type: 'function', id: 'explicit-read', name: 'MemoryRead', arguments: JSON.stringify({ id: saved.entry.id }) });
+    if (agentId === 'main') ctx.mockNextResponse({ type: 'function', id: 'explicit-write', name: 'MemoryWrite', arguments: JSON.stringify({ action: 'update', id: saved.entry.id, expected_revision: saved.entry.revision, type: saved.entry.type, title: saved.entry.title, body: saved.entry.body, reason: 'Already complete guidance' }) });
+    ctx.mockNextResponse({ type: 'text', text: 'Continue the authorized task.' });
+    await send('Read the deployment instructions');
+    const currentTools = ctx.llmCalls.at(-1)!.history.filter((message) => message.role === 'tool');
+    expect(JSON.stringify(currentTools)).toContain(saved.entry.body);
+    const changed = await writer.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Use exactly 5 workers. Never publish artifacts; isolated smoke tests remain the exception.', source: { writer: 'user' }, reason: 'Human correction' });
+    ctx.mockNextResponse({ type: 'text', text: 'Apply the current instructions.' });
+    await send('Continue the deployment instructions');
+    expect(requestText(ctx)).toContain(changed.entry.body);
+    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    const revised = ctx.llmCalls.at(-1)!.history.filter((message) => message.role === 'tool');
+    expect(revised.map((message) => message.toolCallId)).toEqual(['explicit-search', 'explicit-read', ...(agentId === 'main' ? ['explicit-write'] : [])]);
+    expect(JSON.stringify(ctx.llmCalls.at(-1)!.history)).not.toContain(saved.entry.body);
+    expect(JSON.stringify(revised)).toContain('memory_revision_changed');
+    expect(JSON.stringify(ctx.get(IAgentContextMemoryService).get())).toContain(saved.entry.body);
+    const records: WireRecord[] = [];
+    for await (const record of ctx.get(IAppendLogStore).read<WireRecord>(ctx.get(IAgentScopeContext).scope(), AGENT_WIRE_RECORD_KEY)) records.push(record);
+    await store.forget(scope, (await store.previewForget(scope, [saved.entry.id])).targets, `forget-explicit-${agentId}`);
+    const restored = memoryAgent(ctx.get(IFileSystemStorageService), agentId, store);
+    restored.get(IDynamicPromptInjection);
+    await restored.restore(records);
+    restored.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    restored.mockNextResponse({ type: 'text', text: 'Continue independent work.' });
+    const run = await runAgentTurn({ id: agentId, accessor: { get: (id) => restored.get(id) } }, { kind: 'prompt', prompt: 'Continue the deployment instructions' }, { signal: new AbortController().signal });
+    await run.completion;
+    expect(requestText(restored)).not.toContain(saved.entry.body);
+    expect(requestText(restored)).not.toContain(changed.entry.body);
+    expect(requestText(restored)).toContain('memory_unavailable');
+    expect(JSON.stringify(restored.get(IAgentContextMemoryService).get())).toContain(saved.entry.body);
+    const completed = restored.once('compaction.completed');
+    if (strategy === 'summarize') restored.mockNextResponse({ type: 'text', text: 'Continue from the current governed Memory entries.' });
+    expect(restored.get(IAgentFullCompactionService).begin({ source: 'manual', strategy })).toBe(true);
+    await completed;
+    expect(JSON.stringify(restored.llmCalls.at(-1)!.history)).not.toContain(saved.entry.body);
+    expect(JSON.stringify(restored.llmCalls.at(-1)!.history)).not.toContain(changed.entry.body);
+    restored.mockNextResponse({ type: 'text', text: 'Continue independent work after compaction.' });
+    const after = await runAgentTurn({ id: agentId, accessor: { get: (id) => restored.get(id) } }, { kind: 'prompt', prompt: 'Continue independent work' }, { signal: new AbortController().signal });
+    await after.completion;
+    expect(requestText(restored)).not.toContain(saved.entry.body);
+    expect(requestText(restored)).not.toContain(changed.entry.body);
+  });
+
+  it('validates inherited explicit tool payloads in an actual lifecycle fork before its first request', async () => {
+    const store = await canonicalMemory();
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'Deployment instructions', body: 'Use exactly 9 workers. Never publish artifacts; isolated smoke tests are the exception.', source: { writer: 'user' }, reason: 'Human guidance' });
+    const forkHome = await mkdtemp(join(tmpdir(), 'memory-fork-'));
+    memoryCleanup.push(async () => { await rm(forkHome, { recursive: true, force: true }); });
+    const ctx = createTestAgent(homeDirServices(forkHome), appService(IMemoryStore, store), appService(IMemoryScopes, memoryScopes),
+      appService(IRuntimeResolver, { _serviceBrand: undefined,
+        inspect: (binding) => new FakeRuntime({ ...binding, generation: 'memory-fixture' }),
+        acquire: (binding) => ({ runtime: new FakeRuntime({ ...binding, generation: 'memory-fixture' }), track: (resource) => resource, dispose: () => {} }),
+      }), sessionService(ISessionStateService, new SyncDescriptor(SessionStateService)),
+      sessionService(ISessionContext, sessionContext), sessionService(ISessionMetadata, new SyncDescriptor(SessionMetadata)),
+      sessionService(IAgentLifecycleService, new SyncDescriptor(AgentLifecycleService)),
+      sessionService(ISessionInstructionsProvider, { _serviceBrand: undefined, ready: Promise.resolve(), agentsMd: '', agentsMdWarning: undefined, agentsMdPaths: [], onDidChange: Event.None as Event<void> }),
+      { initialConfig: { [MEMORY_SECTION]: MemoryConfigSchema.parse({}), [LOOP_CONTROL_SECTION]: LoopControlSchema.parse({}) } });
+    contexts.push(ctx);
+    installReadableCapabilityOrigins(ctx);
+    const lifecycle = ctx.get(IAgentLifecycleService);
+    const source = await lifecycle.create({ agentId: 'fork-source' });
+    await source.accessor.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    source.accessor.get(IDynamicPromptInjection);
+    source.accessor.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    ctx.mockNextResponse({ type: 'function', id: 'fork-search', name: 'MemorySearch', arguments: JSON.stringify({ query: 'Deployment instructions' }) });
+    ctx.mockNextResponse({ type: 'text', text: 'Continue the authorized task.' });
+    await (await runAgentTurn(source, { kind: 'prompt', prompt: 'Read deployment instructions' }, { signal: new AbortController().signal })).completion;
+    expect(requestText(ctx)).toContain(saved.entry.body);
+    const child = await lifecycle.fork(source.id, { agentId: 'fork-copy' });
+    child.accessor.get(IDynamicPromptInjection);
+    child.accessor.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    expect(JSON.stringify(child.accessor.get(IAgentContextMemoryService).get())).toContain(saved.entry.body);
+    await store.forget(scope, (await store.previewForget(scope, [saved.entry.id])).targets, 'forget-before-fork-request');
+    ctx.mockNextResponse({ type: 'text', text: 'Continue independent work.' });
+    await (await runAgentTurn(child, { kind: 'prompt', prompt: 'Continue deployment instructions' }, { signal: new AbortController().signal })).completion;
+    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    expect(requestText(ctx)).toContain('memory_unavailable');
+    expect(JSON.stringify(child.accessor.get(IAgentContextMemoryService).get())).toContain(saved.entry.body);
+    await lifecycle.remove(child.id);
+    await lifecycle.remove(source.id);
   });
 
   it('rebuilds current revisions after actual relay compaction and a restored profile request', async () => {

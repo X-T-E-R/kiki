@@ -12,6 +12,7 @@ import { IAgentStateService } from '#/agent/state/agentState';
 import { AgentStateService } from '#/agent/state/agentStateService';
 import type { Message } from '#/kosong/contract/message';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { recordingTelemetry, type TelemetryRecord } from '../../app/telemetry/stubs';
 
 const REPAIR_WARNING = 'repaired the request to keep it wire-valid';
@@ -121,6 +122,7 @@ describe('projector tool-exchange normalization', () => {
     ix.set(ILogService, createCapturingLog(warnings));
     ix.set(ITelemetryService, recordingTelemetry(telemetryRecords));
     ix.set(IAgentStateService, new AgentStateService());
+    ix.stub(IAgentMemorySnapshot, {});
     ix.set(
       IAgentScopeContext,
       makeAgentScopeContext({ agentId: 'main', agentScope: '' }),

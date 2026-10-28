@@ -12,6 +12,7 @@ import { memoryRequestText, renderMemoryWorkingSet } from './memoryContext';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from './configSection';
 import { IMemoryStore, memoryApplicability, type MemoryEntry } from './memoryStore';
 import type { MemoryPublicScopeKind, MemoryScope } from './memoryScopes';
+import type { MemoryProjectionView } from './memoryProjection';
 
 export interface MemoryPersonaContext {
   readonly id: string;
@@ -21,6 +22,7 @@ export interface MemoryPersonaContext {
 export interface IAgentMemorySnapshot {
   readonly _serviceBrand: undefined;
   readonly workingSet?: boolean;
+  readonly projectionView?: MemoryProjectionView;
   get(lastKnown?: string): Promise<string>;
   refreshIfDirty(request?: string): Promise<string | undefined>;
   getSessionEntries(): Promise<readonly string[]>;
@@ -46,6 +48,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   private inbound = '';
   private settingsKey = '';
   private refreshing?: Promise<string | undefined>;
+  projectionView?: MemoryProjectionView;
   constructor(
     @IConfigService private readonly config: IConfigService,
     @IInstantiationService private readonly instantiation: IInstantiationService,
@@ -73,6 +76,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     this.frozen = this.project(settings).catch(() => {
       this.frozenRelated = [];
       this.nextUntil = undefined;
+      if (this.workingSet) this.projectionView = { generation: '', scopes: [], entries: [] };
       return memoryStatus(settings, this.session.workspaceId, this.persona, this.lastKnown ? 'stale/degraded' : 'unavailable');
     });
     return this.frozen;
@@ -84,7 +88,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       await this.frozen;
       const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
       if (JSON.stringify(settings) !== this.settingsKey) this.dirty = true;
-      if (settings.budget > 0 && await this.memoryAdmitted(settings)) {
+      if (await this.memoryAdmitted(settings)) {
         const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
         if (store.snapshot !== undefined) {
           let request = inbound;
@@ -165,7 +169,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
           if (visited.has(entry.id)) return `- [${id}] (unavailable: supersession cycle)`;
           visited.add(entry.id);
           const label = id === entry.id ? `[${id}]` : `[${id}] → [${entry.id}]`;
-          if (entry.status === 'archived' || entry.status === 'pending' || entry.status === 'active') return memoryEntryReference(entry).replace(`- [${entry.id}]`, `- ${label}`);
+          if (entry.status === 'archived' || entry.status === 'pending' || entry.status === 'active') return memoryEntryReference(entry, undefined, store.snapshot !== undefined).replace(`- [${entry.id}]`, `- ${label}`);
           if (entry.superseded_by === undefined || !/^m_[a-zA-Z0-9_]+$/.test(entry.superseded_by)) return `- ${label} (superseded; replacement unavailable)`;
           const next = await store.get(scope, entry.superseded_by);
           current = next === undefined ? undefined : { entry: next, scope };
@@ -234,17 +238,13 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     if (!(await this.memoryAdmitted(settings))) {
       this.lastKnown = '';
       this.frozenRelated = [];
+      this.projectionView = { generation: '', scopes: [], entries: [] };
       return memoryStatus(settings, this.session.workspaceId, this.persona, 'disabled');
     }
     return this.render(settings);
   }
 
   private async render(settings: MemoryConfig): Promise<string> {
-    if (!memoryEnabled(settings, this.session.workspaceId) || settings.budget === 0) {
-      this.lastKnown = '';
-      this.frozenRelated = [];
-      return memoryStatus(settings, this.session.workspaceId, this.persona, 'disabled');
-    }
     const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
     if (this.subscribedStore !== store) {
       this.subscribedStore = store;
@@ -255,7 +255,9 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       }));
     }
     if (store.snapshot !== undefined) {
-      const view = await store.snapshot(this.readScopes());
+      const scopes = this.readScopes();
+      const view = await store.snapshot(scopes);
+      this.projectionView = { ...view, scopes };
       const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget));
       this.generation = snapshot.generation;
       this.nextUntil = snapshot.nextUntil;
@@ -263,6 +265,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       this.lastKnown = snapshot.text;
       return snapshot.text;
     }
+    this.projectionView = undefined;
     if (this.agent.agentId !== 'main') return '';
     const snapshot = await renderMemorySnapshot(settings, this.session.workspaceId, store, this.session.sessionId, this.persona);
     this.frozenRelated = snapshot.related;
@@ -364,7 +367,8 @@ function memoryStatus(settings: MemoryConfig | undefined, workspaceId: string, p
   return line.length <= budget ? line : status.length <= budget ? status : '';
 }
 
-export function memoryEntryReference(entry: MemoryEntry, now = Date.now()): string {
+export function memoryEntryReference(entry: MemoryEntry, now = Date.now(), referenceOnly = false): string {
+  if (referenceOnly) return `- [${entry.id}] (resolve current governed Memory before reuse)`;
   const state = `${memoryApplicability(entry, now)}${entry.status === 'active' ? '' : '; not active'}`;
   return `- [${entry.id}] ${entry.title} [index; status=${entry.status}; applicability=${state}]${entry.validity === undefined ? '' : ` check=${entry.validity.check}${entry.validity.until === undefined ? '' : ` until=${entry.validity.until}`}`}`;
 }

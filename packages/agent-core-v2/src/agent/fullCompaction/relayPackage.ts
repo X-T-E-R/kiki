@@ -1,4 +1,5 @@
 import type { ContextMessage, ContextMessageSource } from '#/agent/contextMemory/types';
+import { memoryHandoffMessages } from '#/app/memory/memoryProjection';
 import { originalHumanText } from '#/session/todo/continuityState';
 import { coveredMessageIndex, renderTodoNotes, type NotesMeta, type TodoNotes } from '#/session/todo/todoNotes';
 import type { TodoItem } from '#/session/todo/todoItem';
@@ -199,7 +200,7 @@ export function renderPendingReceipts(input: RelayInput): string {
 }
 
 export function renderRelay(input: RelayInput): string {
-  const section = input.history.slice(0, input.compactCount);
+  const section = memoryHandoffMessages(input.history.slice(0, input.compactCount));
   const lastAssistant = section.findLast((message) => message.role === 'assistant' && message.toolCalls.length === 0 && textOf(message).trim());
   const after = section.slice(coveredMessageIndex(section, input.meta) + 1);
   const evidence = after.filter((message) => message.role === 'assistant' && message.toolCalls.length > 0)
