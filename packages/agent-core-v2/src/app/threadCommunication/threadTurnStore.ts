@@ -35,6 +35,7 @@ export interface ThreadTurnPage {
 
 export interface IThreadTurnStore {
   readonly _serviceBrand: undefined;
+  /** Reads completed turns at a fixed source watermark, preparing recent windows from the tail. Ambiguous layouts resume bounded forward preparation; source replacement or a rebuilt projection invalidates its cursors. */
   read(scope: string, before: number, limit: number, source?: ThreadTurnSource, signal?: AbortSignal): Promise<ThreadTurnPage>;
   content(scope: string, ref: BridgeContentRef, signal?: AbortSignal): Promise<NonNullable<BridgeReadView['segment']>>;
 }
@@ -74,7 +75,7 @@ interface TextRow {
 
 interface Head {
   readonly kind: 'head';
-  readonly version: 1;
+  readonly version: 2;
   readonly generation: string;
   readonly epoch: string;
   offset: number;
@@ -85,6 +86,18 @@ interface Head {
   nextTurnId: number;
   cancelled: number[];
   pending: PendingTurn[];
+  tails?: number[];
+}
+
+interface TailPreparation {
+  readonly kind: 'tail';
+  offset: number;
+  boundary: string;
+  floor: number;
+  complete: boolean;
+  fallback: boolean;
+  group: { terminal?: number; eventTurn?: number; ambiguous: boolean; end?: number };
+  replay?: { head: Head; end: number; turnId: number };
 }
 
 const SCAN_BYTES = 4 * 1024 * 1024;
@@ -115,16 +128,23 @@ export class ThreadTurnStore implements IThreadTurnStore {
         const mtime = await this.storage.mtime(scope, AGENT_WIRE_RECORD_KEY);
         const collection = collectionOf(scope);
         let head = await this.query.get<Head>(collection, 'head', signal);
-        if (head !== undefined && (head.version !== 1 || head.generation !== generation || size < head.offset ||
+        if (head !== undefined && (head.version !== 2 || head.generation !== generation || size < head.offset ||
           size === head.size && mtime !== head.mtime || await proof(pinned, head.offset, signal) !== head.boundary)) {
           await this.query.dropCollection(collection);
           head = undefined;
         }
         const expectedHead = head;
-        head ??= { kind: 'head', version: 1, generation, epoch: randomUUID(), offset: 0, covered: 0, size, mtime, boundary: '', nextTurnId: 0, cancelled: [], pending: [] };
+        head ??= { kind: 'head', version: 2, generation, epoch: randomUUID(), offset: 0, covered: 0, size, mtime, boundary: '', nextTurnId: 0, cancelled: [], pending: [] };
         const selected = source ?? { generation, epoch: head.epoch, watermark: size, proof: await proof(pinned, size, signal) };
         await this.validate(scope, pinned, head, selected, signal);
-        if (head.covered < selected.watermark) {
+        const tailKey = `tail:${selected.watermark}`;
+        const tail = head.covered < selected.watermark ? await this.query.get<TailPreparation>(collection, tailKey, signal) : undefined;
+        const useTail = head.covered < selected.watermark && tail?.fallback !== true;
+        if (useTail) {
+          const prepared = await this.prepareTail(scope, pinned, head, expectedHead, selected, before, limit, tail, mtime, signal);
+          if (!prepared.ready) return { turns: [], source: { ...selected, prepared: prepared.offset }, preparing: true, hasMore: true };
+        }
+        if (!useTail && head.covered < selected.watermark) {
           const operations = new Map<string, WriteOp>();
           const next = structuredClone(head);
           const startedAt = Date.now();
@@ -151,22 +171,28 @@ export class ThreadTurnStore implements IThreadTurnStore {
           if (next.offset >= selected.watermark || consumed < SCAN_BYTES && records < SCAN_RECORDS) {
             next.covered = Math.max(next.covered, selected.watermark);
           }
+          const scannedAt = Date.now();
           next.size = size;
           next.mtime = mtime;
           next.boundary = await proof(pinned, next.offset, signal);
           await this.validate(scope, pinned, next, selected, signal);
           signal?.throwIfAborted();
+          const validatedAt = Date.now();
           const ops: WriteOp[] = [...operations.values(), { kind: 'put', collection, key: 'head', value: next }];
           if (this.query.batchIf !== undefined) {
             if (!await this.query.batchIf([{ collection, key: 'head', value: expectedHead }], ops)) changed();
           } else await this.query.batch(ops);
           head = next;
+          const committedAt = Date.now();
           this.log.info('Thread history preparation slice', {
             records_count: records, source_bytes: consumed, source_offset: head.offset,
-            source_watermark: selected.watermark, duration_ms: Date.now() - startedAt,
+            source_watermark: selected.watermark, duration_ms: committedAt - startedAt,
+            scan_duration_ms: scannedAt - startedAt,
+            validation_duration_ms: validatedAt - scannedAt,
+            projection_commit_duration_ms: committedAt - validatedAt,
           });
         }
-        if (head.covered < selected.watermark) {
+        if (!useTail && head.covered < selected.watermark) {
           return { turns: [], source: { ...selected, prepared: head.offset }, preparing: true, hasMore: true };
         }
         const page = await this.query.pageByColumn<TurnRow>(collection, {
@@ -222,6 +248,121 @@ export class ThreadTurnStore implements IThreadTurnStore {
     });
   }
 
+  private async prepareTail(
+    scope: string, pinned: PinnedLogicalRead, head: Head, expectedHead: Head | undefined,
+    source: ThreadTurnSource, before: number, limit: number, previous: TailPreparation | undefined, mtime: number | undefined, signal?: AbortSignal,
+  ): Promise<{ ready: boolean; offset: number }> {
+    const collection = collectionOf(scope);
+    const key = `tail:${source.watermark}`;
+    const tail: TailPreparation = previous === undefined ? {
+      kind: 'tail', offset: source.watermark, boundary: source.proof,
+      floor: Number.MAX_SAFE_INTEGER, complete: false, fallback: false, group: { ambiguous: false },
+    } : structuredClone(previous);
+    if (await proof(pinned, tail.offset, signal) !== tail.boundary) changed();
+    const page = await this.query.pageByColumn<TurnRow>(collection, {
+      column: 'turnId', dir: 'desc', bounds: { lt: before, gte: tail.floor },
+      filter: { kind: 'turn', terminalEnd: { $lte: source.watermark } }, limit: limit + 1,
+    }, signal);
+    let count = page.items.length;
+    if (count > limit || tail.complete) return { ready: true, offset: tail.offset };
+    const startedAt = Date.now();
+    const operations = new Map<string, WriteOp>();
+    let consumed = 0;
+    let records = 0;
+    const available = (): boolean => consumed < SCAN_BYTES && records < SCAN_RECORDS;
+    while (available() && count <= limit && !tail.complete && !tail.fallback) {
+      if (tail.replay !== undefined) {
+        const replay = tail.replay;
+        for await (const line of lines(pinned, replay.head.offset, replay.end, signal)) {
+          const record = parse(line.bytes, scope, line.start);
+          if (record !== undefined) this.fold(collection, replay.head, record, line, operations);
+          replay.head.offset = line.end;
+          consumed += line.end - line.start;
+          records++;
+          await yieldToEventLoop(undefined, { signal });
+          if (!available()) break;
+        }
+        if (replay.head.offset < replay.end) break;
+        const row = operations.get(`turn:${replay.turnId}`);
+        if (row?.kind === 'put' && replay.turnId < before) count++;
+        tail.floor = Math.min(tail.floor, replay.turnId);
+        tail.replay = undefined;
+        if (tail.offset === 0) tail.complete = true;
+        continue;
+      }
+      let progressed = false;
+      for await (const line of reverseLines(pinned, tail.offset, signal)) {
+        progressed = true;
+        tail.offset = line.start;
+        consumed += line.end - line.start;
+        records++;
+        const record = parse(line.bytes, scope, line.start);
+        if (record?.type === 'turn.ended') {
+          const id = number(record['turnId']);
+          if (id !== undefined && ['completed', 'cancelled', 'failed', 'blocked'].includes(String(record['reason']))) {
+            if (tail.group.terminal !== undefined && tail.group.terminal !== id) tail.group.ambiguous = true;
+            tail.group.terminal = id;
+            tail.group.end = line.end;
+          }
+        } else if (record?.type === 'context.append_loop_event') {
+          const event = record['event'] as LoopRecordedEvent | undefined;
+          const id = event?.type === 'tool.result' || event?.turnId === undefined ? undefined : Number.parseInt(event.turnId, 10);
+          if (id !== undefined && Number.isSafeInteger(id)) {
+            if (tail.group.eventTurn !== undefined && tail.group.eventTurn !== id) tail.group.ambiguous = true;
+            tail.group.eventTurn = id;
+          }
+        } else if (record?.type === 'turn.prompt') {
+          const group = tail.group;
+          const id = group.terminal;
+          tail.group = { ambiguous: false };
+          if (group.ambiguous || number(record['turnId']) === undefined || id !== undefined && (
+            group.eventTurn !== undefined && group.eventTurn !== id || number(record['turnId']) !== id || id >= tail.floor)) {
+            tail.fallback = true;
+          } else if (id !== undefined) {
+            const existing = await this.query.get<TurnRow>(collection, `turn:${id}`, signal);
+            if (existing !== undefined && (existing.promptStart !== line.start || existing.terminalEnd !== group.end)) {
+              tail.fallback = true;
+              break;
+            }
+            const origin = record['origin'] as PromptOrigin | undefined;
+            if (origin !== undefined && origin !== null && publicOrigin(origin) !== undefined) {
+              tail.replay = {
+                head: { ...head, offset: line.start, nextTurnId: id, cancelled: [], pending: [] },
+                end: group.end!, turnId: id,
+              };
+            } else tail.floor = id;
+          } else if (tail.floor < Number.MAX_SAFE_INTEGER) tail.fallback = true;
+          break;
+        }
+        if (!available()) break;
+      }
+      if ((!progressed || tail.offset === 0) && tail.replay === undefined) {
+        if (tail.group.terminal !== undefined) tail.fallback = true;
+        else tail.complete = true;
+      }
+    }
+    const scannedAt = Date.now();
+    tail.boundary = await proof(pinned, tail.offset, signal);
+    const tails = [source.watermark, ...(head.tails ?? []).filter((value) => value !== source.watermark)];
+    const nextHead = { ...head, size: pinned.size ?? 0, mtime, tails: tails.slice(0, 4) };
+    await this.validate(scope, pinned, head, source, signal);
+    signal?.throwIfAborted();
+    const validatedAt = Date.now();
+    const ops: WriteOp[] = [...operations.values()];
+    ops.push(...tails.slice(4).map((value): WriteOp => ({ kind: 'delete', collection, key: `tail:${value}` })),
+      { kind: 'put', collection, key, value: tail }, { kind: 'put', collection, key: 'head', value: nextHead });
+    if (this.query.batchIf !== undefined) {
+      if (!await this.query.batchIf([{ collection, key: 'head', value: expectedHead }, { collection, key, value: previous }], ops)) changed();
+    } else await this.query.batch(ops);
+    const committedAt = Date.now();
+    this.log.info('Thread history tail preparation slice', {
+      records_count: records, source_bytes: consumed, source_offset: tail.offset, source_watermark: source.watermark,
+      duration_ms: committedAt - startedAt, scan_duration_ms: scannedAt - startedAt,
+      validation_duration_ms: validatedAt - scannedAt, projection_commit_duration_ms: committedAt - validatedAt,
+    });
+    return { ready: !tail.fallback && (count > limit || tail.complete), offset: tail.offset };
+  }
+
   private async validate(scope: string, pinned: PinnedLogicalRead, head: Head, source: ThreadTurnSource, signal?: AbortSignal): Promise<void> {
     signal?.throwIfAborted();
     if (source.epoch !== head.epoch || source.generation !== head.generation ||
@@ -251,14 +392,14 @@ export class ThreadTurnStore implements IThreadTurnStore {
       if (origin !== null && typeof origin === 'object') {
         const text = contentText(record['input']);
         const turn: PendingTurn = {
-          turnId: head.nextTurnId, origin: origin as PromptOrigin, startedAt: number(record['time']),
+          turnId: number(record['turnId']) ?? head.nextTurnId, origin: origin as PromptOrigin, startedAt: number(record['time']),
           promptStart: line.start, promptEnd: line.end, promptDigest: digest(line.bytes),
           inputUnits: text.length, outputUnits: 0, outputTail: '',
         };
         head.pending.push(turn);
         textOps(collection, turn.turnId, 'input', 0, text, operations);
       }
-      head.nextTurnId = advance(head.nextTurnId + 1);
+      head.nextTurnId = advance(Math.max(head.nextTurnId, number(record['turnId']) ?? head.nextTurnId) + 1);
       head.cancelled = [...cancelled];
       return;
     }
@@ -350,6 +491,38 @@ export class ThreadTurnStore implements IThreadTurnStore {
 }
 
 interface Line { readonly start: number; readonly end: number; readonly bytes: Uint8Array }
+
+async function* reverseLines(pinned: PinnedLogicalRead, end: number, signal?: AbortSignal): AsyncIterable<Line> {
+  let position = end;
+  let lineEnd = end;
+  let parts: Uint8Array[] = [];
+  const complete = (bytes: Uint8Array): boolean => {
+    if (lineEnd !== end || bytes.at(-1) === 10) return true;
+    try { JSON.parse(Buffer.from(bytes).toString('utf8')); return true; } catch { return false; }
+  };
+  while (position > 0) {
+    const start = Math.max(0, position - 64 * 1024);
+    const chunk = await readPinnedRange(pinned, start, position - start, signal);
+    if (chunk.byteLength !== position - start) changed();
+    let to = chunk.byteLength;
+    for (let index = chunk.byteLength - 1; index >= 0; index--) {
+      if (chunk[index] !== 10 || start + index + 1 === lineEnd) continue;
+      const from = start + index + 1;
+      const bytes = Buffer.concat([chunk.subarray(index + 1, to), ...parts.toReversed()]);
+      if (complete(bytes)) yield { start: from, end: lineEnd, bytes };
+      lineEnd = from;
+      parts = [];
+      to = index + 1;
+    }
+    if (to > 0) parts.push(chunk.subarray(0, to));
+    position = start;
+    await yieldToEventLoop(undefined, { signal });
+  }
+  if (parts.length > 0) {
+    const bytes = Buffer.concat(parts.toReversed());
+    if (complete(bytes)) yield { start: 0, end: lineEnd, bytes };
+  }
+}
 
 async function* lines(pinned: PinnedLogicalRead, start: number, end: number, signal?: AbortSignal): AsyncIterable<Line> {
   if (start >= end) return;

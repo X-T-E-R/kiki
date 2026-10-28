@@ -82,18 +82,31 @@ describe('ThreadTurnStore', () => {
     return page;
   }
 
-  it('pages latest and earlier complete turns without scanning the wire again', async () => {
-    await seed(Array.from({ length: 100 }, (_, id) => [prompt(`input-${id}`), part(id, `output-${id}`), ended(id)]).flat());
+  it('reads latest and earlier windows from the tail and reuses prepared windows', async () => {
+    await seed(Array.from({ length: 1000 }, (_, id) => [{ ...prompt(`input-${id}`), turnId: id }, part(id, `output-${id}`), ended(id)]).flat());
+    const info = vi.spyOn(ix.get(ILogService), 'info');
     const first = await ready(Number.MAX_SAFE_INTEGER, 3);
-    expect(first.turns.map((turn) => turn.turnId)).toEqual([97, 98, 99]);
-    expect(first.turns[2]).toMatchObject({ input: 'input-99', output: 'output-99', startedAt: 10, endedAt: 20, reason: 'completed', origin: 'user' });
+    const phases = info.mock.calls.find(([message]) => message === 'Thread history tail preparation slice')?.[1] as Record<string, number>;
+    expect(phases).toEqual({
+      records_count: 24,
+      source_bytes: expect.any(Number), source_offset: expect.any(Number), source_watermark: expect.any(Number),
+      duration_ms: expect.any(Number), scan_duration_ms: expect.any(Number),
+      validation_duration_ms: expect.any(Number), projection_commit_duration_ms: expect.any(Number),
+    });
+    expect(phases['duration_ms']).toBe(phases['scan_duration_ms']! + phases['validation_duration_ms']! + phases['projection_commit_duration_ms']!);
+    info.mockRestore();
+    expect(first.turns.map((turn) => turn.turnId)).toEqual([997, 998, 999]);
+    expect(first.turns[2]).toMatchObject({ input: 'input-999', output: 'output-999', startedAt: 10, endedAt: 20, reason: 'completed', origin: 'user' });
     const read = vi.spyOn(storage, 'readStream');
-    const second = await turns.read(SCOPE, 97, 3, first.source);
-    expect(second.turns.map((turn) => turn.turnId)).toEqual([94, 95, 96]);
+    const second = await turns.read(SCOPE, 997, 3, first.source);
+    expect(second.turns.map((turn) => turn.turnId)).toEqual([994, 995, 996]);
     const ranges = read.mock.calls.filter(([, key]) => key === KEY).map(([, , range]) => range);
     expect(ranges.length).toBeGreaterThan(0);
-    expect(ranges.every((range) => range !== undefined && range.end - range.start < 1024)).toBe(true);
+    expect(ranges.every((range) => range !== undefined && range.end - range.start < 65_536)).toBe(true);
     expect(ranges.some((range) => range?.start === 0)).toBe(false);
+    read.mockClear();
+    expect((await turns.read(SCOPE, 997, 3, first.source)).turns).toEqual(second.turns);
+    expect(read.mock.calls.filter(([, key]) => key === KEY).every(([, , range]) => range !== undefined && range.end - range.start < 1024)).toBe(true);
     read.mockRestore();
   });
 
@@ -141,15 +154,16 @@ describe('ThreadTurnStore', () => {
   });
 
   it('resumes bounded preparation after cold reopen, pins append watermarks and invalidates rewrite cursors', async () => {
-    await seed([prompt(), ...Array.from({ length: 700 }, () => part(0, 'x'.repeat(16_000))), ended(0)]);
+    await seed([{ ...prompt(), turnId: 0 }, ...Array.from({ length: 700 }, () => part(0, 'x'.repeat(16_000))), ended(0)]);
     const first = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 2);
     expect(first).toMatchObject({ turns: [], preparing: true, hasMore: true });
     const collection = `thread-turns-v1:${Buffer.from(SCOPE).toString('base64url')}`;
-    const checkpoint = await query.get<{ offset: number }>(collection, 'head');
-    expect(checkpoint!.offset).toBeLessThanOrEqual(4 * 1024 * 1024 + 17_000);
+    const checkpoint = await query.get<{ offset: number }>(collection, `tail:${first.source.watermark}`);
+    expect(checkpoint!.offset).toBeLessThan(first.source.watermark);
+    expect(first.source.watermark - checkpoint!.offset).toBeLessThanOrEqual(4 * 1024 * 1024 + 17_000);
     await close();
     open();
-    await seed([prompt('new input'), part(1, 'new output'), ended(1)]);
+    await seed([{ ...prompt('new input'), turnId: 1 }, part(1, 'new output'), ended(1)]);
     let page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 2, first.source);
     while (page.preparing) page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 2, page.source);
     expect(page.turns.map((turn) => turn.turnId)).toEqual([0]);
@@ -162,12 +176,16 @@ describe('ThreadTurnStore', () => {
   it('returns every byte of a greater-than-10MiB turn through bounded text segments', async () => {
     const text = ('a'.repeat(4094) + '😀').repeat(2817);
     expect(Buffer.byteLength(text)).toBeGreaterThan(10 * 1024 * 1024);
-    await seed([prompt(), part(0, text), ended(0)]);
+    await seed([{ ...prompt(), turnId: 0 }, part(0, text), ended(0)]);
     const first = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1);
     expect(first.preparing).toBe(true);
     expect(first.turns).toEqual([]);
-    const page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, first.source);
-    expect(page.preparing).toBe(false);
+    let page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, first.source);
+    let slices = 1;
+    while (page.preparing) {
+      expect(++slices).toBeLessThanOrEqual(5);
+      page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, page.source);
+    }
     const turn = page.turns[0]!;
     const pieces = [turn.output];
     let ref = turn.contentRefs?.find((value) => value.path[0] === 'output');
@@ -228,6 +246,84 @@ describe('ThreadTurnStore', () => {
     await expect(turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, undefined, controller.signal)).rejects.toThrow('fixture cancelled');
     storage.readStream = original;
     expect((await ready()).turns[0]?.output).toBe('answer');
+  });
+
+  it('delivers a cold latest window without touching a large older prefix', async () => {
+    await seed([
+      ...Array.from({ length: 1000 }, () => ({ type: 'fixture.padding', text: 'x'.repeat(8000) })),
+      ...Array.from({ length: 10 }, (_, id) => [{ ...prompt(`input-${id}`), turnId: id + 50 }, part(id + 50, `output-${id}`), ended(id + 50)]).flat(),
+    ]);
+    const read = vi.spyOn(storage, 'readStream');
+    const first = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 3);
+    expect(first.preparing).toBe(false);
+    expect(first.turns.map((turn) => turn.turnId)).toEqual([57, 58, 59]);
+    expect(first.hasMore).toBe(true);
+    const ranges = read.mock.calls.filter(([, key]) => key === KEY).map(([, , range]) => range);
+    expect(ranges.every((range) => range !== undefined && range.start > 7_900_000)).toBe(true);
+    expect(ranges.reduce((sum, range) => sum + (range!.end - range!.start + 1), 0)).toBeLessThan(400_000);
+    await close();
+    open();
+    await seed([{ ...prompt('later'), turnId: 60 }, part(60, 'later output'), ended(60)]);
+    const older = await turns.read(SCOPE, 57, 3, first.source);
+    expect(older.turns.map((turn) => turn.turnId)).toEqual([54, 55, 56]);
+    expect((await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 3)).turns.map((turn) => turn.turnId)).toEqual([58, 59, 60]);
+    read.mockRestore();
+  });
+
+  it('retains implicit ids, cancellation gaps and explicit ids in tail windows', async () => {
+    await seed([
+      prompt('first'), part(0, 'zero'), ended(0),
+      { type: 'turn.cancel', target: 'queued', turnId: 1 },
+      prompt('after cancellation'), part(2, 'two'), ended(2),
+      { ...prompt('explicit'), turnId: 10 }, part(10, 'ten'), ended(10),
+    ]);
+    const page = await ready();
+    expect(page.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([
+      [0, 'first', 'zero'], [2, 'after cancellation', 'two'], [10, 'explicit', 'ten'],
+    ]);
+  });
+
+  it('uses forward preparation for interleaved turns instead of pairing unrelated prompt and terminal records', async () => {
+    await seed([
+      { ...prompt('first'), turnId: 0 }, part(0, 'zero'),
+      { ...prompt('second'), turnId: 1 }, part(1, 'one'), ended(0), ended(1),
+    ]);
+    const page = await ready();
+    expect(page.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([[0, 'first', 'zero'], [1, 'second', 'one']]);
+  });
+
+  it('rejects implicit interleaving and preserves earlier cursors after forward fallback and a new tail', async () => {
+    await seed([prompt('first'), prompt('second'), part(0, 'zero'), ended(0)]);
+    const page = await ready(Number.MAX_SAFE_INTEGER, 1);
+    expect(page.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([[0, 'first', 'zero']]);
+    await seed([{ ...prompt('third'), turnId: 2 }, part(2, 'two'), ended(2)]);
+    expect((await ready(Number.MAX_SAFE_INTEGER, 1)).turns.map((turn) => turn.turnId)).toEqual([2]);
+    expect((await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, page.source)).turns).toEqual(page.turns);
+  });
+
+  it('does not infer prompt ids from a chain of interleaved legacy terminal records', async () => {
+    await seed([
+      prompt('first'), prompt('second'), part(0, 'zero'), ended(0),
+      prompt('third'), part(1, 'one'), ended(1),
+      prompt('fourth'), part(2, 'two'), ended(2),
+    ]);
+    const page = await ready(Number.MAX_SAFE_INTEGER, 1);
+    expect(page.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([[2, 'third', 'two']]);
+    expect(page.hasMore).toBe(true);
+    const older = await turns.read(SCOPE, 2, 2, page.source);
+    expect(older.turns.map((turn) => [turn.turnId, turn.input, turn.output])).toEqual([[0, 'first', 'zero'], [1, 'second', 'one']]);
+  });
+
+  it('keeps only four tail checkpoints while older pinned cursors remain usable', async () => {
+    const sources = [];
+    for (let id = 0; id < 7; id++) {
+      await seed([{ ...prompt(`input-${id}`), turnId: id }, part(id, `output-${id}`), ended(id)]);
+      sources.push((await ready(Number.MAX_SAFE_INTEGER, 1)).source);
+    }
+    const collection = `thread-turns-v1:${Buffer.from(SCOPE).toString('base64url')}`;
+    expect((await query.listKeys(collection)).filter((key) => key.startsWith('tail:'))).toHaveLength(4);
+    const page = await turns.read(SCOPE, Number.MAX_SAFE_INTEGER, 1, sources[0]);
+    expect(page.turns.map((turn) => turn.turnId)).toEqual([0]);
   });
 
   it('reports malformed complete records instead of returning an empty complete page', async () => {
