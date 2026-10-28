@@ -299,7 +299,14 @@ export class UsageRangeFold {
       });
       let bucket = read<BucketRow>(row.bucket);
       if (!changed.has(row.bucket)) {
-        bucket = bucket === undefined ? { kind: 'bucket', key: row.bucketKey, turnCount: 0, sessions: [], sessionsTruncated: false, turnAgents: true } : structuredClone(bucket);
+        bucket = bucket === undefined ? { kind: 'bucket', key: row.bucketKey, turnCount: 0, sessions: [], sessionsTruncated: false, turnAgents: true } : {
+          ...bucket,
+          sessions: bucket.sessions.map((session) => session.sessionId !== summary.id ? session : {
+            ...session,
+            turnIds: session.turnIds.slice(),
+            agents: session.agents?.map((agent) => ({ ...agent, turnIds: agent.turnIds.slice() })),
+          }),
+        };
         changed.set(row.bucket, bucket);
       }
       const persistedTurnIsNew = row.turn !== undefined && read(row.turn) === undefined;

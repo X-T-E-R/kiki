@@ -42,7 +42,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { IModelPricingService } from '../src/pricing/modelPricingService';
 import { UsageAggregationService } from '../src/usage/usageAggregationService';
 import { parseUsageRangeProjection } from '../src/usage/usageRangeProjection';
-import { UsageRangeFold, UsageRangeFoldChangedError, type RangeFoldHead } from '../src/usage/usageRangeFold';
+import { UsageRangeFold, UsageRangeFoldChangedError, type FoldBucketView, type RangeFoldHead } from '../src/usage/usageRangeFold';
 import { UsageSourceTracker, type UsageSourceChanges } from '../src/usage/usageSourceTracker';
 
 const queryFixtures: { home: string; ix: TestInstantiationService; store: IQueryStore }[] = [];
@@ -3175,6 +3175,92 @@ describe('SQLite UsageRangeFold publication', () => {
       const buckets = await fold.buckets(['bucket']);
       expect([...buckets.values()][0]?.turnCount).toBe(1);
     } finally { reads.mockRestore(); }
+  });
+
+  it.each(['commit', 'error', 'reject', 'cancel'])('keeps cached bucket objects immutable across a copied page (%s)', async (outcome) => {
+    const saved = await openRange([], {}, true);
+    const fold = new UsageRangeFold(saved.store, 'bucket-cow', 2, 1);
+    const main = summary('main', 'workspace'), other = summary('other', 'workspace');
+    const fact = (agentId: string, turnId?: number) => ({ time: 1, model: 'example', agentId, turnId, usageKnown: true, usage: { inputOther: 0, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } });
+    await fold.reset();
+    await fold.addPage(main, [fact('a', 1), fact('a', 1), fact('a', 2), fact('b', 1), fact('b')], () => 'bucket', () => true, {});
+    await fold.addPage(other, [fact('c', 1)], () => 'bucket', () => true, {});
+    const cached = (Reflect.get(fold, 'cachedRows') as Map<string, { value: FoldBucketView }>).get('bucket:bucket')!.value;
+    const before = structuredClone(cached);
+    for (const session of cached.sessions) {
+      Object.freeze(session.turnIds);
+      for (const agent of session.agents ?? []) { Object.freeze(agent.turnIds); Object.freeze(agent); }
+      Object.freeze(session.agents);
+      Object.freeze(session);
+    }
+    Object.freeze(cached.sessions);
+    Object.freeze(cached);
+    const records = [fact('a', 1), fact('a', 3), fact('b', 2), fact('b'), fact('d', 4)];
+    const controller = new AbortController();
+    const batch = saved.store.batchIf!.bind(saved.store);
+    const commit = vi.spyOn(saved.store, 'batchIf').mockImplementationOnce(async (...args) => {
+      const row = args[1].find((op) => op.kind === 'put' && op.key === 'bucket:bucket');
+      expect(row?.kind).toBe('put');
+      const copy = (row as { value: FoldBucketView }).value;
+      expect(copy).not.toBe(cached);
+      expect(copy.sessions).not.toBe(cached.sessions);
+      expect(copy.sessions[0]).not.toBe(cached.sessions[0]);
+      expect(copy.sessions[0]?.turnIds).not.toBe(cached.sessions[0]?.turnIds);
+      expect(copy.sessions[0]?.agents).not.toBe(cached.sessions[0]?.agents);
+      expect(copy.sessions[0]?.agents?.[0]?.turnIds).not.toBe(cached.sessions[0]?.agents?.[0]?.turnIds);
+      expect(cached).toEqual(before);
+      if (outcome === 'reject') return false;
+      if (outcome === 'error') throw new Error('Page write failed');
+      if (outcome === 'cancel') { controller.abort(new Error('Page cancelled')); throw controller.signal.reason; }
+      return batch(...args);
+    });
+    try {
+      const pending = fold.addPage(main, records, () => 'bucket', () => true, {}, controller.signal);
+      if (outcome === 'commit') await pending;
+      else if (outcome === 'reject') await expect(pending).rejects.toBeInstanceOf(UsageRangeFoldChangedError);
+      else await expect(pending).rejects.toThrow(outcome === 'error' ? 'Page write failed' : 'Page cancelled');
+      expect(cached).toEqual(before);
+      if (outcome !== 'commit') {
+        expect(await saved.store.get('bucket-cow', 'bucket:bucket')).toEqual(before);
+        await fold.head();
+        await fold.addPage(main, records, () => 'bucket', () => true, {});
+      }
+    } finally { commit.mockRestore(); }
+    const buckets = await fold.buckets(['bucket']);
+    const actual = buckets.get('bucket:bucket')!;
+    expect(actual.turnCount).toBe(7);
+    expect(actual.sessions[0]).toMatchObject({ turnCount: 4, turnIds: [1], unknownTurnRecords: 2, agents: [{ agentId: 'a', turnIds: [1, 2, 3] }, { agentId: 'b', turnIds: [1, 2] }, { agentId: 'd', turnIds: [4] }] });
+    expect(actual.sessions[1]).toEqual(before.sessions[1]);
+    const reopened = new UsageRangeFold(saved.store, 'bucket-cow', 2, 1);
+    await reopened.head();
+    expect(await reopened.buckets(['bucket'])).toEqual(buckets);
+    expect((await reopened.recordPage()).items.reduce((sum, row) => sum + row.record.folded.records, 0)).toBe(11);
+  });
+
+  it.each([false, true])('preserves capped legacy and overflow turn ledgers after local bucket copies (legacy: %s)', async (legacy) => {
+    const saved = await openRange([], {}, true);
+    let fold = new UsageRangeFold(saved.store, 'bucket-cow-legacy', 1, 1);
+    const main = summary('main', 'workspace'), other = summary('other', 'workspace');
+    const fact = (agentId: string, turnId?: number) => ({ time: 1, model: 'example', agentId, turnId, usageKnown: true, usage: { inputOther: 0, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } });
+    await fold.reset();
+    await fold.addPage(main, [fact('a', 1), fact('b', 1)], () => 'bucket', () => true, {});
+    await fold.addPage(other, [fact('c', 1)], () => 'bucket', () => true, {});
+    if (legacy) {
+      const bucket = await saved.store.get<FoldBucketView>('bucket-cow-legacy', 'bucket:bucket');
+      delete bucket!.turnAgents;
+      for (const session of bucket!.sessions) delete session.agents;
+      await saved.store.put('bucket-cow-legacy', 'bucket:bucket', bucket, { columns: { view: 2 } });
+      await fold.head();
+    }
+    const repeated = [fact('a', 1), fact('b', 2), fact('a')];
+    await fold.addPage(main, repeated, () => 'bucket', () => true, {});
+    await fold.addPage(other, [fact('c', 1)], () => 'bucket', () => true, {});
+    fold = new UsageRangeFold(saved.store, 'bucket-cow-legacy', 1, 1);
+    await fold.head();
+    await fold.addPage(main, repeated, () => 'bucket', () => true, {});
+    const bucket = [...(await fold.buckets(['bucket'])).values()][0]!;
+    expect(bucket).toMatchObject({ turnCount: 4, sessionsTruncated: true, sessions: [{ sessionId: 'main', turnIds: [1], turnCount: 2, unknownTurnRecords: 2 }] });
+    expect((await fold.recordPage()).items.reduce((sum, row) => sum + row.record.folded.records, 0)).toBe(10);
   });
 
   it('uses exact bucket agent turns without rereading turn ledgers and retains overflow deduplication after reopen', async () => {
