@@ -29,6 +29,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemorySources, type MemorySource } from './useMemorySources';
 import { MemorySharingControls } from './MemorySharingControls';
+import { MemoryAdvisorSwitch } from './memory/MemoryAdvisorSwitch';
+import { invalidateMemoryAdvisorReads } from './memory/useMemoryAdvisor';
 import { useSearchParams, type To } from 'react-router-dom';
 
 import type { WorkspaceCatalogEntry } from '@kiki/protocol';
@@ -199,7 +201,10 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
     // a cached `effective_enabled` contradicting the switch that was just turned.
     onSuccess: async (next) => {
       applySettings(next);
-      await queryClient.invalidateQueries({ queryKey: MEMORY_WORKSPACE_SETTINGS_KEY });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: MEMORY_WORKSPACE_SETTINGS_KEY }),
+        invalidateMemoryAdvisorReads(queryClient),
+      ]);
     },
     onError: (error: unknown) => {
       pushToast({ tone: 'error', text: t('memory.toggleFailed', { detail: errorText(locale, error) }) });
@@ -236,6 +241,12 @@ export function MemoryPage({ workspaceOptions, workspacesLoading, onNavigate, on
           )}
           {globalEnabled && scope !== undefined && workspaceOverride === false ? (
             <span data-memory-workspace-disabled className="font-medium text-amber-ink">{t('st.memory.workspaceDisabled')}</span>
+          ) : null}
+          {globalEnabled ? (
+            <span className="inline-flex min-w-0 items-center gap-2 border-l border-hairline pl-3" data-memory-advisor-header>
+              <span className="shrink-0 text-ink-faint" aria-hidden>{t('memory.advisor.headerLabel')}</span>
+              <MemoryAdvisorSwitch workspaceId={scope} onNavigate={onNavigate} />
+            </span>
           ) : null}
           <button type="button" data-memory-open-settings onClick={() => { onNavigate(`/settings/memory${scope === undefined ? '' : `?workspace=${encodeURIComponent(scope)}`}`); }} className="font-medium text-accent-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink">
             {t('st.memory.settingsLink')}

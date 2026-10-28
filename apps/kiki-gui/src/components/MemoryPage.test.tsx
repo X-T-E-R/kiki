@@ -287,6 +287,63 @@ function rawSnapshot(entry: MemoryEntry) {
   return `---\n${JSON.stringify(metadata)}\n---\n${body}\n`;
 }
 
+describe('MemoryPage advisor switch', () => {
+  const advisorRead = (mode: 'off' | 'rank') => ({
+    ...enabledSettings, effective_enabled: true,
+    advisor: { mode, selector: { protocol: 'chat_json' as const, model: 'cheap-judge' }, first_step_wait_ms: 1500, timeout_ms: 6000, max_calls_per_turn: 3, candidate_chars: 120, catalog_page_items: 40, max_catalog_pages: 2, max_full_units: 8, judge_input_tokens: 12000, apply_to_children: true, egress_ack: [] },
+    advisor_status: { state: mode === 'off' ? 'off' as const : 'ready' as const, consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 },
+  });
+
+  it('turns the advisor off from the header without touching the memory switch', async () => {
+    seedMemories({ 'global::': [fixtureEntry({ id: 'm_global' })] });
+    vi.spyOn(client, 'getMemoryAdvisorSettings').mockResolvedValue(advisorRead('rank'));
+    const patch = vi.spyOn(client, 'patchMemoryAdvisorSettings').mockImplementation(async () => advisorRead('off'));
+    const memoryPatch = vi.spyOn(client, 'patchMemorySettings');
+    const container = await renderPage('/memory');
+    const header = container.querySelector('[data-memory-advisor-header]')!;
+    expect(header.querySelector('[data-memory-advisor-state]')?.textContent).toBe('Ready');
+    await act(async () => { header.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+    await flush();
+    expect(patch).toHaveBeenCalledWith({ advisor: { mode: 'off' } }, undefined);
+    expect(memoryPatch).not.toHaveBeenCalled();
+    expect(header.querySelector('[data-memory-advisor-state]')?.textContent).toBe('Off');
+    // Memory itself stays on and the entries stay listed.
+    expect(rowIds(container)).toEqual(['m_global']);
+  });
+
+  it('re-reads the advisor when memory is switched on here, instead of keeping its paused read', async () => {
+    let memoryOn = false;
+    seedMemories({ 'global::': [] }, { ...enabledSettings, enabled: false });
+    vi.mocked(client.getMemorySettings).mockImplementation(async () => ({ ...enabledSettings, enabled: memoryOn }));
+    vi.spyOn(client, 'patchMemorySettings').mockImplementation(async (patch) => { memoryOn = patch.enabled ?? memoryOn; return { ...enabledSettings, enabled: memoryOn }; });
+    const advisorReads = vi.spyOn(client, 'getMemoryAdvisorSettings').mockImplementation(async () => {
+      const read = advisorRead('rank');
+      return memoryOn ? read : { ...read, enabled: false, effective_enabled: false, advisor_status: { ...read.advisor_status, state: 'disabled' as const } };
+    });
+    const { container, queryClient } = await mountPage('/memory');
+    // A paused read is already cached, as the settings card would have left it.
+    await act(async () => { await queryClient.fetchQuery({ queryKey: ['memory-settings', 'advisor', null], queryFn: () => client.getMemoryAdvisorSettings() }); });
+    await act(async () => { container.querySelector<HTMLButtonElement>('[data-memory-enable]')!.click(); });
+    await flush();
+    expect(advisorReads.mock.calls.length).toBeGreaterThan(1);
+    expect(container.querySelector('[data-memory-advisor-header] [data-memory-advisor-state]')?.textContent).toBe('Ready');
+  });
+
+  it('shows a failed switch as a retryable toast and keeps the saved state', async () => {
+    seedMemories({ 'global::': [] });
+    vi.spyOn(client, 'getMemoryAdvisorSettings').mockResolvedValue(advisorRead('rank'));
+    vi.spyOn(client, 'patchMemoryAdvisorSettings').mockRejectedValue(new Error('config is read-only'));
+    const container = await renderPage('/memory');
+    const header = container.querySelector('[data-memory-advisor-header]')!;
+    await act(async () => { header.querySelector<HTMLInputElement>('input[type="checkbox"]')!.click(); });
+    await flush();
+    const toast = getToasts().at(-1);
+    expect(toast?.text).toBe('Could not switch Memory Advisor: config is read-only');
+    expect(toast?.retry).toBeDefined();
+    expect(header.querySelector<HTMLInputElement>('input[type="checkbox"]')!.checked).toBe(true);
+  });
+});
+
 describe('MemoryPage sources', () => {
   it('puts global first only for a workspace following global, and changing the switch updates the list', async () => {
     const global = fixtureEntry({ id: 'm_global', title: 'Global preference' });

@@ -617,6 +617,8 @@ export interface MemorySettings {
   readonly budget: number;
   readonly workspaces: Readonly<Record<string, boolean>>;
   readonly effective_enabled?: boolean;
+  /** Present once `[memory.advisor]` exists; its status is on the advisor read. */
+  readonly advisor?: import('@kiki/protocol').MemoryAdvisorConfig;
 }
 
 export interface MemoryWorkspaceSettings {
@@ -2855,6 +2857,29 @@ export class KikiClient {
 
   patchMemorySettings(patch: { readonly enabled?: boolean; readonly approval?: MemoryApproval; readonly budget?: number }): Promise<MemorySettings> {
     return this.memoryRequest('PATCH', '/memory/settings', { body: patch });
+  }
+
+  /**
+   * Memory settings read with the advisor's status for one workspace: the
+   * destination and consent state depend on which workspace asks.
+   */
+  getMemoryAdvisorSettings(workspaceId?: string): Promise<import('@kiki/protocol').MemorySettingsResponse> {
+    return this.run(this.rest.memory.settings({ workspace_id: workspaceId }));
+  }
+
+  /** Sparse advisor write: `{ mode }` alone keeps the selector and consent as saved. */
+  patchMemoryAdvisorSettings(patch: import('@kiki/protocol').MemorySettingsPatch, workspaceId?: string): Promise<import('@kiki/protocol').MemorySettingsResponse> {
+    return this.run(this.rest.memory.updateSettings(patch, { workspace_id: workspaceId }));
+  }
+
+  /** Synthetic connectivity check against the confirmed destination; no saved memory is sent. */
+  probeMemoryAdvisor(confirmDestination: string, signal?: AbortSignal): Promise<import('@kiki/protocol').MemoryAdvisorProbeResult> {
+    return this.run(this.rest.memory.probe({ confirm_destination: confirmDestination }, { signal }));
+  }
+
+  /** Live advisor status of a loaded agent; `null` for a session that is not running. */
+  getMemoryAdvisorStatus(sessionId: string, agentId = 'main'): Promise<import('@kiki/protocol').MemoryAdvisorStatus | null> {
+    return this.run(this.rest.memory.status({ session_id: sessionId, agent_id: agentId }));
   }
 
   getWorkspaceMemorySettings(workspaceId: string): Promise<MemoryWorkspaceSettings> {
