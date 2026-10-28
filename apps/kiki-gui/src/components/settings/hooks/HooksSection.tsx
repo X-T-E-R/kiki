@@ -334,7 +334,12 @@ export function HooksSection() {
   })();
 
   return (
-    <SectionCard id="st-card-hooks" title={t('st.hooks.title')}>
+    <SectionCard id="st-card-hooks" title={t('st.hooks.title')} actions={mode === 'form' ? (
+      <>
+        <button type="button" className={SECONDARY_BUTTON} data-hooks-add-declarative disabled={saving || configQuery.data === undefined} onClick={addDeclarative}>{t('st.hooks.addDeclarative')}</button>
+        <button type="button" className={SECONDARY_BUTTON} data-hooks-add-command disabled={saving || configQuery.data === undefined} onClick={addCommand}>{t('st.hooks.add')}</button>
+      </>
+    ) : undefined}>
       <div className="space-y-3">
         <Hint>{t('st.hooks.hint')}</Hint>
         {configQuery.isLoading ? <Hint>{t('st.runtime.loading')}</Hint> : null}
@@ -378,7 +383,16 @@ export function HooksSection() {
                 />
               )}
               {draft !== null && draft.shape === 'v2' ? (
-                <>
+                // Where rules come from and which ones are switched off are
+                // occasional, file-level decisions; they open by themselves
+                // only when something is already set there.
+                <details data-hooks-sources open={draft.config.files.length > 0 || draft.config.disabled.length > 0 ? true : undefined}
+                  className="group border-t border-hairline pt-3">
+                  <summary className="inline-flex min-h-7 cursor-pointer select-none items-center gap-1 text-[12px] font-medium text-ink-soft hover:text-ink pointer-coarse:min-h-11">
+                    <Icon name="chevron" size={12} className="text-ink-faint transition-transform group-open:rotate-90 motion-reduce:transition-none" />
+                    {t('st.advanced.disclosure')}
+                  </summary>
+                  <div className="mt-2 space-y-3">
                   <SettingsGroup title={t('st.hooks.filesTitle')} help={t('st.hooks.filesHint')}>
                     <StringListEditor
                       items={draft.config.files}
@@ -397,15 +411,14 @@ export function HooksSection() {
                       dataAttr="data-hooks-disabled"
                     />
                   </SettingsGroup>
-                </>
+                  </div>
+                </details>
               ) : null}
             </>
           )}
           <div className="flex flex-wrap items-center gap-3">
             {mode === 'form' ? (
               <>
-                <button type="button" className={SECONDARY_BUTTON} data-hooks-add-declarative onClick={addDeclarative}>{t('st.hooks.addDeclarative')}</button>
-                <button type="button" className={SECONDARY_BUTTON} data-hooks-add-command onClick={addCommand}>{t('st.hooks.add')}</button>
                 {draft !== null && draft.shape === 'v2' && canFlattenToLegacy(draft) && draft.config.legacy.length > 0 ? (
                   <button type="button" data-hooks-flatten-legacy onClick={() => edit(flattenToLegacy(draft))}
                     className="inline-flex min-h-7 items-center text-[12px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11">
