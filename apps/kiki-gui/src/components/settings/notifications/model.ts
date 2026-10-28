@@ -60,6 +60,21 @@ const FIELD_KEYS: Readonly<Record<string, I18nKey>> = {
 
 type Translate = (key: I18nKey, params?: Record<string, string | number>) => string;
 
+/** Where to find a platform's credentials, for the types that need explaining. */
+const GUIDE_KEYS: Readonly<Record<string, I18nKey>> = {
+  telegram: 'st.notify.guide.telegram',
+  wecom_webhook: 'st.notify.guide.wecom_webhook',
+  dingtalk_webhook: 'st.notify.guide.dingtalk_webhook',
+  feishu_webhook: 'st.notify.guide.feishu_webhook',
+  discord_webhook: 'st.notify.guide.discord_webhook',
+  slack_webhook: 'st.notify.guide.slack_webhook',
+  http: 'st.notify.guide.http',
+};
+
+export function providerGuideKey(providerId: string): I18nKey | undefined {
+  return GUIDE_KEYS[providerId];
+}
+
 export function providerLabel(t: Translate, providerId: string): string {
   const key = PROVIDER_KEYS[providerId];
   return key === undefined ? providerId : t(key);

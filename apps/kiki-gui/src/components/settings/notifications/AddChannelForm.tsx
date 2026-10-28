@@ -10,7 +10,7 @@ import { KEEP_SECRET, SecretField, type SecretDraft } from '../SecretField';
 import { FieldIssue, FORM_LABEL, SettingsDraftFooter, SettingsSelect } from '../SettingsPrimitives';
 import { JSON_TEXTAREA } from './fieldControls';
 import {
-  fieldLabel, freshRevision, instanceSlots, isAddable, nextId, parseJsonObject, providerLabel, reasonKey, slotSpec, unavailableProviders,
+  fieldLabel, freshRevision, instanceSlots, isAddable, nextId, parseJsonObject, providerGuideKey, providerLabel, reasonKey, slotSpec, unavailableProviders,
 } from './model';
 import { useNotificationWrites } from './useNotifications';
 
@@ -160,6 +160,11 @@ export function AddChannelForm({ settings, providers, onDone }: {
               choices={[...existing.map(([id, instance]) => ({ value: id, label: instance.label ?? id })), { value: NEW, label: t('st.notify.newConnection') }]}
               onChange={setConnection} />
           </div>
+        ) : null}
+        {providerGuideKey(provider.id) !== undefined && connectionId === NEW ? (
+          <p className="text-[12px] leading-5 text-ink-soft sm:col-span-2" data-notify-guide={provider.id}>
+            {t(providerGuideKey(provider.id)!)}
+          </p>
         ) : null}
         <div className="min-w-0 space-y-1">
           <label htmlFor={`${scope}-label`} className={FORM_LABEL}>{`${t('st.notify.name')} · ${t('st.notify.optional')}`}</label>

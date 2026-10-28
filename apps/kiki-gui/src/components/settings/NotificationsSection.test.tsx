@@ -146,14 +146,28 @@ describe('NotificationsSection', () => {
     expect(api.updateSettings).toHaveBeenCalledWith({ ...GLOBAL, suppress_viewing_session: false });
   });
 
-  it('toggles a scene with an instant channel upsert', async () => {
-    const container = await render();
+  it('chooses moments only in the rules matrix, with an instant channel upsert', async () => {
+    const container = await render(SETTINGS, '/settings/notifications?tab=rules');
+    // The channel's own page no longer carries a second set of moment boxes.
     await click(container.querySelector('[data-notify-channel="a"] button[aria-expanded]'));
-    await act(async () => { container.querySelector<HTMLInputElement>('[data-notify-channel="a"] [data-notify-scene="question_pending"]')!.click(); });
+    expect(container.querySelector('[data-notify-channel="a"] [data-notify-scene]')).toBeNull();
+    const rows = [...container.querySelectorAll('[data-notify-matrix-row]')].map((row) => row.getAttribute('data-notify-matrix-row'));
+    expect(rows).toEqual(['a', 'b', 'c']);
+    const box = container.querySelector<HTMLInputElement>('[data-notify-scene-channel="a"][data-notify-scene="question_pending"]')!;
+    expect(box.getAttribute('aria-label')).toBe('Phone: A question is waiting');
+    await act(async () => { box.click(); });
     const [id, channel] = api.upsertChannel.mock.calls[0]!;
     expect(id).toBe('a');
     expect(channel.scenes).toEqual({ work_complete: true, question_pending: false });
     expect(channel).not.toHaveProperty('health');
+  });
+
+  it('names where to find a platform credential on the channel and in the add form', async () => {
+    const container = await render();
+    await click(container.querySelector('[data-notify-channel="a"] button[aria-expanded]'));
+    expect(container.querySelector('[data-notify-channel="a"] [data-notify-guide="telegram"]')?.textContent).toContain('@BotFather');
+    await click(container.querySelector('[data-notify-add-open]'));
+    expect(container.querySelector('[data-notify-add] [data-notify-guide="telegram"]')).not.toBeNull();
   });
 
   it('reports a failed test send with the platform reason', async () => {
@@ -214,20 +228,51 @@ describe('NotificationsSection', () => {
     expect(api.upsertInstance.mock.invocationCallOrder[0]).toBeLessThan(api.upsertChannel.mock.invocationCallOrder[0]!);
   });
 
-  it('defaults to the two-way chat tab and switches tabs on click', async () => {
+  it('opens on channels and accounts, with chat accounts and push channels together', async () => {
     const container = await render();
-    expect(container.querySelector('[data-notify-tab="im"]')?.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('#notify-panel-im')?.classList.contains('hidden')).toBe(false);
-    expect(container.querySelector('#notify-panel-channels')?.classList.contains('hidden')).toBe(true);
+    expect([...container.querySelectorAll('[data-notify-tab]')].map((tab) => tab.getAttribute('data-notify-tab')))
+      .toEqual(['accounts', 'rules', 'device']);
+    expect(container.querySelector('[data-notify-tab="accounts"]')?.getAttribute('aria-selected')).toBe('true');
+    const accounts = container.querySelector('#notify-panel-accounts')!;
+    expect(accounts.classList.contains('hidden')).toBe(false);
+    expect(accounts.querySelector('#st-card-im-session')).not.toBeNull();
+    expect(accounts.querySelector('#st-card-notify-channels')).not.toBeNull();
+    // A channel needing attention marks the tab that holds it.
+    expect(container.querySelector('[data-notify-tab-attention="accounts"]')).not.toBeNull();
 
-    await click(container.querySelector('[data-notify-tab="channels"]'));
-    expect(container.querySelector('[data-notify-tab="channels"]')?.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('#notify-panel-channels')?.classList.contains('hidden')).toBe(false);
+    await click(container.querySelector('[data-notify-tab="rules"]'));
+    const rules = container.querySelector('#notify-panel-rules')!;
+    expect(rules.classList.contains('hidden')).toBe(false);
+    expect(rules.querySelector('#st-card-notify-rules #notify-enabled')).not.toBeNull();
+    expect(rules.querySelector('#st-card-notify-scenes')).not.toBeNull();
   });
 
-  it('activates the system alerts tab when deep-linked to st-card-notify-away', async () => {
-    const container = await render(SETTINGS, '/settings/notifications#st-card-notify-away');
-    expect(container.querySelector('[data-notify-tab="away"]')?.getAttribute('aria-selected')).toBe('true');
-    expect(container.querySelector('#notify-panel-away')?.classList.contains('hidden')).toBe(false);
+  it.each([
+    ['?tab=im', 'accounts'],
+    ['?tab=channels', 'accounts'],
+    ['?tab=away', 'device'],
+    ['#st-card-notify-away', 'device'],
+    ['#st-card-notify-rules', 'rules'],
+    ['#st-card-im-session', 'accounts'],
+  ])('keeps the older address %s landing on %s', async (suffix, tab) => {
+    const container = await render(SETTINGS, `/settings/notifications${suffix}`);
+    expect(container.querySelector(`[data-notify-tab="${tab}"]`)?.getAttribute('aria-selected')).toBe('true');
+    expect(container.querySelector(`#notify-panel-${tab}`)?.classList.contains('hidden')).toBe(false);
+  });
+
+  it('keeps chat accounts usable while push settings fail to load, and says why', async () => {
+    api.getSettings.mockRejectedValue(new Error('fixture offline'));
+    const container = document.createElement('div');
+    document.body.append(container);
+    containers.push(container);
+    const root = createRoot(container);
+    roots.push(root);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    await act(async () => {
+      root.render(<QueryClientProvider client={client}><I18nProvider><MemoryRouter initialEntries={['/settings/notifications']}><NotificationsSection /></MemoryRouter></I18nProvider></QueryClientProvider>);
+    });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    expect(container.querySelector('#notify-panel-accounts #st-card-im-session')).not.toBeNull();
+    expect(container.querySelector('#notify-panel-accounts')!.textContent).toContain('fixture offline');
   });
 });

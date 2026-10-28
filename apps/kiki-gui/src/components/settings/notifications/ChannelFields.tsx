@@ -133,7 +133,7 @@ export function ChannelFields({ channelId, channel, instanceId, instance, provid
         </SettingsGroup>
       ) : null}
       {provider.target_fields.length > 0 ? (
-        <SettingsGroup title={t('st.notify.target')}>
+        <SettingsGroup title={t('st.notify.sendTo')}>
           {provider.target_fields.map((field) => {
             const label = fieldLabel(t, provider.id, field);
             const value = channel.target[field.key];

@@ -12,16 +12,16 @@ import { useInstantSave } from '../useInstantSave';
 import { ChannelFields } from './ChannelFields';
 import { CapabilityTags, ChannelStatus } from './ChannelStatus';
 import { DeliveryLog } from './DeliveryLog';
-import { channelState, channelsUsing, errorKindKey, lastDelivery, providerLabel, reasonKey } from './model';
+import { channelState, channelsUsing, errorKindKey, lastDelivery, providerGuideKey, providerLabel, reasonKey } from './model';
 import { useNotificationWrites } from './useNotifications';
 import { LIST_ROW_HEIGHT, type ListDensity } from '../list';
 
-const SCENES = ['work_complete', 'question_pending'] as const;
-
 /**
  * One channel as a row in the bordered channel list: name, type, the state
- * that matters, and its switch on one line; the schema-driven fields,
- * scenes, checks and recent activity open underneath. Instant apply.
+ * that matters, and its switch on one line. Underneath, in the order a person
+ * sets one up: where to get the credentials, the connection, where messages
+ * go, check and test, then recent activity. Which moments it hears is chosen
+ * in the rules tab, not here. Instant apply.
  */
 export function ChannelRow({ channelId, channel, settings, provider, deliveries, defaultOpen, density }: {
   channelId: string;
@@ -132,6 +132,11 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
             {t(reasonKey(provider?.status_reason))}
           </p>
         ) : null}
+        {providerGuideKey(providerId) !== undefined && !unavailable ? (
+          <p className="max-w-[62ch] text-[12px] leading-5 text-ink-soft" data-notify-guide={providerId}>
+            {t(providerGuideKey(providerId)!)}
+          </p>
+        ) : null}
         <div className="flex flex-wrap items-center gap-1.5 md:hidden">
           <CapabilityTags sendOnly={provider?.can_send === true && !provider.can_receive} unverified={provider?.status === 'unverified'} />
         </div>
@@ -148,22 +153,9 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
           <ChannelFields channelId={channelId} channel={channel} instanceId={instanceId} instance={instance} provider={provider}
             settings={settings} save={save} pending={pending} setPending={setPending} />
         ) : null}
-        <SettingsGroup title={t('st.notify.scenes')}>
-          <div className="flex flex-wrap gap-x-6 gap-y-1" role="group" aria-label={t('st.notify.scenes')}>
-            {SCENES.map((scene) => (
-              <label key={scene} className="inline-flex min-h-8 cursor-pointer items-center gap-2 text-[13px] text-ink">
-                <input type="checkbox" data-notify-scene={scene} className="h-4 w-4 accent-[var(--color-selected-ink)]"
-                  checked={channel.scenes[scene]} disabled={save.saving}
-                  onChange={(event) => { writeChannel(`scene.${scene}`, { scenes: { ...channel.scenes, [scene]: event.target.checked } }); }} />
-                {t(`st.notify.scene.${scene}`)}
-                {status(`scene.${scene}`)}
-              </label>
-            ))}
-          </div>
-        </SettingsGroup>
         <FeedbackLine feedback={save.error} />
         {!unavailable ? (
-          <div className="space-y-2">
+          <SettingsGroup title={t('st.notify.checkSection')}>
             <CardActions>
               <button type="button" data-notify-check className={SECONDARY_BUTTON} disabled={action !== null || save.saving} onClick={() => void check()}>
                 {action === 'check' ? t('st.notify.checking') : t('st.notify.check')}
@@ -174,8 +166,9 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
               </button>
             </CardActions>
             <div data-notify-result><FeedbackLine feedback={result} /></div>
-          </div>
+          </SettingsGroup>
         ) : null}
+        <SettingsGroup title={t('st.notify.activity')}>
         <dl className="grid gap-x-6 gap-y-1 text-[12px] sm:grid-cols-[6rem_minmax(0,1fr)]" data-notify-activity>
           <dt className="text-ink-soft">{t('st.notify.lastSent')}</dt>
           <dd className="text-ink">{sent === undefined ? <span className="text-ink-faint">{t('st.notify.never')}</span> : time.relativeTime(sent.created_at)}</dd>
@@ -185,6 +178,7 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
           </> : null}
         </dl>
         <DeliveryLog deliveries={deliveries} />
+        </SettingsGroup>
         <div className="flex justify-end">
           <button type="button" data-notify-remove className={DANGER_GHOST_BUTTON} disabled={save.saving} onClick={() => { setConfirming(true); }}>
             {t('st.notify.remove')}
