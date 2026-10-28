@@ -89,7 +89,7 @@ export class UsageReadModelWorker {
     for (const pending of [this.active, ...this.waiting]) {
       if (pending === undefined) continue;
       this.release(pending);
-      const writing = ['apply', 'catalog', 'abandon', 'invalidate', 'settleRetained'].includes(pending.operation.type);
+      const writing = ['apply', 'catalog', 'maintain', 'abandon', 'invalidate', 'settleRetained'].includes(pending.operation.type);
       pending.reject(writing ? Object.assign(new Error('Usage worker stopped; reconcile persisted source progress before retry', { cause: error }), { committed: pending === this.active ? undefined : false }) : error);
     }
     this.active = undefined;

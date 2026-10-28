@@ -69,6 +69,65 @@ describe('Usage source read model', () => {
     expect(priced.total).toMatchObject({ cost: 4.5, costUnknown: false });
   });
 
+  it('reads exact boundary facts when an hourly group crosses a range or timezone bucket', async () => {
+    const edge = 18_000_000 - 17 * 60_000;
+    for (const value of [record(edge - 1, 3), record(edge + 1, 7), { ...record(edge + 2, 5), modelAlias: 'other', provider: 'provider', profileName: 'profile', parentAgentId: 'parent' }]) logs.append(SCOPE, 'wire.jsonl', value);
+    await logs.flush(); await catalog();
+    const split = await model.query({ ...query, timezoneOffsetMinutes: 17 });
+    expect(split.trend.map((item) => ({ start: item.startAt, requests: item.requests, input: item.groups.reduce((total, group) => total + group.usage.inputOther, 0) }))).toEqual([{ start: -1_020_000, requests: 1, input: 3 }, { start: edge, requests: 2, input: 12 }]);
+    expect((await model.query({ ...query, startAt: edge, endAt: edge + 2 })).total).toMatchObject({ usage: usage(7), knownRecords: 1 });
+    const filtered = await model.query({ ...query, dimension: 'provider', providers: ['provider'], profiles: ['profile'], agentIds: ['main'], models: ['other'] });
+    expect(filtered.total).toMatchObject({ usage: usage(5), knownRecords: 1 });
+    expect(filtered.trend[0]?.groups[0]).toMatchObject({ key: 'provider:"provider"', parentAgentId: 'parent', profileName: 'profile', modelAlias: 'other' });
+    expect((await model.read(SCOPE)).records).toHaveLength(3);
+  });
+
+  it('backfills an older typed database in bounded restartable pages and invalidates old query revisions', async () => {
+    const count = 32770;
+    const checkpoint = { generation: 'legacy', offset: count, size: count, mtimeMs: 1, boundaryHash: '', valid: true };
+    await model.apply({ source: SCOPE, progress: { batchStart: 0, offset: count, ordinal: count }, records: Array.from({ length: count }, (_, time) => record(time)), publish: { start: 0, checkpoint, journalSize: count } });
+    await catalog();
+    const original = await model.query(query);
+    await model.close(); await ix.dispose(); await drainQueryStoreDisposals();
+    const { DatabaseSync } = await import('node:sqlite');
+    let database = new DatabaseSync(join(home, 'cache/usage-read-model-v2/index.sqlite'));
+    database.exec('DROP TABLE source_hour_total_v1; DROP TABLE source_hour_head_v1'); database.close();
+    open();
+    await catalog();
+    database = new DatabaseSync(join(home, 'cache/usage-read-model-v2/index.sqlite'), { readOnly: true });
+    expect(database.prepare('SELECT ordinal FROM source_hour_head_v1 WHERE source=?').get(SCOPE)?.['ordinal']).toBe(32768); database.close();
+    const follower = new TestInstantiationService();
+    follower.stub(IBootstrapService, stubBootstrap(home)); follower.stub(ILogService, stubLog());
+    follower.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
+    const readOnly = follower.get(IUsageReadModel);
+    try { expect(await readOnly.query(query)).toEqual(original); }
+    finally { await readOnly.close(); await follower.dispose(); }
+    await model.close(); await ix.dispose(); await drainQueryStoreDisposals();
+    const { UsageDatabase } = await import('#/persistence/backends/sqlite/usageDatabase');
+    let checks = 0;
+    const interrupted = new UsageDatabase(join(home, 'cache/usage-read-model-v2/index.sqlite'), true, () => { if (++checks === 3) throw new Error('cancel migration'); });
+    try { expect(() => interrupted.execute({ type: 'maintain' })).toThrow('cancel migration'); }
+    finally { interrupted.execute({ type: 'close' }); }
+    database = new DatabaseSync(join(home, 'cache/usage-read-model-v2/index.sqlite'), { readOnly: true });
+    expect(database.prepare('SELECT ordinal FROM source_hour_head_v1 WHERE source=?').get(SCOPE)?.['ordinal']).toBe(32768); database.close();
+    open();
+    const rebuilt = await model.query(query);
+    expect(rebuilt.revision).not.toBe(original.revision);
+    expect({ ...rebuilt, revision: original.revision }).toEqual(original);
+    await expect(model.query({ ...query, expectedRevision: original.revision })).rejects.toMatchObject({ code: 'usage.revision_changed' });
+    database = new DatabaseSync(join(home, 'cache/usage-read-model-v2/index.sqlite'), { readOnly: true });
+    expect(database.prepare('SELECT sum(record_count) AS records FROM source_hour_total_v1 WHERE source=?').get(SCOPE)?.['records']).toBe(count);
+    expect(database.prepare('PRAGMA user_version').get()?.['user_version']).toBe(2); database.close();
+  }, 15000);
+
+  it('keeps fractional tokens on the fact path instead of rounding an hourly aggregate', async () => {
+    for (const value of [record(1, 0.1), record(2, 0.2), record(3, 0.3)]) logs.append(SCOPE, 'wire.jsonl', value);
+    await logs.flush(); await catalog();
+    const result = await model.query(query);
+    expect(result.total).toMatchObject({ usage: usage(0.6), knownRecords: 3 });
+    expect(result.total.cost).toBeCloseTo(0.06, 12);
+  });
+
   it('retains finite known costs in total, bucket and session results when record costs overflow', async () => {
     logs.append(SCOPE, 'wire.jsonl', record(1, 1));
     logs.append(SCOPE, 'wire.jsonl', record(2, 1));

@@ -10,7 +10,7 @@ export type UsageStoreOperation =
   | { readonly type: 'query'; readonly query: UsageReadModelQuery }
   | { readonly type: 'retained'; readonly workspaceIds?: readonly string[] }
   | { readonly type: 'settleRetained'; readonly ledger: string; readonly generation: string }
-  | { readonly type: 'models' | 'sources' | 'close' };
+  | { readonly type: 'models' | 'sources' | 'maintain' | 'close' };
 
 export interface UsageStoreRequest {
   readonly id: number;

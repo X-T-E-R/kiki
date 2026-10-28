@@ -1,3 +1,4 @@
+import { setImmediate } from 'node:timers/promises';
 import { join } from 'pathe';
 import { Disposable, toDisposable } from '#/_base/di/lifecycle';
 import { registerScopedService, ScopeActivation } from '#/_base/di/scope';
@@ -57,6 +58,9 @@ export class SqliteUsageReadModel extends Disposable implements IUsageReadModel 
     signal?.throwIfAborted();
     await this.ready();
     signal?.throwIfAborted();
+    if (operation.type === 'query' && this.writer !== undefined) {
+      while (await this.writer.request<boolean>({ type: 'maintain' }, signal)) await setImmediate(undefined, { signal });
+    }
     return this.reader!.request(operation, signal);
   }
   private async writeOperation<T>(operation: UsageStoreOperation): Promise<T> {

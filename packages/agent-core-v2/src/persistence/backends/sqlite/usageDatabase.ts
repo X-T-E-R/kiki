@@ -17,6 +17,7 @@ type Row = Record<string, unknown>;
 export class UsageDatabase {
   private readonly db: DatabaseSync;
   private readonly insertStage;
+  private readonly hourTotalsAvailable;
   constructor(path: string, private readonly writable: boolean, private readonly check: () => void = () => {}) {
     if (writable) mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
     this.db = new DatabaseSync(path, { readOnly: !writable });
@@ -35,6 +36,8 @@ export class UsageDatabase {
           CREATE TABLE IF NOT EXISTS fact(source TEXT NOT NULL,generation TEXT NOT NULL,ordinal INTEGER NOT NULL,time REAL NOT NULL,model TEXT NOT NULL,upstream_model TEXT,source_agent TEXT,agent TEXT,parent_agent TEXT,provider TEXT,model_alias TEXT,profile TEXT,turn REAL,input_other REAL NOT NULL,output REAL NOT NULL,cache_read REAL NOT NULL,cache_creation REAL NOT NULL,state INTEGER NOT NULL,mask INTEGER NOT NULL,known INTEGER,usage_scope TEXT,executor TEXT,PRIMARY KEY(source,generation,ordinal)) WITHOUT ROWID;
           CREATE INDEX IF NOT EXISTS fact_time ON fact(time,source,generation,ordinal);
           CREATE TABLE IF NOT EXISTS source_model_total(source TEXT NOT NULL,generation TEXT NOT NULL,model TEXT NOT NULL,state INTEGER NOT NULL,mask INTEGER NOT NULL,input_other REAL NOT NULL,output REAL NOT NULL,cache_read REAL NOT NULL,cache_creation REAL NOT NULL,records INTEGER NOT NULL,PRIMARY KEY(source,generation,model,state,mask)) WITHOUT ROWID;
+          CREATE TABLE IF NOT EXISTS source_hour_total_v1(source TEXT NOT NULL,generation TEXT NOT NULL,identity TEXT NOT NULL,time REAL NOT NULL,latest_time REAL NOT NULL,model TEXT NOT NULL,source_agent TEXT,agent TEXT,parent_agent TEXT,provider TEXT,model_alias TEXT,profile TEXT,turn REAL,input_other REAL NOT NULL,output REAL NOT NULL,cache_read REAL NOT NULL,cache_creation REAL NOT NULL,state INTEGER NOT NULL,mask INTEGER NOT NULL,record_count INTEGER NOT NULL,precise INTEGER NOT NULL,PRIMARY KEY(source,generation,identity)) WITHOUT ROWID;
+          CREATE TABLE IF NOT EXISTS source_hour_head_v1(source TEXT NOT NULL,generation TEXT NOT NULL,ordinal INTEGER NOT NULL,PRIMARY KEY(source,generation)) WITHOUT ROWID;
           CREATE TABLE IF NOT EXISTS retired_generation(source TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(source,generation)) WITHOUT ROWID;
           CREATE TABLE IF NOT EXISTS retained_publication(ledger TEXT NOT NULL,target TEXT NOT NULL,generation TEXT NOT NULL,PRIMARY KEY(ledger,target)) WITHOUT ROWID;
           CREATE TABLE IF NOT EXISTS import(source TEXT PRIMARY KEY,progress TEXT NOT NULL) WITHOUT ROWID;
@@ -42,6 +45,7 @@ export class UsageDatabase {
           PRAGMA application_id=${APPLICATION_ID}; PRAGMA user_version=2; COMMIT;`);
         this.db.prepare('INSERT OR IGNORE INTO meta VALUES(1,?,0)').run(randomUUID());
       } else if (app !== APPLICATION_ID || version !== 2) throw new Error('Usage read model is preparing');
+      this.hourTotalsAvailable = this.db.prepare("SELECT 1 FROM sqlite_master WHERE name='source_hour_head_v1'").get() !== undefined;
       this.db.function('usage_check', () => { this.check(); return 1; });
       this.db.aggregate<number>('usage_finite_sum', { start: 0, step: (total, value) => { const next = total + Number(value); return Number.isFinite(next) ? next : total; } });
       this.db.function('usage_bucket', { deterministic: true }, (time, granularity, offset) => bucket(Number(time), String(granularity), Number(offset)));
@@ -56,6 +60,7 @@ export class UsageDatabase {
       case 'sources': return this.snapshot(() => this.db.prepare('SELECT * FROM source').all().map((row) => { this.check(); return { source: String(row['id']), head: sourceHeadOf(row) }; }));
       case 'progress': return this.progress(operation.source);
       case 'apply': return this.transaction(() => this.apply(operation.page));
+      case 'maintain': return this.transaction(() => this.backfillHourTotals());
       case 'abandon': return this.transaction(() => { this.db.prepare('DELETE FROM stage WHERE source=?').run(operation.source); this.db.prepare('DELETE FROM import WHERE source=?').run(operation.source); });
       case 'invalidate': return this.transaction(() => {
         const row = this.db.prepare('SELECT generation,building_generation FROM source WHERE id=?').get(operation.source);
@@ -168,6 +173,8 @@ export class UsageDatabase {
       this.db.prepare(`INSERT INTO fact SELECT ?,?,ordinal+?,${COLUMNS} FROM stage WHERE source=?`).run(target, generation, ordinal, page.source);
       this.db.prepare(`INSERT INTO source_model_total SELECT ?,?,model,state,mask,SUM(input_other),SUM(output),SUM(cache_read),SUM(cache_creation),COUNT(*) FROM stage WHERE source=? GROUP BY model,state,mask
         ON CONFLICT(source,generation,model,state,mask) DO UPDATE SET input_other=input_other+excluded.input_other,output=output+excluded.output,cache_read=cache_read+excluded.cache_read,cache_creation=cache_creation+excluded.cache_creation,records=records+excluded.records`).run(target, generation, page.source);
+      const totalHead = this.db.prepare('SELECT ordinal FROM source_hour_head_v1 WHERE source=? AND generation=?').get(target, generation);
+      if (ordinal === 0 || totalHead?.['ordinal'] === ordinal) this.extendHourTotals(target, generation, ordinal, ordinal + page.progress.ordinal);
       const valid = checkpoint.valid && (replace || previous?.valid !== false) && this.db.prepare('SELECT 1 FROM stage WHERE source=? AND state=3 LIMIT 1').get(page.source) === undefined;
       const building = session === undefined && head.checkpoint !== undefined && checkpoint.offset < checkpoint.size && (replace || head.pendingCheckpoint !== undefined);
       const retire = this.db.prepare('INSERT OR IGNORE INTO retired_generation VALUES(?,?)');
@@ -190,6 +197,27 @@ export class UsageDatabase {
     this.collectRetired();
     return true;
   }
+  private extendHourTotals(source: string, generation: string, start: number, until: number): void {
+    const identity = 'json_array(CAST(floor(time/3600000) AS INTEGER),model,source_agent,agent,parent_agent,provider,model_alias,profile,turn,state,mask)';
+    const precise = ['input_other', 'output', 'cache_read', 'cache_creation'].map((column) => `${column}=floor(${column}) AND ${column}<=9007199254740991`).join(' AND ');
+    this.db.prepare(`INSERT INTO source_hour_total_v1 SELECT source,generation,${identity},min(time),max(time),model,source_agent,agent,parent_agent,provider,model_alias,profile,turn,sum(input_other),sum(output),sum(cache_read),sum(cache_creation),state,mask,count(*),min(${precise}) FROM fact WHERE source=? AND generation=? AND ordinal>=? AND ordinal<? AND state!=3 AND usage_check()=1 GROUP BY ${identity}
+      ON CONFLICT(source,generation,identity) DO UPDATE SET time=min(time,excluded.time),latest_time=max(latest_time,excluded.latest_time),input_other=input_other+excluded.input_other,output=output+excluded.output,cache_read=cache_read+excluded.cache_read,cache_creation=cache_creation+excluded.cache_creation,record_count=record_count+excluded.record_count,precise=min(precise,excluded.precise)`).run(source, generation, start, until);
+    this.db.prepare('INSERT INTO source_hour_head_v1 VALUES(?,?,?) ON CONFLICT(source,generation) DO UPDATE SET ordinal=excluded.ordinal').run(source, generation, until);
+  }
+  private backfillHourTotals(): boolean {
+    let remaining = 32768, completed = 0;
+    const sources = this.db.prepare('SELECT s.id,s.generation,s.ordinal,coalesce(h.ordinal,0) AS start FROM source s LEFT JOIN source_hour_head_v1 h ON h.source=s.id AND h.generation=s.generation WHERE s.present=1 AND s.ordinal>coalesce(h.ordinal,0) ORDER BY s.id LIMIT 128').all();
+    for (const row of sources) {
+      this.check();
+      const start = Number(row['start']), until = Math.min(Number(row['ordinal']), start + remaining);
+      this.extendHourTotals(String(row['id']), String(row['generation']), start, until);
+      remaining -= until - start;
+      if (until === Number(row['ordinal'])) completed++;
+      if (remaining === 0) break;
+    }
+    if (completed > 0) this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
+    return this.db.prepare('SELECT 1 FROM source s LEFT JOIN source_hour_head_v1 h ON h.source=s.id AND h.generation=s.generation WHERE s.present=1 AND s.ordinal>coalesce(h.ordinal,0) LIMIT 1').get() !== undefined;
+  }
   private collectRetired(): void {
     const retired = this.db.prepare('SELECT * FROM retired_generation LIMIT 1').get();
     if (retired === undefined) return;
@@ -197,6 +225,9 @@ export class UsageDatabase {
     this.db.prepare('DELETE FROM fact WHERE (source,generation,ordinal) IN (SELECT source,generation,ordinal FROM fact WHERE source=? AND generation=? LIMIT 2048)').run(source, generation);
     if (this.db.prepare('SELECT 1 FROM fact WHERE source=? AND generation=? LIMIT 1').get(source, generation) !== undefined) return;
     this.db.prepare('DELETE FROM source_model_total WHERE source=? AND generation=?').run(source, generation);
+    this.db.prepare('DELETE FROM source_hour_total_v1 WHERE (source,generation,identity) IN (SELECT source,generation,identity FROM source_hour_total_v1 WHERE source=? AND generation=? LIMIT 2048)').run(source, generation);
+    if (this.db.prepare('SELECT 1 FROM source_hour_total_v1 WHERE source=? AND generation=? LIMIT 1').get(source, generation) !== undefined) return;
+    this.db.prepare('DELETE FROM source_hour_head_v1 WHERE source=? AND generation=?').run(source, generation);
     this.db.prepare('DELETE FROM retired_generation WHERE source=? AND generation=?').run(source, generation);
   }
   private catalog(sessions: readonly UsageReadModelSession[], sources: readonly { source: string; workspaceId: string; sessionId: string }[], inventory?: boolean): void {
@@ -216,6 +247,7 @@ export class UsageDatabase {
     for (const item of sessions) changed += Number(put.run(item.workspaceId, item.id, item.title ?? null, item.createdAt, item.updatedAt, Number(item.archived), Number(item.deleted), Number(item.ephemeral ?? false)).changes);
     const source = this.db.prepare(`INSERT INTO source(id,generation,workspace,session_id) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET workspace=excluded.workspace,session_id=excluded.session_id,present=1 WHERE workspace IS NOT excluded.workspace OR session_id IS NOT excluded.session_id OR present!=1`);
     for (const item of sources) changed += Number(source.run(item.source, randomUUID(), item.workspaceId, item.sessionId).changes);
+    this.backfillHourTotals();
     this.collectRetired();
     if (changed > 0) this.db.exec('UPDATE meta SET revision=revision+1 WHERE id=1');
   }
@@ -246,17 +278,29 @@ export class UsageDatabase {
     const bucketParams: SQLInputValue[] = query.granularity === 'session' ? [] : nativeBucket === undefined ? [query.granularity, query.timezoneOffsetMinutes] : [query.timezoneOffsetMinutes * 60_000, query.timezoneOffsetMinutes * 60_000];
     this.db.exec('DROP TABLE IF EXISTS temp.usage_selected; DROP TABLE IF EXISTS temp.usage_sources');
     try {
-    this.db.exec('CREATE TEMP TABLE usage_sources AS SELECT row_number() OVER(ORDER BY id) AS source_number,* FROM source; CREATE UNIQUE INDEX usage_source_number ON usage_sources(source_number)');
-    const selected = `SELECT s.source_number,f.time,f.model,f.source_agent,f.agent,f.parent_agent,f.provider,f.model_alias,f.profile,f.turn,f.input_other,f.output,f.cache_read,f.cache_creation,f.state,f.mask,s.workspace,s.session_id,u.ephemeral,${cost} AS raw_cost,${dimension} AS group_key,${bucketKey} AS bucket FROM usage_sources s JOIN session u ON s.workspace=u.workspace AND s.session_id=u.id CROSS JOIN fact f NOT INDEXED ON f.source=s.id AND f.generation=s.generation LEFT JOIN quote q ON q.model=f.model WHERE s.source_number=? AND ${clauses.join(' AND ')}`;
+    this.db.exec(`CREATE TEMP TABLE usage_sources AS SELECT row_number() OVER(ORDER BY s.id) AS source_number,s.*,${this.hourTotalsAvailable ? 'h.ordinal' : 'NULL'} AS total_ordinal FROM source s ${this.hourTotalsAvailable ? 'LEFT JOIN source_hour_head_v1 h ON h.source=s.id AND h.generation=s.generation' : ''}; CREATE UNIQUE INDEX usage_source_number ON usage_sources(source_number)`);
+    const sourceSelection = (rolled: boolean): string => `SELECT s.source_number,f.time,${rolled ? 'f.latest_time,f.record_count,' : ''}f.model,f.source_agent,f.agent,f.parent_agent,f.provider,f.model_alias,f.profile,f.turn,f.input_other,f.output,f.cache_read,f.cache_creation,f.state,f.mask,s.workspace,s.session_id,u.ephemeral,${cost} AS raw_cost,${dimension} AS group_key,${bucketKey} AS bucket FROM usage_sources s JOIN session u ON s.workspace=u.workspace AND s.session_id=u.id CROSS JOIN ${rolled ? 'source_hour_total_v1' : 'fact'} f NOT INDEXED ON f.source=s.id AND f.generation=s.generation LEFT JOIN quote q ON q.model=f.model WHERE s.source_number=? AND ${clauses.join(' AND ')}`;
+    const selected = sourceSelection(false);
     const identities = 'source_number,bucket,turn,model,source_agent,agent,parent_agent,provider,model_alias,profile,state,mask';
     const compact = `WITH selected AS (${selected}) SELECT min(time) AS time,max(time) AS latest_time,${identities},min(workspace) AS workspace,min(session_id) AS session_id,min(ephemeral) AS ephemeral,min(group_key) AS group_key,sum(input_other) AS input_other,sum(output) AS output,sum(cache_read) AS cache_read,sum(cache_creation) AS cache_creation,sum(CASE WHEN raw_cost<=1.7976931348623157e308 THEN raw_cost END) AS raw_cost,max(raw_cost IS NULL OR raw_cost>1.7976931348623157e308) AS price_unknown,count(*) AS record_count FROM selected GROUP BY ${identities}`;
     const individual = `SELECT *,time AS latest_time,raw_cost IS NULL OR raw_cost>1.7976931348623157e308 AS price_unknown,1 AS record_count FROM (${selected})`;
     const projection = finiteCosts ? individual : compact;
     this.db.prepare(`CREATE TEMP TABLE usage_selected AS ${projection} LIMIT 0`).run(...bucketParams, 0, ...parameters);
     const append = this.db.prepare(`INSERT INTO usage_selected ${projection}`);
-    for (const source of this.db.prepare('SELECT source_number FROM usage_sources WHERE present=1').iterate()) {
+    const rolled = !finiteCosts && this.hourTotalsAvailable ? this.db.prepare(`INSERT INTO usage_selected WITH selected AS (${sourceSelection(true)}) SELECT time,latest_time,${identities},workspace,session_id,ephemeral,group_key,input_other,output,cache_read,cache_creation,raw_cost,raw_cost IS NULL OR raw_cost>1.7976931348623157e308 AS price_unknown,record_count FROM selected`) : undefined;
+    const overlap: string[] = [], unsafe = ['precise=0', ...['input_other', 'output', 'cache_read', 'cache_creation'].map((column) => `${column}>9007199254740991`)];
+    const overlapArgs: SQLInputValue[] = [], unsafeArgs: SQLInputValue[] = [];
+    if (query.startAt !== undefined) { overlap.push('latest_time>=?'); overlapArgs.push(query.startAt); unsafe.push('time<?'); unsafeArgs.push(query.startAt); }
+    if (query.endAt !== undefined) { overlap.push('time<?'); overlapArgs.push(query.endAt); unsafe.push('latest_time>=?'); unsafeArgs.push(query.endAt); }
+    if (query.granularity !== 'session') {
+      unsafe.push('usage_bucket(time,?,?)!=usage_bucket(latest_time,?,?)');
+      unsafeArgs.push(query.granularity, query.timezoneOffsetMinutes, query.granularity, query.timezoneOffsetMinutes);
+    }
+    const boundary = rolled === undefined ? undefined : this.db.prepare(`SELECT 1 FROM source_hour_total_v1 WHERE source=? AND generation=? ${overlap.length === 0 ? '' : `AND ${overlap.join(' AND ')}`} AND (${unsafe.join(' OR ')}) LIMIT 1`);
+    for (const source of this.db.prepare('SELECT source_number,id,generation,ordinal,total_ordinal FROM usage_sources WHERE present=1').iterate()) {
       this.check();
-      append.run(...bucketParams, Number(source['source_number']), ...parameters);
+      const prepared = rolled !== undefined && source['total_ordinal'] === source['ordinal'] && boundary!.get(String(source['id']), String(source['generation']), ...overlapArgs, ...unsafeArgs) === undefined;
+      (prepared ? rolled! : append).run(...bucketParams, Number(source['source_number']), ...parameters);
     }
     this.db.exec('CREATE INDEX usage_selected_session ON usage_selected(workspace,session_id)');
     if (!finiteCosts && this.db.prepare('SELECT 1 FROM usage_selected WHERE raw_cost>1.7976931348623157e308 LIMIT 1').get() !== undefined) throw COST_OVERFLOW;
