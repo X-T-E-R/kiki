@@ -15,6 +15,7 @@ import { DisclosureChevron } from './icons';
 import type { ConnectionConfig, SshProfile } from '../state/connectionConfig';
 import type { DesktopBootStatus, DesktopFailureInfo } from '../state/desktopConnection';
 import { Wordmark } from './Wordmark';
+import { appShellConnectUrl } from '../lib/appShell';
 import { SshProfilesPanel } from './SshProfilesPanel';
 
 declare const __KIKI_PROXY_TARGET__: string;
@@ -38,6 +39,9 @@ export type { WebEntryProblem as WebLinkProblem } from '../lib/webAccess';
 function WebLinkProblemCard({ problem, onRetry }: { problem: WebLinkProblem; onRetry?: () => void }) {
   const { t } = useI18n();
   const [showConnect, setShowConnect] = useState(false);
+  // Inside the phone app there is no address bar to open the new link in; the
+  // app's own connect screen takes it instead.
+  const shellConnect = appShellConnectUrl();
   return (
     <div className="px-7 pt-6 pb-7" data-web-link-problem={problem}>
       <Wordmark size="lg" />
@@ -47,7 +51,12 @@ function WebLinkProblemCard({ problem, onRetry }: { problem: WebLinkProblem; onR
       <p className="mt-1.5 max-w-[46ch] text-[13px] leading-relaxed text-ink-soft">
         {t(problem === 'retargeted' ? 'connect.webLinkRetargetedBody' : 'connect.webLinkRefusedBody')}
       </p>
-      {onRetry !== undefined ? (
+      {shellConnect !== null ? (
+        <a href={shellConnect} data-web-link-app-connect
+          className="mt-5 block w-full rounded-md bg-accent px-3 py-2 text-center text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none">
+          {t('connect.webLinkEnterNew')}
+        </a>
+      ) : onRetry !== undefined ? (
         <button type="button" data-web-link-retry onClick={onRetry}
           className="mt-5 w-full rounded-md bg-accent px-3 py-2 text-[14px] font-medium text-on-accent transition-colors hover:bg-accent-deep focus-visible:ring-2 focus-visible:ring-selected-ink/50 focus-visible:outline-none">
           {t('connect.webLinkRetry')}

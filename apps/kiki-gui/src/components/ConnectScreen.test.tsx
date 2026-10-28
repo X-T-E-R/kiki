@@ -85,6 +85,27 @@ describe('ConnectScreen browser form', () => {
   });
 });
 
+describe('ConnectScreen spent web link', () => {
+  it('offers a retry of the same link in a browser', () => {
+    const html = renderScreen({ desktopBoot: null, desktopFailure: null, webLink: 'refused', onRetryWebLink: () => {} });
+    expect(html).toContain('This link no longer works');
+    expect(html).toContain('data-web-link-retry');
+    expect(html).not.toContain('data-web-link-app-connect');
+  });
+
+  it('sends the phone app back to its own connect screen for a new link', () => {
+    vi.stubGlobal('navigator', { language: 'en-US', userAgent: 'Mozilla/5.0 (Linux; Android 16; wv) KikiApp/android' });
+    try {
+      const html = renderScreen({ desktopBoot: null, desktopFailure: null, webLink: 'refused', onRetryWebLink: () => {} });
+      expect(html).toContain('href="https://localhost/index.html#change"');
+      expect(html).toContain('Enter a new link');
+      expect(html).not.toContain('data-web-link-retry');
+    } finally {
+      vi.stubGlobal('navigator', { language: 'en-US' });
+    }
+  });
+});
+
 describe('normalizeDesktopFailure', () => {
   it('keeps the structured shell rejection intact', () => {
     expect(

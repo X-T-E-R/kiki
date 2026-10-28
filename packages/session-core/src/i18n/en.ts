@@ -9166,6 +9166,7 @@ export const en = {
   'connect.webLinkRetargeted': 'This link was not opened',
   'connect.webLinkRetargetedBody': 'It carried an address for a different server, so it was not followed. Open the link exactly as you received it.',
   'connect.webLinkRetry': 'Try this link again',
+  'connect.webLinkEnterNew': 'Enter a new link',
   'connect.webLinkUseConnect': 'Connect another way',
   'connect.webLinkHideConnect': 'Hide the connect form',
   'st.web.lastUsed': 'Last used {time}',

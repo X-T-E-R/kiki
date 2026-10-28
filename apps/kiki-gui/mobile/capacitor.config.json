@@ -9,11 +9,13 @@
   },
   "android": {
     "allowMixedContent": false,
-    "captureInput": false
+    "captureInput": false,
+    "appendUserAgent": "KikiApp/android"
   },
   "ios": {
     "contentInset": "never",
-    "scrollEnabled": true
+    "scrollEnabled": true,
+    "appendUserAgent": "KikiApp/ios"
   },
   "plugins": {
     "SystemBars": {

@@ -9081,6 +9081,7 @@ export const zh = {
   'connect.webLinkRetargeted': '这个链接没有被打开',
   'connect.webLinkRetargetedBody': '它同时带着另一台服务器的地址，因此没有被跟随。请按收到的原样打开这个链接。',
   'connect.webLinkRetry': '再试一次这个链接',
+  'connect.webLinkEnterNew': '输入新链接',
   'connect.webLinkUseConnect': '换一种方式连接',
   'connect.webLinkHideConnect': '收起连接表单',
   'st.web.lastUsed': '上次使用 {time}',
