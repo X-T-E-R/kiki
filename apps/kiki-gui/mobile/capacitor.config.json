@@ -1,0 +1,24 @@
+{
+  "appId": "ai.easyagent.kiki",
+  "appName": "Kiki",
+  "webDir": "launcher",
+  "backgroundColor": "#fbfaf6",
+  "server": {
+    "androidScheme": "https",
+    "errorPath": "index.html#unreachable"
+  },
+  "android": {
+    "allowMixedContent": false,
+    "captureInput": false
+  },
+  "ios": {
+    "contentInset": "never",
+    "scrollEnabled": true
+  },
+  "plugins": {
+    "SystemBars": {
+      "insetsHandling": "css",
+      "initialViewportFitValueHint": "cover"
+    }
+  }
+}

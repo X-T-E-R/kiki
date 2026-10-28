@@ -1,0 +1,21 @@
+{
+  "name": "kiki-mobile-shell",
+  "version": "0.5.1",
+  "private": true,
+  "description": "Android and iOS app shells that open a Kiki server's own web GUI",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "sync": "cap sync",
+    "android:debug": "cap sync android && cd android && gradlew assembleDebug",
+    "test": "node --test test/target.test.mjs"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.5.3",
+    "@capacitor/core": "8.5.3",
+    "@capacitor/ios": "8.5.3"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.3"
+  }
+}

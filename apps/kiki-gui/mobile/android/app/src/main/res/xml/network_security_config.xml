@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Kiki is self-hosted: a phone often reaches its own computer over plain
+     http on the LAN or a private tunnel, the same choice the web access
+     "insecure, no TLS" option makes on the server side. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

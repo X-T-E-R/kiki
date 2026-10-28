@@ -1,0 +1,155 @@
+/* The app shell's own first screen, in the GUI's paper-and-ink language
+ * (apps/kiki-gui/src/index.css): one field, one vermilion primary action. */
+@font-face {
+  font-family: 'Newsreader Variable';
+  src: url('./fonts/newsreader-latin-opsz-normal.woff2') format('woff2');
+  font-display: swap;
+}
+
+:root {
+  --paper: #fbfaf6;
+  --panel: #fffdfa;
+  --hairline: #e4ddd0;
+  --hairline-strong: #cdc3b1;
+  --ink: #1b1a17;
+  --ink-soft: #4b453e;
+  --ink-faint: #665e54;
+  --accent: #c8401a;
+  --accent-deep: #9c3012;
+  --on-accent: #fffaf5;
+  --danger: #b0261e;
+  --selected: #1d4d6d;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --paper: #1b2226;
+    --panel: #222b30;
+    --hairline: #33403f;
+    --hairline-strong: #4a5856;
+    --ink: #eeeae2;
+    --ink-soft: #c9c3b8;
+    --ink-faint: #a49d92;
+    --accent: #eb946f;
+    --accent-deep: #f0a888;
+    --on-accent: #261a14;
+    --danger: #f08a7e;
+    --selected: #8cc4e6;
+    color-scheme: dark;
+  }
+}
+
+* { box-sizing: border-box; }
+
+html, body { height: 100%; margin: 0; }
+
+body {
+  background: var(--paper);
+  color: var(--ink);
+  font: 16px/1.5 'Instrument Sans', 'Segoe UI', system-ui, 'PingFang SC', 'Noto Sans CJK SC', sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.sheet {
+  display: flex;
+  min-height: 100%;
+  max-width: 440px;
+  margin: 0 auto;
+  flex-direction: column;
+  justify-content: center;
+  padding:
+    calc(env(safe-area-inset-top, 0px) + 32px)
+    calc(env(safe-area-inset-right, 0px) + 24px)
+    calc(env(safe-area-inset-bottom, 0px) + 40px)
+    calc(env(safe-area-inset-left, 0px) + 24px);
+}
+
+.wordmark {
+  margin: 0;
+  font: 600 52px/1 'Newsreader Variable', Georgia, serif;
+  font-optical-sizing: auto;
+  letter-spacing: -0.02em;
+}
+.dot { color: var(--accent); }
+
+.lede {
+  margin: 12px 0 40px;
+  color: var(--ink-soft);
+  font-size: 17px;
+}
+
+form { display: flex; flex-direction: column; }
+
+.label {
+  margin-bottom: 8px;
+  color: var(--ink-soft);
+  font-size: 13px;
+  font-weight: 500;
+}
+
+input {
+  height: 52px;
+  padding: 0 14px;
+  border: 1px solid var(--hairline-strong);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--ink);
+  font: inherit;
+  font-size: 16px;
+  outline: none;
+}
+input::placeholder { color: var(--ink-faint); opacity: 0.7; }
+input:focus-visible { border-color: var(--selected); box-shadow: 0 0 0 2px color-mix(in srgb, var(--selected) 30%, transparent); }
+input[aria-invalid='true'] { border-color: var(--danger); }
+
+.hint, .problem { margin: 10px 2px 0; font-size: 13px; line-height: 1.45; }
+.hint { color: var(--ink-faint); }
+.problem { color: var(--danger); font-weight: 500; }
+
+.primary {
+  height: 52px;
+  margin-top: 28px;
+  border: 0;
+  border-radius: 12px;
+  background: var(--accent);
+  color: var(--on-accent);
+  font: inherit;
+  font-weight: 600;
+}
+.primary:active { background: var(--accent-deep); }
+.primary:disabled { opacity: 0.6; }
+:focus-visible { outline: 2px solid var(--selected); outline-offset: 2px; }
+input:focus-visible { outline: none; }
+
+.recent { margin-top: 36px; }
+.recent-title {
+  margin: 0 0 8px;
+  color: var(--ink-faint);
+  font-size: 12px;
+  font-weight: 500;
+}
+.recent-row {
+  display: flex;
+  width: 100%;
+  min-height: 52px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 14px;
+  border: 1px solid var(--hairline);
+  border-radius: 12px;
+  background: transparent;
+  color: var(--ink);
+  font: inherit;
+  text-align: left;
+}
+.recent-row:active { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+.recent-host { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.recent-go { color: var(--ink-faint); }
+
+@media (prefers-reduced-motion: no-preference) {
+  .sheet { animation: rise 240ms ease-out both; }
+  @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+}

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<shortcuts xmlns:android="http://schemas.android.com/apk/res/android">
+    <shortcut
+        android:enabled="true"
+        android:icon="@mipmap/ic_launcher"
+        android:shortcutId="change_server"
+        android:shortcutShortLabel="@string/change_server">
+        <intent
+            android:action="ai.easyagent.kiki.CHANGE_SERVER"
+            android:targetClass="ai.easyagent.kiki.MainActivity"
+            android:targetPackage="ai.easyagent.kiki" />
+    </shortcut>
+</shortcuts>

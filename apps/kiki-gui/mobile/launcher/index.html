@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Kiki</title>
+    <link rel="stylesheet" href="./launcher.css" />
+  </head>
+  <body>
+    <main class="sheet" aria-labelledby="brand">
+      <h1 id="brand" class="wordmark">kiki<span class="dot" aria-hidden="true">.</span></h1>
+      <p class="lede" data-i18n="lede">Connect to Kiki on your computer.</p>
+
+      <form id="connect" novalidate>
+        <label for="server" class="label" data-i18n="label">Server address or entry link</label>
+        <input id="server" name="server" type="url" inputmode="url" autocomplete="url" autocapitalize="off"
+          autocorrect="off" spellcheck="false" enterkeyhint="go" placeholder="192.168.1.5:5494"
+          aria-describedby="hint problem" />
+        <p id="hint" class="hint" data-i18n="hint">Settings → Web access on that computer shows the address and a one-time link.</p>
+        <p id="problem" class="problem" role="alert" hidden></p>
+        <button id="open" type="submit" class="primary" data-i18n="open">Open Kiki</button>
+      </form>
+
+      <section id="recent" class="recent" hidden aria-labelledby="recent-title">
+        <h2 id="recent-title" class="recent-title" data-i18n="recent">Last server</h2>
+        <button id="recent-open" type="button" class="recent-row">
+          <span id="recent-host" class="recent-host"></span>
+          <span class="recent-go" aria-hidden="true">→</span>
+        </button>
+      </section>
+    </main>
+    <script type="module" src="./launcher.js"></script>
+  </body>
+</html>
