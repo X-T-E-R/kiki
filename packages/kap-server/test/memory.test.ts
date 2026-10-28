@@ -220,3 +220,54 @@ describe('memory REST', () => {
     }
   }, 30_000);
 });
+
+describe('Memory authority management over authenticated HTTP', () => {
+  it('migrates the existing editor, previews exact irreversible targets and resumes editing from read-only recovery', async () => {
+    await mkdir(join(process.cwd(), '.tmp'), { recursive: true });
+    const home = await mkdtemp(join(process.cwd(), '.tmp', 'memory-authority-http-'));
+    const server = await startServer({ hostIdentity: TEST_HOST_IDENTITY, host: '127.0.0.1', port: 0, homeDir: home, logLevel: 'silent' });
+    const base = `http://127.0.0.1:${server.port}/api/memory`;
+    const request = async (method: string, path: string, body?: unknown) => {
+      const response = await fetch(`${base}${path}`, { method, headers: authHeaders(server, { 'content-type': 'application/json' }), body: body === undefined ? undefined : JSON.stringify(body) });
+      expect(response.status).toBe(200);
+      return await response.json() as { code: number; msg: string; data: any };
+    };
+    try {
+      expect((await request('GET', '/authority')).data).toMatchObject({ backend: 'legacy', mode: 'active' });
+      const input = { type: 'feedback', title: 'Deployment procedure', body: 'Use 9 workers; never upload output.', reason: 'Owner instruction' };
+      const saved = (await request('PUT', '/global/new', input)).data.entry;
+      const operationId = 'a552707f-d8b9-4f37-9c83-cb9d872a4150';
+      expect((await request('POST', '/authority/migrate', { operation_id: operationId })).code).toBe(40001);
+      const switched = await request('POST', '/authority/migrate', { operation_id: operationId, older_writers_stopped: true });
+      expect(switched.code).toBe(0);
+      expect(switched.data).toMatchObject({ backend: 'sqlite', mode: 'active' });
+      const edited = await request('PUT', `/global/${saved.id}`, { ...input, action: 'update', expected_revision: saved.revision, body: 'Use 5 workers; never upload output.' });
+      expect(edited.code).toBe(0);
+      const current = edited.data.entry;
+      const previous = await request('GET', `/global/${saved.id}/revisions/${encodeURIComponent(saved.revision)}`);
+      expect(previous.data).toMatchObject({ body: input.body, historical: true });
+      const provenance = await request('GET', `/global/${saved.id}/provenance`);
+      expect(provenance.data.adjudications).toContainEqual(expect.objectContaining({ kind: 'correction' }));
+      const preview = await request('POST', '/global/forget-preview', { ids: [saved.id] });
+      expect(preview.data.targets[0]).toMatchObject({ id: current.id, expectedRevision: current.revision });
+      const targets = preview.data.targets.map((target: { id: string; expectedRevision: string }) => ({ id: target.id, expected_revision: target.expectedRevision }));
+      const forget = { operation_id: 'fcf74ba7-6872-4164-b525-e0b4e6b4eb55', targets };
+      expect((await request('POST', '/global/forget', forget)).code).toBe(40001);
+      expect((await request('POST', '/global/forget', { ...forget, confirm_irreversible: true })).code).toBe(0);
+      expect((await request('GET', `/global/${saved.id}`)).code).toBe(40423);
+      expect((await request('GET', `/global/${saved.id}/revisions/${encodeURIComponent(saved.revision)}`)).code).toBe(40423);
+      const fresh = (await request('PUT', '/global/new', { ...input, title: 'Keep the new correction', body: 'Use the fresh post-cutover instruction.' })).data.entry;
+      expect((await request('POST', '/authority/recover-readonly', {})).code).toBe(40001);
+      const recovery = await request('POST', '/authority/recover-readonly', { confirm_readonly: true });
+      expect(recovery.code).toBe(0);
+      expect(recovery.data).toMatchObject({ mode: 'readonly', resume: 'resumeEditing' });
+      const readonly = (await request('GET', '/authority')).data;
+      expect(readonly.mode).toBe('readonly');
+      expect((await request('GET', `/global/${fresh.id}`)).data.body).toBe(fresh.body);
+      expect((await request('PUT', '/global/new', { ...input, title: 'Blocked while readonly' })).code).toBe(40001);
+      expect((await request('POST', '/authority/resume-editing', { recovery_id: recovery.data.recoveryId, expected_epoch: readonly.epoch - 1 })).code).toBe(40001);
+      expect((await request('POST', '/authority/resume-editing', { recovery_id: recovery.data.recoveryId, expected_epoch: readonly.epoch })).data.mode).toBe('active');
+      expect((await request('PUT', '/global/new', { ...input, title: 'Editable again' })).code).toBe(0);
+    } finally { await server.close(); await rm(home, { force: true, recursive: true }); }
+  }, 30_000);
+});

@@ -90,6 +90,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
       if (JSON.stringify(settings) !== this.settingsKey) this.dirty = true;
       if (await this.memoryAdmitted(settings)) {
         const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
+        try { await store.prepare?.(); } catch { this.dirty = true; }
         if (store.snapshot !== undefined) {
           let request = inbound;
           if (request === undefined) try {
@@ -131,6 +132,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     if (!(await this.memoryAdmitted(settings))) return [];
     try {
       const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
+      await store.prepare?.();
       if (this.agent.agentId !== 'main' && store.snapshot === undefined) return [];
       const scopes = this.readScopes();
       const entries = store.snapshot === undefined ? (await Promise.all(scopes.map((scope) => store.list(scope)))).flat() : (await store.snapshot(scopes)).entries;
@@ -145,7 +147,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     const ids = [...new Set([...text.matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].map((match) => match[1]!))].slice(0, 20);
     if (ids.length === 0) return [];
     let store: IMemoryStore;
-    try { store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore)); }
+    try { store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore)); await store.prepare?.(); }
     catch { return this.agent.agentId !== 'main' ? [] : ids.map((id) => `- [${id}] (unavailable)`); }
     if (this.agent.agentId !== 'main' && store.snapshot === undefined) return [];
     const scopes = this.readScopes();
@@ -246,6 +248,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
 
   private async render(settings: MemoryConfig): Promise<string> {
     const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
+    await store.prepare?.();
     if (this.subscribedStore !== store) {
       this.subscribedStore = store;
       this._register(store.onDidChange((change) => {

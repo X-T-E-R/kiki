@@ -229,6 +229,7 @@ export * from '#/app/memory/configSection';
 export * from '#/app/memory/memoryScopes';
 export * from '#/app/memory/memoryStore';
 export * from '#/app/memory/sqliteMemoryStore';
+export * from './app/memory/memoryAuthorityStore';
 export * from '#/persistence/interface/memoryPersistence';
 import '#/persistence/backends/sqliteMemory/sqliteMemoryPersistence';
 export * from '#/app/memory/memorySnapshot';

@@ -1,4 +1,4 @@
-import { IConfigService, IMemoryStore, IWorkspaceService, MEMORY_SECTION, MemoryDomainError, memoryApplicability, memoryEnabled, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
+import { IConfigService, IMemoryAuthorityService, IMemoryStore, IWorkspaceService, MEMORY_SECTION, MemoryDomainError, memoryApplicability, memoryEnabled, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
 import { memoryPutBodySchema } from '@kiki/protocol';
 import { z } from 'zod';
 import type { FastifyReply } from 'fastify';
@@ -25,6 +25,7 @@ const errors = { [ErrorCode.VALIDATION_FAILED]: {}, [ErrorCode.MEMORY_NOT_FOUND]
 export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
   const config = core.accessor.get(IConfigService);
   const store = () => core.accessor.get(IMemoryStore);
+  const authority = () => core.accessor.get(IMemoryAuthorityService);
   const add = (method: keyof MemoryRouteHost, route: ReturnType<typeof defineRoute>): void => {
     app[method](route.path, route.options, route.handler);
   };
@@ -55,6 +56,41 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
     }
   };
 
+  add('get', defineRoute({ method: 'GET', path: '/memory/authority', success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, () => authority().status());
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/authority/migrate', body: z.object({ operation_id: z.string().uuid(), older_writers_stopped: z.literal(true), max_pages: z.number().int().min(1).max(64).optional() }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, () => authority().migrate({ operationId: req.body.operation_id, olderWritersStopped: true, maxPages: req.body.max_pages }));
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/authority/cancel', body: z.object({ operation_id: z.string().uuid() }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, () => authority().cancelMigration(req.body.operation_id));
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/authority/recover-readonly', body: z.object({ confirm_readonly: z.literal(true) }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, () => authority().recoverReadOnly());
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/authority/resume-editing', body: z.object({ recovery_id: z.string().uuid(), expected_epoch: z.number().int().nonnegative() }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, () => authority().resumeEditing(req.body.recovery_id, req.body.expected_epoch));
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/forget-preview', params: scopeParams, querystring: scopeQuery, body: z.object({ ids: z.array(entryParams.shape.id).min(1).max(1000) }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, async () => authority().previewForget(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.body.ids));
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/{scope}/forget', params: scopeParams, querystring: scopeQuery, body: z.object({ operation_id: z.string().uuid(), confirm_irreversible: z.literal(true), targets: z.array(z.object({ id: entryParams.shape.id, expected_revision: z.string().min(1) }).strict()).min(1).max(1000) }).strict(), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, async () => {
+      await authority().forget(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.body.targets.map((target) => ({ id: target.id, expectedRevision: target.expected_revision })), req.body.operation_id);
+      return { operation_id: req.body.operation_id, forgotten: req.body.targets.map((target) => target.id) };
+    });
+  }));
+  add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/provenance', params: entryParams, querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, async () => authority().provenance(await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id), req.params.id));
+  }));
+  add('get', defineRoute({ method: 'GET', path: '/memory/{scope}/{id}/revisions/{revision}', params: entryParams.extend({ revision: z.string().min(1).max(300) }), querystring: scopeQuery, success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, async () => {
+      const scope = await resolve(req.params.scope, req.query.workspace_id, req.query.persona_id);
+      const entry = await authority().getRevision(scope, req.params.id, req.params.revision);
+      if (entry === undefined) throw new Error('Memory revision not found');
+      return { ...entry, scope, historical: true, complete: true };
+    });
+  }));
   add('get', defineRoute({ method: 'GET', path: '/memory/settings', success: { data: generic }, tags: ['memory'] }, (req, reply) => {
     const value = settings();
     reply.send(okEnvelope({ ...value, effective_enabled: value.enabled }, req.id));

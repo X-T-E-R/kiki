@@ -1,5 +1,9 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { copyFile, mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { createRequire } from 'node:module';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { MemoryWorker } from '#/persistence/backends/sqliteMemory/host';
@@ -9,7 +13,11 @@ import { SyncDescriptor } from '#/_base/di/descriptors';
 import { TestInstantiationService } from '#/_base/di/test';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IMemoryScopes, type MemoryScope } from '#/app/memory/memoryScopes';
-import { IMemoryStore, MemoryStore, type MemoryEntry } from '#/app/memory/memoryStore';
+import { ILegacyMemoryStore, IMemoryStore, MemoryStore, type MemoryEntry } from '#/app/memory/memoryStore';
+import { IMemoryAuthorityService, MemoryAuthorityService, MemoryAuthorityStore } from '#/app/memory/memoryAuthorityStore';
+import { MemoryAuthorityAccess, MEMORY_AUTHORITY_SCOPE } from '#/persistence/memoryAuthority';
+import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
+import { JsonAtomicDocumentStore } from '#/persistence/backends/node-fs/atomicDocumentStore';
 import { ISqliteMemoryStore, SqliteMemoryStore } from '#/app/memory/sqliteMemoryStore';
 import { IMemoryShadowImport, MemoryShadowImport } from '#/app/memory/memoryShadowImport';
 import { IMemoryPersistence, type MemoryCommit } from '#/persistence/interface/memoryPersistence';
@@ -31,6 +39,10 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IMemoryReadTool, IMemoryWriteTool, IMemorySearchTool, MemoryReadTool, MemoryWriteTool, MemorySearchTool } from '#/agent/tools/memory/memoryTools';
 
+function toolText(output: unknown): string {
+  if (typeof output !== 'string') throw new Error('Expected a complete serialized Memory tool result');
+  return output;
+}
 const global: MemoryScope = { kind: 'global' };
 const workspace = { kind: 'workspace', workspaceId: 'wd_example_0123456789ab' } as const;
 const source = { writer: 'user' as const };
@@ -456,7 +468,7 @@ describe('Memory recall and complete working units', () => {
     const execution = ix.get(IMemorySearchTool).resolveExecution({ query: '完整条件' });
     if (!('execute' in execution)) throw new Error('Expected executable search');
     const result = await execution.execute({ turnId: 1, toolCallId: 'search-complete', signal: new AbortController().signal });
-    const output = String(result.output);
+    const output = toolText(result.output);
     expect(memoryTextFits(output, 24_000, 6_000)).toBe(true);
     const items = JSON.parse(output).items;
     expect(items.filter((item: { complete: boolean }) => item.complete).length).toBeGreaterThan(0);
@@ -478,11 +490,11 @@ describe('Memory recall and complete working units', () => {
     };
     const oversized = await run(20);
     expect(oversized.isError).toBe(true);
-    expect(String(oversized.output)).toContain('smaller page_size');
+    expect(toolText(oversized.output)).toContain('smaller page_size');
     const recovered = await run(8);
     expect(recovered.isError).not.toBe(true);
-    expect(memoryTextFits(String(recovered.output), 24_000, 6_000)).toBe(true);
-    expect(JSON.parse(String(recovered.output)).items).toHaveLength(8);
+    expect(memoryTextFits(toolText(recovered.output), 24_000, 6_000)).toBe(true);
+    expect(JSON.parse(toolText(recovered.output)).items).toHaveLength(8);
   });
 
   it('builds whole relevant units before directory or unrelated pinned content and respects token and character limits', async () => {
@@ -661,5 +673,236 @@ describe('Memory recall and complete working units', () => {
     expect(JSON.stringify(withoutMemoryWorkset(message))).toContain('## Skills');
     const legacy: ContextMessage = { ...message, content: [{ type: 'text', text: `${prefix}${unit.replace('<memory-workset generation=1>old body</memory-workset>', '<memory>legacy body</memory>')}\n</system-reminder>` }] };
     expect(withoutMemoryWorkset(legacy)).toBe(legacy);
+  });
+});
+
+function managedMemory() {
+  ix.set(ILegacyMemoryStore, new SyncDescriptor(MemoryStore));
+  ix.set(IMemoryStore, new SyncDescriptor(MemoryAuthorityStore));
+  ix.set(IAtomicDocumentStore, new SyncDescriptor(JsonAtomicDocumentStore));
+  ix.set(IMemoryAuthorityService, new SyncDescriptor(MemoryAuthorityService));
+  return { memory: ix.get(IMemoryStore), authority: ix.get(IMemoryAuthorityService), legacy: ix.get(ILegacyMemoryStore) };
+}
+const migration = () => ({ operationId: randomUUID(), olderWritersStopped: true as const });
+const createManaged = (memory: IMemoryStore, title: string, body = 'Use 9 workers; never upload output.') => memory.put({ action: 'create', scope: global, type: 'feedback', title, body, reason: 'Owner guidance', source });
+
+describe('single Memory authority and isolated recovery', () => {
+  it('keeps legacy authoritative during shadow import and routes the same tools to SQLite after cutover without dual writes', async () => {
+    const { memory, authority, legacy } = managedMemory();
+    const saved = await createManaged(memory, 'Stable identity');
+    const initial = await storage.read('memory/global', `entries/${saved.entry.id}.md`);
+    await ix.get(IMemoryShadowImport).run(global);
+    expect((await authority.status()).backend).toBe('legacy');
+    expect(await memory.get(global, saved.entry.id)).toEqual(saved.entry);
+    await memory.prepare?.();
+    expect(memory.snapshot).toBeUndefined();
+    const before = await memory.checkpoint!();
+    const active = await authority.migrate(migration());
+    expect(active).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    expect(await memory.get(global, saved.entry.id)).toEqual(saved.entry);
+    expect((await memory.snapshot!([global])).generation).not.toBe(before);
+    const tool = ix.get(IMemoryWriteTool);
+    const execution = tool.resolveExecution({ action: 'update', id: saved.entry.id, scope: 'global', expected_revision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Use 5 workers; never upload output.', reason: 'Owner correction' });
+    if (!('execute' in execution)) throw new Error('Expected normal Memory write execution');
+    const result = await execution.execute({ turnId: 2, toolCallId: 'managed-write', signal: new AbortController().signal });
+    expect(result.isError).not.toBe(true);
+    expect((await memory.get(global, saved.entry.id))?.body).toBe('Use 5 workers; never upload output.');
+    expect(await storage.read('memory/global', `entries/${saved.entry.id}.md`)).toEqual(initial);
+    await expect(createManaged(legacy, 'Old writer')).rejects.toThrow('authority changed');
+    const child = await promisify(execFile)(process.execPath, [createRequire(import.meta.url).resolve('tsx/cli'), '--tsconfig', 'tsconfig.json', 'test/fixtures/memoryLegacyWriter.mts', home], { cwd: process.cwd(), timeout: 15_000 });
+    expect(JSON.parse(child.stdout.trim())).toMatchObject({ written: false, code: 'storage.locked' });
+  });
+
+  it('reconciles a legacy deletion and an incremental correction after a completed shadow pass', async () => {
+    const { memory, authority } = managedMemory();
+    const deleted = await createManaged(memory, 'Delete after shadow');
+    const corrected = await createManaged(memory, 'Correct after shadow');
+    await ix.get(IMemoryShadowImport).run(global);
+    const operation = await memory.delete(global, deleted.entry.id, deleted.entry.revision);
+    const latest = await memory.put({ action: 'update', scope: global, id: corrected.entry.id, expectedRevision: corrected.entry.revision, type: corrected.entry.type, title: corrected.entry.title, body: 'Use 5 workers with the original exception.', reason: 'Correction before cutover', source });
+    expect((await authority.migrate(migration())).backend).toBe('sqlite');
+    expect(await memory.get(global, deleted.entry.id)).toBeUndefined();
+    expect(await memory.get(global, corrected.entry.id)).toEqual(latest.entry);
+    expect((await memory.undo(global, operation))?.body).toBe(deleted.entry.body);
+  });
+
+  it('persists the paused write barrier across reopen and resumes the exact migration', async () => {
+    let managed = managedMemory();
+    const saved = await createManaged(managed.memory, 'Paused migration');
+    const input = migration();
+    const paused = await managed.authority.migrate({ ...input, maxPages: 1 });
+    expect(paused.mode).toBe('migrating');
+    await expect(createManaged(managed.memory, 'Blocked write')).rejects.toThrow('write barrier');
+    await expect(createManaged(managed.legacy, 'Blocked old writer')).rejects.toThrow('write barrier');
+    await close();
+    bind();
+    managed = managedMemory();
+    expect((await managed.authority.status()).migration?.id).toBe(input.operationId);
+    expect((await managed.authority.migrate(input)).mode).toBe('active');
+    expect(await managed.memory.get(global, saved.entry.id)).toEqual(saved.entry);
+    await expect(managed.authority.migrate(migration())).rejects.toThrow('different migration');
+  });
+
+  it('reports malformed source payloads and keeps edits blocked until explicit cancellation and repair', async () => {
+    const { memory, authority } = managedMemory();
+    await storage.write('memory/global', 'entries/m_broken.md', new TextEncoder().encode('Malformed source payload'));
+    const input = migration();
+    const state = await authority.migrate(input);
+    expect(state).toMatchObject({ backend: 'legacy', mode: 'migrating' });
+    expect(state.migration?.issues).toContainEqual(expect.objectContaining({ key: 'entries/m_broken.md', issue: 'Invalid memory frontmatter' }));
+    await expect(createManaged(memory, 'No silent partial cutover')).rejects.toThrow('write barrier');
+    await expect(authority.cancelMigration(randomUUID())).rejects.toThrow('does not match');
+    expect((await authority.cancelMigration(input.operationId)).mode).toBe('active');
+    await storage.delete('memory/global', 'entries/m_broken.md');
+    await createManaged(memory, 'Repaired source');
+    expect((await authority.migrate(migration())).backend).toBe('sqlite');
+  });
+
+  it('fails closed on a corrupted marker and reconciles an uncertain marker publication by status', async () => {
+    const { memory, authority } = managedMemory();
+    await storage.write(MEMORY_AUTHORITY_SCOPE, 'backend.json', new TextEncoder().encode('{broken'));
+    await expect(memory.list(global)).rejects.toThrow('Invalid Memory authority marker');
+    await expect(createManaged(memory, 'No fallback')).rejects.toThrow('Invalid Memory authority marker');
+    await storage.delete(MEMORY_AUTHORITY_SCOPE, 'backend.json');
+    const write = storage.write.bind(storage);
+    let interrupted = false;
+    storage.write = async (...args: Parameters<typeof write>) => {
+      await write(...args);
+      if (!interrupted && args[0] === MEMORY_AUTHORITY_SCOPE && new TextDecoder().decode(args[2]).includes('"backend":"sqlite"')) { interrupted = true; throw new Error('Publication acknowledgement lost'); }
+    };
+    const input = migration();
+    await expect(authority.migrate(input)).rejects.toThrow('acknowledgement lost');
+    expect(await authority.migrate(input)).toMatchObject({ backend: 'sqlite', mode: 'active', migrationId: input.operationId });
+    expect((await createManaged(memory, 'Write after reconciliation')).outcome).toBe('applied');
+  });
+
+  it('backs up post-cutover operations, adjudications, proposals and forget barriers before read-only recovery', async () => {
+    let managed = managedMemory();
+    const original = await createManaged(managed.memory, 'Corrected rule');
+    const forgotten = await createManaged(managed.memory, 'Forgotten rule', 'Unique forgotten source text.');
+    const originalRaw = new TextDecoder().decode((await storage.read('memory/global', `entries/${forgotten.entry.id}.md`))!);
+    expect((await managed.authority.migrate(migration())).backend).toBe('sqlite');
+    const changed = await managed.memory.put({ action: 'update', scope: global, id: original.entry.id, expectedRevision: original.entry.revision, type: original.entry.type, title: original.entry.title, body: 'Use 5 workers; never upload output.', reason: 'Human correction after cutover', source });
+    const added = await createManaged(managed.memory, 'Created after cutover', 'Keep the new post-cutover choice.');
+    const proposal = await managed.memory.put({ action: 'archive', scope: global, id: changed.entry.id, expectedRevision: changed.entry.revision, reason: 'Review a later retirement', source: { writer: 'agent' }, pending: true });
+    const provenance = await managed.authority.provenance(global, forgotten.entry.id);
+    const preview = await managed.authority.previewForget(global, [forgotten.entry.id]);
+    await managed.authority.forget(global, preview.targets, randomUUID());
+    const recovery = await managed.authority.recoverReadOnly();
+    expect(recovery.mode).toBe('readonly');
+    expect(await managed.authority.recoverReadOnly()).toEqual(recovery);
+    const state = await managed.authority.status();
+    expect(state).toMatchObject({ backend: 'sqlite', mode: 'readonly', recoveryId: recovery.recoveryId });
+    expect((await managed.memory.get(global, original.entry.id))?.body).toBe(changed.entry.body);
+    await expect(createManaged(managed.memory, 'Readonly edit')).rejects.toThrow('read-only');
+    await expect(managed.authority.forget(global, [{ id: added.entry.id, expectedRevision: added.entry.revision }], randomUUID())).rejects.toThrow('read-only');
+    const markdown = await storage.read(`${recovery.scope}/legacy-current-view`, `memory/global/inbox/${proposal.entry.id}.md`);
+    expect(new TextDecoder().decode(markdown)).toContain(proposal.entry.id);
+    expect(await storage.read(`${recovery.scope}/legacy-current-view`, `memory/global/entries/${forgotten.entry.id}.md`)).toBeUndefined();
+    await mkdir(join(home, 'restored'), { recursive: true });
+    const restoredPath = join(home, 'restored', 'memory.sqlite');
+    await copyFile(storage.pathFor(recovery.scope, recovery.database), restoredPath);
+    const restored = new MemoryDatabase(restoredPath);
+    try {
+      const objects = restored.read(['memory/global']).objects;
+      expect(objects.find((item) => item.id === added.entry.id)?.entry).toEqual(added.entry);
+      expect(objects.find((item) => item.id === proposal.entry.id)?.entry?.status).toBe('pending');
+      expect(restored.receipt(added.operationId!)?.result).toEqual(added);
+      expect(restored.provenance('memory/global', original.entry.id).adjudications).toContainEqual(expect.objectContaining({ kind: 'correction', revision: changed.entry.revision }));
+      expect(restored.revision('memory/global', forgotten.entry.id, forgotten.entry.revision)).toBeUndefined();
+      for (const evidence of provenance.sources) expect(restored.source('memory/global', evidence.id).state).toBe('forgotten');
+      expect(restored.importLegacy([{ scope: 'memory/global', key: `entries/${forgotten.entry.id}.md`, payload: originalRaw, entry: forgotten.entry }]).issues).toContainEqual(expect.objectContaining({ issue: 'forgotten_source_rejected' }));
+    } finally { restored.close(); }
+    await close();
+    bind();
+    managed = managedMemory();
+    expect((await managed.authority.status()).mode).toBe('readonly');
+    expect(await managed.memory.get(global, forgotten.entry.id)).toBeUndefined();
+    expect((await managed.memory.get(global, original.entry.id))?.body).toBe(changed.entry.body);
+    await expect(managed.authority.resumeEditing(recovery.recoveryId, state.epoch - 1)).rejects.toThrow('state changed');
+    expect((await managed.authority.resumeEditing(recovery.recoveryId, state.epoch)).mode).toBe('active');
+    expect((await createManaged(managed.memory, 'Normal editing restored')).outcome).toBe('applied');
+    expect((await managed.memory.get(global, proposal.entry.id))?.status).toBe('pending');
+  });
+
+  it('keeps the live SQLite authority editable if recovery-package publication fails', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const spy = vi.spyOn(ix.get(IAtomicDocumentStore), 'set').mockRejectedValueOnce(new Error('Recovery manifest storage failed'));
+    await expect(authority.recoverReadOnly()).rejects.toThrow('manifest storage failed');
+    spy.mockRestore();
+    expect(await authority.status()).toMatchObject({ backend: 'sqlite', mode: 'active' });
+    expect((await createManaged(memory, 'Still editable')).outcome).toBe('applied');
+  });
+
+  it('serializes legacy writes against publication and rechecks the marker after acquiring the shared lease', async () => {
+    const { legacy, authority } = managedMemory();
+    await persistence.read([]);
+    const access = new MemoryAuthorityAccess(storage);
+    const leaseAcquired = Promise.withResolvers<void>();
+    const release = Promise.withResolvers<void>();
+    const exclusive = access.exclusive(async (lease) => {
+      leaseAcquired.resolve();
+      await release.promise;
+      await lease.publish({ version: 1, epoch: 1, backend: 'sqlite', mode: 'active', migrationId: randomUUID() });
+    });
+    await leaseAcquired.promise;
+    const waiting = createManaged(legacy, 'Queued legacy write');
+    release.resolve();
+    await exclusive;
+    await expect(waiting).rejects.toThrow('authority changed');
+    expect((await authority.status()).backend).toBe('sqlite');
+    expect(await legacy.list(global)).toEqual([]);
+  });
+});
+
+describe('single Memory authority safe-boundary activation', () => {
+  it('preserves all four namespaces and pending revision targets through migration', async () => {
+    const { memory, authority } = managedMemory();
+    const targets: MemoryScope[] = [global, workspace, { kind: 'persona', personaId: 'example-role' }, { kind: 'persona_workspace', workspaceId: workspace.workspaceId, personaId: 'example-role' }];
+    const saved = await Promise.all(targets.map((scope) => memory.put({ action: 'create', scope, type: 'feedback', title: 'Scoped instruction', body: 'Preserve this complete scoped condition.', reason: 'Owner instruction', source })));
+    const pending = await memory.put({ action: 'update', scope: targets[3]!, id: saved[3]!.entry.id, expectedRevision: saved[3]!.entry.revision, type: 'feedback', title: 'Scoped instruction', body: 'Proposed scoped correction.', reason: 'Review correction', source: { writer: 'agent' }, pending: true });
+    expect((await authority.migrate(migration())).backend).toBe('sqlite');
+    for (const [index, scope] of targets.entries()) expect(await memory.get(scope, saved[index]!.entry.id)).toEqual(saved[index]!.entry);
+    expect(await memory.get(targets[3]!, pending.entry.id)).toEqual(pending.entry);
+    const approved = await memory.put({ action: 'update', scope: targets[3]!, id: pending.entry.id, expectedRevision: pending.entry.revision, type: pending.entry.type, title: pending.entry.title, body: pending.entry.body, reason: 'Approve preserved proposal', source });
+    expect(approved.entry.body).toBe('Proposed scoped correction.');
+    expect(approved.entry.id).toBe(saved[3]!.entry.id);
+  });
+
+  it('resolves the current backend before main and child working sets without changing legacy snapshot availability', async () => {
+    const { memory, authority } = managedMemory();
+    const saved = await createManaged(memory, 'Deployment instructions');
+    ix.stub(IConfigService, { get: <T>() => ({ enabled: true, approval: 'auto', budget: 2_000, workspaces: {} }) as T });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(IAgentContextMemoryService, { get: () => [] });
+    ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
+    const main = ix.get(IAgentMemorySnapshot);
+    await main.get();
+    expect(main.workingSet).toBe(false);
+    await authority.migrate(migration());
+    expect(await main.refreshIfDirty('Deployment instructions')).toContain(saved.entry.body);
+    expect(main.workingSet).toBe(true);
+    ix.stub(IAgentScopeContext, { agentId: 'child-example' });
+    ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
+    const child = ix.get(IAgentMemorySnapshot);
+    await child.get();
+    expect(await child.refreshIfDirty('Deployment instructions')).toContain(saved.entry.body);
+    expect(await child.resolveReferences(`[${saved.entry.id}]`)).toContainEqual(expect.stringContaining(saved.entry.id));
+  });
+
+  it('rejects missing or truncated SQLite authority instead of opening an empty replacement or stale legacy view', async () => {
+    const { memory, authority } = managedMemory();
+    const saved = await createManaged(memory, 'Do not restore stale legacy content');
+    await authority.migrate(migration());
+    await close();
+    await rm(join(home, 'store', 'memory-sqlite-v1'), { recursive: true });
+    bind();
+    const reopened = managedMemory();
+    await expect(reopened.memory.get(global, saved.entry.id)).rejects.toThrow('database is missing or truncated');
+    await expect(createManaged(reopened.memory, 'No empty replacement')).rejects.toThrow('database is missing or truncated');
+    expect(await storage.size('store/memory-sqlite-v1', 'memory.sqlite')).toBeUndefined();
+    await storage.write('store/memory-sqlite-v1', 'memory.sqlite', new Uint8Array(0));
+    await expect(reopened.authority.recoverReadOnly()).rejects.toThrow('database is missing or truncated');
   });
 });

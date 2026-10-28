@@ -35,6 +35,14 @@ export class SqliteMemoryPersistence extends Disposable implements IMemoryPersis
   provenance(...[scope, id]: Parameters<IMemoryPersistence['provenance']>): ReturnType<IMemoryPersistence['provenance']> { return this.operation({ type: 'provenance', scope, id }); }
   importLegacy(batch: readonly MemoryLegacyPayload[]): ReturnType<IMemoryPersistence['importLegacy']> { return this.operation({ type: 'importLegacy', batch }); }
   legacy(scope: string): ReturnType<IMemoryPersistence['legacy']> { return this.operation({ type: 'legacy', scope }); }
+  namespaces(): ReturnType<IMemoryPersistence['namespaces']> { return this.operation({ type: 'namespaces' }); }
+  async backup(recoveryId: string): ReturnType<IMemoryPersistence['backup']> {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(recoveryId)) throw new Error('Invalid Memory recovery ID');
+    const scope = `store/memory-recovery-v1/${recoveryId}`;
+    const destination = join(this.databasePath, '..', '..', 'memory-recovery-v1', recoveryId, 'memory.sqlite');
+    const generation = await this.operation<number>({ type: 'backup', destination });
+    return { generation, scope };
+  }
   close(): Promise<void> {
     if (this.closing !== undefined) return this.closing;
     this.closed = true;

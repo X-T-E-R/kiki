@@ -579,12 +579,21 @@ Both `PATCH` variants accept `{ name?, pinned? }`, with at least one field requi
 | `GET /api/memory/{scope}/inbox` | List proposals awaiting review |
 | `GET /api/memory/{scope}/journal` | Change history, optionally narrowed to one `id` |
 | `POST /api/memory/{scope}/undo` | Undo one operation by `operation_id` |
+| `GET /api/memory/authority` | Read the persisted backend, mode, epoch and migration progress |
+| `POST /api/memory/authority/migrate` | Start or continue an explicitly authorized migration |
+| `POST /api/memory/authority/cancel` | Cancel the matching paused migration and restore legacy editing |
+| `POST /api/memory/authority/recover-readonly` | Save a governed recovery package and enter read-only mode |
+| `POST /api/memory/authority/resume-editing` | Resume SQLite editing with the current recovery ID and epoch |
+| `POST /api/memory/{scope}/forget-preview` | Expand exact IDs into the complete source-lineage target set |
+| `POST /api/memory/{scope}/forget` | Irreversibly forget the confirmed target set |
+| `GET /api/memory/{scope}/{id}/provenance` | Read original sources, human adjudications and related IDs |
+| `GET /api/memory/{scope}/{id}/revisions/{revision}` | Read an exact historical revision; URL-encode the revision |
 
 `GET /api/memory/{scope}` returns bounded pages as `{ items, mode, next_cursor, coverage }`, including when no pagination parameters are supplied. `mode` defaults to `list` with no `query` and to `search` with one; `page_size` is 1–20. Without explicit `statuses`, list reads `active` and `pending`, search reads `active`, and `include_inactive=true` widens either to all four. `statuses` is a comma-separated list of `active`, `pending`, `superseded` and `archived`. Existing clients must consume `next_cursor` rather than treating the first page as the whole namespace.
 
-Continue until `next_cursor` is null and `coverage.exhausted` is true. An empty preparation page with a cursor is not an empty namespace. `coverage.complete` and `warnings` report unreadable, invalid or oversized records; those records do not hide the other readable entries. Scan budgets are per call, not a permanent inventory limit; search ranking and list title ordering apply within each bounded source chunk.
+Continue until `next_cursor` is null and `coverage.exhausted` is true. An empty preparation page with a cursor is not an empty namespace. `coverage.complete` and `warnings` report unreadable, invalid or oversized records; those records do not hide the other readable entries. Scan budgets are per call, not a permanent inventory limit. The file backend ranks and orders each bounded source chunk; SQLite pages share one committed generation.
 
-Keep the same `{scope}` path and owning `workspace_id` / `persona_id`, and send `cursor` alone, without the original filters or page size. Mixing them returns `40944`. A cursor is invalidated by source changes or a store restart; restart and reconcile by scope plus ID. `GET /api/memory/{scope}/inbox` returns the same page shape for `pending` only and accepts `page_size` or a pending-list `cursor`; cursors for other statuses or search mode are rejected.
+Keep the same `{scope}` path and owning `workspace_id` / `persona_id`, and send `cursor` alone, without the original filters or page size. Mixing them returns `40944`. File-backend source changes or a store restart invalidate a cursor; restart and reconcile by scope plus ID. SQLite continuation retains its committed view across later writes, while rechecking scope access and forget barriers. `GET /api/memory/{scope}/inbox` returns the same page shape for `pending` only and accepts `page_size` or a pending-list `cursor`; cursors for other statuses or search mode are rejected.
 
 `PUT /api/memory/{scope}/{id}` takes the same action vocabulary as [`MemoryWrite`](../reference/tools.md#writing-an-entry): `action` (`create`, `update`, `supersede`, `archive`), `type`, `title`, `body`, `reason`, `expected_revision` and `pinned`. Writes through REST are recorded as coming from you, whatever `source` the agent would have used. The response is `{ entry, operationId, outcome, warnings? }`, where `outcome` is `applied`, `pending` or `unchanged`; `operationId` is `null` for `unchanged` and for a proposal identical to one already waiting, and those two cases have nothing to undo. For `update`, `supersede` and `archive`, `expected_revision` is required — a `PUT` built on a stale revision is refused instead of overwriting a newer one.
 
@@ -596,6 +605,18 @@ Two metadata fields are optional and behave differently on omission:
 `covered_by` is accepted for `archive` only, as `{ id, expected_revision }` of the retained active entry in the same scope. The stored entry records the same dependency as `{ id, revision }` — the revision you sent — and it is re-checked when the retirement is applied, so an archive against a replacement that has since changed fails rather than dropping a rule that is still needed.
 
 `GET /api/memory/{scope}/{id}` returns the full entry plus `scope`, a `target` of `{ scope, id, expected_revision }`, an `applicability` of `expired`, `recheck` or `unrecorded`, and `complete: true`. The `target` is an addressing object, not a request body: `scope` and `id` belong in the path, the owning workspace or persona in the query string, and `expected_revision` is the one field the `PUT` body takes from it — alongside the `action`, `type`, `title`, `body` and `reason` for the change you are making. Read an entry before writing to it. A `PUT` whose `expected_revision` no longer matches returns the `40944` code, and the response's `details` carries the domain's own `code` and `recovery` while the numeric envelope code stays the one existing clients already handle.
+
+#### Backend migration and recovery
+
+Existing homes keep their legacy authority until migration is explicitly requested. Upgrade or stop every other writer sharing that home before sending `{ operation_id: UUID, older_writers_stopped: true, max_pages?: 1..64 }` to `authority/migrate`. The default is eight bounded import pages. A response with `mode: "migrating"` keeps normal edits blocked: repeat the same operation ID to continue. If `migration.issues` reports invalid sources or broken links, cancel with `{ operation_id }`, repair the sources and start a new operation. A completed migration returns `backend: "sqlite", mode: "active"`; the existing editor and tool entry points then write SQLite without changing the original legacy files. Older binaries that do not understand the marker must remain stopped.
+
+Send `{ confirm_readonly: true }` to `authority/recover-readonly` to save the current governed SQLite database, its legacy-shaped current-view export and a manifest under `store/memory-recovery-v1/<recoveryId>`. The response includes `recoveryId`, `scope`, `generation`, `namespaces` and `mode: "readonly"`. Reads continue from SQLite and mutations are refused. To resume normal editing, read `authority` and send `{ recovery_id: recoveryId, expected_epoch: epoch }` to `authority/resume-editing`. A changed recovery ID or epoch is rejected. The full database preserves post-cutover operations, corrections, proposals and forget barriers; the Markdown export is only the compatible current-view representation.
+
+#### Irreversible forget and historical reads
+
+After SQLite migration, send `{ ids: ["m_example"] }` to `{scope}/forget-preview`. Its `{ generation, targets }` response expands the complete source lineage; each target contains `id`, `expectedRevision` and its current `entry`, or `entry: null` for a recoverably deleted object. Show this exact set before confirmation. Submit `{ operation_id: UUID, confirm_irreversible: true, targets: [{ id, expected_revision }] }` to `{scope}/forget`, copying each preview revision into `expected_revision`. A changed revision or incomplete lineage is refused. This operation cannot be undone and does not delete conversation history, external source files or independently held backups.
+
+Exact historical reads return the entry with `historical: true`, not current guidance. Forgotten revisions return the same not-found outcome as forgotten current entries. Before restoring an older backup, retain the latest applicable adjudications and forget barriers rather than reintroducing its retired content.
 
 ### Session leases and peer threads
 

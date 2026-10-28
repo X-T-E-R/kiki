@@ -93,6 +93,8 @@ export interface IMemoryPersistence {
   provenance(scope: string, id: string): Promise<MemoryProvenance>;
   importLegacy(batch: readonly MemoryLegacyPayload[]): Promise<MemoryImportResult>;
   legacy(scope: string): Promise<readonly MemoryLegacyPayload[]>;
+  namespaces(): Promise<readonly string[]>;
+  backup(recoveryId: string): Promise<{ readonly generation: number; readonly scope: string }>;
   close(): Promise<void>;
 }
 export const IMemoryPersistence = createDecorator<IMemoryPersistence>('memoryPersistence');

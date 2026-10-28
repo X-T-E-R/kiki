@@ -579,12 +579,21 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 | `GET /api/memory/{scope}/inbox` | 列出待审提议 |
 | `GET /api/memory/{scope}/journal` | 改动历史，可用 `id` 收窄到单条 |
 | `POST /api/memory/{scope}/undo` | 按 `operation_id` 撤销一次操作 |
+| `GET /api/memory/authority` | 读取持久化的后端、模式、epoch 与迁移进度 |
+| `POST /api/memory/authority/migrate` | 开始或继续一次明确授权的迁移 |
+| `POST /api/memory/authority/cancel` | 取消匹配的暂停迁移，恢复旧文件后端编辑 |
+| `POST /api/memory/authority/recover-readonly` | 保存受治理恢复包，进入只读模式 |
+| `POST /api/memory/authority/resume-editing` | 用当前恢复 ID 与 epoch 恢复 SQLite 编辑 |
+| `POST /api/memory/{scope}/forget-preview` | 将精确 ID 展开为完整来源链目标集合 |
+| `POST /api/memory/{scope}/forget` | 不可逆地忘记已确认的目标集合 |
+| `GET /api/memory/{scope}/{id}/provenance` | 读取原始来源、人工裁决与关联 ID |
+| `GET /api/memory/{scope}/{id}/revisions/{revision}` | 读取精确历史版本；revision 需 URL 编码 |
 
 `GET /api/memory/{scope}` 返回有界分页的 `{ items, mode, next_cursor, coverage }`，不带分页参数时也一样。没有 `query` 时 `mode` 默认 `list`，有 `query` 时默认 `search`；`page_size` 取 1–20。没有显式 `statuses` 时，list 查 `active` 和 `pending`，search 查 `active`，`include_inactive=true` 把两者都放宽到四种。`statuses` 是 `active`、`pending`、`superseded`、`archived` 的逗号串。既有客户端必须消费 `next_cursor`，不能把第一页当成整个命名空间。
 
-持续接续，直到 `next_cursor` 为 null 且 `coverage.exhausted` 为 true。带 cursor 的空准备页不代表命名空间为空。`coverage.complete` 和 `warnings` 说明不可读、非法或过大的记录；这些记录不会隐藏其余可读条目。扫描预算限制单次调用，不永久限制清单大小；搜索相关性排序与列表标题排序针对每个有界源片段。
+持续接续，直到 `next_cursor` 为 null 且 `coverage.exhausted` 为 true。带 cursor 的空准备页不代表命名空间为空。`coverage.complete` 和 `warnings` 说明不可读、非法或过大的记录；这些记录不会隐藏其余可读条目。扫描预算限制单次调用，不永久限制清单大小。文件后端针对每个有界源片段排序；SQLite 各页共享同一已提交版本。
 
-续读保持同一个 `{scope}` 路径和归属的 `workspace_id` / `persona_id`，只传 `cursor`，不要再带原过滤条件或页大小，混传会返回 `40944`。源内容变化或 store 重启会让 cursor 失效；重新查询并按范围加 ID 对账。`GET /api/memory/{scope}/inbox` 为 `pending` 返回同样的分页形状，接受 `page_size` 或 pending 列表的 `cursor`；其他状态或 search 模式的 cursor 会被拒绝。
+续读保持同一个 `{scope}` 路径和归属的 `workspace_id` / `persona_id`，只传 `cursor`，不要再带原过滤条件或页大小，混传会返回 `40944`。文件后端源内容变化或 store 重启会让 cursor 失效；重新查询并按范围加 ID 对账。SQLite 续页在后续写入发生后仍保留原提交视图，同时重新核对范围访问权限与遗忘屏障。`GET /api/memory/{scope}/inbox` 为 `pending` 返回同样的分页形状，接受 `page_size` 或 pending 列表的 `cursor`；其他状态或 search 模式的 cursor 会被拒绝。
 
 `PUT /api/memory/{scope}/{id}` 使用与 [`MemoryWrite`](../reference/tools.md#写入一条条目)相同的动作词表：`action`（`create`、`update`、`supersede`、`archive`）、`type`、`title`、`body`、`reason`、`expected_revision` 和 `pinned`。经 REST 的写入一律记录为来自你，无论 Agent 本会用哪个 `source`。响应是 `{ entry, operationId, outcome, warnings? }`，`outcome` 取 `applied`、`pending` 或 `unchanged`；`unchanged` 以及与已在等待的提议完全相同的重复提交，`operationId` 为 `null`，这两种情况都没有可撤销的操作。`update`、`supersede` 和 `archive` 必须带 `expected_revision`——基于过期版本的 `PUT` 会被拒绝，而不是覆盖掉更新的那一版。
 
@@ -596,6 +605,18 @@ PTY 终端接口，仅 loopback 绑定时挂载。
 `covered_by` 只在 `archive` 时接受，填同一范围内保留的生效条目的 `{ id, expected_revision }`。存下来的条目以 `{ id, revision }` 记录同一依赖——就是你发过去的那个 revision——并且在真正执行归档时会重新核验，所以对着已经变了的替代条目归档会失败，而不是丢掉仍然需要的规则。
 
 `GET /api/memory/{scope}/{id}` 返回完整条目，外加 `scope`、取 `{ scope, id, expected_revision }` 的 `target`、取 `expired` / `recheck` / `unrecorded` 的 `applicability`，以及 `complete: true`。`target` 是用来定位的对象，不是请求体：`scope` 和 `id` 放路径上，归属的工作区或角色放查询串上，`PUT` 请求体里只有 `expected_revision` 这一个字段取自它，其余是你这次要写的 `action`、`type`、`title`、`body` 和 `reason`。写之前先读：`expected_revision` 对不上的 `PUT` 会返回 `40944`，响应的 `details` 带着 domain 自己的 `code` 与 `recovery`，而信封里的数值 code 仍是既有客户端已在处理的那一个。
+
+#### 后端迁移与恢复
+
+已有家目录继续使用旧文件权威，直到明确请求迁移。发送 `{ operation_id: UUID, older_writers_stopped: true, max_pages?: 1..64 }` 到 `authority/migrate` 前，先升级或停止所有共用该家目录的其他写入进程。默认每次导入八个有界页。响应为 `mode: "migrating"` 时，普通编辑保持阻塞；用同一个操作 ID 继续。如果 `migration.issues` 报告非法来源或断链，先用 `{ operation_id }` 取消，修复来源后再发起新操作。完成时返回 `backend: "sqlite", mode: "active"`，原编辑器和工具入口随即改写 SQLite，旧文件保持原样。不认识该标记的旧二进制必须保持停止。
+
+向 `authority/recover-readonly` 发送 `{ confirm_readonly: true }`，将当前受治理 SQLite 数据库、旧格式的当前视图导出及 manifest 保存到 `store/memory-recovery-v1/<recoveryId>`。响应含 `recoveryId`、`scope`、`generation`、`namespaces` 与 `mode: "readonly"`。读取继续使用 SQLite，修改被拒绝。恢复正常编辑时，先读 `authority`，再向 `authority/resume-editing` 发送 `{ recovery_id: recoveryId, expected_epoch: epoch }`；恢复 ID 或 epoch 已变化时会拒绝。完整数据库保留切换后的操作、纠错、提案和遗忘屏障，Markdown 导出只表达兼容的当前视图。
+
+#### 不可逆遗忘与历史读取
+
+完成 SQLite 迁移后，向 `{scope}/forget-preview` 发送 `{ ids: ["m_example"] }`。响应 `{ generation, targets }` 展开完整来源链，每个目标含 `id`、`expectedRevision` 和当前 `entry`；可恢复删除的对象为 `entry: null`。确认前向用户显示这个精确集合。再向 `{scope}/forget` 提交 `{ operation_id: UUID, confirm_irreversible: true, targets: [{ id, expected_revision }] }`，将预览中的版本逐项填入 `expected_revision`。版本变化或来源链不全时会拒绝。该操作不可撤销，不删除对话历史、外部源文件或独立持有的备份。
+
+精确历史读取返回带 `historical: true` 的条目，不代表现行指引。已遗忘的历史版本与当前条目都返回未找到。恢复旧备份前，须保留最新适用的人工裁决和遗忘屏障，避免重新引入已退出的内容。
 
 ### 会话租约与 peer thread
 

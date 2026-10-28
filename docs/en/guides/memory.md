@@ -72,6 +72,12 @@ If the entry changed while you had it open, saving is refused and you are asked 
 
 Saving an entry that changes nothing — the same title, content, pin state and recorded attributes — produces no new version and nothing to undo, and the page says **No change**. Re-submitting an edit you already saved is the normal way to land here. Changing only the basis or the check is still a change, and does get its own version.
 
+## Backend migration and recovery
+
+Existing memory homes keep their file backend until you explicitly migrate them through the authenticated [Memory API](/en/server/rest-api#backend-migration-and-recovery). Before migration, upgrade or stop every other process writing that home. Migration pauses normal edits while it imports and validates the source; its saved operation ID lets you continue after a pause or restart. Once complete, the same tools and editor use SQLite, and the original files remain unchanged.
+
+The API can also save a governed recovery package and switch SQLite to read-only mode. Current entries stay readable, including corrections made after migration; editing resumes only with the current recovery ID and epoch returned by the API. Keep the full database backup: Markdown exports current entries and pending proposals, while the database also retains immutable revisions, correction records and forget barriers. Do not restore an old file directory over newer governed memory.
+
 ## The review inbox
 
 Memory approval has three settings. The default, **auto**, applies a write the agent proposes right away. Set it to **review** and a proposed update or archive waits for you. With `auto` there is nothing pending, so no **Inbox** tab appears at all.

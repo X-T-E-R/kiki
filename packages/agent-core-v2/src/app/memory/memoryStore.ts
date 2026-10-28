@@ -8,6 +8,7 @@ import { Emitter, type Event } from '#/_base/event';
 import { LifecycleScope } from '#/app/scopes';
 import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
+import { MemoryAuthorityAccess } from '#/persistence/memoryAuthority';
 import { IMemoryScopes, MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from './memoryScopes';
 import { redactMemorySecrets } from './memorySafety';
 import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryValidity, type MemoryBasis, type MemoryValidity } from './memoryMetadata';
@@ -133,6 +134,7 @@ export interface MemoryStoreSnapshot {
 export interface IMemoryStore {
   readonly _serviceBrand: undefined;
   readonly onDidChange: Event<MemoryStoreChange>;
+  prepare?(): Promise<void>;
   checkpoint?(): Promise<string>;
   snapshot?(scopes: readonly MemoryScope[]): Promise<MemoryStoreSnapshot>;
   inventory(scope: MemoryScope): Promise<MemoryInventory>;
@@ -149,6 +151,7 @@ export interface IMemoryStore {
   importLorebook(scope: MemoryScope, entries: readonly MemoryLorebookEntry[], source?: Partial<MemorySource>): Promise<readonly { readonly entry: MemoryEntry; readonly operationId: string }[]>;
 }
 export const IMemoryStore = createDecorator<IMemoryStore>('memoryStore');
+export const ILegacyMemoryStore = createDecorator<IMemoryStore>('legacyMemoryStore');
 
 function assertPersonaId(personaId: string): void {
   if (!MEMORY_PERSONA_ID_PATTERN.test(personaId)) throw new Error('Invalid persona id');
@@ -230,18 +233,20 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     try {
       await (signal === undefined ? previous : abortable(previous, signal));
       signal?.throwIfAborted();
-      const lock = await this.storage.acquireLock(base, 'memory-write', {
-        leaseMs: 30_000, waitForMs: 5_000, owner: { kind: 'memory-write', scope: base, pid: process.pid },
-      });
-      try {
-        signal?.throwIfAborted();
-        const before = await this.storage.size(base, 'journal.jsonl');
+      return await new MemoryAuthorityAccess(this.storage).write('legacy', async () => {
+        const lock = await this.storage.acquireLock(base, 'memory-write', {
+          leaseMs: 30_000, waitForMs: 5_000, owner: { kind: 'memory-write', scope: base, pid: process.pid },
+        });
         try {
-          return await action();
-        } finally {
-          if (changesActive && await this.storage.size(base, 'journal.jsonl') !== before) await this.rebuildCatalog(base);
-        }
-      } finally { await lock.release(); }
+          signal?.throwIfAborted();
+          const before = await this.storage.size(base, 'journal.jsonl');
+          try {
+            return await action();
+          } finally {
+            if (changesActive && await this.storage.size(base, 'journal.jsonl') !== before) await this.rebuildCatalog(base);
+          }
+        } finally { await lock.release(); }
+      }, signal);
     } finally {
       done();
     }
@@ -650,7 +655,11 @@ export class MemoryStore extends Disposable implements IMemoryStore {
     return lists.flat().sort((a, b) => b.updated.localeCompare(a.updated) || a.id.localeCompare(b.id));
   }
 
-  async deletePersonaNamespaces(personaId: string): Promise<MemoryPersonaDeleteResult> {
+  deletePersonaNamespaces(personaId: string): Promise<MemoryPersonaDeleteResult> {
+    return new MemoryAuthorityAccess(this.storage).write('legacy', () => this.deleteLegacyPersonaNamespaces(personaId));
+  }
+
+  private async deleteLegacyPersonaNamespaces(personaId: string): Promise<MemoryPersonaDeleteResult> {
     assertPersonaId(personaId);
     let namespaceCount = 0;
     let entryCount = 0;
@@ -752,4 +761,4 @@ export class MemoryStore extends Disposable implements IMemoryStore {
   }
 }
 
-registerScopedService(LifecycleScope.App, IMemoryStore, MemoryStore, ScopeActivation.OnDemand, 'memory');
+registerScopedService(LifecycleScope.App, ILegacyMemoryStore, MemoryStore, ScopeActivation.OnDemand, 'memory');

@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { backup, DatabaseSync } from 'node:sqlite';
 import type { MemoryEntry, MemoryJournalRecord } from '../../../app/memory/memoryStore.ts';
 // oxlint-disable-next-line import/extensions
 import { memorySourceUnitId } from '../../../app/memory/memorySourceIdentity.ts';
@@ -234,6 +234,14 @@ export class MemoryDatabase {
   }
   legacy(scope: string): readonly MemoryLegacyPayload[] {
     return this.db.prepare('SELECT * FROM legacy WHERE scope=? ORDER BY key').all(scope).map((row) => ({ scope, key: String(row['key']), payload: String(row['payload']), issue: row['issue'] === null ? undefined : String(row['issue']) }));
+  }
+  namespaces(): readonly string[] {
+    return this.db.prepare('SELECT scope FROM heads UNION SELECT scope FROM barriers UNION SELECT scope FROM source_barriers UNION SELECT scope FROM legacy ORDER BY scope').all().map((row) => String(row['scope']));
+  }
+  async backup(destination: string): Promise<number> {
+    mkdirSync(dirname(destination), { recursive: true, mode: 0o700 });
+    await backup(this.db, destination);
+    return this.generation();
   }
   close(): void { this.db.close(); }
 }
