@@ -1,6 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useAgentPanelCatalog } from './useAgentPanelCatalog';
 import { useI18n } from '../../i18n';
-import { useConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { Icon } from '../icons';
 import { agentCapabilitiesErrorText } from './mapCapabilities';
@@ -12,15 +11,8 @@ export function PromptEffectiveDrawer({ sessionId, agentId, onClose }: {
   onClose: () => void;
 }) {
   const { t } = useI18n();
-  const { klient } = useConnection();
   const query = { session_id: sessionId, agent_id: agentId };
-  const result = useQuery({
-    queryKey: ['agentCapabilities', query],
-    queryFn: ({ signal }) => klient.global.agentPanel.read(query, { signal }),
-    staleTime: 5_000,
-    refetchInterval: 15_000,
-    retry: false,
-  });
+  const result = useAgentPanelCatalog(query);
   return <Dialog onClose={onClose} ariaLabel={t('agentPanel.prompt.title')} overlayId="prompt-effective-drawer"
     overlayClassName="fixed inset-0 z-50 flex justify-end bg-shell/40 backdrop-blur-[2px]"
     panelClassName="anim-enter flex h-full w-full max-w-full flex-col overflow-hidden bg-panel text-ink outline-none shadow-2xl min-[768px]:max-w-[440px]">

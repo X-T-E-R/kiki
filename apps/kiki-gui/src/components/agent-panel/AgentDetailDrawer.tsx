@@ -1,9 +1,8 @@
 import { memo, useState, useEffect } from 'react';
-import { useQuery } from '@tanstack/react-query';
+import { useAgentPanelCatalog } from './useAgentPanelCatalog';
 import type { AgentCapabilityTarget } from '@kiki/protocol';
 import { useI18n } from '../../i18n';
 import { Icon } from '../icons';
-import { useOptionalConnection } from '../../state/connection';
 import { Dialog } from '../Dialog';
 import { FilePathLink } from '../mediaParts';
 import { SkillMarkdownBody } from './SkillMarkdownBody';
@@ -58,9 +57,6 @@ function ProfileDraftDetail({
   readonly onOpenTarget?: (target: DetailDrawerTarget) => void;
 }) {
   const { t } = useI18n();
-  const connection = useOptionalConnection();
-  const klient = connection?.klient;
-
   const caller = callerProfile !== undefined && callerProfile !== '' && callerProfile !== profile
     ? { caller_profile: callerProfile }
     : {};
@@ -71,16 +67,7 @@ function ProfileDraftDetail({
         ? { profile, cwd: scope.cwd, ...caller }
         : undefined;
 
-  const capabilities = useQuery({
-    queryKey: ['agentCapabilities', 'draft', profile, query],
-    queryFn: ({ signal }) => {
-      if (!klient || !query) throw new Error('Client or scope unavailable');
-      return klient.global.agentPanel.read(query, { signal });
-    },
-    enabled: klient !== undefined && query !== undefined,
-    staleTime: 15_000,
-    retry: false,
-  });
+  const capabilities = useAgentPanelCatalog(query);
 
   if (!query) {
     return (
@@ -139,20 +126,7 @@ function ProfileDraftDetail({
 
 function ProfileLiveDetail(props: ProfileDetailSectionsProps) {
   const { t } = useI18n();
-  const connection = useOptionalConnection();
-  const klient = connection?.klient;
-  const query = props.query;
-  const result = useQuery({
-    queryKey: ['agentCapabilities', query],
-    queryFn: ({ signal }) => {
-      if (klient === undefined || query === undefined) throw new Error('Client or agent unavailable');
-      return klient.global.agentPanel.read(query, { signal });
-    },
-    enabled: klient !== undefined && query !== undefined,
-    staleTime: 5_000,
-    refetchInterval: 15_000,
-    retry: false,
-  });
+  const result = useAgentPanelCatalog(props.query);
   return <>
     {result.isError ? <p role="alert" className="text-[12px] text-danger">{agentCapabilitiesErrorText(result.error, t)} <button type="button" className="underline" onClick={() => void result.refetch()}>{t('common.retry')}</button></p> : null}
     <ProfileDetailSections {...props} profile={result.data?.profile ?? props.profile}

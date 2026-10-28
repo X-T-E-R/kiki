@@ -166,9 +166,8 @@ export function ContextMeter({
    */
   usageError?: SessionUsageError;
   /**
-   * Whose cumulative usage the detail card reports: the whole session, or the
-   * one agent whose composer carries this meter. Only changes the section
-   * title; the numbers come from `usage` either way.
+   * Whose cumulative usage the detail card reads and reports: the whole
+   * session, or the one agent whose composer carries this meter.
    */
   usageScope?: 'session' | 'agent';
   /** Enables the prefetched deep link to this session on the /usage page (§9.5). */
@@ -199,8 +198,9 @@ export function ContextMeter({
   const manualPending = compaction?.source === 'manual' && (compaction.phase === 'queued' || compaction.phase === 'running');
   const detailsId = useId();
   const [open, setOpen] = useState(false);
-  const canonicalUsage = useCanonicalAgentUsage({ open, sessionId, agentId });
-  const canonicalSession = useCanonicalSessionUsage(open, sessionId, agentId);
+  const canonicalUsage = useCanonicalAgentUsage({ open: open && usageScope === 'agent', sessionId,
+    agentId: usageScope === 'agent' ? agentId : undefined });
+  const canonicalSession = useCanonicalSessionUsage(open && usageScope === 'session', sessionId);
   const hasCanonicalIdentity = canonicalUsage.hasIdentity;
   const sessionUsage = canonicalSession.active ? canonicalSession.usage ?? usage : usage;
   const sessionAccounting = sessionUsage?.accounting;

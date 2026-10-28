@@ -47,6 +47,7 @@ import {
   mapPanelTools,
 } from './agent-panel/mapCapabilities';
 import { isCompletePanelMetrics, isUnsettledPanelMetrics, mergePanelMetrics, panelMetricsCapabilitiesKey, panelMetricsSettleKey, panelMetricsSourceRevision } from './agent-panel/panelMetricsQuery';
+import { useAgentPanelCatalog } from './agent-panel/useAgentPanelCatalog';
 
 const EMPTY_PANEL_METRICS: Readonly<Record<string, AgentPanelMetrics>> = {};
 
@@ -210,7 +211,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const retainedNotesRef = useRef<Map<string, { notes?: TranscriptTodoNotes; meta?: TranscriptTodoNotesMeta }>>(new Map());
   const { t } = useI18n();
   const navigate = useNavigate();
-  const query = { session_id: state.sessionId, agent_id: agentId, metrics_only: part === 'overview' || part === 'usage' ? true : undefined };
+  const query = { session_id: state.sessionId, agent_id: agentId, metrics_only: true };
   const node = forest.byId[agentId];
   const { controller, agentState } = useAgentViewState(state.sessionId, agentId);
 
@@ -292,21 +293,24 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // forest node. The routed agent being busy must neither start nor stop it.
   const active = agentState?.busy === true || node?.busy === true ||
     (agentId === MAIN_AGENT_ID && Object.values(forest.byId).some((entry) => entry.busy));
-  const capabilities = useQuery({
+  const metricsWanted = part === 'all' || part === 'overview' || part === 'usage';
+  const [expandedIdentity, setExpandedIdentity] = useState<string | undefined>();
+  const profileExpanded = expandedIdentity === identityKey;
+  const catalog = useAgentPanelCatalog(part === 'all' || part === 'profile'
+    ? { session_id: state.sessionId, agent_id: agentId } : undefined,
+  visible && state.loaded && !state.resyncing && (part === 'all' || profileExpanded),
+  JSON.stringify([agentState?.profile, agentState?.model, agentState?.permissionMode, agentState?.planMode]));
+  const header = useQuery({
     queryKey: panelMetricsCapabilitiesKey(query, connection.spaceKey, connection.scopeId, connection.meta?.server_id ?? ''),
     queryFn: ({ signal }) => klient.global.agentPanel.read(query, { signal }),
-    // The `work` slice (todo + plan) reads only the live agent state; it never
-    // needs the capability/metrics read, so it does not start one.
-    enabled: part !== 'work' && visible && state.loaded && !state.resyncing,
-    // Overview and setup render side by side and read the same answer.
-    // This refresh stays a header read: it must not send metrics_settle, or an
-    // active agent would restart a full wire scan under the 30s mutable TTL.
+    enabled: metricsWanted && visible && state.loaded && !state.resyncing,
     staleTime: 5_000,
-    refetchInterval: (current) => visible && active && current.state.data?.metrics?.[agentId] !== undefined ? 15_000 : false,
+    refetchInterval: (current) => metricsWanted && visible && active && current.state.data?.metrics?.[agentId] !== undefined ? 15_000 : false,
     refetchIntervalInBackground: false,
-    refetchOnWindowFocus: visible && active,
+    refetchOnWindowFocus: metricsWanted && visible && active,
     retry: false,
   });
+  const capabilities = part === 'profile' ? catalog : header;
   const serverId = connection.meta?.server_id ?? '';
   const refreshSignature = JSON.stringify([
     connection.spaceKey,
@@ -322,23 +326,23 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   ]);
   const previousSignature = useRef(refreshSignature);
   useEffect(() => {
-    if (part === 'work' || !visible || previousSignature.current === refreshSignature || !state.loaded || state.resyncing || capabilities.isFetching) return;
+    if (!metricsWanted || !visible || previousSignature.current === refreshSignature || !state.loaded || state.resyncing || header.isFetching) return;
     previousSignature.current = refreshSignature;
-    void capabilities.refetch({ cancelRefetch: false });
-  }, [part, visible, refreshSignature, state.loaded, state.resyncing, capabilities.isFetching, capabilities.refetch]);
-  const data = capabilities.data;
+    void header.refetch({ cancelRefetch: false });
+  }, [metricsWanted, visible, refreshSignature, state.loaded, state.resyncing, header.isFetching, header.refetch]);
+  const data = part === 'all' ? catalog.data : capabilities.data;
   const profile = data?.profile;
   const metricsIdentity = `${connection.spaceKey}:${connection.scopeId}:${serverId}:${state.sessionId}:${agentId}`;
   const headerHold = useRef<{ space: string; updatedAt: number } | undefined>(undefined);
   const spaceIdentity = `${connection.spaceKey}:${connection.scopeId}:${serverId}`;
   if (headerHold.current === undefined) headerHold.current = { space: spaceIdentity, updatedAt: -1 };
-  else if (headerHold.current.space !== spaceIdentity) headerHold.current = { space: spaceIdentity, updatedAt: capabilities.dataUpdatedAt };
-  const headerHeld = headerHold.current.updatedAt !== -1 && capabilities.dataUpdatedAt === headerHold.current.updatedAt;
-  const rawHeader = data?.metrics ?? EMPTY_PANEL_METRICS;
+  else if (headerHold.current.space !== spaceIdentity) headerHold.current = { space: spaceIdentity, updatedAt: header.dataUpdatedAt };
+  const headerHeld = headerHold.current.updatedAt !== -1 && header.dataUpdatedAt === headerHold.current.updatedAt;
+  const rawHeader = header.data?.metrics ?? EMPTY_PANEL_METRICS;
   const headerMetrics = headerHeld ? EMPTY_PANEL_METRICS : rawHeader;
   // The open agent, plus the whole tree when this surface actually shows it.
   // Scope switches stay local: they read this set and do not start a read.
-  const showsTree = part !== 'work' && (agentId === MAIN_AGENT_ID || (part === 'overview' && overviewMode === 'cockpit'));
+  const showsTree = metricsWanted && (agentId === MAIN_AGENT_ID || (part === 'overview' && overviewMode === 'cockpit'));
   const settleKeyIds = useMemo(() => {
     const treeIds = new Set<string>([MAIN_AGENT_ID, agentId]);
     for (const id of Object.keys(forest.byId)) treeIds.add(id);
@@ -350,7 +354,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   const initialFlight = useRef<{ identity: string; ids: readonly string[] } | undefined>(undefined);
   const stampClock = useRef(0);
   const headerStamp = useRef(0);
-  const seenHeader = useRef(data);
+  const seenHeader = useRef(header.data);
   const startedToken = useRef<string | undefined>(undefined);
   if (kept.current.identity !== metricsIdentity) {
     kept.current = { identity: metricsIdentity, once: false, byId: new Map(), accepted: new Map() };
@@ -360,8 +364,8 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     seenHeader.current = undefined;
     startedToken.current = undefined;
   }
-  if (seenHeader.current !== data) {
-    seenHeader.current = data;
+  if (seenHeader.current !== header.data) {
+    seenHeader.current = header.data;
     stampClock.current += 1;
     headerStamp.current = stampClock.current;
   }
@@ -382,7 +386,7 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
     if (isCompletePanelMetrics(headerMetrics[id])) return false;
     return isUnsettledPanelMetrics(headerMetrics[id]);
   });
-  const canSettle = part !== 'work' && visible && state.loaded && !state.resyncing && capabilities.isSuccess && !headerHeld;
+  const canSettle = metricsWanted && visible && state.loaded && !state.resyncing && header.isSuccess && !headerHeld;
   let requestIds: readonly string[] = [];
   if (!headerHeld && dirtyIds.length > 0) requestIds = dirtyIds;
   else if (!headerHeld && kept.current.once) requestIds = missingIds;
@@ -514,15 +518,15 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
   // A hidden panel releases its scan. Reopening first checks shared completed
   // facts, then resumes the incremental read only if those facts are still missing.
   useEffect(() => {
-    if (!visible || !settleBlocked || part === 'work' || !state.loaded || state.resyncing || capabilities.isFetching) return;
+    if (!visible || !settleBlocked || !metricsWanted || !state.loaded || state.resyncing || header.isFetching) return;
     if (reopenRefetch.current === requestToken) return;
     reopenRefetch.current = requestToken;
     let current = true;
-    void capabilities.refetch({ cancelRefetch: false }).then(() => {
+    void header.refetch({ cancelRefetch: false }).then(() => {
       if (current) setSettleBlock(undefined);
     });
     return () => { current = false; };
-  }, [visible, settleBlocked, part, state.loaded, state.resyncing, capabilities.refetch, requestToken]);
+  }, [visible, settleBlocked, metricsWanted, state.loaded, state.resyncing, header.refetch, requestToken]);
 
   useEffect(() => () => { settleReadAbort.current?.abort(); }, []);
   const settledView = useMemo(() => {
@@ -818,8 +822,8 @@ export function AgentPanelContainer({ state, forest, agentId, visible = true, pa
       <p role="status" className="text-[12px] leading-relaxed text-ink-faint">{unavailableReason}</p>
     ) : null;
     return <div data-agent-panel-container data-agent-panel-part="profile">
-      <AgentIdentitySection {...identityProps} part="profile" capabilities={capabilityBody} capabilitySummary={summary} />
-      {settleError}
+      <AgentIdentitySection key={identityKey} {...identityProps} part="profile" capabilities={capabilityBody} capabilitySummary={summary}
+        onExpandedChange={(expanded) => { setExpandedIdentity(expanded ? identityKey : undefined); }} />
     </div>;
   }
   return <div data-agent-panel-container className="space-y-5">

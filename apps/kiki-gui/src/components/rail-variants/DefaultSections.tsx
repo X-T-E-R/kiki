@@ -14,6 +14,7 @@ import { useI18n } from '../../i18n';
 import { useConnection, useOptionalControllerRegistry } from '../../state/connection';
 import { AgentCapabilitiesSection, capabilityCounts } from '../agent-panel/AgentCapabilitiesSection';
 import { AgentDetailDrawer } from '../agent-panel/AgentDetailDrawer';
+import { useAgentPanelCatalog } from '../agent-panel/useAgentPanelCatalog';
 import { agentTrail } from '../agent-panel/agentRoster';
 import { INSPECTOR_HEAD, InspectorChevron } from '../agent-panel/InspectorSection';
 import { isCapabilityUnsupportedError, capabilityFieldGaps, mapPanelSkills, mapPanelSubagentTargets, mapPanelTools } from '../agent-panel/mapCapabilities';
@@ -261,21 +262,17 @@ export function ProfileHead({ sessionId, agentId, label, fallbackModel, workspac
   externalDriver?: string;
 }) {
   const { t } = useI18n();
-  const { klient } = useConnection();
   const [drawer, setDrawer] = useState<DetailDrawerTarget | null>(null);
   const query = { session_id: sessionId, agent_id: agentId };
-  const read = useQuery({
-    queryKey: ['agentCapabilities', query],
-    queryFn: ({ signal }) => klient.global.agentPanel.read(query, { signal }),
-    staleTime: 5_000,
-    retry: false,
-  });
+  const state = useAgentState(sessionId, agentId);
+  const read = useAgentPanelCatalog(query, drawer !== null,
+    JSON.stringify([state?.profile, state?.model, state?.permissionMode, state?.planMode]));
   const tools = useMemo(() => mapPanelTools(read.data?.tools), [read.data?.tools]);
   const skills = useMemo(() => mapPanelSkills(read.data?.skills), [read.data?.skills]);
   const targets = useMemo(() => mapPanelSubagentTargets(read.data?.targets), [read.data?.targets]);
   const profile = read.data?.profile;
   const profileName = profile?.name !== undefined && profile.name !== '' && profile.name !== 'unknown' ? profile.name : undefined;
-  const model = profile?.model ?? fallbackModel;
+  const model = profile?.model ?? state?.model ?? (agentId === MAIN_AGENT_ID ? fallbackModel : undefined);
   const effortText = profileEffortDisplay(profile, t);
   const externalDefault = effortText === undefined && profile?.executor !== undefined
     && profile.executor !== '' && profile.executor !== 'native';
@@ -488,29 +485,18 @@ export const ActivityFeed = memo(function ActivityFeed({ blocks, forest, onOpenF
  */
 export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { sessionId: string; agentId: string; workspaceId?: string; cwd?: string }) {
   const { t } = useI18n();
-  const { klient, client } = useConnection();
+  const { client } = useConnection();
   const [observationOpen, setObservationOpen] = useState(false);
   const [controlOpen, setControlOpen] = useState(false);
   const query = { session_id: sessionId, agent_id: agentId };
-  const read = useQuery({
-    queryKey: ['agentCapabilities', query],
-    queryFn: ({ signal }) => klient.global.agentPanel.read(query, { signal }),
-    staleTime: 5_000,
-    retry: false,
-  });
-  const liveCapabilities = read.data?.live === true;
-  useEffect(() => {
-    if (!liveCapabilities) return;
-    let disposed = false;
-    const subscription = klient.session(sessionId).events.on('metadata.changed', (event) => {
-      if (event.changed.includes('agents')) void read.refetch();
-    });
-    void subscription.ready.then(() => { if (!disposed) void read.refetch(); }).catch(() => undefined);
-    return () => { disposed = true; subscription.dispose(); };
-  }, [klient, sessionId, liveCapabilities, read.refetch]);
+  const state = useAgentState(sessionId, agentId);
+  const read = useAgentPanelCatalog(query, observationOpen,
+    JSON.stringify([state?.profile, state?.model, state?.permissionMode, state?.planMode]));
   const pluginRead = useQuery({
     queryKey: PLUGIN_QUERY_KEYS.usage(sessionId),
     queryFn: () => client.getPluginUsage({ session_id: sessionId }),
+    enabled: controlOpen,
+    subscribed: controlOpen,
     staleTime: 5_000,
     retry: false,
   });
@@ -535,7 +521,7 @@ export function CapabilitiesBlock({ sessionId, agentId, workspaceId, cwd }: { se
 
   return (
     <>
-      {!capUnsupported && !capPending ? (
+      {!capUnsupported ? (
         <section data-rail-capabilities="observation">
           <FoldHead
             title={t('rail.capabilities.observeTitle')}

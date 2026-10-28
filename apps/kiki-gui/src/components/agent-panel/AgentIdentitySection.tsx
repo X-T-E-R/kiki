@@ -44,6 +44,7 @@ export interface AgentIdentitySectionProps {
   readonly capabilitySummary?: string;
   /** Profile slice: starts expanded. */
   readonly defaultExpanded?: boolean;
+  readonly onExpandedChange?: (expanded: boolean) => void;
 }
 
 export const AgentIdentitySection = memo(function AgentIdentitySection({
@@ -62,6 +63,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
   capabilities,
   capabilitySummary,
   defaultExpanded = false,
+  onExpandedChange,
 }: AgentIdentitySectionProps) {
   const { t, tp } = useI18n();
   const unknownLabel = t('agentPanel.unknown');
@@ -302,7 +304,7 @@ export const AgentIdentitySection = memo(function AgentIdentitySection({
         aria-expanded={expanded}
         aria-controls={bodyId}
         title={t(expanded ? 'inspector.profileCollapse' : 'inspector.profileExpand')}
-        onClick={() => { setExpanded((open) => !open); }}
+        onClick={() => { setExpanded(!expanded); onExpandedChange?.(!expanded); }}
         className="flex h-11 w-full min-w-0 items-center gap-2 rounded-xl pr-3 pl-2 text-left transition-colors hover:bg-ink/[0.03] focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-selected-ink"
       >
         <span aria-hidden className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-ink/[0.05] text-ink-soft">

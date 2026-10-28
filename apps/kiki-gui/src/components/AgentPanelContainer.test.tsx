@@ -38,6 +38,17 @@ const harness = vi.hoisted(() => {
   const retryOpen = vi.fn();
   const resync = vi.fn();
   const getAutoCompact = vi.fn();
+  const getAgentCapabilities = vi.fn();
+  const getAgentPlan = vi.fn();
+  const events = { on: vi.fn(() => ({ ready: Promise.resolve(), dispose: vi.fn() })) };
+  const klient = {
+    global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => getAgentCapabilities(query, options.signal) } },
+    events,
+    session: (_sessionId: string) => ({
+      events,
+      agent: (agentId: string) => ({ getPlan: () => getAgentPlan(agentId) }),
+    }),
+  };
   const client = { getAutoCompact };
   const controller = {
     beginContentRead,
@@ -70,10 +81,11 @@ const harness = vi.hoisted(() => {
     /** What the mocked `useOptionalControllerRegistry` hands back per render. */
     holder: { value: registry as unknown },
     emit: () => { for (const listener of listeners) listener(); },
-    getAgentCapabilities: vi.fn(),
-    getAgentPlan: vi.fn(),
+    getAgentCapabilities,
+    getAgentPlan,
     getAutoCompact,
     client,
+    klient,
     spaceKey: 'main',
     scopeId: 'local',
     serverId: 'server-a',
@@ -81,21 +93,20 @@ const harness = vi.hoisted(() => {
 });
 const { getAgentCapabilities, getAgentPlan } = harness;
 
-vi.mock('../state/connection', () => ({
-  useOptionalControllerRegistry: () => harness.holder.value,
-  useConnection: () => ({
+vi.mock('../state/connection', () => {
+  const connection = () => ({
     spaceKey: harness.spaceKey,
     scopeId: harness.scopeId,
     meta: { server_id: harness.serverId },
     client: harness.client,
-    klient: {
-      global: { agentPanel: { read: (query: unknown, options: { signal: AbortSignal }) => harness.getAgentCapabilities(query, options.signal) } },
-      session: (_sessionId: string) => ({
-        agent: (agentId: string) => ({ getPlan: () => harness.getAgentPlan(agentId) }),
-      }),
-    },
-  }),
-}));
+    klient: harness.klient,
+  });
+  return {
+    useOptionalControllerRegistry: () => harness.holder.value,
+    useConnection: connection,
+    useOptionalConnection: connection,
+  };
+});
 
 function viewState(overrides: Partial<SessionViewState> = {}): SessionViewState {
   return { ...createViewState('session'), loaded: true, ...overrides };
@@ -196,11 +207,12 @@ it('defers agent panel reads until visible and stops reads while hidden', async 
   expect(getAgentCapabilities).not.toHaveBeenCalled();
   await render('child', { visible: true });
   expect(getAgentCapabilities.mock.calls.map((call) => call[0])).toEqual([
+    { session_id: 'session', agent_id: 'child', metrics_only: true },
     { session_id: 'session', agent_id: 'child' },
     { session_id: 'session', agent_id: 'child', metrics_settle: true, metrics_only: true, metrics_agent_ids: ['child'] },
   ]);
   await render('child', { visible: false });
-  expect(getAgentCapabilities).toHaveBeenCalledTimes(2);
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(3);
 });
 
 it('queries the selected identity, keeps missing billing unknown and does not reuse another agent todo', async () => {
@@ -215,7 +227,8 @@ it('queries the selected identity, keeps missing billing unknown and does not re
   expect(element.textContent).toContain('main private todo');
   expect(element.textContent).not.toContain('routed agent todo');
   await render('child');
-  expect(getAgentCapabilities).toHaveBeenLastCalledWith({ session_id: 'session', agent_id: 'child' }, expect.any(AbortSignal));
+  expect(getAgentCapabilities).toHaveBeenLastCalledWith({ session_id: 'session', agent_id: 'child', metrics_only: true }, expect.any(AbortSignal));
+  expect(getAgentCapabilities).toHaveBeenCalledWith({ session_id: 'session', agent_id: 'child' }, expect.any(AbortSignal));
   expect(element.textContent).toContain('child todo');
   expect(element.textContent).not.toContain('main private todo');
   expect(element.textContent).not.toContain('routed agent todo');
@@ -363,7 +376,7 @@ it('defers signature refresh while the metrics request is running instead of abo
   getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'child' }, available: true,
     targets: [], tools: [], skills: [], metrics: { child: UNKNOWN_AGENT_PANEL_METRICS } });
   harness.agents['child'] = viewState({ profile: 'first' });
-  await render('child');
+  await render('child', { part: 'overview' });
   const signal = getAgentCapabilities.mock.calls[0]?.[1] as AbortSignal;
   harness.agents['child'] = viewState({ profile: 'second' });
   await act(async () => { harness.emit(); });
@@ -397,7 +410,7 @@ it('does not keep polling a settled historical agent', async () => {
   getAgentCapabilities.mockResolvedValue({ context: 'live', owner: { agent_id: 'child' }, available: false, targets: [],
     metrics: { child: UNKNOWN_AGENT_PANEL_METRICS } });
   harness.agents['child'] = viewState({ busy: false });
-  await render('child');
+  await render('child', { part: 'overview' });
   expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
   vi.useFakeTimers();
   try {
@@ -1937,4 +1950,26 @@ it('updates the selected agent window through serialized subscription ops, inclu
     await act(async () => { root.render(null); });
     controller.close();
   }
+});
+
+it('keeps the folded profile independent of metrics settlement and reads only its opened catalog', async () => {
+  getAgentCapabilities.mockImplementation((query) => {
+    expect(query.metrics_settle).not.toBe(true);
+    expect(query.metrics_only).toBeUndefined();
+    return Promise.resolve({ context: 'live', owner: { agent_id: query.agent_id }, available: true, tools: [], skills: [], targets: [] });
+  });
+  await render('main', { part: 'profile', forest: forestOf(['main', 'child']) });
+  expect(getAgentCapabilities).not.toHaveBeenCalled();
+  const toggle = element.querySelector<HTMLButtonElement>('[data-profile-toggle]')!;
+  await act(async () => { toggle.click(); });
+  await flushRender();
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+  expect(element.querySelector('[data-agent-capabilities-section]')).not.toBeNull();
+  await act(async () => { toggle.click(); });
+  await act(async () => { harness.agents['main'] = viewState({ busy: true }); harness.emit(); });
+  await flushRender();
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
+  await act(async () => { toggle.click(); });
+  await flushRender();
+  expect(getAgentCapabilities).toHaveBeenCalledTimes(1);
 });

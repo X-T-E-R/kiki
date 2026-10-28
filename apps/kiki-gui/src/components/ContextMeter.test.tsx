@@ -146,6 +146,7 @@ describe('canonical current-agent cumulative usage', () => {
               <ContextMeter
                 used={80_000}
                 limit={200_000}
+                usageScope="agent"
                 agentId="child_7"
                 sessionId="session_abc"
                 usage={{ input_tokens: 900, output_tokens: 800, cache_read_tokens: 700, cache_creation_tokens: 600, total_cost_usd: 9 }}
@@ -188,10 +189,12 @@ describe('canonical current-agent cumulative usage', () => {
     const first = deferred<Record<string, unknown>>();
     const second = deferred<Record<string, unknown>>();
     const signals: AbortSignal[] = [];
+    const agentRead = vi.fn();
     canonicalMocks.connection = {
       spaceKey: 'main',
       scopeId: 'local',
       client: { getSession: canonicalMocks.read },
+      klient: { global: { agentPanel: { read: agentRead } } },
     };
     canonicalMocks.read.mockImplementation((id: string, options: { signal: AbortSignal }) => {
       signals.push(options.signal);
@@ -211,12 +214,13 @@ describe('canonical current-agent cumulative usage', () => {
     await act(async () => {
       root.render(
         <I18nProvider><MemoryRouter>
-          <ContextMeter used={40_000} limit={200_000} sessionId="session_a" usage={usage} />
+          <ContextMeter used={40_000} limit={200_000} usageScope="session" agentId="main" sessionId="session_a" usage={usage} />
         </MemoryRouter></I18nProvider>,
       );
     });
     await act(async () => { container.querySelector<HTMLButtonElement>('[data-context-meter]')!.click(); });
     expect(canonicalMocks.read).toHaveBeenCalledWith('session_a', { signal: expect.any(AbortSignal) });
+    expect(agentRead).not.toHaveBeenCalled();
     first.resolve({
       id: 'session_a',
       usage: {
@@ -347,7 +351,7 @@ describe('canonical current-agent cumulative usage', () => {
           <QueryClientProvider client={queryClient}>
             <I18nProvider>
               <MemoryRouter>
-                <ContextMeter used={40_000} limit={200_000} agentId="child_7" sessionId="session_abc" />
+                <ContextMeter used={40_000} limit={200_000} usageScope="agent" agentId="child_7" sessionId="session_abc" />
               </MemoryRouter>
             </I18nProvider>
           </QueryClientProvider>,
@@ -428,7 +432,7 @@ describe('canonical current-agent cumulative usage', () => {
         root!.render(
           <QueryClientProvider client={queryClient}>
             <I18nProvider><MemoryRouter>
-              <ContextMeter used={40_000} limit={200_000} agentId="child_7" sessionId="session_abc" />
+              <ContextMeter used={40_000} limit={200_000} usageScope="agent" agentId="child_7" sessionId="session_abc" />
             </MemoryRouter></I18nProvider>
           </QueryClientProvider>,
         );
@@ -482,7 +486,7 @@ describe('canonical current-agent cumulative usage', () => {
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <MemoryRouter>
-              <ContextMeter used={40_000} limit={200_000} agentId="child_7" sessionId="session_abc" />
+              <ContextMeter used={40_000} limit={200_000} usageScope="agent" agentId="child_7" sessionId="session_abc" />
             </MemoryRouter>
           </I18nProvider>
         </QueryClientProvider>,
@@ -526,7 +530,7 @@ describe('canonical current-agent cumulative usage', () => {
         <QueryClientProvider client={queryClient}>
           <I18nProvider>
             <MemoryRouter>
-              <ContextMeter used={40_000} limit={200_000} agentId="main" sessionId="session_abc" />
+              <ContextMeter used={40_000} limit={200_000} usageScope="agent" agentId="main" sessionId="session_abc" />
             </MemoryRouter>
           </I18nProvider>
         </QueryClientProvider>,

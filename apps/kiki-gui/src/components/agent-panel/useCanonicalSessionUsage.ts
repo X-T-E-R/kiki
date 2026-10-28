@@ -5,7 +5,7 @@ import { useOptionalConnection } from '../../state/connection';
 export function useCanonicalSessionUsage(open: boolean, sessionId?: string, agentId?: string) {
   const connection = useOptionalConnection();
   const client = connection?.client;
-  const identity = `${connection?.spaceKey ?? ''}:${connection?.scopeId ?? ''}:${sessionId ?? ''}`;
+  const identity = `${connection?.spaceKey ?? ''}:${connection?.scopeId ?? ''}:${connection?.meta?.server_id ?? ''}:${sessionId ?? ''}`;
   const [read, setRead] = useState<{ identity: string; usage?: SessionUsage; error: boolean }>();
   const clientRef = useRef(client);
   clientRef.current = client;

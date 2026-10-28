@@ -13,6 +13,30 @@ function source() {
 }
 
 describe('usage query freshness', () => {
+  it('leaves scoped static catalogs alone while refreshing session metrics', async () => {
+    const queries = new QueryClient();
+    const query = { session_id: 'session-a', agent_id: 'main' };
+    const catalogKey = ['agentCapabilities', query, 'local', 'scope-a', 'server-a', 'catalog'];
+    const metricsKey = ['agentCapabilities', { ...query, metrics_only: true }, 'local', 'scope-a', 'server-a'];
+    let finish!: (value: string) => void;
+    let signal: AbortSignal | undefined;
+    const catalog = new QueryObserver(queries, {
+      queryKey: catalogKey,
+      queryFn: (options) => { signal = options.signal; return new Promise<string>((resolve) => { finish = resolve; }); },
+      staleTime: Infinity,
+    });
+    const stop = catalog.subscribe(() => {});
+    queries.setQueryData(metricsKey, 1);
+    const event = source();
+    const off = subscribeUsageFreshness(event.klient, queries);
+    event.emit();
+    await vi.waitFor(() => expect(queries.getQueryState(metricsKey)?.isInvalidated).toBe(true));
+    expect(signal?.aborted).toBe(false);
+    expect(queries.getQueryState(catalogKey)?.isInvalidated).toBe(false);
+    finish('complete catalog');
+    await vi.waitFor(() => expect(catalog.getCurrentResult().data).toBe('complete catalog'));
+    off(); stop(); queries.clear();
+  });
   it('invalidates parked reads and repairs missed events on reattachment without leaking into another scope', async () => {
     const queries = new QueryClient();
     const otherScope = new QueryClient();
