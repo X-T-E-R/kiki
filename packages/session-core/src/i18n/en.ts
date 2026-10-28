@@ -2957,7 +2957,7 @@ export const en = {
   'st.purpose.agents': 'Manage main and subagent profiles, dispatch defaults, model governance, tools, and runtime limits.',
   'st.purpose.subagents': 'Set subagent defaults, model rules, tools, and runtime limits. Edit agent definitions under Agents.',
   'st.purpose.search': 'Choose search sources and page-fetching behavior; manage credentials and timeouts.',
-  'st.purpose.connection': 'Which server this app talks to and how long it waits. A whole remote environment is set up under "Connect to a remote Kiki" on the Workspaces page.',
+  'st.purpose.connection': 'Which server this app talks to and how long it waits. Other Kikis you connect to are on the Spaces page.',
   'st.unknown.title': 'This setting does not exist',
   'st.unknown.body': '“{section}” is not a settings page. Search below to find a setting.',
   'st.nav.browse': 'Browse sections',
@@ -3669,8 +3669,6 @@ export const en = {
   'st.conn.restart': 'Restart server',
   'st.conn.restarting': 'Restarting server…',
   'st.conn.restarted': 'The desktop server restarted and passed its authenticated health check.',
-  'st.conn.browserHint':
-    'This action is only available in the desktop app.',
   'st.conn.disconnectTitle': 'Disconnect',
   'st.conn.disconnectBody':
     'Clear the saved URL and token on this device and return to the connect screen; sessions stay on the server.',

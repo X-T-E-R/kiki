@@ -2928,7 +2928,7 @@ export const zh = {
   'st.purpose.agents': '管理主智能体与子智能体定义，以及子智能体派发、模型规则、工具与运行限制。',
   'st.purpose.subagents': '设置子智能体默认值、模型规则、工具与运行限制；智能体定义在「智能体」中编辑。',
   'st.purpose.search': '选择搜索来源和网页抓取方式，管理凭证与超时。',
-  'st.purpose.connection': '本应用连接哪个服务器、请求等多久。整套远端环境在「工作区」页的「连接远端 Kiki」里设置。',
+  'st.purpose.connection': '本应用连接哪个服务器、请求等多久。你连接的其他 Kiki 在「空间」页。',
   'st.unknown.title': '此设置不存在',
   'st.unknown.body': '「{section}」不是设置页。请在下方搜索设置项。',
   'st.nav.browse': '浏览设置分组',
@@ -3635,7 +3635,6 @@ export const zh = {
   'st.conn.restart': '重启服务器',
   'st.conn.restarting': '正在重启服务器…',
   'st.conn.restarted': '桌面服务器已重启，并通过认证健康检查。',
-  'st.conn.browserHint': '此操作仅在桌面端可用。',
   'st.conn.disconnectTitle': '断开连接',
   'st.conn.disconnectBody':
     '清除本地保存的地址与令牌，回到连接页；会话仍留在服务器上。',

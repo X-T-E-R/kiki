@@ -658,9 +658,9 @@ describe('SettingsPage batch-3 leaves', () => {
     const card = container.querySelector('#st-card-conn-server')!;
     expect(card.querySelector('[data-conn-url]')?.textContent).toBe('http://127.0.0.1:8080');
     expect(card.querySelector('[data-conn-no-token]')).toBeNull();
-    // In browser host, #st-card-conn-owned shows only the aside and no restart button
+    // In a browser the desktop server card is only its title and "desktop only" badge.
     const ownedCard = container.querySelector('#st-card-conn-owned')!;
-    expect(ownedCard.textContent).toContain('This action is only available in the desktop app.');
+    expect(ownedCard.textContent).toContain('Desktop only');
     expect(ownedCard.querySelector('button')).toBeNull();
 
     await click(card.querySelector('[data-conn-edit]')!);

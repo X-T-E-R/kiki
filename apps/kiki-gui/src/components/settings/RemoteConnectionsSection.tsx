@@ -88,24 +88,27 @@ export function RemoteConnectionsSection() {
       : t('st.remote.configures', { origin: connectionAddress(control.baseUrl), home: controlHomeLabel });
 
   return (
-    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server">
+    <SectionCard id="st-card-remote-connections" title={t('st.remote.outboundTitle')} scope="server" actions={control !== null ? (
+      <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
+        onClick={() => { setDialog({ kind: 'add' }); }}>
+        <Icon name="plus" size={12} />{t('st.remote.add')}
+      </button>
+    ) : undefined}>
       <div className="space-y-4" data-remote-connections>
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1">
           <p className="min-w-0 text-[12.5px] text-ink-soft" data-remote-source>{sourceLine}</p>
-          <button type="button" data-remote-diagnostics className="shrink-0 text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
-            onClick={() => { void navigate('/settings/connection'); }}>
-            {t('st.remote.diagnostics')}
-          </button>
-        </div>
-
-        {control !== null ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <button type="button" data-remote-add className={`${PRIMARY_BUTTON} inline-flex items-center gap-1`}
-              onClick={() => { setDialog({ kind: 'add' }); }}>
-              <Icon name="plus" size={12} />{t('st.remote.add')}
+          <span className="flex shrink-0 items-center gap-4">
+            {/* The other direction lives with the rest of inbound access. */}
+            <button type="button" data-remote-inbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
+              onClick={() => { void navigate('/settings/connection-services?tab=kiki#st-card-inbound-connections'); }}>
+              {t('st.inbound.title')}
             </button>
-          </div>
-        ) : null}
+            <button type="button" data-remote-diagnostics className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
+              onClick={() => { void navigate('/settings/connection'); }}>
+              {t('st.remote.diagnostics')}
+            </button>
+          </span>
+        </div>
 
         {connections.isLoading ? <Hint>{t('st.remote.loading')}</Hint> : null}
         {connections.isError ? <InlineError error={connections.error} /> : null}

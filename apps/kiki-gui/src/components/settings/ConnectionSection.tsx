@@ -297,7 +297,6 @@ function CurrentConnectionContent() {
           id="st-card-conn-owned"
           title={t('st.conn.ownedTitle')}
           badge="desktop"
-          aside={!isDesktop ? t('st.conn.browserHint') : undefined}
         >
           {isDesktop ? (
             <div className="space-y-2">

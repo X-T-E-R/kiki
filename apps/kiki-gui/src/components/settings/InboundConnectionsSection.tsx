@@ -1,5 +1,5 @@
 /**
- * Settings → Spaces: "Kikis allowed to connect to me" (inbound, §5.1/§5.2 of
+ * Settings → Access from elsewhere → Other Kiki: "Kikis allowed to connect to me" (inbound, §5.1/§5.2 of
  * the remote-space design).
  *
  * Two separate effects, deliberately not one switch: the gate says whether this
@@ -11,6 +11,7 @@
 
 import { useState } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
+import { useNavigate } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import { relativeTime } from '@kiki/session-core/util/time';
@@ -33,6 +34,7 @@ export function InboundConnectionsSection() {
   const { client, localClient } = useConnection();
   const { t, locale } = useI18n();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const control = host.kind === 'tauri' ? localClient : client;
   const status = useInboundStatus(control);
   const api = control === null ? null : connectionsApi(control);
@@ -58,7 +60,13 @@ export function InboundConnectionsSection() {
   };
 
   return (
-    <SectionCard id="st-card-inbound-connections" title={t('st.inbound.title')} scope="server">
+    <SectionCard id="st-card-inbound-connections" title={t('st.inbound.title')} scope="server" actions={(
+      // The other direction: Kikis this one connects to live on Spaces.
+      <button type="button" data-inbound-outbound-link className="text-[12.5px] text-ink-soft underline decoration-hairline-strong underline-offset-2 transition-colors hover:text-ink"
+        onClick={() => { void navigate('/settings/spaces#st-card-remote-connections'); }}>
+        {t('st.remote.outboundTitle')}
+      </button>
+    )}>
       <div className="space-y-4" data-inbound-connections>
         {control === null ? <Hint>{t('st.remote.controlUnavailable')}</Hint> : null}
         {status.isError ? <InlineError error={status.error} /> : null}
