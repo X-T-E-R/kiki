@@ -1,11 +1,26 @@
-import { useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { useEffect, useLayoutEffect, useMemo } from 'react';
 import { hashKey, useQuery, useQueryClient, type QueryClient } from '@tanstack/react-query';
 import type { AgentCapabilitiesQuery } from '@kiki/protocol';
 import type { EventSubscription, Klient } from '@kiki/klient';
 import { useOptionalConnection } from '../../state/connection';
 
 type CatalogKey = readonly ['agentCapabilities', AgentCapabilitiesQuery | undefined, string, string, string, 'catalog'];
-type CatalogWatch = { users: number; revision: number; ready: Promise<void>; subscriptions: EventSubscription[] };
+type CatalogHandshake = {
+  subscriptions: EventSubscription[];
+  settled: boolean;
+  readStarted: boolean;
+  revalidated: boolean;
+};
+type CatalogWatch = {
+  users: number;
+  revision: number;
+  subscriptions: EventSubscription[];
+  handshake?: CatalogHandshake;
+  signalsInitialized: boolean;
+  hasData: boolean;
+  lastSourceRevision?: string;
+  lastWsStatus?: string;
+};
 const watches = new WeakMap<QueryClient, Map<string, CatalogWatch>>();
 
 function catalogWatch(queries: QueryClient, key: CatalogKey): CatalogWatch {
@@ -14,7 +29,7 @@ function catalogWatch(queries: QueryClient, key: CatalogKey): CatalogWatch {
   const identity = hashKey(key);
   let entry = entries.get(identity);
   if (entry === undefined) {
-    entry = { users: 0, revision: 0, ready: Promise.resolve(), subscriptions: [] };
+    entry = { users: 0, revision: 0, subscriptions: [], signalsInitialized: false, hasData: false };
     entries.set(identity, entry);
   }
   return entry;
@@ -25,22 +40,60 @@ function invalidateCatalog(queries: QueryClient, key: CatalogKey, watch: Catalog
   void queries.invalidateQueries({ queryKey: key, exact: true }, { cancelRefetch: false });
 }
 
+function observeCatalogSignals(
+  queries: QueryClient,
+  key: CatalogKey,
+  watch: CatalogWatch,
+  sourceRevision: string,
+  wsStatus: string | undefined,
+) {
+  const sourceChanged = sourceRevision !== '' && watch.lastSourceRevision !== sourceRevision;
+  if (!watch.signalsInitialized) {
+    watch.signalsInitialized = true;
+    watch.lastWsStatus = wsStatus;
+    if (sourceRevision !== '') {
+      watch.lastSourceRevision = sourceRevision;
+      if (sourceChanged && watch.hasData) invalidateCatalog(queries, key, watch);
+    }
+    return;
+  }
+  const reconnected = wsStatus === 'open' && watch.lastWsStatus !== 'open';
+  if (sourceChanged) watch.lastSourceRevision = sourceRevision;
+  watch.lastWsStatus = wsStatus;
+  if (sourceChanged || reconnected) invalidateCatalog(queries, key, watch);
+}
+
 function retainCatalog(klient: Klient, queries: QueryClient, key: CatalogKey, watch: CatalogWatch): () => void {
   if (watch.users++ === 0) {
     const invalidate = () => { invalidateCatalog(queries, key, watch); };
-    watch.subscriptions = [
+    const subscriptions = [
       klient.events.on('config.changed', invalidate),
       klient.events.on('kosong.models.changed', invalidate),
       klient.events.on('kosong.providers.changed', invalidate),
       klient.events.on('plugins.reloaded', invalidate),
     ];
-    watch.ready = Promise.all(watch.subscriptions.map((subscription) => subscription.ready)).then(() => {});
-    void watch.ready.catch(() => {});
+    watch.subscriptions = subscriptions;
+    const handshake: CatalogHandshake = { subscriptions, settled: false, readStarted: false, revalidated: false };
+    watch.handshake = handshake;
+    const ready = Promise.all(subscriptions.map((subscription) => subscription.ready));
+    void ready.then(() => {
+      handshake.settled = true;
+      if (!handshake.readStarted || handshake.revalidated || watch.users === 0 ||
+        watch.subscriptions !== subscriptions || watch.handshake !== handshake) return;
+      handshake.revalidated = true;
+      invalidateCatalog(queries, key, watch);
+    }, () => {
+      handshake.settled = true;
+    }).catch(() => {});
   }
   return () => {
     if (--watch.users !== 0) return;
     for (const subscription of watch.subscriptions) subscription.dispose();
     watch.subscriptions = [];
+    watch.handshake = undefined;
+    watch.signalsInitialized = false;
+    watch.hasData = false;
+    watch.lastSourceRevision = undefined;
     // A later mount cannot reuse facts whose invalidation channel was absent.
     watch.revision++;
     void queries.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' });
@@ -64,25 +117,27 @@ export function useAgentPanelCatalog(query: AgentCapabilitiesQuery | undefined, 
     if (klient === undefined || query === undefined) return;
     return retainCatalog(klient, queries, key, watch);
   }, [klient, queries, key, watch]);
-  const previous = useRef({ key, sourceRevision, status: connection?.wsStatus });
-  useEffect(() => {
-    const old = previous.current;
-    previous.current = { key, sourceRevision, status: connection?.wsStatus };
-    if (old.key === key && (old.sourceRevision !== sourceRevision ||
-      (connection?.wsStatus === 'open' && old.status !== 'open'))) invalidateCatalog(queries, key, watch);
-  }, [queries, key, watch, sourceRevision, connection?.wsStatus]);
   const active = enabled && klient !== undefined && query !== undefined;
+  useEffect(() => {
+    observeCatalogSignals(queries, key, watch, sourceRevision, connection?.wsStatus);
+  }, [queries, key, watch, sourceRevision, connection?.wsStatus]);
   const result = useQuery({
     queryKey: key,
     queryFn: async ({ signal }) => {
       if (klient === undefined || query === undefined) throw new Error('Client or agent unavailable');
-      await watch.ready;
+      const handshake = watch.handshake;
+      if (handshake !== undefined && !handshake.settled && handshake.subscriptions === watch.subscriptions) {
+        handshake.readStarted = true;
+      }
       for (;;) {
         signal.throwIfAborted();
         const revision = watch.revision;
         const value = await klient.global.agentPanel.read(query, { signal });
         signal.throwIfAborted();
-        if (revision === watch.revision) return value;
+        if (revision === watch.revision) {
+          watch.hasData = true;
+          return value;
+        }
       }
     },
     enabled: active,
