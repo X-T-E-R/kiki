@@ -103,10 +103,10 @@ rather than reporting the session as idle.
 
 The HTTP transport additionally provides `klient.session(id).view`: `snapshot()`,
 `transcript.page({ agentId, beforeTurn?, beforeItem?, afterTurn?, afterItem?, pageSize? })`,
-`transcript.catchUp({ agentId, since, grade? })`, and `subscribe(input, onSignal)`.
-This capability requires the current kap-server host and is not implemented by
-memory or IPC; those transports reject view calls rather than substituting
-ordinary events.
+`transcript.catchUp({ agentId, since, grade? })`, `bootstrap(input, onSignal)`,
+and `subscribe(input, onSignal)`. This capability requires the current kap-server
+host and is not implemented by memory or IPC; those transports reject view calls
+rather than substituting ordinary events.
 
 Cold views are read-only: `snapshot()` reads indexed metadata and the durable
 session watermark without acquiring a runtime lease or replaying an engine.
@@ -128,9 +128,21 @@ route behavior; in particular, a cold approval/question lookup does not resume.
 Already-live sessions and global background activity remain independent of cold
 view subscriptions.
 
-Read a snapshot, then subscribe with its `{ seq: as_of_seq, epoch }` as
-`sessionCursor` and the desired `transcriptGrades`. Keep that durable checkpoint
-separate from each agent's transcript cursor. The subscription shares the HTTP
+For a first screen, call `view.bootstrap({ transcriptGrades }, onSignal)` without
+waiting for a separate snapshot request. The host attaches the view before
+reading the session shell and requested transcript tails concurrently. Apply
+`transcript` signals as they arrive; the `snapshot` signal supplies session details
+and the paged agent roster independently. Apply its `{ seq: as_of_seq, epoch }`
+through `updateSessionCursor` so reconnect uses ordinary checkpoints rather than
+starting another bootstrap. Durable hints newer than the shell, roster changes
+and history rewrites remain deliverable. `ready` still waits for the shell and
+all admitted transcript seeds. A tail's unknown coverage stays unknown until
+verified; older pages remain available through the transcript page API.
+
+The existing snapshot-first path remains available: read a snapshot, then
+subscribe with its `{ seq: as_of_seq, epoch }` as `sessionCursor` and the desired
+`transcriptGrades`. Keep that durable checkpoint separate from each agent's
+transcript cursor. The subscription shares the HTTP
 transport's existing authenticated WebSocket, reattaches with the latest
 checkpoints, and delivers replay and transcript seeds before `ready`. Advance
 checkpoints only after applying the corresponding signals, using

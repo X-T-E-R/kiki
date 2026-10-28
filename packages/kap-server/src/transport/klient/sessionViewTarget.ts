@@ -1,4 +1,4 @@
-import { resyncRequiredReasonSchema, sessionCursorSchema, type SessionCursor } from '@kiki/protocol';
+import { resyncRequiredReasonSchema, sessionCursorSchema, type SessionCursor, type SessionSnapshotResponse } from '@kiki/protocol';
 import type { SessionViewSignal } from '@kiki/klient';
 import type { TranscriptEvent } from '@kiki/transcript';
 
@@ -9,6 +9,7 @@ export class SessionViewTarget implements BroadcastTarget {
   private generation = 0;
   private attaching = false;
   private streaming = false;
+  private bootstrapPending = false;
   private recoveryRequired = false;
   private replaySignals: SessionViewSignal[] = [];
   private liveSignals: SessionViewSignal[] = [];
@@ -25,14 +26,15 @@ export class SessionViewTarget implements BroadcastTarget {
     if (this.recoveryRequired) return;
     this.latestSessionCursor = cursor;
     const signal: SessionViewSignal = { type: 'sessionCursorAdvanced', cursor, generation: this.generation };
-    if (this.attaching && !this.streaming) this.liveSignals.push(signal);
+    if (this.bootstrapPending || this.attaching && !this.streaming) this.liveSignals.push(signal);
     else this.publishSignal(signal);
   }
 
-  begin(generation: number): void {
+  begin(generation: number, bootstrap = false): void {
     this.generation = generation;
     this.attaching = true;
     this.streaming = false;
+    this.bootstrapPending = bootstrap;
     this.recoveryRequired = false;
     this.replaySignals = [];
     this.liveSignals = [];
@@ -47,8 +49,28 @@ export class SessionViewTarget implements BroadcastTarget {
   }
 
   async drain(): Promise<void> {
-    this.flushSignals();
+    if (!this.bootstrapPending) this.flushSignals();
     this.streaming = true;
+  }
+
+  seedSnapshot(snapshot: SessionSnapshotResponse): void {
+    if (!this.bootstrapPending) return;
+    this.bootstrapPending = false;
+    const cursor = { seq: snapshot.as_of_seq, epoch: snapshot.epoch };
+    this.emitSignal({ type: 'snapshot', snapshot, generation: this.generation });
+    const signals = [...this.replaySignals, ...this.liveSignals];
+    this.replaySignals = [];
+    this.liveSignals = [];
+    for (const signal of signals) {
+      if (signal.type === 'sessionCursorAdvanced' || signal.type === 'historyRewritten') {
+        if (signal.cursor.epoch !== cursor.epoch) {
+          this.sendControl({ type: 'resync_required', payload: { reason: 'epoch_changed', current_seq: cursor.seq, epoch: cursor.epoch } });
+          continue;
+        }
+        if (signal.type === 'sessionCursorAdvanced' && signal.rosterAgentId === undefined && signal.cursor.seq <= cursor.seq) continue;
+      }
+      this.publishSignal(signal);
+    }
   }
 
   private publishSignal(signal: SessionViewSignal): void {
@@ -84,7 +106,10 @@ export class SessionViewTarget implements BroadcastTarget {
   send(envelope: EventEnvelope, _delivery?: BroadcastDelivery): void {
     const signal = this.fromEnvelope(envelope);
     if (signal === undefined) return;
-    if (this.attaching && !this.streaming) this.liveSignals.push(signal);
+    if (this.bootstrapPending) {
+      if (signal.type === 'transcript') this.publishSignal(signal);
+      else this.liveSignals.push(signal);
+    } else if (this.attaching && !this.streaming) this.liveSignals.push(signal);
     else this.publishSignal(signal);
   }
 

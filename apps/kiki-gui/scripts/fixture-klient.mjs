@@ -2033,8 +2033,10 @@ export class FixtureKlient {
         const reason = cursor.epoch !== undefined && cursor.epoch !== session.epoch ? 'epoch_changed'
           : cursor.seq > session.seq ? 'session_recreated'
           : cursor.seq < (session.journal[0]?.seq ?? session.seq + 1) - 1 ? 'buffer_overflow' : undefined;
-        if (reason !== undefined) this.signal(socket, active, { type: 'resyncRequired', reason, currentSessionCursor });
-        else for (const entry of session.journal) if (entry.seq > cursor.seq) this.deliver(socket, active, entry.frame);
+        if (input.bootstrap !== true) {
+          if (reason !== undefined) this.signal(socket, active, { type: 'resyncRequired', reason, currentSessionCursor });
+          else for (const entry of session.journal) if (entry.seq > cursor.seq) this.deliver(socket, active, entry.frame);
+        }
         for (const agentId of session.transcript.agents.keys()) {
           const grade = gradeFor(input.transcriptGrades, agentId);
           if (grade === 'off') continue;
@@ -2050,6 +2052,13 @@ export class FixtureKlient {
             // scenario's bounded entities.
             this.signal(socket, active, { type: 'transcript', event: { ...event, snapshot: boundScenarioEntities(session, redactSnapshotForGrade(grade, event.snapshot)) } });
           }
+        }
+        if (input.bootstrap === true) {
+          const snapshot = boundScenarioSnapshot(session, { as_of_seq: session.seq, epoch: session.epoch,
+            session: session.record, messages: { items: [], has_more: false }, in_flight_turn: session.inFlightTurn,
+            subagents: session.subagents, contentRefs: session.contentRefs.length > 0 ? session.contentRefs : undefined,
+            pending_approvals: session.pendingApprovals, pending_questions: session.pendingQuestions });
+          this.signal(socket, active, { type: 'snapshot', snapshot });
         }
         this.signal(socket, active, { type: 'ready', currentSessionCursor, reconnected: frame.data?.reconnected === true });
       } catch (error) {

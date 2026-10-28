@@ -4,6 +4,7 @@ import {
   resyncRequiredReasonSchema,
   type ResyncRequiredReason,
   type SessionCursor,
+  type SessionSnapshotResponse,
 } from '@kiki/protocol';
 import {
   isPlainAgentId,
@@ -81,6 +82,7 @@ export const sessionViewSubscribeInputSchema = z.object({
   sessionCursor: sessionCursorSchema,
   transcriptGrades: transcriptGradeSpecSchema,
   transcriptSince: z.record(z.string(), transcriptCursorSchema).optional(),
+  bootstrap: z.boolean().optional(),
 });
 
 const sessionViewGenerationSchema = z.number().int().nonnegative();
@@ -96,6 +98,12 @@ export const sessionViewReadySignalSchema = z.object({
   type: z.literal('ready'),
   currentSessionCursor: sessionCursorSchema,
   reconnected: z.boolean(),
+  generation: sessionViewGenerationSchema,
+});
+
+export const sessionViewSnapshotSignalSchema = z.object({
+  type: z.literal('snapshot'),
+  snapshot: sessionSnapshotResponseSchema,
   generation: sessionViewGenerationSchema,
 });
 
@@ -139,6 +147,7 @@ export const sessionViewSignalSchema = z.discriminatedUnion('type', [
   sessionViewProtocolErrorSchema,
   sessionViewStatusSignalSchema,
   sessionViewReadySignalSchema,
+  sessionViewSnapshotSignalSchema,
   sessionViewCursorAdvancedSignalSchema,
   sessionViewHistoryRewrittenSignalSchema,
   sessionViewTranscriptSignalSchema,
@@ -154,6 +163,7 @@ export interface SessionViewSubscribeInput {
   readonly sessionCursor: SessionCursor;
   readonly transcriptGrades: TranscriptGradeSpec;
   readonly transcriptSince?: Readonly<Record<string, TranscriptCursor>>;
+  readonly bootstrap?: boolean;
 }
 
 interface SessionViewSignalBase {
@@ -175,6 +185,10 @@ export type SessionViewSignal =
       readonly type: 'ready';
       readonly currentSessionCursor: SessionCursor;
       readonly reconnected: boolean;
+    })
+  | (SessionViewSignalBase & {
+      readonly type: 'snapshot';
+      readonly snapshot: SessionSnapshotResponse;
     })
   | (SessionViewSignalBase & {
       readonly type: 'sessionCursorAdvanced';

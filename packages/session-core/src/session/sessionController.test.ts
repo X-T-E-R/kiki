@@ -22,7 +22,9 @@ import { mergeSessionQueueRows } from './modelSwitchQueue';
 import { queuedPromptPreviews, type SubagentBlock, type ToolBlock, type UserBlock } from './transcript';
 import { ASSISTANT_FRAME_ID, CHILD_AGENT_ID, emptySnapshot, opsEvent, resetEvent, spawnChildOps, userTurnSnapshot } from './__fixtures__/canonicalTranscript';
 
-import type { SessionViewFacade } from '@kiki/klient/session-view';
+import type { SessionViewFacade, SessionViewSignal } from '@kiki/klient/session-view';
+import { createSessionViewFacade } from '@kiki/klient/core/facade/session-view';
+import type { SessionViewChannel } from '@kiki/klient/core/channel';
 
 function fakeView(client: object, socket: object, sessionId = 'session_test'): SessionViewFacade {
   const reads = client as {
@@ -6082,4 +6084,81 @@ it('drops same-tick transient demand and keeps independent controller grade upda
     first.close();
     second.close();
   }
+});
+
+function bootstrapViewFixture() {
+  let signal!: (value: SessionViewSignal) => void;
+  const controls = {
+    updateSessionCursor: vi.fn(), setTranscriptGrades: vi.fn(), updateTranscriptCursor: vi.fn(),
+    restart: vi.fn(), nudge: vi.fn(), close: vi.fn(),
+  };
+  const channel: SessionViewChannel = {
+    snapshot: vi.fn(async () => snapshot()),
+    transcriptPage: vi.fn(async () => { throw new Error('Unexpected transcript page'); }),
+    transcriptCatchUp: vi.fn(async () => { throw new Error('Unexpected catch-up'); }),
+    subscribe: vi.fn((_sessionId, _input, onSignal) => { signal = onSignal; return controls; }),
+  };
+  return { channel, controls, view: createSessionViewFacade(channel, 'session_test', true),
+    send: (value: SessionViewSignal) => signal(value) };
+}
+
+it('publishes main and focused child tails before the bootstrap shell and preserves live state when the shell arrives', async () => {
+  const fixture = bootstrapViewFixture();
+  const { scheduler, flushAll } = manualScheduler();
+  const controller = new SessionController({} as KikiClient, fixture.view, 'session_test', { scheduler });
+  controller.retainAgentView('visible-child', CHILD_AGENT_ID, 'delta');
+  controller.setFocusedAgent(CHILD_AGENT_ID);
+  let opened = false;
+  const opening = controller.open().then(() => { opened = true; });
+  try {
+    expect(fixture.channel.subscribe).toHaveBeenCalledExactlyOnceWith('session_test', expect.objectContaining({
+      bootstrap: true, sessionCursor: { seq: 0 },
+      transcriptGrades: { '*': 'off', main: 'off', [CHILD_AGENT_ID]: 'delta' },
+    }), expect.any(Function));
+    fixture.send({ type: 'transcript', generation: 1, event: resetEvent('main', userTurnSnapshot({
+      prompt: 'main tail', assistantText: 'main visible before shell', streaming: true,
+    }), 3, true) });
+    fixture.send({ type: 'transcript', generation: 1, event: resetEvent(CHILD_AGENT_ID, userTurnSnapshot({
+      prompt: 'child tail', assistantText: 'child visible before shell',
+    }), 8, true) });
+    controller.flushFrames(); flushAll();
+    expect(controller.getState().blocks).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'assistant', text: 'main visible before shell' })]));
+    expect(controller.getAgentState(CHILD_AGENT_ID).blocks).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'assistant', text: 'child visible before shell' })]));
+    expect(opened).toBe(false);
+    expect(controller.getState().session).toBeUndefined();
+    expect(fixture.channel.snapshot).not.toHaveBeenCalled();
+    fixture.send({ type: 'transcript', generation: 1, event: opsEvent('main', spawnChildOps(), 4) });
+    controller.flushFrames(); flushAll();
+    expect(fixture.channel.snapshot).not.toHaveBeenCalled();
+    const shell = snapshot({ subagents: [{ id: CHILD_AGENT_ID, agent_id: CHILD_AGENT_ID, session_id: 'session_test',
+      kind: 'subagent', description: 'worker', status: 'completed', model: 'example/model', live: false,
+      parent_agent_id: 'main' }] });
+    fixture.send({ type: 'snapshot', generation: 1, snapshot: shell });
+    await opening;
+    controller.flushFrames(); flushAll();
+    expect(controller.getState()).toMatchObject({ session: shell.session, cursor: { seq: 10, epoch: 'epoch-1' }, busy: true });
+    expect(controller.getState().blocks.filter((block) => block.kind === 'assistant')).toHaveLength(1);
+    expect(controller.getAgentState(CHILD_AGENT_ID).blocks.filter((block) => block.kind === 'assistant')).toHaveLength(1);
+    expect(fixture.controls.updateSessionCursor).toHaveBeenLastCalledWith({ seq: 10, epoch: 'epoch-1' });
+    expect(controller.getState().snapshotSubagents).toEqual(shell.subagents);
+    expect(fixture.channel.snapshot).not.toHaveBeenCalled();
+    fixture.send({ type: 'sessionCursorAdvanced', generation: 1, cursor: { seq: 11, epoch: 'epoch-1' }, title: 'later title' });
+    fixture.send({ type: 'ready', generation: 1, currentSessionCursor: { seq: 11, epoch: 'epoch-1' }, reconnected: false });
+    expect(controller.getState()).toMatchObject({ session: { title: 'later title' }, cursor: { seq: 11, epoch: 'epoch-1' } });
+  } finally { controller.close(); await opening; }
+});
+
+it.each(['close', 'suspend'] as const)('settles a pending bootstrap on %s and discards its late shell and tail', async (action) => {
+  const fixture = bootstrapViewFixture();
+  const controller = new SessionController({} as KikiClient, fixture.view, 'session_test');
+  const opening = controller.open();
+  controller[action]();
+  await opening;
+  fixture.send({ type: 'snapshot', generation: 1, snapshot: snapshot() });
+  fixture.send({ type: 'transcript', generation: 1, event: resetEvent('main', userTurnSnapshot(), 1) });
+  expect(controller.getState().session).toBeUndefined();
+  expect(controller.getState().blocks).toEqual([]);
+  expect(fixture.controls.close).toHaveBeenCalledOnce();
+  expect(fixture.channel.snapshot).not.toHaveBeenCalled();
+  controller.close();
 });

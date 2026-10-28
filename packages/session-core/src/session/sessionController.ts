@@ -236,6 +236,7 @@ export class SessionController {
   private connectionGeneration: number | undefined;
   private viewAttachment = 0;
   private openGeneration = 0;
+  private bootstrapOpening: { readonly attachment: number; readonly resolve: () => void } | undefined;
   readonly sessionId: string;
   private state: SessionViewState;
   private publishedState: SessionViewState;
@@ -538,8 +539,23 @@ export class SessionController {
     }
   }
 
-  /** Initial sync: snapshot shell → subscribe_v2 with per-agent grades. */
+  /** Initial sync seeds visible transcripts independently of the session shell when the transport supports it. */
   async open(): Promise<void> {
+    if (this.closed || this.isSuspended) return;
+    if (this.view.bootstrap !== undefined) {
+      this.finishBootstrapOpening();
+      this.transcriptGrades = this.requestedTranscriptGrades();
+      await new Promise<void>((resolve) => {
+        this.bootstrapOpening = { attachment: this.viewAttachment + 1, resolve };
+        try {
+          this.attachView({ seq: 0 }, true);
+        } catch (error) {
+          this.finishBootstrapOpening();
+          this.setState({ ...setLoadError(this.state, errorMessage(error, 'Could not load session')), loaded: this.state.loaded });
+        }
+      });
+      return;
+    }
     const generation = ++this.openGeneration;
     const attachment = this.viewAttachment;
     try {
@@ -556,20 +572,30 @@ export class SessionController {
     }
   }
 
-  private attachView(sessionCursor: SessionCursor): void {
+  private finishBootstrapOpening(): void {
+    const opening = this.bootstrapOpening;
+    this.bootstrapOpening = undefined;
+    opening?.resolve();
+  }
+
+  private attachView(sessionCursor: SessionCursor, bootstrap = false): void {
     const attachment = ++this.viewAttachment;
     this.droppedWithLiveWork = false;
     const previous = this.viewHandle;
     this.viewHandle = undefined;
     previous?.close();
     const qualifiedCursors = [...this.transcriptCursors].filter(([agentId]) => this.hasTranscriptBaseline(agentId));
-    this.viewHandle = this.view.subscribe({
+    const input = {
       sessionCursor,
       transcriptGrades: this.transcriptGrades,
       transcriptSince: qualifiedCursors.length === 0 ? undefined : Object.fromEntries(qualifiedCursors),
-    }, (signal) => {
+    };
+    const onSignal = (signal: SessionViewSignal) => {
       if (attachment === this.viewAttachment) this.handleSignal(signal);
-    });
+    };
+    this.viewHandle = bootstrap && this.view.bootstrap !== undefined
+      ? this.view.bootstrap(input, onSignal) : this.view.subscribe(input, onSignal);
+    if (bootstrap && this.bootstrapOpening === undefined) this.viewHandle.updateSessionCursor(this.state.cursor);
   }
 
   nudge(): void {
@@ -591,6 +617,7 @@ export class SessionController {
   suspend(): void {
     if (this.closed || this.isSuspended) return;
     this.isSuspended = true;
+    this.finishBootstrapOpening();
     this.pauseDurableSteerReads();
     this.resolveResyncIdleWaiters();
     for (const controller of this.snapshotControllers) controller.abort();
@@ -673,6 +700,7 @@ export class SessionController {
 
   close(): void {
     this.closed = true;
+    this.finishBootstrapOpening();
     this.pauseDurableSteerReads();
     this.durableSteerReads.clear();
     this.resolveResyncIdleWaiters();
@@ -920,6 +948,28 @@ export class SessionController {
       case 'status':
         if (signal.status !== 'open') this.handleWsDrop();
         return;
+      case 'snapshot': {
+        if (this.bootstrapOpening?.attachment !== this.viewAttachment) return;
+        const snapshot = signal.snapshot;
+        if (snapshot.session.id !== this.sessionId) {
+          this.handleSignal({ type: 'protocolError', detail: 'Session snapshot identity changed', recoverable: false, generation: signal.generation });
+          return;
+        }
+        this.latestSnapshot = snapshot;
+        this.setState(this.applyTranscriptShellSnapshot(snapshot), false);
+        this.viewHandle?.updateSessionCursor(this.state.cursor);
+        this.finishBootstrapOpening();
+        const main = this.agentTranscripts.get(MAIN_AGENT_ID);
+        if (main !== undefined && this.hasTranscriptBaseline(MAIN_AGENT_ID)) this.publishProjectedAgent(MAIN_AGENT_ID, main);
+        this.retireRequestedRosterAgents();
+        this.publishForest();
+        this.notifyMain();
+        const queued = this.rosterRefreshQueuedCursor;
+        this.rosterRefreshQueuedCursor = undefined;
+        if (queued !== undefined && this.requestedRosterAgents.size > 0) void this.refreshRoster(queued);
+        void this.refreshDurableIngress();
+        return;
+      }
       case 'ready':
         if (this.resyncInFlight) return;
         if (this.state.cursor.epoch !== undefined && signal.currentSessionCursor.epoch !== this.state.cursor.epoch) {
@@ -953,6 +1003,10 @@ export class SessionController {
         return;
       case 'protocolError': {
         if (this.state.resyncError?.retryable === false) return;
+        if (this.bootstrapOpening !== undefined) {
+          this.finishBootstrapOpening();
+          this.setState(setLoadError(this.state, signal.detail), false);
+        }
         this.setState({
           ...setResyncFailed(setResyncing(this.state, false), true, this.state.resyncAttempt + 1),
           resyncError: { message: signal.detail, code: API_CODES.INVALID_RESPONSE, retryable: signal.recoverable },
@@ -1014,7 +1068,7 @@ export class SessionController {
 
   private async refreshRoster(cursor: SessionCursor): Promise<void> {
     if (this.closed || this.isSuspended || this.resyncInFlight) return;
-    if (this.rosterRefreshInFlight) {
+    if (this.rosterRefreshInFlight || this.bootstrapOpening !== undefined) {
       const queued = this.rosterRefreshQueuedCursor;
       if (queued === undefined || cursor.epoch !== queued.epoch || cursor.seq > queued.seq) {
         this.rosterRefreshQueuedCursor = cursor;
@@ -1163,6 +1217,7 @@ export class SessionController {
    * a rewrite retains only baselines from a new transcript epoch. */
   async resync(options: { rewrite?: boolean } = {}): Promise<void> {
     if (this.closed || this.isSuspended) return;
+    this.finishBootstrapOpening();
     const rewrite = options.rewrite === true;
     if (rewrite) this.beginRewriteHold();
     const rewriteHoldToken = rewrite ? this.rewriteHold?.token : undefined;

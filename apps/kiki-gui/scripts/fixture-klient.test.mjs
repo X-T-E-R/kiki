@@ -352,3 +352,32 @@ test('fixture fails closed for missing auth, unsupported methods and invalid ord
     socket.terminate();
   } finally { await fixture.stop(); }
 });
+
+
+test('fixture bootstrap exposes the tail before its shell and reconnects with ordinary checkpoints', async () => {
+  const fixture = await startFixtureServer({ port: 0, scenario: 'first-open' });
+  const endpoint = `http://127.0.0.1:${fixture.http.address().port}`;
+  const client = createKlient({ endpoint, token: FIXTURE_TOKEN, WebSocket });
+  const signals = [];
+  let subscription;
+  try {
+    subscription = client.session(SID).view.bootstrap({ transcriptGrades: { main: 'delta' } }, (signal) => {
+      signals.push(signal);
+      if (signal.type === 'snapshot') subscription.updateSessionCursor({ seq: signal.snapshot.as_of_seq, epoch: signal.snapshot.epoch });
+      if (signal.type === 'transcript') subscription.updateTranscriptCursor(signal.event.agent_id, signal.event.cursor);
+    });
+    await waitFor(() => signals.some((signal) => signal.type === 'ready'));
+    const frames = signals.filter((signal) => signal.type !== 'status');
+    assert.deepEqual(frames.map((signal) => signal.type), ['transcript', 'snapshot', 'ready']);
+    assert.equal(frames[1].snapshot.session.id, SID);
+    assert.ok(JSON.stringify(frames[0].event.snapshot).includes('先通读最近的任务记录'));
+    const firstGeneration = frames.at(-1).generation;
+    for (const socket of fixture.sockets) socket.terminate();
+    await waitFor(() => signals.some((signal) => signal.type === 'ready' && signal.generation > firstGeneration));
+    assert.equal(signals.filter((signal) => signal.type === 'snapshot').length, 1);
+    assert.equal(signals.filter((signal) => signal.type === 'transcript' && signal.event.type === 'transcript.reset').length, 1);
+    const attaches = fixture.wsInbound.filter((frame) => frame.type === 'view_attach');
+    assert.equal(attaches[0].data.input.bootstrap, true);
+    assert.equal(attaches.at(-1).data.input.bootstrap, undefined);
+  } finally { subscription?.close(); await client.close(); await fixture.stop(); }
+});

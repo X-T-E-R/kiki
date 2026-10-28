@@ -1,6 +1,8 @@
 import { channel } from 'node:diagnostics_channel';
 import { describe, expect, it, vi } from 'vitest';
 import type { SessionViewSignal } from '@kiki/klient';
+import type { SessionSnapshotResponse } from '@kiki/protocol';
+import * as snapshotReads from '../src/routes/snapshot';
 import { AgentTranscript, TRANSCRIPT_COVERAGE_VERSION, type AgentTranscriptSnapshot } from '@kiki/transcript';
 import { SessionViewTarget } from '../src/transport/klient/sessionViewTarget';
 import { SessionViewHttpConnection } from '../src/transport/klient/sessionViewHttp';
@@ -16,7 +18,120 @@ function coldPageReader(read: (sessionId: string, agentId: string, signal: Abort
     project(await read(sessionId, agentId, signal)));
 }
 
+function shellSnapshot(epoch = 'session-epoch'): SessionSnapshotResponse {
+  return { as_of_seq: 10, epoch, messages: { items: [], has_more: false }, in_flight_turn: null,
+    pending_approvals: [], pending_questions: [], subagents: [],
+    session: { id: 's1', workspace_id: 'workspace-test', title: 'Snapshot title', created_at: '2026-01-01T00:00:00.000Z',
+      updated_at: '2026-01-01T00:00:00.000Z', busy: false, metadata: { cwd: '/fixture/workspace' }, agent_config: { model: '' },
+      usage: { input_tokens: 0, output_tokens: 0, cache_read_tokens: 0, cache_creation_tokens: 0,
+        total_cost_usd: 0, context_tokens: 0, context_limit: 0, turn_count: 0 },
+      permission_rules: [], message_count: 0, last_seq: 10 } };
+}
+
 describe('SessionViewTarget', () => {
+  it('streams bootstrap transcripts before its shell while preserving later title, roster and rewrite hints', async () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    target.begin(4, true);
+    target.send({ ...durable(9), type: 'session.meta.updated', payload: { type: 'session.meta.updated', title: 'old title' } });
+    target.send({ ...durable(10), type: 'agent.created', payload: { type: 'agent.created', agentId: 'child' } });
+    target.send({ ...durable(11), type: 'session.meta.updated', payload: { type: 'session.meta.updated', title: 'new title' } });
+    target.send({ ...durable(12), type: 'event.session.history_rewritten', payload: {
+      type: 'event.session.history_rewritten', reason: 'regenerate', target_message_id: 'message-test',
+    } });
+    target.send({ ...durable(0), type: 'transcript.reset', payload: { type: 'transcript.reset',
+      session_id: 's1', agent_id: 'main', snapshot: new AgentTranscript('main').snapshot(), grade: 'delta',
+      coverage: { kind: 'unknown', hasMoreOlder: true }, cursor: { seq: 3, epoch: 'transcript-epoch' } } });
+    await target.drain();
+    expect(signals.map((signal) => signal.type)).toEqual(['transcript']);
+    target.seedSnapshot(shellSnapshot());
+    target.finish({ seq: 10, epoch: 'session-epoch' }, false);
+    expect(signals.map((signal) => signal.type)).toEqual(['transcript', 'snapshot', 'sessionCursorAdvanced', 'sessionCursorAdvanced', 'historyRewritten', 'ready']);
+    expect(signals[2]).toMatchObject({ rosterAgentId: 'child', cursor: { seq: 10 } });
+    expect(signals[3]).toMatchObject({ title: 'new title', cursor: { seq: 11 } });
+    expect(signals.at(-1)).toMatchObject({ currentSessionCursor: { seq: 12, epoch: 'session-epoch' } });
+  });
+
+  it('requires recovery when a bootstrap shell belongs to another durable epoch', async () => {
+    const signals: SessionViewSignal[] = [];
+    const target = new SessionViewTarget('s1', (signal) => signals.push(signal));
+    target.begin(2, true);
+    target.send(durable(11));
+    await target.drain();
+    target.seedSnapshot(shellSnapshot('new-session-epoch'));
+    target.finish({ seq: 10, epoch: 'new-session-epoch' }, false);
+    expect(signals.map((signal) => signal.type)).toEqual(['snapshot', 'resyncRequired']);
+    expect(signals[1]).toMatchObject({ reason: 'epoch_changed', currentSessionCursor: { seq: 10, epoch: 'new-session-epoch' } });
+  });
+
+  it.each(['complete', 'detach'] as const)('starts bootstrap seed and shell concurrently after attachment and preserves %s', async (outcome) => {
+    let finishShell!: (snapshot: SessionSnapshotResponse) => void;
+    let signal: AbortSignal | undefined;
+    let attachedTarget: SessionViewTarget | undefined;
+    const shell = vi.spyOn(snapshotReads, 'assembleBrowseSnapshot').mockImplementation(async (_core, _broadcaster, _sessionId, timing) => {
+      expect(attachedTarget).toBeDefined();
+      signal = timing?.signal;
+      return new Promise((resolve) => { finishShell = resolve; });
+    });
+    const broadcaster = { subscribe: vi.fn(async (_sessionId, target: SessionViewTarget) => { attachedTarget = target; return true; }),
+      unsubscribe: vi.fn(), getBufferedSince: vi.fn(), flushTranscriptSeed: vi.fn(async () => {
+        attachedTarget!.send({ ...durable(0), type: 'transcript.reset', payload: { type: 'transcript.reset',
+          session_id: 's1', agent_id: 'main', snapshot: new AgentTranscript('main').snapshot(), grade: 'delta',
+          coverage: { kind: 'unknown', hasMoreOlder: true }, cursor: { seq: 3, epoch: 'transcript-epoch' } } });
+      }) };
+    const send = vi.fn(); const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
+      { core: { accessor: { get: () => ({ get: () => ({}) }) } } as never });
+    try {
+      connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: { generation: 1,
+        transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+        input: { bootstrap: true, sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } });
+      await vi.waitFor(() => expect(send).toHaveBeenCalledWith(expect.objectContaining({ data: expect.objectContaining({ type: 'transcript' }) })));
+      expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript']);
+      expect(shell).toHaveBeenCalledOnce();
+      expect(broadcaster.getBufferedSince).not.toHaveBeenCalled();
+      if (outcome === 'detach') {
+        connection.receive({ type: 'view_detach', id: 'v1' });
+        expect(signal?.aborted).toBe(true);
+      } else attachedTarget!.send(durable(11));
+      finishShell(shellSnapshot());
+      if (outcome === 'complete') {
+        await vi.waitFor(() => expect(send.mock.calls.at(-1)?.[0].data.type).toBe('ready'));
+        expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript', 'snapshot', 'sessionCursorAdvanced', 'ready']);
+        expect(send.mock.calls.at(-1)?.[0].data.currentSessionCursor).toEqual({ seq: 11, epoch: 'session-epoch' });
+      } else {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        expect(send.mock.calls.map(([frame]) => frame.data.type)).toEqual(['transcript']);
+      }
+      expect(errors).not.toHaveBeenCalled();
+    } finally { connection.dispose(); shell.mockRestore(); }
+  });
+
+  it('reports a failed bootstrap shell and aborts a concurrent cold body read', async () => {
+    let bodySignal: AbortSignal | undefined;
+    let failShell!: (error: Error) => void;
+    const shell = vi.spyOn(snapshotReads, 'assembleBrowseSnapshot').mockImplementation(() => new Promise((_resolve, reject) => { failShell = reject; }));
+    const service = { readColdRoster: vi.fn(async () => [{ agentId: 'main', type: 'main' }]),
+      readColdPageSnapshot: coldPageReader(async (_session, _agent, signal) => {
+        bodySignal = signal;
+        return new Promise((_resolve, reject) => signal.addEventListener('abort', () => reject(signal.reason), { once: true }));
+      }) };
+    const broadcaster = { unsubscribe: vi.fn(), getCursor: vi.fn() };
+    const send = vi.fn(); const errors = vi.fn();
+    const connection = new SessionViewHttpConnection(broadcaster as unknown as SessionEventBroadcaster, send, errors,
+      { core: { accessor: { get: () => ({ get: () => undefined }) } } as never, service: service as never });
+    try {
+      connection.receive({ type: 'view_attach', id: 'v1', sessionId: 's1', data: { generation: 1,
+        transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION,
+        input: { bootstrap: true, sessionCursor: { seq: 0 }, transcriptGrades: { main: 'delta' } } } });
+      await vi.waitFor(() => expect(bodySignal).toBeDefined());
+      failShell(new Error('shell failed'));
+      await vi.waitFor(() => expect(errors).toHaveBeenCalledWith('v1', expect.objectContaining({ message: 'shell failed' })));
+      expect(bodySignal?.aborted).toBe(true);
+      expect(send).not.toHaveBeenCalled();
+    } finally { connection.dispose(); shell.mockRestore(); }
+  });
+
   it('deduplicates replay and live durable work before acknowledging the latest watermark', () => {
     const signals: SessionViewSignal[] = [];
     const target = new SessionViewTarget('s1', (signal) => signals.push(signal));

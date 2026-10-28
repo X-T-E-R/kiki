@@ -213,7 +213,7 @@ export class SessionViewHttpConnection {
         ? { ...signal, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION }
         : signal });
     });
-    target.begin(data.generation);
+    target.begin(data.generation, input.bootstrap === true);
     const cold = this.browse !== undefined && this.browse.core.accessor.get(ISessionManager).get(frame.sessionId) === undefined
       ? new AbortController() : undefined;
     const diagnostics = new AbortController();
@@ -222,42 +222,58 @@ export class SessionViewHttpConnection {
     const upgrading = (replacedCold || previous?.cold !== undefined) && cold === undefined;
     const view: AttachedView = { frame, sessionId: frame.sessionId, target, coverage, cold, diagnostics };
     this.views.set(id, view);
+    const readShell = async () => {
+      const browse = this.browse;
+      if (browse === undefined) throw new RPCError(50001, 'session view unavailable');
+      const snapshot = await timeSessionViewPhase('bootstrap_shell', fields,
+        () => assembleBrowseSnapshot(browse.core, broadcaster, fields.sessionId, timing), timing);
+      diagnostics.signal.throwIfAborted();
+      if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
+      target.seedSnapshot(snapshot);
+      recordSessionViewTiming('first_shell_snapshot', attachedAt, fields, timing);
+      return snapshot;
+    };
     if (cold !== undefined) {
-      const service = this.browse?.service;
-      if (service === undefined) throw new RPCError(50001, 'session view unavailable');
-      const roster = await timeSessionViewPhase('cold_roster', fields, () => service.readColdRoster(fields.sessionId), timing);
-      cold.signal.throwIfAborted();
-      if (roster === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
-      const agents = new Set(Object.keys(input.transcriptGrades).filter((agentId) => agentId !== '*'));
-      if (gradeFor(input.transcriptGrades, '*') === 'delta' || gradeFor(input.transcriptGrades, '*') === 'block') {
-        for (const descriptor of roster) agents.add(descriptor.agentId);
-      }
-      const priority = (agentId: string): boolean => Object.hasOwn(input.transcriptGrades, agentId) &&
-        (gradeFor(input.transcriptGrades, agentId) === 'block' || gradeFor(input.transcriptGrades, agentId) === 'delta');
-      const ordered = [...agents].toSorted((left, right) => Number(priority(right)) - Number(priority(left)));
-      let firstDetail = false;
-      let nextAgent = 0;
-      const readAgents = async (): Promise<void> => {
-        while (nextAgent < ordered.length) {
-          cold.signal.throwIfAborted();
-          const agentId = ordered[nextAgent++]!;
-          const grade = gradeFor(input.transcriptGrades, agentId);
-          if (grade === 'off') continue;
-          const event = await timeSessionViewPhase('cold_agent_read', { ...fields, agentId },
-            () => readColdSessionViewBaseline(service, fields.sessionId, agentId, grade, cold.signal), timing);
-          if (event === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
-          cold.signal.throwIfAborted();
-          if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
-          this.send({ type: 'view_signal', id, data: { type: 'transcript', event,
-            generation: data.generation, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION } });
-          if (!firstDetail && priority(agentId)) {
-            firstDetail = true;
-            recordSessionViewTiming('first_detail_reset', attachedAt, { ...fields, agentId }, timing);
-          }
+      const readColdAgents = async () => {
+        const service = this.browse?.service;
+        if (service === undefined) throw new RPCError(50001, 'session view unavailable');
+        const roster = await timeSessionViewPhase('cold_roster', fields, () => service.readColdRoster(fields.sessionId), timing);
+        cold.signal.throwIfAborted();
+        if (roster === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
+        const agents = new Set(Object.keys(input.transcriptGrades).filter((agentId) => agentId !== '*'));
+        if (gradeFor(input.transcriptGrades, '*') === 'delta' || gradeFor(input.transcriptGrades, '*') === 'block') {
+          for (const descriptor of roster) agents.add(descriptor.agentId);
         }
+        const priority = (agentId: string): boolean => Object.hasOwn(input.transcriptGrades, agentId) &&
+          (gradeFor(input.transcriptGrades, agentId) === 'block' || gradeFor(input.transcriptGrades, agentId) === 'delta');
+        const ordered = [...agents].toSorted((left, right) => Number(priority(right)) - Number(priority(left)));
+        let firstDetail = false;
+        let nextAgent = 0;
+        const readAgents = async (): Promise<void> => {
+          while (nextAgent < ordered.length) {
+            cold.signal.throwIfAborted();
+            const agentId = ordered[nextAgent++]!;
+            const grade = gradeFor(input.transcriptGrades, agentId);
+            if (grade === 'off') continue;
+            const event = await timeSessionViewPhase('cold_agent_read', { ...fields, agentId },
+              () => readColdSessionViewBaseline(service, fields.sessionId, agentId, grade, cold.signal), timing);
+            if (event === undefined) throw new RPCError(40401, `session not found: ${frame.sessionId}`);
+            cold.signal.throwIfAborted();
+            if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
+            this.send({ type: 'view_signal', id, data: { type: 'transcript', event,
+              generation: data.generation, transcript_coverage_version: TRANSCRIPT_COVERAGE_VERSION } });
+            if (!firstDetail && priority(agentId)) {
+              firstDetail = true;
+              recordSessionViewTiming('first_detail_reset', attachedAt, { ...fields, agentId }, timing);
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.min(2, ordered.length) }, () => readAgents()));
       };
-      await Promise.all(Array.from({ length: Math.min(2, ordered.length) }, () => readAgents()));
-      const cursor = await timeSessionViewPhase('attach_cursor', fields, () => broadcaster.getCursor(fields.sessionId), timing);
+      const [snapshot] = await Promise.all([input.bootstrap === true ? readShell() : undefined, readColdAgents()]);
+      const cursor = snapshot === undefined
+        ? await timeSessionViewPhase('attach_cursor', fields, () => broadcaster.getCursor(fields.sessionId), timing)
+        : { seq: snapshot.as_of_seq, epoch: snapshot.epoch };
       cold.signal.throwIfAborted();
       if (this.views.get(id) !== view || this.frames.get(id) !== frame) return;
       target.finish({ seq: cursor.seq, epoch: cursor.epoch || `cold:${frame.sessionId}` }, data.reconnected === true);
@@ -276,6 +292,20 @@ export class SessionViewHttpConnection {
       target.sendControl({ type: 'resync_required', payload: { reason: 'session_recreated', current_seq: 0 } });
       target.finish({ seq: 0 }, data.reconnected === true);
       this.detach(id);
+      return;
+    }
+    if (input.bootstrap === true) {
+      const [snapshot] = await Promise.all([
+        readShell(),
+        timeSessionViewPhase('attach_seed', fields, async () => {
+          await target.drain();
+          await broadcaster.flushTranscriptSeed(fields.sessionId, target);
+        }, timing),
+      ]);
+      diagnostics.signal.throwIfAborted();
+      if (snapshot === undefined || this.views.get(id) !== view || this.frames.get(id) !== frame) return;
+      target.finish({ seq: snapshot.as_of_seq, epoch: snapshot.epoch }, data.reconnected === true);
+      recordSessionViewTiming('attach_ready', attachedAt, fields, timing);
       return;
     }
     const replay = await timeSessionViewPhase('attach_replay', fields,

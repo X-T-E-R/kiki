@@ -60,7 +60,7 @@ export class HttpSessionViews {
       throw error;
     }
     return {
-      updateSessionCursor: (cursor) => { view.input = { ...view.input, sessionCursor: cursor }; },
+      updateSessionCursor: (cursor) => { view.input = { ...view.input, sessionCursor: cursor, bootstrap: undefined }; },
       setTranscriptGrades: (grades) => {
         if (!this.views.has(id)) return;
         const previousGrades = view.input.transcriptGrades;

@@ -57,6 +57,10 @@ export interface SessionViewTranscriptFacade {
 export interface SessionViewFacade {
   snapshot(options?: CallOptions): Promise<SessionSnapshotResponse>;
   readonly transcript: SessionViewTranscriptFacade;
+  bootstrap?(
+    input: Omit<SessionViewSubscribeInput, 'sessionCursor' | 'bootstrap'>,
+    onSignal: (signal: SessionViewSignal) => void,
+  ): SessionViewSubscription;
   subscribe(
     input: SessionViewSubscribeInput,
     onSignal: (signal: SessionViewSignal) => void,
@@ -86,7 +90,10 @@ export function createSessionViewFacade(
     }
     return result.data;
   };
-  return {
+  const facade: SessionViewFacade = {
+    bootstrap(input, onSignal) {
+      return facade.subscribe({ ...input, sessionCursor: { seq: 0 }, bootstrap: true }, onSignal);
+    },
     async snapshot(options) {
       const output = await requireChannel().snapshot(sessionId, options);
       return validate
@@ -160,6 +167,7 @@ export function createSessionViewFacade(
       });
     },
   };
+  return facade;
 }
 
 export type {
