@@ -84,6 +84,10 @@ function usageResponse(overrides: {
   hasMore?: boolean;
   nextPageToken?: string | null;
   trendGroups?: { key: string; cost: number; provider?: string | null; profile?: string | null }[];
+  rangeStartAt?: number | null;
+  rangeEndAt?: number | null;
+  rangePreset?: UsageResponseWire['query']['range']['preset'];
+  trendBuckets?: UsageResponseWire['trend'];
 } = {}): UsageResponseWire {
   const items = (overrides.sessions ?? [{ id: 's_1', title: 'Alpha session', cost: 1.5 }]).map(
     (item) => ({
@@ -108,9 +112,9 @@ function usageResponse(overrides: {
     query: {
       granularity: 'day',
       range: {
-        preset: 'all',
-        start_at: null,
-        end_at: null,
+        preset: overrides.rangePreset ?? 'all',
+        start_at: overrides.rangeStartAt ?? null,
+        end_at: overrides.rangeEndAt ?? null,
         defaulted_to_all_history: overrides.defaulted ?? false,
       },
       dimension: 'model',
@@ -128,7 +132,7 @@ function usageResponse(overrides: {
       cost_unknown: overrides.costUnknown ?? false,
       session_count: items.length,
     },
-    trend: [
+    trend: overrides.trendBuckets ?? [
       {
         key: String(day),
         start_at: day,
@@ -1010,6 +1014,83 @@ describe('UsagePage (V2)', () => {
     const toggle = container.querySelector<HTMLInputElement>('[data-usage-compare]')!;
     expect(toggle.disabled).toBe(true);
     expect(container.textContent).toContain('Comparison needs a bounded range');
+    await act(async () => { root.unmount(); });
+  });
+
+  it('aligns compare window with resolved server query.range timestamps and handles bucket compare', async () => {
+    // Server returned range is Oct 1 - Oct 8 (start: 1790784000000, end: 1791388800000)
+    // whereas client system clock might be Oct 28.
+    const serverStart = 1790784000000;
+    const serverEnd = 1791388800000;
+    const bucketStart = 1791043200000;
+    const bucketEnd = 1791129600000;
+    const customBucket: UsageResponseWire['trend'][0] = {
+      key: String(bucketStart),
+      start_at: bucketStart,
+      end_at: bucketEnd,
+      groups: [
+        {
+          key: 'k2-thinking',
+          tokens: tokens(5000, 2500),
+          tokens_unknown: false,
+          cost_usd_estimated: 10,
+          cost_unknown: false,
+          provider: 'kimi',
+          model_alias: 'k2-thinking',
+          agent_id: null,
+          parent_agent_id: null,
+          profile_name: 'default',
+        },
+      ],
+      drilldown: { sessions: [], sessions_truncated: false },
+    };
+
+    getUsage.mockImplementation(async (query: Record<string, unknown>) => {
+      if (query['start_at'] !== undefined) {
+        return usageResponse({
+          rangePreset: 'custom',
+          rangeStartAt: Number(query['start_at']),
+          rangeEndAt: Number(query['end_at']),
+          summaryCost: 5,
+        });
+      }
+      return usageResponse({
+        rangePreset: 'last_7_days',
+        rangeStartAt: serverStart,
+        rangeEndAt: serverEnd,
+        summaryCost: 15,
+        trendBuckets: [customBucket],
+      });
+    });
+
+    const { container, root } = await renderPage('/usage?range=last_7_days&compare=previous');
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // Whole-range comparison should be requested using server range minus 7 days:
+    // shift is -(serverEnd - serverStart) = -604800000
+    // so start_at = serverStart - 604800000 = 1790179200000, end_at = serverEnd - 604800000 = 1790784000000
+    const compareCalls = getUsage.mock.calls.filter(([q]) => (q as Record<string, unknown>)['start_at'] !== undefined);
+    expect(compareCalls.length).toBeGreaterThan(0);
+    const wholeRangeCompare = compareCalls[0]?.[0] as Record<string, unknown>;
+    expect(wholeRangeCompare['start_at']).toBe(serverStart - (serverEnd - serverStart));
+    expect(wholeRangeCompare['end_at']).toBe(serverStart);
+
+    // Now click the specific bucket
+    const bucketEl = container.querySelector<HTMLElement>('[data-usage-trend] [data-bucket]')!;
+    expect(bucketEl).not.toBeNull();
+    await act(async () => { bucketEl.click(); });
+    for (let i = 0; i < 5; i += 1) await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+
+    // The bucket comparison should request [bucketStart - 7d, bucketEnd - 7d]
+    const bucketCompareCalls = getUsage.mock.calls.filter(([q]) => {
+      const query = q as Record<string, unknown>;
+      return query['start_at'] === bucketStart - (serverEnd - serverStart);
+    });
+    expect(bucketCompareCalls.length).toBeGreaterThan(0);
+    const bucketCompare = bucketCompareCalls[0]?.[0] as Record<string, unknown>;
+    expect(bucketCompare['start_at']).toBe(bucketStart - (serverEnd - serverStart));
+    expect(bucketCompare['end_at']).toBe(bucketEnd - (serverEnd - serverStart));
+
     await act(async () => { root.unmount(); });
   });
 

@@ -1008,7 +1008,18 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
 
   // The comparison is read only after the reader asks for it, and for exactly
   // the period in view: the whole range, or the selected bucket's own window.
-  const rangeWindow = usageRangeWindow(filters, timezoneOffsetMinutes, usageNowMs);
+  const serverRange = firstPage?.query.range;
+  const rangeWindow = useMemo(() => {
+    if (
+      serverRange?.start_at !== null &&
+      serverRange?.start_at !== undefined &&
+      serverRange?.end_at !== null &&
+      serverRange?.end_at !== undefined
+    ) {
+      return { startAt: serverRange.start_at, endAt: serverRange.end_at };
+    }
+    return usageRangeWindow(filters, timezoneOffsetMinutes, usageNowMs);
+  }, [serverRange?.start_at, serverRange?.end_at, filters, timezoneOffsetMinutes, usageNowMs]);
   const compareWindow = useMemo(() => {
     if (!comparing || rangeWindow === null) return null;
     return selectedBucket === undefined || selectedBucket === null
@@ -1017,7 +1028,7 @@ export function UsagePage({ onToggleSidebar }: { onToggleSidebar: () => void }) 
   }, [comparing, rangeWindow, selectedBucket, timezoneOffsetMinutes, usageNowMs]);
   const compareQuery = useQuery({
     queryKey: ['usage-v2', 'compare', filters, compareWindow, localUsageDate, timezoneOffsetMinutes],
-    enabled: panel === 'history' && compareWindow !== null,
+    enabled: panel === 'history' && compareWindow !== null && firstPage !== undefined,
     retry: false,
     queryFn: ({ signal }) =>
       client.getUsage(

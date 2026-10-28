@@ -177,8 +177,8 @@ export const usageV2 = {
 
 export default {
   models: [
-    { id: 'axon/gpt-6.1-sol', provider_id: 'axon', remote_id: 'axon/gpt-6.1-sol', display_name: 'GPT-6.1 Sol' },
-    { id: 'axon/gpt-6-astra', provider_id: 'axon', remote_id: 'axon/gpt-6-astra', display_name: 'GPT-6 Astra' },
+    { id: 'axon/gpt-6.1-sol', provider_id: 'axon', remote_id: 'axon/gpt-6.1-sol', display_name: 'GPT-6.1 Sol', max_context_size: 262144 },
+    { id: 'axon/gpt-6-astra', provider_id: 'axon', remote_id: 'axon/gpt-6-astra', display_name: 'GPT-6 Astra', max_context_size: 262144 },
   ],
   providers: [
     { id: 'axon', type: 'openai', has_api_key: true, status: 'connected', default_model: 'axon/gpt-6.1-sol', models: ['axon/gpt-6.1-sol', 'axon/gpt-6-astra'] },
