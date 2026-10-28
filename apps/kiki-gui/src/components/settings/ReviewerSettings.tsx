@@ -10,6 +10,7 @@ import { SearchableSelect } from '../SearchableSelect';
 import { INPUT } from '../ui';
 import { KEEP_SECRET, SecretField, type SecretDraft } from './SecretField';
 import { SectionCard } from './SectionCard';
+import { AdvancedDetails } from './fields';
 import { SETTINGS_SELECT_TRIGGER, SettingsDraftFooter, SettingsSegmented } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -121,7 +122,11 @@ export function ReviewerSettings() {
             envName={reviewerEcho?.apiKeyEnv} draft={draft.apiKey} onChange={(apiKey) => update({ apiKey })}
             reveal={keySource === 'none' ? undefined : revealKey} hint={t('st.reviewer.keyHint')} />
         </div>}
-        <div className="grid gap-3 sm:grid-cols-3">
+        {/* Tuning, not the decision: the source and its model are what a
+            reader chooses; how long to wait, how sure to be and which checks
+            run keep their defaults unless someone opens this. */}
+        <AdvancedDetails summary={t('st.advanced.disclosure')} data-reviewer-advanced className="space-y-4 text-[13px] text-ink">
+        <div className="mt-3 grid gap-3 sm:grid-cols-3">
           {(['timeoutMs', 'allowThreshold', 'denyThreshold'] as const).map((key) => <label key={key} className="block space-y-1.5">
             <span className="block text-[13px] font-medium text-ink">{t(`st.reviewer.${key}` as I18nKey)}</span>
             <input type="number" className={`${INPUT} text-[13px] tabular-nums`} value={draft[key]}
@@ -135,6 +140,7 @@ export function ReviewerSettings() {
               categories: event.target.checked ? [...draft.categories, category] : draft.categories.filter((item) => item !== category),
             })} />{t(`st.reviewer.category.${category}` as I18nKey)}</label>)}
         </fieldset>
+        </AdvancedDetails>
       </fieldset>
       <SettingsDraftFooter saved={justSaved} id="permission-reviewer" dirty={dirty} saving={saving} saveDisabled={!valid(draft)}
         onSave={() => void save()} onDiscard={() => { setDraft(baseline); setFeedback(null); }} />

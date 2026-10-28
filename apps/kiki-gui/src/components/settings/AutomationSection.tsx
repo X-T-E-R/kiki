@@ -14,7 +14,8 @@ import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, InlineError, type Feedback } from '../controls';
 import { INPUT } from '../ui';
 import { SectionCard } from './SectionCard';
-import { AdvancedDetails, SettingField } from './fields';
+import { SettingField } from './fields';
+import { SettingHelp } from './SettingHelp';
 import { SettingsDraftFooter, SettingsSelect } from './SettingsPrimitives';
 import { useSavedTick } from './useSavedTick';
 
@@ -103,11 +104,23 @@ export function ToolPolicyCard() {
               {toolNames.filter((name) => name.toLowerCase().includes(search.toLowerCase())).map((name) => {
                 const descriptor = toolsQuery.data?.tools.find((tool) => tool.name === name);
                 return (
-                  <div key={name} className="grid gap-2 border-b border-hairline py-2 md:grid-cols-[minmax(0,1fr)_auto] md:items-center">
-                    <div className="min-w-0">
-                      <p className="break-all text-[13px] font-medium text-ink">{name}</p>
-                      <p className="text-[11px] text-ink-soft">{descriptor === undefined ? t('st.tools.configOnly') : t(descriptor.active ? 'st.tools.currentOn' : 'st.tools.currentOff')}</p>
-                      {descriptor !== undefined ? <AdvancedDetails summary={t('st.tools.description')}><p>{descriptor.description}</p></AdvancedDetails> : null}
+                  <div key={name} className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-2 border-b border-hairline py-2">
+                    {/* An available tool needs no state line; only the
+                        exceptions (unavailable here, or configured but not in
+                        the catalog) say so. What the tool does is one tap away
+                        behind its name instead of a fold on every row. */}
+                    <div className="min-w-0" data-tool-row={name}>
+                      <div className="flex min-w-0 items-center gap-1.5">
+                        <p className="break-all text-[13px] font-medium text-ink">{name}</p>
+                        {descriptor !== undefined && descriptor.description.trim() !== '' ? (
+                          <SettingHelp>{descriptor.description}</SettingHelp>
+                        ) : null}
+                      </div>
+                      {descriptor === undefined || !descriptor.active ? (
+                        <p data-tool-state={descriptor === undefined ? 'config-only' : 'unavailable'} className="text-[11px] text-ink-faint">
+                          {descriptor === undefined ? t('st.tools.configOnly') : t('st.tools.currentOff')}
+                        </p>
+                      ) : null}
                     </div>
                     <SettingsSelect<'enabled' | 'disabled' | 'inherited'>
                       dataAttr="data-tool-policy"

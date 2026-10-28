@@ -59,7 +59,8 @@ describe('safe automation drafts', () => {
     await mount();
     expect(policyValue('ThreadCreate')).toBe('inherited');
     expect(policyValue('ThreadList')).toBe('inherited');
-    expect(policy('ThreadCreate').closest('div.grid')?.textContent).toContain('Currently available on this server');
+    // An available tool carries no state line; only exceptions are labelled.
+    expect(policy('ThreadCreate').closest('div.grid')?.querySelector('[data-tool-state]')).toBeNull();
     await pick(policy('ThreadCreate'), 'Deny');
     await click('Save tool policy');
     expect(config.tools).toEqual({ enabled: [], disabled: ['ThreadCreate'] });
