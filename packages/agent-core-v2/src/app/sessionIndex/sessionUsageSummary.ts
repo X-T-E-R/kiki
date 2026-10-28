@@ -1,6 +1,7 @@
 import { addUsage, emptyUsage, type TokenUsage } from '#/kosong/contract/usage';
 import type { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
+import { summarizeUsageFacts } from '#/agent/usage/usageFact';
 
 import type { SessionUsageSummary } from './sessionIndex';
 
@@ -8,6 +9,7 @@ export function addSessionUsage(
   current: SessionUsageSummary | undefined,
   model: string,
   usage: TokenUsage,
+  usageKnown?: boolean,
 ): SessionUsageSummary {
   const modelUsage = current?.byModel?.[model];
   return {
@@ -17,6 +19,7 @@ export function addSessionUsage(
       [model]: modelUsage === undefined ? { ...usage } : addUsage(modelUsage, usage),
     },
     wireComplete: current?.wireComplete,
+    accounting: current === undefined || current.accounting !== undefined ? summarizeUsageFacts([{ time: 0, model, usage, usageKnown }], current?.accounting) : undefined,
   };
 }
 
@@ -42,7 +45,7 @@ export async function readSessionUsageFromWires(
           complete = false;
           continue;
         }
-        summary = addSessionUsage(summary, parsed.model, parsed.usage);
+        summary = addSessionUsage(summary, parsed.model, parsed.usage, parsed.usageKnown);
       }
     } catch {
       complete = false;
@@ -62,7 +65,7 @@ export async function readSessionUsageFromWires(
 
 function parseUsageRecord(
   record: WireRecord,
-): { readonly model: string; readonly usage: TokenUsage } | undefined {
+): { readonly model: string; readonly usage: TokenUsage; readonly usageKnown?: boolean } | undefined {
   if (record.type !== 'usage.record' || typeof record['model'] !== 'string') return undefined;
   const usage = record['usage'];
   if (usage === null || typeof usage !== 'object' || Array.isArray(usage)) return undefined;
@@ -82,6 +85,7 @@ function parseUsageRecord(
   return {
     model: record['model'],
     usage: { inputOther, output, inputCacheRead, inputCacheCreation },
+    usageKnown: typeof record['usageKnown'] === 'boolean' ? record['usageKnown'] : undefined,
   };
 }
 

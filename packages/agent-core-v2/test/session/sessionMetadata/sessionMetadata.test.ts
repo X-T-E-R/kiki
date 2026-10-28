@@ -231,12 +231,31 @@ describe('SessionMetadata', () => {
         'example-model': { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
       },
       wireComplete: undefined,
+      accounting: {
+        version: 2,
+        usage: { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 },
+        byModel: { 'example-model': { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 } },
+        byModelMask: { 'example-model': { '7': { inputOther: 3, output: 2, inputCacheRead: 1, inputCacheCreation: 0 } } },
+        records: 1, knownUsageRecords: 1, partial: false,
+      },
     });
     const persisted = await ix
       .get(IAtomicDocumentStore)
       .get<{ usage?: { wireComplete?: boolean } }>(META_SCOPE, 'state.json');
     expect(persisted?.usage?.wireComplete).toBeUndefined();
     expect(mirror.recorded.at(-1)?.usage).toEqual((await meta.read()).usage);
+  });
+
+  it('keeps explicit unknown nonzero usage out of canonical known accounting while retaining legacy totals', async () => {
+    const meta = ix.get(ISessionMetadata);
+    await meta.ready;
+    meta.recordUsage('example-model', { inputOther: 10, output: 0, inputCacheRead: 0, inputCacheCreation: 0 }, true);
+    meta.recordUsage('example-model', { inputOther: 7, output: 0, inputCacheRead: 0, inputCacheCreation: 0 }, false);
+    await drainSessionMetadataWrites();
+    const usage = (await meta.read()).usage;
+    expect(usage?.total.inputOther).toBe(17);
+    expect(usage?.accounting).toMatchObject({ version: 2, usage: { inputOther: 10 }, records: 2, knownUsageRecords: 1, partial: true });
+    expect((await createFreshMetadata(ix).read()).usage?.accounting).toEqual(usage?.accounting);
   });
 
   it('flushes delayed usage during direct metadata disposal', async () => {

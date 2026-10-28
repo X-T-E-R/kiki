@@ -118,7 +118,7 @@ export class AgentUsageService extends Service implements IAgentUsageService {
     }
 
     void this.dispatcher.dispatch(new AgentStatusUpdated({ usage: this.status() }));
-    this._onDidRecord.fire({ model, usage: copyUsage(usage), source });
+    this._onDidRecord.fire({ model, usage: copyUsage(usage), source, usageKnown: context?.usageKnown ?? true });
   }
 
   status(): UsageStatus {

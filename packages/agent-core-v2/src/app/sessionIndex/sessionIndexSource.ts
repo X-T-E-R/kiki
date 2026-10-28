@@ -4,6 +4,7 @@ import type { AgentMeta } from '#/session/sessionMetadata/sessionMetadata';
 import { workspaceRootKey } from '#/_base/utils/workdir-slug';
 import { ILogService } from '#/_base/log/log';
 import type { TokenUsage } from '#/kosong/contract/usage';
+import { usageFactTotalsSchema } from '#/agent/usage/usageFact';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
 import { SESSION_INDEX_KEY, SESSION_INDEX_SCOPE } from '#/app/workspace/workspaceAlias';
 import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStore';
@@ -83,6 +84,7 @@ function parseSessionUsageSummary(value: unknown): SessionUsageSummary | undefin
     total,
     byModel: Object.keys(byModel).length === 0 ? undefined : byModel,
     wireComplete,
+    accounting: usageFactTotalsSchema.safeParse(record['accounting']).data,
   };
 }
 

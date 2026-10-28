@@ -686,6 +686,30 @@ export interface SessionStateSnapshot {
         inputCacheCreation: number;
       }>>;
       readonly wireComplete?: boolean;
+      readonly accounting?: /* UsageFactTotals — packages/agent-core-v2/src/agent/usage/usageFact.ts */ {
+        readonly version?: 2;
+        readonly usage: /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
+          inputOther: number;
+          output: number;
+          inputCacheRead: number;
+          inputCacheCreation: number;
+        };
+        readonly byModel: Readonly<Record<string, /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
+          inputOther: number;
+          output: number;
+          inputCacheRead: number;
+          inputCacheCreation: number;
+        }>>;
+        readonly byModelMask?: Readonly<Record<string, Readonly<Record<string, /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
+          inputOther: number;
+          output: number;
+          inputCacheRead: number;
+          inputCacheCreation: number;
+        }>>>>;
+        readonly records: number;
+        readonly knownUsageRecords: number;
+        readonly partial: boolean;
+      };
     };
   } | undefined;
   // src/session/sessionSkillCatalog/skillCatalogService.ts
@@ -7945,6 +7969,13 @@ export interface AgentStateSnapshot {
   // src/agent/usage/panelAccounting.ts
   // replayable · durable — folds: UsageRecord, FullCompactionComplete
   'usage.panelAccounting': /* PanelAccountingState — packages/agent-core-v2/src/agent/usage/panelAccounting.ts */ {
+    version: 2;
+    knownByModelMask: Record<string, Record<string, /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {
+      inputOther: number;
+      output: number;
+      inputCacheRead: number;
+      inputCacheCreation: number;
+    }>>;
     records: number;
     knownRecords: number;
     knownByModel: Record<string, /* TokenUsage — packages/agent-core-v2/src/kosong/contract/usage.ts */ {

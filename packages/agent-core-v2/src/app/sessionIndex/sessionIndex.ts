@@ -4,6 +4,7 @@ import type { Event } from '#/_base/event';
 import type { TokenUsage } from '#/kosong/contract/usage';
 import type { SessionWorktree } from '#/app/git/worktreeModel';
 import type { Page } from '#/persistence/interface/queryStore';
+import type { UsageFactTotals } from '#/agent/usage/usageFact';
 
 export const PARENT_SESSION_ID_KEY = 'parent_session_id';
 
@@ -18,6 +19,7 @@ export interface SessionUsageSummary {
   readonly total: TokenUsage;
   readonly byModel?: Readonly<Record<string, TokenUsage>>;
   readonly wireComplete?: boolean;
+  readonly accounting?: UsageFactTotals;
 }
 
 export interface SessionSummary {

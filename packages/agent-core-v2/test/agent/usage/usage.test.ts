@@ -153,6 +153,8 @@ describe('AgentUsageService (wire-backed)', () => {
   it('retains known and missing accounting with only successful compactions across replay', async () => {
     const state = ix.get(IAgentStateService);
     expect(state.get(panelAccountingKey)).toEqual({
+      version: 2,
+      knownByModelMask: {},
       records: 0,
       knownRecords: 0,
       knownByModel: {},
@@ -168,6 +170,8 @@ describe('AgentUsageService (wire-backed)', () => {
     expect(state.get(panelAccountingKey).incomplete).toBe(false);
     svc.record('model-a', zero, undefined, { usageKnown: false });
     expect(state.get(panelAccountingKey)).toEqual({
+      version: 2,
+      knownByModelMask: { 'model-a': { '0': zero, '15': a1 } },
       records: 3,
       knownRecords: 2,
       knownByModel: { 'model-a': a1 },
@@ -180,18 +184,12 @@ describe('AgentUsageService (wire-backed)', () => {
     expect(fresh.agentState.get(panelAccountingKey)).toEqual(state.get(panelAccountingKey));
   });
 
-  it('defaults known provenance when parsing legacy accounting state', () => {
-    expect(panelAccountingKey.replayable.schema.parse({
+  it('rejects legacy accounting checkpoints so replay recovers token masks', () => {
+    expect(panelAccountingKey.replayable.schema.safeParse({
       records: 2,
       incomplete: true,
       successfulCompactions: 1,
-    })).toEqual({
-      records: 2,
-      knownRecords: 0,
-      knownByModel: {},
-      incomplete: true,
-      successfulCompactions: 1,
-    });
+    }).success).toBe(false);
   });
 
   it('accumulates usage by model', () => {
@@ -278,6 +276,7 @@ describe('AgentUsageService (wire-backed)', () => {
         model: 'model-a',
         usage: a1,
         source: { type: 'turn', turnId: 7, step: 2 },
+        usageKnown: true,
       },
     ]);
   });

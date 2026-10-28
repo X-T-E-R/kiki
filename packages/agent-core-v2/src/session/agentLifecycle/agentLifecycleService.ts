@@ -220,8 +220,8 @@ export class AgentLifecycleService extends Disposable implements IAgentLifecycle
     if (this.usageDisposables.has(handle.id)) return;
     const d = handle.accessor
       .get(IAgentUsageService)
-      .onDidRecord(({ model, usage }) => {
-        this.sessionMetadata.recordUsage(model, usage);
+      .onDidRecord(({ model, usage, usageKnown }) => {
+        this.sessionMetadata.recordUsage(model, usage, usageKnown);
       });
     this.usageDisposables.set(handle.id, d);
   }

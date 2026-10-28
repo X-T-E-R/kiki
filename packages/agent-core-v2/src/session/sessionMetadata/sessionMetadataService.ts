@@ -196,9 +196,9 @@ export class SessionMetadata extends Service implements ISessionMetadata {
     return this.createdDocument;
   }
 
-  recordUsage(model: string, usage: TokenUsage): void {
+  recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void {
     if (this.disposed || this.disposing) return;
-    this.data = { ...this.data, usage: addSessionUsage(this.data.usage, model, usage) };
+    this.data = { ...this.data, usage: addSessionUsage(this.data.usage, model, usage, usageKnown) };
     this.usageDirty = true;
     if (this.usageTimer !== undefined) return;
     this.usageTimer = setTimeout(this.onUsageTimer, USAGE_FLUSH_DELAY_MS);

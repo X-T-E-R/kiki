@@ -109,7 +109,7 @@ export interface ISessionMetadata {
   read(): Promise<SessionMeta>;
   getAgentExecutor(agentId: string): Promise<string | undefined>;
   usage(): SessionUsageSummary | undefined;
-  recordUsage(model: string, usage: TokenUsage): void;
+  recordUsage(model: string, usage: TokenUsage, usageKnown?: boolean): void;
   update(patch: SessionMetaPatch, opts?: { readonly touchUpdatedAt?: boolean }): Promise<void>;
   setTitle(title: string): Promise<void>;
   /**
