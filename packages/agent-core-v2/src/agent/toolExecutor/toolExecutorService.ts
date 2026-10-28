@@ -850,7 +850,7 @@ function preflightToolCall(
       output: describeMissingTool?.(toolName) ?? `Tool "${toolName}" not found`,
     };
   }
-  const source = toolRegistry.list().find((entry) => entry.name === toolName)?.source ?? 'builtin';
+  const source = toolRegistry.listReferences().find((entry) => entry.name === toolName)?.source ?? 'builtin';
   const denied = guard?.({ name: toolName, source });
   if (denied !== undefined) {
     return {

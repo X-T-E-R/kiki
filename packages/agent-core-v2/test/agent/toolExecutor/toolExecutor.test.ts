@@ -364,6 +364,30 @@ describe('AgentToolExecutorService', () => {
     });
   });
 
+  it.each(['builtin', 'user', 'mcp', 'plugin'] as const)(
+    'checks %s policy without materializing unrelated tool definitions', async (source) => {
+      const tool = new TestTool('selected');
+      const unrelated = new TestTool('unrelated');
+      const description = vi.fn(() => { throw new Error('unrelated description must stay lazy'); });
+      const parameters = vi.fn(() => { throw new Error('unrelated schema must stay lazy'); });
+      Object.defineProperties(unrelated, {
+        description: { get: description },
+        parameters: { get: parameters },
+      });
+      registry.register(tool, { source });
+      registry.register(unrelated, { source: 'plugin' });
+      const guard = vi.fn(() => undefined);
+      executor.registerToolCallGuard(guard);
+
+      expect(await execute([toolCall('selected-call', 'selected', {})])).toEqual([
+        expect.objectContaining({ output: 'selected result' }),
+      ]);
+      expect(guard).toHaveBeenCalledExactlyOnceWith({ name: 'selected', source });
+      expect(description).not.toHaveBeenCalled();
+      expect(parameters).not.toHaveBeenCalled();
+    },
+  );
+
   it('rejects by policy before dynamic availability when a tool-call guard denies it', async () => {
     const tool = new TestTool('blocked');
     registry.register(tool, { source: 'mcp' });
