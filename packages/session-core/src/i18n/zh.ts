@@ -6939,7 +6939,7 @@ export const zh = {
 
   'st.purpose.hooks': '事件发生时会运行的规则。',
 
-  'st.purpose.workspaces': '服务器已知的文件夹。移除后不会删除其中的文件和会话。',
+  'st.purpose.workspaces': '服务器已知的文件夹。注销后不会删除其中的文件和会话。',
   'st.purpose.about': '版本、构建、Server 标识与更新。',
   'st.purpose.permissions': '默认模式、持久工具规则、危险 Bash 检查、审查者及可用工具。',
   'st.purpose.developer': '引擎参数、底层配置、系统诊断与实验性功能索引。',

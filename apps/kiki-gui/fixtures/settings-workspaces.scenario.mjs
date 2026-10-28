@@ -31,4 +31,8 @@ export default {
       pinned: true,
     },
   ],
+  workspaceTrust: {
+    [WS_A]: { trusted: true },
+    [WS_B]: { trusted: false },
+  },
 };

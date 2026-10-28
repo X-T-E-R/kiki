@@ -30,6 +30,7 @@ import { useGuardedNavigate } from '../dirtyGuard';
 import { Icon } from '../icons';
 import { SECONDARY_BUTTON } from '../ui';
 import { SectionCard } from './SectionCard';
+import { SettingHelp } from './SettingHelp';
 import { WorktreeRemoveDialog, outcomeReasonKey } from './WorktreeRemoveDialog';
 import { WorktreePolicy, useWorktreePolicy } from './WorktreePolicy';
 
@@ -163,7 +164,7 @@ export function WorktreesCard() {
           >
             {gcBusy ? t('st.worktrees.cleanupChecking') : t('st.worktrees.cleanup')}
           </button>
-          <p className="min-w-0 flex-1 basis-64 text-[12px] leading-snug text-ink-faint">{t('st.worktrees.cleanupRule', { days: afterDays })}</p>
+          <SettingHelp className="self-center">{t('st.worktrees.cleanupRule', { days: afterDays })}</SettingHelp>
         </div>
         <div className="pt-4">
           <WorktreePolicy />

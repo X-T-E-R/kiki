@@ -7018,7 +7018,7 @@ export const en = {
 
   'st.purpose.hooks': 'Rules that run when an event happens.',
 
-  'st.purpose.workspaces': 'Folders the server knows about. Removing one keeps its files and sessions.',
+  'st.purpose.workspaces': 'Folders the server knows about. Unregistering one keeps its files and sessions.',
   'st.purpose.about': 'Version, build, server identity, and updates.',
   'st.purpose.permissions': 'Default mode, persistent tool rules, dangerous Bash checks, reviewer, and available tools.',
   'st.purpose.developer': 'Engine parameters, low-level configuration, system diagnostics, and experimental feature index.',

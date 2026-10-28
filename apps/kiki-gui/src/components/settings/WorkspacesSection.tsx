@@ -96,12 +96,11 @@ function WorkspacesList() {
 
   return (
     <>
-    <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}>
+    {/* The page intro already says what unregistering keeps; the card names
+        only which machine's folders these are. */}
+    <SectionCard id="st-card-workspaces" title={t('st.workspaces.title')}
+      aside={sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${sshLabel}`}>
       <div className="space-y-2">
-        <Hint>{t('st.workspaces.hint')}</Hint>
-        <p className="text-[12px] font-medium text-ink-soft">
-          {sshLabel === null ? t('connect.localScope') : `${t('connect.remoteScope')} · ${sshLabel}`}
-        </p>
         {scopeId.startsWith('ssh:') ? (
           <button type="button" onClick={activateLocal} className={SECONDARY_BUTTON}>
             {t('connect.switchLocal')}
@@ -384,8 +383,10 @@ function WorkspaceRow({ workspace, density, selecting, checked, onCheck, pinBusy
         {compact ? null : (
           <p className="flex min-w-0 items-baseline gap-2 text-[12px] leading-4 text-ink-faint">
             <span className="min-w-0 truncate font-mono text-[11px]" title={workspace.root}>{workspace.root}</span>
-            <span aria-hidden className="shrink-0">·</span>
-            <span className="shrink-0">{facts}</span>
+            {/* On a phone the path is what tells two rows apart; the group
+                heading above already says roughly when it was opened. */}
+            <span aria-hidden className="hidden shrink-0 sm:inline">·</span>
+            <span className="hidden shrink-0 sm:inline">{facts}</span>
           </p>
         )}
         {trustQuery.isError ? <InlineError error={trustQuery.error} /> : null}
