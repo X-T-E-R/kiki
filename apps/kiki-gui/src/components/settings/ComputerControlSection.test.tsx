@@ -867,6 +867,7 @@ describe('ComputerControlSection', () => {
         args: ['-m', 'windows_mcp', 'serve', '--transport', 'stdio', '--config', 'C:\\Env\\config.toml', '--tools', 'ControlStatus,DisplayInventory,Screenshot,Snapshot,Click,Type,Scroll,Move,Shortcut,Wait,WaitFor,App'],
         executor: 'local' as const,
         envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+        computerServeReady: true,
       };
       mcpList.mockResolvedValue([
         managedEntry({ name: 'kiki-computer' }),
@@ -909,8 +910,10 @@ describe('ComputerControlSection', () => {
       expect(patchConfig).toHaveBeenCalledWith({ computer_control: { connection: 'kiki-windows-mcp' } });
       expect(installCapability).not.toHaveBeenCalled();
       expect(query('[data-computer-active-windows-mcp-hint]')?.textContent).toContain('interactive desktop');
-      // Selecting a serve-ready Windows-MCP connection reports ready without prompting to install bundled CUA.
-      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('uses kiki-windows-mcp');
+      // Selecting a serve-ready Windows-MCP connection reports configured ready without claiming the bundled executor is installed or prompting to install it.
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('Allowed; connection configured; uses kiki-windows-mcp');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).not.toContain('executor installed');
+      expect(query('[data-computer-bundled-executor-label]')?.textContent).toBe('Bundled CUA executor');
       expect(query('[data-computer-install-btn]')).toBeNull();
 
       await click('[data-computer-active-connection] button');
@@ -924,17 +927,19 @@ describe('ComputerControlSection', () => {
       expect(query('[data-computer-verdict="not_installed"]')).not.toBeNull();
     });
 
-    it('derives the verdict from the selected connection and its executor (missing, disabled, non-ready Windows-MCP, and MCP list failure)', async () => {
+    it('derives the verdict from the selected connection and its executor (missing, disabled, non-ready Windows-MCP, redacted telemetry value, default CUA set, custom CUA, and config/MCP read failures)', async () => {
       const windowsReadyConfig = {
         transport: 'stdio' as const,
         command: 'C:\\Env\\venv\\Scripts\\python.exe',
         args: ['-m', 'windows_mcp', 'serve', '--transport', 'stdio', '--config', 'C:\\Env\\config.toml', '--tools', 'ControlStatus,DisplayInventory,Screenshot,Snapshot,Click,Type,Scroll,Move,Shortcut,Wait,WaitFor,App'],
         executor: 'local' as const,
         envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+        computerServeReady: true,
       };
       const windowsNotReadyConfig = {
         ...windowsReadyConfig,
         args: ['-m', 'windows_mcp', 'serve'],
+        computerServeReady: false,
       };
 
       // 1. Selected connection is missing from MCP entries while CUA files are installed → no_connection (never ready)
@@ -982,9 +987,43 @@ describe('ComputerControlSection', () => {
       expect(query('[data-computer-verdict="connection_not_ready"]')).not.toBeNull();
       expect(query('[data-computer-install-btn]')).toBeNull();
 
-      // 4. MCP list read failure while CUA files are installed → unknown (never ready)
+      // 4. Redacted Windows-MCP with ANONYMIZED_TELEMETRY='true' (computerServeReady: false) or unverified key-only listing → connection_not_ready (never ready)
+      const windowsTelemetryTrueRedacted = {
+        ...windowsReadyConfig,
+        computerServeReady: false,
+      };
+      mcpList.mockResolvedValue([
+        managedEntry({ name: 'kiki-windows-mcp', config: windowsTelemetryTrueRedacted as never }),
+      ]);
+      await act(async () => {
+        await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
+      });
+      await settleUntil('[data-computer-verdict="connection_not_ready"]');
+      expect(query('[data-computer-verdict="ready"]')).toBeNull();
+
+      const windowsKeyOnlyUnverified = {
+        transport: 'stdio' as const,
+        command: 'C:\\Env\\venv\\Scripts\\python.exe',
+        args: windowsReadyConfig.args,
+        executor: 'local' as const,
+        envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+      };
+      mcpList.mockResolvedValue([
+        managedEntry({ name: 'kiki-windows-mcp', config: windowsKeyOnlyUnverified as never }),
+      ]);
+      await act(async () => {
+        await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
+      });
+      await settleUntil('[data-computer-verdict="connection_not_ready"]', 'needs its environment verified');
+      expect(query('[data-computer-verdict="connection_not_ready"]')?.textContent).toContain('needs its environment verified');
+      expect(query('[data-computer-active-windows-mcp-not-ready]')?.textContent).toContain('ANONYMIZED_TELEMETRY=false');
+
+      // 5. Default selection with two enabled CUA entries → preserves set semantics instead of claiming only the first entry
       getCapability.mockResolvedValue(READY);
-      mcpList.mockRejectedValue(new Error('mcp list failed'));
+      mcpList.mockResolvedValue([
+        managedEntry({ name: 'cua-a' }),
+        managedEntry({ name: 'cua-b' }),
+      ]);
       getConfig.mockResolvedValue({
         providers: {},
         computer_control: { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
@@ -994,9 +1033,60 @@ describe('ComputerControlSection', () => {
         await queries.invalidateQueries({ queryKey: ['config', 'local'] });
         await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
       });
+      await settleUntil('[data-computer-verdict="ready"]');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('uses CUA connections (cua-a, cua-b)');
+
+      // 6. Custom CUA configured while bundled CUA is not installed → ready (configured), does not block on bundled CUA install
+      getCapability.mockResolvedValue(CAPABILITY);
+      mcpList.mockResolvedValue([
+        managedEntry({
+          name: 'custom-cua',
+          config: { transport: 'stdio', command: 'C:\\Custom\\cua-driver.exe', args: ['mcp'], executor: 'local' },
+        }),
+      ]);
+      await act(async () => {
+        await queries.invalidateQueries({ queryKey: ['capability', 'kiki-computer', 'local'] });
+        await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
+      });
+      await settleUntil('[data-computer-verdict="ready"]', 'custom-cua');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('Allowed; connection configured; uses custom-cua');
+      expect(query('[data-computer-install-btn]')).toBeNull();
+
+      // 7. MCP list read failure while CUA files are installed → unknown (never ready)
+      getCapability.mockResolvedValue(READY);
+      mcpList.mockRejectedValue(new Error('mcp list failed'));
+      await act(async () => {
+        await queries.invalidateQueries({ queryKey: ['capability', 'kiki-computer', 'local'] });
+        await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
+      });
       await settleUntil('[data-computer-verdict="unknown"]');
       expect(query('[data-computer-verdict="ready"]')).toBeNull();
       expect(query('[data-computer-retry]')).not.toBeNull();
+
+      // 8. Initial config read failure (no cached config data) while CUA files and MCP list are ready → unknown, and top retry refetches config to recover
+      await act(async () => { root.unmount(); });
+      container.remove();
+      queries = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      container = document.createElement('div');
+      document.body.append(container);
+      root = createRoot(container);
+      getCapability.mockResolvedValue(READY);
+      mcpList.mockResolvedValue([managedEntry({ name: 'kiki-computer' })]);
+      getConfig.mockRejectedValue(new Error('config read failed'));
+
+      await render();
+      await settleUntil('[data-computer-preference-state="failed"]');
+      expect(query('[data-computer-verdict="unknown"]')).not.toBeNull();
+      expect(query('[data-computer-verdict="ready"]')).toBeNull();
+      expect(query('[data-computer-retry]')).not.toBeNull();
+
+      getConfig.mockResolvedValue({
+        providers: {},
+        computer_control: { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
+      });
+      await click('[data-computer-retry]');
+      await settleUntil('[data-computer-verdict="ready"]');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('uses kiki-computer');
     });
 
     it('registers an external Windows-MCP 0.8.8 environment on Windows without auto-starting or auto-selecting', async () => {

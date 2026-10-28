@@ -93,7 +93,9 @@ export function isComputerMcpConfig(config: McpManagedServerConfig | undefined):
   return computerExecutorKind(config) !== undefined;
 }
 
-export function isWindowsMcpServeReady(config: McpManagedServerConfig | undefined): boolean {
+export type WindowsMcpServeReadiness = 'ready' | 'not_ready' | 'unverified';
+
+function hasWindowsMcpServeShape(config: McpManagedServerConfig | undefined): boolean {
   if (config === undefined || config.transport !== 'stdio' || !windowsMcpInvocation(config)) return false;
   if (config.executor === 'kaos') return false;
   const base = commandBaseName(config.command).toLowerCase();
@@ -109,15 +111,34 @@ export function isWindowsMcpServeReady(config: McpManagedServerConfig | undefine
   if (configPath === undefined || configPath.startsWith('-')) return false;
   const tools = flagValue(args, '--tools');
   if (tools === undefined) return false;
-  const env = secretValues(config, 'env');
-  const envKeys = secretKeys(config, 'envKeys');
-  if (env !== undefined ? env['ANONYMIZED_TELEMETRY'] !== 'false' : envKeys !== undefined && !envKeys.includes('ANONYMIZED_TELEMETRY')) {
-    return false;
-  }
   const names = tools.split(',').map((item) => item.trim()).filter((item) => item.length > 0);
   if (names.length !== WINDOWS_MCP_TOOLS.size) return false;
   const seen = new Set(names);
   return seen.size === names.length && WINDOWS_MCP_TOOL_NAMES.every((name) => seen.has(name));
+}
+
+export function windowsMcpServeReadiness(config: McpManagedServerConfig | undefined): WindowsMcpServeReadiness {
+  if (!hasWindowsMcpServeShape(config) || config === undefined || config.transport !== 'stdio') return 'not_ready';
+  const serveReady = (config as unknown as Record<string, unknown>)['computerServeReady'];
+  if (typeof serveReady === 'boolean') return serveReady ? 'ready' : 'not_ready';
+  const env = secretValues(config, 'env');
+  if (env !== undefined) return env['ANONYMIZED_TELEMETRY'] === 'false' ? 'ready' : 'not_ready';
+  const envKeys = secretKeys(config, 'envKeys');
+  if (envKeys !== undefined && !envKeys.includes('ANONYMIZED_TELEMETRY')) return 'not_ready';
+  return 'unverified';
+}
+
+export function isWindowsMcpServeReady(config: McpManagedServerConfig | undefined): boolean {
+  return windowsMcpServeReadiness(config) === 'ready';
+}
+
+export function isBundledCuaCommand(command: string, planDestination: string | undefined): boolean {
+  const norm = (value: string) => value.replace(/\\/g, '/').toLowerCase();
+  const cmd = norm(command.trim());
+  if (planDestination !== undefined && planDestination.trim() !== '') {
+    if (cmd === norm(planDestination.trim())) return true;
+  }
+  return cmd.includes('/capabilities/kiki-computer/');
 }
 
 export function isComputerConnection(entry: Pick<McpManagedServer, 'name' | 'config'>): boolean {

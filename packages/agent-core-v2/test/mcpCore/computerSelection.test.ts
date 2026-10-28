@@ -17,6 +17,7 @@ import {
 import { computerSpawnHeld, StdioMcpClient, type StdioMcpClientOptions } from '#/mcpCore/client-stdio';
 import { McpConnectionManager } from '#/mcpCore/connection-manager';
 import type { McpServerConfig } from '#/mcpCore/config-schema';
+import { toMcpServerConfigView } from '#/mcpCore/configView';
 import { HostProcessService } from '#/os/backends/node-local/hostProcessService';
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { hostProcessPathClass } from './stubs';
@@ -75,6 +76,26 @@ describe('computer executor selection', () => {
     expect(computerSelectionAdmits('kiki-computer', cua)).toBe(false);
     expect(computerSelectionAdmits('kiki-windows-mcp', windows)).toBe(true);
     expect(computerSelectionAdmits('python-tools', { transport: 'stdio', command: 'python', args: ['server.py'] })).toBe(false);
+
+    const readyView = toMcpServerConfigView(windows);
+    expect(readyView).toMatchObject({
+      transport: 'stdio',
+      envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+      computerServeReady: true,
+    });
+    expect('env' in readyView).toBe(false);
+
+    const telemetryTrue = { ...windows, env: { ...windows.env, ANONYMIZED_TELEMETRY: 'true' } };
+    expect(isWindowsMcpServeReady(telemetryTrue)).toBe(false);
+    expect(computerSelectionAdmits('kiki-windows-mcp', telemetryTrue)).toBe(false);
+    const notReadyView = toMcpServerConfigView(telemetryTrue);
+    expect(notReadyView).toMatchObject({
+      transport: 'stdio',
+      envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+      computerServeReady: false,
+    });
+    expect('env' in notReadyView).toBe(false);
+    expect(toMcpServerConfigView(cua)).toMatchObject({ computerServeReady: undefined });
   });
 
   it('adds input recovery to Windows-MCP actions without claiming screenshot is a replayable observation', () => {

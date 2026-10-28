@@ -57,10 +57,11 @@ import {
   commandSummary,
   computerExecutorKind,
   computerMcpQueryKey,
+  isBundledCuaCommand,
   isComputerConnection,
   isComputerMcpConfig,
-  isWindowsMcpServeReady,
   platformDisplay,
+  windowsMcpServeReadiness,
 } from './computerControl/computerMcp';
 
 type ComputerUsagePreference = ReturnType<typeof computerControlPreference>;
@@ -219,19 +220,51 @@ export function ComputerControlSection() {
     return base;
   }, [mcpEntries, selectedConnection, t]);
 
+  const cuaEntries = useMemo(
+    () => mcpEntries.filter((entry) => computerExecutorKind(entry.config) === 'cua'),
+    [mcpEntries],
+  );
+  const enabledCuaEntries = useMemo(
+    () => cuaEntries.filter((entry) => entry.config.enabled !== false),
+    [cuaEntries],
+  );
   const activeEntry = useMemo(() => {
     if (selectedConnection !== undefined) {
       return mcpEntries.find((entry) => entry.name === selectedConnection);
     }
-    const cuaEntries = mcpEntries.filter((entry) => computerExecutorKind(entry.config) === 'cua');
-    return cuaEntries.find((entry) => entry.config.enabled !== false) ?? cuaEntries[0];
-  }, [mcpEntries, selectedConnection]);
+    return enabledCuaEntries[0] ?? cuaEntries[0];
+  }, [cuaEntries, enabledCuaEntries, mcpEntries, selectedConnection]);
   const activeKind = activeEntry !== undefined ? computerExecutorKind(activeEntry.config) : undefined;
-  const activeWindowsNotReady = activeKind === 'windows-mcp' && activeEntry !== undefined && !isWindowsMcpServeReady(activeEntry.config);
+  const activeWindowsReadiness = activeKind === 'windows-mcp' && activeEntry !== undefined
+    ? windowsMcpServeReadiness(activeEntry.config)
+    : undefined;
+  const activeWindowsNotReady = activeWindowsReadiness !== undefined && activeWindowsReadiness !== 'ready';
+  const activeWindowsUnverified = activeWindowsReadiness === 'unverified';
   const activeEntryEnabled = activeEntry !== undefined && activeEntry.config.enabled !== false;
   const activeConnectionReady = activeEntry !== undefined
     && activeEntryEnabled
-    && (activeKind === 'cua' || (activeKind === 'windows-mcp' && !activeWindowsNotReady));
+    && (activeKind === 'cua' || activeWindowsReadiness === 'ready');
+
+  const planBinary = capabilityQuery.data?.plan?.destination;
+  const activeUsesCustomExecutor = useMemo(() => {
+    if (selectedConnection !== undefined) {
+      if (activeKind === 'windows-mcp') return true;
+      if (activeKind === 'cua' && activeEntry?.config.transport === 'stdio') {
+        return !isBundledCuaCommand(activeEntry.config.command, planBinary);
+      }
+      return true;
+    }
+    const candidates = enabledCuaEntries.length > 0 ? enabledCuaEntries : cuaEntries;
+    return candidates.some((entry) => entry.config.transport === 'stdio' && !isBundledCuaCommand(entry.config.command, planBinary));
+  }, [activeEntry, activeKind, cuaEntries, enabledCuaEntries, planBinary, selectedConnection]);
+
+  const activeUsesBundledCua = useMemo(() => {
+    if (selectedConnection !== undefined) {
+      return activeKind === 'cua' && activeEntry?.config.transport === 'stdio' && isBundledCuaCommand(activeEntry.config.command, planBinary);
+    }
+    const candidates = enabledCuaEntries.length > 0 ? enabledCuaEntries : cuaEntries;
+    return candidates.length === 0 || candidates.some((entry) => entry.config.transport === 'stdio' && isBundledCuaCommand(entry.config.command, planBinary));
+  }, [activeEntry, activeKind, cuaEntries, enabledCuaEntries, planBinary, selectedConnection]);
 
   const [draftPreference, setDraftPreference] = useState<ComputerUsagePreference | null>(null);
   const [preferenceSaving, setPreferenceSaving] = useState(false);
@@ -326,8 +359,11 @@ export function ComputerControlSection() {
     setChecking(true);
     setFeedback(null);
     try {
-      await capabilityQuery.refetch();
-      await mcpQuery.refetch();
+      await Promise.all([
+        configQuery.refetch(),
+        capabilityQuery.refetch(),
+        mcpQuery.refetch(),
+      ]);
     } catch (error) {
       reportFailure(error);
     } finally {
@@ -361,12 +397,18 @@ export function ComputerControlSection() {
 
   const verdictExecutor = ((): Parameters<typeof computerControlVerdict>[0]['executor'] => {
     if (configQuery.isPending || mcpQuery.isPending) return 'checking';
-    if (mcpQuery.isError) return 'unknown';
+    if ((configQuery.isError && configQuery.data === undefined) || mcpQuery.isError) return 'unknown';
     if (activeKind === 'windows-mcp' || (selectedConnection !== undefined && activeKind !== 'cua')) {
+      return 'external';
+    }
+    if (activeUsesCustomExecutor && !activeUsesBundledCua) {
       return 'external';
     }
     if (capabilityQuery.isPending) return 'checking';
     if (capabilityQuery.isError || capability === undefined) return 'unknown';
+    if (capability.state !== 'ready' && !capability.install.running && !installing && activeUsesCustomExecutor) {
+      return 'external';
+    }
     return { state: capability.state, installing: capability.install.running || installing };
   })();
 
@@ -379,9 +421,26 @@ export function ComputerControlSection() {
     hasConnection: activeEntry !== undefined,
     activeConnectionReady,
   });
-  const verdictText = verdict.kind === 'ready'
-    ? t('st.computer.verdict.ready', { name: selectedConnection ?? activeEntry?.name ?? t('st.computer.activeConnectionDefault') })
-    : t(VERDICT_KEYS[verdict.kind]);
+  const verdictText = ((): string => {
+    if (verdict.kind === 'ready') {
+      const configuredOnly = verdictExecutor === 'external'
+        || capability?.state !== 'ready'
+        || (selectedConnection === undefined && enabledCuaEntries.some((entry) => entry.config.transport === 'stdio' && !isBundledCuaCommand(entry.config.command, planBinary)));
+      if (selectedConnection === undefined && enabledCuaEntries.length > 1) {
+        return t(configuredOnly ? 'st.computer.verdict.readyConfiguredSet' : 'st.computer.verdict.readySet', {
+          names: enabledCuaEntries.map((entry) => entry.name).join(', '),
+        });
+      }
+      const name = selectedConnection ?? activeEntry?.name ?? t('st.computer.activeConnectionDefault');
+      return t(configuredOnly ? 'st.computer.verdict.readyConfigured' : 'st.computer.verdict.ready', { name });
+    }
+    if (verdict.kind === 'connection_not_ready' && activeWindowsUnverified) {
+      return t('st.computer.verdict.connectionUnverified', {
+        name: selectedConnection ?? activeEntry?.name ?? 'kiki-windows-mcp',
+      });
+    }
+    return t(VERDICT_KEYS[verdict.kind]);
+  })();
   const verdictAction = verdict.kind === 'unknown' ? (
     <button type="button" className={SECONDARY_BUTTON} data-computer-retry onClick={() => { void check(); }}>
       {t('common.retry')}
@@ -432,7 +491,7 @@ export function ComputerControlSection() {
       ) : null}
       {activeWindowsNotReady ? (
         <p className="text-[12px] text-amber-ink" data-computer-active-windows-mcp-not-ready>
-          {t('st.computer.windowsMcp.notServeReady')}
+          {t(activeWindowsUnverified ? 'st.computer.windowsMcp.unverified' : 'st.computer.windowsMcp.notServeReady')}
         </p>
       ) : null}
       <FeedbackLine feedback={connectionSave.error} />
@@ -484,6 +543,7 @@ export function ComputerControlSection() {
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-[12px]" id="st-card-computer-setup" data-settings-card="st-card-computer-setup">
               <span className="text-ink-soft" id="computer-machine-label">{sshLabel ?? t('st.computer.machineLabel')}</span>
               <span className="font-mono text-ink" data-computer-platform aria-labelledby="computer-machine-label">{machineLine}</span>
+              <span className="text-ink-faint" data-computer-bundled-executor-label>{t('st.computer.bundledExecutorLabel')}</span>
               {capabilityQuery.isPending ? (
                 <span className="text-ink-faint" role="status" data-computer-state="detecting">{t('st.computer.state.detecting')}</span>
               ) : capabilityQuery.isError || capability === undefined ? (

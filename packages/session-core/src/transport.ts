@@ -335,6 +335,7 @@ export type McpServerConfig =
 export type McpServerConfigView =
   | (Omit<Extract<McpServerConfig, { readonly transport: 'stdio' }>, 'env'> & {
       readonly envKeys?: readonly string[];
+      readonly computerServeReady?: boolean;
     })
   | (Omit<Exclude<McpServerConfig, { readonly transport: 'stdio' }>, 'headers'> & {
       readonly headerKeys?: readonly string[];

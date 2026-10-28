@@ -48,7 +48,10 @@ export const globalMcpServerConfigSchema = z.discriminatedUnion('transport', [
  * `McpServerConfig | McpServerConfigView` union.
  */
 export const mcpServerConfigDataSchema = z.discriminatedUnion('transport', [
-  mcpServerStdioConfigSchema.extend({ envKeys: z.array(z.string()).optional() }),
+  mcpServerStdioConfigSchema.extend({
+    envKeys: z.array(z.string()).optional(),
+    computerServeReady: z.boolean().optional(),
+  }),
   mcpServerHttpConfigSchema.extend({ headerKeys: z.array(z.string()).optional() }),
   mcpServerSseConfigSchema.extend({ headerKeys: z.array(z.string()).optional() }),
 ]);

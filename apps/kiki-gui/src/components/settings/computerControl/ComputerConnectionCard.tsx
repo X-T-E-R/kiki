@@ -43,9 +43,9 @@ import {
   isComputerMcpConfig,
   isDirtyDraft,
   isNewDraft,
-  isWindowsMcpServeReady,
   newComputerDraft,
   pluginLink,
+  windowsMcpServeReadiness,
   type ComputerDraft,
   type ComputerExecutor,
 } from './computerMcp';
@@ -223,7 +223,11 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
 
   const readOnly = draft?.original !== undefined && !draft.original.mutable;
   const draftKind = draft?.original !== undefined ? computerExecutorKind(draft.original.config) : undefined;
-  const draftWindowsNotReady = draftKind === 'windows-mcp' && draft?.original !== undefined && !isWindowsMcpServeReady(draft.original.config);
+  const draftWindowsReadiness = draftKind === 'windows-mcp' && draft?.original !== undefined
+    ? windowsMcpServeReadiness(draft.original.config)
+    : undefined;
+  const draftWindowsNotReady = draftWindowsReadiness !== undefined && draftWindowsReadiness !== 'ready';
+  const draftWindowsUnverified = draftWindowsReadiness === 'unverified';
 
   const list = (
     <nav aria-label={t('st.computer.connectionsTitle')} className="min-w-0 space-y-2">
@@ -278,7 +282,7 @@ export function ComputerConnectionCard({ platform, planBinary, summary, footer }
 
       {draftWindowsNotReady ? (
         <p className="text-[12px] text-amber-ink" data-computer-windows-mcp-not-ready>
-          {t('st.computer.windowsMcp.notServeReady')}
+          {t(draftWindowsUnverified ? 'st.computer.windowsMcp.unverified' : 'st.computer.windowsMcp.notServeReady')}
         </p>
       ) : null}
 
