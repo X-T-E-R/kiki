@@ -14,7 +14,7 @@ const PAGES = ['general', 'connection', 'sessions', 'permissions', 'extensions',
 const EXPERIMENTAL_PAGES = [
   ['agents', ['agent-profile-routes', 'subagent_release_idle']],
   ['extensions', ['tool-select', 'external_delegation_mcp']],
-  ['sessions', ['session_idle_eviction', 'task_wait', 'local_session_resume']],
+  ['sessions', ['session_idle_eviction', 'task_wait', 'local_session_resume'], 'runtime'],
 ];
 
 /** Old section URLs and card hashes that other code or bookmarks still use. */
@@ -89,8 +89,8 @@ export function createSettingsIaWalker({ page, shot, resizeViewport, setProofThe
   }
 
   async function experimental(theme, width) {
-    for (const [section, flags] of EXPERIMENTAL_PAGES) {
-      await open(`/settings/${section}`);
+    for (const [section, flags, tab] of EXPERIMENTAL_PAGES) {
+      await open(tab === undefined ? `/settings/${section}` : `/settings/${section}?tab=${tab}`);
       const block = page.locator(`#st-card-exp-${section}`);
       await block.waitFor({ timeout: 10_000 });
       const rows = await block.locator('[data-experimental-row]').evaluateAll((nodes) => nodes.map((node) => node.getAttribute('data-experimental-row')));

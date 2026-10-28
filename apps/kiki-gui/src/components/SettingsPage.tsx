@@ -5,6 +5,7 @@ import {
   AGENTS_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_DEFAULT_TAB,
   BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
+  SESSIONS_SETTINGS_DEFAULT_TAB,
   EXTENSIONS_SETTINGS_DEFAULT_TAB,
   SETTINGS_NAV_TREE,
   SETTINGS_SECTION_META,
@@ -448,6 +449,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
       : active === 'agents' ? AGENTS_SETTINGS_DEFAULT_TAB
       : active === 'extensions' ? EXTENSIONS_SETTINGS_DEFAULT_TAB
       : active === 'browser-control' ? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB
+      : active === 'sessions' ? SESSIONS_SETTINGS_DEFAULT_TAB
       : active === 'search' ? 'overview'
       : null);
   const fromOnboarding = new URLSearchParams(search).get('from') === 'onboarding';

@@ -77,7 +77,9 @@ import {
   runtimeConfigDraftFromConfig,
   searchSettings,
   SEARCH_SETTINGS_TABS,
+  SESSIONS_SETTINGS_TABS,
   searchTabForCard,
+  sessionsTabForCard,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   SETTINGS_SEARCH_SPEC,
@@ -1332,6 +1334,20 @@ describe('settings search index', () => {
     expect(searchTabForCard('st-card-search-unknown')).toBeUndefined();
   });
 
+  it('assigns every sessions-entry card to the tab that mounts it', () => {
+    const sessionsEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'sessions');
+    for (const entry of sessionsEntries) {
+      expect(entry.tab, entry.cardId).toBeDefined();
+      expect(entry.tab).toBe(sessionsTabForCard(entry.cardId));
+    }
+    for (const tab of SESSIONS_SETTINGS_TABS) {
+      expect(sessionsEntries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
+    expect(resolveSettingsRoute('tasks', '')).toMatchObject({ section: 'sessions', tab: 'runtime' });
+    expect(resolveSettingsRoute('sessions', '#st-card-import-history'))
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-import-history', tab: 'conversations' });
+  });
+
   it('assigns every connection-entry card to the tab that mounts it', () => {
     const connectionEntries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'connection');
     expect(connectionEntries.length).toBeGreaterThan(0);
@@ -1630,7 +1646,7 @@ describe('settings route resolver', () => {
       ['st-card-performance-storage', 'developer'],
     ] as const) {
       expect(resolveSettingsRoute('labs', `#${card}`), card)
-        .toEqual({ status: 'ok', section, cardId: `st-card-exp-${section}`, tab: undefined });
+        .toEqual({ status: 'ok', section, cardId: `st-card-exp-${section}`, tab: section === 'sessions' ? 'runtime' : undefined });
     }
     // New row anchors on tabbed pages switch to the tab that mounts them.
     expect(resolveSettingsRoute('search', '#st-card-exp-search'))
@@ -1638,7 +1654,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('ai', '#st-card-exp-ai'))
       .toEqual({ status: 'ok', section: 'ai', cardId: 'st-card-exp-ai', tab: 'defaults' });
     expect(resolveSettingsRoute('general', '#st-card-defaults'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-defaults', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-defaults', tab: 'behavior' });
   });
 
   it('redirects the leaves retired by IA v2 to their new owners', () => {
@@ -1648,12 +1664,12 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('automation', '')).toEqual({ status: 'ok', section: 'permissions', cardId: undefined, tab: undefined });
     expect(resolveSettingsRoute('automation', '#st-card-hooks'))
       .toEqual({ status: 'ok', section: 'hooks', cardId: 'st-card-hooks', tab: undefined });
-    expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: undefined });
+    expect(resolveSettingsRoute('communication', '')).toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: 'behavior' });
     expect(resolveSettingsRoute('communication', '#st-card-token-counting'))
       .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-token-counting', tab: undefined });
     for (const card of ['st-card-thread-communication', 'st-card-notify-parent', 'st-card-communication']) {
       expect(resolveSettingsRoute('communication', `#${card}`), card)
-        .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: undefined });
+        .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
     }
     // Permission defaults and the reviewer left the Models & providers tab.
     expect(resolveSettingsRoute('ai', '#st-card-permission-defaults'))
@@ -1661,7 +1677,7 @@ describe('settings route resolver', () => {
     expect(resolveSettingsRoute('ai', '#st-card-reviewer'))
       .toEqual({ status: 'ok', section: 'permissions', cardId: 'st-card-reviewer', tab: undefined });
     expect(resolveSettingsRoute('general', '#st-card-session-title'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-title', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-session-title', tab: 'conversations' });
   });
 
   it('follows a card hash whose content moved to another section', () => {
@@ -1701,15 +1717,15 @@ describe('settings route resolver', () => {
 
   it('redirects the retired runtime page to sessions and keeps dissolved card links precise', () => {
     expect(resolveSettingsRoute('runtime', ''))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: undefined, tab: 'runtime' });
     expect(resolveSettingsRoute('runtime', '#st-card-runtime'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime' });
     expect(resolveSettingsRoute('retired-section', '#st-card-runtime'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime' });
     expect(resolveSettingsRoute('runtime', '#st-card-cron'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-cron', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-cron', tab: 'runtime' });
     expect(resolveSettingsRoute('runtime', '#st-card-communication'))
-      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: undefined });
+      .toEqual({ status: 'ok', section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior' });
     expect(resolveSettingsRoute('runtime', '#st-card-resource-limits'))
       .toEqual({ status: 'ok', section: 'developer', cardId: 'st-card-resource-limits', tab: undefined });
     expect(resolveSettingsRoute('runtime', '#st-card-agent-runtime'))

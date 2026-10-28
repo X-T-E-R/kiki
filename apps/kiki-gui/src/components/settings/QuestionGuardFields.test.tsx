@@ -113,7 +113,7 @@ async function render(node: React.ReactNode): Promise<HTMLDivElement> {
   const root = createRoot(container);
   roots.push(root);
   await act(async () => {
-    root.render(<MemoryRouter><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>
+    root.render(<MemoryRouter initialEntries={['/settings/sessions?tab=behavior']}><QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } })}>
       <I18nProvider>{node}</I18nProvider>
     </QueryClientProvider></MemoryRouter>);
   });

@@ -2108,6 +2108,42 @@ export function browserControlTabLabelKey(tab: BrowserControlSettingsTab): I18nK
 }
 
 /**
+ * Sub-pages of the "Sessions" leaf, one question each: what happens to my
+ * conversations (archive, import, titles), how an agent behaves inside a
+ * session (plan mode, questions, messaging), and how background work runs
+ * (task limits, cron diagnostics, the runtime flags). The ids double as the
+ * `?tab=` deep-link parameter.
+ */
+export const SESSIONS_SETTINGS_TABS = ['conversations', 'behavior', 'runtime'] as const;
+export type SessionsSettingsTab = (typeof SESSIONS_SETTINGS_TABS)[number];
+export const SESSIONS_SETTINGS_DEFAULT_TAB: SessionsSettingsTab = 'conversations';
+
+/** Card → sub-page for the sessions leaf, mirroring the page's tab mount table. */
+const SESSIONS_TAB_BY_CARD: Readonly<Record<string, SessionsSettingsTab>> = {
+  'st-card-archived': 'conversations',
+  'st-card-import-history': 'conversations',
+  'st-card-session-title': 'conversations',
+  'st-card-defaults': 'behavior',
+  'st-card-questions': 'behavior',
+  'st-card-agent-messaging': 'behavior',
+  'st-card-task-policy': 'runtime',
+  'st-card-cron': 'runtime',
+  'st-card-exp-sessions': 'runtime',
+};
+
+export function sessionsTabForCard(cardId: string): SessionsSettingsTab | undefined {
+  return SESSIONS_TAB_BY_CARD[cardId];
+}
+
+export function normalizeSessionsTab(value: string | null | undefined): SessionsSettingsTab | undefined {
+  return SESSIONS_SETTINGS_TABS.find((tab) => tab === value);
+}
+
+export function sessionsTabLabelKey(tab: SessionsSettingsTab): I18nKey {
+  return `st.sessions.tab.${tab}` as I18nKey;
+}
+
+/**
  * The "Connection" entry is a single page again: the live server session is
  * its only content after the Cloudflare card moved to Connection services.
  * The remaining tab id doubles as the `?tab=` deep-link parameter; a bare
@@ -2157,6 +2193,7 @@ export type SettingsTab =
   | ExtensionsSettingsTab
   | BrowserControlSettingsTab
   | ConnectionSettingsTab
+  | SessionsSettingsTab
   | SearchSettingsTab;
 
 /** Card → sub-page for the search leaf, mirroring the page's tab mount table. */
@@ -2184,6 +2221,7 @@ export function settingsTabLabelKey(section: string, tab: SettingsTab): I18nKey 
   if (section === 'extensions') return extensionsTabLabelKey(tab as ExtensionsSettingsTab);
   if (section === 'browser-control') return browserControlTabLabelKey(tab as BrowserControlSettingsTab);
   if (section === 'connection') return connectionTabLabelKey(tab as ConnectionSettingsTab);
+  if (section === 'sessions') return sessionsTabLabelKey(tab as SessionsSettingsTab);
   return `st.nbSearch.tab.${tab}` as I18nKey;
 }
 
@@ -2432,7 +2470,7 @@ export function experimentalCardId(section: string): string {
 }
 
 /** Tab a tabbed page mounts its Experimental rows on (Models → Defaults, Search → Advanced). */
-const EXPERIMENTAL_TAB: Readonly<Record<string, SettingsTab>> = { ai: 'defaults', search: 'advanced' };
+const EXPERIMENTAL_TAB: Readonly<Record<string, SettingsTab>> = { ai: 'defaults', search: 'advanced', sessions: 'runtime' };
 
 export function experimentalTabForSection(section: string): SettingsTab | undefined {
   return EXPERIMENTAL_TAB[section];
@@ -2459,7 +2497,7 @@ const EXPERIMENTAL_SEARCH_ENTRIES: readonly SettingsSearchSpecEntry[] = [
 });
 
 export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
-  { section: 'sessions', cardId: 'st-card-defaults', titleKey: 'st.plan.title', keywordKeys: ['st.defaults.planMode', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['plan', 'plan mode', '计划', '计划模式'] },
+  { section: 'sessions', cardId: 'st-card-defaults', tab: 'behavior', titleKey: 'st.plan.title', keywordKeys: ['st.defaults.planMode', 'st.defaults.planGate', 'st.defaults.planGateTimeout'], synonyms: ['plan', 'plan mode', '计划', '计划模式'] },
   { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagent-default-target', titleKey: 'st.subagentDefault.title', keywordKeys: ['st.subagentDefault.label', 'st.subagentDefault.hint'], synonyms: ['default profile', '默认 profile', '默认子代理', 'general'] },
   { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagent-open-mode', titleKey: 'st.subagentOpenMode.title', keywordKeys: ['st.subagentOpenMode.hint', 'st.subagentOpenMode.tab', 'st.subagentOpenMode.fullscreen'], synonyms: ['subagent panel', '子代理面板', '打开方式'] },
   { section: 'agents', tab: 'dispatch', cardId: 'st-card-subagent-limits', titleKey: 'st.subagentLimits.title', keywordKeys: ['st.subagentLimits.timeout', 'st.subagentLimits.direct', 'st.subagentLimits.total'], synonyms: ['timeout', '超时', '限额'] },
@@ -2475,14 +2513,14 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'permissions', cardId: 'st-card-permission-defaults', titleKey: 'st.perm.defaultTitle', keywordKeys: ['st.defaults.permissionMode', 'st.defaults.permission.manual', 'st.defaults.permission.yolo', 'st.perm.dangerousBash'], synonyms: ['permission defaults', '权限默认值', 'permission mode', '权限模式', 'yolo', 'full access', '完全访问', 'dangerous_bash', '危险命令'] },
   { section: 'permissions', cardId: 'st-card-permission-rules', titleKey: 'st.perm.rulesTitle', keywordKeys: ['st.perm.pattern', 'st.perm.decision'], synonyms: ['permission rules', '权限规则', 'always allow', '总是允许'] },
   { section: 'permissions', cardId: 'st-card-reviewer', titleKey: 'st.reviewer.title', keywordKeys: ['st.reviewer.model', 'st.reviewer.categories'], synonyms: ['approve for me', '替我审批', 'TypeSafe', 'Jev'] },
-  { section: 'sessions', cardId: 'st-card-archived', titleKey: 'st.sessions.archivedTitle', keywordKeys: ['st.sessions.archivedHint', 'st.sessions.archivedOpen'], synonyms: ['archive', 'archived', 'archived conversation', 'delete archived', '归档', '归档对话', '删除归档'] },
-  { section: 'sessions', cardId: 'st-card-questions', titleKey: 'st.sessions.questionsTitle', keywordKeys: ['st.composer.questions', 'st.composer.questionsBlock'], synonyms: ['ask user question', 'AskUserQuestion', '提问', '问题'] },
+  { section: 'sessions', cardId: 'st-card-archived', tab: 'conversations', titleKey: 'st.sessions.archivedTitle', keywordKeys: ['st.sessions.archivedHint', 'st.sessions.archivedOpen'], synonyms: ['archive', 'archived', 'archived conversation', 'delete archived', '归档', '归档对话', '删除归档'] },
+  { section: 'sessions', cardId: 'st-card-questions', tab: 'behavior', titleKey: 'st.sessions.questionsTitle', keywordKeys: ['st.composer.questions', 'st.composer.questionsBlock'], synonyms: ['ask user question', 'AskUserQuestion', '提问', '问题'] },
   { section: 'general', cardId: 'st-card-composer', titleKey: 'st.composer.title', keywordKeys: ['st.composer.sendShortcut', 'st.composer.persistDrafts', 'st.transcript.foldSteps', 'st.layout.railOpenByDefault'], synonyms: ['timeline', '时间线', 'transcript', '会话记录', 'fold steps', 'fold reads', '折叠', '工具步骤', '连续读取', 'right panel', 'inspector', '右侧栏', '侧栏'] },
   { section: 'shortcuts', cardId: 'st-card-shortcuts', titleKey: 'st.shortcuts.title', keywordKeys: ['st.shortcuts.intro', 'st.shortcuts.platform', 'st.shortcuts.reset'], synonyms: ['shortcut', 'shortcuts', 'keybinding', 'keyboard', 'hotkey', '快捷键', '键位', '按键', '热键'] },
   { section: 'shortcuts', cardId: 'st-card-shortcuts-fixed', titleKey: 'st.shortcuts.fixedTitle', keywordKeys: ['st.shortcuts.fixedHint'], synonyms: ['esc', 'enter', '固定按键'] },
   { section: 'general', cardId: 'st-card-desktop', titleKey: 'st.desktop.title', keywordKeys: ['st.desktop.tray', 'st.desktop.quit'] },
   { section: 'notifications', cardId: 'st-card-notify-away', titleKey: 'st.away.title', keywordKeys: ['st.away.enabled', 'st.away.completed', 'st.away.failed', 'st.away.question', 'st.away.approval'], synonyms: ['system notification', '系统通知', 'desktop notification', '桌面通知', 'unread', '未读', 'badge', '角标', 'activity', '活动'] },
-  { section: 'sessions', cardId: 'st-card-session-title', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessions.titleMoments', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型', 'title moment', '标题时机', 'automatic title', '自动标题', 'generate when', '生成时机'] },
+  { section: 'sessions', cardId: 'st-card-session-title', tab: 'conversations', titleKey: 'st.sessions.titlesTitle', keywordKeys: ['st.sessions.titlesToggle', 'st.sessions.titleMoments', 'st.sessionTitleModel.model'], synonyms: ['session title', '会话标题', 'title model', '标题模型', 'title moment', '标题时机', 'automatic title', '自动标题', 'generate when', '生成时机'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-catalog-refresh', titleKey: 'st.catalogRefresh.title', keywordKeys: ['st.catalogRefresh.hint', 'st.catalogRefresh.getModels'], synonyms: ['模型目录刷新', 'catalog refresh', '获取模型', 'get models'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-model-migration', titleKey: 'st.modelMigration.title', keywordKeys: ['st.modelMigration.hint', 'st.modelMigration.preview', 'st.modelMigration.restore'], synonyms: ['model migration', '模型迁移', '旧版模型参数', 'model parameters backup'] },
   { section: 'ai', tab: 'defaults', cardId: 'st-card-global-defaults', titleKey: 'st.defaults.globalTitle', keywordKeys: ['st.models.providerLabel', 'st.defaults.globalHint'] },
@@ -2510,9 +2548,9 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'extensions', tab: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
   { section: 'connection-services', cardId: 'st-card-host-skill', titleKey: 'st.hostSkill.title', keywordKeys: ['st.hostSkill.host.claude', 'st.hostSkill.host.codex', 'st.hostSkill.host.grok'], synonyms: ['kiki-as-subagent', 'subagent', '子智能体', 'Claude Code', 'Codex', 'Grok'] },
   { section: 'extensions', tab: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
-  { section: 'sessions', cardId: 'st-card-task-policy', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive', 'st.taskPolicy.fileToolHints'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
-  { section: 'sessions', cardId: 'st-card-cron', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
-  { section: 'sessions', cardId: 'st-card-agent-messaging', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent', 'st.sessions.delegationSub', 'st.sessions.delegationIndependent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
+  { section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive', 'st.taskPolicy.fileToolHints'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
+  { section: 'sessions', cardId: 'st-card-cron', tab: 'runtime', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
+  { section: 'sessions', cardId: 'st-card-agent-messaging', tab: 'behavior', titleKey: 'st.sessions.messagingTitle', keywordKeys: ['st.communication.threadCommunication', 'st.communication.notifyParent', 'st.sessions.delegationSub', 'st.sessions.delegationIndependent'], synonyms: ['thread communication', '线程通信', 'notify parent', '通知父代理', 'AgentNotify', 'agent communication', '智能体通信'] },
   { section: 'developer', cardId: 'st-card-token-counting', titleKey: 'st.communication.tokenCountingTitle', keywordKeys: ['st.communication.tokenCounting', 'st.communication.tokenCountingHint'], synonyms: ['token counting', 'token 计数'] },
   { section: 'general', cardId: 'st-card-append-timing', titleKey: 'st.communication.appendTimingTitle', keywordKeys: ['st.communication.appendTimingHint', 'st.communication.appendTiming'], synonyms: ['append timing', 'queue timing', '排队时机', '追加时机'] },
   { section: 'general', cardId: 'st-card-sidebar-nav', titleKey: 'st.sidebarNav.title', keywordKeys: ['st.sidebarNav.hint'], synonyms: ['sidebar tools', 'sidebar nav', 'pinned nav', '侧栏', '导航', '常用工具'] },
@@ -2581,7 +2619,7 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'spaces', cardId: 'st-card-space-overrides', titleKey: 'st.spaces.ownChoices', keywordKeys: ['st.origin.restore', 'st.origin.local', 'st.origin.inherited'], synonyms: ['inherit', '继承', '恢复继承', 'override', '覆盖'] },
   { section: 'connection-services', cardId: 'st-card-web-access', titleKey: 'st.web.title', keywordKeys: ['st.web.newLink', 'st.web.turnOff', 'st.web.address', 'st.web.signedIn', 'st.web.persistent', 'st.web.temporary'], synonyms: ['web access', 'web 访问', '浏览器访问', 'browser access', '网页', '临时开启', 'always on', '始终开启', 'entry link', '入口链接', 'web link', '手机', 'phone'] },
   // The import surface has its own sub-route; the hit lands on its entry card.
-  { section: 'sessions', cardId: 'st-card-import-history', titleKey: 'cap.import.entry', keywordKeys: ['cap.import.settingsHint', 'cap.import.open'], synonyms: ['import', '导入', '导入历史', '迁移', 'history', '旧对话'] },
+  { section: 'sessions', cardId: 'st-card-import-history', tab: 'conversations', titleKey: 'cap.import.entry', keywordKeys: ['cap.import.settingsHint', 'cap.import.open'], synonyms: ['import', '导入', '导入历史', '迁移', 'history', '旧对话'] },
 ];
 
 export interface SettingsSearchEntry {
@@ -2723,6 +2761,9 @@ const LEGACY_SECTION_TABS: Readonly<Record<string, SettingsTab>> = {
   mcp: 'mcp',
   plugins: 'plugins',
   'computer-control': 'computer',
+  tasks: 'runtime',
+  runtime: 'runtime',
+  communication: 'behavior',
 };
 
 /** Which card a legacy section bookmark defaults to when no hash is supplied. */
@@ -2742,7 +2783,8 @@ export function settingsTabForCard(cardId: string): SettingsTab | undefined {
     ?? extensionsTabForCard(cardId)
     ?? browserControlTabForCard(cardId)
     ?? searchTabForCard(cardId)
-    ?? connectionTabForCard(cardId);
+    ?? connectionTabForCard(cardId)
+    ?? sessionsTabForCard(cardId);
 }
 
 /**

@@ -123,7 +123,7 @@ afterAll(() => {
   vi.unstubAllGlobals();
 });
 
-async function renderSection(section: 'general' | 'permissions' | 'sessions' | 'plan' = 'plan'): Promise<HTMLDivElement> {
+async function renderSection(section: 'general' | 'permissions' | 'sessions' | 'plan' = 'plan', path = '/settings/sessions'): Promise<HTMLDivElement> {
   const container = document.createElement('div');
   document.body.append(container);
   containers.push(container);
@@ -133,7 +133,7 @@ async function renderSection(section: 'general' | 'permissions' | 'sessions' | '
   await act(async () => {
     root.render(
       <QueryClientProvider client={client}>
-        <MemoryRouter>
+        <MemoryRouter initialEntries={[path]}>
           <I18nProvider>
             {section === 'plan' ? <PlanSettings /> : section === 'permissions' ? <PermissionsSection /> : section === 'sessions' ? <SessionsSection /> : <GeneralSection />}
           </I18nProvider>
@@ -310,7 +310,7 @@ describe('PlanSettings plan gate defaults', () => {
   });
 
   it('saves the question blocking choice immediately on Sessions', async () => {
-    const container = await renderSection('sessions');
+    const container = await renderSection('sessions', '/settings/sessions?tab=behavior');
     const card = container.querySelector('#st-card-questions')!;
     expect(card.querySelector('[data-question-behavior]')?.textContent).toContain('Don’t block');
     await click([...card.querySelectorAll('button')].find((button) => button.textContent === 'Block')!);
@@ -550,7 +550,7 @@ describe('PlanSettings plan gate defaults', () => {
   });
 
   it('still saves each choice instantly with the explanation moved aside', async () => {
-    const container = await renderSection('sessions');
+    const container = await renderSection('sessions', '/settings/sessions?tab=behavior');
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     const questions = container.querySelector('#st-card-questions')!;
     await click([...questions.querySelectorAll('button')].find((button) => button.textContent === 'Block')!);

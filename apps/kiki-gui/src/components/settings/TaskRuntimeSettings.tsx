@@ -158,12 +158,12 @@ export function TaskPolicyCard() {
   return (
     <SectionCard id="st-card-task-policy" title={t('st.taskPolicy.title')}>
       <div className="space-y-4">
-        <Hint>{t('st.taskPolicy.hint')} <span className="text-ink-soft">{t('st.taskPolicy.emptyRule')}</span></Hint>
         <fieldset disabled={saving} className="min-w-0 space-y-4 disabled:opacity-60">
           <div className="grid gap-3 sm:grid-cols-2">
             <NumberField
               label={t('st.taskPolicy.maxRunningTasks')}
               value={draft.maxRunningTasks}
+              placeholder={t('st.loopLimits.unlimited')}
               hint={t('st.taskPolicy.maxRunningTasksHint')}
               detail={t('st.taskPolicy.maxRunningTasksDetail')}
               onChange={(maxRunningTasks) => { updateTask({ maxRunningTasks }); }}
@@ -171,6 +171,7 @@ export function TaskPolicyCard() {
             <NumberField
               label={t('st.taskPolicy.bashTimeout')}
               value={draft.bashTaskTimeoutS}
+              placeholder={TASK_DEFAULTS.bashTaskTimeoutS}
               hint={t('st.taskPolicy.bashTimeoutHint')}
               detail={t('st.taskPolicy.bashTimeoutDetail', { seconds: TASK_DEFAULTS.bashTaskTimeoutS })}
               onChange={(bashTaskTimeoutS) => { updateTask({ bashTaskTimeoutS }); }}
@@ -195,6 +196,7 @@ export function TaskPolicyCard() {
                     <NumberField
                       label={t('st.taskPolicy.printWait')}
                       value={draft.printWaitCeilingS}
+                      placeholder={TASK_DEFAULTS.printWaitCeilingS}
                       hint={t('st.taskPolicy.printWaitHint')}
                       detail={t('st.taskPolicy.printWaitDetail', { seconds: TASK_DEFAULTS.printWaitCeilingS })}
                       onChange={(printWaitCeilingS) => { updateTask({ printWaitCeilingS }); }}
@@ -202,6 +204,7 @@ export function TaskPolicyCard() {
                     <NumberField
                       label={t('st.taskPolicy.printTurns')}
                       value={draft.printMaxTurns}
+                      placeholder={TASK_DEFAULTS.printMaxTurns}
                       hint={t('st.taskPolicy.printTurnsHint')}
                       detail={t('st.taskPolicy.printTurnsDetail', { turns: TASK_DEFAULTS.printMaxTurns })}
                       onChange={(printMaxTurns) => { updateTask({ printMaxTurns }); }}
@@ -218,6 +221,7 @@ export function TaskPolicyCard() {
                   <NumberField
                     label={t('st.taskPolicy.killGrace')}
                     value={draft.killGracePeriodMs}
+                    placeholder={TASK_DEFAULTS.killGracePeriodMs}
                     hint={t('st.taskPolicy.killGraceHint')}
                     detail={t('st.taskPolicy.killGraceDetail', { ms: TASK_DEFAULTS.killGracePeriodMs })}
                     onChange={(killGracePeriodMs) => { updateTask({ killGracePeriodMs }); }}
@@ -256,7 +260,6 @@ export function CronRuntimeCard() {
   return (
     <SectionCard id="st-card-cron" title={t('st.cron.title')} scope="readOnly">
       <div className="space-y-3">
-        <Hint>{t('st.cron.hint')}</Hint>
         {cron === null ? (
           configQuery.isError ? <InlineError error={configQuery.error} /> : <Hint>{t('st.runtime.loading')}</Hint>
         ) : (
@@ -266,8 +269,8 @@ export function CronRuntimeCard() {
             <SettingsDiagnosticRow label={t('st.cron.noStale')} value={onOff(cron.noStale)} />
             <SettingsDiagnosticRow label={t('st.cron.disabled')} value={onOff(cron.disabled)} />
             <SettingsDiagnosticRow label={t('st.cron.manualTick')} value={onOff(cron.manualTick)} />
-            <SettingsDiagnosticRow label={t('st.cron.clock')} value={cron.clock} />
-            <SettingsDiagnosticRow label={t('st.cron.poll')} value={millisecondsAsSeconds(cron.pollIntervalMs)} />
+            <SettingsDiagnosticRow label={t('st.cron.clock')} value={cron.clock.trim() === '' ? t('st.cron.unset') : cron.clock} />
+            <SettingsDiagnosticRow label={t('st.cron.poll')} value={cron.pollIntervalMs.trim() === '' ? t('st.cron.unset') : millisecondsAsSeconds(cron.pollIntervalMs)} />
           </dl>
         )}
       </div>

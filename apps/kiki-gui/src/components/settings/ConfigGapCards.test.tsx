@@ -135,10 +135,11 @@ describe('config gap cards', () => {
     for (const label of ['Wait ceiling (s)', 'Maximum steered turns', 'Kill grace period (ms)']) {
       expect(advanced.contains(fieldFor(label))).toBe(true);
     }
-    // The rule "empty uses the engine default" is stated once, by the card
-    // lead. Each number's own default, its 0, and its floor live behind that
-    // field's `i` — the page opens without five copies of the same sentence.
-    expect(card.textContent).toContain('A number left empty uses the engine default.');
+    // An empty number shows the value it resolves to as its placeholder, so
+    // no sentence has to say so. Each number's own default, its 0, and its
+    // floor live behind that field's `i`.
+    expect(fieldFor('Maximum running tasks').placeholder).toBe('No limit');
+    expect(fieldFor('Bash task timeout (s)').placeholder).toBe('600');
     expect(card.textContent).not.toContain('Empty allows any number of background tasks at once');
     // A switch already shows whether it is on: "on by default" restated under
     // it told a reader nothing they could not see. What each switch *does*

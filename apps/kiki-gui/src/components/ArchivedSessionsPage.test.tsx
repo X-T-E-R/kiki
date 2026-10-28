@@ -595,7 +595,7 @@ describe('ArchivedSessionsPage', () => {
  * nothing else on the section moves or disappears.
  */
 describe('SessionsSection archive entry', () => {
-  it('offers the archive first and leaves the other session cards where they were', async () => {
+  it('offers the archive first and keeps the other session cards on their tabs', async () => {
     vi.spyOn(client, 'getConfig').mockResolvedValue({ interaction: {}, session_title: {} } as never);
     vi.spyOn(client, 'meta').mockResolvedValue({ experimental_flags: {} } as never);
     vi.spyOn(client, 'listModels').mockResolvedValue({ items: [] } as never);
@@ -621,17 +621,14 @@ describe('SessionsSection archive entry', () => {
     });
     await flush();
 
-    const cards = [...container.querySelectorAll<HTMLElement>('[data-settings-card]')]
+    const cards = () => [...container.querySelectorAll<HTMLElement>('[data-settings-card]')]
       .map((card) => card.dataset['settingsCard'] ?? null);
-    expect(cards).toEqual([
-      'st-card-archived',
-      'st-card-defaults',
-      'st-card-questions',
-      'st-card-session-title',
-      'st-card-agent-messaging',
-      'st-card-task-policy',
-      'st-card-cron',
-    ]);
+    expect(cards()).toEqual(['st-card-archived', 'st-card-session-title']);
+    await click(container.querySelector('[data-sessions-tab="behavior"]')!);
+    expect(cards()).toEqual(['st-card-defaults', 'st-card-questions', 'st-card-agent-messaging']);
+    await click(container.querySelector('[data-sessions-tab="runtime"]')!);
+    expect(cards()).toEqual(['st-card-task-policy', 'st-card-cron']);
+    await click(container.querySelector('[data-sessions-tab="conversations"]')!);
 
     const entry = container.querySelector('[data-settings-open-archived]')!;
     expect(entry.textContent).toContain('Manage archived conversations');

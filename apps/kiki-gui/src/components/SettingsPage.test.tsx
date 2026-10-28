@@ -738,7 +738,7 @@ describe('SettingsPage batch-3 leaves', () => {
   it('mounts the split runtime content on its new leaves', async () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
-    expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Everyday background-task limits.');
+    expect(tasks.querySelector('#st-card-task-policy')!.textContent).toContain('Maximum running tasks');
     expect(tasks.querySelector('#st-card-cron [data-settings-diagnostics]')).not.toBeNull();
     const diagnosticsScope = tasks.querySelector('#st-card-cron [data-settings-panel-scope]');
     expect(diagnosticsScope?.getAttribute('data-settings-panel-scope')).toBe('readOnly');
@@ -790,12 +790,13 @@ describe('SettingsPage batch-3 leaves', () => {
   it('keeps plan defaults on sessions and puts each flag on its feature page', async () => {
     const tasks = await renderSettings('/settings/tasks');
     expect(tasks.querySelector('#st-card-agent-board')).toBeNull();
-    // /settings/tasks redirects to /settings/sessions, which unites plan defaults and task policy.
-    expect(tasks.querySelector('#st-card-defaults')).not.toBeNull();
+    // /settings/tasks redirects to the Background work tab of /settings/sessions.
     expect(tasks.querySelector('#st-card-task-policy')).not.toBeNull();
+    expect(tasks.querySelector('[data-sessions-tab="runtime"]')?.getAttribute('aria-selected')).toBe('true');
+    const behavior = await renderSettings('/settings/sessions?tab=behavior');
+    expect(behavior.querySelector('#st-card-defaults')).not.toBeNull();
+    expect(behavior.querySelector('#st-card-questions')).not.toBeNull();
     const sessions = await renderSettings('/settings/sessions');
-    expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
-    expect(sessions.querySelector('#st-card-questions')).not.toBeNull();
     expect(sessions.querySelector('#st-card-session-title')).not.toBeNull();
     // Session titles are switched by their own card, so they get no second row.
     expect(sessions.querySelector('[data-experimental-row="auto_session_title"]')).toBeNull();
@@ -1093,7 +1094,7 @@ describe('SettingsPage search ownership', () => {
     expect(general.querySelector('#st-card-session-title')).toBeNull();
     expect(defaults.querySelector('#st-card-permission-defaults')).toBeNull();
     expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
-    expect(sessions.querySelector('#st-card-defaults')).not.toBeNull();
+    expect(sessions.querySelector('#st-card-archived')).not.toBeNull();
     expect(labs.querySelector('#st-card-labs')).not.toBeNull();
     const dir = dirname(fileURLToPath(import.meta.url));
     const rendered = new Set(

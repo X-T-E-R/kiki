@@ -1,12 +1,17 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useNavigate } from 'react-router-dom';
+import { useLocation, useNavigate } from 'react-router-dom';
 
 import { errorText, type I18nKey } from '@kiki/session-core/i18n';
 import {
+  SESSIONS_SETTINGS_DEFAULT_TAB,
+  SESSIONS_SETTINGS_TABS,
   SESSION_TITLE_TRIGGERS,
   importHistoryPath,
+  normalizeSessionsTab,
   sessionTitleModelPatch,
+  sessionsTabLabelKey,
+  type SessionsSettingsTab,
 } from '@kiki/session-core/settings';
 import type { KikiConfigResponse } from '@kiki/session-core/transport';
 import { useI18n } from '../../i18n';
@@ -21,7 +26,8 @@ import { mergeConfigEcho } from './configEcho';
 import { DependentField, SettingField, SettingsGroup } from './fields';
 import { PlanSettings } from './PlanSettings';
 import { QuestionGuardFields, rangeTextFor } from './QuestionGuardFields';
-import { SectionCard } from './SectionCard';
+import { useGuardedNavigate } from '../dirtyGuard';
+import { SectionCard, SettingsCardMountContext, SettingsFlashContext } from './SectionCard';
 import { SessionTitlePromptField } from './SessionTitlePromptField';
 import { SettingHelp } from './SettingHelp';
 import { SETTINGS_SELECT_TRIGGER, SettingsSegmented } from './SettingsPrimitives';
@@ -362,88 +368,145 @@ function SessionTitlesCard() {
   );
 }
 
+const IMPORT_CARD = 'st-card-import-history';
+
+const ENTRY_BUTTON = 'inline-flex h-9 shrink-0 items-center gap-2 rounded-lg border border-hairline-strong px-3 text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11';
+
 /**
- * Import an old conversation into this machine's session history.
- *
- * This is the primary place the reader meets it, because bringing history in
- * is a way of working with sessions, not a plugin to install: it ships with
- * Kiki, needs no flag, and opens the built-in import surface. It offers itself
- * only when the connected server can actually read a history — otherwise the
- * row would promise something this server cannot do.
+ * The import row. It offers itself only when the connected server can read a
+ * history, so it never promises something this server cannot do. It keeps
+ * its own card anchor: search hits and old links name it, and it announces
+ * itself the way a card does, so the page can scroll to it and flash it.
  */
-function ImportHistoryCard() {
+function ImportHistoryRow() {
   const { client, scopeId } = useConnection();
   const { t } = useI18n();
   const navigate = useNavigate();
+  const flashId = useContext(SettingsFlashContext);
+  const onCardMount = useContext(SettingsCardMountContext);
   const enabled = useImportHistoryEnabled(client, scopeId).enabled === true;
+  useEffect(() => { if (enabled) onCardMount?.(IMPORT_CARD); }, [enabled, onCardMount]);
   if (!enabled) return null;
   return (
-    <SectionCard id="st-card-import-history" title={t('cap.import.entry')}>
-      <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">
-        {t('cap.import.settingsHint')}
-      </p>
-      <div className="mt-3">
-        <button
-          type="button"
-          data-settings-open-import
-          className="inline-flex h-9 items-center gap-2 rounded-lg border border-hairline-strong px-3 text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
-          onClick={() => { void navigate(importHistoryPath()); }}
-        >
+    <div id="st-card-import-history" data-settings-card={IMPORT_CARD}
+      className={`scroll-mt-4 ${flashId === IMPORT_CARD ? 'settings-card-flash' : ''}`}>
+      <SettingField label={t('st.sessions.importRow')} help={t('st.sessions.importRowHint')}>
+        <button type="button" data-settings-open-import className={ENTRY_BUTTON}
+          onClick={() => { void navigate(importHistoryPath()); }}>
           <Icon name="read" size={16} className="text-ink-faint" />
           {t('cap.import.open')}
         </button>
-      </div>
-    </SectionCard>
+      </SettingField>
+    </div>
   );
 }
 
 /**
- * The archive, as the first thing this section offers.
- *
- * Archived conversations are native sessions that have been set aside, and
- * clearing them is a separate operation from anything else on the page. It
- * therefore gets its own card at the top with a plain action into its own
- * page, rather than a control folded into the title or session cards: nothing
- * on this page deletes conversations, and the entry says so once, here.
+ * Conversations kept outside the sidebar, and conversations brought in from
+ * elsewhere: two ways into history, one card. Each row leads to its own page;
+ * nothing here deletes or imports by itself.
  */
-function ArchivedConversationsCard() {
+function ConversationHistoryCard() {
   const { t } = useI18n();
   const navigate = useNavigate();
   return (
-    <SectionCard id="st-card-archived" title={t('st.sessions.archivedTitle')}>
-      <p className="mt-1 max-w-[62ch] text-[13px] leading-5 text-ink-soft">
-        {t('st.sessions.archivedHint')}
-      </p>
-      <div className="mt-3">
-        <button
-          type="button"
-          data-settings-open-archived
-          className="inline-flex h-9 items-center gap-2 rounded-lg border border-hairline-strong px-3 text-[13px] font-medium text-ink transition-colors hover:bg-ink/[0.04] focus-visible:ring-2 focus-visible:ring-selected-ink/40 focus-visible:outline-none pointer-coarse:h-11"
-          onClick={() => { void navigate('/archived'); }}
-        >
-          <Icon name="thread" size={16} className="text-ink-faint" />
-          {t('st.sessions.archivedOpen')}
-        </button>
+    <SectionCard id="st-card-archived" title={t('st.sessions.historyTitle')}>
+      <div className="space-y-1">
+        <SettingField label={t('st.sessions.archivedRow')} help={t('st.sessions.archivedRowHint')}>
+          <button type="button" data-settings-open-archived className={ENTRY_BUTTON}
+            onClick={() => { void navigate('/archived'); }}>
+            <Icon name="thread" size={16} className="text-ink-faint" />
+            {t('st.sessions.archivedOpen')}
+          </button>
+        </SettingField>
+        <ImportHistoryRow />
       </div>
     </SectionCard>
   );
 }
 
 /**
- * Sessions: what a new session looks like, how agents behave inside one, and
- * how background & scheduled tasks run across sessions.
+ * Sessions, in three tabs: Conversations (history and titles), Agent
+ * behavior (plan mode, questions, messaging), and Background work (task
+ * limits, cron diagnostics, and the runtime flags the page appends there).
+ * The tab is the `?tab=` query, so search hits, card hashes and the retired
+ * `/settings/tasks`, `/runtime` and `/communication` addresses land on the
+ * tab that mounts their card.
  */
 export function SessionsSection() {
+  const { t } = useI18n();
+  const navigate = useGuardedNavigate();
+  const { search } = useLocation();
+  const tab: SessionsSettingsTab = normalizeSessionsTab(new URLSearchParams(search).get('tab')) ?? SESSIONS_SETTINGS_DEFAULT_TAB;
+  const tabsRef = useRef<HTMLDivElement>(null);
+
+  const selectTab = (next: SessionsSettingsTab, focus = false) => {
+    if (focus) tabsRef.current?.querySelector<HTMLButtonElement>(`[data-sessions-tab="${next}"]`)?.focus();
+    if (next === tab) return;
+    const params = new URLSearchParams(search);
+    params.set('tab', next);
+    void navigate(`/settings/sessions?${params.toString()}`);
+  };
+
+  const onTabKey = (event: React.KeyboardEvent, index: number) => {
+    const last = SESSIONS_SETTINGS_TABS.length - 1;
+    const target = event.key === 'ArrowRight' ? (index === last ? 0 : index + 1)
+      : event.key === 'ArrowLeft' ? (index === 0 ? last : index - 1)
+      : event.key === 'Home' ? 0
+      : event.key === 'End' ? last
+      : null;
+    if (target === null) return;
+    event.preventDefault();
+    selectTab(SESSIONS_SETTINGS_TABS[target]!, true);
+  };
+
   return (
-    <>
-      <ArchivedConversationsCard />
-      <PlanSettings />
-      <ImportHistoryCard />
-      <QuestionsCard />
-      <SessionTitlesCard />
-      <AgentMessagingCard />
-      <TaskPolicyCard />
-      <CronRuntimeCard />
-    </>
+    <div className="space-y-6">
+      <div ref={tabsRef} role="tablist" aria-label={t('st.section.sessions')} className="flex flex-wrap gap-1 border-b border-hairline">
+        {SESSIONS_SETTINGS_TABS.map((candidate, index) => {
+          const active = candidate === tab;
+          return (
+            <button
+              key={candidate}
+              id={`sessions-tab-${candidate}`}
+              type="button"
+              role="tab"
+              aria-selected={active}
+              aria-controls="sessions-tab-panel"
+              tabIndex={active ? 0 : -1}
+              data-sessions-tab={candidate}
+              onClick={() => { selectTab(candidate); }}
+              onKeyDown={(event) => { onTabKey(event, index); }}
+              className={`-mb-px min-h-9 border-b-2 px-3 py-1.5 text-[13px] transition-colors outline-none focus-visible:ring-2 focus-visible:ring-selected-ink/40 pointer-coarse:min-h-11 ${
+                active
+                  ? 'border-ink font-medium text-ink'
+                  : 'border-transparent text-ink-soft hover:text-ink'
+              }`}
+            >
+              {t(sessionsTabLabelKey(candidate))}
+            </button>
+          );
+        })}
+      </div>
+      <div id="sessions-tab-panel" role="tabpanel" aria-labelledby={`sessions-tab-${tab}`} data-sessions-panel={tab} className="space-y-6">
+        {tab === 'behavior' ? (
+          <>
+            <PlanSettings />
+            <QuestionsCard />
+            <AgentMessagingCard />
+          </>
+        ) : tab === 'runtime' ? (
+          <>
+            <TaskPolicyCard />
+            <CronRuntimeCard />
+          </>
+        ) : (
+          <>
+            <ConversationHistoryCard />
+            <SessionTitlesCard />
+          </>
+        )}
+      </div>
+    </div>
   );
 }
