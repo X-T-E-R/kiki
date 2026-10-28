@@ -66,6 +66,7 @@ export interface UsageReadModelQuery {
   readonly position?: readonly [number, string];
   readonly quotes: readonly UsageReadModelQuote[];
   readonly expectedRevision?: string;
+  readonly excludedSources?: readonly string[];
   readonly drilldownSessionLimit: number;
   readonly drilldownTurnLimit: number;
 }

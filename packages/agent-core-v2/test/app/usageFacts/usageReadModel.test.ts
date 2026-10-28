@@ -60,13 +60,24 @@ describe('Usage source read model', () => {
     await catalog();
     const result = await model.query(query);
     expect(result.total).toMatchObject({ usage: usage(20, 1), cost: 2, costUnknown: true, knownRecords: 3 });
-    expect(result.trend[0]).toMatchObject({ requests: 3, turns: 1, groups: [{ key: 'alias' }] });
+    expect(result.trend[0]).toMatchObject({ key: '0', requests: 3, turns: 1, groups: [{ key: 'alias' }] });
     expect((await facts.summary(SCOPE)).totals?.byModelMask).toEqual({ example: { 1: usage(20), 2: usage(0, 1) } });
     logs.append(SCOPE, 'wire.jsonl', record(1, 5));
     await logs.flush();
     expect((await model.query(query)).total).toMatchObject({ usage: usage(25, 1), cost: 2.5, knownRecords: 4 });
     const priced = await model.query({ ...query, quotes: [{ model: 'example', inputOther: 0.1, output: 2 }] });
     expect(priced.total).toMatchObject({ cost: 4.5, costUnknown: false });
+  });
+
+  it('retains finite known costs in total, bucket and session results when record costs overflow', async () => {
+    logs.append(SCOPE, 'wire.jsonl', record(1, 1));
+    logs.append(SCOPE, 'wire.jsonl', record(2, 1));
+    await logs.flush(); await catalog();
+    const result = await model.query({ ...query, quotes: [{ model: 'example', inputOther: 1e308 }] });
+    expect(result.total).toMatchObject({ cost: 1e308, costUnknown: true, knownRecords: 2, usage: usage(2) });
+    expect(result.trend[0]?.groups[0]).toMatchObject({ cost: 1e308, costUnknown: true });
+    expect(result.sessions[0]).toMatchObject({ cost: 1e308, costUnknown: true });
+    expect(await model.models()).toEqual(['example']);
   });
 
   it('keeps staged facts invisible and resumes a large batch across budgets and process restart', async () => {
@@ -133,6 +144,17 @@ describe('Usage source read model', () => {
     await logs.rewrite('store', key, []);
     expect(await service.listEphemeralUsage!(budget)).toMatchObject({ items: [], complete: true });
     expect((await model.query(query)).total.knownRecords).toBe(0);
+  });
+
+  it('publishes an initial committed prefix with incomplete coverage and resumes it after restart', async () => {
+    const checkpoint = { generation: 'first', offset: 5, size: 10, mtimeMs: 1, boundaryHash: '', valid: true };
+    await model.apply({ source: SCOPE, progress: { batchStart: 0, offset: 50, ordinal: 1 }, records: [record(1, 10)], publish: { start: 0, checkpoint, journalSize: 100 } });
+    await catalog();
+    expect((await model.source(SCOPE))?.pendingCheckpoint).toBeUndefined();
+    expect((await model.query(query))).toMatchObject({ total: { usage: usage(10), knownRecords: 1 }, incompleteSessions: 1 });
+    await model.close(); await ix.dispose(); await drainQueryStoreDisposals(); open();
+    await model.apply({ source: SCOPE, progress: { batchStart: 50, offset: 100, ordinal: 1 }, records: [record(2, 7)], publish: { start: 5, checkpoint: { ...checkpoint, offset: 10 }, journalSize: 100 } });
+    expect((await model.query(query))).toMatchObject({ total: { usage: usage(17), knownRecords: 2 }, incompleteSessions: 0 });
   });
 
   it('keeps the previous generation visible until a multi-envelope rewrite completes after restart', async () => {
