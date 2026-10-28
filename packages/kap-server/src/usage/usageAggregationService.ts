@@ -887,7 +887,7 @@ export class UsageAggregationService {
       const excluded = mtimeExcludesRange(mtime ?? 0, range.startAt);
       const checkpoint = excluded || (size ?? 0) === 0
         ? { generation, offset: size ?? 0, size: size ?? 0, mtimeMs: mtime ?? 0, boundaryHash: '', valid: true }
-        : await this.factJournalCheckpoint(scope, signal);
+        : await this.factJournalCheckpoint(scope, signal, { generation, size: size ?? 0, mtimeMs: mtime ?? 0 });
       const current = checkpoint !== undefined && checkpoint.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0) && (excluded || await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation);
       if (current) prepared.get(session)!.checkpoints[agentId] = { ...checkpoint, generation };
     });
@@ -1504,7 +1504,7 @@ export class UsageAggregationService {
     }
   }
 
-  private async factJournalCheckpoint(wireScope: string, signal?: AbortSignal): Promise<WireCheckpoint | undefined> {
+  private async factJournalCheckpoint(wireScope: string, signal?: AbortSignal, expected?: Pick<WireCheckpoint, 'generation' | 'size' | 'mtimeMs'>): Promise<WireCheckpoint | undefined> {
     signal?.throwIfAborted();
     const storage = this.core.accessor.get(IFileSystemStorageService);
     const directory = factJournalDirectory(wireScope);
@@ -1525,6 +1525,19 @@ export class UsageAggregationService {
           if (checkpoint !== undefined && Number.isSafeInteger(checkpoint.offset) && checkpoint.offset >= 0 && Number.isSafeInteger(checkpoint.size) && checkpoint.size >= checkpoint.offset && typeof checkpoint.mtimeMs === 'number' && Number.isFinite(checkpoint.mtimeMs) && typeof checkpoint.boundaryHash === 'string' && typeof checkpoint.valid === 'boolean') return checkpoint;
         } catch { return undefined; }
         return undefined;
+      }
+      if (length === 4096 && expected !== undefined) {
+        const opening = await waitForSource(readKeyedRange(storage, directory, FACT_JOURNAL_KEY, 0, 4095, signal), signal);
+        signal?.throwIfAborted();
+        const header = Buffer.from(opening).toString('utf8');
+        const records = header.indexOf(',"records":[');
+        if (records >= 0) {
+          try {
+            const batch = JSON.parse(`${header.slice(0, records)}}`) as { version?: number; start?: number; checkpoint?: WireCheckpoint };
+            const checkpoint = batch.checkpoint;
+            if (batch.version === 1 && batch.start === 0 && checkpoint !== undefined && checkpoint.generation === expected.generation && checkpoint.offset === expected.size && checkpoint.size === expected.size && checkpoint.mtimeMs === expected.mtimeMs && Number.isFinite(checkpoint.mtimeMs) && Number.isSafeInteger(checkpoint.offset) && checkpoint.offset >= 0 && typeof checkpoint.boundaryHash === 'string' && typeof checkpoint.valid === 'boolean') return checkpoint;
+          } catch { signal?.throwIfAborted(); }
+        }
       }
       if (length === limit) return this.core.accessor.get(IUsageFactStore).checkpoint(wireScope, signal);
       signal?.throwIfAborted();

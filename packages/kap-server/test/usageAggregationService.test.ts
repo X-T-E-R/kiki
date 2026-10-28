@@ -1892,6 +1892,41 @@ describe('shared agent and history usage projection', () => {
     } finally { service.dispose(); read.mockRestore(); }
   });
 
+  it.each(['aligned', 'append', 'rewrite', 'metadata', 'start', 'layout', 'cancel'])('uses opening checkpoint metadata only at the frozen canonical watermark (%s)', async (mode) => {
+    const main = scope('w', 's');
+    const saved = await openRange([], { [main]: [] });
+    const directory = `cache/usage-facts-v1/${createHash('sha256').update(main).digest('hex')}`;
+    const checkpoint = { generation: 'example', offset: 600, size: 600, mtimeMs: 100, boundaryHash: '', valid: true };
+    const opening = { ...checkpoint, generation: mode === 'rewrite' ? 'earlier' : checkpoint.generation, offset: mode === 'append' ? 599 : checkpoint.offset, mtimeMs: mode === 'metadata' ? 99 : checkpoint.mtimeMs };
+    const first = mode === 'layout'
+      ? { version: 1, start: 0, records: [], checkpoint: opening, padding: 'x'.repeat(9000) }
+      : { version: 1, start: mode === 'start' ? 1 : 0, checkpoint: opening, records: [], padding: 'x'.repeat(9000) };
+    const journal = Buffer.from(`${JSON.stringify(first)}\n${JSON.stringify({ version: 1, start: 0, checkpoint, records: [], padding: 'x'.repeat(9000) })}\n`);
+    await saved.storage.write(directory, 'facts.jsonl', journal);
+    const service = new UsageAggregationService(saved.core);
+    const controller = new AbortController();
+    const original = saved.storage.readStream.bind(saved.storage);
+    const streams = vi.spyOn(saved.storage, 'readStream').mockImplementation((source, key, range) => {
+      if (mode === 'cancel' && range?.start === 0) controller.abort(new DOMException('Stop opening checkpoint', 'AbortError'));
+      return original(source, key, range);
+    });
+    const read = () => Reflect.apply(Reflect.get(service, 'factJournalCheckpoint'), service, [main, controller.signal, checkpoint]) as Promise<unknown>;
+    try {
+      if (mode === 'cancel') await expect(read()).rejects.toThrow('Stop opening checkpoint');
+      else {
+        expect(await read()).toEqual(checkpoint);
+        const ranges = streams.mock.calls.map(([, , range]) => range!);
+        expect(ranges[0]).toEqual({ start: journal.length - 4096, end: journal.length - 1 });
+        expect(ranges[1]).toEqual({ start: 0, end: 4095 });
+        expect(ranges).toHaveLength(mode === 'aligned' ? 2 : 4);
+        if (mode !== 'aligned') {
+          expect(ranges[2]!.end + 1).toBe(ranges[0]!.start);
+          expect(ranges[3]!.end + 1).toBe(ranges[2]!.start);
+        }
+      }
+    } finally { streams.mockRestore(); service.dispose(); }
+  });
+
   it('folds small committed journal batches in bounded pages across batch boundaries', async () => {
     const main = scope('w', 's');
     const saved = await openRange([summary('s', 'w')], { [main]: [] }, true);
@@ -2915,7 +2950,7 @@ describe('SQLite UsageRangeFold publication', () => {
     resumed.dispose();
   });
 
-  it.each([3, 40])('folds unchanged journals using the bounded tail before checkpoint metadata with missing fact rows (%s facts)', async (count) => {
+  it.each([3, 40])('folds unchanged journals using bounded tail or aligned opening metadata with missing fact rows (%s facts)', async (count) => {
     const wireScope = scope('workspace', 'session');
     const model = count === 3 ? 'example' : 'example'.repeat(5000);
     const records = [...Array.from({ length: count - 1 }, () => ({ ...usageRecord(1, 7), model })), { ...usageRecord(2, 8), model, usageKnown: false }];
@@ -2936,7 +2971,7 @@ describe('SQLite UsageRangeFold publication', () => {
     expect(response.reliability.usage_coverage).toMatchObject({ known_records: count - 1, missing_records: 1 });
     expect(response.summary.tokens.output).toBe(count - 1);
     expect(response.trend[0]?.turn_count).toBe(2);
-    expect(checkpoint).toHaveBeenCalledTimes(count === 3 ? 0 : 1);
+    expect(checkpoint).not.toHaveBeenCalled();
     expect(read).not.toHaveBeenCalled();
     expect(summarize).not.toHaveBeenCalled();
     const reopened = await new UsageAggregationService(saved.core, () => 1000).query(input);
