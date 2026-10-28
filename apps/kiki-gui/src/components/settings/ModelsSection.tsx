@@ -314,12 +314,7 @@ export function ProviderModelList({ providerId, models, inheritedImageTypes, onC
       ) : (
         <p className="text-[12px] leading-4 text-ink-faint" data-provider-models-empty>{t('st.providerModels.empty')}</p>
       )}
-      {own.length > 0 ? (
-        <p className="flex items-center gap-2 text-[11.5px] leading-4 text-ink-faint">
-          <span className="min-w-0">{t('st.providerModels.openHint')}</span>
-          <SavedTick show={tick} />
-        </p>
-      ) : null}
+      <SavedTick show={tick} />
       <FeedbackLine feedback={feedback} />
       {editingItem !== undefined ? (
         <ModelDetailPanel
@@ -960,7 +955,6 @@ export function ModelMaintenance() {
       <summary className="flex min-h-8 w-fit cursor-pointer list-none items-center gap-1.5 rounded-md px-1 text-[12px] font-medium text-ink-soft hover:bg-ink/[0.04] hover:text-ink focus-visible:outline-2 focus-visible:outline-selected-ink [&::-webkit-details-marker]:hidden">
         <DisclosureChevron open={false} className="text-ink-soft transition-transform group-open:rotate-90" />
         {t('st.models.maintenance')}
-        <span className="font-normal text-ink-faint">{t('st.providerModels.maintenanceHint')}</span>
       </summary>
       {open ? (
         <div className="space-y-6 pt-4">

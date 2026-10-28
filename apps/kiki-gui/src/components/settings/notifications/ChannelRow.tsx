@@ -132,7 +132,7 @@ export function ChannelRow({ channelId, channel, settings, provider, deliveries,
             {t(reasonKey(provider?.status_reason))}
           </p>
         ) : null}
-        {providerGuideKey(providerId) !== undefined && !unavailable ? (
+        {providerGuideKey(providerId) !== undefined && (state === 'noCredential' || state === 'unauthorized') ? (
           <p className="max-w-[62ch] text-[12px] leading-5 text-ink-soft" data-notify-guide={providerId}>
             {t(providerGuideKey(providerId)!)}
           </p>

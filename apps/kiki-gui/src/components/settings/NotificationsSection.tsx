@@ -248,7 +248,6 @@ export function NotificationsSection() {
             ) : undefined}
           >
             <div className="space-y-3">
-              <p className="text-[12px] leading-4 text-ink-faint">{t('st.notify.pushHint')}</p>
               {!data.global.enabled ? (
                 <p className="text-[12px] text-amber-ink" data-notify-paused-banner>{t('st.notify.paused')}</p>
               ) : null}

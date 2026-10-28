@@ -26,8 +26,58 @@ export const GLOBAL = { enabled: true, suppress_viewing_session: true, min_work_
 
 const slot = (provider, instance, purpose) => ({ provider_id: provider, provider_instance_id: instance, purpose, env: `KIKI_NOTIFY_${instance.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_${purpose.toUpperCase()}` });
 
+/**
+ * Two-way chat accounts, in memory only (scripts/fixture-im-sessions.mjs): an
+ * official QQ bot through the kiki-qq plugin that is listening with one bound
+ * chat, a Telegram bot that is paused, and a WeChat account whose sign-in
+ * expired. Account ids are placeholders; nothing connects to a platform.
+ */
+export const IM_ACCOUNTS = {
+  snapshot: {
+    policy: { allowed: true, default_enabled: true },
+    instances: [
+      { id: 'plugin:kiki-qq/qq-official', provider_kind: 'plugin:kiki-qq/qq-official', label: 'QQ 官方机器人', account_id: '10000001', listening: true, configured: true, adapter: 'running' },
+      { id: 'telegram-im', provider_kind: 'telegram', label: 'Kiki bot', account_id: 'example_kiki_bot', listening: false, configured: true, adapter: 'stopped' },
+      { id: 'wechat-im', provider_kind: 'wechat_bridge', label: 'WeChat', account_id: 'wxid_example', listening: true, configured: true, adapter: 'running', connection: 'auth_expired', connection_detail: { code: 'auth_expired', failure_count: 1 } },
+    ],
+    discoveries: [],
+    bindings: [
+      { id: 'qq-study', provider_instance_id: 'plugin:kiki-qq/qq-official', provider_kind: 'plugin:kiki-qq/qq-official', account_id: '10000001', identity: { chat_id: 'group-example', chat_title: '学习小组', sender_id: 'member-example', sender_name: '小林', topic_id: '0', chat_kind: 'group' }, session_id: SID, enabled: true, busy: 'queue', reply: 'final', mobile_interactions: true, binding_scope: 'chat', group_policy: { wake: 'mention_or_reply' } },
+    ],
+    strangers: [],
+    voice_fallbacks: 0,
+  },
+  catalog: { personas: [], sessions: [{ id: SID, title: 'Fixture: notifications' }] },
+  setupCatalog: { platforms: [] },
+};
+
+/**
+ * The installed kiki-qq plugin the QQ account's Configure account link opens:
+ * its official-bot fields as the published manifest declares them, with a
+ * placeholder AppID and the secret reported as set.
+ */
+const QQ_PLUGIN = {
+  plugins: [{
+    id: 'kiki-qq', displayName: 'QQ', version: '0.4.0', enabled: true, globalEnabled: true, state: 'ok',
+    skillCount: 0, mcpServerCount: 0, enabledMcpServerCount: 0, hookCount: 0, commandCount: 0, hasErrors: false,
+    source: 'local-path', originalSource: 'C:/fixture/plugins/kiki-qq',
+  }],
+  pluginSettings: {
+    'kiki-qq': {
+      schema: { schemaVersion: 1, schema: { type: 'object', properties: {
+        official__appId: { type: 'string', title: 'QQ Bot AppID', description: 'Application ID for the official QQ Bot account.', localizations: { zh: { title: 'QQ Bot AppID', description: '官方 QQ Bot 账号的应用 ID。' } } },
+        official__appSecret: { type: 'string', title: 'QQ Bot AppSecret', description: 'Application secret; stored write-only.', secret: true, localizations: { zh: { title: 'QQ Bot AppSecret', description: '官方应用密钥；仅写入，不回显。' } } },
+      } } },
+      values: { official__appId: '10000001' },
+      secretsConfigured: ['official__appSecret'],
+    },
+  },
+};
+
 export default {
   ...notificationsBase,
+  ...QQ_PLUGIN,
+  im: IM_ACCOUNTS,
   notifications: {
     settings: {
       global: GLOBAL,

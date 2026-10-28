@@ -191,6 +191,7 @@ import { antigravityCheck, antigravityLogin, handleAntigravity } from './fixture
 import { handleGuiEntries } from './fixture-gui-entries.mjs';
 import { handleSpaces, spaceConfig, spaceConfigWrite, spaceCurrentHome, spacesControl } from './fixture-spaces.mjs';
 import { handleNotifications, resetNotifications, revealNotificationCredential } from './fixture-notifications.mjs';
+import { handleImSessions, resetImSessions } from './fixture-im-sessions.mjs';
 import { browserEndpointSecret, handleBrowser } from './fixture-browser.mjs';
 import { handleWebAccess, webCookiePresent } from './fixture-web-access.mjs';
 
@@ -911,6 +912,7 @@ class FixtureServer {
     this.autoCompactOverrides = new Map();
     resetContextStrategy(this);
     resetNotifications(this);
+    resetImSessions(this);
     this.autoCompactAgents = structuredClone(data.autoCompact?.agents ?? {});
     this.usageV2 = data.usageV2 ?? null;
     // `/usage-export`: the destinations panel projects this instead of holding
@@ -2978,6 +2980,8 @@ class FixtureServer {
     if (memoryHandled) return undefined;
     // nb-IM notifications (scripts/fixture-notifications.mjs).
     if (handleNotifications(this, res, path, query, method, body)) return undefined;
+    // Two-way IM sessions (scripts/fixture-im-sessions.mjs).
+    if (handleImSessions(this, res, path, method, body)) return undefined;
     if (path === '/secrets:reveal' && method === 'POST' && body?.ref?.kind === 'browser_endpoint') {
       const value = browserEndpointSecret(this, body.ref.browser_id);
       return this.envelope(res, value === undefined ? { source: 'none' } : { source: 'kiki', value });

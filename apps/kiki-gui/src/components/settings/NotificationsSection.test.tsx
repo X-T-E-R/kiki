@@ -162,10 +162,12 @@ describe('NotificationsSection', () => {
     expect(channel).not.toHaveProperty('health');
   });
 
-  it('names where to find a platform credential on the channel and in the add form', async () => {
+  it('names where to find a platform credential when it was refused and in the add form, not on a working channel', async () => {
     const container = await render();
     await click(container.querySelector('[data-notify-channel="a"] button[aria-expanded]'));
-    expect(container.querySelector('[data-notify-channel="a"] [data-notify-guide="telegram"]')?.textContent).toContain('@BotFather');
+    expect(container.querySelector('[data-notify-channel="a"] [data-notify-guide]')).toBeNull();
+    await click(container.querySelector('[data-notify-channel="b"] button[aria-expanded]'));
+    expect(container.querySelector('[data-notify-channel="b"] [data-notify-guide="telegram"]')?.textContent).toContain('@BotFather');
     await click(container.querySelector('[data-notify-add-open]'));
     expect(container.querySelector('[data-notify-add] [data-notify-guide="telegram"]')).not.toBeNull();
   });
