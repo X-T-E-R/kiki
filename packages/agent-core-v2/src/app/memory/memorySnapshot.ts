@@ -5,7 +5,10 @@ import { ScopeActivation, registerScopedService } from '#/_base/di/scope';
 import { IConfigService } from '#/app/config/config';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { memoryRequestText, renderMemoryWorkingSet } from './memoryContext';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from './configSection';
 import { IMemoryStore, memoryApplicability, type MemoryEntry } from './memoryStore';
 import type { MemoryPublicScopeKind, MemoryScope } from './memoryScopes';
@@ -17,8 +20,9 @@ export interface MemoryPersonaContext {
 
 export interface IAgentMemorySnapshot {
   readonly _serviceBrand: undefined;
+  readonly workingSet?: boolean;
   get(lastKnown?: string): Promise<string>;
-  refreshIfDirty(): Promise<string | undefined>;
+  refreshIfDirty(request?: string): Promise<string | undefined>;
   getSessionEntries(): Promise<readonly string[]>;
   liveSessionEntries(): Promise<readonly MemoryEntry[]>;
   resolveReferences(text: string): Promise<readonly string[]>;
@@ -37,6 +41,10 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   private subscribedStore?: IMemoryStore;
   private lastKnown = '';
   private nextUntil?: number;
+  private generation?: string;
+  private request = '';
+  private inbound = '';
+  private settingsKey = '';
   private refreshing?: Promise<string | undefined>;
   constructor(
     @IConfigService private readonly config: IConfigService,
@@ -54,11 +62,14 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     }
   }
 
+  get workingSet(): boolean { return this.subscribedStore?.snapshot !== undefined; }
+
   get(lastKnown?: string): Promise<string> {
     if (this.frozen !== undefined) return this.frozen;
-    if (this.agent.agentId !== 'main') return this.frozen = Promise.resolve('');
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
     this.lastKnown = lastKnown ?? this.lastKnown;
+    this.settingsKey = JSON.stringify(settings);
+    this.dirty = false;
     this.frozen = this.project(settings).catch(() => {
       this.frozenRelated = [];
       this.nextUntil = undefined;
@@ -67,10 +78,35 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     return this.frozen;
   }
 
-  refreshIfDirty(): Promise<string | undefined> {
+  refreshIfDirty(inbound?: string): Promise<string | undefined> {
     if (this.refreshing !== undefined) return this.refreshing;
     this.refreshing = (async () => {
       await this.frozen;
+      const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
+      if (JSON.stringify(settings) !== this.settingsKey) this.dirty = true;
+      if (settings.budget > 0 && await this.memoryAdmitted(settings)) {
+        const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
+        if (store.snapshot !== undefined) {
+          let request = inbound;
+          if (request === undefined) try {
+            const context = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentContextMemoryService));
+            const messages = context.get();
+            request = memoryRequestText(messages) ?? (messages.length === 0 ? '' : this.inbound);
+          } catch {}
+          if (request !== undefined) this.inbound = request;
+          let task = '';
+          try {
+            const todos = this.instantiation.invokeFunction((accessor) => accessor.get(ISessionTodoService));
+            const notes = todos.getNotes(this.agent.agentId).notes;
+            const references = [...(notes?.decided ?? '').matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].slice(0, 20).map((match) => match[0]).join(' ');
+            task = [notes?.goal, notes?.directives, notes?.next, references].filter(Boolean).join('\n');
+          } catch {}
+          const currentRequest = [this.inbound, task].filter(Boolean).join('\n');
+          if (currentRequest !== this.request) { this.request = currentRequest; this.dirty = true; }
+          try { if (await store.checkpoint?.() !== this.generation) this.dirty = true; }
+          catch { this.dirty = true; }
+        }
+      }
       if (this.nextUntil !== undefined && Date.now() >= this.nextUntil) this.dirty = true;
       if (!this.dirty) return undefined;
       this.dirty = false;
@@ -87,27 +123,27 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   }
 
   async liveSessionEntries(): Promise<readonly MemoryEntry[]> {
-    if (this.agent.agentId !== 'main') return [];
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
     if (!(await this.memoryAdmitted(settings))) return [];
     try {
       const store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore));
+      if (this.agent.agentId !== 'main' && store.snapshot === undefined) return [];
       const scopes = this.readScopes();
-      const entries = (await Promise.all(scopes.map((scope) => store.list(scope)))).flat();
+      const entries = store.snapshot === undefined ? (await Promise.all(scopes.map((scope) => store.list(scope)))).flat() : (await store.snapshot(scopes)).entries;
       return entries.filter((entry) => entry.status === 'active' && entry.source.session === this.session.sessionId)
         .sort((a, b) => b.updated.localeCompare(a.updated)).slice(0, 20);
     } catch { return []; }
   }
 
   async resolveReferences(text: string): Promise<readonly string[]> {
-    if (this.agent.agentId !== 'main') return [];
     const settings = this.config.get<MemoryConfig>(MEMORY_SECTION);
     if (!(await this.memoryAdmitted(settings))) return [];
     const ids = [...new Set([...text.matchAll(/\[(m_[a-zA-Z0-9_]+)\]/g)].map((match) => match[1]!))].slice(0, 20);
     if (ids.length === 0) return [];
     let store: IMemoryStore;
     try { store = this.instantiation.invokeFunction((accessor) => accessor.get(IMemoryStore)); }
-    catch { return ids.map((id) => `- [${id}] (unavailable)`); }
+    catch { return this.agent.agentId !== 'main' ? [] : ids.map((id) => `- [${id}] (unavailable)`); }
+    if (this.agent.agentId !== 'main' && store.snapshot === undefined) return [];
     const scopes = this.readScopes();
     const lookup = async (id: string) => {
       const found: Array<{ entry: MemoryEntry; scope: MemoryScope }> = [];
@@ -166,7 +202,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     ];
   }
 
-  invalidate(): void { this.frozen = undefined; this.frozenRelated = []; }
+  invalidate(): void { this.frozen = undefined; this.frozenRelated = []; this.generation = undefined; this.dirty = true; }
 
   private optionalPolicy(): IOptionalCapabilityPolicy | undefined {
     try {
@@ -218,6 +254,16 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
             (change.beforeStatus === 'pending') !== (change.afterStatus === 'pending'))) this.dirty = true;
       }));
     }
+    if (store.snapshot !== undefined) {
+      const view = await store.snapshot(this.readScopes());
+      const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget));
+      this.generation = snapshot.generation;
+      this.nextUntil = snapshot.nextUntil;
+      this.frozenRelated = snapshot.entries.map((entry) => memoryEntryReference(entry));
+      this.lastKnown = snapshot.text;
+      return snapshot.text;
+    }
+    if (this.agent.agentId !== 'main') return '';
     const snapshot = await renderMemorySnapshot(settings, this.session.workspaceId, store, this.session.sessionId, this.persona);
     this.frozenRelated = snapshot.related;
     this.nextUntil = snapshot.nextUntil;

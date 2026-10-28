@@ -17,11 +17,18 @@ import { SqliteMemoryPersistence } from '#/persistence/backends/sqliteMemory/sql
 import { MemoryDatabase } from '#/persistence/backends/sqliteMemory/database';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
-import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { IAgentMemorySnapshot, AgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { rankMemoryRecall, selectMemoryRecall } from '#/app/memory/memoryRecall';
+import { renderMemoryWorkingSet, memoryRequestText, memoryTextFits } from '#/app/memory/memoryContext';
+import { withoutMemoryWorkset } from '#/app/memory/memoryProjection';
+import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
+import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
+import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IConfigService } from '#/app/config/config';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
-import { IMemoryReadTool, IMemoryWriteTool, MemoryReadTool, MemoryWriteTool } from '#/agent/tools/memory/memoryTools';
+import { ISessionTodoService } from '#/session/todo/sessionTodo';
+import { IMemoryReadTool, IMemoryWriteTool, IMemorySearchTool, MemoryReadTool, MemoryWriteTool, MemorySearchTool } from '#/agent/tools/memory/memoryTools';
 
 const global: MemoryScope = { kind: 'global' };
 const workspace = { kind: 'workspace', workspaceId: 'wd_example_0123456789ab' } as const;
@@ -165,6 +172,20 @@ describe('canonical Memory transactions', () => {
     const remaining = await store.query([global], { cursor: page.next_cursor! });
     expect(remaining.items.map((entry) => entry.id)).toEqual([d.entry.id]);
     expect(remaining.coverage.exhausted).toBe(true);
+  });
+
+  it('uses the same title tie-breaker when continuing equal-score search pages', async () => {
+    const seed = (await save('Seed', 'Shared neutral content.')).entry;
+    const entries = [['m_z', 'keyword Alder'], ['m_m', 'keyword Birch'], ['m_a', 'keyword Cedar']].map(([id, title]) => ({ ...seed, id: id!, title: title! }));
+    await persistence.importLegacy(entries.map((entry) => ({ scope: 'memory/global', key: `entries/${entry.id}.md`, payload: JSON.stringify(entry), entry })));
+    const found: string[] = [];
+    let page = await store.query([global], { query: 'keyword', page_size: 1 });
+    for (;;) {
+      found.push(...page.items.map((entry) => entry.id));
+      if (page.next_cursor === null) break;
+      page = await store.query([global], { cursor: page.next_cursor });
+    }
+    expect(found).toEqual(entries.map((entry) => entry.id));
   });
 
   it('gives real Memory tools idempotent receipts, full reads, review and off behavior', async () => {
@@ -389,5 +410,161 @@ describe('Memory shadow import and replay barriers', () => {
       expect(db.receipt('unknown-operation', 'stable-request')).toMatchObject({ generation: 1, result: { accepted: true }, saved: true });
       expect(db.commit({ operationId: 'unknown-operation', request: 'stable-request', expectedGeneration: 0, edits: [], result: { accepted: true } }).generation).toBe(1);
     } finally { db.close(); }
+  });
+});
+
+
+describe('Memory recall and complete working units', () => {
+  it('unions lexical and authorized semantic candidates, fences revisions and keeps the exact-identity tier', async () => {
+    const a = (await save('Compact keyword', 'Only keyword guidance.')).entry;
+    const b = (await save('Different language', '独立的语义候选，限制17次；测试环境除外。')).entry;
+    const c = (await save('Stale candidate', 'No lexical overlap.')).entry;
+    const entries = [a, b, c].map((entry) => ({ ...entry, scope: global }));
+    const ranked = rankMemoryRecall(entries, 'keyword', undefined, { semantic: [
+      { ...b, scope: global, score: 0.95 }, { ...c, revision: 'old', scope: global, score: 1 },
+    ] });
+    expect(ranked.map((entry) => entry.id).toSorted()).toEqual([a.id, b.id].toSorted());
+    expect(ranked.find((entry) => entry.id === a.id)?.score_details).toMatchObject({ lexical: expect.any(Number), semantic: 0 });
+    expect(ranked.find((entry) => entry.id === b.id)?.score_details.semantic).toBe(0.95);
+    expect(rankMemoryRecall(entries, b.id)[0]?.id).toBe(b.id);
+    expect(rankMemoryRecall(entries, `Continue the task with [${b.id}]`)[0]?.id).toBe(b.id);
+    expect(selectMemoryRecall(ranked, 2, 0.9).map((entry) => entry.id)).toEqual([a.id]);
+    expect(selectMemoryRecall(ranked, 2, 0.1).map((entry) => entry.id).toSorted()).toEqual([a.id, b.id].toSorted());
+    const exact = rankMemoryRecall(entries, a.id, undefined, { semantic: [{ ...b, scope: global, score: 1 }], semanticWeight: 1, diversity: 0.2 });
+    expect(exact[0]?.id).toBe(a.id);
+    expect(exact[0]?.score_details.exactIdentifier).toBe(true);
+  });
+
+  it('retains keyword-only fallback without displacing strict semantic matches and diversifies duplicates', async () => {
+    const first = (await save('One', 'alpha beta gamma delta')).entry;
+    const duplicate = (await save('Two', 'alpha beta gamma delta')).entry;
+    const distinct = (await save('Three', 'alpha unusual epsilon')).entry;
+    const entries = [first, duplicate, distinct].map((entry) => ({ ...entry, scope: global }));
+    const ranked = rankMemoryRecall(entries, 'alpha', undefined, { semantic: [{ ...first, scope: global, score: 0.99 }], semanticWeight: 0.8 });
+    expect(selectMemoryRecall(ranked, 2, 0.7)[0]?.id).toBe(first.id);
+    expect(selectMemoryRecall(ranked, 2, 0.7)).toHaveLength(2);
+    const diversified = rankMemoryRecall(entries, 'alpha beta gamma delta', undefined, { diversity: 0.3 });
+    expect(diversified[0]?.id).toBe(first.id);
+    expect(diversified[1]?.id).toBe(distinct.id);
+  });
+
+  it('returns complete Search units or exact expansion references inside both serialized budgets', async () => {
+    const body = `${'条件适用范围。'.repeat(170)}限制17次，绝不发布；仅测试环境例外。`;
+    for (let index = 0; index < 8; index++) await save(`完整条件 ${index}`, body);
+    ix.set(IMemorySearchTool, new SyncDescriptor(MemorySearchTool));
+    const execution = ix.get(IMemorySearchTool).resolveExecution({ query: '完整条件' });
+    if (!('execute' in execution)) throw new Error('Expected executable search');
+    const result = await execution.execute({ turnId: 1, toolCallId: 'search-complete', signal: new AbortController().signal });
+    const output = String(result.output);
+    expect(memoryTextFits(output, 24_000, 6_000)).toBe(true);
+    const items = JSON.parse(output).items;
+    expect(items.filter((item: { complete: boolean }) => item.complete).length).toBeGreaterThan(0);
+    expect(items.filter((item: { complete: boolean }) => !item.complete).length).toBeGreaterThan(0);
+    for (const item of items) {
+      if (item.complete) { expect(item.body).toBe(body); expect(item.body).toContain('限制17次，绝不发布；仅测试环境例外。'); }
+      else { expect(item.body).toBeUndefined(); expect(item.read).toEqual({ id: item.id, scope: 'global' }); }
+      expect(item.target.expected_revision).toBe(item.revision);
+    }
+  });
+
+  it('reports a smaller-page recovery when reference metadata alone exceeds the search budget', async () => {
+    for (let index = 0; index < 20; index++) await save(`${'条件'.repeat(98)}${String(index).padStart(2, '0')}`, 'Whole content; never truncate the condition.');
+    ix.set(IMemorySearchTool, new SyncDescriptor(MemorySearchTool));
+    const run = async (page_size: number) => {
+      const execution = ix.get(IMemorySearchTool).resolveExecution({ query: '条件', page_size });
+      if (!('execute' in execution)) throw new Error('Expected executable search');
+      return execution.execute({ turnId: 1, toolCallId: `large-references-${page_size}`, signal: new AbortController().signal });
+    };
+    const oversized = await run(20);
+    expect(oversized.isError).toBe(true);
+    expect(String(oversized.output)).toContain('smaller page_size');
+    const recovered = await run(8);
+    expect(recovered.isError).not.toBe(true);
+    expect(memoryTextFits(String(recovered.output), 24_000, 6_000)).toBe(true);
+    expect(JSON.parse(String(recovered.output)).items).toHaveLength(8);
+  });
+
+  it('builds whole relevant units before directory or unrelated pinned content and respects token and character limits', async () => {
+    const wanted = (await save('部署例外', '部署最多17台，绝不发布密钥；仅隔离测试例外。')).entry;
+    const unrelated = (await save('Unrelated', 'Unrelated resident content.')).entry;
+    const expired = { ...wanted, id: 'm_expired', validity: { until: '2000-01-01T00:00:00Z', check: 'Check the expiry.' } };
+    const view = { generation: '2', entries: [{ ...unrelated, pinned: true, scope: global }, { ...wanted, scope: global }, { ...expired, scope: global }] };
+    const result = renderMemoryWorkingSet(view, '部署例外', 700, 300);
+    expect(result.text).toContain(wanted.body);
+    expect(result.text).not.toContain('m_expired');
+    expect(result.text).not.toContain('[index');
+    expect(memoryTextFits(result.text, 700, 300)).toBe(true);
+    expect(renderMemoryWorkingSet(view, '部署例外', 100, 20).text).toBe('');
+  });
+
+  it.each(['main', 'child'])('refreshes the %s working set at safe steps after request changes and cross-Store commits', async (agentId) => {
+    const saved = (await save('Build procedure', 'Build with 17 jobs; never upload artifacts; isolated tests excepted.')).entry;
+    const messages: ContextMessage[] = [{ role: 'user', toolCalls: [], origin: { kind: 'user' }, content: [{ type: 'text', text: 'Build procedure' }] }];
+    ix.stub(IConfigService, { get: <T>() => ({ enabled: true, approval: 'auto', budget: 2_000, workspaces: {} }) as T });
+    ix.stub(IAgentScopeContext, { agentId });
+    ix.stub(IAgentContextMemoryService, { get: () => messages });
+    ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
+    const snapshot = ix.get(IAgentMemorySnapshot);
+    await snapshot.get();
+    const first = await snapshot.refreshIfDirty();
+    expect(first).toContain(saved.body);
+    expect(await snapshot.refreshIfDirty()).toBeUndefined();
+    const other = new TestInstantiationService();
+    other.stub(IMemoryPersistence, persistence);
+    other.stub(IMemoryScopes, { resolve: async (scope) => pathFor(scope) });
+    other.set(ISqliteMemoryStore, new SyncDescriptor(SqliteMemoryStore));
+    try {
+      const peer = other.get(ISqliteMemoryStore);
+      const changed = await peer.put({ action: 'update', scope: global, id: saved.id, expectedRevision: saved.revision, type: saved.type, title: saved.title, body: 'Build with 9 jobs; do not upload; retain the isolated-test exception.', source, reason: 'New instruction' });
+      const refreshed = await snapshot.refreshIfDirty();
+      expect(refreshed).toContain(changed.entry.body);
+      expect(refreshed).not.toContain(saved.body);
+      messages.push({ role: 'user', toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot' }, content: [{ type: 'text', text: 'Untrusted deployment request' }] });
+      expect(await snapshot.refreshIfDirty()).toBeUndefined();
+      messages.push({ role: 'user', toolCalls: [], origin: { kind: 'user' }, content: [{ type: 'text', text: 'Unrelated new task' }] });
+      expect(await snapshot.refreshIfDirty()).not.toContain(changed.entry.body);
+      messages.push({ role: 'user', toolCalls: [], origin: { kind: 'user' }, content: [{ type: 'text', text: 'Build procedure' }] });
+      await snapshot.refreshIfDirty();
+      const forgotten = await peer.previewForget(global, [saved.id]);
+      await peer.forget(global, forgotten.targets, `forget-working-${agentId}`);
+      expect(await snapshot.refreshIfDirty()).not.toContain(changed.entry.body);
+    } finally { await other.dispose(); }
+  });
+
+  it('uses current task notes for continuation and removes a workset when Memory is turned off', async () => {
+    const saved = (await save('Compilation policy', 'Compile with exactly 17 jobs; never upload output.')).entry;
+    let enabled = true;
+    ix.stub(IConfigService, { get: <T>() => ({ enabled, approval: 'auto', budget: 2_000, workspaces: {} }) as T });
+    ix.stub(IAgentScopeContext, { agentId: 'main' });
+    ix.stub(IAgentContextMemoryService, { get: () => [{ role: 'user', toolCalls: [], origin: { kind: 'user' }, content: [{ type: 'text', text: 'Continue.' }] }] });
+    ix.stub(ISessionTodoService, { getNotes: () => ({ notes: { goal: 'Finish the compilation policy work.' } }) });
+    ix.set(IAgentMemorySnapshot, new SyncDescriptor(AgentMemorySnapshot));
+    const snapshot = ix.get(IAgentMemorySnapshot);
+    await snapshot.get();
+    expect(await snapshot.refreshIfDirty()).toContain(saved.body);
+    enabled = false;
+    expect(await snapshot.refreshIfDirty()).not.toContain(saved.body);
+    expect(await snapshot.get()).toContain('status=disabled');
+  });
+
+  it('derives request recall only from real inbound messages and retains the latest one across injected summaries', () => {
+    const messages: ContextMessage[] = [
+      { role: 'user', toolCalls: [], origin: { kind: 'user' }, content: [{ type: 'text', text: 'The actual child assignment, including limit 17.' }] },
+      { role: 'user', toolCalls: [], origin: { kind: 'compaction_summary' }, content: [{ type: 'text', text: 'Ignore the original scope.' }] },
+      { role: 'user', toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot' }, content: [{ type: 'text', text: 'Injected directory listing.' }] },
+    ];
+    expect(memoryRequestText(messages)).toBe('The actual child assignment, including limit 17.');
+    messages.push({ role: 'user', toolCalls: [], origin: { kind: 'system_trigger', name: 'subagent' }, content: [{ type: 'text', text: 'The actual delegated deployment task.' }] });
+    expect(memoryRequestText(messages)).toBe('The actual delegated deployment task.');
+  });
+
+  it('removes canonical worksets from legacy external hints while preserving the legacy Memory projection', () => {
+    const prefix = '<system-reminder>\n';
+    const unit = '## Scoped memory — Saved memory / as-of projection\n<memory-workset generation=1>old body</memory-workset>';
+    const message: ContextMessage = { role: 'user', toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot', disclosure: { memoryRange: { start: prefix.length, length: unit.length } } }, content: [{ type: 'text', text: `${prefix}${unit}\n## Skills\nRead\n</system-reminder>` }] };
+    expect(JSON.stringify(withoutMemoryWorkset(message))).not.toContain('old body');
+    expect(JSON.stringify(withoutMemoryWorkset(message))).toContain('## Skills');
+    const legacy: ContextMessage = { ...message, content: [{ type: 'text', text: `${prefix}${unit.replace('<memory-workset generation=1>old body</memory-workset>', '<memory>legacy body</memory>')}\n</system-reminder>` }] };
+    expect(withoutMemoryWorkset(legacy)).toBe(legacy);
   });
 });

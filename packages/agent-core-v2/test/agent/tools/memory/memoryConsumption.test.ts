@@ -9,6 +9,7 @@ import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { SessionTodoService } from '#/session/todo/sessionTodoService';
 import { ISessionInstructionsProvider } from '#/session/sessionInstructions/instructionsProvider';
 import { IAgentProfileService } from '#/agent/profile/profile';
+import { IDynamicPromptInjection } from '#/agent/profile/dynamicPrompt';
 import { IAgentLoopService } from '#/agent/loop/loop';
 import { IBuiltinAgentProfileLoader } from '#/app/agentProfileCatalog/builtinAgentProfileLoader';
 import { IAgentStateService } from '#/agent/state/agentState';
@@ -16,6 +17,15 @@ import { IAgentFullCompactionService } from '#/agent/fullCompaction/fullCompacti
 import { IAgentTokenCountingService } from '#/agent/tokenCounting/tokenCounting';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
 import { IMemoryStore } from '#/app/memory/memoryStore';
+import { ISqliteMemoryStore, SqliteMemoryStore } from '#/app/memory/sqliteMemoryStore';
+import { IMemoryPersistence } from '#/persistence/interface/memoryPersistence';
+import { SqliteMemoryPersistence } from '#/persistence/backends/sqliteMemory/sqliteMemoryPersistence';
+import { TestInstantiationService } from '#/_base/di/test';
+import { SyncDescriptor } from '#/_base/di/descriptors';
+import { IBootstrapService } from '#/app/bootstrap/bootstrap';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 import { IMemoryScopes, type MemoryScope } from '#/app/memory/memoryScopes';
 import '#/agent/tools/memory/memoryTools';
@@ -34,9 +44,15 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { AGENT_WIRE_RECORD_KEY, type WireRecord } from '#/wire/record';
 import { continuityClockKey } from '#/session/todo/continuityState';
 import { contextWindowEpochKey } from '#/agent/fullCompaction/windowEpoch';
+import { runAgentTurn } from '#/session/subagent/runAgentTurn';
 
 const contexts: TestAgentContext[] = [];
-afterEach(async () => { vi.restoreAllMocks(); for (const context of contexts.splice(0)) await context.dispose(); });
+const memoryCleanup: Array<() => Promise<void>> = [];
+afterEach(async () => {
+  vi.restoreAllMocks();
+  for (const context of contexts.splice(0)) await context.dispose();
+  for (const cleanup of memoryCleanup.splice(0)) await cleanup();
+});
 
 const sessionContext: ISessionContext = {
   _serviceBrand: undefined, sessionId: 'test-session', workspaceId: 'wd_example_0123456789ab',
@@ -83,7 +99,7 @@ function installReadableCapabilityOrigins(ctx: TestAgentContext): void {
   Object.defineProperty(config, 'origins', { configurable: true, value: origins });
 }
 
-function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main'): TestAgentContext {
+function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main', store?: IMemoryStore): TestAgentContext {
   const willCreate = new Emitter<IAgentScopeHandle>();
   const didCreate = new Emitter<IAgentScopeHandle>();
   let handle: IAgentScopeHandle | undefined;
@@ -99,6 +115,7 @@ function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main'): Tes
     sessionService(ISessionInstructionsProvider, { _serviceBrand: undefined, ready: Promise.resolve(), agentsMd: '', agentsMdWarning: undefined, agentsMdPaths: [], onDidChange: Event.None as Event<void> }),
     agentService(IAgentScopeContext, { _serviceBrand: undefined, agentId, scope: (key) => `sessions/test-workspace/test-session/agents/${agentId}${key ? `/${key}` : ''}` }),
     appService(IFileSystemStorageService, storage ?? new DirectoryMemoryStorage()),
+    ...(store === undefined ? [] : [appService(IMemoryStore, store)]),
     { autoConfigure: storage === undefined, initialConfig: { [MEMORY_SECTION]: MemoryConfigSchema.parse({}), [LOOP_CONTROL_SECTION]: LoopControlSchema.parse({}) } });
   installReadableCapabilityOrigins(ctx);
   contexts.push(ctx);
@@ -269,5 +286,80 @@ describe('actual default memory contract consumption', () => {
     expect(requestText(ctx)).not.toContain('choose its durable home');
     expect(requestText(ctx)).not.toContain('This human input may change guidance beyond the current task');
     expect(ctx.llmCalls.at(-1)!.systemPrompt).toContain('You are Kiki, an interactive general AI agent');
+  });
+});
+
+
+async function canonicalMemory(): Promise<ISqliteMemoryStore> {
+  const home = await mkdtemp(join(tmpdir(), 'memory-request-'));
+  const ix = new TestInstantiationService();
+  ix.stub(IBootstrapService, { storeDir: join(home, 'store') });
+  ix.stub(IMemoryScopes, memoryScopes);
+  ix.set(IMemoryPersistence, new SyncDescriptor(SqliteMemoryPersistence));
+  ix.set(ISqliteMemoryStore, new SyncDescriptor(SqliteMemoryStore));
+  const persistence = ix.get(IMemoryPersistence);
+  memoryCleanup.push(async () => { await persistence.close(); await ix.dispose(); await rm(home, { recursive: true, force: true }); });
+  return ix.get(ISqliteMemoryStore);
+}
+
+describe('canonical Memory actual request working sets', () => {
+  it.each(['main', 'child'])('delivers complete relevant guidance to the %s actual request and removes replaced workset bodies', async (agentId) => {
+    const store = await canonicalMemory();
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'Deployment instructions', body: 'Use exactly 17 workers. Never publish artifacts; isolated smoke tests are the exception.', source: { writer: 'user' }, reason: 'Human guidance' });
+    await store.put({ action: 'create', scope, type: 'project', title: 'Unrelated garden', body: 'Water the unrelated garden every morning.', source: { writer: 'user' }, reason: 'Another topic' });
+    const ctx = memoryAgent(undefined, agentId, store);
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    const send = async (input: string) => {
+      if (agentId === 'main') return prompt(ctx, input);
+      ctx.mockNextResponse({ type: 'text', text: 'Continue the delegated task.' });
+      const run = await runAgentTurn({ id: agentId, accessor: { get: (id) => ctx.get(id) } }, { kind: 'prompt', prompt: input }, { signal: new AbortController().signal });
+      await run.completion;
+      await ctx.get(IAgentLoopService).settled();
+    };
+    await send('Apply the deployment instructions');
+    expect(requestText(ctx)).toContain(saved.entry.body);
+    expect(requestText(ctx)).not.toContain('Water the unrelated garden');
+    expect(requestText(ctx)).toContain(`[full; revision=${saved.entry.revision}`);
+    const changed = await store.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Use exactly 9 workers. Never publish artifacts; isolated smoke tests remain the exception.', source: { writer: 'user' }, reason: 'Corrected limit' });
+    await send('Continue the deployment instructions');
+    expect(requestText(ctx)).toContain(changed.entry.body);
+    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    expect(JSON.stringify(ctx.get(IAgentContextMemoryService).get())).toContain(saved.entry.body);
+    await store.forget(scope, (await store.previewForget(scope, [saved.entry.id])).targets, `forget-request-${agentId}`);
+    await send('Continue the deployment instructions');
+    expect(requestText(ctx)).not.toContain(changed.entry.body);
+  });
+
+  it('rebuilds current revisions after actual relay compaction and a restored profile request', async () => {
+    const store = await canonicalMemory();
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'Compilation policy', body: 'Compile with exactly 17 jobs; never upload output.', source: { writer: 'user' }, reason: 'Human policy' });
+    const ctx = memoryAgent(undefined, 'main', store);
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    await prompt(ctx, 'Apply the compilation policy');
+    const completed = ctx.once('compaction.completed');
+    expect(ctx.get(IAgentFullCompactionService).begin({ source: 'manual', strategy: 'relay' })).toBe(true);
+    await completed;
+    const changed = await store.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Compile with exactly 9 jobs; never upload output.', source: { writer: 'user' }, reason: 'Human correction' });
+    await prompt(ctx, 'Continue the compilation policy');
+    expect(requestText(ctx)).toContain(changed.entry.body);
+    expect(requestText(ctx)).not.toContain(saved.entry.body);
+    await ctx.expectResumeMatches();
+    const records: WireRecord[] = [];
+    for await (const record of ctx.get(IAppendLogStore).read<WireRecord>(ctx.get(IAgentScopeContext).scope(), AGENT_WIRE_RECORD_KEY)) records.push(record);
+    const latest = await store.put({ action: 'update', scope, id: changed.entry.id, expectedRevision: changed.entry.revision, type: changed.entry.type, title: changed.entry.title, body: 'Compile with exactly 5 jobs; never upload output.', source: { writer: 'user' }, reason: 'Correction while suspended' });
+    const restored = memoryAgent(ctx.get(IFileSystemStorageService), 'main', store);
+    restored.get(IDynamicPromptInjection);
+    await restored.restore(records);
+    restored.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    await prompt(restored, 'Resume the compilation policy');
+    expect(requestText(restored)).toContain(latest.entry.body);
+    expect(requestText(restored)).not.toContain(changed.entry.body);
+    expect(requestText(restored)).not.toContain(saved.entry.body);
   });
 });

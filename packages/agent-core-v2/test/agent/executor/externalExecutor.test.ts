@@ -20,6 +20,7 @@ import { ISessionMetadata } from '#/session/sessionMetadata/sessionMetadata';
 import { coldPromptFixture } from './coldPromptFixture';
 import { resolveExecutionBinding } from '#/agent/profile/executionBinding';
 import { attachExternalMailboxHarness } from './mailboxHarness';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
 
 import { buildModeOption } from '../../../../acp-server/src/config-options';
 
@@ -3282,5 +3283,33 @@ describe('ACP MCP approval scope', () => {
       await run.completion;
       expect(harness.elicitationDecisions).toEqual([{ action: 'accept', content: { persist: 'session' } }]);
     } finally { await harness.session.shutdown(); }
+  });
+});
+
+
+describe('external Memory working-set delivery', () => {
+  it.each([true, false])('captures the actual ACP request with explicit memory admission=%s', async (admitted) => {
+    const harness = createExecutionHarness({ unpinModel: true, thinkingEffort: 'off' });
+    const profile = harness.ix.get(IAgentProfileService);
+    const original = profile.data();
+    const execution = resolveExecutionBinding({ executor: original.executorId!, overrides: { kiki_context: admitted ? ['memory'] : [], inject_kiki_mcp: false } }, undefined, undefined, undefined);
+    vi.spyOn(profile, 'data').mockReturnValue({ ...original, execution, systemPrompt: '', kikiContext: admitted ? ['memory'] : [] });
+    const projection = '<memory-workset generation=2>\nUse exactly 17 jobs. Never upload; isolated tests excepted.\n</memory-workset>';
+    const refresh = vi.fn(async () => projection);
+    harness.ix.stub(IAgentMemorySnapshot, { refreshIfDirty: refresh, get: async () => projection });
+    try {
+      await harness.execution.run({ kind: 'prompt', prompt: 'Compilation policy' }, { signal: new AbortController().signal });
+      const actual = harness.starts[0]?.prompt;
+      if (admitted) {
+        expect(refresh).toHaveBeenCalledWith('Compilation policy');
+        expect(actual).toContain(projection);
+        expect(actual).toContain('Compilation policy');
+        expect(harness.events.filter((event) => event instanceof ExecutorHintDelivery)).toContainEqual(expect.objectContaining({ origin: 'memory_workset', method: 'next_turn_preamble', status: 'delivered' }));
+      } else {
+        expect(refresh).not.toHaveBeenCalled();
+        expect(actual).toBe('Compilation policy');
+        expect(harness.events.filter((event) => event instanceof ExecutorHintDelivery)).not.toContainEqual(expect.objectContaining({ origin: 'memory_workset' }));
+      }
+    } finally { await harness.execution.shutdown(); await harness.ix.dispose(); }
   });
 });

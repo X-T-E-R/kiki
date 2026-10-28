@@ -4,9 +4,11 @@ import { IConfigService } from '#/app/config/config';
 import { MEMORY_SECTION, type MemoryConfig } from '#/app/memory/configSection';
 import { ICapabilitySnapshotService } from '#/app/capabilitySnapshot/capabilitySnapshot';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
-import { IMemoryStore, MemoryDomainError, memoryBasisSchema, memoryValiditySchema, memoryCoveredBySchema, memoryApplicability, type MemoryEntry, type MemoryTarget } from '#/app/memory/memoryStore';
+import { IMemoryStore, MemoryDomainError, memoryBasisSchema, memoryValiditySchema, memoryCoveredBySchema, type MemoryEntry, type MemoryTarget } from '#/app/memory/memoryStore';
 import type { MemoryScope } from '#/app/memory/memoryScopes';
 import { IAgentMemorySnapshot, type MemoryPersonaContext } from '#/app/memory/memorySnapshot';
+import { memoryResult, memoryResultReference, memoryTextFits } from '#/app/memory/memoryContext';
+import type { MemoryScoreDetails } from '#/app/memory/memoryRecall';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
@@ -199,7 +201,7 @@ Search requires query: 1–200 characters and at most 10 whitespace-separated wo
 
 Returns an object with items, next_cursor, and coverage. Search defaults to 8 results and list to 20; page_size is 1–20. Continue with cursor alone, including an empty preparation page with exhausted=false. Source scan budgets limit each call, not the retrievable inventory; ranking is local to each bounded source chunk. Coverage identifies the exact scopes and filters, whether more pages remain, and whether input was skipped or unavailable. Exhausted complete search covers that lexical query, not every possible wording. If a cursor is invalidated by changes, restart the query and reconcile IDs rather than claiming a complete inventory.
 
-Each item has its complete title, status, owning scope, revision, and a target whose fields can be copied into MemoryWrite. Search snippets are at most 200 characters; they omit conditions. Read relevant entries in full before relying on omitted details, replacing, or merging them. An expired item is a historical lead; a recheck item requires current evidence. Query errors are reported as errors, not empty search results.`;
+Search returns complete stored units when they fit the response budget (24,000 UTF-16 units and 6,000 estimated tokens, including framing and metadata). complete=true includes the full body, source, basis, validity and target; reuse that current read without another MemoryRead. An item with complete=false is a reference only and includes an exact read target. If reference metadata alone exceeds the budget, restart with a smaller page_size. List returns references. Complete bodies are never truncated. An expired item is a historical lead; a recheck item requires current evidence. Query errors are reported as errors, not empty search results.`;
   readonly parameters = toInputJsonSchema(searchSchema);
   constructor(
     @IMemoryStore private readonly store: IMemoryStore,
@@ -223,9 +225,15 @@ Each item has its complete title, status, owning scope, revision, and a target w
           mode: input.mode, query: input.query, scope: input.scope, type: input.type, page_size: input.page_size,
           statuses: input.statuses ?? (input.include_superseded === true ? ['active', 'superseded'] : undefined),
         }, signal);
-        return { output: JSON.stringify({ ...page, items: page.items.map((entry) => ({ id: entry.id, title: entry.title, type: entry.type, status: entry.status,
-          revision: entry.revision, scope: entry.scope, target: target(entry.scope, entry), basis_kind: entry.basis?.kind ?? 'unknown', applicability: memoryApplicability(entry),
-          snippet: page.mode === 'search' ? entry.body.slice(0, 200) : undefined, score: page.mode === 'search' ? entry.score : undefined })) }) };
+        const items: Array<(ReturnType<typeof memoryResult> | ReturnType<typeof memoryResultReference>) & { score?: number; score_details?: MemoryScoreDetails }> = page.items.map((entry) => memoryResultReference(entry, entry.scope));
+        const output = () => JSON.stringify({ ...page, items });
+        if (page.mode === 'search' && !memoryTextFits(output(), 24_000, 6_000)) throw new MemoryDomainError('invalid_input', 'Memory reference metadata exceeds the response budget', 'Restart the search with a smaller page_size, such as 8.');
+        if (page.mode === 'search') for (const [index, entry] of page.items.entries()) {
+          const previous = items[index]!;
+          items[index] = { ...memoryResult(entry, entry.scope), score: entry.score, score_details: entry.score_details };
+          if (!memoryTextFits(output(), 24_000, 6_000)) items[index] = previous;
+        }
+        return { spillExempt: true, output: output() };
       } catch (error) { signal.throwIfAborted(); return failure(error); }
     } };
   }
@@ -264,7 +272,7 @@ Check status and validity. Archived and superseded entries are history, not curr
           const item = found[0];
           if (item === undefined) return { id, missing: true, reason: 'not_found', recovery: 'Locate the ID in visible scopes; do not create a duplicate to bypass lookup.' };
           if (item.entry.status === 'pending' && !parsed.data.include_pending) return { id, missing: true, reason: 'pending_excluded', recovery: 'Use include_pending=true to inspect the proposal; it is not active guidance.' };
-          return { ...item.entry, scope: item.scope, target: target(item.scope, item.entry), applicability: memoryApplicability(item.entry), basis_kind: item.entry.basis?.kind ?? 'unknown', complete: true };
+          return memoryResult(item.entry, item.scope);
         }));
         return { spillExempt: true, output: JSON.stringify(items) };
       } catch (error) { return failure(error); }

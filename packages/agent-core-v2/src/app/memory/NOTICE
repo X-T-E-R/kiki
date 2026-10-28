@@ -1,4 +1,4 @@
-OpenClaw Memory source lifecycle adaptation
+OpenClaw Memory lifecycle and recall adaptation
 
 Upstream: https://github.com/openclaw/openclaw
 Revision: 3c9b8602b79b2ae2f3c9a76ac7dfb9579ea8eefc
@@ -14,14 +14,26 @@ Adapted units:
   reserve provenance before content commit and roll both back on failure.
 - extensions/memory-core/src/memory-forget.ts:
   preview exact affected lineage, fence reads/reprocessing, remove derived content.
+- extensions/memory-core/src/memory/hybrid.ts and mmr.ts:
+  lexical/vector union, weighted component scores, exact-identity tiers,
+  diversity reranking, keyword-only fallback and spare-window selection.
+- extensions/active-memory/trigger-recall.ts:
+  message/title trigger scoring, admitted-source selection and request reuse.
 
 Changes: Kiki uses per-fact source units and scoped IDs rather than whole-session
 blacklists. Sources, immutable revisions, independent human adjudications,
 lineage, barriers and content cleanup share one SQLite transaction. It preserves
 CAS, review/off policy and recoverable delete/undo. It does not run dreaming.
+Recall uses Kiki scoped IDs, immutable revisions and its ASCII/CJK tokenizer;
+file-path/project ranking and temporal decay do not determine applicability.
+Whole-unit character/token budgets replace the donor's truncated 1800-character
+output. No provider connection or model download is added.
 
 Adapted behavioral tests in test/app/memory/sqliteMemory.test.ts retain upstream
 cases from dreaming-consolidation.test.ts, memory-entry-origins.test.ts,
 memory-forget-consolidation.test.ts and memory-forget.test.ts: blocked origins,
 interactive session admission, failed lineage reservation, predecessor-source
-inheritance, mixed-lineage preview and persistent replay prevention.
+inheritance, mixed-lineage preview and persistent replay prevention. Additional
+hybrid.test.ts/mmr.test.ts/trigger-recall.test.ts cases cover strict semantic
+windows, keyword fallback, duplicate diversity, exact IDs, trusted inbound
+messages and complete request units.

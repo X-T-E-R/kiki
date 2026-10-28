@@ -49,6 +49,10 @@ import { externalPromptHints, externalStateHints, type ExternalPromptHint } from
 import { NativeAgentExecutorSession } from './nativeAgentExecutorSession';
 import { acquireAgentActivityPermit } from './agentActivityPermit';
 import type { RequestPermit } from '#/kosong/model/requestAdmission';
+import { IAgentMemorySnapshot } from '#/app/memory/memorySnapshot';
+import { withoutMemoryWorkset } from '#/app/memory/memoryProjection';
+import { harnessCapabilities } from '#/app/agentExecutor/harnessMcp';
+import { resolveExecutorPrompt } from '@kiki/agent-profiles/executorPrompt';
 
 interface ActiveRun {
   readonly controller: AbortController;
@@ -153,7 +157,7 @@ export class AgentExecutionService implements IAgentExecutionService {
         await this.agent.accessor.get(IAgentContextInjectorService).reconcileAllAtSafeBoundary();
         const todos = this.agent.accessor.get(ISessionTodoService);
         hints = [
-          ...externalPromptHints(this.agent.accessor.get(IAgentContextMemoryService).get(), this.deliveredHints),
+          ...externalPromptHints(this.agent.accessor.get(IAgentContextMemoryService).get().map(withoutMemoryWorkset), this.deliveredHints),
           ...externalStateHints({
             todos: todos.getTodos(this.agent.id),
             notes: todos.getNotes(this.agent.id).notes,
@@ -165,6 +169,18 @@ export class AgentExecutionService implements IAgentExecutionService {
         if (deliverable.length > 0) outbound = { ...outbound, prompt: [
           ...deliverable.map((hint) => `[Kiki ${hint.origin}]\n${hint.text}`), outbound.prompt,
         ].join('\n\n') };
+      }
+      const memoryAllowed = harnessCapabilities(binding).context?.includes('memory') === true ||
+        resolveExecutorPrompt(binding.executorPrompt, binding.executorId ?? 'native').include.includes('memory_snapshot');
+      if ((binding.executorId ?? 'native') !== 'native' && outbound.kind !== 'retry' && memoryAllowed) {
+        const memory = this.agent.accessor.get(IAgentMemorySnapshot);
+        const inbound = runContext.request ?? request;
+        await memory.refreshIfDirty(inbound.kind === 'retry' ? undefined : inbound.prompt);
+        const projection = await memory.get();
+        if (projection.startsWith('<memory-workset')) {
+          hints.push({ origin: 'memory_workset', text: projection });
+          outbound = { ...outbound, prompt: `${projection}\n\n${outbound.prompt}` };
+        }
       }
       controller.signal.throwIfAborted();
       session = await this.resolveSession();

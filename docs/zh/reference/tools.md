@@ -264,7 +264,7 @@ Plan 模式下，`Write` 与 `Edit` 只能修改当前计划文件。`TaskStop`�
 
 ### 搜索与读取
 
-`MemorySearch` 可以用 `mode: "search"`（默认，需要 `query`）或 `mode: "list"`（不带 query，浏览清单）。`page_size` 取 1–20，search 默认 8、list 默认 20；翻页只带 `cursor`，改动任何过滤条件都会让它失效。每一项都带完整标题、type、status、revision、所属范围、可直接复制进 `MemoryWrite` 的 `target`、`basis_kind`，以及 `expired` / `recheck` / `unrecorded` 三态的 `applicability`。响应里的 `coverage` 说明实际查了哪些范围和状态、有没有跳过什么。只要 `exhausted` 为 false，空准备页也要接续；扫描预算不会截掉剩余源内容。搜索相关性排序针对每个有界源片段。search 额外给最多 200 字符的 `snippet` 和 `score`，list 两者都没有。片段会省略条件，所以要依赖、合并或替换一条记忆前先完整读出来。
+`MemorySearch` 可以用 `mode: "search"`（默认，需要 `query`）或 `mode: "list"`（不带 query，浏览清单）。`page_size` 取 1–20，search 默认 8、list 默认 20；翻页只带 `cursor`，改动任何过滤条件都会让它失效。每一项都带完整标题、type、status、revision、所属范围、可直接复制进 `MemoryWrite` 的 `target`、`basis_kind`，以及 `expired` / `recheck` / `unrecorded` 三态的 `applicability`。响应里的 `coverage` 说明实际查了哪些范围和状态、有没有跳过什么。只要 `exhausted` 为 false，空准备页也要接续；扫描预算不会截掉剩余源内容。文件后端按有界源片段分别排序。search 会在序列化回包预算内提供整条正文、来源、依据与有效性，并标记 `complete: true`；预算为 24,000 个 UTF-16 代码单元及 6,000 个估算 token。该完整版本可直接复用，无需再读。放不下的条目标记 `complete: false`，并给出精确的 `read` 目标；依赖或修改内容前先展开。完整搜索条目带 `score`；后端提供分项分数时，还会带 `score_details`。如果引用元数据本身就超过预算，缩小 `page_size` 后重新搜索。list 返回引用。
 
 `MemoryRead` 在 `id` 和 `ids`（最多 10 个）中恰好取一个，默认读取生效、已归档和被替代的条目，只有显式传 `include_pending: true` 才包含待审提议。结果是完整条目而不是摘要，并带所属范围、target 字段和适用性，所以一次读取可以直接作为 `update` 的来源。
 

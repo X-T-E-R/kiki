@@ -6,6 +6,7 @@ import type { ContextMessage } from '#/agent/contextMemory/types';
 import { IAgentStateService } from '#/agent/state/agentState';
 import type { Message } from '#/kosong/contract/message';
 import { ITelemetryService } from '#/app/telemetry/telemetry';
+import { projectCurrentMemory } from '#/app/memory/memoryProjection';
 import {
   IAgentContextProjectorService,
   type MediaStripSnapshot,
@@ -72,7 +73,7 @@ export class AgentContextProjectorService implements IAgentContextProjectorServi
     fn: (history: readonly ContextMessage[], onAnomaly?: OnAnomaly) => Message[],
   ): readonly Message[] {
     const anomalies: ProjectionAnomaly[] = [];
-    const result = fn(messages, (anomaly) => anomalies.push(anomaly));
+    const result = fn(projectCurrentMemory(messages), (anomaly) => anomalies.push(anomaly));
     this.reportProjectionRepairs(anomalies);
     return result;
   }

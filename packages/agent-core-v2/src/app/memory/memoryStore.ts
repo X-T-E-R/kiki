@@ -85,7 +85,7 @@ export interface MemoryQuery {
   readonly cursor?: string;
 }
 export interface MemoryQueryPage {
-  readonly items: readonly (MemoryEntry & { readonly scope: MemoryScope; readonly score?: number })[];
+  readonly items: readonly (MemoryEntry & { readonly scope: MemoryScope; readonly score?: number; readonly score_details?: import('./memoryRecall').MemoryScoreDetails })[];
   readonly mode: 'search' | 'list';
   readonly next_cursor: string | null;
   readonly coverage: { readonly scopes: readonly MemoryScope[]; readonly statuses: readonly MemoryStatus[]; readonly exhausted: boolean; readonly complete: boolean; readonly warnings: readonly string[] };
@@ -126,9 +126,15 @@ export interface MemoryInventory {
   readonly warnings: readonly string[];
   readonly fingerprint: string;
 }
+export interface MemoryStoreSnapshot {
+  readonly generation: string;
+  readonly entries: readonly (MemoryEntry & { readonly scope: MemoryScope })[];
+}
 export interface IMemoryStore {
   readonly _serviceBrand: undefined;
   readonly onDidChange: Event<MemoryStoreChange>;
+  checkpoint?(): Promise<string>;
+  snapshot?(scopes: readonly MemoryScope[]): Promise<MemoryStoreSnapshot>;
   inventory(scope: MemoryScope): Promise<MemoryInventory>;
   list(scope: MemoryScope, includeInactive?: boolean): Promise<readonly MemoryEntry[]>;
   get(scope: MemoryScope, id: string): Promise<MemoryEntry | undefined>;

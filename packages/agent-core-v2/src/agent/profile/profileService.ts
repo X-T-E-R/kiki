@@ -3590,7 +3590,7 @@ export class AgentProfileService extends Disposable implements IAgentProfileServ
       productName: (await this.identity.resolved()).displayName,
       replyStyleGuide: this.bootstrap.args.replyStyleGuide,
     };
-    const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.promptLayoutMigrationPending;
+    const enabled = previous?.enabled === true || this.profileState.renderGeneration === 0 || this.promptLayoutMigrationPending || this.memorySnapshot.workingSet === true;
     this.promptLayoutMigrationPending = false;
     const effective = enabled ? context : legacyEnvironmentContext(context, this.profileState.systemPrompt, previous?.context);
     const content = dynamicPromptContent(effective);

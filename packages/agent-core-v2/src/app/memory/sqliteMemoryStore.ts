@@ -8,7 +8,8 @@ import { IMemoryPersistence, type MemoryCommit, type MemoryObjectEdit, type Memo
 import { IMemoryScopes, type MemoryScope } from './memoryScopes';
 import { decodeMemoryEntry, type IMemoryStore, type MemoryEntry, type MemoryMutation, type MemoryPutResult, type MemoryStoreChange, type MemoryWriter, type MemoryQuery, type MemoryQueryPage, type MemoryLorebookEntry, type MemorySource } from './memoryStore';
 import { MemoryDomainError, memoryApplicability, normalizeMemoryBasis, normalizeMemoryValidity } from './memoryMetadata';
-import { memoryQueryCursor, memoryQueryRequest, rankMemoryEntries } from './memoryQuery';
+import { memoryQueryCursor, memoryQueryRequest } from './memoryQuery';
+import { rankMemoryRecall } from './memoryRecall';
 import { redactMemorySecrets } from './memorySafety';
 import { memorySourceUnitId } from './memorySourceIdentity';
 
@@ -33,6 +34,8 @@ export interface MemoryForgetPreview {
   readonly targets: readonly MemoryForgetTarget[];
 }
 export interface ISqliteMemoryStore extends IMemoryStore {
+  checkpoint(): Promise<string>;
+  snapshot(scopes: readonly MemoryScope[]): Promise<import('./memoryStore').MemoryStoreSnapshot>;
   getRevision(scope: MemoryScope, id: string, revision: string): Promise<MemoryEntry | undefined>;
   provenance(scope: MemoryScope, id: string): Promise<MemoryProvenance>;
   ingest(candidate: MemoryIngestCandidate): Promise<MemoryPutResult>;
@@ -57,6 +60,15 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
   private async view(scope: MemoryScope): Promise<{ base: string; view: MemoryReadView }> {
     const base = await this.scopes.resolve(scope);
     return { base, view: await this.persistence.read([base]) };
+  }
+  async checkpoint(): Promise<string> { return String((await this.persistence.read([])).generation); }
+  async snapshot(scopes: readonly MemoryScope[]): ReturnType<ISqliteMemoryStore['snapshot']> {
+    const bases = await Promise.all(scopes.map((scope) => this.scopes.resolve(scope)));
+    const view = await this.persistence.read(bases);
+    return { generation: String(view.generation), entries: view.objects.flatMap((object) => {
+      const scope = scopes[bases.indexOf(object.scope)];
+      return scope === undefined || object.entry === null ? [] : [{ ...object.entry, scope }];
+    }) };
   }
   async inventory(scope: MemoryScope): ReturnType<IMemoryStore['inventory']> {
     const { view } = await this.view(scope);
@@ -242,9 +254,9 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
       const scope = selected[bases.indexOf(object.scope)];
       return object.entry !== null && scope !== undefined && request.statuses!.includes(object.entry.status) && (request.type === undefined || request.type === object.entry.type) ? [{ ...object.entry, scope }] : [];
     });
-    const ordered = request.mode === 'search' ? rankMemoryEntries(entries, request.query!, request.type) : entries.toSorted((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id) || JSON.stringify(a.scope).localeCompare(JSON.stringify(b.scope)));
+    const ordered = request.mode === 'search' ? rankMemoryRecall(entries, request.query!, request.type) : entries.toSorted((a, b) => a.title.localeCompare(b.title) || a.id.localeCompare(b.id) || JSON.stringify(a.scope).localeCompare(JSON.stringify(b.scope)));
     const key = (item: typeof ordered[number]): [number, string, string, string] => ['score' in item ? item.score : 0, item.title, item.id, JSON.stringify(item.scope)];
-    const compare = (a: ReturnType<typeof key>, b: ReturnType<typeof key>): number => (request.mode === 'search' ? b[0] - a[0] : a[1].localeCompare(b[1])) || a[2].localeCompare(b[2]) || a[3].localeCompare(b[3]);
+    const compare = (a: ReturnType<typeof key>, b: ReturnType<typeof key>): number => (request.mode === 'search' ? b[0] - a[0] : 0) || a[1].localeCompare(b[1]) || a[2].localeCompare(b[2]) || a[3].localeCompare(b[3]);
     const last = position.chunkHash === undefined ? undefined : JSON.parse(position.chunkHash) as ReturnType<typeof key>;
     const remaining = last === undefined ? ordered : ordered.filter((item) => compare(key(item), last) > 0);
     const items = remaining.slice(0, request.page_size!);
@@ -252,8 +264,8 @@ export class SqliteMemoryStore extends Disposable implements ISqliteMemoryStore 
     return { items, mode: request.mode!, next_cursor: exhausted ? null : memoryQueryCursor(scopes, request, { ...position, chunkHash: JSON.stringify(key(items.at(-1)!)), fingerprint: String(view.generation) }, this.cursorSalt), coverage: { scopes: selected, statuses: request.statuses!, exhausted, complete: true, warnings: [] } };
   }
   async search(...[scopes, query, type, includeInactive]: Parameters<IMemoryStore['search']>): ReturnType<IMemoryStore['search']> {
-    const lists = await Promise.all(scopes.map(async (scope) => (await this.list(scope, includeInactive)).filter((entry) => includeInactive || entry.status === 'active').map((entry) => ({ ...entry, scope }))));
-    return rankMemoryEntries(lists.flat(), query, type);
+    const view = await this.snapshot(scopes);
+    return rankMemoryRecall(view.entries.filter((entry) => includeInactive || entry.status === 'active'), query, type);
   }
   async listPersonaEntries(personaId: string): ReturnType<IMemoryStore['listPersonaEntries']> {
     const scopes: MemoryScope[] = [{ kind: 'persona', personaId }, ...(await this.scopes.listWorkspaceIds?.() ?? []).map((workspaceId) => ({ kind: 'persona_workspace' as const, workspaceId, personaId }))];
