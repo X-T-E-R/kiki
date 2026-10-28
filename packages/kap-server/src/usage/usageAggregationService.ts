@@ -236,7 +236,7 @@ export class UsageAggregationService {
     const readSignal = AbortSignal.any([this.modelController.signal, deadline.signal, ...(signal === undefined ? [] : [signal])]);
     const rows: Record<string, AgentUsageProjection> = {};
     const revisions = new Map<string, string>();
-    let agents: string[] = [];
+    let agents: readonly string[] = [];
     let inventoryComplete = false;
     let pricingReady = false;
     const pricing = this.core.accessor.get(IModelPricingService);
