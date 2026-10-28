@@ -1041,6 +1041,18 @@ describe('ThreadCommunicationService', () => {
     expect(await service.isWorkspaceEnabled('workspace-a', a)).toBe(false);
   });
 
+  it('checks workspace communication once per listing and refreshes it for the next listing', async () => {
+    const rows = Array.from({ length: 50 }, (_, index) => summary(`page-${index}`, 'workspace-a', 50 - index));
+    ix.stub(ISessionIndex, { listRecent: async () => ({ items: rows }) });
+    const checks = ix.stub(IThreadMailboxStore, 'getWorkspaceOverride', async (workspaceId: string) => workspaceOverrides.get(workspaceId));
+    const service = ix.get(IThreadCommunicationService);
+    expect((await service.listThreads({ limit: 50 })).threads).toHaveLength(50);
+    expect(checks.callCount).toBe(1);
+    workspaceOverrides.set('workspace-a', false);
+    expect((await service.listThreads({ limit: 50 })).threads).toEqual([]);
+    expect(checks.callCount).toBe(2);
+  });
+
   it('paginates every enabled session when the requested limit is smaller than the index page', async () => {
     const rows: SessionSummary[] = [
       summary('page-a', 'workspace-a', 5),

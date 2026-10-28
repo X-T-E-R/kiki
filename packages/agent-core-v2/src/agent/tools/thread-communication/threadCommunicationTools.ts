@@ -5,7 +5,7 @@ import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory'
 import { createDecorator, IInstantiationService, type ServicesAccessor } from '#/_base/di/instantiation';
 import { toInputJsonSchema } from '#/tool/input-schema';
 import THREAD_SEND_DESCRIPTION_SOURCE from './thread-send.md?raw';
-import type { AgentTool, ToolExecution } from '#/tool/toolContract';
+import { ToolAccesses, type AgentTool, type ToolExecution } from '#/tool/toolContract';
 import { registerAgentToolService } from '#/agent/toolRegistry/toolContribution';
 import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
@@ -192,6 +192,7 @@ export class ListThreadsTool extends ThreadToolBase implements IListThreadsTool 
   resolveExecution(input: ListThreadsToolInput): ToolExecution {
     return {
       approvalRule: this.name,
+      accesses: ToolAccesses.none(),
       description: 'Listing local threads',
       execute: async (ctx) => {
         await this.requireCallerEnabled();
@@ -228,6 +229,7 @@ export class ReadThreadTool extends ThreadToolBase implements IReadThreadTool {
   resolveExecution(input: ReadThreadToolInput): ToolExecution {
     return {
       approvalRule: this.name,
+      accesses: ToolAccesses.none(),
       description: 'Reading a local thread',
       execute: async (ctx) => {
         await this.requireCallerEnabled();
@@ -312,6 +314,7 @@ export class WaitThreadsTool extends ThreadToolBase implements IWaitThreadsTool 
   resolveExecution(input: WaitThreadsToolInput): ToolExecution {
     return {
       approvalRule: this.name,
+      accesses: ToolAccesses.none(),
       description: 'Waiting for thread activity',
       execute: async (ctx) => {
         await this.requireCallerEnabled();

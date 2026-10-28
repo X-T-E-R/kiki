@@ -42,6 +42,9 @@ import { makeAgentScopeContext, IAgentScopeContext } from '#/agent/scopeContext/
 import { IAgentToolRegistryService } from '#/agent/toolRegistry/toolRegistry';
 import { AgentToolRegistryService } from '#/agent/toolRegistry/toolRegistryService';
 import { IAgentProfileService, type ProfileData } from '#/agent/profile/profile';
+import { IListThreadsTool, ListThreadsTool, IReadThreadTool, ReadThreadTool, IWaitThreadsTool, WaitThreadsTool } from '#/agent/tools/thread-communication/threadCommunicationTools';
+import { IThreadCommunicationService } from '#/app/threadCommunication/threadCommunication';
+import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IAgentToolPolicyService } from '#/agent/toolPolicy/toolPolicy';
 import { AgentToolPolicyService } from '#/agent/toolPolicy/toolPolicyService';
 import { IConfigService } from '#/app/config/config';
@@ -297,6 +300,44 @@ describe('AgentToolExecutorService', () => {
     expect(writer.calls).toHaveLength(1);
     expect(tailResolve).not.toHaveBeenCalled();
   });
+
+  it.each(['ThreadList', 'ThreadRead', 'ThreadWait'] as const)(
+    'runs unrelated shell work while %s is still reading managed state', async (name) => {
+      const entered = deferred();
+      const release = deferred();
+      const hold = async () => { entered.resolve(); await release.promise; };
+      ix.stub(ISessionContext, { sessionId: 'source', workspaceId: 'workspace-a' });
+      ix.stub(IThreadCommunicationService, {
+        hostId: 'local',
+        isWorkspaceEnabled: async () => true,
+        listThreads: async () => { await hold(); return { threads: [] }; },
+        readThread: async (input) => { await hold(); return { thread: input.thread, turns: [] }; },
+        waitThreads: async () => { await hold(); return { threads: [], timedOut: true }; },
+      });
+      ix.set(IListThreadsTool, new SyncDescriptor(ListThreadsTool));
+      ix.set(IReadThreadTool, new SyncDescriptor(ReadThreadTool));
+      ix.set(IWaitThreadsTool, new SyncDescriptor(WaitThreadsTool));
+      registry.register(ix.get(IListThreadsTool));
+      registry.register(ix.get(IReadThreadTool));
+      registry.register(ix.get(IWaitThreadsTool));
+      const shell = new TestTool('Bash');
+      registry.register(shell);
+      const thread = { workspace_id: 'workspace-b', session_id: 'target' };
+      const args = name === 'ThreadList' ? {} : name === 'ThreadRead' ? { thread } : { threads: [{ thread }] };
+      const running = execute([toolCall('managed-read', name, args), toolCall('shell-call', 'Bash', {})]);
+      try {
+        await entered.promise;
+        await new Promise<void>((resolve) => setImmediate(resolve));
+        expect(shell.calls).toHaveLength(1);
+        expect(pairedToolCallIds().results).toContain('shell-call');
+        expect(pairedToolCallIds().results).not.toContain('managed-read');
+      } finally {
+        release.resolve();
+        await running;
+      }
+      expect(pairedToolCallIds().results).toHaveLength(2);
+    },
+  );
 
   it('keeps all-access tasks and their conflicting followers in original queue order', async () => {
     const firstRelease = deferred<ExecutableToolResult>();

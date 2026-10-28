@@ -353,6 +353,7 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
     }
 
     const threads: ThreadSummary[] = [];
+    const workspaceAdmission = new Map<string, boolean>();
     let before = decoded?.before;
     let terminal = false;
     let lastScanned: string | undefined;
@@ -367,7 +368,12 @@ export class ThreadCommunicationService extends Disposable implements IThreadCom
       if (page.items.length === 0) break;
       for (const [index, summary] of page.items.entries()) {
         lastScanned = summary.id;
-        if (!(await this.workspaceEnabled(summary.workspaceId))) continue;
+        let enabled = workspaceAdmission.get(summary.workspaceId);
+        if (enabled === undefined) {
+          enabled = await this.workspaceEnabled(summary.workspaceId);
+          workspaceAdmission.set(summary.workspaceId, enabled);
+        }
+        if (!enabled) continue;
         threads.push(this.toThreadSummary(summary));
         if (threads.length >= limit) {
           hasMore = index < page.items.length - 1 || page.nextCursor !== undefined;
