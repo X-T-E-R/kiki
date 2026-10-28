@@ -1560,7 +1560,7 @@ export class UsageAggregationService {
     hold.cursor = continuation(startOffset, skip);
     const reached = (): boolean => endOffset !== undefined && covered !== undefined && covered.generation === generation && covered.offset === endOffset;
     if (startOffset === size) return endOffset === undefined || reached() ? { done: true, cursor: hold.cursor } : changed();
-    let pending = Buffer.alloc(0);
+    let fragments: Buffer[] = [], fragmentBytes = 0;
     let lineStart = startOffset;
     let invalid = false;
     let done = false;
@@ -1605,17 +1605,24 @@ export class UsageAggregationService {
     };
     try {
       for await (const chunk of storage.readStream(directory, FACT_JOURNAL_KEY, { start: startOffset, end: size - 1 }, { signal: budget.factSignal })) {
-        pending = pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([pending, Buffer.from(chunk)]);
-        let newline = pending.indexOf(10);
-        while (newline >= 0) {
-          const line = pending.subarray(0, newline);
-          pending = pending.subarray(newline + 1);
+        const bytes = Buffer.from(chunk);
+        let start = 0;
+        for (let newline = bytes.indexOf(10, start); newline >= 0; newline = bytes.indexOf(10, start)) {
+          const suffix = bytes.subarray(start, newline);
+          const line = fragments.length === 0 ? suffix : Buffer.concat([...fragments, suffix], fragmentBytes + suffix.length);
+          fragments = [];
+          fragmentBytes = 0;
           if (line.length > 0 && await consume(line)) return invalid ? changed() : { done, cursor: hold.cursor };
           lineStart += line.byteLength + 1;
-          newline = pending.indexOf(10);
+          start = newline + 1;
+        }
+        if (start < bytes.length) {
+          const suffix = bytes.subarray(start);
+          fragments.push(suffix);
+          fragmentBytes += suffix.length;
         }
       }
-      if (pending.length > 0 && await consume(pending)) return invalid ? changed() : { done, cursor: hold.cursor };
+      if (fragmentBytes > 0 && await consume(Buffer.concat(fragments, fragmentBytes))) return invalid ? changed() : { done, cursor: hold.cursor };
       if (endOffset !== undefined && !reached()) return changed();
       if (!invalid) await publish(size, 0);
     } catch (error) {

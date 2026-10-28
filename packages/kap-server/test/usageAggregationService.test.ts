@@ -2754,6 +2754,50 @@ describe('shared agent and history usage projection', () => {
 
 
 describe('SQLite UsageRangeFold publication', () => {
+  it.each([Infinity, 257])('joins fragmented journal rows once while retaining UTF-8, empty lines and paused ordinals (budget: %s)', async (allowance) => {
+    const wireScope = scope('workspace', 'session');
+    const saved = await openRange([summary('session', 'workspace')], {}, true);
+    const directory = `cache/usage-facts-v1/${createHash('sha256').update(wireScope).digest('hex')}`;
+    const records = Array.from({ length: 600 }, (_, index) => ({ time: index + 1, model: '模型😀', usageKnown: index % 3 !== 0, usage: { inputOther: 0, output: 1, inputCacheRead: 0, inputCacheCreation: 0 } }));
+    const checkpoint = { generation: 'legacy', offset: 300, size: 300, mtimeMs: 1, boundaryHash: '', valid: true };
+    const bytes = Buffer.from(`\n${JSON.stringify({ version: 1, start: 0, checkpoint, records: records.slice(0, 300) })}\n${JSON.stringify({ version: 1, start: 300, checkpoint: { ...checkpoint, offset: 600, size: 600 }, records: records.slice(300) })}\n`);
+    await saved.storage.write(directory, 'facts.jsonl', bytes);
+    const stream = saved.storage.readStream.bind(saved.storage);
+    const fragments = vi.spyOn(saved.storage, 'readStream').mockImplementation((source, key, range) => {
+      const original = stream(source, key, range);
+      if (source !== directory || key !== 'facts.jsonl') return original;
+      return (async function* () {
+        const reused = Buffer.alloc(17);
+        for await (const chunk of original) for (let offset = 0; offset < chunk.length; offset += 17) {
+          const length = Math.min(17, chunk.length - offset);
+          reused.set(chunk.subarray(offset, offset + length));
+          yield reused.subarray(0, length);
+        }
+      })();
+    });
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const replay = Reflect.get(service, 'replayFactJournal') as (...args: unknown[]) => Promise<{ done: boolean; cursor: string }>;
+    const pages: UsageFactSnapshot['records'][number][][] = [];
+    const emit = async (records: readonly UsageFactSnapshot['records'][number][]) => { pages.push([...records]); };
+    const signal = new AbortController().signal;
+    const budget = { remainingFacts: allowance, deadlineAt: 2000, signal, factSignal: signal, incompleteReason: null };
+    const hold = { cursor: 'journal:0:0' };
+    const concat = vi.spyOn(Buffer, 'concat');
+    try {
+      let result = await replay.call(service, wireScope, hold.cursor, { startAt: 0, endAt: 1000 }, budget, hold, emit, 'legacy', 600);
+      if (allowance !== Infinity) {
+        expect(result.done).toBe(false);
+        expect(pages.flat()).toEqual(records.slice(0, allowance));
+        budget.remainingFacts = Infinity;
+        result = await replay.call(service, wireScope, result.cursor, { startAt: 0, endAt: 1000 }, budget, hold, emit, 'legacy', 600);
+      }
+      expect(result.done).toBe(true);
+      expect(pages.flat()).toEqual(records);
+      expect(pages.every((page) => page.length <= 256)).toBe(true);
+      expect(concat.mock.calls.reduce((sum, [pieces, size]) => sum + (size ?? pieces.reduce((total, piece) => total + piece.length, 0)), 0)).toBeLessThanOrEqual(bytes.length * 2);
+    } finally { concat.mockRestore(); fragments.mockRestore(); service.dispose(); }
+  });
+
   it('reuses consecutive attribution keys without merging changed fields, buckets or later pages', async () => {
     const saved = await openRange([summary('session', 'workspace')], {}, true);
     const fold = new UsageRangeFold(saved.store, 'attribution-keys', 100, 100);
