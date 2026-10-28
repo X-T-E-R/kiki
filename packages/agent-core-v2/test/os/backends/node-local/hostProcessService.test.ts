@@ -716,7 +716,7 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
     }
   });
 
-  it('keeps an exited command running after control EPIPE, then repeated stops do not write the destroyed pipe', async () => {
+  it('completes an exited command once its unreleased helper closed the Job after control EPIPE, without writing the destroyed pipe', async () => {
     const proc = await spawnOwned(process.execPath, ['-e', 'process.exit(0)']);
     expect(await proc.wait()).toBe(0);
     const control = (proc as unknown as { control: { write: (chunk: string, cb?: (error?: Error | null) => void) => boolean; destroy: () => void } }).control;
@@ -731,23 +731,50 @@ describe.skipIf(process.platform !== 'win32')('Windows owned process tree', () =
       }
       throw new Error(`control write after EPIPE (${String(chunk)})`);
     });
+    const helper = (proc as unknown as { child: { pid?: number; exitCode: number | null } }).child;
     const taskId = tasks.registerTask(new ProcessTask(proc, 'ffprobe', 'media info'), { detached: true });
     await vi.waitFor(() => {
-      expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
-      expect(tasks.getTask(taskId)?.stopReason).toContain('write EPIPE');
-      expect(tasks.getTask(taskId)?.stopReason).toContain('"cleanupComplete":false');
-      expect(tasks.getTask(taskId)?.stopReason).toContain('"phase":"control"');
-      expect(tasks.getTask(taskId)?.stopReason).toContain('"controlClosed":true');
+      expect(helper.exitCode).toBe(6);
+      expect(tasks.getTask(taskId)).toMatchObject({ status: 'completed', exitCode: 0 });
+      expect(tasks.getTask(taskId)?.endedAt).toEqual(expect.any(Number));
+    }, { timeout: 5_000 });
+    expect(alive(helper.pid!)).toBe(false);
+    expect(writes).toBe(1);
+    expect((await tasks.stop(taskId))?.status).toBe('completed');
+    expect((await tasks.stop(taskId))?.status).toBe('completed');
+    expect(writes).toBe(1);
+  }, 15_000);
+
+  it('confirms termination of retained descendants when the unreleased helper closes their Job, and TaskStop then succeeds', async () => {
+    const file = join(directory, 'unreleased-close-pids.txt');
+    const command = `${quote(process.execPath.replaceAll('\\', '/'))} ${quote(join(directory, 'tree.cjs').replaceAll('\\', '/'))} ${quote(file.replaceAll('\\', '/'))} >/dev/null 2>&1 & sleep 0.4`;
+    const proc = await spawnOwned('C:/Program Files/Git/bin/bash.exe', ['-c', command]);
+    proc.stdin.end();
+    expect(await proc.wait()).toBe(0);
+    const pids = await readPids(file);
+    expect(pids.filter(alive).length).toBe(3);
+    const raw = proc as unknown as { control: { write: (chunk: string, cb?: (error?: Error | null) => void) => boolean; destroy: () => void }; child: { pid?: number; exitCode: number | null } };
+    let writes = 0;
+    vi.spyOn(raw.control, 'write').mockImplementation((chunk, cb) => {
+      writes += 1;
+      if (writes > 1) throw new Error(`control write after EPIPE (${String(chunk)})`);
+      cb?.(Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+      queueMicrotask(() => raw.control.destroy());
+      return false;
     });
-    expect(writes).toBe(1);
-    const helperPid = (proc as unknown as { child: { pid?: number } }).child.pid;
-    expect(helperPid).toEqual(expect.any(Number));
-    await vi.waitFor(() => { expect(alive(helperPid!)).toBe(false); }, { timeout: 5_000 });
-    await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
-    expect(tasks.getTask(taskId)).toMatchObject({ status: 'running', exitCode: 0, endedAt: null });
-    await expect(tasks.stop(taskId)).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { cleanupComplete: false, phase: 'control', controlClosed: true } });
-    expect(writes).toBe(1);
-    expect(tasks.getTask(taskId)?.status).toBe('running');
+    const taskId = tasks.registerTask(new ProcessTask(proc, command, 'release write lost'), { detached: true });
+    try {
+      await vi.waitFor(() => {
+        expect(raw.child.exitCode).toBe(6);
+        expect(tasks.getTask(taskId)).toMatchObject({ status: 'completed', exitCode: 0 });
+      }, { timeout: 5_000 });
+      await vi.waitFor(() => { expect(pids.filter(alive)).toEqual([]); }, { timeout: 5_000 });
+      expect((await tasks.stop(taskId))?.status).toBe('completed');
+      await expect(proc.kill()).rejects.toMatchObject({ code: 'os.process.kill_failed', details: { phase: 'control' } });
+      expect(writes).toBe(1);
+    } finally {
+      for (const pid of pids) if (alive(pid)) process.kill(pid, 'SIGKILL');
+    }
   }, 15_000);
 
   const dropReleaseAck = async (file: string): Promise<{

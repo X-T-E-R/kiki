@@ -13,6 +13,7 @@ import { quoteWindowsArgument } from './windowsCommandLine';
 
 const CONTROL_TIMEOUT_MS = 5_000;
 const RELEASE_EXIT_CAPABILITY = 'release-exit-v2';
+const UNRELEASED_EXIT_CODE = 6;
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: unknown) => void } {
   let resolve!: (value: T) => void;
@@ -62,6 +63,7 @@ class WindowsProcessTree implements IHostProcess {
   private rootPid = -1;
   private controlClosed = false;
   private helperGone = false;
+  private helperExitCode: number | null = null;
   private releaseAttempted = false;
   private releaseExitCapable = false;
   private releaseConfirmed = false;
@@ -104,6 +106,7 @@ class WindowsProcessTree implements IHostProcess {
     child.on('error', (error) => { this.fail(error); });
     child.on('exit', (code, signal) => {
       this.helperGone = true;
+      this.helperExitCode = signal === null ? code : null;
       this.helperExited.resolve();
       if (code === 0 && this.releaseExitCapable && this.releaseAttempted && signal === null) this.releaseConfirmed = true;
       if (this.disposed) return;
@@ -197,7 +200,7 @@ class WindowsProcessTree implements IHostProcess {
       if (this.cleanupFailure !== undefined) throw this.cleanupFailure instanceof Error ? this.cleanupFailure : new Error('Windows process cleanup failed', { cause: this.cleanupFailure });
       if (!this.releaseConfirmed && (!this.helperGone || this.releaseAttempted)) {
         const response = await this.request('release');
-        if (response !== 'released') throw this.decodeError(response);
+        if (response !== 'released' && response !== 'terminated') throw this.decodeError(response);
       }
       this.disposed = true;
       this.control.destroy();
@@ -260,8 +263,16 @@ class WindowsProcessTree implements IHostProcess {
   }
 
   private responseAfterControlLoss(command: 'kill' | 'release' | 'retain'): string | undefined {
-    if (!this.helperGone || this.releaseAttempted || this.releaseConfirmed || command === 'release') return undefined;
-    return 'active:0';
+    if (!this.helperGone || this.releaseConfirmed) return undefined;
+    if (this.releaseAttempted) {
+      if (!this.closedUnreleasedJob()) return undefined;
+      return command === 'release' ? 'terminated' : 'active:0';
+    }
+    return command === 'release' ? undefined : 'active:0';
+  }
+
+  private closedUnreleasedJob(): boolean {
+    return this.releaseExitCapable && this.helperExitCode === UNRELEASED_EXIT_CODE;
   }
 
   private settlePendingControlLoss(error: Error): void {
