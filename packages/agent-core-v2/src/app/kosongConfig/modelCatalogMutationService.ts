@@ -32,7 +32,7 @@ import { CONFIG_INVALID_ERROR_CODE } from '#/kosong/contract/errors';
 import { modelBindingOriginFields, toProtocolProvider } from '#/kosong/model/catalog';
 import { resolveProviderCredentialState } from '#/kosong/model/catalogService';
 import { ModelCatalogErrors } from '#/kosong/model/errors';
-import { deriveProviderId, nonEmpty } from '#/kosong/model/modelAuth';
+import { deriveProviderId, nonEmpty, resolveConfiguredModelBaseUrl } from '#/kosong/model/modelAuth';
 import { IModelOAuthTokens } from '#/kosong/model/modelOAuth';
 import type { ModelRecord, ModelsSection } from '#/kosong/model/model';
 import { parametersFromWire, parametersToWire, patchGenerationParameters, resolveGenerationParameters, patchModelUsagePolicy, resolveModelUsage, usagePolicyFromWire, usagePolicyToWire, usageParametersToWire } from '#/kosong/model/parameters';
@@ -298,6 +298,7 @@ function modelEntity(
     protocol_source: explained?.source,
     ...modelBindingOriginFields(record, provider),
     base_url: record.baseUrl,
+    effective_base_url: resolveConfiguredModelBaseUrl(record, provider),
     revision: revisionOf(record),
     issues: [
       ...modelIssues(record, providers, ref),

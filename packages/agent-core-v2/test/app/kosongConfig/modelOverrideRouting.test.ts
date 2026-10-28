@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
+import { getModelResponseSchema } from '@kiki/protocol';
+import { KIMI_DEFAULT_BASE_URL } from '#/kosong/provider/providers/kimi/kimi.contrib';
 
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
@@ -116,5 +118,86 @@ describe('model override routing fields', () => {
     const wire = JSON.stringify({ gateway, located });
     expect(wire).not.toContain('fixture-gateway-key');
     expect(wire).not.toContain('https://ignored.example.test');
+  });
+});
+
+describe('read-only effective model endpoints', () => {
+  interface EndpointCase {
+    source: string;
+    modelBase?: string;
+    providerBase?: string;
+    envBase?: string;
+    providerType?: string;
+    expected?: string;
+  }
+  function endpointConfig(options: EndpointCase): string {
+    return [
+      '[providers.edge]',
+      `type = ${JSON.stringify(options.providerType ?? 'kimi')}`,
+      options.providerBase === undefined ? '' : `base_url = ${JSON.stringify(options.providerBase)}`,
+      '[providers.edge.env]',
+      options.envBase === undefined ? '' : `KIMI_BASE_URL = ${JSON.stringify(options.envBase)}`,
+      '[models.chosen]',
+      'provider = "edge"',
+      'model = "example-model"',
+      'max_context_size = 8192',
+      options.modelBase === undefined ? '' : `base_url = ${JSON.stringify(options.modelBase)}`,
+    ].join('\n');
+  }
+  const cases: EndpointCase[] = [
+    { source: 'model', modelBase: ' https://model.example.test/v1 ', providerBase: 'https://provider.example.test/v1', envBase: 'https://env.example.test/v1', expected: 'https://model.example.test/v1' },
+    { source: 'provider', providerBase: 'https://provider.example.test/v1', envBase: 'https://env.example.test/v1', expected: 'https://provider.example.test/v1' },
+    { source: 'env', envBase: 'https://env.example.test/v1', expected: 'https://env.example.test/v1' },
+    { source: 'vendor', expected: KIMI_DEFAULT_BASE_URL },
+    { source: 'none', providerType: 'openai' },
+  ];
+  it.each(cases)('projects the $source endpoint without filling the stored base_url or changing configuration', async (options) => {
+    const storage = new InMemoryStorageService();
+    const host = createHost(storage);
+    const document = host.get(IAtomicTomlDocumentStore);
+    const original = endpointConfig(options);
+    await document.setText('', 'config.toml', original);
+    const catalog = host.get(IModelCatalogMutationService);
+    const entity = await catalog.readModel('chosen');
+    expect(entity.base_url).toBe(options.modelBase);
+    expect(entity.effective_base_url).toBe(options.expected);
+    expect(entity.endpoint_source).toBe(options.source);
+    expect(entity.endpoint_env).toBe(options.source === 'env' ? 'KIMI_BASE_URL' : undefined);
+    const wire = getModelResponseSchema.parse(JSON.parse(JSON.stringify(entity)));
+    expect(wire.effective_base_url).toBe(options.expected);
+    if (options.expected === undefined) expect(wire).not.toHaveProperty('effective_base_url');
+    expect((await catalog.readModel('chosen')).revision).toBe(entity.revision);
+    expect(await document.getText('', 'config.toml')).toBe(original);
+  });
+  it('rejects writes to the effective endpoint and keeps it out of ordinary model updates and creates', async () => {
+    const storage = new InMemoryStorageService();
+    const host = createHost(storage);
+    const document = host.get(IAtomicTomlDocumentStore);
+    const endpoint = 'https://env.example.test/v1';
+    const original = endpointConfig({ source: 'env', envBase: endpoint });
+    await document.setText('', 'config.toml', original);
+    const catalog = host.get(IModelCatalogMutationService);
+    const entity = await catalog.readModel('chosen');
+    await expect(catalog.updateModel('chosen', JSON.parse(JSON.stringify({
+      base_revision: entity.revision,
+      display_name: 'Must not be written',
+      effective_base_url: 'https://other.example.test/v1',
+    })))).rejects.toMatchObject({ code: 'config.invalid' });
+    await expect(catalog.createModel(JSON.parse(JSON.stringify({
+      id: 'rejected', provider_id: 'edge', remote_id: 'rejected-remote', effective_base_url: endpoint,
+    })))).rejects.toMatchObject({ code: 'config.invalid' });
+    expect(await document.getText('', 'config.toml')).toBe(original);
+    const updated = await catalog.updateModel('chosen', { base_revision: entity.revision, display_name: 'Renamed' });
+    expect(updated.base_url).toBeUndefined();
+    expect(updated.effective_base_url).toBe(endpoint);
+    const created = await catalog.createModel({ id: 'another', provider_id: 'edge', remote_id: 'another-remote' });
+    expect(created.base_url).toBeUndefined();
+    expect(created.effective_base_url).toBe(endpoint);
+    const models = host.get(IConfigService).inspect<ModelsSection>(MODELS_SECTION).userValue!;
+    expect(models['chosen']).toMatchObject({ provider: 'edge', model: 'example-model', displayName: 'Renamed' });
+    expect(models['another']).toEqual({ provider: 'edge', model: 'another-remote' });
+    expect(await document.getText('', 'config.toml')).not.toMatch(/effective_base_url|effectiveBaseUrl/);
+    await host.get(IConfigService).reload();
+    expect((await catalog.readModel('chosen')).effective_base_url).toBe(endpoint);
   });
 });

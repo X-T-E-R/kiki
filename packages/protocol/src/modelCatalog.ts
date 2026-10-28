@@ -452,8 +452,10 @@ export const modelOverridesSchema = z.record(z.string(), z.unknown());
  * The single-model read/write projection (`GET`/`PATCH /models/{id}`). The
  * stored entity is exposed field by field; `revision` is the compare-and-swap
  * token the next PATCH must carry so a concurrent edit cannot be silently
- * overwritten. Absent optional fields mean "not configured" — they are never
- * filled with fabricated defaults.
+ * overwritten. Stored optional fields remain absent when not configured.
+ * `base_url` is the model's stored override; read-only `effective_base_url`
+ * resolves model > provider > provider environment > vendor default and is
+ * absent when no endpoint resolves. PATCH never accepts effective fields.
  */
 export const modelEntitySchema = z.object({
   id: z.string().min(1),
@@ -499,6 +501,7 @@ export const modelEntitySchema = z.object({
   auth_source: bindingOriginSchema.optional(),
   auth_env: z.string().min(1).optional(),
   base_url: z.string().min(1).optional(),
+  effective_base_url: z.string().min(1).optional(),
   revision: z.string().min(1),
   issues: z.array(modelIssueSchema),
 });

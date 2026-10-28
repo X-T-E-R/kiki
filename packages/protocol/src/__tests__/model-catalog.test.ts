@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   configResponseSchema,
   createProviderRequestSchema,
+  getModelResponseSchema,
   getProviderResponseSchema,
   listModelsResponseSchema,
   listDiscoveredModelsResponseSchema,
@@ -146,6 +147,26 @@ describe('model catalog schemas', () => {
       expect(patchModelRequestSchema.safeParse({ cognition: { steering_interval_steps } }).success).toBe(false);
     }
     expect(patchModelRequestSchema.safeParse({ cognition: { steering_on_input: 'false' } }).success).toBe(false);
+  });
+
+  it('round-trips a read-only effective model endpoint independently of the stored override', () => {
+    const entity = {
+      ...model,
+      provider_source: 'provider',
+      base_url: ' https://model.example.test/v1 ',
+      effective_parameters: {},
+      parameter_sources: {},
+      revision: 'example-revision',
+      issues: [],
+    };
+    const response = { ...entity, effective_base_url: 'https://model.example.test/v1' };
+    expect(modelEntitySchema.parse(response)).toEqual(response);
+    expect(getModelResponseSchema.parse(JSON.parse(JSON.stringify(response)))).toEqual(response);
+    expect(getModelResponseSchema.parse(entity)).not.toHaveProperty('effective_base_url');
+    for (const effective_base_url of ['', null, 42])
+      expect(modelEntitySchema.safeParse({ ...entity, effective_base_url }).success).toBe(false);
+    expect(patchModelRequestSchema.safeParse({ effective_base_url: response.effective_base_url }).success).toBe(false);
+    expect(createModelRequestSchema.safeParse({ provider_id: 'edge', remote_id: 'remote-model', effective_base_url: response.effective_base_url }).success).toBe(false);
   });
 
   it('accepts a sparse model patch and rejects unknown fields', () => {
