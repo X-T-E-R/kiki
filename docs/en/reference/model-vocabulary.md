@@ -45,7 +45,7 @@ Identity is who the model is serving, not which profile is selected, so switchin
 
 The context budget and the generated-token ceiling are caps, not preferences: the effective value is the lower of the shared cap and any identity value, so an identity can tighten them but never raise them past what the model allows.
 
-In Settings › Models, the model editor opens on the shared values; switch to Main agent to see and edit only that identity's differences, and the editor shows what each field inherits and what it resolves to.
+In Settings › Models & providers › Providers & accounts, expand a connection, open its Models list, and click a model row to open the side-panel editor. It opens on the shared values; switch to Main agent to see and edit only that identity's differences, and the editor shows what each field inherits and what it resolves to.
 
 ## Model ID resolution
 

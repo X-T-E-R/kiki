@@ -4,7 +4,7 @@ title: Phone session
 
 # Phone session
 
-Connect an IM account and bind each of its channels to a persona's daily conversation or a thread you pick. Different contacts, chats or supported group topics can use different targets under the same account. Open **Settings → Notifications & messages**, where **Two-way chat**, **Push channels**, and **System alerts** are organized into separate tabs with **Two-way chat** open by default.
+Connect an IM account and bind each of its channels to a persona's daily conversation or a thread you pick. Different contacts, chats or supported group topics can use different targets under the same account. Open **Settings → Notifications & messages → Channels & accounts** (`/settings/notifications?tab=accounts`) to manage chat accounts and their channels.
 
 Paste a setup and check it, or scan a WeChat code from this page. WeChat does not ask for a token or a numeric id here. Under the connected account, choose **Add channel**, start listening, and send a message from the contact, group or topic you want to add. Kiki shows the sender, channel and a short preview; choose a persona or thread for that discovery, then **Bind**. Each discovery has its own target. Adding another channel needs no new scan or setup paste, and a chat id inside the paste is not a binding. The current WeChat connection supports direct messages only: contacts can have separate bindings, while group discoveries remain visible with binding disabled.
 

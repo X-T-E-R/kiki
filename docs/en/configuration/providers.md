@@ -126,17 +126,17 @@ Two paths when adding:
 
 ### Fetching model suggestions
 
-In GUI **Settings → Models & providers**, click **Get models** to fetch suggestions from configured providers. API-key providers and custom registries are fetched only on request, not at startup or on a timer. Fetching these suggestions does not change your providers, configured models, or default model. Choose a suggestion and save it separately to add a model; an upstream removal does not delete an existing model.
+In GUI **Settings → Models & providers → Providers & accounts**, expand the folded **Maintenance** section at the bottom and click **Get models** to fetch suggestions from every connection. API-key providers and custom registries are fetched only on request, not at startup or on a timer. Fetching these suggestions does not change your providers, configured models, or default model. Choose a suggestion and save it separately to add a model; an upstream removal does not delete an existing model.
 
 Kimi Code account sign-in maintains its managed catalog separately. When that catalog refreshes and no global default is set, Kiki selects a managed model even if the catalog itself has not changed. An unchanged catalog preserves explicit defaults, including a choice made while the refresh was in progress.
 
 Suggestions are kept in server memory and disappear when the server restarts. Changing or deleting a provider connection discards its cached suggestions. A failed fetch shows an error while retaining the last successful suggestions; a successful empty response clears them. Models already configured for that provider are excluded even if their local aliases differ from the upstream model IDs.
 
-In the GUI, open **Settings → Models & providers → Providers & accounts**. Under **Connect with an API key**, choose one of five protocol entries (`openai`, `openai_responses`, `anthropic`, `google-genai`, `vertexai`) or search for a service by name. A matching service, including DeepSeek, GLM, Kimi, Ollama, LM Studio, or OpenRouter, fills in its protocol and base URL. If there is no match, choose a protocol and enter the base URL yourself. Then enter the key if required and add a model.
+In the GUI, open **Settings → Models & providers → Providers & accounts**. Under **Connect with an API key**, choose one of five protocol entries (`openai`, `openai_responses`, `anthropic`, `google-genai`, `vertexai`) or search for a service by name. A matching service, including DeepSeek, GLM, Kimi, Ollama, LM Studio, or OpenRouter, fills in its protocol and base URL. If there is no match, choose a protocol and enter the base URL yourself. Then enter the key if required, use **Add model** inside the connection form, and choose **Save provider**.
 
 Ollama and LM Studio use the same API-key path as other OpenAI-compatible services; their local servers may not require a key. The five quick starts are OpenAI, Anthropic, Google Gemini, DeepSeek, and Moonshot (Kimi) — the Kimi shortcut configures the `kimi` provider described below.
 
-**Available models** lists configured models across providers: search by name or ID, inspect context size and capabilities, and star a model to set the global default. The provider and model also retain their own per-provider default and remote ID. A manually entered Kimi API key uses the same suggestion-only flow as other API-key connections; account sign-in provisions its own models.
+**Providers & accounts** lists configured connections and their **Models** lists. Search by connection name or by the IDs and names of its models; expand a connection to inspect context size and capabilities, then click a model row to open the full editor in a side panel. A model star sets the global new-session default; the **New sessions use** bar above the tabs does the same. **Remove model** is at the bottom of the editor and asks for confirmation. The provider and model also retain their own per-provider default and remote ID. A manually entered Kimi API key uses the same suggestion-only flow as other API-key connections; account sign-in provisions its own models.
 
 ::: warning
 Kimi Code OAuth managed accounts logged in via `/login` do not appear in `/provider`. Use `/login` and `/logout` to manage them.
@@ -367,7 +367,7 @@ GUI **Settings → Models & providers → Identity** is the central page: the le
 | --- | --- | --- |
 | Global default | Settings → Models & providers → Identity | `[request_identity]` |
 | Provider | Settings → Models & providers → provider editor → Request identity | `[providers.<name>.request_identity]` |
-| Model | Settings → Models & providers → model editor → Request identity | `[models."<alias>".request_identity]` |
+| Model | Settings → Models & providers → Providers & accounts → expand connection → Models → model row → Request identity | `[models."<alias>".request_identity]` |
 
 Later layers override earlier ones (global → provider → model). With no layer set, an ordinary API-key connection uses the built-in Kimi Code identity, and a provider authenticated through the Codex or Grok Build OAuth flows uses that provider's default identity. Choosing a compatible preset clears the lower layers first, then applies that layer's optional sparse `overrides` (for example `lineage.format`, `client.user_agent`, `request.logical_id`). Sending one provider's traffic as OpenCode takes only:
 

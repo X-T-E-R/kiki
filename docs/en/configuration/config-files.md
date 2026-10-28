@@ -301,7 +301,7 @@ max_context_size = 1048576
 
 ### Legacy model parameter migration
 
-Older configurations put `temperature` / `top_p` and `max_completion_tokens` / `service_tier` in different places. **Settings → Models & providers → Available models → Legacy model parameter migration** can copy them into a model's `parameters` table.
+Older configurations put `temperature` / `top_p` and `max_completion_tokens` / `service_tier` in different places. **Settings → Models & providers → Providers & accounts → Maintenance → Legacy model parameter migration** can copy them into a model's `parameters` table.
 
 **Preview migration** first, which lists the model aliases, parameter names, review reasons, a revision and the backup name it would use, and writes nothing. Unambiguous values are copied; ambiguous or conflicting ones are left for you to decide. Your existing fields are not removed, so read the preview instead of assuming anything changed.
 
