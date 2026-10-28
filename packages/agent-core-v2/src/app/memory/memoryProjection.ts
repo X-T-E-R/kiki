@@ -1,9 +1,12 @@
 import type { ContextMessage } from '#/agent/contextMemory/types';
 import { memoryApplicability, type MemoryStoreSnapshot } from './memoryStore';
 import type { MemoryScope } from './memoryScopes';
+import type { MemoryRecallEntry } from './memoryRecall';
+import { renderMemoryWorkingSetText } from './memoryContext';
 
 export interface MemoryProjectionView extends MemoryStoreSnapshot {
   readonly scopes: readonly MemoryScope[];
+  readonly workset?: { readonly text: string; readonly entries: readonly MemoryRecallEntry[] };
 }
 function range(message: ContextMessage): { start: number; length: number } | undefined {
   if (message.origin?.kind !== 'injection' || message.origin.variant !== 'runtime_snapshot') return undefined;
@@ -29,7 +32,22 @@ function record(value: unknown): value is Record<string, unknown> {
 function sameScope(a: MemoryScope, b: Record<string, unknown>): boolean {
   return a.kind === b['kind'] && ('workspaceId' in a ? a.workspaceId : undefined) === b['workspaceId'] && ('personaId' in a ? a.personaId : undefined) === b['personaId'];
 }
-function projectToolResult(message: ContextMessage, name: string | undefined, view: MemoryProjectionView): ContextMessage {
+function entryKey(entry: Pick<MemoryRecallEntry, 'scope' | 'id' | 'revision'>): string {
+  return JSON.stringify([entry.scope.kind, 'workspaceId' in entry.scope ? entry.scope.workspaceId : null, 'personaId' in entry.scope ? entry.scope.personaId : null, entry.id, entry.revision]);
+}
+function projectMemoryWorkset(message: ContextMessage, view: MemoryProjectionView, covered: ReadonlySet<string>): ContextMessage {
+  const memory = range(message);
+  const workset = view.workset;
+  if (memory === undefined || workset === undefined || !workset.text || covered.size === 0 || message.content.length !== 1 || message.content[0]?.type !== 'text') return message;
+  const prefix = '## Scoped memory — Saved memory / as-of projection\n';
+  const text = message.content[0].text;
+  if (text.slice(memory.start, memory.start + memory.length) !== prefix + workset.text) return message;
+  const remaining = workset.entries.filter((entry) => !covered.has(entryKey(entry)));
+  if (remaining.length === workset.entries.length) return message;
+  const replacement = prefix + renderMemoryWorkingSetText(view.generation, remaining);
+  return { ...message, content: [{ type: 'text', text: text.slice(0, memory.start) + replacement + text.slice(memory.start + memory.length) }] };
+}
+function projectToolResult(message: ContextMessage, name: string | undefined, view: MemoryProjectionView, delivered: Set<string>): ContextMessage {
   if (message.role !== 'tool' || !['MemoryRead', 'MemorySearch', 'MemoryWrite'].includes(name ?? '') || message.content.length !== 1 || message.content[0]?.type !== 'text') return message;
   let output: unknown;
   try { output = JSON.parse(message.content[0].text); } catch { return message; }
@@ -42,6 +60,15 @@ function projectToolResult(message: ContextMessage, name: string | undefined, vi
     const visible = view.scopes.find((item) => sameScope(item, scope));
     const current = visible === undefined ? undefined : view.entries.find((entry) => entry.id === value['id'] && sameScope(entry.scope, scope));
     if (current?.revision === revision) {
+      if (value['complete'] !== false && value['body'] === current.body) {
+        const key = entryKey(current);
+        if (delivered.has(key)) {
+          changed = true;
+          return { id: current.id, scope: current.scope, revision, complete: false, reason: 'memory_content_reused', read: { id: current.id, scope: current.scope.kind },
+            recovery: 'The complete current unit is already in an earlier Memory tool result in this request.' };
+        }
+        delivered.add(key);
+      }
       const applicability = memoryApplicability(current);
       if (value['applicability'] === undefined || value['applicability'] === applicability) return value;
       changed = true;
@@ -71,12 +98,24 @@ export interface MemoryObservedReference {
   readonly id: string;
   readonly observed_revision: string;
 }
-function observedReferences(message: ContextMessage, name: string | undefined): MemoryObservedReference[] {
+function memoryToolUnits(message: ContextMessage, name: string | undefined): unknown[] {
   if (message.role !== 'tool' || !['MemoryRead', 'MemorySearch', 'MemoryWrite'].includes(name ?? '') || message.isError === true) return [];
   let output: unknown;
   try { output = JSON.parse(message.content[0]?.type === 'text' ? message.content[0].text : 'null'); } catch { return []; }
-  const units = Array.isArray(output) ? output : record(output) ? Array.isArray(output['items']) ? output['items'] : record(output['entry']) ? [{ ...output['entry'], scope: output['owner_scope'] }] : [] : [];
-  return units.flatMap((unit) => {
+  return Array.isArray(output) ? output : record(output) ? Array.isArray(output['items']) ? output['items'] : record(output['entry']) ? [{ ...output['entry'], scope: output['owner_scope'] }] : [] : [];
+}
+function currentToolCoverage(messages: readonly ContextMessage[], calls: ReadonlyMap<string, string>, view: MemoryProjectionView): Set<string> {
+  const covered = new Set<string>();
+  for (const message of messages) for (const unit of memoryToolUnits(message, calls.get(message.toolCallId ?? ''))) {
+    if (!record(unit) || unit['complete'] === false || typeof unit['body'] !== 'string' || !record(unit['scope'])) continue;
+    const scope = unit['scope'];
+    const current = view.entries.find((entry) => entry.id === unit['id'] && entry.revision === unit['revision'] && entry.body === unit['body'] && sameScope(entry.scope, scope));
+    if (current !== undefined) covered.add(entryKey(current));
+  }
+  return covered;
+}
+function observedReferences(message: ContextMessage, name: string | undefined): MemoryObservedReference[] {
+  return memoryToolUnits(message, name).flatMap((unit) => {
     if (!record(unit) || typeof unit['id'] !== 'string' || typeof unit['revision'] !== 'string' || !record(unit['scope'])) return [];
     const value = unit['scope'];
     let scope: MemoryScope;
@@ -109,14 +148,19 @@ export function memoryHandoffMessages(messages: readonly ContextMessage[]): read
 export function projectCurrentMemory(messages: readonly ContextMessage[], view?: MemoryProjectionView): readonly ContextMessage[] {
   const latest = messages.findLastIndex((message) => range(message) !== undefined);
   const calls = new Map(messages.flatMap((message) => message.toolCalls.map((call) => [call.id, call.name] as const)));
-  const staleWrites = new Set<string>();
+  const writes = new Set<string>();
+  const delivered = new Set<string>();
   const projected = messages.map((message, index) => {
     const current = index < latest ? withoutMemoryProjection(message) : message;
-    const result = view === undefined ? current : projectToolResult(current, calls.get(message.toolCallId ?? ''), view);
-    if (result !== current && calls.get(message.toolCallId ?? '') === 'MemoryWrite') staleWrites.add(message.toolCallId!);
+    const name = calls.get(message.toolCallId ?? '');
+    const result = view === undefined ? current : projectToolResult(current, name, view, delivered);
+    if (view !== undefined && name === 'MemoryWrite' && observedReferences(message, name).length > 0) writes.add(message.toolCallId!);
     return result;
   });
-  if (staleWrites.size === 0) return projected;
-  return projected.map((message) => message.toolCalls.some((call) => staleWrites.has(call.id)) ? { ...message,
-    toolCalls: message.toolCalls.map((call) => staleWrites.has(call.id) ? { ...call, arguments: referenceArguments(call.arguments) } : call) } : message);
+  const covered = view === undefined ? new Set<string>() : currentToolCoverage(projected, calls, view);
+  return projected.map((message) => {
+    const current = view === undefined ? message : projectMemoryWorkset(message, view, covered);
+    return current.toolCalls.some((call) => writes.has(call.id)) ? { ...current,
+      toolCalls: current.toolCalls.map((call) => writes.has(call.id) ? { ...call, arguments: referenceArguments(call.arguments) } : call) } : current;
+  });
 }

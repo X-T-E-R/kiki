@@ -257,8 +257,8 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     if (store.snapshot !== undefined) {
       const scopes = this.readScopes();
       const view = await store.snapshot(scopes);
-      this.projectionView = { ...view, scopes };
       const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget));
+      this.projectionView = { ...view, scopes, workset: { text: snapshot.text, entries: snapshot.entries } };
       this.generation = snapshot.generation;
       this.nextUntil = snapshot.nextUntil;
       this.frozenRelated = snapshot.entries.map((entry) => memoryEntryReference(entry));

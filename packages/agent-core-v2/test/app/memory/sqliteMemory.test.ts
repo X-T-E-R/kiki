@@ -498,6 +498,43 @@ describe('Memory recall and complete working units', () => {
     expect(renderMemoryWorkingSet(view, '部署例外', 100, 20).text).toBe('');
   });
 
+  it('keeps whole-body relevance ahead of a short incidental title match in automatic selection', async () => {
+    const wanted = (await save('Operational contract', 'For service calibration input use fixtures/sample-42.json; stop after 17 checks, never upload output, and keep the isolated-test exception.')).entry;
+    const incidental = (await save('Input', 'An input box accepts any greeting.')).entry;
+    const entries = [wanted, incidental].map((entry) => ({ ...entry, scope: global }));
+    const query = 'service calibration input';
+    const ranked = rankMemoryRecall(entries, query);
+    expect(ranked[0]?.id).toBe(wanted.id);
+    const selected = renderMemoryWorkingSet({ generation: '1', entries }, query, 650, 300);
+    expect(selected.entries[0]?.id).toBe(wanted.id);
+    expect(selected.text).toContain(wanted.body);
+  });
+
+  it('reuses a complete current explicit unit instead of duplicating its body in tools and the automatic workset', async () => {
+    const entry = (await save('Deployment instructions', 'Use exactly 9 workers; isolated checks never publish artifacts.')).entry;
+    const snapshot = { generation: '1', entries: [{ ...entry, scope: global }] };
+    const workset = renderMemoryWorkingSet(snapshot, 'Deployment instructions', 2_000, 1_000);
+    const prefix = '<system-reminder>\n';
+    const memory = `## Scoped memory — Saved memory / as-of projection\n${workset.text}`;
+    const messages: ContextMessage[] = [
+      { role: 'user', toolCalls: [], origin: { kind: 'injection', variant: 'runtime_snapshot', disclosure: { memoryRange: { start: prefix.length, length: memory.length } } }, content: [{ type: 'text', text: `${prefix}${memory}\n## Skills\nRead\n</system-reminder>` }] },
+      { role: 'assistant', toolCalls: [{ type: 'function', id: 'read', name: 'MemoryRead', arguments: '{}' }], content: [] },
+      { role: 'tool', toolCallId: 'read', toolCalls: [], content: [{ type: 'text', text: JSON.stringify([{ ...entry, scope: global, complete: true }]) }] },
+      { role: 'assistant', toolCalls: [{ type: 'function', id: 'search', name: 'MemorySearch', arguments: '{}' }], content: [] },
+      { role: 'tool', toolCallId: 'search', toolCalls: [], content: [{ type: 'text', text: JSON.stringify({ items: [{ ...entry, scope: global, complete: true }] }) }] },
+    ];
+    const before = JSON.stringify(messages);
+    const view = { ...snapshot, scopes: [global], workset: { text: workset.text, entries: workset.entries } };
+    const projected = projectCurrentMemory(messages, view);
+    expect(JSON.stringify(projected).split(entry.body)).toHaveLength(2);
+    expect(JSON.stringify(projected[0])).toContain('## Skills');
+    expect(JSON.stringify(projected[4])).toContain('memory_content_reused');
+    expect(projected.map((message) => message.toolCallId)).toEqual(messages.map((message) => message.toolCallId));
+    const referenceOnly = [...messages.slice(0, 2), { ...messages[2]!, content: [{ type: 'text' as const, text: JSON.stringify([{ id: entry.id, scope: global, revision: entry.revision, complete: false }]) }] }];
+    expect(JSON.stringify(projectCurrentMemory(referenceOnly, view)[0])).toContain(entry.body);
+    expect(JSON.stringify(messages)).toBe(before);
+  });
+
   it.each(['main', 'child'])('refreshes the %s working set at safe steps after request changes and cross-Store commits', async (agentId) => {
     const saved = (await save('Build procedure', 'Build with 17 jobs; never upload artifacts; isolated tests excepted.')).entry;
     const messages: ContextMessage[] = [{ role: 'user', toolCalls: [], origin: { kind: 'user' }, content: [{ type: 'text', text: 'Build procedure' }] }];
@@ -572,7 +609,11 @@ describe('Memory recall and complete working units', () => {
     ];
     const before = JSON.stringify(messages);
     const valid = { generation: '1', scopes: [global], entries: [{ ...entry, scope: global }] };
-    expect(projectCurrentMemory(messages, valid)).toEqual(messages);
+    const current = projectCurrentMemory(messages, valid);
+    expect(current[0]).toBe(messages[0]);
+    expect(current[2]).toBe(messages[2]);
+    expect(current[4]).toBe(messages[4]);
+    expect(JSON.stringify(current[1])).not.toContain(entry.body);
     const unavailable = projectCurrentMemory(messages, { generation: '2', scopes: [workspace], entries: [{ ...entry, scope: workspace }] });
     expect(unavailable[0]).toBe(messages[0]);
     expect(unavailable[4]).toBe(messages[4]);

@@ -18,7 +18,7 @@ Adapted units:
   lexical/vector union, weighted component scores, exact-identity tiers,
   diversity reranking, keyword-only fallback and spare-window selection.
 - extensions/active-memory/trigger-recall.ts:
-  message/title trigger scoring, admitted-source selection and request reuse.
+  trusted inbound recall, admitted-source selection and request reuse.
 
 Changes: Kiki uses per-fact source units and scoped IDs rather than whole-session
 blacklists. Sources, immutable revisions, independent human adjudications,
@@ -26,6 +26,8 @@ lineage, barriers and content cleanup share one SQLite transaction. It preserves
 CAS, review/off policy and recoverable delete/undo. It does not run dreaming.
 Recall uses Kiki scoped IDs, immutable revisions and its ASCII/CJK tokenizer;
 file-path/project ranking and temporal decay do not determine applicability.
+The automatic workset shares whole-body ranking with Search instead of reranking
+by title triggers. Current explicit units are reused without duplicate bodies.
 Whole-unit character/token budgets replace the donor's truncated 1800-character
 output. No provider connection or model download is added.
 

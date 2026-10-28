@@ -370,6 +370,7 @@ describe('canonical Memory actual request working sets', () => {
     await send('Read the deployment instructions');
     const currentTools = ctx.llmCalls.at(-1)!.history.filter((message) => message.role === 'tool');
     expect(JSON.stringify(currentTools)).toContain(saved.entry.body);
+    expect(JSON.stringify(ctx.llmCalls.at(-1)!.history).split(saved.entry.body)).toHaveLength(2);
     const changed = await writer.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: 'feedback', title: saved.entry.title, body: 'Use exactly 5 workers. Never publish artifacts; isolated smoke tests remain the exception.', source: { writer: 'user' }, reason: 'Human correction' });
     ctx.mockNextResponse({ type: 'text', text: 'Apply the current instructions.' });
     await send('Continue the deployment instructions');
