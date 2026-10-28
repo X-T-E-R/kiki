@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import { z } from 'zod';
 import { createDecorator, IInstantiationService } from '#/_base/di/instantiation';
 import { Disposable } from '#/_base/di/lifecycle';
@@ -10,12 +10,15 @@ import { IAtomicDocumentStore } from '#/persistence/interface/atomicDocumentStor
 import { IMemoryPersistence, type MemoryObjectEdit, type MemoryProvenance } from '#/persistence/interface/memoryPersistence';
 import { MemoryAuthorityAccess, assertMemoryAuthorityWritable, type MemoryAuthorityState } from '#/persistence/memoryAuthority';
 import { IMemoryScopes, MEMORY_PERSONA_ID_PATTERN, MEMORY_WORKSPACE_ID_PATTERN, type MemoryScope } from './memoryScopes';
-import { ILegacyMemoryStore, IMemoryStore, type MemoryStoreChange, type MemoryStoreSnapshot } from './memoryStore';
-import { ISqliteMemoryStore, type MemoryForgetPreview } from './sqliteMemoryStore';
+import { ILegacyMemoryStore, IMemoryStore, type MemoryEntry, type MemoryPutResult, type MemoryStoreChange, type MemoryStoreSnapshot } from './memoryStore';
+import { ISqliteMemoryStore, memoryIngestSourceIds, type MemoryForgetPreview, type MemoryIngestCandidate } from './sqliteMemoryStore';
 import { IMemoryShadowImport } from './memoryShadowImport';
 import { MemoryDomainError } from './memoryMetadata';
+import { parseMemoryMarkdown, serializeMemoryMarkdown, type MemoryMarkdownDocument } from './memoryMarkdown';
+import { memoryObjectSourceUnitId, memorySourceUnitId } from './memorySourceIdentity';
 
 export type { MemoryAuthorityState } from '#/persistence/memoryAuthority';
+export type { MemoryMarkdownDocument } from './memoryMarkdown';
 export interface MemoryRecoveryPackage {
   readonly recoveryId: string;
   readonly scope: string;
@@ -25,6 +28,18 @@ export interface MemoryRecoveryPackage {
   readonly database: 'memory.sqlite';
   readonly compatibility: 'legacy-current-view';
   readonly resume: 'resumeEditing';
+}
+const importInputSchema = z.object({ markdown: z.string().max(65_536), sourceLocator: z.string().trim().min(1).max(2_000), reason: z.string().trim().min(1).max(500) }).strict();
+const importTokenSchema = z.object({ version: z.literal(1), epoch: z.number().int().nonnegative(), expiresAt: z.number().int(), input: importInputSchema }).strict();
+export type MemoryImportInput = z.infer<typeof importInputSchema>;
+export interface MemoryImportPreview {
+  readonly incoming: MemoryMarkdownDocument;
+  readonly current: MemoryEntry | null;
+  readonly action: 'create' | 'update' | 'unchanged' | 'retained';
+  readonly canApply: boolean;
+  readonly previewToken?: string;
+  readonly expiresAt?: string;
+  readonly issue?: { readonly code: 'revision_conflict' | 'inactive_target' | 'duplicate_title' | 'invalid_input'; readonly recovery: string };
 }
 export interface IMemoryAuthorityService {
   readonly _serviceBrand: undefined;
@@ -37,6 +52,9 @@ export interface IMemoryAuthorityService {
   getRevision(scope: MemoryScope, id: string, revision: string): ReturnType<ISqliteMemoryStore['getRevision']>;
   previewForget(scope: MemoryScope, ids: readonly string[]): Promise<MemoryForgetPreview>;
   forget(...args: Parameters<ISqliteMemoryStore['forget']>): Promise<void>;
+  exportMarkdown(scope: MemoryScope, id: string): Promise<{ readonly markdown: string; readonly entry: MemoryEntry }>;
+  previewImport(scope: MemoryScope, input: MemoryImportInput): Promise<MemoryImportPreview>;
+  applyImport(scope: MemoryScope, previewToken: string, operationId: string): Promise<MemoryPutResult>;
 }
 export const IMemoryAuthorityService = createDecorator<IMemoryAuthorityService>('memoryAuthorityService');
 function invalid(message: string): never { throw new MemoryDomainError('invalid_input', message, 'Inspect Memory authority status and reconcile the reported operation before retrying.'); }
@@ -117,6 +135,7 @@ export class MemoryAuthorityStore extends Disposable implements IMemoryStore {
 export class MemoryAuthorityService implements IMemoryAuthorityService {
   declare readonly _serviceBrand: undefined;
   private readonly authority: MemoryAuthorityAccess;
+  private readonly importSalt = randomUUID();
   constructor(
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IMemoryScopes private readonly scopes: IMemoryScopes,
@@ -223,6 +242,75 @@ export class MemoryAuthorityService implements IMemoryAuthorityService {
     });
   }
   private async requireSqlite(): Promise<void> { if ((await this.authority.read()).backend !== 'sqlite') invalid('This Memory governance operation requires completed SQLite migration'); }
+  async exportMarkdown(scope: MemoryScope, id: string): Promise<{ markdown: string; entry: MemoryEntry }> {
+    await this.requireSqlite();
+    const entry = await this.sqlite.get(scope, id);
+    if (entry === undefined) throw new MemoryDomainError('not_found', 'Memory not found', 'Reload the current scoped entry before exporting.');
+    await this.sqlite.provenance(scope, id);
+    return { markdown: serializeMemoryMarkdown(scope, entry), entry };
+  }
+  private async importCandidate(scope: MemoryScope, input: MemoryImportInput): Promise<{ incoming: MemoryMarkdownDocument; candidate: MemoryIngestCandidate; base: string }> {
+    const incoming = parseMemoryMarkdown(input.markdown);
+    const identity = (value: MemoryScope) => JSON.stringify([value.kind, 'workspaceId' in value ? value.workspaceId : null, 'personaId' in value ? value.personaId : null]);
+    if (identity(scope) !== identity(incoming.scope)) throw new MemoryDomainError('scope_mismatch', 'Markdown scope does not match the selected owner', 'Select the exported workspace and persona; exporting or importing never moves an entry.');
+    const base = await this.scopes.resolve(scope);
+    const content = JSON.stringify([incoming.source, incoming.origin?.revision ?? null, incoming.type, incoming.title, incoming.body, incoming.pinned, incoming.basis ?? null, incoming.validity]);
+    const unitId = memorySourceUnitId(base, incoming.source, content, [input.sourceLocator], 'markdown-revision')!;
+    const canonical = memorySourceUnitId(base, incoming.source, incoming.body, incoming.basis?.refs);
+    const aliases = [memorySourceUnitId(base, incoming.source, incoming.body, [input.sourceLocator], 'markdown')!, ...(canonical === undefined ? [] : [canonical]), ...(incoming.origin === null ? [] : [memoryObjectSourceUnitId(base, incoming.origin.id, incoming.body)])];
+    const mutation = { scope, type: incoming.type, title: incoming.title, body: incoming.body, pinned: incoming.pinned, basis: incoming.basis, validity: incoming.validity, reason: input.reason, source: { writer: 'user' as const } };
+    const candidate: MemoryIngestCandidate = { mutation: incoming.id === 'new' ? mutation : { ...mutation, action: 'update', id: incoming.id, expectedRevision: incoming.revision! }, unit: { id: unitId, payload: input.markdown, locator: input.sourceLocator, origin: 'owner', sessionKind: 'interactive', aliases } };
+    return { incoming, candidate, base };
+  }
+  async previewImport(scope: MemoryScope, original: MemoryImportInput): Promise<MemoryImportPreview> {
+    const input = importInputSchema.parse(original);
+    const state = await this.authority.read();
+    assertMemoryAuthorityWritable(state, 'sqlite');
+    const { incoming, candidate, base } = await this.importCandidate(scope, input);
+    const states = await Promise.all(memoryIngestSourceIds(base, candidate.unit).map((id) => this.persistence.source(base, id)));
+    if (states.some((state) => state.state === 'forgotten')) throw new MemoryDomainError('inactive_target', 'This exact Markdown source has been forgotten', 'Use a distinct new source; an old source cannot recreate forgotten Memory.');
+    const related = new Set(states.flatMap((state) => state.state === 'registered' ? state.objectIds : []));
+    if (related.size > 0) {
+      const view = await this.sqlite.snapshot([scope]);
+      const linked = view.entries.filter((entry) => related.has(entry.id));
+      const active = linked.filter((entry) => entry.status === 'active');
+      if (active.length > 1) invalid('This Markdown source has conflicting active successors');
+      const current = active[0] ?? linked.find((entry) => entry.status === 'pending') ?? linked.find((entry) => entry.status === 'archived');
+      if (current === undefined) throw new MemoryDomainError('inactive_target', 'This Markdown source belongs to a deleted Memory object', 'Undo the recoverable deletion through its existing operation before editing.');
+      if (states[0]?.state === 'registered' || incoming.id !== current.id || incoming.revision !== current.revision) return { incoming, current, action: 'retained', canApply: false };
+    }
+    const current = incoming.id === 'new' ? null : await this.sqlite.get(scope, incoming.id) ?? null;
+    if (incoming.id !== 'new' && (current === null || current.revision !== incoming.revision)) return { incoming, current, action: 'update', canApply: false, issue: { code: 'revision_conflict', recovery: 'Export the current entry again, reconcile the complete content and preview that new file.' } };
+    if (incoming.status !== 'active' || current !== null && current.status !== 'active') return { incoming, current, action: incoming.id === 'new' ? 'create' : 'update', canApply: false, issue: { code: 'inactive_target', recovery: 'Use the normal review or restoration controls for pending, replaced or archived entries before importing an edit.' } };
+    if (incoming.id === 'new') {
+      const active = (await this.sqlite.snapshot([scope])).entries.filter((entry) => entry.status === 'active');
+      const duplicate = active.find((entry) => entry.title.toLowerCase() === incoming.title.toLowerCase());
+      if (duplicate !== undefined) return { incoming, current: duplicate, action: 'create', canApply: false, issue: { code: 'duplicate_title', recovery: 'Export the existing entry and reconcile its complete content instead of creating a duplicate title.' } };
+      if (active.length >= 300) return { incoming, current: null, action: 'create', canApply: false, issue: { code: 'invalid_input', recovery: 'The scope is full; merge or retire existing entries before importing a new one.' } };
+    }
+    const changedContent = current !== null && (current.type !== incoming.type || current.title !== incoming.title || current.body !== incoming.body);
+    const projected = { ...incoming, basis: incoming.basis ?? (changedContent && current?.basis !== undefined ? { kind: 'unknown' as const, note: 'content changed without refreshed attribution' } : current?.basis) };
+    if (current !== null && current.type === projected.type && current.title === projected.title && current.body === projected.body && current.pinned === projected.pinned && JSON.stringify(current.basis) === JSON.stringify(projected.basis) && JSON.stringify(current.validity ?? null) === JSON.stringify(projected.validity)) return { incoming: projected, current, action: 'unchanged', canApply: false };
+    const expiresAt = Date.now() + 10 * 60_000;
+    const payload = Buffer.from(JSON.stringify({ version: 1, epoch: state.epoch, expiresAt, input })).toString('base64url');
+    const previewToken = `${payload}.${createHmac('sha256', this.importSalt).update(payload).digest('hex')}`;
+    return { incoming: projected, current, action: incoming.id === 'new' ? 'create' : 'update', canApply: true, previewToken, expiresAt: new Date(expiresAt).toISOString() };
+  }
+  applyImport(scope: MemoryScope, previewToken: string, operationId: string): Promise<MemoryPutResult> {
+    z.string().uuid().parse(operationId);
+    return this.authority.write('sqlite', async () => {
+      let token: z.infer<typeof importTokenSchema>;
+      try {
+        if (previewToken.length > 600_000) throw new Error('Oversized import preview');
+        const [payload, signature, extra] = previewToken.split('.');
+        if (!payload || !signature || extra !== undefined || createHmac('sha256', this.importSalt).update(payload).digest('hex') !== signature) throw new Error('Invalid import preview');
+        token = importTokenSchema.parse(JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')));
+        if (token.expiresAt <= Date.now() || token.epoch !== (await this.authority.read()).epoch) throw new Error('Import preview expired or authority changed');
+      } catch { throw new MemoryDomainError('invalid_input', 'Memory import preview is invalid, expired or from a different authority state', 'Preview the unchanged Markdown again and review its current target before confirming.'); }
+      const { candidate } = await this.importCandidate(scope, token.input);
+      return this.sqlite.ingest({ ...candidate, mutation: { ...candidate.mutation, operationId } });
+    });
+  }
   async getRevision(...args: Parameters<ISqliteMemoryStore['getRevision']>): ReturnType<ISqliteMemoryStore['getRevision']> { await this.requireSqlite(); return this.sqlite.getRevision(...args); }
   async provenance(...args: Parameters<ISqliteMemoryStore['provenance']>): ReturnType<ISqliteMemoryStore['provenance']> { await this.requireSqlite(); return this.sqlite.provenance(...args); }
   async previewForget(...args: Parameters<ISqliteMemoryStore['previewForget']>): Promise<MemoryForgetPreview> { await this.requireSqlite(); return this.sqlite.previewForget(...args); }

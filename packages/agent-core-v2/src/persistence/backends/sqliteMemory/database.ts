@@ -4,7 +4,7 @@ import { dirname } from 'node:path';
 import { backup, DatabaseSync } from 'node:sqlite';
 import type { MemoryEntry, MemoryJournalRecord } from '../../../app/memory/memoryStore.ts';
 // oxlint-disable-next-line import/extensions
-import { memorySourceUnitId } from '../../../app/memory/memorySourceIdentity.ts';
+import { memoryEntrySourceUnitIds, memorySourceUnitId } from '../../../app/memory/memorySourceIdentity.ts';
 import type { MemoryCommit, MemoryCommitReceipt, MemoryImportResult, MemoryLegacyPayload, MemoryReadView, MemorySourceState, MemoryProvenance, MemoryAdjudication } from '../../interface/memoryPersistence.ts';
 
 function conflict(message: string): never { throw Object.assign(new Error(message), { code: 'revision_conflict', committed: false }); }
@@ -91,8 +91,7 @@ export class MemoryDatabase {
       const aliases = input.edits.flatMap((edit) => {
         this.linkHistoricalSources(edit.scope, edit.id);
         if (edit.entry === null) return [];
-        const id = memorySourceUnitId(edit.scope, edit.entry.source, edit.entry.body, edit.entry.basis?.refs);
-        return id === undefined ? [] : [{ scope: edit.scope, id, objectId: edit.id }];
+        return memoryEntrySourceUnitIds(edit.scope, edit.entry).map((id) => ({ scope: edit.scope, id, objectId: edit.id }));
       });
       for (const source of input.sources ?? []) for (const id of source.aliases ?? []) {
         if (!/^source-unit:[a-f0-9]{64}$/.test(id)) throw new Error('Invalid Memory source alias');
@@ -177,8 +176,7 @@ export class MemoryDatabase {
   private linkHistoricalSources(scope: string, id: string): void {
     for (const row of this.db.prepare('SELECT entry FROM revisions WHERE scope=? AND id=? AND entry IS NOT NULL').all(scope, id)) {
       const entry = JSON.parse(String(row['entry'])) as MemoryEntry;
-      const alias = memorySourceUnitId(scope, entry.source, entry.body, entry.basis?.refs);
-      if (alias !== undefined) this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(scope, alias, id);
+      for (const alias of memoryEntrySourceUnitIds(scope, entry)) this.db.prepare('INSERT OR IGNORE INTO source_links VALUES(?,?,?)').run(scope, alias, id);
     }
   }
   provenance(scope: string, id: string): MemoryProvenance {

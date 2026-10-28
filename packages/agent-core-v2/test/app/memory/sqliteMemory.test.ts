@@ -914,6 +914,133 @@ describe('single Memory authority and isolated recovery', () => {
   });
 });
 
+describe('revision-bound Memory Markdown imports', () => {
+  const editFile = (markdown: string, changes: Record<string, unknown> = {}, body?: string): string => {
+    const match = /^---\n([\s\S]*?)\n---\n([\s\S]*)$/.exec(markdown)!;
+    return `---\n${JSON.stringify({ ...JSON.parse(match[1]!), ...changes }, null, 2)}\n---\n${body ?? match[2]!.trim()}\n`;
+  };
+  const fileInput = (markdown: string, sourceLocator = 'file:///example/memory/rule.md') => ({ markdown, sourceLocator, reason: 'Reviewed owner Markdown edit' });
+
+  it('previews complete revision-bound changes, applies only the reviewed payload and retains its original source', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const saved = await memory.put({ action: 'create', scope: global, type: 'feedback', title: 'Deployment guidance', body: 'Use 9 workers; never upload output; isolated tests remain allowed.', reason: 'Owner instruction', source, basis: { kind: 'human', note: 'Direct owner instruction', refs: ['fixture://owner/instruction'] }, validity: { check: 'Recheck before production', until: '2030-01-01T00:00:00Z' } });
+    const exported = await authority.exportMarkdown(global, saved.entry.id);
+    expect(exported.markdown).toContain(saved.entry.revision);
+    expect((await authority.previewImport(global, fileInput(exported.markdown))).action).toBe('unchanged');
+    const markdown = editFile(exported.markdown, { pinned: true, validity: null }, 'Use 5 workers; never upload output; isolated tests remain allowed.');
+    const preview = await authority.previewImport(global, fileInput(markdown));
+    expect(preview).toMatchObject({ canApply: true, action: 'update', current: JSON.parse(JSON.stringify(saved.entry)), incoming: { body: 'Use 5 workers; never upload output; isolated tests remain allowed.', pinned: true, validity: null, basis: saved.entry.basis } });
+    expect(await memory.get(global, saved.entry.id)).toEqual(saved.entry);
+    await expect(authority.applyImport(workspace, preview.previewToken!, randomUUID())).rejects.toThrow('scope does not match');
+    const applied = await authority.applyImport(global, preview.previewToken!, randomUUID());
+    expect(applied.entry).toMatchObject({ id: saved.entry.id, body: preview.incoming.body, pinned: true, basis: saved.entry.basis });
+    expect(applied.entry.validity).toBeUndefined();
+    expect((await authority.provenance(global, applied.entry.id)).sources).toContainEqual(expect.objectContaining({ payload: markdown, locator: 'file:///example/memory/rule.md' }));
+    expect((await authority.previewImport(global, fileInput(markdown)))).toMatchObject({ canApply: false, action: 'retained', current: JSON.parse(JSON.stringify(applied.entry)) });
+    const metadataEdit = editFile((await authority.exportMarkdown(global, applied.entry.id)).markdown, { title: 'Renamed deployment guidance' });
+    const next = await authority.previewImport(global, fileInput(metadataEdit));
+    expect(next.canApply).toBe(true);
+    expect((await authority.applyImport(global, next.previewToken!, randomUUID())).entry.title).toBe('Renamed deployment guidance');
+  });
+
+  it('rejects a concurrent correction without overwriting it and requires a fresh complete preview', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const saved = await createManaged(memory, 'Concurrent Markdown edit');
+    const exported = await authority.exportMarkdown(global, saved.entry.id);
+    const preview = await authority.previewImport(global, fileInput(editFile(exported.markdown, {}, 'The reviewed Markdown choice, exception 17.')));
+    const corrected = await update(saved.entry, 'The concurrent owner correction, exception 19.');
+    await expect(authority.applyImport(global, preview.previewToken!, randomUUID())).rejects.toThrow('revision conflict');
+    expect(await memory.get(global, saved.entry.id)).toEqual(corrected.entry);
+    expect(await authority.previewImport(global, fileInput(editFile(exported.markdown, {}, 'The reviewed Markdown choice, exception 17.')))).toMatchObject({ canApply: false, issue: { code: 'revision_conflict' }, current: JSON.parse(JSON.stringify(corrected.entry)) });
+    const current = await authority.exportMarkdown(global, saved.entry.id);
+    const fresh = await authority.previewImport(global, fileInput(editFile(current.markdown, {}, 'Reconciled complete choice, exceptions 17 and 19.')));
+    expect((await authority.applyImport(global, fresh.previewToken!, randomUUID())).entry.body).toBe(fresh.incoming.body);
+  });
+
+  it('blocks corrected or forgotten exported origins despite renamed IDs, titles and locators', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const saved = await createManaged(memory, 'Exported native source without session coordinates');
+    const exported = await authority.exportMarkdown(global, saved.entry.id);
+    const copied = editFile(exported.markdown, { id: 'new', revision: null, title: 'Renamed extraction' });
+    const corrected = await update(saved.entry, 'Only the corrected choice 5 applies; never upload output.');
+    expect(await authority.previewImport(global, fileInput(copied))).toMatchObject({ canApply: false, action: 'retained', current: JSON.parse(JSON.stringify(corrected.entry)) });
+    await authority.forget(global, (await authority.previewForget(global, [saved.entry.id])).targets, randomUUID());
+    await close();
+    bind();
+    const reopened = managedMemory();
+    await expect(reopened.authority.previewImport(global, fileInput(copied, 'file:///example/renamed-again.md'))).rejects.toThrow('source has been forgotten');
+    expect(await reopened.memory.list(global, true)).toEqual([]);
+    const freshRevision = editFile(copied, { origin: null, source: { writer: 'user', session: 'distinct-owner-instruction', turn: 18 } }, 'A genuinely new instruction after forget; exception 23.');
+    const preview = await reopened.authority.previewImport(global, fileInput(freshRevision));
+    expect(preview).toMatchObject({ action: 'create', canApply: true, current: null });
+    expect((await reopened.authority.applyImport(global, preview.previewToken!, randomUUID())).entry.body).toBe(preview.incoming.body);
+  });
+
+  it('allows distinct Markdown source revisions while preventing an old file from replaying a prior choice', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const seed = await createManaged(memory, 'Markdown source template');
+    const template = (await authority.exportMarkdown(global, seed.entry.id)).markdown;
+    const fresh = editFile(template, { id: 'new', revision: null, origin: null, source: { writer: 'import', session: 'owner-document', turn: 1 }, title: 'New Markdown source' }, 'Choice A; preserve exception 17.');
+    const initial = await authority.previewImport(global, fileInput(fresh));
+    const created = await authority.applyImport(global, initial.previewToken!, randomUUID());
+    const corrected = await update(created.entry, 'Choice B; preserve exceptions 17 and 19.');
+    expect(await authority.previewImport(global, fileInput(fresh))).toMatchObject({ canApply: false, action: 'retained', current: JSON.parse(JSON.stringify(corrected.entry)) });
+    const ownerRevert = await authority.previewImport(global, fileInput(editFile((await authority.exportMarkdown(global, corrected.entry.id)).markdown, {}, 'Choice A; preserve exception 17.')));
+    expect(ownerRevert.canApply).toBe(true);
+    expect((await authority.applyImport(global, ownerRevert.previewToken!, randomUUID())).entry.body).toBe('Choice A; preserve exception 17.');
+    await authority.forget(global, (await authority.previewForget(global, [created.entry.id])).targets, randomUUID());
+    await expect(authority.previewImport(global, fileInput(editFile(fresh, { title: 'Another extraction title' })))).rejects.toThrow('source has been forgotten');
+    const revised = editFile(fresh, {}, 'Choice C from a revised source; exception 23.');
+    const next = await authority.previewImport(global, fileInput(revised));
+    expect((await authority.applyImport(global, next.previewToken!, randomUUID())).entry.body).toBe(next.incoming.body);
+  });
+
+  it('binds confirmation to the token, expiry, process and authority epoch while preserving read-only export', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const saved = await createManaged(memory, 'Confirmation boundary');
+    const input = fileInput(editFile((await authority.exportMarkdown(global, saved.entry.id)).markdown, {}, 'The reviewed new choice.'));
+    const preview = await authority.previewImport(global, input);
+    await expect(authority.applyImport(global, `${preview.previewToken!}tampered`, randomUUID())).rejects.toThrow('preview is invalid');
+    const clock = vi.spyOn(Date, 'now').mockReturnValue(Date.parse(preview.expiresAt!) + 1);
+    try { await expect(authority.applyImport(global, preview.previewToken!, randomUUID())).rejects.toThrow('preview is invalid'); }
+    finally { clock.mockRestore(); }
+    const recovery = await authority.recoverReadOnly();
+    await expect(authority.previewImport(global, input)).rejects.toThrow('read-only');
+    await expect(authority.applyImport(global, preview.previewToken!, randomUUID())).rejects.toThrow('read-only');
+    expect((await authority.exportMarkdown(global, saved.entry.id)).entry).toEqual(saved.entry);
+    await authority.resumeEditing(recovery.recoveryId, (await authority.status()).epoch);
+    await expect(authority.applyImport(global, preview.previewToken!, randomUUID())).rejects.toThrow('preview is invalid');
+    const fresh = await authority.previewImport(global, input);
+    await close();
+    bind();
+    await expect(managedMemory().authority.applyImport(global, fresh.previewToken!, randomUUID())).rejects.toThrow('preview is invalid');
+  });
+
+  it('validates complete Markdown ownership and shows duplicate or inactive targets before confirmation', async () => {
+    const { memory, authority } = managedMemory();
+    await authority.migrate(migration());
+    const saved = await createManaged(memory, 'Existing Markdown title');
+    const exported = await authority.exportMarkdown(global, saved.entry.id);
+    await expect(authority.previewImport(global, fileInput(editFile(exported.markdown, { revision: null })))).rejects.toThrow('exported revision');
+    await expect(authority.previewImport(global, fileInput(editFile(exported.markdown, { unknown: true })))).rejects.toThrow();
+    await expect(authority.previewImport(global, fileInput(editFile(exported.markdown, {}, 'x'.repeat(1_501))))).rejects.toThrow('oversized');
+    await expect(authority.previewImport(workspace, fileInput(exported.markdown))).rejects.toThrow('scope does not match');
+    const duplicate = editFile(exported.markdown, { id: 'new', revision: null, origin: null }, 'A different fact using an existing title.');
+    expect(await authority.previewImport(global, fileInput(duplicate))).toMatchObject({ canApply: false, action: 'create', issue: { code: 'duplicate_title' }, current: { id: saved.entry.id } });
+    const pending = await memory.put({ action: 'create', scope: global, type: 'reference', title: 'Pending source', body: 'Awaiting explicit review.', source: { writer: 'agent' }, pending: true, reason: 'Review required' });
+    expect(await authority.previewImport(global, fileInput((await authority.exportMarkdown(global, pending.entry.id)).markdown))).toMatchObject({ canApply: false, issue: { code: 'inactive_target' } });
+    const preview = await authority.previewImport(global, fileInput(editFile(exported.markdown, {}, 'Reviewed edit before a later forget.')));
+    await authority.forget(global, (await authority.previewForget(global, [saved.entry.id])).targets, randomUUID());
+    await expect(authority.applyImport(global, preview.previewToken!, randomUUID())).rejects.toThrow('revision conflict');
+    expect(await memory.get(global, saved.entry.id)).toBeUndefined();
+  });
+});
+
 describe('single Memory authority safe-boundary activation', () => {
   it('preserves all four namespaces and pending revision targets through migration', async () => {
     const { memory, authority } = managedMemory();
