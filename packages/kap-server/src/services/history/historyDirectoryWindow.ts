@@ -7,6 +7,7 @@ export interface HistoryDirectoryWindow {
   readonly start: number;
   readonly end: number;
   readonly proof: HistoryNavigationProof;
+  readonly mode?: 'prefix';
 }
 
 export interface HistoryDirectoryTail {

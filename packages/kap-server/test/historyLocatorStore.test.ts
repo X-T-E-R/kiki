@@ -112,11 +112,66 @@ describe('history navigation source rows', () => {
         } while (continued.coverage.complete !== true && continued.nextCursor !== undefined);
         expect(continued.turns?.map((turn) => turn.turn)).toEqual([400]);
         expect(continued.coverage.complete).toBe(true);
-        expect((await reopened.ready()).readManifest('ws\0s\0main')?.offset).toBe(Buffer.byteLength(prefix + tail));
+        expect((await reopened.ready()).readManifest('ws\0s\0main')).toBeUndefined();
         await appendFile(wirePath, line({ type: 'context.undo', count: 1 }));
         expect(await next.readBlocks(ref, 16000)).toEqual({ status: 'stale_ref' });
         await expect(next.list({ workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns',
           order: 'newest', limit: 5, cursor: page.nextCursor })).rejects.toThrow('source changed');
+      } finally { await reopened.close(); }
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])('continues a fixed directory after shared navigation advances beyond its watermark: %s', async (lateOlderStep) => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-directory-interleave-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      const prefix = line({ type: 'note', pad: 'x'.repeat(1 << 20) }).repeat(9);
+      const turns = Array.from({ length: 6 }, (_, index) => {
+        const turnId = 400 + index;
+        return line({ type: 'turn.prompt', turnId, promptId: `p${turnId}`,
+          origin: { kind: 'user' }, input: [{ type: 'text', text: `prompt ${turnId}` }] }) +
+          line({ type: 'turn.ended', turnId, reason: 'completed' });
+      }).join('');
+      const frozen = Buffer.byteLength(prefix + turns);
+      await writeFile(wirePath, prefix + turns);
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const request = { workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns' as const,
+        order: 'newest' as const, limit: 5 };
+      const first = await nav.list(request);
+      expect(first.turns?.map((turn) => turn.turn)).toEqual([405, 404, 403, 402, 401]);
+      const added = line({ type: 'turn.prompt', turnId: 406, input: [{ type: 'text', text: 'appended turn' }] }) +
+        (lateOlderStep ? line({ type: 'context.append_loop_event', event: { type: 'step.begin',
+          turnId: 400, step: 1, uuid: 'late-older-step' } }) : '');
+      await appendFile(wirePath, added);
+      let latest = await nav.list({ ...request, beforeTurn: 1000 });
+      let calls = 0;
+      while (!latest.coverage.complete && latest.nextCursor !== undefined) {
+        latest = await nav.list({ ...request, beforeTurn: 1000, cursor: latest.nextCursor });
+        expect(++calls).toBeLessThan(4);
+      }
+      const advanced = (await db.ready()).readManifest('ws\0s\0main')!;
+      expect(advanced.offset).toBeGreaterThan(frozen);
+      let older = await nav.list({ ...request, cursor: first.nextCursor });
+      calls = 0;
+      while (!older.coverage.complete && older.nextCursor !== undefined) {
+        older = await nav.list({ ...request, cursor: older.nextCursor });
+        expect(++calls).toBeLessThan(4);
+      }
+      expect(older.turns).toMatchObject([{ turn: 400, promptExcerpt: 'prompt 400', stepCount: 0 }]);
+      expect(older.turns).toHaveLength(1);
+      expect(older.coverage.complete).toBe(true);
+      expect(await nav.readBlocks(older.turns![0]!.ref!, 16000)).toMatchObject({ status: 'ok', complete: true,
+        blocks: [{ text: 'prompt 400' }] });
+      expect((await db.ready()).readManifest('ws\0s\0main')).toEqual(advanced);
+      await db.close();
+      const reopened = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+      try {
+        const fresh = new HistoryLocatorStore(reopened, transcript);
+        expect(await fresh.readBlocks(older.turns![0]!.ref!, 16000)).toMatchObject({ status: 'ok', complete: true,
+          blocks: [{ text: 'prompt 400' }] });
+        expect((await reopened.ready()).readManifest('ws\0s\0main')).toEqual(advanced);
       } finally { await reopened.close(); }
     } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
   });
@@ -410,7 +465,7 @@ describe('history navigation source rows', () => {
       const controller = new AbortController();
       const query = { query: '原话', mode: 'auto' as const, pageSize: 5 };
       const queued = nav.scan('s', 'main', controller.signal, query);
-      await vi.waitFor(() => expect((nav as unknown as { queuedScans: number }).queuedScans).toBe(2));
+      await vi.waitFor(() => expect((nav as unknown as { scanQueue: { queued: number } }).scanQueue.queued).toBe(2));
       controller.abort(new Error('cancel queued HistorySearch'));
       await expect(queued).rejects.toThrow('cancel queued HistorySearch');
       expect(rollback).not.toHaveBeenCalled();

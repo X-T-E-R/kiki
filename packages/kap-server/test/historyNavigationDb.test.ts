@@ -11,6 +11,56 @@ import { HistoryNavigationDb } from '../src/services/history/historyNavigationDb
 import { SqliteNavigationMap, SqliteNavigationSet } from '../src/services/history/historyNavigationState';
 
 describe('history navigation SQLite repository', () => {
+  it('isolates fixed directory projections, shares rollback and retains two committed watermarks', async () => {
+    const home = await mkdtemp(join(tmpdir(), 'history-navigation-fixed-'));
+    const path = join(home, 'navigation.sqlite');
+    const db = await HistoryNavigationDb.open(path);
+    const row = { workspace: 'ws', session: 's', agent: 'main', kind: 'turn', turn: 1, active: true, position: 1 };
+    const proof = { identity: 'fixture', size: 0, mtimeNs: '0', ctimeNs: '0', head: '0', tail: '0' };
+    const manifest = { v: 2 as const, generation: 'fixed', incarnation: 'fixture', offset: 0,
+      ordinal: 0, complete: true, source: proof };
+    try {
+      await db.put(HISTORY_NAV_COLLECTION, 'turn', { ...row, excerpt: 'current' });
+      const views = ['1', '2', '3'].map((id) => db.projected(id.repeat(64)));
+      const scope = (view: HistoryNavigationDb): string => `${view.projectionPrefix}ws\0s\0main`;
+      const commit = async (view: HistoryNavigationDb, excerpt: string): Promise<void> => {
+        view.beginSlice();
+        view.scalarState(scope(view)).turnStart.set('t1', 0);
+        await view.put(HISTORY_NAV_COLLECTION, 'turn', { ...row, excerpt });
+        view.commitSlice(scope(view), manifest, { ordinal: 0, legacyTurn: 0 });
+      };
+      await commit(views[0]!, 'watermark-1');
+      views[1]!.beginSlice();
+      expect(() => db.beginSlice()).toThrow('already active');
+      await views[1]!.put(HISTORY_NAV_COLLECTION, 'turn', { ...row, excerpt: 'uncommitted' });
+      db.rollbackSlice();
+      expect(await views[1]!.get(HISTORY_NAV_COLLECTION, 'turn')).toBeUndefined();
+      await commit(views[1]!, 'watermark-2');
+      expect((await db.pageByColumn(HISTORY_NAV_COLLECTION, { column: 'turn', filter: { workspace: 'ws' }, limit: 10 })).items)
+        .toEqual([{ ...row, excerpt: 'current' }]);
+      expect((await views[0]!.pageByColumn(HISTORY_NAV_COLLECTION, { column: 'turn', filter: { workspace: 'ws' }, limit: 10 })).items)
+        .toEqual([{ ...row, excerpt: 'watermark-1' }]);
+      await commit(views[0]!, 'watermark-1');
+      await commit(views[2]!, 'watermark-3');
+      expect(await views[1]!.get(HISTORY_NAV_COLLECTION, 'turn')).toBeUndefined();
+      expect(views[1]!.readManifest(scope(views[1]!))).toBeUndefined();
+      expect(views[1]!.scalarState(scope(views[1]!)).turnStart.has('t1')).toBe(false);
+      expect(await db.get(HISTORY_NAV_COLLECTION, 'turn')).toEqual({ ...row, excerpt: 'current' });
+      views[2]!.beginSlice();
+      views[2]!.clearProjection(scope(views[2]!), 'ws', 's', 'main');
+      views[2]!.rollbackSlice();
+      expect(await views[2]!.get(HISTORY_NAV_COLLECTION, 'turn')).toEqual({ ...row, excerpt: 'watermark-3' });
+      views[2]!.close();
+      expect(await db.get(HISTORY_NAV_COLLECTION, 'turn')).toEqual({ ...row, excerpt: 'current' });
+      db.close();
+      const reopened = await HistoryNavigationDb.open(path);
+      try {
+        expect(await reopened.projected('1'.repeat(64)).get(HISTORY_NAV_COLLECTION, 'turn'))
+          .toEqual({ ...row, excerpt: 'watermark-1' });
+      } finally { reopened.close(); }
+    } finally { db.close(); await rm(home, { recursive: true, force: true }); }
+  });
+
   it('reuses hot SQL across records while preserving rollback and independent iterators', async () => {
     const home = await mkdtemp(join(tmpdir(), 'history-navigation-statements-'));
     const db = await HistoryNavigationDb.open(join(home, 'navigation.sqlite'));

@@ -44,8 +44,16 @@ const FILTERS = new Set(['workspace', 'session', 'agent', 'kind', 'turn', 'activ
 /** Derived, per-installation history index. Never used as the canonical wire/replay store. */
 export class HistoryNavigationDb implements NavigationStore {
   private closed = false;
-  private scanTransactionOpen = false;
-  private constructor(readonly db: DatabaseSync) {}
+  private readonly transaction: { open: boolean };
+  private constructor(readonly db: DatabaseSync, private readonly projection?: string,
+    transaction?: { open: boolean }) { this.transaction = transaction ?? { open: false }; }
+
+  get projectionPrefix(): string { return this.projection === undefined ? '' : `directory:${this.projection}\0`; }
+
+  projected(id: string): HistoryNavigationDb {
+    if (!/^[0-9a-f]{64}$/u.test(id)) throw new Error('invalid history directory projection');
+    return new HistoryNavigationDb(this.db, id, this.transaction);
+  }
 
   static async open(path: string): Promise<HistoryNavigationDb> {
     const actual = resolve(path);
@@ -193,13 +201,13 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   beginSlice(): void {
-    if (this.scanTransactionOpen) throw new Error('history navigation transaction already active');
+    if (this.transaction.open) throw new Error('history navigation transaction already active');
     this.db.exec('BEGIN IMMEDIATE');
-    this.scanTransactionOpen = true;
+    this.transaction.open = true;
   }
 
   commitSlice(scope: string, manifest: HistoryNavManifest, cursor: NavigationAdapterCursor): void {
-    if (!this.scanTransactionOpen || manifest.ordinal !== cursor.ordinal) throw new Error('invalid navigation checkpoint');
+    if (!this.transaction.open || manifest.ordinal !== cursor.ordinal) throw new Error('invalid navigation checkpoint');
     const value = JSON.stringify(manifest);
     if (Buffer.byteLength(value) > MANIFEST_MAX_BYTES) throw new Error('navigation manifest exceeds 16 KiB');
     navigationStatement(this.db, `INSERT INTO state(scope,bucket,key,value) VALUES(?,'cursor','adapter',?)
@@ -207,14 +215,40 @@ export class HistoryNavigationDb implements NavigationStore {
     navigationStatement(this.db, "INSERT OR REPLACE INTO state(scope,bucket,key,value) VALUES(?,'cursor','canonicalSources','1')").run(scope);
     navigationStatement(this.db, `INSERT INTO manifest(scope,value) VALUES(?,?)
       ON CONFLICT(scope) DO UPDATE SET value=excluded.value`).run(scope, value);
+    this.retainProjection();
     this.db.exec('COMMIT');
-    this.scanTransactionOpen = false;
+    this.transaction.open = false;
   }
 
   rollbackSlice(): void {
-    if (!this.scanTransactionOpen) return;
+    if (!this.transaction.open) return;
     try { this.db.exec('ROLLBACK'); }
-    finally { this.scanTransactionOpen = false; }
+    finally { this.transaction.open = false; }
+  }
+
+  private retainProjection(): void {
+    if (this.projection === undefined) return;
+    const saved = navigationStatement(this.db, "SELECT value FROM manifest WHERE scope GLOB 'directory-view:*'")
+      .all() as Array<{ value: string }>;
+    const views = saved.flatMap(({ value }) => {
+      let item: { id?: unknown; used?: unknown };
+      try { item = JSON.parse(value) as typeof item; } catch { return []; }
+      if (item === null || typeof item !== 'object') return [];
+      return typeof item.id === 'string' && /^[0-9a-f]{64}$/u.test(item.id) &&
+        typeof item.used === 'number' && Number.isSafeInteger(item.used) ? [{ id: item.id, used: item.used }] : [];
+    }).filter((item) => item.id !== this.projection).toSorted((left, right) => right.used - left.used);
+    const used = Math.max(0, ...views.map((item) => item.used)) + 1;
+    navigationStatement(this.db, 'INSERT OR REPLACE INTO manifest(scope,value) VALUES(?,?)')
+      .run(`directory-view:${this.projection}`, JSON.stringify({ id: this.projection, used }));
+    for (const view of views.slice(1)) {
+      const lower = `directory:${view.id}\0`;
+      const upper = `directory:${view.id}\u0001`;
+      navigationStatement(this.db, 'DELETE FROM rows WHERE key>=? AND key<?').run(lower, upper);
+      for (const table of ['state', 'turn_sequence', 'anchor_sequence', 'manifest']) {
+        navigationStatement(this.db, `DELETE FROM ${table} WHERE scope>=? AND scope<?`).run(lower, upper);
+      }
+      navigationStatement(this.db, 'DELETE FROM manifest WHERE scope=?').run(`directory-view:${view.id}`);
+    }
   }
 
   clearProjection(scope: string, workspace: string, session: string, agent: string): void {
@@ -226,8 +260,8 @@ export class HistoryNavigationDb implements NavigationStore {
       navigationStatement(this.db, `DELETE FROM ${table} WHERE scope>=? AND scope<?`).run(lower, upper);
     }
     navigationStatement(this.db, 'DELETE FROM rows WHERE workspace=? AND session=? AND agent=?')
-      .run(workspace, session, agent);
-    navigationStatement(this.db, 'DELETE FROM rows WHERE key=?').run(`${scope}\0checkpoint`);
+      .run(`${this.projectionPrefix}${workspace}`, session, agent);
+    navigationStatement(this.db, 'DELETE FROM rows WHERE key=?').run(`${this.projectionPrefix}${scope}\0checkpoint`);
   }
 
   clearState(scope: string): void {
@@ -271,7 +305,7 @@ export class HistoryNavigationDb implements NavigationStore {
       navigationStatement(this.db, `UPDATE rows SET active=0,value=json_set(value,'$.active',json('false'))
         WHERE workspace=? AND session=? AND agent=? AND active=1 AND turn IN
         (SELECT CAST(substr(id,2) AS INTEGER) FROM turn_sequence WHERE scope=? AND seq>=? AND seq<=?)`)
-        .run(input.workspace, input.session, input.agent, input.scope, input.range[0], input.range[1]);
+        .run(`${this.projectionPrefix}${input.workspace}`, input.session, input.agent, input.scope, input.range[0], input.range[1]);
     }
     if (input.retain !== undefined) {
       navigationStatement(this.db, `DELETE FROM state WHERE scope=? AND bucket='canonicalUnlocatedCalls'
@@ -282,14 +316,14 @@ export class HistoryNavigationDb implements NavigationStore {
         .run(input.scope, `t${input.retain.turn}`, input.retain.beforeOrdinal);
       navigationStatement(this.db, `UPDATE rows SET active=0,value=json_set(value,'$.active',json('false'))
         WHERE workspace=? AND session=? AND agent=? AND active=1 AND turn=? AND kind<>'turn' AND position>=?`)
-        .run(input.workspace, input.session, input.agent, input.retain.turn, input.retain.beforeOrdinal * 1024);
+        .run(`${this.projectionPrefix}${input.workspace}`, input.session, input.agent, input.retain.turn, input.retain.beforeOrdinal * 1024);
     }
   }
 
   rowsAtSource(workspace: string, session: string, agent: string, start: number): HistoryNavRow[] {
     const rows = navigationStatement(this.db, `SELECT value FROM rows WHERE workspace=? AND session=? AND agent=? AND active=1
       AND json_extract(value, '$.anchor.start')=? LIMIT 1024`)
-      .all(workspace, session, agent, start) as Array<{ value: string }>;
+      .all(`${this.projectionPrefix}${workspace}`, session, agent, start) as Array<{ value: string }>;
     return rows.map((row) => JSON.parse(row.value) as HistoryNavRow);
   }
 
@@ -301,7 +335,7 @@ export class HistoryNavigationDb implements NavigationStore {
     const where = ["r.workspace=? AND r.session=? AND r.agent=? AND r.active=1",
       "json_extract(r.value,'$.part') IN ('prompt','text','output','record')",
       "EXISTS (SELECT 1 FROM rows p WHERE p.workspace=r.workspace AND p.session=r.session AND p.agent=r.agent AND p.kind='turn' AND p.turn=r.turn AND p.active=1)"];
-    const values: Array<string | number> = [input.workspace, input.session, input.agent];
+    const values: Array<string | number> = [`${this.projectionPrefix}${input.workspace}`, input.session, input.agent];
     if (input.role !== undefined) {
       where.push("coalesce(json_extract(r.value,'$.role'),'user')=?");
       values.push(input.role);
@@ -326,7 +360,7 @@ export class HistoryNavigationDb implements NavigationStore {
 
   async get<T>(collection: string, key: string): Promise<T | undefined> {
     this.assertCollection(collection);
-    const row = navigationStatement(this.db, 'SELECT value FROM rows WHERE key=?').get(key) as { value: string } | undefined;
+    const row = navigationStatement(this.db, 'SELECT value FROM rows WHERE key=?').get(`${this.projectionPrefix}${key}`) as { value: string } | undefined;
     return row === undefined ? undefined : JSON.parse(row.value) as T;
   }
 
@@ -336,16 +370,16 @@ export class HistoryNavigationDb implements NavigationStore {
   }
 
   async batch(ops: readonly WriteOp[]): Promise<void> {
-    if (!this.scanTransactionOpen) this.db.exec('BEGIN IMMEDIATE');
+    if (!this.transaction.open) this.db.exec('BEGIN IMMEDIATE');
     try {
       for (const op of ops) {
         this.assertCollection(op.collection);
         if (op.kind === 'put') this.write(op.key, op.value);
-        else navigationStatement(this.db, 'DELETE FROM rows WHERE key=?').run(op.key);
+        else navigationStatement(this.db, 'DELETE FROM rows WHERE key=?').run(`${this.projectionPrefix}${op.key}`);
       }
-      if (!this.scanTransactionOpen) this.db.exec('COMMIT');
+      if (!this.transaction.open) this.db.exec('COMMIT');
     } catch (error) {
-      if (!this.scanTransactionOpen) this.db.exec('ROLLBACK');
+      if (!this.transaction.open) this.db.exec('ROLLBACK');
       throw error;
     }
   }
@@ -363,7 +397,7 @@ export class HistoryNavigationDb implements NavigationStore {
         throw new Error('invalid history navigation filter');
       }
       where.push(`${column}=?`);
-      values.push(typeof value === 'boolean' ? Number(value) : value);
+      values.push(column === 'workspace' ? `${this.projectionPrefix}${String(value)}` : typeof value === 'boolean' ? Number(value) : value);
     }
     for (const [bound, sql] of [['gt', '>'], ['gte', '>='], ['lt', '<'], ['lte', '<=']] as const) {
       const value = query.bounds?.[bound];
@@ -377,8 +411,9 @@ export class HistoryNavigationDb implements NavigationStore {
 
   close(): void {
     if (this.closed) return;
-    this.rollbackSlice();
     this.closed = true;
+    if (this.projection !== undefined) return;
+    this.rollbackSlice();
     this.db.close();
   }
 
@@ -393,7 +428,8 @@ export class HistoryNavigationDb implements NavigationStore {
       workspace=excluded.workspace,session=excluded.session,agent=excluded.agent,kind=excluded.kind,
       turn=excluded.turn,step=excluded.step,active=excluded.active,position=excluded.position,
       time=excluded.time,value=excluded.value`).run(
-      key, row.workspace ?? null, row.session ?? null, row.agent ?? null, row.kind ?? null,
+      `${this.projectionPrefix}${key}`, row.workspace === undefined ? null : `${this.projectionPrefix}${row.workspace}`,
+      row.session ?? null, row.agent ?? null, row.kind ?? null,
       row.turn ?? null, row.step ?? null, row.active === undefined ? null : Number(row.active),
       row.position ?? null, row.time ?? null, JSON.stringify(value),
     );
@@ -408,6 +444,11 @@ export class LazyHistoryNavigationDb implements NavigationStore {
   ready(): Promise<HistoryNavigationDb> {
     if (this.closed) throw new Error('history navigation store closed');
     return this.opened ??= HistoryNavigationDb.open(this.path);
+  }
+  projected(id: string): LazyHistoryNavigationDb {
+    const child = new LazyHistoryNavigationDb(this.path);
+    child.opened = this.ready().then((db) => db.projected(id));
+    return child;
   }
   async get<T>(collection: string, key: string): Promise<T | undefined> {
     return (await this.ready()).get<T>(collection, key);

@@ -70,7 +70,8 @@ export function decodeHistoryRef(value: string): HistorySourceAnchor {
   const window = a.window;
   if (window !== undefined && (typeof window !== 'object' || window === null ||
       !Number.isSafeInteger(window.start) || window.start < 0 || window.start > a.start! ||
-      !Number.isSafeInteger(window.end) || window.end < a.end! || window.end - window.start > (4 << 20) ||
+      !Number.isSafeInteger(window.end) || window.end < a.end! ||
+      (window.mode === undefined ? window.end - window.start > (4 << 20) : window.mode !== 'prefix' || window.start !== 0) ||
       window.proof === null || typeof window.proof !== 'object' ||
       window.proof.identity !== a.incarnation || !Number.isSafeInteger(window.proof.size) || window.proof.size < window.end ||
       typeof window.proof.mtimeNs !== 'string' || !/^\d{1,32}$/u.test(window.proof.mtimeNs) ||
