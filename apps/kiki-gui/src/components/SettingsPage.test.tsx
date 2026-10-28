@@ -809,15 +809,69 @@ describe('SettingsPage batch-3 leaves', () => {
     try {
       const container = await renderSettings('/settings/connection?tab=external', { guarded: true });
       await vi.waitFor(() => {
-        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/connection-services#st-card-conn-external');
+        expect(container.querySelector('[data-test-location]')?.textContent).toBe('/settings/connection-services?tab=web#st-card-conn-external');
       });
+      // The tunnel sits with browser access: the tab that gives a browser an address.
       await vi.waitFor(() => {
         expect(container.querySelector('#st-card-conn-external')).not.toBeNull();
-        expect(container.querySelector('#st-card-external-clients')).not.toBeNull();
         expect(container.querySelector('#st-card-web-access')).not.toBeNull();
-        expect(container.querySelector('#st-card-inbound-connections')).not.toBeNull();
-        expect(container.querySelector('#st-card-host-skill')).not.toBeNull();
+        expect(container.querySelector('#st-card-external-clients')).toBeNull();
       });
+    } finally {
+      client.klient.rest = undefined;
+    }
+  });
+
+  it('moves between access tabs by keyboard and holds a dirty draft before leaving', async () => {
+    localStorage.setItem('kiki.locale', 'en');
+    client.klient.rest = { connections: { list: async () => [], handshake: async () => ({}) } };
+    try {
+      const container = await renderSettings('/settings/connection-services', { guarded: true });
+      await flush();
+      const tab = (id: string) => container.querySelector<HTMLButtonElement>(`[data-access-tab="${id}"]`)!;
+      const location = () => container.querySelector('[data-test-location]')?.textContent;
+      const press = async (key: string) => {
+        await act(async () => {
+          (document.activeElement ?? tab('web')).dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+        });
+        await flush();
+      };
+      expect(tab('web').getAttribute('aria-selected')).toBe('true');
+      expect(container.querySelector('#st-card-web-access')).not.toBeNull();
+      act(() => { tab('web').focus(); });
+
+      await press('ArrowRight');
+      expect(document.activeElement).toBe(tab('kiki'));
+      expect(location()).toBe('/settings/connection-services?tab=kiki');
+      expect(container.querySelector('[data-access-panel="kiki"] #st-card-inbound-connections')).not.toBeNull();
+
+      await press('End');
+      expect(document.activeElement).toBe(tab('clients'));
+      expect(tab('clients').getAttribute('aria-selected')).toBe('true');
+      expect(container.querySelector('[data-access-panel="clients"] #st-card-external-clients')).not.toBeNull();
+
+      await press('ArrowRight');
+      expect(document.activeElement).toBe(tab('web'));
+      expect(location()).toBe('/settings/connection-services?tab=web');
+
+      await press('End');
+      await press('Home');
+      expect(document.activeElement).toBe(tab('web'));
+      expect(location()).toBe('/settings/connection-services?tab=web');
+
+      // A tab switch is a navigation: an unsaved draft holds it until the reader decides.
+      await click(container.querySelector('[data-test-dirty]')!);
+      await click(tab('clients'));
+      expect(container.querySelector('[data-test-confirm]')).not.toBeNull();
+      expect(location()).toBe('/settings/connection-services?tab=web');
+      expect(tab('web').getAttribute('aria-selected')).toBe('true');
+      await click(container.querySelector('[data-test-cancel]')!);
+      expect(location()).toBe('/settings/connection-services?tab=web');
+      await click(tab('clients'));
+      await click(container.querySelector('[data-test-confirm]')!);
+      await flush();
+      expect(location()).toBe('/settings/connection-services?tab=clients');
+      expect(tab('clients').getAttribute('aria-selected')).toBe('true');
     } finally {
       client.klient.rest = undefined;
     }
@@ -1178,7 +1232,9 @@ describe('SettingsPage search ownership', () => {
     const ssh = await renderSettings('/settings/ssh');
     const plugins = await renderSettings('/settings/plugins');
     const spaces = await renderSettings('/settings/spaces');
-    const connectionServices = await renderSettings('/settings/connection-services');
+    const connectionServices = await renderSettings('/settings/connection-services?tab=web');
+    const accessKiki = await renderSettings('/settings/connection-services?tab=kiki');
+    const accessClients = await renderSettings('/settings/connection-services?tab=clients');
     expect(general.querySelector('#st-card-session-title')).toBeNull();
     expect(defaults.querySelector('#st-card-permission-defaults')).toBeNull();
     expect(permissions.querySelector('#st-card-permission-defaults')).not.toBeNull();
@@ -1195,7 +1251,7 @@ describe('SettingsPage search ownership', () => {
         ])
         .map((match) => match[1]!),
     );
-    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, connectionServices]) {
+    for (const page of [general, agents, subagents, mcp, sessions, permissions, tasks, developer, labs, defaults, searchAdvanced, ssh, plugins, spaces, connectionServices, accessKiki, accessClients]) {
       for (const card of page.querySelectorAll('[id^="st-card-"]')) rendered.add(card.id);
     }
     expect(rendered.size).toBeGreaterThan(10);

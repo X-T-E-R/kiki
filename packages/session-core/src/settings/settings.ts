@@ -2144,6 +2144,37 @@ export function sessionsTabLabelKey(tab: SessionsSettingsTab): I18nKey {
 }
 
 /**
+ * Sub-pages of "Access from elsewhere", split by who connects in: a browser on
+ * another device (and the tunnel that gives it an address), another Kiki, or
+ * an agent / MCP client calling this Kiki's tools. Inbound only; outbound
+ * model providers stay on Models. The ids double as the `?tab=` parameter.
+ */
+export const CONNECTION_SERVICES_SETTINGS_TABS = ['web', 'kiki', 'clients'] as const;
+export type ConnectionServicesSettingsTab = (typeof CONNECTION_SERVICES_SETTINGS_TABS)[number];
+export const CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB: ConnectionServicesSettingsTab = 'web';
+
+const CONNECTION_SERVICES_TAB_BY_CARD: Readonly<Record<string, ConnectionServicesSettingsTab>> = {
+  'st-card-web-access': 'web',
+  'st-card-conn-external': 'web',
+  'st-card-inbound-connections': 'kiki',
+  'st-card-external-clients': 'clients',
+  'st-card-host-skill': 'clients',
+  'st-card-exp-connection-services': 'clients',
+};
+
+export function connectionServicesTabForCard(cardId: string): ConnectionServicesSettingsTab | undefined {
+  return CONNECTION_SERVICES_TAB_BY_CARD[cardId];
+}
+
+export function normalizeConnectionServicesTab(value: string | null | undefined): ConnectionServicesSettingsTab | undefined {
+  return CONNECTION_SERVICES_SETTINGS_TABS.find((tab) => tab === value);
+}
+
+export function connectionServicesTabLabelKey(tab: ConnectionServicesSettingsTab): I18nKey {
+  return `st.access.tab.${tab}` as I18nKey;
+}
+
+/**
  * The "Connection" entry is a single page again: the live server session is
  * its only content after the Cloudflare card moved to Connection services.
  * The remaining tab id doubles as the `?tab=` deep-link parameter; a bare
@@ -2194,6 +2225,7 @@ export type SettingsTab =
   | BrowserControlSettingsTab
   | ConnectionSettingsTab
   | SessionsSettingsTab
+  | ConnectionServicesSettingsTab
   | SearchSettingsTab;
 
 /** Card → sub-page for the search leaf, mirroring the page's tab mount table. */
@@ -2222,6 +2254,7 @@ export function settingsTabLabelKey(section: string, tab: SettingsTab): I18nKey 
   if (section === 'browser-control') return browserControlTabLabelKey(tab as BrowserControlSettingsTab);
   if (section === 'connection') return connectionTabLabelKey(tab as ConnectionSettingsTab);
   if (section === 'sessions') return sessionsTabLabelKey(tab as SessionsSettingsTab);
+  if (section === 'connection-services') return connectionServicesTabLabelKey(tab as ConnectionServicesSettingsTab);
   return `st.nbSearch.tab.${tab}` as I18nKey;
 }
 
@@ -2470,7 +2503,7 @@ export function experimentalCardId(section: string): string {
 }
 
 /** Tab a tabbed page mounts its Experimental rows on (Models → Defaults, Search → Advanced). */
-const EXPERIMENTAL_TAB: Readonly<Record<string, SettingsTab>> = { ai: 'defaults', search: 'advanced', sessions: 'runtime' };
+const EXPERIMENTAL_TAB: Readonly<Record<string, SettingsTab>> = { ai: 'defaults', search: 'advanced', sessions: 'runtime', 'connection-services': 'clients' };
 
 export function experimentalTabForSection(section: string): SettingsTab | undefined {
   return EXPERIMENTAL_TAB[section];
@@ -2538,15 +2571,15 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-owned', titleKey: 'st.conn.ownedTitle', keywordKeys: ['st.conn.ownedBody', 'st.conn.restart'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-disconnect', titleKey: 'st.conn.disconnectTitle', keywordKeys: ['st.conn.disconnectBody', 'sidebar.disconnect'] },
   { section: 'connection', tab: 'current', cardId: 'st-card-conn-log', titleKey: 'st.conn.logTitle', keywordKeys: ['st.conn.logBody', 'st.conn.logCopy'], synonyms: ['connection log', '连接日志', 'disconnect', '断线', 'heartbeat', '心跳', 'close code'] },
-  { section: 'connection-services', cardId: 'st-card-conn-external', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接'] },
-  { section: 'connection-services', cardId: 'st-card-external-clients', titleKey: 'st.section.externalClients', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle', 'st.xc.intro', 'st.xc.workspace', 'st.xc.tools'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入', 'ChatGPT', 'chatgpt', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
+  { section: 'connection-services', cardId: 'st-card-conn-external', tab: 'web', titleKey: 'st.conn.ext.title', keywordKeys: ['st.conn.ext.intro', 'st.conn.ext.notInstalled'], synonyms: ['cloudflare', 'tunnel', '隧道', 'external connection', '外部连接'] },
+  { section: 'connection-services', cardId: 'st-card-external-clients', tab: 'clients', titleKey: 'st.section.externalClients', keywordKeys: ['st.xc.localTitle', 'st.xc.remoteTitle', 'st.xc.listenerTitle', 'st.xc.authTitle', 'st.xc.intro', 'st.xc.workspace', 'st.xc.tools'], synonyms: ['external client', '外部客户端', 'mcp client', 'stdio client', 'connection services', '连接服务', 'remote access', '远程接入', 'ChatGPT', 'chatgpt', '客户端', 'client', '连接客户端', 'stdio', '反向', 'reverse mcp', '外部调用'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-auth', titleKey: 'st.connections.addTitle', keywordKeys: ['st.auth.signIn', 'st.account.signIn', 'st.connect.accountTitle'], synonyms: ['提供商', '供应商', 'provider', '认证', '登录', 'sign in', '账号', 'account', '订阅', 'subscription'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers', titleKey: 'st.providers.title', keywordKeys: ['st.providers.empty', 'st.images.acceptedTypes', 'st.images.convertUnsupported', 'st.quota.intro', 'st.quota.refresh'], synonyms: ['提供商', '供应商', 'provider', 'image policy', '图片策略', '图片类型', '图片转换', 'accepted image types', 'convert unsupported', '额度', '配额', 'quota', 'limit', '限额', 'Kimi Code', '订阅', 'subscription', '模型目录', 'model catalog', '模型列表', 'model editing', '模型编辑', '模型参数', 'model parameters', 'remote id', '远端模型 ID', 'Recipe', '思考强度', 'thinking effort'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-providers-add', titleKey: 'st.providers.addTitle', keywordKeys: ['st.wizard.chooseTemplate', 'st.fetchModels.button'], synonyms: ['提供商', '供应商', 'provider'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-catalog-import', titleKey: 'st.catalog.title', keywordKeys: ['st.catalog.intro', 'st.catalog.searchPlaceholder'], synonyms: ['models.dev', '目录', 'catalog', 'directory', '导入', 'import', '提供商', 'provider'] },
   { section: 'ai', tab: 'providers', cardId: 'st-card-engines', titleKey: 'st.engines.title', keywordKeys: ['st.engines.intro', 'st.engines.check'], synonyms: ['外部引擎', 'executor', 'harness', 'Codex', 'Claude Code', 'Grok Build', 'ACP'] },
   { section: 'extensions', tab: 'skills', cardId: 'st-card-caps', titleKey: 'st.caps.title', keywordKeys: ['st.caps.mergeSkills', 'st.caps.extraDirs', 'st.sidecar.builtinSkills'], synonyms: ['能力', 'skills', '技能'] },
-  { section: 'connection-services', cardId: 'st-card-host-skill', titleKey: 'st.hostSkill.title', keywordKeys: ['st.hostSkill.host.claude', 'st.hostSkill.host.codex', 'st.hostSkill.host.grok'], synonyms: ['kiki-as-subagent', 'subagent', '子智能体', 'Claude Code', 'Codex', 'Grok'] },
+  { section: 'connection-services', cardId: 'st-card-host-skill', tab: 'clients', titleKey: 'st.hostSkill.title', keywordKeys: ['st.hostSkill.host.claude', 'st.hostSkill.host.codex', 'st.hostSkill.host.grok'], synonyms: ['kiki-as-subagent', 'subagent', '子智能体', 'Claude Code', 'Codex', 'Grok'] },
   { section: 'extensions', tab: 'skills', cardId: 'st-card-skill-catalog', titleKey: 'st.skills.catalogTitle', keywordKeys: ['cap.filterPlaceholder'], synonyms: ['能力', 'capabilities', '技能目录', 'skill catalog'] },
   { section: 'sessions', cardId: 'st-card-task-policy', tab: 'runtime', titleKey: 'st.taskPolicy.title', keywordKeys: ['st.taskPolicy.hint', 'st.taskPolicy.maxRunningTasks', 'st.taskPolicy.bashTimeout', 'st.taskPolicy.keepAlive', 'st.taskPolicy.fileToolHints'], synonyms: ['runtime', '运行时', 'background tasks', '后台任务'] },
   { section: 'sessions', cardId: 'st-card-cron', tab: 'runtime', titleKey: 'st.cron.title', keywordKeys: ['st.cron.hint', 'st.cron.poll'], synonyms: ['cron', '定时任务', 'environment diagnostics', '环境诊断'] },
@@ -2614,10 +2647,10 @@ export const SETTINGS_SEARCH_SPEC: readonly SettingsSearchSpecEntry[] = [
   { section: 'spaces', cardId: 'st-card-space-window', titleKey: 'st.spaces.windowTitle', keywordKeys: ['st.spaces.windowSwitch', 'st.spaces.windowWindows', 'st.spaces.windowNextLaunch'], synonyms: ['window mode', '窗口模式', 'multi window', '多窗口'] },
   { section: 'spaces', cardId: 'st-card-spaces', titleKey: 'st.spaces.listTitle', keywordKeys: ['st.spaces.new', 'st.spaces.attach', 'st.spaces.removeFromList', 'st.spaces.delete', 'st.spaces.credentials'], synonyms: ['space', 'spaces', '空间', 'home', 'kiki home', 'profile', '多开', '独立空间', 'isolated'] },
   { section: 'spaces', cardId: 'st-card-remote-connections', titleKey: 'st.remote.outboundTitle', keywordKeys: ['st.remote.addTitle', 'st.remote.way.ssh', 'st.remote.removeTitle'], synonyms: ['remote kiki', 'remote space', 'connection', '远端 kiki', '远端空间', '连接', 'broker', 'over ssh'] },
-  { section: 'connection-services', cardId: 'st-card-inbound-connections', titleKey: 'st.inbound.title', keywordKeys: ['st.inbound.gate', 'st.inbound.invitationLabel', 'st.inbound.bridgeNote'], synonyms: ['inbound', 'allow', 'invitation', '入站', '准入', '允许', '邀请', '被连接'] },
+  { section: 'connection-services', cardId: 'st-card-inbound-connections', tab: 'kiki', titleKey: 'st.inbound.title', keywordKeys: ['st.inbound.gate', 'st.inbound.invitationLabel', 'st.inbound.bridgeNote'], synonyms: ['inbound', 'allow', 'invitation', '入站', '准入', '允许', '邀请', '被连接'] },
   { section: 'spaces', cardId: 'st-card-space-credentials', titleKey: 'st.spaces.credTitle', keywordKeys: ['st.spaces.credShared', 'st.spaces.credIsolated', 'st.spaces.copySsh'], synonyms: ['credentials', '凭据', '账号与密钥', 'ssh password', 'oauth'] },
   { section: 'spaces', cardId: 'st-card-space-overrides', titleKey: 'st.spaces.ownChoices', keywordKeys: ['st.origin.restore', 'st.origin.local', 'st.origin.inherited'], synonyms: ['inherit', '继承', '恢复继承', 'override', '覆盖'] },
-  { section: 'connection-services', cardId: 'st-card-web-access', titleKey: 'st.web.title', keywordKeys: ['st.web.newLink', 'st.web.turnOff', 'st.web.address', 'st.web.signedIn', 'st.web.persistent', 'st.web.temporary'], synonyms: ['web access', 'web 访问', '浏览器访问', 'browser access', '网页', '临时开启', 'always on', '始终开启', 'entry link', '入口链接', 'web link', '手机', 'phone'] },
+  { section: 'connection-services', cardId: 'st-card-web-access', tab: 'web', titleKey: 'st.web.title', keywordKeys: ['st.web.newLink', 'st.web.turnOff', 'st.web.address', 'st.web.signedIn', 'st.web.persistent', 'st.web.temporary'], synonyms: ['web access', 'web 访问', '浏览器访问', 'browser access', '网页', '临时开启', 'always on', '始终开启', 'entry link', '入口链接', 'web link', '手机', 'phone'] },
   // The import surface has its own sub-route; the hit lands on its entry card.
   { section: 'sessions', cardId: 'st-card-import-history', tab: 'conversations', titleKey: 'cap.import.entry', keywordKeys: ['cap.import.settingsHint', 'cap.import.open'], synonyms: ['import', '导入', '导入历史', '迁移', 'history', '旧对话'] },
 ];
@@ -2764,6 +2797,8 @@ const LEGACY_SECTION_TABS: Readonly<Record<string, SettingsTab>> = {
   tasks: 'runtime',
   runtime: 'runtime',
   communication: 'behavior',
+  'external-clients': 'clients',
+  external_clients: 'clients',
 };
 
 /** Which card a legacy section bookmark defaults to when no hash is supplied. */
@@ -2784,7 +2819,8 @@ export function settingsTabForCard(cardId: string): SettingsTab | undefined {
     ?? browserControlTabForCard(cardId)
     ?? searchTabForCard(cardId)
     ?? connectionTabForCard(cardId)
-    ?? sessionsTabForCard(cardId);
+    ?? sessionsTabForCard(cardId)
+    ?? connectionServicesTabForCard(cardId);
 }
 
 /**

@@ -80,6 +80,8 @@ import {
   SESSIONS_SETTINGS_TABS,
   searchTabForCard,
   sessionsTabForCard,
+  connectionServicesTabForCard,
+  CONNECTION_SERVICES_SETTINGS_TABS,
   serverFileSettingsFromConfig,
   serverFileSettingsPatch,
   SETTINGS_SEARCH_SPEC,
@@ -1332,6 +1334,20 @@ describe('settings search index', () => {
     }
     expect(searchTabForCard('st-card-search-index')).toBe('advanced');
     expect(searchTabForCard('st-card-search-unknown')).toBeUndefined();
+  });
+
+  it('assigns every access-from-elsewhere card to the tab that mounts it', () => {
+    const entries = SETTINGS_SEARCH_SPEC.filter((entry) => entry.section === 'connection-services');
+    for (const entry of entries) {
+      expect(entry.tab, entry.cardId).toBeDefined();
+      expect(entry.tab).toBe(connectionServicesTabForCard(entry.cardId));
+    }
+    for (const tab of CONNECTION_SERVICES_SETTINGS_TABS) {
+      expect(entries.some((entry) => entry.tab === tab), tab).toBe(true);
+    }
+    expect(resolveSettingsRoute('external-clients', '')).toMatchObject({ section: 'connection-services', tab: 'clients' });
+    expect(resolveSettingsRoute('connection', '#st-card-conn-external'))
+      .toEqual({ status: 'ok', section: 'connection-services', cardId: 'st-card-conn-external', tab: 'web' });
   });
 
   it('assigns every sessions-entry card to the tab that mounts it', () => {

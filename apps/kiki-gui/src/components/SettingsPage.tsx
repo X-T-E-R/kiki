@@ -5,6 +5,7 @@ import {
   AGENTS_SETTINGS_DEFAULT_TAB,
   AI_SETTINGS_DEFAULT_TAB,
   BROWSER_CONTROL_SETTINGS_DEFAULT_TAB,
+  CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB,
   SESSIONS_SETTINGS_DEFAULT_TAB,
   EXTENSIONS_SETTINGS_DEFAULT_TAB,
   SETTINGS_NAV_TREE,
@@ -36,7 +37,7 @@ import { ConnectionSection } from './settings/ConnectionSection';
 import { DeveloperSection } from './settings/DeveloperSection';
 import { ExperimentalRows } from './settings/ExperimentalRows';
 import { ExtensionsSection } from './settings/ExtensionsSection';
-import { ExternalClientsSection } from './settings/ExternalClientsSection';
+import { ConnectionServicesSection } from './settings/ConnectionServicesSection';
 import { GeneralSection } from './settings/GeneralSection';
 import { LabsSection } from './settings/LabsSection';
 import { McpSection } from './settings/McpSection';
@@ -450,6 +451,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
       : active === 'extensions' ? EXTENSIONS_SETTINGS_DEFAULT_TAB
       : active === 'browser-control' ? BROWSER_CONTROL_SETTINGS_DEFAULT_TAB
       : active === 'sessions' ? SESSIONS_SETTINGS_DEFAULT_TAB
+      : active === 'connection-services' ? CONNECTION_SERVICES_SETTINGS_DEFAULT_TAB
       : active === 'search' ? 'overview'
       : null);
   const fromOnboarding = new URLSearchParams(search).get('from') === 'onboarding';
@@ -466,7 +468,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'ai' ? <AiSection />
     : active === 'providers' ? <ProvidersSection />
     : active === 'models' ? <DefaultsTab />
-    : active === 'connection-services' ? <ExternalClientsSection />
+    : active === 'connection-services' ? <ConnectionServicesSection />
     : active === 'identity' ? <IdentitySection />
     : active === 'agents' ? <AgentsSection />
     : active === 'subagents' ? <AgentsSection />
@@ -477,7 +479,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
     : active === 'tasks' ? <TasksSection />
     : active === 'skills' ? <SkillsSection />
     : active === 'mcp' ? <McpSection />
-    : active === 'external-clients' ? <ExternalClientsSection />
+    : active === 'external-clients' ? <ConnectionServicesSection />
     : active === 'plugins' ? <PluginsSection pluginId={activePluginId} />
     : active === 'browser-control' ? <BrowserControlSection />
     : active === 'computer-control' ? <ComputerControlSection />
@@ -495,7 +497,7 @@ export function SettingsPage({ onToggleSidebar }: { onToggleSidebar: () => void 
         : currentTab === 'computer-control' ? <ComputerControlSection />
         : <div className="space-y-6"><NbSearchSection /><BrowserControlSection /><ComputerControlSection /></div>
       )
-    : active === 'remote' ? <div className="space-y-6"><ConnectionSection /><SshSection /><ExternalClientsSection /></div>
+    : active === 'remote' ? <div className="space-y-6"><ConnectionSection /><SshSection /><ConnectionServicesSection /></div>
     : active === 'system' ? <div className="space-y-6"><DeveloperSection /><AboutSection /><DesktopLogCard /></div>
     : <><AboutSection /><DesktopLogCard /></>;
 

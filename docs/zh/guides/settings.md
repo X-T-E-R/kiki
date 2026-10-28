@@ -57,7 +57,7 @@ Kiki 桌面版在**设置**对话框里提供偏好设置，在侧栏的「用�
 
 **② 账号登录（订阅直连）**列出已经连上的订阅账号：Kimi Code、用于 Codex 的 ChatGPT 账号、Grok Build 账号、GitHub Copilot。还没连上的账号在这里点**登录**。已经有连接的账号不会再次出现；失效的登录在它自己的那一行恢复。
 
-**③ 本机 HTTP 与 CLI**包括本机上的服务器，以及 AGY CLI、Codex、Claude Code 这类本机程序。CLI 程序启用后，在对话的运行方式里选择。**让外部客户端使用 Kiki** 打开**连接与远程 → 外部接入**（`/settings/connection-services`）。`/settings/external-clients` 打开同一页。
+**③ 本机 HTTP 与 CLI**包括本机上的服务器，以及 AGY CLI、Codex、Claude Code 这类本机程序。CLI 程序启用后，在对话的运行方式里选择。**让外部客户端使用 Kiki** 打开**连接与远程 → 外部接入 → 智能体与客户端**（`/settings/connection-services?tab=clients`）。`/settings/external-clients` 打开同一标签。**浏览器**标签放 Web 访问与 Cloudflare 隧道；**其他 Kiki** 标签放允许连接你的 Kiki。
 
 账号连接由登录写入，因此它的行里没有协议、地址或密钥可填。展开可看背后是哪个账号、服务方说还剩多少，以及改变登录的那一个操作：
 

@@ -57,7 +57,7 @@ For either path, use **Add model** inside the connection form, then choose **Sav
 
 **② Account sign-in (subscription)** lists the subscription accounts already connected: Kimi Code, a ChatGPT account for Codex, a Grok Build account, GitHub Copilot. An account that is not connected yet has **Sign in** in this block. An account you already have a connection for is not offered again; a sign-in that has gone stale is recovered on that connection's own row.
 
-**③ Local HTTP and CLI** holds a server on this machine and local programs such as AGY CLI, Codex, and Claude Code. Once a CLI program is enabled, choose it from the conversation's runtime picker. **Let an outside client use Kiki** opens **Connection & remote → Access from elsewhere** (`/settings/connection-services`). `/settings/external-clients` opens the same page.
+**③ Local HTTP and CLI** holds a server on this machine and local programs such as AGY CLI, Codex, and Claude Code. Once a CLI program is enabled, choose it from the conversation's runtime picker. **Let an outside client use Kiki** opens **Connection & remote → Access from elsewhere → Agents & clients** (`/settings/connection-services?tab=clients`). `/settings/external-clients` opens the same tab. The **Browser** tab holds web access and the Cloudflare tunnel; **Other Kiki** holds the Kikis allowed to connect to you.
 
 An account connection is written by the sign-in, so its row has no protocol, address or key to fill in. Expand it to see which account is behind it, what the vendor says it has left, and the action that changes the sign-in:
 

@@ -7,10 +7,8 @@
  * workspaces and session parameters belong to conversation drafts, not a
  * global settings operation table.
  *
- * The page is the single home for "let something else reach this Kiki": the
- * web-access entry link, the inbound Kiki gate, these external clients,
- * installing Kiki into another agent host, and the Cloudflare tunnel all live
- * here, each still writing the same server object it always did.
+ * It is the "Agents & clients" tab of Access from elsewhere
+ * (`ConnectionServicesSection`), beside installing Kiki into another agent host.
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
@@ -44,10 +42,6 @@ import { DisclosureChevron, Icon } from '../icons';
 import { INPUT, SECONDARY_BUTTON } from '../ui';
 import { ListEmpty } from './list';
 import { SectionCard } from './SectionCard';
-import { ExternalConnectionSection } from './ExternalConnectionSection';
-import { HostSkillInstallCard } from './HostSkillInstallCard';
-import { InboundConnectionsSection } from './InboundConnectionsSection';
-import { WebAccessSection } from './WebAccessSection';
 
 const CLIENTS_QUERY_KEY = ['external-clients'] as const;
 const AUTHORIZATIONS_QUERY_KEY = ['external-clients', 'authorizations'] as const;
@@ -863,10 +857,7 @@ export function ExternalClientsSection() {
   const empty = listQuery.isSuccess && connections.length === 0;
 
   return (
-    <>
-      <WebAccessSection />
-      <InboundConnectionsSection />
-      <SectionCard id="st-card-external-clients" title={t('st.section.externalClients')}>
+    <SectionCard id="st-card-external-clients" title={t('st.section.externalClients')}>
       <div data-external-clients className="space-y-3">
         {api === undefined ? (
           <div role="alert" data-xc-unsupported className="rounded-md border border-danger/30 bg-danger/5 px-3 py-2">
@@ -931,8 +922,5 @@ export function ExternalClientsSection() {
         ) : null}
       </div>
     </SectionCard>
-    <HostSkillInstallCard />
-    <ExternalConnectionSection />
-    </>
   );
 }
