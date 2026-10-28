@@ -66,18 +66,42 @@ function referenceArguments(args: string | null): string {
   return JSON.stringify({ action: record(input) ? input['action'] : undefined, id: record(input) ? input['id'] : undefined,
     scope: record(input) ? input['scope'] : undefined, memory_content_omitted: true });
 }
+export interface MemoryObservedReference {
+  readonly scope: MemoryScope;
+  readonly id: string;
+  readonly observed_revision: string;
+}
+function observedReferences(message: ContextMessage, name: string | undefined): MemoryObservedReference[] {
+  if (message.role !== 'tool' || !['MemoryRead', 'MemorySearch', 'MemoryWrite'].includes(name ?? '') || message.isError === true) return [];
+  let output: unknown;
+  try { output = JSON.parse(message.content[0]?.type === 'text' ? message.content[0].text : 'null'); } catch { return []; }
+  const units = Array.isArray(output) ? output : record(output) ? Array.isArray(output['items']) ? output['items'] : record(output['entry']) ? [{ ...output['entry'], scope: output['owner_scope'] }] : [] : [];
+  return units.flatMap((unit) => {
+    if (!record(unit) || typeof unit['id'] !== 'string' || typeof unit['revision'] !== 'string' || !record(unit['scope'])) return [];
+    const value = unit['scope'];
+    let scope: MemoryScope;
+    if (value['kind'] === 'global') scope = { kind: 'global' };
+    else if (value['kind'] === 'workspace' && typeof value['workspaceId'] === 'string') scope = { kind: 'workspace', workspaceId: value['workspaceId'] };
+    else if (value['kind'] === 'persona' && typeof value['personaId'] === 'string') scope = { kind: 'persona', personaId: value['personaId'] };
+    else if (value['kind'] === 'persona_workspace' && typeof value['workspaceId'] === 'string' && typeof value['personaId'] === 'string') scope = { kind: 'persona_workspace', workspaceId: value['workspaceId'], personaId: value['personaId'] };
+    else return [];
+    return [{ scope, id: unit['id'], observed_revision: unit['revision'] }];
+  });
+}
+export function renderMemoryHandoffReferences(messages: readonly ContextMessage[]): string {
+  const calls = new Map(messages.flatMap((message) => message.toolCalls.map((call) => [call.id, call.name] as const)));
+  const references = new Map(messages.flatMap((message) => observedReferences(message, calls.get(message.toolCallId ?? ''))).map((reference) => [JSON.stringify([reference.scope, reference.id]), reference]));
+  return references.size === 0 ? '' : `## Observed Memory references\nHistorical observations only; read by scope and ID to resolve current governed content before reuse.\n${[...references.values()].map((reference) => `- ${JSON.stringify(reference)}`).join('\n')}`;
+}
 export function memoryHandoffMessages(messages: readonly ContextMessage[]): readonly ContextMessage[] {
   const calls = new Map(messages.flatMap((message) => message.toolCalls.map((call) => [call.id, call.name] as const)));
   const omitted = new Set<string>();
   const projected = messages.map((message) => {
     const current = withoutMemoryProjection(message);
-    if (message.role !== 'tool' || !['MemoryRead', 'MemorySearch', 'MemoryWrite'].includes(calls.get(message.toolCallId ?? '') ?? '') || message.isError === true) return current;
-    let output: unknown;
-    try { output = JSON.parse(message.content[0]?.type === 'text' ? message.content[0].text : 'null'); } catch { return current; }
-    const units = Array.isArray(output) ? output : record(output) ? Array.isArray(output['items']) ? output['items'] : [output['entry']] : [];
-    if (!units.some((unit) => record(unit) && typeof unit['id'] === 'string' && typeof unit['revision'] === 'string')) return current;
+    const references = observedReferences(message, calls.get(message.toolCallId ?? ''));
+    if (references.length === 0) return current;
     omitted.add(message.toolCallId!);
-    return { ...current, content: [{ type: 'text' as const, text: 'Memory reference: resolve the current governed entry before reuse.' }] };
+    return { ...current, content: [{ type: 'text' as const, text: JSON.stringify({ memory_references: references, recovery: 'Historical observations only; read by scope and ID to resolve current governed content before reuse.' }) }] };
   });
   return projected.map((message) => message.toolCalls.some((call) => omitted.has(call.id) && call.name === 'MemoryWrite') ? { ...message,
     toolCalls: message.toolCalls.map((call) => omitted.has(call.id) && call.name === 'MemoryWrite' ? { ...call, arguments: referenceArguments(call.arguments) } : call) } : message);

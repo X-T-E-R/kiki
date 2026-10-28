@@ -407,6 +407,37 @@ describe('canonical Memory actual request working sets', () => {
     expect(requestText(restored)).not.toContain(changed.entry.body);
   });
 
+  it.each(['relay', 'summarize'] as const)('preserves exact explicit-only Memory references across %s for a current scoped reread', async (strategy) => {
+    const store = await canonicalMemory();
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const saved = await store.put({ action: 'create', scope, type: 'feedback', title: 'A rule outside the automatic working set', body: 'Use exactly 9 workers; isolated checks never publish artifacts.', source: { writer: 'user' }, reason: 'Human guidance' });
+    const ctx = memoryAgent(undefined, 'main', store);
+    ctx.kimiConfig = { ...ctx.kimiConfig, [MEMORY_SECTION]: MemoryConfigSchema.parse({ budget: 0 }) };
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    ctx.mockNextResponse({ type: 'function', id: 'reference-read', name: 'MemoryRead', arguments: JSON.stringify({ id: saved.entry.id, scope: 'workspace' }) });
+    await prompt(ctx, 'Retrieve the exact saved rule');
+    expect(requestText(ctx)).toContain(saved.entry.body);
+    expect(await ctx.get(IAgentMemorySnapshot).get()).toBe('');
+    if (strategy === 'summarize') ctx.mockNextResponse({ type: 'text', text: 'Continue using current governed sources.' });
+    const compact = ctx.get(IAgentFullCompactionService);
+    expect(compact.begin({ source: 'manual', strategy })).toBe(true);
+    expect(await compact.compacting!.promise).toMatchObject({ strategy });
+    const summary = ctx.get(IAgentContextMemoryService).get().find((message) => message.origin?.kind === 'compaction_summary')!;
+    const text = summary.content.flatMap((part) => part.type === 'text' ? [part.text] : []).join('\n');
+    const reference = JSON.parse(text.split('\n').find((line) => line.startsWith('- {') && line.includes('"observed_revision"'))!.slice(2)) as { scope: MemoryScope; id: string; observed_revision: string };
+    expect(reference).toEqual({ scope, id: saved.entry.id, observed_revision: saved.entry.revision });
+    expect(text).toContain('Historical observations only');
+    expect(text).not.toContain(saved.entry.title);
+    expect(text).not.toContain(saved.entry.body);
+    const changed = await store.put({ action: 'update', scope, id: saved.entry.id, expectedRevision: saved.entry.revision, type: saved.entry.type, title: saved.entry.title, body: 'Use exactly 5 workers; isolated checks never publish artifacts.', source: { writer: 'user' }, reason: 'Human correction' });
+    ctx.mockNextResponse({ type: 'function', id: 'reference-reread', name: 'MemoryRead', arguments: JSON.stringify({ id: reference.id, scope: reference.scope.kind }) });
+    await prompt(ctx, 'Recheck the observed Memory reference before continuing');
+    expect(requestText(ctx)).toContain(changed.entry.body);
+    expect(requestText(ctx)).not.toContain(saved.entry.body);
+  });
+
   it('validates inherited explicit tool payloads in an actual lifecycle fork before its first request', async () => {
     const store = await canonicalMemory();
     const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;

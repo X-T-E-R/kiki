@@ -31,7 +31,7 @@ import { IAgentScopeContext } from '#/agent/scopeContext/scopeContext';
 import { renderTodoList, type TodoItem } from '#/session/todo/todoItem';
 import { compactionDirectivesBudget, renderTodoNotes } from '#/session/todo/todoNotes';
 import { IAgentMemorySnapshot, memoryEntryReference } from '#/app/memory/memorySnapshot';
-import { memoryHandoffMessages } from '#/app/memory/memoryProjection';
+import { memoryHandoffMessages, renderMemoryHandoffReferences } from '#/app/memory/memoryProjection';
 import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { IConfigService } from '#/app/config/config';
 import { type LoopControl } from '#/agent/loop/configSection';
@@ -1282,7 +1282,8 @@ export class AgentFullCompactionService extends Service implements IAgentFullCom
     const budget = extracted && extracted !== '(none)' ? compactionDirectivesBudget(input.notes, extracted) : undefined;
     const notice = extracted ? `Summary candidates have not changed current notes. Reconcile them with original human sources before an explicit TodoList update.${budget?.exceeded ? ` Automatic promotion skipped: budget. Required directives ${budget.sectionChars}/1500 characters, notes total ${budget.totalChars}/7500; notes revision ${input.meta?.rev ?? 0} is unchanged. The complete candidate remains above.` : ''}` : '';
     return [candidate, notice ? `## Directive review status\n${notice}` : '', todos.length ? renderTodoList(todos, '## TODO List') : '',
-      notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), renderLinkedBoardCards(input), receipts].filter(Boolean).join('\n\n');
+      notes ? `## Working notes\n${notes}` : '', renderStandingDirectives(input), renderLinkedBoardCards(input),
+      renderMemoryHandoffReferences(input.history.slice(0, input.compactCount)), receipts].filter(Boolean).join('\n\n');
   }
 
   private currentTodos(): readonly TodoItem[] {

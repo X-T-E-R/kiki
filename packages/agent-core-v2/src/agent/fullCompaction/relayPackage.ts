@@ -1,5 +1,5 @@
 import type { ContextMessage, ContextMessageSource } from '#/agent/contextMemory/types';
-import { memoryHandoffMessages } from '#/app/memory/memoryProjection';
+import { memoryHandoffMessages, renderMemoryHandoffReferences } from '#/app/memory/memoryProjection';
 import { originalHumanText } from '#/session/todo/continuityState';
 import { coveredMessageIndex, renderTodoNotes, type NotesMeta, type TodoNotes } from '#/session/todo/todoNotes';
 import type { TodoItem } from '#/session/todo/todoItem';
@@ -234,6 +234,7 @@ export function renderRelay(input: RelayInput): string {
     `## Working notes\n${renderTodoNotes(input.notes) || '(empty)'}`,
     renderStandingDirectives(input),
     renderLinkedBoardCards(input),
+    renderMemoryHandoffReferences(input.history.slice(0, input.compactCount)),
     `## Notes metadata\nrevision ${input.meta?.rev ?? 0} · written ${input.meta?.writtenStep ?? 'none'} · reviewed ${input.meta?.reviewedMessageId ?? 'not confirmed'}`,
     input.todos.length > 0 ? renderTodoList(input.todos, '## TODO List') : '',
     lastAssistant ? `## Last conclusion\n${textOf(lastAssistant).slice(-6_000)}${conclusionPointer}` : '',

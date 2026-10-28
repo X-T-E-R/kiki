@@ -5,6 +5,7 @@ import { originalHumanText } from '#/session/todo/continuityState';
 import { renderTodoNotes } from '#/session/todo/todoNotes';
 import { renderTodoList } from '#/session/todo/todoItem';
 import { ErrorCodes, Error2 } from '#/errors';
+import { renderMemoryHandoffReferences } from '#/app/memory/memoryProjection';
 
 export interface FreshPackageInput extends RelayInput {
   readonly taskDescription?: string;
@@ -37,6 +38,7 @@ export function buildFreshPackage(input: FreshPackageInput): readonly ContextMes
     ...(input.stateViews ?? []),
     input.memoryEntries?.length ? `## Available memory (existing access scope)\n${input.memoryEntries.join('\n')}` : '',
     input.memoryReferences?.length ? `## Referenced memory (live)\n${input.memoryReferences.join('\n')}` : '',
+    renderMemoryHandoffReferences(input.history),
   ].filter(Boolean);
   const messages = (body: readonly string[]): readonly ContextMessage[] => [createCompactionSummaryMessage([header, ...body, footer].join('\n\n'))];
   if (input.estimateMessages(messages([])) > input.maxTokens) {
