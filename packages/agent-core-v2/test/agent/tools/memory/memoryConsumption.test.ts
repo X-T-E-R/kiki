@@ -52,6 +52,11 @@ import { IRuntimeResolver } from '#/workspace/workspaceInstance/workspaceInstanc
 import { FakeRuntime } from '#/runtime/fakeRuntime';
 import { ISessionStateService } from '#/session/state/sessionState';
 import { SessionStateService } from '#/session/state/sessionStateService';
+import { IMemorySelector } from '#/app/memory/memorySelector';
+import { IAgentMemoryAdvisor } from '#/app/memory/memoryAdvisor';
+import { advisorStatus } from '#/app/memory/memoryAdvisorTypes';
+import { IModelCatalog } from '#/kosong/model/catalog';
+import { IAgentUsageService, type UsageRecordedContext } from '#/agent/usage/usage';
 
 const contexts: TestAgentContext[] = [];
 const memoryCleanup: Array<() => Promise<void>> = [];
@@ -106,7 +111,7 @@ function installReadableCapabilityOrigins(ctx: TestAgentContext): void {
   Object.defineProperty(config, 'origins', { configurable: true, value: origins });
 }
 
-function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main', store?: IMemoryStore): TestAgentContext {
+function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main', store?: IMemoryStore, selector?: IMemorySelector): TestAgentContext {
   const willCreate = new Emitter<IAgentScopeHandle>();
   const didCreate = new Emitter<IAgentScopeHandle>();
   let handle: IAgentScopeHandle | undefined;
@@ -123,6 +128,7 @@ function memoryAgent(storage?: IFileSystemStorageService, agentId = 'main', stor
     agentService(IAgentScopeContext, { _serviceBrand: undefined, agentId, scope: (key) => `sessions/test-workspace/test-session/agents/${agentId}${key ? `/${key}` : ''}` }),
     appService(IFileSystemStorageService, storage ?? new DirectoryMemoryStorage()),
     ...(store === undefined ? [] : [appService(IMemoryStore, store)]),
+    ...(selector === undefined ? [] : [appService(IMemorySelector, selector)]),
     { autoConfigure: storage === undefined, initialConfig: { [MEMORY_SECTION]: MemoryConfigSchema.parse({}), [LOOP_CONTROL_SECTION]: LoopControlSchema.parse({}) } });
   installReadableCapabilityOrigins(ctx);
   contexts.push(ctx);
@@ -319,6 +325,69 @@ async function canonicalMemory(onPeer?: (peer: ISqliteMemoryStore) => void): Pro
 }
 
 describe('canonical Memory actual request working sets', () => {
+  it.each(['main', 'child'])('publishes Advisor full-unit judgments to the %s actual request and hot-disables to the lexical baseline', async (agentId) => {
+    const store = await canonicalMemory();
+    const saved = await store.put({ action: 'create', scope: { kind: 'workspace', workspaceId: sessionContext.workspaceId }, type: 'feedback', title: 'Quiet routine', body: 'Use exactly 17 workers. Never publish artifacts; isolated smoke tests are the exception.', basis: { kind: 'human', note: 'Synthetic complete condition.' }, reason: 'Explicit preference', source: { writer: 'user' } });
+    const destination = 'example@https://example.test';
+    const call = vi.fn<IMemorySelector['call']>(async (input) => {
+      input.stats.requests++;
+      input.record?.(ctx.get(IModelCatalog).get('mock-model'), { inputOther: 11, output: 3, inputCacheRead: 0, inputCacheCreation: 0 }, true);
+      return input.units.map((unit) => ({ handle: unit.handle, use: input.stage === 'discover' ? 'read' : 'history' }));
+    });
+    const ctx = memoryAgent(undefined, agentId, store, { _serviceBrand: undefined, describe: () => advisorStatus('ready', { destination, applicability: 'full_units' }), call, probe: async () => { throw new Error('Synthetic probe unused'); } });
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    ctx.kimiConfig = { ...ctx.kimiConfig, [MEMORY_SECTION]: MemoryConfigSchema.parse({ budget: 4000, advisor: { selector: { protocol: 'chat_json', model: 'mock-model' }, first_step_wait_ms: 500, egress_ack: [{ workspace_id: sessionContext.workspaceId, destination }] } }) };
+    const usage: UsageRecordedContext[] = [];
+    const subscription = ctx.get(IAgentUsageService).onDidRecord((record) => usage.push(record));
+    const send = async () => {
+      ctx.mockNextResponse({ type: 'text', text: 'Continue the authorized work.' });
+      const run = await runAgentTurn({ id: agentId, accessor: { get: (id) => ctx.get(id) } }, { kind: 'prompt', prompt: 'A new unrelated request' }, { signal: new AbortController().signal });
+      await run.completion; await ctx.get(IAgentLoopService).settled();
+    };
+    await send();
+    expect(requestText(ctx)).toContain(saved.entry.body); expect(requestText(ctx)).toContain('use=history');
+    expect(call).toHaveBeenCalledTimes(2);
+    expect(usage.filter((record) => record.source?.type === 'operation' && record.source.requestKind === 'memory_advice')).toMatchObject([{ usageKnown: true, usage: { inputOther: 11, output: 3 } }, { usageKnown: true, usage: { inputOther: 11, output: 3 } }]);
+    const memory = ctx.get(IConfigService).get<ReturnType<typeof MemoryConfigSchema.parse>>(MEMORY_SECTION);
+    ctx.kimiConfig = { ...ctx.kimiConfig, [MEMORY_SECTION]: { ...memory, advisor: { ...memory.advisor, mode: 'off' } } };
+    await send();
+    expect(call).toHaveBeenCalledTimes(2); expect(requestText(ctx)).not.toContain(saved.entry.body); expect(requestText(ctx)).not.toContain('use=history');
+    expect(ctx.get(IAgentMemoryAdvisor).status().state).toBe('off');
+    subscription.dispose();
+  });
+  it('preserves historical purpose in the actual request when a MemoryRead covers another advised unit', async () => {
+    const store = await canonicalMemory();
+    const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;
+    const covered = await store.put({ action: 'create', scope, type: 'feedback', title: 'Read independently', body: 'The separate unit has a complete condition.', reason: 'Explicit synthetic guidance', source: { writer: 'user' } });
+    const historical = await store.put({ action: 'create', scope, type: 'feedback', title: 'Earlier release exception', body: 'The earlier release allowed exactly 17 workers; this is historical background only.', reason: 'Explicit historical condition', source: { writer: 'user' } });
+    const destination = 'example@https://example.test';
+    const call = vi.fn<IMemorySelector['call']>(async (input) => {
+      input.stats.requests++;
+      return input.units.map((unit) => ({ handle: unit.handle, use: input.stage === 'discover' ? 'read' : 'history' }));
+    });
+    const ctx = memoryAgent(undefined, 'main', store, { _serviceBrand: undefined, describe: () => advisorStatus('ready', { destination, applicability: 'full_units' }), call, probe: async () => { throw new Error('Synthetic probe unused'); } });
+    ctx.get(IDynamicPromptInjection);
+    await ctx.get(IAgentProfileService).applyProfile(ctx.get(IBuiltinAgentProfileLoader).getDefault());
+    ctx.get(IAgentFullCompactionService).setAutoCompactOverride(100_000);
+    ctx.kimiConfig = { ...ctx.kimiConfig, [MEMORY_SECTION]: MemoryConfigSchema.parse({ budget: 4000, advisor: { selector: { protocol: 'chat_json', model: 'mock-model' }, first_step_wait_ms: 500, egress_ack: [{ workspace_id: sessionContext.workspaceId, destination }] } }) };
+    ctx.mockNextResponse({ type: 'function', id: 'covered-advice', name: 'MemoryRead', arguments: JSON.stringify({ id: covered.entry.id, scope: 'workspace' }) });
+    await prompt(ctx, 'Compare the saved complete conditions');
+    expect(ctx.llmCalls).toHaveLength(2);
+    const first = ctx.llmCalls[0]!.history.flatMap((message) => message.content.flatMap((part) => part.type === 'text' ? [part.text] : [])).join('\n');
+    expect(first).toContain(`[${covered.entry.id}]`);
+    expect(first).toContain(`[${historical.entry.id}]`);
+    const workset = ctx.llmCalls[1]!.history.flatMap((message) => message.content.flatMap((part) => part.type === 'text' && part.text.includes('<memory-workset ') ? [part.text] : [])).join('\n');
+    expect(workset).not.toContain(`[${covered.entry.id}]`);
+    expect(workset).not.toContain(covered.entry.body);
+    expect(workset).toContain(`[${historical.entry.id}]`);
+    expect(workset).toContain(historical.entry.body);
+    expect(workset).toContain('use=history');
+    expect(workset).toContain('history is background, not current authority');
+    expect(requestText(ctx).split(covered.entry.body)).toHaveLength(2);
+    expect(call).toHaveBeenCalledTimes(2);
+  });
   it.each(['main', 'child'])('delivers complete relevant guidance to the %s actual request and removes replaced workset bodies', async (agentId) => {
     const store = await canonicalMemory();
     const scope = { kind: 'workspace', workspaceId: sessionContext.workspaceId } as const;

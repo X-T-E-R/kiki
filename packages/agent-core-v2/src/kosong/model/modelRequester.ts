@@ -64,6 +64,7 @@ export interface ModelRequestParams {
   readonly usedContextTokensTrusted?: boolean;
   readonly maxContextTokens?: number;
   readonly onTraceId?: (traceId: string | null) => void;
+  readonly onRequestAttempt?: () => void;
   readonly rawResponseObserver?: RawResponseObserver;
   readonly requestIdentity?: RequestIdentityWireOptions;
   readonly responsesTransport?: ResponsesRequestTransport;

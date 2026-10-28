@@ -8,11 +8,12 @@ import { ISessionContext } from '#/session/sessionContext/sessionContext';
 import { ISessionTodoService } from '#/session/todo/sessionTodo';
 import { IOptionalCapabilityPolicy } from '#/app/optionalCapability/policy';
 import { IAgentContextMemoryService } from '#/agent/contextMemory/contextMemory';
-import { memoryRequestText, renderMemoryWorkingSet } from './memoryContext';
+import { memoryRequestIdentity, memoryRequestText, renderMemoryWorkingSet } from './memoryContext';
 import { MEMORY_SECTION, memoryEnabled, type MemoryConfig } from './configSection';
 import { IMemoryStore, memoryApplicability, type MemoryEntry } from './memoryStore';
 import type { MemoryPublicScopeKind, MemoryScope } from './memoryScopes';
 import type { MemoryProjectionView } from './memoryProjection';
+import type { MemoryAdvice } from './memoryAdvisorTypes';
 
 export interface MemoryPersonaContext {
   readonly id: string;
@@ -23,6 +24,9 @@ export interface IAgentMemorySnapshot {
   readonly _serviceBrand: undefined;
   readonly workingSet?: boolean;
   readonly projectionView?: MemoryProjectionView;
+  readonly advisorRequest?: string;
+  readonly advisorRequestIdentity?: string;
+  setAdvice?(advice: MemoryAdvice | undefined): void;
   get(lastKnown?: string): Promise<string>;
   refreshIfDirty(request?: string): Promise<string | undefined>;
   getSessionEntries(): Promise<readonly string[]>;
@@ -48,6 +52,10 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
   private inbound = '';
   private settingsKey = '';
   private refreshing?: Promise<string | undefined>;
+  private advice?: MemoryAdvice;
+  get advisorRequest(): string { return this.request; }
+  advisorRequestIdentity?: string;
+  setAdvice(advice: MemoryAdvice | undefined): void { if (this.advice === advice) return; this.advice = advice; this.dirty = true; }
   projectionView?: MemoryProjectionView;
   constructor(
     @IConfigService private readonly config: IConfigService,
@@ -96,6 +104,7 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
           if (request === undefined) try {
             const context = this.instantiation.invokeFunction((accessor) => accessor.get(IAgentContextMemoryService));
             const messages = context.get();
+            this.advisorRequestIdentity = memoryRequestIdentity(messages) ?? (messages.length === 0 ? undefined : this.advisorRequestIdentity);
             request = memoryRequestText(messages) ?? (messages.length === 0 ? '' : this.inbound);
           } catch {}
           if (request !== undefined) this.inbound = request;
@@ -260,8 +269,9 @@ export class AgentMemorySnapshot extends Disposable implements IAgentMemorySnaps
     if (store.snapshot !== undefined) {
       const scopes = this.readScopes();
       const view = await store.snapshot(scopes);
-      const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget));
-      this.projectionView = { ...view, scopes, workset: { text: snapshot.text, entries: snapshot.entries } };
+      const advice = settings.advisor?.mode === 'off' || settings.advisor?.selector === undefined ? undefined : this.advice;
+      const snapshot = renderMemoryWorkingSet(view, this.request, settings.budget, Math.min(1_000, settings.budget), Date.now(), advice);
+      this.projectionView = { ...view, scopes, workset: { text: snapshot.text, entries: snapshot.entries, uses: snapshot.uses } };
       this.generation = snapshot.generation;
       this.nextUntil = snapshot.nextUntil;
       this.frozenRelated = snapshot.entries.map((entry) => memoryEntryReference(entry));

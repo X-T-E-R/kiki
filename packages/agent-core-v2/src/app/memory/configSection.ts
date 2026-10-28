@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { memoryAdvisorConfigSchema } from '@kiki/protocol';
 import { registerConfigSection } from '#/app/config/configSectionContributions';
 
 export const MEMORY_SECTION = 'memory';
@@ -7,11 +8,13 @@ export const MemoryConfigSchema = z.object({
   approval: z.enum(['auto', 'review', 'off']).default('auto'),
   budget: z.number().int().min(0).max(4_000).default(2_000).describe('Saved-memory projection budget in JavaScript string length units, not tokens; includes status, metadata, and framing. Zero disables projection text.'),
   workspaces: z.record(z.string(), z.boolean()).default({}),
+  advisor: memoryAdvisorConfigSchema.optional(),
 }).strict();
 export type MemoryConfig = z.infer<typeof MemoryConfigSchema>;
 
 registerConfigSection(MEMORY_SECTION, MemoryConfigSchema, {
   defaultValue: { enabled: true, approval: 'auto', budget: 2_000, workspaces: {} },
+  fromToml: (raw) => raw,
 });
 
 export function memoryEnabled(config: MemoryConfig | undefined, workspaceId?: string): boolean {

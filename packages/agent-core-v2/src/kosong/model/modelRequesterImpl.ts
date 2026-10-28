@@ -223,6 +223,7 @@ export class ModelRequesterImpl implements ModelRequester {
           }, requestSignal);
           try {
             requestSignal?.throwIfAborted();
+            params.onRequestAttempt?.();
             requestStartedAt = Date.now();
             return await generate(
               provider,

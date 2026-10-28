@@ -335,6 +335,12 @@ export type HttpRestConfigPatch = PatchConfigRequest & {
  * arbitrary URL or untyped request escape hatch.
  */
 export interface HttpRestFacade {
+  readonly memory: {
+    settings(query?: { workspace_id?: string }): Promise<import('@kiki/protocol').MemorySettingsResponse>;
+    updateSettings(patch: import('@kiki/protocol').MemorySettingsPatch, query?: { workspace_id?: string }): Promise<import('@kiki/protocol').MemorySettingsResponse>;
+    probe(input: { confirm_destination: string }, options?: HttpRestRequestOptions): Promise<import('@kiki/protocol').MemoryAdvisorProbeResult>;
+    status(query: { session_id: string; agent_id?: string }): Promise<import('@kiki/protocol').MemoryAdvisorStatus | null>;
+  };
   readonly outputLayer: import('./output-layer.js').OutputLayerFacade;
   readonly externalClients: import('./external-clients.js').ExternalClientsFacade;
   readonly webAccess: import('./web-access.js').WebAccessFacade;

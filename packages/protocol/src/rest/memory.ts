@@ -36,3 +36,5 @@ export type MemoryRestPutBody = z.infer<typeof memoryPutBodySchema>;
 export type MemoryRestPutResult = z.infer<typeof memoryPutResultSchema>;
 export type MemoryRestListResponse = z.infer<typeof memoryListResponseSchema>;
 export type MemoryRestJournalRecord = z.infer<typeof memoryJournalRecordSchema>;
+
+export * from './memoryAdvisor.js';

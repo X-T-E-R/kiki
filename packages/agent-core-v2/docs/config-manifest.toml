@@ -451,6 +451,7 @@ compaction_soft_context_size = 0
 # memory
 #   owner: src/app/memory/configSection.ts
 #   scope: core
+#   hooks: custom fromToml
 # ##########################################################################
 
 [memory]
@@ -458,6 +459,23 @@ enabled = true
 approval = "auto"
 budget = 2000
 workspaces = {  }
+
+# [memory.advisor]
+  # mode: "off" | "rank" | "select" (default: "rank")
+  # selector: object
+    # protocol: "chat_json" | "system_one" | "pair_score"
+    # model: string
+    # endpoint: string
+  # first_step_wait_ms: integer (default: 1500)
+  # timeout_ms: integer (default: 6000)
+  # max_calls_per_turn: integer (default: 3)
+  # candidate_chars: integer (default: 120)
+  # catalog_page_items: integer (default: 40)
+  # max_catalog_pages: integer (default: 2)
+  # max_full_units: integer (default: 8)
+  # judge_input_tokens: integer (default: 12000)
+  # apply_to_children: boolean (default: true)
+  # egress_ack: object[] (default: [])
 
 # ##########################################################################
 # mergeAllAvailableSkills (config.toml: merge_all_available_skills)

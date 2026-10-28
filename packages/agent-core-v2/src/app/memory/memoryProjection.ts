@@ -3,10 +3,11 @@ import { memoryApplicability, type MemoryStoreSnapshot } from './memoryStore';
 import type { MemoryScope } from './memoryScopes';
 import type { MemoryRecallEntry } from './memoryRecall';
 import { renderMemoryWorkingSetText } from './memoryContext';
+import type { MemoryAdviceUse } from './memoryAdvisorTypes';
 
 export interface MemoryProjectionView extends MemoryStoreSnapshot {
   readonly scopes: readonly MemoryScope[];
-  readonly workset?: { readonly text: string; readonly entries: readonly MemoryRecallEntry[] };
+  readonly workset?: { readonly text: string; readonly entries: readonly MemoryRecallEntry[]; readonly uses?: ReadonlyMap<string, MemoryAdviceUse> };
 }
 function range(message: ContextMessage): { start: number; length: number } | undefined {
   if (message.origin?.kind !== 'injection' || message.origin.variant !== 'runtime_snapshot') return undefined;
@@ -44,7 +45,7 @@ function projectMemoryWorkset(message: ContextMessage, view: MemoryProjectionVie
   if (text.slice(memory.start, memory.start + memory.length) !== prefix + workset.text) return message;
   const remaining = workset.entries.filter((entry) => !covered.has(entryKey(entry)));
   if (remaining.length === workset.entries.length) return message;
-  const replacement = prefix + renderMemoryWorkingSetText(view.generation, remaining);
+  const replacement = prefix + renderMemoryWorkingSetText(view.generation, remaining, workset.uses);
   return { ...message, content: [{ type: 'text', text: text.slice(0, memory.start) + replacement + text.slice(memory.start + memory.length) }] };
 }
 function projectToolResult(message: ContextMessage, name: string | undefined, view: MemoryProjectionView, delivered: Set<string>): ContextMessage {

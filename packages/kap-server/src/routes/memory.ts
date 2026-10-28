@@ -1,5 +1,5 @@
-import { IConfigService, IMemoryAuthorityService, IMemoryStore, IWorkspaceService, MEMORY_SECTION, MemoryDomainError, memoryApplicability, memoryEnabled, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
-import { memoryPutBodySchema } from '@kiki/protocol';
+import { IAgentLifecycleService, IAgentMemoryAdvisor, ISessionManager, IConfigService, IMemoryAuthorityService, IMemoryStore, IMemorySelector, IWorkspaceService, MEMORY_SECTION, MemoryConfigSchema, MemoryDomainError, advisorStatus, memoryApplicability, memoryEnabled, type MemoryConfig, type MemoryScope, type Scope } from '@kiki/agent-core-v2';
+import { memoryPutBodySchema, memorySettingsPatchSchema, memorySettingsResponseSchema, memoryAdvisorProbeInputSchema, memoryAdvisorProbeResultSchema, memoryAdvisorStatusSchema } from '@kiki/protocol';
 import { z } from 'zod';
 import type { FastifyReply } from 'fastify';
 import { errEnvelope, okEnvelope } from '../envelope';
@@ -91,12 +91,45 @@ export function registerMemoryRoutes(app: MemoryRouteHost, core: Scope): void {
       return { ...entry, scope, historical: true, complete: true };
     });
   }));
-  add('get', defineRoute({ method: 'GET', path: '/memory/settings', success: { data: generic }, tags: ['memory'] }, (req, reply) => {
+  const settingsResponse = async (workspaceId?: string) => {
     const value = settings();
-    reply.send(okEnvelope({ ...value, effective_enabled: value.enabled }, req.id));
+    let status = value.advisor?.selector === undefined ? advisorStatus(value.advisor?.mode === 'off' ? 'off' : 'unconfigured', { reason: value.advisor?.mode === 'off' ? undefined : 'unconfigured' }) : core.accessor.get(IMemorySelector).describe(value.advisor, workspaceId);
+    if (memoryEnabled(value, workspaceId) && value.advisor?.selector !== undefined && value.advisor.mode !== 'off') {
+      const memory = store();
+      await memory.prepare?.();
+      if (memory.snapshot === undefined) status = { ...status, state: 'unsupported_store', reason: 'unsupported_store' };
+    }
+    if (!memoryEnabled(value, workspaceId)) status = { ...status, state: 'disabled' };
+    return { ...value, effective_enabled: memoryEnabled(value, workspaceId), advisor_status: status };
+  };
+  const settingsQuery = z.object({ workspace_id: z.string().optional() });
+  add('get', defineRoute({ method: 'GET', path: '/memory/settings', querystring: settingsQuery, success: { data: memorySettingsResponseSchema }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, async () => settingsResponse(req.query.workspace_id));
   }));
-  add('patch', defineRoute({ method: 'PATCH', path: '/memory/settings', body: z.object({ enabled: z.boolean().optional(), approval: z.enum(['auto', 'review', 'off']).optional(), budget: z.number().int().min(0).max(4_000).optional() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
-    await handle(req.id, reply, async () => { await config.set(MEMORY_SECTION, req.body); return settings(); });
+  add('patch', defineRoute({ method: 'PATCH', path: '/memory/settings', querystring: settingsQuery, body: memorySettingsPatchSchema, success: { data: memorySettingsResponseSchema }, errors, tags: ['memory'] }, async (req, reply) => {
+    await handle(req.id, reply, async () => {
+      const patch = req.body;
+      const current = settings();
+      const advisor = patch.advisor === null ? undefined : patch.advisor === undefined ? current.advisor : { ...current.advisor, ...patch.advisor, selector: patch.advisor.selector === null ? undefined : patch.advisor.selector ?? current.advisor?.selector };
+      const next = MemoryConfigSchema.parse({ ...current, ...patch, advisor });
+      await config.replace(MEMORY_SECTION, next);
+      return settingsResponse(req.query.workspace_id);
+    });
+  }));
+  add('post', defineRoute({ method: 'POST', path: '/memory/advisor/probe', body: memoryAdvisorProbeInputSchema, success: { data: memoryAdvisorProbeResultSchema }, errors, tags: ['memory'] }, async (req, reply) => {
+    const controller = new AbortController();
+    const raw = (reply as unknown as { raw?: import('node:http').ServerResponse }).raw;
+    const abort = () => controller.abort();
+    const onClose = () => { if (raw?.writableFinished !== true) abort(); };
+    raw?.once('close', onClose);
+    const subscription = config.onDidChangeConfiguration((event) => { if ([MEMORY_SECTION, 'models', 'providers'].includes(event.domain)) abort(); });
+    try { await handle(req.id, reply, async () => core.accessor.get(IMemorySelector).probe(settings().advisor, req.body.confirm_destination, controller.signal)); }
+    finally { subscription.dispose(); raw?.removeListener('close', onClose); }
+  }));
+  add('get', defineRoute({ method: 'GET', path: '/memory/advisor/status', querystring: z.object({ session_id: z.string(), agent_id: z.string().default('main') }), success: { data: memoryAdvisorStatusSchema.nullable() }, errors, tags: ['memory'] }, (req, reply) => {
+    const session = core.accessor.get(ISessionManager).get(req.query.session_id);
+    const agent = session?.accessor.get(IAgentLifecycleService).get(req.query.agent_id);
+    reply.send(okEnvelope(agent?.accessor.get(IAgentMemoryAdvisor).status() ?? null, req.id));
   }));
   add('get', defineRoute({ method: 'GET', path: '/memory/workspaces/{workspace_id}/settings', params: z.object({ workspace_id: z.string() }), success: { data: generic }, errors, tags: ['memory'] }, async (req, reply) => {
     await handle(req.id, reply, async () => {

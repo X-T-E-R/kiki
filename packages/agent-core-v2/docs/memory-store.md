@@ -66,6 +66,34 @@ The projector removes superseded host-owned memory sections and validates struct
 
 External execution passes the outbound request text explicitly and carries the same read-only working-set payload only when its binding selects `kiki_context: ["memory"]` or `executor_prompt.include: ["memory_snapshot"]`. Explicit off choices remain effective. The actual ACP request boundary is `AgentExecutionService.run` immediately before `session.run`; native captures use `TestAgentContext.llmCalls` after the safe-step injector.
 
+## Memory Advisor
+
+Configure `memory.advisor.selector` with a model alias already present in the model catalog. With no selector, or with `mode = "off"`, native requests retain the existing lexical working set and make no Advisor requests. Advisor requires a Store with `snapshot`; the legacy Store reports `unsupported_store` and keeps its existing rendering. On an admitted, configured path, Advisor awaits the Store's optional `prepare()` before checking a lazy `snapshot` getter. Off and unconfigured Advisor paths add no Store preparation.
+
+```toml
+[memory.advisor]
+mode = "rank"
+first_step_wait_ms = 1500
+timeout_ms = 6000
+max_calls_per_turn = 3
+
+[memory.advisor.selector]
+protocol = "chat_json"
+model = "YOUR_CONFIGURED_ALIAS"
+```
+
+Before sending memory, read `GET /api/memory/settings?workspace_id=...` and confirm its `advisor_status.destination`. Save an `advisor.egress_ack` item containing that exact destination and workspace ID. This authorizes sending the visible directory and selected complete bodies, including basis and validity, to the resolved provider and origin. Secret-pattern redaction runs before transmission; it cannot remove every sensitive fact. Changing the provider or origin requires a new confirmation.
+
+`PATCH /api/memory/settings` accepts sparse `advisor` updates. `{ "advisor": { "mode": "off" } }` preserves the selector, budgets and confirmations. `advisor: null` removes the configuration; `selector: null` removes only the model selection. Changes take effect without restarting. `POST /api/memory/advisor/probe` takes `{ "confirm_destination": "<destination>" }` and tests both phases with synthetic data, including when automatic advice is off. It returns request/retry counts, known token usage and the failure state without reading saved memory. `GET /api/memory/advisor/status?session_id=...&agent_id=main` reads a live agent's diagnostics; a cold or absent agent returns `null` without resuming it. The HTTP client exposes these as `rest.memory.settings`, `updateSettings`, `probe` and `status`.
+
+The three selector protocols accept any configured model alias. `chat_json` uses the model requester and a strict JSON answer contract. `system_one` sends named choice questions with `criteria` and reads their probabilities. `pair_score` sends a standard rerank request with query/documents and consumes indexed relevance scores; it supports `rank` only and labels full units `recommended`, never `apply` or `history`. Non-chat protocols can set an absolute `selector.endpoint` on the model's configured origin; credentials never follow redirects or cross-origin endpoint overrides. Authentication and admission use the selected model and never substitute another model.
+
+A new request, task-note change or distinct tool error wakes the Agent-scoped Advisor. It pages the visible directory, re-reads selected units at the discovered revision, and judges complete body/basis/validity payloads. `catalog_page_items`, `max_catalog_pages`, `max_full_units` and `judge_input_tokens` bound this work. `enumeration` reports directory coverage; `unjudged_count` reports units without full-unit conclusions. Logical rounds are limited by `max_calls_per_turn`; pagination, batches and authentication retries count as separate real requests. Native children use the same configuration only when their capability and effective model constraints permit it; `apply_to_children = false` disables their Advisor.
+
+Only the first step waits, for at most `first_step_wait_ms`. The request has its own `timeout_ms`; cancelling the first-step wait does not prolong that deadline. Completed advice becomes visible at a safe step head through the existing `runtime_snapshot`. Request, configuration, permission and scope-lifetime changes cancel and discard previous advice. Every render revalidates scope, ID, revision, status and expiry against the current view. Newly added units remain unjudged, including in `select` mode.
+
+`rank` tries exact identifiers, recommendations, lexical hits and pinned entries inside the unchanged complete-unit budget. Recommendations can displace lexical hits; exact IDs still cannot exceed the hard budget. `select` additionally removes explicitly judged `skip` results, while preserving exact IDs, pinned entries and unjudged units. A successful zero result remains distinct from a failure. Failure leaves working-set text and entries byte-identical to the lexical baseline; diagnostics remain in the status API and content-free logs. Runtime token usage is recorded through the Agent usage service as `memory_advice`, including explicit unknown usage when a service does not return tokens.
+
 ## Integration boundary
 
 The runtime router, explicit migration and read-only recovery API are implemented without automatically migrating existing homes. SDK and npm builds emit `memory-worker.mjs`; SEA registers, extracts and configures the same worker through the native asset manifest. The native smoke checks a real commit, complete read, receipt, database backup and clean worker exit. Revision-bound Markdown import preview, the GUI governance consumer and the pre-protocol writer boundary above remain required before production migration. The MemorySearch complete-response contract applies to both Stores.

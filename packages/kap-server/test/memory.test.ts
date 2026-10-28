@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { MemoryConfigSchema, IConfigService, IMemoryStore, ISessionIndex, IWorkspaceService, type MemoryConfig, type Scope } from '@kiki/agent-core-v2';
+import { MemoryConfigSchema, IConfigService, IMemoryStore, IMemorySelector, ISessionManager, advisorStatus, ISessionIndex, IWorkspaceService, type MemoryConfig, type Scope } from '@kiki/agent-core-v2';
 import { registerMemoryRoutes } from '../src/routes/memory';
 import { startServer } from '../src/start';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -13,22 +13,28 @@ interface CapturedRoute {
   readonly handler: (req: any, reply: { send(payload: unknown): unknown }) => Promise<void> | void;
 }
 
-function setup() {
+function setup(lazy = false) {
   const routes: CapturedRoute[] = [];
   let settings: MemoryConfig = MemoryConfigSchema.parse({ enabled: false });
+  let prepared = false;
+  const prepare = vi.fn(async () => { prepared = true; });
   const store = {
+    prepare,
+    get snapshot() { return lazy && prepared ? async () => ({ generation: 'g1', entries: [] }) : undefined; },
     list: async () => [], inventory: async () => ({ entries: [], complete: true, warnings: [], fingerprint: 'empty' }), get: async () => undefined, journal: async () => [], undo: async () => undefined,
     put: async (input: Record<string, unknown>) => ({ entry: input, operationId: 'receipt-id' }),
     delete: async () => 'receipt-id', search: async () => [],
     query: async (_scopes: unknown, input: { statuses?: string[] }) => ({ items: [], mode: 'list', next_cursor: null, coverage: { scopes: [{ kind: 'global' }], statuses: input.statuses ?? ['active'], complete: true, exhausted: true, warnings: [] } }),
   };
   const config = {
+    onDidChangeConfiguration: () => ({ dispose() {} }),
     get: () => settings,
     set: async (_section: string, patch: Partial<MemoryConfig>) => { settings = MemoryConfigSchema.parse({ ...settings, ...patch }); },
     replace: async (_section: string, value: MemoryConfig) => { settings = MemoryConfigSchema.parse(value); },
   };
   const workspaces = { get: async (id: string) => id === 'wd_example_0123456789ab' ? { id } : undefined };
-  const services = new Map<unknown, unknown>([[IMemoryStore, store], [IConfigService, config], [IWorkspaceService, workspaces]]);
+  const selector = { describe: (advisor: MemoryConfig['advisor']) => advisorStatus(advisor?.mode === 'off' ? 'off' : 'ready', { destination: 'example@https://example.test', consent_required: true }), probe: vi.fn(async () => ({ ok: false, status: advisorStatus('failed', { reason: 'consent_required' }), duration_ms: 0, usage_known: false })) };
+  const services = new Map<unknown, unknown>([[IMemoryStore, store], [IConfigService, config], [IWorkspaceService, workspaces], [IMemorySelector, selector], [ISessionManager, { get: () => undefined }]]);
   const getService = vi.fn((key: unknown) => services.get(key));
   const core = { accessor: { get: getService } } as unknown as Scope;
   const host = Object.fromEntries(['get', 'post', 'put', 'patch', 'delete'].map((method) => [method, (path: string, _options: unknown, handler: CapturedRoute['handler']) => routes.push({ method, path, handler })]));
@@ -40,10 +46,32 @@ function setup() {
     await route!.handler({ id: 'request-memory', params: extras.params ?? {}, body: extras.body ?? {}, query: extras.query ?? {} }, { send: (payload) => { response = payload; } });
     return response as { code: number; data: any };
   }
-  return { request, getSettings: () => settings, getService };
+  return { request, getSettings: () => settings, getService, prepare };
 }
 
 describe('memory REST', () => {
+  it('prepares authority before diagnosing a lazy snapshot getter while off and unconfigured reads stay lazy', async () => {
+    const api = setup(true);
+    await api.request('get', '/memory/settings'); expect(api.prepare).not.toHaveBeenCalled();
+    await api.request('patch', '/memory/settings', { body: { enabled: true, advisor: { mode: 'off', selector: { protocol: 'chat_json', model: 'any-user-model' } } } });
+    await api.request('get', '/memory/settings'); expect(api.prepare).not.toHaveBeenCalled();
+    const enabled = await api.request('patch', '/memory/settings', { body: { advisor: { mode: 'rank' } } });
+    expect(api.prepare).toHaveBeenCalledOnce(); expect(enabled.data.advisor_status.state).toBe('ready');
+    expect((await api.request('get', '/memory/settings')).data.advisor_status.state).toBe('ready');
+  });
+  it('patches advisor preferences sparsely, preserves the selector when toggled off, and supports explicit removal', async () => {
+    const api = setup();
+    await api.request('patch', '/memory/settings', { body: { enabled: true, advisor: { selector: { protocol: 'chat_json', model: 'any-user-model' }, timeout_ms: 2000 } } });
+    const disabled = await api.request('patch', '/memory/settings', { body: { advisor: { mode: 'off' } } });
+    expect(disabled.data.advisor).toMatchObject({ mode: 'off', timeout_ms: 2000, selector: { model: 'any-user-model' } });
+    expect(disabled.data.advisor_status.state).toBe('off');
+    await api.request('patch', '/memory/settings', { body: { advisor: { mode: 'rank', selector: null } } });
+    expect(api.getSettings().advisor?.selector).toBeUndefined();
+    expect((await api.request('get', '/memory/settings')).data.advisor_status.state).toBe('unconfigured');
+    await api.request('patch', '/memory/settings', { body: { advisor: null } });
+    expect(api.getSettings().advisor).toBeUndefined();
+    expect((await api.request('get', '/memory/advisor/status', { query: { session_id: 'cold', agent_id: 'main' } })).data).toBeNull();
+  });
   it('reads and writes global and workspace switches without enabling workspace memory when global is off', async () => {
     const api = setup();
     const id = 'wd_example_0123456789ab';

@@ -50,7 +50,7 @@ import type {
   PersonaSnapshot,
   PersonaSummary,
 } from '@kiki/protocol';
-import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, MEDIA_PREVIEW_MAX_BYTES } from '@kiki/protocol';
+import { deleteArchivedSessionRequestSchema, deleteArchivedSessionsResponseSchema, MEDIA_PREVIEW_MAX_BYTES, memorySettingsResponseSchema, memorySettingsPatchSchema, memoryAdvisorProbeInputSchema, memoryAdvisorProbeResultSchema, memoryAdvisorStatusSchema } from '@kiki/protocol';
 
 export interface HttpRestJsonOptions extends HttpRestRequestOptions {
   readonly method?: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
@@ -77,6 +77,12 @@ export interface HttpRestTransport {
 
 export function createHttpRestFacade(transport: HttpRestTransport): HttpRestFacade {
   return {
+    memory: {
+      settings: async (query) => memorySettingsResponseSchema.parse(await transport.json('/memory/settings', { query })),
+      updateSettings: async (body, query) => memorySettingsResponseSchema.parse(await transport.json('/memory/settings', { method: 'PATCH', body: memorySettingsPatchSchema.parse(body), query })),
+      probe: async (body, options) => memoryAdvisorProbeResultSchema.parse(await transport.json('/memory/advisor/probe', { method: 'POST', body: memoryAdvisorProbeInputSchema.parse(body), ...options })),
+      status: async (query) => memoryAdvisorStatusSchema.nullable().parse(await transport.json('/memory/advisor/status', { query })),
+    },
     outputLayer: createOutputLayerFacade(transport),
     externalClients: createExternalClientsFacade(transport),
     webAccess: createWebAccessFacade(transport),

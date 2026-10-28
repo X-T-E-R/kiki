@@ -23,6 +23,29 @@ function envelope(data: unknown, code = 0): Response {
 }
 
 describe('HTTP REST domains', () => {
+  it('exposes validated memory settings, sparse advisor toggles, synthetic probes and live status', async () => {
+    const status = { state: 'off', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 };
+    const settings = { enabled: true, approval: 'auto', budget: 2000, workspaces: {}, effective_enabled: true, advisor_status: status };
+    const calls: { path: string; method: string; body: unknown; workspace: string | null }[] = [];
+    const fetchMock = vi.fn(async (input: string | URL, init?: RequestInit) => {
+      const url = new URL(String(input));
+      calls.push({ path: url.pathname, method: init?.method ?? 'GET', body: init?.body === undefined ? undefined : jsonRequestBody(init.body), workspace: url.searchParams.get('workspace_id') });
+      return envelope(url.pathname.endsWith('/probe') ? { ok: true, status, duration_ms: 2, usage_known: false } : url.pathname.endsWith('/status') ? null : settings);
+    });
+    const channel = new HttpChannel({ endpoint: 'http://example.test', token: 'fixture-token', fetch: fetchMock as typeof fetch });
+    try {
+      expect(await channel.rest.memory.settings({ workspace_id: 'workspace-example' })).toEqual(settings);
+      await channel.rest.memory.updateSettings({ advisor: { mode: 'off' } });
+      expect((await channel.rest.memory.probe({ confirm_destination: 'example@https://example.test' })).ok).toBe(true);
+      expect(await channel.rest.memory.status({ session_id: 'cold' })).toBeNull();
+      expect(calls).toEqual([
+        { path: '/api/memory/settings', method: 'GET', body: undefined, workspace: 'workspace-example' },
+        { path: '/api/memory/settings', method: 'PATCH', body: { advisor: { mode: 'off' } }, workspace: null },
+        { path: '/api/memory/advisor/probe', method: 'POST', body: { confirm_destination: 'example@https://example.test' }, workspace: null },
+        { path: '/api/memory/advisor/status', method: 'GET', body: undefined, workspace: null },
+      ]);
+    } finally { await channel.close(); }
+  });
   it.each([undefined, 'child/example'])('resumes a durable prompt with the GUI recovery request shape (agent=%s)', async (agentId) => {
     const body = {
       admission: 'durable' as const,
