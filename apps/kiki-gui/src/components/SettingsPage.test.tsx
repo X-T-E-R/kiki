@@ -979,6 +979,25 @@ describe('SettingsPage batch-3 leaves', () => {
     expect(card.querySelectorAll('[data-labs-entry]').length).toBe(11);
   });
 
+  it('names flags this app has no copy for by their id, so two stay tellable apart', async () => {
+    const reported = await client.meta();
+    client.meta.mockResolvedValue({ experimental_flags: { ...reported.experimental_flags, vendor_alpha: true, vendor_beta: false } });
+    try {
+      const labs = await renderSettings('/settings/labs');
+      await flush();
+      const name = (flag: string) => labs.querySelector(`[data-labs-entry="${flag}"] [data-labs-unknown]`);
+      expect(name('vendor_alpha')?.textContent).toBe('vendor_alpha');
+      expect(name('vendor_beta')?.textContent).toBe('vendor_beta');
+      // Visible text, not a hover title: no hidden-at-narrow class on the name.
+      expect(name('vendor_alpha')?.className).not.toContain('hidden');
+      // No invented meaning for an unknown flag; known flags keep their own name.
+      expect(labs.querySelector('[data-labs-entry="vendor_alpha"]')?.textContent).not.toContain('Server-specific feature');
+      expect(labs.querySelector('[data-labs-entry="desktop_search"] [data-labs-unknown]')).toBeNull();
+    } finally {
+      client.meta.mockImplementation(async () => reported);
+    }
+  });
+
   it('saves an experimental row on change with a narrow experimental patch', async () => {
     client.getConfig.mockResolvedValue({ experimental: { desktop_search: false } });
     client.patchConfig.mockClear();

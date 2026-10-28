@@ -48,23 +48,27 @@ export function LabsSection() {
           const page = labels[section] ?? section;
           const state = effective[row.id];
           return (
-            <li key={row.id} data-labs-entry={row.id} className="flex flex-wrap items-center justify-between gap-x-6 gap-y-1 py-2 first:pt-0 last:pb-0">
-              <div className="min-w-0">
-                <p className="text-[13px] text-ink">{t(home?.labelKey ?? 'st.exp.unknown.name')}</p>
-                <p className="text-[12px] leading-snug text-ink-faint">
-                  <span className={state === true ? 'text-success' : undefined}>
-                    {t(state === undefined ? 'st.exp.state.unknown' : state ? 'st.exp.state.on' : 'st.exp.state.off')}
-                  </span>
-                  <span aria-hidden className="px-1.5">·</span>
-                  <span className="font-mono text-[11px]">{row.id}</span>
+            <li key={row.id} data-labs-entry={row.id} className="flex min-h-9 items-center gap-x-4 py-1 first:pt-0 last:pb-0">
+              {/* A flag this app has no copy for is named by its id: two of them
+                  must stay tellable apart at any width. */}
+              {home === undefined ? (
+                <p className="min-w-0 flex-1 truncate font-mono text-[12px] text-ink" data-labs-unknown>{row.id}</p>
+              ) : (
+                <p className="min-w-0 flex-1 truncate text-[13px] text-ink" title={row.id}>
+                  {t(home.labelKey)}
+                  <span className="ml-2 hidden font-mono text-[11px] text-ink-faint sm:inline">{row.id}</span>
                 </p>
-              </div>
+              )}
+              <span className={`shrink-0 text-[12px] ${state === true ? 'text-success' : 'text-ink-faint'}`}>
+                {t(state === undefined ? 'st.exp.state.unknown' : state ? 'st.exp.state.on' : 'st.exp.state.off')}
+              </span>
               <Link
                 to={`/settings/${section}${query}#${card}`}
                 data-labs-link={section}
-                className="inline-flex min-h-8 items-center rounded-md px-1 text-[13px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
+                aria-label={t('st.labs.openIn', { page })}
+                className="inline-flex min-h-8 shrink-0 items-center rounded-md px-1 text-[13px] font-medium text-selected-ink hover:underline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-selected-ink pointer-coarse:min-h-11"
               >
-                {t('st.labs.openIn', { page })}
+                {page}
               </Link>
             </li>
           );

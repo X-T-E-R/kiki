@@ -6,6 +6,7 @@ import { parseAdvancedServerConfig } from '@kiki/session-core/settings';
 import { useI18n } from '../../i18n';
 import { useConnection } from '../../state/connection';
 import { FeedbackLine, Hint, type Feedback } from '../controls';
+import { Icon } from '../icons';
 import { INPUT } from '../ui';
 import { SettingsDraftFooter } from './SettingsPrimitives';
 import type { KikiConfigResponse } from '../../lib/client';
@@ -74,8 +75,18 @@ export function AdvancedSection() {
       <SectionCard id="st-card-advanced" title={t('st.advanced.title')}>
         <div className="space-y-3">
           <Hint>{t('st.advanced.hint')}</Hint>
+          {/* The raw editor is an escape hatch: closed until asked for, and it
+              stays open while it holds an unsaved edit. */}
+          <details data-advanced-json open={dirty ? true : undefined} className="group">
+            <summary className="inline-flex min-h-7 cursor-pointer select-none items-center gap-1 text-[12px] font-medium text-ink-soft hover:text-ink pointer-coarse:min-h-11">
+              <Icon name="chevron" size={12} className="text-ink-faint transition-transform group-open:rotate-90 motion-reduce:transition-none" />
+              {t('st.advanced.disclosure')}
+            </summary>
+            <div className="mt-2 space-y-3">
           <textarea className={`${INPUT} min-h-64 font-mono`} value={advanced} onChange={(event) => { setAdvanced(event.target.value); setDirty(true); setFeedback(null); }} aria-label={t('st.advanced.aria')} />
           <SettingsDraftFooter saved={justSaved} id="advanced-json" dirty={dirty} saving={saving} saveLabel={t('st.advanced.save')} onSave={() => void save()} onDiscard={discard} />
+            </div>
+          </details>
           <FeedbackLine feedback={feedback} />
         </div>
       </SectionCard>
