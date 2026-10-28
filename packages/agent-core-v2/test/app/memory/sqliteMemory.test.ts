@@ -598,7 +598,10 @@ describe('Memory recall and complete working units', () => {
 
   it('projects only trusted Memory units by scope and revision while preserving user text and call pairs', async () => {
     const entry = (await save('Deployment instructions', 'Use exactly 9 workers. Never upload output.')).entry;
-    const input = { action: 'create', title: entry.title, body: entry.body, reason: 'Human guidance' };
+    const input = { action: 'create', scope: 'global', type: 'feedback', title: entry.title, body: entry.body,
+      reason: 'Human guidance: use exactly 9 workers', expected_revision: 'previous-observation', validity: null,
+      basis: { kind: 'human', note: 'Owner requested 9 workers', refs: ['history:example/t9'] }, pinned: false };
+    const { body: _body, ...nonBodyInput } = input;
     const receipt = { action: 'create', outcome: 'applied', entry, owner_scope: global, title: entry.title, revision: entry.revision };
     const messages: ContextMessage[] = [
       { role: 'user', toolCalls: [], content: [{ type: 'text', text: entry.body }], origin: { kind: 'user' } },
@@ -614,6 +617,16 @@ describe('Memory recall and complete working units', () => {
     expect(current[2]).toBe(messages[2]);
     expect(current[4]).toBe(messages[4]);
     expect(JSON.stringify(current[1])).not.toContain(entry.body);
+    expect(JSON.parse(current[1]!.toolCalls[0]!.arguments!)).toEqual(nonBodyInput);
+    const changed = (await update(entry, 'Use exactly 5 workers. Never upload output.')).entry;
+    for (const entries of [[{ ...changed, scope: global }], []]) {
+      const invalidated = projectCurrentMemory(messages, { generation: '2', scopes: [global], entries });
+      for (const oldText of [entry.body, entry.title, input.reason, input.basis.note, input.basis.refs[0]!]) expect(JSON.stringify(invalidated.slice(1, 3))).not.toContain(oldText);
+      expect(JSON.parse(invalidated[1]!.toolCalls[0]!.arguments!)).toEqual({ action: input.action, scope: input.scope, memory_content_omitted: true });
+    }
+    const failed = [messages[1]!, { ...messages[2]!, isError: true }];
+    expect(projectCurrentMemory(failed, { generation: '2', scopes: [global], entries: [] })).toEqual(failed);
+    expect(memoryHandoffMessages(failed)).toEqual(failed);
     const unavailable = projectCurrentMemory(messages, { generation: '2', scopes: [workspace], entries: [{ ...entry, scope: workspace }] });
     expect(unavailable[0]).toBe(messages[0]);
     expect(unavailable[4]).toBe(messages[4]);

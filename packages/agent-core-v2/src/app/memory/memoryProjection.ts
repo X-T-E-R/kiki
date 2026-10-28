@@ -48,7 +48,7 @@ function projectMemoryWorkset(message: ContextMessage, view: MemoryProjectionVie
   return { ...message, content: [{ type: 'text', text: text.slice(0, memory.start) + replacement + text.slice(memory.start + memory.length) }] };
 }
 function projectToolResult(message: ContextMessage, name: string | undefined, view: MemoryProjectionView, delivered: Set<string>): ContextMessage {
-  if (message.role !== 'tool' || !['MemoryRead', 'MemorySearch', 'MemoryWrite'].includes(name ?? '') || message.content.length !== 1 || message.content[0]?.type !== 'text') return message;
+  if (message.role !== 'tool' || message.isError === true || !['MemoryRead', 'MemorySearch', 'MemoryWrite'].includes(name ?? '') || message.content.length !== 1 || message.content[0]?.type !== 'text') return message;
   let output: unknown;
   try { output = JSON.parse(message.content[0].text); } catch { return message; }
   let changed = false;
@@ -87,7 +87,14 @@ function projectToolResult(message: ContextMessage, name: string | undefined, vi
   }
   return changed ? { ...message, content: [{ type: 'text', text: JSON.stringify(output) }] } : message;
 }
-function referenceArguments(args: string | null): string {
+function currentWriteArguments(args: string | null): string | null {
+  let input: unknown;
+  try { input = JSON.parse(args ?? 'null'); } catch { return args; }
+  if (!record(input)) return args;
+  const { body: _body, ...retained } = input;
+  return JSON.stringify(retained);
+}
+function historicalWriteArguments(args: string | null): string {
   let input: unknown;
   try { input = JSON.parse(args ?? 'null'); } catch { input = undefined; }
   return JSON.stringify({ action: record(input) ? input['action'] : undefined, id: record(input) ? input['id'] : undefined,
@@ -143,24 +150,29 @@ export function memoryHandoffMessages(messages: readonly ContextMessage[]): read
     return { ...current, content: [{ type: 'text' as const, text: JSON.stringify({ memory_references: references, recovery: 'Historical observations only; read by scope and ID to resolve current governed content before reuse.' }) }] };
   });
   return projected.map((message) => message.toolCalls.some((call) => omitted.has(call.id) && call.name === 'MemoryWrite') ? { ...message,
-    toolCalls: message.toolCalls.map((call) => omitted.has(call.id) && call.name === 'MemoryWrite' ? { ...call, arguments: referenceArguments(call.arguments) } : call) } : message);
+    toolCalls: message.toolCalls.map((call) => omitted.has(call.id) && call.name === 'MemoryWrite' ? { ...call, arguments: historicalWriteArguments(call.arguments) } : call) } : message);
 }
 export function projectCurrentMemory(messages: readonly ContextMessage[], view?: MemoryProjectionView): readonly ContextMessage[] {
   const latest = messages.findLastIndex((message) => range(message) !== undefined);
   const calls = new Map(messages.flatMap((message) => message.toolCalls.map((call) => [call.id, call.name] as const)));
-  const writes = new Set<string>();
+  const writes = new Map<string, 'current' | 'historical'>();
   const delivered = new Set<string>();
   const projected = messages.map((message, index) => {
     const current = index < latest ? withoutMemoryProjection(message) : message;
     const name = calls.get(message.toolCallId ?? '');
     const result = view === undefined ? current : projectToolResult(current, name, view, delivered);
-    if (view !== undefined && name === 'MemoryWrite' && observedReferences(message, name).length > 0) writes.add(message.toolCallId!);
+    const references = view === undefined || name !== 'MemoryWrite' ? [] : observedReferences(message, name);
+    if (view !== undefined && references.length > 0) {
+      const valid = references.every((reference) => view.scopes.some((scope) => sameScope(scope, reference.scope)) && view.entries.some((entry) =>
+        entry.id === reference.id && entry.revision === reference.observed_revision && sameScope(entry.scope, reference.scope)));
+      writes.set(message.toolCallId!, valid ? 'current' : 'historical');
+    }
     return result;
   });
   const covered = view === undefined ? new Set<string>() : currentToolCoverage(projected, calls, view);
   return projected.map((message) => {
     const current = view === undefined ? message : projectMemoryWorkset(message, view, covered);
     return current.toolCalls.some((call) => writes.has(call.id)) ? { ...current,
-      toolCalls: current.toolCalls.map((call) => writes.has(call.id) ? { ...call, arguments: referenceArguments(call.arguments) } : call) } : current;
+      toolCalls: current.toolCalls.map((call) => writes.has(call.id) ? { ...call, arguments: writes.get(call.id) === 'current' ? currentWriteArguments(call.arguments) : historicalWriteArguments(call.arguments) } : call) } : current;
   });
 }
