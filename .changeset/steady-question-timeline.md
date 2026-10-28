@@ -2,4 +2,4 @@
 "@kiki/cli": patch
 ---
 
-Keep answered questions anchored while the conversation updates.
+Keep answered questions in place after local answers, live updates, and reopening conversations.
