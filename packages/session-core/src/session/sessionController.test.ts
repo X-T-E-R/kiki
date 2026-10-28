@@ -1177,21 +1177,18 @@ describe('SessionController pipeline', () => {
     const releaseSecond = controller.subscribeAgent('cold-child', vi.fn());
     expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
     controller.setFocusedAgent('focused-child');
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+    await Promise.resolve();
+    expect(socket.setTranscriptGrades).toHaveBeenCalledExactlyOnceWith('session_test', {
       '*': 'off', main: 'off', 'focused-child': 'delta', 'cold-child': 'turn',
     });
     releaseFirst();
     expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(1);
     releaseSecond();
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'off', main: 'off', 'focused-child': 'delta',
-    });
     const releaseLate = controller.subscribeAgent('late-child', vi.fn());
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
-      '*': 'off', main: 'off', 'focused-child': 'delta', 'late-child': 'turn',
-    });
     controller.setFocusedAgent('late-child');
     releaseLate();
+    await Promise.resolve();
+    expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(2);
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
       '*': 'off', main: 'off', 'late-child': 'delta',
     });
@@ -2255,18 +2252,22 @@ describe('SessionController transcript authority', () => {
     controller.setFocusedAgent('legacy-child');
     controller.retainAgentView('left', 'child-1', 'delta');
     controller.retainAgentView('right', 'child-2', 'delta');
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+    await Promise.resolve();
+    expect(socket.setTranscriptGrades).toHaveBeenCalledExactlyOnceWith('session_test', {
       '*': 'off', main: 'off', 'legacy-child': 'delta', 'child-1': 'delta', 'child-2': 'delta',
     });
     controller.releaseAgentView('left');
+    await Promise.resolve();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
       '*': 'off', main: 'off', 'legacy-child': 'delta', 'child-2': 'delta',
     });
     controller.setFocusedAgent(undefined);
+    await Promise.resolve();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
       '*': 'off', main: 'delta', 'child-2': 'delta',
     });
     controller.updateAgentView('right', 'off');
+    await Promise.resolve();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
       '*': 'off', main: 'delta', 'child-2': 'off',
     });
@@ -2290,10 +2291,13 @@ describe('SessionController transcript authority', () => {
     expect(client.getAgentTranscript).not.toHaveBeenCalled();
     controller.retainAgentView('inspector', 'child-1', 'block');
     controller.releaseAgentView('tab');
+    await Promise.resolve();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'off', main: 'delta', 'child-1': 'block' });
     controller.updateAgentView('inspector', 'turn');
+    await Promise.resolve();
     expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', { '*': 'off', main: 'delta', 'child-1': 'turn' });
     controller.releaseAgentView('inspector');
+    await Promise.resolve();
     const releasedCalls = socket.setTranscriptGrades.mock.calls.length;
     controller.releaseAgentView('inspector');
     controller.updateAgentView('inspector', 'delta');
@@ -2313,6 +2317,7 @@ describe('SessionController transcript authority', () => {
       controller.updateAgentView(`tab-${index}`, 'off');
       releases[index]!();
     }
+    await Promise.resolve();
     const grades = socket.setTranscriptGrades.mock.lastCall?.[1] as Record<string, string>;
     expect(Object.entries(grades).filter(([key, grade]) => key.startsWith('child-') && grade === 'off')).toHaveLength(511);
     expect(grades).toMatchObject({ '*': 'off', main: 'delta' });
@@ -2325,17 +2330,20 @@ describe('SessionController transcript authority', () => {
     controller.retainAgentView('tab', 'child-1', 'delta');
     controller.retainAgentView('tab', 'child-2', 'block');
     controller.retainAgentView('main-view', 'main', 'off');
-    expect(socket.setTranscriptGrades).toHaveBeenLastCalledWith('session_test', {
+    await Promise.resolve();
+    expect(socket.setTranscriptGrades).toHaveBeenCalledExactlyOnceWith('session_test', {
       '*': 'off', main: 'delta', 'child-1': 'turn', 'child-2': 'block',
     });
     expect(() => controller.retainAgentView('wildcard', '*', 'off')).toThrow('concrete agent ID');
     expect(() => controller.retainAgentView('', 'child-1', 'delta')).toThrow('view ID');
     off();
     controller.close();
+    await Promise.resolve();
     const calls = socket.setTranscriptGrades.mock.calls.length;
     controller.retainAgentView('late', 'child-1', 'delta');
     controller.updateAgentView('tab', 'delta');
     controller.releaseAgentView('tab');
+    await Promise.resolve();
     expect(socket.setTranscriptGrades).toHaveBeenCalledTimes(calls);
   });
 
@@ -6028,4 +6036,50 @@ it('retains the current view and refuses a gap ready cursor while restoring the 
     expect(controller.getState().cursor).toEqual({ seq: 99, epoch: 'epoch-1' });
     expect(socket.subscribe).toHaveBeenLastCalledWith('session_test', { seq: 99, epoch: 'epoch-1' }, expect.anything());
   } finally { pending.resolve(snapshot()); controller.close(); }
+});
+
+it('coalesces one GUI child switch demand into one final ordered-view grade update', async () => {
+  const client = { snapshot: vi.fn(async () => snapshot()) };
+  const socket = { subscribe: vi.fn(), setTranscriptGrades: vi.fn(), unsubscribe: vi.fn() };
+  const controller = new SessionController(client as unknown as KikiClient, fakeView(client, socket), 'session_test');
+  await controller.open();
+  const stop = controller.subscribeAgent('child-1', vi.fn());
+  controller.retainAgentView('workspace:session_test:child-1', 'child-1', 'delta');
+  controller.setFocusedAgent('child-1');
+  expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
+  await Promise.resolve();
+  expect(socket.setTranscriptGrades).toHaveBeenCalledExactlyOnceWith('session_test', { '*': 'off', main: 'off', 'child-1': 'delta' });
+  socket.setTranscriptGrades.mockClear();
+  controller.releaseAgentView('workspace:session_test:child-1');
+  stop();
+  controller.setFocusedAgent('main');
+  controller.close();
+  await Promise.resolve();
+  expect(socket.setTranscriptGrades).not.toHaveBeenCalled();
+});
+
+it('drops same-tick transient demand and keeps independent controller grade updates isolated', async () => {
+  const client = { snapshot: vi.fn(async () => snapshot()) };
+  const left = { subscribe: vi.fn(), setTranscriptGrades: vi.fn(), unsubscribe: vi.fn() };
+  const right = { subscribe: vi.fn(), setTranscriptGrades: vi.fn(), unsubscribe: vi.fn() };
+  const first = new SessionController(client as unknown as KikiClient, fakeView(client, left), 'session_test');
+  const second = new SessionController(client as unknown as KikiClient, fakeView(client, right, 'session_other'), 'session_other');
+  try {
+    await Promise.all([first.open(), second.open()]);
+    first.retainAgentView('temporary', 'child-1', 'delta');
+    first.releaseAgentView('temporary');
+    second.retainAgentView('visible', 'child-2', 'delta');
+    second.setFocusedAgent('child-2');
+    await Promise.resolve();
+    expect(left.setTranscriptGrades).not.toHaveBeenCalled();
+    expect(right.setTranscriptGrades).toHaveBeenCalledExactlyOnceWith('session_other', { '*': 'off', main: 'off', 'child-2': 'delta' });
+    second.releaseAgentView('visible');
+    second.setFocusedAgent('main');
+    second.suspend();
+    await Promise.resolve();
+    expect(right.setTranscriptGrades).toHaveBeenCalledTimes(1);
+  } finally {
+    first.close();
+    second.close();
+  }
 });

@@ -876,6 +876,8 @@ export class SessionController {
     return grades;
   }
 
+  private scheduledTranscriptGrades: { handle: SessionViewSubscription; previous: TranscriptGradeSpec } | undefined;
+
   private refreshTranscriptGrades(): void {
     if (this.closed) return;
     const nextGrades = this.requestedTranscriptGrades();
@@ -892,7 +894,18 @@ export class SessionController {
     for (const [agentId, store] of this.agentTranscripts) {
       if (gradeFor(previous, agentId) !== gradeFor(nextGrades, agentId)) this.publishProjectedAgent(agentId, store);
     }
-    this.viewHandle?.setTranscriptGrades(this.transcriptGrades);
+    const handle = this.viewHandle;
+    if (handle === undefined || this.scheduledTranscriptGrades?.handle === handle) return;
+    const scheduled = { handle, previous };
+    this.scheduledTranscriptGrades = scheduled;
+    queueMicrotask(() => {
+      if (this.scheduledTranscriptGrades !== scheduled) return;
+      this.scheduledTranscriptGrades = undefined;
+      if (this.closed || this.isSuspended || this.viewHandle !== handle) return;
+      if (Object.keys(scheduled.previous).length === Object.keys(this.transcriptGrades).length &&
+        Object.entries(this.transcriptGrades).every(([id, grade]) => scheduled.previous[id] === grade)) return;
+      handle.setTranscriptGrades(this.transcriptGrades);
+    });
   }
 
   private hasTranscriptBaseline(agentId: string): boolean {
