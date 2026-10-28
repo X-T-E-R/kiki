@@ -67,6 +67,129 @@ const lines = [
 ];
 
 describe('history navigation source rows', () => {
+  it('serves newest directory content and readable refs before projecting a large older prefix', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-tail-directory-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const path = join(dir, 'navigation.sqlite');
+    const db = HistoryNavigationDb.lazy(path);
+    const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+    try {
+      const prefix = line({ type: 'note', pad: 'x'.repeat(1 << 20) }).repeat(12);
+      const tail = Array.from({ length: 6 }, (_, index) => {
+        const turnId = 400 + index;
+        return [line({ type: 'turn.prompt', turnId, promptId: `p${turnId}`, origin: { kind: 'user' },
+          input: [{ type: 'text', text: `prompt ${turnId}` }], time: turnId * 10 }),
+        line({ type: 'context.append_loop_event', event: { type: 'step.begin', turnId, step: 1, uuid: `s${turnId}` } }),
+        line({ type: 'context.append_loop_event', event: { type: 'content.part', turnId,
+          stepUuid: `s${turnId}`, uuid: `f${turnId}`, part: { type: 'text', text: `answer ${turnId}` } } }),
+        line({ type: 'turn.ended', turnId, reason: 'completed' })].join('');
+      }).join('');
+      await writeFile(wirePath, prefix + tail);
+      const nav = new HistoryLocatorStore(db, transcript);
+      const page = await nav.list({ workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns', order: 'newest', limit: 5 });
+      expect(page.turns?.map((turn) => turn.turn)).toEqual([405, 404, 403, 402, 401]);
+      expect(page).toMatchObject({ status: 'partial', coverage: { complete: false }, nextCursor: expect.any(String) });
+      expect(page.coverage.scanned!.bytes).toBeLessThanOrEqual(8 << 20);
+      expect((await db.ready()).readManifest('ws\0s\0main')).toBeUndefined();
+      const ref = page.turns![0]!.ref!;
+      expect(await nav.readBlocks(ref, 16000)).toMatchObject({ status: 'ok', complete: true,
+        blocks: [{ text: 'prompt 405' }, { text: 'answer 405' }] });
+      await db.close();
+      const reopened = HistoryNavigationDb.lazy(path);
+      try {
+        const next = new HistoryLocatorStore(reopened, transcript);
+        expect(await next.readBlocks(ref, 16000)).toMatchObject({ status: 'ok',
+          blocks: [{ text: 'prompt 405' }, { text: 'answer 405' }] });
+        await appendFile(wirePath, line({ type: 'turn.prompt', turnId: 406, input: [{ type: 'text', text: 'later prompt' }] }));
+        expect(await next.readBlocks(ref, 16000)).toMatchObject({ status: 'ok',
+          blocks: [{ text: 'prompt 405' }, { text: 'answer 405' }] });
+        let continued = page;
+        let calls = 0;
+        do {
+          continued = await next.list({ workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns',
+            order: 'newest', limit: 5, cursor: continued.nextCursor });
+          expect(++calls).toBeLessThan(5);
+        } while (continued.coverage.complete !== true && continued.nextCursor !== undefined);
+        expect(continued.turns?.map((turn) => turn.turn)).toEqual([400]);
+        expect(continued.coverage.complete).toBe(true);
+        expect((await reopened.ready()).readManifest('ws\0s\0main')?.offset).toBe(Buffer.byteLength(prefix + tail));
+        await appendFile(wirePath, line({ type: 'context.undo', count: 1 }));
+        expect(await next.readBlocks(ref, 16000)).toEqual({ status: 'stale_ref' });
+        await expect(next.list({ workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns',
+          order: 'newest', limit: 5, cursor: page.nextCursor })).rejects.toThrow('source changed');
+      } finally { await reopened.close(); }
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([
+    { name: 'implicit string turn', suffix: line({ type: 'turn.prompt', turnId: '700', input: [{ type: 'text', text: 'implicit prompt' }] }), turns: [401, 400] },
+    { name: 'undo', suffix: line({ type: 'context.undo', count: 1 }), turns: [] },
+    { name: 'clear', suffix: line({ type: 'context.clear' }), turns: [] },
+  ])('recovers $name through the original forward projection without guessing tail identities', async ({ suffix, turns }) => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-tail-fallback-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    try {
+      await writeFile(wirePath, line({ type: 'note', pad: 'x'.repeat(1 << 20) }).repeat(10) +
+        line({ type: 'turn.prompt', turnId: 400, origin: { kind: 'user' }, input: [{ type: 'text', text: 'known prompt' }] }) + suffix);
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      let page = await nav.list({ workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns', order: 'newest', limit: 5 });
+      expect(page.turns).toEqual([]);
+      expect((await db.ready()).readManifest('ws\0s\0main')?.offset).toBeGreaterThan(0);
+      let calls = 0;
+      while (page.nextCursor !== undefined && page.coverage.complete !== true) {
+        page = await nav.list({ workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns',
+          order: 'newest', limit: 5, cursor: page.nextCursor });
+        expect(++calls).toBeLessThan(4);
+      }
+      expect(page.coverage.complete).toBe(true);
+      expect(page.turns?.map((turn) => turn.turn)).toEqual(turns);
+    } finally { await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])('cancels an entered cold directory window while preserving a remaining waiter: %s', async (shared) => {
+    const dir = await mkdtemp(join(tmpdir(), 'history-nav-tail-cancel-'));
+    const wirePath = join(dir, 'wire.jsonl');
+    const db = HistoryNavigationDb.lazy(join(dir, 'navigation.sqlite'));
+    let restore = (): void => {};
+    try {
+      await writeFile(wirePath, line({ type: 'note', pad: 'x'.repeat(1 << 20) }).repeat(10) + lines.join(''));
+      const transcript = { historyWireLocation: async () => ({ workspaceId: 'ws', wirePath }) } as unknown as TranscriptService;
+      const nav = new HistoryLocatorStore(db, transcript);
+      const controller = new AbortController();
+      let entered!: () => void;
+      const active = new Promise<void>((resolve) => { entered = resolve; });
+      const actual = await vi.importActual<typeof logicalWire>('../src/services/history/logicalWireRead');
+      let release!: () => void;
+      const stream = vi.spyOn(logicalWire, 'streamLogicalWireRecordsAwaited').mockImplementationOnce(async (path, options) => {
+        expect(options.startByteOffset).toBeGreaterThan(8 << 20);
+        expect(options.signal).toBeInstanceOf(AbortSignal);
+        entered();
+        await new Promise<void>((resolve, reject) => {
+          const abort = (): void => { reject(options.signal!.reason); };
+          options.signal!.addEventListener('abort', abort, { once: true });
+          release = () => { options.signal!.removeEventListener('abort', abort); resolve(); };
+        });
+        return actual.streamLogicalWireRecordsAwaited(path, options);
+      });
+      restore = () => { stream.mockRestore(); };
+      const request = { workspaceId: 'ws', sessionId: 's', agentId: 'main', kind: 'turns' as const,
+        order: 'newest' as const, limit: 5 };
+      const pending = nav.list({ ...request, signal: controller.signal });
+      await active;
+      const survivor = shared ? nav.list(request) : undefined;
+      controller.abort(new Error('cancel entered directory window'));
+      await expect(pending).rejects.toThrow('cancel entered directory window');
+      if (shared) release();
+      const recovered = await (survivor ?? nav.list(request));
+      expect(recovered.turns?.map((turn) => turn.turn)).toEqual([4]);
+      expect(await nav.readBlocks(recovered.turns![0]!.ref!, 16000)).toMatchObject({ status: 'ok', complete: true,
+        blocks: [{ text: '原话 one' }, { text: '{"file":"a.txt"}' }, { text: 'needle 𠮷 suffix' }] });
+      expect((await db.ready()).readManifest('ws\0s\0main')).toBeUndefined();
+    } finally { restore(); await db.close(); await rm(dir, { recursive: true, force: true }); }
+  });
+
   it('projects canonical IDs and source spans, verifies a tool result, and rejects a same-size replacement', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'history-nav-'));
     const wirePath = join(dir, 'wire.jsonl');

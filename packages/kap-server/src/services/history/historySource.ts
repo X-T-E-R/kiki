@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { stat } from 'node:fs/promises';
 
 import { readLogicalWireRange } from './logicalWireRead';
+import type { HistoryDirectoryWindow } from './historyDirectoryWindow';
 
 export type HistoryRefKind = 'turn' | 'step' | 'frame';
 
@@ -20,6 +21,7 @@ export interface HistorySourceAnchor {
   readonly digest: string;
   readonly selector?: string;
   readonly focus?: number;
+  readonly window?: HistoryDirectoryWindow;
 }
 
 export type HistorySourceResult = { readonly status: 'ok' } |
@@ -65,6 +67,16 @@ export function decodeHistoryRef(value: string): HistorySourceAnchor {
       (a.selector !== undefined && (typeof a.selector !== 'string' || a.selector.length > 128 ||
         !/^(?:input|event\.(?:part\.text|args|result\.output)|message\.content(?:\.\d+)?|message\.toolCalls\.\d+\.arguments)$/u.test(a.selector))) ||
       (a.focus !== undefined && (!Number.isSafeInteger(a.focus) || a.focus < 0))) throw new Error('invalid_ref');
+  const window = a.window;
+  if (window !== undefined && (typeof window !== 'object' || window === null ||
+      !Number.isSafeInteger(window.start) || window.start < 0 || window.start > a.start! ||
+      !Number.isSafeInteger(window.end) || window.end < a.end! || window.end - window.start > (4 << 20) ||
+      window.proof === null || typeof window.proof !== 'object' ||
+      window.proof.identity !== a.incarnation || !Number.isSafeInteger(window.proof.size) || window.proof.size < window.end ||
+      typeof window.proof.mtimeNs !== 'string' || !/^\d{1,32}$/u.test(window.proof.mtimeNs) ||
+      typeof window.proof.ctimeNs !== 'string' || !/^\d{1,32}$/u.test(window.proof.ctimeNs) ||
+      typeof window.proof.head !== 'string' || !SHA256.test(window.proof.head) ||
+      typeof window.proof.tail !== 'string' || !SHA256.test(window.proof.tail))) throw new Error('invalid_ref');
   return a as HistorySourceAnchor;
 }
 

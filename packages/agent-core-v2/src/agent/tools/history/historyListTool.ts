@@ -46,6 +46,7 @@ export interface HistoryDirectoryCursor {
   readonly afterTurn?: number;
   readonly afterAgent?: { readonly time?: string; readonly agentId: string };
   readonly preparation?: { readonly offset: number; readonly incarnation: string };
+  readonly tailRef?: string;
 }
 
 export interface HistoryDirectoryRequest extends HistoryDirectoryCursorRequest {
@@ -161,7 +162,11 @@ export function decodeHistoryDirectoryCursor(value: string): HistoryDirectoryCur
   if (cursor.afterTurn !== undefined && (!Number.isSafeInteger(cursor.afterTurn) || cursor.afterTurn < 0)) {
     throw new Error('Invalid HistoryList cursor; restart with {kind:"turns"}.');
   }
-  if (cursor.preparation !== undefined && (normalized.kind !== 'turns' || cursor.afterTurn !== undefined ||
+  if (cursor.tailRef !== undefined && (normalized.kind !== 'turns' || typeof cursor.tailRef !== 'string' ||
+      !cursor.tailRef.startsWith('h1_') || cursor.tailRef.length > 2048 || cursor.afterTurn === undefined)) {
+    throw new Error('Invalid HistoryList tail cursor; restart with {kind:"turns"}.');
+  }
+  if (cursor.preparation !== undefined && (normalized.kind !== 'turns' || cursor.afterTurn !== undefined && cursor.tailRef === undefined ||
       !Number.isSafeInteger(cursor.preparation?.offset) || cursor.preparation.offset < 0 ||
       typeof cursor.preparation.incarnation !== 'string' || !cursor.preparation.incarnation)) {
     throw new Error('Invalid HistoryList preparation cursor; restart with {kind:"turns"}.');

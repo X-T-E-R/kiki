@@ -21,6 +21,8 @@ import { searchSortedHistory, type HistorySortedCursor } from './historySortedSe
 import type { TranscriptService } from '../transcript/transcriptService';
 import { HistoryCanonicalReader, type CanonicalToolLookup, type CanonicalEntityLookup } from './historyCanonicalReader';
 import type { ContentSource } from '@kiki/transcript';
+import { discoverHistoryDirectoryTail, historyDirectoryWindowGuard, historyDirectoryWindowStore,
+  validateHistoryDirectoryWindow, type HistoryDirectoryWindow } from './historyDirectoryWindow';
 
 export const HISTORY_NAV_COLLECTION = 'history_navigation_v1';
 export const HISTORY_NAV_SCAN_BYTES = 8 << 20;
@@ -119,9 +121,9 @@ interface Scanner {
   ordinal: number;
 }
 
-interface NavigationScanFlight {
+interface NavigationScanFlight<T = HistoryNavScan> {
   readonly controller: AbortController;
-  readonly promise: Promise<HistoryNavScan>;
+  readonly promise: Promise<T>;
   waiters: number;
   settled: boolean;
 }
@@ -207,6 +209,9 @@ export class HistoryLocatorStore {
   private readonly flights = new Map<string, NavigationScanFlight>();
   private scanTail: Promise<void> = Promise.resolve();
   private queuedScans = 0;
+  private directoryWindow?: HistoryDirectoryWindow;
+  private readonly directoryWindows = new Map<string, HistoryLocatorStore>();
+  private readonly directoryFlights = new Map<string, NavigationScanFlight<HistoryDirectoryPage | undefined>>();
 
   constructor(private readonly store: Pick<IQueryStore, 'get' | 'put' | 'batch' | 'pageByColumn'>,
     private readonly transcript: TranscriptService) {}
@@ -278,7 +283,7 @@ export class HistoryLocatorStore {
   }
 
   async scan(session: string, agent: string, signal?: AbortSignal,
-    search?: HistoryNavSearch): Promise<HistoryNavScan | undefined> {
+    search?: HistoryNavSearch, through?: number): Promise<HistoryNavScan | undefined> {
     const location = await this.transcript.historyWireLocation(session, agent);
     if (location === undefined) return undefined;
     const { wirePath, workspaceId: workspace } = location;
@@ -286,7 +291,8 @@ export class HistoryLocatorStore {
     if (incarnation === undefined) return undefined;
     const key = `${workspace}\0${session}\0${agent}`;
     signal?.throwIfAborted();
-    const existing = search === undefined ? this.flights.get(key) : undefined;
+    const flightKey = through === undefined ? key : `${key}\0through:${through}`;
+    const existing = search === undefined ? this.flights.get(flightKey) : undefined;
     if (existing !== undefined && !existing.controller.signal.aborted) return this.awaitScan(existing, signal);
     const controller = search === undefined ? new AbortController() : undefined;
     const scanSignal = controller?.signal ?? signal;
@@ -310,7 +316,7 @@ export class HistoryLocatorStore {
             textOf: originalText, refOf: (row, focus) => this.ref(row, focus) });
         }
         return await (search !== undefined && 'ready' in this.store
-          ? this.scanSearchSlice(input, search) : this.scanSlice({ ...input, search }));
+          ? this.scanSearchSlice(input, search) : this.scanSlice({ ...input, search, stopAt: through }));
       } catch (error) {
         if (entered) {
           this.scanners.delete(key);
@@ -328,15 +334,15 @@ export class HistoryLocatorStore {
     })();
     if (controller === undefined) return flight;
     const shared: NavigationScanFlight = { controller, promise: flight, waiters: 0, settled: false };
-    this.flights.set(key, shared);
+    this.flights.set(flightKey, shared);
     void flight.finally(() => {
       shared.settled = true;
-      if (this.flights.get(key) === shared) this.flights.delete(key);
+      if (this.flights.get(flightKey) === shared) this.flights.delete(flightKey);
     }).catch(() => undefined);
     return this.awaitScan(shared, signal);
   }
 
-  private async awaitScan(flight: NavigationScanFlight, signal?: AbortSignal): Promise<HistoryNavScan> {
+  private async awaitScan<T>(flight: NavigationScanFlight<T>, signal?: AbortSignal): Promise<T> {
     signal?.throwIfAborted();
     flight.waiters += 1;
     let abort: (() => void) | undefined;
@@ -459,7 +465,9 @@ export class HistoryLocatorStore {
 
   private async scanSlice(input: { workspace: string; session: string; agent: string; wirePath: string;
     incarnation: string; key: string; signal?: AbortSignal; search?: HistoryNavSearch;
-    stopAt?: number }): Promise<HistoryNavScan> {
+    stopAt?: number; startAt?: number }): Promise<HistoryNavScan> {
+    const directoryWindow = this.directoryWindow;
+    const guard = directoryWindow === undefined ? undefined : historyDirectoryWindowGuard();
     const stateDb = 'ready' in this.store
       ? await (this.store as LazyHistoryNavigationDb).ready() : undefined;
     let scanner = this.scanners.get(input.key);
@@ -469,6 +477,7 @@ export class HistoryLocatorStore {
       saved.incarnation === input.incarnation && await historyNavigationProof(input.wirePath, saved.offset, input.signal)
         .then((proof) => matchesNavigationProof(saved.source, proof), sourceMutationOrThrow);
     const through = input.stopAt ?? input.search?.asOf ?? (await stat(input.wirePath)).size;
+    if (sourceMatches && saved!.offset > through) throw new Error('history_source_changed');
     const source = await historyNavigationProof(input.wirePath, through, input.signal);
     if (source.identity !== input.incarnation) throw new Error('history_source_changed');
     const freshSearch = input.search !== undefined && input.search.cursor === undefined;
@@ -485,7 +494,7 @@ export class HistoryLocatorStore {
       if (!rebuild && cursor !== undefined) adapter.restore(cursor);
       scanner = { adapter, incarnation: input.incarnation,
         generation: !rebuild && saved !== undefined ? saved.generation : randomUUID(),
-        offset: !rebuild && saved !== undefined ? saved.offset : 0,
+        offset: !rebuild && saved !== undefined ? saved.offset : input.startAt ?? 0,
         ordinal: !rebuild && saved !== undefined ? saved.ordinal : 0 };
       this.scanners.delete(input.key);
       if (this.scanners.size >= MAX_SCANNERS) this.scanners.delete(this.scanners.keys().next().value!);
@@ -524,13 +533,14 @@ export class HistoryLocatorStore {
     let pendingBytes = 0;
     const readOptions: AwaitedWireRecordsStreamOptions = {
       startByteOffset: scanner.offset, startRecordOrdinal: scanner.ordinal,
-      maxBytes: HISTORY_NAV_SCAN_BYTES,
+      maxBytes: directoryWindow === undefined ? HISTORY_NAV_SCAN_BYTES : HISTORY_NAV_SCAN_BYTES / 2,
       endByteOffset: through,
       maxRecords: HISTORY_NAV_SCAN_RECORDS,
       maxLineBytes: HISTORY_NAV_MAX_LINE_BYTES, chunkBytes: HISTORY_NAV_CHUNK_BYTES,
       signal: input.signal, includeRawRecord: true,
       onRecord: async (record, span, raw) => {
         if (input.stopAt !== undefined && span.endByteOffset > input.stopAt) throw new Error('stale_scan_cursor');
+        guard?.(record);
         const before = scanner.adapter.checkpoint();
         const projected = scanner.adapter.add(record);
         const recordDigest = hashHistoryRecord(raw!);
@@ -596,7 +606,7 @@ export class HistoryLocatorStore {
       },
     };
     let read = await streamLogicalWireRecordsAwaited(input.wirePath, readOptions);
-    if (input.search === undefined && input.stopAt === undefined && read.recordCount === 0 &&
+    if (input.search === undefined && directoryWindow === undefined && read.recordCount === 0 &&
         (read.incompleteReason === 'byte_budget' || read.incompleteReason === 'line_budget') && read.nextByteOffset === scanner.offset) {
       const attemptedBytes = read.bytesRead;
       read = await streamLogicalWireRecordsAwaited(input.wirePath, {
@@ -620,7 +630,7 @@ export class HistoryLocatorStore {
       input.signal?.throwIfAborted();
       const anchorBase = { v: 1 as const, workspace: input.workspace, session: input.session,
         agent: input.agent, incarnation: input.incarnation,
-        start: record.span.startByteOffset, end: record.span.endByteOffset, digest: record.digest };
+        start: record.span.startByteOffset, end: record.span.endByteOffset, digest: record.digest, window: directoryWindow };
       let sequence = 0;
       const nextPosition = (): number => {
         if (sequence >= 1024 || !Number.isSafeInteger(record.span.ordinal * 1024 + sequence)) {
@@ -795,10 +805,102 @@ export class HistoryLocatorStore {
       if (row?.active !== true || row.anchor.digest !== anchor.digest) continue;
       activeHits.push(hit);
     }
-    const throughWatermark = input.search?.asOf !== undefined && read.nextByteOffset >= input.search.asOf;
+    const watermark = input.stopAt ?? input.search?.asOf;
+    const throughWatermark = watermark !== undefined && read.nextByteOffset >= watermark;
     return { complete: read.complete || throughWatermark, nextByteOffset: read.nextByteOffset, ordinal: scanner.ordinal,
       bytesRead: read.bytesRead, recordsRead: read.recordCount, incarnation: input.incarnation,
       incompleteReason: throughWatermark ? undefined : read.incompleteReason, hits: activeHits };
+  }
+
+  private async windowNavigation(anchor: Pick<HistorySourceAnchor, 'workspace' | 'session' | 'agent' | 'incarnation' | 'window'>,
+    signal?: AbortSignal): Promise<{ navigation: HistoryLocatorStore; bytesRead: number; recordsRead: number } | undefined> {
+    const window = anchor.window;
+    if (window === undefined) return undefined;
+    const location = await this.transcript.historyWireLocation(anchor.session, anchor.agent);
+    if (location?.workspaceId !== anchor.workspace ||
+        !await validateHistoryDirectoryWindow(location.wirePath, window, signal)) return undefined;
+    const key = `${anchor.workspace}\0${anchor.session}\0${anchor.agent}\0${JSON.stringify(window)}`;
+    const cached = this.directoryWindows.get(key);
+    if (cached !== undefined) {
+      this.directoryWindows.delete(key);
+      this.directoryWindows.set(key, cached);
+      return { navigation: cached, bytesRead: 0, recordsRead: 0 };
+    }
+    const child = new HistoryLocatorStore(historyDirectoryWindowStore(), this.transcript);
+    child.directoryWindow = window;
+    let scan: HistoryNavScan;
+    try {
+      scan = await child.scanSlice({ workspace: anchor.workspace, session: anchor.session, agent: anchor.agent,
+        wirePath: location.wirePath, incarnation: anchor.incarnation, key,
+        startAt: window.start, stopAt: window.end, signal });
+      if (scan.nextByteOffset !== window.end) return undefined;
+    } catch (error) {
+      signal?.throwIfAborted();
+      if (error instanceof Error && ['history_directory_window_unsupported', 'history_directory_window_limit'].includes(error.message)) return undefined;
+      throw error;
+    }
+    signal?.throwIfAborted();
+    if (this.directoryWindows.size >= 2) this.directoryWindows.delete(this.directoryWindows.keys().next().value!);
+    this.directoryWindows.set(key, child);
+    return { navigation: child, bytesRead: scan.bytesRead, recordsRead: scan.recordsRead };
+  }
+
+  private async recentDirectory(request: HistoryDirectoryRequest): Promise<HistoryDirectoryPage | undefined> {
+    if (this.directoryWindow !== undefined || !('ready' in this.store) || request.cursor !== undefined ||
+        request.order !== 'newest' || request.at !== undefined || request.beforeTurn !== undefined ||
+        request.afterTurn !== undefined || request.agentId === undefined) return undefined;
+    request.signal?.throwIfAborted();
+    const key = `${request.workspaceId}\0${request.sessionId}\0${request.agentId}\0${request.limit}`;
+    const existing = this.directoryFlights.get(key);
+    if (existing !== undefined && !existing.controller.signal.aborted) return this.awaitScan(existing, request.signal);
+    const controller = new AbortController();
+    const promise = this.projectRecentDirectory({ ...request, agentId: request.agentId, signal: controller.signal });
+    const shared: NavigationScanFlight<HistoryDirectoryPage | undefined> = { controller, promise, waiters: 0, settled: false };
+    this.directoryFlights.set(key, shared);
+    void promise.finally(() => {
+      shared.settled = true;
+      if (this.directoryFlights.get(key) === shared) this.directoryFlights.delete(key);
+    }).catch(() => undefined);
+    return this.awaitScan(shared, request.signal);
+  }
+
+  private async projectRecentDirectory(request: HistoryDirectoryRequest & { readonly agentId: string }): Promise<HistoryDirectoryPage | undefined> {
+    const location = await this.transcript.historyWireLocation(request.sessionId, request.agentId);
+    if (location?.workspaceId !== request.workspaceId) return undefined;
+    const db = await (this.store as LazyHistoryNavigationDb).ready();
+    const manifest = db.readManifest(`${request.workspaceId}\0${request.sessionId}\0${request.agentId}`);
+    if (manifest?.complete === true) return undefined;
+    if (this.queuedScans >= MAX_QUEUED_SCANS) throw new Error('history_navigation_busy');
+    this.queuedScans += 1;
+    try {
+      const tail = await discoverHistoryDirectoryTail(location.wirePath, request.limit, request.signal);
+      if (tail === undefined) return undefined;
+      const window = await this.windowNavigation({ workspace: request.workspaceId, session: request.sessionId,
+        agent: request.agentId, incarnation: tail.window.proof.identity, window: tail.window }, request.signal);
+      if (window === undefined) return undefined;
+      const child = window.navigation;
+      const turns: HistoryDirectoryTurn[] = [];
+      for (const id of tail.turns.slice(0, request.limit)) {
+        const row = await child.row(request.workspaceId, request.sessionId, request.agentId, 'turn', id);
+        if (row === undefined) return undefined;
+        const ref = child.ref(row);
+        if (ref.length > 2048) return undefined;
+        turns.push({ ref, turn: row.turn, startedAt: row.time === undefined ? undefined : new Date(row.time).toISOString(),
+          promptExcerpt: row.excerpt, answerExcerpt: row.answerExcerpt, stepCount: row.stepCount ?? 0, toolCount: row.toolCount ?? 0 });
+      }
+      if (turns.length === 0) return undefined;
+      return { status: 'partial', target: { workspaceId: request.workspaceId, sessionId: request.sessionId, agentId: request.agentId },
+        source: 'navigation', turns,
+        nextCursor: encodeHistoryDirectoryCursor({ v: 1,
+          request: { workspaceId: request.workspaceId, sessionId: request.sessionId, agentId: request.agentId,
+            kind: 'turns', order: request.order, limit: request.limit },
+          afterTurn: turns.at(-1)!.turn, tailRef: turns.at(-1)!.ref }),
+        coverage: { complete: false, domain: 'directory', gaps: ['older_navigation_unprepared'],
+          scanned: { bytes: tail.bytesRead + window.bytesRead,
+            records: tail.recordsRead + window.recordsRead } } };
+    } finally {
+      this.queuedScans -= 1;
+    }
   }
 
   async list(request: HistoryDirectoryRequest): Promise<HistoryDirectoryPage> {
@@ -808,7 +910,21 @@ export class HistoryLocatorStore {
       coverage: { complete: false, domain: 'directory', gaps: ['agent_roster_not_projected'] },
     };
     const cursor = request.cursor === undefined ? undefined : decodeHistoryDirectoryCursor(request.cursor);
-    const scan = await this.scan(request.sessionId, request.agentId, request.signal);
+    let through: number | undefined;
+    if (cursor?.tailRef !== undefined) {
+      const source = decodeHistoryRef(cursor.tailRef);
+      const location = await this.transcript.historyWireLocation(request.sessionId, request.agentId);
+      if (source.workspace !== request.workspaceId || source.session !== request.sessionId || source.agent !== request.agentId ||
+          source.window === undefined || location?.workspaceId !== request.workspaceId ||
+          !await validateHistoryDirectoryWindow(location.wirePath, source.window, request.signal)) {
+        throw new Error('HistoryList source changed; restart without cursor.');
+      }
+      through = source.window.end;
+    } else {
+      const recent = await this.recentDirectory(request);
+      if (recent !== undefined) return recent;
+    }
+    const scan = await this.scan(request.sessionId, request.agentId, request.signal, undefined, through);
     if (scan === undefined) return { status: 'unavailable', target, source: 'navigation',
       coverage: { complete: false, domain: 'directory', gaps: ['source_missing'] } };
     if (cursor?.preparation !== undefined && (cursor.preparation.incarnation !== scan.incarnation ||
@@ -819,7 +935,8 @@ export class HistoryLocatorStore {
         request: { workspaceId: request.workspaceId, sessionId: request.sessionId, kind: 'turns',
           agentId: request.agentId, beforeTurn: request.beforeTurn, afterTurn: request.afterTurn,
           at: request.at, order: request.order, limit: request.limit },
-        preparation: { offset: scan.nextByteOffset, incarnation: scan.incarnation } }) : undefined;
+        preparation: { offset: scan.nextByteOffset, incarnation: scan.incarnation },
+        afterTurn: cursor?.afterTurn, tailRef: cursor?.tailRef }) : undefined;
       return { status: 'partial', target, source: 'navigation', turns: [], nextCursor,
         coverage: { complete: false, domain: 'directory',
           gaps: [progressed ? 'navigation_building' : scan.incompleteReason ?? 'projection_stalled'],
@@ -868,7 +985,7 @@ export class HistoryLocatorStore {
     const nextCursor = more && lastTurn !== undefined ? encodeHistoryDirectoryCursor({ v: 1,
       request: { workspaceId: request.workspaceId, sessionId: request.sessionId, kind: 'turns',
         agentId: request.agentId, beforeTurn: request.beforeTurn, afterTurn: request.afterTurn,
-        at: request.at, order: request.order, limit: request.limit }, afterTurn: lastTurn }) : undefined;
+        at: request.at, order: request.order, limit: request.limit }, afterTurn: lastTurn, tailRef: cursor?.tailRef }) : undefined;
     const complete = scan.complete && !stale;
     return { status: !complete ? 'partial' : entries.length > 0 ? 'ok' : 'no_match',
       target, source: 'navigation', turns: entries, nextCursor,
@@ -910,13 +1027,19 @@ export class HistoryLocatorStore {
     cursor?: { readonly position: number; readonly offset: number; readonly watermark: number;
       readonly asOfBytes: number }, signal?: AbortSignal): Promise<HistoryNavBlocksPage> {
     signal?.throwIfAborted();
+    const anchor = decodeHistoryRef(ref);
+    if (anchor.window !== undefined && this.directoryWindow === undefined) {
+      const child = await this.windowNavigation(anchor, signal);
+      return child === undefined ? { status: 'stale_ref' } : child.navigation.readBlocks(ref, maxChars, cursor, signal);
+    }
     const source = await this.read(ref, signal);
     if (source.status !== 'ok') return { status: source.status };
     const selected = source.row;
     if (selected.kind === 'frame' || selected.position === undefined) return { status: 'navigation_building' };
     const location = await this.transcript.historyWireLocation(selected.session, selected.agent);
     if (location === undefined) return { status: 'source_missing' };
-    const asOfBytes = cursor?.asOfBytes ?? (await stat(location.wirePath)).size;
+    const asOfBytes = cursor?.asOfBytes ?? this.directoryWindow?.end ?? (await stat(location.wirePath)).size;
+    if (this.directoryWindow !== undefined && asOfBytes !== this.directoryWindow.end) return { status: 'stale_ref' };
     if (selected.anchor.end > asOfBytes) return { status: 'stale_ref' };
     const filter = { workspace: selected.workspace, session: selected.session, agent: selected.agent,
       turn: selected.turn, active: true, ...(selected.kind === 'step' ? { step: selected.step } : {}) };
@@ -980,6 +1103,10 @@ export class HistoryLocatorStore {
     { status: 'stale_ref' | 'source_missing' }> {
     signal?.throwIfAborted();
     const anchor = decodeHistoryRef(ref);
+    if (anchor.window !== undefined && this.directoryWindow === undefined) {
+      const child = await this.windowNavigation(anchor, signal);
+      return child === undefined ? { status: 'stale_ref' } : child.navigation.read(ref, signal);
+    }
     const location = await this.transcript.historyWireLocation(anchor.session, anchor.agent);
     if (location === undefined) return { status: 'source_missing' };
     if (location.workspaceId !== anchor.workspace) return { status: 'stale_ref' };

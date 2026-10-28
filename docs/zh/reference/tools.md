@@ -78,7 +78,7 @@ MCP 和插件工具会以名称和简短说明公告。需要调用时，先用 
 
 会话或工作区无法定位时，按结构化错误中的 `next_call` 继续。已知会话保留索引中的工作区及相应访问审批；未知会话转向浏览发现，而不是在另一个会话中读取同号轮次。失效 cursor 可能先去掉 cursor 重试原会话；如果该会话仍不存在，就使用返回的浏览调用，不再重复缺失的 id。
 
-不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。cursor 已携带原来的目标，续页时只传 cursor。导航目录尚在构建时，返回的是 `partial` 准备页，会披露已扫描范围并带上 cursor——用它继续，而不是把当前列表当成完整结果。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会返回结构化恢复错误：丢弃 `ref` 或 cursor，按 `next_call` 重新定位，不要原样重试。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
+不知道关键词时，用 `HistoryList` 浏览短轮次摘录或旧会话的 Agent 目录。轮次条目的 `ref` 传给 `HistoryRead` 会按来源 block 读取整轮；也可用 `turn` 或 `step_id` 选择有界的轮次、步骤 block。cursor 已携带原来的目标，续页时只传 cursor。冷态大会话的默认最新优先列表，可以在较早目录尚未准备好时先返回近期轮次和可读 ref。此页仍是 `partial`，条目数可能少于 `limit`；沿 cursor 会在同一来源水位下继续读取较早轮次。其他目录准备页仍可能为空。用返回的 cursor 继续，不要把部分覆盖当成完整列表。已知步骤可用 `HistoryRead({"step_id":"t42.3"})`。Search 命中文本块时，`HistoryRead({"ref":"<hit.ref>"})` 从命中附近开始读。每个 block 返回自己的 `ref` 和 UTF-16 `range`；用 `cursor` 续读，若 cursor 失效，可用 block 的 `ref` 加上一次的 `range.end` 作为 `start_char` 重开。来源撤销或失效会返回结构化恢复错误：丢弃 `ref` 或 cursor，按 `next_call` 重新定位，不要原样重试。已有的 v1 Read cursor 仍按旧 JSON 形式续页；用 ref、turn 或 step_id 重新发起可切换到 blocks。
 
 `HistoryRead` 正常返回 `partial` 时，会带上已扫描到的 block 和续读 cursor。`no_match` 表示扫描已完成、这个定位没有内容。`source_pending` 表示持久化转录末尾是一条未写完的记录，还无法判断该定位是否命中，等写入方稳定后重试。导航目录仍在准备时同样是 `partial`，但带的是准备 cursor 和进度；此时的空 block 列表表示「还没扫到」而不是「没有」，先用该 cursor 续读再判断。若该 Agent 的持久化转录整体不可用，错误会指向 `HistoryList` 的 `kind: "agents"` 去核对 agent id。来源已变化时返回错误，不会读到另一轮内容。
 

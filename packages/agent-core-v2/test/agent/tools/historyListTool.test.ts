@@ -102,6 +102,20 @@ describe('HistoryListTool', () => {
     expect(decodeHistoryDirectoryCursor(cursor).request.kind).toBe('turns');
   });
 
+  it('preserves a fixed tail source and turn keyset during older navigation preparation', async () => {
+    const source = directory();
+    const tool = new HistoryListTool(source, session, workspaces, sessions, caller);
+    const value = { v: 1 as const, request: { workspaceId: 'ws-a', sessionId: 'current', agentId: 'child',
+      kind: 'turns' as const, order: 'newest' as const, limit: 5 }, afterTurn: 400,
+      tailRef: 'h1_source-window', preparation: { offset: 8192, incarnation: 'source-identity' } };
+    const cursor = encodeHistoryDirectoryCursor(value);
+    expect(decodeHistoryDirectoryCursor(cursor)).toEqual(value);
+    await run(tool, { cursor });
+    expect(source.list).toHaveBeenLastCalledWith(expect.objectContaining({ ...value.request, cursor }));
+    expect(() => decodeHistoryDirectoryCursor(encodeHistoryDirectoryCursor({ ...value, tailRef: undefined }))).toThrow('preparation');
+    expect(() => decodeHistoryDirectoryCursor(encodeHistoryDirectoryCursor({ ...value, afterTurn: undefined }))).toThrow('tail cursor');
+  });
+
   it('uses the agent directory without an agent filter', async () => {
     const source = directory();
     const tool = new HistoryListTool(source, session, workspaces, sessions, caller);
