@@ -68,6 +68,8 @@ const MATRIX = {
   capabilities: ['theme', 'width'],
   cockpit: ['theme', 'width'],
   'composer-modes': ['theme', 'width'],
+  'context-ring': ['width'],
+  'subagent-context-meter': ['width'],
   'context-compact': ['theme', 'width'],
   'models-page': ['theme', 'width'],
   'models-page-empty': ['theme', 'width'],
@@ -289,7 +291,7 @@ const SOURCES = {
   sessionUsage: { key: 'context.sessionUsage' },
   usageAllHistory: { key: 'usage.allHistoryChip' },
   usageEstimatedCost: { key: 'usage.kpi.estimatedCost' },
-  usagePartial: { key: 'usage.kpi.partialUnknown' },
+  usagePartial: { key: 'usage.kpi.costPartiallyUnknown' },
   usageReliability: { key: 'usage.reliability.title' },
   usageDeletedExcluded: { key: 'usage.reliability.deleted.excluded' },
   usageFiveHourRhythm: { key: 'usage.tab.fiveHour' },
@@ -380,6 +382,7 @@ const LITERALS = {
   capNoWorkspace: { en: 'No workspace to show skills for yet', zh: '还没有可查看技能的工作区', anchor: 'cap.noWorkspace' },
   queueEditBanner: { en: 'Editing a queued message', zh: '正在编辑排队消息', anchor: 'composer.queueEditBanner' },
   compactionRequested: { en: 'Compaction requested', zh: '已请求压缩', anchor: 'context.strategy.compactRequested.summarize' },
+  manualCompactionRequested: { key: 'action.compactRequestedSession' },
   exportArchive: { en: 'Export archive', zh: '导出归档', anchor: 'menu.export' },
   undoLastTurn: { en: 'Undo last turn', zh: '撤销最后一轮', anchor: 'menu.undo' },
   // Regex matchers, each anchored to the copy it must keep matching.
@@ -5145,9 +5148,42 @@ async function scenarioUsageDashboard() {
   await page.waitForSelector(`text=${S.usageAllHistory}`, { timeout: 10_000 });
   await shot('usage-all-history');
 
-  // 2. Three axes + the fixed reliability card (scrolled into view).
-  await page.locator('[data-axis="range"] [data-axis-value="last_7_days"]').click();
-  await page.locator('[data-axis="dimension"] [data-axis-value="agent"]').click();
+  // 2. The live strip reads the remembered session rather than the selected
+  // history. Verify a known accounting subtotal keeps its amount and marker,
+  // then switch to a read-failed zero placeholder and prove it never becomes
+  // a misleading $0.00.
+  await selectSession('Fixture: usage aggregation rework');
+  await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
+  await page.locator('[data-usage-strip-toggle]').click();
+  await page.waitForSelector('[data-usage-strip-current-cost]', { timeout: 10_000 });
+  const knownStrip = await page.locator('[data-usage-strip-current-cost]').innerText();
+  const knownMarkerCount = await page.locator('[data-usage-strip-current-cost] [data-usage-accounting-known-subtotal]').count();
+  if (!/\$0\.53/.test(knownStrip) || knownMarkerCount !== 1) {
+    throw new Error(`known subtotal strip lost its amount or marker: ${knownStrip} (markers=${knownMarkerCount})`);
+  }
+  await shot('usage-live-known-subtotal');
+
+  await selectSession('Fixture: reference corpus index');
+  await page.goto(usageUrl(''), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
+  await page.locator('[data-usage-strip-toggle]').click();
+  await page.waitForSelector('[data-usage-strip-current-cost]', { timeout: 10_000 });
+  const failedStrip = await page.locator('[data-usage-strip-current-cost]').innerText();
+  if (failedStrip.includes('$0.00') || !failedStrip.includes('—')) {
+    throw new Error(`read-failed strip rendered a zero placeholder: ${failedStrip}`);
+  }
+  await shot('usage-live-read-failed');
+
+  // ContextMeter main/child lifecycle remains covered by the dedicated
+  // context-ring proof and component tests; this UsageDashboard pass stays on
+  // the cross-session read-model and LiveStrip states.
+
+  // 3. The advanced agent dimension is a shareable query choice; the current
+  // filter bar keeps the range control and the detail dimension separate.
+  await page.goto(usageUrl('granularity=day&range=last_7_days&dimension=agent'), { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
+  await page.locator('[data-usage-reliability-toggle]').click();
   await page.waitForSelector('[data-usage-reliability]', { timeout: 10_000 });
   await page.waitForSelector(`text=${S.usageDeletedExcluded}`, { timeout: 10_000 });
   await page.waitForTimeout(500);
@@ -5173,8 +5209,8 @@ async function scenarioUsageDashboard() {
   await page.waitForTimeout(700);
   await page.locator('[data-usage-tab="fiveHour"]').click();
   await page.waitForSelector('[data-usage-fivehour]', { timeout: 10_000 });
-  if (!page.url().includes('view=five_hour') || !page.url().includes('granularity=five_hour')) {
-    throw new Error(`5h view missing from the URL: ${page.url()}`);
+  if (!page.url().includes('view=five_hour') || await page.locator('[data-axis="granularity"] [data-axis-value="five_hour"][aria-pressed="true"]').count() !== 1) {
+    throw new Error(`5h view missing from the URL or filter state: ${page.url()}`);
   }
   const fiveHour = page.locator('[data-usage-fivehour]');
   const fiveHourText = await fiveHour.innerText();
@@ -5211,20 +5247,22 @@ async function scenarioUsageDashboard() {
   // 6. Workspace breakdown over a week (names resolve from the registry), the
   //    cache-hit trend metric, and the 820px + dark-theme passes.
   await resizeViewport(1440);
-  await page.goto(usageUrl('range=last_7_days&dimension=project&view=breakdown'), { waitUntil: 'domcontentloaded' });
+  await page.goto(usageUrl('granularity=day&range=last_7_days&group_by=workspace&view=sources'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-usage-breakdown-row="wd_docs_site_000000000000"]', { timeout: 15_000 });
   const projectText = await page.locator('[data-usage-breakdown-row="wd_docs_site_000000000000"]').innerText();
   if (!projectText.includes('docs-site')) throw new Error(`workspace breakdown shows no workspace name: ${projectText}`);
   await page.waitForTimeout(300);
   await shot('usage-breakdown-workspace');
-  await page.goto(usageUrl('range=last_7_days'), { waitUntil: 'domcontentloaded' });
+  await page.goto(usageUrl('granularity=day&range=last_7_days'), { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('[data-usage-trend]', { timeout: 15_000 });
   await page.locator('[data-trend-metric="cache"]').click();
   await page.waitForTimeout(300);
   await shot('usage-week-cache');
   await page.locator('[data-trend-metric="cost"]').click();
   await page.locator('[data-usage-trend] [data-bucket]').nth(3).click();
-  await page.waitForSelector('[data-usage-drilldown]', { timeout: 5000 });
+  await page.waitForSelector('[data-usage-source-scope]', { timeout: 5000 });
+  const selectedScope = await page.locator('[data-usage-source-scope]').innerText();
+  if (!selectedScope.includes('Selected period')) throw new Error(`selected bucket did not scope sources: ${selectedScope}`);
   await page.waitForTimeout(300);
   await shot('usage-week-drilldown');
   await resizeViewport(820);
@@ -5306,6 +5344,24 @@ async function scenarioWorkspaceTools() {
  * amber → red once the context crosses the danger threshold.
  */
 async function scenarioContextRing() {
+  if (job().view.width === 390) {
+    await page.goto(`${WEB_URL}/s/session_fixture_context_ring?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`, { waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('[data-context-meter]', { timeout: 15_000 });
+    await page.locator('[data-context-meter]').click();
+    await page.waitForSelector('[data-context-details]', { timeout: 5000 });
+    await page.waitForSelector('[data-context-usage]', { timeout: 10_000 });
+    const mobileDetails = page.locator('[data-context-details]');
+    const mobileText = await mobileDetails.innerText();
+    const mobileMarkerCount = await mobileDetails.locator('[data-usage-accounting-known-subtotal]').count();
+    if (!mobileText.includes(S.contextDetails) || !mobileText.includes(S.sessionUsage) || !/258\.8k/.test(mobileText) || mobileMarkerCount !== 1) {
+      throw new Error(`mobile context details missing session subject or subtotal marker: ${mobileText}`);
+    }
+    await shot('context-ring-details-390');
+    await page.locator('[data-context-meter]').click();
+    await page.waitForSelector('[data-context-details]', { state: 'detached', timeout: 5000 });
+    await shot('context-ring-closed-390');
+    return;
+  }
   await selectSession('Fixture: context ring');
   await page.waitForSelector('[data-context-meter]', { timeout: 10_000 });
   const levelBefore = await page
@@ -5334,15 +5390,26 @@ async function scenarioContextRing() {
   // Open the detail card via the ring; its usage rows must carry the seeded numbers.
   await page.click('[data-context-meter]');
   await page.waitForSelector('[data-context-details]', { timeout: 5000 });
-  const detailsText = await page.locator('[data-context-details]').innerText();
-  for (const expected of [S.sessionUsage, S.contextDetails]) {
-    if (!detailsText.includes(expected)) throw new Error(`detail card missing "${expected}"`);
+  await page.waitForSelector('[data-context-usage]', { timeout: 10_000 });
+  const details = page.locator('[data-context-details]');
+  const detailsText = await details.innerText();
+  const knownMarkerCount = await details.locator('[data-usage-accounting-known-subtotal]').count();
+  if (!detailsText.includes(S.contextDetails) || !detailsText.includes(S.sessionUsage) || !/258\.8k/.test(detailsText)) {
+    throw new Error(`main context details missing session subject or total: ${detailsText}`);
+  }
+  if (!/\$0\.84/.test(detailsText) || knownMarkerCount !== 1) {
+    throw new Error(`main context details lost known subtotal: ${detailsText} (markers=${knownMarkerCount})`);
   }
   await shot('context-ring-details');
+  await page.locator('[data-context-meter]').click();
+  await page.waitForSelector('[data-context-details]', { state: 'detached', timeout: 5000 });
+  await shot('context-ring-closed');
 
   // Compaction fires from the detail card's button, not the ring click itself.
+  await page.locator('[data-context-meter]').click();
+  await page.waitForSelector('[data-context-details]', { timeout: 5000 });
   await page.locator('[data-context-details] button', { hasText: S.compactOlderContext }).click();
-  await page.waitForSelector(`text=${S.compactionRequested}`, { timeout: 5000 });
+  await page.waitForSelector(`text=${S.manualCompactionRequested}`, { timeout: 5000 });
   await shot('context-ring-compact');
 
   // The input's custom right-click menu.
@@ -5381,6 +5448,34 @@ async function scenarioContextRing() {
 }
 
 /** Settings IA v2: nav blocks, owned pages, storage line, search, redirects (scripts/visual-proof-settings-ia.mjs). */
+async function scenarioSubagentContextMeter() {
+  const sessionUrl = `${WEB_URL}/s/session_fixture_subagent_context_meter/agent/agent-research?server=${encodeURIComponent(fixtureUrl())}&token=${FIXTURE_TOKEN}`;
+  await page.goto(sessionUrl, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('[data-context-meter]', { timeout: 15_000 });
+  const childLevel = await page.locator('[data-context-meter]').getAttribute('data-context-level');
+  if (childLevel !== 'warn' && childLevel !== 'danger') {
+    throw new Error(`child context meter did not render an attention state: ${childLevel}`);
+  }
+  await page.locator('[data-context-meter]').click();
+  await page.waitForSelector('[data-context-details]', { timeout: 5000 });
+  await page.waitForFunction(
+    () => document.querySelector('[data-context-usage]')?.textContent?.includes('152.0k') === true,
+    { timeout: 10_000 },
+  );
+  const details = page.locator('[data-context-details]');
+  const detailsText = await details.innerText();
+  if (!detailsText.includes('152.0k') || !detailsText.includes('12.4k')) {
+    throw new Error(`child details did not render self projected totals: ${detailsText}`);
+  }
+  if (detailsText.includes('$0.043') || detailsText.includes('$0.04')) {
+    throw new Error(`child details appears to have read session cost: ${detailsText}`);
+  }
+  await shot(`subagent-context-details-${job().view.width}`);
+  await page.locator('[data-context-meter]').click();
+  await page.waitForSelector('[data-context-details]', { state: 'detached', timeout: 5000 });
+  await shot(`subagent-context-closed-${job().view.width}`);
+}
+
 async function scenarioSettingsIa() {
   const walk = createSettingsIaWalker({
     page, shot, resizeViewport, setProofTheme, view: job().view,
@@ -6454,6 +6549,7 @@ const BODIES = [
   ['thread-relations', scenarioThreadRelations],
   ['activity-inbox', scenarioActivityInbox],
   ['context-ring', scenarioContextRing],
+  ['subagent-context-meter', scenarioSubagentContextMeter],
   ['context-compact', scenarioContextCompact],
   ['models-page', scenarioModelsPage],
   ['models-page-empty', scenarioModelsPageEmpty],

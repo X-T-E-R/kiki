@@ -16,6 +16,7 @@
 import { sessionRecord, turnEnd, workChanged } from './helpers.mjs';
 
 const SID = 'session_fixture_subagent_context_meter';
+const MODEL = 'fixture/kiki-pro';
 
 // 148k of 262k ≈ 56% — the warn (amber) band, so the ring shows its details
 // hint; the lifetime totals exercise every cumulative row except cost, which
@@ -24,13 +25,51 @@ const CHILD_CONTEXT = { contextTokens: 148_000, maxContextTokens: 262_144 };
 const CHILD_USAGE = {
   total: { inputOther: 152_000, output: 12_400, inputCacheRead: 96_000, inputCacheCreation: 8_200 },
 };
+const CHILD_METRICS = {
+  inputTokens: 256_200,
+  outputTokens: 12_400,
+  cacheReadTokens: 96_000,
+  cacheWriteTokens: 8_200,
+  totalTokens: 268_600,
+  totalCostUsd: null,
+  contextTokens: CHILD_CONTEXT.contextTokens,
+  contextLimit: CHILD_CONTEXT.maxContextTokens,
+  compactionCount: 0,
+  usageSource: 'live',
+  usageComplete: true,
+  usagePartial: false,
+  costPartial: true,
+};
+
+const agentPanel = {
+  context: 'live',
+  live: true,
+  owner: { profile: 'agent', agent_id: 'main' },
+  available: true,
+  profile: {
+    name: 'agent',
+    description: 'Fixture general-purpose agent.',
+    source: 'builtin',
+    model: MODEL,
+    thinking_effort: 'high',
+    profile_source: 'registered',
+    subagent_policy: 'advisory',
+  },
+  targets: [],
+  metrics: { 'agent-research': CHILD_METRICS },
+};
 
 export default {
-  sessions: [sessionRecord(SID, { title: 'Fixture: subagent context meter' })],
+  agentPanel,
+  models: [{ id: MODEL, provider_id: 'fixture', remote_id: 'kiki-pro', display_name: 'Kiki Pro', max_context_size: 262_144 }],
+  sessions: [sessionRecord(SID, { title: 'Fixture: subagent context meter', agent_config: { model: MODEL } })],
   snapshots: {
     [SID]: {
       messages: [],
       has_more: false,
+      subagents: [
+        { id: 'task-agent-research', session_id: SID, kind: 'subagent', agent_id: 'agent-research', label: 'Researcher', parent_agent_id: 'main', status: 'completed', description: 'Map the protocol surface', started_at: new Date().toISOString(), completed_at: new Date().toISOString(), live: true },
+      ],
       agent_transcripts: {
         'agent-research': {
           agent_id: 'agent-research',

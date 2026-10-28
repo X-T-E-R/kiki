@@ -43,6 +43,7 @@ function prompt(id, text, minutesAgo, status) {
 const ZETA = 'session_fixture_usage_zeta';
 const ETA = 'session_fixture_usage_eta';
 const THETA = 'session_fixture_usage_theta';
+const ALPHA = 'session_fixture_usage_alpha';
 
 // ---------------------------------------------------------------------------
 // /api/usage seed (consumed by the unified advanced route in fixture-server.mjs). Times are
@@ -65,6 +66,20 @@ function tok(inputOther, output, cacheRead, cacheWrite) {
     output,
     input_cache_read: cacheRead,
     input_cache_creation: cacheWrite,
+  };
+}
+
+function accountingSnapshot(sessionId, inputOther, output, cacheRead, cacheWrite, cost, fields = {}) {
+  return {
+    version: 2,
+    subject: { session_id: sessionId, scope: fields.scope ?? 'session' },
+    source_revision: 'fixture-usage-dashboard',
+    covered_at: Date.now(),
+    complete: fields.complete ?? true,
+    tokens: tok(inputOther, output, cacheRead, cacheWrite),
+    tokens_unknown: fields.tokens_unknown,
+    cost_usd_estimated: cost,
+    cost_unknown: fields.cost_unknown ?? false,
   };
 }
 
@@ -469,9 +484,9 @@ export default {
   // one billed as another model, one user override, and one unpriced model
   // (mystery-9, named by the usage view). Prices are per token, as on the wire.
   models: [
-    { id: K2, provider_id: 'kimi', remote_id: K2, display_name: 'Kimi K2 Thinking' },
-    { id: SONNET, provider_id: 'anthropic', remote_id: SONNET, display_name: 'Claude Sonnet 4.5', pricing_model: 'claude-sonnet-4-5' },
-    { id: 'gpt-5.1-codex', provider_id: 'openai', remote_id: 'gpt-5.1-codex', display_name: 'GPT-5.1 Codex' },
+    { id: K2, provider_id: 'kimi', remote_id: K2, display_name: 'Kimi K2 Thinking', max_context_size: 262_144 },
+    { id: SONNET, provider_id: 'anthropic', remote_id: SONNET, display_name: 'Claude Sonnet 4.5', pricing_model: 'claude-sonnet-4-5', max_context_size: 262_144 },
+    { id: 'gpt-5.1-codex', provider_id: 'openai', remote_id: 'gpt-5.1-codex', display_name: 'GPT-5.1 Codex', max_context_size: 262_144 },
   ],
   catalogPrices: {
     [K2]: { input_cost_per_token: 0.6e-6, output_cost_per_token: 2.5e-6, cache_read_input_token_cost: 0.15e-6 },
@@ -602,7 +617,10 @@ export default {
       current_prompt_id: 'prompt_fx_zeta_active',
       last_prompt: 'Refactor the usage aggregation into pure functions',
       agent_config: { model: 'kimi/k2-thinking' },
-      usage: usage(84_300, 9_400, 210_000, 18_200, 0.5312, 6),
+      usage: {
+        ...usage(84_300, 9_400, 210_000, 18_200, 0.5312, 6),
+        accounting: accountingSnapshot(ZETA, 84_300, 9_400, 210_000, 18_200, 0.5312, { cost_unknown: true }),
+      },
       message_count: 2,
       created_at: ts(300),
       updated_at: ts(3),
@@ -625,14 +643,18 @@ export default {
       main_turn_active: false,
       last_prompt: 'Index the reference corpus in the background',
       agent_config: { model: 'kimi/k2-thinking' },
-      usage: usage(12_900, 1_800, 0, 4_100, 0.0871, 2),
+      usage: usage(0, 0, 0, 0, 0, 0),
+      usage_error: 'read-failed',
       created_at: ts(DAY_MIN),
       updated_at: ts(16),
     }),
     sessionRecord('session_fixture_usage_alpha', {
       title: 'Fixture: bench harness',
       agent_config: { model: 'kimi/k2-thinking' },
-      usage: usage(1_204_000, 88_100, 3_410_000, 240_000, 4.8213, 42),
+      usage: {
+        ...usage(1_204_000, 88_100, 3_410_000, 240_000, 4.8213, 42),
+        accounting: accountingSnapshot(ALPHA, 1_204_000, 88_100, 3_410_000, 240_000, 4.8213, { cost_unknown: true }),
+      },
       created_at: ts(2 * DAY_MIN + 100),
       updated_at: ts(45),
     }),
