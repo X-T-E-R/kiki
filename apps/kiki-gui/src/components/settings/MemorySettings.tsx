@@ -11,6 +11,7 @@ import { FeedbackLine, Hint, SaveStatus, Toggle, type Feedback } from '../contro
 import { useGuardedNavigate } from '../dirtyGuard';
 import { SECONDARY_BUTTON } from '../ui';
 import { Icon } from '../icons';
+import { invalidateMemoryAdvisorReads } from '../memory/useMemoryAdvisor';
 import { SectionCard } from './SectionCard';
 import { AdvancedDetails, SettingField } from './fields';
 import { CommitInput, SettingsSelect } from './SettingsPrimitives';
@@ -61,7 +62,12 @@ export function MemorySettingsCard() {
       // The global switch decides every workspace's effective state, so a save
       // that touched it has to re-read all of them, not just the ones this
       // card happens to be holding.
-      await queryClient.invalidateQueries({ queryKey: MEMORY_WORKSPACE_SETTINGS_KEY });
+      // The advisor reads carry their own `effective_enabled` and status,
+      // which this write just changed.
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: MEMORY_WORKSPACE_SETTINGS_KEY }),
+        invalidateMemoryAdvisorReads(queryClient),
+      ]);
       ping();
     },
   });

@@ -34,6 +34,35 @@ const WORKSPACES = {
   ],
 };
 
+/**
+ * A small stand-in for `/memory/settings`'s advisor half with the server's
+ * sparse-merge rules: `advisor: null` removes the block, `selector: null`
+ * clears the model, anything omitted is kept.
+ */
+type AdvisorFake = { advisor?: Record<string, unknown>; status: Record<string, unknown>; patches: unknown[]; memoryEnabled: boolean; modelBaseUrl?: string; modelEffectiveBaseUrl?: string };
+const advisorFake: AdvisorFake = { status: {}, patches: [], memoryEnabled: true };
+function advisorResponse(workspaceId?: string) {
+  const advisor: Record<string, unknown> | undefined = advisorFake.advisor === undefined ? undefined : {
+    mode: 'rank', first_step_wait_ms: 1500, timeout_ms: 6000, max_calls_per_turn: 3, candidate_chars: 120,
+    catalog_page_items: 40, max_catalog_pages: 2, max_full_units: 8, judge_input_tokens: 12000, apply_to_children: true, egress_ack: [],
+    ...advisorFake.advisor,
+  };
+  const selector = advisor?.['selector'] as { protocol: string; model: string } | undefined;
+  const acks = (advisor?.['egress_ack'] ?? []) as { workspace_id: string; destination: string }[];
+  const destination = selector === undefined ? undefined : 'openai:https://api.example.test';
+  const consented = destination !== undefined && acks.some((ack) => ack.workspace_id === workspaceId && ack.destination === destination);
+  const configured = advisor?.['mode'] === 'off' ? 'off' : selector === undefined ? 'unconfigured' : consented ? 'ready' : 'failed';
+  const state = advisorFake.memoryEnabled ? configured : 'disabled';
+  return {
+    enabled: advisorFake.memoryEnabled, approval: 'auto' as const, budget: 2000, workspaces: {}, effective_enabled: advisorFake.memoryEnabled, advisor,
+    advisor_status: {
+      state, consent_required: state === 'failed' && consented === false, reason: state === 'failed' ? 'consent_required' : state === 'unconfigured' ? 'unconfigured' : undefined,
+      destination, origin: destination === undefined ? undefined : 'https://api.example.test', protocol: selector?.protocol, model: selector?.model,
+      logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0, ...advisorFake.status,
+    },
+  };
+}
+
 const MCP_ENTRY = {
   name: 'old-server',
   config: { transport: 'stdio' as const, command: 'node', args: ['server.js'] },
@@ -116,6 +145,30 @@ const client = {
   patchMemorySettings: vi.fn(async (patch: { enabled?: boolean; approval?: string; budget?: number }) => ({ enabled: true, approval: 'auto', budget: 2000, workspaces: {}, ...patch })),
   getWorkspaceMemorySettings: vi.fn(async (id: string) => ({ workspace_id: id, enabled: null as boolean | null, effective_enabled: true })),
   patchWorkspaceMemorySettings: vi.fn(async (id: string, enabled: boolean | null) => ({ workspace_id: id, enabled, effective_enabled: enabled !== false })),
+  getMemoryAdvisorSettings: vi.fn(async (workspaceId?: string) => advisorResponse(workspaceId)),
+  patchMemoryAdvisorSettings: vi.fn(async (patch: { advisor?: Record<string, unknown> | null }, workspaceId?: string) => {
+    advisorFake.patches.push(patch);
+    if (patch.advisor === null) advisorFake.advisor = undefined;
+    else if (patch.advisor !== undefined) {
+      const next = { ...advisorFake.advisor, ...patch.advisor };
+      if (patch.advisor['selector'] === null) delete next['selector'];
+      advisorFake.advisor = next;
+    }
+    return advisorResponse(workspaceId);
+  }),
+  listSessions: vi.fn(async (query: { workspace_id?: string }) => ({ items: query.workspace_id === 'ws-alpha' ? [] : [
+    { id: 'ses-1', title: 'Refactor memory', busy: true, workspace_id: 'ws-beta' },
+    { id: 'ses-2', title: 'Old notes', busy: false, workspace_id: 'ws-beta' },
+  ], has_more: false })),
+  getMemoryAdvisorStatus: vi.fn(async (): Promise<Record<string, unknown> | null> => null),
+  probeMemoryAdvisor: vi.fn(async () => ({ ok: true, duration_ms: 412, usage_known: true, input_tokens: 180, output_tokens: 12, status: advisorResponse().advisor_status })),
+  listModels: vi.fn(async () => ({ items: [
+    { id: 'cheap-judge', provider_id: 'openai', remote_id: 'cheap-judge-1', max_context_size: 128000 },
+  ] })),
+  listProviders: vi.fn(async () => ({ items: [{ id: 'openai', type: 'openai', base_url: 'https://api.example.test/v1', has_api_key: true, status: 'ok' }] })),
+  getModel: vi.fn(async (id: string) => ({ id, provider_id: 'openai', provider_source: 'explicit', base_url: advisorFake.modelBaseUrl, effective_base_url: advisorFake.modelEffectiveBaseUrl, revision: 'r1', issues: [] })),
+  getProviderEntity: vi.fn(async (id: string) => ({ id, type: 'openai', base_url: 'https://api.example.test/v1', has_api_key: true, status: 'ok', revision: 'rev-1', custom_header_keys: [], env_keys: [] })),
+  getCatalogProvider: vi.fn(async (id: string) => ({ id, name: id, wire_type: null, guessed: false, needs_base_url: false, base_url: null, rejected: false, reject_reason: null, env_key: null, models: [] })),
   patchConfig: vi.fn(async () => ({})),
   requestIdentity: {
     get: vi.fn(async () => ({ profiles: [], usage: [], observations: [], tracks: [], manifest_url: null })),
@@ -184,6 +237,16 @@ beforeEach(() => {
   client.patchMemorySettings.mockClear();
   client.getWorkspaceMemorySettings.mockClear();
   client.patchWorkspaceMemorySettings.mockClear();
+  client.patchMemoryAdvisorSettings.mockClear();
+  client.probeMemoryAdvisor.mockClear();
+  advisorFake.advisor = undefined;
+  advisorFake.status = {};
+  advisorFake.patches = [];
+  advisorFake.memoryEnabled = true;
+  advisorFake.modelBaseUrl = undefined;
+  advisorFake.modelEffectiveBaseUrl = undefined;
+  client.listSessions.mockClear();
+  client.getMemoryAdvisorStatus.mockReset();
 });
 
 afterEach(() => {
@@ -600,6 +663,249 @@ describe('SettingsPage panel scopes', () => {
     expect(client.patchMemorySettings.mock.calls.length).toBe(writes);
     expect(budget.getAttribute('aria-invalid')).toBe('true');
     expect(container.textContent).toContain('Enter a whole number from 0 to 4,000.');
+  });
+});
+
+describe('SettingsPage memory advisor', () => {
+  const card = (container: HTMLElement) => container.querySelector<HTMLElement>('#st-card-memory-advisor')!;
+
+  it('starts on but asking for a model, and never offers to send before one is saved', async () => {
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    expect(card(container)).not.toBeNull();
+    expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(true);
+    expect(card(container).querySelector('[data-memory-advisor-status]')?.getAttribute('data-memory-advisor-status')).toBe('unconfigured');
+    expect(card(container).textContent).toContain('Needs a model');
+    expect(card(container).querySelector('[data-memory-advisor-allow]')).toBeNull();
+    expect(card(container).querySelector('[data-memory-advisor-test]')).toBeNull();
+    // Tuning waits behind Advanced.
+    expect(card(container).querySelector<HTMLDetailsElement>('[data-memory-advisor-advanced]')!.open).toBe(false);
+    expect(client.getMemoryAdvisorSettings).toHaveBeenCalledWith('ws-beta');
+  });
+
+  it('saves the chosen model, then asks for this workspace\'s OK and probes the confirmed destination', async () => {
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    await pickOption(card(container).querySelector('#memory-advisor-model')!.closest('[data-searchable-select]') ?? card(container).querySelector('#memory-advisor-model')!, 'cheap-judge');
+    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
+    await click(save);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'chat_json', model: 'cheap-judge' } } });
+    expect(card(container).querySelector('[data-memory-advisor-egress]')?.getAttribute('data-memory-advisor-egress')).toBe('required');
+    expect(card(container).querySelector('[data-memory-advisor-destination]')?.textContent).toBe('openai:https://api.example.test');
+    expect(card(container).textContent).toContain('In Beta, the advisor sends the current request, task notes and related tool errors, along with memory titles');
+
+    await click(card(container).querySelector('[data-memory-advisor-allow]')!);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] } });
+    expect(card(container).querySelector('[data-memory-advisor-egress]')?.getAttribute('data-memory-advisor-egress')).toBe('allowed');
+    expect(card(container).textContent).toContain('Ready');
+
+    await click(card(container).querySelector('[data-memory-advisor-test]')!);
+    await flush();
+    expect(client.probeMemoryAdvisor).toHaveBeenCalledWith('openai:https://api.example.test');
+    expect(card(container).querySelector('[data-memory-advisor-probe]')?.textContent).toContain('Answered in 412 ms. 180 tokens in, 12 out.');
+  });
+
+  it('turns only the advisor off: the mode alone is written, memory stays on, the model and consent stay', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' }, egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] };
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    const memoryWrites = client.patchMemorySettings.mock.calls.length;
+    await click(container.querySelector('#memory-advisor-enabled')!);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { mode: 'off' } });
+    expect(client.patchMemorySettings.mock.calls.length).toBe(memoryWrites);
+    expect(container.querySelector<HTMLInputElement>('#memory-enabled')!.checked).toBe(true);
+    expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(false);
+    expect(card(container).textContent).toContain('cheap-judge');
+    await click(container.querySelector('#memory-advisor-enabled')!);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { mode: 'rank' } });
+    expect(card(container).querySelector('[data-memory-advisor-egress]')?.getAttribute('data-memory-advisor-egress')).toBe('allowed');
+  });
+
+  it('shows a failed switch as an error and leaves the saved state unchanged', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    client.patchMemoryAdvisorSettings.mockRejectedValueOnce(new Error('config is read-only'));
+    const container = await renderSettings('/settings/memory');
+    await click(container.querySelector('#memory-advisor-enabled')!);
+    await flush();
+    expect(card(container).querySelector('[role="alert"]')?.textContent).toContain('Could not save Memory Advisor settings: config is read-only');
+    expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(true);
+  });
+
+  it('refuses an endpoint off the model provider\'s host and points to Connections', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    const container = await renderSettings('/settings/memory');
+    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
+    const endpoint = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!;
+    await setInput(endpoint, 'https://rerank.other.test/score');
+    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')?.getAttribute('data-memory-advisor-endpoint-issue')).toBe('origin');
+    expect(card(container).textContent).toContain('This endpoint is not on https://api.example.test');
+    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
+    expect(save.disabled).toBe(true);
+    await setInput(endpoint, 'https://api.example.test/v1/rerank');
+    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')).toBeNull();
+    await click(save);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'pair_score', model: 'cheap-judge', endpoint: 'https://api.example.test/v1/rerank' } } });
+  });
+
+  it('matches the endpoint to the address the model overrides its provider with', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    advisorFake.modelBaseUrl = 'https://judge.example.test/v1';
+    const container = await renderSettings('/settings/memory');
+    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
+    await flush();
+    const endpoint = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!;
+    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
+    await setInput(endpoint, 'https://api.example.test/v1/rerank');
+    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')?.getAttribute('data-memory-advisor-endpoint-issue')).toBe('origin');
+    expect(card(container).textContent).toContain('This endpoint is not on https://judge.example.test');
+    expect(save.disabled).toBe(true);
+    await setInput(endpoint, 'https://judge.example.test/v1/rerank');
+    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')).toBeNull();
+    expect(save.disabled).toBe(false);
+    await click(save);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'pair_score', model: 'cheap-judge', endpoint: 'https://judge.example.test/v1/rerank' } } });
+  });
+
+  it('saves a first endpoint on the address the server resolves when neither model nor provider stores one', async () => {
+    client.listProviders.mockResolvedValueOnce({ items: [{ id: 'openai', type: 'openai', has_api_key: true, status: 'ok' }] } as never);
+    advisorFake.modelEffectiveBaseUrl = 'https://vendor.example.test/v1';
+    const container = await renderSettings('/settings/memory');
+    expect(advisorFake.advisor).toBeUndefined();
+    await pickOption(card(container).querySelector('#memory-advisor-model')!.closest('[data-searchable-select]') ?? card(container).querySelector('#memory-advisor-model')!, 'cheap-judge');
+    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
+    await flush();
+    const endpoint = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!;
+    expect(endpoint.placeholder).toBe('https://vendor.example.test/');
+    const save = [...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Save model')!;
+    await setInput(endpoint, 'https://elsewhere.example.test/v1/rerank');
+    expect(card(container).textContent).toContain('This endpoint is not on https://vendor.example.test, the selected model\'s address.');
+    expect(save.disabled).toBe(true);
+    await setInput(endpoint, 'https://vendor.example.test/v1/rerank');
+    expect(card(container).querySelector('[data-memory-advisor-endpoint-issue]')).toBeNull();
+    await click(save);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { selector: { protocol: 'pair_score', model: 'cheap-judge', endpoint: 'https://vendor.example.test/v1/rerank' } } });
+  });
+
+  it('sends an endpoint off the model address to that model\'s own settings', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    const container = await renderSettings('/settings/memory', { guarded: true });
+    await click([...card(container).querySelectorAll('[data-memory-advisor-protocol]')].find((button) => button.textContent === 'Pair score')!);
+    await setInput(card(container).querySelector<HTMLInputElement>('[data-memory-advisor-endpoint]')!, 'https://rerank.other.test/score');
+    await click([...card(container).querySelectorAll('button')].find((button) => button.textContent === 'Open model settings')!);
+    await flush();
+    // The unsaved endpoint arms the leave guard first.
+    await click(container.querySelector<HTMLButtonElement>('[data-test-confirm]')!);
+    await flush();
+    const location = container.querySelector('[data-test-location]')?.textContent ?? '';
+    expect(location).toContain('/settings/ai?tab=providers&model=cheap-judge');
+  });
+
+  it('keeps tuning inside the schema range and removes the whole block only after confirmation', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    const container = await renderSettings('/settings/memory');
+    const timeout = card(container).querySelector<HTMLInputElement>('[data-memory-advisor-timeout-ms]')!;
+    expect(timeout.value).toBe('6000');
+    await commitText(timeout, '99');
+    expect(timeout.getAttribute('aria-invalid')).toBe('true');
+    expect(card(container).textContent).toContain('Enter a whole number from 100 to 60000.');
+    await commitText(timeout, '9000');
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { timeout_ms: 9000 } });
+    await click(card(container).querySelector('[data-memory-advisor-remove]')!);
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: { timeout_ms: 9000 } });
+    await click([...document.querySelectorAll('button')].find((button) => button.textContent === 'Remove settings')!);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
+  });
+
+  it('keeps the remove dialog open with its reason when removal fails, and retries from there', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    const container = await renderSettings('/settings/memory');
+    client.patchMemoryAdvisorSettings.mockRejectedValueOnce(new Error('config is read-only'));
+    await click(card(container).querySelector('[data-memory-advisor-remove]')!);
+    const confirm = () => [...document.querySelectorAll('button')].find((button) => button.textContent === 'Remove settings');
+    await click(confirm()!);
+    await flush();
+    expect(confirm()).toBeDefined();
+    expect(document.querySelector('[data-memory-advisor-remove-error]')?.textContent).toContain('config is read-only');
+    expect(advisorFake.advisor).toBeDefined();
+    await click(confirm()!);
+    await flush();
+    expect(advisorFake.patches.at(-1)).toEqual({ advisor: null });
+    expect(confirm()).toBeUndefined();
+  });
+
+  it('accepts one heading-switch write at a time', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    let release!: () => void;
+    client.patchMemoryAdvisorSettings.mockImplementationOnce(async (patch: { advisor?: Record<string, unknown> | null }) => {
+      await new Promise<void>((resolve) => { release = resolve; });
+      advisorFake.patches.push(patch);
+      advisorFake.advisor = { ...advisorFake.advisor, ...patch.advisor };
+      return advisorResponse();
+    });
+    const container = await renderSettings('/settings/memory');
+    const toggle = () => container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!;
+    await click(toggle());
+    expect(toggle().disabled).toBe(true);
+    await click(toggle());
+    expect(client.patchMemoryAdvisorSettings).toHaveBeenCalledTimes(1);
+    await act(async () => { release(); });
+    await flush();
+    expect(advisorFake.patches).toEqual([{ advisor: { mode: 'off' } }]);
+    expect(toggle().disabled).toBe(false);
+  });
+
+  it('turning memory off updates the advisor on the same screen', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' }, egress_ack: [{ workspace_id: 'ws-beta', destination: 'openai:https://api.example.test' }] };
+    client.patchMemorySettings.mockImplementationOnce(async (patch: { enabled?: boolean }) => {
+      advisorFake.memoryEnabled = patch.enabled ?? true;
+      return { enabled: advisorFake.memoryEnabled, approval: 'auto', budget: 2000, workspaces: {} };
+    });
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    expect(card(container).textContent).toContain('Ready');
+    await click(container.querySelector('#memory-enabled')!);
+    await flush();
+    expect(card(container).textContent).toContain('Paused while memory is off');
+    expect(card(container).querySelector('[data-memory-advisor-memory-off]')).not.toBeNull();
+    // Memory off is not the advisor off: its own switch and model are untouched.
+    expect(container.querySelector<HTMLInputElement>('#memory-advisor-enabled')!.checked).toBe(true);
+    expect(advisorFake.patches).toEqual([]);
+  });
+
+  it('reads a running agent\'s status on request and keeps a cold session distinct', async () => {
+    advisorFake.advisor = { selector: { protocol: 'chat_json', model: 'cheap-judge' } };
+    const container = await renderSettings('/settings/memory?workspace=ws-beta');
+    const runtime = () => card(container).querySelector<HTMLElement>('[data-memory-advisor-runtime]')!;
+    expect(client.getMemoryAdvisorStatus).not.toHaveBeenCalled();
+    expect(client.listSessions).toHaveBeenCalledWith(expect.objectContaining({ workspace_id: 'ws-beta' }));
+    client.getMemoryAdvisorStatus.mockResolvedValueOnce({
+      state: 'failed', reason: 'timeout', consent_required: false, logical_calls: 2, requests: 3, retries: 1,
+      recommended_count: 0, displaced_ids: [], unjudged_count: 4, enumeration: 'partial',
+    });
+    await click(runtime().querySelector('[data-memory-advisor-runtime-read]')!);
+    await flush();
+    expect(client.getMemoryAdvisorStatus).toHaveBeenLastCalledWith('ses-1', 'main');
+    const result = runtime().querySelector('[data-memory-advisor-runtime-result]')!;
+    expect(result.getAttribute('data-memory-advisor-runtime-result')).toBe('failed');
+    expect(result.textContent).toContain('Not working, keyword match in use');
+    expect(result.textContent).toContain('The model did not answer in time.');
+    expect(result.textContent).toContain('Requests3');
+    expect(result.textContent).toContain('Not judged4');
+    expect(result.textContent).toContain('Partial');
+    // Another session hides the previous result instead of showing it as its own.
+    await pickOption(runtime().querySelector('[data-memory-advisor-runtime-session]')!, 'Old notes');
+    expect(runtime().querySelector('[data-memory-advisor-runtime-result]')).toBeNull();
+    client.getMemoryAdvisorStatus.mockResolvedValueOnce(null);
+    await click(runtime().querySelector('[data-memory-advisor-runtime-read]')!);
+    await flush();
+    expect(client.getMemoryAdvisorStatus).toHaveBeenLastCalledWith('ses-2', 'main');
+    expect(runtime().querySelector('[data-memory-advisor-runtime-result]')?.getAttribute('data-memory-advisor-runtime-result')).toBe('none');
+    expect(runtime().textContent).toContain('No running status yet.');
   });
 });
 

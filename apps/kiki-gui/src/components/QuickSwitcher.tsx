@@ -18,15 +18,21 @@ import {
 } from '@kiki/session-core/sessions';
 import {
   buildSettingsSearchIndex,
+  memoryAdvisorSettingsRoute,
   searchSettings,
   settingsSectionLabels,
 } from '@kiki/session-core/settings';
+import { errorText } from '@kiki/session-core/i18n';
 import { useI18n } from '../i18n';
+import { pushToast } from '../lib/toasts';
+import { useMemoryAdvisor } from './memory/useMemoryAdvisor';
 import { useSessionSearch } from '../lib/sessionSearch';
 import { Dialog } from './Dialog';
 import { useGuardedNavigate } from './dirtyGuard';
 import { Icon } from './icons';
 import { ThreadTitle } from './ThreadTitle';
+
+const ADVISOR_ACTION = 'memory-advisor-toggle';
 
 export function QuickSwitcher({
   sessions,
@@ -40,8 +46,15 @@ export function QuickSwitcher({
   initialQuery?: string;
   onClose: () => void;
 }) {
-  const { t, time } = useI18n();
+  const { t, time, locale } = useI18n();
   const navigate = useGuardedNavigate();
+  // The advisor switch is a command, not a page: it saves the mode and
+  // stays here. While it still needs a model it opens the settings card.
+  const advisor = useMemoryAdvisor();
+  const advisorNeedsSetup = advisor.view.on && advisor.view.kind === 'unconfigured';
+  const advisorTitle = advisor.data === undefined ? undefined
+    : advisorNeedsSetup ? t('memory.advisor.setUp')
+      : t(advisor.view.on ? 'memory.advisor.turnOff' : 'memory.advisor.turnOn');
   const [input, setInput] = useState(initialQuery ?? '');
   const [includeToolOutput, setIncludeToolOutput] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -93,6 +106,7 @@ export function QuickSwitcher({
           { actionId: 'usage', title: usageActionTitle, route: '/usage' },
           { actionId: 'cron', title: t('nav.cron'), route: '/cron' },
           { actionId: 'memory', title: t('nav.memory'), route: '/memory' },
+          ...(advisorTitle === undefined ? [] : [{ actionId: ADVISOR_ACTION, title: advisorTitle, route: memoryAdvisorSettingsRoute() }]),
           { actionId: 'settings', title: settingsActionTitle, route: '/settings' },
         ],
         settings: settingsMatches,
@@ -106,6 +120,7 @@ export function QuickSwitcher({
       usageActionTitle,
       settingsActionTitle,
       settingsMatches,
+      advisorTitle,
     ],
   );
 
@@ -123,7 +138,13 @@ export function QuickSwitcher({
   const openItem = (item: SwitcherItem | undefined) => {
     if (item === undefined) return;
     onClose();
-    if (item.kind === 'action' || item.kind === 'setting') void navigate(item.route);
+    if (item.kind === 'action' && item.actionId === ADVISOR_ACTION && !advisorNeedsSetup) {
+      const on = !advisor.view.on;
+      void advisor.setOn(on).then(
+        () => { pushToast({ tone: 'success', text: t(on ? 'memory.advisor.turnedOn' : 'memory.advisor.turnedOff') }); },
+        (error: unknown) => { pushToast({ tone: 'error', text: t('memory.advisor.toggleFailed', { detail: errorText(locale, error) }) }); },
+      );
+    } else if (item.kind === 'action' || item.kind === 'setting') void navigate(item.route);
     else if (item.kind === 'hit') {
       const route = item.agentId && item.agentId !== 'main'
         ? `/s/${item.sessionId}/agent/${item.agentId}` : `/s/${item.sessionId}`;

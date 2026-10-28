@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { computerControlPreference, computerControlPreferencePatch, computerControlConnection, computerControlConnectionPatch, computerControlVerdict, isComputerControlEnabled, computerControlEnabledPatch, isComputerToolPolicyDenied, isComputerToolPolicyPartiallyDenied } from './computerControl';
 import { isBrowserControlEnabled, browserControlEnabledPatch, browserControlVerdict, isBrowserToolPolicyDenied, isBrowserToolPolicyPartiallyDenied, isBrowserConnectionEffectiveAllowed, effectiveAllowedBrowserCount, browserSourceOfConnectionType } from './browserControl';
 import { patchConfigRequestSchema } from '@kiki/protocol';
+import { MEMORY_ADVISOR_RANGES, memoryAdvisorConsentPatch, memoryAdvisorEndpointIssue, memoryAdvisorModelBaseUrl, memoryAdvisorModePatch, memoryAdvisorOn, memoryAdvisorSelectorFromDraft, memoryAdvisorView, parseMemoryAdvisorNumber } from './memoryAdvisor';
 
 import {
   DEFAULT_DESKTOP_SETTINGS,
@@ -2423,5 +2424,64 @@ describe('browser-control settings helpers', () => {
     expect(browserControlVerdict({ ...base, defaultBrowser: 'edge', disabledSources: ['kimi-webbridge'] }).kind).toBe('default_not_allowed');
     expect(browserControlVerdict({ ...base, defaultBrowser: 'research' })).toMatchObject({ kind: 'allowed', defaultBrowser: 'research' });
     expect(browserControlVerdict({ ...base, defaultBrowser: '' }).defaultBrowser).toBeUndefined();
+  });
+});
+
+describe('memory advisor settings', () => {
+  const status = (state: string, extra: Record<string, unknown> = {}) => ({ state, consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0, ...extra }) as never;
+  const config = (extra: Record<string, unknown> = {}) => ({ mode: 'rank', egress_ack: [], ...extra }) as never;
+
+  it('reads its ranges from the protocol schema and validates against them', () => {
+    expect(MEMORY_ADVISOR_RANGES.timeout_ms).toEqual({ min: 100, max: 60_000, fallback: 6_000 });
+    expect(MEMORY_ADVISOR_RANGES.max_calls_per_turn).toEqual({ min: 1, max: 10, fallback: 3 });
+    expect(parseMemoryAdvisorNumber('timeout_ms', '99')).toBeNull();
+    expect(parseMemoryAdvisorNumber('timeout_ms', '6000')).toBe(6000);
+    expect(parseMemoryAdvisorNumber('candidate_chars', '1.5')).toBeNull();
+  });
+
+  it('switches with the mode alone and treats a missing block as available but waiting', () => {
+    expect(memoryAdvisorModePatch(false)).toEqual({ advisor: { mode: 'off' } });
+    expect(memoryAdvisorModePatch(true, config({ mode: 'off' }))).toEqual({ advisor: { mode: 'rank' } });
+    expect(memoryAdvisorModePatch(true, config({ mode: 'select' }))).toEqual({ advisor: { mode: 'select' } });
+    expect(memoryAdvisorOn(undefined)).toBe(true);
+    expect(memoryAdvisorOn(config({ mode: 'off' }))).toBe(false);
+    expect(memoryAdvisorView(undefined, status('unconfigured')).kind).toBe('unconfigured');
+  });
+
+  it('separates off, missing model, missing consent, failure and running', () => {
+    const selector = { protocol: 'chat_json', model: 'judge' };
+    expect(memoryAdvisorView(config({ mode: 'off', selector }), status('off')).kind).toBe('off');
+    expect(memoryAdvisorView(config({ selector }), status('failed', { reason: 'consent_required', consent_required: true })).kind).toBe('consent');
+    const failed = memoryAdvisorView(config({ selector }), status('failed', { reason: 'auth' }));
+    expect(failed).toMatchObject({ kind: 'problem', tone: 'danger', reasonKey: 'memory.advisor.reason.auth' });
+    expect(memoryAdvisorView(config({ selector }), status('selected')).stateKey).toBe('memory.advisor.state.selected');
+  });
+
+  it('keeps a non-chat endpoint on the model provider origin', () => {
+    expect(memoryAdvisorEndpointIssue('https://api.example.test/v1/rerank', 'https://api.example.test/v1')).toBeNull();
+    expect(memoryAdvisorEndpointIssue('https://other.example.test/score', 'https://api.example.test/v1')).toEqual({ kind: 'origin', origin: 'https://api.example.test' });
+    expect(memoryAdvisorEndpointIssue('not a url', 'https://api.example.test')).toEqual({ kind: 'invalid' });
+    expect(memoryAdvisorEndpointIssue('https://api.example.test/x', undefined)).toEqual({ kind: 'no_provider_url' });
+    expect(memoryAdvisorEndpointIssue('https://user:pw@api.example.test/x', 'https://api.example.test')).toEqual({ kind: 'invalid' });
+    expect(memoryAdvisorSelectorFromDraft({ protocol: 'chat_json', model: ' judge ', endpoint: 'ignored' })).toEqual({ protocol: 'chat_json', model: 'judge' });
+    expect(memoryAdvisorSelectorFromDraft({ protocol: 'pair_score', model: 'judge', endpoint: '' })).toBeNull();
+  });
+
+  it('checks the endpoint against the model override before the provider address', () => {
+    const provider = { base_url: 'https://api.example.test/v1' };
+    const effective = memoryAdvisorModelBaseUrl({ base_url: 'https://judge.example.test/v1' }, provider);
+    expect(effective).toBe('https://judge.example.test/v1');
+    expect(memoryAdvisorEndpointIssue('https://judge.example.test/v1/rerank', effective)).toBeNull();
+    expect(memoryAdvisorEndpointIssue('https://api.example.test/v1/rerank', effective)).toEqual({ kind: 'origin', origin: 'https://judge.example.test' });
+    expect(memoryAdvisorModelBaseUrl({}, provider)).toBe('https://api.example.test/v1');
+    expect(memoryAdvisorModelBaseUrl({ base_url: ' ' }, undefined, 'https://env.example.test')).toBe('https://env.example.test');
+    expect(memoryAdvisorModelBaseUrl(undefined, undefined)).toBeUndefined();
+    expect(memoryAdvisorModelBaseUrl({ effective_base_url: 'https://vendor.example.test/v1', base_url: 'https://stale.example.test' }, provider, 'https://status.example.test')).toBe('https://vendor.example.test/v1');
+  });
+
+  it('adds and revokes one workspace consent without touching the others', () => {
+    const current = config({ egress_ack: [{ workspace_id: 'ws-a', destination: 'd1' }] });
+    expect(memoryAdvisorConsentPatch(current, 'ws-b', 'd1', true)).toEqual({ advisor: { egress_ack: [{ workspace_id: 'ws-a', destination: 'd1' }, { workspace_id: 'ws-b', destination: 'd1' }] } });
+    expect(memoryAdvisorConsentPatch(current, 'ws-a', 'd1', false)).toEqual({ advisor: { egress_ack: [] } });
   });
 });

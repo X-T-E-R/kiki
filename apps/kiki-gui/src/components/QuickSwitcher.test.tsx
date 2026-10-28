@@ -19,7 +19,7 @@ import { I18nProvider } from '../i18n';
 import { QuickSwitcher } from './QuickSwitcher';
 
 const { client } = vi.hoisted(() => ({
-  client: { searchMessages: vi.fn(), retrySearchIndexer: vi.fn() },
+  client: { searchMessages: vi.fn(), retrySearchIndexer: vi.fn(), getMemoryAdvisorSettings: vi.fn(), patchMemoryAdvisorSettings: vi.fn() },
 }));
 vi.mock('../state/connection', () => ({ useConnection: () => ({ client }), useOptionalConnection: () => ({ client }) }));
 
@@ -40,6 +40,8 @@ afterEach(async () => {
   document.body.innerHTML = '';
   client.searchMessages.mockReset();
   client.retrySearchIndexer.mockReset();
+  client.getMemoryAdvisorSettings.mockReset();
+  client.patchMemoryAdvisorSettings.mockReset();
 });
 
 function session(id: string, title: string): Session {
@@ -189,5 +191,33 @@ describe('quick switcher content search', () => {
     expect(document.querySelector('[data-search-unavailable]')).toBeNull();
     expect(document.querySelector('[data-switcher-search-status]')).toBeNull();
     expect(document.body.textContent).toContain('No sessions match');
+  });
+});
+
+describe('quick switcher memory advisor command', () => {
+  const settings = (mode: 'off' | 'rank', selector?: { protocol: 'chat_json'; model: string }) => ({
+    enabled: true, approval: 'auto', budget: 2000, workspaces: {}, effective_enabled: true,
+    advisor: { mode, selector, egress_ack: [] },
+    advisor_status: { state: mode === 'off' ? 'off' : selector === undefined ? 'unconfigured' : 'ready', consent_required: false, logical_calls: 0, requests: 0, retries: 0, displaced_ids: [], unjudged_count: 0 },
+  });
+  const row = (label: string) => [...document.querySelectorAll<HTMLButtonElement>('[role="option"]')].find((node) => node.textContent?.includes(label));
+
+  it('switches the advisor in place with the mode alone and keeps the chosen model', async () => {
+    client.getMemoryAdvisorSettings.mockResolvedValue(settings('rank', { protocol: 'chat_json', model: 'cheap-judge' }));
+    client.patchMemoryAdvisorSettings.mockImplementation(async (patch: { advisor: { mode: 'off' | 'rank' } }) => settings(patch.advisor.mode, { protocol: 'chat_json', model: 'cheap-judge' }));
+    await mount();
+    await waitFor(() => row('Turn off Memory Advisor') !== undefined, 'advisor command');
+    await act(async () => { row('Turn off Memory Advisor')!.click(); });
+    await settle();
+    expect(client.patchMemoryAdvisorSettings).toHaveBeenCalledWith({ advisor: { mode: 'off' } }, undefined);
+  });
+
+  it('opens the advisor settings instead of switching when no model is chosen', async () => {
+    client.getMemoryAdvisorSettings.mockResolvedValue(settings('rank'));
+    await mount();
+    await waitFor(() => row('Set up Memory Advisor') !== undefined, 'advisor setup command');
+    await act(async () => { row('Set up Memory Advisor')!.click(); });
+    await settle();
+    expect(client.patchMemoryAdvisorSettings).not.toHaveBeenCalled();
   });
 });

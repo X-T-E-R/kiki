@@ -3,6 +3,7 @@ export * from './browserControl';
 export * from './computerControl';
 export * from './layoutPrefs';
 export * from './mcp';
+export * from './memoryAdvisor';
 export * from './modelSwitchPreferences';
 export * from './nbSearch';
 export * from './onboarding';
