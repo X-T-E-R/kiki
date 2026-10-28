@@ -96,6 +96,22 @@ const getPluginSettings = vi.fn(async (): Promise<{ schema?: unknown; values: Re
 }));
 const getCapability = vi.fn(async (): Promise<CapabilityStatus> => WEBBRIDGE);
 const installCapability = vi.fn(async (): Promise<CapabilityStatus> => ({ ...WEBBRIDGE, install: { running: true } }));
+const browserList = vi.fn(async () => ({ connections: [] }));
+const browserSetupPresets = vi.fn(async () => ({
+  presets: [
+    {
+      preset: 'kimi-webbridge' as const,
+      displayName: 'Kimi Browser Extension',
+      controlSurface: 'plugin-skill' as const,
+      state: 'ready' as const,
+      supported: true,
+      executionHost: 'kiki-fixture-host',
+      steps: [],
+      actions: [],
+      sourceUrl: 'https://www.kimi.com/en/help/kimi-webbridge',
+    },
+  ],
+}));
 
 // Both connection accessors read one client, so the page and the navigation it
 // sits beside are looking at the same server the way they do in the app. The
@@ -104,8 +120,8 @@ const installCapability = vi.fn(async (): Promise<CapabilityStatus> => ({ ...WEB
 const mocks = vi.hoisted(() => ({ client: {} as Record<string, unknown> }));
 
 vi.mock('../../state/connection', () => ({
-  useConnection: () => ({ client: mocks.client, scopeId: 'scope-test' }),
-  useOptionalConnection: () => ({ client: mocks.client, scopeId: 'scope-test' }),
+  useConnection: () => ({ client: mocks.client, scopeId: 'scope-test', sshLabel: null }),
+  useOptionalConnection: () => ({ client: mocks.client, scopeId: 'scope-test', sshLabel: null }),
 }));
 
 vi.mock('../../host', () => ({
@@ -133,6 +149,14 @@ Object.assign(mocks.client, {
   getPluginSettings,
   getCapability,
   installCapability,
+  klient: {
+    rest: {
+      browser: {
+        list: browserList,
+        setupPresets: browserSetupPresets,
+      },
+    },
+  },
 });
 
 const containers: HTMLDivElement[] = [];
@@ -167,6 +191,8 @@ afterEach(() => {
   getPluginSettings.mockResolvedValue({ values: {}, secretsConfigured: [] });
   installCapability.mockReset();
   installCapability.mockResolvedValue({ ...WEBBRIDGE, install: { running: true } });
+  browserList.mockClear();
+  browserSetupPresets.mockClear();
 });
 
 afterAll(() => {
@@ -221,7 +247,19 @@ async function renderPlugin(pluginId: string): Promise<HTMLDivElement> {
 
 /** The browser page, which now owns the WebBridge readiness card. */
 async function renderBrowser(): Promise<HTMLDivElement> {
-  return renderInto(<BrowserControlSection />);
+  const container = await renderInto(<BrowserControlSection />);
+  for (let attempt = 0; attempt < 10 && container.querySelector('[data-webbridge-state]') === null; attempt++) {
+    await flush();
+  }
+  const webbridgeDetails = container.querySelector<HTMLDetailsElement>('[data-webbridge-readiness]');
+  if (webbridgeDetails !== null && !webbridgeDetails.open) {
+    await act(async () => {
+      webbridgeDetails.open = true;
+      webbridgeDetails.dispatchEvent(new Event('toggle'));
+    });
+    await flush();
+  }
+  return container;
 }
 
 async function renderInto(node: React.ReactNode): Promise<HTMLDivElement> {
@@ -871,7 +909,7 @@ describe('PluginsSection', () => {
           detail: 'Unverified: publisher URL does not prove ZIP integrity or daemon compatibility' },
       ] });
     const container = await renderBrowser();
-    expect(container.querySelector('[data-webbridge-state="ready"]')?.textContent).toBe('Working');
+    expect(container.querySelector('[data-webbridge-state="ready"]')?.textContent).toBe(' · Working');
     // The card is the status, the extension link, and the two actions. The
     // attestation sentences are gone rather than moved somewhere else.
     expect(container.querySelector('[data-webbridge-details]')).toBeNull();
@@ -908,7 +946,7 @@ describe('PluginsSection', () => {
         { id: 'extension', state: 'missing', reason: 'extension_not_connected' },
       ] });
     const container = await renderBrowser();
-    expect(container.querySelector('[data-webbridge-state="partial"]')?.textContent).toBe('Set up, but not everything is working');
+    expect(container.querySelector('[data-webbridge-state="partial"]')?.textContent).toBe(' · Set up, but not everything is working');
     // Only the step that blocks the feature is named; the healthy ones are not.
     expect(container.querySelector('[data-webbridge-blocking]')?.textContent).toBe('These parts are not ready: Browser extension.');
   });
@@ -931,7 +969,7 @@ describe('PluginsSection', () => {
     getCapability.mockResolvedValue({ ...WEBBRIDGE, state: 'not_installed',
       steps: [{ id: 'daemon', state: 'missing' }, { id: 'skill', state: 'missing', reason: 'plugin_not_installed' }] });
     const container = await renderBrowser();
-    expect(container.querySelector('[data-webbridge-state="not_installed"]')?.textContent).toBe('Not set up on this machine yet');
+    expect(container.querySelector('[data-webbridge-state="not_installed"]')?.textContent).toBe(' · Not set up on this machine yet');
     expect(container.querySelector('[data-webbridge-prepare]')?.textContent).toBe('Set up WebBridge…');
     expect(container.querySelector('[data-webbridge-check]')?.textContent).toBe('Check again');
   });
