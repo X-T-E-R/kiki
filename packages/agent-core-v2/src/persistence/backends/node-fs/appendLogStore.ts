@@ -155,7 +155,10 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
     const textDecoder = new TextDecoder();
     let pending = '';
     let lineNumber = 0;
-    for await (const chunk of readLogicalBytes(this.storage, scope, key, undefined, {
+    let position = options?.startOffset ?? 0;
+    const end = options?.endOffset ?? (options?.startOffset === undefined ? undefined : await this.storage.size(scope, key));
+    const range = end === undefined ? undefined : { start: position, end: end - 1 };
+    for await (const chunk of readLogicalBytes(this.storage, scope, key, range, {
       signal: options?.signal,
       chunkBytes: options?.chunkBytes,
     })) {
@@ -173,6 +176,8 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
           onTruncate({ lineNumber, reason: 'corrupted', cause: error });
           return;
         }
+        position += Buffer.byteLength(raw, 'utf8') + 1;
+        options?.onPosition?.(position);
         if (record !== undefined) {
           options?.signal?.throwIfAborted();
           options?.onRecordBytes?.(Buffer.byteLength(raw, 'utf8') + 1);
@@ -186,6 +191,8 @@ export class AppendLogStore extends Disposable implements IAppendLogStore {
       lineNumber++;
       const record = this.parseLine<R>(pending, scope, key, lineNumber, true);
       if (record !== undefined) {
+        position += Buffer.byteLength(pending, 'utf8');
+        options?.onPosition?.(position);
         options?.signal?.throwIfAborted();
         options?.onRecordBytes?.(Buffer.byteLength(pending, 'utf8'));
         yield record;

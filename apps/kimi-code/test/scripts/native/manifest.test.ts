@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   KAP_MODEL_PRICES_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION,
+  USAGE_READ_MODEL_WORKER_ASSET,
   buildManifestKey,
   isManifestVersionSupported,
   kikiDocsAsset,
@@ -25,6 +26,14 @@ describe('buildManifestKey', () => {
     expect(KAP_MODEL_PRICES_ASSET).toMatchObject({
       key: 'kap-model-prices',
       relativePath: 'runtime/kap-server/model_prices_and_context_window.json',
+      mode: 0o644,
+    });
+  });
+
+  it('maps the usage read-model worker into the SEA runtime asset tree', () => {
+    expect(USAGE_READ_MODEL_WORKER_ASSET).toEqual({
+      key: 'usage-read-model-worker',
+      relativePath: 'runtime/usage/usage-read-model-worker.mjs',
       mode: 0o644,
     });
   });

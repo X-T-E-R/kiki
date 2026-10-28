@@ -36,5 +36,6 @@ function workerConfig(name: string, entry: string) {
 export default [
   workerConfig('usage-parser-worker', '../../packages/kap-server/src/usage/worker/entry.ts'),
   workerConfig('query-store-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/entry.ts'),
+  workerConfig('usage-read-model-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/usageEntry.ts'),
   workerConfig('mailbox-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMailbox/entry.ts'),
 ];

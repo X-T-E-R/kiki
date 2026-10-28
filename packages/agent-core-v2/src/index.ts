@@ -73,6 +73,8 @@ export * from '#/app/git/worktreeEvents';
 export * from '#/app/retainedUsage/retainedUsage';
 export * from '#/app/retainedUsage/retainedUsageService';
 export * from '#/app/usageFacts/usageFactStore';
+export * from '#/persistence/interface/usageReadModel';
+export * from '#/persistence/backends/sqlite/sqliteUsageReadModel';
 export * from '#/app/runtimeHost/index';
 
 export * from '#/_base/log/log';

@@ -29,6 +29,12 @@ export const QUERY_STORE_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const USAGE_READ_MODEL_WORKER_ASSET = Object.freeze({
+  key: 'usage-read-model-worker',
+  relativePath: 'runtime/usage/usage-read-model-worker.mjs',
+  mode: 0o644,
+});
+
 export const MAILBOX_WORKER_ASSET = Object.freeze({
   key: 'mailbox-worker',
   relativePath: 'runtime/mailbox/mailbox-worker.mjs',

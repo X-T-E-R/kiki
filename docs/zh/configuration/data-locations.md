@@ -114,9 +114,9 @@ $KIKI_HOME  （默认 ~/.kiki）
 
 ## 会话与用量查询缓存
 
-`cache/query-store-sqlite-v1/index.sqlite` 保存会话列表、用量事实和线程轮次查询使用的 SQLite 缓存。Kiki 会按需从会话元数据、用量事实日志和对话历史重建这些视图。数据库打开时，旁边可能还有 `-wal` 和 `-shm` 文件。
+`cache/query-store-sqlite-v1/index.sqlite` 保存会话列表和线程轮次查询使用的 SQLite 缓存。用量事实与来源覆盖水位使用独立数据库 `cache/usage-read-model-v2/index.sqlite`。Kiki 会按需从会话元数据、用量事实日志、保留用量账本和对话历史重建这些视图。每个数据库打开时，旁边可能还有 `-wal` 和 `-shm` 文件。
 
-如果缓存损坏，先停止所有使用该数据根目录的 Kiki 进程，备份后仅移除 `cache/query-store-sqlite-v1/`，再重新启动。历史较多时，重建可能需要多次请求；准备完成前，Usage 会显示覆盖不完整。请保留 `cache/usage-facts-v1/`、`sessions/` 和 `store/`，恢复所需的日志与记录存放在这些目录中。旧的 `cache/query-store-v*/` 目录与 SQLite 缓存分开，新后端不会导入它们。
+如果某个缓存损坏，先停止所有使用该数据根目录的 Kiki 进程，备份后仅移除对应缓存目录，再重新启动。历史较多时，Usage 重建可能需要多次请求；已提交的导入进度可在重启后接续。请保留 `cache/usage-facts-v1/`、`sessions/` 和 `store/`，恢复所需的日志与记录存放在这些目录中。旧通用用量集合和 `cache/query-store-v*/` 目录会保留供回滚使用；不要为了重置 Usage 而删除共享查询数据库。
 
 ## 全文搜索索引
 

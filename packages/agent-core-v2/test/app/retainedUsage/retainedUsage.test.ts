@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { SyncDescriptor } from '#/_base/di/descriptors';
 import { DisposableStore } from '#/_base/di/lifecycle';
 import { TestInstantiationService } from '#/_base/di/test';
+import { ILogService } from '#/_base/log/log';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventService } from '#/app/event/event';
 import { EventService } from '#/app/event/eventService';
@@ -21,15 +22,19 @@ import { RetainedUsageService } from '#/app/retainedUsage/retainedUsageService';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { AppendLogStore } from '#/persistence/backends/node-fs/appendLogStore';
 import { FileStorageService } from '#/persistence/backends/node-fs/fileStorageService';
+import { SqliteUsageReadModel } from '#/persistence/backends/sqlite/sqliteUsageReadModel';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
+import { IUsageReadModel } from '#/persistence/interface/usageReadModel';
 import {
   IFileSystemStorageService,
   type StorageReadOptions,
   type StorageReadRange,
 } from '#/persistence/interface/storage';
+import { drainQueryStoreDisposals } from '#/persistence/queryStoreDisposals';
 import { AGENT_WIRE_RECORD_KEY } from '#/wire/record';
 
 import { stubBootstrap } from '../bootstrap/stubs';
+import { stubLog } from '../../_base/log/stubs';
 
 class BlockingFileStorageService extends FileStorageService {
   readonly started: Promise<void>;
@@ -116,14 +121,18 @@ async function listItems(
 describe('RetainedUsageService', () => {
   let homeDir: string;
   let stores: DisposableStore[];
+  let models: IUsageReadModel[];
 
   beforeEach(async () => {
     homeDir = await fsp.mkdtemp(join(os.tmpdir(), 'retained-usage-'));
     stores = [];
+    models = [];
   });
 
   afterEach(async () => {
+    for (const model of models.toReversed()) await model.close();
     for (const store of stores.toReversed()) await store.dispose();
+    await drainQueryStoreDisposals();
     await fsp.rm(homeDir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 });
   });
 
@@ -133,19 +142,25 @@ describe('RetainedUsageService', () => {
     readonly service: IRetainedUsageService;
     readonly appendLog: IAppendLogStore;
     readonly events: IEventService;
+    readonly model: IUsageReadModel;
   } {
     const disposables = new DisposableStore();
     stores.push(disposables);
     const ix = disposables.add(new TestInstantiationService());
     ix.stub(IBootstrapService, stubBootstrap(homeDir));
+    ix.stub(ILogService, stubLog());
     ix.stub(IFileSystemStorageService, storage);
     ix.set(IAppendLogStore, new SyncDescriptor(AppendLogStore));
+    ix.set(IUsageReadModel, new SyncDescriptor(SqliteUsageReadModel));
     ix.set(IEventService, new SyncDescriptor(EventService));
     ix.set(IRetainedUsageService, new SyncDescriptor(RetainedUsageService));
+    const model = ix.get(IUsageReadModel);
+    models.push(model);
     return {
       service: ix.get(IRetainedUsageService),
       appendLog: ix.get(IAppendLogStore),
       events: ix.get(IEventService),
+      model,
     };
   }
 
@@ -177,6 +192,7 @@ describe('RetainedUsageService', () => {
 
     await first.service.retainDeletedSession(summary);
     await fsp.rm(join(homeDir, sessionScope), { recursive: true, force: true });
+    await first.model.close();
 
     const restarted = build();
     await expect(listItems(restarted.service)).resolves.toEqual([
@@ -221,6 +237,7 @@ describe('RetainedUsageService', () => {
     await fsp.rm(join(homeDir, sessionScope), { recursive: true, force: true });
     const ledger = await fsp.readFile(join(homeDir, 'store/ephemeral-totals-v1.jsonl'), 'utf8');
     expect(ledger).not.toMatch(/private-session|secret title|turnId|agentId/);
+    await first.model.close();
     const restarted = build();
     expect((await restarted.service.listEphemeralUsage!(listQuery())).items).toEqual([
       { workspaceId: 'workspace-1', time: 150, model: 'model-a', usage },
@@ -240,6 +257,7 @@ describe('RetainedUsageService', () => {
     await expect(fsp.rm(join(homeDir, scope), { recursive: true })).rejects.toThrow('source-remove-failed');
     remove.mockRestore();
     const ledgerBefore = await fsp.readFile(join(homeDir, 'store/ephemeral-totals-v1.jsonl'), 'utf8');
+    await first.model.close();
     const restarted = build();
     await restarted.service.retainEphemeralUsage!(scope, 'workspace-1');
     expect(await fsp.readFile(join(homeDir, 'store/ephemeral-totals-v1.jsonl'), 'utf8')).toBe(ledgerBefore);
@@ -338,6 +356,7 @@ describe('RetainedUsageService', () => {
     expect(retained.records[2]).not.toHaveProperty('usageKnown');
 
     await fsp.rm(join(homeDir, sessionScope), { recursive: true, force: true });
+    await first.model.close();
     const restarted = build();
     const items = await listItems(restarted.service);
     expect(items[0]?.records).toEqual(retained.records);
@@ -475,7 +494,9 @@ describe('RetainedUsageService', () => {
 
   it('returns when the deadline expires after the storage read blocks', async () => {
     const storage = new BlockingFileStorageService(homeDir);
-    const { service } = build(storage);
+    const { service, model } = build(storage);
+    await writeLedger([{ kind: 'session', version: 1, id: summary.id, workspaceId: summary.workspaceId, recordCount: 1 }]);
+    await model.source('');
     const startedAt = Date.now();
     const pending = service.listDeletedSessions(listQuery({ deadlineAt: startedAt + 10 }));
     await storage.started;
@@ -491,7 +512,9 @@ describe('RetainedUsageService', () => {
 
   it('returns when the signal aborts after the storage read blocks', async () => {
     const storage = new BlockingFileStorageService(homeDir);
-    const { service } = build(storage);
+    const { service, model } = build(storage);
+    await writeLedger([{ kind: 'session', version: 1, id: summary.id, workspaceId: summary.workspaceId, recordCount: 1 }]);
+    await model.source('');
     const controller = new AbortController();
     const pending = service.listDeletedSessions(listQuery({ signal: controller.signal }));
     await storage.started;
@@ -551,9 +574,8 @@ describe('RetainedUsageService', () => {
       incompleteReason: 'record_budget',
       scannedRecords: 0,
     });
-    expect(storage.chunksRead).toBe(1);
-    expect(storage.bytesRead).toBeLessThan(new TextEncoder().encode(ledger).byteLength);
-    expect(storage.bytesRead).toBe(64 * 1024);
+    expect(storage.chunksRead).toBe(0);
+    expect(storage.bytesRead).toBe(0);
     storage.bytesRead = 0; storage.chunksRead = 0;
     const full = await service.listDeletedSessions(listQuery({ recordLimit: 20_001 }));
     expect(full.complete).toBe(true);
@@ -629,7 +651,7 @@ describe('RetainedUsageService', () => {
     expect(parsedOversizedEntry).toBe(false);
   });
 
-  it('applies the workspace header filter before spending the record budget', async () => {
+  it('filters workspaces from the shared imported source without spending another record budget', async () => {
     const { service, appendLog } = build();
     const sessionScope = 'sessions/workspace-1/session-1';
     appendLog.append(`${sessionScope}/agents/main`, AGENT_WIRE_RECORD_KEY, {
@@ -641,6 +663,7 @@ describe('RetainedUsageService', () => {
     });
     await appendLog.flush();
     await service.retainDeletedSession(summary);
+    expect((await service.listDeletedSessions(listQuery())).items).toHaveLength(1);
 
     await expect(
       service.listDeletedSessions(

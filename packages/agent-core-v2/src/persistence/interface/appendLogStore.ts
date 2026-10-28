@@ -32,6 +32,10 @@ export interface AppendLogReadOptions {
   readonly onTruncate?: (truncation: AppendLogTruncation) => void;
   readonly signal?: AbortSignal;
   readonly chunkBytes?: number;
+  /** Resume at a previously observed complete-record byte boundary. */
+  readonly startOffset?: number;
+  readonly endOffset?: number;
+  readonly onPosition?: (endOffset: number) => void;
   /** Called before each yielded record with its UTF-8 source line length, including a present newline. */
   readonly onRecordBytes?: (byteLength: number) => void;
 }

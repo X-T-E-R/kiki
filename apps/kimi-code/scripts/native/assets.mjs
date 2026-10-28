@@ -10,6 +10,7 @@ import {
   KAP_SQLITE_QUERY_WORKER_ASSET,
   KAP_USAGE_PARSER_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
+  USAGE_READ_MODEL_WORKER_ASSET,
   MAILBOX_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
@@ -383,6 +384,10 @@ export async function collectNativeAssets({ appRoot, target }) {
     [
       resolve(appRoot, 'dist-native', 'intermediates', 'query-store-worker.mjs'),
       QUERY_STORE_WORKER_ASSET,
+    ],
+    [
+      resolve(appRoot, 'dist-native', 'intermediates', 'usage-read-model-worker.mjs'),
+      USAGE_READ_MODEL_WORKER_ASSET,
     ],
     [
       resolve(appRoot, 'dist-native', 'intermediates', 'mailbox-worker.mjs'),

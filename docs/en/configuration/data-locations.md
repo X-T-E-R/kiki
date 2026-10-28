@@ -114,9 +114,9 @@ The 0.5.x upgrade retains its checkpoint in `migration.json`, frozen source copi
 
 ## Session and usage query cache
 
-`cache/query-store-sqlite-v1/index.sqlite` holds the SQLite query cache for session lists, usage facts, and thread-turn lookups. Kiki rebuilds these views from session metadata, usage-fact journals, and conversation history when needed. The database may have adjacent `-wal` and `-shm` files while it is open.
+`cache/query-store-sqlite-v1/index.sqlite` holds the SQLite query cache for session lists and thread-turn lookups. Usage facts and source coverage use a separate database at `cache/usage-read-model-v2/index.sqlite`. Kiki rebuilds these views from session metadata, usage-fact journals, retained accounting ledgers, and conversation history when needed. Each open database may have adjacent `-wal` and `-shm` files.
 
-If this cache is damaged, stop every Kiki process using the data root, back up and remove only `cache/query-store-sqlite-v1/`, then restart. Rebuilding a large history can take several requests; Usage reports incomplete coverage until preparation finishes. Keep `cache/usage-facts-v1/`, `sessions/`, and `store/`: they contain the journals and records needed for recovery. The older `cache/query-store-v*/` directories are separate from the SQLite cache and are not imported by this backend.
+If one cache is damaged, stop every Kiki process using the data root, back up and remove only that cache directory, then restart. Rebuilding a large Usage history can take several requests; committed import progress survives a restart. Keep `cache/usage-facts-v1/`, `sessions/`, and `store/`: they contain the journals and records needed for recovery. Older generic Usage collections and `cache/query-store-v*/` directories are retained for rollback; do not remove the shared query database to reset Usage.
 
 ## Content search index
 

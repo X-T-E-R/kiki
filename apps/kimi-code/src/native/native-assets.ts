@@ -24,6 +24,7 @@ import {
   MAILBOX_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
+  USAGE_READ_MODEL_WORKER_ASSET,
   PLUGIN_HOST_RUNNER_ASSET,
   WINDOWS_PROCESS_HELPER_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION as MANIFEST_VERSION,
@@ -449,6 +450,10 @@ export function getKapUsageWorkerFile(options: NativeAssetOptions = {}): string 
 
 export function getQueryStoreWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(QUERY_STORE_WORKER_ASSET.key, options);
+}
+
+export function getUsageReadModelWorkerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(USAGE_READ_MODEL_WORKER_ASSET.key, options);
 }
 
 export function getMailboxWorkerFile(options: NativeAssetOptions = {}): string | null {

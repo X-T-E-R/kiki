@@ -25,6 +25,7 @@ import {
   getMinidbTextBuildWorkerFile,
   getNativeCacheBase,
   getNativePackageRoot,
+  getUsageReadModelWorkerFile,
   getPluginHostRunnerFile,
   getWindowsProcessHelperFile,
   NATIVE_ASSET_MANIFEST_VERSION,
@@ -33,7 +34,9 @@ import {
 } from '#/native/native-assets';
 import { installMinidbTextBuildWorker } from '#/native/minidb-worker';
 import { installKapUsageWorker } from '#/native/usage-worker';
+import { installUsageReadModelWorker } from '#/native/usage-read-model-worker';
 import { resetUsageWorkerRuntime, usageWorkerEntry } from '@kiki/kap-server/usage-worker-runtime';
+import { configureUsageReadModelWorkerRuntime } from '@kiki/node-sdk';
 import { loadNativePackage } from '#/native/native-require';
 import { installKikiDocs, resolveKikiDocsSourceDir } from '#/native/product-docs';
 import { Marked } from '@kiki/pi-tui';
@@ -163,6 +166,7 @@ function writeDocsTree(root: string, english: string, chinese: string): void {
 afterEach(() => {
   resetTextBuildWorkerRuntime();
   resetUsageWorkerRuntime();
+  configureUsageReadModelWorkerRuntime(undefined);
 });
 
 describe('native assets', () => {
@@ -306,6 +310,21 @@ describe('native assets', () => {
       expect(installKapUsageWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'installed', basename: 'usage-parser-worker.mjs' });
       expect(readFileSync(usageWorkerEntry()!, 'utf8')).toBe(content.toString());
       expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it('installs the usage read-model worker asset without starting a worker', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kimi-usage-read-model-worker-'));
+    try {
+      const content = Buffer.from('export const worker = true;\n');
+      const key = 'native/test-target/runtime/usage-read-model-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'usage-read-model-worker', assetKey: key, relativePath: 'runtime/usage/usage-read-model-worker.mjs', sha256: sha256(content), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: (asset) => { if (asset !== key) throw new Error('Unexpected asset'); return content; } };
+      const options = { cacheBase: dir, manifest, source, version: 'test' };
+      expect(installUsageReadModelWorker(options)).toMatchObject({ status: 'installed', basename: 'usage-read-model-worker.mjs' });
+      const worker = getUsageReadModelWorkerFile(options);
+      expect(worker).not.toBeNull();
+      expect(readFileSync(worker!, 'utf8')).toBe(content.toString());
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 

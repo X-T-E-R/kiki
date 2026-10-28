@@ -7,6 +7,8 @@ import { LifecycleScope } from '#/app/scopes';
 import { IBootstrapService } from '#/app/bootstrap/bootstrap';
 import { IEventService } from '#/app/event/event';
 import { UsageSettled } from '#/agent/usage/usageEvents';
+import { usageFactTotalsSchema, type UsageFact } from '#/agent/usage/usageFact';
+import { IUsageReadModel, type UsageImportProgress, type UsageReadModelSession } from '#/persistence/interface/usageReadModel';
 import type { SessionSummary } from '#/app/sessionIndex/sessionIndex';
 import { IAppendLogStore } from '#/persistence/interface/appendLogStore';
 import { IFileSystemStorageService } from '#/persistence/interface/storage';
@@ -39,6 +41,7 @@ const sessionUsageSummarySchema = z.object({
   total: tokenUsageSchema,
   byModel: z.record(z.string(), tokenUsageSchema).optional(),
   wireComplete: z.literal(true).optional(),
+  accounting: usageFactTotalsSchema.optional(),
 });
 
 const retainedUsageRecordSchema = z.object({
@@ -132,6 +135,11 @@ const retainedUsageLedgerKindSchema = z.object({
 
 type RetainedUsageLedgerStart = z.infer<typeof retainedUsageLedgerStartSchema>;
 type RetainedUsageLedgerMeta = z.infer<typeof retainedUsageLedgerMetaSchema>;
+interface RetainedImportState {
+  generation: string;
+  damaged: boolean;
+  current?: { source: string; transactionId?: string; count: number; observed: number; valid: boolean; session?: UsageReadModelSession; header?: RetainedUsageLedgerStart; meta?: RetainedUsageLedgerMeta };
+}
 
 export class RetainedUsageService implements IRetainedUsageService {
   declare readonly _serviceBrand: undefined;
@@ -141,7 +149,113 @@ export class RetainedUsageService implements IRetainedUsageService {
     @IFileSystemStorageService private readonly storage: IFileSystemStorageService,
     @IAppendLogStore private readonly appendLog: IAppendLogStore,
     @IEventService private readonly events: IEventService,
+    @IUsageReadModel private readonly model: IUsageReadModel,
   ) {}
+
+  private importing = Promise.resolve();
+
+  prepareReadModel(query: RetainedUsageListQuery, includeEphemeral = true): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
+    const next = this.importing.then(async () => {
+      const deleted = await this.importLedger(RETAINED_USAGE_KEY, false, query);
+      if (!deleted.complete || !includeEphemeral) return deleted;
+      const ephemeral = await this.importLedger(EPHEMERAL_USAGE_KEY, true, { ...query, recordLimit: query.recordLimit - deleted.scannedRecords });
+      return { ...ephemeral, scannedRecords: deleted.scannedRecords + ephemeral.scannedRecords };
+    });
+    this.importing = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private async importLedger(key: string, ephemeral: boolean, query: RetainedUsageListQuery): Promise<{ complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
+    query.signal?.throwIfAborted();
+    await this.appendLog.flush(this.storeScope, key);
+    const size = await this.storage.size(this.storeScope, key) ?? 0;
+    const mtimeMs = await this.storage.mtime(this.storeScope, key) ?? 0;
+    const generation = await this.appendLog.generation(this.storeScope, key);
+    const source = `retained-ledger:${key}`;
+    let expected = await this.model.progress(source, query.signal);
+    let state = expected?.parser as RetainedImportState | undefined;
+    if (state?.generation !== generation || (expected?.offset ?? 0) > size) { await this.model.abandon(source); expected = undefined; state = undefined; }
+    state = structuredClone(state ?? { generation, damaged: false });
+    let offset = expected?.offset ?? 0;
+    let scannedRecords = 0;
+    let records: UsageFact[] = [];
+    let reset = false;
+    const save = async (publish?: { source: string; session: UsageReadModelSession }): Promise<void> => {
+      const progress: UsageImportProgress = { batchStart: expected?.batchStart ?? offset, offset, ordinal: state!.current?.observed ?? 0, parser: structuredClone(state) };
+      const continuation = publish === undefined ? undefined : { batchStart: offset, offset, ordinal: 0, parser: { ...state, current: undefined } };
+      if (!await this.model.apply({ source, expected, progress, records, reset, publish: publish === undefined ? undefined : { ...publish, start: 0, checkpoint: { generation, offset, size: offset, mtimeMs, boundaryHash: '', valid: state!.current?.valid === true && state!.current?.meta?.complete !== false }, journalSize: size }, continuation })) throw new Error('Retained Usage progress changed; retry');
+      records = []; reset = false; expected = continuation ?? progress;
+      if (publish !== undefined) state!.current = undefined;
+    };
+    const remaining = (): RetainedUsageIncompleteReason | undefined => Date.now() >= query.deadlineAt ? 'deadline' : scannedRecords >= query.recordLimit ? 'record_budget' : undefined;
+    if (offset === size) {
+      if (state.current === undefined && !state.damaged) await this.model.settleRetained(source, generation);
+      return { complete: state.current === undefined && !state.damaged, scannedRecords };
+    }
+    let reason = remaining();
+    if (reason !== undefined) return { complete: false, scannedRecords, incompleteReason: reason };
+    for await (const raw of this.appendLog.read<unknown>(this.storeScope, key, { signal: query.signal, startOffset: offset, endOffset: size, chunkBytes: RETAINED_READ_CHUNK_BYTES, onPosition: (position) => { offset = position; }, onTruncate: () => { state!.damaged = true; } })) {
+      query.signal?.throwIfAborted();
+      const kind = raw !== null && typeof raw === 'object' ? (raw as { kind?: unknown }).kind : undefined;
+      const start = ephemeral ? ephemeralUsageStartSchema.safeParse(raw) : retainedUsageLedgerStartSchema.safeParse(raw);
+      if (start.success || kind === 'record' || kind === undefined) scannedRecords++;
+      if (start.success) {
+        if (state.current !== undefined) {
+          const nextSource = ephemeral ? `retained:ephemeral:${(start.data as z.infer<typeof ephemeralUsageStartSchema>).sourceId}` : `retained:deleted:${(start.data as RetainedUsageLedgerStart).workspaceId}\0${(start.data as RetainedUsageLedgerStart).id}`;
+          if (state.current.source !== nextSource) state.damaged = true;
+        }
+        records = []; reset = true;
+        if (ephemeral) {
+          const header = start.data as z.infer<typeof ephemeralUsageStartSchema>;
+          state.current = { source: `retained:ephemeral:${header.sourceId}`, transactionId: header.sourceId, count: header.recordCount, observed: 0, valid: true };
+        } else {
+          const header = start.data as RetainedUsageLedgerStart;
+          state.current = { source: `retained:deleted:${header.workspaceId}\0${header.id}`, count: header.recordCount, observed: 0, valid: true, header };
+        }
+      } else if (!ephemeral && kind === 'meta' && state.current !== undefined) {
+        const meta = retainedUsageLedgerMetaSchema.safeParse(raw);
+        if (meta.success) {
+          state.current.meta = meta.data;
+          state.current.session = { ...retainedDeletedSessionUsageHeaderSchema.parse(state.current.header), ...retainedDeletedSessionUsageMetaSchema.parse(meta.data) };
+        } else state.current.valid = false;
+      } else if (kind === 'record' && state.current !== undefined) {
+        state.current.observed++;
+        const parsed = ephemeral ? ephemeralUsageRecordSchema.safeParse(raw) : retainedUsageLedgerRecordSchema.safeParse(raw);
+        if (parsed.success) {
+          const record = parsed.data.record;
+          records.push(record);
+          if (ephemeral && 'workspaceId' in record) {
+            const previous = state.current.session;
+            if (previous !== undefined && previous.workspaceId !== record.workspaceId) state.current.valid = false;
+            state.current.session = { id: state.current.source, workspaceId: record.workspaceId, createdAt: Math.min(previous?.createdAt ?? record.time, record.time), updatedAt: Math.max(previous?.updatedAt ?? record.time, record.time), archived: false, deleted: true, ephemeral: true };
+          }
+        } else state.current.valid = false;
+      } else if (kind === 'commit' && state.current !== undefined) {
+        const parsed = ephemeral ? ephemeralUsageCommitSchema.safeParse(raw) : retainedUsageLedgerCommitSchema.safeParse(raw);
+        const current = state.current;
+        const valid = parsed.success && (!ephemeral || 'sourceId' in parsed.data && parsed.data.sourceId === current.transactionId) && current.valid && current.observed === current.count && (current.session !== undefined || ephemeral && current.count === 0) && (ephemeral || current.meta !== undefined);
+        if (valid && current.session !== undefined) await save({ source: current.source, session: current.session });
+        else { state.damaged ||= !valid; state.current = undefined; records = []; reset = true; }
+      } else if (ephemeral && state.current === undefined) {
+        const legacy = ephemeralUsageSchema.safeParse(raw);
+        if (legacy.success) {
+          const value = legacy.data;
+          state.current = { source: `retained:ephemeral:legacy:${generation}:${offset}`, count: 1, observed: 1, valid: true, session: { id: `retained:ephemeral:legacy:${generation}:${offset}`, workspaceId: value.workspaceId, createdAt: value.time, updatedAt: value.time, archived: false, deleted: true, ephemeral: true } };
+          records.push(value);
+          await save({ source: state.current.source, session: state.current.session! });
+        } else state.damaged = true;
+      } else { state.damaged = true; if (state.current !== undefined) state.current.valid = false; }
+      reason = remaining();
+      if (reason === 'record_budget' && (offset === size || state.current !== undefined && state.current.observed === state.current.count)) reason = undefined;
+      if (records.length >= 256 || reason !== undefined) await save();
+      if (reason !== undefined) return { complete: false, scannedRecords, incompleteReason: reason };
+    }
+    await save();
+    const stable = await this.appendLog.generation(this.storeScope, key) === generation;
+    const complete = stable && offset === size && state.current === undefined && !state.damaged;
+    if (complete) await this.model.settleRetained(source, generation);
+    return { complete, scannedRecords };
+  }
 
   async retainEphemeralUsage(sessionScope: string, workspaceId: string): Promise<void> {
     const sourceId = createHash('sha256').update(sessionScope).digest('hex');
@@ -164,7 +278,26 @@ export class RetainedUsageService implements IRetainedUsageService {
     this.events.publish(new UsageSettled({ payload: {} }));
   }
 
-  async listEphemeralUsage(query: RetainedUsageListQuery): Promise<{
+  listEphemeralUsage(query: RetainedUsageListQuery): Promise<{ items: readonly EphemeralUsageTotal[]; complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
+    return readWithDeadline(query, (query) => this.readEphemeralTotals(query));
+  }
+
+  private async readEphemeralTotals(query: RetainedUsageListQuery): Promise<{ items: readonly EphemeralUsageTotal[]; complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
+    const progress = await this.prepareReadModel(query);
+    const items: EphemeralUsageTotal[] = [];
+    for (const row of await this.model.retained(query.workspaceIds, query.signal)) {
+      if (!row.session.ephemeral) continue;
+      let offset: number | undefined = 0;
+      do {
+        const page = await this.model.read(row.source, undefined, offset, 1000, query.signal);
+        for (const fact of page.records) items.push({ workspaceId: row.session.workspaceId, time: fact.time, model: fact.model, usage: fact.usage, usageKnown: fact.usageKnown });
+        offset = page.nextOffset;
+      } while (offset !== undefined);
+    }
+    return { ...progress, items };
+  }
+
+  async listEphemeralUsageLegacy(query: RetainedUsageListQuery): Promise<{
     readonly items: readonly EphemeralUsageTotal[];
     readonly complete: boolean;
     readonly scannedRecords: number;
@@ -256,7 +389,29 @@ export class RetainedUsageService implements IRetainedUsageService {
     if (damaged) yield { kind: 'incomplete' };
   }
 
-  async listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult> {
+  listDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult> {
+    return readWithDeadline(query, (query) => this.readDeletedSessions(query));
+  }
+
+  private async readDeletedSessions(query: RetainedUsageListQuery): Promise<RetainedUsageListResult> {
+    const progress = await this.prepareReadModel(query, false);
+    const items: RetainedDeletedSessionUsage[] = [];
+    for (const row of await this.model.retained(query.workspaceIds, query.signal)) {
+      if (row.session.ephemeral) continue;
+      const records: RetainedUsageRecord[] = [];
+      let offset: number | undefined = 0;
+      do {
+        const page = await this.model.read(row.source, undefined, offset, 1000, query.signal);
+        records.push(...page.records);
+        offset = page.nextOffset;
+      } while (offset !== undefined);
+      const head = await this.model.source(row.source, query.signal);
+      items.push({ ...row.session, version: RETAINED_USAGE_VERSION, deleted: true, deletedAt: row.session.deletedAt ?? row.session.updatedAt, records, complete: row.session.complete !== false && head?.checkpoint?.valid === true });
+    }
+    return { ...progress, items };
+  }
+
+  async listDeletedSessionsLegacy(query: RetainedUsageListQuery): Promise<RetainedUsageListResult> {
     const workspaceIds =
       query.workspaceIds === undefined ? undefined : new Set(query.workspaceIds);
     const records = new Map<string, RetainedDeletedSessionUsage>();
@@ -500,6 +655,20 @@ export class RetainedUsageService implements IRetainedUsageService {
     }
     return { records, complete };
   }
+}
+
+async function readWithDeadline<T>(query: RetainedUsageListQuery, read: (query: RetainedUsageListQuery) => Promise<{ items: readonly T[]; complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }>): Promise<{ items: readonly T[]; complete: boolean; scannedRecords: number; incompleteReason?: RetainedUsageIncompleteReason }> {
+  const expired = { items: [], complete: false, scannedRecords: 0, incompleteReason: 'deadline' as const };
+  if (query.signal?.aborted || Date.now() >= query.deadlineAt) return expired;
+  const controller = new AbortController();
+  const signal = query.signal === undefined ? controller.signal : AbortSignal.any([query.signal, controller.signal]);
+  const remaining = query.deadlineAt - Date.now();
+  const timer = remaining <= 2_147_483_647 ? setTimeout(() => controller.abort(new DOMException('Retained Usage deadline', 'TimeoutError')), remaining) : undefined;
+  timer?.unref();
+  let abort!: () => void;
+  const aborted = new Promise<typeof expired>((resolve) => { abort = () => resolve(expired); signal.addEventListener('abort', abort, { once: true }); });
+  try { return await Promise.race([read({ ...query, signal }), aborted]); }
+  finally { signal.removeEventListener('abort', abort); if (timer !== undefined) clearTimeout(timer); }
 }
 
 registerScopedService(

@@ -12,6 +12,7 @@ import {
   getNativeCacheBase,
   getNativePackageRoot,
   getQueryStoreWorkerFile,
+  getUsageReadModelWorkerFile,
 } from './native-assets';
 
 const smokePackages = ['@mariozechner/clipboard', '@napi-rs/keyring', '@kiki/pi-tui', 'node-pty'];
@@ -215,6 +216,30 @@ async function smokeQueryStoreWorker(): Promise<void> {
   }
 }
 
+async function smokeUsageReadModelWorker(): Promise<void> {
+  const runtime = getUsageReadModelWorkerFile();
+  if (runtime === null) throw new Error('usage read-model worker runtime was not installed');
+  const cacheBase = getNativeCacheBase();
+  mkdirSync(cacheBase, { recursive: true });
+  const dir = mkdtempSync(join(cacheBase, 'sea-usage-read-model-worker-'));
+  const worker = new Worker(runtime, {
+    workerData: { database: join(dir, 'index.sqlite'), writable: true },
+  });
+  const exited = once(worker, 'exit', {
+    signal: AbortSignal.timeout(15_000),
+  }) as Promise<[number]>;
+  try {
+    const result = await nativeWorkerRequest(worker, 1, { type: 'source', source: 'smoke' });
+    if (result !== undefined) throw new Error(`usage read-model worker returned an unexpected source: ${JSON.stringify(result)}`);
+    await nativeWorkerRequest(worker, 2, { type: 'close' });
+    const [exitCode] = await exited;
+    if (exitCode !== 0) throw new Error(`usage read-model worker exited with code ${exitCode}`);
+  } finally {
+    await worker.terminate().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 async function smokeMailboxWorker(): Promise<void> {
   const runtime = getMailboxWorkerFile();
   if (runtime === null) throw new Error('mailbox worker runtime was not installed');
@@ -303,11 +328,12 @@ async function runSmoke(): Promise<void> {
   smokeKeyringNativeLoad();
   await smokeMinidbWorker();
   await smokeQueryStoreWorker();
+  await smokeUsageReadModelWorker();
   await smokeMailboxWorker();
   await smokeNativePty();
   await smokeAuthNative();
   process.stdout.write(
-    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; query-store worker ready; mailbox worker ready; PTY input/resize/exit/kill passed\n`,
+    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; query-store and usage read-model workers ready; mailbox worker ready; PTY input/resize/exit/kill passed\n`,
   );
 }
 

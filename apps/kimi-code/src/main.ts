@@ -40,6 +40,7 @@ import { installKapModelPricing } from './native/model-pricing';
 import { installKikiDocs } from './native/product-docs';
 import { installKapUsageWorker } from './native/usage-worker';
 import { installQueryStoreWorker } from './native/query-store-worker';
+import { installUsageReadModelWorker } from './native/usage-read-model-worker';
 import { installMailboxWorker } from './native/mailbox-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
@@ -133,6 +134,14 @@ function bootstrap(): void {
       : queryStoreWorkerInstall.status === 'failed'
         ? `query-store-worker:failed code=${queryStoreWorkerInstall.errorCode} sha256=${queryStoreWorkerInstall.assetSha256 ?? 'unknown'}`
         : `query-store-worker:${queryStoreWorkerInstall.status}`,
+  );
+  const usageReadModelWorkerInstall = installUsageReadModelWorker();
+  startupTrace(
+    usageReadModelWorkerInstall.status === 'installed'
+      ? `usage-read-model-worker:installed basename=${usageReadModelWorkerInstall.basename} sha256=${usageReadModelWorkerInstall.assetSha256}`
+      : usageReadModelWorkerInstall.status === 'failed'
+        ? `usage-read-model-worker:failed code=${usageReadModelWorkerInstall.errorCode} sha256=${usageReadModelWorkerInstall.assetSha256 ?? 'unknown'}`
+        : `usage-read-model-worker:${usageReadModelWorkerInstall.status}`,
   );
   const mailboxWorkerInstall = installMailboxWorker();
   startupTrace(
