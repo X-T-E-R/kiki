@@ -10663,7 +10663,7 @@ export const zh = {
   'st.computer.verdict.partial': '已允许，但执行器缺少组件。',
   'st.computer.verdict.noConnection': '已允许，但还没有电脑控制连接。',
   'st.computer.verdict.connectionNotReady': '已允许，但当前连接还不能启动。',
-  'st.computer.verdict.connectionUnverified': '已允许，但 {name} 的环境尚未证实满足受管合同。',
+  'st.computer.verdict.connectionUnverified': '已允许，但 {name} 的环境变量配置尚未核验。',
   'st.computer.machineLabel': 'Kiki 服务机',
   'st.computer.bundledExecutorLabel': '随附 CUA 执行器',
   'st.computer.machineTitle': '这台服务机',

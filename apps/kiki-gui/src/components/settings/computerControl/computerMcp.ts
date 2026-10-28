@@ -136,7 +136,7 @@ export function isBundledCuaCommand(command: string, planDestination: string | u
   const norm = (value: string) => value.replace(/\\/g, '/').toLowerCase();
   const cmd = norm(command.trim());
   if (planDestination !== undefined && planDestination.trim() !== '') {
-    if (cmd === norm(planDestination.trim())) return true;
+    return cmd === norm(planDestination.trim());
   }
   return cmd.includes('/capabilities/kiki-computer/');
 }

@@ -10759,7 +10759,7 @@ export const en = {
   'st.computer.verdict.partial': 'Allowed, but the executor is missing components.',
   'st.computer.verdict.noConnection': 'Allowed, but there is no computer-control connection.',
   'st.computer.verdict.connectionNotReady': 'Allowed, but the active connection cannot start yet.',
-  'st.computer.verdict.connectionUnverified': 'Allowed, but {name} needs its environment verified before starting.',
+  'st.computer.verdict.connectionUnverified': 'Allowed, but {name} needs its environment configuration verified before starting.',
   'st.computer.machineLabel': 'Kiki server',
   'st.computer.bundledExecutorLabel': 'Bundled CUA executor',
   'st.computer.machineTitle': 'This server',

@@ -19,6 +19,7 @@ import { I18nProvider } from '../../i18n';
 import { DirtyGuardContext, type DirtyGuardValue } from '../dirtyGuard';
 import type { CapabilityStatus, KikiConfigPatch, KikiConfigResponse } from '../../lib/client';
 import { ComputerControlSection } from './ComputerControlSection';
+import { isBundledCuaCommand } from './computerControl/computerMcp';
 
 const connection = { scopeId: 'local', sshLabel: null as string | null };
 
@@ -74,7 +75,7 @@ const CAPABILITY: CapabilityStatus = {
 
 const CUA_CONFIG = {
   transport: 'stdio' as const,
-  command: 'C:\\Users\\fixture\\.kimi\\capabilities\\kiki-computer\\cua-driver.exe',
+  command: CAPABILITY.plan!.destination,
   args: ['mcp'],
   executor: 'local' as const,
 };
@@ -85,7 +86,7 @@ const READY: CapabilityStatus = {
   state: 'ready',
   version: '0.32.0',
   steps: [
-    { id: 'binary', state: 'ok', detail: 'C:\\Users\\fixture\\.kimi\\capabilities\\kiki-computer\\cua-driver.exe' },
+    { id: 'binary', state: 'ok', detail: CAPABILITY.plan!.destination },
     { id: 'mcp', state: 'ok', detail: 'Global MCP entry kiki-computer' },
     { id: 'desktop-access', state: 'missing', detail: 'Not checked during install', optional: true },
   ],
@@ -1014,8 +1015,8 @@ describe('ComputerControlSection', () => {
       await act(async () => {
         await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
       });
-      await settleUntil('[data-computer-verdict="connection_not_ready"]', 'needs its environment verified');
-      expect(query('[data-computer-verdict="connection_not_ready"]')?.textContent).toContain('needs its environment verified');
+      await settleUntil('[data-computer-verdict="connection_not_ready"]', 'needs its environment configuration verified');
+      expect(query('[data-computer-verdict="connection_not_ready"]')?.textContent).toContain('needs its environment configuration verified');
       expect(query('[data-computer-active-windows-mcp-not-ready]')?.textContent).toContain('ANONYMIZED_TELEMETRY=false');
 
       // 5. Default selection with two enabled CUA entries → preserves set semantics instead of claiming only the first entry
@@ -1034,10 +1035,55 @@ describe('ComputerControlSection', () => {
         await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
       });
       await settleUntil('[data-computer-verdict="ready"]');
-      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('uses CUA connections (cua-a, cua-b)');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('Allowed; executor installed; uses CUA connections (cua-a, cua-b)');
 
-      // 6. Custom CUA configured while bundled CUA is not installed → ready (configured), does not block on bundled CUA install
+      // 6. Custom CUA configured (including another home/old version under capabilities/kiki-computer) → treated as custom/configured when planDestination is known
+      const otherHomeOldCua = 'C:\\OtherHome\\capabilities\\kiki-computer\\cua-driver-rs-0.31.0-windows-x86_64\\cua-driver.exe';
+      expect(isBundledCuaCommand(CAPABILITY.plan!.destination, CAPABILITY.plan!.destination)).toBe(true);
+      expect(isBundledCuaCommand(otherHomeOldCua, CAPABILITY.plan!.destination)).toBe(false);
+      expect(isBundledCuaCommand(otherHomeOldCua, undefined)).toBe(true);
+
+      // 6a. Default mixed set (current bundled + another home's old CUA) when bundled is ready → reports connections configured (never claims whole set is installed)
+      mcpList.mockResolvedValue([
+        managedEntry({ name: 'kiki-computer' }),
+        managedEntry({
+          name: 'other-home-cua',
+          config: { transport: 'stdio', command: otherHomeOldCua, args: ['mcp'], executor: 'local' },
+        }),
+      ]);
+      await act(async () => {
+        await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
+      });
+      await settleUntil('[data-computer-verdict="ready"]', 'other-home-cua');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('Allowed; connections configured; uses CUA connections (kiki-computer, other-home-cua)');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).not.toContain('executor installed');
+
+      // 6b. Explicitly selected another home's old CUA when current bundled is ready → reports connection configured (never claims executor installed)
+      getConfig.mockResolvedValue({
+        providers: {},
+        computer_control: { enabled: true, enabledSource: 'default', connection: 'other-home-cua', connectionSource: 'home', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
+      });
+      await act(async () => {
+        await queries.invalidateQueries({ queryKey: ['config', 'local'] });
+      });
+      await settleUntil('[data-computer-verdict="ready"]', 'uses other-home-cua');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('Allowed; connection configured; uses other-home-cua');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).not.toContain('executor installed');
+
+      // 6c. Explicitly selected another home's old CUA when current bundled is not_installed → still ready (configured), never blocked by unrelated bundle
       getCapability.mockResolvedValue(CAPABILITY);
+      await act(async () => {
+        await queries.invalidateQueries({ queryKey: ['capability', 'kiki-computer', 'local'] });
+      });
+      await settleUntil('[data-computer-state="not_installed"]');
+      expect(query('[data-computer-verdict="ready"]')?.textContent).toContain('Allowed; connection configured; uses other-home-cua');
+      expect(query('[data-computer-install-btn]')).toBeNull();
+
+      // 6d. Ordinary custom CUA configured while bundled CUA is not installed → ready (configured), does not block on bundled CUA install
+      getConfig.mockResolvedValue({
+        providers: {},
+        computer_control: { enabled: true, enabledSource: 'default', usagePreference: 'avoid', usagePreferenceSource: 'default', appliesOn: 'next-model-request', toolsApplyOn: 'next-step' },
+      });
       mcpList.mockResolvedValue([
         managedEntry({
           name: 'custom-cua',
@@ -1045,7 +1091,7 @@ describe('ComputerControlSection', () => {
         }),
       ]);
       await act(async () => {
-        await queries.invalidateQueries({ queryKey: ['capability', 'kiki-computer', 'local'] });
+        await queries.invalidateQueries({ queryKey: ['config', 'local'] });
         await queries.invalidateQueries({ queryKey: ['computer-control-mcp', 'local'] });
       });
       await settleUntil('[data-computer-verdict="ready"]', 'custom-cua');

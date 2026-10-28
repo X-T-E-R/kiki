@@ -118,8 +118,11 @@ const mcpServerAuthStateSchema = z.enum([
   'unavailable',
 ]);
 
-const mcpServerConfigDataSchema = z.union([
-  McpServerStdioConfigSchema.extend({ envKeys: z.array(z.string()).optional() }),
+export const mcpServerConfigDataSchema = z.union([
+  McpServerStdioConfigSchema.extend({
+    envKeys: z.array(z.string()).optional(),
+    computerServeReady: z.boolean().optional(),
+  }),
   McpServerHttpConfigSchema.extend({ headerKeys: z.array(z.string()).optional() }),
   McpServerSseConfigSchema.extend({ headerKeys: z.array(z.string()).optional() }),
 ]);

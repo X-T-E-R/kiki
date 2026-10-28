@@ -12,8 +12,11 @@ import {
   type McpServerLocator,
   type McpServerTestTarget,
 } from '@kiki/agent-core-v2';
+import { windowsMcpStdioConfig } from '@kiki/agent-core-v2/mcpCore/computer';
+import { toMcpServerConfigView } from '@kiki/agent-core-v2/mcpCore/configView';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { mcpServerConfigDataSchema } from '../src/routes/v2/mcp';
 import { type RunningServer, startServer } from '../src/start';
 import { authedFetch } from './helpers/auth';
 import { TEST_HOST_IDENTITY } from './helpers/hostIdentity';
@@ -565,6 +568,42 @@ describe('server /api/mcp', () => {
 
       await expect(pending).rejects.toThrow();
       await vi.waitFor(() => expect(seenSignal?.aborted).toBe(true));
+    });
+
+    it('accepts and preserves redacted computerServeReady projections in the REST stdio output schema while rejecting it on writable bodies', async () => {
+      const readyView = toMcpServerConfigView(
+        windowsMcpStdioConfig('C:\\Env\\venv\\Scripts\\python.exe', 'C:\\Env\\config.toml'),
+      );
+      const notReadyView = toMcpServerConfigView({
+        ...windowsMcpStdioConfig('C:\\Env\\venv\\Scripts\\python.exe', 'C:\\Env\\config.toml'),
+        env: { ANONYMIZED_TELEMETRY: 'true', WINDOWS_MCP_WATCHDOG: 'false' },
+      });
+
+      const parsedReady = mcpServerConfigDataSchema.parse(readyView);
+      const parsedNotReady = mcpServerConfigDataSchema.parse(notReadyView);
+
+      expect(parsedReady).toMatchObject({
+        transport: 'stdio',
+        envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+        computerServeReady: true,
+      });
+      expect(parsedReady).not.toHaveProperty('env');
+      expect(parsedNotReady).toMatchObject({
+        transport: 'stdio',
+        envKeys: ['ANONYMIZED_TELEMETRY', 'WINDOWS_MCP_WATCHDOG'],
+        computerServeReady: false,
+      });
+      expect(parsedNotReady).not.toHaveProperty('env');
+
+      const stub = makeMcpStub();
+      await boot(stub);
+      const rejectedWrite = await call('POST', '/api/mcp/servers', {
+        name: 'kiki-windows-mcp',
+        transport: 'stdio',
+        command: 'C:\\Env\\venv\\Scripts\\python.exe',
+        computerServeReady: true,
+      });
+      expect(rejectedWrite.body.code).toBe(40001);
     });
   });
 });
