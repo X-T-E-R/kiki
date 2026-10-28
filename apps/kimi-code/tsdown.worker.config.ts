@@ -50,4 +50,5 @@ export default [
   workerConfig('query-store-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/entry.ts'),
   workerConfig('usage-read-model-worker', '../../packages/agent-core-v2/src/persistence/backends/sqlite/usageEntry.ts'),
   workerConfig('mailbox-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMailbox/entry.ts'),
+  workerConfig('memory-worker', '../../packages/agent-core-v2/src/persistence/backends/sqliteMemory/entry.ts'),
 ];

@@ -22,6 +22,7 @@ import {
   KAP_SQLITE_QUERY_WORKER_ASSET,
   KAP_USAGE_PARSER_WORKER_ASSET,
   MAILBOX_WORKER_ASSET,
+  MEMORY_WORKER_ASSET,
   MINIDB_TEXT_BUILD_WORKER_ASSET,
   QUERY_STORE_WORKER_ASSET,
   USAGE_READ_MODEL_WORKER_ASSET,
@@ -458,6 +459,10 @@ export function getUsageReadModelWorkerFile(options: NativeAssetOptions = {}): s
 
 export function getMailboxWorkerFile(options: NativeAssetOptions = {}): string | null {
   return getNativeRuntimeFile(MAILBOX_WORKER_ASSET.key, options);
+}
+
+export function getMemoryWorkerFile(options: NativeAssetOptions = {}): string | null {
+  return getNativeRuntimeFile(MEMORY_WORKER_ASSET.key, options);
 }
 
 export function getKapSqliteQueryWorkerFile(options: NativeAssetOptions = {}): string | null {

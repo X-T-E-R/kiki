@@ -36,7 +36,11 @@ import { installMinidbTextBuildWorker } from '#/native/minidb-worker';
 import { installKapUsageWorker } from '#/native/usage-worker';
 import { installUsageReadModelWorker } from '#/native/usage-read-model-worker';
 import { resetUsageWorkerRuntime, usageWorkerEntry } from '@kiki/kap-server/usage-worker-runtime';
-import { configureUsageReadModelWorkerRuntime } from '@kiki/node-sdk';
+import { configureMemoryWorkerRuntime, configureUsageReadModelWorkerRuntime } from '@kiki/node-sdk';
+import { installMemoryWorker } from '#/native/memory-worker';
+import { smokeMemoryWorker } from '#/native/smoke';
+import { build } from 'tsdown';
+import { checkBundle } from '../../scripts/native/check-bundle.mjs';
 import { loadNativePackage } from '#/native/native-require';
 import { installKikiDocs, resolveKikiDocsSourceDir } from '#/native/product-docs';
 import { Marked } from '@kiki/pi-tui';
@@ -167,6 +171,7 @@ afterEach(() => {
   resetTextBuildWorkerRuntime();
   resetUsageWorkerRuntime();
   configureUsageReadModelWorkerRuntime(undefined);
+  configureMemoryWorkerRuntime(undefined);
 });
 
 describe('native assets', () => {
@@ -325,6 +330,39 @@ describe('native assets', () => {
       const worker = getUsageReadModelWorkerFile(options);
       expect(worker).not.toBeNull();
       expect(readFileSync(worker!, 'utf8')).toBe(content.toString());
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  });
+
+  it.each([
+    ['SDK', '../../../../packages/node-sdk/tsdown.query-store-worker.config.ts'],
+    ['npm', '../../tsdown.dist-worker.config.ts'],
+    ['SEA', '../../tsdown.worker.config.ts'],
+  ] as const)('builds and starts the fresh %s Memory worker with committed data, receipts and recovery backup', async (_lane, config) => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-memory-worker-bundle-'));
+    try {
+      await build({ config: resolve(import.meta.dirname, config), filter: 'memory-worker', outDir: join(dir, 'bundle') });
+      const runtime = join(dir, 'bundle', 'memory-worker.mjs');
+      expect(checkBundle(runtime, { worker: true })).toEqual([]);
+      const content = readFileSync(runtime);
+      const key = 'native/test-target/runtime/memory-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'memory-worker', assetKey: key, relativePath: 'runtime/memory/memory-worker.mjs', sha256: sha256(content), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: (asset) => { if (asset !== key) throw new Error('Unexpected Memory worker asset'); return content; } };
+      const options = { cacheBase: join(dir, 'cache'), manifest, source, version: 'test' };
+      expect(installMemoryWorker(options)).toMatchObject({ status: 'installed', basename: 'memory-worker.mjs' });
+      await smokeMemoryWorker(options);
+      expect(getTextBuildWorkerRuntimeState()).toEqual({ configured: false });
+    } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
+  }, 30_000);
+
+  it('reports missing and corrupt Memory assets before worker configuration', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kiki-memory-worker-invalid-'));
+    try {
+      const missing = fakeManifest({});
+      expect(installMemoryWorker({ ...missing, cacheBase: dir, version: 'test' })).toEqual({ status: 'asset-missing' });
+      const key = 'native/test-target/runtime/memory-worker';
+      const manifest: NativeAssetManifest = { version: NATIVE_ASSET_MANIFEST_VERSION, target: 'test-target', packages: [], runtimeFiles: [{ key: 'memory-worker', assetKey: key, relativePath: 'runtime/memory/memory-worker.mjs', sha256: sha256('original'), mode: 0o644 }] };
+      const source: NativeAssetSource = { getAssetKeys: () => [key], getRawAsset: () => Buffer.from('corrupt') };
+      expect(installMemoryWorker({ cacheBase: dir, manifest, source, version: 'test' })).toMatchObject({ status: 'failed' });
     } finally { rmSync(dir, { recursive: true, force: true, maxRetries: 8, retryDelay: 100 }); }
   });
 

@@ -42,6 +42,7 @@ import { installKapUsageWorker } from './native/usage-worker';
 import { installQueryStoreWorker } from './native/query-store-worker';
 import { installUsageReadModelWorker } from './native/usage-read-model-worker';
 import { installMailboxWorker } from './native/mailbox-worker';
+import { installMemoryWorker } from './native/memory-worker';
 import { installNativeModuleHook } from './native/module-hook';
 import { runNativeAssetSmokeIfRequested } from './native/smoke';
 
@@ -150,6 +151,14 @@ function bootstrap(): void {
       : mailboxWorkerInstall.status === 'failed'
         ? `mailbox-worker:failed code=${mailboxWorkerInstall.errorCode} sha256=${mailboxWorkerInstall.assetSha256 ?? 'unknown'}`
         : `mailbox-worker:${mailboxWorkerInstall.status}`,
+  );
+  const memoryWorkerInstall = installMemoryWorker();
+  startupTrace(
+    memoryWorkerInstall.status === 'installed'
+      ? `memory-worker:installed basename=${memoryWorkerInstall.basename} sha256=${memoryWorkerInstall.assetSha256}`
+      : memoryWorkerInstall.status === 'failed'
+        ? `memory-worker:failed code=${memoryWorkerInstall.errorCode} sha256=${memoryWorkerInstall.assetSha256 ?? 'unknown'}`
+        : `memory-worker:${memoryWorkerInstall.status}`,
   );
   if (isSea()) {
     const queryWorker = getKapSqliteQueryWorkerFile();

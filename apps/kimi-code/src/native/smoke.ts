@@ -9,6 +9,7 @@ import { MiniDb } from '@kiki/minidb';
 import {
   getEmbeddedNativeAssetManifest,
   getMailboxWorkerFile,
+  getMemoryWorkerFile,
   getNativeCacheBase,
   getNativePackageRoot,
   getQueryStoreWorkerFile,
@@ -275,6 +276,32 @@ async function smokeMailboxWorker(): Promise<void> {
   }
 }
 
+export async function smokeMemoryWorker(options: import('./native-assets').NativeAssetOptions = {}): Promise<void> {
+  const runtime = getMemoryWorkerFile(options);
+  if (runtime === null) throw new Error('memory worker runtime was not installed');
+  const cacheBase = getNativeCacheBase(options);
+  mkdirSync(cacheBase, { recursive: true });
+  const dir = mkdtempSync(join(cacheBase, 'sea-memory-worker-'));
+  const worker = new Worker(runtime, { workerData: { database: join(dir, 'memory.sqlite') } });
+  const exited = once(worker, 'exit', { signal: AbortSignal.timeout(15_000) }) as Promise<[number]>;
+  try {
+    const scope = 'memory/global';
+    const entry = { id: 'm_smoke', type: 'feedback', title: 'Worker instruction', body: 'Keep the complete instruction.', status: 'active', pinned: false, created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z', source: { writer: 'user' }, reason: 'Worker delivery check', revision: 'mem2:smoke' };
+    await nativeWorkerRequest(worker, 1, { type: 'commit', input: { operationId: 'memory-worker-smoke', request: 'memory-worker-smoke', expectedGeneration: 0, edits: [{ scope, id: entry.id, expectedRevision: null, revision: entry.revision, entry }], result: { id: entry.id } } });
+    const view = await nativeWorkerRequest(worker, 2, { type: 'read', scopes: [scope] }) as { generation?: unknown; objects?: Array<{ entry?: { body?: unknown } }> };
+    if (view.generation !== 1 || view.objects?.[0]?.entry?.body !== entry.body) throw new Error('memory worker did not preserve the committed instruction');
+    const receipt = await nativeWorkerRequest(worker, 3, { type: 'receipt', operationId: 'memory-worker-smoke' }) as { saved?: unknown };
+    if (receipt.saved !== true) throw new Error('memory worker receipt is unavailable');
+    await nativeWorkerRequest(worker, 4, { type: 'backup', destination: join(dir, 'backup', 'memory.sqlite') });
+    await nativeWorkerRequest(worker, 5, { type: 'close' });
+    const [exitCode] = await exited;
+    if (exitCode !== 0) throw new Error(`memory worker exited with code ${exitCode}`);
+  } finally {
+    await worker.terminate().catch(() => {});
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export async function smokeAuthNative(): Promise<void> {
   const auth = createRequire(import.meta.url)('@kiki/auth-native') as typeof import('@kiki/auth-native');
   const cacheBase = getNativeCacheBase();
@@ -330,10 +357,11 @@ async function runSmoke(): Promise<void> {
   await smokeQueryStoreWorker();
   await smokeUsageReadModelWorker();
   await smokeMailboxWorker();
+  await smokeMemoryWorker();
   await smokeNativePty();
   await smokeAuthNative();
   process.stdout.write(
-    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; query-store and usage read-model workers ready; mailbox worker ready; PTY input/resize/exit/kill passed\n`,
+    `Native asset smoke passed: ${manifest.target}; MiniDb worker build passed; query-store and usage read-model workers ready; mailbox and memory workers ready; PTY input/resize/exit/kill passed\n`,
   );
 }
 

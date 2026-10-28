@@ -35,6 +35,12 @@ export const USAGE_READ_MODEL_WORKER_ASSET = Object.freeze({
   mode: 0o644,
 });
 
+export const MEMORY_WORKER_ASSET = Object.freeze({
+  key: 'memory-worker',
+  relativePath: 'runtime/memory/memory-worker.mjs',
+  mode: 0o644,
+});
+
 export const MAILBOX_WORKER_ASSET = Object.freeze({
   key: 'mailbox-worker',
   relativePath: 'runtime/mailbox/mailbox-worker.mjs',

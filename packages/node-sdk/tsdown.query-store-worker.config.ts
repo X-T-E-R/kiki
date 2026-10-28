@@ -44,4 +44,5 @@ export default [
   workerConfig('query-store-worker', workerEntry),
   workerConfig('usage-read-model-worker', usageReadModelWorkerEntry),
   workerConfig('mailbox-worker', mailboxWorkerEntry),
+  workerConfig('memory-worker', resolve(import.meta.dirname, '../agent-core-v2/src/persistence/backends/sqliteMemory/entry.ts')),
 ];

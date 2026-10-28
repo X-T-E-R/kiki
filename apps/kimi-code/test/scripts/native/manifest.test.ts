@@ -4,6 +4,7 @@ import {
   KAP_MODEL_PRICES_ASSET,
   NATIVE_ASSET_MANIFEST_VERSION,
   USAGE_READ_MODEL_WORKER_ASSET,
+  MEMORY_WORKER_ASSET,
   buildManifestKey,
   isManifestVersionSupported,
   kikiDocsAsset,
@@ -34,6 +35,14 @@ describe('buildManifestKey', () => {
     expect(USAGE_READ_MODEL_WORKER_ASSET).toEqual({
       key: 'usage-read-model-worker',
       relativePath: 'runtime/usage/usage-read-model-worker.mjs',
+      mode: 0o644,
+    });
+  });
+
+  it('maps the Memory worker into the SEA runtime asset tree', () => {
+    expect(MEMORY_WORKER_ASSET).toEqual({
+      key: 'memory-worker',
+      relativePath: 'runtime/memory/memory-worker.mjs',
       mode: 0o644,
     });
   });
