@@ -3049,6 +3049,83 @@ describe('SQLite UsageRangeFold publication', () => {
     warm.dispose();
   });
 
+  it.each(['before_replay', 'after_first_page', 'after_last_page'])('invalidates the frozen fold after a concurrent source rewrite (%s)', async (when) => {
+    const first = scope('workspace', 'first'), later = scope('workspace', 'later');
+    const count = when === 'before_replay' ? 2 : 600;
+    const saved = await openRange([summary('first', 'workspace'), summary('later', 'workspace')], { [first]: Array.from({ length: count }, (_, index) => usageRecord(10 + index, index)), [later]: [usageRecord(30, 3)] }, true);
+    const warm = new UsageAggregationService(saved.core, () => 1000);
+    for (const id of ['first', 'later']) await warm.readAgentUsage('workspace', id, ['main']);
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const rewrite = async (): Promise<void> => { await saved.logs.rewrite(first, 'wire.jsonl', [usageRecord(1, 99)]); };
+    const replay = Reflect.get(service, 'replayFactJournal') as (...args: unknown[]) => Promise<unknown>;
+    const replaying = vi.spyOn(service as unknown as { replayFactJournal: (...args: unknown[]) => Promise<unknown> }, 'replayFactJournal').mockImplementationOnce(async (...args) => {
+      if (when === 'before_replay') await rewrite();
+      return replay.apply(service, args);
+    });
+    const add = UsageRangeFold.prototype.addPage;
+    let pages = 0;
+    const adding = vi.spyOn(UsageRangeFold.prototype, 'addPage').mockImplementation(async function (this: UsageRangeFold, ...args) {
+      await add.apply(this, args);
+      pages++;
+      if (when === 'after_first_page' && pages === 1 || when === 'after_last_page' && pages === 4) await rewrite();
+    });
+    const writes = vi.spyOn(saved.storage, 'write');
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    try {
+      const changed = await service.query(input);
+      expect(changed.reliability.complete).toBe(false);
+      expect(changed.summary.tokens.output).toBe(0);
+      expect(writes.mock.calls.some(([directory, key]) => directory === 'cache/usage-aggregation-v1' && key.startsWith('range-projection-'))).toBe(false);
+    } finally { writes.mockRestore(); adding.mockRestore(); replaying.mockRestore(); service.dispose(); warm.dispose(); }
+    for (const consumer of [new UsageAggregationService(saved.core, () => 1000), new UsageAggregationService(saved.core, () => 1000)]) {
+      const complete = await consumer.query(input);
+      expect(complete.reliability.complete).toBe(true);
+      expect(complete.summary.tokens).toEqual({ input_other: 2, output: 2, input_cache_read: 2, input_cache_creation: 2 });
+      expect(complete.reliability.usage_coverage).toEqual({ known_records: 2, missing_records: 0, legacy_zero_records: 0 });
+      expect(complete.trend[0]?.turn_count).toBe(2);
+      consumer.dispose();
+    }
+  });
+
+  it.each(['deadline', 'cancel', 'error'])('never falls back into an unfinished metadata source after %s', async (mode) => {
+    const first = scope('workspace', 'first'), later = scope('workspace', 'later');
+    const saved = await openRange([summary('first', 'workspace'), summary('later', 'workspace')], { [first]: [usageRecord(10, 1)], [later]: [usageRecord(20, 2)] }, true);
+    const warm = new UsageAggregationService(saved.core, () => 1000);
+    for (const id of ['first', 'later']) await warm.readAgentUsage('workspace', id, ['main']);
+    const service = new UsageAggregationService(saved.core, () => 1000);
+    const controller = new AbortController();
+    let enter!: () => void;
+    const entered = new Promise<void>((resolve) => { enter = resolve; });
+    const size = saved.storage.size.bind(saved.storage);
+    const stalled = vi.spyOn(saved.storage, 'size').mockImplementation((target, key) => {
+      if (target !== later || key !== 'wire.jsonl') return size(target, key);
+      enter();
+      return mode === 'error' ? Promise.reject(new Error('Metadata unavailable')) : new Promise(() => {});
+    });
+    const fallback = vi.spyOn(service as unknown as { loadSessionIncremental: (...args: unknown[]) => Promise<unknown> }, 'loadSessionIncremental');
+    const input = { range: 'custom', start_at: 0, end_at: 1000 } as const;
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const pending = service.query(input, controller.signal);
+      const rejected = mode === 'deadline' ? undefined : expect(pending).rejects.toThrow(mode === 'cancel' ? 'Cancel metadata' : 'Metadata unavailable');
+      await entered;
+      if (mode === 'cancel') controller.abort(new Error('Cancel metadata'));
+      if (mode === 'deadline') {
+        vi.advanceTimersByTime(10_001);
+        const partial = await pending;
+        expect(partial.reliability).toMatchObject({ complete: false, incomplete_reason: 'deadline' });
+      } else await rejected;
+      await Promise.allSettled([...(Reflect.get(service, 'rangeOperations') as Map<string, Promise<unknown>>).values()]);
+      expect(fallback).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); fallback.mockRestore(); stalled.mockRestore(); }
+    const continued = new UsageAggregationService(saved.core, () => 1000);
+    try {
+      const complete = await continued.query(input);
+      expect(complete.reliability.complete).toBe(true);
+      expect(complete.summary.tokens.output).toBe(2);
+    } finally { continued.dispose(); service.dispose(); warm.dispose(); }
+  });
+
   it.each([false, true])('prepares unchanged journal checkpoints together and falls back for an unaligned source (stale: %s)', async (stale) => {
     const sessions = Array.from({ length: 40 }, (_, index) => summary(`session-${index}`, 'workspace'));
     const saved = await openRange(sessions, Object.fromEntries(sessions.flatMap((session) => ['main', 'child'].map((agentId) => [`sessions/workspace/${session.id}/agents/${agentId}`, [usageRecord(1, 7)]]))), true);

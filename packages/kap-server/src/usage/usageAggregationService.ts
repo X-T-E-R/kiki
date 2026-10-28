@@ -680,7 +680,7 @@ export class UsageAggregationService {
             for (const source of session.sources ?? []) {
               if (source.cursor === undefined) continue;
               while (!source.done) {
-                if (this.now() >= budget.deadlineAt) { await flush(); budget.incompleteReason = 'deadline'; return; }
+                if (this.now() >= budget.deadlineAt || budget.factSignal?.aborted) { await flush(); budget.incompleteReason = 'deadline'; return; }
                 if ((budget.remainingFacts ?? Infinity) <= 0) { await flush(); budget.incompleteReason = 'record_budget'; return; }
                 if (source.cursor?.startsWith('journal:') === true) {
                   const hold = { cursor: source.cursor };
@@ -734,11 +734,12 @@ export class UsageAggregationService {
       }
       for (const session of head.sessions) {
         if (session.prepared) continue;
-        if (this.now() >= budget.deadlineAt) { budget.incompleteReason = 'deadline'; break; }
+        if (this.now() >= budget.deadlineAt || budget.factSignal.aborted) { budget.incompleteReason = 'deadline'; break; }
         if ((budget.remainingFacts ?? Infinity) <= 0 || budget.remainingRecords <= 0) { budget.incompleteReason = 'record_budget'; break; }
         const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
         const journalSession = journalPreparation?.get(session);
-        const listedAgents = journalSession?.agentIds ?? await storage.list(`${scope}/agents`);
+        const listedAgents = journalSession?.agentIds ?? await waitForSource(storage.list(`${scope}/agents`), budget.factSignal);
+        budget.factSignal.throwIfAborted();
         const known = new Set((session.sources ?? []).map((source) => source.agentId));
         const pending = journalSession !== undefined ? listedAgents.filter((agentId) => journalSession.checkpoints[agentId] === undefined)
           : session.sources === undefined ? undefined : listedAgents.filter((agentId) => !known.has(agentId));
@@ -796,7 +797,16 @@ export class UsageAggregationService {
         }
       }
       await pageOpened();
-      head.complete = head.sessions.every((session) => session.prepared && session.sources?.every((source) => source.done));
+      const complete = head.sessions.every((session) => session.prepared && session.sources?.every((source) => source.done));
+      if (complete && replayJournal && !reuseCompleteHead) {
+        const logs = this.core.accessor.get(IAppendLogStore);
+        const sources = head.sessions.flatMap((session) => session.sources ?? []);
+        for (let offset = 0; offset < sources.length; offset += 32) {
+          const current = await waitForSource(Promise.all(sources.slice(offset, offset + 32).map(async (source) => await logs.generation(source.scope, AGENT_WIRE_RECORD_KEY) === (source.checkpoint.generation ?? 'legacy'))), budget.factSignal);
+          if (current.some((value) => !value)) throw new UsageFactCursorChangedError();
+        }
+      }
+      head.complete = complete;
       if (!reuseCompleteHead) await fold.saveHead(head);
       budget.sourcesComplete = head.complete && head.inventoryComplete && !head.invalidated;
       if (head.complete && budget.incompleteReason === null) {
@@ -859,36 +869,45 @@ export class UsageAggregationService {
     const logs = this.core.accessor.get(IAppendLogStore);
     const prepared = new Map<RangeFoldSession, { agentIds: readonly string[]; checkpoints: Record<string, WireCheckpoint> }>();
     const pending = sessions.filter((session) => !session.prepared && session.sources === undefined);
+    const stopped = new AbortController();
+    const activeSignal = signal === undefined ? stopped.signal : AbortSignal.any([signal, stopped.signal]);
     const parallel = async <T>(items: readonly T[], run: (item: T) => Promise<void>): Promise<boolean> => {
       let next = 0;
       const results = await Promise.allSettled(Array.from({ length: Math.min(32, items.length) }, async () => {
-        for (let index = next++; index < items.length; index = next++) {
-          signal?.throwIfAborted();
-          await waitForSource(run(items[index]!), signal);
-        }
+        try {
+          for (let index = next++; index < items.length; index = next++) {
+            activeSignal.throwIfAborted();
+            await run(items[index]!);
+          }
+        } catch (error) { stopped.abort(error); throw error; }
       }));
       for (const result of results) if (result.status === 'rejected') {
-        if (signal?.aborted && (signal.reason as { name?: string } | undefined)?.name === 'TimeoutError') return false;
+        if (signal?.aborted && (signal.reason as { name?: string } | undefined)?.name === 'TimeoutError' && result.reason === signal.reason) return false;
         throw result.reason;
       }
       return true;
     };
     if (!await parallel(pending, async (session) => {
       const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
-      prepared.set(session, { agentIds: await storage.list(`${scope}/agents`), checkpoints: {} });
+      const agentIds = await waitForSource(storage.list(`${scope}/agents`), activeSignal);
+      activeSignal.throwIfAborted();
+      prepared.set(session, { agentIds, checkpoints: {} });
     })) return prepared;
     const jobs = pending.flatMap((session) => {
       const scope = sessionScopeOf(workspacePersistenceScope('sessions', session.summary.workspaceId), session.summary.id);
       return prepared.get(session)!.agentIds.map((agentId) => ({ session, agentId, scope: agentScopeOf(scope, agentId) }));
     });
     await parallel(jobs, async ({ session, agentId, scope }) => {
-      const generation = await logs.generation(scope, AGENT_WIRE_RECORD_KEY);
-      const [size, mtime] = await Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]);
+      const generation = await waitForSource(logs.generation(scope, AGENT_WIRE_RECORD_KEY), activeSignal);
+      activeSignal.throwIfAborted();
+      const [size, mtime] = await waitForSource(Promise.all([storage.size(scope, AGENT_WIRE_RECORD_KEY), storage.mtime(scope, AGENT_WIRE_RECORD_KEY)]), activeSignal);
+      activeSignal.throwIfAborted();
       const excluded = mtimeExcludesRange(mtime ?? 0, range.startAt);
       const checkpoint = excluded || (size ?? 0) === 0
         ? { generation, offset: size ?? 0, size: size ?? 0, mtimeMs: mtime ?? 0, boundaryHash: '', valid: true }
-        : await this.factJournalCheckpoint(scope, signal, { generation, size: size ?? 0, mtimeMs: mtime ?? 0 });
-      const current = checkpoint !== undefined && checkpoint.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0) && (excluded || await logs.generation(scope, AGENT_WIRE_RECORD_KEY) === generation);
+        : await this.factJournalCheckpoint(scope, activeSignal, { generation, size: size ?? 0, mtimeMs: mtime ?? 0 });
+      const current = checkpoint !== undefined && checkpoint.generation === generation && checkpoint.offset === (size ?? 0) && checkpoint.size === (size ?? 0) && checkpoint.mtimeMs === (mtime ?? 0) && (excluded || await waitForSource(logs.generation(scope, AGENT_WIRE_RECORD_KEY), activeSignal) === generation);
+      activeSignal.throwIfAborted();
       if (current) prepared.get(session)!.checkpoints[agentId] = { ...checkpoint, generation };
     });
     for (const value of prepared.values()) value.checkpoints = Object.fromEntries(value.agentIds.flatMap((agentId) => value.checkpoints[agentId] === undefined ? [] : [[agentId, value.checkpoints[agentId]]]));
