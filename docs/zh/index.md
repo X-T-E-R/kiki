@@ -1,9 +1,11 @@
 ---
 layout: home
+title: Kiki（kiki-agent）— 多模型 AI 智能体工作台
+titleTemplate: false
 hero:
   name: Kiki
   text: 把一个文件夹和一件事交给它。
-  tagline: 跑在你机器上的开源 AI 智能体工作台。摸清代码库、核对 PDF 与表格、写长文或改工程都能交出去——主会话按角色调度你选定的模型，桌面、终端与浏览器共用同一个本地会话存储。
+  tagline: 跑在你机器上的开源多模型 AI 智能体工作台。摸清代码库、核对 PDF 与表格、写长文或改工程都能交出去——主会话按角色调度你选定的模型，桌面、终端与浏览器共用同一个本地会话存储。
   actions:
     - theme: brand
       text: 快速上手

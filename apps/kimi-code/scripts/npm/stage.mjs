@@ -22,10 +22,14 @@ export async function stageNpmDistributions(root = resolve(import.meta.dirname, 
     const manifest = {
       name,
       version: source.version,
-      description: kind === 'lite' ? 'Kiki CLI/TUI (Node.js)' : 'Kiki CLI/TUI and desktop app',
+      description: kind === 'lite'
+        ? 'Kiki (kiki-agent-lite) — Multi-Model AI Agent Workbench CLI/TUI (Node.js)'
+        : 'Kiki (kiki-agent) — Multi-Model AI Agent Workbench (Desktop GUI, TUI, and Web UI)',
       license: source.license,
       homepage: source.homepage,
       repository: source.repository,
+      bugs: source.bugs,
+      keywords: source.keywords,
       type: 'module',
       bin: { kiki: 'dist/main.mjs' },
       engines: { node: NODE_RUNTIME_RANGE },

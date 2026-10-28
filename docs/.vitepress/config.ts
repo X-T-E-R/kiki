@@ -18,10 +18,24 @@ const mermaidOptimizeDeps = [
   'cytoscape',
 ]
 
+const legacyRedirectPaths = new Set([
+  ...legacyRoutes.map(({ locale, from }) => `${locale}/${from}`),
+  'en/customization/datasource',
+  'zh/customization/datasource',
+])
+
 const config = withMermaid(defineConfig({
   base,
-  title: 'Kiki Docs',
-  description: 'Kiki Product Documentation',
+  title: 'Kiki',
+  titleTemplate: ':title | Kiki (kiki-agent)',
+  description: 'Kiki (kiki-agent) — Open-source multi-model AI agent workbench (Desktop GUI, TUI, and Web UI on one local daemon). Dispatch subagents across Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI.',
+  sitemap: {
+    hostname: 'https://x-t-e-r.github.io/kiki/',
+    transformItems: (items) => items.filter((item) => {
+      const normalized = item.url.replace(/^\/+|\/+$/g, '').replace(/\.html$/, '')
+      return !legacyRedirectPaths.has(normalized)
+    }),
+  },
 
   head: [
     ['link', { rel: 'icon', type: 'image/x-icon', href: `${base}favicon.ico` }],
@@ -55,8 +69,9 @@ const config = withMermaid(defineConfig({
       label: '简体中文',
       lang: 'zh-CN',
       link: '/zh/',
-      title: 'Kiki 产品文档',
-      description: 'Kiki 用户文档',
+      title: 'Kiki',
+      titleTemplate: ':title | Kiki（kiki-agent）',
+      description: 'Kiki（kiki-agent）开源多模型 AI 智能体工作台文档（桌面 GUI、终端 TUI 与 Web 共用本地守护进程，支持跨模型派发子智能体与微信 / QQ 接入）',
       themeConfig: {
         nav: [
           { text: '快速上手', link: '/zh/getting-started/installation', activeMatch: '/zh/getting-started/' },
@@ -188,8 +203,9 @@ const config = withMermaid(defineConfig({
       label: 'English',
       lang: 'en-US',
       link: '/en/',
-      title: 'Kiki Docs',
-      description: 'Kiki Product Documentation',
+      title: 'Kiki',
+      titleTemplate: ':title | Kiki (kiki-agent)',
+      description: 'Kiki (kiki-agent) documentation — open-source multi-model AI agent workbench with Desktop GUI, terminal TUI, browser UI, subagent dispatch, and WeChat / QQ bridge.',
       themeConfig: {
         nav: [
           { text: 'Getting started', link: '/en/getting-started/installation', activeMatch: '/en/getting-started/' },
@@ -332,7 +348,14 @@ const config = withMermaid(defineConfig({
     optimizeDeps: {
       include: mermaidOptimizeDeps.map((dep) => `mermaid > ${dep}`),
     },
-    plugins: [llmstxt({ ignoreFiles: ['redirects/**'] })],
+    plugins: [
+      llmstxt({
+        ignoreFiles: ['redirects/**', '**/customization/datasource.md'],
+        title: 'Kiki (kiki-agent) — Multi-Model AI Agent Workbench',
+        description: 'Open-source multi-model AI agent workbench (Desktop GUI, terminal TUI, and browser Web UI sharing one local daemon).',
+        details: 'Kiki (npm: kiki-agent / kiki-agent-lite, repository: https://github.com/X-T-E-R/kiki) is an MIT-licensed local AI agent workbench. A lead session dispatches isolated subagents across Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI, bridges WeChat and QQ for mobile replies and approvals, enforces per-model concurrency rules with unreported calls marked unknown rather than zero, and interoperates with Claude Code, Codex CLI, Cursor, Zed, and JetBrains over ACP (kiki acp) and MCP (kiki seat).',
+      }),
+    ],
   },
 }))
 

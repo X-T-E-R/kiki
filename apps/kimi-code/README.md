@@ -1,12 +1,12 @@
-# @kiki/cli
+# Kiki (`kiki-agent` / `kiki-agent-lite`)
 
-> A local agent workspace for Kiki
+> **Kiki (`kiki-agent` / `kiki-agent-lite`) — Multi-Model AI Agent Workbench** (Desktop GUI in `kiki-agent`, plus terminal TUI and browser UI sharing one local daemon)
 
 [![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/X-T-E-R/kiki/blob/kiki/LICENSE) [![Docs](https://img.shields.io/badge/docs-online-blue)](https://x-t-e-r.github.io/kiki/) [Releases](https://github.com/X-T-E-R/kiki/releases)
 
 ## About
 
-Kiki is a local agent workspace with a desktop GUI, a CLI/TUI, and a browser UI available through `kiki web`. It can read and edit code, run shell commands, search files, fetch web pages, and choose the next step from the feedback it receives. It works out of the box with Moonshot AI's Kimi models and can also be configured to use other compatible providers.
+Kiki is an open-source multi-model AI agent workbench with a desktop GUI (`kiki-agent`), a terminal UI (`kiki`, in both `kiki-agent` and `kiki-agent-lite`), and a browser UI (`kiki web`) connected to the same local daemon. It can read and edit code, run shell commands, fetch web pages, process local PDFs and Office spreadsheets through optional plugins (`Kiki Extract`, `Kiki Office Suite`), and dispatch subagents across Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI in a single session.
 
 Kiki began as a fork of Kimi Code (Moonshot AI) and is now developed independently.
 

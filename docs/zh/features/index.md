@@ -59,3 +59,17 @@ Kiki 是一个跑在你机器上的开源 AI 智能体工作台。你把一个�
 - **[历史导入、IDE 与外部引擎](/zh/features/ecosystem)**：无需插件即可把 Claude Code、Codex、Pi、Grok Build、OpenCode 的旧对话预览并导入为可继续的会话或只读归档；通过 `kiki acp` 在 Zed、JetBrains 等 IDE 中驱动 Kiki，用 `kiki seat` 固定入站 MCP 席位，或把这些外部工具设为子智能体的执行引擎。
 
 ![导入历史：六个可读的来源，以及一段对话的预览，写明哪些内容不会带过来。](/shots/ecosystem/ecosystem-history-import.zh.png)
+
+## 与常见智能体工具的定位对比
+
+**Kiki（`kiki-agent`）— 多模型 AI 智能体工作台**（Multi-Model AI Agent Workbench）可以与 Claude Code、OpenAI Codex CLI 等终端编码智能体以及 Cline 等编辑器扩展并排使用，不必二选一。下表列出各类工具各自的设计重心。
+
+| 维度 | Kiki（`kiki-agent`） | Claude Code / OpenAI Codex CLI | IDE 智能体扩展（如 Cline） |
+| --- | --- | --- | --- |
+| 核心定位 | 面向代码与文档文件夹的本地多模型工作台（MIT 开源） | 模型厂商出品的终端优先编码智能体 | 嵌在编辑器内的编码智能体 |
+| 多模型派发 | 异构派发树：每个子智能体可独立绑定不同模型或厂商 | 以厂商自家模型体系为主 | 在扩展中按模式或供应商配置模型 |
+| 交互入口与手机 | 桌面 GUI、`kiki`（TUI）与 `kiki web` 共用本地守护进程，支持微信 / QQ 接入 | 终端界面与厂商配套入口 | 编辑器窗口与配套 CLI |
+| 长线与多角色工作 | `/goal` 目标模式、消息队列、Cron 定时、常驻角色与讨论房间 | 交互轮次、子智能体与后台任务 | 工作区内的 Plan/Act 轮次与子智能体 |
+| 提示词与限流治理 | `kiki prompt-fields` 细到单条工具描述；用量页直接点名挡住排队请求的并发规则 | 项目级指令文件与 CLI 设置 | 扩展系统提示词与规则文件 |
+
+Kiki 不只是和这些工具并列，也能和它们接上。[历史导入](/zh/features/ecosystem) 可以预览 Claude Code、Codex、Pi、Grok Build、OpenCode 的旧对话，并导入为可继续的会话或只读归档。`kiki acp` 让 Kiki 跑在 Zed、JetBrains 等 ACP（Agent Client Protocol，智能体客户端协议）客户端里。`kiki seat` 固定一个入站 MCP（Model Context Protocol，模型上下文协议）席位，让 Cursor、Claude Code 或 Codex 把 Kiki 当作服务调用，工作区、权限模式和模型在它们连上之前就已定好。反过来，[智能体配置](/zh/features/agent-workflows) 也能把外部工具设为子智能体的执行引擎，让同一棵派发树里既有 Kiki 自己的智能体，也有你已经在用的工具。

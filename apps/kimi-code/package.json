@@ -1,10 +1,10 @@
 {
   "name": "@kiki/cli",
   "version": "0.5.1",
-  "description": "Kiki local agent workspace and shared daemon",
+  "description": "Kiki (kiki-agent) — Multi-Model AI Agent Workbench (Desktop GUI, TUI, and Web UI on one shared local daemon)",
   "license": "MIT",
   "author": "Moonshot AI",
-  "homepage": "https://github.com/X-T-E-R/kiki/releases",
+  "homepage": "https://x-t-e-r.github.io/kiki/",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/X-T-E-R/kiki.git",
@@ -15,12 +15,19 @@
   },
   "keywords": [
     "kiki",
+    "kiki-agent",
+    "ai-agent",
+    "coding-agent",
+    "multi-agent",
+    "agent-workbench",
+    "mcp",
+    "claude-code",
+    "codex",
+    "kimi",
     "local-first",
     "cli",
-    "agent",
-    "coding-agent",
-    "ai",
-    "tui"
+    "tui",
+    "desktop-app"
   ],
   "bin": {
     "kiki": "dist/main.mjs"

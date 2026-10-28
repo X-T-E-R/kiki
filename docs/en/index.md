@@ -1,9 +1,11 @@
 ---
 layout: home
+title: Kiki (kiki-agent) — Multi-Model AI Agent Workbench
+titleTemplate: false
 hero:
   name: Kiki
   text: Hand over a folder and a task.
-  tagline: An open-source AI agent workbench on your machine. Map a codebase, cross-check PDFs and spreadsheets, or finish a draft — the lead session dispatches subagents on the models you choose, while sessions stay in one local store shared by desktop, terminal, and browser.
+  tagline: An open-source multi-model AI agent workbench on your machine. Map a codebase, cross-check PDFs and spreadsheets, or finish a draft — the lead session dispatches subagents on the models you choose, while sessions stay in one local store shared by desktop, terminal, and browser.
   actions:
     - theme: brand
       text: Get Started

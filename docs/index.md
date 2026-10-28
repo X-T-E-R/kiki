@@ -1,5 +1,7 @@
 ---
 layout: home
+title: Kiki (kiki-agent) — Multi-Model AI Agent Workbench
+titleTemplate: false
 hero:
   name: Kiki
   text: ' '

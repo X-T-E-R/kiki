@@ -59,3 +59,17 @@ Sessions and configuration stay in your local Kiki home by default, and connect 
 - **[History Import, IDEs & Engines](/en/features/ecosystem)**: preview and import conversations from Claude Code, Codex, Pi, Grok Build, or OpenCode as continuable sessions or read-only archives; drive Kiki inside Zed, JetBrains, and other IDEs over `kiki acp`; fix an inbound MCP seat with `kiki seat`; or run subagents on external harnesses with Kiki context bridging.
 
 ![Importing history: six readable sources and a preview of one conversation showing what will not be carried over.](/shots/ecosystem/ecosystem-history-import.en.png)
+
+## How Kiki compares
+
+**Kiki (`kiki-agent`) — Multi-Model AI Agent Workbench** runs alongside terminal coding agents such as Claude Code and OpenAI Codex CLI and editor extensions such as Cline rather than asking you to replace them. The table below shows where each category is centered.
+
+| Dimension | Kiki (`kiki-agent`) | Claude Code / OpenAI Codex CLI | IDE agent extensions (e.g. Cline) |
+| --- | --- | --- | --- |
+| Primary focus | Local multi-model workbench for code and document folders (MIT) | Terminal-first coding agent from a model vendor | Coding agent embedded inside an editor |
+| Multi-model dispatch | Each subagent in a dispatch tree binds its own model or vendor | Centered on the vendor's model family | Configured per mode or provider in the extension |
+| Surfaces & mobile | Desktop GUI, `kiki` (TUI), and `kiki web` on one local daemon, plus WeChat / QQ bridge | Terminal CLI and vendor-shipped surfaces | Editor window and companion CLI |
+| Long-running & multi-role | `/goal` mode, message queue, cron schedules, personas, and moderated rooms | Interactive turns, subagents, and background tasks | Plan/Act turns and subagents in the workspace |
+| Prompts & governance | `kiki prompt-fields` down to one tool description; Usage names the rule holding a queued request | Project instruction files and CLI settings | Extension system prompt and rule files |
+
+Kiki also works with these tools instead of only beside them. [History import](/en/features/ecosystem) previews conversations from Claude Code, Codex, Pi, Grok Build, and OpenCode and brings them in as continuable sessions or read-only archives. `kiki acp` runs Kiki inside Zed, JetBrains, and other ACP (Agent Client Protocol) clients. `kiki seat` fixes an inbound MCP (Model Context Protocol) seat so Cursor, Claude Code, or Codex can call Kiki as a service, with the workspace, permission mode, and model set before they connect. Going the other direction, an [agent profile](/en/features/agent-workflows) can run a subagent on an external harness as its engine, so one dispatch tree can mix Kiki's own agents with the tools you already use.

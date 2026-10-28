@@ -7,7 +7,14 @@
 
 Hand Kiki a folder and a task: map an unfamiliar codebase, work through a stack of PDFs and spreadsheets, finish a draft, or ship a change. It reads what is there, plans, and works in place. When a job divides, it hands parts to subagents you can put on different models, and goals, a queue, and memory keep the work moving across turns.
 
-Work files stay in the folder you choose, sessions, history, and configuration stay in your local Kiki home, and model requests go only to the providers or local servers you connect. It is open source (MIT). The desktop app, the terminal UI, and the browser UI all connect to one local daemon, so a session you start in one is the same session you open in another.
+Work files stay in the folder you choose, sessions, history, and configuration stay in your local Kiki home, and model requests go only to the providers or local servers you connect. It is open source (MIT).
+
+Coming from Claude Code, OpenAI Codex CLI, or Cursor? Four things work differently here:
+
+- **Several models in one dispatch tree**: a strong model plans, cheaper models run routine work, and a review on another vendor does not share the implementation's blind spots. Kimi, Anthropic, OpenAI and Codex, Gemini, and Vertex AI all fit in one session, and you can sign in with GitHub Copilot or ChatGPT.
+- **One live session, three surfaces**: the desktop app, the terminal UI (`kiki`), and the browser UI (`kiki web`) attach to the same local daemon, so the session you start in one is the one you open in another.
+- **Reachable away from the desk**: pair WeChat or QQ to a persona or session to reply, steer the current turn, and answer approvals from your phone. Remote connections and SSH hosts extend the same work to other machines; Spaces keep work and personal setups apart.
+- **Limits and prompts in plain view**: the Usage page names the concurrency rule holding each queued request, `kiki prompt-fields` overrides prompt text down to a single tool description, and every memory change can be undone.
 
 ![The Kiki workbench: a lead session with the subagents it dispatched, an active goal, and a queued message.](marketing/shots/wl-hero-workbench.en.light.png)
 
